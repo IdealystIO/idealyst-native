@@ -17,8 +17,11 @@
 //!
 //! `thumb_icon` puts a glyph inside the thumb, tinted with the variant
 //! foreground (the color a Button label takes on the same tone/variant). An
-//! icon thumb is larger than the plain one so the glyph stays legible — see
-//! `SLIDER_ICON_THUMB_DIMS` in idea-theme.
+//! icon thumb is larger than the plain one so the glyph stays legible.
+//!
+//! Styling is [`SliderStyles`]: `container` (the drag box), `track` (the
+//! muted rail), `fill`, `thumb`, `thumb_icon`, `row` (the icons-flanked
+//! layout) and `side_icon`.
 //!
 //! ## Drag stability
 //!
@@ -33,39 +36,187 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, icon, ui, AlignItems, Cursor, Element, FlexDirection, IconData, IdealystSchema,
-    IntoElement, JustifyContent, Length, Position, Reactive, StyleApplication, StyleRules,
-    StyleSheet, Tokenized, TouchPhase, TouchResponse, VariantSet,
+    component, component_styles, icon, ui, AlignItems, Cursor, Element, FlexDirection, IconData, IdealystSchema,
+    IntoElement, JustifyContent, Length, Overflow, Position, Reactive, SlotRestyle, SlotStyle, StyleRules,
+    Tokenized, TouchPhase, TouchResponse,
 };
 
-use idea_theme::extensible::{
-    installed_slider_sheets, ToneRef, VariantRef, SLIDER_DIMS, SLIDER_ICON_THUMB_DIMS,
-};
+use idea_theme::extensible::{semantic_tones, ToneRef};
 
+use crate::components::tone_slots::{recipe_compounds, with_tone};
 use crate::components::ControlSize;
+use crate::modifiers::{marker_into_axis, variant};
+use crate::theme::IdeaThemeRef;
 use idea_theme::tokens;
 
-/// Thumb diameter (px) per size, read from the theme's `SLIDER_DIMS` (or
-/// `SLIDER_ICON_THUMB_DIMS` for an icon thumb). Used to offset the thumb's
-/// `left` so its *center* tracks the value, and as the container height.
-fn thumb_diameter(size: ControlSize, has_icon: bool) -> f32 {
-    let key = size.as_variant_str();
-    if has_icon {
-        SLIDER_ICON_THUMB_DIMS.iter().find(|(k, ..)| *k == key).map(|d| d.1)
-    } else {
-        SLIDER_DIMS.iter().find(|(k, ..)| *k == key).map(|d| d.2)
+component_styles! {
+    /// The styled sections of [`Slider`].
+    pub Slider<IdeaThemeRef> {
+        /// The fill and thumb treatment — a tone-aware recipe per value.
+        axis variant { #[default] filled, soft, outlined, ghost }
+
+        /// The fixed-width drag box (track + thumb). Its per-instance width
+        /// and the thumb-sized height ride the inline layer.
+        slot container {
+            base(_t) {
+                position: Position::Relative,
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Stretch,
+            }
+            /// The disabled look.
+            variant dimmed {
+                #[default]
+                off(_t) { cursor: Cursor::Pointer }
+                on(_t) {
+                    cursor: Cursor::Default,
+                    opacity: 0.45,
+                }
+            }
+        }
+
+        /// The muted rail.
+        slot track {
+            base(t) {
+                position: Position::Relative,
+                background: t.color.border(),
+                width: Length::pct(100.0),
+                overflow: Overflow::Hidden,
+                border_radius: t.radius.pill(),
+            }
+            /// Rail thickness.
+            variant size {
+                sm(_t) { height: 3.0 }
+                #[default]
+                md(_t) { height: 4.0 }
+                lg(_t) { height: 6.0 }
+            }
+        }
+
+        /// The tone bar from the left edge to the thumb; its width is the
+        /// value (inline).
+        slot fill {
+            extend(tone_backgrounds)
+            base(t) {
+                position: Position::Absolute,
+                left: 0.0,
+                top: 0.0,
+                height: Length::pct(100.0),
+                border_radius: t.radius.pill(),
+            }
+            transitions {
+                background: 120ms EaseOut,
+            }
+        }
+
+        /// The round handle; `left` (the value position) rides the inline
+        /// layer.
+        slot thumb {
+            extend(tone_backgrounds)
+            base(t) {
+                position: Position::Absolute,
+                top: 0.0,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                border_radius: t.radius.pill(),
+                shadow: runtime_core::Shadow {
+                    x: 0.0,
+                    y: 1.0,
+                    blur: 4.0,
+                    color: runtime_core::Color("rgba(0,0,0,0.25)".into()).into(),
+                },
+            }
+            /// Diameter. An icon thumb is larger (inline) so its glyph stays
+            /// legible.
+            variant size {
+                sm(_t) { width: 12.0, height: 12.0 }
+                #[default]
+                md(_t) { width: 16.0, height: 16.0 }
+                lg(_t) { width: 20.0, height: 20.0 }
+            }
+        }
+
+        /// The glyph inside the thumb, in the variant's foreground (what a
+        /// Button label takes on the same tone/variant).
+        slot thumb_icon {
+            extend(tone_foregrounds)
+            base(_t) { flex_shrink: 0.0 }
+            variant size {
+                sm(_t) { width: 12.0, height: 12.0 }
+                #[default]
+                md(_t) { width: 14.0, height: 14.0 }
+                lg(_t) { width: 16.0, height: 16.0 }
+            }
+        }
+
+        /// Leading icon, slider, trailing icon.
+        slot row {
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: t.spacing.sm(),
+            }
+        }
+
+        /// A leading / trailing icon (outside the drag area, so it can't
+        /// perturb the `x / width` drag math).
+        slot side_icon {
+            base(_t) {
+                width: 16.0,
+                height: 16.0,
+                flex_shrink: 0.0,
+            }
+        }
     }
-    .expect("every ControlSize has a slider dimension row")
 }
 
-/// Glyph size (px) inside an icon thumb, from `SLIDER_ICON_THUMB_DIMS`.
-fn thumb_icon_px(size: ControlSize) -> f32 {
-    let key = size.as_variant_str();
-    SLIDER_ICON_THUMB_DIMS
-        .iter()
-        .find(|(k, ..)| *k == key)
-        .map(|d| d.2)
-        .expect("every ControlSize has a slider icon-thumb row")
+fn tone_backgrounds(s: &mut SlotRestyle<'_, SliderStyles>) {
+    recipe_compounds(s, &semantic_tones(), &[], |ctx, recipe| StyleRules {
+        background: recipe.render(ctx).background,
+        ..Default::default()
+    });
+}
+
+fn tone_foregrounds(s: &mut SlotRestyle<'_, SliderStyles>) {
+    recipe_compounds(s, &semantic_tones(), &[], |ctx, recipe| StyleRules {
+        color: recipe.render(ctx).color,
+        ..Default::default()
+    });
+}
+
+marker_into_axis!(SliderVariant {
+    variant::Filled => Filled,
+    variant::Soft => Soft,
+    variant::Outlined => Outlined,
+    variant::Ghost => Ghost,
+});
+
+/// The control-wide size scale converts into Slider's own size axis.
+impl From<ControlSize> for SliderSize {
+    fn from(s: ControlSize) -> Self {
+        SliderSize::define(s.as_variant_str())
+    }
+}
+
+impl From<ControlSize> for Reactive<SliderSize> {
+    fn from(s: ControlSize) -> Self {
+        Reactive::Static(s.into())
+    }
+}
+
+/// Thumb diameter (px) per size — the `thumb` slot's size arm, or the
+/// larger icon-thumb diameter. Used to offset the thumb's `left` so its
+/// *center* tracks the value, and as the container height. An app-defined
+/// size takes `md`'s.
+fn thumb_diameter(size: SliderSize, has_icon: bool) -> f32 {
+    match (size, has_icon) {
+        (SliderSize::Sm, false) => 12.0,
+        (SliderSize::Lg, false) => 20.0,
+        (_, false) => 16.0,
+        (SliderSize::Sm, true) => 20.0,
+        (SliderSize::Lg, true) => 28.0,
+        (_, true) => 24.0,
+    }
 }
 
 /// Normalized `0..1` position of `v` within `[min, max]`.
@@ -86,7 +237,7 @@ fn norm_pos(v: f32, min: f32, max: f32) -> f32 {
 // re-style the fill/track/thumb in place; `disabled`'s DIM rides the reactive
 // container style, and its press-BLOCK is read live in `on_touch` (per touch),
 // so a live `disabled` blocks and unblocks in place.
-#[runtime_core::props]
+#[runtime_core::props(styles = SliderStyles)]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct SliderProps {
@@ -109,10 +260,11 @@ pub struct SliderProps {
     pub width: f32,
     /// Semantic palette for the fill + thumb. Default Primary.
     pub tone: ToneRef,
-    /// Surface skeleton for the fill + thumb. Default Filled.
-    pub variant: VariantRef,
-    /// Rail thickness + thumb size. Default Md.
-    pub size: ControlSize,
+    /// Surface skeleton for the fill + thumb (or an app value). Default
+    /// Filled.
+    pub variant: SliderVariant,
+    /// Rail thickness + thumb size (a `ControlSize` converts). Default Md.
+    pub size: SliderSize,
     /// When `true`, blocks dragging and dims the control. Default `false`.
     /// A live value (`Signal` / `rx!`) blocks and unblocks in place.
     pub disabled: bool,
@@ -139,12 +291,13 @@ impl Default for SliderProps {
             step: Reactive::Static(0.0),
             width: Reactive::Static(184.0),
             tone: Reactive::Static(ToneRef::default()),
-            variant: Reactive::Static(VariantRef::default()),
-            size: Reactive::Static(ControlSize::default()),
+            variant: Reactive::Static(SliderVariant::default()),
+            size: Reactive::Static(SliderSize::default()),
             disabled: Reactive::Static(false),
             leading_icon: Reactive::Static(None),
             trailing_icon: Reactive::Static(None),
             thumb_icon: Reactive::Static(None),
+            styles: Default::default(),
         }
     }
 }
@@ -171,51 +324,33 @@ pub fn Slider(props: &SliderProps) -> Element {
     let has_thumb_icon = props.thumb_icon.get().is_some();
     let dia = thumb_diameter(size, has_thumb_icon);
 
-    // Style keys as live closures so a reactive tone/variant/size re-styles the
-    // fill/track/thumb in place; bare props collapse to a static resolution.
-    let appearance_for = {
-        let tone = props.tone.clone();
-        let variant = props.variant.clone();
-        move || format!("{}_{}", tone.get().key(), variant.get().key())
-    };
-    let size_key_for = {
-        let size_prop = props.size.clone();
-        move || size_prop.get().as_variant_str().to_string()
-    };
-    let sheets = installed_slider_sheets();
+    let styles = props.styles.clone();
+    // Tone, variant and size are read live, so a reactive one re-styles the
+    // fill/track/thumb in place; every continuous value (the fill's width,
+    // the thumb's `left`, the container's dimensions) rides an inline layer,
+    // so all of it premints.
+    let values =
+        with_tone(SliderStyles::values().set(props.variant.clone()).set(props.size.clone()), &props.tone);
 
-    // --- fill: width tracks the value%, cached per whole percent ---
+    // --- fill: width tracks the value% ---
     let fill = {
-        let fill_sheet = sheets.fill_sheet.clone();
-        let app = appearance_for.clone();
         let value = value.clone();
-        runtime_core::view(Vec::new())
-            .with_style(move || {
+        let style = SliderStyles::fill()
+            .values(&values)
+            .inline_with(move || {
                 let pct = norm_pos(value.get(), min, max) * 100.0;
-                StyleApplication::new(fill_sheet.clone())
-                    .with("appearance", app())
-                    // Continuous — one entry/class per whole percent as a
-                    // computed layer. Inline instead.
-                    .with_inline(StyleRules {
-                        width: Some(Tokenized::Literal(Length::pct(pct))),
-                        ..Default::default()
-                    })
+                StyleRules { width: Some(Tokenized::Literal(Length::pct(pct))), ..Default::default() }
             })
-            .into_element()
+            .overridden(styles.fill.as_ref());
+        runtime_core::view(Vec::new()).with_style(style).into_element()
     };
 
     // --- track: the muted rail, holding the fill ---
-    let track = {
-        let track_sheet = sheets.track_sheet.clone();
-        let size_key = size_key_for.clone();
-        runtime_core::view(vec![fill])
-            .with_style(move || {
-                StyleApplication::new(track_sheet.clone()).with("size", size_key())
-            })
-            .into_element()
-    };
+    let track = runtime_core::view(vec![fill])
+        .with_style(SliderStyles::track().values(&values).overridden(styles.track.as_ref()))
+        .into_element();
 
-    // --- thumb icon: glyph inside the thumb, tinted by the icon sheet ---
+    // --- thumb icon: glyph inside the thumb ---
     let thumb_kids = if has_thumb_icon {
         let mut el = icon(props.thumb_icon.get().expect("presence checked above"));
         if !props.thumb_icon.is_static() {
@@ -224,66 +359,49 @@ pub fn Slider(props: &SliderProps) -> Element {
             let slot = props.thumb_icon.clone();
             el = el.data(move || slot.get().unwrap_or(crate::components::button::EMPTY_ICON_DATA));
         }
-        let icon_sheet = sheets.thumb_icon_sheet.clone();
-        let app = appearance_for.clone();
-        let px = thumb_icon_px(size);
-        vec![thumb_icon(el, move || {
-            StyleApplication::new(icon_sheet.clone()).with("appearance", app())
-        }, px)]
+        let slot = {
+            let values = values.clone();
+            let styles = styles.clone();
+            move || SliderStyles::thumb_icon().values(&values).overridden(styles.thumb_icon.as_ref())
+        };
+        vec![thumb_icon(el, slot)]
     } else {
         Vec::new()
     };
 
     // --- thumb: round handle, `left` tracks the value (center on the point) ---
     let thumb = {
-        let thumb_sheet = sheets.thumb_sheet.clone();
-        let app = appearance_for.clone();
-        let size_key = size_key_for.clone();
         let value = value.clone();
-        runtime_core::view(thumb_kids)
-            .with_style(move || {
+        let style = SliderStyles::thumb()
+            .values(&values)
+            .inline_with(move || {
                 let left = norm_pos(value.get(), min, max) * w - dia / 2.0;
-                // An icon thumb's diameter is not a `size` arm of the sheet,
-                // so it rides the inline layer next to `left`.
+                // An icon thumb's diameter is not a `size` arm, so it rides
+                // the inline layer next to `left`.
                 let (width, height) = if has_thumb_icon {
                     (Some(Tokenized::Literal(Length::Px(dia))), Some(Tokenized::Literal(Length::Px(dia))))
                 } else {
                     (None, None)
                 };
-                StyleApplication::new(thumb_sheet.clone())
-                    .with("appearance", app())
-                    .with("size", size_key())
-                    // Continuous, and the worst of the set: keyed on the
-                    // thumb's pixel offset, a drag across a 300px track minted
-                    // ~300 cache entries and ~300 classes, none reusable.
-                    .with_inline(StyleRules {
-                        left: Some(Tokenized::Literal(Length::Px(left))),
-                        width,
-                        height,
-                        ..Default::default()
-                    })
+                StyleRules { left: Some(Tokenized::Literal(Length::Px(left))), width, height, ..Default::default() }
             })
-            .into_element()
+            .overridden(styles.thumb.as_ref());
+        runtime_core::view(thumb_kids).with_style(style).into_element()
     };
 
-    // --- container: fixed-width relative box with the drag handler. Layout
-    // lives on ONE shared, identified sheet; the DIM (cursor + opacity) is a
-    // `dimmed` on/off AXIS read LIVE inside the style closure, so a reactive
-    // `disabled` dims/uncurses in place; the per-instance dimensions (author
-    // `width`, size-derived thumb diameter) ride the INLINE layer. Every arm
-    // has build-time CSS, so the container premints — the former
-    // `with_computed` dim layer kept every Slider on the live engine, and the
-    // per-instance base sheet minted a class per (width, dia) pair. ---
-    let disabled_dim = props.disabled.clone();
-    let container_style = move || {
-        StyleApplication::new(slider_container_sheet())
-            .with("dimmed", if disabled_dim.get() { "on" } else { "off" })
-            .with_inline(StyleRules {
-                width: Some(Tokenized::Literal(Length::Px(w))),
-                height: Some(Tokenized::Literal(Length::Px(dia))),
-                ..Default::default()
-            })
-    };
+    // --- container: fixed-width relative box with the drag handler. The
+    // DIM (cursor + opacity) is the `dimmed` axis read LIVE, so a reactive
+    // `disabled` dims in place; the per-instance dimensions (author `width`,
+    // size-derived thumb diameter) ride the inline layer. ---
+    let container_style = SliderStyles::container()
+        .values(&values)
+        .set(props.disabled.clone().map(SliderDimmed::from))
+        .inline(StyleRules {
+            width: Some(Tokenized::Literal(Length::Px(w))),
+            height: Some(Tokenized::Literal(Length::Px(dia))),
+            ..Default::default()
+        })
+        .overridden(styles.container.as_ref());
 
     let slider = runtime_core::view(vec![track, thumb])
         .with_style(container_style)
@@ -317,7 +435,7 @@ pub fn Slider(props: &SliderProps) -> Element {
     // (relative to the track) is untouched.
     let mk_icon = |data: IconData| -> Element {
         icon(data)
-            .size(16.0)
+            .with_style(SliderStyles::side_icon().values(&values).overridden(styles.side_icon.as_ref()))
             .color(|| tokens().color.text_muted().resolve())
             .into_element()
     };
@@ -328,14 +446,7 @@ pub fn Slider(props: &SliderProps) -> Element {
     if leading_icon.is_none() && trailing_icon.is_none() {
         return slider;
     }
-    // `r#static` so the row sheet auto-premints by content — a closure
-    // sheet here was a live-engine fall-through on the docs corpus.
-    let row_style = Rc::new(StyleSheet::r#static(StyleRules {
-        flex_direction: Some(FlexDirection::Row),
-        align_items: Some(AlignItems::Center),
-        gap: Some(tokens().spacing.sm()),
-        ..Default::default()
-    }));
+    let row_style = SliderStyles::row().values(&values).overridden(styles.row.as_ref());
     ui! {
         view(style = row_style) {
             if let Some(d) = leading_icon {
@@ -349,32 +460,19 @@ pub fn Slider(props: &SliderProps) -> Element {
     }
 }
 
-/// Style the thumb's icon. Mirrors Checkbox's `checkmark_icon`: on a premint
-/// build the application is ATTACHED (its class carries the appearance arm's
-/// `color`, the SVG tints via `currentColor`, and the square rides the inline
-/// layer because `.size()` and the application share one style slot). On a
-/// live/native build the arm's color is resolved and stamped — native icons
-/// don't inherit color — and re-resolved on a tone/variant/theme change.
-fn thumb_icon(
-    el: runtime_core::GlueIcon,
-    app_for: impl Fn() -> StyleApplication + Clone + 'static,
-    px: f32,
-) -> Element {
-    if app_for().attaches_preminted() {
-        return el
-            .with_style(move || {
-                app_for().with_inline(StyleRules {
-                    width: Some(Tokenized::Literal(Length::Px(px))),
-                    height: Some(Tokenized::Literal(Length::Px(px))),
-                    flex_shrink: Some(Tokenized::Literal(0.0)),
-                    ..Default::default()
-                })
-            })
-            .into_element();
+/// Style the thumb's icon. Mirrors Checkbox's `checkmark_icon`: on a
+/// premint build the slot is ATTACHED (its class carries the arm's `color`,
+/// and the SVG tints via `currentColor`). On a live/native build the arm's
+/// color is resolved and stamped — native icons don't inherit color — and
+/// re-resolved on a tone/variant/theme change.
+fn thumb_icon(el: runtime_core::GlueIcon, slot: impl Fn() -> SlotStyle<SliderStyles> + 'static) -> Element {
+    if slot().into_style_application().attaches_preminted() {
+        return el.with_style(slot()).into_element();
     }
-    el.size(px)
+    let style = slot();
+    el.with_style(style)
         .color(move || {
-            runtime_core::resolve_style(&app_for())
+            runtime_core::resolve_style(&slot().into_style_application())
                 .color
                 .as_ref()
                 .map(|c| c.resolve())
@@ -382,46 +480,6 @@ fn thumb_icon(
         })
         .into_element()
 }
-
-runtime_tls::thread_local! {
-    static SLIDER_CONTAINER_SHEET: std::cell::RefCell<Option<Rc<StyleSheet>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// The shared Slider container sheet: relative column that centers the
-/// track, with a `dimmed` axis for the disabled look. Per-instance
-/// dimensions ride the application's inline layer (see the container
-/// style closure), so ONE sheet serves every Slider at every width.
-fn slider_container_sheet() -> Rc<StyleSheet> {
-    SLIDER_CONTAINER_SHEET.with(|s| {
-        if s.borrow().is_none() {
-            *s.borrow_mut() = Some(
-                StyleSheet::new(|_vs: &VariantSet| StyleRules {
-                    position: Some(Position::Relative),
-                    flex_direction: Some(FlexDirection::Column),
-                    justify_content: Some(JustifyContent::Center),
-                    align_items: Some(AlignItems::Stretch),
-                    ..Default::default()
-                })
-                .variant("dimmed", "off", |_vs| StyleRules {
-                    cursor: Some(Cursor::Pointer),
-                    ..Default::default()
-                })
-                .variant("dimmed", "on", |_vs| StyleRules {
-                    cursor: Some(Cursor::Default),
-                    opacity: Some(Tokenized::Literal(SLIDER_DISABLED_OPACITY)),
-                    ..Default::default()
-                })
-                .variant_default("dimmed", "off")
-                .premint_as("idea-ui.v1.slider.container"),
-            );
-        }
-        s.borrow().as_ref().cloned().unwrap()
-    })
-}
-
-/// Opacity of a disabled Slider.
-const SLIDER_DISABLED_OPACITY: f32 = 0.45;
 
 #[cfg(test)]
 mod tests {
@@ -608,8 +666,7 @@ mod tests {
                 _ => panic!("thumb child is an Icon"),
             };
             let expected = runtime_core::resolve_style(
-                &StyleApplication::new(installed_slider_sheets().thumb_icon_sheet)
-                    .with("appearance", "primary_filled".to_string()),
+                &SliderStyles::thumb_icon().raw("tone", "primary").set(SliderVariant::Filled).into_style_application(),
             )
             .color
             .as_ref()

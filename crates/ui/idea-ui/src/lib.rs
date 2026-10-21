@@ -241,7 +241,10 @@ pub use components::popover::{Popover, PopoverProps};
 // (`target = AnchorTarget::from(trigger)`, `side`, `align`), so an app
 // anchoring an overlay needs no `runtime_core::primitives::portal` path.
 pub use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
-pub use components::progress::{Progress, ProgressCap, ProgressMode, ProgressProps};
+pub use components::progress::{
+    Progress, ProgressCap, ProgressMode, ProgressMotion, ProgressProps, ProgressRestyle, ProgressSize,
+    ProgressSlotStyles, ProgressStyles, ProgressVariant, PROGRESS_SWEEP_FRACTION,
+};
 pub use components::segmented_control::{
     SegmentOption, SegmentedControl, SegmentedControlBlock, SegmentedControlProps, SegmentedControlRestyle,
     SegmentedControlSelected, SegmentedControlSize, SegmentedControlSlotStyles, SegmentedControlStyles,
@@ -250,7 +253,9 @@ pub use components::select::{Select, SelectProps};
 // Data/style types shared with Autocomplete.
 pub use components::select::{SelectOption, SelectSize};
 pub use components::skeleton::{Skeleton, SkeletonProps, SkeletonWidth};
-pub use components::slider::{Slider, SliderProps};
+pub use components::slider::{
+    Slider, SliderDimmed, SliderProps, SliderRestyle, SliderSize, SliderSlotStyles, SliderStyles, SliderVariant,
+};
 pub use components::spacer::{Spacer, SpacerProps};
 pub use components::spinner::{Spinner, SpinnerProps, SpinnerSize};
 pub use components::stack::{

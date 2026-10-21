@@ -34,16 +34,114 @@ use runtime_core::animation::{
     AnimProp, AnimatedValue, LoopFactory, Repeat, SequenceFactory, TweenTo,
 };
 use runtime_core::{
-    component, on_scope_drop, signal, ui, AnchorableHandle, Element, IdealystSchema, IntoElement,
-    LayoutSubscription, Length, Reactive, Ref, Signal, StyleApplication, StyleRules, Tokenized,
+    component, component_styles, on_scope_drop, signal, ui, AnchorableHandle, Element, IdealystSchema,
+    IntoElement, LayoutSubscription, Length, Overflow, Reactive, Ref, Signal, SlotRestyle, StyleRules, Tokenized,
     ViewHandle,
 };
 
-use idea_theme::extensible::{
-    installed_progress_sheets, ToneRef, VariantRef, PROGRESS_SWEEP_FRACTION,
-};
+use idea_theme::extensible::{semantic_tones, ToneRef};
 
+use crate::components::tone_slots::{recipe_compounds, with_tone};
 use crate::components::ControlSize;
+use crate::modifiers::{marker_into_axis, variant};
+use crate::theme::IdeaThemeRef;
+
+/// Fraction of the track the indeterminate sweep segment occupies. The
+/// sweep runs from `-fraction × track_width` to `track_width`, so the
+/// segment enters fully hidden on the left and exits fully past the right
+/// edge; the `fill` slot's `indeterminate` arm sizes the segment from it.
+pub const PROGRESS_SWEEP_FRACTION: f32 = 0.4;
+
+component_styles! {
+    /// The styled sections of [`Progress`].
+    pub Progress<IdeaThemeRef> {
+        /// The fill's surface treatment — a tone-aware recipe per value
+        /// (the fill takes the recipe's background).
+        axis variant { #[default] filled, soft, outlined, ghost }
+
+        /// The muted rail.
+        slot track {
+            base(t) {
+                background: t.color.border(),
+                width: Length::pct(100.0),
+                overflow: Overflow::Hidden,
+            }
+            /// Bar thickness.
+            variant size {
+                sm(_t) { height: 4.0 }
+                #[default]
+                md(_t) { height: 8.0 }
+                lg(_t) { height: 12.0 }
+            }
+            /// End caps: square by default — a progress bar is a
+            /// measurement surface, and pill ends visually under-report the
+            /// value at the extremes (a 2% fill vanishes into the round cap).
+            variant cap {
+                #[default]
+                none(_t) {}
+                rounded(t) { border_radius: t.radius.pill() }
+            }
+        }
+
+        /// The tone-colored bar.
+        slot fill {
+            extend(fill_backgrounds)
+            base(_t) {
+                height: Length::pct(100.0),
+            }
+            /// End caps follow the track's.
+            variant cap {
+                #[default]
+                none(_t) {}
+                rounded(t) { border_radius: t.radius.pill() }
+            }
+            /// `determinate` (the `Value` and `Simulated` modes): the width
+            /// is the live value (inline), and this arm animates it.
+            /// `indeterminate`: a fixed sweep segment, animated by
+            /// translate.
+            variant motion {
+                #[default]
+                determinate(_t) {}
+                indeterminate(_t) { width: Length::pct(PROGRESS_SWEEP_FRACTION * 100.0) }
+            }
+            transitions {
+                background: 200ms EaseOut,
+                opacity: 200ms EaseOut,
+                // A value change (or a Simulated creep step) animates to the
+                // new width: long enough to read as motion, short enough
+                // that a fast-ticking value never lags a step behind.
+                width: 300ms EaseOut,
+            }
+        }
+    }
+}
+
+fn fill_backgrounds(s: &mut SlotRestyle<'_, ProgressStyles>) {
+    recipe_compounds(s, &semantic_tones(), &[], |ctx, recipe| StyleRules {
+        background: recipe.render(ctx).background,
+        ..Default::default()
+    });
+}
+
+marker_into_axis!(ProgressVariant {
+    variant::Filled => Filled,
+    variant::Soft => Soft,
+    variant::Outlined => Outlined,
+    variant::Ghost => Ghost,
+});
+
+/// The control-wide size scale converts into Progress's own size axis.
+impl From<ControlSize> for ProgressSize {
+    fn from(s: ControlSize) -> Self {
+        ProgressSize::define(s.as_variant_str())
+    }
+}
+
+impl From<ControlSize> for Reactive<ProgressSize> {
+    fn from(s: ControlSize) -> Self {
+        Reactive::Static(s.into())
+    }
+}
 
 /// One full indeterminate sweep (segment enters left, exits right).
 const SWEEP_MS: u64 = 1400;
@@ -64,28 +162,6 @@ const SIM_STEP_MAX_MS: i32 = 1100;
 /// (the 32-bit golden-ratio constant). Deterministic on purpose: two
 /// runs creep identically, which keeps screenshots/tests stable.
 const SIM_JITTER_SEED: u32 = 0x9E37_79B9;
-
-/// End-cap treatment for the track + fill. Square (`None`) by default —
-/// a progress bar is a measurement surface, and pill ends visually
-/// under-report the value at the extremes.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
-pub enum ProgressCap {
-    /// Square ends (default).
-    #[default]
-    None,
-    /// Pill ends on the track and fill.
-    Rounded,
-}
-
-impl ProgressCap {
-    /// The `cap` variant-axis key for this treatment.
-    pub fn as_variant_str(self) -> &'static str {
-        match self {
-            ProgressCap::None => "none",
-            ProgressCap::Rounded => "rounded",
-        }
-    }
-}
 
 /// How the bar behaves. Selects the whole fill subtree, so a live
 /// change is structural (`switch`) — the outgoing mode's scope-owned
@@ -112,7 +188,7 @@ pub enum ProgressMode {
 // routed through `switch` in `Progress` when Dynamic so a live flip swaps
 // the subtree (and frees the prior branch's scope-owned animation/timers);
 // Static keeps the direct build.
-#[runtime_core::props]
+#[runtime_core::props(styles = ProgressStyles)]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ProgressProps {
@@ -126,10 +202,10 @@ pub struct ProgressProps {
     pub mode: Reactive<ProgressMode>,
     /// Semantic palette for the fill. Default Primary.
     pub tone: ToneRef,
-    /// Surface skeleton for the fill. Default Filled.
-    pub variant: VariantRef,
-    /// Bar thickness. Default Md.
-    pub size: ControlSize,
+    /// Surface skeleton for the fill (or an app value). Default Filled.
+    pub variant: ProgressVariant,
+    /// Bar thickness (a `ControlSize` converts). Default Md.
+    pub size: ProgressSize,
     /// End caps: square (default) or rounded (pill).
     pub cap: ProgressCap,
 }
@@ -140,9 +216,10 @@ impl Default for ProgressProps {
             value: Reactive::Static(0.0),
             mode: Reactive::Static(ProgressMode::Value),
             tone: Reactive::Static(ToneRef::default()),
-            variant: Reactive::Static(VariantRef::default()),
-            size: Reactive::Static(ControlSize::default()),
+            variant: Reactive::Static(ProgressVariant::default()),
+            size: Reactive::Static(ProgressSize::default()),
             cap: Reactive::Static(ProgressCap::default()),
+            styles: Default::default(),
         }
     }
 }
@@ -207,56 +284,30 @@ fn schedule_sim_step(progress: Signal<f32>, rng: Rc<Cell<u32>>) {
 /// indeterminate sweep, or a simulated loading creep.
 #[component]
 pub fn Progress(props: &ProgressProps) -> Element {
-    let sheets = installed_progress_sheets();
-
-    let fill_sheet = sheets.fill_sheet.clone();
-    let track_sheet = sheets.track_sheet.clone();
-
-    // The fill appearance (tone × variant) is read LIVE inside each fill style
-    // closure, so the apply-style Effect subscribes to a reactive tone/variant
-    // and re-resolves the fill color in place (a bare value just snapshots).
-    let appearance_for = {
-        let tone = props.tone.clone();
-        let variant = props.variant.clone();
-        move || format!("{}_{}", tone.get().key(), variant.get().key())
-    };
-    // End-cap axis, shared by the track and every fill flavor (read
-    // LIVE inside each style closure, same contract as `appearance`).
-    let cap_for = {
-        let cap = props.cap.clone();
-        move || cap.get().as_variant_str().to_string()
-    };
+    let styles = props.styles.clone();
+    // Tone, variant and caps are shared by the track and every fill flavor
+    // (read live, so a reactive one re-styles in place).
+    let values = with_tone(ProgressStyles::values().set(props.variant.clone()).set(props.cap.clone()), &props.tone);
 
     // A determinate-looking fill whose width (0..=1 fraction) comes from
     // `fraction_source` — shared by the `Value` mode (reads the prop) and
-    // the `Simulated` mode (reads its private creep signal). The sheet's
-    // `mode=determinate` arm carries the width transition, so every
-    // source change ANIMATES to the new width on all backends.
+    // the `Simulated` mode (reads its private creep signal). The
+    // `determinate` arm carries the width transition, so every source
+    // change ANIMATES to the new width on all backends. The width itself
+    // is continuous, so it rides the inline layer and the fill premints.
     let build_valued_fill = {
-        let fill_sheet = fill_sheet.clone();
-        let appearance_for = appearance_for.clone();
-        let cap_for = cap_for.clone();
+        let values = values.clone();
+        let styles = styles.clone();
         move |fraction_source: Rc<dyn Fn() -> f32>| -> Element {
-            let fill_sheet = fill_sheet.clone();
-            let appearance_for = appearance_for.clone();
-            let cap_for = cap_for.clone();
-            runtime_core::view(Vec::new())
-                .with_style(move || {
+            let style = ProgressStyles::fill()
+                .values(&values)
+                .set(ProgressMotion::Determinate)
+                .inline_with(move || {
                     let pct = runtime_core::num::clamp_f32(fraction_source(), 0.0, 1.0) * 100.0;
-                    StyleApplication::new(fill_sheet.clone())
-                        .with("appearance", appearance_for())
-                        .with("cap", cap_for())
-                        .with("mode", "determinate".to_string())
-                        // Continuous: a computed layer keyed on the rounded
-                        // percent minted a cache entry and a CSS class per
-                        // whole percent. Inline keeps the fill sheet
-                        // premintable and puts only the width on the node.
-                        .with_inline(StyleRules {
-                            width: Some(Tokenized::Literal(Length::pct(pct))),
-                            ..Default::default()
-                        })
+                    StyleRules { width: Some(Tokenized::Literal(Length::pct(pct))), ..Default::default() }
                 })
-                .into_element()
+                .overridden(styles.fill.as_ref());
+            runtime_core::view(Vec::new()).with_style(style).into_element()
         }
     };
 
@@ -285,9 +336,8 @@ pub fn Progress(props: &ProgressProps) -> Element {
         }
     };
     let build_indeterminate = {
-        let fill_sheet = fill_sheet.clone();
-        let appearance_for = appearance_for.clone();
-        let cap_for = cap_for.clone();
+        let values = values.clone();
+        let styles = styles.clone();
         move || -> Element {
             // A sweep segment (constant `PROGRESS_SWEEP_FRACTION` of the
             // track, from the sheet's `mode=indeterminate` arm) translated
@@ -382,18 +432,11 @@ pub fn Progress(props: &ProgressProps) -> Element {
                 }
             });
 
-            let fill_sheet = fill_sheet.clone();
-            let appearance_for = appearance_for.clone();
-            let cap_for = cap_for.clone();
-            runtime_core::view(Vec::new())
-                .with_style(move || {
-                    StyleApplication::new(fill_sheet.clone())
-                        .with("appearance", appearance_for())
-                        .with("cap", cap_for())
-                        .with("mode", "indeterminate".to_string())
-                })
-                .bind(fill_ref)
-                .into_element()
+            let style = ProgressStyles::fill()
+                .values(&values)
+                .set(ProgressMotion::Indeterminate)
+                .overridden(styles.fill.as_ref());
+            runtime_core::view(Vec::new()).with_style(style).bind(fill_ref).into_element()
         }
     };
 
@@ -418,16 +461,8 @@ pub fn Progress(props: &ProgressProps) -> Element {
         runtime_core::switch(move || mode.get(), move |&m| build_for(m))
     };
 
-    // Track thickness follows `size`, caps follow `cap` — both read
-    // LIVE inside the style closure.
-    let track_style = {
-        let size = props.size.clone();
-        move || {
-            StyleApplication::new(track_sheet.clone())
-                .with("size", size.get().as_variant_str().to_string())
-                .with("cap", cap_for())
-        }
-    };
+    // Track thickness follows `size`, caps follow `cap`.
+    let track_style = ProgressStyles::track().values(&values).set(props.size.clone()).overridden(styles.track.as_ref());
     let track = runtime_core::view(vec![fill]).with_style(track_style).into_element();
     ui! { view { track } }
 }
