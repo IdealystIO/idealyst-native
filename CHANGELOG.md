@@ -730,6 +730,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **One-sided table inset** (`idea-ui`). `Table(inset_left = …)` /
+  `Table(inset_right = …)` pad one edge of every row (and of the frame
+  slots), overriding `inset_x` on that side; a side left at
+  `TableInset::None` follows `inset_x`. Reactive, like `inset_x`. An icon
+  column at an edge (`TableColumn::actions`, the selection and grip
+  columns, any `CellPadding::Icon` cell) now keeps its compact padding
+  instead of taking the inset, which squeezed its icon out of the fixed
+  width.
+
 - **`component_styles!`** (`runtime-macros`, `runtime-shared`,
   `runtime-vocabulary`): declare a component's styled sections once as
   named slots with component-level open axes; generates the registry key

@@ -261,6 +261,16 @@
 //! that is not on it. Typically paired with `variant = TableVariant::Plain`
 //! for an edge-to-edge list.
 //!
+//! `inset_left` / `inset_right` pad one edge only, overriding `inset_x` on
+//! that side (a side left at `TableInset::None` follows `inset_x`):
+//! `Table(inset_left = TableInset::Px(16.0))` lines the text up with the
+//! page margin and leaves the trailing edge alone.
+//!
+//! An icon column at an edge — [`TableColumn::actions`], the selection
+//! and grip columns, any `CellPadding::Icon` cell — keeps its compact
+//! padding: its width is sized for its icon, so the inset is not added to
+//! it.
+//!
 //! # Plain tables
 //!
 //! `Table(variant = TableVariant::Plain)` drops the card — no frame, no
@@ -644,6 +654,19 @@ pub struct TableProps {
     /// rebuilds for it.
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub inset_x: TableInset,
+    /// The outer padding of every row's FIRST cell only (and the frame
+    /// slots' leading edge), overriding `inset_x` on that side —
+    /// `inset_left = TableInset::Px(16.0)` alone lines the text up with
+    /// the page margin and leaves the trailing edge (an actions column)
+    /// at its own padding. `TableInset::None` (the default) follows
+    /// `inset_x`. Reactive, like `inset_x`.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub inset_left: TableInset,
+    /// The outer padding of every row's LAST cell only (and the frame
+    /// slots' trailing edge), overriding `inset_x` on that side. See
+    /// `inset_left`.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub inset_right: TableInset,
     /// Row padding for every cell — `Compact`, `Standard` or
     /// `Comfortable`.
     // STATIC — selected onto every built cell's sheet when the table is
@@ -1007,8 +1030,13 @@ pub fn Table(props: TableProps) -> Element {
     // Edge inset: the first and last cell of every row — a single-cell
     // row takes both sides. A static inset is a static selection (the
     // cells stay preminted); a live one re-pads the same cells in place.
-    let inset = props.inset_x;
-    if !matches!(inset, Reactive::Static(TableInset::None)) {
+    // An icon column at the edge (`CellPadding::Icon` — the actions,
+    // selection and grip columns) keeps its compact padding: its width is
+    // sized for its icon, and the inset would squeeze the icon out of it.
+    let inset_left = side_inset(&props.inset_left, &props.inset_x);
+    let inset_right = side_inset(&props.inset_right, &props.inset_x);
+    let pads = |i: &Reactive<TableInset>| !matches!(i, Reactive::Static(TableInset::None));
+    if pads(&inset_left) || pads(&inset_right) {
         for child in &children {
             table::visit_rows(child, |row| {
                 let mut count = 0usize;
@@ -1017,8 +1045,14 @@ pub fn Table(props: TableProps) -> Element {
                 table::visit_row_cells(row, |cell| {
                     let (first, last) = (i == 0, i + 1 == count);
                     i += 1;
-                    if first || last {
-                        apply_edge_inset(cell, &inset, first, last);
+                    if (!first && !last) || is_icon_cell(cell) {
+                        return;
+                    }
+                    if first && pads(&inset_left) {
+                        apply_edge_inset(cell, &inset_left, InsetSide::Left);
+                    }
+                    if last && pads(&inset_right) {
+                        apply_edge_inset(cell, &inset_right, InsetSide::Right);
                     }
                 });
             });
@@ -1057,28 +1091,28 @@ pub fn Table(props: TableProps) -> Element {
         edges
     });
     let slot_style = {
-        let inset = inset.clone();
+        let (left, right) = (inset_left.clone(), inset_right.clone());
         let slot_override = props.styles.frame_slot.clone();
         move |edge: &'static str| {
-            let inset = inset.clone();
+            let (left, right) = (left.clone(), right.clone());
             let slot_override = slot_override.clone();
             move || {
                 let app = TableStyles::frame_slot()
                     .overridden(slot_override.as_ref())
                     .into_style_application()
                     .with("edge", edge);
-                let i = inset.get();
-                i.apply(i.apply(app, InsetSide::Left), InsetSide::Right)
+                right.get().apply(left.get().apply(app, InsetSide::Left), InsetSide::Right)
             }
         }
     };
+    let live_slots = matches!(inset_left, Reactive::Dynamic(_)) || matches!(inset_right, Reactive::Dynamic(_));
     let header_slot = props.header_slot.map(|slot| {
         let style = slot_style("top");
-        slot_view(slot, &inset, style)
+        slot_view(slot, live_slots, style)
     });
     let footer_slot = props.footer_slot.map(|slot| {
         let style = slot_style("bottom");
-        slot_view(slot, &inset, style)
+        slot_view(slot, live_slots, style)
     });
     // In grid-column mode every column is one track: the added columns
     // at their fixed widths, the author's from the column model.
@@ -1109,26 +1143,40 @@ pub fn Table(props: TableProps) -> Element {
 
 /// A frame slot's view: its sheet resolved once for a static inset (the
 /// slot premints), followed live for a reactive one.
-fn slot_view(
-    slot: Element,
-    inset: &Reactive<TableInset>,
-    style: impl Fn() -> StyleApplication + 'static,
-) -> Element {
-    match inset {
-        Reactive::Static(_) => {
-            let app = style();
-            ui! { view(style = app) { slot } }
-        }
-        Reactive::Dynamic(_) => ui! { view(style = style) { slot } },
+fn slot_view(slot: Element, live: bool, style: impl Fn() -> StyleApplication + 'static) -> Element {
+    if live {
+        ui! { view(style = style) { slot } }
+    } else {
+        let app = style();
+        ui! { view(style = app) { slot } }
     }
 }
 
-/// Pad one edge cell with the table's inset — see [`TableInset::apply`].
-fn apply_edge_inset(cell: &Element, inset: &Reactive<TableInset>, first: bool, last: bool) {
-    let pad = move |app: StyleApplication, i: TableInset| {
-        let app = if first { i.apply(app, InsetSide::Left) } else { app };
-        if last { i.apply(app, InsetSide::Right) } else { app }
-    };
+/// One edge's inset: the side's own when it sets one, else `inset_x`.
+fn side_inset(side: &Reactive<TableInset>, both: &Reactive<TableInset>) -> Reactive<TableInset> {
+    match side {
+        Reactive::Static(TableInset::None) => both.clone(),
+        Reactive::Static(_) => side.clone(),
+        Reactive::Dynamic(f) => {
+            let (f, both) = (f.clone(), both.clone());
+            Reactive::Dynamic(Rc::new(move || match f() {
+                TableInset::None => both.get(),
+                own => own,
+            }))
+        }
+    }
+}
+
+/// Whether a built cell has the compact icon padding (`CellPadding::Icon`).
+fn is_icon_cell(cell: &Element) -> bool {
+    table::cell_application(cell)
+        .is_some_and(|app| app.variants.0.get("cell_padding").map(String::as_str) == Some("icon"))
+}
+
+/// Pad one side of an edge cell with the table's inset — see
+/// [`TableInset::apply`].
+fn apply_edge_inset(cell: &Element, inset: &Reactive<TableInset>, side: InsetSide) {
+    let pad = move |app: StyleApplication, i: TableInset| i.apply(app, side);
     match inset {
         Reactive::Static(i) => {
             let i = *i;

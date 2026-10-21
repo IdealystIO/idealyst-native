@@ -1596,6 +1596,80 @@ fn inset_x_px_is_exact_and_reaches_the_slots() {
     });
 }
 
+/// One-sided inset: `inset_left` pads only the first cell of each row
+/// (and the slots' leading edge); `inset_right` only the last; a side
+/// left at `None` follows `inset_x`.
+#[test]
+fn inset_left_and_right_pad_one_edge_each() {
+    with_test_world(|| {
+        let pads = |left: TableInset, right: TableInset, x: TableInset| {
+            let t = Table(TableProps {
+                children: vec![row_of(vec![body_cell("1"), body_cell("2"), body_cell("3")])],
+                inset_x: Reactive::Static(x),
+                inset_left: Reactive::Static(left),
+                inset_right: Reactive::Static(right),
+                ..Default::default()
+            });
+            grid_cells(t)
+                .into_iter()
+                .map(|c| {
+                    let r = rules_of(c);
+                    (px_of(&r.padding_left).unwrap(), px_of(&r.padding_right).unwrap())
+                })
+                .collect::<Vec<_>>()
+        };
+        let lg = px_of(&rules_of(body_cell("x")).padding_left).expect("base cell padding");
+        assert_eq!(
+            pads(TableInset::Px(28.0), TableInset::None, TableInset::None),
+            vec![(28.0, lg), (lg, lg), (lg, lg)],
+            "inset_left alone pads the leading edge only"
+        );
+        assert_eq!(
+            pads(TableInset::None, TableInset::Px(12.0), TableInset::Px(28.0)),
+            vec![(28.0, lg), (lg, lg), (lg, 12.0)],
+            "a side's own inset overrides inset_x there; the other side follows inset_x"
+        );
+    });
+}
+
+/// CrewForge: `inset_x` re-added the page gutter to the right of the
+/// frozen actions column, squeezing its icon button out of the fixed
+/// width (they dropped `inset_x`). An icon column at an edge — the
+/// actions column, the selection and grip columns — keeps its compact
+/// padding; the inset pads the text columns' edges only.
+#[test]
+fn regression_edge_inset_leaves_the_icon_columns_alone() {
+    with_test_world(|| {
+        let selection = runtime_core::signal(BTreeSet::<RowId>::new());
+        let t = Table(TableProps {
+            columns: vec![TableColumn::new("name"), TableColumn::actions("menu")],
+            selection: Some(selection),
+            children: vec![
+                row_of(vec![head_cell("Name"), head_cell("")]),
+                id_row("a", &["Ana", "…"], true, true),
+            ],
+            inset_x: Reactive::Static(TableInset::Px(28.0)),
+            ..Default::default()
+        });
+        let icon = px_of(
+            &runtime_core::resolve_style(
+                &TableStyles::body_cell().into_style_application().with("cell_padding", "icon"),
+            )
+            .padding_right,
+        )
+        .expect("the icon padding");
+        for (i, c) in grid_cells(t).into_iter().enumerate() {
+            let r = rules_of(c);
+            let (l, rt) = (px_of(&r.padding_left).unwrap(), px_of(&r.padding_right).unwrap());
+            match i % 3 {
+                0 => assert_eq!((l, rt), (icon, icon), "the selection column keeps its padding"),
+                1 => assert_ne!(l, 28.0, "the name column is not an edge any more"),
+                _ => assert_eq!((l, rt), (icon, icon), "the actions column keeps its padding"),
+            }
+        }
+    });
+}
+
 /// A token inset is an axis selection, so the edge cells stay
 /// preminted (build-time CSS per arm).
 #[test]
