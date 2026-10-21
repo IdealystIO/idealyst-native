@@ -1,12 +1,13 @@
 //! Shared scrolling surface for the anchored-menu family — `Select`, `Menu`,
-//! `SubMenu`, and `Autocomplete` all drop the same themed [`SelectMenu`] panel,
+//! `SubMenu`, and `Autocomplete` all drop the same themed panel (`SelectStyles`'
+//! `menu` slot),
 //! so they all shared the same bug: the option rows were placed directly in the
 //! panel with no height cap and no scroll container, so a long list (e.g. a
 //! category filter listing every category) grew past the bottom of the viewport
 //! and the overflow was simply unreachable.
 //!
 //! [`scrolling_menu_panel`] is the one place that fix lives: it wraps the rows
-//! in a height-capped `scroll_view` inside the `SelectMenu` panel — the panel
+//! in a height-capped `scroll_view` inside the `menu` panel — the panel
 //! hugs its content until it hits the cap, then the row list scrolls. Mirrors
 //! the modal scroller's "content-sized up to a cap, then scroll" shape (see
 //! [`crate::components::modal::modal_scroll_sheet`]).
@@ -20,7 +21,7 @@ use runtime_core::{
     StyleSheet, Tokenized
 };
 
-use crate::stylesheets::SelectMenu;
+use crate::components::select::SelectStyles;
 
 /// Default ceiling for the open menu's scrollable row area, in DIPs — roughly
 /// eight or nine rows. Enough to browse comfortably without the menu dominating
@@ -63,7 +64,7 @@ stylesheet! {
         base(_t) {
             flex_direction: FlexDirection::Column,
             flex_shrink: 0.0,
-            // Matches `SelectMenu`'s base `gap` (2px) so row spacing is
+            // Matches the `menu` slot's base `gap` (2px) so row spacing is
             // unchanged.
             gap: Length::Px(2.0),
         }
@@ -98,12 +99,12 @@ stylesheet! {
     }
 }
 
-/// Wraps `rows` in a viewport-capped, scrolling [`SelectMenu`] panel. This is
+/// Wraps `rows` in a viewport-capped, scrolling `menu` panel. This is
 /// the canonical anchored-menu surface — every menu-family component (`Select`,
 /// `Menu`, `SubMenu`, `Autocomplete`) builds its dropdown through here so a long
 /// option list scrolls within a bounded panel instead of running off-screen.
 ///
-/// Structure: `panel(SelectMenu) → scroll_view(height cap) → body(rows)`. The
+/// Structure: `panel(menu slot) → scroll_view(height cap) → body(rows)`. The
 /// height cap is applied reactively from `viewport_size()` so it tracks
 /// orientation / split-view / window resizes and never exceeds the visible area.
 /// `max_width` caps the panel as in [`slotted_menu_panel`].
@@ -147,7 +148,7 @@ fn slotted_panel_children(
 /// make.
 ///
 /// `max_width` caps the panel (the `max_width` prop of `Menu`, `SubMenu`,
-/// `Select` and `Autocomplete`). It layers on top of `SelectMenu`'s
+/// `Select` and `Autocomplete`). It layers on top of the `menu` slot's
 /// `min_width` floor. What a row longer than the cap does is the row's
 /// text style: `MenuItemLabel` is single-line and ellipsizes, a Select
 /// row's label and description wrap.
@@ -160,18 +161,14 @@ pub(crate) fn slotted_menu_panel(
     let slotted = header.is_some() || footer.is_some();
     let panel = runtime_core::view(slotted_panel_children(rows, header, footer));
     let panel = if slotted { panel.preserves_focus(true) } else { panel };
-    panel
-        .with_style(move || {
-            let app = StyleApplication::new(SelectMenu::sheet());
-            match max_width {
-                Some(w) => app.with_overrides(StyleRules {
-                    max_width: Some(Tokenized::Literal(Length::Px(w))),
-                    ..Default::default()
-                }),
-                None => app,
-            }
-        })
-        .into_element()
+    let style = match max_width {
+        Some(w) => SelectStyles::menu().inline(StyleRules {
+            max_width: Some(Tokenized::Literal(Length::Px(w))),
+            ..Default::default()
+        }),
+        None => SelectStyles::menu(),
+    };
+    panel.with_style(style).into_element()
 }
 
 /// [`scrolling_menu_panel`] shaped for a combobox (`Autocomplete`): the same
@@ -203,34 +200,22 @@ pub(crate) fn combobox_menu_panel(
     let viewport = viewport_size();
     runtime_core::view(slotted_panel_children(rows, header, footer))
         .preserves_focus(true)
-        .with_style(move || {
+        .with_style(SelectStyles::menu().inline_with(move || {
             // Reading the viewport subscribes this style: a window resize
             // re-measures the anchor (its width can change with layout)
             // while the menu is open. `rect()` itself is an imperative
             // measure, not a reactive source.
             let _ = viewport.get();
-            let app = StyleApplication::new(SelectMenu::sheet());
-            let app = match max_width {
-                Some(w) => app.with_overrides(StyleRules {
-                    max_width: Some(Tokenized::Literal(Length::Px(w))),
-                    ..Default::default()
-                }),
-                None => app,
+            let px = |w: f32| Some(Tokenized::Literal(Length::Px(w)));
+            // The floor never exceeds the cap: a field wider than
+            // `max_width` gets a panel exactly `max_width` wide. Measured
+            // from the anchor — continuous, so inline.
+            let min_width = match anchor.rect() {
+                Some(r) if r.width > 0.0 => px(max_width.map_or(r.width, |cap| r.width.min(cap))),
+                _ => None,
             };
-            match anchor.rect() {
-                Some(r) if r.width > 0.0 => {
-                    // The floor never exceeds the cap: a field wider than
-                    // `max_width` gets a panel exactly `max_width` wide.
-                    let w = max_width.map_or(r.width, |cap| r.width.min(cap));
-                    // Measured from the anchor — continuous, so inline.
-                    app.with_inline(StyleRules {
-                        min_width: Some(Tokenized::Literal(Length::Px(w))),
-                        ..Default::default()
-                    })
-                }
-                _ => app,
-            }
-        })
+            StyleRules { min_width, max_width: max_width.and_then(px), ..Default::default() }
+        }))
         .into_element()
 }
 
@@ -328,7 +313,7 @@ mod tests {
             );
 
             let P::View { preserves_focus, style, mut children, .. } = classify(panel) else {
-                panic!("the combobox panel is a View (the SelectMenu surface)");
+                panic!("the combobox panel is a View (the menu surface)");
             };
             assert!(
                 preserves_focus,
@@ -343,11 +328,10 @@ mod tests {
             // The panel style must resolve the anchor's width as `min_width` —
             // a floor (rows longer than the field still widen it), not a fixed
             // width.
-            let app = match style.expect("the panel carries the SelectMenu style") {
-                TStyle::AppFn(f) => f(),
+            let resolved = match style.expect("the panel carries the menu slot style") {
+                s @ TStyle::AppFn(_) => s.resolve(),
                 _ => panic!("the combobox panel style is reactive (anchor width + viewport cap)"),
             };
-            let resolved = runtime_core::resolve_style(&app);
             let min_width = resolved
                 .min_width
                 .clone()
@@ -359,12 +343,9 @@ mod tests {
 
     fn panel_rules(panel: Element) -> Rc<StyleRules> {
         let P::View { style, .. } = classify(panel) else {
-            panic!("a menu panel is a View (the SelectMenu surface)");
+            panic!("a menu panel is a View (the menu surface)");
         };
-        match style.expect("the panel carries the SelectMenu style") {
-            TStyle::AppFn(f) => runtime_core::resolve_style(&f()),
-            _ => panic!("the panel style is a live application"),
-        }
+        style.expect("the panel carries the menu slot style").resolve()
     }
 
     /// Select and Autocomplete dropdowns grew to their longest row, so a
@@ -423,7 +404,7 @@ mod tests {
             );
 
             let P::View { preserves_focus, mut children, .. } = classify(panel) else {
-                panic!("the combobox panel is a View (the SelectMenu surface)");
+                panic!("the combobox panel is a View (the menu surface)");
             };
             assert!(preserves_focus, "slot presses must not blur the anchoring input");
             assert_eq!(children.len(), 3, "panel children are [header, scroller, footer]");
@@ -460,7 +441,7 @@ mod tests {
             );
 
             let P::View { preserves_focus, mut children, .. } = classify(panel) else {
-                panic!("the slotted panel is a View (the SelectMenu surface)");
+                panic!("the slotted panel is a View (the menu surface)");
             };
             assert!(preserves_focus, "a row press must not blur a focusable header slot");
             assert_eq!(children.len(), 3, "panel children are [header, scroller, footer]");
@@ -496,7 +477,7 @@ mod tests {
             );
 
             let P::View { preserves_focus, children, .. } = classify(panel) else {
-                panic!("the panel is a View (the SelectMenu surface)");
+                panic!("the panel is a View (the menu surface)");
             };
             assert!(!preserves_focus, "a slotless menu panel keeps its original focus behaviour");
             assert_eq!(children.len(), 1, "the panel holds a single scroller child");
@@ -505,7 +486,7 @@ mod tests {
 
     /// Regression: the anchored menu panel must wrap its rows in a `scroll_view`
     /// so a long option list scrolls instead of overflowing the viewport. The
-    /// panel is `view(SelectMenu) → scroll_view → body(rows)`; if a refactor
+    /// panel is `view(menu slot) → scroll_view → body(rows)`; if a refactor
     /// drops the scroller and puts rows straight in the panel again, the
     /// off-screen-overflow bug returns and this fails.
     #[test]
@@ -521,7 +502,7 @@ mod tests {
 
             let mut panel_children = match classify(panel) {
                 P::View { children, .. } => children,
-                _ => panic!("the menu panel must be a View (the SelectMenu surface)"),
+                _ => panic!("the menu panel must be a View (the menu surface)"),
             };
             assert_eq!(panel_children.len(), 1, "the panel holds a single scroller child");
             let mut body = match classify(panel_children.remove(0)) {

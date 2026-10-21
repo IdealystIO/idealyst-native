@@ -176,7 +176,8 @@ pub use breakpoint::{
 // they coexist in different namespaces.
 pub use components::alert::{Alert, AlertClose, AlertProps, AlertRestyle, AlertSlotStyles, AlertStyles, AlertVariant};
 pub use components::autocomplete::{
-    Autocomplete, AutocompleteProps, AutocompleteSlot, AutocompleteSlotCx,
+    Autocomplete, AutocompleteProps, AutocompleteSize, AutocompleteSlot, AutocompleteSlotCx, AutocompleteSlotStyles,
+    AutocompleteStyles, AutocompleteTrailing,
 };
 pub use components::avatar::{
     Avatar, AvatarProps, AvatarRestyle, AvatarSize, AvatarSlotStyles, AvatarStyles, AvatarVariant,
@@ -254,7 +255,9 @@ pub use components::segmented_control::{
 };
 pub use components::select::{Select, SelectProps};
 // Data/style types shared with Autocomplete.
-pub use components::select::{SelectOption, SelectSize};
+pub use components::select::{
+    SelectActive, SelectOpen, SelectOption, SelectRestyle, SelectSize, SelectSlotStyles, SelectStyles,
+};
 pub use components::skeleton::{Skeleton, SkeletonProps, SkeletonWidth};
 pub use components::slider::{
     Slider, SliderDimmed, SliderProps, SliderRestyle, SliderSize, SliderSlotStyles, SliderStyles, SliderVariant,

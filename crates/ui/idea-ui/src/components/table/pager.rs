@@ -8,12 +8,19 @@
 
 use std::rc::Rc;
 
-use runtime_core::{component, rx, signal, ui, Element, IdealystSchema, Reactive};
+use runtime_core::{component, rx, signal, ui, Element, IdealystSchema, Length, Reactive, StyleRules};
 
 use crate::components::pagination::Pagination;
-use crate::components::select::{Select, SelectOption, SelectSize};
+use crate::components::select::{Select, SelectOption, SelectSize, SelectSlotStyles};
 use crate::components::typography::Typography;
-use crate::stylesheets::{TablePagerBar, TablePagerGroup, TablePagerSize};
+use crate::stylesheets::{TablePagerBar, TablePagerGroup};
+
+/// The "Rows" picker's width floor: a three-digit page size and its
+/// chevron, and no wider. It replaces the trigger's own `min_width` through
+/// the trigger slot — a narrower box AROUND the Select can't shrink it,
+/// because a `min_width` beats its container's width, and the trigger then
+/// spills over the page numbers beside it.
+const ROWS_PICKER_MIN_WIDTH: f32 = 84.0;
 use crate::typography_kind;
 
 /// "26–50": the window's first and last row, 1-based; "0" for an empty
@@ -127,14 +134,16 @@ pub fn TablePager(props: &TablePagerProps) -> Element {
                 if !sizes.is_empty() {
                     view(style = TablePagerGroup()) {
                         Typography(content = "Rows".to_string(), kind = typography_kind::BodySm, muted = true)
-                        view(style = TablePagerSize()) {
-                            Select(
-                                value = size_text,
-                                on_change = on_size_text.clone(),
-                                options = size_options.clone(),
-                                size = SelectSize::Sm,
-                            )
-                        }
+                        Select(
+                            value = size_text,
+                            on_change = on_size_text.clone(),
+                            options = size_options.clone(),
+                            size = SelectSize::Sm,
+                            styles = SelectSlotStyles::default().trigger(StyleRules {
+                                min_width: Some(Length::Px(ROWS_PICKER_MIN_WIDTH).into()),
+                                ..Default::default()
+                            }),
+                        )
                     }
                 }
                 match pages_key() {

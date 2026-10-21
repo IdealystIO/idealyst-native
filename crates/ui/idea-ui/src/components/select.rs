@@ -44,16 +44,214 @@ use runtime_core::primitives::overlay::{overlay, BackdropMode};
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{
     component, each_keyed, effect, signal, ui, EachKey, EachRowBuild, Color, Element, FillRule, IconData, IdealystSchema,
-    IntoElement, Length, Position, PressableHandle, Reactive, Ref, Signal, StyleApplication, StyleSheet, VariantEnum, ViewHandle
+    IntoElement, Length, Position, PressableHandle, Reactive, Ref, Signal, StyleApplication, StyleSheet, ViewHandle,
+    component_styles, AlignItems, Cursor, FlexDirection, JustifyContent, TextAlign,
 };
 
 use idea_theme::theme::IdeaThemeRef;
 
 // The `icon` primitive builder — the Select trigger's chevron.
 use runtime_core::icon;
-use crate::stylesheets::{
-    SelectOption as SelectOptionStyle, SelectOptionBody, SelectOptionDescription, SelectOptionLabel, SelectTrigger,
-};
+
+component_styles! {
+    /// The styled sections of [`Select`] — and of the whole dropdown
+    /// family: `Autocomplete`, `Menu`/`SubMenu` and the date pickers drop
+    /// the same `menu` panel and `option` rows, and the date pickers' field
+    /// is a `trigger`, so restyling these slots restyles every dropdown.
+    pub Select<IdeaThemeRef> {
+        /// The always-visible button. Mirrors Field's shape (background,
+        /// border, size arms) so a Select sits next to a Field without
+        /// juddering.
+        slot trigger {
+            base(t) {
+                background: t.color.surface(),
+                color: t.color.text(),
+                padding_vertical: t.spacing.sm(),
+                padding_horizontal: t.spacing.md(),
+                border_radius: t.radius.md(),
+                border_width: 1.0,
+                border_color: t.color.border(),
+                font_size: t.typography.body_size(),
+                text_align: TextAlign::Left,
+                min_width: 160.0,
+                // Row: label on the left, chevron on the right.
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                gap: t.spacing.sm(),
+                cursor: Cursor::Pointer,
+            }
+            // When the menu is open, highlight with the focus ring (like Field).
+            variant open {
+                #[default]
+                off(_t) {}
+                on(t) {
+                    border_color: t.color.focus_ring(),
+                }
+            }
+            variant size {
+                sm(t) {
+                    padding_vertical: t.spacing.xs(),
+                    padding_horizontal: t.spacing.sm(),
+                    font_size: t.typography.body_sm_size(),
+                }
+                #[default]
+                md(t) {
+                    padding_vertical: t.spacing.sm(),
+                    padding_horizontal: t.spacing.md(),
+                    font_size: t.typography.body_size(),
+                }
+                lg(t) {
+                    padding_vertical: t.spacing.md(),
+                    padding_horizontal: t.spacing.lg(),
+                    font_size: t.typography.body_lg_size(),
+                }
+            }
+            state hovered(t) {
+                border_color: t.color.border_hover(),
+            }
+            // Keyboard/pointer focus paints the same indigo ring as `open` and as
+            // Field's `state focused` — the cross-platform focus indicator that
+            // replaces the native macOS ring (suppressed in the pressable host).
+            state focused(t) {
+                border_color: t.color.focus_ring(),
+            }
+            // `Select(disabled = …)`: dimmed like a disabled Field, with the
+            // default arrow instead of the base's hand cursor.
+            state disabled(_t) {
+                opacity: 0.55,
+                cursor: Cursor::Default,
+            }
+            transitions {
+                background: 250ms EaseInOut,
+                border_color: 150ms EaseOut,
+                color: 250ms EaseInOut,
+            }
+        }
+
+        /// The dropdown panel, rendered inside an overlay.
+        slot menu {
+            base(t) {
+                // NO font_family pin, deliberately. The menu portals under
+                // `<body>` (outside the app tree's inherited font), which used
+                // to need an `active_font_family()` pin here against the
+                // browser-serif fallback — but a dynamic font is the one thing
+                // that disqualifies a sheet from preminting, and the pin is
+                // redundant now: the theme's default text font is DECLARED ON
+                // THE DOCUMENT ROOT on every build (live publication +
+                // premint's `--iy-default-font` hook), so a portal inherits it
+                // through `<body>`, and the live static path additionally
+                // folds it into fontless rules at apply. Pinned by
+                // `select_menu_sheet_premints_and_rides_the_default_font`.
+                background: t.color.surface(),
+                border_radius: t.radius.md(),
+                border_width: 1.0,
+                border_color: t.color.border(),
+                padding: t.spacing.xs(),
+                gap: Length::Px(2.0),
+                flex_direction: FlexDirection::Column,
+                min_width: 200.0,
+                shadow: runtime_core::Shadow {
+                    x: 0.0,
+                    y: 8.0,
+                    blur: 24.0,
+                    color: runtime_core::Color("rgba(15, 17, 21, 0.18)".into()).into(),
+                },
+            }
+            transitions {
+                background: 250ms EaseInOut,
+                border_color: 250ms EaseInOut,
+            }
+        }
+
+        /// One row in the menu.
+        slot option {
+            base(t) {
+                background: Color("transparent".into()),
+                color: t.color.text(),
+                padding_vertical: t.spacing.xs(),
+                padding_horizontal: t.spacing.sm(),
+                border_radius: t.radius.sm(),
+                font_size: t.typography.body_size(),
+                text_align: TextAlign::Left,
+                cursor: Cursor::Pointer,
+            }
+            // `on` = the COMMITTED selection (solid primary). `cursor` = the
+            // keyboard cursor resting on a row that is NOT the selection
+            // (Autocomplete's ArrowUp/ArrowDown position) — styled like the
+            // hover state, since pointer hover and keyboard cursor mean the
+            // same thing: "Enter/click commits this row". Two distinct looks so
+            // an open menu never shows two solid rows. Select uses only
+            // `on`/`off`.
+            variant active {
+                #[default]
+                off(_t) {}
+                cursor(t) {
+                    background: t.color.surface_alt(),
+                }
+                on(t) {
+                    background: t.intent.primary.solid_bg(),
+                    color: t.intent.primary.solid_text(),
+                }
+            }
+            state hovered(t) {
+                background: t.color.surface_alt(),
+            }
+            transitions {
+                background: 150ms EaseOut,
+                color: 150ms EaseOut,
+            }
+        }
+
+        /// Stacks a row's label over its optional description
+        /// (`SelectOption::with_description`); a row without one renders
+        /// the bare label and never builds it.
+        slot option_body {
+            base(_t) {
+                flex_direction: FlexDirection::Column,
+            }
+        }
+
+        /// The row's label text. It carries its own size and color because
+        /// native text widgets (UILabel / TextView / NSTextField) don't
+        /// inherit the row's — without them the label on the committed
+        /// solid-primary row kept the plain text color on iOS. Its `active`
+        /// arm tracks the row's `on`; `cursor`/hover rows keep the plain
+        /// text color.
+        slot option_label {
+            base(t) {
+                font_size: t.typography.body_size(),
+                color: t.color.text(),
+            }
+            variant active {
+                #[default]
+                off(t) { color: t.color.text() }
+                on(t)  { color: t.intent.primary.solid_text() }
+            }
+            transitions {
+                color: 150ms EaseOut,
+            }
+        }
+
+        /// A row's muted second line — the theme's help/caption treatment.
+        /// On the committed (`on`, solid primary) row the muted color would
+        /// lose contrast, so it takes the solid text color.
+        slot option_description {
+            base(t) {
+                color: t.color.text_muted(),
+                font_size: t.typography.body_sm_size(),
+            }
+            variant active {
+                #[default]
+                off(t) { color: t.color.text_muted() }
+                on(t)  { color: t.intent.primary.solid_text() }
+            }
+            transitions {
+                color: 150ms EaseOut,
+            }
+        }
+    }
+}
 
 /// Full-bleed, fully-transparent backdrop for the open menu: it catches the
 /// outside click (and a re-press of the trigger) that dismisses the dropdown,
@@ -79,12 +277,20 @@ stylesheet! {
     }
 }
 
-pub use crate::stylesheets::SelectTriggerSize as SelectSize;
 use idea_theme::tokens;
 
 /// Default trigger affordance: lucide's `chevron-down`, rotated when the
 /// menu opens. Authors override it via [`SelectProps::icon`]. Shared with
 /// `Autocomplete`'s disclosure chevron.
+/// The row's `active` arm for a committed (`on`) or plain (`off`) row.
+pub(crate) fn option_active(selected: bool) -> SelectActive {
+    if selected {
+        SelectActive::On
+    } else {
+        SelectActive::Off
+    }
+}
+
 pub(crate) const CHEVRON_DOWN: IconData = IconData {
     view_box: (24, 24),
     paths: &["M6 9l6 6 6-6"],
@@ -236,28 +442,23 @@ pub(crate) fn option_text(
     selected: impl Fn() -> bool + 'static,
 ) -> Element {
     let selected = Rc::new(selected);
-    let active = {
+    let active = move || {
         let selected = selected.clone();
-        move || if selected() { "on" } else { "off" }.to_string()
+        Reactive::Dynamic(Rc::new(move || option_active(selected())))
     };
-    let label_active = active.clone();
     // `label` is a `Reactive<String>` — routed through `IntoTextSource`
     // (Static→Static, Dynamic→Bound) so a live label re-paints its row.
     let label = runtime_core::text(label)
-        .with_style(move || {
-            StyleApplication::new(SelectOptionLabel::sheet()).with("active", label_active())
-        })
+        .with_style(SelectStyles::option_label().set(active()))
         .into_element();
     let Some(description) = description else {
         return label;
     };
     let description = runtime_core::text(description)
-        .with_style(move || {
-            StyleApplication::new(SelectOptionDescription::sheet()).with("active", active())
-        })
+        .with_style(SelectStyles::option_description().set(active()))
         .into_element();
     runtime_core::view(vec![label, description])
-        .with_style(SelectOptionBody())
+        .with_style(SelectStyles::option_body())
         .into_element()
 }
 
@@ -269,7 +470,7 @@ pub(crate) fn option_text(
 // `size` routes into the reactive `trigger_style` sink; `placeholder` is read
 // live inside the trigger's label text source. `icon` is structural (the
 // chevron is built once into a bound view) — see the TODO in the body.
-#[runtime_core::props]
+#[runtime_core::props(styles = SelectStyles)]
 #[derive(IdealystSchema)]
 pub struct SelectProps {
     /// Controlled selected value — the `id` of the chosen
@@ -320,6 +521,7 @@ impl Default for SelectProps {
             icon: Reactive::Static(None),
             disabled: Reactive::Static(false),
             max_width: None,
+            styles: Default::default(),
         }
     }
 }
@@ -365,22 +567,13 @@ pub fn Select(props: SelectProps) -> Element {
     // Trailing chevron that rotates 180° while the menu is open.
     let chevron = rotating_chevron(icon_data, SELECT_CHEVRON_PX, open);
 
-    // `size` is read LIVE inside the trigger style closure so a reactive
-    // `size` re-resolves the trigger height in place (the apply-style Effect
-    // subscribes to it). The closure is always reactive here (it reads the
-    // `open` signal regardless), so no static fast-path gate is needed.
-    let trigger_style = {
-        let size = size.clone();
-        move || {
-            let _ = idea_theme::active_theme_untracked()
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-            StyleApplication::new(SelectTrigger::sheet())
-                .with("size", size.get().as_variant_str().to_string())
-                // Highlight (focus-ring border) while the menu is open.
-                .with("open", if open.get() { "on" } else { "off" }.to_string())
-        }
-    };
+    // `size` and `open` are read live, so a reactive `size` re-resolves the
+    // trigger height in place.
+    let trigger_style = SelectStyles::trigger()
+        .set(size.clone())
+        // Highlight (focus-ring border) while the menu is open.
+        .set(Reactive::Dynamic(Rc::new(move || SelectOpen::from(open.get()))))
+        .overridden(props.styles.trigger.as_ref());
     // Open on press; the menu's dismiss backdrop handles close — clicking
     // away OR clicking the trigger again lands on the (invisible) backdrop
     // and dismisses, so an open Select closes on the next click anywhere.
@@ -413,6 +606,7 @@ pub fn Select(props: SelectProps) -> Element {
     let trigger = trigger.into_element();
 
     let menu_on_change = on_change.clone();
+    let styles = props.styles.clone();
     let menu_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
     // The menu exists only while open: each open builds it fresh (rows
     // reflect the current `value`), each close tears it down.
@@ -428,6 +622,7 @@ pub fn Select(props: SelectProps) -> Element {
                         menu_close.clone(),
                         trigger_ref,
                         max_width,
+                        &styles,
                     )
                 }
             }
@@ -444,6 +639,7 @@ fn menu_row(
     value: Signal<String>,
     on_change: Rc<dyn Fn(String)>,
     menu_close: Rc<dyn Fn()>,
+    styles: &SelectSlotStyles,
 ) -> Element {
     let on_click: Rc<dyn Fn()> = Rc::new({
         let opt_id = opt_id.clone();
@@ -453,13 +649,9 @@ fn menu_row(
         }
     });
     let selected_id = opt_id.clone();
-    let row_style = move || {
-        let _ = idea_theme::active_theme_untracked()
-            .downcast_ref::<IdeaThemeRef>()
-            .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-        let variant = if value.get() == opt_id { "on" } else { "off" };
-        StyleApplication::new(SelectOptionStyle::sheet()).with("active", variant.to_string())
-    };
+    let row_style = SelectStyles::option()
+        .set(Reactive::Dynamic(Rc::new(move || option_active(value.get() == opt_id))))
+        .overridden(styles.option.as_ref());
     let text_child =
         option_text(opt_label, opt_description, move || value.get() == selected_id);
     runtime_core::pressable(vec![text_child], move || (on_click)())
@@ -474,11 +666,13 @@ fn menu_build(
     menu_close: Rc<dyn Fn()>,
     trigger_ref: Ref<PressableHandle>,
     max_width: Option<f32>,
+    styles: &SelectSlotStyles,
 ) -> Element {
     // Keyed by option id so a list that changes while the menu is open
     // (rows loaded after mount) adds and drops rows in place instead of
     // rebuilding the panel.
     let row_close = menu_close.clone();
+    let row_styles = styles.clone();
     let rows = each_keyed(move || {
         options
             .get()
@@ -489,8 +683,9 @@ fn menu_build(
                 let opt_description = option.description.clone();
                 let on_change = on_change.clone();
                 let menu_close = row_close.clone();
+                let styles = row_styles.clone();
                 let build: EachRowBuild = Box::new(move || {
-                    vec![menu_row(opt_id, opt_label, opt_description, value, on_change, menu_close)]
+                    vec![menu_row(opt_id, opt_label, opt_description, value, on_change, menu_close, &styles)]
                 });
                 (EachKey::new(option.id.clone()), build)
             })
@@ -550,7 +745,6 @@ mod tests {
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::resolve_style;
 
-    use crate::stylesheets::{SelectMenu, SelectTrigger};
 
     /// Regression: the open menu's fullscreen catcher must NOT trap focus.
     /// `overlay()` defaults the trap ON, and a trapping EMPTY portal installs
@@ -570,6 +764,7 @@ mod tests {
                 Rc::new(|| {}),
                 trigger,
                 None,
+                &SelectSlotStyles::default(),
             );
             let kids = match classify(el) {
                 P::View { children, .. } => children,
@@ -605,7 +800,7 @@ mod tests {
             let ring = tokens().color.focus_ring().resolve();
 
             let focused = resolve_style(
-                &StyleApplication::new(SelectTrigger::sheet()).with("__state_focused", "on"),
+                &SelectStyles::trigger().into_style_application().with("__state_focused", "on"),
             );
             let focused_border = focused
                 .border_top_color
@@ -619,7 +814,7 @@ mod tests {
 
             // Without focus the border is the resting neutral border — proving the
             // ring comes from the `focused` state, not the base.
-            let base = resolve_style(&StyleApplication::new(SelectTrigger::sheet()));
+            let base = resolve_style(&SelectStyles::trigger().into_style_application());
             let base_border = base
                 .border_top_color
                 .clone()
@@ -673,6 +868,7 @@ mod tests {
                 value,
                 Rc::new(|_| {}),
                 Rc::new(|| {}),
+                &SelectSlotStyles::default(),
             );
             let (label, desc) = row_texts(row);
             assert_eq!(label.as_deref(), Some("Address"));
@@ -696,6 +892,7 @@ mod tests {
                 value,
                 Rc::new(|_| {}),
                 Rc::new(|| {}),
+                &SelectSlotStyles::default(),
             );
             let (label, desc) = row_texts(bare);
             assert_eq!(label.as_deref(), Some("Plain"));
@@ -738,6 +935,7 @@ mod tests {
                     value,
                     Rc::new(|_| {}),
                     Rc::new(|| {}),
+                    &SelectSlotStyles::default(),
                 )
             };
             let solid = Some(tokens().intent.primary.solid_text().resolve());
@@ -772,12 +970,13 @@ mod tests {
                 value,
                 Rc::new(|_| {}),
                 Rc::new(|| {}),
+                &SelectSlotStyles::default(),
             );
             let (_, desc) = row_texts(row);
             let (_, rules) = desc.unwrap();
             // The committed row's own text color (`active: on`).
             let row_on = resolve_style(
-                &StyleApplication::new(SelectOptionStyle::sheet()).with("active", "on"),
+                &SelectStyles::option().set(SelectActive::On).into_style_application(),
             );
             assert_eq!(
                 rules.color.clone().map(|c| c.resolve()),
@@ -830,14 +1029,14 @@ mod tests {
             // the live static path folds it at apply. That machinery is
             // pinned by the runtime-vocabulary font tests and
             // backend-ssr's `regression_reactive_styled_node_inherits_theme_font`.
-            let resolved = resolve_style(&StyleApplication::new(SelectMenu::sheet()));
+            let resolved = resolve_style(&SelectStyles::menu().into_style_application());
             assert!(
                 resolved.font_family.is_none(),
                 "the menu sheet must not pin a font — that disqualifies it \
                  from preminting; portals get the theme font from the root"
             );
             assert!(
-                StyleApplication::new(SelectMenu::sheet()).preminted_class_list().is_some(),
+                SelectStyles::menu().into_style_application().preminted_class_list().is_some(),
                 "the menu sheet must premint: it first constructs when a \
                  Select OPENS, so only build-time CSS can style it under \
                  --premint-only"

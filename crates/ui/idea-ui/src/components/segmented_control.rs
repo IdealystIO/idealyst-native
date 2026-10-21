@@ -927,14 +927,13 @@ mod tests {
     /// + border, and the fonts match.
     #[test]
     fn each_size_matches_a_select_of_the_same_size() {
-        use crate::stylesheets::SelectTrigger;
         with_test_world(|| {
             reset();
             install_idea_theme(light_theme());
             let group = resolve_style(&SegmentedControlStyles::track().into_style_application());
             for (size, arm) in [(SegmentedControlSize::Sm, "sm"), (SegmentedControlSize::Md, "md"), (SegmentedControlSize::Lg, "lg")] {
                 let seg = resolve_style(&SegmentedControlStyles::segment().set(size).into_style_application());
-                let select = resolve_style(&StyleApplication::new(SelectTrigger::sheet()).with("size", arm.to_string()));
+                let select = resolve_style(&crate::SelectStyles::trigger().set(crate::SelectSize::define(arm)).into_style_application());
                 let seg_chrome = width(&group.border_top_width)
                     + width(&group.border_bottom_width)
                     + px(&group.padding_top)

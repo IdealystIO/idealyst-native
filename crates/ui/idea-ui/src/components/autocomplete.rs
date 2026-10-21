@@ -129,7 +129,8 @@ use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
     component, each_keyed, memo, on_defer, pressable, signal, text, text_input, ui, view,
     EachKey, EachRowBuild, Element, IdealystSchema, IntoElement, Reactive, ReadSignal, Ref, Signal,
-    StyleApplication, TextInputHandle, VariantEnum, ViewHandle,
+    TextInputHandle, VariantEnum, ViewHandle, component_styles, AlignItems, Cursor, FlexDirection,
+    JustifyContent, Length, Position, TextAlign,
 };
 
 use idea_theme::theme::IdeaThemeRef;
@@ -138,12 +139,173 @@ use crate::components::date_input::CLEAR_GLYPH;
 use crate::components::field::{adornment_icon_color, adornment_icon_px_for};
 use crate::components::icon::Icon;
 use crate::components::select::{
-    live_options, option_text, rotating_chevron, SelectOption, SelectSize, CHEVRON_DOWN,
+    live_options, option_active, option_text, rotating_chevron, SelectActive, SelectOption, SelectSize,
+    SelectStyles, CHEVRON_DOWN,
 };
-use crate::stylesheets::{
-    AutocompleteBox, AutocompleteChevron, AutocompleteClear, AutocompleteEmpty,
-    AutocompleteInput, AutocompleteTrailing, SelectOption as SelectOptionStyle,
-};
+
+// Right padding the autocomplete input reserves, per size, so typed text
+// never runs under the trailing row. The chevron-only reserve is the row's
+// `sm` (8) inset + the chevron glyph + an `xs` (4) gap before the text; a
+// CLEARABLE input adds the ✕ glyph + its `xs` (4) margin. Glyphs are sized
+// by `field::adornment_icon_px_for` (14 / 16 / 18) — pixel constants, which
+// is why these are too (stylesheets also can't add two tokens).
+
+/// Chevron-only right reserve at `sm`: 8 + 14 + 4.
+pub const AUTOCOMPLETE_PAD_SM_PX: f32 = 26.0;
+/// Chevron-only right reserve at `md`: 8 + 16 + 4.
+pub const AUTOCOMPLETE_PAD_MD_PX: f32 = 28.0;
+/// Chevron-only right reserve at `lg`: 8 + 18 + 4.
+pub const AUTOCOMPLETE_PAD_LG_PX: f32 = 30.0;
+/// Clearable right reserve at `sm`: chevron-only + 14 + 4.
+pub const AUTOCOMPLETE_CLEARABLE_PAD_SM_PX: f32 = 44.0;
+/// Clearable right reserve at `md`: chevron-only + 16 + 4.
+pub const AUTOCOMPLETE_CLEARABLE_PAD_MD_PX: f32 = 48.0;
+/// Clearable right reserve at `lg`: chevron-only + 18 + 4.
+pub const AUTOCOMPLETE_CLEARABLE_PAD_LG_PX: f32 = 52.0;
+
+component_styles! {
+    /// The styled sections of [`Autocomplete`]. The dropdown draws
+    /// `SelectStyles`' `menu` and `option` slots, so a Select and an
+    /// Autocomplete drop the same menu.
+    pub Autocomplete<IdeaThemeRef> {
+        /// A thin positioning shell: the input carries the bordered chrome
+        /// (so the native focus ring lands on the focusable element, like
+        /// `Field`), and the trailing row is pinned over the input's right
+        /// edge — hence `position: relative` here.
+        slot root {
+            base(_t) {
+                position: Position::Relative,
+                flex_direction: FlexDirection::Column,
+                min_width: 200.0,
+            }
+        }
+
+        /// The text input: the same box as Field's input and Select's
+        /// trigger (so a combobox sits flush beside them), with right
+        /// padding reserving room for the trailing row.
+        slot input {
+            base(t) {
+                width: Length::pct(100.0),
+                background: t.color.surface(),
+                color: t.color.text(),
+                border_radius: t.radius.md(),
+                border_width: 1.0,
+                border_color: t.color.border(),
+                padding_vertical: t.spacing.sm(),
+                padding_left: t.spacing.md(),
+                // Reserve room for the chevron pinned over the right edge.
+                padding_right: AUTOCOMPLETE_PAD_MD_PX,
+                font_size: t.typography.body_size(),
+                text_align: TextAlign::Left,
+            }
+            variant size {
+                sm(t) {
+                    padding_vertical: t.spacing.xs(),
+                    padding_left: t.spacing.sm(),
+                    padding_right: AUTOCOMPLETE_PAD_SM_PX,
+                    font_size: t.typography.body_sm_size(),
+                }
+                #[default]
+                md(t) {
+                    padding_vertical: t.spacing.sm(),
+                    padding_left: t.spacing.md(),
+                    padding_right: AUTOCOMPLETE_PAD_MD_PX,
+                    font_size: t.typography.body_size(),
+                }
+                lg(t) {
+                    padding_vertical: t.spacing.md(),
+                    padding_left: t.spacing.lg(),
+                    padding_right: AUTOCOMPLETE_PAD_LG_PX,
+                    font_size: t.typography.body_lg_size(),
+                }
+            }
+            // `clearable` widens the right reserve to cover the ✕ as well. It
+            // is reserved whenever the prop is on — not only while the ✕ is
+            // showing — so text doesn't reflow the moment a value lands.
+            variant trailing {
+                #[default]
+                chevron(_t) {}
+                clear(_t) {}
+            }
+            compound (size: sm, trailing: clear)(_t) {
+                padding_right: AUTOCOMPLETE_CLEARABLE_PAD_SM_PX,
+            }
+            compound (size: md, trailing: clear)(_t) {
+                padding_right: AUTOCOMPLETE_CLEARABLE_PAD_MD_PX,
+            }
+            compound (size: lg, trailing: clear)(_t) {
+                padding_right: AUTOCOMPLETE_CLEARABLE_PAD_LG_PX,
+            }
+            state focused(t) {
+                border_color: t.color.focus_ring(),
+            }
+            state disabled(_t) {
+                opacity: 0.55,
+            }
+            transitions {
+                border_color: 150ms EaseOut,
+                background: 250ms EaseInOut,
+                color: 250ms EaseInOut,
+            }
+        }
+
+        /// The row pinned over the input's right edge, holding the optional
+        /// clear ✕ and the chevron.
+        slot trailing {
+            base(t) {
+                position: Position::Absolute,
+                right: t.spacing.sm(),
+                top: Length::Px(0.0),
+                bottom: Length::Px(0.0),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+            }
+        }
+
+        /// The clear ✕ button.
+        slot clear {
+            base(t) {
+                cursor: Cursor::Pointer,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                // Margin, not a row `gap`: the ✕ sits in a reactive branch whose
+                // empty state may still leave a placeholder node, and a gap
+                // would space the chevron off that invisible sibling.
+                margin_right: t.spacing.xs(),
+            }
+            state hovered(_t) { opacity: 0.65 }
+            state pressed(_t) { opacity: 0.4 }
+        }
+
+        /// The disclosure chevron button.
+        slot chevron {
+            base(_t) {
+                cursor: Cursor::Pointer,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+            }
+        }
+
+        /// The "no matches" row.
+        slot empty {
+            base(t) {
+                color: t.color.text_muted(),
+                padding_vertical: t.spacing.xs(),
+                padding_horizontal: t.spacing.sm(),
+                font_size: t.typography.body_size(),
+                text_align: TextAlign::Left,
+            }
+        }
+    }
+}
+
+/// The Select size scale (Autocomplete's `size` prop) converts into the
+/// input's own size axis.
+impl From<SelectSize> for AutocompleteSize {
+    fn from(s: SelectSize) -> Self {
+        AutocompleteSize::define(s.key())
+    }
+}
 
 /// Context handed to a menu-slot builder ([`AutocompleteProps::header`] /
 /// [`AutocompleteProps::footer`]) each time the menu opens.
@@ -199,7 +361,7 @@ const DEFAULT_EMPTY_TEXT: &str = "No results";
 // `header`/`footer` are `#[prop(static)]` for the same reason as `Field`'s
 // adornments: they're ELEMENT-BUILDERS (the *children* category), whose
 // reactivity is structural/internal via the slot cx, not data-reactive.
-#[runtime_core::props]
+#[runtime_core::props(styles = AutocompleteStyles)]
 #[derive(IdealystSchema)]
 pub struct AutocompleteProps {
     /// Controlled selected value — the `id` of the chosen [`SelectOption`].
@@ -297,6 +459,7 @@ impl Default for AutocompleteProps {
             autofocus: false,
             clearable: false,
             max_width: None,
+            styles: Default::default(),
         }
     }
 }
@@ -445,14 +608,14 @@ pub(crate) fn clear_action(
 /// at the same density. `preserves_focus` for the chevron's reason —
 /// pressing it must not blur the input (a blur would close-and-revert the
 /// menu mid-clear).
-fn clear_button(clear: Rc<dyn Fn()>, size: SelectSize) -> Element {
+fn clear_button(clear: Rc<dyn Fn()>, size: SelectSize, styles: &AutocompleteSlotStyles) -> Element {
     let px = adornment_icon_px_for(size.as_variant_str());
     let muted = adornment_icon_color();
     let glyph = ui! { Icon(data = CLEAR_GLYPH, size = px, color = Some(muted)) };
     pressable(vec![glyph], move || (clear)())
         .preserves_focus(true)
         .a11y_label("Clear")
-        .with_style(AutocompleteClear())
+        .with_style(AutocompleteStyles::clear().overridden(styles.clear.as_ref()))
         .into_element()
 }
 
@@ -635,19 +798,12 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     };
 
     // --- input --------------------------------------------------------------
-    // `size` is read LIVE inside the style closure so a reactive `size`
-    // re-resolves the input height in place; a `Static` one keeps the
-    // build-time fast path (no per-input apply-style Effect).
-    let size_is_reactive = !size.is_static();
-    let make_input_style = {
-        let size = size.clone();
-        let trailing = if clearable { "clear" } else { "chevron" };
-        move || {
-            StyleApplication::new(AutocompleteInput::sheet())
-                .with("size", size.get().as_variant_str().to_string())
-                .with("trailing", trailing.to_string())
-        }
-    };
+    // A reactive `size` re-resolves the input height in place.
+    let styles = props.styles.clone();
+    let input_style = AutocompleteStyles::input()
+        .set(size.clone().map(AutocompleteSize::from))
+        .set(if clearable { AutocompleteTrailing::Clear } else { AutocompleteTrailing::Chevron })
+        .overridden(styles.input.as_ref());
 
     let key_commit = commit.clone();
     let key_revert = revert.clone();
@@ -728,13 +884,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
             }
             _ => KeyOutcome::Default,
         }});
-    // Reactive when `size` is live (re-resolves the input height in place);
-    // else the build-time fast path.
-    let input_node = if size_is_reactive {
-        input.with_style(make_input_style).into_element()
-    } else {
-        input.with_style(make_input_style()).into_element()
-    };
+    let input_node = input.with_style(input_style).into_element();
 
     // --- chevron ------------------------------------------------------------
     // `preserves_focus`: pressing the chevron must not blur the input — a
@@ -761,7 +911,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         }
     })
     .preserves_focus(true)
-    .with_style(AutocompleteChevron())
+    .with_style(AutocompleteStyles::chevron().overridden(styles.chevron.as_ref()))
     .into_element();
 
     // --- clear ✕ -------------------------------------------------------------
@@ -775,11 +925,13 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         };
         committed || !query.get().is_empty()
     });
+    let trailing_style = AutocompleteStyles::trailing().overridden(styles.trailing.as_ref());
+    let clear_styles = styles.clone();
     let trailing = ui! {
-        view(style = AutocompleteTrailing()) {
+        view(style = trailing_style) {
             if clearable {
                 if show_clear.get() {
-                    clear_button(clear.clone(), size.get())
+                    clear_button(clear.clone(), size.get(), &clear_styles)
                 }
             }
             chevron
@@ -787,7 +939,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     };
 
     let wrapper = view(vec![input_node, trailing])
-        .with_style(AutocompleteBox())
+        .with_style(AutocompleteStyles::root().overridden(styles.root.as_ref()))
         .bind(wrapper_ref)
         .into_element();
 
@@ -803,15 +955,19 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let header_slot = props.header.clone();
     let max_width = props.max_width;
     let footer_slot = props.footer.clone();
+    let empty_style = styles.empty.clone();
     let build_panel = move || {
         let snapshot_commit = menu_commit.clone();
         let empty_text = empty_text.clone();
+        let empty_style = empty_style.clone();
         let rows = each_keyed(move || {
             let idxs = filtered.get();
             if idxs.is_empty() {
                 let empty_text = empty_text.clone();
+                let empty_style = empty_style.clone();
                 let build: EachRowBuild = Box::new(move || {
-                    vec![text(empty_text).with_style(AutocompleteEmpty()).into_element()]
+                    let style = AutocompleteStyles::empty().overridden(empty_style.as_ref());
+                    vec![text(empty_text).with_style(style).into_element()]
                 });
                 return vec![(EachKey::new("__empty".to_string()), build)];
             }
@@ -915,21 +1071,15 @@ fn row(
     }));
     let press_id = id.clone();
     pressable(kids, move || (commit)(&press_id))
-        .with_style(move || {
-            let _ = idea_theme::active_theme_untracked()
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
+        .with_style(SelectStyles::option().set(Reactive::Dynamic(Rc::new(move || {
             let highlighted = cursor_id().as_deref() == Some(id.as_str());
             let selected = selection.is_none() && value.get() == id;
-            let variant = if selected {
-                "on"
-            } else if highlighted {
-                "cursor"
+            if !selected && highlighted {
+                SelectActive::Cursor
             } else {
-                "off"
-            };
-            StyleApplication::new(SelectOptionStyle::sheet()).with("active", variant.to_string())
-        })
+                option_active(selected)
+            }
+        }))))
         .into_element()
 }
 
@@ -1095,7 +1245,7 @@ mod tests {
             // Same rule for the clear ✕: a blur mid-clear would close the
             // menu and revert the input to the label being cleared.
             let P::Pressable { preserves_focus, .. } =
-                classify(clear_button(Rc::new(|| {}), SelectSize::default()))
+                classify(clear_button(Rc::new(|| {}), SelectSize::default(), &AutocompleteSlotStyles::default()))
             else {
                 panic!("the ✕ is a pressable");
             };
@@ -1182,16 +1332,12 @@ mod tests {
     fn clearable_reserves_room_for_the_x() {
         with_test_world(|| {
             idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
-            let pad = |size: &str, trailing: &str| {
-                let app = StyleApplication::new(AutocompleteInput::sheet())
-                    .with("size", size.to_string())
-                    .with("trailing", trailing.to_string());
+            let pad = |size: &'static str, trailing: &'static str| {
+                let app = AutocompleteStyles::input()
+                    .set(AutocompleteSize::define(size))
+                    .set(AutocompleteTrailing::define(trailing))
+                    .into_style_application();
                 runtime_core::resolve_style(&app).padding_right.clone().map(|t| t.resolve())
-            };
-            use crate::stylesheets::{
-                AUTOCOMPLETE_CLEARABLE_PAD_LG_PX, AUTOCOMPLETE_CLEARABLE_PAD_MD_PX,
-                AUTOCOMPLETE_CLEARABLE_PAD_SM_PX, AUTOCOMPLETE_PAD_LG_PX, AUTOCOMPLETE_PAD_MD_PX,
-                AUTOCOMPLETE_PAD_SM_PX,
             };
             for (size, chevron_only, clearable) in [
                 ("sm", AUTOCOMPLETE_PAD_SM_PX, AUTOCOMPLETE_CLEARABLE_PAD_SM_PX),
@@ -1357,7 +1503,7 @@ mod tests {
             let TStyle::AppFn(style) = style else {
                 panic!("row style is reactive (cursor/selection resolve live)");
             };
-            let bg = |app: StyleApplication| {
+            let bg = |app: runtime_core::StyleApplication| {
                 runtime_core::resolve_style(&app).background.clone().map(|b| b.resolve())
             };
 

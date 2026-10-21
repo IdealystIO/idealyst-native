@@ -13,9 +13,9 @@
 //! ```
 //!
 //! All three share the same anatomy: a trigger (formatted value or
-//! placeholder + calendar glyph, styled by the `SelectTrigger` sheet so
+//! placeholder + calendar glyph, drawn by `SelectStyles`' `trigger` slot so
 //! pickers sit flush beside `Select`s and `Field`s) opening an anchored
-//! panel (`SelectMenu` sheet) with a borderless [`Calendar`] /
+//! panel (the `menu` slot) with a borderless [`Calendar`] /
 //! [`RangeCalendar`] inside. Dismissal mirrors `Select`: a fullscreen
 //! transparent catcher closes on any outside press (including a
 //! trigger re-press), Escape closes via the anchored overlay's
@@ -40,18 +40,15 @@ use runtime_core::stylesheet;
 use runtime_core::{
     component, effect, icon, pressable, signal, text, ui, view, Color, Element, FillRule,
     IconData, IdealystSchema, IntoElement, Length, Position, PressableHandle, Reactive, Ref,
-    Signal, StyleApplication, StyleSheet, VariantEnum,
+    Signal, StyleApplication, StyleSheet,
 };
 
 use crate::components::calendar::{Calendar, RangeCalendar};
-use crate::components::select::SelectSize;
+use crate::components::select::{SelectOpen, SelectSize, SelectStyles};
 use crate::components::time_input::TimeInput;
 use crate::date::{
     format_date_with, format_datetime_with, CivilDate, CivilDateTime, CivilTime, DateLabels,
     Weekday,
-};
-use crate::stylesheets::{
-    SelectMenu, SelectOption as SelectOptionStyle, SelectOptionLabel, SelectTrigger,
 };
 use idea_theme::tokens;
 
@@ -90,7 +87,7 @@ fn popup_backdrop_sheet() -> Rc<StyleSheet> {
 }
 
 /// The trigger: current value (or placeholder) + calendar glyph,
-/// `SelectTrigger`-styled with its `open` highlight.
+/// drawn by the Select `trigger` slot with its `open` highlight.
 pub(crate) fn picker_trigger(
     label_source: impl Fn() -> String + 'static,
     open: Signal<bool>,
@@ -103,11 +100,9 @@ pub(crate) fn picker_trigger(
         .color(|| tokens().color.text_muted().resolve())
         .into_element();
 
-    let trigger_style = move || {
-        StyleApplication::new(SelectTrigger::sheet())
-            .with("size", size.get().as_variant_str().to_string())
-            .with("open", if open.get() { "on" } else { "off" }.to_string())
-    };
+    let trigger_style = SelectStyles::trigger()
+        .set(size)
+        .set(Reactive::Dynamic(Rc::new(move || SelectOpen::from(open.get()))));
     // Open on press; the catcher owns closing (an open picker's next
     // click lands on the fullscreen backdrop, wherever it is).
     pressable(vec![label_child, glyph], move || open.set(true))
@@ -116,7 +111,7 @@ pub(crate) fn picker_trigger(
         .into_element()
 }
 
-/// The open panel: fullscreen dismiss catcher + a `SelectMenu`-styled
+/// The open panel: fullscreen dismiss catcher + a `menu`-slot
 /// column anchored below the trigger. `content` builds the panel body
 /// fresh per open.
 pub(crate) fn anchored_panel(
@@ -137,7 +132,7 @@ pub(crate) fn anchored_panel(
         .into_element();
 
     let panel = view(content)
-        .with_style(StyleApplication::new(SelectMenu::sheet()))
+        .with_style(SelectStyles::menu())
         .into_element();
 
     let anchored = runtime_core::anchored_overlay(anchor, vec![panel])
@@ -152,14 +147,14 @@ pub(crate) fn anchored_panel(
     view(vec![catcher, anchored]).into_element()
 }
 
-/// A quiet footer action row (`Clear`), `SelectOption`-styled so it
+/// A quiet footer action row (`Clear`), drawn by the `option` slot so it
 /// reads as part of the menu family.
 fn footer_action(label: String, on_press: impl Fn() + 'static) -> Element {
     // The label carries its own font/color: native text doesn't inherit the
     // row's.
-    let label = text(label).with_style(StyleApplication::new(SelectOptionLabel::sheet()));
+    let label = text(label).with_style(SelectStyles::option_label());
     pressable(vec![label.into_element()], on_press)
-        .with_style(StyleApplication::new(SelectOptionStyle::sheet()))
+        .with_style(SelectStyles::option())
         .into_element()
 }
 
@@ -635,7 +630,7 @@ mod tests {
     }
 
     // The popup panel + backdrop construct on OPEN — the premint crawl
-    // never gets there. The panel reuses SelectMenu (premint pinned in
+    // never gets there. The panel reuses the Select `menu` slot (premint pinned in
     // select.rs); the backdrop sheet is ours, so pin it here.
     #[test]
     fn popup_backdrop_sheet_premints() {
