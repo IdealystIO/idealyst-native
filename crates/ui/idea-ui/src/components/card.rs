@@ -1,4 +1,4 @@
-//! `Card` — surface container, built on the extensible Variant trait.
+//! `Card` — surface container.
 //!
 //! ```ignore
 //! ui! {
@@ -8,354 +8,148 @@
 //! }
 //! ```
 //!
-//! Four built-in variants:
+//! Four built-in variants ([`CardVariant`]):
 //!
-//! - [`variant::Regular`] (default) — page-surface fill + 1px border.
-//! - [`variant::Outline`] — the border alone, no fill. The base for a
-//!   dashed or dotted frame: override `border_style` and nothing else
-//!   competes with the stroke.
-//! - [`variant::Flat`] — secondary (`surface_alt`) fill, no border.
-//! - [`variant::Elevated`] — surface-alt fill + drop shadow.
+//! - `Regular` (default) — page-surface fill + 1px border.
+//! - `Outline` — the border alone, no fill. The base for a dashed or
+//!   dotted frame: override `border_style` and nothing else competes with
+//!   the stroke.
+//! - `Flat` — secondary (`surface_alt`) fill, no border.
+//! - `Elevated` — surface-alt fill + drop shadow.
 //!
-//! They read the theme's surface colors directly — no intent palette — so
-//! they ignore the `tone` field of `ResolutionCtx`.
+//! They read the theme's surface colors directly — no intent palette.
+//! Styling is [`CardStyles`]' `root` slot; an app restyles a variant, or
+//! adds one, at boot:
 //!
 //! ```ignore
-//! // A dashed drop-zone frame:
-//! Card(variant = card::variant::Outline, style = dashed_sheet) { … }
-//! // where dashed_sheet sets `border_style: Some(BorderStyle::Dashed)`.
+//! const GLASS: CardVariant = CardVariant::define("glass");
+//! CardStyles::restyle(|s| {
+//!     s.root().arm(CardVariant::Regular, |t| StyleRules { shadow: …, ..Default::default() });
+//!     s.root().arm(GLASS, |t| StyleRules { background: Some(t.color.surface_alt()), … });
+//! });
 //! ```
 //!
-//! The Card stylesheet is built programmatically (variant × padding
-//! axes) and installed lazily on first use. Apps with custom Card
-//! variants install an extended sheet via [`install_card_sheet`]
-//! before mounting. [`build_card_sheet`] always carries the four
-//! built-ins; a passed variant whose key matches a built-in replaces
-//! that one arm (e.g. a `regular` with a shadow), and any other key is
-//! added. A Card whose variant key has no arm on the installed sheet
-//! draws the bare base style; debug builds log a warning once per key.
-
-use std::cell::RefCell;
-use std::rc::Rc;
+//! A dashed drop-zone frame is one instance's override:
+//!
+//! ```ignore
+//! Card(variant = card::variant::Outline, styles = CardSlotStyles::default().root(dashed)) { … }
+//! ```
 
 use runtime_core::{
-    component, ui, ChildList, Easing, IdealystSchema, Length, Element, Overflow, Reactive,
-    StyleApplication, StyleRules, StyleSheet, Tokenized, Transition, VariantEnum, VariantSet,
+    component, component_styles, ui, ChildList, Element, IdealystSchema, Length, Reactive, StyleRules,
 };
 
-use idea_theme::active_theme;
-use idea_theme::extensible::{
-    premint_identity, tone as tones, variant_keys, RefBuiltins, ResolutionCtx, ToneRef,
-    VariantRef,
-};
+use idea_theme::extensible::{Tone, ToneRef};
 use idea_theme::theme::IdeaThemeRef;
 
-use crate::slot_override::apply_override;
+use crate::modifiers::marker_into_axis;
 
-pub use crate::stylesheets::CardPadding;
-use idea_theme::tokens;
-
-/// Built-in Card variants. Card's variants don't consume a Tone (a
-/// surface container isn't intent-colored) — they read the theme's
-/// surface colors directly via `ctx.theme.colors()`.
-pub mod variant {
-    use idea_theme::extensible::{ResolutionCtx, Variant, VariantRef};
-    use runtime_core::{Color, IdealystSchema, StyleRules};
-
-    // Reactive-prop coercion for the card-local variants, so a bare marker
-    // (`variant = variant::Flat`) coerces into a `#[props]`-wrapped
-    // `Reactive<VariantRef>` field. Hand-written markers don't go through the
-    // `variant!` macro, so they emit it here (see idea-theme's `variant!`).
-    macro_rules! card_variant_reactive {
-        ($($name:ident),*) => { $(
-            // A remote bundle names it by key (see `idea_theme::__remote_marker!`).
-            idea_theme::__remote_marker!(VariantRef, $name);
-
-            impl ::core::convert::From<$name> for ::runtime_core::Reactive<VariantRef> {
-                fn from(marker: $name) -> Self {
-                    ::runtime_core::Reactive::Static(VariantRef::from(marker))
+component_styles! {
+    /// The styled sections of [`Card`].
+    pub Card<IdeaThemeRef> {
+        /// The surface.
+        slot root {
+            base(t) {
+                gap: t.spacing.sm(),
+                border_radius: t.radius.lg(),
+                border_width: 1.0,
+                border_color: t.color.border(),
+            }
+            /// The surface treatment. Every arm sets its fill (and Flat its
+            /// border widths) explicitly rather than leaving them unset: a
+            /// card whose variant switches live must CLEAR the previous fill,
+            /// and a native backend leaves an unset property as it was.
+            variant variant {
+                #[default]
+                regular(t) { background: t.color.surface() }
+                outline(_t) { background: runtime_core::Color("transparent".into()) }
+                flat(t) {
+                    background: t.color.surface_alt(),
+                    border_width: 0.0,
+                }
+                elevated(t) {
+                    background: t.color.surface_alt(),
+                    shadow: runtime_core::Shadow {
+                        x: 0.0,
+                        y: 4.0,
+                        blur: 16.0,
+                        color: t.effect.shadow(),
+                    },
                 }
             }
-        )* };
+            /// Inner padding: none / the theme's sm / lg / xl spacing.
+            variant padding {
+                none(_t) { padding: Length::Px(0.0) }
+                sm(t) { padding: t.spacing.sm() }
+                #[default]
+                md(t) { padding: t.spacing.lg() }
+                lg(t) { padding: t.spacing.xl() }
+            }
+            transitions {
+                background: 250ms EaseInOut,
+                color: 250ms EaseInOut,
+                border_color: 250ms EaseInOut,
+            }
+        }
     }
+}
 
-    /// Regular — page-surface background framed by the sheet's 1px
-    /// border. The default.
-    #[derive(Copy, Clone, Default, IdealystSchema)]
-    #[schema(value_of = "VariantRef", via = "idea_ui::components::{card::variant}")]
+/// The built-in Card variant markers: `variant = card::variant::Flat`
+/// converts into [`CardVariant`] — and only into it, so a Card variant on
+/// a Button does not compile.
+///
+/// ```compile_fail
+/// let _: idea_ui::ButtonVariant = idea_ui::components::card::variant::Flat.into();
+/// ```
+pub mod variant {
+    use runtime_core::IdealystSchema;
+
+    /// Regular — page-surface background framed by the 1px border. The
+    /// default.
+    #[derive(Copy, Clone, Default, Debug, IdealystSchema)]
+    #[schema(value_of = "CardVariant", via = "idea_ui::components::{card::variant}")]
     pub struct Regular;
 
-    impl Variant for Regular {
-        fn key(&self) -> &'static str {
-            "regular"
-        }
-        fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
-            StyleRules {
-                background: Some(ctx.theme.colors().surface.clone()),
-                ..Default::default()
-            }
-        }
-    }
-
     /// Outline — the border with no fill, so whatever is behind the card
-    /// shows through. Set `border_style` in a `style` override for a
-    /// dashed or dotted frame (drop zones, placeholders, "add" tiles).
-    ///
-    /// The background is an explicit `transparent`, not unset: a card
-    /// whose variant switches live from Regular to Outline must CLEAR the
-    /// fill, and a native backend leaves an unset background as it was.
-    #[derive(Copy, Clone, Default, IdealystSchema)]
-    #[schema(value_of = "VariantRef", via = "idea_ui::components::{card::variant}")]
+    /// shows through.
+    #[derive(Copy, Clone, Default, Debug, IdealystSchema)]
+    #[schema(value_of = "CardVariant", via = "idea_ui::components::{card::variant}")]
     pub struct Outline;
 
-    impl Variant for Outline {
-        fn key(&self) -> &'static str {
-            "outline"
-        }
-        fn render(&self, _ctx: &ResolutionCtx) -> StyleRules {
-            StyleRules {
-                background: Some(Color("transparent".into()).into()),
-                ..Default::default()
-            }
-        }
-    }
-
     /// Flat — the secondary (`surface_alt`) fill with NO border: a panel
-    /// set apart by its tone alone. Widths are zeroed explicitly rather
-    /// than left unset for the same live-switch reason as [`Outline`].
-    #[derive(Copy, Clone, Default, IdealystSchema)]
-    #[schema(value_of = "VariantRef", via = "idea_ui::components::{card::variant}")]
+    /// set apart by its tone alone.
+    #[derive(Copy, Clone, Default, Debug, IdealystSchema)]
+    #[schema(value_of = "CardVariant", via = "idea_ui::components::{card::variant}")]
     pub struct Flat;
 
-    impl Variant for Flat {
-        fn key(&self) -> &'static str {
-            "flat"
-        }
-        fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
-            let none = || Some(runtime_core::Tokenized::Literal(0.0));
-            StyleRules {
-                background: Some(ctx.theme.colors().surface_alt.clone()),
-                border_top_width: none(),
-                border_right_width: none(),
-                border_bottom_width: none(),
-                border_left_width: none(),
-                ..Default::default()
-            }
-        }
-    }
-
-    /// Elevated — raised surface with a soft drop shadow. Uses
-    /// `surface_alt` so the card reads as a layer above the page's
-    /// `surface`, distinct even on platforms that don't render shadows.
-    #[derive(Copy, Clone, Default, IdealystSchema)]
-    #[schema(value_of = "VariantRef", via = "idea_ui::components::{card::variant}")]
+    /// Elevated — raised surface with a soft drop shadow (the theme's
+    /// `effect-shadow` token). `surface_alt`, so the card reads as a layer
+    /// above the page even where shadows don't render.
+    #[derive(Copy, Clone, Default, Debug, IdealystSchema)]
+    #[schema(value_of = "CardVariant", via = "idea_ui::components::{card::variant}")]
     pub struct Elevated;
-
-    impl Variant for Elevated {
-        fn key(&self) -> &'static str {
-            "elevated"
-        }
-        fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
-            StyleRules {
-                background: Some(ctx.theme.colors().surface_alt.clone()),
-                // The theme's `effect-shadow` token, so a swap re-tints it.
-                shadow: Some(runtime_core::Shadow {
-                    x: 0.0,
-                    y: 4.0,
-                    blur: 16.0,
-                    color: ctx.theme.effects().shadow.clone(),
-                }),
-                ..Default::default()
-            }
-        }
-    }
-
-    card_variant_reactive!(Regular, Outline, Flat, Elevated);
 }
 
-runtime_tls::thread_local! {
-    static CARD_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
-    #[cfg(debug_assertions)]
-    static WARNED_CARD_VARIANTS: RefCell<std::collections::HashSet<String>> =
-        RefCell::new(std::collections::HashSet::new());
-}
-
-/// Debug builds: log once per key when a Card asks for a variant the
-/// installed sheet has no arm for. Without an arm the key resolves to the
-/// sheet's base (a transparent box with a 1px border) and nothing else
-/// says so. Returns whether it warned, for the test.
-#[cfg(debug_assertions)]
-fn warn_unregistered_variant(sheet: &StyleSheet, key: &str) -> bool {
-    let registered = sheet.variant_keys().iter().any(|(a, v)| a == "variant" && v == key);
-    if registered || !WARNED_CARD_VARIANTS.with(|w| w.borrow_mut().insert(key.to_string())) {
-        return false;
-    }
-    runtime_core::log_warn!(
-        "[idea-ui] Card variant `{key}` has no arm on the installed card sheet, so it draws \
-         the bare base style (transparent, 1px border). Pass it to `build_card_sheet` \
-         before `install_card_sheet`."
-    );
-    true
-}
-
-/// Install a custom Card stylesheet (e.g. with app-defined variants).
-/// Call before the first Card mounts. If never called, the default
-/// sheet (all four built-in variants) is installed lazily on first use.
-pub fn install_card_sheet(sheet: Rc<StyleSheet>) {
-    CARD_SHEET.with(|s| *s.borrow_mut() = Some(sheet));
-}
-
-fn card_sheet() -> Rc<StyleSheet> {
-    CARD_SHEET.with(|s| {
-        if s.borrow().is_none() {
-            let tones: Vec<ToneRef> = ToneRef::builtins().into_iter().map(|(_, t)| t).collect();
-            *s.borrow_mut() = Some(build_card_sheet(Vec::new(), tones));
-        }
-        s.borrow().as_ref().cloned().unwrap()
-    })
-}
-
-/// The four built-in variants, in the order [`build_card_sheet`] registers them.
-fn builtin_variants() -> Vec<VariantRef> {
-    vec![
-        variant::Regular.into(),
-        variant::Outline.into(),
-        variant::Flat.into(),
-        variant::Elevated.into(),
-    ]
-}
-
-/// The built-ins with `extra` layered on by key: an `extra` variant whose
-/// key matches a built-in (or an earlier `extra`) replaces it in place;
-/// any other key is appended.
-fn merge_variants(extra: Vec<VariantRef>) -> Vec<VariantRef> {
-    let mut merged = builtin_variants();
-    for v in extra {
-        match merged.iter_mut().find(|m| m.key() == v.key()) {
-            Some(slot) => *slot = v,
-            None => merged.push(v),
-        }
-    }
-    merged
-}
-
-/// Build a Card stylesheet: the four built-in variants plus `variants`.
-/// A passed variant whose key matches a built-in replaces that arm, so an
-/// app that only wants a different `regular` passes just that one — the
-/// other built-ins stay registered. The padding axis is fixed
-/// (none/sm/md/lg → theme spacing tokens). Each variant arm pulls its
-/// background/shadow from `variant.render(ctx)` (Card variants ignore the
-/// tone, so a placeholder Neutral is passed).
-pub fn build_card_sheet(variants: Vec<VariantRef>, tones: Vec<ToneRef>) -> Rc<StyleSheet> {
-    let variants = merge_variants(variants);
-    let radius = || tokens().radius.lg();
-
-    let mut sheet = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
-        gap: Some(tokens().spacing.sm()),
-        border_top_left_radius: Some(radius()),
-        border_top_right_radius: Some(radius()),
-        border_bottom_left_radius: Some(radius()),
-        border_bottom_right_radius: Some(radius()),
-        border_top_width: Some(Tokenized::Literal(1.0)),
-        border_right_width: Some(Tokenized::Literal(1.0)),
-        border_bottom_width: Some(Tokenized::Literal(1.0)),
-        border_left_width: Some(Tokenized::Literal(1.0)),
-        border_top_color: Some(tokens().color.border()),
-        border_right_color: Some(tokens().color.border()),
-        border_bottom_color: Some(tokens().color.border()),
-        border_left_color: Some(tokens().color.border()),
-        background_transition: Some(Transition::new(250, Easing::EaseInOut)),
-        color_transition: Some(Transition::new(250, Easing::EaseInOut)),
-        border_top_color_transition: Some(Transition::new(250, Easing::EaseInOut)),
-        ..Default::default()
-    });
-
-    for v in &variants {
-        let v_c = v.clone();
-        sheet = sheet.variant("variant", v.key(), move |_vs| {
-            let theme_rc = active_theme();
-            let theme_ref = theme_rc
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("idea-ui: no IdeaTheme installed");
-            let neutral = tones::Neutral;
-            let ctx = ResolutionCtx {
-                theme: theme_ref,
-                tone: &neutral,
-            };
-            v_c.0.render(&ctx)
-        });
-    }
-
-    sheet = sheet
-        .variant("padding", "none", |_vs| StyleRules {
-            padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
-            padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
-            padding_left: Some(Tokenized::Literal(Length::Px(0.0))),
-            padding_right: Some(Tokenized::Literal(Length::Px(0.0))),
-            ..Default::default()
-        })
-        .variant("padding", "sm", move |_vs| StyleRules {
-            padding_top: Some(tokens().spacing.sm()),
-            padding_bottom: Some(tokens().spacing.sm()),
-            padding_left: Some(tokens().spacing.sm()),
-            padding_right: Some(tokens().spacing.sm()),
-            ..Default::default()
-        })
-        .variant("padding", "md", move |_vs| StyleRules {
-            padding_top: Some(tokens().spacing.lg()),
-            padding_bottom: Some(tokens().spacing.lg()),
-            padding_left: Some(tokens().spacing.lg()),
-            padding_right: Some(tokens().spacing.lg()),
-            ..Default::default()
-        })
-        .variant("padding", "lg", move |_vs| StyleRules {
-            padding_top: Some(tokens().spacing.xl()),
-            padding_bottom: Some(tokens().spacing.xl()),
-            padding_left: Some(tokens().spacing.xl()),
-            padding_right: Some(tokens().spacing.xl()),
-            ..Default::default()
-        })
-        .variant_default("variant", "regular")
-        .variant_default("padding", "md");
-
-    // NOTE: the intent tint deliberately does NOT live on a `tone` axis here,
-    // even though every sibling sheet enumerates its tones. `StyleSheet`
-    // stores axes in a `BTreeMap`, so per-axis arms merge in ALPHABETICAL axis
-    // order — `"tone"` merges before `"variant"`, and Card's `variant` arms
-    // set `background` (the variant's surface), which would overwrite the
-    // tint. The tint has to resolve after the surface, and the computed layer
-    // is the only slot that does (base → axes → computed → overrides).
-    //
-    // The sheets that DO enumerate tones (Badge/Tag/Alert) dodge this by
-    // folding both into ONE `appearance` axis keyed `{tone}_{variant}`, so
-    // there's no cross-axis conflict to order. Card could follow suit — it's a
-    // tones × variants arm expansion — but that's a behavioral restructure of
-    // the public axis, not a mechanical conversion.
-    //
-    // Consequence: a TONED Card still resolves live. An untoned one (the
-    // common case) premints, which is what the identity below unlocks.
-
-    // Premint identity — without it the sheet has no premint class and every
-    // Card falls through to the runtime engine.
-    sheet.premint_as(&premint_identity("card", [variant_keys(&variants)]))
-}
+marker_into_axis!(CardVariant {
+    variant::Regular => Regular,
+    variant::Outline => Outline,
+    variant::Flat => Flat,
+    variant::Elevated => Elevated,
+});
 
 // Reactive-by-default: `#[props]` wraps each scalar-DATA field → `Reactive<…>`
 // (`variant`/`padding`/`tone`). All three drive the Card surface style, so they
-// route into the style sink reading `.get()` live; `children` is the children
-// category and stays bare. A bare value stays a zero-cost `Static` snapshot (the
-// fast path — keeps the build-time `StyleSource::Static`); a `Signal`/`rx!`
-// re-styles in place.
-#[runtime_core::props]
+// route into the style sink; `children` is the children category and stays
+// bare. `styles` (from `styles = CardStyles`) is the per-instance override.
+#[runtime_core::props(styles = CardStyles)]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct CardProps {
-    /// Surface skeleton: built-in [`variant::Regular`] (page surface +
-    /// border), [`variant::Outline`] (border only), [`variant::Flat`]
-    /// (secondary fill, no border) or [`variant::Elevated`] (raised
-    /// surface + shadow), or an app-installed custom variant. Default
-    /// Regular.
-    pub variant: VariantRef,
+    /// Surface skeleton: `Regular` (page surface + border), `Outline`
+    /// (border only), `Flat` (secondary fill, no border), `Elevated`
+    /// (raised surface + shadow), or an app-defined [`CardVariant`].
+    /// Default Regular.
+    pub variant: CardVariant,
     /// Inner padding scale (None/Sm/Md/Lg → theme spacing tokens).
     /// Default Md.
     pub padding: CardPadding,
@@ -365,23 +159,6 @@ pub struct CardProps {
     /// for support/crisis/info panels that need to read as intent-colored.
     /// When `None` (the default), the variant keeps its surface look.
     pub tone: Option<ToneRef>,
-    /// Style override for the card surface (background, border, radius, shadow,
-    /// …), layered on top of the resolved variant/padding/tone style — the top
-    /// resolution layer, so any field set here wins. See [`crate::slot_override`].
-    ///
-    /// This is also how you clip contents to the rounded corners: by default a
-    /// card does NOT clip (content may extend past the radius — the friendlier
-    /// default for overhanging popovers/menus), so pass an override that sets
-    /// `overflow: Overflow::Hidden` for an edge-to-edge image or coloured header
-    /// that should follow the corner curve. It clips on every backend (the same
-    /// mechanism Modal uses for its rounded frame), and `Elevated` still casts
-    /// its drop shadow when clipped — the Apple backends synthesize a separate
-    /// shadow layer for that combination, since one CALayer can't both clip and
-    /// cast. That works for a card with an opaque surface, which every built-in
-    /// variant has; a *translucent* surface override plus `Overflow::Hidden`
-    /// still renders without a shadow on iOS/macOS.
-    #[prop(static)]
-    pub style: Option<Rc<StyleSheet>>,
     /// Card contents. Incoming fragments are flattened via
     /// `ChildList::append_to` before rendering inside the surface.
     pub children: Vec<Element>,
@@ -390,93 +167,77 @@ pub struct CardProps {
 impl Default for CardProps {
     fn default() -> Self {
         Self {
-            variant: variant::Regular.into(),
+            variant: Reactive::Static(CardVariant::default()),
             padding: Reactive::Static(CardPadding::default()),
             tone: Reactive::Static(None),
-            style: None,
             children: Vec::new(),
+            styles: Default::default(),
         }
     }
+}
+
+/// The intent tint over the variant's surface: the tone's Soft background,
+/// foreground and stroke. Token references, so it follows a theme swap.
+fn tint(tone: Option<ToneRef>) -> StyleRules {
+    let Some(tone) = tone else { return StyleRules::default() };
+    idea_theme::extensible::with_idea_theme(|theme| {
+        let border = tone.stroke_color(theme);
+        StyleRules {
+            background: Some(tone.soft_bg(theme)),
+            color: Some(tone.soft_fg(theme)),
+            border_top_color: Some(border.clone()),
+            border_right_color: Some(border.clone()),
+            border_bottom_color: Some(border.clone()),
+            border_left_color: Some(border),
+            ..Default::default()
+        }
+    })
 }
 
 /// Surface container that wraps its children in a themed, bordered,
 /// rounded panel. The `variant` picks the background/shadow treatment
 /// and `padding` the inner spacing.
+///
+/// The per-instance `styles.root` override is also how a card clips its
+/// contents to the rounded corners: by default it does NOT clip (content
+/// may extend past the radius — the friendlier default for overhanging
+/// popovers/menus), so pass `overflow: Overflow::Hidden` for an
+/// edge-to-edge image or coloured header that should follow the corner
+/// curve. It clips on every backend, and `Elevated` still casts its drop
+/// shadow when clipped — the Apple backends synthesize a separate shadow
+/// layer for that combination, since one CALayer can't both clip and
+/// cast. That works for an opaque surface, which every built-in variant
+/// has; a *translucent* surface plus `Overflow::Hidden` renders without a
+/// shadow on iOS/macOS.
 #[component(children)]
 pub fn Card(props: CardProps) -> Element {
-    // The style is REACTIVE when any style-driving prop is live; otherwise it's
-    // the build-time fast path (one `StyleSource::Static`, no flicker — see
-    // Button). The closure reads each prop's `.get()` INSIDE so the apply-style
-    // Effect subscribes to whichever are dynamic.
-    let style_is_reactive =
-        !props.variant.is_static() || !props.padding.is_static() || !props.tone.is_static();
-
-    let make_style = {
-        let variant = props.variant.clone();
-        let padding = props.padding.clone();
-        let tone = props.tone.clone();
-        let style_ovr = props.style.clone();
-        move || -> StyleApplication {
-            let variant_key = variant.get().key().to_string();
-            let padding_key = padding.get().as_variant_str().to_string();
-            let sheet = card_sheet();
-            #[cfg(debug_assertions)]
-            warn_unregistered_variant(&sheet, &variant_key);
-            let mut style = StyleApplication::new(sheet)
-                .with("variant", variant_key)
-                .with("padding", padding_key);
-
-            // Intent tint — overlays the variant's surface bg/border with the
-            // tone's Soft slots. Rides the INLINE layer, which resolves after
-            // the `variant` axis (see `build_card_sheet`) — and, unlike the
-            // old `with_computed` spelling, does not disqualify the card
-            // from preminting (a `--premint-only` app panicked on any toned
-            // Card). Tones are an OPEN set (author-extensible via the tone
-            // macro), so an enumerated axis can't carry them; the slot
-            // values are theme TOKENS, so the tint stays live across theme
-            // swaps on every backend.
-            if let Some(tone) = tone.get() {
-                let theme_rc = active_theme();
-                let theme_ref = theme_rc
-                    .downcast_ref::<IdeaThemeRef>()
-                    .expect("idea-ui: no IdeaTheme installed");
-                let bg = tone.soft_bg(theme_ref);
-                let border = tone.stroke_color(theme_ref);
-                let fg = tone.soft_fg(theme_ref);
-                style = style.with_inline(StyleRules {
-                    background: Some(bg),
-                    color: Some(fg),
-                    border_top_color: Some(border.clone()),
-                    border_right_color: Some(border.clone()),
-                    border_bottom_color: Some(border.clone()),
-                    border_left_color: Some(border),
-                    ..Default::default()
-                });
-            }
-
-            // Author surface override wins (top resolution layer). This is also
-            // where a caller opts into corner clipping — `overflow: hidden` in
-            // the override sheet clips children to the card's border radius.
-            apply_override(style, &style_ovr)
-        }
+    let style = CardStyles::root().set(props.variant.clone()).set(props.padding.clone());
+    // The intent tint resolves after the `variant` axis (whose arms set the
+    // surface background), so it rides the INLINE layer — and premints.
+    // Tones are an open set (app-registered), and the values are theme
+    // tokens, so the tint stays live across theme swaps on every backend.
+    let style = match props.tone.clone() {
+        Reactive::Static(None) => style,
+        Reactive::Static(t) => style.inline(tint(t)),
+        live => style.inline_with(move || tint(live.get())),
     };
+    let style = style.overridden(props.styles.root.as_ref());
 
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut children);
     }
-    if style_is_reactive {
-        ui! { view(style = make_style) { children } }
-    } else {
-        ui! { view(style = make_style()) { children } }
-    }
+    ui! { view(style = style) { children } }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::{classify, P, TStyle};
-    use idea_theme::extensible::{tone, Tone};
+    use idea_theme::active_theme;
+    use idea_theme::extensible::tone;
+    use runtime_core::{Overflow, StyleApplication, StyleSheet, Tokenized};
+    use std::rc::Rc;
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::resolve_style;
@@ -581,7 +342,7 @@ mod tests {
                 ..Default::default()
             }));
             let clipped = CardProps {
-                style: Some(clip),
+                styles: CardSlotStyles::default().root(clip),
                 ..Default::default()
             };
             assert_eq!(
@@ -611,7 +372,7 @@ mod tests {
                 ..Default::default()
             }));
             let props = CardProps {
-                style: Some(ovr),
+                styles: CardSlotStyles::default().root(ovr),
                 ..Default::default()
             };
             assert_eq!(
@@ -625,8 +386,12 @@ mod tests {
     });
     }
 
-    fn resolved(variant: VariantRef, style: Option<Rc<StyleSheet>>) -> StyleRules {
-        let props = CardProps { variant: Reactive::Static(variant), style, ..Default::default() };
+    fn resolved(variant: CardVariant, style: Option<Rc<StyleSheet>>) -> StyleRules {
+        let styles = match style {
+            Some(s) => CardSlotStyles::default().root(s),
+            None => CardSlotStyles::default(),
+        };
+        let props = CardProps { variant: Reactive::Static(variant), styles, ..Default::default() };
         resolve_style(&view_style(Card(props))).as_ref().clone()
     }
 
@@ -703,12 +468,8 @@ mod tests {
     fn every_builtin_variant_resolves_distinctly() {
         with_test_world(|| {
             theme();
-            let all: [VariantRef; 4] = [
-                variant::Regular.into(),
-                variant::Outline.into(),
-                variant::Flat.into(),
-                variant::Elevated.into(),
-            ];
+            let all: [CardVariant; 4] =
+                [CardVariant::Regular, CardVariant::Outline, CardVariant::Flat, CardVariant::Elevated];
             let keys: Vec<String> =
                 all.iter().map(|v| resolved(v.clone(), None).content_key()).collect();
             for i in 0..keys.len() {
@@ -719,73 +480,67 @@ mod tests {
         });
     }
 
-    /// A custom `regular` with a shadow, the way an app restyles one built-in.
-    struct LiftedRegular;
-    impl idea_theme::extensible::Variant for LiftedRegular {
-        fn key(&self) -> &'static str {
-            "regular"
-        }
-        fn render(&self, _ctx: &ResolutionCtx) -> StyleRules {
-            StyleRules {
-                shadow: Some(runtime_core::Shadow {
-                    x: 0.0,
-                    y: 2.0,
-                    blur: 8.0,
-                    color: runtime_core::Color("rgba(0,0,0,0.2)".into()).into(),
-                }),
-                ..Default::default()
-            }
+    fn reset_styles() {
+        runtime_core::component_styles::__reset::<CardStyles>();
+    }
+
+    fn lifted() -> StyleRules {
+        StyleRules {
+            shadow: Some(runtime_core::Shadow {
+                x: 0.0,
+                y: 2.0,
+                blur: 8.0,
+                color: runtime_core::Color("rgba(0,0,0,0.2)".into()).into(),
+            }),
+            ..Default::default()
         }
     }
 
-    fn all_tones() -> Vec<ToneRef> {
-        ToneRef::builtins().into_iter().map(|(_, t)| t).collect()
-    }
-
-    // An app that installed a sheet listing only the variants it changed lost
-    // every other built-in: a `Card(variant = Flat)` drew the base style (a
-    // transparent box with a 1px border) instead of Flat's `surface_alt` fill
-    // with no border, and nothing reported it.
+    /// Restyling one built-in variant changes that arm and nothing else: the
+    /// other variants keep theirs (an app that replaced the whole sheet to
+    /// change one variant used to lose every other built-in), and the
+    /// restyled arm keeps the properties the restyle leaves unset.
     #[test]
-    fn regression_partial_card_sheet_drops_builtin_variants() {
+    fn restyling_one_variant_keeps_the_others_and_merges() {
         with_test_world(|| {
+            reset_styles();
             theme();
-            install_card_sheet(build_card_sheet(
-                vec![VariantRef(Rc::new(LiftedRegular)), variant::Elevated.into()],
-                all_tones(),
-            ));
-            let flat = resolved(variant::Flat.into(), None);
+            CardStyles::restyle(|s| {
+                s.root().arm(CardVariant::Regular, |_| lifted());
+            });
+            let flat = resolved(CardVariant::Flat, None);
             assert_eq!(flat.background, Some(surface(|c| &c.surface_alt)));
             assert_eq!(widths(&flat), [Some(0.0); 4], "Flat keeps its borderless arm");
-
-            // The passed `regular` replaces the built-in arm by key.
-            let regular = resolved(variant::Regular.into(), None);
-            assert!(regular.shadow.is_some(), "the app's `regular` wins");
-            assert_eq!(regular.background, None, "the built-in `regular` arm is gone");
+            let regular = resolved(CardVariant::Regular, None);
+            assert!(regular.shadow.is_some(), "the app's shadow lands on `regular`");
+            assert_eq!(regular.background, Some(surface(|c| &c.surface)), "and the surface stays");
+            reset_styles();
         });
     }
 
+    /// An app-defined variant draws through its restyle arm; one nothing
+    /// styles warns once in debug builds instead of silently drawing the
+    /// base.
     #[test]
-    fn build_card_sheet_registers_each_key_once() {
-        let sheet = build_card_sheet(vec![VariantRef(Rc::new(LiftedRegular))], all_tones());
-        let mut keys: Vec<String> = sheet
-            .variant_keys()
-            .into_iter()
-            .filter(|(a, _)| a == "variant")
-            .map(|(_, v)| v.to_string())
-            .collect();
-        keys.sort();
-        assert_eq!(keys, ["elevated", "flat", "outline", "regular"]);
-    }
-
-    // The base-style fallback is silent at render time, so debug builds say
-    // so — once per key, not once per restyle.
-    #[cfg(debug_assertions)]
-    #[test]
-    fn unregistered_card_variant_warns_once_in_debug() {
-        let sheet = build_card_sheet(Vec::new(), all_tones());
-        assert!(!warn_unregistered_variant(&sheet, "flat"), "a registered key is quiet");
-        assert!(warn_unregistered_variant(&sheet, "frosted"), "an unknown key warns");
-        assert!(!warn_unregistered_variant(&sheet, "frosted"), "and only the first time");
+    fn a_custom_variant_draws_and_an_unstyled_one_warns() {
+        const GLASS: CardVariant = CardVariant::define("glass");
+        const FROSTED: CardVariant = CardVariant::define("frosted_unstyled");
+        with_test_world(|| {
+            reset_styles();
+            theme();
+            CardStyles::restyle(|s| {
+                s.root().arm(GLASS, |t| StyleRules { background: Some(t.color.surface_alt()), ..lifted() });
+            });
+            let glass = resolved(GLASS, None);
+            assert!(glass.shadow.is_some());
+            let before = runtime_core::component_styles::__warn_count();
+            let _ = resolved(FROSTED, None);
+            #[cfg(debug_assertions)]
+            assert_eq!(runtime_core::component_styles::__warn_count(), before + 1, "an unstyled key warns");
+            let _ = resolved(FROSTED, None);
+            #[cfg(debug_assertions)]
+            assert_eq!(runtime_core::component_styles::__warn_count(), before + 1, "once");
+            reset_styles();
+        });
     }
 }

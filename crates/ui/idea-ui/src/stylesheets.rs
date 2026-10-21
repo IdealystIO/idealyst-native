@@ -351,58 +351,6 @@ stylesheet! {
 }
 
 // =============================================================================
-// Card
-// =============================================================================
-
-stylesheet! {
-    pub Card<IdeaThemeRef> {
-        base(t) {
-            background: t.color.surface(),
-            padding: t.spacing.lg(),
-            border_radius: t.radius.lg(),
-            gap: t.spacing.sm(),
-            border_width: 1.0,
-            border_color: t.color.border(),
-        }
-        variant tone {
-            #[default]
-            surface(t) {
-                background: t.color.surface(),
-            }
-            elevated(t) {
-                background: t.color.surface(),
-                shadow: runtime_core::Shadow {
-                    x: 0.0,
-                    y: 4.0,
-                    blur: 16.0,
-                    color: t.effect.shadow(),
-                },
-            }
-            primary(t) {
-                background: t.intent.primary.solid_bg(),
-                color: t.intent.primary.solid_text(),
-                border_color: t.intent.primary.solid_bg(),
-            }
-            muted(t) {
-                background: t.color.surface_alt(),
-            }
-        }
-        variant padding {
-            none(_t) { padding: 0.0 }
-            sm(t)    { padding: t.spacing.sm() }
-            #[default]
-            md(t)    { padding: t.spacing.lg() }
-            lg(t)    { padding: t.spacing.xl() }
-        }
-        transitions {
-            background: 250ms EaseInOut,
-            border_color: 250ms EaseInOut,
-            color: 250ms EaseInOut,
-        }
-    }
-}
-
-// =============================================================================
 // Divider
 // =============================================================================
 
