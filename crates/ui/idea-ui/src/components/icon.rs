@@ -17,11 +17,23 @@
 //! inherits the ambient text color — matching the primitive's default.
 
 use runtime_core::{
-    component, icon, Color, Element, IconData, IdealystSchema, IntoElement, Reactive,
+    component, component_styles, icon, Color, Element, IconData, IdealystSchema, IntoElement, Length, Reactive,
+    StyleRules, Tokenized,
 };
 
 use idea_theme::extensible::ToneRef;
 use idea_theme::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`Icon`].
+    pub Icon<IdeaThemeRef> {
+        /// The glyph. Its square `size` rides the inline layer (a
+        /// continuous value); the tint is the primitive's own color.
+        slot root {
+            base(_t) { flex_shrink: 0.0 }
+        }
+    }
+}
 
 /// Default rendered size (square, in points) when `size` is left at its
 /// default. Matches the body text cap-height region so an inline icon
@@ -34,7 +46,7 @@ pub const ICON_DEFAULT_PX: f32 = 20.0;
 // `size` are snapshotted: the `icon` primitive has no reactive `data`/`size`
 // setter (`data` is fixed at construction, `.size(f32)` applies a static
 // sheet) — see the TODO in the body.
-#[runtime_core::props]
+#[runtime_core::props(styles = IconStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct IconProps {
@@ -60,6 +72,7 @@ impl Default for IconProps {
             size: Reactive::Static(ICON_DEFAULT_PX),
             tone: Reactive::Static(None),
             color: Reactive::Static(None),
+            styles: Default::default(),
         }
     }
 }
@@ -79,17 +92,24 @@ pub(crate) const EMPTY_ICON: IconData = IconData {
 /// the raw primitive.
 #[component]
 pub fn Icon(props: &IconProps) -> Element {
-    // `size` is a `.size()` sizing-sheet pin (a plain `f32`); a live `size`
-    // is snapshotted here. TODO(reactive-sweep): a reactive `.size()` setter
-    // on `Bound<IconHandle>` would route it (same shape as `.data()` below).
-    let size = props.size.get();
+    // The square rides the inline layer, so a live `size` resizes in place.
+    let square = |px: f32| StyleRules {
+        width: Some(Tokenized::Literal(Length::Px(px))),
+        height: Some(Tokenized::Literal(Length::Px(px))),
+        ..Default::default()
+    };
+    let style = match props.size.clone() {
+        Reactive::Static(px) => IconStyles::root().inline(square(px)),
+        live => IconStyles::root().inline_with(move || square(live.get())),
+    };
+    let style = style.overridden(props.styles.root.as_ref());
     let tone = props.tone.clone();
     let explicit = props.color.clone();
 
     // `data` is routed LIVE: a reactive source swaps the rendered glyph in
     // place via the primitive's reactive `.data()` setter (no node rebuild).
     // A `Static` data installs no effect (the create-time glyph).
-    let mut node = icon(props.data.get()).size(size);
+    let mut node = icon(props.data.get()).with_style(style);
     if !props.data.is_static() {
         let data = props.data.clone();
         node = node.data(move || data.get());
