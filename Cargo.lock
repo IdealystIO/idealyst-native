@@ -6421,6 +6421,7 @@ name = "idea-ui"
 version = "10.0.0"
 dependencies = [
  "backend-ssr",
+ "dnd",
  "host-mock",
  "idea-theme",
  "idea-ui-docs-derive",

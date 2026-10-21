@@ -1,16 +1,18 @@
 //! Data — Card, Table (body-only pages).
 
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
-use runtime_core::{rx, signal, ui, BorderStyle, Element, Signal, StyleRules, StyleSheet};
-use icons_lucide::{PENCIL, TRASH_2};
+use runtime_core::{current_breakpoint, rx, signal, ui, BorderStyle, Breakpoint, Element, Signal, StyleRules, StyleSheet};
+use icons_lucide::{ELLIPSIS_VERTICAL, PENCIL, TRASH_2};
 use idea_ui::{
     tone, typography_kind, variant, Button, Card, CardPadding, IconButton, Stack, StackAxis, StackGap, Tag,
     Typography,
 };
 use idea_ui::{
-    CellAlign, ColSpan, ColumnPin, RowTone, Table, TableCell, TableDensity, TableFooter, TableInset,
-    TableRow, TableVariant,
+    move_in_place, CardSlot, CellAlign, CellTone, ColSpan, ColumnId, ColumnPin, ColumnWidths,
+    RowId, RowTone, SortState, Table, TableCards, TableCell, TableColumn, TableDensity,
+    TableFooter, TableInset, TablePager, TableRow, TableVariant,
 };
 
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, P};
@@ -175,6 +177,103 @@ fn stat_card() -> Element {
 
 pub fn table() -> Element {
     crate::pages::body(vec![
+        ui! {
+            Section(title = "A page table: column model, resize, selection, sort, pager".to_string()) {
+                P(content = "Everything a data table needs, from Table, TableRow and TableCell alone. \
+                    `columns` puts each column's settings on the TABLE — width, floor, cap, fill, \
+                    resizable, frozen edge, alignment — so the cells carry none of it. Hover a \
+                    header and drag its trailing edge to resize the whole column live (double-click \
+                    the edge to reset); the widths live in a signal the screen owns, so a resized \
+                    column survives the table being rebuilt for the next page. `selection` adds the \
+                    tri-state checkbox column, the name column and the checkboxes freeze together, \
+                    the trailing `TableColumn::actions` column is frozen right, headers with `sort` \
+                    toggle the order, and the pager sits in the footer slot under the scrolling \
+                    rows. Resize the window: the edge inset steps with the breakpoint without the \
+                    table rebuilding — and below `sm` the same column specs lay the rows out as \
+                    cards.".to_string())
+                page_table()
+                CodePanel(src = r##"let widths = signal(saved_widths);            // the SCREEN owns these
+let selected = signal(BTreeSet::<RowId>::new());
+let columns = vec![
+    TableColumn::new("name").label("Project").width(220.0).min_width(120.0)
+        .resizable().pinned(ColumnPin::Left).card(CardSlot::Title),
+    TableColumn::new("client").label("Client").width(150.0).resizable(),
+    TableColumn::new("status").label("Status").card(CardSlot::Opposite),
+    TableColumn::new("due").label("Due"),
+    TableColumn::new("hours").label("Hours").width(90.0).align(CellAlign::Right),
+    TableColumn::new("notes").label("Notes").fill().min_width(160.0).truncate(),
+    TableColumn::actions("menu"),
+];
+ui! {
+    if current_breakpoint().get().is_at_least(Breakpoint::Sm) {
+        Table(
+            scroll_x = true, scroll_y = true, max_height = Some(360.0),
+            variant = TableVariant::Plain,
+            inset_x = TableInset::by_breakpoint(TableInset::Px(16.0), TableInset::Px(24.0), TableInset::Px(28.0)),
+            columns = columns.clone(),
+            column_widths = Some(widths),
+            on_column_resize = Some(save_width),
+            selection = Some(selected),
+            footer_slot = Some(ui! {
+                TablePager(offset = offset, page_size = size, total = total,
+                           noun = "projects".to_string(), on_offset = go,
+                           page_sizes = vec![10, 25, 50], on_page_size = Some(resize_page))
+            }),
+        ) {
+            TableRow {
+                TableCell(header = true, text = Some("Project".into()),
+                          sort = rx!(sort_of("name")), on_sort = Some(sort_by("name")))
+                // …one header cell per column, the menu column's empty…
+            }
+            for p in page {
+                TableRow(id = Some(p.id.into()), tone = landed(p.id), on_row_click = Some(open(p.id))) {
+                    TableCell(text = Some(p.name))
+                    // …
+                    TableCell(text = Some(p.due), tone = if p.overdue { CellTone::Danger } else { CellTone::None })
+                    TableCell { IconButton(icon = Some(ELLIPSIS_VERTICAL), …) }
+                }
+            }
+        }
+    } else {
+        TableCards(columns = columns.clone(), row_count = rx!(rows.get().len()),
+                   row_id = row_id, cell = cell, on_end_reached = Some(load_more))
+    }
+}"##.to_string())
+            }
+        },
+        ui! {
+            Section(title = "Drag to reorder".to_string()) {
+                P(content = "`on_reorder` adds a leading grip column. Grab a row by its grip and drag: \
+                    the row lifts above its neighbours while they slide aside to open the gap, and \
+                    dropping calls `on_reorder(from, to)` — ordinals over the draggable rows; \
+                    `move_in_place` is the matching list move. Rows only land within their \
+                    `reorder_group`, and a row with `draggable = false` (the group titles here) has \
+                    no grip. The lifted row keeps its frozen column frozen: scroll sideways mid-drag \
+                    and the name stays put.".to_string())
+                reorder_table()
+                CodePanel(src = r##"Table(scroll_x = true, on_reorder = Some(Rc::new(move |from, to| {
+    let mut v = items.get();
+    if move_in_place(&mut v, from, to) { items.set(v) }   // then persist
+}))) {
+    TableRow { TableCell(header = true, text = Some("Task".into()), pinned = Some(ColumnPin::Left)) … }
+    for task in tasks {
+        TableRow(id = Some(task.id.into()), reorder_group = Some(task.group.into())) { … }
+    }
+}"##.to_string())
+            }
+        },
+        ui! {
+            Section(title = "Empty state".to_string()) {
+                P(content = "`empty` keeps the header of a table with no rows and spans one row saying \
+                    why across every column — past the selection and grip columns, so the sentence \
+                    starts where the first column does. No column counting.".to_string())
+                empty_table()
+                CodePanel(src = r##"Table(selection = Some(selected), empty = Some("No one is signed in yet.".into())) {
+    TableRow { TableCell(header = true, text = Some("Name".into())) … }
+    for person in signed_in { TableRow(id = Some(person.id.into())) { … } }
+}"##.to_string())
+            }
+        },
         ui! {
             Section(title = "Clickable rows with buttons".to_string()) {
                 P(content = "Set `on_row_click` on a `TableRow` to make the whole row a tap \
@@ -409,41 +508,13 @@ TableFooter {
             }
         },
         ui! {
-            Section(title = "Row drag & drop — bring your own".to_string()) {
-                P(content = "idea-ui ships no drag-and-drop behavior; the `table` SDK exposes the \
-                    handles a custom implementation needs, and you own the interaction. Per row: \
-                    fan your drag recognizer across the cells with `visit_row_cells` + \
-                    `set_cell_touch` (row touch must live per-cell), bind drop-target geometry to \
-                    the row's proxy surface with `bind_row`, anchor animated drag offsets per cell \
-                    with `bind_cell`, and select the themed `dragging` / `drop_target` feedback \
-                    axes with `map_cell_style`, which composes them over whatever style a cell already \
-                    carries. The demo below wires the \
-                    `dnd` SDK through exactly those seams — long-press a row to pick it up.".to_string())
-                reorder_table()
-                CodePanel(src = r##"// Userland wiring — everything here is public `table` SDK + `dnd` SDK surface.
-let drag = Draggable::new(&ctx, move || i)
-    .activation(Activation::LongPress { threshold_ms: 250, slop_px: 8.0 });
-let handler = drag.handler();          // ONE recognizer per row, cloned per cell
-let (_, offset_y) = drag.offset();
-let dragging = drag.is_dragging();
-
-let drop = Droppable::new(&ctx)
-    .accepts(move |from: &usize| *from != i)
-    .on_drop(move |from| reorder(from, i));
-let over = drop.is_over();
-let row_ref: Ref<ViewHandle> = Ref::new();
-drop.bind(row_ref);
-table::bind_row(&row, move |h| row_ref.fill(h));   // row proxy = drop geometry
-
-table::visit_row_cells(&row, |cell| {
-    table::map_cell_style(cell, Rc::new(move |app| app
-        .with("dragging", if dragging.get() { "on" } else { "off" })
-        .with("drop_target", if over.get() { "on" } else { "off" })));
-    table::set_cell_touch(cell, handler.clone());
-    let cell_ref: Ref<ViewHandle> = Ref::new();
-    table::bind_cell(cell, move |h| cell_ref.fill(h));
-    offset_y.bind(cell_ref, AnimProp::TranslateY);  // row follows the finger
-});"##.to_string())
+            Section(title = "Building your own row interaction".to_string()) {
+                P(content = "For an interaction the table does not ship, the `table` SDK exposes the \
+                    handles its own are built from: `bind_row` for a row's proxy surface (drop \
+                    geometry, anchoring), `visit_row_cells` + `set_cell_touch` to fan a recognizer \
+                    across a row's cells, `bind_cell` for animated per-cell offsets, and \
+                    `map_cell_style` to select themed axes (the cell sheets ship `dragging` / \
+                    `drop_target` arms) over whatever a cell already carries.".to_string())
             }
         },
         ui! {
@@ -471,8 +542,8 @@ table::visit_row_cells(&row, |cell| {
                     },
                     Prop {
                         name: "inset_x",
-                        ty: "TableInset",
-                        desc: "Outer padding of each row's first and last cell (and the frame slots): None (default), Xs–Xxl spacing tokens, or Px(f32). Dividers keep running the full width while text aligns to the page margin.",
+                        ty: "Reactive<TableInset>",
+                        desc: "Outer padding of each row's first and last cell (and the frame slots): None (default), Xs–Xxl spacing tokens, or Px(f32). Dividers keep running the full width while text aligns to the page margin. Reactive — TableInset::by_breakpoint(base, md, lg) re-pads in place as the page margin steps, without rebuilding the table.",
                     },
                     Prop {
                         name: "variant",
@@ -492,7 +563,37 @@ table::visit_row_cells(&row, |cell| {
                     Prop {
                         name: "footer_slot",
                         ty: "Option<Element>",
-                        desc: "Content inside the frame below the rows, outside the scroller — a blank-state sentence, an Add action. Default None.",
+                        desc: "Content inside the frame below the rows, outside the scroller — a TablePager, an Add action. Pinned under a scroll_y table's rows. Default None.",
+                    },
+                    Prop {
+                        name: "columns",
+                        ty: "Vec<TableColumn>",
+                        desc: "The column model: column i describes the i-th column you wrote (the selection and grip columns are not counted). Each spec — width, min/max, fill, resizable, pinned, align, truncate, padding — applies to every cell of its column, header and body. Default empty (cells size their own columns).",
+                    },
+                    Prop {
+                        name: "column_widths",
+                        ty: "Option<Signal<ColumnWidths>>",
+                        desc: "Live column widths by id: a resize drag writes here, and an entry overrides the spec width. Create it in the screen and seed it with the saved layout so widths survive a rebuild. Default None (the table keeps its own).",
+                    },
+                    Prop {
+                        name: "on_column_resize",
+                        ty: "Option<Rc<dyn Fn(ColumnId, Option<f32>)>>",
+                        desc: "Called when a resize drag is released (Some(width)) or a column is reset by double-clicking its handle (None). Save the layout here.",
+                    },
+                    Prop {
+                        name: "selection",
+                        ty: "Option<Signal<BTreeSet<RowId>>>",
+                        desc: "Adds a leading checkbox column: a tri-state select-all over the visible selectable rows, and a box per row with an id. Frozen with a pinned first column. Default None.",
+                    },
+                    Prop {
+                        name: "on_reorder",
+                        ty: "Option<Rc<dyn Fn(usize, usize)>>",
+                        desc: "Adds a leading grip column and drag-to-reorder: (from, to) are ordinals over the draggable body rows; move_in_place applies them. Default None.",
+                    },
+                    Prop {
+                        name: "empty",
+                        ty: "Option<TableEmpty>",
+                        desc: "What a table with no body rows says: one row under the header spanning every column past the added ones. Some(\"…\".into()) or any element. Default None.",
                     },
                 ])
             }
@@ -519,6 +620,26 @@ table::visit_row_cells(&row, |cell| {
                         name: "bind_to",
                         ty: "Option<Ref<ViewHandle>>",
                         desc: "Filled with the row's handle on mount (the <tr> on web, a row-spanning backdrop on native) — anchor a hover card or read the row frame. Default None.",
+                    },
+                    Prop {
+                        name: "id",
+                        ty: "Option<RowId>",
+                        desc: "The row's identity — what Table(selection) holds. A row without one gets no checkbox. Default None.",
+                    },
+                    Prop {
+                        name: "selectable",
+                        ty: "bool",
+                        desc: "Whether the row takes part in the selection column. Default true.",
+                    },
+                    Prop {
+                        name: "draggable",
+                        ty: "bool",
+                        desc: "Whether the row can be dragged in a reorderable table (false for a group title). Default true.",
+                    },
+                    Prop {
+                        name: "reorder_group",
+                        ty: "Option<RowId>",
+                        desc: "A draggable row lands only among rows of the same group. Default None (one group).",
                     },
                 ])
             }
@@ -586,7 +707,54 @@ table::visit_row_cells(&row, |cell| {
                         ty: "ColSpan",
                         desc: "Columns covered: ColSpan::Columns(n), or ColSpan::Rest for every column to the end of the row. Default one column.",
                     },
+                    Prop {
+                        name: "padding",
+                        ty: "CellPadding",
+                        desc: "Standard (default) or Icon — the compact padding of a column of icons or icon buttons, such as a row menu.",
+                    },
+                    Prop {
+                        name: "tone",
+                        ty: "Reactive<CellTone>",
+                        desc: "One value's text colour — None (default), Muted, Success, Warning, Danger (an overdue date). A whole row takes TableRow(tone).",
+                    },
+                    Prop {
+                        name: "sort",
+                        ty: "Reactive<Option<SortState>>",
+                        desc: "Makes a header cell a sort control: Some(SortState::None) sortable, Some(Asc)/Some(Desc) sorted. Draws the direction; a press calls on_sort. Default None.",
+                    },
+                    Prop {
+                        name: "on_sort",
+                        ty: "Option<Rc<dyn Fn(SortState)>>",
+                        desc: "Called with the sort a press asks for (SortState::next of the current). The sorting is yours.",
+                    },
                 ])
+            }
+        },
+        ui! {
+            Section(title = "TableColumn".to_string()) {
+                P(content = "A column spec for `Table(columns = …)` and `TableCards(columns = …)`, built \
+                    with `TableColumn::new(id)` and chained setters. `TableColumn::actions(id)` is the \
+                    trailing row-menu column: fixed width, frozen right, compact, centred.".to_string())
+                PropsTable(rows = vec![
+                    Prop { name: "label", ty: "Option<String>", desc: "The column's name where the header row is not — card labels and the row detail sheet." },
+                    Prop { name: "width", ty: "Option<f32>", desc: "Exact width unless the width map has an entry. None sizes to content." },
+                    Prop { name: "min_width / max_width", ty: "Option<f32>", desc: "Floor and cap — also a resize drag's bounds. max_width lays the table out as grid columns." },
+                    Prop { name: "fill", ty: "bool", desc: "Take the width the other columns leave (a dragged width becomes its floor). Lays the table out as grid columns." },
+                    Prop { name: "resizable", ty: "bool", desc: "A header drag handle, revealed on hover; live resize of the whole column; double-click resets." },
+                    Prop { name: "pinned", ty: "Option<ColumnPin>", desc: "Freeze against an edge; later frozen columns inset by the widths before them." },
+                    Prop { name: "align / truncate / padding", ty: "CellAlign / bool / CellPadding", desc: "Applied to every cell of the column, header and body, and to the text inside." },
+                    Prop { name: "card", ty: "CardSlot", desc: "Where the column goes in TableCards: Title, Opposite, Actions, Field (default), Detail or Hidden." },
+                ])
+            }
+        },
+        ui! {
+            Section(title = "TablePager and TableCards".to_string()) {
+                P(content = "`TablePager(offset, page_size, total, noun, on_offset, page_sizes, on_page_size)` — \
+                    the paged table's footer: the range, a Rows picker and the page numbers. \
+                    `TableCards(columns, row_count, row_id, cell, max_cells, on_row_click, \
+                    on_end_reached, selection, empty)` — the narrow form: a virtualized list of \
+                    cards with measured heights, laid out from the same column specs, loading the \
+                    next page as the reader nears the end.".to_string())
             }
         },
     ])
@@ -798,91 +966,375 @@ fn slots_table() -> Element {
     }
 }
 
-/// Reorder demo — a USERLAND drag-and-drop implementation, wired
-/// entirely through public seams: the `table` SDK's row/cell handles
-/// plus the `dnd` SDK. idea-ui contributes only the inert themed
-/// feedback axes (`dragging` / `drop_target`) on its cell sheets.
-///
-/// Shape: the row order lives in a signal; each row gets a
-/// `Draggable<usize>` (long-press pickup — vertical drag IS the page's
-/// scroll direction, so the scroll-aware activation is wrong here)
-/// whose ONE recognizer fans out to the cells, a `Droppable` bound to
-/// the row's proxy surface, and the drag's vertical offset bound to
-/// every cell so the row follows the finger. Dropping reorders the
-/// signal and the keyed loop rebuilds.
-fn reorder_table() -> Element {
-    use dnd::{Activation, DragContext, Draggable, Droppable};
-    use runtime_core::animation::AnimProp;
-    use runtime_core::{memo, Ref, ViewHandle};
+/// One project row of the page-table demo.
+#[derive(Clone, PartialEq)]
+struct Project {
+    id: String,
+    name: String,
+    client: &'static str,
+    status: &'static str,
+    due: String,
+    overdue: bool,
+    hours: f32,
+    notes: &'static str,
+}
 
-    let items: Signal<Vec<&'static str>> =
-        signal(vec!["Ship hotfix", "Review PR #412", "Update changelog", "Cut release"]);
-    let ctx: DragContext<usize> = DragContext::new();
+/// Sixty generated projects — enough to page and to scroll.
+fn projects() -> Vec<Project> {
+    const NAMES: [&str; 12] = [
+        "North portal", "Decline extension", "Vent raise 3", "Crusher reline", "Shaft collar",
+        "Haul road", "Pump station", "Stope 14B", "Rehab drive", "Escapeway", "Magazine", "Workshop",
+    ];
+    const CLIENTS: [&str; 4] = ["Ridgeway Gold", "Kestrel Nickel", "Saltbush Coal", "Mount Iron"];
+    const STATUSES: [&str; 3] = ["Active", "On hold", "Closing"];
+    const NOTES: [&str; 3] = [
+        "Ground support review booked for the night shift",
+        "Awaiting the client's survey pickup before the next blast",
+        "",
+    ];
+    (0..60)
+        .map(|i| Project {
+            id: format!("p{i}"),
+            name: format!("{} {}", NAMES[i % NAMES.len()], i / NAMES.len() + 1),
+            client: CLIENTS[i % CLIENTS.len()],
+            status: STATUSES[i % STATUSES.len()],
+            due: format!("{:02} Nov", 1 + (i * 7) % 28),
+            overdue: i % 9 == 4,
+            hours: 40.0 + ((i * 37) % 160) as f32 / 2.0,
+            notes: NOTES[i % NOTES.len()],
+        })
+        .collect()
+}
 
-    let wire = move |ctx: &DragContext<usize>, i: usize, row: &Element| {
-        let drag = Draggable::new(ctx, move || i)
-            .activation(Activation::LongPress { threshold_ms: 250, slop_px: 8.0 });
-        let dragging = drag.is_dragging();
-        let (_, offset_y) = drag.offset();
-        // One recognizer per row, cloned per cell — `handler()` builds
-        // fresh recognizer state on every call.
-        let handler = drag.handler();
+/// The page-table demo's columns — one list for both forms.
+fn project_columns() -> Vec<TableColumn> {
+    vec![
+        TableColumn::new("name")
+            .label("Project")
+            .width(200.0)
+            .min_width(120.0)
+            .max_width(360.0)
+            .resizable()
+            .pinned(ColumnPin::Left)
+            .card(CardSlot::Title),
+        TableColumn::new("client").label("Client").width(150.0).resizable(),
+        TableColumn::new("status").label("Status").card(CardSlot::Opposite),
+        TableColumn::new("due").label("Due"),
+        TableColumn::new("hours").label("Hours").width(90.0).align(CellAlign::Right),
+        TableColumn::new("notes").label("Notes").fill().min_width(160.0).truncate(),
+        TableColumn::actions("menu"),
+    ]
+}
 
-        let drop = Droppable::new(ctx)
-            .accepts(move |from: &usize| *from != i)
-            .on_drop(move |from| {
-                let mut v = items.get();
-                if from < v.len() && i <= v.len() {
-                    let moved = v.remove(from);
-                    v.insert(i.min(v.len()), moved);
-                    items.set(v);
-                }
-            });
-        let over = drop.is_over();
-        let row_ref: Ref<ViewHandle> = Ref::new();
-        drop.bind(row_ref);
-        table::bind_row(row, move |h| row_ref.fill(h));
-
-        table::visit_row_cells(row, |cell| {
-            table::map_cell_style(
-                cell,
-                Rc::new(move |app: runtime_core::StyleApplication| {
-                    app.with("dragging", if dragging.get() { "on" } else { "off" })
-                        .with("drop_target", if over.get() { "on" } else { "off" })
-                }),
-            );
-            table::set_cell_touch(cell, handler.clone());
-            let cell_ref: Ref<ViewHandle> = Ref::new();
-            table::bind_cell(cell, move |h| cell_ref.fill(h));
-            offset_y.bind(cell_ref, AnimProp::TranslateY);
-        });
+/// One project cell, by column — the renderer both forms share.
+fn project_cell(p: &Project, col: &ColumnId) -> Element {
+    let status_tone = |s: &str| -> idea_ui::ToneRef {
+        match s {
+            "Active" => tone::Success.into(),
+            "On hold" => tone::Warning.into(),
+            _ => tone::Neutral.into(),
+        }
     };
+    match col.as_str() {
+        "name" => ui! { Typography(content = p.name.clone(), kind = typography_kind::Body) },
+        "client" => ui! { Typography(content = p.client.to_string(), kind = typography_kind::Body) },
+        "status" => ui! { Tag(label = p.status.to_string(), tone = status_tone(p.status), variant = variant::Soft) },
+        "due" => ui! { Typography(content = p.due.clone(), kind = typography_kind::Body, tone = p.overdue.then(|| tone::Danger.into())) },
+        "hours" => ui! { Typography(content = format!("{:.1}", p.hours), kind = typography_kind::Body) },
+        "notes" => ui! { Typography(content = p.notes.to_string(), kind = typography_kind::Body, muted = true) },
+        _ => {
+            let noop: Rc<dyn Fn()> = Rc::new(|| {});
+            ui! { IconButton(icon = Some(ELLIPSIS_VERTICAL), on_click = noop, tone = tone::Neutral, variant = variant::Ghost) }
+        }
+    }
+}
 
-    // Indexed view of the list so each row knows its ordinal.
-    let indexed = memo(move || {
-        items
-            .get()
-            .into_iter()
-            .enumerate()
-            .collect::<Vec<(usize, &'static str)>>()
-    });
+/// The page-table demo's state — owned above the table, so a page change,
+/// a sort or a breakpoint crossing rebuilds the table without losing the
+/// selection, the column widths or the landing.
+#[derive(Clone, Copy)]
+struct ProjectsPage {
+    all: Signal<Vec<Project>>,
+    widths: Signal<ColumnWidths>,
+    last_resize: Signal<String>,
+    selected: Signal<BTreeSet<RowId>>,
+    opened: Signal<Option<String>>,
+    sort: Signal<(&'static str, SortState)>,
+    offset: Signal<usize>,
+    page_size: Signal<usize>,
+    /// The card form pages by growing: twenty more each time the reader
+    /// nears the end.
+    shown: Signal<usize>,
+}
 
+impl ProjectsPage {
+    fn sorted(&self) -> Vec<Project> {
+        let mut v = self.all.get();
+        let (key, dir) = self.sort.get();
+        match (key, dir) {
+            (_, SortState::None) => {}
+            ("hours", _) => v.sort_by(|a, b| a.hours.total_cmp(&b.hours)),
+            _ => v.sort_by(|a, b| a.name.cmp(&b.name)),
+        }
+        if dir == SortState::Desc {
+            v.reverse();
+        }
+        v
+    }
+
+    fn sort_of(&self, key: &'static str) -> runtime_core::Reactive<Option<SortState>> {
+        let sort = self.sort;
+        runtime_core::Reactive::Dynamic(Rc::new(move || {
+            let (k, d) = sort.get();
+            Some(if k == key { d } else { SortState::None })
+        }))
+    }
+
+    fn sort_by(&self, key: &'static str) -> Option<Rc<dyn Fn(SortState)>> {
+        let (sort, offset) = (self.sort, self.offset);
+        Some(Rc::new(move |next| {
+            sort.set((key, next));
+            offset.set(0);
+        }))
+    }
+}
+
+/// The page-table demo: the wide form at `sm` and up, cards below.
+fn page_table() -> Element {
+    let page = ProjectsPage {
+        all: signal(projects()),
+        widths: signal(ColumnWidths::new()),
+        last_resize: signal("(drag a header edge)".to_string()),
+        selected: signal(BTreeSet::new()),
+        opened: signal(Some("p3".to_string())),
+        sort: signal(("name", SortState::None)),
+        offset: signal(0),
+        page_size: signal(10),
+        shown: signal(20),
+    };
+    let (selected, last_resize, opened) = (page.selected, page.last_resize, page.opened);
     ui! {
-        Table {
-            TableRow {
-                TableCell(header = true, text = Some("".to_string()))
-                TableCell(header = true, text = Some("Task (long-press to reorder)".to_string()))
+        Stack(axis = StackAxis::Column, gap = StackGap::Sm) {
+            Typography(
+                kind = typography_kind::Caption,
+                muted = true,
+                content = rx!(format!(
+                    "Selected: {} · last resize: {} · opened: {}",
+                    selected.get().len(),
+                    last_resize.get(),
+                    opened.get().unwrap_or_default(),
+                )),
+            )
+            // On a surface, as a plain table belongs: its frozen cells
+            // paint `color-surface`.
+            if current_breakpoint().get().is_at_least(Breakpoint::Sm) {
+                Card(padding = CardPadding::None) { wide_projects(page.clone()) }
+            } else {
+                narrow_projects(page.clone())
             }
-            for (i, name) in indexed, key = name {
-                {
-                    let row = ui! {
-                        TableRow {
-                            TableCell(text = Some("\u{283f}".to_string()))
-                            TableCell(text = Some(name.to_string()))
+        }
+    }
+}
+
+/// The wide form: one table per (sort, page) — the rows are rebuilt for
+/// each page, the widths and the selection are not.
+fn wide_projects(page: ProjectsPage) -> Element {
+    let p = page.clone();
+    ui! {
+        match (page.sorted(), page.offset.get(), page.page_size.get()) {
+            (rows, from, size) => {
+                projects_table(p.clone(), rows.iter().skip(*from).take(*size).cloned().collect())
+            }
+        }
+    }
+}
+
+/// One page of the wide form.
+fn projects_table(page: ProjectsPage, rows: Vec<Project>) -> Element {
+    let (offset, page_size, all, opened, last_resize) =
+        (page.offset, page.page_size, page.all, page.opened, page.last_resize);
+    let on_resize: Rc<dyn Fn(ColumnId, Option<f32>)> = Rc::new(move |id, w| {
+        last_resize.set(match w {
+            Some(w) => format!("{id} → {w}px"),
+            None => format!("{id} reset"),
+        })
+    });
+    let pager = ui! {
+        TablePager(
+            offset = offset,
+            page_size = page_size,
+            total = rx!(all.get().len()),
+            noun = "projects".to_string(),
+            on_offset = Rc::new(move |o| offset.set(o)) as Rc<dyn Fn(usize)>,
+            page_sizes = vec![10, 25, 50],
+            on_page_size = Some(Rc::new(move |n| { page_size.set(n); offset.set(0) }) as Rc<dyn Fn(usize)>),
+        )
+    };
+    ui! {
+        Table(
+            scroll_x = true,
+            scroll_y = true,
+            max_height = Some(360.0),
+            variant = TableVariant::Plain,
+            inset_x = TableInset::by_breakpoint(TableInset::Px(16.0), TableInset::Px(24.0), TableInset::Px(28.0)),
+            columns = project_columns(),
+            column_widths = Some(page.widths),
+            on_column_resize = Some(on_resize),
+            selection = Some(page.selected),
+            footer_slot = Some(pager),
+        ) {
+            TableRow {
+                TableCell(header = true, text = Some("Project".to_string()), sort = page.sort_of("name"), on_sort = page.sort_by("name"))
+                TableCell(header = true, text = Some("Client".to_string()))
+                TableCell(header = true, text = Some("Status".to_string()))
+                TableCell(header = true, text = Some("Due".to_string()))
+                TableCell(header = true, text = Some("Hours".to_string()), sort = page.sort_of("hours"), on_sort = page.sort_by("hours"))
+                TableCell(header = true, text = Some("Notes".to_string()))
+                TableCell(header = true)
+            }
+            for p in rows {
+                TableRow(
+                    id = Some(RowId::from(p.id.as_str())),
+                    tone = {
+                        let id = p.id.clone();
+                        rx!(if opened.get().as_deref() == Some(id.as_str()) { RowTone::Highlight } else { RowTone::None })
+                    },
+                    on_row_click = {
+                        let id = p.id.clone();
+                        Some(Rc::new(move || opened.set(Some(id.clone()))) as Rc<dyn Fn()>)
+                    },
+                ) {
+                    TableCell(text = Some(p.name.clone()))
+                    TableCell(text = Some(p.client.to_string()))
+                    TableCell { project_cell(&p, &ColumnId::from("status")) }
+                    TableCell(text = Some(p.due.clone()), tone = if p.overdue { CellTone::Danger } else { CellTone::None })
+                    TableCell(text = Some(format!("{:.1}", p.hours)))
+                    TableCell(text = Some(p.notes.to_string()), tone = CellTone::Muted)
+                    TableCell { project_cell(&p, &ColumnId::from("menu")) }
+                }
+            }
+        }
+    }
+}
+
+/// The narrow form: the same column specs and cell renderer, as cards.
+fn narrow_projects(page: ProjectsPage) -> Element {
+    let (all, shown, opened) = (page.all, page.shown, page.opened);
+    let rows = page.clone();
+    let cell: Rc<dyn Fn(usize, &ColumnId) -> Element> = Rc::new(move |i, col| {
+        match rows.sorted().get(i) {
+            Some(p) => project_cell(p, col),
+            None => ui! { view {} },
+        }
+    });
+    let ids = page.clone();
+    let row_id: Rc<dyn Fn(usize) -> RowId> = Rc::new(move |i| {
+        ids.sorted().get(i).map(|p| RowId::from(p.id.as_str())).unwrap_or_else(|| RowId::from(i))
+    });
+    let open = page.clone();
+    let on_open: Rc<dyn Fn(usize)> = Rc::new(move |i| opened.set(open.sorted().get(i).map(|p| p.id.clone())));
+    let more: Rc<dyn Fn()> = Rc::new(move || shown.set((shown.get() + 20).min(all.get().len())));
+    ui! {
+        view(style = phone_frame()) {
+            TableCards(
+                columns = project_columns(),
+                row_count = rx!(shown.get().min(all.get().len())),
+                row_id = row_id,
+                cell = cell,
+                selection = Some(page.selected),
+                on_row_click = Some(on_open),
+                on_end_reached = Some(more),
+            )
+        }
+    }
+}
+
+/// The card form's bounded box in the demo — the list virtualizes inside
+/// it, as it would inside a phone screen's body.
+fn phone_frame() -> Rc<StyleSheet> {
+    Rc::new(StyleSheet::new(|_| StyleRules {
+        height: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(520.0))),
+        ..Default::default()
+    }))
+}
+
+/// Built-in reorder demo: two groups of tasks in a scroll-x table with a
+/// frozen task column. Group titles do not drag; tasks land only within
+/// their own group.
+fn reorder_table() -> Element {
+    let tasks: Signal<Vec<(&'static str, &'static str, &'static str)>> = signal(vec![
+        ("t1", "Today", "Ship hotfix"),
+        ("t2", "Today", "Review PR #412"),
+        ("t3", "Today", "Update changelog"),
+        ("t4", "This week", "Cut release"),
+        ("t5", "This week", "Plan the retro"),
+        ("t6", "This week", "Rotate on-call"),
+    ]);
+    let reorder: Rc<dyn Fn(usize, usize)> = Rc::new(move |from, to| {
+        let mut v = tasks.get();
+        if move_in_place(&mut v, from, to) {
+            tasks.set(v);
+        }
+    });
+    ui! {
+        match tasks.get() {
+            list => {
+                Table(scroll_x = true, on_reorder = Some(reorder.clone())) {
+                    TableRow {
+                        TableCell(header = true, text = Some("Task".to_string()), width = Some(200.0), pinned = Some(ColumnPin::Left))
+                        TableCell(header = true, text = Some("Owner".to_string()))
+                        TableCell(header = true, text = Some("Estimate".to_string()))
+                        TableCell(header = true, text = Some("Board".to_string()))
+                        TableCell(header = true, text = Some("Notes".to_string()))
+                    }
+                    for group in ["Today", "This week"] {
+                        TableRow(draggable = false) {
+                            TableCell(span = ColSpan::Rest, text = Some(group.to_string()), tone = CellTone::Muted)
                         }
-                    };
-                    wire(&ctx, i, &row);
-                    row
+                        for (id, _, name) in list.iter().filter(|t| t.1 == group).cloned() {
+                            TableRow(id = Some(RowId::from(id)), reorder_group = Some(RowId::from(group))) {
+                                TableCell(text = Some(name.to_string()), width = Some(200.0), pinned = Some(ColumnPin::Left))
+                                TableCell(text = Some("Nicho".to_string()))
+                                TableCell(text = Some("2h".to_string()))
+                                TableCell(text = Some("Release train".to_string()))
+                                TableCell(text = Some("Drag the grip — the task column stays frozen while you scroll sideways".to_string()))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Empty-state demo: a selectable table whose rows a button clears.
+fn empty_table() -> Element {
+    let people = signal(vec!["Ana Ruiz", "Bo Chen"]);
+    let selected: Signal<BTreeSet<RowId>> = signal(BTreeSet::new());
+    let clear: Rc<dyn Fn()> = Rc::new(move || people.set(Vec::new()));
+    let refill: Rc<dyn Fn()> = Rc::new(move || people.set(vec!["Ana Ruiz", "Bo Chen"]));
+    ui! {
+        Stack(axis = StackAxis::Column, gap = StackGap::Sm) {
+            Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                Button(label = "Sign everyone out".to_string(), on_click = clear, tone = tone::Neutral, variant = variant::Soft)
+                Button(label = "Sign them back in".to_string(), on_click = refill, tone = tone::Neutral, variant = variant::Soft)
+            }
+            match people.get() {
+                list => {
+                    Table(selection = Some(selected), empty = Some("No one is signed in yet.".into())) {
+                        TableRow {
+                            TableCell(header = true, text = Some("Name".to_string()))
+                            TableCell(header = true, text = Some("Signed in".to_string()))
+                            TableCell(header = true, text = Some("Site".to_string()))
+                        }
+                        for name in list.iter().copied() {
+                            TableRow(id = Some(RowId::from(name))) {
+                                TableCell(text = Some(name.to_string()))
+                                TableCell(text = Some("06:12".to_string()))
+                                TableCell(text = Some("North portal".to_string()))
+                            }
+                        }
+                    }
                 }
             }
         }

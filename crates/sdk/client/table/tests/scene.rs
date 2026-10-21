@@ -1193,6 +1193,35 @@ fn map_cell_application_keeps_static_sheets_static() {
     }
 }
 
+/// CrewForge: `cell_application` returned `None` for a cell styled with
+/// a reactive sheet, so a table-level pass (idea-ui's head-row
+/// detection) could not see what the cell selected. It evaluates the
+/// closure once, untracked: reading it must not subscribe the caller.
+#[test]
+fn regression_cell_application_reads_a_dynamic_sheet_untracked() {
+    let world = World::new();
+    world.enter(|| {
+        let tone = glue::signal("warning");
+        let cell = table_cell(TableCellProps::default())
+            .with_style(StyleProp::SheetDynamic(Box::new(move || {
+                glue::StyleApplication::new(Rc::new(glue::StyleSheet::new(|_| glue::StyleRules::default())))
+                    .with("tone", tone.get())
+            })))
+            .into_element();
+        let runs = Rc::new(Cell::new(0));
+        let r = runs.clone();
+        let _watch = runtime_world::effect(move || {
+            r.set(r.get() + 1);
+            let app = table::cell_application(&cell).expect("a dynamic sheet has an application");
+            assert_eq!(app.variants.0.get("tone").map(String::as_str), Some("warning"));
+        });
+        assert_eq!(runs.get(), 1);
+        tone.set("danger");
+        world.flush();
+        assert_eq!(runs.get(), 1, "reading the cell's application must not subscribe the reader");
+    });
+}
+
 // ===========================================================================
 // Grid columns (`ColumnTrack`): flex / max_width switch the table to
 // explicit grid tracks on both lowerings.
@@ -1572,4 +1601,163 @@ fn scroll_y_web_border_model_and_scroller() {
     assert!(!html.contains("border-collapse:collapse"), "{html}");
     assert!(html.contains("width:100%"), "fill-and-wrap width kept: {html}");
     assert!(!html.contains("max-content"), "natural widths are scroll_x's: {html}");
+}
+
+// ===========================================================================
+// Table-level column model + the theme-layer hooks (row data, cell
+// insertion, cell content, hover-only reporters).
+// ===========================================================================
+
+/// A table-level spec (`TableProps::columns`) sizes its column whatever
+/// the cells say: column 0's cells declare nothing, column 1's cells
+/// declare a flex track that the table-level fixed width overrides. One
+/// spec drives the header and every body cell of the column.
+#[test]
+fn table_level_column_spec_overrides_the_cells() {
+    let rows = vec![
+        row_of(vec![text_cell("Name"), sized_cell(true, "Notes", FLEX)]),
+        row_of(vec![text_cell("Ana"), sized_cell(false, "…", FLEX)]),
+    ];
+    let t = table(TableProps {
+        children: rows,
+        columns: vec![
+            Some(ColumnSpec::new(ColumnTrack { flex: Some(1.0), ..Default::default() })),
+            Some(ColumnSpec::new(ColumnTrack { width: Some(90.0), ..Default::default() })),
+        ],
+        ..Default::default()
+    })
+    .into_element();
+    let inner = item_children(t).pop().expect("outer wraps the grid");
+    let rules = grid_rules(take_view_prim(&inner).style);
+    assert_eq!(
+        rules.grid_template_columns,
+        Some(vec![
+            TrackSize::Minmax(Box::new(TrackSize::Px(0.0)), Box::new(TrackSize::Fr(1.0))),
+            TrackSize::Px(90.0),
+        ]),
+        "the table's spec wins over the cells' flex"
+    );
+}
+
+/// A `None` entry — and every column past the list — keeps reading its
+/// cells, so a table may size only some columns at the table level.
+#[test]
+fn table_level_column_gaps_fall_back_to_the_cells() {
+    let rows = vec![row_of(vec![
+        sized_cell(true, "Name", FLEX),
+        sized_cell(true, "Hours", ColumnTrack { max_width: Some(80.0), ..Default::default() }),
+    ])];
+    let t = table(TableProps { children: rows, columns: vec![None], ..Default::default() })
+        .into_element();
+    let inner = item_children(t).pop().expect("outer wraps the grid");
+    let rules = grid_rules(take_view_prim(&inner).style);
+    assert_eq!(
+        rules.grid_template_columns,
+        Some(vec![
+            TrackSize::Minmax(Box::new(TrackSize::Px(0.0)), Box::new(TrackSize::Fr(1.0))),
+            TrackSize::FitContent(80.0),
+        ])
+    );
+}
+
+/// Row data rides the row payload through a component's `Owned` scope
+/// wrapper, on the native marker and the web `<tr>` item alike.
+#[test]
+fn row_data_round_trips_on_both_lowerings() {
+    let world = World::new();
+    world.enter(|| {
+        let wrapped = component_scope(|| {
+            let _state = glue::signal(false);
+            row(2)
+        });
+        assert!(matches!(wrapped, Element::Owned { .. }), "precondition: Owned-wrapped");
+        table::set_row_data(&wrapped, Rc::new(7usize));
+        let got = table::row_data(&wrapped).expect("data attached");
+        assert_eq!(got.downcast_ref::<usize>(), Some(&7));
+    });
+
+    let web = item_lowering::row_item(Vec::new(), None);
+    assert!(table::row_data(&web).is_none(), "no data until attached");
+    table::set_row_data(&web, Rc::new("tag"));
+    assert_eq!(table::row_data(&web).unwrap().downcast_ref::<&str>(), Some(&"tag"));
+    assert!(table::row_data(&cell()).is_none(), "a cell is not a row");
+}
+
+/// A leading cell inserted into a built row becomes column 0 of the
+/// native grid — the row's cells shift right, and the column count
+/// grows with it.
+#[test]
+fn a_cell_inserted_into_a_built_row_takes_its_column() {
+    let mut rows = vec![row(2), row(2)];
+    for r in rows.iter_mut() {
+        table::visit_rows_mut(r, |row| {
+            table::row_cells_mut(row).expect("a row").insert(0, text_cell("lead"));
+        });
+    }
+    let t = table(TableProps { children: rows, ..Default::default() }).into_element();
+    let inner = item_children(t).pop().expect("outer wraps the grid");
+    let rules = grid_rules(take_view_prim(&inner).style);
+    assert_eq!(rules.grid_template_columns.map(|t| t.len()), Some(3));
+    assert_eq!(item_children(inner).len(), 6);
+}
+
+/// `visit_rows_mut` reaches a footer section's rows, and `is_footer`
+/// tells the section apart from a row.
+#[test]
+fn visit_rows_mut_reaches_footer_rows() {
+    let mut foot = table::table_foot(table::TableFootProps { children: vec![row(1), row(1)] });
+    assert!(table::is_footer(&foot));
+    assert!(!table::is_footer(&row(1)));
+    let mut n = 0;
+    table::visit_rows_mut(&mut foot, |r| {
+        n += 1;
+        assert!(table::row_cells_mut(r).is_some());
+    });
+    assert_eq!(n, 2);
+}
+
+/// Content can be appended to a built cell — through the `CellMarker` a
+/// spanning native cell rides in, and on the web `<td>` item — and
+/// `visit_cell_content` sees it.
+#[test]
+fn push_cell_content_reaches_through_the_marker() {
+    let mut spanning = span_cell(ColSpan::Columns(2));
+    assert!(table::push_cell_content(&mut spanning, text_cell("extra")));
+    let mut seen = 0;
+    table::visit_cell_content(&spanning, |_| seen += 1);
+    assert_eq!(seen, 1, "the pushed child is the cell's only content");
+
+    let mut web = item_lowering::cell_item(false, ColSpan::default(), Vec::new(), None);
+    assert!(table::push_cell_content(&mut web, text_cell("x")));
+    let mut seen = 0;
+    table::visit_cell_content(&web, |_| seen += 1);
+    assert_eq!(seen, 1);
+    let mut not_a_cell = row(1);
+    assert!(!table::push_cell_content(&mut not_a_cell, text_cell("x")));
+}
+
+/// A hover-only reporter leaves the touch handler alone and COMPOSES with
+/// a hover reporter the cell already carries — a clickable row's shared
+/// hover keeps working under a header cell's reveal.
+#[test]
+fn set_cell_hover_composes_and_leaves_touch_alone() {
+    let c = cell();
+    let first = Rc::new(Cell::new(0));
+    let second = Rc::new(Cell::new(0));
+    let (f, s) = (first.clone(), second.clone());
+    set_cell_interaction(
+        &c,
+        Rc::new(|_ev| runtime_shared::TouchResponse::default()),
+        Rc::new(move |_| f.set(f.get() + 1)),
+    );
+    table::set_cell_hover(&c, Rc::new(move |_| s.set(s.get() + 1)));
+    let prim = take_view_prim(&c);
+    assert!(prim.on_touch.is_some(), "the tap handler survives");
+    (prim.on_hover.expect("hover installed"))(true);
+    assert_eq!((first.get(), second.get()), (1, 1), "both reporters hear it");
+
+    let bare = cell();
+    table::set_cell_hover(&bare, Rc::new(|_| {}));
+    let prim = take_view_prim(&bare);
+    assert!(prim.on_hover.is_some() && prim.on_touch.is_none());
 }

@@ -1451,6 +1451,16 @@ stylesheet! {
             standard(t) { padding_vertical: t.spacing.md() }
             comfortable(t) { padding_vertical: t.spacing.lg() }
         }
+        // Horizontal padding (`TableCell(padding = …)` /
+        // `TableColumn::padding`): `icon` is the compact padding a column
+        // of icons or icon buttons takes — a row menu, a checkbox, a drag
+        // grip. Named to sort BEFORE `inset_left` / `inset_right`, so a
+        // table's edge inset still wins on the row's first and last cell.
+        variant cell_padding {
+            #[default]
+            standard(_t) {}
+            icon(t) { padding_horizontal: t.spacing.sm() }
+        }
         // Column alignment (`TableCell(align = …)`). On the CELL as well
         // as on the inner text/content: the cell's `text-align` is what
         // positions inline content on web (and overrides the UA `th {
@@ -1524,24 +1534,38 @@ stylesheet! {
         // cell from a body cell — and `Table` selects `on` for the leading
         // head rows. Stacking among the cells (all siblings of one grid on
         // native, one table on web): a body cell pinned to a side paints at
-        // the sticky default (`STICKY_Z`, 1), the header row above it (2) so
-        // rows slide UNDER the header, and a corner cell — pinned to the
-        // top AND a side — above both (3), so columns slide under it
-        // sideways and rows slide under it vertically.
+        // the sticky default (`STICKY_Z`, 1); a row lifted by a reorder drag
+        // above that (2, its frozen cells 3 — see `TableBodyCell`'s `drag`);
+        // the header row above every body row (4) so rows, lifted ones
+        // included, slide UNDER the header; and a corner cell — pinned to
+        // the top AND a side — above all of them (5), so columns slide under
+        // it sideways and rows slide under it vertically.
         variant sticky_header {
             #[default]
             off(_t) {}
             on(_t) {
                 position: Position::Sticky,
                 top: 0,
-                z_index: 2,
+                z_index: 4,
             }
         }
         compound (sticky_header: on, pinned: left)(_t) {
-            z_index: 3,
+            z_index: 5,
         }
         compound (sticky_header: on, pinned: right)(_t) {
-            z_index: 3,
+            z_index: 5,
+        }
+        // A resizable column's header cell (`TableColumn::resizable`) holds
+        // its drag handle absolutely positioned on its trailing edge, so
+        // the cell must be the handle's containing block: a `<th>` that is
+        // not positioned is not one, and the handle would pin to the table
+        // instead. `relative` — and the axis sorts BEFORE `pinned` and
+        // `sticky_header`, so a frozen or pinned-header cell keeps its
+        // `Sticky` (itself a containing block) rather than unfreezing.
+        variant anchor {
+            #[default]
+            off(_t) {}
+            on(_t) { position: Position::Relative }
         }
         // Table edge inset (`Table(inset_x = …)`): the outer padding of
         // a row's FIRST cell (`inset_left`) and LAST cell (`inset_right`),
@@ -1568,12 +1592,11 @@ stylesheet! {
             xl(t) { padding_right: t.spacing.xl() }
             xxl(t) { padding_right: t.spacing.xxl() }
         }
-        // Drag-and-drop feedback VOCABULARY for author-wired row drag
-        // (idea-ui ships no dnd behavior — see the Table component
-        // docs): `dragging` dims an in-flight row, `drop_target`
-        // highlights the slot under it. Inert until a custom
-        // implementation selects them via `table::set_cell_style` on
-        // the base application. Shared-signal axes like `row_hovered`.
+        // Drag-and-drop feedback for a CUSTOM row interaction (the
+        // built-in reorder uses `TableBodyCell`'s `drag` axis instead):
+        // `dragging` dims an in-flight row, `drop_target` highlights the
+        // slot under it. Inert until an implementation selects them via
+        // `table::map_cell_style`. Shared-signal axes like `row_hovered`.
         // Row divider (the cell's bottom border). `Table` selects `off`
         // on the row it renders LAST when nothing sits below the rows:
         // there the frame's own bottom border is the edge, and the
@@ -1622,11 +1645,22 @@ stylesheet! {
             #[default]
             shown(_t) {}
             hidden(_t) {}
+            // A frozen column with another frozen column between it and
+            // the scrolling ones (a selection column beside a frozen name
+            // column): its inner edge is inside the frozen block, so it
+            // never draws.
+            interior(_t) {}
         }
         compound (pinned: left, pin_edge: hidden)(_t) {
             border_right_color: Color("transparent".into()),
         }
         compound (pinned: right, pin_edge: hidden)(_t) {
+            border_left_color: Color("transparent".into()),
+        }
+        compound (pinned: left, pin_edge: interior)(_t) {
+            border_right_color: Color("transparent".into()),
+        }
+        compound (pinned: right, pin_edge: interior)(_t) {
             border_left_color: Color("transparent".into()),
         }
         transitions {
@@ -1660,6 +1694,16 @@ stylesheet! {
             #[default]
             standard(t) { padding_vertical: t.spacing.md() }
             comfortable(t) { padding_vertical: t.spacing.lg() }
+        }
+        // Horizontal padding (`TableCell(padding = …)` /
+        // `TableColumn::padding`): `icon` is the compact padding a column
+        // of icons or icon buttons takes — a row menu, a checkbox, a drag
+        // grip. Named to sort BEFORE `inset_left` / `inset_right`, so a
+        // table's edge inset still wins on the row's first and last cell.
+        variant cell_padding {
+            #[default]
+            standard(_t) {}
+            icon(t) { padding_horizontal: t.spacing.sm() }
         }
         // Column alignment (`TableCell(align = …)`). On the CELL as well
         // as on the inner text/content: the cell's `text-align` is what
@@ -1780,6 +1824,41 @@ stylesheet! {
         compound (pinned: right, row_hovered: on)(t) {
             background: t.color.surface_alt(),
         }
+        // Row reorder (`Table(on_reorder = …)`). While a row is dragged,
+        // every body row is `behind` or `lifted`:
+        //
+        // - `behind` paints the plain surface: body cells have no fill of
+        //   their own, and the rows sliding aside to open the landing gap
+        //   cross each other — transparent cells would show one row's text
+        //   through another's. A compound, because `row_hovered`'s resting
+        //   `transparent` sorts after `drag`.
+        // - `lifted` is the held row. `relative` + a z-index raise it above
+        //   the rows it crosses (cells paint in document order, so a row
+        //   dragged down would slide UNDER the rows below it), and it rides
+        //   above other rows' frozen cells (sticky, 1) but under the
+        //   pinned header row (4). The axis sorts BEFORE `pinned`, so a
+        //   lifted frozen cell keeps `Sticky` — it stays frozen during the
+        //   drag — and the compounds give it 3, above its own row's
+        //   scrolling cells. The table selects `row_hovered: on` with it,
+        //   which is the lifted row's opaque tint.
+        variant drag {
+            #[default]
+            idle(_t) {}
+            behind(_t) {}
+            lifted(_t) {
+                position: Position::Relative,
+                z_index: 2,
+            }
+        }
+        compound (drag: behind, row_hovered: off)(t) {
+            background: t.color.surface(),
+        }
+        compound (drag: lifted, pinned: left)(_t) {
+            z_index: 3,
+        }
+        compound (drag: lifted, pinned: right)(_t) {
+            z_index: 3,
+        }
         // Footer section (`TableFooter`): the header band's tint, so a
         // totals row reads as the table's footer rather than as data.
         // The axis sorts after `row_hovered`, so it already beats the
@@ -1836,8 +1915,8 @@ stylesheet! {
         compound (tone: danger, row_hovered: on)(t) {
             background: t.color.table_row_danger_hover(),
         }
-        // Author-wired drag-and-drop feedback vocabulary — see
-        // `TableHeadCell`.
+        // Custom drag-and-drop feedback (`dragging`, `drop_target`) —
+        // see `TableHeadCell`.
         // Row divider (the cell's bottom border). `Table` selects `off`
         // on the row it renders LAST when nothing sits below the rows:
         // there the frame's own bottom border is the edge, and the
@@ -1868,11 +1947,22 @@ stylesheet! {
             #[default]
             shown(_t) {}
             hidden(_t) {}
+            // A frozen column with another frozen column between it and
+            // the scrolling ones (a selection column beside a frozen name
+            // column): its inner edge is inside the frozen block, so it
+            // never draws.
+            interior(_t) {}
         }
         compound (pinned: left, pin_edge: hidden)(_t) {
             border_right_color: Color("transparent".into()),
         }
         compound (pinned: right, pin_edge: hidden)(_t) {
+            border_left_color: Color("transparent".into()),
+        }
+        compound (pinned: left, pin_edge: interior)(_t) {
+            border_right_color: Color("transparent".into()),
+        }
+        compound (pinned: right, pin_edge: interior)(_t) {
             border_left_color: Color("transparent".into()),
         }
         // `Table(variant = …)` — inert here: a body cell has no band to
@@ -1883,6 +1973,19 @@ stylesheet! {
             #[default]
             framed(_t) {}
             plain(_t) {}
+        }
+        // Cell text tone (`TableCell(tone = …)`): one value's colour — an
+        // overdue date, a failed check. On the CELL so rich children that
+        // inherit text colour (web) take it; `TableBodyText` carries the
+        // same axis for the text node itself (native text does not
+        // inherit).
+        variant text_tone {
+            #[default]
+            none(_t) {}
+            muted(t) { color: t.color.text_muted() }
+            success(t) { color: t.intent.success.fg() }
+            warning(t) { color: t.intent.warning.fg() }
+            danger(t) { color: t.intent.danger.fg() }
         }
         transitions {
             border_bottom_color: 250ms EaseInOut,
@@ -1936,6 +2039,15 @@ stylesheet! {
             font_size: 14.0,
             color: t.color.text(),
             text_align: TextAlign::Left,
+        }
+        // Cell text tone — see `TableBodyCell`'s `text_tone`.
+        variant text_tone {
+            #[default]
+            none(_t) {}
+            muted(t) { color: t.color.text_muted() }
+            success(t) { color: t.intent.success.fg() }
+            warning(t) { color: t.intent.warning.fg() }
+            danger(t) { color: t.intent.danger.fg() }
         }
         // Mirrors the cell's `align` axis — see `TableHeadCell`.
         variant align {
@@ -2030,6 +2142,239 @@ stylesheet! {
         }
         transitions {
             border_bottom_color: 250ms EaseInOut,
+        }
+    }
+}
+
+// The drag strip on a resizable column's header cell
+// (`TableColumn::resizable`): absolutely positioned on the cell's trailing
+// edge, the full height of the cell, with the column-resize cursor.
+//
+// REVEALED, not drawn at rest: a hairline on every heading turns a plain
+// table back into a grid, so the divider shows only while the heading is
+// hovered or a drag is in flight (`revealed`) — where the person looking
+// for it already is. At rest the border is transparent rather than absent,
+// so revealing it moves nothing, and the strip stays grabbable. Hovering
+// the strip itself steps up to the strong border.
+stylesheet! {
+    pub TableResizeHandle<IdeaThemeRef> {
+        base(_t) {
+            position: Position::Absolute,
+            top: 0.0,
+            bottom: 0.0,
+            right: 0.0,
+            width: 8.0,
+            cursor: Cursor::ColResize,
+            border_right_width: 1.0,
+            border_right_color: Color("transparent".into()),
+        }
+        variant revealed {
+            #[default]
+            off(_t) {}
+            on(t) { border_right_color: t.color.border() }
+        }
+        state hovered(t) {
+            border_right_width: 2.0,
+            border_right_color: t.color.border_strong(),
+        }
+        transitions {
+            border_right_color: 120ms EaseInOut,
+        }
+    }
+}
+
+// A sortable header's idle direction glyph (`TableCell(sort =
+// Some(SortState::None))`): the up-down pair, faint, so the column reads
+// as sortable without competing with the one that is sorted.
+stylesheet! {
+    pub TableSortIdle<IdeaThemeRef> {
+        base(_t) {
+            opacity: 0.45,
+        }
+    }
+}
+
+// `TablePager`: the range text at the leading end, the "Rows" picker and
+// page numbers at the trailing end, wrapping to two lines on a narrow
+// table. Sits in the table's footer slot, which supplies the padding and
+// the edge inset.
+stylesheet! {
+    pub TablePagerBar<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            flex_wrap: runtime_core::FlexWrap::Wrap,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            gap: t.spacing.md(),
+        }
+    }
+}
+
+stylesheet! {
+    pub TablePagerGroup<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: t.spacing.sm(),
+        }
+    }
+}
+
+// The "Rows" picker: wide enough for a three-digit page size and its
+// chevron, and no wider.
+stylesheet! {
+    pub TablePagerSize<IdeaThemeRef> {
+        base(_t) {
+            width: 84.0,
+        }
+    }
+}
+
+// `TableCards` — a table's narrow form. A card per row: surface, hairline
+// border, radius, and a gap between cards (the list's `gap`). A reflowed
+// row is two-dimensional — a title line over a grid of labelled cells — so
+// the card boundary is what says where one record ends; a shared hairline
+// between rows would compete with the rule above the cells.
+stylesheet! {
+    pub TableCardsList<IdeaThemeRef> {
+        base(_t) {
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            min_height: 0.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub TableCard<IdeaThemeRef> {
+        base(t) {
+            background: t.color.surface(),
+            border_top_width: 1.0,
+            border_right_width: 1.0,
+            border_bottom_width: 1.0,
+            border_left_width: 1.0,
+            border_top_color: t.color.border(),
+            border_right_color: t.color.border(),
+            border_bottom_color: t.color.border(),
+            border_left_color: t.color.border(),
+            border_top_left_radius: t.radius.lg(),
+            border_top_right_radius: t.radius.lg(),
+            border_bottom_left_radius: t.radius.lg(),
+            border_bottom_right_radius: t.radius.lg(),
+            padding_vertical: t.spacing.md(),
+            padding_horizontal: t.spacing.lg(),
+            gap: t.spacing.sm(),
+        }
+        // A card whose row has `on_row_click`.
+        variant interactive {
+            #[default]
+            off(_t) {}
+            on(_t) { cursor: Cursor::Pointer }
+        }
+    }
+}
+
+// The title line: [selection box] title … opposite [row menu].
+stylesheet! {
+    pub TableCardTitleLine<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: t.spacing.sm(),
+        }
+    }
+}
+
+stylesheet! {
+    pub TableCardTitle<IdeaThemeRef> {
+        base(t) {
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            min_width: 0.0,
+            font_size: 15.0,
+            font_weight: FontWeight::SemiBold,
+            color: t.color.text(),
+        }
+    }
+}
+
+stylesheet! {
+    pub TableCardOpposite<IdeaThemeRef> {
+        base(_t) {
+            flex_shrink: 0.0,
+            align_items: AlignItems::FlexEnd,
+        }
+    }
+}
+
+// The labelled cells: two to a line under a hairline, label over value.
+stylesheet! {
+    pub TableCardFields<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            flex_wrap: runtime_core::FlexWrap::Wrap,
+            row_gap: t.spacing.md(),
+            padding_top: t.spacing.md(),
+            margin_top: t.spacing.xs(),
+            border_top_width: 1.0,
+            border_top_color: t.color.border(),
+        }
+    }
+}
+
+stylesheet! {
+    pub TableCardField<IdeaThemeRef> {
+        base(t) {
+            width: Length::Percent(50.0),
+            padding_right: t.spacing.sm(),
+            gap: t.spacing.xs(),
+            min_width: 0.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub TableCardLabel<IdeaThemeRef> {
+        base(t) {
+            font_size: 11.0,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: 0.6,
+            text_transform: TextTransform::Uppercase,
+            color: t.color.text_muted(),
+        }
+    }
+}
+
+// The "+N more" control under the cells — opens the row's detail sheet.
+// A row, so the hugging button sits at the card's leading edge (a
+// non-block button centres itself on a column's cross axis).
+stylesheet! {
+    pub TableCardMore<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            justify_content: JustifyContent::FlexStart,
+        }
+    }
+}
+
+stylesheet! {
+    pub TableCardsEmpty<IdeaThemeRef> {
+        base(t) {
+            padding_vertical: t.spacing.xl(),
+            padding_horizontal: t.spacing.lg(),
+            align_items: AlignItems::Center,
+        }
+    }
+}
+
+// One labelled cell in a card's detail sheet.
+stylesheet! {
+    pub TableDetailRow<IdeaThemeRef> {
+        base(t) {
+            gap: t.spacing.xs(),
+            padding_vertical: t.spacing.sm(),
+            border_bottom_width: 1.0,
+            border_bottom_color: t.color.border(),
         }
     }
 }
