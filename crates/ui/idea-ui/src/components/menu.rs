@@ -99,8 +99,11 @@ use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
     after_ms, component, signal, ui, ChildList, IdealystSchema, IntoElement, Element, Reactive,
-    Ref, ScheduledTask, Signal, StyleApplication, ViewHandle,
+    Ref, ScheduledTask, Signal, ViewHandle, component_styles, AlignItems, Color, Cursor, FlexDirection,
+    FontWeight, JustifyContent, Length, TextAlign, TextTransform,
 };
+
+use crate::theme::IdeaThemeRef;
 
 /// Grace period before a hovered-out submenu collapses. Bridges the small gap
 /// between a SubMenu's trigger row and its flyout panel so moving the pointer
@@ -108,7 +111,147 @@ use runtime_core::{
 /// intent" delay.
 const SUBMENU_HOVER_GRACE_MS: i32 = 120;
 
-use crate::stylesheets::{MenuItemLabel, MenuCheckMark, MenuCheckbox, MenuChevron, MenuItemRow, MenuLabel as MenuLabelStyle, MenuSeparator as MenuSeparatorStyle};
+
+component_styles! {
+    /// The styled sections of [`Menu`]'s contents — rows ([`MenuItem`],
+    /// [`SubMenu`] triggers and flyout rows), section labels, separators and
+    /// the checkable rows' box. The panel surface itself is `SelectStyles`'
+    /// `menu` slot, shared with every dropdown.
+    pub Menu<IdeaThemeRef> {
+        slot item {
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: t.spacing.sm(),
+                background: Color("transparent".into()),
+                color: t.color.text(),
+                // Desktop-menu proportions: ~36px rows with a real inline
+                // inset, and a floor so a short-labeled menu still reads as
+                // a panel rather than a tag. `xs`/`sm` here made every menu
+                // read compressed.
+                padding_vertical: t.spacing.sm(),
+                padding_horizontal: t.spacing.md(),
+                min_width: 160.0,
+                border_radius: t.radius.sm(),
+                font_size: t.typography.body_size(),
+                text_align: TextAlign::Left,
+                cursor: Cursor::Pointer,
+            }
+            variant active {
+                #[default]
+                off(_t) {}
+                on(t) { background: t.color.surface_alt() }
+            }
+            state hovered(t) {
+                background: t.color.surface_alt(),
+            }
+            // Focus mirrors hover (row wash) — replaces the native macOS ring.
+            state focused(t) {
+                background: t.color.surface_alt(),
+            }
+            transitions { background: 120ms EaseOut }
+        }
+
+        /// A menu row's LABEL, carrying the row's type size and color itself.
+        /// 
+        /// Native text widgets (UILabel / TextView / NSTextField) do not
+        /// inherit either from their parent — the same gap `Tabs` documents
+        /// for its own labels — so a bare text node inside `MenuItemRow`
+        /// rendered at the platform default, ignoring the `body_size` the row
+        /// asks for. On a 13.5px body that is a label a third too large, and
+        /// it showed the moment a menu sat beside anything else: the filter
+        /// panel's dimension rows towered over the column switches in the
+        /// pane next to them. Web inherits through the cascade and was right
+        /// all along, which is why this survived.
+        slot item_label {
+            base(t) {
+                font_size: t.typography.body_size(),
+                color: t.color.text(),
+                // One line, ending in "…" when the row is narrower than the
+                // label (a panel capped by `max_width`). A single-line limit
+                // also zeroes the label's automatic minimum width, which is
+                // what lets it shrink inside the row at all. An uncapped panel
+                // is sized to its longest row, so nothing truncates there.
+                max_lines: 1u32,
+            }
+        }
+
+        slot label {
+            base(t) {
+                color: t.color.text_muted(),
+                font_size: t.typography.overline_size(),
+                font_weight: FontWeight::SemiBold,
+                letter_spacing: 0.8,
+                text_transform: TextTransform::Uppercase,
+                // Inline inset tracks MenuItemRow's so the heading sits on
+                // the rows' text column.
+                padding_vertical: t.spacing.xs(),
+                padding_horizontal: t.spacing.md(),
+            }
+        }
+
+        slot separator {
+            base(t) {
+                height: 1.0,
+                width: Length::pct(100.0),
+                background: t.color.border(),
+                margin_top: 4.0,
+                margin_bottom: 4.0,
+            }
+        }
+
+        /// Trailing chevron for SubMenu rows.
+        slot chevron {
+            base(t) {
+                color: t.color.text_muted(),
+                font_size: t.typography.body_size(),
+            }
+        }
+
+        /// Leading checkbox for CHECKABLE menu rows (multi-select flyouts and
+        /// composed rows via `menu_checkbox`). Box + mark are separate sheets:
+        /// native text nodes don't inherit color from a parent, so the mark
+        /// carries its own color and flips it with the same variant key.
+        slot checkbox {
+            base(t) {
+                width: 16.0,
+                height: 16.0,
+                flex_shrink: 0.0,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                border_radius: t.radius.sm(),
+                border_width: 1.5,
+            }
+            variant checked {
+                #[default]
+                off(t) {
+                    border_color: t.color.border(),
+                    background: Color("transparent".into()),
+                }
+                on(t) {
+                    border_color: t.intent.primary.solid_bg(),
+                    background: t.intent.primary.solid_bg(),
+                }
+            }
+            transitions { background: 120ms EaseOut, border_color: 120ms EaseOut }
+        }
+
+        /// The ✓ inside the box. Always rendered, transparent while off, so
+        /// toggling never reflows the row.
+        slot check_mark {
+            base(_t) {
+                font_size: 11.0,
+                font_weight: FontWeight::Bold,
+                line_height: 12.0,
+            }
+            variant checked {
+                #[default]
+                off(_t) { color: Color("transparent".into()) }
+                on(t) { color: t.intent.primary.solid_text() }
+            }
+        }
+    }
+}
 
 /// Right-pointing chevron shown on SubMenu rows.
 const CHEVRON: &str = "\u{203A}";
@@ -269,7 +412,7 @@ pub fn Menu(props: MenuProps) -> Element {
 // Reactive-by-default: `#[props]` wraps the scalar `active` → `Reactive<bool>`
 // (routes to the row style sink below). `label` is already reactive; the
 // handler (`on_select`) and element slots (`leading`/`trailing`) auto-skip.
-#[runtime_core::props]
+#[runtime_core::props(styles = MenuStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct MenuItemProps {
@@ -297,6 +440,7 @@ impl Default for MenuItemProps {
             leading: None,
             trailing: None,
             active: Reactive::Static(false),
+            styles: Default::default(),
         }
     }
 }
@@ -305,11 +449,11 @@ impl Default for MenuItemProps {
 ///
 /// NOT a bare `text()`: native text widgets inherit neither font size
 /// nor color from the row around them, so the `body_size` on
-/// `MenuItemRow` never reached the label and every menu on iOS, Android
-/// and macOS drew it at the platform default. See `MenuItemLabel`.
-fn menu_label(label: Reactive<String>) -> Element {
+/// the `item` slot never reached the label and every menu on iOS, Android
+/// and macOS drew it at the platform default. See the `item_label` slot.
+fn menu_label(label: Reactive<String>, styles: &MenuSlotStyles) -> Element {
     runtime_core::text(label)
-        .with_style(MenuItemLabel())
+        .with_style(MenuStyles::item_label().overridden(styles.item_label.as_ref()))
         .into_element()
 }
 
@@ -324,26 +468,17 @@ pub fn MenuItem(props: MenuItemProps) -> Element {
     if let Some(l) = props.leading {
         kids.push(l);
     }
-    kids.push(menu_label(props.label));
+    kids.push(menu_label(props.label, &props.styles));
     if let Some(tr) = props.trailing {
         kids.push(grow());
         kids.push(tr);
     }
 
-    // `active` reads live INSIDE the style closure so the apply-style Effect
-    // subscribes when it's a signal; a static stays the build-time fast path.
-    let style_is_reactive = !active.is_static();
-    let make_style = move || {
-        StyleApplication::new(MenuItemRow::sheet())
-            .with("active", if active.get() { "on" } else { "off" }.to_string())
-    };
-
-    let bound = runtime_core::pressable(kids, move || (on_select)());
-    if style_is_reactive {
-        bound.with_style(make_style).into_element()
-    } else {
-        bound.with_style(make_style()).into_element()
-    }
+    // A live `active` re-styles the row in place.
+    let style = MenuStyles::item()
+        .set(active.map(MenuActive::from))
+        .overridden(props.styles.item.as_ref());
+    runtime_core::pressable(kids, move || (on_select)()).with_style(style).into_element()
 }
 
 // =============================================================================
@@ -352,7 +487,7 @@ pub fn MenuItem(props: MenuItemProps) -> Element {
 
 // Reactive-by-default: only data field (`text`) is already `Reactive`;
 // `#[props]` is a no-op here but kept for uniformity with the family.
-#[runtime_core::props]
+#[runtime_core::props(styles = MenuStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct MenuLabelProps {
@@ -362,30 +497,32 @@ pub struct MenuLabelProps {
 }
 impl Default for MenuLabelProps {
     fn default() -> Self {
-        Self { text: Reactive::Static(String::new()) }
+        Self { text: Reactive::Static(String::new()), styles: Default::default() }
     }
 }
 
 /// Renders a non-interactive section heading inside a menu panel.
 #[component]
 pub fn MenuLabel(props: MenuLabelProps) -> Element {
-    ui! { text(style = MenuLabelStyle()) { props.text.clone() } }
+    let style = MenuStyles::label().overridden(props.styles.label.as_ref());
+    ui! { text(style = style) { props.text.clone() } }
 }
 
-#[runtime_core::props]
+#[runtime_core::props(styles = MenuStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct MenuSeparatorProps {}
 impl Default for MenuSeparatorProps {
     fn default() -> Self {
-        Self {}
+        Self { styles: Default::default() }
     }
 }
 
 /// Renders a thin horizontal divider between groups of menu rows.
 #[component]
-pub fn MenuSeparator(_props: MenuSeparatorProps) -> Element {
-    ui! { view(style = MenuSeparatorStyle()) {} }
+pub fn MenuSeparator(props: MenuSeparatorProps) -> Element {
+    let style = MenuStyles::separator().overridden(props.styles.separator.as_ref());
+    ui! { view(style = style) {} }
 }
 
 // =============================================================================
@@ -464,16 +601,10 @@ pub fn menu_checkbox(checked: impl Into<Reactive<bool>>) -> Element {
     let checked = checked.into();
     let mark_checked = checked.clone();
     let mark = runtime_core::text("✓".to_string())
-        .with_style(move || {
-            StyleApplication::new(MenuCheckMark::sheet())
-                .with("checked", if mark_checked.get() { "on" } else { "off" }.to_string())
-        })
+        .with_style(MenuStyles::check_mark().set(mark_checked.map(MenuChecked::from)))
         .into_element();
     runtime_core::view(vec![mark])
-        .with_style(move || {
-            StyleApplication::new(MenuCheckbox::sheet())
-                .with("checked", if checked.get() { "on" } else { "off" }.to_string())
-        })
+        .with_style(MenuStyles::checkbox().set(checked.map(MenuChecked::from)))
         .into_element()
 }
 
@@ -647,7 +778,7 @@ impl HoverLatch {
 // structural overlay positioning, kept bare via `#[prop(static)]`; the slots
 // are ELEMENT-BUILDERS (the *children* category, reactive internally via the
 // slot cx), `#[prop(static)]` for the same reason as `Autocomplete`'s.
-#[runtime_core::props]
+#[runtime_core::props(styles = MenuStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct SubMenuProps {
@@ -709,6 +840,7 @@ impl Default for SubMenuProps {
             header: None,
             footer: None,
             max_width: None,
+            styles: Default::default(),
         }
     }
 }
@@ -718,7 +850,7 @@ impl Default for SubMenuProps {
 /// the end — the same shape as a [`MenuItem`]. A checkable row keeps the
 /// flyout open — multi-select toggles stack without re-hovering (the
 /// checkbox itself re-marks reactively).
-fn flyout_row(entry: MenuEntry, close: Rc<dyn Fn()>) -> Element {
+fn flyout_row(entry: MenuEntry, close: Rc<dyn Fn()>, styles: &MenuSlotStyles) -> Element {
     let on_select = entry.on_select;
     let keep_open = entry.checked.is_some();
     let mut kids: Vec<Element> = Vec::with_capacity(5);
@@ -728,7 +860,7 @@ fn flyout_row(entry: MenuEntry, close: Rc<dyn Fn()>) -> Element {
     if let Some(build) = &entry.leading {
         kids.push(build());
     }
-    kids.push(menu_label(entry.label));
+    kids.push(menu_label(entry.label, styles));
     if let Some(build) = &entry.trailing {
         kids.push(grow());
         kids.push(build());
@@ -739,7 +871,7 @@ fn flyout_row(entry: MenuEntry, close: Rc<dyn Fn()>) -> Element {
             (close)();
         }
     })
-    .with_style(|| StyleApplication::new(MenuItemRow::sheet()))
+    .with_style(MenuStyles::item().overridden(styles.item.as_ref()))
     .into_element()
 }
 
@@ -750,14 +882,19 @@ fn flyout_row(entry: MenuEntry, close: Rc<dyn Fn()>) -> Element {
 /// place WITHOUT touching the panel around them; that boundary is the whole
 /// reason a header search field survives the list it filters (rebuilding the
 /// panel would remount the field and drop its caret and focus).
-fn flyout_rows(items: &Reactive<Vec<MenuEntry>>, close: Rc<dyn Fn()>) -> Vec<Element> {
+fn flyout_rows(
+    items: &Reactive<Vec<MenuEntry>>,
+    close: Rc<dyn Fn()>,
+    styles: &MenuSlotStyles,
+) -> Vec<Element> {
     if items.is_static() {
         return items
             .get_untracked()
             .into_iter()
-            .map(|e| flyout_row(e, close.clone()))
+            .map(|e| flyout_row(e, close.clone(), styles))
             .collect();
     }
+    let styles = styles.clone();
     let identity = items.clone();
     let build = items.clone();
     // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape (see `components/mod.rs`)
@@ -777,7 +914,7 @@ fn flyout_rows(items: &Reactive<Vec<MenuEntry>>, close: Rc<dyn Fn()>) -> Vec<Ele
                 build
                     .get_untracked()
                     .into_iter()
-                    .map(|e| flyout_row(e, close.clone()))
+                    .map(|e| flyout_row(e, close.clone(), &styles))
                     .collect(),
             )
         },
@@ -797,11 +934,12 @@ fn flyout_panel(
     footer: Option<&SubMenuSlot>,
     max_width: Option<f32>,
     close: Rc<dyn Fn()>,
+    styles: &MenuSlotStyles,
 ) -> Element {
     let cx = SubMenuSlotCx { dismiss: close.clone() };
     let header = header.map(|s| s.build(cx.clone()));
     let footer = footer.map(|s| s.build(cx));
-    slotted_panel(flyout_rows(items, close), header, footer, max_width)
+    slotted_panel(flyout_rows(items, close, styles), header, footer, max_width)
 }
 
 /// Renders a menu row with a trailing chevron whose nested flyout opens on
@@ -837,6 +975,7 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
     let header = props.header;
     let footer = props.footer;
     let max_width = props.max_width;
+    let styles = props.styles;
 
     // Identity for the level claim, and the hover-out policy: a flyout that
     // carries a slot latches once the pointer has been inside it.
@@ -910,18 +1049,19 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
     // submenu for clicking its row either. Closing stays with hover-out,
     // Escape, a pick, and the outside catcher.
     let chevron = runtime_core::text(CHEVRON.to_string())
-        .with_style(MenuChevron())
+        .with_style(MenuStyles::chevron().overridden(styles.chevron.as_ref()))
         .into_element();
-    let label_node = menu_label(props.label);
+    let label_node = menu_label(props.label, &styles);
     let trigger = {
         let open_now = open_now.clone();
         let schedule_close = schedule_close.clone();
         let press_open = open_now.clone();
         let row = runtime_core::pressable(vec![label_node, grow(), chevron], move || press_open())
-            .with_style(move || {
-                StyleApplication::new(MenuItemRow::sheet())
-                    .with("active", if open.get() { "on" } else { "off" }.to_string())
-            })
+            .with_style(
+                MenuStyles::item()
+                    .set(Reactive::Dynamic(Rc::new(move || MenuActive::from(open.get()))))
+                    .overridden(styles.item.as_ref()),
+            )
             .into_element();
         runtime_core::view(vec![row])
             .on_hover(move |entering| {
@@ -949,7 +1089,7 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
         let schedule_close = schedule_close.clone();
         move || {
             let panel =
-                flyout_panel(&items, header.as_ref(), footer.as_ref(), max_width, close.clone());
+                flyout_panel(&items, header.as_ref(), footer.as_ref(), max_width, close.clone(), &styles);
             let on_enter = open_now.clone();
             let on_leave = schedule_close.clone();
             let latch = latch.clone();
@@ -1164,6 +1304,7 @@ mod tests {
                 })),
                 None,
                 noop,
+                &MenuSlotStyles::default(),
             );
 
             let P::View { preserves_focus, mut children, .. } = classify(panel) else {
@@ -1200,7 +1341,7 @@ mod tests {
 
             let noop: Rc<dyn Fn()> = Rc::new(|| {});
             let items = Reactive::Static(vec![MenuEntry::new("Inbox", noop.clone())]);
-            let panel = flyout_panel(&items, None, None, None, noop);
+            let panel = flyout_panel(&items, None, None, None, noop, &MenuSlotStyles::default());
 
             let P::View { preserves_focus, children, .. } = classify(panel) else {
                 panic!("the flyout panel is a View (the SelectMenu surface)");
@@ -1236,6 +1377,7 @@ mod tests {
                 })),
                 None,
                 close,
+                &MenuSlotStyles::default(),
             );
 
             let P::View { mut children, .. } = classify(panel) else {
@@ -1268,7 +1410,7 @@ mod tests {
                 counted.set(counted.get() + 1);
                 vec![MenuEntry::new("Inbox", entry.clone())]
             });
-            let rows = flyout_rows(&live, noop.clone());
+            let rows = flyout_rows(&live, noop.clone(), &MenuSlotStyles::default());
             assert_eq!(rows.len(), 1, "a live list contributes one reactive region");
             assert!(
                 matches!(classify(rows.into_iter().next().expect("one region")), P::Other(_)),
@@ -1284,7 +1426,7 @@ mod tests {
                 MenuEntry::new("Inbox", noop.clone()),
                 MenuEntry::new("Archive", noop.clone()),
             ]);
-            let rows = flyout_rows(&stat, noop);
+            let rows = flyout_rows(&stat, noop, &MenuSlotStyles::default());
             assert_eq!(rows.len(), 2, "a static list still builds its rows directly");
     });
     }
@@ -1302,7 +1444,7 @@ mod tests {
             let noop: Rc<dyn Fn()> = Rc::new(|| {});
 
             let P::Pressable { on_click, .. } =
-                classify(flyout_row(MenuEntry::checkable("Starred", true, noop.clone()), close.clone()))
+                classify(flyout_row(MenuEntry::checkable("Starred", true, noop.clone()), close.clone(), &MenuSlotStyles::default()))
             else {
                 panic!("a flyout row is a pressable");
             };
@@ -1310,7 +1452,7 @@ mod tests {
             assert!(!closed.get(), "a checkable row keeps the flyout open for the next toggle");
 
             let P::Pressable { on_click, .. } =
-                classify(flyout_row(MenuEntry::new("Inbox", noop), close))
+                classify(flyout_row(MenuEntry::new("Inbox", noop), close, &MenuSlotStyles::default()))
             else {
                 panic!("a flyout row is a pressable");
             };
@@ -1481,7 +1623,7 @@ mod tests {
                 _ => panic!("a menu row's label is a Text node"),
             };
             let rules = style.resolve();
-            let want = runtime_core::resolve_style(&StyleApplication::new(MenuItemRow::sheet()))
+            let want = runtime_core::resolve_style(&MenuStyles::item().into_style_application())
                 .font_size
                 .as_ref()
                 .map(|t| t.resolve())
@@ -1516,7 +1658,7 @@ mod tests {
             let items = Reactive::Static(vec![MenuEntry::new("Inbox", noop.clone())]);
             let panel_max = |max_width| {
                 let P::View { style, .. } =
-                    classify(flyout_panel(&items, None, None, max_width, noop.clone()))
+                    classify(flyout_panel(&items, None, None, max_width, noop.clone(), &MenuSlotStyles::default()))
                 else {
                     panic!("the flyout panel is a View");
                 };
@@ -1543,7 +1685,7 @@ mod tests {
             let entry = MenuEntry::checkable("Daily report", false, noop.clone())
                 .leading(|| runtime_core::text("L".to_string()).into_element())
                 .trailing(|| runtime_core::text("Active".to_string()).into_element());
-            let P::Pressable { children, .. } = classify(flyout_row(entry, noop)) else {
+            let P::Pressable { children, .. } = classify(flyout_row(entry, noop, &MenuSlotStyles::default())) else {
                 panic!("a flyout row is a Pressable");
             };
             assert_eq!(children.len(), 5, "checkbox, leading, label, spacer, trailing");
@@ -1578,7 +1720,7 @@ mod tests {
     fn menu_labels_are_single_line() {
         with_test_world(|| {
             idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
-            let P::Text { style, .. } = classify(menu_label(Reactive::Static("x".into()))) else {
+            let P::Text { style, .. } = classify(menu_label(Reactive::Static("x".into()), &MenuSlotStyles::default())) else {
                 panic!("a menu label is a Text");
             };
             assert_eq!(style.expect("styled").resolve().max_lines, Some(1));
