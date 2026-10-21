@@ -555,20 +555,6 @@ stylesheet! {
 }
 
 // =============================================================================
-// Switch row — packs label + Toggle.
-// =============================================================================
-
-stylesheet! {
-    pub SwitchRow<IdeaThemeRef> {
-        base(t) {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            gap: t.spacing.sm(),
-        }
-    }
-}
-
-// =============================================================================
 // Selection controls — Switch thumb + shared label row
 // =============================================================================
 //
@@ -576,35 +562,6 @@ stylesheet! {
 // live in idea-theme's extensible sheet builders so apps can register
 // custom tones. The thumb and the label-row layout carry no tone, so
 // they're plain static stylesheets here.
-
-stylesheet! {
-    pub SwitchThumb<IdeaThemeRef> {
-        base(t) {
-            background: Color("#ffffff".into()),
-            border_radius: t.radius.pill(),
-            // Fixed-size puck: never flex-shrink (the slide travel assumes
-            // the declared diameter).
-            flex_shrink: 0.0,
-            // Center an optional thumb icon (without this it sits in the corner).
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            shadow: runtime_core::Shadow {
-                x: 0.0,
-                y: 1.0,
-                blur: 3.0,
-                color: Color("rgba(15, 17, 21, 0.30)".into()).into(),
-            },
-        }
-        // Diameter = track height − 4 (2px inset on each edge). Mirrors
-        // `SWITCH_TRACK_DIMS` in idea-theme; keep in lockstep.
-        variant size {
-            sm(_t) { width: 14.0, height: 14.0 }
-            #[default]
-            md(_t) { width: 18.0, height: 18.0 }
-            lg(_t) { width: 24.0, height: 24.0 }
-        }
-    }
-}
 
 // A horizontal label row shared by Switch / Checkbox / Radio: control
 // on one side, label text on the other, vertically centered.

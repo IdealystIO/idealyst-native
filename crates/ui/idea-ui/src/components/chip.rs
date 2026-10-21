@@ -53,7 +53,7 @@ use runtime_core::{
 
 use idea_theme::extensible::{categorization_tones, tone, Tone, ToneRef};
 
-use crate::components::tone_slots::{focus_ring, foreground_arms, surface_arms};
+use crate::components::tone_slots::{focus_ring_compounds, foreground_arms, recipe_compounds, surface_arms};
 use crate::components::ControlSize;
 use crate::modifiers::{marker_into_axis, variant};
 use crate::theme::IdeaThemeRef;
@@ -88,19 +88,13 @@ component_styles! {
                 md(t) { padding_vertical: Length::Px(2.0), padding_horizontal: t.spacing.sm() }
                 lg(t) { padding_vertical: Length::Px(4.0), padding_horizontal: t.spacing.md() }
             }
-            /// A chip with an `on_select`: the pointer cursor, and a 1px
-            /// border reserved for the focus ring — on a content-sized pill
-            /// the ring would otherwise add 2px per axis on focus, and since
-            /// a press focuses, pressing a chip nudged its neighbours. Sets
-            /// only the WIDTH: an outlined chip keeps its stroke colour, a
-            /// borderless one the transparent colour its recipe gave it.
+            /// A chip with an `on_select` shows the pointer (the 1px border
+            /// it reserves for the focus ring is per `(tone, variant)` — see
+            /// `root_surfaces`).
             variant interactive {
                 #[default]
                 off(_t) {}
-                on(_t) {
-                    cursor: runtime_core::Cursor::Pointer,
-                    border_width: 1.0,
-                }
+                on(_t) { cursor: runtime_core::Cursor::Pointer }
             }
         }
 
@@ -122,10 +116,24 @@ component_styles! {
 }
 
 fn root_surfaces(s: &mut SlotRestyle<'_, ChipStyles>) {
-    surface_arms(s, &categorization_tones());
-    // The themed focus ring (a pressable chip receives FOCUSED): 1px in the
-    // focus-ring color.
-    s.state(StateBits::FOCUSED, |_| focus_ring(1.0));
+    let tones = categorization_tones();
+    surface_arms(s, &tones);
+    // An interactive chip reserves a 1px border for its focus ring: on a
+    // content-sized pill the ring would otherwise add 2px per axis on
+    // focus, and since a press focuses, pressing a chip nudged its
+    // neighbours. Width only — an outlined chip keeps its stroke colour, a
+    // borderless one the transparent colour its recipe gave it. A compound,
+    // because the recipe's own border (a compound) must not win over it.
+    recipe_compounds(s, &tones, &[("interactive", "on")], |_, _| StyleRules {
+        border_top_width: Some(runtime_core::Tokenized::Literal(1.0)),
+        border_right_width: Some(runtime_core::Tokenized::Literal(1.0)),
+        border_bottom_width: Some(runtime_core::Tokenized::Literal(1.0)),
+        border_left_width: Some(runtime_core::Tokenized::Literal(1.0)),
+        ..Default::default()
+    });
+    // The themed focus ring (a pressable chip receives FOCUSED), declared
+    // after the reservation so it wins over it.
+    focus_ring_compounds(s, &tones, &[], 1.0);
 }
 
 fn label_foregrounds(s: &mut SlotRestyle<'_, ChipStyles>) {
@@ -453,6 +461,31 @@ mod tests {
                 _ => panic!("chip's child is its label text"),
             };
             assert_eq!(label_color, fill_color, "the label is painted in the fill's foreground");
+        });
+    }
+
+    /// An interactive chip keeps its 1px focus-ring reservation and draws
+    /// the ring on focus even over a borderless (Filled) recipe: the
+    /// recipe's fill is a compound, which merges after single-axis arms
+    /// and states, so the reservation and the ring are compounds too.
+    #[test]
+    fn interactive_chip_reserves_and_draws_its_focus_ring_over_a_filled_recipe() {
+        with_test_world(|| {
+            use idea_theme::theme::{install_idea_theme, light_theme};
+            install_idea_theme(light_theme());
+            let app = ChipStyles::root()
+                .raw("tone", "primary")
+                .set(ChipVariant::Filled)
+                .set(ChipInteractive::On)
+                .into_style_application();
+            let rest = runtime_core::resolve_style(&app);
+            assert_eq!(rest.border_left_width.as_ref().map(|w| w.resolve()), Some(1.0), "the reservation wins");
+            let focused = runtime_core::resolve_style(&app.with("__state_focused", "on"));
+            assert_eq!(
+                focused.border_left_color.as_ref().and_then(|c| c.name()),
+                Some("color-focus-ring"),
+                "the ring wins over the recipe's transparent border"
+            );
         });
     }
 }

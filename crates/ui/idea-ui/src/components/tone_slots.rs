@@ -69,3 +69,46 @@ pub(crate) fn with_tone<S: ComponentStyles>(values: AxisValues<S>, tone: &Reacti
         live => values.raw_with("tone", move || live.get().key()),
     }
 }
+
+/// One compound per `(tone, built-in variant)` plus the `extra` legs,
+/// carrying `f(ctx, recipe)` — a projection of the recipe (just its
+/// background, a stroke in the tone's accent, …) for a part of a control
+/// that shows only in one state (`("checked", "on")`).
+///
+/// A compound merges after every single-axis arm and every state, in the
+/// live engine and in build-time CSS (where it outranks them on
+/// specificity), so a slot whose state overlay must win over such a fill
+/// — a focus ring over a checked box — adds that overlay as a compound
+/// with MORE legs too: [`focus_ring_compounds`].
+pub(crate) fn recipe_compounds<S: ComponentStyles>(
+    s: &mut SlotRestyle<'_, S>,
+    tones: &[ToneRef],
+    extra: &[(&str, &str)],
+    f: impl Fn(&ResolutionCtx, &dyn idea_theme::extensible::Variant) -> StyleRules,
+) {
+    for (key, recipe) in variant::builtin_recipes() {
+        with_idea_theme(|theme| {
+            for tone in tones {
+                let ctx = ResolutionCtx { theme, tone: &*tone.0 };
+                let mut legs: Vec<(&str, &str)> = vec![("tone", tone.key()), ("variant", key)];
+                legs.extend_from_slice(extra);
+                s.raw_compound(&legs, f(&ctx, recipe));
+            }
+        });
+    }
+}
+
+/// The focus ring as compounds one leg longer than [`recipe_compounds`]'s
+/// fills with the same `extra` legs, so it wins over them; plus the plain
+/// state overlay for when no fill compound applies.
+pub(crate) fn focus_ring_compounds<S: ComponentStyles>(
+    s: &mut SlotRestyle<'_, S>,
+    tones: &[ToneRef],
+    extra: &[(&str, &str)],
+    width: f32,
+) {
+    s.state(runtime_core::StateBits::FOCUSED, |_| focus_ring(width));
+    let mut legs: Vec<(&str, &str)> = extra.to_vec();
+    legs.push(("__state_focused", "on"));
+    recipe_compounds(s, tones, &legs, |_, _| focus_ring(width));
+}

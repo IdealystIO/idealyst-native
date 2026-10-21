@@ -253,7 +253,10 @@ pub use components::stack::{
     Stack, StackAlign, StackAxis, StackGap, StackJustify, StackPadding, StackProps,
 };
 pub use components::surface::{Surface, SurfaceColor, SurfaceProps};
-pub use components::switch::{Switch, SwitchProps};
+pub use components::switch::{
+    Switch, SwitchChecked, SwitchDimmed, SwitchProps, SwitchRestyle, SwitchSize, SwitchSlotStyles, SwitchStyles,
+    SwitchVariant,
+};
 #[cfg(feature = "table")]
 pub use components::table::{
     CellAlign, ColSpan, ColumnPin, RowTone, Table, TableCell, TableCellProps, TableDensity,
