@@ -3644,7 +3644,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "6.0.0"
+version = "7.0.0"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -5865,7 +5865,7 @@ dependencies = [
 
 [[package]]
 name = "host-mock"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
@@ -6397,7 +6397,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "5.0.0"
+version = "6.0.0"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6407,7 +6407,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme-editor"
-version = "7.0.0"
+version = "8.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6418,7 +6418,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "10.0.0"
+version = "11.0.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6438,7 +6438,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "8.0.0"
+version = "9.0.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6489,7 +6489,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.17"
+version = "1.5.18"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6499,7 +6499,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.16"
+version = "1.5.17"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6519,7 +6519,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-nav"
-version = "7.0.0"
+version = "8.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6546,7 +6546,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.15.2"
+version = "1.16.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7690,7 +7690,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.27.0"
+version = "1.28.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7715,7 +7715,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "1.15.0"
+version = "1.15.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -10746,7 +10746,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-core"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "runtime-macros",
  "runtime-shared",
@@ -10763,14 +10763,14 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.20.0"
+version = "1.21.0"
 dependencies = [
  "runtime-macros-expand",
 ]
 
 [[package]]
 name = "runtime-macros-expand"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10814,7 +10814,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10848,7 +10848,7 @@ version = "0.1.0"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -12806,7 +12806,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "4.0.1"
+version = "5.0.0"
 dependencies = [
  "backend-ssr",
  "runtime-scene",
