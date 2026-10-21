@@ -210,7 +210,7 @@ pub use components::chip::{
 pub use components::grid::{Grid, GridProps};
 pub use components::icon::{Icon, IconProps};
 pub use components::image::{Image, ImageProps};
-pub use components::link::{Link, LinkProps};
+pub use components::link::{Link, LinkAction, LinkProps, LinkRestyle, LinkSlotStyles, LinkStyles};
 pub use components::list::{
     List, ListItem, ListItemActive, ListItemInteractive, ListItemProps, ListItemSlotStyles, ListItemStyles,
     ListProps, ListSlotStyles, ListStyles,

@@ -77,10 +77,10 @@
 //!   media.
 //! - **Windows** — `IFileOpenDialog`.
 //! - **Linux** — `xdg-desktop-portal` `FileChooser.OpenFile`.
-//! - **web** — `showOpenFilePicker()`, with an `<input type=file>` fallback
-//!   used only when the FSA picker is missing or provably never showed its
-//!   dialog. A rejection after the dialog is a [`PickError::Backend`], never a
-//!   second dialog.
+//! - **web** — a hidden `<input type=file>`. Not `showOpenFilePicker()`: a
+//!   pick only reads, and the File System Access handle's `getFile()` can be
+//!   refused after the user already chose (Chrome on macOS), which no retry
+//!   recovers without a second dialog.
 
 #![deny(missing_docs)]
 
@@ -90,12 +90,6 @@ mod error;
 pub use error::PickError;
 
 mod mime;
-
-// The web backend's decision on a rejected `showOpenFilePicker()` (fall back
-// to `<input type=file>` / dismissed / fail). Pure, so it also compiles under
-// native `cargo test`, where its regression tests run.
-#[cfg(any(test, target_arch = "wasm32"))]
-mod fsa_rejection;
 
 // Shared 1-MiB-chunk path reader for the backends that read from a real file
 // path (macOS/iOS/Windows/Linux). Android (fd) and web (Blob) bring their own.

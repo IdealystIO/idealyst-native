@@ -14,8 +14,8 @@ use idea_ui::{
     StackAxis, StackGap, tone, variant, size,
 };
 
-use crate::restyles::DocsButtonVariants;
-use idea_ui::ButtonVariant;
+use crate::restyles::{DocsButtonVariants, DocsIconButtonVariants};
+use idea_ui::{ButtonVariant, IconButtonVariant};
 
 use crate::pages::body;
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, H3, P};
@@ -290,6 +290,16 @@ pub fn icon_button() -> Element {
             }
         },
         ui! {
+            Section(title = "Your own variant".to_string()) {
+                P(content = "`IconButtonStyles::restyle(|s| s.tone_variant(VALUE, &Recipe))` gives an \
+                    app variant a recipe's look over every tone, with the hover / press feedback, \
+                    the glyph's foreground and the `selected` accent — the same helper as Button's, \
+                    so one recipe styles both. Here the Raised recipe from Button:".to_string())
+                DemoSurface { icon_button_custom_row() }
+                CodePanel(src = ICON_CUSTOM_VARIANT.to_string())
+            }
+        },
+        ui! {
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
                     Prop { name: "glyph",    ty: "String",          desc: "Single-character glyph rendered centered. Used when `icon` is None." },
@@ -304,6 +314,26 @@ pub fn icon_button() -> Element {
             }
         },
     ])
+}
+
+const ICON_CUSTOM_VARIANT: &str = r##"axis_values! { pub trait AppIconButtonVariants for IconButtonVariant { Raised } }
+
+// At boot — `Raised` is the recipe from Button's "Your own variant":
+IconButtonStyles::restyle(|s| s.tone_variant(IconButtonVariant::Raised, &Raised));
+
+// Anywhere:
+IconButton(icon = Some(PLUS), on_click = add, tone = tone::Success, variant = IconButtonVariant::Raised)"##;
+
+fn icon_button_custom_row() -> Element {
+    let on_click: Rc<dyn Fn()> = Rc::new(|| {});
+    ui! {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
+            IconButton(icon = Some(PLUS),    on_click = on_click.clone(), tone = tone::Primary, variant = IconButtonVariant::Raised)
+            IconButton(icon = Some(HEART),   on_click = on_click.clone(), tone = tone::Success, variant = IconButtonVariant::Raised)
+            IconButton(icon = Some(TRASH_2), on_click = on_click.clone(), tone = tone::Danger,  variant = IconButtonVariant::Raised)
+            IconButton(icon = Some(STAR),    on_click = on_click,         tone = tone::Primary, variant = IconButtonVariant::Raised, selected = true)
+        }
+    }
 }
 
 fn icon_button_variant_row() -> Element {
@@ -351,8 +381,8 @@ pub fn link() -> Element {
     body(vec![
         ui! {
             Section(title = "Standalone".to_string()) {
-                P(content = "A styled external/inline navigational link. On web it renders a \
-                    real `<a href target=\"_blank\" rel=\"noopener\">`; on native it hands the \
+                P(content = "A styled link to a URL. On web it renders a real \
+                    `<a href target=\"_blank\" rel=\"noopener\">`; on native it hands the \
                     URL to the platform opener.".to_string())
                 DemoSurface {
                     Stack(gap = StackGap::Sm) {
@@ -378,21 +408,57 @@ pub fn link() -> Element {
             }
         },
         ui! {
+            Section(title = "In-app action".to_string()) {
+                P(content = "`on_press` makes the link run an action instead of opening a URL — \
+                    \"Show 1 archived\", \"Undo\", \"Edit\". It is drawn as underlined text in \
+                    the body color, and it is a button to assistive tech (an action is not \
+                    navigation): Tab reaches it and Enter or Space presses it.".to_string())
+                DemoSurface { link_action_demo() }
+                CodePanel(src = LINK_ACTION.to_string())
+            }
+        },
+        ui! {
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
-                    Prop { name: "label", ty: "Reactive<String>", desc: "Link text. Static or reactive." },
-                    Prop { name: "url",   ty: "String",           desc: "Destination URL (https:, mailto:, tel:, …)." },
+                    Prop { name: "label",    ty: "Reactive<String>",     desc: "Link text. Static or reactive." },
+                    Prop { name: "url",      ty: "String",               desc: "Destination URL (https:, mailto:, tel:, …). Ignored when `on_press` is set." },
+                    Prop { name: "on_press", ty: "Option<Rc<dyn Fn()>>", desc: "Run this on press instead of opening a URL. Renders as a button to assistive tech." },
+                    Prop { name: "test_id",  ty: "Option<&'static str>", desc: "Robot / E2E id on the interactive node (`robot` feature)." },
                 ])
             }
         },
         ui! {
             Callout(label = "In-app route navigation".to_string()) {
-                P(content = "`Link` is for external/opener URLs. For in-app route navigation use \
-                    the framework's lowercase `link(&route, params, children)` primitive directly \
-                    — it needs a typed Route, which is app-specific.".to_string())
+                P(content = "`Link` opens a URL or runs an action. For in-app route navigation \
+                    use the framework's lowercase `link(&route, params, children)` primitive \
+                    directly — it needs a typed Route, which is app-specific.".to_string())
             }
         },
     ])
+}
+
+const LINK_ACTION: &str = r##"let archived = signal(1);
+let shown = signal(false);
+Link(
+    label = rx!(if shown.get() { "Hide archived".to_string() } else { format!("Show {} archived", archived.get()) }),
+    on_press = Some(Rc::new(move || shown.set(!shown.get())) as Rc<dyn Fn()>),
+)"##;
+
+fn link_action_demo() -> Element {
+    let shown = runtime_core::signal(false);
+    let toggle: Rc<dyn Fn()> = Rc::new(move || shown.set(!shown.get()));
+    ui! {
+        Stack(gap = StackGap::Sm) {
+            Link(
+                label = runtime_core::rx!(if shown.get() { "Hide archived".to_string() } else { "Show 1 archived".to_string() }),
+                on_press = Some(toggle),
+                test_id = Some("link-action-demo"),
+            )
+            if shown.get() {
+                P(content = "Archived: Night shift crew (2025)".to_string())
+            }
+        }
+    }
 }
 
 // =============================================================================

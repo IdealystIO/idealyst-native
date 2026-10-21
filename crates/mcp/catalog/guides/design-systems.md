@@ -205,7 +205,9 @@ idea-ui's tone-aware components render a *recipe* — an
 every registered tone. An app value gets the same treatment from
 `tone_variant_arms(&mut s.root(), &semantic_tones(), VALUE.key(), &Recipe)`;
 Button bundles the box, its hover/press feedback and the label foreground as
-`ButtonStyles::restyle(|s| s.tone_variant(RAISED, &Raised))`. The opt-in
+`ButtonStyles::restyle(|s| s.tone_variant(RAISED, &Raised))`; IconButton has
+the same helper (`IconButtonStyles::restyle(|s| s.tone_variant(…))`), which
+also keeps its `selected` accent winning over the new fill. The opt-in
 accent gradient is the same call with `variant::Gradient`.
 
 ## Per-instance overrides

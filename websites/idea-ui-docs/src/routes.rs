@@ -376,7 +376,7 @@ pub const CATALOG: &[Group] = &[
                 name: "Link",
                 status: Preview,
                 token: "intent-primary-fg",
-                desc: "Inline and standalone navigation, with external and muted treatments.",
+                desc: "Inline and standalone text links: to a URL, or to an in-app action.",
                 body: lazy_pages::link,
                 code: "",
             },

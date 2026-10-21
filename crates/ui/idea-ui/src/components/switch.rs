@@ -241,6 +241,13 @@ pub struct SwitchProps {
     /// (the pressable that toggles). Only honored when idea-ui's `robot`
     /// feature is on; ignored otherwise.
     pub test_id: Option<&'static str>,
+    /// The switch's accessible name — what screen readers announce and what
+    /// the robot reports as the track's `label`. Defaults to `label`. Set it
+    /// when the switch has no `label` or its visible label is drawn OUTSIDE
+    /// this component (a settings row's title), so the switch is still
+    /// named. Snapshot at build, like every a11y name here.
+    #[prop(static)]
+    pub accessibility_label: Option<String>,
 }
 
 impl Default for SwitchProps {
@@ -255,6 +262,7 @@ impl Default for SwitchProps {
             disabled: Reactive::Static(false),
             icon: Reactive::Static(None),
             test_id: None,
+            accessibility_label: None,
             styles: Default::default(),
         }
     }
@@ -331,6 +339,14 @@ pub fn Switch(props: &SwitchProps) -> Element {
         Reactive::Static(true) => track.disabled(true),
         live => track.disabled(move || live.get()),
     };
+    // Accessible name: the explicit override, else the visible label. The
+    // label is a sibling of the track, so the track can't derive it from
+    // its content. Snapshot — the a11y prop bag is plain data (Field and
+    // Checkbox do the same).
+    let track = match props.accessibility_label.clone().or_else(|| props.label.get()) {
+        Some(name) => track.a11y_label(name),
+        None => track,
+    };
     // Forward the test id to the interactive track so a robot suite can
     // locate + click it — set on the BUILDER (`.test_id` on the pressable
     // wrapper). Gated: the id slot only registers under `robot`, and the
@@ -362,7 +378,43 @@ mod tests {
     use super::*;
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
+    use crate::test_support::{classify, P};
     use runtime_core::resolve_style;
+
+    /// The accessible name on the Switch's track (the pressable), found in
+    /// the bare and the labelled (row-wrapped) layouts alike.
+    fn track_a11y_label(el: Element) -> Option<String> {
+        match classify(el) {
+            P::Pressable { accessibility, .. } => accessibility.label,
+            P::View { children, .. } => children.into_iter().find_map(|c| match classify(c) {
+                P::Pressable { accessibility, .. } => Some(accessibility.label),
+                _ => None,
+            })?,
+            _ => panic!("Switch renders its track or a row around it"),
+        }
+    }
+
+    /// A Switch had no accessible name: its visible label is a sibling
+    /// Text, and there was no way to name a label-less switch (a settings
+    /// row whose title sits elsewhere), so screen readers announced an
+    /// unnamed button and the robot reported `label: null`.
+    #[test]
+    fn regression_switch_accessibility_label_names_its_track() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let named = SwitchProps { accessibility_label: Some("Show archived".into()), ..Default::default() };
+            assert_eq!(track_a11y_label(Switch(&named)).as_deref(), Some("Show archived"));
+            let labelled = SwitchProps { label: Reactive::Static(Some("Notifications".into())), ..Default::default() };
+            assert_eq!(track_a11y_label(Switch(&labelled)).as_deref(), Some("Notifications"));
+            let both = SwitchProps {
+                label: Reactive::Static(Some("Email".into())),
+                accessibility_label: Some("Email notifications".into()),
+                ..Default::default()
+            };
+            assert_eq!(track_a11y_label(Switch(&both)).as_deref(), Some("Email notifications"), "the override wins");
+            assert_eq!(track_a11y_label(Switch(&SwitchProps::default())), None);
+        });
+    }
 
     /// The track draws the `(tone, variant)` fill only while on, the muted
     /// track while off, and its focus ring over the fill when focused on:

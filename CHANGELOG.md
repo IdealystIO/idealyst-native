@@ -739,6 +739,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   hand. They work in props, restyle arms and `match` patterns. idea-ui's
   `ButtonVariant::Gradient`, the docs site's values and the Ink brand use
   it.
+- **`Link(on_press = …)`** (`idea-ui`): a link that runs an in-app action
+  ("Show 1 archived") instead of opening a URL. It draws as underlined text
+  in the body color (`LinkStyles::text`'s new `action` axis) and renders as
+  a `pressable` — a button to assistive tech, Tab-focusable and pressed by
+  Enter / Space on web, with a soft tint while focused (the new `action`
+  slot). A static `label` names it; a live one leaves the name to the text.
+  `on_press` wins over `url`. Link also takes `test_id`, and idea-ui now
+  exports `LinkStyles`, `LinkRestyle`, `LinkSlotStyles` and `LinkAction`.
+- **`Switch(accessibility_label = …)`** (`idea-ui`): the switch's accessible
+  name, defaulting to `label` — as Field's does. A labelled Switch is now
+  named by its label too; before, its track had no accessible name.
+- **`IconButtonRestyle::tone_variant`** (`idea-ui`): Button's helper for
+  IconButton — an app variant value gets a recipe's fill per tone, the
+  hover / press feedback and the glyph foreground, and `selected` keeps its
+  accent fill over it.
 - **`component_styles!`** (`runtime-macros`, `runtime-shared`,
   `runtime-vocabulary`): declare a component's styled sections once as
   named slots with component-level open axes; generates the registry key
@@ -1963,6 +1978,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **file-picker reads a picked file in Chrome on macOS** (`file-picker`).
+  A web pick went through `showOpenFilePicker()`, and Chrome on macOS
+  refused the chosen handle's `getFile()` with `NotAllowedError` (a fresh
+  Desktop screenshot), so `pick()` failed with "could not read the picked
+  file". A pick only reads, and `PickedFile` never exposes a handle, so the
+  web picker now uses a hidden `<input type=file>` in every browser: no
+  handle step that can fail after the dialog, one dialog per pick. The API
+  is unchanged.
+- **An adorned Field's text sits 2px from its adornment at every size**
+  (`idea-ui`). The input inside the adorned shell took the `size` axis's
+  horizontal padding (12px at `md`) over the shell's 2px inset, because
+  `size` arms merge after `placement` arms. `(placement: shell, size)`
+  compounds restate the inset for `sm`, `md` and `lg`; an app-defined
+  `FieldSize` whose arm sets horizontal padding adds its own compound.
 - **A focused text input removed by navigation no longer aborts the app**
   (`runtime-vocabulary`). Its `on_focus` handler is scope-guarded like the
   input's other callbacks; the blur fired during teardown wrote a freed

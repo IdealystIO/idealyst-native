@@ -42,6 +42,7 @@ use idea_theme::extensible::{
 };
 use idea_theme::theme::IdeaThemeRef;
 
+use crate::components::tone_slots::{foreground_arms, foreground_compounds};
 use crate::modifiers::{marker_into_axis, shape, size, variant};
 
 /// Pixel size of a button's leading/trailing icon. Matches the label's
@@ -188,32 +189,10 @@ fn root_tone_variants(s: &mut SlotRestyle<'_, ButtonStyles>) {
     }
 }
 
-/// The label's `(tone, variant)` foreground — the recipe's `color` alone.
-fn label_tone_variants(s: &mut SlotRestyle<'_, ButtonStyles>) {
-    let tones = semantic_tones();
-    for (key, recipe) in variant::builtin_recipes() {
-        label_variant_colors(s, &tones, key, recipe);
-    }
-}
-
-/// One variant's label foreground per tone: the recipe's `color` alone
+/// The label's `(tone, variant)` foreground — the recipe's `color` alone
 /// (a text node takes no surface).
-fn label_variant_colors(
-    s: &mut SlotRestyle<'_, ButtonStyles>,
-    tones: &[ToneRef],
-    key: &str,
-    recipe: &dyn idea_theme::extensible::Variant,
-) {
-    idea_theme::extensible::with_idea_theme(|theme| {
-        for tone in tones {
-            let ctx = idea_theme::extensible::ResolutionCtx { theme, tone: &*tone.0 };
-            let color = recipe.render(&ctx).color;
-            s.raw_compound(
-                &[("tone", tone.key()), ("variant", key)],
-                runtime_core::StyleRules { color, ..Default::default() },
-            );
-        }
-    });
+fn label_tone_variants(s: &mut SlotRestyle<'_, ButtonStyles>) {
+    foreground_arms(s, &semantic_tones());
 }
 
 impl ButtonRestyle<'_, '_> {
@@ -233,7 +212,7 @@ impl ButtonRestyle<'_, '_> {
         let mut root = self.root();
         tone_variant_arms(&mut root, &tones, value.key(), recipe);
         tone_variant_state_overlays(&mut root, &tones, value.key());
-        label_variant_colors(&mut self.label(), &tones, value.key(), recipe);
+        foreground_compounds(&mut self.label(), &tones, value.key(), recipe);
     }
 }
 

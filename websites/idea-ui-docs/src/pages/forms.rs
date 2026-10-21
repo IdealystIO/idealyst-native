@@ -215,6 +215,8 @@ pub fn switch() -> Element {
     let on_wifi: Rc<dyn Fn(bool)> = Rc::new(move |v| wifi.set(v));
     let bluetooth = signal(false);
     let on_bt: Rc<dyn Fn(bool)> = Rc::new(move |v| bluetooth.set(v));
+    let email = signal(true);
+    let on_email: Rc<dyn Fn(bool)> = Rc::new(move |v| email.set(v));
 
     body(vec![ui! {
         Section(title = "Sizes & states".to_string()) {
@@ -257,9 +259,27 @@ pub fn switch() -> Element {
             }
         }
     }, ui! {
+        Section(title = "Accessible name".to_string()) {
+            P(content = "A Switch is named by its `label`. When the visible title is drawn \
+                outside the Switch — a settings row with its own text column — name it with \
+                `accessibility_label`, which screen readers announce and the robot reports.".to_string())
+            DemoSurface {
+                Stack(axis = idea_ui::StackAxis::Row, gap = StackGap::Md, align = idea_ui::StackAlign::Center) {
+                    P(content = "Email me when a timesheet is approved".to_string())
+                    Switch(
+                        value = email,
+                        on_change = on_email,
+                        accessibility_label = Some("Email notifications".to_string()),
+                        test_id = Some("switch-a11y-demo"),
+                    )
+                }
+            }
+        }
+    }, ui! {
         Section(title = "Props".to_string()) {
             PropsTable(rows = vec![
                 Prop { name: "label",     ty: "Reactive<Option<String>>", desc: "Optional label rendered to the left of the toggle." },
+                Prop { name: "accessibility_label", ty: "Option<String>", desc: "The accessible name. Defaults to `label`; set it when the visible title is outside the Switch." },
                 Prop { name: "value",     ty: "Signal<bool>",             desc: "Controlled on/off state. The host owns the signal." },
                 Prop { name: "on_change", ty: "Rc<dyn Fn(bool)>",         desc: "Fires with the new value when the user flips the toggle." },
                 Prop { name: "tone",      ty: "ToneRef",                  desc: "Semantic palette for the 'on' track fill. Default: Primary." },
