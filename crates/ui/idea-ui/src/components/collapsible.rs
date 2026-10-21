@@ -46,23 +46,195 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, derived, on_scope_drop, pressable, signal, text, ui, ChildList, Element,
-    IdealystSchema, IntoElement, LayoutSubscription, Reactive, Ref, Signal, StyleApplication,
-    VariantEnum, ViewHandle,
+    component, on_scope_drop, pressable, signal, text, ui, ChildList, Element,
+    component_styles, resolve_style, AlignItems, FlexDirection, FontWeight, IdealystSchema, IntoElement,
+    JustifyContent, LayoutSubscription, Length, Reactive, Ref, Signal, TextAlign, ViewHandle,
 };
 use idea_theme::compat::SignalModify as _;
 use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use std::time::Duration;
 
-use crate::stylesheets::{
-    AccordionContainer, AccordionItemSeparator, CollapsibleBody, CollapsibleBodyAnimated,
-    CollapsibleBodyAnimatedOpen, CollapsibleBodyOpen, CollapsibleChevron, CollapsibleContainer,
-    CollapsibleHeader, CollapsibleHeaderContent, CollapsibleHeaderRow,
-};
+use crate::theme::IdeaThemeRef;
 
 // =============================================================================
 // CollapsibleTransition + tunables
 // =============================================================================
+
+component_styles! {
+    /// The styled sections of [`Collapsible`] (and of each [`Accordion`]
+    /// item's header and body).
+    pub Collapsible<IdeaThemeRef> {
+        slot container {
+            base(t) {
+                background: t.color.surface(),
+                border_top_width: 1.0,
+                border_right_width: 1.0,
+                border_bottom_width: 1.0,
+                border_left_width: 1.0,
+                border_top_color: t.color.border(),
+                border_right_color: t.color.border(),
+                border_bottom_color: t.color.border(),
+                border_left_color: t.color.border(),
+                border_top_left_radius: t.radius.lg(),
+                border_top_right_radius: t.radius.lg(),
+                border_bottom_left_radius: t.radius.lg(),
+                border_bottom_right_radius: t.radius.lg(),
+                flex_direction: FlexDirection::Column,
+                overflow: runtime_core::Overflow::Hidden,
+            }
+            transitions {
+                background: 250ms EaseInOut,
+                border_top_color: 250ms EaseInOut,
+            }
+        }
+
+        slot header {
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding_vertical: t.spacing.md(),
+                padding_horizontal: t.spacing.lg(),
+                gap: t.spacing.sm(),
+                color: t.color.text(),
+                font_size: 14.0,
+                font_weight: FontWeight::SemiBold,
+                text_align: TextAlign::Left,
+            }
+            // Where the chevron sits. `end`: title left, chevron pushed right.
+            // `start`: chevron then title, packed left — the tree convention.
+            variant chevron {
+                #[default]
+                end(_t)   { justify_content: JustifyContent::SpaceBetween }
+                start(_t) { justify_content: JustifyContent::FlexStart }
+            }
+            // `beside`: the header shares its row with a `trailing` element
+            // (outside the toggle), so it takes the row's spare width.
+            variant trailing {
+                #[default]
+                none(_t)   { }
+                beside(_t) { flex_grow: 1.0, min_width: 0.0 }
+            }
+            state hovered(t) {
+                background: t.color.surface_alt(),
+            }
+            // Focus mirrors hover (row wash) — replaces the native macOS ring.
+            state focused(t) {
+                background: t.color.surface_alt(),
+            }
+            transitions {
+                background: 150ms EaseOut,
+                color: 250ms EaseInOut,
+            }
+        }
+
+        /// / A custom `header` element's box inside the toggle: takes the spare
+        /// / width so a chevron at the end stays at the end, and may shrink.
+        slot header_content {
+            base(_t) {
+                flex_grow: 1.0,
+                min_width: 0.0,
+            }
+        }
+
+        /// / The header row when a `trailing` element sits beside the toggle:
+        /// / the toggle (growing) then the trailing element, which gets the
+        /// / header's end padding since the toggle's padding no longer reaches
+        /// / the row's edge.
+        slot header_row {
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: t.spacing.sm(),
+                padding_right: t.spacing.lg(),
+            }
+        }
+
+        slot chevron {
+            base(t) {
+                font_size: 13.0,
+                color: t.color.text_muted(),
+            }
+            transitions {
+                color: 250ms EaseInOut,
+            }
+        }
+
+        /// Snap-mode body: state changes apply instantly. Cheap, predictable,
+        /// no perceived animation. Pick this via `CollapsibleTransition::Snap`
+        /// when the disclosure should feel like a single click → done.
+        slot body {
+            base(t) {
+                flex_direction: FlexDirection::Column,
+                padding_horizontal: t.spacing.lg(),
+                border_top_width: 1.0,
+                border_top_color: t.color.border(),
+                gap: t.spacing.sm(),
+                overflow: runtime_core::Overflow::Hidden,
+            }
+            variant open {
+                #[default]
+                closed(_t) {
+                    max_height: Length::Px(0.0),
+                    padding_top: Length::Px(0.0),
+                    padding_bottom: Length::Px(0.0),
+                    border_top_width: 0.0,
+                }
+                shown(t) {
+                    max_height: Length::Px(2000.0),
+                    padding_top: t.spacing.md(),
+                    padding_bottom: t.spacing.md(),
+                    border_top_width: 1.0,
+                }
+            }
+            transitions {
+                border_top_color: 250ms EaseInOut,
+            }
+        }
+
+        /// Measured-mode body: the chrome (padding, opacity, border-top)
+        /// transitions on the `open` flip, while `max-height` is driven per
+        /// frame by an `AnimatedValue<f32>` in `measured_body` — neither arm
+        /// declares `max_height`, so the animated inline writes never fight
+        /// a class-rule baseline. The `shown` arm's vertical padding and top
+        /// border are read back at build as the body's chrome (see
+        /// `measured_chrome_px`), so a restyle that changes them stays
+        /// unclipped.
+        ///
+        /// The chrome timings match [`COLLAPSIBLE_DURATION_DEFAULT_MS`], the
+        /// recommended tween length.
+        slot body_animated {
+            base(t) {
+                flex_direction: FlexDirection::Column,
+                padding_horizontal: t.spacing.lg(),
+                border_top_width: 1.0,
+                border_top_color: t.color.border(),
+                gap: t.spacing.sm(),
+                overflow: runtime_core::Overflow::Hidden,
+            }
+            variant open {
+                #[default]
+                closed(_t) {
+                    padding_top: Length::Px(0.0),
+                    padding_bottom: Length::Px(0.0),
+                    opacity: 0.0,
+                    border_top_width: 0.0,
+                }
+                shown(t) {
+                    padding_top: t.spacing.md(),
+                    padding_bottom: t.spacing.md(),
+                    opacity: 1.0,
+                    border_top_width: 1.0,
+                }
+            }
+            transitions {
+                border_top_color: 250ms EaseInOut,
+                opacity: 200ms EaseOut,
+                padding_top: 240ms EaseOut,
+                padding_bottom: 240ms EaseOut,
+            }
+        }
+    }
+}
 
 /// Default duration of the open/close animation in milliseconds.
 /// Used by [`CollapsibleTransition::Measured`] for the AV tween.
@@ -79,16 +251,34 @@ use crate::stylesheets::{
 pub const COLLAPSIBLE_DURATION_DEFAULT_MS: u32 = 240;
 
 /// Total vertical chrome (padding + border) on a Measured body when
-/// shown. Used to translate the inner content's measured height into
-/// the outer's target max-height — the framework forces
-/// `box-sizing: border-box`, so the outer's max-height has to cover
-/// content + chrome to avoid clipping.
-///
-/// Mirrors the `CollapsibleBodyAnimated` `shown` variant:
-/// `padding_top: spacing-md (12) + padding_bottom: spacing-md (12) +
-/// border_top_width: 1 = 25`. If the stylesheet's chrome changes,
-/// bump this in lockstep.
-const MEASURED_CHROME_PX: f32 = 25.0;
+/// shown, read from the composed `body_animated` slot's `shown` arm (app
+/// restyles and this instance's override included). Used to translate the
+/// inner content's measured height into the outer's target max-height —
+/// the framework forces `box-sizing: border-box`, so the outer's
+/// max-height has to cover content + chrome to avoid clipping.
+fn measured_chrome_px(styles: &CollapsibleSlotStyles) -> f32 {
+    let shown = CollapsibleStyles::body_animated()
+        .set(CollapsibleOpen::Shown)
+        .overridden(styles.body_animated.as_ref())
+        .into_style_application();
+    let rules = resolve_style(&shown);
+    let px = |l: &Option<runtime_core::Tokenized<Length>>| match l.as_ref().map(|t| t.resolve()) {
+        Some(Length::Px(v)) => v,
+        _ => 0.0,
+    };
+    px(&rules.padding_top)
+        + px(&rules.padding_bottom)
+        + rules.border_top_width.as_ref().map_or(0.0, |w| w.resolve())
+}
+
+impl From<CollapsibleChevronSide> for CollapsibleChevron {
+    fn from(side: CollapsibleChevronSide) -> Self {
+        match side {
+            CollapsibleChevronSide::Start => CollapsibleChevron::Start,
+            CollapsibleChevronSide::End => CollapsibleChevron::End,
+        }
+    }
+}
 
 /// How a [`Collapsible`] (or [`Accordion`] item) animates between
 /// open and closed states.
@@ -141,7 +331,7 @@ pub enum CollapsibleChevronSide {
 // Snap-vs-Measured body branch and the tween timing inside an Effect), not a
 // style sink, so they're snapshotted at build with flagged TODOs below.
 /// Props for [`Collapsible`].
-#[runtime_core::props]
+#[runtime_core::props(styles = CollapsibleStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct CollapsibleProps {
@@ -198,6 +388,7 @@ impl Default for CollapsibleProps {
             transition: Reactive::Static(CollapsibleTransition::default()),
             duration_ms: Reactive::Static(COLLAPSIBLE_DURATION_DEFAULT_MS),
             children: Vec::new(),
+            styles: Default::default(),
         }
     }
 }
@@ -206,13 +397,15 @@ impl Default for CollapsibleProps {
 /// animated chevron above a body that expands/collapses per `transition`.
 #[component(children)]
 pub fn Collapsible(props: CollapsibleProps) -> Element {
-    let container = CollapsibleContainer();
+    let styles = props.styles;
+    let container = CollapsibleStyles::container().overridden(styles.container.as_ref());
     let header = collapsible_header(
         HeaderContent::new(props.title, props.header),
         props.chevron_side,
         props.trailing,
         props.value,
         props.on_change,
+        &styles,
     );
     // TODO(reactive-sweep): route `transition`/`duration_ms` into the body. Both
     // are STRUCTURAL/animation inputs — `transition` selects the Snap-vs-Measured
@@ -226,6 +419,7 @@ pub fn Collapsible(props: CollapsibleProps) -> Element {
         props.transition.get(),
         props.duration_ms.get(),
         props.children,
+        &styles,
     );
     ui! {
         view(style = container) {
@@ -266,10 +460,11 @@ fn collapsible_header(
     trailing: Option<Element>,
     value: Signal<bool>,
     on_change: Rc<dyn Fn(bool)>,
+    styles: &CollapsibleSlotStyles,
 ) -> Element {
     // The chevron flips from `›` (closed) to `⌄` (open). Only its TEXT
     // changes, so it is live text that updates in place — no subtree swap.
-    let chevron_style = || StyleApplication::new(CollapsibleChevron::sheet());
+    let chevron_style = CollapsibleStyles::chevron().overridden(styles.chevron.as_ref());
     let chevron = ui! {
         text(style = chevron_style) {
             move || if value.get() { "\u{2304}" } else { "\u{203A}" }.to_string()
@@ -282,7 +477,8 @@ fn collapsible_header(
     let content = match content {
         HeaderContent::Title(title) => text(title).into_element(),
         HeaderContent::Custom(el) => {
-            let content_style = || StyleApplication::new(CollapsibleHeaderContent::sheet());
+            let content_style =
+                CollapsibleStyles::header_content().overridden(styles.header_content.as_ref());
             ui! { view(style = content_style) { el } }
         }
     };
@@ -293,18 +489,12 @@ fn collapsible_header(
         CollapsibleChevronSide::End => vec![content, chevron],
     };
 
-    let chevron_variant = match chevron_side {
-        CollapsibleChevronSide::Start => "start",
-        CollapsibleChevronSide::End => "end",
-    };
-    let trailing_variant = if trailing.is_some() { "beside" } else { "none" };
-    // One style closure for open and closed (the chevron carries the open
+    // One style for open and closed (the chevron carries the open
     // indicator), which keeps hover behaviour intact.
-    let header_style = move || {
-        StyleApplication::new(CollapsibleHeader::sheet())
-            .with("chevron", chevron_variant.to_string())
-            .with("trailing", trailing_variant.to_string())
-    };
+    let header_style = CollapsibleStyles::header()
+        .set(CollapsibleChevron::from(chevron_side))
+        .set(if trailing.is_some() { CollapsibleTrailing::Beside } else { CollapsibleTrailing::None })
+        .overridden(styles.header.as_ref());
 
     let press_handler = move || {
         let next = !value.get();
@@ -316,7 +506,7 @@ fn collapsible_header(
     match trailing {
         None => toggle,
         Some(trailing) => {
-            let row_style = || StyleApplication::new(CollapsibleHeaderRow::sheet());
+            let row_style = CollapsibleStyles::header_row().overridden(styles.header_row.as_ref());
             ui! {
                 view(style = row_style) {
                     toggle
@@ -328,8 +518,7 @@ fn collapsible_header(
 }
 
 /// The collapsible body. Dispatches on `transition`:
-/// - `Snap`: instantaneous show/hide via the `CollapsibleBody`
-///   stylesheet's `open` variant axis (max-height 0 ↔ shown is one
+/// - `Snap`: instantaneous show/hide via the `body` slot's `open` axis (max-height 0 ↔ shown is one
 ///   frame, no CSS transition declared).
 /// - `Measured`: see [`measured_body`].
 ///
@@ -344,6 +533,7 @@ fn collapsible_body(
     transition: CollapsibleTransition,
     duration_ms: u32,
     children: Vec<Element>,
+    styles: &CollapsibleSlotStyles,
 ) -> Element {
     let mut kids: Vec<Element> = Vec::with_capacity(children.len());
     for c in children {
@@ -352,16 +542,12 @@ fn collapsible_body(
 
     match transition {
         CollapsibleTransition::Snap => {
-            let style = CollapsibleBody().open(derived(move || {
-                if value.get() {
-                    CollapsibleBodyOpen::Shown
-                } else {
-                    CollapsibleBodyOpen::Closed
-                }
-            }));
+            let style = CollapsibleStyles::body()
+                .set(open_axis(value))
+                .overridden(styles.body.as_ref());
             ui! { view(style = style) { kids } }
         }
-        CollapsibleTransition::Measured => measured_body(value, duration_ms, kids),
+        CollapsibleTransition::Measured => measured_body(value, duration_ms, kids, styles),
     }
 }
 
@@ -385,7 +571,24 @@ fn collapsible_body(
 /// animated max-height. The inner one is in the natural-flow layout
 /// so `ResizeObserver` (or platform equivalent) sees its full height
 /// regardless of the outer's max-height clamp.
-fn measured_body(value: Signal<bool>, duration_ms: u32, kids: Vec<Element>) -> Element {
+/// The `open` axis value tracking `value` live.
+fn open_axis(value: Signal<bool>) -> Reactive<CollapsibleOpen> {
+    Reactive::Dynamic(Rc::new(move || {
+        if value.get() {
+            CollapsibleOpen::Shown
+        } else {
+            CollapsibleOpen::Closed
+        }
+    }))
+}
+
+fn measured_body(
+    value: Signal<bool>,
+    duration_ms: u32,
+    kids: Vec<Element>,
+    styles: &CollapsibleSlotStyles,
+) -> Element {
+    let chrome_px = measured_chrome_px(styles);
     // Per-instance signals + handles.
     let natural_height: Signal<f32> = signal(0.0);
     let body_ref: Ref<ViewHandle> = Ref::new();
@@ -460,13 +663,13 @@ fn measured_body(value: Signal<bool>, duration_ms: u32, kids: Vec<Element>) -> E
         // without this addition.
         let target = if open {
             let nh = natural_height.get();
-            if nh > 0.0 { nh + MEASURED_CHROME_PX } else { 0.0 }
+            if nh > 0.0 { nh + chrome_px } else { 0.0 }
         } else {
             0.0
         };
         // `TweenTo` from the framework animation system — handles
         // raf loop, easing, cancellation. The chrome transitions
-        // (padding, opacity, border) on `CollapsibleBodyAnimated`
+        // (padding, opacity, border) on the `body_animated` slot
         // are baked at 200–240ms; keep `duration_ms` near 240 to
         // avoid the chrome finishing visibly out of sync with the
         // height.
@@ -476,10 +679,10 @@ fn measured_body(value: Signal<bool>, duration_ms: u32, kids: Vec<Element>) -> E
     // teardown (the `_toggle` handle's drop is a no-op). No `mem::forget`.
 
     // Outer view — `body_ref` binds for AnimatedValue (drives
-    // max-height per frame). The variant axis switches between
+    // max-height per frame). The `open` axis switches between
     // `closed` and `shown` based on `value`, so padding / opacity /
-    // border-top CSS-transition between the variants' values via
-    // the declared transitions on `CollapsibleBodyAnimated`.
+    // border-top transition between the arms' values via the
+    // `body_animated` slot's declared transitions.
     //
     // Division of labor:
     //   - max-height: driven by AV (animator-precise to natural height)
@@ -489,15 +692,9 @@ fn measured_body(value: Signal<bool>, duration_ms: u32, kids: Vec<Element>) -> E
     // Both run concurrently over ~240ms — the body's chrome
     // (padding, border) collapses with the height, so closed items
     // leave zero visible footprint.
-    let outer_style = move || {
-        let variant = if value.get() {
-            CollapsibleBodyAnimatedOpen::Shown
-        } else {
-            CollapsibleBodyAnimatedOpen::Closed
-        };
-        StyleApplication::new(CollapsibleBodyAnimated::sheet())
-            .with("open", variant.as_variant_str().to_string())
-    };
+    let outer_style = CollapsibleStyles::body_animated()
+        .set(open_axis(value))
+        .overridden(styles.body_animated.as_ref());
 
     // Inner view is in natural flow — its layout reports the
     // intrinsic content height regardless of the outer's clamp.
@@ -513,6 +710,51 @@ fn measured_body(value: Signal<bool>, duration_ms: u32, kids: Vec<Element>) -> E
 // =============================================================================
 // Accordion
 // =============================================================================
+
+component_styles! {
+    /// The styled sections of [`Accordion`].
+    pub Accordion<IdeaThemeRef> {
+        /// Accordion item — same header/body shape as a Collapsible, but
+        /// without the per-item border/radius (the Accordion container owns
+        /// those, and items just contribute internal dividers).
+        slot container {
+            base(t) {
+                background: t.color.surface(),
+                border_top_width: 1.0,
+                border_right_width: 1.0,
+                border_bottom_width: 1.0,
+                border_left_width: 1.0,
+                border_top_color: t.color.border(),
+                border_right_color: t.color.border(),
+                border_bottom_color: t.color.border(),
+                border_left_color: t.color.border(),
+                border_top_left_radius: t.radius.lg(),
+                border_top_right_radius: t.radius.lg(),
+                border_bottom_left_radius: t.radius.lg(),
+                border_bottom_right_radius: t.radius.lg(),
+                flex_direction: FlexDirection::Column,
+                overflow: runtime_core::Overflow::Hidden,
+            }
+            transitions {
+                background: 250ms EaseInOut,
+                border_top_color: 250ms EaseInOut,
+            }
+        }
+
+        /// Per-item divider — top border on items 1..N so the first item has
+        /// no top border and the rest separate cleanly.
+        slot separator {
+            base(t) {
+                flex_direction: FlexDirection::Column,
+                border_top_width: 1.0,
+                border_top_color: t.color.border(),
+            }
+            transitions {
+                border_top_color: 250ms EaseInOut,
+            }
+        }
+    }
+}
 
 /// Expansion policy for an [`Accordion`].
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, IdealystSchema, runtime_core::Remote)]
@@ -545,7 +787,7 @@ pub struct AccordionItem {
 // build loop (expansion policy, body strategy, tween timing) — so they're
 // snapshotted at build with a flagged TODO in the body.
 /// Props for [`Accordion`].
-#[runtime_core::props]
+#[runtime_core::props(styles = AccordionStyles)]
 #[derive(IdealystSchema)]
 pub struct AccordionProps {
     /// Items rendered in order.
@@ -589,6 +831,7 @@ impl Default for AccordionProps {
             transition: Reactive::Static(CollapsibleTransition::default()),
             duration_ms: Reactive::Static(COLLAPSIBLE_DURATION_DEFAULT_MS),
             on_change: None,
+            styles: Default::default(),
         }
     }
 }
@@ -598,7 +841,10 @@ impl Default for AccordionProps {
 /// multi-open) and reporting clicks via `on_change`.
 #[component]
 pub fn Accordion(props: AccordionProps) -> Element {
-    let container_style = AccordionContainer();
+    let container_style = AccordionStyles::container().overridden(props.styles.container.as_ref());
+    // Items draw the Collapsible header and body slots (restyled app-wide
+    // through `CollapsibleStyles`).
+    let item_styles = CollapsibleSlotStyles::default();
     let open_state = props.open;
     // TODO(reactive-sweep): route `expand`/`transition`/`duration_ms` into the
     // per-item build. All three are STRUCTURAL — consumed in the item loop below
@@ -671,15 +917,17 @@ pub fn Accordion(props: AccordionProps) -> Element {
             None,
             item_open,
             item_on_change,
+            &item_styles,
         );
-        let body = collapsible_body(item_open, transition, duration_ms, vec![item.body]);
+        let body =
+            collapsible_body(item_open, transition, duration_ms, vec![item.body], &item_styles);
 
         let item_block = if idx == 0 {
             // First item: no top divider; the container's own border
             // takes care of the top edge.
             ui! { view { header body } }
         } else {
-            let sep = AccordionItemSeparator();
+            let sep = AccordionStyles::separator().overridden(props.styles.separator.as_ref());
             ui! { view(style = sep) { header body } }
         };
         item_views.push(item_block);
@@ -687,5 +935,47 @@ pub fn Accordion(props: AccordionProps) -> Element {
 
     ui! {
         view(style = container_style) { item_views }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use idea_theme::testing::with_test_world;
+    use runtime_core::StyleRules;
+
+    fn install() {
+        use idea_theme::theme::{install_idea_theme, light_theme};
+        install_idea_theme(light_theme());
+    }
+
+    /// The measured body's max-height target is content + chrome. The
+    /// chrome comes from the composed `body_animated` slot, so an app that
+    /// restyles the open body's padding gets a target that still covers it
+    /// (a fixed constant would clip the restyled body's last lines).
+    #[test]
+    fn regression_measured_chrome_follows_a_restyled_body() {
+        with_test_world(|| {
+            runtime_core::component_styles::__reset::<CollapsibleStyles>();
+            install();
+            // Light theme: spacing-md (12) top + bottom, 1px top border.
+            assert_eq!(measured_chrome_px(&CollapsibleSlotStyles::default()), 25.0);
+
+            CollapsibleStyles::restyle(|s| {
+                s.body_animated().arm(CollapsibleOpen::Shown, |_t| StyleRules {
+                    padding_top: Some(Length::Px(20.0).into()),
+                    ..Default::default()
+                });
+            });
+            assert_eq!(measured_chrome_px(&CollapsibleSlotStyles::default()), 33.0);
+
+            // A per-instance override is counted too.
+            let one = CollapsibleSlotStyles::default().body_animated(StyleRules {
+                padding_bottom: Some(Length::Px(0.0).into()),
+                ..Default::default()
+            });
+            assert_eq!(measured_chrome_px(&one), 21.0);
+            runtime_core::component_styles::__reset::<CollapsibleStyles>();
+        });
     }
 }

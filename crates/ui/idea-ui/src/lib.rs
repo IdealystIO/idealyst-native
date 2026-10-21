@@ -226,8 +226,9 @@ pub use components::radio::{
 };
 pub use components::ControlSize;
 pub use components::collapsible::{
-    Accordion, AccordionExpand, AccordionItem, AccordionProps, Collapsible, CollapsibleChevronSide,
-    CollapsibleProps, CollapsibleTransition,
+    Accordion, AccordionExpand, AccordionItem, AccordionProps, AccordionSlotStyles, AccordionStyles, Collapsible,
+    CollapsibleChevron, CollapsibleChevronSide, CollapsibleOpen, CollapsibleProps, CollapsibleSlotStyles,
+    CollapsibleStyles, CollapsibleTrailing, CollapsibleTransition,
 };
 pub use components::divider::{Divider, DividerAxis, DividerProps};
 pub use components::field::{
