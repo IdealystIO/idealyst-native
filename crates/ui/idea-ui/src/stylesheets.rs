@@ -3491,10 +3491,13 @@ stylesheet! {
 }
 
 // The "+N more" control under the cells — opens the row's detail sheet.
+// A row, so the hugging button sits at the card's leading edge (a
+// non-block button centres itself on a column's cross axis).
 stylesheet! {
     pub TableCardMore<IdeaThemeRef> {
         base(_t) {
-            align_items: AlignItems::FlexStart,
+            flex_direction: FlexDirection::Row,
+            justify_content: JustifyContent::FlexStart,
         }
     }
 }
