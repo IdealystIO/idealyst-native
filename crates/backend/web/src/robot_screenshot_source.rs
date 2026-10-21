@@ -86,9 +86,10 @@ impl Source {
 
 /// The error a `tab` request gets while the tab is not shared. The agent
 /// reads it, so it says what the user has to do.
-pub(crate) const NOT_SHARED: &str = "the user has not shared this tab with the agent. The dev \
-    overlay now shows \"Agent asks to see this tab\" in the page's bottom-right corner: ask the \
-    user to click it and allow sharing this tab, then call screenshot again. Source \"dom\" works \
+pub(crate) const NOT_SHARED: &str = "the user has not allowed capture of this tab. The dev \
+    overlay now shows \"agent wants capture · allow\" in the page's bottom-right corner (or a \
+    lit glyph there, if they collapsed the overlay): ask the user to click it and accept the \
+    browser's permission prompt for this tab, then call screenshot again. Source \"dom\" works \
     without them, rendered from a copy of the DOM (less exact: canvases drawn with WebGL, PDF \
     viewers and some font rendering can differ)";
 

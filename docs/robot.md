@@ -255,8 +255,10 @@ used in the result:
   (a PDF viewer) and exact font rendering can differ.
 - `tab` — a frame of the tab's screen-share stream (`dev-http`'s
   `tab_capture.js`). A browser opens `getDisplayMedia` only from a click,
-  so the user starts it from the dev overlay's "Share this tab with the
-  agent" button; until then `tab` errors and the button lights up. Only a
+  so the user starts it from the "allow capture" chip on the dev
+  overlay's robot line; the browser then asks them for permission. Until
+  then `tab` errors and the chip lights up as "agent wants capture ·
+  allow" (and lights the overlay's glyph if they collapsed it). Only a
   browser tab — this one, where capture handles can tell — is accepted.
 - `cdp` — `robot_relay::cdp`: the relay captures the driven tab with
   `Page.captureScreenshot`, for a tab in a Chromium the dev session

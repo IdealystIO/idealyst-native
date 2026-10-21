@@ -28,12 +28,17 @@
 //   `robot_transport`): connecting, connected, or what failed and when it
 //   retries. The page reports it itself because the relay cannot: a page
 //   that never reaches the relay is invisible to it;
-// - above that, while the robot is connected, the "Share tab with agent"
-//   button of the tab capture (`capture`, from `tab_capture.js`): the
-//   click a browser requires before a page may share its tab, after which
-//   the Robot's `screenshot` source "tab" is the browser's real pixels. It
-//   lights up when an agent asked for the tab, and while sharing it says so
-//   and stops the share on a click.
+// - on that robot line, while the robot is connected, the "allow capture"
+//   chip of the tab capture (`capture`, from `tab_capture.js`): the click a
+//   browser requires before it asks the user for permission to capture
+//   the tab, after which the Robot's `screenshot` source "tab" is the
+//   browser's real pixels. It lights up when an agent asked for it, and
+//   while capturing it says so and stops the capture on a click.
+//
+// The "–" on the status line collapses all of that to one status glyph
+// (remembered for the page in localStorage); the glyph expands it again
+// and lights up when an agent asks for capture. A failed build's panel
+// still opens over the page while collapsed — an error is never hidden.
 //
 // DOM use is deliberately narrow (createElement, appendChild, textContent,
 // style.cssText, setAttribute, addEventListener, attachShadow) so the
@@ -42,7 +47,32 @@
 // app's CSS out of the overlay and the overlay's out of the app.
 function idealystStatusOverlay(doc, capture) {
   var FONT = "font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;";
-  var host = null, badge = null, robotBadge = null, shareButton = null, panel = null, list = null, title = null;
+  var host = null, stack = null, badge = null, robotRow = null, robotBadge = null, shareButton = null,
+    collapseButton = null, pill = null, panel = null, list = null, title = null;
+  var COLLAPSED_KEY = "idealyst-dev-overlay-collapsed";
+  // Per-page convenience only: storage can be missing or throw (private
+  // windows, blocked site data), and the overlay must render without it.
+  function storage() {
+    try {
+      var w = doc.defaultView;
+      return w && w.localStorage ? w.localStorage : null;
+    } catch (_) {
+      return null;
+    }
+  }
+  var collapsed = false;
+  try {
+    var s = storage();
+    collapsed = !!s && s.getItem(COLLAPSED_KEY) === "1";
+  } catch (_) {}
+  function setCollapsed(v) {
+    collapsed = v;
+    try {
+      var s = storage();
+      if (s) s.setItem(COLLAPSED_KEY, v ? "1" : "0");
+    } catch (_) {}
+    render();
+  }
   // This page's Robot connection, as the app's robot client last reported
   // it ({state, url, error, retry_ms}); null until it reports.
   var robot = null;
@@ -137,29 +167,54 @@ function idealystStatusOverlay(doc, capture) {
     host = el("idealyst-dev-overlay", "all:initial;");
     host.setAttribute("data-idealyst-dev-overlay", "");
     var root = host.attachShadow ? host.attachShadow({ mode: "open" }) : host;
-    badge = el("div",
+    // One bottom-right column (robot line above the status line), so
+    // lines that wrap push each other up instead of overlapping. The
+    // column ignores the pointer; only its buttons take clicks.
+    stack = el("div",
       "position:fixed;right:8px;bottom:8px;z-index:2147483647;max-width:60vw;" +
-      "padding:3px 8px;border-radius:4px;background:#111c;color:#eee;" +
-      "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;" + FONT);
-    badge.setAttribute("data-part", "badge");
-    robotBadge = el("div",
-      "position:fixed;right:8px;bottom:32px;z-index:2147483647;max-width:60vw;" +
-      "padding:3px 8px;border-radius:4px;background:#111c;color:#eee;" +
-      "white-space:normal;overflow-wrap:anywhere;pointer-events:none;" + FONT);
+      "display:flex;flex-direction:column;align-items:flex-end;gap:4px;pointer-events:none;");
+    stack.setAttribute("data-part", "stack");
+    var ROW = "display:flex;align-items:center;gap:6px;max-width:100%;padding:3px 8px;" +
+      "border-radius:4px;background:#111c;color:#eee;box-sizing:border-box;" + FONT;
+    var CHIP = "padding:0 6px;border-radius:3px;border:1px solid #fff3;background:transparent;" +
+      "color:#eee;cursor:pointer;pointer-events:auto;white-space:nowrap;" + FONT;
+    robotRow = el("div", ROW + "display:none;");
+    robotRow.setAttribute("data-part", "robot-row");
+    robotBadge = el("span", "white-space:normal;overflow-wrap:anywhere;");
     robotBadge.setAttribute("data-part", "robot");
-    shareButton = el("button",
-      "position:fixed;right:8px;bottom:56px;z-index:2147483647;max-width:60vw;" +
-      "padding:3px 8px;border-radius:4px;border:1px solid #fff3;background:#111c;color:#eee;" +
-      "white-space:normal;overflow-wrap:anywhere;cursor:pointer;text-align:left;display:none;" + FONT);
+    shareButton = el("button", CHIP + "display:none;");
     shareButton.setAttribute("data-part", "share");
     shareButton.setAttribute("type", "button");
     shareButton.addEventListener("click", function () {
       if (!capture) return;
       if (capture.state().sharing) capture.stop();
-      // The browser's dialog follows; its outcome comes back through
-      // `subscribe`. A dismissed dialog is no error to show.
+      // The browser's permission prompt follows; its outcome comes back
+      // through `subscribe`. A dismissed prompt is no error to show.
       else capture.start().catch(function () {});
     });
+    robotRow.appendChild(robotBadge);
+    robotRow.appendChild(shareButton);
+    var statusRow = el("div", ROW);
+    badge = el("span", "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;");
+    badge.setAttribute("data-part", "badge");
+    collapseButton = el("button", CHIP + "border:none;padding:0 2px;color:#999;");
+    collapseButton.setAttribute("data-part", "collapse");
+    collapseButton.setAttribute("type", "button");
+    collapseButton.setAttribute("title", "Hide the dev overlay");
+    collapseButton.textContent = "–";
+    collapseButton.addEventListener("click", function () { setCollapsed(true); });
+    statusRow.appendChild(badge);
+    statusRow.appendChild(collapseButton);
+    stack.appendChild(robotRow);
+    stack.appendChild(statusRow);
+    pill = el("button",
+      "position:fixed;right:8px;bottom:8px;z-index:2147483647;display:none;" +
+      "width:22px;height:22px;padding:0;border-radius:11px;border:1px solid #fff3;" +
+      "background:#111c;color:#eee;cursor:pointer;" + FONT);
+    pill.setAttribute("data-part", "pill");
+    pill.setAttribute("type", "button");
+    pill.setAttribute("title", "Show the dev overlay");
+    pill.addEventListener("click", function () { setCollapsed(false); });
     panel = el("div",
       "position:fixed;inset:0;z-index:2147483647;background:#000b;display:none;" +
       "overflow:auto;padding:5vh 5vw;box-sizing:border-box;" + FONT);
@@ -176,9 +231,8 @@ function idealystStatusOverlay(doc, capture) {
     card.appendChild(list);
     card.appendChild(hint);
     panel.appendChild(card);
-    root.appendChild(badge);
-    root.appendChild(robotBadge);
-    root.appendChild(shareButton);
+    root.appendChild(stack);
+    root.appendChild(pill);
     root.appendChild(panel);
     (doc.body || doc.documentElement).appendChild(host);
     panel.addEventListener("click", function (e) {
@@ -372,26 +426,36 @@ function idealystStatusOverlay(doc, capture) {
     return two(d.getHours()) + ":" + two(d.getMinutes()) + ":" + two(d.getSeconds());
   }
 
-  // What the share button says, or null when it is not shown: only while
+  // What the capture chip says, or null when it is not shown: only while
   // the robot is connected (no agent can ask otherwise) and the browser
-  // can share a tab — or once an agent asked, so a browser that cannot
-  // still says why.
+  // can capture a tab — or once an agent asked, so a browser that cannot
+  // still says why. The click asks the BROWSER for permission to capture
+  // this tab (`getDisplayMedia`); `title` carries the longer explanation.
   function shareText() {
     if (!capture || !robot || robot.state !== "connected") return null;
     var c = capture.state();
     if (!c.supported) {
-      return c.requested ? { text: "✗ An agent asked to see this tab, but this browser cannot share one", color: "#ff8b8b", lit: false } : null;
+      return c.requested
+        ? { text: "✗ capture unsupported", title: "An agent asked to capture this tab, but this browser cannot capture a tab", color: "#ff8b8b", lit: false }
+        : null;
     }
     if (c.sharing) {
       return {
-        text: "◉ Sharing this tab with the agent" + (c.lastShot ? " · last screenshot " + clock(c.lastShot) : "") + " · click to stop",
+        text: "◉ capturing · stop",
+        title: "The agent's screenshots of this tab are the browser's real pixels" +
+          (c.lastShot ? " · last screenshot " + clock(c.lastShot) : "") + ". Click to stop.",
         color: "#8be28b",
         lit: false
       };
     }
-    var t = c.requested ? "◎ Agent asks to see this tab: click to share it" : "◎ Share this tab with the agent";
+    var t = c.requested ? "agent wants capture · allow" : "allow capture";
     if (c.error) t += " (" + c.error + ")";
-    return { text: t, color: c.requested ? "#111" : "#eee", lit: c.requested };
+    return {
+      text: t,
+      title: "Lets the agent screenshot this tab with the browser's real pixels. The browser asks for permission.",
+      color: c.requested ? "#111" : "#eee",
+      lit: c.requested
+    };
   }
 
   var ICON = { idle: "○", change: "…", patching: "↻", building: "⚙", done: "✓", error: "✗" };
@@ -411,22 +475,31 @@ function idealystStatusOverlay(doc, capture) {
       // the page is waiting on.
       t = st.phase === "idle" || st.phase === "done" ? serverText() : serverText() + " · " + t;
     }
-    badge.textContent = t;
-    badge.style.color = serverBusy() ? "#eee"
+    var statusColor = serverBusy() ? "#eee"
       : st.phase === "error" ? "#ff8b8b" : st.phase === "done" ? "#8be28b" : "#eee";
-    robotBadge.style.display = robot ? "block" : "none";
+    badge.textContent = t;
+    badge.style.color = statusColor;
+    robotRow.style.display = robot ? "flex" : "none";
     if (robot) {
       var r = robotText();
       robotBadge.textContent = r.text;
       robotBadge.style.color = r.color;
     }
     var share = shareText();
-    shareButton.style.display = share ? "block" : "none";
+    shareButton.style.display = share ? "inline-block" : "none";
     if (share) {
       shareButton.textContent = share.text;
+      shareButton.setAttribute("title", share.title);
       shareButton.style.color = share.color;
-      shareButton.style.background = share.lit ? "#e5b443" : "#111c";
+      shareButton.style.background = share.lit ? "#e5b443" : "transparent";
     }
+    stack.style.display = collapsed ? "none" : "flex";
+    pill.style.display = collapsed ? "block" : "none";
+    pill.textContent = ICON[serverBusy() ? "building" : st.phase];
+    pill.style.color = share && share.lit ? "#111" : statusColor;
+    // An agent's capture request is the one thing worth a collapsed
+    // overlay's attention short of an error (which opens the panel).
+    pill.style.background = share && share.lit ? "#e5b443" : "#111c";
 
     var show = !!st.failure && !st.dismissed;
     panel.style.display = show ? "block" : "none";

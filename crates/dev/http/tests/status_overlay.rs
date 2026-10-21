@@ -44,6 +44,16 @@ El.prototype.findAll = function (part, out) {
 const document = new El("#document");
 document.body = new El("body");
 document.createElement = t => new El(t);
+// `!storage <json>` seeds a fake localStorage before the overlay is built.
+const stored = {};
+document.defaultView = { localStorage: {
+  getItem: k => (k in stored ? stored[k] : null),
+  setItem: (k, v) => { stored[k] = String(v); },
+} };
+const input = require("fs").readFileSync(0, "utf8").split("\n").filter(Boolean);
+for (const line of input) {
+  if (line.startsWith("!storage ")) Object.assign(stored, JSON.parse(line.slice("!storage ".length)));
+}
 
 __OVERLAY__
 
@@ -58,7 +68,7 @@ const capture = {
   subscribe(f) { this.subs.push(f); },
 };
 const o = idealystStatusOverlay(document, capture);
-const lines = require("fs").readFileSync(0, "utf8").split("\n").filter(Boolean);
+const lines = input.filter(l => !l.startsWith("!storage "));
 const out = [];
 for (const line of lines) {
   if (line.startsWith("!robot ")) {
@@ -75,6 +85,8 @@ for (const line of lines) {
     const cmd = line.slice(1).trim();
     if (cmd === "esc") document.fire("keydown", { key: "Escape" });
     if (cmd === "click-share") document.body.children[0].find("share").fire("click", {});
+    if (cmd === "click-collapse") document.body.children[0].find("collapse").fire("click", {});
+    if (cmd === "click-pill") document.body.children[0].find("pill").fire("click", {});
     const host = document.body.children[0];
     const share = host.find("share");
     const panel = host.find("panel");
@@ -83,10 +95,15 @@ for (const line of lines) {
       panel: panel.style.display !== "none",
       panelText: panel.textContent,
       diagnostics: host.findAll("diagnostic").length,
-      robot: host.find("robot").style.display === "none" ? null : host.find("robot").textContent,
+      robot: host.find("robot-row").style.display === "none" ? null : host.find("robot").textContent,
       robotColor: host.find("robot").style.color || null,
       share: share.style.display === "none" ? null : share.textContent,
       shareLit: share.style.background === "#e5b443",
+      shareTitle: share.attrs["title"] || null,
+      expanded: host.find("stack").style.display !== "none",
+      pill: host.find("pill").style.display === "none" ? null : host.find("pill").textContent,
+      pillLit: host.find("pill").style.background === "#e5b443",
+      stored: stored["idealyst-dev-overlay-collapsed"] || null,
       starts: capture.starts,
       stops: capture.stops,
     });
@@ -333,20 +350,24 @@ fn the_share_button_follows_the_robot_and_the_capture() {
         return skip();
     };
     assert_eq!(out[0]["share"], serde_json::Value::Null, "no robot, no agent to share with");
-    assert_eq!(out[1]["share"], "◎ Share this tab with the agent");
+    assert_eq!(out[1]["share"], "allow capture");
+    assert!(
+        out[1]["shareTitle"].as_str().unwrap().contains("The browser asks for permission"),
+        "the chip says the click is the browser's permission prompt"
+    );
     assert_eq!(out[1]["shareLit"], false);
-    assert_eq!(out[2]["share"], "◎ Agent asks to see this tab: click to share it");
+    assert_eq!(out[2]["share"], "agent wants capture · allow");
     assert_eq!(out[2]["shareLit"], true, "an agent's request lights the button");
     // `#click-share` records a frame of its own: the click, before the
     // controller reports back.
     assert_eq!(out[3]["starts"], 1, "the click starts the share");
-    let sharing = out[4]["share"].as_str().unwrap();
-    assert!(sharing.starts_with("◉ Sharing this tab with the agent · last screenshot "), "{sharing}");
-    assert!(sharing.ends_with(" · click to stop"), "{sharing}");
+    assert_eq!(out[4]["share"], "◉ capturing · stop");
+    let title = out[4]["shareTitle"].as_str().unwrap();
+    assert!(title.contains(" · last screenshot "), "{title}");
     assert_eq!(out[4]["shareLit"], false);
     assert_eq!(out[5]["stops"], 1, "a click while sharing stops it");
     assert_eq!(out[5]["starts"], 1);
-    assert_eq!(out[6]["share"], "◎ Share this tab with the agent (a window was shared, not this tab)");
+    assert_eq!(out[6]["share"], "allow capture (a window was shared, not this tab)");
     assert_eq!(out[7]["share"], serde_json::Value::Null, "hidden again while the robot is away");
 }
 
@@ -364,5 +385,42 @@ fn a_browser_without_tab_sharing_says_so_only_when_asked() {
         return skip();
     };
     assert_eq!(out[0]["share"], serde_json::Value::Null);
-    assert_eq!(out[1]["share"], "✗ An agent asked to see this tab, but this browser cannot share one");
+    assert_eq!(out[1]["share"], "✗ capture unsupported");
+    assert!(out[1]["shareTitle"].as_str().unwrap().contains("cannot capture a tab"));
+}
+
+/// The overlay collapses to one status glyph and back, remembers that
+/// for the page, still opens a failed build's panel while collapsed, and
+/// lights the glyph when an agent asks for capture.
+#[test]
+fn the_overlay_collapses_to_a_glyph_and_remembers_it() {
+    let Some(out) = run(&[
+        BUILD,
+        "#",
+        "#click-collapse",
+        r#"!robot {"state":"connected","url":"ws://h/__idealyst/relay"}"#,
+        r#"!capture {"requested":true}"#,
+        "#",
+        DIAG,
+        FAILED,
+        "#",
+        "#click-pill",
+    ]) else {
+        return skip();
+    };
+    assert_eq!(out[0]["expanded"], true);
+    assert_eq!(out[0]["pill"], serde_json::Value::Null);
+    assert_eq!(out[1]["expanded"], false, "the – collapses the overlay");
+    assert_eq!(out[1]["pill"], "⚙", "the glyph is the status icon");
+    assert_eq!(out[1]["stored"], "1", "remembered for the page");
+    assert_eq!(out[2]["pillLit"], true, "an agent's capture request lights the glyph");
+    assert_eq!(out[3]["panel"], true, "a failed build still opens its panel while collapsed");
+    assert_eq!(out[3]["pill"], "✗");
+    assert_eq!(out[4]["expanded"], true, "the glyph expands it again");
+    assert_eq!(out[4]["stored"], "0");
+
+    let Some(out) = run(&[r#"!storage {"idealyst-dev-overlay-collapsed":"1"}"#, BUILD, "#"]) else {
+        return skip();
+    };
+    assert_eq!(out[0]["expanded"], false, "a reload starts collapsed when it was left collapsed");
 }
