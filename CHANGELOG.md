@@ -15,6 +15,66 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **idea-ui components are styled through `component_styles!` slots; the
+  shared modifier refs and sheet builders are gone** (`idea-ui`,
+  `idea-theme`, `runtime-shared`, `runtime-vocabulary`, `runtime-macros`).
+  Every idea-ui component declares its styled sections as named slots
+  (`ButtonStyles`, `FieldStyles`, `TableStyles`, …). An app restyles any
+  slot app-wide at boot (`ButtonStyles::restyle(|s| …)`); the restyle is
+  composed into the slot's sheet, so it premints. Variant axes are open
+  and per component: `ButtonVariant`, `CardVariant`, `FieldAppearance`,
+  `TableDensity`, … each take built-in values (`ButtonVariant::Ghost`, or
+  the `variant::Ghost` marker) and app values
+  (`ButtonVariant::define("raised")` plus a restyle arm). A value of one
+  component's axis does not compile on another's. Every component takes a
+  `styles` prop overriding its slots on one instance. See the
+  design-systems guide.
+
+  Removed, with their replacements:
+  - `VariantRef`, `ButtonSizeRef`, `ShapeRef`, `TypographyKindRef` and
+    their `ButtonSize` / `Shape` / `TypographyKind` traits →
+    the component's own axis types (`ButtonVariant`, `ButtonSize`,
+    `ButtonShape`, `TypographyKind`, `CardVariant`, `BadgeVariant`, …).
+    The `variant::*`, `size::*`, `shape::*` and `typography_kind::*`
+    markers still convert, so `ui!` call sites are unchanged; code that
+    named the ref types (`let v: VariantRef = variant::Soft.into()`)
+    names the component's type (`ButtonVariant::Soft`).
+  - Every `*SheetBuilder`, `install_*_sheet`, `installed_*_sheet` and
+    `install_default_idea_sheets` → a restyle of the component's slots;
+    an extra tone is `register_tone(…)` or `app_theme! { tones: [...] }`
+    (it now reaches every tone-aware component with no per-sheet step);
+    the Gradient variant is
+    `ButtonStyles::restyle(|s| s.tone_variant(ButtonVariant::Gradient, &variant::Gradient))`.
+  - The `variant!` macro and idea-theme's own variant markers → a recipe
+    is a plain `Variant` impl, applied with `tone_variant_arms` (or
+    Button's `tone_variant`).
+  - `idea_ui::stylesheets` (every public sheet, including `TabPanel`) →
+    the component's slot (`TabsStyles::panel()`, `SelectStyles::menu()`).
+  - Per-slot style props (`SegmentedControl(style / segment_style /
+    selected_segment_style)`, `Card(style)`, `Button(label_style)`,
+    `Modal(backdrop_style / surface_style / content_style)`, …) and
+    `install_segmented_control_style` / the `slot_override` module → the
+    `styles` prop (`styles = ModalSlotStyles::default().body(rules)`) or a
+    restyle. A per-instance override is rules, optionally with per-value
+    arms (`SlotOverride::from(rules).arm(SegmentedControlSelected::On, …)`).
+  - `TableDensity`, `TableVariant` and `RowTone` are the table's open axis
+    types (`RowTone` is an alias of `TableTone`); a `match` on them needs a
+    wildcard arm. The table's `frame` axis is now named `variant`.
+  - `DISABLED_CONTROL_OPACITY` moved from `idea_theme::extensible` to
+    `idea_ui`.
+
+  *Migration:* replace each removed name with the item listed; register
+  restyles inside `app()` before the tree is built (a later restyle warns
+  once in debug builds). Look and premint behaviour of an unrestyled app
+  are unchanged.
+
+- **Collapsible's measured body is three views deep** (`idea-ui`). The
+  clip (animated `max-height`) holds an unpadded measured column, which
+  holds the padded `body_animated` slot. The body's padding and border no
+  longer animate on open/close — the clip reveals them — and only its
+  opacity fades. A restyled body padding is now inside the measured
+  height. *Migration:* none, unless a test walked the old two-view shape.
+
 - **Nested presses fire only the innermost target on web**
   (`backend-web`). A pressable, button or link inside a pressable used
   to fire inner then outer, because `click` bubbles; native backends
@@ -669,6 +729,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **`component_styles!`** (`runtime-macros`, `runtime-shared`,
+  `runtime-vocabulary`): declare a component's styled sections once as
+  named slots with component-level open axes; generates the registry key
+  (`restyle`, `set_default`, `values`), typed axis keys with `define`, a
+  restyle wrapper and per-instance `*SlotStyles` (`#[props(styles = …)]`
+  adds the field). Restyles compose into slot sheets and premint; every
+  linked component composes in the premint dump; `composed_slots()` names
+  them for tooling. Guide: design-systems.
+- **`websites/idea-ui-docs-branded`**: the idea-ui docs under a second
+  design language installed only through restyles — the worked example of
+  branding idea-ui (`idealyst dev --web --local` from its directory).
+- **`ButtonRestyle::tone_variant`**, **`idea_ui_docs::app_with`** (a boot
+  hook for a branded build) and the docs pages' restyle / app-value demos.
 
 - **The table suite** (`idea-ui`, `table`). Every data table builds from
   `Table` / `TableRow` / `TableCell` alone:
@@ -1879,6 +1953,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A focused text input removed by navigation no longer aborts the app**
+  (`runtime-vocabulary`). Its `on_focus` handler is scope-guarded like the
+  input's other callbacks; the blur fired during teardown wrote a freed
+  signal (`stale-signal-handle`). Field's focus ring was the common trigger.
+- **The table pager's "Rows" picker no longer shows a stray `‹`**
+  (`idea-ui`). The Select trigger's `min_width` beat the picker's box, so
+  the trigger spilled under the page numbers; the pager now sets the
+  trigger's floor through its slot override.
 
 - **A header row with reactive cell styles pins in a `scroll_y` table**
   (`table`, `idea-ui`). `table::cell_application` returned `None` for a
