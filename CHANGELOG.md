@@ -1968,6 +1968,23 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   plain variant's transparent fill, so header text overprinted whatever
   passed behind it; `TableStyles` now states `background: surface` for
   `(variant: plain, sticky_header: on)`.
+- **A `scroll_y` table's scrollbar runs under its header** (`table`,
+  `idea-ui`, `backend-ssr`). The header was a sticky row inside the rows'
+  scroller, so the vertical scrollbar ran the table's full height beside
+  it. The header rows now lay out in a strip above the rows' scroller:
+  the strip keeps the body's column tracks (each grid leads with a
+  zero-height sizer row; the head measures and follows the body's, and
+  floors the body at its own first widths) and follows the body's
+  horizontal scroll both ways, frozen columns frozen in both. On web the
+  two `<table>`s sit in one `role="table"` frame, each
+  `role="presentation"` with explicit row and cell roles. *Structure
+  change:* a `scroll_y` table with a header is surface > frame > [head
+  strip, rows' scroller]; code that walks the built tree (tests) reads
+  the head cells from the strip. The `table` SDK gained `table_head` /
+  `TableHeadPrim` (`<thead>`), `TableFramePrim`, `is_head`, and
+  `TablePrim::framed`, `TableRowPrim::{presentational, roles}`,
+  `TableCellPrim::roles`; `bind_row` / `bind_cell` binders now compose.
+  The SSR backend serializes `aria-label` and `aria-hidden`.
 - **A fill column in a `scroll_x` table takes the rest and truncates**
   (`table`). On web the scrolled `<table>` was `width: max-content`, and
   a `1fr` track's max-content contribution is its content, so one long

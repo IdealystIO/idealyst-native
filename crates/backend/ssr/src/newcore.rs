@@ -968,6 +968,10 @@ impl caps::DocumentOps for SsrBackend {
             // Explicit table roles on a grid-column table, whose rows are
             // `display: contents` (the `table` SDK).
             "role" => "role",
+            // The `table` SDK's row groups (`aria-label` on a group's
+            // `<tbody>`) and its column-sizing rows (`aria-hidden`).
+            "aria-label" => "aria-label",
+            "aria-hidden" => "aria-hidden",
             other => {
                 runtime_shared::unsupported::warn_once(
                     "ssr.attach_html_attribute",

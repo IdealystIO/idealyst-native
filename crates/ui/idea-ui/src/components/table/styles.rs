@@ -197,18 +197,19 @@ component_styles! {
                     border_left_color: t.color.border(),
                 }
             }
-            // Pinned header row (`Table(scroll_y = true)`): the head cells stick
-            // to the top of the table's own scroller. `TableCell(header = true)`
-            // selects `off` explicitly — that key is how `Table` tells a head
-            // cell from a body cell — and `Table` selects `on` for the leading
-            // head rows. Stacking among the cells (all siblings of one grid on
-            // native, one table on web): a body cell pinned to a side paints at
-            // the sticky default (`STICKY_Z`, 1); a row lifted by a reorder drag
-            // above that (2, its frozen cells 3 — see the `body_cell` slot's `drag`);
-            // the header row above every body row (4) so rows, lifted ones
-            // included, slide UNDER the header; and a corner cell — pinned to
-            // the top AND a side — above all of them (5), so columns slide under
-            // it sideways and rows slide under it vertically.
+            // The header row of a `Table(scroll_y = true)`. `TableCell(header =
+            // true)` selects `off` explicitly — that key is how `Table` tells a
+            // head cell from a body cell — and `Table` selects `on` for the
+            // leading head rows, which the table SDK lays out in a strip of
+            // their own above the rows' scroller. The top pin holds the row at
+            // the top of whatever scroller contains it (nothing scrolls under
+            // it vertically in that strip). Stacking among the cells of one
+            // grid: a body cell pinned to a side paints at the sticky default
+            // (`STICKY_Z`, 1); a row lifted by a reorder drag above that (2,
+            // its frozen cells 3 — see the `body_cell` slot's `drag`); the
+            // header row above every body row (4); and a corner cell — pinned
+            // to the top AND a side — above all of them (5), so header cells
+            // scrolled sideways slide under the frozen ones.
             variant sticky_header {
                 #[default]
                 off(_t) {}

@@ -236,17 +236,22 @@
 //! # Vertical scrolling & a pinned header
 //!
 //! `Table(scroll_y = true)` makes the table own its vertical scroll: the
-//! rows scroll inside the table's own height and the header row stays
-//! pinned to the top. Bound it with `max_height = Some(px)`, or let it
-//! fill a bounded parent (without `max_height` a `scroll_y` table takes
-//! the height its parent column gives it, and is as tall as its rows in
-//! an unbounded one). With `scroll_x` too the table owns ONE two-axis
-//! scroller, so the header pins to the top while frozen columns keep
-//! pinning to the sides, and a frozen header cell — the corner — pins on
-//! both axes, painted above the header row, which is painted above the
-//! body. That is the only way to freeze both: a sticky cell pins against
-//! its nearest scroll container, so in a `scroll_x` table that scrolls
-//! with the page the header can never stick to the page.
+//! rows scroll inside the table's own height and the header stays put
+//! above them. Bound it with `max_height = Some(px)`, or let it fill a
+//! bounded parent (without `max_height` a `scroll_y` table takes the
+//! height its parent column gives it, and is as tall as its rows in an
+//! unbounded one).
+//!
+//! The header rows lay out OUTSIDE the rows' scroller, above it, so the
+//! vertical scrollbar runs beside the rows only — under the header, not
+//! beside it. The header keeps the rows' column tracks (it measures and
+//! follows them, including a resize drag and a fill column) and, with
+//! `scroll_x` too, their horizontal scroll: scrolling the rows sideways
+//! moves the header with them, and scrolling over the header moves the
+//! rows. Frozen columns stay frozen in both, and a frozen header cell —
+//! the corner — is painted above the header cells sliding beneath it.
+//! The header's widths as first laid out are its columns' floors, so a
+//! header label is never cut by a narrower column.
 //!
 //! The header rows are the LEADING rows whose cells are all head cells
 //! (`TableCell(header = true)`).
@@ -634,10 +639,11 @@ pub struct TableProps {
     #[prop(static)]
     pub scroll_x: bool,
     /// Vertical-scroll mode: the rows scroll inside the table's own
-    /// height and the header row stays pinned to the top. Bound it with
-    /// `max_height`, or let it fill a bounded parent. With `scroll_x` the
-    /// table owns one two-axis scroller, so frozen columns and the header
-    /// pin together — see the module docs.
+    /// height under a header that stays put above them, with the
+    /// scrollbar beside the rows only. Bound it with `max_height`, or let
+    /// it fill a bounded parent. With `scroll_x` the header follows the
+    /// rows' horizontal scroll and frozen columns stay frozen in both —
+    /// see the module docs.
     // STRUCTURAL — selects the SDK's scroller and the header pin at build.
     #[prop(static)]
     pub scroll_y: bool,
@@ -1114,6 +1120,28 @@ pub fn Table(props: TableProps) -> Element {
         let style = slot_style("bottom");
         slot_view(slot, live_slots, style)
     });
+    // A scroll-y table's leading header rows form its head section: the
+    // SDK lays them out above the rows' scroller, so the vertical
+    // scrollbar runs beside the body only, under the header.
+    if props.scroll_y {
+        let mut row_i = 0usize;
+        let mut lead = 0usize;
+        for child in &children {
+            let mut rows = 0usize;
+            table::visit_rows(child, |_| rows += 1);
+            let head = rows > 0 && (row_i..row_i + rows).all(|i| kinds.get(i) == Some(&RowKind::Head));
+            if !head || table::is_footer(child) {
+                break;
+            }
+            row_i += rows;
+            lead += 1;
+        }
+        if lead > 0 {
+            let rest = children.split_off(lead);
+            let head = std::mem::replace(&mut children, rest);
+            children.insert(0, table::table_head(table::TableHeadProps { children: head }));
+        }
+    }
     // In grid-column mode every column is one track: the added columns
     // at their fixed widths, the author's from the column model.
     let mut sdk_columns: Vec<Option<table::ColumnSpec>> = lead

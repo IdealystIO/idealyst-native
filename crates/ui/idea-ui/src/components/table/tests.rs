@@ -1330,7 +1330,37 @@ fn framed_scroll_table_keeps_its_frozen_edge_static() {
 /// The surface and scroller of a scrolling table: (surface rules,
 /// scroller axis, rendered cells).
 fn scrolling_parts(t: Element) -> (Rc<StyleRules>, runtime_core::ScrollAxis, Vec<Element>) {
+    let (surface, axis, head, body) = split_parts(t);
+    (surface, axis, head.into_iter().chain(body).collect())
+}
+
+/// Whether a grid child is a table cell — not a split head's zero-height
+/// sizer cell, whose sheet selects no axes (every themed cell selects
+/// some).
+fn is_table_cell(el: &Element) -> bool {
+    table::cell_application(el).is_some_and(|app| !app.variants.0.is_empty())
+}
+
+/// The parts of a scrolling table: (surface rules, the rows' scroller
+/// axis, the head strip's cells, the body's cells). A table with a header
+/// and `scroll_y` splits — surface > frame > [head strip > content >
+/// grid, body scroller > [probe, content > grid]]; any other scrolling
+/// table is surface > scroller > content > grid, with no head strip.
+fn split_parts(
+    t: Element,
+) -> (Rc<StyleRules>, runtime_core::ScrollAxis, Vec<Element>, Vec<Element>) {
     use runtime_vocabulary::prims::{PrimCell, ScrollViewPrim, ViewPrim};
+    fn scroller(el: Element) -> (runtime_core::ScrollAxis, Vec<Element>) {
+        match peel_owned_keepalive(el) {
+            Element::Item { data, children, .. } => match data.downcast_ref::<PrimCell<ScrollViewPrim>>() {
+                Some(sv) => (sv.take().axis, children),
+                // A watched scroller sits in its viewport holder.
+                None => scroller(children.into_iter().next().expect("the holder wraps the scroller")),
+            },
+            _ => panic!("expected a scroller"),
+        }
+    }
+    let cells = |content: Element| grid_cells(content).into_iter().filter(is_table_cell).collect::<Vec<_>>();
     let (surface_rules, mut kids) = match peel_owned_keepalive(t) {
         Element::Item { data, children, .. } => {
             let vp = data.downcast_ref::<PrimCell<ViewPrim>>().expect("surface view").take();
@@ -1338,15 +1368,28 @@ fn scrolling_parts(t: Element) -> (Rc<StyleRules>, runtime_core::ScrollAxis, Vec
         }
         _ => panic!("a scrolling table lowers to its surface view"),
     };
-    let scroller = kids.pop().expect("surface wraps the scroller");
-    let (axis, mut inner) = match peel_owned_keepalive(scroller) {
-        Element::Item { data, children, .. } => (
-            data.downcast_ref::<PrimCell<ScrollViewPrim>>().expect("scroll_view").take().axis,
-            children,
-        ),
-        _ => panic!("the surface's content is the scroller"),
+    let content = kids.pop().expect("surface wraps the rows");
+    let content = peel_owned_keepalive(content);
+    let is_scroller = matches!(&content, Element::Item { data, .. }
+        if data.downcast_ref::<PrimCell<ScrollViewPrim>>().is_some());
+    let is_holder = matches!(&content, Element::Item { children, .. }
+        if children.len() == 1);
+    if is_scroller || is_holder {
+        let (axis, mut inner) = scroller(content);
+        return (surface_rules, axis, Vec::new(), cells(inner.pop().expect("the scroller wraps the table")));
+    }
+    let mut frame = match content {
+        Element::Item { children, .. } => children,
+        _ => panic!("the frame view"),
     };
-    (surface_rules, axis, grid_cells(inner.pop().expect("the scroller wraps the table")))
+    let body = frame.pop().expect("frame: the body scroller");
+    let strip = frame.pop().expect("frame: the head strip");
+    let (strip_axis, mut strip_kids) = scroller(strip);
+    assert_eq!(strip_axis, runtime_core::ScrollAxis::Horizontal, "the head strip scrolls sideways only");
+    let head = cells(strip_kids.pop().expect("the strip wraps the head content"));
+    let (axis, mut body_kids) = scroller(body);
+    let body = cells(body_kids.pop().expect("the body scroller wraps the table"));
+    (surface_rules, axis, head, body)
 }
 
 fn surface_rules_of(style: Option<runtime_vocabulary::StyleProp>) -> Rc<StyleRules> {
@@ -1361,10 +1404,11 @@ fn z_of(rules: &StyleRules) -> Option<i32> {
 }
 
 /// CrewForge: a header row could not stay put while the rows scroll.
-/// `scroll_y` pins the leading head row to the top of the table's own
-/// scroller, and with `scroll_x` the corner (a frozen head cell) pins
-/// on both axes, stacked above the header row, which is stacked above
-/// the frozen body column. Body cells take no top pin.
+/// `scroll_y` marks the leading head row as the pinned header (top pin,
+/// laid out in the head strip above the rows), and with `scroll_x` the
+/// corner (a frozen head cell) pins on both axes, stacked above the
+/// header row, which is stacked above the frozen body column. Body cells
+/// take no top pin.
 #[test]
 fn regression_scroll_y_pins_the_header_row_and_stacks_the_corner_on_top() {
     with_test_world(|| {
@@ -1415,6 +1459,40 @@ fn regression_scroll_y_pins_the_header_row_and_stacks_the_corner_on_top() {
         assert!(z(&lifted) < z(&lifted_frozen), "its own frozen cell stays above its scrolling ones");
         assert!(z(&lifted_frozen) < z(head), "and the lifted row slides under the header");
         assert_eq!(z_of(corner), Some(5));
+    });
+}
+
+/// CrewForge (want_9f817d95): a `scroll_y` table's vertical scrollbar
+/// ran beside the pinned header, down the table's full height — the
+/// header row was a sticky row inside the rows' scroller. The leading
+/// head rows now lay out in the head strip above the rows' scroller: the
+/// body scroller holds the body cells only, and the strip holds the head
+/// cells (still marked as the pinned header row, so a plain table's
+/// header stays opaque). With `scroll_x` the rows' scroller is two-axis.
+#[test]
+fn regression_scroll_y_header_sits_above_the_rows_scroller() {
+    with_test_world(|| {
+        for (scroll_x, axis) in [(false, runtime_core::ScrollAxis::Vertical), (true, runtime_core::ScrollAxis::Both)] {
+            let t = Table(TableProps {
+                children: vec![
+                    row_of(vec![head_cell("Name"), head_cell("Hours")]),
+                    row_of(vec![body_cell("Ana"), body_cell("8")]),
+                    row_of(vec![body_cell("Ben"), body_cell("6")]),
+                ],
+                scroll_x,
+                scroll_y: true,
+                variant: TableVariant::Plain,
+                ..Default::default()
+            });
+            let (_, body_axis, head, body) = split_parts(t);
+            assert_eq!(body_axis, axis, "the rows' scroller (scroll_x: {scroll_x})");
+            assert_eq!(head.len(), 2, "the header row sits in the head strip");
+            assert_eq!(body.len(), 4, "the body scroller holds the body rows only");
+            for c in head {
+                let r = rules_of(c);
+                assert_eq!(bg_token(&r).as_deref(), Some("color-surface"), "a plain header is opaque");
+            }
+        }
     });
 }
 

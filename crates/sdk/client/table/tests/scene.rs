@@ -1634,6 +1634,162 @@ fn regression_scroll_x_and_y_share_one_two_axis_scroller() {
     );
 }
 
+/// CrewForge (want_9f817d95): a `scroll_y` table's vertical scrollbar
+/// ran its full height, beside the pinned header, because the header was
+/// a sticky row inside the rows' scroller. With a header section the
+/// native table splits: surface > frame > [head strip, body scroller].
+/// The strip is a horizontal scroller without a scrollbar holding the
+/// header rows' own grid; the body scroller (vertical here, both axes
+/// with `scroll_x`) holds the viewport probe and the body rows' grid, and
+/// each grid leads with a zero-height sizer row of one cell per column.
+#[test]
+fn regression_scroll_y_header_lays_out_above_the_rows_scroller() {
+    use runtime_vocabulary::prims::ScrollViewPrim;
+    let world = World::new();
+    world.enter(|| {
+        for (scroll_x, axis) in [(false, runtime_shared::ScrollAxis::Vertical), (true, runtime_shared::ScrollAxis::Both)] {
+            let t = table(TableProps {
+                children: vec![table::table_head(table::TableHeadProps { children: vec![row(3)] }), row(3), row(3)],
+                scroll_x,
+                scroll_y: true,
+                ..Default::default()
+            })
+            .into_element();
+            let mut surface = item_children(t);
+            assert_eq!(surface.len(), 1, "surface holds just the frame");
+            let mut frame = item_children(surface.pop().unwrap());
+            assert_eq!(frame.len(), 2, "frame: head strip, body scroller");
+            let body = frame.pop().unwrap();
+            let strip = frame.pop().unwrap();
+
+            let (strip_prim, mut strip_kids) = match strip {
+                Element::Item { data, children } => {
+                    (data.downcast_ref::<PrimCell<ScrollViewPrim>>().expect("the strip scrolls").take(), children)
+                }
+                _ => panic!("strip item"),
+            };
+            assert_eq!(strip_prim.axis, runtime_shared::ScrollAxis::Horizontal, "the head never scrolls vertically");
+            let strip_rules = match strip_prim.style {
+                Some(StyleProp::SheetDynamic(f)) => resolve_style(&f()),
+                _ => panic!("the strip's style is a live sheet application"),
+            };
+            assert_eq!(strip_rules.scrollbar, Some(runtime_shared::ScrollbarVisibility::Hidden));
+            let head_content = item_children(strip_kids.pop().unwrap());
+            let head_grid = item_children(head_content.into_iter().next().unwrap());
+            assert_eq!(head_grid.len(), 3 + 3, "head grid: the sizer row, then the header row");
+
+            let (body_prim, mut body_kids) = match body {
+                Element::Item { data, children } => {
+                    (data.downcast_ref::<PrimCell<ScrollViewPrim>>().expect("the body scrolls").take(), children)
+                }
+                _ => panic!("body item"),
+            };
+            assert_eq!(body_prim.axis, axis, "the rows' scroller (scroll_x: {scroll_x})");
+            assert!(body_prim.on_scroll.is_some(), "the body's scroll drives the head strip");
+            assert_eq!(body_kids.len(), 2, "body scroller: probe, content");
+            let content = item_children(body_kids.pop().unwrap());
+            let body_grid = item_children(content.into_iter().next().unwrap());
+            assert_eq!(body_grid.len(), 3 + 3 * 2, "body grid: the sizer row, then both body rows");
+        }
+    });
+}
+
+/// Web: the split table is a `role="table"` frame around two
+/// presentational `<table>`s — the head's rows in a `<thead>` — whose rows
+/// and cells say their roles; the sizer rows are hidden from assistive
+/// tech, and the head strip shows no scrollbar.
+#[test]
+fn split_head_web_markup_reads_as_one_table() {
+    let page = backend_ssr::newcore::render_path_with("/", table::register, || {
+        let head = table::table_head(table::TableHeadProps {
+            children: vec![item_lowering::row_item(
+                vec![item_lowering::cell_item(true, ColSpan::default(), vec![glue::text("Name").into_element()], None)],
+                None,
+            )],
+        });
+        let body = item_lowering::row_item(
+            vec![item_lowering::cell_item(false, ColSpan::default(), vec![glue::text("Ana").into_element()], None)],
+            None,
+        );
+        item_lowering::web_scrolling_table(vec![head, body], None, false, true)
+    });
+    let html = &page.html;
+    assert!(html.contains("role=\"table\""), "the frame is the table: {html}");
+    assert_eq!(html.matches("<table").count(), 2, "a head table and a body table: {html}");
+    assert_eq!(html.matches("role=\"presentation\"").count(), 2, "{html}");
+    assert!(html.contains("<thead"), "{html}");
+    assert_eq!(html.matches("aria-hidden=\"true\"").count(), 2, "one sizer row per table: {html}");
+    assert!(html.contains("role=\"columnheader\"") && html.contains("role=\"cell\""), "{html}");
+    assert!(html.contains("role=\"row\""), "{html}");
+    let css = &page.head_css;
+    assert!(css.contains("scrollbar-width: none") || css.contains("scrollbar-width:none"), "{css}");
+}
+
+/// A group's rows lay out in place among the table's rows (native: in the
+/// one grid), and a collapsed row's cells take no height, padding or
+/// divider while its flag holds — and give them back when it clears.
+#[test]
+fn group_rows_flatten_in_place_and_collapse_live() {
+    let world = World::new();
+    let (collapsed, cells) = world.enter(|| {
+        let collapsed = glue::signal(true);
+        let member = row(2);
+        table::set_row_collapsed(&member, Rc::new(move || collapsed.get()));
+        let group = table::table_group(table::TableGroupProps {
+            children: vec![row(2), member],
+            label: Some("Crew".into()),
+        });
+        let t = table(TableProps { children: vec![row(2), group], ..Default::default() }).into_element();
+        let outer = item_children(t);
+        let cells = item_children(outer.into_iter().next().unwrap());
+        (collapsed, cells)
+    });
+    assert_eq!(cells.len(), 6, "three rows of two cells, the group's in place");
+    let rules = |c: &Element| match c {
+        Element::Item { data, .. } => {
+            let mut rules: Rc<glue::StyleRules> = Rc::default();
+            data.downcast_ref::<PrimCell<ViewPrim>>().unwrap().with_mut(|p| {
+                rules = match p.style.as_ref() {
+                    Some(StyleProp::Dynamic(f)) => f(),
+                    Some(StyleProp::SheetDynamic(f)) => resolve_style(&f()),
+                    Some(StyleProp::Static(r)) => r.clone(),
+                    _ => Rc::default(),
+                }
+            });
+            rules
+        }
+        _ => panic!("cell view"),
+    };
+    let zero = Some(glue::Tokenized::Literal(glue::Length::Px(0.0)));
+    world.enter(|| {
+        assert_eq!(rules(&cells[4]).max_height, zero, "the collapsed row clips to zero height");
+        assert_eq!(rules(&cells[4]).padding_top, zero);
+        assert!(rules(&cells[2]).max_height.is_none(), "its group's other row is untouched");
+    });
+    world.enter(|| collapsed.set(false));
+    world.flush();
+    world.enter(|| assert!(rules(&cells[4]).max_height.is_none(), "expanded again in place"));
+}
+
+/// Web: a group is its own `<tbody role="rowgroup">` named by its label,
+/// and in an auto-layout `<table>` (whose cells ignore `max-height`) a
+/// collapsible row's cell content sits in a clip block.
+#[test]
+fn web_group_is_a_named_rowgroup_and_collapsible_cells_clip() {
+    let page = backend_ssr::newcore::render_path_with("/", table::register, || {
+        let member = item_lowering::row_item(
+            vec![item_lowering::cell_item(false, ColSpan::default(), vec![glue::text("Ana").into_element()], None)],
+            None,
+        );
+        table::set_row_collapsed(&member, Rc::new(|| true));
+        let group = table::table_group(table::TableGroupProps { children: vec![member], label: Some("Crew".into()) });
+        item_lowering::web_table(vec![group], None, false, None, None)
+    });
+    let html = &page.html;
+    assert!(html.contains("<tbody role=\"rowgroup\" aria-label=\"Crew\""), "{html}");
+    assert!(html.contains("<td") && html.contains("overflow:hidden"), "the content clip: {html}");
+}
+
 /// Web: `scroll_y` wraps the `<table>` in the scroller and switches to
 /// the separate border model (a pinned header's hairlines travel with
 /// it), but keeps the fill-and-wrap width — only `scroll_x` lays the
