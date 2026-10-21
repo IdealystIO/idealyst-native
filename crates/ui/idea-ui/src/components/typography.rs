@@ -1,31 +1,164 @@
-//! `Typography` — text component driven by the extensible
-//! `TypographyKind` trait.
+//! `Typography` — themed text.
 //!
 //! ```ignore
 //! ui! { Typography(content = "Welcome".into(), kind = typography_kind::H1) }
 //! ```
 //!
-//! Styling routes through the installed Typography stylesheet (set by
-//! `install_idea_theme`). Three axes: `kind` (font characteristics),
-//! `color` (default / muted / tone-driven), `align`. Every combination
-//! is pre-generated, so apply-style is a className lookup.
+//! Styling is [`TypographyStyles`]' `text` slot: `kind` (font size, weight,
+//! line height, tracking), `tone` (`default` / `muted` / a tone's
+//! foreground), `weight` and `align` arms. Every combination ships as
+//! build-time CSS, so applying a style is a class lookup. An app adds a
+//! kind with `TypographyKind::define("lead")` plus a restyle arm.
 //!
 //! Color precedence: `tone: Some(...)` wins, then `muted: true`, then
 //! the theme's default text color.
 
 use runtime_core::{
-    component, text, FontFamily, FontWeight, IdealystSchema, IntoElement, Element, Reactive,
-    Role, StyleApplication, StyleRules, TextAlign,
+    component, component_styles, text, Element, FontFamily, FontWeight, IdealystSchema, IntoElement, Length, Reactive,
+    Role, SlotRestyle, StyleRules, TextAlign,
 };
 
-use idea_theme::extensible::{installed_typography_sheet, ToneRef, TypographyKindRef};
+use idea_theme::extensible::{semantic_tones, tone_arms, ToneRef};
+
+use crate::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`Typography`].
+    pub Typography<IdeaThemeRef> {
+        /// The text node.
+        slot text {
+            extend(tone_colors)
+            // Deliberately sets NO `font_family`: the theme's font reaches
+            // every Typography through the framework's default-text-font
+            // channel (the live path fills an absent family at apply time,
+            // the preminted path emits `var(--iy-default-font, inherit)`).
+            // A family baked here is not `Tokenized`, so a build-time class
+            // would freeze whichever theme the dump build installed.
+            base(_t) {}
+            /// The typographic role. Line heights and tracking are px.
+            /// H4–H6 borrow the body ramp's size tokens at heading weight.
+            variant kind {
+                display(t) { font_size: t.typography.display_size(), font_weight: FontWeight::Bold, line_height: 44.0, letter_spacing: -1.0 }
+                h1(t) { font_size: t.typography.h1_size(), font_weight: FontWeight::Bold, line_height: 36.0, letter_spacing: -0.8 }
+                h2(t) { font_size: t.typography.h2_size(), font_weight: FontWeight::SemiBold, line_height: 28.0, letter_spacing: -0.5 }
+                h3(t) { font_size: t.typography.h3_size(), font_weight: FontWeight::SemiBold, line_height: 24.0, letter_spacing: -0.2 }
+                h4(t) { font_size: t.typography.body_xl_size(), font_weight: FontWeight::SemiBold, line_height: 24.0, letter_spacing: -0.1 }
+                h5(t) { font_size: t.typography.body_lg_size(), font_weight: FontWeight::SemiBold, line_height: 22.0, letter_spacing: 0.0 }
+                h6(t) { font_size: t.typography.body_size(), font_weight: FontWeight::SemiBold, line_height: 20.0, letter_spacing: 0.0 }
+                body_xl(t) { font_size: t.typography.body_xl_size(), font_weight: FontWeight::Normal, line_height: 27.0, letter_spacing: 0.0 }
+                body_lg(t) { font_size: t.typography.body_lg_size(), font_weight: FontWeight::Normal, line_height: 25.0, letter_spacing: 0.0 }
+                #[default]
+                body(t) { font_size: t.typography.body_size(), font_weight: FontWeight::Normal, line_height: 22.0, letter_spacing: 0.0 }
+                body_sm(t) { font_size: t.typography.body_sm_size(), font_weight: FontWeight::Normal, line_height: 21.0, letter_spacing: 0.0 }
+                caption(t) { font_size: t.typography.caption_size(), font_weight: FontWeight::Medium, line_height: 17.0, letter_spacing: 0.0 }
+                overline(t) { font_size: t.typography.overline_size(), font_weight: FontWeight::Bold, line_height: 14.0, letter_spacing: 1.5 }
+            }
+            /// The color: the theme's text, its muted text, or a tone's
+            /// foreground (one arm per registered tone — `tone_colors`).
+            variant tone {
+                #[default]
+                default(t) { color: t.color.text() }
+                muted(t) { color: t.color.text_muted() }
+            }
+            /// A per-instance weight over the kind's — an axis, so it
+            /// premints.
+            variant weight {
+                #[default]
+                inherit(_t) {}
+                thin(_t) { font_weight: FontWeight::Thin }
+                extra_light(_t) { font_weight: FontWeight::ExtraLight }
+                light(_t) { font_weight: FontWeight::Light }
+                normal(_t) { font_weight: FontWeight::Normal }
+                medium(_t) { font_weight: FontWeight::Medium }
+                semi_bold(_t) { font_weight: FontWeight::SemiBold }
+                bold(_t) { font_weight: FontWeight::Bold }
+                extra_bold(_t) { font_weight: FontWeight::ExtraBold }
+                black(_t) { font_weight: FontWeight::Black }
+            }
+            variant align {
+                #[default]
+                left(_t) { text_align: TextAlign::Left }
+                center(_t) { text_align: TextAlign::Center }
+                right(_t) { text_align: TextAlign::Right }
+                justify(_t) { text_align: TextAlign::Justify }
+            }
+            transitions {
+                color: 250ms EaseInOut,
+            }
+        }
+    }
+}
+
+/// One `tone` arm per registered tone: the tone's stroke foreground (its
+/// text color over the page surface).
+fn tone_colors(s: &mut SlotRestyle<'_, TypographyStyles>) {
+    tone_arms(s, &semantic_tones(), |ctx| StyleRules {
+        color: Some(ctx.tone.stroke_fg(ctx.theme)),
+        ..Default::default()
+    });
+}
+
+impl TypographyKind {
+    /// Whether this kind is a heading (`display`, `h1`…`h6`) — a heading
+    /// kind gets `Role::Header` unless `a11y_role` says otherwise. An
+    /// app-defined kind is not a heading; give it `a11y_role =
+    /// Some(Role::Header)` when it is one.
+    pub fn is_heading(self) -> bool {
+        matches!(self.key(), "display" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+    }
+}
+
+/// The built-in kinds by their short names, so `kind =
+/// typography_kind::H1` reads as it always has.
+#[allow(non_upper_case_globals)]
+pub mod typography_kind {
+    use super::TypographyKind;
+    pub const Display: TypographyKind = TypographyKind::Display;
+    pub const H1: TypographyKind = TypographyKind::H1;
+    pub const H2: TypographyKind = TypographyKind::H2;
+    pub const H3: TypographyKind = TypographyKind::H3;
+    pub const H4: TypographyKind = TypographyKind::H4;
+    pub const H5: TypographyKind = TypographyKind::H5;
+    pub const H6: TypographyKind = TypographyKind::H6;
+    pub const BodyXl: TypographyKind = TypographyKind::BodyXl;
+    pub const BodyLg: TypographyKind = TypographyKind::BodyLg;
+    pub const Body: TypographyKind = TypographyKind::Body;
+    pub const BodySm: TypographyKind = TypographyKind::BodySm;
+    pub const Caption: TypographyKind = TypographyKind::Caption;
+    pub const Overline: TypographyKind = TypographyKind::Overline;
+}
+
+/// The `weight` arm for a `FontWeight`.
+fn weight_value(w: FontWeight) -> TypographyWeight {
+    match w {
+        FontWeight::Thin => TypographyWeight::Thin,
+        FontWeight::ExtraLight => TypographyWeight::ExtraLight,
+        FontWeight::Light => TypographyWeight::Light,
+        FontWeight::Normal => TypographyWeight::Normal,
+        FontWeight::Medium => TypographyWeight::Medium,
+        FontWeight::SemiBold => TypographyWeight::SemiBold,
+        FontWeight::Bold => TypographyWeight::Bold,
+        FontWeight::ExtraBold => TypographyWeight::ExtraBold,
+        FontWeight::Black => TypographyWeight::Black,
+    }
+}
+
+/// The `align` arm for a `TextAlign`.
+fn align_value(a: TextAlign) -> TypographyAlign {
+    match a {
+        TextAlign::Left => TypographyAlign::Left,
+        TextAlign::Center => TypographyAlign::Center,
+        TextAlign::Right => TypographyAlign::Right,
+        TextAlign::Justify => TypographyAlign::Justify,
+    }
+}
 
 // Reactive-by-default: `#[props]` wraps each data field `T` → `Reactive<T>`.
 // `content` routes to the `text()` sink; the style-driving props (kind/tone/
 // muted/font/align) route to the style sink. A bare value stays a zero-cost
 // `Static` snapshot (the no-flicker fast path); a `Signal`/`rx!` re-styles in
 // place.
-#[runtime_core::props]
+#[runtime_core::props(styles = TypographyStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct TypographyProps {
@@ -37,9 +170,10 @@ pub struct TypographyProps {
     pub content: Reactive<String>,
     /// Typographic role (font size/weight/line-height): `Display`,
     /// `H1`…`H6`, `BodyXl`/`BodyLg`/`Body`/`BodySm`, `Caption`,
-    /// `Overline`, or an app-defined kind. Default Body. A heading kind
-    /// also gets `Role::Header` unless `a11y_role` says otherwise.
-    pub kind: TypographyKindRef,
+    /// `Overline`, or an app-defined [`TypographyKind`]. Default Body. A
+    /// heading kind also gets `Role::Header` unless `a11y_role` says
+    /// otherwise.
+    pub kind: TypographyKind,
     /// Optional intent-colored text. When `Some`, overrides `muted`.
     pub tone: Option<ToneRef>,
     /// When `true` and `tone` is `None`, use the theme's muted text color.
@@ -82,8 +216,7 @@ pub struct TypographyProps {
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub lines: Option<u32>,
     /// Accessibility role override. Default `None` = AUTO: a heading `kind`
-    /// (`display`, `h1`…`h6`, or a custom kind whose `is_heading()` is true)
-    /// gets `Role::Header` so screen readers, locators, and platform a11y
+    /// (`display`, `h1`…`h6`) gets `Role::Header` so screen readers, locators, and platform a11y
     /// trees see a real heading — matching what the visual scale implies;
     /// non-heading kinds get no role (natural text). Set `Some(role)` to
     /// force a specific role, including `Some(Role::Text)` to opt a heading
@@ -97,7 +230,7 @@ impl Default for TypographyProps {
     fn default() -> Self {
         Self {
             content: Reactive::Static(String::new()),
-            kind: Reactive::Static(TypographyKindRef::default()),
+            kind: Reactive::Static(TypographyKind::default()),
             tone: Reactive::Static(None),
             muted: Reactive::Static(false),
             font: Reactive::Static(None),
@@ -105,6 +238,7 @@ impl Default for TypographyProps {
             align: Reactive::Static(TextAlign::Left),
             lines: Reactive::Static(None),
             a11y_role: Reactive::Static(None),
+            styles: Default::default(),
         }
     }
 }
@@ -126,79 +260,46 @@ impl Default for TypographyProps {
 pub fn Typography(props: &TypographyProps) -> Element {
     let content = props.content.clone();
 
-    // The style is REACTIVE when any style-driving prop is live; otherwise it
-    // stays the build-time fast path (applied before first paint, theme-swapped
-    // in bulk — no per-node Effect, no first-paint color flicker). The
-    // closure reads each prop live INSIDE, so the apply-style Effect subscribes
-    // to whichever are dynamic.
-    let style_is_reactive = !props.kind.is_static()
-        || !props.tone.is_static()
-        || !props.muted.is_static()
-        || !props.font.is_static()
-        || !props.weight.is_static()
-        || !props.align.is_static()
-        || !props.lines.is_static();
-
-    let make_style = {
-        let kind = props.kind.clone();
-        let tone = props.tone.clone();
-        let muted = props.muted.clone();
-        let font = props.font.clone();
-        let weight = props.weight.clone();
-        let align = props.align.clone();
-        let lines = props.lines.clone();
-        move || -> StyleApplication {
-            let kind_key = kind.get().key().to_string();
-            // Color precedence: tone wins, then muted, then default.
-            let color_key = match (tone.get(), muted.get()) {
-                (Some(t), _) => t.key().to_string(),
-                (None, true) => "muted".to_string(),
-                (None, false) => "default".to_string(),
-            };
-            let align_key = match align.get() {
-                TextAlign::Left => "left",
-                TextAlign::Center => "center",
-                TextAlign::Right => "right",
-                TextAlign::Justify => "justify",
+    // Color precedence: tone wins, then muted, then default.
+    let tone_axis = {
+        let (tone, muted) = (props.tone.clone(), props.muted.clone());
+        let pick = |t: Option<ToneRef>, m: bool| -> &'static str {
+            match (t, m) {
+                (Some(t), _) => {
+                    use idea_theme::extensible::Tone;
+                    t.key()
+                }
+                (None, true) => "muted",
+                (None, false) => "default",
             }
-            .to_string();
-
-            // Per-instance weight override, layered over the kind's baked-in
-            // weight. An axis rather than a computed layer: `FontWeight` is a
-            // closed enum, so it premints — and `StyleApplication` has only
-            // ONE computed slot, so while both `font` and `weight` rode
-            // computed layers the second silently overwrote the first and a
-            // Typography with both set lost its font.
-            let weight_key = match weight.get() {
-                Some(w) => idea_theme::extensible::font_weight_key(w),
-                None => "inherit",
-            };
-
-            let mut style = StyleApplication::new(installed_typography_sheet())
-                .with("kind", kind_key)
-                .with("color", color_key)
-                .with("weight", weight_key.to_string())
-                .with("align", align_key);
-
-            // Per-instance font override and line limit, layered over the
-            // sheet base. They ride the INLINE layer: a typeface is an
-            // app-supplied asset, not a closed set the sheet could enumerate
-            // as an axis — and unlike a `with_computed` layer, inline does
-            // not disqualify the application from preminting (a
-            // `--premint-only` app would panic on any Typography with a
-            // `font` override). ONE inline layer: `with_inline` replaces, so both
-            // go in the same rules.
-            let (font, lines) = (font.get(), lines.get());
-            if font.is_some() || lines.is_some() {
-                style = style.with_inline(StyleRules {
-                    font_family: font,
-                    max_lines: lines,
-                    ..Default::default()
-                });
-            }
-            style
+        };
+        match (tone, muted) {
+            (Reactive::Static(t), Reactive::Static(m)) => Reactive::Static(pick(t, m)),
+            (t, m) => Reactive::Dynamic(std::rc::Rc::new(move || pick(t.get(), m.get()))),
         }
     };
+    let style = TypographyStyles::text()
+        .set(props.kind.clone())
+        .set(props.weight.clone().map(|w| w.map(weight_value).unwrap_or(TypographyWeight::Inherit)))
+        .set(props.align.clone().map(align_value));
+    let style = match tone_axis {
+        Reactive::Static(key) => style.raw("tone", key),
+        live => style.raw_with("tone", move || live.get()),
+    };
+    // Per-instance font override and line limit ride the INLINE layer: a
+    // typeface is an app-supplied asset, not a closed set the slot could
+    // enumerate, and inline keeps the application premintable.
+    let inline = |font: Option<FontFamily>, lines: Option<u32>| StyleRules {
+        font_family: font,
+        max_lines: lines,
+        ..Default::default()
+    };
+    let style = match (props.font.clone(), props.lines.clone()) {
+        (Reactive::Static(None), Reactive::Static(None)) => style,
+        (Reactive::Static(f), Reactive::Static(l)) => style.inline(inline(f, l)),
+        (f, l) => style.inline_with(move || inline(f.get(), l.get())),
+    };
+    let style = style.overridden(props.styles.text.as_ref());
 
     // Resolve the accessibility role ONCE at build. Explicit `a11y_role`
     // wins; otherwise a heading kind auto-derives `Role::Header`. Reading
@@ -214,11 +315,7 @@ pub fn Typography(props: &TypographyProps) -> Element {
     // Both branches produce the same wrapper type, so the role is folded
     // in after the style split (no `Bound<_>` type annotation — the
     // builder's own type carries it).
-    let styled = if style_is_reactive {
-        text(content).with_style(make_style)
-    } else {
-        text(content).with_style(make_style())
-    };
+    let styled = text(content).with_style(style);
     match role {
         Some(r) => styled.a11y_role(r).into_element(),
         None => styled.into_element(),
@@ -356,13 +453,13 @@ mod tests {
         with_test_world(|| {
             install_idea_theme(light_theme());
             for kind in [
-                TypographyKindRef::from(idea_theme::extensible::typography::H1),
-                TypographyKindRef::from(idea_theme::extensible::typography::H2),
-                TypographyKindRef::from(idea_theme::extensible::typography::H3),
-                TypographyKindRef::from(idea_theme::extensible::typography::H4),
-                TypographyKindRef::from(idea_theme::extensible::typography::H5),
-                TypographyKindRef::from(idea_theme::extensible::typography::H6),
-                TypographyKindRef::from(idea_theme::extensible::typography::Display),
+                TypographyKind::H1,
+                TypographyKind::H2,
+                TypographyKind::H3,
+                TypographyKind::H4,
+                TypographyKind::H5,
+                TypographyKind::H6,
+                TypographyKind::Display,
             ] {
                 let props = TypographyProps {
                     kind: Reactive::Static(kind.clone()),
@@ -387,9 +484,7 @@ mod tests {
 
             // Explicit Role::Text opts a heading kind OUT of the heading role.
             let opted_out = TypographyProps {
-                kind: Reactive::Static(TypographyKindRef::from(
-                    idea_theme::extensible::typography::H1,
-                )),
+                kind: Reactive::Static(TypographyKind::H1),
                 a11y_role: Reactive::Static(Some(Role::Text)),
                 ..Default::default()
             };
@@ -486,7 +581,17 @@ mod tests {
     fn every_font_weight_resolves_through_the_axis() {
         with_test_world(|| {
             install_idea_theme(light_theme());
-            for (_, w) in idea_theme::extensible::FONT_WEIGHT_KEYS {
+            for w in [
+                FontWeight::Thin,
+                FontWeight::ExtraLight,
+                FontWeight::Light,
+                FontWeight::Normal,
+                FontWeight::Medium,
+                FontWeight::SemiBold,
+                FontWeight::Bold,
+                FontWeight::ExtraBold,
+                FontWeight::Black,
+            ] {
                 let rules = resolve(Typography(&TypographyProps {
                     content: Reactive::Static("Hi".to_string()),
                     weight: Reactive::Static(Some(w)),
@@ -504,9 +609,8 @@ mod tests {
     #[test]
     fn regression_typography_kind_h4_to_h6_exist_and_continue_the_ramp() {
         with_test_world(|| {
-            use crate::{typography_kind, TypographyKind};
             install_idea_theme(light_theme());
-            let size_of = |kind: TypographyKindRef| -> f32 {
+            let size_of = |kind: TypographyKind| -> f32 {
                 let rules = resolve(Typography(&TypographyProps {
                     content: Reactive::Static("Hi".to_string()),
                     kind: Reactive::Static(kind),
@@ -518,20 +622,17 @@ mod tests {
                 }
             };
             let sizes = [
-                size_of(typography_kind::H3.into()),
-                size_of(typography_kind::H4.into()),
-                size_of(typography_kind::H5.into()),
-                size_of(typography_kind::H6.into()),
+                size_of(typography_kind::H3),
+                size_of(typography_kind::H4),
+                size_of(typography_kind::H5),
+                size_of(typography_kind::H6),
             ];
             assert!(
                 sizes.windows(2).all(|w| w[0] > w[1]),
                 "H3 > H4 > H5 > H6, got {sizes:?}"
             );
-            for kind in [typography_kind::H4.key(), typography_kind::H5.key(), typography_kind::H6.key()] {
-                assert!(
-                    TypographyKindRef::builtins().iter().any(|(k, _)| *k == kind),
-                    "{kind} is a registered builtin, so the typography sheet has an arm for it"
-                );
+            for kind in [typography_kind::H4, typography_kind::H5, typography_kind::H6] {
+                assert!(TypographyKind::BUILTINS.contains(&kind), "{} is a built-in arm", kind.key());
             }
             // The `ui!` struct-literal path coerces the bare marker.
             let el = runtime_core::ui! { Typography(content = "Section", kind = typography_kind::H6) };

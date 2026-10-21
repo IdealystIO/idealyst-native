@@ -278,7 +278,10 @@ pub use components::toast::{
     dismiss_toast, push_standard_toast, push_toast, push_toast_node, push_toast_with, Toast, ToastCard, ToastCardProps,
     ToastEntry, ToastHost, ToastHostProps, ToastPlacement,
 };
-pub use components::typography::{Typography, TypographyProps};
+pub use components::typography::{
+    typography_kind, Typography, TypographyAlign, TypographyKind, TypographyProps, TypographyRestyle,
+    TypographySlotStyles, TypographyStyles, TypographyTone, TypographyWeight,
+};
 
 // Historical note: an earlier `Btn` alias for `Button` existed because the
 // `ui!` macro routed PascalCase `Button` straight to the framework's native
@@ -291,10 +294,7 @@ pub use components::typography::{Typography, TypographyProps};
 // Re-exported at the crate root so apps can write
 // `use idea_ui::{tone, variant, size, shape, typography_kind}` for
 // the namespaces.
-pub use idea_theme::extensible::{
-    installed_typography_sheet, tone, typography as typography_kind, ResolutionCtx, Tone, ToneRef,
-    TypographyKind, TypographyKindRef, Variant, VariantRef,
-};
+pub use idea_theme::extensible::{tone, ResolutionCtx, Tone, ToneRef, Variant, VariantRef};
 pub use modifiers::{shape, size, variant};
 // Macros from idea-theme. `#[macro_export]` macros live at the
 // defining crate's root; re-exported here for convenience. The
