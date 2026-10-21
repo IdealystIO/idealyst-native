@@ -87,7 +87,7 @@ pub(super) fn select_all_box(selection: Signal<BTreeSet<RowId>>, visible: Rc<Vec
         icon: Reactive::Dynamic(Rc::new(move || {
             (state.get() == SelectAllState::Some).then_some(MIXED_MARK)
         })),
-        size: Reactive::Static(ControlSize::Sm),
+        size: ControlSize::Sm.into(),
         disabled: Reactive::Static(nothing_to_select),
         ..Default::default()
     })
@@ -111,7 +111,7 @@ pub(super) fn select_row_box(selection: Signal<BTreeSet<RowId>>, id: RowId) -> E
             }
             selection.set(next);
         }),
-        size: Reactive::Static(ControlSize::Sm),
+        size: ControlSize::Sm.into(),
         ..Default::default()
     })
 }
