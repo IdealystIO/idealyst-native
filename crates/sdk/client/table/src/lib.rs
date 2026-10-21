@@ -886,8 +886,11 @@ impl EdgeWatch {
 /// the scroll and viewport measurements for
 /// [`TableBound::on_scroll_edges`]. The viewport is measured on a
 /// holder view rather than the scroller itself (a scroll view hands out
-/// no layout handle); unstyled, it is exactly the scroller's width. A
-/// table that does not watch keeps the bare scroller.
+/// no layout handle). The holder sits between the bounded surface and
+/// the scroller, so it carries [`edge_watch_holder_rules`]:
+/// sized like the scroller (content-sized, shrinkable to 0) so a bounded
+/// surface still caps the scroller. A table that does not watch keeps
+/// the bare scroller.
 fn edge_watched_scroller(
     scroller: glue::primitives::scroll_view::GlueScrollView,
     axis: runtime_shared::ScrollAxis,
@@ -907,8 +910,31 @@ fn edge_watched_scroller(
     let scroller = scroller.on_scroll(move |x, _y| on_scroll.set_offset(x)).into_element();
     runtime_vocabulary::builders::view()
         .children(vec![scroller])
+        .style(StyleProp::Static(Rc::new(edge_watch_holder_rules())))
         .on_handle(move |h| watch.measure(h, |w| &w.viewport))
         .build()
+}
+
+/// The viewport-measuring holder `edge_watched_scroller` puts around a
+/// watched (plain `scroll_x`) table's scroller. It must pass the
+/// surface's bound through to the scroller: an unstyled node's
+/// automatic minimum size is its content (a flex item's `min-height:
+/// auto` on web, Taffy's content-based minimum natively), so it grew to
+/// every row and the scroller inside it had nothing to scroll — a
+/// `scroll_y` plain table showed its first rows and cut the rest off.
+/// Content-sized like the scroller (`flex_grow: 0`, `flex_basis:
+/// auto`), shrinkable to 0 on both axes, and a column so the scroller
+/// fills its width and takes its height.
+fn edge_watch_holder_rules() -> StyleRules {
+    StyleRules {
+        flex_direction: Some(glue::FlexDirection::Column),
+        flex_grow: Some(glue::Tokenized::Literal(0.0)),
+        flex_shrink: Some(glue::Tokenized::Literal(1.0)),
+        flex_basis: Some(glue::Tokenized::Literal(glue::Length::Auto)),
+        min_height: Some(glue::Tokenized::Literal(glue::Length::Px(0.0))),
+        min_width: Some(glue::Tokenized::Literal(glue::Length::Px(0.0))),
+        ..Default::default()
+    }
 }
 
 /// Every row a table child holds: the row itself, or a footer

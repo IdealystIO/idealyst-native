@@ -656,6 +656,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`label_hint` on Field and Textarea** (`idea-ui`). A short muted note
+  beside the label ("Full name  Optional"). The Field docs page now shows
+  the `variant` shells (`Outline`, the filled `Contained`, `Bare`) side by
+  side.
+
 - **`z_index` style property** (`runtime-shared`, `css`, `wire`,
   `dev-client`, `dev-server`, `backend-web`, `backend-ios-mobile`,
   `backend-macos`, `backend-apple-core`, `backend-android-mobile`,
@@ -1569,6 +1574,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Changed
 
+- **The dev overlay collapses, and its capture button is a chip**
+  (`dev-http`, `backend-web`, `mcp-server`). A "–" on the status line
+  collapses the overlay to one status glyph in the corner, remembered for
+  the page; the glyph expands it again, and lights up when an agent asks
+  for capture. A failed build's panel still opens while collapsed. The
+  robot line and the status line now stack in one column instead of three
+  separately placed boxes, and the full-width "Share this tab with the
+  agent" button is an "allow capture" chip on the robot line ("agent
+  wants capture · allow" when asked, "◉ capturing · stop" while
+  capturing); its tooltip says the click opens the browser's permission
+  prompt. The Robot's `tab` screenshot error names the new chip.
+
 - **The release planner raises breaking API changes to a major on its own**
   (`registry`). `plan` / `build` / `publish` parse each changed crate's
   library at its last release and at HEAD and raise the crate to a major
@@ -1809,6 +1826,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A plain `scroll_y` table scrolls its rows again** (`table`). A table
+  that watches its scroll edges (idea-ui's plain variant with `scroll_x`,
+  to draw frozen-column edges) wraps its scroller in a viewport-measuring
+  view. That view was unstyled, so its automatic minimum size was its
+  content: it grew to every row, the scroller inside had nothing to
+  scroll, and the surface's bound cut the rows off. The view now passes
+  the bound through (content-sized, shrinkable to 0), on web and native.
 
 - **Linux virtualizer rows draw at their own slot** (`backend-linux`).
   Every row was framed at the list origin: the layout pass wrote a

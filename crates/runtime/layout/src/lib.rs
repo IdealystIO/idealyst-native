@@ -4531,6 +4531,73 @@ mod tests {
     }
 
 
+    /// The table SDK's edge-watch holder: a watched (plain `scroll_x`)
+    /// table puts a viewport-measuring view between the bounded surface and
+    /// the scroller. Unstyled, a node's automatic minimum size is its
+    /// content, so the holder grew to every row and the scroller inside had
+    /// nothing to scroll (CrewForge, table 4.0.0: a `scroll_y` plain table
+    /// cut its rows off). With `table`'s `edge_watch_holder_rules` —
+    /// column, content-sized, shrinkable, `min_*: 0` — the surface's cap
+    /// reaches the scroller again.
+    #[test]
+    fn edge_watch_holder_passes_the_surface_cap() {
+        fn scroller_height(styled_holder: bool) -> f32 {
+            let mut t = LayoutTree::new();
+            let root = t.new_node();
+            let mut rr = StyleRules::default();
+            rr.flex_direction = Some(FwFlexDirection::Column);
+            t.set_style(root, &rr);
+            let card = t.new_node();
+            let mut cr = StyleRules::default();
+            cr.height = Some(px(240.0));
+            t.set_style(card, &cr);
+            t.add_child(root, card);
+
+            let holder = t.new_node();
+            if styled_holder {
+                let mut hr = StyleRules::default();
+                hr.flex_direction = Some(FwFlexDirection::Column);
+                hr.flex_grow = Some(Tokenized::Literal(0.0));
+                hr.flex_shrink = Some(Tokenized::Literal(1.0));
+                hr.flex_basis = Some(Tokenized::Literal(FwLength::Auto));
+                hr.min_height = Some(px(0.0));
+                hr.min_width = Some(px(0.0));
+                t.set_style(holder, &hr);
+            }
+            t.add_child(card, holder);
+
+            let scroller = t.new_node();
+            t.set_overflow_scroll_axis(scroller, runtime_shared::ScrollAxis::Both);
+            let mut scr = StyleRules::default();
+            scr.flex_direction = Some(FwFlexDirection::Row);
+            scr.align_items = Some(runtime_shared::AlignItems::FlexStart);
+            scr.flex_grow = Some(Tokenized::Literal(0.0));
+            scr.flex_basis = Some(Tokenized::Literal(FwLength::Auto));
+            t.set_style(scroller, &scr);
+            t.add_child(holder, scroller);
+
+            let content = t.new_node();
+            let mut sr = StyleRules::default();
+            sr.flex_shrink = Some(Tokenized::Literal(0.0));
+            t.set_style(content, &sr);
+            t.add_child(scroller, content);
+            for _ in 0..20 {
+                let row = t.new_node();
+                let mut rw = StyleRules::default();
+                rw.height = Some(px(40.0));
+                rw.width = Some(px(300.0));
+                t.set_style(row, &rw);
+                t.add_child(content, row);
+            }
+            t.compute(root, 393.0, 852.0);
+            t.frame_of(scroller).height
+        }
+        let capped = scroller_height(true);
+        assert!((capped - 240.0).abs() < 0.5, "styled holder: the scroller is capped at 240, got {capped}");
+        let uncapped = scroller_height(false);
+        assert!(uncapped > 700.0, "an unstyled holder grows to its 800px of rows: got {uncapped}");
+    }
+
     /// Regression: the idea-ui `Modal`'s safe-area handling relies on two
     /// Taffy behaviors that must not silently change under an engine upgrade.
     ///

@@ -661,6 +661,50 @@ fn scroll_x_lowers_to_surface_wrapping_horizontal_scroller() {
     }
 }
 
+/// CrewForge (table 4.0.0): a `scroll_y` plain table in a fixed-height
+/// region showed its first rows and cut the rest off. A watched table
+/// (`on_scroll_edges`, which idea-ui's plain variant uses to draw frozen
+/// edges) wraps its scroller in a viewport-measuring holder; unstyled, the
+/// holder's automatic minimum size was its content, so it grew to every
+/// row and the scroller inside had nothing to scroll. The holder must pass
+/// the surface's bound through: content-sized, shrinkable to 0 on both
+/// axes. (`runtime-layout`'s `edge_watch_holder_passes_the_surface_cap`
+/// pins the layout consequence.)
+#[test]
+fn regression_watched_scroll_y_table_holder_passes_the_height_cap_through() {
+    use runtime_vocabulary::prims::ScrollViewPrim;
+    let t = table(TableProps {
+        children: vec![row(2), row(2), row(2)],
+        scroll_x: true,
+        scroll_y: true,
+        ..Default::default()
+    })
+    .on_scroll_edges(|_| {})
+    .into_element();
+    let Element::Item { mut children, .. } = t else { panic!("surface view") };
+    let Element::Item { data, children: holder_children } = children.pop().expect("one child") else {
+        panic!("the surface holds the edge-watch holder");
+    };
+    let holder = data
+        .downcast_ref::<PrimCell<ViewPrim>>()
+        .expect("a watched table's scroller sits in a holder view")
+        .take();
+    let rules = match holder.style {
+        Some(StyleProp::Static(r)) => r,
+        _ => panic!("the holder carries static rules"),
+    };
+    let len = |l: &Option<glue::Tokenized<glue::Length>>| l.as_ref().map(|t| t.resolve());
+    assert_eq!(len(&rules.min_height), Some(glue::Length::Px(0.0)), "shrinks below its rows");
+    assert_eq!(len(&rules.min_width), Some(glue::Length::Px(0.0)), "shrinks below its columns");
+    assert_eq!(rules.flex_shrink.as_ref().map(|t| t.resolve()), Some(1.0));
+    assert_eq!(rules.flex_grow.as_ref().map(|t| t.resolve()), Some(0.0), "content-sized like the scroller");
+    assert_eq!(rules.flex_direction, Some(glue::FlexDirection::Column));
+    match &holder_children[..] {
+        [Element::Item { data, .. }] => assert!(data.downcast_ref::<PrimCell<ScrollViewPrim>>().is_some()),
+        _ => panic!("the holder wraps exactly the scroller"),
+    }
+}
+
 /// Binding a row (the drag-and-drop geometry seam) turns the native
 /// lowering into the PROXY shape: a row-spanning backdrop view is
 /// inserted before the bound row's cells (carrying the ref_fill), and
