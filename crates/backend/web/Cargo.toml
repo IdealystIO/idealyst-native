@@ -134,3 +134,6 @@ wasm-bindgen-test = "0.3"
 # depend on backend-web, so there is no cycle.
 idea-ui = { workspace = true, default-features = false }
 idea-theme = { workspace = true }
+# `src/table_layout_tests.rs`: idea-ui tables laid out by a real browser,
+# which needs the table SDK's web handlers registered.
+table = { workspace = true }

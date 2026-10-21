@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use runtime_core::{Element, IdealystSchema, Reactive, Signal, TouchHandler, VariantEnum};
 
-use super::RowTone;
+use super::{RowTone, TableDensity};
 
 /// A row's identity — what a selection holds and a reorder reports.
 /// Cheap to clone; built from strings and integers.
@@ -82,13 +82,56 @@ pub(super) struct RowInteraction {
 }
 
 /// What a row tells its table — see the module docs.
+#[derive(Clone)]
 pub(super) struct RowMeta {
     pub id: Option<RowId>,
     pub selectable: bool,
     pub draggable: bool,
+    /// The reorder scope (`TableRow(reorder_group = …)`, or its
+    /// `TableGroup`'s id).
     pub group: Option<RowId>,
     pub tone: Reactive<RowTone>,
     pub interaction: Option<RowInteraction>,
+    /// The row's own density, over the table's (`TableRow(density = …)`).
+    pub density: Option<TableDensity>,
+    /// Set on a `TableGroup`'s band row.
+    pub band: Option<BandMeta>,
+}
+
+/// What a group's band row tells its table.
+#[derive(Clone)]
+pub(super) struct BandMeta {
+    /// Whether the group moves as a whole in `Table(on_group_reorder = …)`.
+    pub draggable: bool,
+    /// The band content's left pin — the width of the frozen columns the
+    /// table adds before it — and, when the band's cell is the row's first,
+    /// the table's leading edge inset. The table sets both while it
+    /// builds; the band's style reads them when it resolves.
+    pub lead: Rc<std::cell::RefCell<BandLead>>,
+}
+
+/// See [`BandMeta::lead`].
+#[derive(Clone)]
+pub(super) struct BandLead {
+    pub pin: f32,
+    pub inset: Reactive<super::TableInset>,
+}
+
+impl Default for BandLead {
+    fn default() -> Self {
+        BandLead { pin: 0.0, inset: Reactive::Static(super::TableInset::None) }
+    }
+}
+
+impl RowMeta {
+    /// A copy with `f` applied, re-attached to `row`.
+    pub(super) fn update(row: &Element, f: impl FnOnce(&mut RowMeta)) {
+        if let Some(meta) = row_meta(row) {
+            let mut meta = (*meta).clone();
+            f(&mut meta);
+            table::set_row_data(row, Rc::new(meta));
+        }
+    }
 }
 
 /// The [`RowMeta`] a built row carries, if it is a `TableRow`.

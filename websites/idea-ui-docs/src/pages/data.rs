@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use runtime_core::{current_breakpoint, rx, signal, ui, BorderStyle, Breakpoint, Element, Signal, StyleRules, StyleSheet};
-use icons_lucide::{ELLIPSIS_VERTICAL, PENCIL, TRASH_2};
+use icons_lucide::{ELLIPSIS_VERTICAL, PENCIL, PLUS, TRASH_2};
 use idea_ui::{
     tone, typography_kind, variant, Button, Card, CardPadding, CardSlotStyles, IconButton, Stack, StackAxis,
     StackGap, Tag, Typography,
@@ -12,7 +12,7 @@ use idea_ui::{
 use idea_ui::{
     move_in_place, CardSlot, CellAlign, CellTone, ColSpan, ColumnId, ColumnPin, ColumnWidths,
     RowId, RowTone, SortState, Table, TableCards, TableCell, TableColumn, TableDensity,
-    TableFooter, TableInset, TablePager, TableRow, TableVariant,
+    TableFooter, TableGroup, TableInset, TablePager, TableRow, TableVariant,
 };
 
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, P};
@@ -365,25 +365,76 @@ TableCell {
         ui! {
             Section(title = "Pinned header (vertical scroll)".to_string()) {
                 P(content = "Set `scroll_y = true` and the rows scroll inside the table's own \
-                    height while the header row stays pinned to the top. Bound it with \
-                    `max_height`, or let it fill a bounded parent. With `scroll_x` as well the \
-                    table owns ONE two-axis scroller: the header pins to the top, frozen \
-                    columns pin to the sides, and a frozen header cell — the corner — pins \
-                    both ways, painted above everything sliding beneath it. (In a `scroll_x` \
-                    table that scrolls with the page the header cannot stick: a sticky cell \
-                    pins against its nearest scroller, which is the table's own.)".to_string())
-                pinned_header_table()
-                CodePanel(src = r##"Table(scroll_x = true, scroll_y = true, max_height = Some(240.0)) {
-    TableRow {
-        TableCell(header = true, text = Some("Service".to_string()), pinned = Some(ColumnPin::Left))
-        TableCell(header = true, text = Some("Region".to_string()))
+                    height under a header that stays put. Bound it with `max_height`, or let it \
+                    fill a bounded parent. The header sits ABOVE the rows' scroller, so the \
+                    scrollbar runs beside the rows only, starting under the header. It keeps \
+                    the rows' columns (it measures and follows them) and, with `scroll_x`, \
+                    their sideways scroll: scroll the rows and the header moves with them; \
+                    scroll over the header and the rows follow. Frozen columns stay frozen in \
+                    both, the corner cell above the header cells sliding under it. A plain \
+                    table's header is opaque, so nothing shows through it.".to_string())
+                pinned_header_table(TableVariant::Framed)
+                Card(padding = CardPadding::Md) { pinned_header_table(TableVariant::Plain) }
+                CodePanel(src = r##"Table(
+    scroll_x = true, scroll_y = true, max_height = Some(240.0),
+    variant = TableVariant::Plain,            // or the framed default
+    columns = vec![
+        TableColumn::new("service").width(140.0).pinned(ColumnPin::Left),
+        TableColumn::new("region").width(140.0),
         // …more columns…
+        TableColumn::actions("menu"),
+    ],
+) {
+    TableRow {
+        TableCell(header = true, text = Some("Service".to_string()))
+        // …one header cell per column…
     }
     for row in rows {
-        TableRow {
-            TableCell(text = Some(row.name.clone()), pinned = Some(ColumnPin::Left))
-            TableCell(text = Some(row.region.clone()))
-            // …
+        TableRow { TableCell(text = Some(row.name.clone())) /* … */ }
+    }
+}"##.to_string())
+            }
+        },
+        ui! {
+            Section(title = "Row groups".to_string()) {
+                P(content = "`TableGroup` puts rows under a band row — the settings screen grouped by \
+                    category. The band spans the table in the group tone, with the title, a \
+                    collapse toggle (`collapsed` is a signal the screen owns, so the state \
+                    survives a rebuild) and trailing `actions`. Collapsing keeps the rows in \
+                    place at zero height — no rebuild — and the column model keeps every column \
+                    still. Each group is announced as a row group named by its title, and the \
+                    toggle as expanded or collapsed. Rows reorder within their group by the \
+                    grip, which `grip_on_hover` reveals on row hover; `on_group_reorder` puts a \
+                    grip on each band, and dragging it moves the band with its rows. The grab is \
+                    the grip only, so the row stays clickable (click a name). On a narrow \
+                    screen the band's title stays at the left edge and its actions at the right \
+                    while the columns scroll.".to_string())
+                groups_table()
+                CodePanel(src = r##"let collapsed = signal(false);                 // the SCREEN owns these
+Table(
+    scroll_x = true,
+    grip_on_hover = true,
+    columns = vec![
+        TableColumn::new("name").fill().min_width(160.0).truncate().pinned(ColumnPin::Left),
+        TableColumn::new("value").width(150.0),
+        TableColumn::new("scope").width(130.0),
+        TableColumn::actions("menu"),
+    ],
+    on_reorder = Some(move_setting),          // (from, to) over the draggable rows
+    on_group_reorder = Some(move_group),      // (from, to) over the groups
+) {
+    TableRow { TableCell(header = true, text = Some("Setting".into())) … }
+    for g in groups {
+        TableGroup(
+            id = Some(g.id.into()),
+            title = g.title.to_string(),
+            collapsed = Some(g.collapsed),
+            density = Some(TableDensity::Compact),
+            actions = Some(ui! { IconButton(icon = Some(PLUS), label = Some("Add".into()), on_click = add) }),
+        ) {
+            for s in g.settings {
+                TableRow(id = Some(s.id.into()), on_row_click = Some(open(s.id))) { … }
+            }
         }
     }
 }"##.to_string())
@@ -398,6 +449,16 @@ TableCell {
                     `TableInset::Px(28.0)` takes an exact margin. Pair it with the plain \
                     variant for an edge-to-edge list.".to_string())
                 inset_table()
+                P(content = "`inset_left` / `inset_right` pad one edge only, over `inset_x` on that \
+                    side. An icon column at an edge — the actions column, the selection and grip \
+                    columns — keeps its compact padding instead of taking the inset, so the menu \
+                    button keeps its width.".to_string())
+                one_sided_inset_table()
+                CodePanel(src = r##"Table(
+    variant = TableVariant::Plain,
+    inset_left = TableInset::Px(28.0),      // text on the page margin; the menu at the edge
+    columns = vec![TableColumn::new("crew").fill(), TableColumn::new("shift").width(100.0), TableColumn::actions("menu")],
+) { … }"##.to_string())
                 CodePanel(src = r##"Table(variant = TableVariant::Plain, inset_x = TableInset::Xl) {
     TableRow {
         TableCell(header = true, text = Some("Crew".to_string()))
@@ -466,6 +527,17 @@ TableRow {
                     content's width up to the cap, and every other column keeps its content \
                     width. Narrow the window to watch Name give way while Type and Page hold.".to_string())
                 flex_columns_table()
+                P(content = "In a `scroll_x` table a fill column does the same: it takes what the \
+                    scroller leaves and truncates, and the table scrolls only once the other \
+                    columns plus its `min_width` no longer fit.".to_string())
+                flex_scroll_table()
+                CodePanel(src = r##"Table(scroll_x = true, columns = vec![
+    TableColumn::new("name").fill().truncate().min_width(120.0).pinned(ColumnPin::Left),
+    TableColumn::new("role").width(180.0),
+    TableColumn::new("start").width(168.0),
+    TableColumn::new("end").width(168.0),
+    TableColumn::actions("menu"),
+]) { … }"##.to_string())
                 CodePanel(src = r##"Table {
     TableRow {
         TableCell(header = true, flex = Some(1.0), truncate = true, text = Some("Name".into()))
@@ -553,7 +625,7 @@ TableFooter {
                     Prop {
                         name: "scroll_y",
                         ty: "bool",
-                        desc: "Vertical-scroll mode: rows scroll inside the table's own height and the header row (the leading rows of header cells) pins to the top. With scroll_x the table owns one two-axis scroller, so the header and frozen columns pin together. Default false.",
+                        desc: "Vertical-scroll mode: rows scroll inside the table's own height under the header (the leading rows of header cells), which sits above the rows' scroller — the scrollbar runs beside the rows only. The header keeps the rows' columns and, with scroll_x, their sideways scroll. Default false.",
                     },
                     Prop {
                         name: "max_height",
@@ -564,6 +636,11 @@ TableFooter {
                         name: "inset_x",
                         ty: "Reactive<TableInset>",
                         desc: "Outer padding of each row's first and last cell (and the frame slots): None (default), Xs–Xxl spacing tokens, or Px(f32). Dividers keep running the full width while text aligns to the page margin. Reactive — TableInset::by_breakpoint(base, md, lg) re-pads in place as the page margin steps, without rebuilding the table.",
+                    },
+                    Prop {
+                        name: "inset_left / inset_right",
+                        ty: "Reactive<TableInset>",
+                        desc: "One edge's inset only, over inset_x on that side (None follows inset_x). An icon column at an edge (actions, selection, grip) keeps its compact padding. Reactive.",
                     },
                     Prop {
                         name: "variant",
@@ -609,6 +686,16 @@ TableFooter {
                         name: "on_reorder",
                         ty: "Option<Rc<dyn Fn(usize, usize)>>",
                         desc: "Adds a leading grip column and drag-to-reorder: (from, to) are ordinals over the draggable body rows; move_in_place applies them. Default None.",
+                    },
+                    Prop {
+                        name: "on_group_reorder",
+                        ty: "Option<Rc<dyn Fn(usize, usize)>>",
+                        desc: "Makes TableGroups draggable as a whole by a grip on their band: the band moves with its rows; (from, to) are ordinals over the draggable groups. Default None.",
+                    },
+                    Prop {
+                        name: "grip_on_hover",
+                        ty: "bool",
+                        desc: "Show a row's drag grip only while the row is hovered (still grabbable when hidden; always shown where the pointer cannot hover). Default false.",
                     },
                     Prop {
                         name: "empty",
@@ -659,8 +746,28 @@ TableFooter {
                     Prop {
                         name: "reorder_group",
                         ty: "Option<RowId>",
-                        desc: "A draggable row lands only among rows of the same group. Default None (one group).",
+                        desc: "A draggable row lands only among rows of the same group. Default None (one group; a TableGroup's id for its rows).",
                     },
+                    Prop {
+                        name: "density",
+                        ty: "Option<TableDensity>",
+                        desc: "This row's padding, over the table's density. Default None.",
+                    },
+                ])
+            }
+        },
+        ui! {
+            Section(title = "TableGroup props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "children", ty: "Vec<Element>", desc: "The group's TableRows." },
+                    Prop { name: "id", ty: "Option<RowId>", desc: "The group's identity: its rows' reorder_group." },
+                    Prop { name: "title", ty: "Reactive<String>", desc: "The band's title, and the group's accessible name." },
+                    Prop { name: "header", ty: "Option<Element>", desc: "Band content in place of the title text (an icon, a count)." },
+                    Prop { name: "actions", ty: "Option<Element>", desc: "Trailing band content — an add button, a menu — pinned to the scroller's right edge." },
+                    Prop { name: "collapsed", ty: "Option<Signal<bool>>", desc: "Makes the group collapsible: a toggle on the band, and the rows take no height while it is true. The screen owns the signal." },
+                    Prop { name: "tone", ty: "Reactive<RowTone>", desc: "The band's tint. Default RowTone::Group (the header band's neutral tint)." },
+                    Prop { name: "density", ty: "Option<TableDensity>", desc: "The band's padding, over the table's." },
+                    Prop { name: "draggable", ty: "bool", desc: "Whether the band carries a grip in Table(on_group_reorder). Default true." },
                 ])
             }
         },
@@ -825,26 +932,217 @@ fn wide_table(frame: TableVariant) -> Element {
 /// Pinned-header demo: a two-axis table bounded at 240px, its header row
 /// pinned to the top and its first column frozen, so the corner cell pins
 /// both ways.
-fn pinned_header_table() -> Element {
-    let regions = ["eu-west-1", "us-east-1", "ap-south-1", "us-west-2", "sa-east-1", "af-south-1"];
+fn pinned_header_table(variant: TableVariant) -> Element {
+    let regions = [
+        "eu-west-1", "us-east-1", "ap-south-1", "us-west-2", "sa-east-1", "af-south-1", "eu-north-1", "ca-central-1",
+    ];
+    let columns = vec![
+        TableColumn::new("service").width(140.0).pinned(ColumnPin::Left),
+        TableColumn::new("region").width(140.0),
+        TableColumn::new("version").width(110.0),
+        TableColumn::new("replicas").width(110.0).align(CellAlign::Right),
+        TableColumn::new("latency").width(130.0).align(CellAlign::Right),
+        TableColumn::new("errors").width(120.0).align(CellAlign::Right),
+        TableColumn::actions("menu"),
+    ];
     ui! {
-        Table(scroll_x = true, scroll_y = true, max_height = Some(240.0)) {
+        Table(scroll_x = true, scroll_y = true, max_height = Some(240.0), variant = variant, columns = columns) {
             TableRow {
-                TableCell(header = true, text = Some("Service".to_string()), pinned = Some(ColumnPin::Left))
+                TableCell(header = true, text = Some("Service".to_string()))
                 TableCell(header = true, text = Some("Region".to_string()))
                 TableCell(header = true, text = Some("Version".to_string()))
                 TableCell(header = true, text = Some("Replicas".to_string()))
                 TableCell(header = true, text = Some("p99 latency".to_string()))
                 TableCell(header = true, text = Some("Error rate".to_string()))
+                TableCell(header = true)
             }
             for (i, region) in regions.into_iter().enumerate() {
                 TableRow {
-                    TableCell(text = Some(format!("service-{i}")), pinned = Some(ColumnPin::Left))
+                    TableCell(text = Some(format!("service-{i}")))
                     TableCell(text = Some(region.to_string()))
                     TableCell(text = Some(format!("v2.{i}.0")))
                     TableCell(text = Some(format!("{}", i + 2)))
                     TableCell(text = Some(format!("{}ms", 12 + i * 31)))
                     TableCell(text = Some(format!("0.0{i}%")))
+                    TableCell { IconButton(icon = Some(ELLIPSIS_VERTICAL), on_click = noop(), tone = tone::Neutral, variant = variant::Ghost) }
+                }
+            }
+        }
+    }
+}
+
+/// A demo button's press.
+fn noop() -> Rc<dyn Fn()> {
+    Rc::new(|| {})
+}
+
+/// A settings group for the row-groups demo.
+#[derive(Clone, PartialEq)]
+struct SettingsGroup {
+    id: &'static str,
+    title: &'static str,
+    settings: Vec<(&'static str, &'static str, &'static str, &'static str)>,
+}
+
+/// Row-groups demo: settings grouped by category — collapsible bands with
+/// an add action, rows that reorder within their group by a hover grip,
+/// groups that drag as a whole, and a clickable name on every row.
+fn groups_table() -> Element {
+    let groups: Signal<Vec<SettingsGroup>> = signal(vec![
+        SettingsGroup {
+            id: "shifts",
+            title: "Shifts and rosters",
+            settings: vec![
+                ("s1", "Default shift length for every new crew roster", "12 hours", "Team"),
+                ("s2", "Night shift starts", "18:00", "Team"),
+                ("s3", "Rotation pattern", "4 on, 4 off", "Project"),
+            ],
+        },
+        SettingsGroup {
+            id: "safety",
+            title: "Safety",
+            settings: vec![
+                ("s4", "Pre-start talk required before the first heading of the shift", "Yes", "Team"),
+                ("s5", "Gas check interval", "2 hours", "Heading"),
+            ],
+        },
+        SettingsGroup {
+            id: "pay",
+            title: "Payroll",
+            settings: vec![("s6", "Overtime after", "40 hours", "Division"), ("s7", "Pay period", "Fortnightly", "Team")],
+        },
+    ]);
+    // Created once, outside the rebuild: a collapse survives a reorder.
+    let collapsed: [(&'static str, Signal<bool>); 3] =
+        [("shifts", signal(false)), ("safety", signal(false)), ("pay", signal(false))];
+    let opened: Signal<String> = signal("Click a setting's name".to_string());
+    let move_setting: Rc<dyn Fn(usize, usize)> = Rc::new(move |from, to| {
+        // Ordinals run over every group's rows in order; a row only lands
+        // in its own group, so the move stays inside one group.
+        let mut all = groups.get();
+        let mut flat: Vec<(usize, (&str, &str, &str, &str))> = all
+            .iter()
+            .enumerate()
+            .flat_map(|(g, grp)| grp.settings.iter().map(move |s| (g, *s)))
+            .collect();
+        if move_in_place(&mut flat, from, to) {
+            for (g, grp) in all.iter_mut().enumerate() {
+                grp.settings = flat.iter().filter(|(fg, _)| *fg == g).map(|(_, s)| *s).collect();
+            }
+            groups.set(all);
+        }
+    });
+    let move_group: Rc<dyn Fn(usize, usize)> = Rc::new(move |from, to| {
+        let mut all = groups.get();
+        if move_in_place(&mut all, from, to) {
+            groups.set(all);
+        }
+    });
+    let columns = vec![
+        TableColumn::new("name").fill().min_width(160.0).truncate().pinned(ColumnPin::Left),
+        TableColumn::new("value").width(150.0),
+        TableColumn::new("scope").width(130.0),
+        TableColumn::actions("menu"),
+    ];
+    ui! {
+        Stack(gap = StackGap::Sm) {
+            Typography(content = rx!(opened.get()), kind = typography_kind::Caption, muted = true)
+            match groups.get() {
+                list => {
+                    Table(
+                        scroll_x = true,
+                        grip_on_hover = true,
+                        columns = columns.clone(),
+                        on_reorder = Some(move_setting.clone()),
+                        on_group_reorder = Some(move_group.clone()),
+                    ) {
+                        TableRow {
+                            TableCell(header = true, text = Some("Setting".to_string()))
+                            TableCell(header = true, text = Some("Value".to_string()))
+                            TableCell(header = true, text = Some("Applies to".to_string()))
+                            TableCell(header = true)
+                        }
+                        for g in list.clone() {
+                            TableGroup(
+                                id = Some(RowId::from(g.id)),
+                                title = g.title.to_string(),
+                                collapsed = collapsed.iter().find(|(id, _)| *id == g.id).map(|(_, c)| *c),
+                                density = Some(TableDensity::Compact),
+                                actions = Some(ui! {
+                                    IconButton(icon = Some(PLUS), label = Some(format!("Add to {}", g.title)), on_click = noop(), tone = tone::Neutral, variant = variant::Ghost)
+                                }),
+                            ) {
+                                for (id, name, value, scope) in g.settings.clone() {
+                                    TableRow(id = Some(RowId::from(id)), on_row_click = Some(Rc::new(move || opened.set(format!("Opened: {name}"))) as Rc<dyn Fn()>)) {
+                                        TableCell(text = Some(name.to_string()))
+                                        TableCell(text = Some(value.to_string()))
+                                        TableCell(text = Some(scope.to_string()))
+                                        TableCell { IconButton(icon = Some(ELLIPSIS_VERTICAL), on_click = noop(), tone = tone::Neutral, variant = variant::Ghost) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One-sided inset demo: the text takes the page margin on the left; the
+/// trailing menu column keeps its compact padding at the edge.
+fn one_sided_inset_table() -> Element {
+    let crew = [("Ana Ruiz", "Day"), ("Bo Chen", "Night"), ("Cy Okafor", "Day")];
+    let columns = vec![TableColumn::new("crew").fill(), TableColumn::new("shift").width(100.0), TableColumn::actions("menu")];
+    ui! {
+        Table(variant = TableVariant::Plain, inset_left = TableInset::Px(28.0), columns = columns) {
+            TableRow {
+                TableCell(header = true, text = Some("Crew".to_string()))
+                TableCell(header = true, text = Some("Shift".to_string()))
+                TableCell(header = true)
+            }
+            for (name, shift) in crew {
+                TableRow {
+                    TableCell(text = Some(name.to_string()))
+                    TableCell(text = Some(shift.to_string()))
+                    TableCell { IconButton(icon = Some(ELLIPSIS_VERTICAL), on_click = noop(), tone = tone::Neutral, variant = variant::Ghost) }
+                }
+            }
+        }
+    }
+}
+
+/// Fill column in a `scroll_x` table: the name takes the rest and
+/// truncates; the table scrolls only once the fixed columns and the
+/// name's floor no longer fit.
+fn flex_scroll_table() -> Element {
+    let crew = [
+        ("Shotcrete crew lead, night shift, north decline, ventilation raise and refuge bay", "Lead", "06:00", "18:00"),
+        ("Ana Ruiz", "Operator", "18:00", "06:00"),
+    ];
+    let columns = vec![
+        TableColumn::new("name").fill().truncate().min_width(120.0).pinned(ColumnPin::Left),
+        TableColumn::new("role").width(180.0),
+        TableColumn::new("start").width(168.0),
+        TableColumn::new("end").width(168.0),
+        TableColumn::actions("menu"),
+    ];
+    ui! {
+        Table(scroll_x = true, columns = columns) {
+            TableRow {
+                TableCell(header = true, text = Some("Name".to_string()))
+                TableCell(header = true, text = Some("Role".to_string()))
+                TableCell(header = true, text = Some("Start".to_string()))
+                TableCell(header = true, text = Some("End".to_string()))
+                TableCell(header = true)
+            }
+            for (name, role, start, end) in crew {
+                TableRow {
+                    TableCell(text = Some(name.to_string()))
+                    TableCell(text = Some(role.to_string()))
+                    TableCell(text = Some(start.to_string()))
+                    TableCell(text = Some(end.to_string()))
+                    TableCell { IconButton(icon = Some(ELLIPSIS_VERTICAL), on_click = noop(), tone = tone::Neutral, variant = variant::Ghost) }
                 }
             }
         }
@@ -1133,6 +1431,7 @@ fn page_table() -> Element {
         shown: signal(20),
     };
     let (selected, last_resize, opened) = (page.selected, page.last_resize, page.opened);
+    let _ = phone_frame();
     ui! {
         Stack(axis = StackAxis::Column, gap = StackGap::Sm) {
             Typography(
@@ -1271,11 +1570,19 @@ fn narrow_projects(page: ProjectsPage) -> Element {
 
 /// The card form's bounded box in the demo — the list virtualizes inside
 /// it, as it would inside a phone screen's body.
+///
+/// A cached static sheet, built once by `page_table` whatever the width —
+/// the premint dump crawls the page at desktop width, and a sheet first
+/// built for the phone layout would have no CSS in a `--premint-only`
+/// bundle.
 fn phone_frame() -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::new(|_| StyleRules {
-        height: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(520.0))),
-        ..Default::default()
-    }))
+    static KEY: u8 = 0;
+    runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        Rc::new(StyleSheet::r#static(StyleRules {
+            height: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(520.0))),
+            ..Default::default()
+        }))
+    })
 }
 
 /// Built-in reorder demo: two groups of tasks in a scroll-x table with a

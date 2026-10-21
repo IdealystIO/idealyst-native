@@ -197,18 +197,19 @@ component_styles! {
                     border_left_color: t.color.border(),
                 }
             }
-            // Pinned header row (`Table(scroll_y = true)`): the head cells stick
-            // to the top of the table's own scroller. `TableCell(header = true)`
-            // selects `off` explicitly — that key is how `Table` tells a head
-            // cell from a body cell — and `Table` selects `on` for the leading
-            // head rows. Stacking among the cells (all siblings of one grid on
-            // native, one table on web): a body cell pinned to a side paints at
-            // the sticky default (`STICKY_Z`, 1); a row lifted by a reorder drag
-            // above that (2, its frozen cells 3 — see the `body_cell` slot's `drag`);
-            // the header row above every body row (4) so rows, lifted ones
-            // included, slide UNDER the header; and a corner cell — pinned to
-            // the top AND a side — above all of them (5), so columns slide under
-            // it sideways and rows slide under it vertically.
+            // The header row of a `Table(scroll_y = true)`. `TableCell(header =
+            // true)` selects `off` explicitly — that key is how `Table` tells a
+            // head cell from a body cell — and `Table` selects `on` for the
+            // leading head rows, which the table SDK lays out in a strip of
+            // their own above the rows' scroller. The top pin holds the row at
+            // the top of whatever scroller contains it (nothing scrolls under
+            // it vertically in that strip). Stacking among the cells of one
+            // grid: a body cell pinned to a side paints at the sticky default
+            // (`STICKY_Z`, 1); a row lifted by a reorder drag above that (2,
+            // its frozen cells 3 — see the `body_cell` slot's `drag`); the
+            // header row above every body row (4); and a corner cell — pinned
+            // to the top AND a side — above all of them (5), so header cells
+            // scrolled sideways slide under the frozen ones.
             variant sticky_header {
                 #[default]
                 off(_t) {}
@@ -301,6 +302,13 @@ component_styles! {
                 background: t.color.surface(),
             }
             compound (variant: plain, pinned: right, row_hovered: off)(t) {
+                background: t.color.surface(),
+            }
+            // The pinned header row of a plain `scroll_y` table is opaque
+            // too: a pinned header cell left transparent shows whatever
+            // passes behind it — the rows, if they ever reach it, or a
+            // column scrolled sideways under a frozen one.
+            compound (variant: plain, sticky_header: on, row_hovered: off)(t) {
                 background: t.color.surface(),
             }
             // A frozen column's inner-edge hairline, for a `plain` table:
@@ -557,12 +565,16 @@ component_styles! {
             //   paths.
             // - The tints are the `table-row-*` tokens, OPAQUE by contract:
             //   a frozen toned cell covers the columns sliding beneath it.
+            //
+            // `group` is a row group's band (`TableGroup`): the header band's
+            // neutral tint, so a band reads as a heading among the rows.
             variant tone {
                 #[default]
                 none(_t) {}
                 highlight(t) { background: t.color.table_row_highlight() }
                 warning(t) { background: t.color.table_row_warning() }
                 danger(t) { background: t.color.table_row_danger() }
+                group(t) { background: t.color.table_header() }
             }
             compound (tone: highlight, row_hovered: off)(t) {
                 background: t.color.table_row_highlight(),
@@ -581,6 +593,26 @@ component_styles! {
             }
             compound (tone: danger, row_hovered: on)(t) {
                 background: t.color.table_row_danger_hover(),
+            }
+            compound (tone: group, row_hovered: off)(t) {
+                background: t.color.table_header(),
+            }
+            compound (tone: group, row_hovered: on)(t) {
+                background: t.color.surface_alt(),
+            }
+            // A row group's band (`TableGroup`): its one spanning cell hands
+            // its horizontal padding to the band's pinned content
+            // (`band_lead` / `band_trail`), so that content rests exactly
+            // where it pins while the columns scroll — padding on the cell
+            // would make it jump by the padding as it starts to pin. Sorts
+            // after `inset_left` / `inset_right`, so it wins over them.
+            variant row_kind {
+                #[default]
+                data(_t) {}
+                band(_t) {
+                    padding_left: 0.0,
+                    padding_right: 0.0,
+                }
             }
             // Custom drag-and-drop feedback (`dragging`, `drop_target`) —
             // see `head_cell`.
@@ -753,6 +785,105 @@ component_styles! {
                 left(_t) { justify_content: JustifyContent::FlexStart }
                 center(_t) { justify_content: JustifyContent::Center }
                 right(_t) { justify_content: JustifyContent::FlexEnd }
+            }
+        }
+
+        /// A row group's band (`TableGroup`): its leading content — the
+        /// collapse toggle and the title — pinned to the scroller's left edge
+        /// (past any frozen columns the table added, an inline `left`), so it
+        /// stays in view while a `scroll_x` table's columns scroll beneath it.
+        slot band_lead {
+            base(t) {
+                position: Position::Sticky,
+                left: 0,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: t.spacing.sm(),
+                min_width: 0.0,
+                // The cell padding the band's cell hands over (its
+                // `row_kind: band` arm), so the title lines up with the
+                // rows' text.
+                padding_left: t.spacing.lg(),
+            }
+            // The table's leading edge inset, when the band's cell is the
+            // row's first — see the cell sheets' `inset_left`.
+            variant inset_left {
+                #[default]
+                none(_t) {}
+                xs(t) { padding_left: t.spacing.xs() }
+                sm(t) { padding_left: t.spacing.sm() }
+                md(t) { padding_left: t.spacing.md() }
+                lg(t) { padding_left: t.spacing.lg() }
+                xl(t) { padding_left: t.spacing.xl() }
+                xxl(t) { padding_left: t.spacing.xxl() }
+            }
+        }
+
+        /// Takes the band's free width, pushing its actions to the trailing
+        /// edge.
+        slot band_spacer {
+            base(_t) {
+                flex_grow: 1.0,
+            }
+        }
+
+        /// The band's trailing actions (an add button, a menu), pinned to the
+        /// scroller's right edge.
+        slot band_trail {
+            base(t) {
+                position: Position::Sticky,
+                right: 0,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: t.spacing.xs(),
+                // The compact icon padding, so a trailing icon button sits
+                // over the actions column's (`TableColumn::actions`).
+                padding_right: t.spacing.sm(),
+            }
+        }
+
+        /// The band's title.
+        slot band_title {
+            base(t) {
+                font_size: 14.0,
+                font_weight: FontWeight::SemiBold,
+                color: t.color.text(),
+                max_lines: 1u32,
+            }
+        }
+
+        /// The band's collapse toggle: a chevron that reads as the group's
+        /// disclosure control.
+        slot group_toggle {
+            base(t) {
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                width: 24.0,
+                height: 24.0,
+                border_radius: t.radius.sm(),
+                cursor: Cursor::Pointer,
+            }
+            state hovered(t) {
+                background: t.color.surface_alt(),
+            }
+        }
+
+        /// The drag grip glyph. With `Table(grip_on_hover = true)` it is
+        /// hidden until its row is hovered (always shown where the primary
+        /// pointer cannot hover); transparent rather than absent, so it stays
+        /// grabbable and nothing moves when it appears.
+        slot grip {
+            base(_t) {
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+            }
+            variant shown {
+                #[default]
+                on(_t) { opacity: 1.0 }
+                off(_t) { opacity: 0.0 }
+            }
+            transitions {
+                opacity: 120ms EaseInOut,
             }
         }
 

@@ -280,7 +280,7 @@ pub use components::table::{
     toggle_select_all, CardSlot, CellAlign, CellPadding, CellTone, ColSpan, ColumnId,
     ColumnPin, ColumnResizeCallback, ColumnWidths, RowId, RowTone, SelectAllState, SortState,
     Table, TableCards, TableCardsProps, TableCell, TableCellProps, TableColumn, TableDensity,
-    TableEmpty, TableFooter, TableFooterProps, TableInset, TablePager, TablePagerProps,
+    TableEmpty, TableFooter, TableFooterProps, TableGroup, TableGroupProps, TableInset, TablePager, TablePagerProps,
     TableProps, TableRestyle, TableRow, TableRowProps, TableSlotStyles, TableStyles, TableTone, TableVariant,
     ACTIONS_COLUMN_WIDTH_PX, CARD_CELL_CAP,
     CARD_ESTIMATE_PX, CARD_GAP_PX, CARD_LOAD_AHEAD_PX, COLUMN_RESET_DOUBLE_CLICK_NS,

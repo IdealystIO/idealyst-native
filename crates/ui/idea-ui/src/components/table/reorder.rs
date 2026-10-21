@@ -8,7 +8,12 @@
 //!   is skipped, so the numbers index the list the app reorders. The app
 //!   owns the move ([`move_in_place`]) and the persist.
 //! - **Groups.** A row only lands among rows of its own
-//!   `TableRow(reorder_group = …)`; across groups the gap stays put.
+//!   `TableRow(reorder_group = …)` (a `TableGroup`'s rows share its id);
+//!   across groups the gap stays put.
+//! - **Group drag.** [`GroupReorder`] (`Table(on_group_reorder = …)`)
+//!   moves a whole `TableGroup` by its band's grip: the band and its rows
+//!   lift together, the other groups slide by the group's height, and the
+//!   callback gets ordinals over the draggable groups.
 //! - **The grab.** Only the grip cell takes the drag recognizer, so
 //!   everything else in the row (menus, checkboxes, a clickable row's tap)
 //!   stays plainly clickable. Activation is scroll-aware: a mouse grabs at
@@ -231,6 +236,133 @@ impl Reorder {
     }
 }
 
+/// One draggable group's half of a group drag.
+struct GroupDrag {
+    handler: TouchHandler,
+    offset_y: AnimatedValue<f32>,
+    /// The group's rows (band first), measured at drag start.
+    row_refs: Vec<Ref<ViewHandle>>,
+}
+
+/// `Table(on_group_reorder = …)`: a `TableGroup`'s band carries a grip, and
+/// dragging it moves the band with its rows — the lifted group rides above
+/// the others while they slide aside by its height, and `cb(from, to)`
+/// reports ordinals over the draggable groups. Built like [`Reorder`]:
+/// before the grip cells are added, then wired row by row.
+pub(super) struct GroupReorder {
+    ctx: DragContext<usize>,
+    drag_from: Signal<Option<usize>>,
+    over_slot: Signal<Option<usize>>,
+    /// Group heights (band plus rows), sampled at drag start.
+    heights: Rc<RefCell<Vec<f32>>>,
+    groups: Vec<GroupDrag>,
+    on_reorder: Rc<dyn Fn(usize, usize)>,
+}
+
+impl GroupReorder {
+    /// Wiring for `sizes.len()` draggable groups of `sizes[g]` rows each
+    /// (band included).
+    pub(super) fn new(sizes: &[usize], on_reorder: Rc<dyn Fn(usize, usize)>) -> Self {
+        let ctx: DragContext<usize> = DragContext::new();
+        let drag_from: Signal<Option<usize>> = signal(None);
+        let over_slot: Signal<Option<usize>> = signal(None);
+        let heights = Rc::new(RefCell::new(vec![0.0_f32; sizes.len()]));
+        let all_refs: Rc<Vec<Vec<Ref<ViewHandle>>>> =
+            Rc::new(sizes.iter().map(|n| (0..*n).map(|_| Ref::new()).collect()).collect());
+        let groups = (0..sizes.len())
+            .map(|g| {
+                let start_heights = heights.clone();
+                let start_refs = all_refs.clone();
+                let drag = Draggable::new(&ctx, move || g)
+                    .activation(Activation::scroll_aware(ScrollAxis::Vertical))
+                    .on_start(move || {
+                        {
+                            let mut hs = start_heights.borrow_mut();
+                            for (j, refs) in start_refs.iter().enumerate() {
+                                hs[j] = refs
+                                    .iter()
+                                    .map(|r| r.with(|h| h.absolute_frame()).flatten().map(|f| f.height).unwrap_or(0.0))
+                                    .sum();
+                            }
+                        }
+                        drag_from.set(Some(g));
+                        over_slot.set(Some(g));
+                    })
+                    .on_release(move |_| {
+                        drag_from.set(None);
+                        over_slot.set(None);
+                    });
+                GroupDrag { handler: drag.handler(), offset_y: drag.offset().1, row_refs: all_refs[g].clone() }
+            })
+            .collect();
+        GroupReorder { ctx, drag_from, over_slot, heights, groups, on_reorder }
+    }
+
+    /// The drag recognizer group `g`'s band grip installs.
+    pub(super) fn grip_handler(&self, g: usize) -> TouchHandler {
+        self.groups[g].handler.clone()
+    }
+
+    /// Wire row `i` (the band is 0) of group `g`, every cell in place: its
+    /// geometry for the group's height, the band as the group's drop
+    /// target, and the lift / slide on its cells.
+    pub(super) fn wire_row(&self, g: usize, i: usize, row: &Element) {
+        let row_ref = self.groups[g].row_refs[i];
+        table::bind_row(row, move |h| row_ref.fill(h));
+        let (drag_from, over_slot) = (self.drag_from, self.over_slot);
+        if i == 0 {
+            let on_reorder = self.on_reorder.clone();
+            let drop = Droppable::new(&self.ctx)
+                .accepts(move |from: &usize| *from != g)
+                .on_enter(move |_| over_slot.set(Some(g)))
+                .on_drop(move |from| on_reorder(from, g));
+            drop.bind(row_ref);
+        }
+        let slide = AnimatedValue::new(0.0);
+        let heights = self.heights.clone();
+        let e_slide = slide.clone();
+        let _ = effect(move || {
+            let target = match (drag_from.get(), over_slot.get()) {
+                (Some(f), Some(o)) => slide_offset(g, f, o, &heights.borrow()),
+                _ => 0.0,
+            };
+            e_slide.animate(SpringTo::new(target).stiffness(SLIDE_STIFFNESS).damping(SLIDE_DAMPING));
+        });
+        let offsets = [self.groups[g].offset_y.clone(), slide];
+        table::visit_row_cells(row, |cell| {
+            table::map_cell_style(
+                cell,
+                Rc::new(move |app| match drag_from.get() {
+                    None => app,
+                    Some(f) if f == g => app.with("drag", "lifted").with("row_hovered", "on"),
+                    Some(_) => app.with("drag", "behind"),
+                }),
+            );
+            let cell_ref: Ref<ViewHandle> = Ref::new();
+            table::bind_cell(cell, move |h| cell_ref.fill(h));
+            for value in &offsets {
+                value.bind(cell_ref, AnimProp::TranslateY);
+            }
+        });
+    }
+
+    /// Lift and drop a row outside any draggable group the way every other
+    /// row behind a group drag is: opaque, so the sliding groups never
+    /// show through it.
+    pub(super) fn wire_other_row(&self, row: &Element) {
+        let drag_from = self.drag_from;
+        table::visit_row_cells(row, |cell| {
+            table::map_cell_style(
+                cell,
+                Rc::new(move |app| match drag_from.get() {
+                    None => app,
+                    Some(_) => app.with("drag", "behind"),
+                }),
+            );
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +425,47 @@ mod tests {
                 "a row behind the drag is opaque"
             );
         });
+    }
+
+    /// CrewForge (10c): dragging a group's band lifts the band WITH its
+    /// rows — every row of the group rides above the others — while every
+    /// other row goes opaque behind it; nothing moves until the drag
+    /// starts.
+    #[test]
+    fn group_drag_lifts_the_band_with_its_rows() {
+        with_test_world(|| {
+            let reorder = GroupReorder::new(&[2, 1], Rc::new(|_, _| {}));
+            let (band_a, row_a, band_b, loose) = (row(false), row(false), row(false), row(false));
+            reorder.wire_row(0, 0, &band_a);
+            reorder.wire_row(0, 1, &row_a);
+            reorder.wire_row(1, 0, &band_b);
+            reorder.wire_other_row(&loose);
+            assert_eq!(cell_rules(&row_a)[1].position, None, "nothing moves until a drag starts");
+
+            reorder.drag_from.set(Some(0));
+            idea_theme::testing::commit();
+            for lifted in [&band_a, &row_a] {
+                let r = cell_rules(lifted);
+                assert_eq!(r[1].position, Some(runtime_core::Position::Relative));
+                assert_eq!(r[1].z_index, Some(2), "the dragged group's rows ride above the rest");
+            }
+            for behind in [&band_b, &loose] {
+                assert_eq!(
+                    cell_rules(behind)[1].background.as_ref().and_then(|b| b.name().map(str::to_string)).as_deref(),
+                    Some("color-surface"),
+                    "every other row is opaque behind the drag"
+                );
+            }
+        });
+    }
+
+    /// The gap a dragged group opens is its whole height, band and rows.
+    #[test]
+    fn groups_slide_by_the_dragged_groups_height() {
+        let heights = [90.0, 40.0, 130.0];
+        assert_eq!(slide_offset(1, 0, 2, &heights), -90.0, "groups between move up by the dragged group");
+        assert_eq!(slide_offset(2, 0, 2, &heights), -90.0);
+        assert_eq!(slide_offset(0, 2, 0, &heights), 130.0);
     }
 
     /// Only draggable rows take part, ordinals skip the rest, and a row

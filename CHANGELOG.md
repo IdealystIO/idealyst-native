@@ -754,6 +754,36 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   IconButton — an app variant value gets a recipe's fill per tone, the
   hover / press feedback and the glyph foreground, and `selected` keeps its
   accent fill over it.
+- **Table row groups** (`idea-ui`, `table`). `TableGroup(id, title,
+  header, actions, collapsed, tone, density, draggable) { TableRow … }`
+  puts rows under a band row: one cell spanning the table in the new
+  `RowTone::Group` tint, a collapse toggle (announced expanded /
+  collapsed) when `collapsed = Some(signal)`, and trailing `actions`. In
+  a `scroll_x` table the band's title stays at the scroller's left edge
+  (past the frozen added columns) and its actions at the right edge.
+  Collapsing keeps the rows in place at zero height — no rebuild. Each
+  group is a row group (`<tbody role="rowgroup" aria-label>` on web). A
+  group's rows reorder only among themselves; `Table(on_group_reorder =
+  Some(cb))` puts a grip on each draggable band and drags the band with
+  its rows (`cb(from, to)` over the draggable groups). Also:
+  `Table(grip_on_hover = true)` reveals each row's grip on row hover
+  (always shown where the primary pointer cannot hover);
+  `TableRow(density = Some(…))` overrides the table's density for one
+  row. Reorder already grabbed by the grip only, so a clickable first
+  cell works on a reorderable row. SDK: `table_group` /
+  `TableGroupPrim`, `is_group`, `set_row_collapsed` (a live zero-height
+  row collapse; `TableCellClipPrim` clips the content of an auto-layout
+  web `<table>`'s cells, which ignore `max-height`).
+
+- **One-sided table inset** (`idea-ui`). `Table(inset_left = …)` /
+  `Table(inset_right = …)` pad one edge of every row (and of the frame
+  slots), overriding `inset_x` on that side; a side left at
+  `TableInset::None` follows `inset_x`. Reactive, like `inset_x`. An icon
+  column at an edge (`TableColumn::actions`, the selection and grip
+  columns, any `CellPadding::Icon` cell) now keeps its compact padding
+  instead of taking the inset, which squeezed its icon out of the fixed
+  width.
+
 - **`component_styles!`** (`runtime-macros`, `runtime-shared`,
   `runtime-vocabulary`): declare a component's styled sections once as
   named slots with component-level open axes; generates the registry key
@@ -1992,6 +2022,36 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `size` arms merge after `placement` arms. `(placement: shell, size)`
   compounds restate the inset for `sm`, `md` and `lg`; an app-defined
   `FieldSize` whose arm sets horizontal padding adds its own compound.
+- **A plain table's pinned header is opaque** (`idea-ui`). In
+  `Table(variant = Plain, scroll_y = true)` the header cells kept the
+  plain variant's transparent fill, so header text overprinted whatever
+  passed behind it; `TableStyles` now states `background: surface` for
+  `(variant: plain, sticky_header: on)`.
+- **A `scroll_y` table's scrollbar runs under its header** (`table`,
+  `idea-ui`, `backend-ssr`). The header was a sticky row inside the rows'
+  scroller, so the vertical scrollbar ran the table's full height beside
+  it. The header rows now lay out in a strip above the rows' scroller:
+  the strip keeps the body's column tracks (each grid leads with a
+  zero-height sizer row; the head measures and follows the body's, and
+  floors the body at its own first widths) and follows the body's
+  horizontal scroll both ways, frozen columns frozen in both. On web the
+  two `<table>`s sit in one `role="table"` frame, each
+  `role="presentation"` with explicit row and cell roles. *Structure
+  change:* a `scroll_y` table with a header is surface > frame > [head
+  strip, rows' scroller]; code that walks the built tree (tests) reads
+  the head cells from the strip. The `table` SDK gained `table_head` /
+  `TableHeadPrim` (`<thead>`), `TableFramePrim`, `is_head`, and
+  `TablePrim::framed`, `TableRowPrim::{presentational, roles}`,
+  `TableCellPrim::roles`; `bind_row` / `bind_cell` binders now compose.
+  The SSR backend serializes `aria-label` and `aria-hidden`.
+- **A fill column in a `scroll_x` table takes the rest and truncates**
+  (`table`). On web the scrolled `<table>` was `width: max-content`, and
+  a `1fr` track's max-content contribution is its content, so one long
+  name widened the table past its scroller and `truncate` never applied.
+  A grid table with a `flex` column is now the scroller's width, floored
+  at its min-content width — the fill column's `min_width` plus every
+  other column — so it scrolls only once those no longer fit. The
+  `TablePrim` payload gained `fills`.
 - **A focused text input removed by navigation no longer aborts the app**
   (`runtime-vocabulary`). Its `on_focus` handler is scope-guarded like the
   input's other callbacks; the blur fired during teardown wrote a freed

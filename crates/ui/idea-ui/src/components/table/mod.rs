@@ -47,13 +47,14 @@
 //! - [`Table`] wraps the SDK's `<table>` with the themed surface
 //!   (rounded corners, hairline border, theme background), and owns the
 //!   table-wide settings: `variant`, `scroll_x`, `scroll_y`,
-//!   `max_height`, `inset_x`, `density`, the frame slots — and the column
-//!   model and the columns it adds (`columns`, `column_widths`,
-//!   `on_column_resize`, `selection`, `on_reorder`, `empty`).
+//!   `max_height`, `inset_x` / `inset_left` / `inset_right`, `density`,
+//!   the frame slots — and the column model and the columns it adds
+//!   (`columns`, `column_widths`, `on_column_resize`, `selection`,
+//!   `on_reorder`, `on_group_reorder`, `grip_on_hover`, `empty`).
 //! - [`TableRow`] is a `<tr>`: `on_row_click` for a clickable row,
-//!   `tone` for a whole-row tint, `bind_to` for the row's handle, and the
-//!   row's part in the table's columns — `id`, `selectable`, `draggable`,
-//!   `reorder_group`.
+//!   `tone` for a whole-row tint, `density` for its own padding, `bind_to`
+//!   for the row's handle, and the row's part in the table's columns —
+//!   `id`, `selectable`, `draggable`, `reorder_group`.
 //! - [`TableCell`] wraps `<td>` (or `<th>` when `header = true`) with
 //!   the cell-level padding + row divider, and wraps cell contents in
 //!   a themed `text` node so values without explicit Typography pick
@@ -62,6 +63,8 @@
 //!   `span`, `pinned`, `padding` — along with a value's `tone` and a
 //!   header's `sort`.
 //! - [`TableFooter`] holds footer rows (`<tfoot>` on web).
+//! - [`TableGroup`] holds a group of rows under a band row — see "Row
+//!   groups" below.
 //!
 //! Beside them: [`TablePager`] (the paged-table footer) and
 //! [`TableCards`] (the narrow form, from the same column specs).
@@ -117,12 +120,43 @@
 //!   among rows with its `reorder_group`. The lift is the cell sheets'
 //!   `drag` axis, which sorts before `pinned` — a frozen column stays
 //!   frozen through the drag.
+//! - The drag starts on the grip only: the row's other cells keep their
+//!   own presses, so a clickable first cell (a name that opens the
+//!   record, a link) works on a reorderable row.
+//! - `Table(grip_on_hover = true)` shows each grip only while its row is
+//!   hovered (transparent, still grabbable, otherwise); where the primary
+//!   pointer cannot hover, the grips stay shown.
 //! - Both added columns freeze with the first author column when it is
 //!   pinned left, at their fixed widths, and take each row's tone, hover
 //!   and click like the row's own cells.
 //! - `Table(empty = Some("Nobody yet".into()))` — with no body rows, the
 //!   table keeps its header and adds one row: empty cells under the added
 //!   columns, then the message (muted) spanning every author column.
+//!
+//! # Row groups
+//!
+//! `TableGroup(title = …) { TableRow … }` groups rows under a band row —
+//! a settings screen by category, a crew by heading:
+//!
+//! - **The band** spans the table in `RowTone::Group` (the header band's
+//!   neutral tint), with the title (or any `header` content), a collapse
+//!   toggle when the group is collapsible, and trailing `actions`. In a
+//!   `scroll_x` table the title stays pinned to the scroller's left edge
+//!   (past the frozen columns the table added) and the actions to its
+//!   right edge while the columns scroll beneath them. `density` sets the
+//!   band's own padding.
+//! - **Collapsing**: `collapsed = Some(signal)` adds the toggle (announced
+//!   as expanded / collapsed). A collapsed group's rows keep their place
+//!   but take no height — nothing is rebuilt — and a column model keeps
+//!   the columns still while rows hide.
+//! - **Accessibility**: each group is a row group (`<tbody
+//!   role="rowgroup">` on web) named by its title.
+//! - **Reorder**: a group's rows reorder among themselves (the group's
+//!   `id` is their `reorder_group`). `Table(on_group_reorder = Some(cb))`
+//!   gives each draggable group's band a grip; dragging it moves the band
+//!   with its rows while the other groups slide aside, and `cb(from, to)`
+//!   gets ordinals over the draggable groups.
+//! - A row's own `TableRow(density = Some(…))` beats the table's.
 //!
 //! # Sort headers and cell tones
 //!
@@ -236,17 +270,22 @@
 //! # Vertical scrolling & a pinned header
 //!
 //! `Table(scroll_y = true)` makes the table own its vertical scroll: the
-//! rows scroll inside the table's own height and the header row stays
-//! pinned to the top. Bound it with `max_height = Some(px)`, or let it
-//! fill a bounded parent (without `max_height` a `scroll_y` table takes
-//! the height its parent column gives it, and is as tall as its rows in
-//! an unbounded one). With `scroll_x` too the table owns ONE two-axis
-//! scroller, so the header pins to the top while frozen columns keep
-//! pinning to the sides, and a frozen header cell — the corner — pins on
-//! both axes, painted above the header row, which is painted above the
-//! body. That is the only way to freeze both: a sticky cell pins against
-//! its nearest scroll container, so in a `scroll_x` table that scrolls
-//! with the page the header can never stick to the page.
+//! rows scroll inside the table's own height and the header stays put
+//! above them. Bound it with `max_height = Some(px)`, or let it fill a
+//! bounded parent (without `max_height` a `scroll_y` table takes the
+//! height its parent column gives it, and is as tall as its rows in an
+//! unbounded one).
+//!
+//! The header rows lay out OUTSIDE the rows' scroller, above it, so the
+//! vertical scrollbar runs beside the rows only — under the header, not
+//! beside it. The header keeps the rows' column tracks (it measures and
+//! follows them, including a resize drag and a fill column) and, with
+//! `scroll_x` too, their horizontal scroll: scrolling the rows sideways
+//! moves the header with them, and scrolling over the header moves the
+//! rows. Frozen columns stay frozen in both, and a frozen header cell —
+//! the corner — is painted above the header cells sliding beneath it.
+//! The header's widths as first laid out are its columns' floors, so a
+//! header label is never cut by a narrower column.
 //!
 //! The header rows are the LEADING rows whose cells are all head cells
 //! (`TableCell(header = true)`).
@@ -260,6 +299,16 @@
 //! theme's spacing scale; `TableInset::Px(28.0)` takes an exact margin
 //! that is not on it. Typically paired with `variant = TableVariant::Plain`
 //! for an edge-to-edge list.
+//!
+//! `inset_left` / `inset_right` pad one edge only, overriding `inset_x` on
+//! that side (a side left at `TableInset::None` follows `inset_x`):
+//! `Table(inset_left = TableInset::Px(16.0))` lines the text up with the
+//! page margin and leaves the trailing edge alone.
+//!
+//! An icon column at an edge — [`TableColumn::actions`], the selection
+//! and grip columns, any `CellPadding::Icon` cell — keeps its compact
+//! padding: its width is sized for its icon, so the inset is not added to
+//! it.
 //!
 //! # Plain tables
 //!
@@ -340,6 +389,7 @@ use runtime_vocabulary::StyleProp;
 
 mod cards;
 mod columns;
+mod group;
 mod pager;
 mod reorder;
 mod rows;
@@ -351,13 +401,14 @@ pub use columns::{
     dragged_width, CardSlot, CellPadding, ColumnId, ColumnResizeCallback, ColumnWidths,
     TableColumn, ACTIONS_COLUMN_WIDTH_PX, COLUMN_RESET_DOUBLE_CLICK_NS, COLUMN_RESIZE_MIN_PX,
 };
+pub use group::{TableGroup, TableGroupProps};
 pub use pager::{page_window_text, TablePager, TablePagerProps};
 pub use reorder::{move_in_place, slide_offset, GRIP_COLUMN_WIDTH_PX};
 pub use rows::RowId;
 pub use select::{select_all_state, toggle_select_all, SelectAllState, SELECT_COLUMN_WIDTH_PX};
 
 use columns::ColumnModel;
-use reorder::{Reorder, GRIP_ICON_PX, GRIP_MARK};
+use reorder::{GroupReorder, Reorder, GRIP_ICON_PX, GRIP_MARK};
 mod styles;
 pub use styles::*;
 
@@ -624,10 +675,11 @@ pub struct TableProps {
     #[prop(static)]
     pub scroll_x: bool,
     /// Vertical-scroll mode: the rows scroll inside the table's own
-    /// height and the header row stays pinned to the top. Bound it with
-    /// `max_height`, or let it fill a bounded parent. With `scroll_x` the
-    /// table owns one two-axis scroller, so frozen columns and the header
-    /// pin together — see the module docs.
+    /// height under a header that stays put above them, with the
+    /// scrollbar beside the rows only. Bound it with `max_height`, or let
+    /// it fill a bounded parent. With `scroll_x` the header follows the
+    /// rows' horizontal scroll and frozen columns stay frozen in both —
+    /// see the module docs.
     // STRUCTURAL — selects the SDK's scroller and the header pin at build.
     #[prop(static)]
     pub scroll_y: bool,
@@ -644,6 +696,19 @@ pub struct TableProps {
     /// rebuilds for it.
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub inset_x: TableInset,
+    /// The outer padding of every row's FIRST cell only (and the frame
+    /// slots' leading edge), overriding `inset_x` on that side —
+    /// `inset_left = TableInset::Px(16.0)` alone lines the text up with
+    /// the page margin and leaves the trailing edge (an actions column)
+    /// at its own padding. `TableInset::None` (the default) follows
+    /// `inset_x`. Reactive, like `inset_x`.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub inset_left: TableInset,
+    /// The outer padding of every row's LAST cell only (and the frame
+    /// slots' trailing edge), overriding `inset_x` on that side. See
+    /// `inset_left`.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub inset_right: TableInset,
     /// Row padding for every cell — `Compact`, `Standard` or
     /// `Comfortable`.
     // STATIC — selected onto every built cell's sheet when the table is
@@ -707,6 +772,18 @@ pub struct TableProps {
     /// rows — on drop. See [`move_in_place`].
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub on_reorder: Option<Rc<dyn Fn(usize, usize)>>,
+    /// Makes [`TableGroup`]s draggable as a whole: each draggable group's
+    /// band gets a grip (the grip column is added if `on_reorder` has not
+    /// already), dragging it moves the band with its rows while the other
+    /// groups slide aside, and this is called with `(from, to)` — ordinals
+    /// over the draggable groups — on drop. Rows outside a group stay put.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub on_group_reorder: Option<Rc<dyn Fn(usize, usize)>>,
+    /// Show each row's drag grip only while the row is hovered (and while
+    /// it is dragged). Where the primary pointer cannot hover (a touch
+    /// screen) the grips stay shown. The hidden grip is still grabbable.
+    #[prop(static)]
+    pub grip_on_hover: bool,
     /// What a table with no body rows says: one row under the header
     /// spanning every column (past the selection and grip columns).
     /// `Some("No crew yet".into())`, or any element. Decided from the
@@ -778,14 +855,23 @@ pub fn Table(props: TableProps) -> Element {
     // footer section's rows are footer rows whatever they hold.
     let mut kinds: Vec<RowKind> = Vec::new();
     let mut metas: Vec<Option<Rc<RowMeta>>> = Vec::new();
+    // Per row: its `TableGroup` (by order among the groups) and its place
+    // in it (the band is 0).
+    let mut groups: Vec<Option<(usize, usize)>> = Vec::new();
+    let mut group_count = 0usize;
     {
         let mut head_open = true;
         for child in &children {
             let foot = table::is_footer(child);
+            let group = table::is_group(child).then(|| {
+                group_count += 1;
+                group_count - 1
+            });
+            let mut in_group = 0usize;
             table::visit_rows(child, |row| {
                 let kind = if foot {
                     RowKind::Foot
-                } else if head_open && row_is_head(row) {
+                } else if head_open && group.is_none() && row_is_head(row) {
                     RowKind::Head
                 } else {
                     head_open = false;
@@ -793,13 +879,45 @@ pub fn Table(props: TableProps) -> Element {
                 };
                 kinds.push(kind);
                 metas.push(row_meta(row));
+                groups.push(group.map(|g| (g, in_group)));
+                in_group += 1;
             });
         }
     }
 
+    // Group drag: the groups whose band is draggable, in order, each with
+    // its row count (band included).
+    let group_reorder = props.on_group_reorder.map(|cb| {
+        let mut sizes = vec![0usize; group_count];
+        let mut draggable = vec![false; group_count];
+        for ((g, meta), _) in groups.iter().zip(&metas).zip(&kinds) {
+            if let Some((g, i)) = g {
+                sizes[*g] += 1;
+                if *i == 0 {
+                    draggable[*g] = meta.as_ref().and_then(|m| m.band.as_ref()).is_some_and(|b| b.draggable);
+                }
+            }
+        }
+        let mut ordinal = vec![None; group_count];
+        let mut kept = Vec::new();
+        for g in 0..group_count {
+            if draggable[g] {
+                ordinal[g] = Some(kept.len());
+                kept.push(sizes[g]);
+            }
+        }
+        (GroupReorder::new(&kept, cb), ordinal)
+    });
+    let group_drag = |row_i: usize| -> Option<(usize, usize)> {
+        let (reorder, ordinal) = group_reorder.as_ref()?;
+        let _ = reorder;
+        let (g, i) = groups.get(row_i).copied().flatten()?;
+        ordinal[g].map(|o| (o, i))
+    };
+
     // The columns the table adds before the author's, in order.
     let lead: Vec<Builtin> = [
-        props.on_reorder.is_some().then_some(Builtin::Grip),
+        (props.on_reorder.is_some() || group_reorder.is_some()).then_some(Builtin::Grip),
         props.selection.is_some().then_some(Builtin::Select),
     ]
     .into_iter()
@@ -855,6 +973,18 @@ pub fn Table(props: TableProps) -> Element {
         .collect();
     let reorder = props.on_reorder.map(|cb| Reorder::new(&body, cb));
     let selection = props.selection;
+    // A band's content pins past the frozen columns the table adds, and
+    // takes the leading edge inset when its cell is the row's first.
+    for meta in metas.iter().flatten() {
+        if let Some(band) = &meta.band {
+            let mut lead_of = band.lead.borrow_mut();
+            lead_of.pin = lead_pin_width;
+            if lead.is_empty() {
+                lead_of.inset = side_inset(&props.inset_left, &props.inset_x);
+            }
+        }
+    }
+    let grip_on_hover = props.grip_on_hover;
     if !lead.is_empty() {
         let visible: Rc<Vec<RowId>> = Rc::new(
             kinds
@@ -870,15 +1000,22 @@ pub fn Table(props: TableProps) -> Element {
             table::visit_rows_mut(child, |row| {
                 let kind = kinds[row_i];
                 let meta = metas[row_i].clone();
+                // The row's drag recognizer: a band's group drag, or the
+                // row's own reorder.
+                let grip_touch = match (kind, group_drag(row_i)) {
+                    (RowKind::Body, Some((g, 0))) => {
+                        group_reorder.as_ref().map(|(r, _)| r.grip_handler(g))
+                    }
+                    (RowKind::Body, _) => reorder.as_ref().and_then(|r| r.grip_handler(body_i)),
+                    _ => None,
+                };
+                // A hover-revealed grip follows its row's pointer.
+                let row_hover = (grip_on_hover && grip_touch.is_some()).then(|| signal(false));
                 let mut added = Vec::with_capacity(lead.len());
                 let mut offset = 0.0_f32;
                 for b in &lead {
                     let content: Option<Element> = match (b, kind) {
-                        (Builtin::Grip, RowKind::Body)
-                            if reorder.as_ref().and_then(|r| r.grip_handler(body_i)).is_some() =>
-                        {
-                            Some(grip_mark())
-                        }
+                        (Builtin::Grip, RowKind::Body) if grip_touch.is_some() => Some(grip_mark(row_hover)),
                         (Builtin::Select, RowKind::Head) if Some(row_i) == first_head => {
                             selection.map(|s| select_all_box(s, visible.clone()))
                         }
@@ -900,9 +1037,7 @@ pub fn Table(props: TableProps) -> Element {
                         cell
                     };
                     let touch = match b {
-                        Builtin::Grip if kind == RowKind::Body => {
-                            reorder.as_ref().and_then(|r| r.grip_handler(body_i))
-                        }
+                        Builtin::Grip => grip_touch.clone(),
                         _ => None,
                     };
                     let cell = match (&meta, kind) {
@@ -921,6 +1056,11 @@ pub fn Table(props: TableProps) -> Element {
                     for (i, cell) in added.into_iter().enumerate() {
                         cells.insert(i, cell);
                     }
+                }
+                if let Some(hovered) = row_hover {
+                    table::visit_row_cells(row, |cell| {
+                        table::set_cell_hover(cell, Rc::new(move |entering| hovered.set(entering)));
+                    });
                 }
                 if kind == RowKind::Body {
                     body_i += 1;
@@ -958,19 +1098,41 @@ pub fn Table(props: TableProps) -> Element {
             });
         }
     }
+    // Group drag: every row of a draggable group moves with it; every
+    // other body row goes opaque behind it.
+    if let Some((greorder, _)) = &group_reorder {
+        let mut row_i = 0usize;
+        for child in &children {
+            table::visit_rows(child, |row| {
+                match (kinds[row_i], group_drag(row_i)) {
+                    (_, Some((g, i))) => greorder.wire_row(g, i, row),
+                    (RowKind::Body, None) => greorder.wire_other_row(row),
+                    _ => {}
+                }
+                row_i += 1;
+            });
+        }
+    }
 
     // Density is a table-wide setting, but the cells are already built
     // when this body runs (the `ui!` children block builds them first),
-    // so it is selected onto each built cell. A static selection keeps a
-    // static sheet static — it still premints. `Standard` is every
-    // sheet's default arm, so it needs no pass at all.
-    if props.density != TableDensity::Standard {
-        let arm = props.density.as_variant_str();
+    // so it is selected onto each built cell — the row's own density
+    // (`TableRow(density = …)`) over the table's. A static selection keeps
+    // a static sheet static — it still premints. `Standard` is every
+    // sheet's default arm, so it needs no pass.
+    {
+        let mut row_i = 0usize;
         for child in &children {
             table::visit_rows(child, |row| {
-                table::visit_row_cells(row, |cell| {
-                    table::map_cell_application(cell, Rc::new(move |app| app.with("density", arm)));
-                });
+                let density =
+                    metas.get(row_i).cloned().flatten().and_then(|m| m.density).unwrap_or(props.density);
+                if density != TableDensity::Standard {
+                    let arm = density.as_variant_str();
+                    table::visit_row_cells(row, |cell| {
+                        table::map_cell_application(cell, Rc::new(move |app| app.with("density", arm)));
+                    });
+                }
+                row_i += 1;
             });
         }
     }
@@ -1007,8 +1169,13 @@ pub fn Table(props: TableProps) -> Element {
     // Edge inset: the first and last cell of every row — a single-cell
     // row takes both sides. A static inset is a static selection (the
     // cells stay preminted); a live one re-pads the same cells in place.
-    let inset = props.inset_x;
-    if !matches!(inset, Reactive::Static(TableInset::None)) {
+    // An icon column at the edge (`CellPadding::Icon` — the actions,
+    // selection and grip columns) keeps its compact padding: its width is
+    // sized for its icon, and the inset would squeeze the icon out of it.
+    let inset_left = side_inset(&props.inset_left, &props.inset_x);
+    let inset_right = side_inset(&props.inset_right, &props.inset_x);
+    let pads = |i: &Reactive<TableInset>| !matches!(i, Reactive::Static(TableInset::None));
+    if pads(&inset_left) || pads(&inset_right) {
         for child in &children {
             table::visit_rows(child, |row| {
                 let mut count = 0usize;
@@ -1017,8 +1184,14 @@ pub fn Table(props: TableProps) -> Element {
                 table::visit_row_cells(row, |cell| {
                     let (first, last) = (i == 0, i + 1 == count);
                     i += 1;
-                    if first || last {
-                        apply_edge_inset(cell, &inset, first, last);
+                    if (!first && !last) || is_icon_cell(cell) {
+                        return;
+                    }
+                    if first && pads(&inset_left) {
+                        apply_edge_inset(cell, &inset_left, InsetSide::Left);
+                    }
+                    if last && pads(&inset_right) {
+                        apply_edge_inset(cell, &inset_right, InsetSide::Right);
                     }
                 });
             });
@@ -1057,29 +1230,51 @@ pub fn Table(props: TableProps) -> Element {
         edges
     });
     let slot_style = {
-        let inset = inset.clone();
+        let (left, right) = (inset_left.clone(), inset_right.clone());
         let slot_override = props.styles.frame_slot.clone();
         move |edge: &'static str| {
-            let inset = inset.clone();
+            let (left, right) = (left.clone(), right.clone());
             let slot_override = slot_override.clone();
             move || {
                 let app = TableStyles::frame_slot()
                     .overridden(slot_override.as_ref())
                     .into_style_application()
                     .with("edge", edge);
-                let i = inset.get();
-                i.apply(i.apply(app, InsetSide::Left), InsetSide::Right)
+                right.get().apply(left.get().apply(app, InsetSide::Left), InsetSide::Right)
             }
         }
     };
+    let live_slots = matches!(inset_left, Reactive::Dynamic(_)) || matches!(inset_right, Reactive::Dynamic(_));
     let header_slot = props.header_slot.map(|slot| {
         let style = slot_style("top");
-        slot_view(slot, &inset, style)
+        slot_view(slot, live_slots, style)
     });
     let footer_slot = props.footer_slot.map(|slot| {
         let style = slot_style("bottom");
-        slot_view(slot, &inset, style)
+        slot_view(slot, live_slots, style)
     });
+    // A scroll-y table's leading header rows form its head section: the
+    // SDK lays them out above the rows' scroller, so the vertical
+    // scrollbar runs beside the body only, under the header.
+    if props.scroll_y {
+        let mut row_i = 0usize;
+        let mut lead = 0usize;
+        for child in &children {
+            let mut rows = 0usize;
+            table::visit_rows(child, |_| rows += 1);
+            let head = rows > 0 && (row_i..row_i + rows).all(|i| kinds.get(i) == Some(&RowKind::Head));
+            if !head || table::is_footer(child) {
+                break;
+            }
+            row_i += rows;
+            lead += 1;
+        }
+        if lead > 0 {
+            let rest = children.split_off(lead);
+            let head = std::mem::replace(&mut children, rest);
+            children.insert(0, table::table_head(table::TableHeadProps { children: head }));
+        }
+    }
     // In grid-column mode every column is one track: the added columns
     // at their fixed widths, the author's from the column model.
     let mut sdk_columns: Vec<Option<table::ColumnSpec>> = lead
@@ -1109,26 +1304,40 @@ pub fn Table(props: TableProps) -> Element {
 
 /// A frame slot's view: its sheet resolved once for a static inset (the
 /// slot premints), followed live for a reactive one.
-fn slot_view(
-    slot: Element,
-    inset: &Reactive<TableInset>,
-    style: impl Fn() -> StyleApplication + 'static,
-) -> Element {
-    match inset {
-        Reactive::Static(_) => {
-            let app = style();
-            ui! { view(style = app) { slot } }
-        }
-        Reactive::Dynamic(_) => ui! { view(style = style) { slot } },
+fn slot_view(slot: Element, live: bool, style: impl Fn() -> StyleApplication + 'static) -> Element {
+    if live {
+        ui! { view(style = style) { slot } }
+    } else {
+        let app = style();
+        ui! { view(style = app) { slot } }
     }
 }
 
-/// Pad one edge cell with the table's inset — see [`TableInset::apply`].
-fn apply_edge_inset(cell: &Element, inset: &Reactive<TableInset>, first: bool, last: bool) {
-    let pad = move |app: StyleApplication, i: TableInset| {
-        let app = if first { i.apply(app, InsetSide::Left) } else { app };
-        if last { i.apply(app, InsetSide::Right) } else { app }
-    };
+/// One edge's inset: the side's own when it sets one, else `inset_x`.
+fn side_inset(side: &Reactive<TableInset>, both: &Reactive<TableInset>) -> Reactive<TableInset> {
+    match side {
+        Reactive::Static(TableInset::None) => both.clone(),
+        Reactive::Static(_) => side.clone(),
+        Reactive::Dynamic(f) => {
+            let (f, both) = (f.clone(), both.clone());
+            Reactive::Dynamic(Rc::new(move || match f() {
+                TableInset::None => both.get(),
+                own => own,
+            }))
+        }
+    }
+}
+
+/// Whether a built cell has the compact icon padding (`CellPadding::Icon`).
+fn is_icon_cell(cell: &Element) -> bool {
+    table::cell_application(cell)
+        .is_some_and(|app| app.variants.0.get("cell_padding").map(String::as_str) == Some("icon"))
+}
+
+/// Pad one side of an edge cell with the table's inset — see
+/// [`TableInset::apply`].
+fn apply_edge_inset(cell: &Element, inset: &Reactive<TableInset>, side: InsetSide) {
+    let pad = move |app: StyleApplication, i: TableInset| i.apply(app, side);
     match inset {
         Reactive::Static(i) => {
             let i = *i;
@@ -1215,10 +1424,19 @@ fn pin_builtin(cell: Element, offset: f32) -> Element {
     cell
 }
 
-/// The grip glyph a draggable row's grip cell shows.
-fn grip_mark() -> Element {
+/// The grip glyph a draggable row's grip cell shows — revealed only while
+/// `hovered` holds when the table reveals grips on hover (always, where
+/// the primary pointer cannot hover).
+fn grip_mark(hovered: Option<Signal<bool>>) -> Element {
+    let revealed: Option<Rc<dyn Fn() -> bool>> = hovered.map(|h| {
+        let pointer = runtime_core::primary_pointer();
+        Rc::new(move || h.get() || pointer.get() == runtime_core::PointerKind::Coarse) as Rc<dyn Fn() -> bool>
+    });
+    let style = group::grip_style(revealed);
     ui! {
-        Icon(data = GRIP_MARK, size = GRIP_ICON_PX, tone = Some(crate::tone::Neutral.into()))
+        view(style = style) {
+            Icon(data = GRIP_MARK, size = GRIP_ICON_PX, tone = Some(crate::tone::Neutral.into()))
+        }
     }
 }
 
@@ -1334,6 +1552,11 @@ pub struct TableRowProps {
     #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub reorder_group: Option<RowId>,
+    /// This row's padding, over the table's `density` — a denser band, a
+    /// roomier summary row. `None` (the default) follows the table.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
+    pub density: Option<TableDensity>,
 }
 
 impl Default for TableRowProps {
@@ -1347,6 +1570,7 @@ impl Default for TableRowProps {
             selectable: true,
             draggable: true,
             reorder_group: None,
+            density: None,
         }
     }
 }
@@ -1410,6 +1634,8 @@ pub fn TableRow(props: TableRowProps) -> Element {
             group: props.reorder_group,
             tone: props.tone,
             interaction,
+            density: props.density,
+            band: None,
         }),
     );
     row
