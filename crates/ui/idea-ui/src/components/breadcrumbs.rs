@@ -52,8 +52,8 @@ component_styles! {
                     font_weight: FontWeight::SemiBold,
                 }
             }
-            // A linked (non-current) crumb shows a pointer. Variant rather than a
-            // computed layer so the rule premints — see `ListItemRow::interactive`.
+            // A linked (non-current) crumb shows a pointer. An axis arm rather
+            // than a computed layer so the rule premints.
             variant interactive {
                 #[default]
                 off(_t) {}

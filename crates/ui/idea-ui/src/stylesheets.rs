@@ -2830,115 +2830,13 @@ stylesheet! {
 // Pagination
 // =============================================================================
 
-stylesheet! {
-    pub PaginationRow<IdeaThemeRef> {
-        base(t) {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            gap: t.spacing.xs(),
-        }
-    }
-}
 
-stylesheet! {
-    pub PageButton<IdeaThemeRef> {
-        base(t) {
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            min_width: 32.0,
-            height: 32.0,
-            padding_horizontal: t.spacing.sm(),
-            border_radius: t.radius.md(),
-            background: Color("transparent".into()),
-            color: t.color.text(),
-            font_size: t.typography.body_sm_size(),
-            font_weight: FontWeight::Medium,
-            text_align: TextAlign::Center,
-            cursor: Cursor::Pointer,
-        }
-        variant active {
-            #[default]
-            off(_t) {}
-            on(t) {
-                background: t.intent.primary.solid_bg(),
-                color: t.intent.primary.solid_text(),
-            }
-        }
-        state hovered(t) { background: t.color.surface_alt() }
-        // Focus mirrors hover (surface wash) — replaces the native macOS ring.
-        state focused(t) { background: t.color.surface_alt() }
-        state disabled(_t) { opacity: 0.4 }
-        transitions { background: 120ms EaseOut, color: 120ms EaseOut }
-    }
-}
 
 // =============================================================================
 // List / ListItem
 // =============================================================================
 
-stylesheet! {
-    pub ListContainer<IdeaThemeRef> {
-        base(t) {
-            flex_direction: FlexDirection::Column,
-            background: t.color.surface(),
-            border_top_width: 1.0,
-            border_right_width: 1.0,
-            border_bottom_width: 1.0,
-            border_left_width: 1.0,
-            border_top_color: t.color.border(),
-            border_right_color: t.color.border(),
-            border_bottom_color: t.color.border(),
-            border_left_color: t.color.border(),
-            border_top_left_radius: t.radius.lg(),
-            border_top_right_radius: t.radius.lg(),
-            border_bottom_left_radius: t.radius.lg(),
-            border_bottom_right_radius: t.radius.lg(),
-            overflow: runtime_core::Overflow::Hidden,
-        }
-    }
-}
 
-stylesheet! {
-    pub ListItemRow<IdeaThemeRef> {
-        base(t) {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            gap: t.spacing.sm(),
-            padding_vertical: t.spacing.sm(),
-            padding_horizontal: t.spacing.md(),
-            background: Color("transparent".into()),
-            color: t.color.text(),
-            font_size: t.typography.body_size(),
-            text_align: TextAlign::Left,
-        }
-        variant divided {
-            #[default]
-            off(_t) {}
-            on(t) {
-                border_top_width: 1.0,
-                border_top_color: t.color.border(),
-            }
-        }
-        variant active {
-            #[default]
-            off(_t) {}
-            on(t) { background: t.color.surface_alt() }
-        }
-        // A row with an `on_press` shows a pointer (the "anything pressable
-        // shows a pointer" rule). A variant arm rather than a computed layer
-        // so the rule premints — a constant closure defeats premint for the
-        // whole sheet without expressing anything a variant can't.
-        variant interactive {
-            #[default]
-            off(_t) {}
-            on(_t) { cursor: Cursor::Pointer }
-        }
-        state hovered(t) { background: t.color.surface_alt() }
-        // Focus mirrors hover (row wash) — replaces the native macOS ring.
-        state focused(t) { background: t.color.surface_alt() }
-        transitions { background: 120ms EaseOut }
-    }
-}
 
 // =============================================================================
 // Grid — N equal columns via real CSS grid (display: grid)

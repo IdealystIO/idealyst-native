@@ -210,12 +210,15 @@ pub use components::grid::{Grid, GridProps};
 pub use components::icon::{Icon, IconProps};
 pub use components::image::{Image, ImageProps};
 pub use components::link::{Link, LinkProps};
-pub use components::list::{List, ListItem, ListItemProps, ListProps};
+pub use components::list::{
+    List, ListItem, ListItemActive, ListItemInteractive, ListItemProps, ListItemSlotStyles, ListItemStyles,
+    ListProps, ListSlotStyles, ListStyles,
+};
 pub use components::menu::{
     menu_checkbox, Menu, MenuEntry, MenuItem, MenuItemProps, MenuLabel, MenuLabelProps, MenuProps,
     MenuSeparator, MenuSeparatorProps, SubMenu, SubMenuProps, SubMenuSlot, SubMenuSlotCx,
 };
-pub use components::pagination::{Pagination, PaginationProps};
+pub use components::pagination::{Pagination, PaginationProps, PaginationSlotStyles, PaginationStyles};
 pub use components::tooltip::{Tooltip, TooltipProps};
 pub use components::radio::{
     Radio, RadioAxis, RadioChecked, RadioDimmed, RadioGroup, RadioGroupProps, RadioOption, RadioProps,

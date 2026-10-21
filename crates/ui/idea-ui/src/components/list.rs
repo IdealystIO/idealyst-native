@@ -18,19 +18,45 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, ChildList, Element, IdealystSchema, IntoElement, Reactive, StyleApplication,
+    component, component_styles, ui, AlignItems, ChildList, Color, Cursor, Element, FlexDirection,
+    IdealystSchema, IntoElement, Reactive, TextAlign,
 };
 
 use crate::components::divider::DividerStyles;
-use crate::stylesheets::{ListContainer, ListItemRow};
+use crate::theme::IdeaThemeRef;
 
 // =============================================================================
 // List
 // =============================================================================
 
+component_styles! {
+    /// The styled sections of [`List`].
+    pub List<IdeaThemeRef> {
+        slot root {
+            base(t) {
+                flex_direction: FlexDirection::Column,
+                background: t.color.surface(),
+                border_top_width: 1.0,
+                border_right_width: 1.0,
+                border_bottom_width: 1.0,
+                border_left_width: 1.0,
+                border_top_color: t.color.border(),
+                border_right_color: t.color.border(),
+                border_bottom_color: t.color.border(),
+                border_left_color: t.color.border(),
+                border_top_left_radius: t.radius.lg(),
+                border_top_right_radius: t.radius.lg(),
+                border_bottom_left_radius: t.radius.lg(),
+                border_bottom_right_radius: t.radius.lg(),
+                overflow: runtime_core::Overflow::Hidden,
+            }
+        }
+    }
+}
+
 // Reactive-by-default: only field is `children` (a LIST, auto-skipped);
 // `#[props]` is a no-op here but kept for uniformity with the family.
-#[runtime_core::props]
+#[runtime_core::props(styles = ListStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct ListProps {
@@ -41,7 +67,7 @@ pub struct ListProps {
 
 impl Default for ListProps {
     fn default() -> Self {
-        Self { children: Vec::new() }
+        Self { children: Vec::new(), styles: Default::default() }
     }
 }
 
@@ -63,17 +89,55 @@ pub fn List(props: ListProps) -> Element {
         kids.push(item);
     }
 
-    ui! { view(style = ListContainer()) { kids } }
+    let root_style = ListStyles::root().overridden(props.styles.root.as_ref());
+    ui! { view(style = root_style) { kids } }
 }
 
 // =============================================================================
 // ListItem
 // =============================================================================
 
+component_styles! {
+    /// The styled sections of [`ListItem`].
+    pub ListItem<IdeaThemeRef> {
+        slot root {
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: t.spacing.sm(),
+                padding_vertical: t.spacing.sm(),
+                padding_horizontal: t.spacing.md(),
+                background: Color("transparent".into()),
+                color: t.color.text(),
+                font_size: t.typography.body_size(),
+                text_align: TextAlign::Left,
+            }
+            variant active {
+                #[default]
+                off(_t) {}
+                on(t) { background: t.color.surface_alt() }
+            }
+            // A row with an `on_press` shows a pointer (the "anything pressable
+            // shows a pointer" rule). A variant arm rather than a computed layer
+            // so the rule premints — a constant closure defeats premint for the
+            // whole sheet without expressing anything a variant can't.
+            variant interactive {
+                #[default]
+                off(_t) {}
+                on(_t) { cursor: Cursor::Pointer }
+            }
+            state hovered(t) { background: t.color.surface_alt() }
+            // Focus mirrors hover (row wash) — replaces the native macOS ring.
+            state focused(t) { background: t.color.surface_alt() }
+            transitions { background: 120ms EaseOut }
+        }
+    }
+}
+
 // Reactive-by-default: `#[props]` wraps the scalar `active` → `Reactive<bool>`
 // (routes to the row style sink below). `label` is already reactive; the
 // `on_press` handler and `leading`/`trailing` element slots auto-skip.
-#[runtime_core::props]
+#[runtime_core::props(styles = ListItemStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct ListItemProps {
@@ -100,6 +164,7 @@ impl Default for ListItemProps {
             leading: None,
             trailing: None,
             active: Reactive::Static(false),
+            styles: Default::default(),
         }
     }
 }
@@ -127,44 +192,18 @@ pub fn ListItem(props: ListItemProps) -> Element {
         kids.push(tr);
     }
 
-    // `active` is read live INSIDE each style closure so the apply-style Effect
-    // subscribes when it's a signal; a static stays the build-time fast path.
-    let style_is_reactive = !active.is_static();
-
     // Clickable rows show a pointer (the "anything pressable shows a pointer"
-    // rule); static rows don't. Both ride the sheet's `interactive` variant —
-    // `on_press` is known at build time, so the arm is fixed per row. A
-    // variant rather than a computed layer so the rule premints: the closure
-    // was constant, and a constant closure blocks premint for the whole sheet
-    // without expressing anything a variant can't.
-    let row_style = move |interactive: &'static str| {
-        let active = active.clone();
-        move || {
-            StyleApplication::new(ListItemRow::sheet())
-                .with("active", if active.get() { "on" } else { "off" }.to_string())
-                .with("interactive", interactive.to_string())
-        }
-    };
+    // rule); static rows don't. `on_press` is known at build time, so the
+    // `interactive` arm is fixed per row; `active` may be live and re-styles
+    // the row in place.
+    let style = ListItemStyles::root()
+        .set(active.map(ListItemActive::from))
+        .set(ListItemInteractive::from(props.on_press.is_some()))
+        .overridden(props.styles.root.as_ref());
 
     match props.on_press {
-        Some(cb) => {
-            let make_style = row_style("on");
-            let bound = runtime_core::pressable(kids, move || (cb)());
-            if style_is_reactive {
-                bound.with_style(make_style).into_element()
-            } else {
-                bound.with_style(make_style()).into_element()
-            }
-        }
-        None => {
-            let make_style = row_style("off");
-            let bound = runtime_core::view(kids);
-            if style_is_reactive {
-                bound.with_style(make_style).into_element()
-            } else {
-                bound.with_style(make_style()).into_element()
-            }
-        }
+        Some(cb) => runtime_core::pressable(kids, move || (cb)()).with_style(style).into_element(),
+        None => runtime_core::view(kids).with_style(style).into_element(),
     }
 }
 

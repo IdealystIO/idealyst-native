@@ -19,10 +19,54 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, IdealystSchema, IntoElement, Element, Reactive, Signal, StyleApplication,
+    component, component_styles, ui, AlignItems, Color, Cursor, Element, FlexDirection, FontWeight,
+    IdealystSchema, IntoElement, JustifyContent, Reactive, Signal, TextAlign,
 };
 
-use crate::stylesheets::{PageButton, PaginationRow};
+use crate::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`Pagination`].
+    pub Pagination<IdeaThemeRef> {
+        slot row {
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: t.spacing.xs(),
+            }
+        }
+
+        slot button {
+            base(t) {
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                min_width: 32.0,
+                height: 32.0,
+                padding_horizontal: t.spacing.sm(),
+                border_radius: t.radius.md(),
+                background: Color("transparent".into()),
+                color: t.color.text(),
+                font_size: t.typography.body_sm_size(),
+                font_weight: FontWeight::Medium,
+                text_align: TextAlign::Center,
+                cursor: Cursor::Pointer,
+            }
+            variant active {
+                #[default]
+                off(_t) {}
+                on(t) {
+                    background: t.intent.primary.solid_bg(),
+                    color: t.intent.primary.solid_text(),
+                }
+            }
+            state hovered(t) { background: t.color.surface_alt() }
+            // Focus mirrors hover (surface wash) — replaces the native macOS ring.
+            state focused(t) { background: t.color.surface_alt() }
+            state disabled(_t) { opacity: 0.4 }
+            transitions { background: 120ms EaseOut, color: 120ms EaseOut }
+        }
+    }
+}
 
 /// Pages shown without collapsing. Above this, the middle ellipsizes.
 const WINDOW_FULL: usize = 7;
@@ -31,7 +75,7 @@ const WINDOW_FULL: usize = 7;
 // `page` (`Signal`) and `on_change` (Rc handler) are auto-skipped. `total`
 // drives the windowed cell STRUCTURE (built imperatively in `build_row`); it's
 // snapshotted at build — see the TODO in the body.
-#[runtime_core::props]
+#[runtime_core::props(styles = PaginationStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct PaginationProps {
@@ -46,7 +90,12 @@ pub struct PaginationProps {
 
 impl Default for PaginationProps {
     fn default() -> Self {
-        Self { page: runtime_core::signal(1), total: Reactive::Static(1), on_change: Rc::new(|_| {}) }
+        Self {
+            page: runtime_core::signal(1),
+            total: Reactive::Static(1),
+            on_change: Rc::new(|_| {}),
+            styles: Default::default(),
+        }
     }
 }
 
@@ -78,7 +127,12 @@ fn cells(current: usize, total: usize) -> Vec<Option<usize>> {
     out
 }
 
-fn nav_button(glyph: &str, target: Option<usize>, on_change: Rc<dyn Fn(usize)>) -> Element {
+fn nav_button(
+    glyph: &str,
+    target: Option<usize>,
+    on_change: Rc<dyn Fn(usize)>,
+    styles: &PaginationSlotStyles,
+) -> Element {
     let disabled = target.is_none();
     let label = runtime_core::text(glyph.to_string()).into_element();
     let mut b = runtime_core::pressable(vec![label], move || {
@@ -86,7 +140,7 @@ fn nav_button(glyph: &str, target: Option<usize>, on_change: Rc<dyn Fn(usize)>) 
             (on_change)(t);
         }
     })
-    .with_style(|| StyleApplication::new(PageButton::sheet()));
+    .with_style(PaginationStyles::button().overridden(styles.button.as_ref()));
     if disabled {
         b = b.disabled(move || true);
     }
@@ -110,6 +164,7 @@ pub fn Pagination(props: PaginationProps) -> Element {
     let page = props.page;
     let total = props.total.clone();
     let on_change = props.on_change.clone();
+    let styles = props.styles.clone();
     // A direct `switch`, not a `ui!` `match`: the row has ONE shape, rebuilt
     // whenever its derived key changes. `ui!` has no keyed-rebuild form —
     // the equivalent would be a single-arm `match (page.get(), …) { k => … }`,
@@ -117,19 +172,24 @@ pub fn Pagination(props: PaginationProps) -> Element {
     // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape
     runtime_core::switch(
         move || (page.get(), total.get().max(1)),
-        move |&(current, total)| build_row(current, total, on_change.clone()),
+        move |&(current, total)| build_row(current, total, on_change.clone(), &styles),
     )
 }
 
 /// Build the pagination row for a concrete `current` page. Called fresh by
 /// `switch` on every page or page-count change, so all derived values (nav
 /// targets, the windowed cells, the active mark) are computed live.
-fn build_row(current: usize, total: usize, on_change: Rc<dyn Fn(usize)>) -> Element {
+fn build_row(
+    current: usize,
+    total: usize,
+    on_change: Rc<dyn Fn(usize)>,
+    styles: &PaginationSlotStyles,
+) -> Element {
     let mut kids: Vec<Element> = Vec::new();
 
     // Prev.
     let prev_target = if current > 1 { Some(current - 1) } else { None };
-    kids.push(nav_button("\u{2039}", prev_target, on_change.clone()));
+    kids.push(nav_button("\u{2039}", prev_target, on_change.clone(), styles));
 
     // Page cells.
     for cell in cells(current, total) {
@@ -139,18 +199,18 @@ fn build_row(current: usize, total: usize, on_change: Rc<dyn Fn(usize)>) -> Elem
                 let label = runtime_core::text(n.to_string()).into_element();
                 // `active` is baked from `current` (this row is rebuilt per
                 // page change), not read reactively — no per-cell closure.
-                let active = if current == n { "on" } else { "off" }.to_string();
+                let style = PaginationStyles::button()
+                    .set(PaginationActive::from(current == n))
+                    .overridden(styles.button.as_ref());
                 let row = runtime_core::pressable(vec![label], move || (on_change_for)(n))
-                    .with_style(move || {
-                        StyleApplication::new(PageButton::sheet()).with("active", active.clone())
-                    })
+                    .with_style(style)
                     .into_element();
                 kids.push(row);
             }
             None => {
                 kids.push(
                     runtime_core::text("\u{2026}".to_string())
-                        .with_style(|| StyleApplication::new(PageButton::sheet()))
+                        .with_style(PaginationStyles::button().overridden(styles.button.as_ref()))
                         .into_element(),
                 );
             }
@@ -159,9 +219,10 @@ fn build_row(current: usize, total: usize, on_change: Rc<dyn Fn(usize)>) -> Elem
 
     // Next.
     let next_target = if current < total { Some(current + 1) } else { None };
-    kids.push(nav_button("\u{203A}", next_target, on_change));
+    kids.push(nav_button("\u{203A}", next_target, on_change, styles));
 
-    ui! { view(style = PaginationRow()) { kids } }
+    let row_style = PaginationStyles::row().overridden(styles.row.as_ref());
+    ui! { view(style = row_style) { kids } }
 }
 
 #[cfg(test)]
@@ -186,6 +247,7 @@ mod tests {
                 page: runtime_core::signal(3),
                 total: Reactive::Static(20),
                 on_change: Rc::new(|_| {}),
+                ..Default::default()
             });
             let p = classify(el);
             assert!(
