@@ -5161,8 +5161,8 @@ mod layout_tests {
         // text".
         //
         // Swept across font sizes because WHICH sizes disagree depends on the
-        // host's fonts; the letter-spacing (0.3px, what `TagSheetBuilder`
-        // gives every Tag) is the part that reproduces anywhere. Asserting
+        // host's fonts; the letter-spacing (0.3px, what idea-ui's Tag
+        // `label` slot gives every Tag) is the part that reproduces anywhere. Asserting
         // self-consistency rather than specific pixel widths keeps the test
         // font-independent while failing for exactly this bug.
         for text in ["★ Featured", "✓ Verified", "→ Next"] {

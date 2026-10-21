@@ -213,7 +213,7 @@ pub fn progress() -> Element {
                     Prop { name: "value",   ty: "Reactive<f32>",          desc: "Completion in 0.0..=1.0, read in Value mode (ignored by the others). Static or a live Signal<f32>; changes animate." },
                     Prop { name: "mode",    ty: "Reactive<ProgressMode>", desc: "Value (default, value-driven), Indeterminate (endless sweep), or Simulated (fake loading creep)." },
                     Prop { name: "tone",    ty: "ToneRef",                desc: "Semantic palette for the fill. Default: Primary." },
-                    Prop { name: "variant", ty: "VariantRef",             desc: "Surface skeleton for the fill. Default: Filled." },
+                    Prop { name: "variant", ty: "ProgressVariant",             desc: "Surface skeleton for the fill. Default: Filled." },
                     Prop { name: "size",    ty: "ControlSize",            desc: "Sm / Md / Lg bar thickness. Default: Md." },
                     Prop { name: "cap",     ty: "ProgressCap",            desc: "End caps: None (square, default) or Rounded (pill track + fill)." },
                 ])
@@ -276,7 +276,7 @@ pub fn badge() -> Element {
                 PropsTable(rows = vec![
                     Prop { name: "label",   ty: "Reactive<String>", desc: "Pill text. Static or reactive." },
                     Prop { name: "tone",    ty: "ToneRef",          desc: "Semantic palette. Default: Neutral." },
-                    Prop { name: "variant", ty: "VariantRef",       desc: "Filled / Soft / Outlined. No Ghost (a transparent badge would be invisible). Default: Soft." },
+                    Prop { name: "variant", ty: "BadgeVariant",       desc: "Filled / Soft / Outlined. No Ghost (a transparent badge would be invisible). Default: Soft." },
                 ])
                 CodePanel(src = r##"// Status indicator in a header
 Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
@@ -349,7 +349,7 @@ pub fn tag() -> Element {
                 PropsTable(rows = vec![
                     Prop { name: "label",     ty: "Reactive<String>",     desc: "Tag text." },
                     Prop { name: "tone",      ty: "ToneRef",              desc: "Semantic palette. Default: Neutral." },
-                    Prop { name: "variant",   ty: "VariantRef",           desc: "Filled / Soft / Outlined. Default: Soft." },
+                    Prop { name: "variant",   ty: "TagVariant",           desc: "Filled / Soft / Outlined. Default: Soft." },
                     Prop { name: "on_remove", ty: "Option<Rc<dyn Fn()>>", desc: "When Some, a close (×) button renders to the right of the label." },
                 ])
                 CodePanel(src = r##"let langs = signal(vec!["Rust".to_string(), "Go".to_string()]);
@@ -427,7 +427,7 @@ pub fn chip() -> Element {
                     Prop { name: "selected",  ty: "bool",                 desc: "Controlled selected state — the host owns it. Drives the lit/muted appearance." },
                     Prop { name: "on_select", ty: "Option<Rc<dyn Fn()>>", desc: "Fires when tapped. The host flips its selected source here. When unset, the chip is inert." },
                     Prop { name: "tone",      ty: "ToneRef",              desc: "Semantic palette. Default: Neutral." },
-                    Prop { name: "variant",   ty: "VariantRef",           desc: "Surface treatment for the selected state. Unselected always uses Ghost. Default: Soft." },
+                    Prop { name: "variant",   ty: "ChipVariant",           desc: "Surface treatment for the selected state. Unselected always uses Ghost. Default: Soft." },
                     Prop { name: "size",      ty: "ControlSize",          desc: "Sm / Md / Lg. Default: Md." },
                 ])
             }

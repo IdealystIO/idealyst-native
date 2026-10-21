@@ -299,7 +299,7 @@ const NAT_WIDTH_CORRECTION_MAX_PX: i32 = 4;
 /// per-glyph spacing accumulates a fractional total that the width report rounds
 /// away and the line breaker does not, so GTK claims a width and then refuses to
 /// render in it. Measured on a letter-spaced label (0.3px, the value
-/// `TagSheetBuilder::build_text` gives every Tag), sweeping font sizes:
+/// idea-ui's Tag `label` slot gives every Tag), sweeping font sizes:
 ///
 /// ```text
 /// "★ Featured"  short at 10, 13, 16, 22, 23 px

@@ -842,11 +842,11 @@ pub struct IconSetEntry {
 /// to "what can I write after `tone =`?".
 ///
 /// Closed enums answer that through [`TypeEntry`] (shape `Enum`): the
-/// variants are the values. But idea-theme's extensible vocabularies
-/// (`ToneRef`, `VariantRef`, `TypographyKindRef`, …) are open: a prop
-/// takes `impl Into<ToneRef>`, each value is a zero-sized marker struct
-/// implementing the trait, and an app adds its own by writing another
-/// impl. No enum lists them, so completion tooling had nothing to offer
+/// variants are the values. But open vocabularies — idea-theme's `ToneRef`,
+/// a component's generated axis keys (`ButtonVariant`, `TypographyKind`, …)
+/// — are open: a prop takes a marker or a key, built-in values are
+/// zero-sized markers or associated consts, and an app adds its own (a
+/// `tone!`, a `ButtonVariant::define`). No enum lists them, so completion tooling had nothing to offer
 /// for exactly the props authors pick values for most. Each marker
 /// registers one of these instead.
 ///

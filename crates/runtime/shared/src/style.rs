@@ -3257,9 +3257,8 @@ impl StyleSheet {
     /// own source tokens).
     ///
     /// The `stylesheet!` macro premints at expansion, where its whole
-    /// variant space is known. A sheet assembled at RUNTIME — idea-theme's `TypographySheetBuilder`
-    /// and friends, whose kinds/tones an app extends before
-    /// `install_idea_theme` — has no such expansion site, so without this
+    /// variant space is known. A sheet assembled at RUNTIME — a component's slot composed with an
+    /// app's restyles and registered tones at boot — has no such expansion site, so without this
     /// every one of those components falls through to the live engine and
     /// keeps it linked. The dump build already runs `app()`, so by the time it
     /// asks for CSS the assembled sheets exist; registering here is what

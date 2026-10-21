@@ -972,9 +972,8 @@ fn mount_text(a: &App, tree: impl FnOnce() -> Element) -> String {
 }
 
 /// The bundle sends only the props its call site set; the app fills the
-/// rest from its own defaults. Before, every field crossed — defaults too —
-/// so idea-ui's `Card()` failed on its default `VariantRef`, which can't
-/// cross as data.
+/// rest from its own defaults. A default that can't cross as data (an
+/// app-side value with behavior) then never has to.
 #[test]
 fn regression_an_app_components_defaults_never_cross() {
     let a = app();

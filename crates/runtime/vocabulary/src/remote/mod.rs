@@ -1900,7 +1900,8 @@ macro_rules! __remote_props_receive {
 }
 
 /// Let `$ty` — something an app defines natively, with behavior, from an
-/// open set (idea-theme's `ToneRef`, `VariantRef`, …) — cross from a bundle
+/// open set (idea-theme's `ToneRef`, a component's axis keys like
+/// `ButtonVariant`, …) — cross from a bundle
 /// to an app component BY KEY: the bundle sends `$key(&value)`, the app
 /// rebuilds its own value registered under that key (`__remote_key!`). A
 /// key the app has no value for is an error naming it — the same rule as

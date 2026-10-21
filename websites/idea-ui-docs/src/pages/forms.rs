@@ -119,7 +119,7 @@ ui! {
                 Prop { name: "value",     ty: "Signal<bool>",             desc: "Controlled checked state. The host owns the signal." },
                 Prop { name: "on_change", ty: "Rc<dyn Fn(bool)>",         desc: "Fires with the new value when the user toggles the box." },
                 Prop { name: "tone",      ty: "ToneRef",                  desc: "Semantic palette for the checked fill. Default: Primary." },
-                Prop { name: "variant",   ty: "VariantRef",              desc: "Surface skeleton for the checked fill. Default: Filled." },
+                Prop { name: "variant",   ty: "CheckboxVariant",              desc: "Surface skeleton for the checked fill. Default: Filled." },
                 Prop { name: "size",      ty: "ControlSize",             desc: "Sm / Md / Lg box scale. Default: Md." },
                 Prop { name: "disabled",  ty: "bool",                     desc: "When true, ignores presses (box and label) and dims the box. Takes a Signal/rx! too. Default: false." },
             ])
@@ -210,7 +210,7 @@ ui! {
                 Prop { name: "options",   ty: "Vec<RadioOption>",   desc: "RadioGroup: options in render order. RadioOption::new(id, label)." },
                 Prop { name: "axis",      ty: "RadioAxis",          desc: "RadioGroup: Column (default) or Row layout." },
                 Prop { name: "tone",      ty: "ToneRef",            desc: "Semantic palette for the selected ring + dot. Default: Primary." },
-                Prop { name: "variant",   ty: "VariantRef",        desc: "Surface skeleton. Default: Filled." },
+                Prop { name: "variant",   ty: "RadioVariant",        desc: "Surface skeleton. Default: Filled." },
                 Prop { name: "size",      ty: "ControlSize",       desc: "Sm / Md / Lg indicator scale. Default: Md." },
                 Prop { name: "disabled",  ty: "bool",              desc: "When true, ignores presses and dims the ring (every option, on RadioGroup). Takes a Signal/rx! too. Default: false." },
                 Prop { name: "selected",  ty: "Signal<bool>",      desc: "Standalone Radio only: whether this row is selected." },
@@ -260,9 +260,10 @@ pub fn switch() -> Element {
         }
     }, ui! {
         Section(title = "Tones".to_string()) {
-            P(content = "The 'on' track takes the tone fill. Override the whole control's \
-                appearance globally with \
-                `install_switch_sheet(SwitchSheetBuilder::new().add_tone(Hype).build())`.".to_string())
+            P(content = "The 'on' track takes the tone fill. Every registered tone draws: \
+                `register_tone(Hype)` (or `app_theme! { tones: [Hype] }`) adds one to every \
+                tone-aware control, and `SwitchStyles::restyle` changes the control's slots \
+                app-wide.".to_string())
             DemoSurface {
                 Stack(gap = StackGap::Md) {
                     Switch(label = Some("Primary".to_string()), value = t_primary, on_change = on_t_primary, tone = tone::Primary)
@@ -290,7 +291,7 @@ pub fn switch() -> Element {
                 Prop { name: "value",     ty: "Signal<bool>",             desc: "Controlled on/off state. The host owns the signal." },
                 Prop { name: "on_change", ty: "Rc<dyn Fn(bool)>",         desc: "Fires with the new value when the user flips the toggle." },
                 Prop { name: "tone",      ty: "ToneRef",                  desc: "Semantic palette for the 'on' track fill. Default: Primary." },
-                Prop { name: "variant",   ty: "VariantRef",              desc: "Surface skeleton. Default: Filled." },
+                Prop { name: "variant",   ty: "SwitchVariant",              desc: "Surface skeleton. Default: Filled." },
                 Prop { name: "size",      ty: "ControlSize",             desc: "Sm / Md / Lg track + thumb scale. Default: Md." },
                 Prop { name: "disabled",  ty: "bool",                     desc: "When true, ignores presses and dims the track. Takes a Signal/rx! too. Default: false." },
             ])
@@ -382,7 +383,7 @@ ui! {
                 Prop { name: "step",      ty: "f32",               desc: "Snap increment. 0.0 (default) is continuous." },
                 Prop { name: "width",     ty: "f32",               desc: "Track width in px. Default: 184.0 — fixed so drag math stays stable." },
                 Prop { name: "tone",      ty: "ToneRef",           desc: "Semantic palette for the fill + thumb. Default: Primary." },
-                Prop { name: "variant",   ty: "VariantRef",       desc: "Surface skeleton. Default: Filled." },
+                Prop { name: "variant",   ty: "SliderVariant",       desc: "Surface skeleton. Default: Filled." },
                 Prop { name: "size",      ty: "ControlSize",      desc: "Sm / Md / Lg rail thickness + thumb size. Default: Md." },
                 Prop { name: "disabled",  ty: "bool",              desc: "When true, blocks dragging and dims the control. Default: false." },
                 Prop { name: "leading_icon",  ty: "Option<IconData>", desc: "Muted icon left of the track." },

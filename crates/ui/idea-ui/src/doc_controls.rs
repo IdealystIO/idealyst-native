@@ -254,15 +254,10 @@ where
     }
 }
 
-/// Generic picker over a typed `*Ref` handle (`ToneRef`,
-/// `VariantRef`, `ButtonSizeRef`, `ShapeRef`, `TypographyKindRef`).
-/// Renders a Select populated from the type's `builtins_list()` —
-/// users see one row per built-in modifier and clicking changes the
-/// active selection.
-///
-/// App code with custom modifier types implements
-/// [`idea_theme::extensible::RefBuiltins`] on the relevant `*Ref`
-/// wrapper to plug into this same picker.
+/// Generic picker over a typed `*Ref` handle (`ToneRef`, or an app type
+/// implementing [`idea_theme::extensible::RefBuiltins`]). Renders a Select
+/// populated from the type's `builtins_list()` — one row per built-in
+/// value; clicking changes the active selection.
 pub fn ref_picker_control<T: idea_theme::extensible::RefBuiltins>(
     value: Signal<T>,
 ) -> Element {

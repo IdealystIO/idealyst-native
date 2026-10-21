@@ -312,11 +312,9 @@ enum FieldKind {
     /// A type expected to implement `VariantEnum`. The generated
     /// code uses `all_variants()` on it.
     VariantEnum(Type),
-    /// A `*Ref` newtype handle from `idea_theme::extensible`
-    /// (`ToneRef`, `VariantRef`, `ButtonSizeRef`, `ShapeRef`,
-    /// `TypographyKindRef`, or any app-defined `*Ref` implementing
-    /// `idea_theme::extensible::RefBuiltins`). Generated code uses
-    /// the generic `ref_picker_control` to enumerate built-ins.
+    /// A `*Ref` newtype handle (`ToneRef`, or any app-defined `*Ref`
+    /// implementing `idea_theme::extensible::RefBuiltins`). Generated
+    /// code uses the generic `ref_picker_control` to enumerate built-ins.
     RefHandle(Type),
     /// Type we don't have a control for. Field is filled by
     /// `Default::default()` and gets no panel entry.
@@ -352,8 +350,7 @@ fn classify_field_type(ty: &Type) -> FieldKind {
     if is_rc_dyn_intent(ty) {
         return FieldKind::Intent;
     }
-    // *Ref newtype handles (ToneRef, VariantRef, ButtonSizeRef,
-    // ShapeRef, TypographyKindRef, or app-defined). Detected by name
+    // *Ref newtype handles (ToneRef, or app-defined). Detected by name
     // suffix — the type must implement `idea_theme::extensible::RefBuiltins`
     // for the generated control to compile, which the suffix
     // convention enforces by surface contract.

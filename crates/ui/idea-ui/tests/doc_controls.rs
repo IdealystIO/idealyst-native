@@ -1,14 +1,11 @@
 //! The `docs` feature end-to-end: the `DocControls` derive plus the
 //! doc-controls runtime that renders a component's live control panel.
 //!
-//! History (the reason this suite exists as its own file): the derive's
-//! RefHandle arm holds the picked value in a `Signal<T>`, and the world
-//! kernel's signal surface requires `T: PartialEq` even for `get` /
-//! `set_always`. The `*Ref` handle types (`ToneRef`, `VariantRef`, …) had
-//! none, so `ref_picker_control<T: RefBuiltins>` failed to type-check and
-//! `idea-ui/docs` was parked as unbuildable. The fix made `PartialEq` a
-//! `RefBuiltins` supertrait with pointer-identity impls in idea-theme (see
-//! the rationale there). This suite is what keeps that wired.
+//! The derive's RefHandle arm holds the picked value in a `Signal<T>`, and
+//! the world kernel's signal surface requires `T: PartialEq` even for `get`
+//! / `set_always` — so `PartialEq` is a `RefBuiltins` supertrait, with a
+//! pointer-identity impl for `ToneRef` in idea-theme (see the rationale
+//! there). This suite keeps that wired.
 //!
 //!   cargo test -p idea-ui --features docs --test doc_controls
 

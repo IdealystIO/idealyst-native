@@ -715,7 +715,7 @@ pub fn alert() -> Element {
                     Prop { name: "title",      ty: "Reactive<String>",         desc: "Headline text." },
                     Prop { name: "body",       ty: "Reactive<Option<String>>", desc: "Optional second-line detail." },
                     Prop { name: "tone",       ty: "ToneRef",                  desc: "Semantic palette. Default: Info." },
-                    Prop { name: "variant",    ty: "VariantRef",               desc: "Filled / Soft / Outlined. Default: Soft." },
+                    Prop { name: "variant",    ty: "AlertVariant",               desc: "Filled / Soft / Outlined. Default: Soft." },
                     Prop { name: "action",     ty: "Option<Element>",          desc: "Optional trailing action slot (e.g. a Retry button)." },
                     Prop { name: "close",      ty: "AlertClose",               desc: "None (default) / Button(handler) for the × / Custom(element)." },
                 ])

@@ -349,8 +349,7 @@ mod tests {
     /// override, Typography text must still land on the theme's sans
     /// stack, so web text isn't left in the browser serif fallback.
     ///
-    /// The sheet deliberately does NOT carry the family (see
-    /// `TypographySheetBuilder::build`). A baked `FontFamily` is not
+    /// The `text` slot deliberately does NOT carry the family. A baked `FontFamily` is not
     /// `Tokenized`, so it is exactly the shape premint cannot honour: a
     /// build-time class would freeze whichever theme the dump installed.
     /// The guarantee rides the framework's default-text-font channel

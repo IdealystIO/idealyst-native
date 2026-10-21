@@ -636,8 +636,8 @@ fn canonicalize_palette(p: &Palette) -> Palette {
 // Canonical token names — the single source of truth
 // =============================================================================
 //
-// idea-ui's stylesheets resolve theme colors by these *canonical* names
-// (e.g. `Tokenized::token("color-surface", ..)` in `idea_ui::stylesheets`).
+// idea-ui's component slots resolve theme colors by these *canonical*
+// names (e.g. `t.color.surface()` is `Tokenized::token("color-surface", ..)`).
 // They are the keys the token registry must be populated under, so they
 // drive `ThemeTokens::tokens()` (the install path) below. They're also the
 // only names `idea_color`/`color_token!`-built overrides effectively need:

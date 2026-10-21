@@ -387,3 +387,17 @@ fn composed_slots_names_every_composed_slot_with_its_sheet() {
     assert_eq!(names, ["root", "title"], "declaration order");
     assert_eq!(slots[0].2.premint_class(), Some("iy-card00root"), "the composed sheet itself");
 }
+
+/// An axis a slot only meets through a compound leg (an `extend` hook or a
+/// restyle declared it with empty arms) takes the component's declared
+/// default, so an application that never selects the axis stamps the
+/// default's class like every other slot of the component.
+#[test]
+fn a_compound_only_axis_takes_the_components_declared_default() {
+    reset();
+    restyle::<CardStyles>(|s| {
+        s.slot(1).compound((CardTone::Loud, StateBits::PRESSED), |_| StyleRules { color: bg("pressed"), ..Default::default() });
+    });
+    let title = slot_sheet::<CardStyles>(1);
+    assert_eq!(title.axis_default("tone").map(String::as_str), Some("plain"), "the declared `#[default]` reaches the slot");
+}

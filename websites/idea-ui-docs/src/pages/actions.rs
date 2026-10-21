@@ -293,7 +293,7 @@ pub fn icon_button() -> Element {
                     Prop { name: "icon",     ty: "Option<IconData>", desc: "Vector (Lucide) icon. Wins over `glyph` when Some." },
                     Prop { name: "on_click", ty: "Rc<dyn Fn()>",    desc: "Callback fired on press." },
                     Prop { name: "tone",     ty: "ToneRef",         desc: "Semantic palette. Default: Neutral." },
-                    Prop { name: "variant",  ty: "VariantRef",      desc: "Filled / Soft / Outlined / Ghost. Default: Filled." },
+                    Prop { name: "variant",  ty: "IconButtonVariant",      desc: "Filled / Soft / Outlined / Ghost. Default: Filled." },
                     Prop { name: "size",     ty: "IconButtonSize",  desc: "Sm / Md / Lg — closed enum (square footprint)." },
                     Prop { name: "selected", ty: "bool",            desc: "Paints the tone's accent fill (the active-toggle / selected-tool look). Default: false." },
                     Prop { name: "disabled", ty: "bool",            desc: "Blocks the press and dims the button. Default: false." },
@@ -447,7 +447,7 @@ Avatar(initials = "AL", tone = tone::Violet, variant = variant::Filled)"##.to_st
                     Prop { name: "src",      ty: "Option<ImageSource>", desc: "Optional image (URL or bundled asset). When Some, an Image renders and initials are hidden." },
                     Prop { name: "initials", ty: "Reactive<String>",    desc: "Fallback text rendered when src is None." },
                     Prop { name: "tone",     ty: "ToneRef",             desc: "Disc color: a palette hue (tone::Blue, tone::palette_from_seed(..)) or a semantic tone. Default Neutral." },
-                    Prop { name: "variant",  ty: "VariantRef",          desc: "Soft (default), Filled, Outlined or Ghost." },
+                    Prop { name: "variant",  ty: "AvatarVariant",          desc: "Soft (default), Filled, Outlined or Ghost." },
                     Prop { name: "size",     ty: "AvatarSize",          desc: "Xs / Sm / Md / Lg / Xl." },
                 ])
             }
