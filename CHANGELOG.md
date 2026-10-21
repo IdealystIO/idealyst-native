@@ -730,6 +730,27 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Table row groups** (`idea-ui`, `table`). `TableGroup(id, title,
+  header, actions, collapsed, tone, density, draggable) { TableRow … }`
+  puts rows under a band row: one cell spanning the table in the new
+  `RowTone::Group` tint, a collapse toggle (announced expanded /
+  collapsed) when `collapsed = Some(signal)`, and trailing `actions`. In
+  a `scroll_x` table the band's title stays at the scroller's left edge
+  (past the frozen added columns) and its actions at the right edge.
+  Collapsing keeps the rows in place at zero height — no rebuild. Each
+  group is a row group (`<tbody role="rowgroup" aria-label>` on web). A
+  group's rows reorder only among themselves; `Table(on_group_reorder =
+  Some(cb))` puts a grip on each draggable band and drags the band with
+  its rows (`cb(from, to)` over the draggable groups). Also:
+  `Table(grip_on_hover = true)` reveals each row's grip on row hover
+  (always shown where the primary pointer cannot hover);
+  `TableRow(density = Some(…))` overrides the table's density for one
+  row. Reorder already grabbed by the grip only, so a clickable first
+  cell works on a reorderable row. SDK: `table_group` /
+  `TableGroupPrim`, `is_group`, `set_row_collapsed` (a live zero-height
+  row collapse; `TableCellClipPrim` clips the content of an auto-layout
+  web `<table>`'s cells, which ignore `max-height`).
+
 - **One-sided table inset** (`idea-ui`). `Table(inset_left = …)` /
   `Table(inset_right = …)` pad one edge of every row (and of the frame
   slots), overriding `inset_x` on that side; a side left at

@@ -2634,3 +2634,272 @@ fn app_defined_table_axes_reach_built_cells_and_premint() {
         runtime_core::component_styles::__reset::<TableStyles>();
     });
 }
+
+// =========================================================================
+// Row groups (`TableGroup`), group drag, the hover grip, row density.
+// =========================================================================
+
+fn group_of(id: &str, title: &str, rows: Vec<Element>, collapsed: Option<runtime_core::Signal<bool>>) -> Element {
+    TableGroup(TableGroupProps {
+        children: rows,
+        id: Some(RowId::from(id)),
+        title: Reactive::Static(title.into()),
+        collapsed,
+        ..Default::default()
+    })
+}
+
+/// CrewForge (10a, 10b): a group is a band row and its rows. The band is
+/// one cell spanning the table in the group tone (the header band's
+/// neutral tint), never selectable or row-draggable; the rows take the
+/// group as their reorder scope; and the group is a section named by its
+/// title, which is what assistive tech announces.
+#[test]
+fn table_group_is_a_named_section_under_a_tinted_band() {
+    with_test_world(|| {
+        let g = group_of("ops", "Operations", vec![id_row("a", &["Ana"], true, true), id_row("b", &["Ben"], true, true)], None);
+        assert!(table::is_group(&g), "a group lowers to the SDK's group section");
+        let mut label = None;
+        let mut section = &g;
+        while let Element::Owned { element, .. } = section {
+            section = element;
+        }
+        if let Element::Item { data, .. } = section {
+            if let Some(c) = data.downcast_ref::<runtime_vocabulary::prims::PrimCell<table::TableGroupPrim>>() {
+                c.with_mut(|p| label = p.label.clone());
+            }
+        }
+        assert_eq!(label.as_deref(), Some("Operations"), "the group is named by its title");
+
+        let mut metas = Vec::new();
+        table::visit_rows(&g, |row| metas.push(rows::row_meta(row).expect("a TableRow")));
+        assert_eq!(metas.len(), 3, "band, then the two rows");
+        let band = &metas[0];
+        assert!(band.band.is_some() && !band.selectable && !band.draggable, "the band is not a data row");
+        for m in &metas[1..] {
+            assert_eq!(m.group, Some(RowId::from("ops")), "a group's rows reorder among themselves");
+        }
+
+        let t = Table(TableProps { children: vec![row_of(vec![head_cell("Name")]), g], ..Default::default() });
+        let cells = grid_cells(t);
+        let band_cell = cells.into_iter().nth(1).expect("the band's cell");
+        assert_eq!(table::cell_span(&band_cell), ColSpan::Columns(1), "one column table: the band spans it");
+        let r = rules_of(band_cell);
+        assert_eq!(bg_token(&r).as_deref(), Some("color-table-header"), "the band takes the group tone");
+    });
+}
+
+/// CrewForge (10b): collapsing a group is a signal the app owns. Its rows
+/// keep their place but take no height — every cell clipped to zero with
+/// no padding or divider — and expand in place when it clears; the band
+/// stays. No rebuild.
+#[test]
+fn collapsed_group_rows_take_no_height_until_expanded() {
+    with_test_world(|| {
+        let collapsed = runtime_core::signal(true);
+        let t = Table(TableProps {
+            children: vec![
+                row_of(vec![head_cell("Name")]),
+                group_of("ops", "Operations", vec![row_of(vec![body_cell("Ana")])], Some(collapsed)),
+            ],
+            ..Default::default()
+        });
+        let mut cells = grid_cells(t).into_iter();
+        let (_head, band, member) = (cells.next().unwrap(), cells.next().unwrap(), cells.next().unwrap());
+        let band_app = cell_app(band);
+        let member_prim = view_prim(member);
+        let height = |prim: &runtime_vocabulary::prims::ViewPrim| match prim.style.as_ref() {
+            Some(StyleProp::SheetDynamic(f)) => runtime_core::resolve_style(&f()),
+            _ => panic!("a collapsible cell's style is live"),
+        };
+        let r = height(&member_prim);
+        assert_eq!(px_of(&r.max_height), Some(0.0), "collapsed: no height");
+        assert_eq!(px_of(&r.padding_top), Some(0.0), "…no padding");
+        assert_eq!(r.border_bottom_width.as_ref().map(|w| w.resolve()), Some(0.0), "…no divider");
+        assert!(runtime_core::resolve_style(&band_app).max_height.is_none(), "the band stays");
+        collapsed.set(false);
+        idea_theme::testing::commit();
+        assert!(height(&member_prim).max_height.is_none(), "expanded in place");
+    });
+}
+
+/// The band's toggle is a button announced as expanded or collapsed (a
+/// screen reader names the group it opens), and pressing it flips the
+/// app's signal. The band rebuilds the toggle when the state flips, since
+/// the announced state is part of the built button.
+#[test]
+fn group_toggle_announces_its_state_and_flips_the_signal() {
+    use runtime_core::accessibility::AccessibilityTraits;
+    with_test_world(|| {
+        let collapsed = runtime_core::signal(false);
+        let (on_click, a11y) = match classify(group::toggle_button(collapsed, false, "Operations")) {
+            P::Pressable { on_click, accessibility, .. } => (on_click, accessibility),
+            _ => panic!("the toggle is a pressable"),
+        };
+        assert!(a11y.traits.contains(AccessibilityTraits::EXPANDED), "an open group's toggle is expanded");
+        assert_eq!(a11y.label.as_deref(), Some("Collapse Operations"));
+        on_click();
+        idea_theme::testing::commit();
+        assert!(collapsed.get(), "pressing it collapses the group");
+        match classify(group::toggle_button(collapsed, true, "Operations")) {
+            P::Pressable { accessibility, .. } => {
+                assert!(accessibility.traits.contains(AccessibilityTraits::COLLAPSED));
+                assert_eq!(accessibility.label.as_deref(), Some("Expand Operations"));
+            }
+            _ => panic!("the toggle is a pressable"),
+        }
+    });
+}
+
+/// CrewForge (10g): a row's own density beats the table's — a denser
+/// band in a comfortable table.
+#[test]
+fn row_density_overrides_the_table_density() {
+    with_test_world(|| {
+        let t = Table(TableProps {
+            children: vec![
+                row_of(vec![body_cell("Ana")]),
+                TableRow(TableRowProps {
+                    children: vec![body_cell("Band")],
+                    density: Some(TableDensity::Compact),
+                    ..Default::default()
+                }),
+            ],
+            density: TableDensity::Comfortable,
+            ..Default::default()
+        });
+        let pads: Vec<_> = grid_cells(t).into_iter().map(|c| px_of(&rules_of(c).padding_top)).collect();
+        let at = |d: TableDensity| {
+            px_of(&runtime_core::resolve_style(
+                &TableStyles::body_cell().into_style_application().with("density", d.as_variant_str()),
+            ).padding_top)
+        };
+        assert_eq!(pads, vec![at(TableDensity::Comfortable), at(TableDensity::Compact)]);
+    });
+}
+
+/// CrewForge (10h): reorder grabs by the grip only. In a reorderable
+/// table the author's cells carry no drag recognizer, so a clickable
+/// first cell — a button, a link, a clickable row — keeps its own press;
+/// only the grip cell starts a drag.
+#[test]
+fn regression_reorder_grabs_by_the_grip_only() {
+    with_test_world(|| {
+        let t = Table(TableProps {
+            on_reorder: Some(Rc::new(|_, _| {})),
+            children: vec![row_of(vec![head_cell("Name"), head_cell("Role")]), id_row("a", &["Ana", "Lead"], true, true)],
+            ..Default::default()
+        });
+        let touches: Vec<bool> = grid_cells(t)
+            .into_iter()
+            .filter(|c| !is_backdrop(c))
+            .map(|c| match classify(cell_node(c)) {
+                P::View { on_touch, .. } => on_touch,
+                _ => panic!("view"),
+            })
+            .collect();
+        assert_eq!(touches, vec![false, false, false, true, false, false], "only the body row's grip takes a touch");
+    });
+}
+
+/// CrewForge (10f): `grip_on_hover` hides a row's grip until the row is
+/// hovered — transparent, still grabbable — and shows it while hovered.
+#[test]
+fn hover_grip_shows_while_its_row_is_hovered() {
+    with_test_world(|| {
+        let t = Table(TableProps {
+            on_reorder: Some(Rc::new(|_, _| {})),
+            grip_on_hover: true,
+            children: vec![id_row("a", &["Ana"], true, true)],
+            ..Default::default()
+        });
+        let mut cells = grid_cells(t).into_iter().filter(|c| !is_backdrop(c));
+        let grip = cells.next().expect("the grip cell");
+        let name = view_prim(cells.next().expect("the name cell"));
+        let inner = cell_content(grip).into_iter().next().expect("the cell's content wrapper");
+        let glyph = match classify(inner) {
+            P::View { children, .. } => children.into_iter().next().expect("the grip glyph"),
+            _ => panic!("the content wrapper is a view"),
+        };
+        let style = match classify(glyph) {
+            P::View { style, .. } => style.expect("the glyph's reveal style"),
+            _ => panic!("the glyph sits in a view"),
+        };
+        let opacity = || style.resolve().opacity.as_ref().map(|o| o.resolve());
+        assert_eq!(opacity(), Some(0.0), "hidden until the row is hovered");
+        (name.on_hover.expect("every cell of the row reports its hover"))(true);
+        idea_theme::testing::commit();
+        assert_eq!(opacity(), Some(1.0), "shown while the row is hovered");
+    });
+}
+
+/// CrewForge (10c): with `on_group_reorder` a draggable group's band gets
+/// the grip, and its rows do not (they reorder by their own grips with
+/// `on_reorder`).
+#[test]
+fn group_drag_puts_the_grip_on_the_band() {
+    with_test_world(|| {
+        let t = Table(TableProps {
+            on_group_reorder: Some(Rc::new(|_, _| {})),
+            children: vec![
+                group_of("a", "A", vec![id_row("a1", &["Ana"], true, true)], None),
+                group_of("b", "B", vec![id_row("b1", &["Ben"], true, true)], None),
+            ],
+            ..Default::default()
+        });
+        let grips: Vec<bool> = grid_cells(t)
+            .into_iter()
+            .filter(|c| !is_backdrop(c))
+            .step_by(2)
+            .map(|c| match classify(cell_node(c)) {
+                P::View { on_touch, children, .. } => on_touch && children.len() == 1,
+                _ => panic!("view"),
+            })
+            .collect();
+        assert_eq!(grips, vec![true, false, true, false], "bands drag; their rows do not without on_reorder");
+    });
+}
+
+/// CrewForge (10e): in a `scroll_x` table the band's title stays in view —
+/// its leading content pins to the scroller's left edge, past the frozen
+/// columns the table added (here a selection column frozen with the first
+/// column), and its actions pin to the right edge.
+#[test]
+fn band_content_pins_to_the_scrollers_edges() {
+    with_test_world(|| {
+        let selection = runtime_core::signal(BTreeSet::<RowId>::new());
+        let g = TableGroup(TableGroupProps {
+            children: vec![id_row("a", &["Ana", "Lead"], true, true)],
+            title: Reactive::Static("Operations".into()),
+            actions: Some(runtime_core::text("+".to_string()).into_element()),
+            ..Default::default()
+        });
+        let t = Table(TableProps {
+            scroll_x: true,
+            selection: Some(selection),
+            columns: vec![TableColumn::new("name").width(160.0).pinned(ColumnPin::Left), TableColumn::new("role")],
+            children: vec![row_of(vec![head_cell("Name"), head_cell("Role")]), g],
+            ..Default::default()
+        });
+        let cells: Vec<_> = any_grid_cells(t, true, false, true).into_iter().filter(|c| !is_backdrop(c)).collect();
+        // header: select, name, role; band: select, band cell.
+        let band_cell = cells.into_iter().nth(4).expect("the band's cell");
+        let wrapper = cell_content(band_cell).into_iter().next().expect("the band content");
+        let parts = match classify(wrapper) {
+            P::View { children, .. } => children,
+            _ => panic!("the band content is a row"),
+        };
+        let rules: Vec<_> = parts
+            .into_iter()
+            .map(|p| match classify(p) {
+                P::View { style, .. } => style.expect("styled").resolve(),
+                _ => panic!("band part"),
+            })
+            .collect();
+        assert_eq!(rules.len(), 3, "lead, spacer, actions");
+        assert_eq!(rules[0].position, Some(runtime_core::Position::Sticky));
+        assert_eq!(px_of(&rules[0].left), Some(SELECT_COLUMN_WIDTH_PX), "past the frozen selection column");
+        assert_eq!(rules[2].position, Some(runtime_core::Position::Sticky));
+        assert_eq!(px_of(&rules[2].right), Some(0.0), "the actions pin to the right edge");
+    });
+}

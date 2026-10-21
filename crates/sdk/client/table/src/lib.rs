@@ -920,6 +920,12 @@ pub fn is_head(el: &Element) -> bool {
     section_of(el) == Some(Section::Head)
 }
 
+/// Whether a table child is a group section ([`table_group`]),
+/// Owned-peeled.
+pub fn is_group(el: &Element) -> bool {
+    section_of(el) == Some(Section::Group)
+}
+
 /// Mark a built row collapsed while `collapsed()` is true: it keeps its
 /// place among the rows but takes no height — every cell is clipped to
 /// zero height with no padding or divider. The flag is read live, so a
