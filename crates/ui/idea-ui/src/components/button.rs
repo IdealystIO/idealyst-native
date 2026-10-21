@@ -1,5 +1,4 @@
-//! `Button` — the styled clickable, built on the extensible
-//! Variant/Tone/Size/Shape trait surface.
+//! `Button` — the styled clickable.
 //!
 //! ```ignore
 //! ui! {
@@ -14,45 +13,227 @@
 //! }
 //! ```
 //!
-//! Styling routes through the [installed Button
-//! stylesheet][installed_button_sheet]. `install_idea_theme` installs
-//! the default sheet at startup; apps with custom modifiers
-//! (`Hype` tone, `Elevated` variant) override via
-//! `install_button_sheet(ButtonSheetBuilder::new().add_tone(Hype.into()).build())`.
+//! Styling is [`ButtonStyles`]: a `root` slot (the pressable box), a
+//! `label` slot and an `icon` slot. The box and the label draw one
+//! compound per `(tone, variant)` pair — every registered tone over every
+//! built-in variant recipe — plus `size`, `shape`, `layout`, `block` and
+//! `dimmed` arms. Every combination ships as build-time CSS, so applying a
+//! style is a class lookup.
 //!
-//! Every supported `(tone, variant, size, shape)` combination is
-//! pre-generated as a CSS rule at sheet registration time, so
-//! apply-style is a className lookup — no FOUC, no dynamic CSS mint.
+//! Extend it at boot: `ButtonStyles::restyle(|s| …)` changes any slot,
+//! `ButtonVariant::define("raised")` adds a variant (give it a look with
+//! a restyle arm, or a tone-aware one with
+//! [`tone_variant_arms`](idea_theme::extensible::tone_variant_arms)), and
+//! [`register_tone`](idea_theme::extensible::register_tone) (or a theme's
+//! `extension_tones`) adds a tone every tone-aware component draws.
 
 use std::rc::Rc;
 
 use runtime_core::primitives::activity_indicator::{activity_indicator, ActivityIndicatorSize};
 use runtime_core::{
-    component, icon, resolve_style, text, AlignSelf, Color, Element, FlexDirection, IconData,
-    IdealystSchema, IntoElement, Length, PressableHandle, Reactive, Ref, StyleApplication,
-    StyleRules, StyleSheet, Tokenized,
+    component, component_styles, icon, resolve_style, text, AlignItems, AlignSelf, Color, Cursor,
+    Element, FlexDirection, FontWeight, IconData, IdealystSchema, IntoElement, JustifyContent, Length,
+    PressableHandle, Reactive, Ref, SlotRestyle, TextAlign, UserSelect, VariantSet,
 };
 
 use idea_theme::extensible::{
-    installed_button_label_sheet, installed_button_sheet, ButtonSizeRef, ShapeRef, ToneRef,
-    VariantRef,
+    semantic_tones, tone_variant_arms, tone_variant_state_overlays, Tone, ToneRef, DISABLED_CONTROL_OPACITY,
 };
+use idea_theme::theme::IdeaThemeRef;
 
-use crate::slot_override::{apply_override, override_rules};
+use crate::modifiers::{marker_into_axis, shape, size, variant};
 
-/// Props for the extensible Button. Each modifier axis is a typed
-/// handle (`*Ref` newtype) so call sites can write
-/// `tone: tone::Primary.into()` instead of `Rc::new(...)`. Built-in
-/// defaults route to Filled/Primary/Md/Md.
+/// Pixel size of a button's leading/trailing icon. Matches the label's
+/// cap-height closely enough to sit inline without throwing off the
+/// centered row.
+const BUTTON_ICON_PX: f32 = 16.0;
+
+component_styles! {
+    /// The styled sections of [`Button`].
+    pub Button<IdeaThemeRef> {
+        /// The surface treatment. Each built-in value is a tone-aware
+        /// recipe ([`variant`]) drawn for every registered tone.
+        axis variant { #[default] filled, soft, outlined, ghost }
+
+        /// The pressable box.
+        slot root {
+            extend(root_tone_variants)
+            base(_t) {
+                font_weight: FontWeight::SemiBold,
+                letter_spacing: 0.2,
+                text_align: TextAlign::Center,
+                // Center the content on BOTH axes: web centers the label via
+                // the box's `text-align` + inline flow, native flex needs it
+                // explicit or the label lands at the top-left.
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                // A component library opts in to the interaction
+                // affordances; the bare `pressable` imposes neither. Touch
+                // backends no-op both.
+                cursor: Cursor::Pointer,
+                user_select: UserSelect::None,
+                // Explicit resting opacity so the hover/press dim has a
+                // value to animate back TO: native applies the state
+                // overlay by re-resolving, and leaves an unset opacity
+                // untouched.
+                opacity: 1.0,
+            }
+            variant size {
+                sm(t) {
+                    padding_vertical: t.spacing.xs(),
+                    padding_horizontal: t.spacing.md(),
+                    font_size: t.typography.body_sm_size(),
+                }
+                #[default]
+                md(t) {
+                    padding_vertical: t.spacing.sm(),
+                    padding_horizontal: t.spacing.lg(),
+                    font_size: t.typography.body_size(),
+                }
+                lg(t) {
+                    padding_vertical: t.spacing.md(),
+                    padding_horizontal: t.spacing.xl(),
+                    font_size: t.typography.body_lg_size(),
+                }
+            }
+            variant shape {
+                sm(t) { border_radius: t.radius.sm() }
+                #[default]
+                md(t) { border_radius: t.radius.md() }
+                lg(t) { border_radius: t.radius.lg() }
+                pill(t) { border_radius: t.radius.pill() }
+            }
+            // Icon + label lay out in a row with a gap; a plain label stays
+            // a column.
+            variant layout {
+                #[default]
+                column(_t) {}
+                row(t) {
+                    flex_direction: FlexDirection::Row,
+                    gap: t.spacing.xs(),
+                }
+            }
+            // `block` fills the container; otherwise the button hugs its
+            // content — `Center`, not `Stretch`, so a flex parent's
+            // `align-items: stretch` can't grow it.
+            variant block {
+                #[default]
+                off(_t) { align_self: AlignSelf::Center }
+                on(_t) {
+                    width: Length::Percent(100.0),
+                    align_self: AlignSelf::Stretch,
+                }
+            }
+            // The author's `disabled` prop: a deterministic dim on every
+            // backend, whether or not the host marks the node disabled.
+            variant dimmed {
+                #[default]
+                off(_t) {}
+                on(_t) { opacity: DISABLED_CONTROL_OPACITY }
+            }
+            // Registered so hover/press are tracked; the feedback itself is
+            // per-(tone, variant) — see `root_tone_variants`.
+            state hovered(_t) {}
+            state pressed(_t) {}
+            transitions {
+                background: 120ms EaseOut,
+                color: 200ms EaseOut,
+                opacity: 200ms EaseOut,
+                border_color: 150ms EaseOut,
+                // `idea_theme::extensible::variant::GLOW_TRANSITION_MS`.
+                shadow: 180ms EaseOut,
+            }
+        }
+
+        /// The label text. It carries the box's typography and its
+        /// `(tone, variant)` foreground on its own node: native text
+        /// inherits neither color nor weight/size/alignment from the box.
+        slot label {
+            extend(label_tone_variants)
+            base(_t) {
+                font_weight: FontWeight::SemiBold,
+                letter_spacing: 0.2,
+                text_align: TextAlign::Center,
+            }
+            variant size {
+                sm(t) { font_size: t.typography.body_sm_size() }
+                #[default]
+                md(t) { font_size: t.typography.body_size() }
+                lg(t) { font_size: t.typography.body_lg_size() }
+            }
+        }
+
+        /// The leading / trailing icon: a fixed square that flex can't
+        /// squeeze (icons have no intrinsic content size).
+        slot icon {
+            base(_t) {
+                width: BUTTON_ICON_PX,
+                height: BUTTON_ICON_PX,
+                flex_shrink: 0.0,
+            }
+        }
+    }
+}
+
+/// The box's `(tone, variant)` fills and their hover/press feedback, for
+/// every registered tone.
+fn root_tone_variants(s: &mut SlotRestyle<'_, ButtonStyles>) {
+    let tones = semantic_tones();
+    for (key, recipe) in variant::builtin_recipes() {
+        tone_variant_arms(s, &tones, key, recipe);
+    }
+    for (key, _) in variant::builtin_recipes() {
+        tone_variant_state_overlays(s, &tones, key);
+    }
+}
+
+/// The label's `(tone, variant)` foreground — the recipe's `color` alone.
+fn label_tone_variants(s: &mut SlotRestyle<'_, ButtonStyles>) {
+    for (key, recipe) in variant::builtin_recipes() {
+        idea_theme::extensible::with_idea_theme(|theme| {
+            for tone in semantic_tones() {
+                let ctx = idea_theme::extensible::ResolutionCtx { theme, tone: &*tone.0 };
+                let color = recipe.render(&ctx).color;
+                s.raw_compound(
+                    &[("tone", tone.key()), ("variant", key)],
+                    runtime_core::StyleRules { color, ..Default::default() },
+                );
+            }
+        });
+    }
+}
+
+marker_into_axis!(ButtonVariant {
+    variant::Filled => Filled,
+    variant::Soft => Soft,
+    variant::Outlined => Outlined,
+    variant::Ghost => Ghost,
+    variant::Gradient => Gradient,
+});
+marker_into_axis!(ButtonSize { size::Sm => Sm, size::Md => Md, size::Lg => Lg });
+marker_into_axis!(ButtonShape { shape::Sm => Sm, shape::Md => Md, shape::Lg => Lg, shape::Pill => Pill });
+
+#[allow(non_upper_case_globals)]
+impl ButtonVariant {
+    /// The opt-in accent-gradient variant ([`variant::Gradient`]). Draws
+    /// once an app adds its arms at boot — see the recipe's docs.
+    pub const Gradient: Self = Self::define("gradient");
+}
+
+/// Props for [`Button`]. `variant`, `size` and `shape` are Button's own
+/// axes — a built-in marker (`variant::Ghost`, `size::Sm`, `shape::Pill`)
+/// converts, as does an app value (`ButtonVariant::define("raised")`).
+/// `tone` is the shared palette.
 // Reactive-by-default: `#[props]` wraps each data field. Style axes
 // (tone/variant/size/shape) route to the style sink; structural props
-// (disabled/loading/block/icons) now route too — icon glyph swaps via the
+// (disabled/loading/block/icons) route too — icon glyph swaps via the
 // primitive's reactive `.data()` (no rebuild), and presence/loading/block/
 // disabled via a `switch` over a `PartialEq` tuple that rebuilds the pressable
 // subtree on change (the static fast path stays when none is live). See `Button`.
 // `on_click` (handler), `bind_to` (Ref), and `test_id` (`&'static str`) are
-// auto-skipped (not reactive data).
-#[runtime_core::props]
+// auto-skipped (not reactive data). `styles` (from `styles = ButtonStyles`) is
+// the per-instance override for the root, label and icon slots.
+#[runtime_core::props(styles = ButtonStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct ButtonProps {
@@ -62,14 +243,16 @@ pub struct ButtonProps {
     pub label: Reactive<String>,
     /// Fires on press/click.
     pub on_click: Rc<dyn Fn()>,
-    /// Semantic color palette (Primary, Neutral, Danger, …). Default Primary.
+    /// Semantic color palette (Primary, Neutral, Danger, …, or a registered
+    /// app tone). Default Primary.
     pub tone: ToneRef,
-    /// Surface treatment (Filled, Soft, Outline, Ghost, …). Default Filled.
-    pub variant: VariantRef,
+    /// Surface treatment (Filled, Soft, Outlined, Ghost, or an app value).
+    /// Default Filled.
+    pub variant: ButtonVariant,
     /// Padding/font scale (Sm, Md, Lg). Default Md.
-    pub size: ButtonSizeRef,
-    /// Corner-radius scale (Sm, Md, Lg, Pill, …). Default Md.
-    pub shape: ShapeRef,
+    pub size: ButtonSize,
+    /// Corner-radius scale (Sm, Md, Lg, Pill). Default Md.
+    pub shape: ButtonShape,
     /// When `true`, blocks the press and dims the button (opacity drop).
     /// Default `false`. Reactive: pass a `Signal<bool>` (`disabled =
     /// some_state.into()`) and the button rebuilds its pressable in place
@@ -108,24 +291,6 @@ pub struct ButtonProps {
     /// When `true`, the button stretches to fill its container's width
     /// (a full-bleed CTA). Default `false` — the button hugs its content.
     pub block: bool,
-    /// Per-slot style overrides layered on top of the theme style. See
-    /// [`crate::slot_override`]. `style` overrides the root pressable's box
-    /// (background, border, padding, radius, …); `label_style` and `icon_style`
-    /// override the label text node and the leading/trailing icon nodes. Use
-    /// these for one-off tweaks a theme sheet shouldn't own — e.g. a custom
-    /// label colour on a neutral fill (native-safe, unlike the CSS cascade).
-    #[prop(static)]
-    pub style: Option<Rc<StyleSheet>>,
-    /// Override for the label text node. A `color` here wins over the theme
-    /// foreground and is stamped on the label's own node, so it renders on
-    /// every backend (native text doesn't inherit colour). See `style`.
-    #[prop(static)]
-    pub label_style: Option<Rc<StyleSheet>>,
-    /// Override for the leading/trailing icon nodes. A `color` here wins over
-    /// the theme foreground for the icon tint; other fields merge into the icon
-    /// box style. See `style`.
-    #[prop(static)]
-    pub icon_style: Option<Rc<StyleSheet>>,
     /// Optional robot/E2E test id, forwarded to the root pressable. Only
     /// honored when idea-ui's `robot` feature is on; ignored otherwise.
     pub test_id: Option<&'static str>,
@@ -137,65 +302,23 @@ impl Default for ButtonProps {
             label: Reactive::Static(String::new()),
             on_click: Rc::new(|| {}),
             tone: Reactive::Static(ToneRef::default()),
-            variant: Reactive::Static(VariantRef::default()),
-            size: Reactive::Static(ButtonSizeRef::default()),
-            shape: Reactive::Static(ShapeRef::default()),
+            variant: Reactive::Static(ButtonVariant::default()),
+            size: Reactive::Static(ButtonSize::default()),
+            shape: Reactive::Static(ButtonShape::default()),
             disabled: Reactive::Static(false),
             loading: Reactive::Static(false),
             bind_to: None,
             leading_icon: Reactive::Static(None),
             trailing_icon: Reactive::Static(None),
             block: Reactive::Static(false),
-            style: None,
-            label_style: None,
-            icon_style: None,
             test_id: None,
+            styles: Default::default(),
         }
     }
 }
 
-/// Pixel size of a button's leading/trailing icon. Matches the label's
-/// cap-height closely enough to sit inline without throwing off the
-/// centered row.
-const BUTTON_ICON_PX: f32 = 16.0;
-
-runtime_tls::thread_local! {
-    static BUTTON_ICON_SHEET: std::cell::RefCell<Option<Rc<runtime_core::StyleSheet>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// A cached static sheet that pins the leading/trailing icon to a fixed
-/// square and stops it from being squeezed by flex. Icons have no
-/// intrinsic content size, so without an explicit width/height they hit
-/// a 0×0 box.
-fn button_icon_sheet() -> Rc<runtime_core::StyleSheet> {
-    BUTTON_ICON_SHEET.with(|s| {
-        if s.borrow().is_none() {
-            let sheet = runtime_core::StyleSheet::r#static(StyleRules {
-                width: Some(Tokenized::Literal(Length::Px(BUTTON_ICON_PX))),
-                height: Some(Tokenized::Literal(Length::Px(BUTTON_ICON_PX))),
-                flex_shrink: Some(Tokenized::Literal(0.0)),
-                ..Default::default()
-            });
-            // Constant square → a build-time class. Without an identity this
-            // sheet has no preminted CSS, so every Button with an icon fell
-            // through to the live engine and kept it linked.
-            *s.borrow_mut() = Some(sheet.premint_as("idea-ui.v1.button.icon"));
-        }
-        s.borrow().as_ref().cloned().unwrap()
-    })
-}
-
-// The text-typography subset the label must carry ON ITS OWN NODE.
-// (Former `label_typography_style` — a per-instance snapshot of the
-// container typography plus a color override — is replaced by the
-// installed Button LABEL sheet (`installed_button_label_sheet`), whose
-// enumerated `appearance`/`size` axes carry the same values and premint.
-// Native text still gets everything on its own node; see
-// `ButtonSheetBuilder::build_label`.)
-
 /// Renders a styled, clickable button whose appearance is driven by
-/// the tone × variant × size × shape axes of the installed Button sheet.
+/// the tone × variant × size × shape axes of [`ButtonStyles`].
 #[component]
 pub fn Button(props: &ButtonProps) -> Element {
     let label = props.label.clone();
@@ -206,109 +329,74 @@ pub fn Button(props: &ButtonProps) -> Element {
     // `busy.set(true)` → `spawn_then(io, done)`). A task spawned from
     // the handler anchors, via `ScopeAlive::current`, to the node that
     // mounted the handler — the very arm that flip tears down — so its
-    // callback was silently dropped: the IO completed, the spinner
-    // never stopped, and the done-writes vanished. Publishing the
-    // body-scope token around the call gives handler-reached spawns
-    // the Button's lifetime: alive across arm rebuilds, dead when the
-    // Button actually unmounts (same teardown moment as before on the
-    // static path, where the pressable IS the button's whole life).
-    // Regression: `tests/loading_button_spawn.rs`.
+    // callback was silently dropped. Publishing the body-scope token
+    // around the call gives handler-reached spawns the Button's
+    // lifetime: alive across arm rebuilds, dead when the Button actually
+    // unmounts. Regression: `tests/loading_button_spawn.rs`.
     let on_click: Rc<dyn Fn()> = {
         let anchor = runtime_core::ScopeAlive::current();
         let inner = props.on_click.clone();
         Rc::new(move || anchor.run_within(|| inner()))
     };
-    // Style axes — kept as `Reactive` and read live INSIDE `make_style` so a
-    // reactive tone/variant/size/shape re-styles the button in place.
     let tone = props.tone.clone();
-    let variant = props.variant.clone();
-    let size = props.size.clone();
-    let shape = props.shape.clone();
-    // reactive-sweep DONE (structure): the structural props drive the children
-    // (spinner-vs-icon swap, icon appear/disappear) and the layout/press-block.
-    // They're kept as `Reactive` here and routed in TWO layers (see below):
-    //   - icon GLYPH swaps (same presence) → the primitive's reactive `.data()`
-    //     setter, no rebuild (layer 1);
-    //   - presence/loading STRUCTURE (spinner-vs-icon, icon on/off, the layout
-    //     layer + press-block) → a `switch` keyed on a `PartialEq` tuple of the
-    //     structural booleans, which rebuilds the pressable subtree atomically
-    //     on change (layer 2).
-    // When NONE of them is live we keep the build-time fast path (no `switch`,
-    // no first-paint flicker) — the path the static tests exercise.
+    // Structural props drive the children (spinner-vs-icon swap, icon
+    // appear/disappear) and the layout/press-block, routed in TWO layers:
+    //   - icon GLYPH swaps (same presence) → the primitive's reactive
+    //     `.data()` setter, no rebuild (layer 1);
+    //   - presence/loading STRUCTURE (spinner-vs-icon, icon on/off, the
+    //     layout layer + press-block) → a `switch` keyed on a `PartialEq`
+    //     tuple of the structural booleans, which rebuilds the pressable
+    //     subtree atomically on change (layer 2).
+    // When NONE of them is live the build-time fast path stays (no
+    // `switch`, no first-paint flicker).
     let leading_icon = props.leading_icon.clone();
     let trailing_icon = props.trailing_icon.clone();
     let disabled_prop = props.disabled.clone();
     let loading_prop = props.loading.clone();
     let block_prop = props.block.clone();
     let bind_to = props.bind_to;
-    // Per-slot style overrides (see `crate::slot_override`). Static sheets, so
-    // clone the `Rc`s into the (reactive-capable) build closures below.
-    let style_ovr = props.style.clone();
-    let label_ovr = props.label_style.clone();
-    let icon_ovr = props.icon_style.clone();
+    let styles = props.styles.clone();
 
-    // STYLE-axis reactivity (tone/variant/size/shape) is independent of
-    // STRUCTURE reactivity. `make_style` reads each axis live INSIDE so the
-    // apply-style Effect subscribes to the dynamic ones.
-    let style_is_reactive =
-        !tone.is_static() || !variant.is_static() || !size.is_static() || !shape.is_static();
-
-    // `make_style` is parameterized by the structural booleans (row layout /
-    // block / disabled) so the same closure serves the static build and each
-    // `switch` arm. The style axes are captured reactively; the layout layer is
-    // baked from the per-arm booleans (constant within an arm — a structural
-    // change rebuilds the arm, re-baking the layer).
-    let make_style = {
+    // The style axes every slot sees: tone (the shared palette, an open
+    // set of registered keys), variant, size, shape.
+    let values = {
         let tone = tone.clone();
-        let variant = variant.clone();
-        let size = size.clone();
-        let shape = shape.clone();
+        let v = ButtonStyles::values()
+            .set(props.variant.clone())
+            .set(props.size.clone())
+            .set(props.shape.clone());
+        match tone {
+            Reactive::Static(t) => v.raw("tone", t.key()),
+            live => v.raw_with("tone", move || live.get().key()),
+        }
+    };
+    let style_is_reactive = values.is_reactive();
+
+    // The box style for one STRUCTURAL state: the axes above plus the
+    // layout booleans, baked per arm (a structural change rebuilds the arm).
+    let make_style = {
+        let values = values.clone();
         move |row_layout: bool, block: bool, disabled: bool| {
-            let tone = tone.clone();
-            let variant = variant.clone();
-            let size = size.clone();
-            let shape = shape.clone();
-            move || {
-                let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
-                // Layout rides three sheet axes rather than one computed
-                // layer keyed `layout_{row}_{block}_{disabled}`. They're three
-                // independent booleans, so they enumerate — and a computed
-                // layer is opaque to premint, which disqualified every Button
-                // on the page. See `ButtonSheetBuilder::build`.
-                StyleApplication::new(installed_button_sheet())
-                    .with("appearance", appearance_key)
-                    .with("size", size.get().key().to_string())
-                    .with("shape", shape.get().key().to_string())
-                    .with("layout", if row_layout { "row" } else { "column" }.to_string())
-                    .with("block", if block { "on" } else { "off" }.to_string())
-                    .with("dimmed", if disabled { "on" } else { "off" }.to_string())
-            }
+            ButtonStyles::root()
+                .values(&values)
+                .set(if row_layout { ButtonLayout::Row } else { ButtonLayout::Column })
+                .set(ButtonBlock::from(block))
+                .set(ButtonDimmed::from(disabled))
         }
     };
 
-    // reactive-sweep DONE (label/icon COLOR): the foreground is DERIVED from
-    // the resolved fill, so when tone/variant are live it re-resolves IN PLACE
-    // — the icon via the primitive's reactive `.color(closure)` and the label
-    // via a reactive style closure. The STATIC fast path stamps the snapshot
-    // color (no flicker, no per-node Effect). Structure-reactivity (handled by
-    // the `switch` below) is orthogonal: each arm rebuilds the children but
-    // still threads the same fg machinery.
-
     // `build_pressable` builds the full pressable (children + style +
-    // press-block) for one STRUCTURAL state — the spinner-vs-icon leading slot,
-    // the optional trailing icon, the label, and the layout/dim style for these
-    // booleans. It captures everything reactively, so both the static path and
-    // each `switch` arm call it. Layer-1 (icon `.data()`) routing lives inside
-    // its `icon_node`.
+    // press-block) for one STRUCTURAL state — the spinner-vs-icon leading
+    // slot, the optional trailing icon, the label, and the layout/dim style
+    // for these booleans. Both the static path and each `switch` arm call it.
     let build_pressable = {
         let label = label.clone();
         let on_click = on_click.clone();
         let make_style = make_style.clone();
         let leading_icon = leading_icon.clone();
         let trailing_icon = trailing_icon.clone();
-        let style_ovr = style_ovr.clone();
-        let label_ovr = label_ovr.clone();
-        let icon_ovr = icon_ovr.clone();
+        let values = values.clone();
+        let styles = styles.clone();
         move |loading: bool, has_lead: bool, has_trail: bool, disabled: bool, block: bool| {
             // A loading spinner occupies the leading slot, so it needs the same
             // centered-row layout an icon does.
@@ -317,33 +405,21 @@ pub fn Button(props: &ButtonProps) -> Element {
             // dims the surface.
             let inert = disabled || loading;
 
-            let style_closure = make_style(row_layout, block, disabled);
-            // Snapshot the resolved container foreground for this build. The
-            // icons + spinner carry the fg on their OWN nodes because native
-            // doesn't inherit text/icon color. When the container application
-            // ATTACHES PREMINTED (a `--premint`/`--premint-only` web build,
-            // no runtime override), skip the read-back: the fill's `color` is
-            // in the box's build-time CSS, so the web icon/spinner inherit it
-            // as `currentColor` — which also tracks `:hover`, something the
-            // snapshot never did — and under `--premint-only` a resolve here
-            // is the panic the stripped rule closure names. Native builds
-            // never premint, so they keep the resolved read.
-            let fg = {
-                let container_app = style_closure();
-                if container_app.attaches_preminted() {
-                    None
-                } else {
-                    resolve_style(&container_app).color.clone()
-                }
-            };
-            // Re-resolves the container's foreground from the live tone/variant.
-            // Used by the reactive icon `.color`/label-style closures so the
-            // tint tracks the container in place when a style axis is live.
-            // Same premint gate, per evaluation.
+            // The icons and the spinner carry the foreground on their OWN
+            // nodes: native doesn't inherit text/icon color. When the box
+            // attaches PREMINTED (a `--premint` web build), skip the
+            // read-back — the fill's `color` is in the box's build-time CSS,
+            // so the web icon/spinner inherit it as `currentColor` (which
+            // also tracks `:hover`), and under `--premint-only` a resolve
+            // here is the panic the stripped rule closure names. Native
+            // builds never premint, so they keep the resolved read.
             let resolve_fg = {
-                let style_closure = style_closure.clone();
+                let make_style = make_style.clone();
+                let styles = styles.clone();
                 move || {
-                    let app = style_closure();
+                    let app = make_style(row_layout, block, disabled)
+                        .overridden(styles.root.as_ref())
+                        .into_style_application();
                     if app.attaches_preminted() {
                         None
                     } else {
@@ -351,57 +427,43 @@ pub fn Button(props: &ButtonProps) -> Element {
                     }
                 }
             };
+            let fg = runtime_core::untrack(&resolve_fg);
 
-            // Icon-slot override: a `color` in `icon_style` wins over the theme
-            // foreground for the icon tint; the whole override sheet also layers
-            // onto the icon box style (size/margin/…).
-            let icon_color_ovr = override_rules(&icon_ovr).color;
+            // An explicit color in the instance's `icon` override wins over
+            // the theme foreground for the icon tint.
+            let icon_color_ovr =
+                styles.icon.as_ref().and_then(|o| o.resolve(&VariantSet::default()).color.clone());
 
             // Builds one inline icon node from a `Reactive<Option<IconData>>`
-            // slot known to be `Some` here. LAYER 1: when the slot is a live
-            // `Dynamic`, route the glyph reactively via the primitive's
-            // `.data()` setter so a glyph SWAP (same presence) updates in place
-            // — no rebuild. (Presence changes are handled by the `switch`
-            // scrutinee, which keys on `.is_some()`, not the glyph itself —
-            // `IconData` isn't `PartialEq`.) Color tint follows the same
-            // static-vs-reactive split the label uses.
+            // slot known to be `Some` here. LAYER 1: a live slot routes the
+            // glyph through the primitive's `.data()` setter, so a glyph SWAP
+            // (same presence) updates in place. Presence changes are the
+            // `switch` scrutinee's job (`IconData` isn't `PartialEq`).
             let icon_node = |slot: &Reactive<Option<IconData>>| -> Element {
                 let mut el = icon(slot.get().expect("icon slot is Some in this arm"))
-                    .with_style(apply_override(
-                        StyleApplication::new(button_icon_sheet()),
-                        &icon_ovr,
-                    ));
+                    .with_style(ButtonStyles::icon().values(&values).overridden(styles.icon.as_ref()));
                 if !slot.is_static() {
-                    // Live glyph: the slot is `Some` in this arm (presence is
-                    // the switch key); read the inner data reactively. The
-                    // `unwrap_or` guards the impossible "arm says Some, closure
-                    // now None" — a presence flip rebuilds the arm instead.
+                    // The `unwrap_or` guards the impossible "arm says Some,
+                    // closure now None" — a presence flip rebuilds the arm.
                     let slot = slot.clone();
                     el = el.data(move || slot.get().unwrap_or(EMPTY_ICON_DATA));
                 }
-                // Explicit icon-color override takes precedence over the theme fg.
                 if let Some(oc) = icon_color_ovr.clone() {
                     return el.color(move || oc.resolve()).into_element();
                 }
-                if style_is_reactive {
-                    let resolve_fg = resolve_fg.clone();
-                    match fg.clone() {
-                        Some(_) => el
-                            .color(move || {
-                                resolve_fg()
-                                    .map(|c| c.resolve())
-                                    .unwrap_or_else(|| Color("#000000".into()))
-                            })
-                            .into_element(),
-                        None => el.into_element(),
+                match fg.clone() {
+                    // A live style axis re-resolves the foreground in place.
+                    Some(_) if style_is_reactive => {
+                        let resolve_fg = resolve_fg.clone();
+                        el.color(move || {
+                            resolve_fg().map(|c| c.resolve()).unwrap_or_else(|| Color("#000000".into()))
+                        })
+                        .into_element()
                     }
-                } else {
-                    match fg.clone() {
-                        // Reactive read: `resolve()` re-runs on theme swap, so
-                        // the icon tint tracks the token like the label does.
-                        Some(c) => el.color(move || c.resolve()).into_element(),
-                        None => el.into_element(),
-                    }
+                    // `resolve()` re-runs on a theme swap, so the tint
+                    // tracks the token like the label does.
+                    Some(c) => el.color(move || c.resolve()).into_element(),
+                    None => el.into_element(),
                 }
             };
 
@@ -416,50 +478,18 @@ pub fn Button(props: &ButtonProps) -> Element {
             } else if has_lead {
                 children.push(icon_node(&leading_icon));
             }
-            // The label applies the SAME appearance/size keys as the box, on
-            // the installed LABEL sheet (color + typography as enumerated
-            // arms — no per-instance snapshot, no color override, so it
-            // premints). A `label_style` slot override still layers on top
-            // and takes the live engine, as every runtime override does.
-            let label_app = {
-                let tone = tone.clone();
-                let variant = variant.clone();
-                let size = size.clone();
-                move || {
-                    StyleApplication::new(installed_button_label_sheet())
-                        .with(
-                            "appearance",
-                            format!("{}_{}", tone.get().key(), variant.get().key()),
-                        )
-                        .with("size", size.get().key().to_string())
-                }
-            };
-            let label_node = if style_is_reactive {
-                let label_ovr = label_ovr.clone();
-                let label_app = label_app.clone();
-                text(label.clone())
-                    .with_style(move || apply_override(label_app(), &label_ovr))
-                    .into_element()
-            } else {
-                text(label.clone())
-                    .with_style(apply_override(label_app(), &label_ovr))
-                    .into_element()
-            };
-            children.push(label_node);
+            // The label draws the LABEL slot with the same axes as the box:
+            // its foreground and typography are enumerated arms, so it
+            // premints, and it carries them on its own node for native.
+            let label_style = ButtonStyles::label().values(&values).overridden(styles.label.as_ref());
+            children.push(text(label.clone()).with_style(label_style).into_element());
             if has_trail {
                 children.push(icon_node(&trailing_icon));
             }
 
             let on_click_for_p = on_click.clone();
-            let mut bound = runtime_core::pressable(children, move || (on_click_for_p)());
-            // Layer the root `style` override on the pressable box (background,
-            // border, padding, radius, …) on top of the resolved theme style.
-            bound = if style_is_reactive {
-                let style_ovr = style_ovr.clone();
-                bound.with_style(move || apply_override(style_closure(), &style_ovr))
-            } else {
-                bound.with_style(apply_override(style_closure(), &style_ovr))
-            };
+            let mut bound = runtime_core::pressable(children, move || (on_click_for_p)())
+                .with_style(make_style(row_layout, block, disabled).overridden(styles.root.as_ref()));
             if inert {
                 bound = bound.disabled(true);
             }
@@ -572,18 +602,19 @@ fn finalize_switch(switch_el: Element, _props: &ButtonProps) -> Element {
 #[cfg(test)]
 mod tests {
 
-    /// The LABEL sheet must premint for every (appearance, size) the box
+    /// The LABEL slot must premint for every (tone, variant, size) the box
     /// itself premints — it replaces the per-instance typography snapshot
     /// + color override, which forced every Button label onto the live
     /// engine under `--premint`.
     #[test]
     fn regression_button_label_sheet_premints() {
-        use idea_theme::extensible::installed_button_label_sheet;
         with_test_world(|| {
             install_idea_theme(light_theme());
-            let app = StyleApplication::new(installed_button_label_sheet())
-                .with("appearance", "primary_filled".to_string())
-                .with("size", "lg".to_string());
+            let app = ButtonStyles::label()
+                .raw("tone", "primary")
+                .set(ButtonVariant::Filled)
+                .set(ButtonSize::Lg)
+                .into_style_application();
             assert!(
                 app.preminted_class_list().is_some(),
                 "button label sheet must premint (was snapshot + color override)"
@@ -595,7 +626,7 @@ mod tests {
     use crate::test_support::{classify, P, TStyle};
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, FillRule};
+    use runtime_core::{resolve_style, FillRule, StyleApplication, StyleRules, StyleSheet, Tokenized};
 
     fn theme() {
         install_idea_theme(light_theme());
@@ -637,7 +668,7 @@ mod tests {
             let props = ButtonProps {
                 label: Reactive::Static("Save".into()),
                 tone: Reactive::Static(ToneRef::default()), // Primary
-                variant: Reactive::Static(VariantRef::default()), // Filled
+                variant: Reactive::Static(ButtonVariant::default()), // Filled
                 ..Default::default()
             };
             let (mut children, _) = pressable_parts(Button(&props));
@@ -1014,24 +1045,23 @@ mod tests {
     fn button_has_hover_and_pressed_opacity_overlays() {
         with_test_world(|| {
             theme();
-            let sheet = installed_button_sheet();
+            let app = ButtonStyles::root().raw("tone", "primary").into_style_application();
 
-            let base = resolve_style(&StyleApplication::new(sheet.clone()));
+            let base = resolve_style(&app);
             assert_eq!(
                 base.opacity.as_ref().map(|t| t.resolve()),
                 Some(1.0),
                 "resting button is fully opaque so the hover/press dim has a value to animate back to"
             );
 
-            let hovered =
-                resolve_style(&StyleApplication::new(sheet.clone()).with("__state_hovered", "on"));
+            let hovered = resolve_style(&app.clone().with("__state_hovered", "on"));
             assert_eq!(
                 hovered.opacity.as_ref().map(|t| t.resolve()),
                 Some(0.92),
                 "hover dims the button"
             );
 
-            let pressed = resolve_style(&StyleApplication::new(sheet).with("__state_pressed", "on"));
+            let pressed = resolve_style(&app.with("__state_pressed", "on"));
             assert_eq!(
                 pressed.opacity.as_ref().map(|t| t.resolve()),
                 Some(0.85),
@@ -1065,7 +1095,7 @@ mod tests {
             theme();
             let props = ButtonProps {
                 label: Reactive::Static("Get started".into()),
-                label_style: Some(color_sheet("#0b6b3a")),
+                styles: ButtonSlotStyles::default().label(color_sheet("#0b6b3a")),
                 ..Default::default()
             };
             let (mut children, _) = pressable_parts(Button(&props));
@@ -1090,7 +1120,7 @@ mod tests {
             }));
             let props = ButtonProps {
                 label: Reactive::Static("Go".into()),
-                style: Some(ovr),
+                styles: ButtonSlotStyles::default().root(ovr),
                 ..Default::default()
             };
             let (_, app) = pressable_parts(Button(&props));
@@ -1110,7 +1140,7 @@ mod tests {
             let props = ButtonProps {
                 label: Reactive::Static("Go".into()),
                 leading_icon: Reactive::Static(Some(PLUS)),
-                icon_style: Some(color_sheet("#0b6b3a")),
+                styles: ButtonSlotStyles::default().icon(color_sheet("#0b6b3a")),
                 ..Default::default()
             };
             let (mut children, _) = pressable_parts(Button(&props));
@@ -1148,5 +1178,101 @@ mod tests {
                 "a non-disabled button attaches no disabled source"
             );
     });
+    }
+
+    fn box_rules(props: ButtonProps) -> Rc<StyleRules> {
+        let (_, app) = pressable_parts(Button(&props));
+        resolve_style(&app)
+    }
+
+    fn reset_styles() {
+        runtime_core::component_styles::__reset::<ButtonStyles>();
+    }
+
+    /// A custom variant: `ButtonVariant::define` plus a restyle arm. The
+    /// button draws it, and its classes premint.
+    #[test]
+    fn custom_variant_draws_through_a_restyle_arm() {
+        const RAISED: ButtonVariant = ButtonVariant::define("raised");
+        with_test_world(|| {
+            reset_styles();
+            theme();
+            ButtonStyles::restyle(|s| {
+                s.root().arm(RAISED, |t| StyleRules {
+                    background: Some(t.color.surface()),
+                    shadow: Some(runtime_core::Shadow {
+                        x: 0.0,
+                        y: 2.0,
+                        blur: 8.0,
+                        color: Tokenized::Literal(Color("rgba(0,0,0,0.2)".into())),
+                    }),
+                    ..Default::default()
+                });
+            });
+            let rules = box_rules(ButtonProps { variant: Reactive::Static(RAISED), ..Default::default() });
+            assert_eq!(rules.background.as_ref().and_then(|c| c.name()), Some("color-surface"));
+            assert!(rules.shadow.is_some());
+            let classes = ButtonStyles::root()
+                .raw("tone", "primary")
+                .set(RAISED)
+                .into_style_application()
+                .preminted_class_list()
+                .expect("the extended root premints");
+            assert!(classes.contains("-variant-raised"), "{classes}");
+            reset_styles();
+        });
+    }
+
+    /// A tone-aware custom variant: the app's own recipe rendered over every
+    /// registered tone with `tone_variant_arms`.
+    #[test]
+    fn tone_aware_custom_variant_uses_each_tones_colors() {
+        const TINTED: ButtonVariant = ButtonVariant::define("tinted");
+        with_test_world(|| {
+            reset_styles();
+            theme();
+            ButtonStyles::restyle(|s| {
+                tone_variant_arms(&mut s.root(), &semantic_tones(), TINTED.key(), &variant::Soft);
+            });
+            let danger = box_rules(ButtonProps {
+                variant: Reactive::Static(TINTED),
+                tone: Reactive::Static(idea_theme::extensible::tone::Danger.into()),
+                ..Default::default()
+            });
+            assert_eq!(danger.background.as_ref().and_then(|c| c.name()), Some("intent-danger-soft-bg"));
+            reset_styles();
+        });
+    }
+
+    /// The `app_theme! { …, tones: [Brand] }` path: installing the theme
+    /// registers its tones, so `Button(tone = Brand)` draws with no other
+    /// wiring.
+    #[test]
+    fn a_theme_extension_tone_draws_on_button() {
+        idea_theme::tone! {
+            Brand using self, theme {
+                key = "brand_button_test",
+                fill_bg = idea_theme::color_token!("brand-button-fill", "#5b21b6"),
+                fill_fg = theme.colors().background.clone(),
+                soft_bg = theme.colors().surface_alt.clone(),
+                soft_fg = theme.colors().text.clone(),
+                stroke_color = theme.colors().border.clone(),
+                stroke_fg = theme.colors().text.clone(),
+                ghost_fg = theme.colors().text.clone(),
+                disabled = theme.colors().text_muted.clone(),
+                focus_ring = theme.colors().focus_ring.clone(),
+                tokens = ["brand-button-fill" => "#5b21b6"],
+            }
+        }
+        idea_theme::app_theme! {
+            BrandTheme { idea: idea_theme::theme::IdeaThemeDefaults, tones: [Brand] }
+        }
+        with_test_world(|| {
+            reset_styles();
+            install_idea_theme(BrandTheme { idea: light_theme() });
+            let rules = box_rules(ButtonProps { tone: Reactive::Static(Brand.into()), ..Default::default() });
+            assert_eq!(rules.background.as_ref().and_then(|c| c.name()), Some("brand-button-fill"));
+            reset_styles();
+        });
     }
 }

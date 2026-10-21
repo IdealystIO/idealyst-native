@@ -98,7 +98,7 @@ pub fn variant_state_overlay(
 /// (an interactive Chip reserves 1px for its focus ring, see
 /// `tone_variant_sheet`). Without it the border would draw in the
 /// platform default, `currentColor` on web.
-fn no_border() -> StyleRules {
+pub fn no_border() -> StyleRules {
     let zero = Tokenized::Literal(0.0);
     let clear = Tokenized::Literal(Color("transparent".into()));
     StyleRules {

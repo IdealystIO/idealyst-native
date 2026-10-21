@@ -107,6 +107,7 @@ pub(crate) mod date_mask;
 #[cfg(feature = "docs")]
 pub mod doc_controls;
 pub mod intent;
+pub mod modifiers;
 // Compile-checked usage examples for idea-ui components. `recipe!`
 // self-gates on the `catalog` feature, so this module is empty (zero
 // cost) in production and only materializes when the catalog is built.
@@ -180,7 +181,10 @@ pub use components::autocomplete::{
 };
 pub use components::avatar::{Avatar, AvatarProps, AvatarSize};
 pub use components::badge::{Badge, BadgeProps};
-pub use components::button::{Button, ButtonProps};
+pub use components::button::{
+    Button, ButtonBlock, ButtonDimmed, ButtonLayout, ButtonProps, ButtonRestyle, ButtonShape, ButtonSize,
+    ButtonSlotStyles, ButtonStyles, ButtonVariant,
+};
 pub use components::breadcrumbs::{Breadcrumbs, BreadcrumbsProps, Crumb};
 pub use components::calendar::{Calendar, CalendarProps, RangeCalendar, RangeCalendarProps};
 pub use components::card::{Card, CardPadding, CardProps};
@@ -269,10 +273,10 @@ pub use components::typography::{Typography, TypographyProps};
 // `use idea_ui::{tone, variant, size, shape, typography_kind}` for
 // the namespaces.
 pub use idea_theme::extensible::{
-    installed_typography_sheet, tone, variant, size, shape, typography as typography_kind,
-    ButtonSize, ButtonSizeRef, ResolutionCtx, Shape, ShapeRef, Tone, ToneRef, TypographyKind,
-    TypographyKindRef, Variant, VariantRef,
+    installed_typography_sheet, tone, typography as typography_kind, ResolutionCtx, Tone, ToneRef,
+    TypographyKind, TypographyKindRef, Variant, VariantRef,
 };
+pub use modifiers::{shape, size, variant};
 // Macros from idea-theme. `#[macro_export]` macros live at the
 // defining crate's root; re-exported here for convenience. The
 // modifier macros (`tone!`, `variant!`) live in idea-theme's macro

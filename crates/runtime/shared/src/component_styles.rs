@@ -521,19 +521,20 @@ fn compose<S: ComponentStyles>(restyles: &[RestyleFn], defaults: &[(&'static str
     let mut identities = Vec::with_capacity(slots.len());
     for (def, items) in slots.iter().zip(collector.slots.iter()) {
         let mut sheet = (def.build)();
+        for item in items {
+            sheet = item.apply(sheet);
+        }
         // A component-level axis default reaches every slot that styles
-        // the axis without naming a default of its own. Part of the
-        // declaration (the macro's content hash covers it), so it does not
-        // move the slot off its declared class.
+        // the axis without naming a default of its own — including an axis
+        // only an `extend` hook or a restyle declared (a compound leg).
+        // Part of the declaration (the macro's content hash covers it), so
+        // it does not by itself move the slot off its declared class.
         for axis in S::axes() {
             if let Some(d) = axis.default {
                 if sheet.declares_axis(axis.name) && sheet.axis_default(axis.name).is_none() {
                     sheet = sheet.variant_default(axis.name, d);
                 }
             }
-        }
-        for item in items {
-            sheet = item.apply(sheet);
         }
         let applied_defaults: Vec<&(&str, &str)> =
             defaults.iter().filter(|(a, _)| sheet.declares_axis(a)).collect();
