@@ -25,9 +25,9 @@
 //! Like Checkbox, drawn from primitives so it shares `tone` × `variant`
 //! × `size`, and likewise the ring — not the label row — is the
 //! `pressable` that takes focus and wears the focus ring. The selected
-//! indicator is a filled dot inside a
-//! tone-colored ring; override the appearance via
-//! `install_radio_sheets(RadioSheetBuilder::new().add_tone(Hype).build())`.
+//! indicator is a filled dot inside a tone-colored ring. Styling is
+//! [`RadioStyles`] — `ring`, `dot`, `row`, `label` and `group` (a
+//! `RadioGroup`'s stack) — shared by `Radio` and `RadioGroup`.
 //!
 //! `disabled` follows `Switch` (and `Button`) on both `Radio` and
 //! `RadioGroup` (where it disables every option): it blocks selection
@@ -39,16 +39,171 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    accessibility::Role, component, tap, ui, Element, IdealystSchema, IntoElement, Reactive,
-    Signal, StyleApplication, TapRecognizer,
+    accessibility::Role, component, component_styles, derived, tap, AlignItems, AxisValues, Cursor, Element,
+    FlexDirection, FontWeight, IdealystSchema, IntoElement, JustifyContent, Reactive, Signal, SlotRestyle,
+    StyleRules, TapRecognizer, Tokenized,
 };
 
-use idea_theme::extensible::{installed_radio_sheets, RadioSheets, ToneRef, VariantRef};
+use idea_theme::extensible::{semantic_tones, tone_arms, tone_compounds, ToneRef, DISABLED_CONTROL_OPACITY};
 
+use crate::components::tone_slots::{focus_ring, with_tone};
 use crate::components::ControlSize;
-use crate::components::stack::{Stack, StackAxis, StackGap};
-use crate::components::field::FieldStyles;
-use crate::stylesheets::ControlRow;
+use crate::modifiers::{marker_into_axis, variant};
+use crate::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`Radio`] and [`RadioGroup`].
+    pub Radio<IdeaThemeRef> {
+        /// The surface treatment. The ring and dot draw in the tone's accent
+        /// whatever the value; it is there for restyles to key on.
+        axis variant { #[default] filled, soft, outlined, ghost }
+
+        /// The ring — the pressable, so it takes focus and wears the focus
+        /// ring on its own.
+        slot ring {
+            extend(ring_strokes)
+            base(t) {
+                // Fixed-size control: never flex-shrink (see Switch).
+                flex_shrink: 0.0,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                border_radius: t.radius.pill(),
+            }
+            /// Unselected: a muted outline. Selected: a transparent ring
+            /// with a 1px border in the tone's accent (`ring_strokes`) — it
+            /// reads best as an outline, and the dot carries the fill.
+            variant checked {
+                #[default]
+                off(t) {
+                    background: runtime_core::Color("transparent".into()),
+                    color: t.color.text_muted(),
+                    border_width: 1.0,
+                    border_color: t.color.border(),
+                }
+                on(_t) {
+                    background: runtime_core::Color("transparent".into()),
+                    border_width: 1.0,
+                }
+            }
+            variant size {
+                sm(_t) { width: 16.0, height: 16.0 }
+                #[default]
+                md(_t) { width: 20.0, height: 20.0 }
+                lg(_t) { width: 24.0, height: 24.0 }
+            }
+            /// The author's `disabled`: on the ring, so the dot dims with it.
+            variant dimmed {
+                #[default]
+                off(_t) {}
+                on(_t) { opacity: DISABLED_CONTROL_OPACITY }
+            }
+            transitions {
+                background: 150ms EaseOut,
+                border_color: 150ms EaseOut,
+            }
+        }
+
+        /// The selected dot, in the tone's accent (the ring is transparent,
+        /// so the dot carries the color).
+        slot dot {
+            extend(dot_fills)
+            base(t) { border_radius: t.radius.pill() }
+            variant size {
+                sm(_t) { width: 8.0, height: 8.0 }
+                #[default]
+                md(_t) { width: 10.0, height: 10.0 }
+                lg(_t) { width: 12.0, height: 12.0 }
+            }
+            transitions {
+                background: 150ms EaseOut,
+            }
+        }
+
+        /// Ring + label, vertically centered — a plain layout view; the ring
+        /// inside is the focus target.
+        slot row {
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: t.spacing.sm(),
+                cursor: Cursor::Pointer,
+            }
+        }
+
+        /// The label.
+        slot label {
+            base(t) {
+                color: t.color.text(),
+                font_size: t.typography.body_sm_size(),
+                font_weight: FontWeight::Medium,
+            }
+        }
+
+        /// A `RadioGroup`'s options, stacked.
+        slot group {
+            base(t) {
+                flex_direction: FlexDirection::Column,
+                gap: t.spacing.sm(),
+            }
+            /// Layout direction.
+            variant axis {
+                #[default]
+                column(_t) { flex_direction: FlexDirection::Column }
+                row(_t) { flex_direction: FlexDirection::Row }
+            }
+        }
+    }
+}
+
+/// The selected ring's stroke — the tone's solid accent, not the recipe's
+/// foreground (for Filled that is the on-fill contrast color, white: an
+/// invisible ring on a light surface) — and, above it, the 2px focus
+/// ring. The stroke is a compound, so the focus ring is one too.
+fn ring_strokes(s: &mut SlotRestyle<'_, RadioStyles>) {
+    let tones = semantic_tones();
+    tone_compounds(s, &tones, ("checked", "on"), |ctx| {
+        let stroke = ctx.tone.fill_bg(ctx.theme);
+        StyleRules {
+            border_top_color: Some(stroke.clone()),
+            border_right_color: Some(stroke.clone()),
+            border_bottom_color: Some(stroke.clone()),
+            border_left_color: Some(stroke),
+            ..Default::default()
+        }
+    });
+    s.state(runtime_core::StateBits::FOCUSED, |_| focus_ring(2.0));
+    for tone in &tones {
+        s.raw_compound(&[("tone", tone.key()), ("checked", "on"), ("__state_focused", "on")], focus_ring(2.0));
+    }
+}
+
+/// The dot — the tone's solid accent.
+fn dot_fills(s: &mut SlotRestyle<'_, RadioStyles>) {
+    tone_arms(s, &semantic_tones(), |ctx| StyleRules {
+        background: Some(ctx.tone.fill_bg(ctx.theme)),
+        ..Default::default()
+    });
+}
+
+marker_into_axis!(RadioVariant {
+    variant::Filled => Filled,
+    variant::Soft => Soft,
+    variant::Outlined => Outlined,
+    variant::Ghost => Ghost,
+});
+
+/// The control-wide size scale converts into Radio's own size axis.
+impl From<ControlSize> for RadioSize {
+    fn from(s: ControlSize) -> Self {
+        RadioSize::define(s.as_variant_str())
+    }
+}
+
+impl From<ControlSize> for Reactive<RadioSize> {
+    fn from(s: ControlSize) -> Self {
+        Reactive::Static(s.into())
+    }
+}
 
 // =============================================================================
 // Shared indicator + row builders
@@ -67,41 +222,32 @@ fn radio_indicator(
     on_select: Rc<dyn Fn()>,
     disabled: Reactive<bool>,
     a11y_label: Option<String>,
-    appearance: impl Fn() -> String + Clone + 'static,
-    size_key: impl Fn() -> String + Clone + 'static,
-    sheets: RadioSheets,
+    values: AxisValues<RadioStyles>,
+    styles: RadioSlotStyles,
 ) -> Element {
-    // Inner dot — mounted only while selected. Its style reads the live
-    // appearance/size so a reactive tone/variant/size re-styles it in place.
-    let dot_sheet = sheets.dot_sheet.clone();
-    let dot_appearance = appearance.clone();
-    let dot_size = size_key.clone();
-    let dot_style = move || {
-        StyleApplication::new(dot_sheet.clone())
-            .with("appearance", dot_appearance())
-            .with("size", dot_size())
+    // Inner dot — mounted only while selected.
+    let dot_style = {
+        let values = values.clone();
+        let styles = styles.clone();
+        move || RadioStyles::dot().values(&values).overridden(styles.dot.as_ref())
     };
     let sel_for_dot = is_selected.clone();
-    let dot = ui! {
+    let dot = runtime_core::ui! {
         if sel_for_dot() {
-            view(style = dot_style.clone()) {}
+            view(style = dot_style()) {}
         }
     };
 
-    // Outer ring — the pressable host. `disabled` is read LIVE in the style
-    // so the dim follows a reactive prop in place (the `dimmed` axis —
-    // Switch/Button parity).
-    let outer_sheet = sheets.outer_sheet.clone();
-    let sel_for_ring = is_selected;
-    let disabled_dim = disabled.clone();
+    // Outer ring — the pressable host. `disabled` is read LIVE so the dim
+    // follows a reactive prop in place (the `dimmed` axis — Switch/Button
+    // parity).
+    let ring_style = RadioStyles::ring()
+        .values(&values)
+        .set(derived(move || RadioChecked::from(is_selected())))
+        .set(disabled.clone().map(RadioDimmed::from))
+        .overridden(styles.ring.as_ref());
     let ring = runtime_core::pressable(vec![dot], move || (on_select)())
-        .with_style(move || {
-            StyleApplication::new(outer_sheet.clone())
-                .with("appearance", appearance())
-                .with("checked", if sel_for_ring() { "on" } else { "off" }.to_string())
-                .with("size", size_key())
-                .with("dimmed", if disabled_dim.get() { "on" } else { "off" }.to_string())
-        })
+        .with_style(ring_style)
         .a11y_role(Role::RadioButton);
     // Block the press through the pressable's own `disabled` binding (see
     // Switch): press block, host `set_disabled`, DISABLED state bit.
@@ -132,24 +278,15 @@ fn radio_row(
     label: Option<(Element, Option<String>)>,
     on_select: Rc<dyn Fn()>,
     disabled: Reactive<bool>,
-    appearance: impl Fn() -> String + Clone + 'static,
-    size_key: impl Fn() -> String + Clone + 'static,
-    sheets: RadioSheets,
+    values: AxisValues<RadioStyles>,
+    styles: RadioSlotStyles,
 ) -> Element {
     let (label_el, label_text) = match label {
         Some((el, text)) => (Some(el), text),
         None => (None, None),
     };
     let row_disabled = disabled.clone();
-    let indicator = radio_indicator(
-        is_selected,
-        on_select.clone(),
-        disabled,
-        label_text,
-        appearance,
-        size_key,
-        sheets,
-    );
+    let indicator = radio_indicator(is_selected, on_select.clone(), disabled, label_text, values.clone(), styles.clone());
     // No label — the indicator IS the whole control; skip the wrapper row.
     let Some(label_el) = label_el else { return indicator };
 
@@ -165,7 +302,7 @@ fn radio_row(
         }
     });
     runtime_core::view(vec![indicator, label_el])
-        .with_style(|| StyleApplication::new(ControlRow::sheet()))
+        .with_style(RadioStyles::row().values(&values).overridden(styles.row.as_ref()))
         .on_touch(move |ev| row_tap(ev))
         .into_element()
 }
@@ -179,7 +316,7 @@ fn radio_row(
 // a `Signal`/`rx!` and re-style in place. The controlled `selected` `Signal`
 // stays bare (a reactive *source*), `on_select` is a handler, `label` is
 // already `Reactive`.
-#[runtime_core::props]
+#[runtime_core::props(styles = RadioStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct RadioProps {
@@ -193,10 +330,10 @@ pub struct RadioProps {
     pub on_select: Rc<dyn Fn()>,
     /// Semantic palette for the selected ring + dot. Default Primary.
     pub tone: ToneRef,
-    /// Surface skeleton. Default Filled.
-    pub variant: VariantRef,
-    /// Indicator scale. Default Md.
-    pub size: ControlSize,
+    /// Surface skeleton (or an app value). Default Filled.
+    pub variant: RadioVariant,
+    /// Indicator scale (a `ControlSize` converts). Default Md.
+    pub size: RadioSize,
     /// When `true`, blocks selection (`on_select` never fires, from the ring
     /// or the label row) and dims the ring — the same opacity drop a disabled
     /// `Button` gets — and marks the ring disabled for the host (native
@@ -213,9 +350,10 @@ impl Default for RadioProps {
             selected: runtime_core::signal(false),
             on_select: Rc::new(|| {}),
             tone: Reactive::Static(ToneRef::default()),
-            variant: Reactive::Static(VariantRef::default()),
-            size: Reactive::Static(ControlSize::default()),
+            variant: Reactive::Static(RadioVariant::default()),
+            size: Reactive::Static(RadioSize::default()),
             disabled: Reactive::Static(false),
+            styles: Default::default(),
         }
     }
 }
@@ -226,26 +364,12 @@ impl Default for RadioProps {
 #[component]
 pub fn Radio(props: &RadioProps) -> Element {
     let selected = props.selected;
-    // Style keys as live closures so a reactive tone/variant/size re-styles
-    // the indicator in place; bare props collapse to a static resolution.
-    let appearance = {
-        let tone = props.tone.clone();
-        let variant = props.variant.clone();
-        move || format!("{}_{}", tone.get().key(), variant.get().key())
-    };
-    let size = props.size.clone();
-    let size_key = move || size.get().as_variant_str().to_string();
-    let label = crate::components::optional_reactive_text(props.label.clone(), FieldStyles::label())
+    let styles = props.styles.clone();
+    let values = with_tone(RadioStyles::values().set(props.variant.clone()).set(props.size.clone()), &props.tone);
+    let label_style = RadioStyles::label().values(&values).overridden(styles.label.as_ref());
+    let label = crate::components::optional_reactive_text(props.label.clone(), label_style)
         .map(|el| (el, props.label.get()));
-    radio_row(
-        move || selected.get(),
-        label,
-        props.on_select.clone(),
-        props.disabled.clone(),
-        appearance,
-        size_key,
-        installed_radio_sheets(),
-    )
+    radio_row(move || selected.get(), label, props.on_select.clone(), props.disabled.clone(), values, styles)
 }
 
 // =============================================================================
@@ -269,35 +393,12 @@ impl RadioOption {
     }
 }
 
-/// Layout direction for a [`RadioGroup`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
-#[derive(IdealystSchema, runtime_core::Remote)]
-pub enum RadioAxis {
-    /// Stack options vertically. The default.
-    #[default]
-    Column,
-    /// Lay options out in a row.
-    Row,
-}
-
-impl runtime_core::VariantEnum for RadioAxis {
-    fn as_variant_str(self) -> &'static str {
-        match self {
-            RadioAxis::Column => "column",
-            RadioAxis::Row => "row",
-        }
-    }
-    fn all_variants() -> &'static [Self] {
-        &[RadioAxis::Column, RadioAxis::Row]
-    }
-}
-
 // Reactive-by-default: `#[props]` wraps the scalar-DATA style props
 // (tone/variant/size/disabled). The controlled `value` `Signal` stays bare,
 // `on_change` is a handler, and `options` is a `Vec` (auto-skipped — bare).
 // `axis` drives STRUCTURE (it selects the Stack layout branch) and so isn't
 // routed reactively here — see the body TODO.
-#[runtime_core::props]
+#[runtime_core::props(styles = RadioStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct RadioGroupProps {
@@ -313,9 +414,10 @@ pub struct RadioGroupProps {
     /// Semantic palette applied to every option. Default Primary.
     pub tone: ToneRef,
     /// Surface skeleton applied to every option. Default Filled.
-    pub variant: VariantRef,
-    /// Indicator scale applied to every option. Default Md.
-    pub size: ControlSize,
+    pub variant: RadioVariant,
+    /// Indicator scale applied to every option (a `ControlSize` converts).
+    /// Default Md.
+    pub size: RadioSize,
     /// When `true`, disables every option: selection is blocked
     /// (`on_change` never fires), each ring dims — the same opacity drop a
     /// disabled `Button` gets — and is marked disabled for the host (native
@@ -333,9 +435,10 @@ impl Default for RadioGroupProps {
             options: Vec::new(),
             axis: Reactive::Static(RadioAxis::default()),
             tone: Reactive::Static(ToneRef::default()),
-            variant: Reactive::Static(VariantRef::default()),
-            size: Reactive::Static(ControlSize::default()),
+            variant: Reactive::Static(RadioVariant::default()),
+            size: Reactive::Static(RadioSize::default()),
             disabled: Reactive::Static(false),
+            styles: Default::default(),
         }
     }
 }
@@ -348,52 +451,41 @@ impl Default for RadioGroupProps {
 pub fn RadioGroup(props: RadioGroupProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
-    // Style keys as live closures, cloned per row so a reactive tone/variant/
-    // size re-styles every option's indicator in place.
-    let appearance = {
-        let tone = props.tone.clone();
-        let variant = props.variant.clone();
-        move || format!("{}_{}", tone.get().key(), variant.get().key())
-    };
-    let size = props.size.clone();
-    let size_key = move || size.get().as_variant_str().to_string();
-    let sheets = installed_radio_sheets();
+    let styles = props.styles.clone();
+    let values = with_tone(RadioStyles::values().set(props.variant.clone()).set(props.size.clone()), &props.tone);
     let disabled = props.disabled.clone();
 
     // One option's row: reports its id via `on_change`, shows selected while
     // `value` matches it.
-    let option_row = move |option: RadioOption| -> Element {
-        let id = option.id.clone();
-        let id_for_select = option.id;
-        let on_change_for_row = on_change.clone();
-        let on_select: Rc<dyn Fn()> = Rc::new(move || (on_change_for_row)(id_for_select.clone()));
+    let option_row = {
+        let values = values.clone();
+        let styles = styles.clone();
+        move |option: RadioOption| -> Element {
+            let id = option.id.clone();
+            let id_for_select = option.id;
+            let on_change_for_row = on_change.clone();
+            let on_select: Rc<dyn Fn()> = Rc::new(move || (on_change_for_row)(id_for_select.clone()));
 
-        let a11y_label = option.label.get();
-        let label = runtime_core::text(option.label)
-            .with_style(FieldStyles::label())
-            .into_element();
+            let a11y_label = option.label.get();
+            let label = runtime_core::text(option.label)
+                .with_style(RadioStyles::label().values(&values).overridden(styles.label.as_ref()))
+                .into_element();
 
-        radio_row(
-            move || value.get() == id,
-            Some((label, Some(a11y_label))),
-            on_select,
-            disabled.clone(),
-            appearance.clone(),
-            size_key.clone(),
-            sheets.clone(),
-        )
+            radio_row(
+                move || value.get() == id,
+                Some((label, Some(a11y_label))),
+                on_select,
+                disabled.clone(),
+                values.clone(),
+                styles.clone(),
+            )
+        }
     };
 
-    // TODO(reactive-sweep): `axis` drives STRUCTURE (which Stack layout branch
-    // is built), so a reactive axis won't re-lay-out without a `when()`/`switch`
-    // around the Stack. Read once for now; the common case is a fixed axis.
-    let stack_axis = match props.axis.get() {
-        RadioAxis::Column => StackAxis::Column,
-        RadioAxis::Row => StackAxis::Row,
-    };
+    let group_style = RadioStyles::group().values(&values).set(props.axis.clone()).overridden(styles.group.as_ref());
     let options = props.options;
-    ui! {
-        Stack(gap = StackGap::Sm, axis = stack_axis) {
+    runtime_core::ui! {
+        view(style = group_style) {
             for option in options {
                 option_row(option)
             }
@@ -418,7 +510,7 @@ mod tests {
 
     /// Mirror of the Checkbox regression: the focus ring rings the RING,
     /// not the ring+label row. Before this, the row was the `pressable` and
-    /// `ControlRow` carried the `state focused` border, so tabbing to a
+    /// the row style carried the `state focused` border, so tabbing to a
     /// radio drew a border around its label text too.
     #[test]
     fn regression_focus_ring_rings_the_indicator_not_the_label_row() {

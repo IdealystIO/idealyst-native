@@ -555,38 +555,6 @@ stylesheet! {
 }
 
 // =============================================================================
-// Selection controls — Switch thumb + shared label row
-// =============================================================================
-//
-// The tone-bearing surfaces (Switch track, Checkbox box, Radio ring)
-// live in idea-theme's extensible sheet builders so apps can register
-// custom tones. The thumb and the label-row layout carry no tone, so
-// they're plain static stylesheets here.
-
-// A horizontal label row shared by Switch / Checkbox / Radio: control
-// on one side, label text on the other, vertically centered.
-stylesheet! {
-    pub ControlRow<IdeaThemeRef> {
-        base(t) {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            gap: t.spacing.sm(),
-            // Clickable control: pointer cursor on web (inherits to the inner
-            // box/track + label). macOS maps it to NSCursor; touch backends
-            // no-op. Mirrors Button/IconButton.
-            cursor: Cursor::Pointer,
-        }
-        // NO `state focused` here. The row is a plain layout view whose
-        // focusable host is the CONTROL inside it (the Switch track, the
-        // Checkbox box, the Radio ring — each a `pressable` carrying its
-        // sheet's `__state_focused` ring). Ringing the row instead drew a
-        // border around control *and* label, which reads as a stray box
-        // around the text rather than a focus indicator on the control.
-    }
-}
-
-
-// =============================================================================
 // Select — trigger + menu surfaces
 // =============================================================================
 //

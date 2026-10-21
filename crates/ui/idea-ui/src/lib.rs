@@ -199,7 +199,10 @@ pub use components::time_input::{TimeInput, TimeInputProps};
 // The date components' value vocabulary — apps hold these in their state.
 pub use date::{CivilDate, CivilDateTime, CivilTime, DateLabels, Weekday};
 pub use components::center::{Center, CenterProps};
-pub use components::checkbox::{Checkbox, CheckboxProps};
+pub use components::checkbox::{
+    Checkbox, CheckboxChecked, CheckboxDimmed, CheckboxProps, CheckboxRestyle, CheckboxSize, CheckboxSlotStyles,
+    CheckboxStyles, CheckboxVariant,
+};
 pub use components::chip::{
     Chip, ChipInteractive, ChipProps, ChipRestyle, ChipSize, ChipSlotStyles, ChipStyles, ChipVariant,
 };
@@ -215,7 +218,8 @@ pub use components::menu::{
 pub use components::pagination::{Pagination, PaginationProps};
 pub use components::tooltip::{Tooltip, TooltipProps};
 pub use components::radio::{
-    Radio, RadioAxis, RadioGroup, RadioGroupProps, RadioOption, RadioProps,
+    Radio, RadioAxis, RadioChecked, RadioDimmed, RadioGroup, RadioGroupProps, RadioOption, RadioProps,
+    RadioRestyle, RadioSize, RadioSlotStyles, RadioStyles, RadioVariant,
 };
 pub use components::ControlSize;
 pub use components::collapsible::{
