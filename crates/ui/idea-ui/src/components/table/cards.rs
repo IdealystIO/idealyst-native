@@ -417,6 +417,18 @@ mod tests {
         assert_eq!(plan.more(), 0);
     }
 
+    /// Regression: the "+N more" button floated mid-card — a non-block
+    /// Button centres itself on a column's cross axis. Its holder is a row,
+    /// so it sits at the card's leading edge.
+    #[test]
+    fn regression_more_control_sits_at_the_leading_edge() {
+        idea_theme::testing::with_test_world(|| {
+            let r = runtime_core::resolve_style(&TableCardMore().into_style_application());
+            assert_eq!(r.flex_direction, Some(runtime_core::FlexDirection::Row));
+            assert_eq!(r.justify_content, Some(runtime_core::JustifyContent::FlexStart));
+        });
+    }
+
     #[test]
     fn row_keys_follow_the_id_not_the_index() {
         assert_eq!(row_key(&RowId::from("a")), row_key(&RowId::from("a")));
