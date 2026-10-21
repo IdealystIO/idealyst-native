@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ssr"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "css",
  "parity-goldens",
@@ -1607,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "css",
  "dev-client",
@@ -3645,7 +3645,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "7.0.0"
+version = "8.0.0"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -4299,7 +4299,7 @@ dependencies = [
 
 [[package]]
 name = "file-picker"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "ashpd",
  "block2 0.5.1",
@@ -6408,7 +6408,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme-editor"
-version = "8.0.0"
+version = "9.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6419,7 +6419,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "11.0.0"
+version = "12.0.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6439,7 +6439,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "9.0.0"
+version = "10.0.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6468,7 +6468,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-branded"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "idea-theme",
  "idea-ui",
@@ -6490,7 +6490,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.18"
+version = "1.5.19"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6500,7 +6500,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.17"
+version = "1.5.18"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6520,7 +6520,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-nav"
-version = "8.0.0"
+version = "9.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6547,7 +6547,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7691,7 +7691,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.28.0"
+version = "1.29.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -10747,7 +10747,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-core"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "runtime-macros",
  "runtime-shared",
@@ -10764,14 +10764,14 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.21.0"
+version = "1.22.0"
 dependencies = [
  "runtime-macros-expand",
 ]
 
 [[package]]
 name = "runtime-macros-expand"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -12807,7 +12807,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "5.0.0"
+version = "6.0.0"
 dependencies = [
  "backend-ssr",
  "runtime-scene",
