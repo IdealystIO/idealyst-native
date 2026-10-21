@@ -84,6 +84,27 @@ Four primitives, each its own scene payload type on web:
   on web, announced as the footer; always rendered after the body rows,
   wherever it is written (native moves its rows to the end of the grid).
 
+`TableProps::columns` is the table-level column model: column `i`'s
+`ColumnSpec`, taking precedence over whatever that column's cells declare,
+so one spec sizes the header and every body cell of the column.
+
+## Theme-layer hooks
+
+A theme layer post-processes built rows and cells before the table is
+built (a table's body runs after its children). Besides the style helpers
+(`map_cell_style`, `map_cell_application`, `set_cell_interaction`,
+`bind_row`, `bind_cell`), it can:
+
+- carry a row's settings to the table: `set_row_data` / `row_data`;
+- add cells the author never wrote (a selection column, a drag grip):
+  `visit_rows_mut` + `row_cells_mut`, with `is_footer` and `cell_span` to
+  tell the rows and columns apart;
+- add an overlay to a built cell (a resize handle) with
+  `push_cell_content`, and re-style what a cell already holds with
+  `visit_cell_content`;
+- report a cell's hover without replacing its touch handler:
+  `set_cell_hover` (it composes with a hover reporter already there).
+
 ## Styling
 
 `.with_style(...)` is provided on each of these constructors' builder
