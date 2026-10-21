@@ -635,9 +635,9 @@ pub fn Table(props: TableProps) -> Element {
     }
     // A plain table's frozen columns draw their inner edge only while
     // columns are scrolled beneath it. Last, so it composes over every
-    // selection above; and only on cells that may be pinned, so the rest
-    // stay static (a static cell that is not pinned is skipped, a reactive
-    // one is asked when it evaluates — see `pin_edge`).
+    // selection above; and only on pinned cells, so the rest stay static.
+    // A reactive cell is judged by the `pinned` arm it selects now — a
+    // column's pin is fixed for the cell's lifetime.
     let edges = (plain && props.scroll_x).then(|| {
         let edges = signal(table::ScrollEdges::default());
         for child in &children {
@@ -2655,6 +2655,33 @@ mod tests {
             assert_eq!(axis, runtime_core::ScrollAxis::Vertical);
             let head = rules_of(cells.into_iter().next().unwrap());
             assert_eq!(px_of(&head.top), Some(0.0));
+        });
+    }
+
+    /// CrewForge: a header row whose cells carry a REACTIVE head style
+    /// (a resizable column's width follows a live drag) never pinned —
+    /// head-row detection read only static sheets, so the row did not
+    /// count as a header and `scroll_y` left it scrolling with the body.
+    #[test]
+    fn regression_scroll_y_pins_a_header_row_with_dynamic_cell_styles() {
+        use runtime_vocabulary::style_attach::StyleProp;
+        with_test_world(|| {
+            let width = runtime_core::signal(120.0_f32);
+            let dynamic_head = table::table_cell(Default::default())
+                .with_style(StyleProp::SheetDynamic(Box::new(move || {
+                    let _ = width.get();
+                    TableHeadCell().into_style_application().with("sticky_header", "off")
+                })))
+                .into_element();
+            let t = Table(TableProps {
+                children: vec![row_of(vec![dynamic_head]), row_of(vec![body_cell("Ana")])],
+                scroll_y: true,
+                ..Default::default()
+            });
+            let (_, _, cells) = scrolling_parts(t);
+            let head = rules_of(cells.into_iter().next().unwrap());
+            assert_eq!(head.position, Some(runtime_core::Position::Sticky));
+            assert_eq!(px_of(&head.top), Some(0.0), "the dynamic header row pins to the top");
         });
     }
 

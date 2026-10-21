@@ -1995,11 +1995,13 @@ pub fn map_cell_application(
     mapped
 }
 
-/// A built cell's sheet application, when its style is a STATIC
-/// [`StyleProp::Sheet`] — `None` for a reactive style (whose application
-/// exists only when it is evaluated) or a non-cell. Lets a table-level
-/// pass read what a cell selected (idea-ui reads its `pinned` arm) and
-/// leave the cells it has no business with static.
+/// A built cell's sheet application — `None` for a non-cell or a cell
+/// with no sheet. A reactive [`StyleProp::SheetDynamic`] is evaluated
+/// once, untracked, so the read never subscribes the caller: what it
+/// reports is the cell's CURRENT selection, which suits arms a cell keeps
+/// for its lifetime (header-ness, `pinned`). Lets a table-level pass read
+/// what a cell selected (idea-ui reads its `pinned` arm and detects head
+/// rows) without touching the cell.
 pub fn cell_application(cell: &Element) -> Option<StyleApplication> {
     let mut app = None;
     visit_cell(cell, &mut |view, table_cell| {
@@ -2008,8 +2010,10 @@ pub fn cell_application(cell: &Element) -> Option<StyleApplication> {
             (_, Some(p)) => &p.style,
             _ => return,
         };
-        if let Some(StyleProp::Sheet(a)) = slot {
-            app = Some((**a).clone());
+        match slot {
+            Some(StyleProp::Sheet(a)) => app = Some((**a).clone()),
+            Some(StyleProp::SheetDynamic(g)) => app = Some(glue::untrack(|| g())),
+            _ => {}
         }
     });
     app

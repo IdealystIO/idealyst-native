@@ -1827,6 +1827,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A header row with reactive cell styles pins in a `scroll_y` table**
+  (`table`, `idea-ui`). `table::cell_application` returned `None` for a
+  cell styled with `StyleProp::SheetDynamic`, so idea-ui never counted
+  the row as a header and it scrolled away with the body. It now
+  evaluates a reactive sheet once, untracked, and reports the cell's
+  current selection.
 - **A plain `scroll_y` table scrolls its rows again** (`table`). A table
   that watches its scroll edges (idea-ui's plain variant with `scroll_x`,
   to draw frozen-column edges) wraps its scroller in a viewport-measuring

@@ -1193,6 +1193,35 @@ fn map_cell_application_keeps_static_sheets_static() {
     }
 }
 
+/// CrewForge: `cell_application` returned `None` for a cell styled with
+/// a reactive sheet, so a table-level pass (idea-ui's head-row
+/// detection) could not see what the cell selected. It evaluates the
+/// closure once, untracked: reading it must not subscribe the caller.
+#[test]
+fn regression_cell_application_reads_a_dynamic_sheet_untracked() {
+    let world = World::new();
+    world.enter(|| {
+        let tone = glue::signal("warning");
+        let cell = table_cell(TableCellProps::default())
+            .with_style(StyleProp::SheetDynamic(Box::new(move || {
+                glue::StyleApplication::new(Rc::new(glue::StyleSheet::new(|_| glue::StyleRules::default())))
+                    .with("tone", tone.get())
+            })))
+            .into_element();
+        let runs = Rc::new(Cell::new(0));
+        let r = runs.clone();
+        let _watch = runtime_world::effect(move || {
+            r.set(r.get() + 1);
+            let app = table::cell_application(&cell).expect("a dynamic sheet has an application");
+            assert_eq!(app.variants.0.get("tone").map(String::as_str), Some("warning"));
+        });
+        assert_eq!(runs.get(), 1);
+        tone.set("danger");
+        world.flush();
+        assert_eq!(runs.get(), 1, "reading the cell's application must not subscribe the reader");
+    });
+}
+
 // ===========================================================================
 // Grid columns (`ColumnTrack`): flex / max_width switch the table to
 // explicit grid tracks on both lowerings.
