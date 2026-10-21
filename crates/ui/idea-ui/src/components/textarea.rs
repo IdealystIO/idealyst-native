@@ -47,7 +47,7 @@ use runtime_core::{
 use idea_theme::extensible::{tone as tones, ToneRef};
 
 use crate::components::field::{field_help_sheet, field_input_sheet};
-use crate::stylesheets::{FieldGroup, FieldLabel};
+use crate::stylesheets::FieldGroup;
 pub use crate::stylesheets::{FieldAppearance, FieldSize};
 
 // Reactive-by-default: `#[props]` rewrites each scalar-DATA field `T` →
@@ -64,6 +64,14 @@ pub struct TextareaProps {
     /// Optional label above the input.
     #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
     pub label: Reactive<Option<String>>,
+    /// A short muted note beside the label — "Optional", "Required",
+    /// "Max 20". `Reactive<Option<String>>` — static or live. Default
+    /// `None`.
+    // Left out of the docs controls: the derive compares its controls as
+    // one tuple, and std implements `PartialEq` for tuples of at most 12.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
+    pub label_hint: Option<String>,
     /// Controlled text value. The host owns the signal.
     pub value: Signal<String>,
     /// Fires with the full new text on every edit.
@@ -130,6 +138,7 @@ impl Default for TextareaProps {
         Self {
             accessibility_label: None,
             label: Reactive::Static(None),
+            label_hint: Reactive::Static(None),
             value: runtime_core::signal(String::new()),
             on_change: Rc::new(|_| {}),
             placeholder: Reactive::Static(None),
@@ -242,7 +251,8 @@ pub fn Textarea(props: &TextareaProps) -> Element {
     let help_style =
         StyleApplication::new(field_help_sheet()).with("tone", tone_key_for());
 
-    let label_node = crate::components::optional_reactive_text(props.label.clone(), FieldLabel());
+    let label_node =
+        crate::components::field_label_line(props.label.clone(), props.label_hint.clone());
 
     let help_combined = match (props.error.clone(), props.help.clone()) {
         (Reactive::Static(e), Reactive::Static(h)) => Reactive::Static(e.or(h)),

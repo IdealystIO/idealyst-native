@@ -66,7 +66,7 @@ use idea_theme::extensible::{
 };
 use idea_theme::theme::{IdeaTheme, IdeaThemeRef};
 
-use crate::stylesheets::{FieldGroup, FieldLabel};
+use crate::stylesheets::FieldGroup;
 pub use crate::stylesheets::{FieldAppearance, FieldSize};
 /// The soft-keyboard hint [`FieldProps::keyboard`] takes (re-exported so a
 /// form can spell `field::KeyboardKind::Email`).
@@ -237,6 +237,14 @@ pub struct FieldProps {
     /// (`None`/`Some`) or live (signal/`rx!`).
     #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
     pub label: Reactive<Option<String>>,
+    /// A short muted note beside the label — "Optional", "Required",
+    /// "Max 20". `Reactive<Option<String>>` — static or live. Default
+    /// `None`.
+    // Left out of the docs controls: the derive compares its controls as
+    // one tuple, and std implements `PartialEq` for tuples of at most 12.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
+    pub label_hint: Option<String>,
     /// The input's current text. The host owns this signal; the Field
     /// reads it to populate the input and writes via `on_change`.
     pub value: Signal<String>,
@@ -354,6 +362,7 @@ impl Default for FieldProps {
         Self {
             accessibility_label: None,
             label: Reactive::Static(None),
+            label_hint: Reactive::Static(None),
             value: runtime_core::signal(String::new()),
             on_change: Rc::new(|_| {}),
             placeholder: Reactive::Static(None),
@@ -794,7 +803,7 @@ pub fn Field(props: &FieldProps) -> Element {
     };
 
     let label_node =
-        crate::components::optional_reactive_text(props.label.clone(), FieldLabel());
+        crate::components::field_label_line(props.label.clone(), props.label_hint.clone());
 
     // error wins over help. Combine into one `Reactive<Option<String>>`,
     // staying `Static` when both inputs are (no Effect, and no empty
@@ -1043,6 +1052,56 @@ mod tests {
     use idea_theme::theme::install_idea_theme;
     use idea_theme::theme::light_theme;
     use runtime_core::resolve_style;
+
+    /// The Field group's first child: its label line.
+    fn label_line(field: Element) -> Element {
+        let P::View { mut children, .. } = classify(field) else {
+            panic!("a Field is a group View");
+        };
+        children.remove(0)
+    }
+
+    fn text_of(el: Element) -> (Option<String>, Option<std::rc::Rc<runtime_core::StyleRules>>) {
+        match classify(el) {
+            P::Text { text, style, .. } => (text, style.map(|s| s.resolve())),
+            other => panic!("expected a text node, got {}", match other {
+                P::View { .. } => "view", P::Fragment { .. } => "fragment", P::Other(k) => k, P::TextInput { .. } => "text_input", P::Pressable { .. } => "pressable", P::Icon { .. } => "icon", _ => "other" }),
+        }
+    }
+
+    /// `label_hint` draws a muted note beside the label ("Full name
+    /// Optional"): the label line becomes a row of [label, hint], the hint
+    /// in the theme's muted color. Without it the label stays a bare text.
+    #[test]
+    fn label_hint_draws_a_muted_note_beside_the_label() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let field = Field(&FieldProps {
+                label: Reactive::Static(Some("Full name".into())),
+                label_hint: Reactive::Static(Some("Optional".into())),
+                ..Default::default()
+            });
+            let P::View { mut children, .. } = classify(label_line(field)) else {
+                panic!("a hinted label is a row View");
+            };
+            assert_eq!(children.len(), 2, "[label, hint]");
+            let (hint, hint_rules) = text_of(children.remove(1));
+            let (label, label_rules) = text_of(children.remove(0));
+            assert_eq!(label.as_deref(), Some("Full name"));
+            assert_eq!(hint.as_deref(), Some("Optional"));
+            let color = |r: Option<std::rc::Rc<runtime_core::StyleRules>>| {
+                r.and_then(|r| r.color.clone()).map(|c| c.resolve())
+            };
+            assert_eq!(color(hint_rules), Some(idea_theme::tokens().color.text_muted().resolve()));
+            assert_ne!(color(label_rules), Some(idea_theme::tokens().color.text_muted().resolve()));
+
+            let plain = Field(&FieldProps {
+                label: Reactive::Static(Some("Meters".into())),
+                ..Default::default()
+            });
+            assert_eq!(text_of(label_line(plain)).0.as_deref(), Some("Meters"), "no hint, bare label");
+        });
+    }
 
     /// User-reported `--premint-only` panic: FOCUSING any text input.
     /// The input's style closure re-evaluates with `focused = true`, and

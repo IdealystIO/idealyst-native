@@ -16,7 +16,7 @@ use idea_ui::{
     date::{format_date, format_datetime, format_time},
     tone, Adornment, Autocomplete, Button, Calendar, Checkbox, CivilDate, CivilDateTime, CivilTime,
     ControlSize, DateInput, DatePicker, DateRangePicker, DateTimeInput, DateTimePicker, Field,
-    FieldSize, Icon, RadioGroup, RadioOption, RangeCalendar, SegmentOption, SegmentedControl,
+    FieldAppearance, FieldSize, Icon, RadioGroup, RadioOption, RangeCalendar, SegmentOption, SegmentedControl,
     Select, SelectOption, Slider, Stack, StackGap, Switch, Textarea, TimeInput, Typography,
     Weekday,
 };
@@ -376,6 +376,15 @@ pub fn field() -> Element {
     let query = signal(String::new());
     let on_query: Rc<dyn Fn(String)> = Rc::new(move |s| query.set(s));
 
+    let full_name = signal(String::new());
+    let on_full_name: Rc<dyn Fn(String)> = Rc::new(move |s| full_name.set(s));
+    let meters = signal("4.2".to_string());
+    let on_meters: Rc<dyn Fn(String)> = Rc::new(move |s| meters.set(s));
+    let outlined = signal(String::new());
+    let on_outlined: Rc<dyn Fn(String)> = Rc::new(move |s| outlined.set(s));
+    let bare = signal(String::new());
+    let on_bare: Rc<dyn Fn(String)> = Rc::new(move |s| bare.set(s));
+
     // Size demo — one shared value across the three densities.
     let sized = signal(String::new());
     let on_sized: Rc<dyn Fn(String)> = Rc::new(move |s| sized.set(s));
@@ -505,6 +514,42 @@ ui! {
 )"##.to_string())
         }
     }, ui! {
+        Section(title = "Variants".to_string()) {
+            P(content = "`variant` picks the input's shell: `FieldAppearance::Outline` (the \
+                default, bordered), `Contained` (filled with the surface-alt color, no \
+                border — focus draws the ring) or `Bare` (no chrome, for a field inside \
+                another container). `label_hint` puts a short muted note beside the label, \
+                such as \"Optional\".".to_string())
+            DemoSurface {
+                Field(
+                    label = Some("Full name".to_string()),
+                    label_hint = Some("Optional".to_string()),
+                    value = full_name,
+                    on_change = on_full_name,
+                    placeholder = Some("Jordan Smith".to_string()),
+                    variant = FieldAppearance::Contained,
+                    size = FieldSize::Lg,
+                )
+                Field(
+                    label = Some("Meters".to_string()),
+                    value = meters,
+                    on_change = on_meters,
+                    variant = FieldAppearance::Contained,
+                    size = FieldSize::Lg,
+                )
+                Field(label = Some("Outline".to_string()), value = outlined, on_change = on_outlined, placeholder = Some("The default".to_string()))
+                Field(label = Some("Bare".to_string()), value = bare, on_change = on_bare, placeholder = Some("No chrome".to_string()), variant = FieldAppearance::Bare)
+            }
+            CodePanel(src = r##"Field(
+    label = Some("Full name".to_string()),
+    label_hint = Some("Optional".to_string()),
+    value = name,
+    on_change = on_name,
+    placeholder = Some("Jordan Smith".to_string()),
+    variant = FieldAppearance::Contained,
+)"##.to_string())
+        }
+    }, ui! {
         Section(title = "Sizes".to_string()) {
             P(content = "`size = FieldSize::Sm | Md | Lg` scales padding + font; a leading \
                 `Adornment::Icon` auto-sizes to match.".to_string())
@@ -585,6 +630,7 @@ ui! {
                 Prop { name: "value",       ty: "Signal<String>",           desc: "Controlled input value." },
                 Prop { name: "on_change",   ty: "Rc<dyn Fn(String)>",        desc: "Fires on every keystroke." },
                 Prop { name: "placeholder", ty: "Option<String>",            desc: "Hint text shown when value is empty." },
+                Prop { name: "label_hint",  ty: "Reactive<Option<String>>",  desc: "Short muted note beside the label — \"Optional\", \"Required\"." },
                 Prop { name: "help",        ty: "Reactive<Option<String>>",  desc: "Helper text below the input." },
                 Prop { name: "error",       ty: "Reactive<Option<String>>",  desc: "Error text below the input. Takes precedence over help; auto-applies the Danger tone." },
                 Prop { name: "tone",        ty: "Option<ToneRef>",           desc: "Optional border + help-text color overlay." },
@@ -662,6 +708,7 @@ pub fn textarea() -> Element {
                 Prop { name: "value",       ty: "Signal<String>",           desc: "Controlled input value." },
                 Prop { name: "on_change",   ty: "Rc<dyn Fn(String)>",        desc: "Fires on every keystroke." },
                 Prop { name: "placeholder", ty: "Option<String>",            desc: "Hint text shown when value is empty." },
+                Prop { name: "label_hint",  ty: "Reactive<Option<String>>",  desc: "Short muted note beside the label — \"Optional\", \"Required\"." },
                 Prop { name: "help",        ty: "Reactive<Option<String>>",  desc: "Helper text below the input." },
                 Prop { name: "error",       ty: "Reactive<Option<String>>",  desc: "Error text; takes precedence over help and auto-applies the Danger tone." },
                 Prop { name: "tone",        ty: "Option<ToneRef>",           desc: "Optional border + help-text color overlay." },

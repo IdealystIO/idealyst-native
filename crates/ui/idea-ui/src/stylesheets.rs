@@ -561,6 +561,28 @@ stylesheet! {
     }
 }
 
+// A field's label with its `label_hint` beside it ("Full name  Optional").
+// The hint is the help-text treatment — muted color, label size, regular
+// weight — so it reads as a note on the label rather than part of it.
+stylesheet! {
+    pub FieldLabelRow<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: runtime_core::AlignItems::Baseline,
+            gap: t.spacing.xs(),
+        }
+    }
+}
+
+stylesheet! {
+    pub FieldLabelHint<IdeaThemeRef> {
+        base(t) {
+            color: t.color.text_muted(),
+            font_size: t.typography.body_sm_size(),
+        }
+    }
+}
+
 stylesheet! {
     pub FieldHelp<IdeaThemeRef> {
         base(t) {

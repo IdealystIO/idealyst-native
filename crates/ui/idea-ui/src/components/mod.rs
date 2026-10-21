@@ -74,6 +74,26 @@ pub(crate) fn hug_self() -> StyleRules {
 /// `ui!`/`jsx!` dispatch's per-field `.into()` (blanket
 /// `From<Option<String>>`), and a `Signal<Option<String>>` /
 /// `rx!(Some(...))` arrives `Dynamic`.
+/// A form field's label line: the label alone, or — when `hint` is set —
+/// the label followed by its muted `label_hint` ("Full name  Optional").
+/// Shared by `Field` and `Textarea`. `None` when neither is set.
+pub(crate) fn field_label_line(
+    label: Reactive<Option<String>>,
+    hint: Reactive<Option<String>>,
+) -> Option<Element> {
+    let label = optional_reactive_text(label, crate::stylesheets::FieldLabel());
+    let Some(hint) = optional_reactive_text(hint, crate::stylesheets::FieldLabelHint()) else {
+        return label;
+    };
+    // `label` is an `Option<Element>` — an absent one splats to nothing.
+    Some(runtime_core::ui! {
+        view(style = crate::stylesheets::FieldLabelRow()) {
+            label
+            hint
+        }
+    })
+}
+
 pub(crate) fn optional_reactive_text(
     content: Reactive<Option<String>>,
     style: impl IntoStyleSource,
