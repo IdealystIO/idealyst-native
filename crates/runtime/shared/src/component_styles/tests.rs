@@ -358,21 +358,18 @@ fn invalidate_all_recomposes_with_what_extend_hooks_now_read() {
 }
 
 #[test]
-fn slot_override_sheets_resolve_against_the_slot_selection() {
-    let sheet = Rc::new(
-        StyleSheet::new(|_| StyleRules { color: bg("green"), ..Default::default() })
-            .variant("selected", "on", |_| StyleRules { background: bg("on"), ..Default::default() })
-            .variant("selected", "off", |_| StyleRules::default())
-            .variant_default("selected", "off"),
-    );
-    let o = SlotOverride::from(sheet);
-    assert!(o.is_sheet());
-    let off = o.resolve(&VariantSet::new());
-    assert_eq!(off.color.as_ref().unwrap().value().0, "green");
-    assert!(off.background.is_none());
-    assert_eq!(bg_of(&o.resolve(&VariantSet::new().with("selected", "on"))), "on");
+fn slot_override_arms_resolve_against_the_slot_selection() {
+    let o = SlotOverride::from(StyleRules { color: bg("green"), ..Default::default() })
+        .arm(CardTone::Loud, StyleRules { background: bg("on"), ..Default::default() });
+    assert!(o.has_arms());
+    let quiet = o.resolve(&VariantSet::new());
+    assert_eq!(quiet.color.as_ref().unwrap().value().0, "green");
+    assert!(quiet.background.is_none(), "an arm applies only while its value is selected");
+    let loud = o.resolve(&VariantSet::new().with("tone", "loud"));
+    assert_eq!(bg_of(&loud), "on");
+    assert_eq!(loud.color.as_ref().unwrap().value().0, "green", "the arm merges over the base");
     let fixed = SlotOverride::from(StyleRules { background: bg("x"), ..Default::default() });
-    assert_eq!(bg_of(&fixed.resolve(&VariantSet::new().with("selected", "on"))), "x");
+    assert_eq!(bg_of(&fixed.resolve(&VariantSet::new().with("tone", "loud"))), "x");
 }
 
 #[test]

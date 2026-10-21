@@ -11,44 +11,16 @@
 use std::rc::Rc;
 
 use icons_lucide::{CHECK, EYE, EYE_OFF, HEART, LAYOUT_GRID, LIST, MAP, SEARCH, STAR};
-use runtime_core::{pressable, rx, signal, stylesheet, ui, Element, IntoElement, Signal, StyleRules};
+use runtime_core::{pressable, rx, signal, ui, Element, IntoElement, SlotOverride, Signal, StyleRules};
 use idea_ui::{
     date::{format_date, format_datetime, format_time},
     tone, Adornment, Autocomplete, Button, Calendar, Checkbox, CivilDate, CivilDateTime, CivilTime,
     ControlSize, DateInput, DatePicker, DateRangePicker, DateTimeInput, DateTimePicker, Field,
     FieldAppearance, FieldSize, FieldSlotStyles, Icon, RadioGroup, RadioOption, RangeCalendar, SegmentOption, SegmentedControl,
-    SegmentedControlSlotStyles, Select, SelectOption, Slider, Stack, StackGap, Switch, Textarea, TimeInput,
+    SegmentedControlSelected, SegmentedControlSlotStyles, Select, SelectOption, Slider, Stack, StackGap, Switch, Textarea, TimeInput,
     Typography, Weekday,
 };
-use idea_ui::theme::IdeaThemeRef;
-
 use crate::restyles::PILL;
-
-stylesheet! {
-    /// The restyled demo's segment: primary-filled when selected.
-    InkSegment<IdeaThemeRef> {
-        base(_t) {}
-        variant selected {
-            #[default]
-            off(_t) {}
-            on(t) { background: t.intent.primary.solid_bg() }
-        }
-    }
-}
-
-stylesheet! {
-    /// The restyled demo's label: light on the ink track, the primary
-    /// fill's text color when selected.
-    InkSegmentLabel<IdeaThemeRef> {
-        base(t) { color: t.color.surface() }
-        variant selected {
-            #[default]
-            off(_t) {}
-            on(t) { color: t.intent.primary.solid_text() }
-        }
-    }
-}
-
 use crate::pages::body;
 use crate::shell::{Callout, CodePanel, Demo, DemoSurface, Prop, PropsTable, Section, H3, P};
 
@@ -1019,10 +991,17 @@ pub fn segmented_control() -> Element {
     // segment, and labels that read on both.
     let roster = signal("day".to_string());
     let on_roster: Rc<dyn Fn(String)> = Rc::new(move |v| roster.set(v));
+    let t = idea_ui::tokens();
     let ink = SegmentedControlSlotStyles::default()
-        .track(StyleRules { background: Some(idea_ui::tokens().color.text()), ..Default::default() })
-        .segment(InkSegment::sheet())
-        .label(InkSegmentLabel::sheet());
+        .track(StyleRules { background: Some(t.color.text()), ..Default::default() })
+        .segment(SlotOverride::from(StyleRules::default()).arm(
+            SegmentedControlSelected::On,
+            StyleRules { background: Some(t.intent.primary.solid_bg()), ..Default::default() },
+        ))
+        .label(SlotOverride::from(StyleRules { color: Some(t.color.surface()), ..Default::default() }).arm(
+            SegmentedControlSelected::On,
+            StyleRules { color: Some(t.intent.primary.solid_text()), ..Default::default() },
+        ));
 
     let current = ui! {
         Typography(
@@ -1139,8 +1118,7 @@ ui! {
         Section(title = "Restyling".to_string()) {
             P(content = "Every styled section is a slot of `SegmentedControlStyles`: `track`, \
                 `segment`, `inner`, `label` and `adornment`. The `styles` prop overrides slots on \
-                one control — plain rules, or a sheet whose `selected` arms resolve against the \
-                segment's own selection. To restyle every SegmentedControl in the app, restyle \
+                one control — plain rules, with `arm`s that apply only to the selected segment. To restyle every SegmentedControl in the app, restyle \
                 the slots once at boot; the restyle composes into the slot sheets (they still \
                 premint), and a `styles` prop on one control still wins over it.".to_string())
             DemoSurface {
@@ -1155,36 +1133,22 @@ ui! {
                     styles = ink,
                 )
             }
-            CodePanel(src = r##"stylesheet! {
-    InkSegment<IdeaThemeRef> {
-        base(_t) {}
-        variant selected {
-            #[default]
-            off(_t) {}
-            on(t) { background: t.intent.primary.solid_bg() }
-        }
-    }
-}
-stylesheet! {
-    InkSegmentLabel<IdeaThemeRef> {
-        base(t) { color: t.color.surface() }
-        variant selected {
-            #[default]
-            off(_t) {}
-            on(t) { color: t.intent.primary.solid_text() }
-        }
-    }
-}
-
+            CodePanel(src = r##"let t = idea_ui::tokens();
 // One control:
 SegmentedControl(
     value = roster,
     on_change = on_change,
     options = vec![SegmentOption::new("day", "Day"), SegmentOption::new("night", "Night")],
     styles = SegmentedControlSlotStyles::default()
-        .track(StyleRules { background: Some(tokens().color.text()), ..Default::default() })
-        .segment(InkSegment::sheet())
-        .label(InkSegmentLabel::sheet()),
+        .track(StyleRules { background: Some(t.color.text()), ..Default::default() })
+        .segment(SlotOverride::from(StyleRules::default()).arm(
+            SegmentedControlSelected::On,
+            StyleRules { background: Some(t.intent.primary.solid_bg()), ..Default::default() },
+        ))
+        .label(SlotOverride::from(StyleRules { color: Some(t.color.surface()), ..Default::default() }).arm(
+            SegmentedControlSelected::On,
+            StyleRules { color: Some(t.intent.primary.solid_text()), ..Default::default() },
+        )),
 )
 
 // Or every SegmentedControl in the app, once at boot:

@@ -88,3 +88,72 @@ fn snap_collapsible_also_mounts_directly() {
     harness.flush();
     drop(realized);
 }
+
+/// Regression: the measured body's padding and border must sit INSIDE the
+/// measured node, so the animated max-height covers them whatever their
+/// value. The body read its chrome back by resolving its own style in
+/// Rust, which a `--premint-only` bundle cannot do (it panicked on the
+/// first Collapsible); a fixed constant instead clips a restyled body.
+/// The structure that needs neither: clip > unpadded measured column >
+/// padded body. Pinned on the applied styles: the padded node's parent
+/// carries no padding, and its grandparent is the clip.
+#[test]
+fn regression_measured_body_padding_sits_inside_the_measured_node() {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use runtime_core::{Overflow, StyleRules};
+
+    let harness = host_mock::Harness::new();
+    let styles: Rc<RefCell<HashMap<u32, StyleRules>>> = Rc::default();
+    {
+        let styles = styles.clone();
+        harness.set_style_line(move |n, rules| {
+            styles.borrow_mut().insert(n, rules.clone());
+            format!("apply_style n{n}")
+        });
+    }
+    let tree = harness.world.enter(|| {
+        idea_ui::install_idea_theme(idea_ui::light_theme());
+        let open = signal(true);
+        ui! {
+            Collapsible(
+                title = "Advanced settings".to_string(),
+                value = open,
+                on_change = Rc::new(move |v: bool| open.set(v)) as Rc<dyn Fn(bool)>,
+            ) {
+                text("body")
+            }
+        }
+    });
+    let _realized = harness.mount(tree);
+    harness.flush();
+
+    let styles = styles.borrow();
+    let padded_body = styles
+        .iter()
+        .find(|(_, r)| r.padding_top.is_some() && r.border_top_width.is_some() && r.opacity.is_some())
+        .map(|(n, _)| *n)
+        .expect("the measured body applies its padded, bordered, fading style");
+    let parent_of = |node: u32| -> u32 {
+        fn walk(h: &host_mock::Harness, at: u32, target: u32) -> Option<u32> {
+            let kids = h.children_of(at);
+            if kids.contains(&target) {
+                return Some(at);
+            }
+            kids.into_iter().find_map(|k| walk(h, k, target))
+        }
+        harness.live_roots().into_iter().find_map(|r| walk(&harness, r, node)).expect("a parent")
+    };
+    let measured = parent_of(padded_body);
+    let measured_rules = styles.get(&measured).cloned().unwrap_or_default();
+    assert!(
+        measured_rules.padding_top.is_none() && measured_rules.border_top_width.is_none(),
+        "the measured node carries no chrome of its own, so its height is the body's whole box"
+    );
+    let clip = parent_of(measured);
+    assert_eq!(
+        styles.get(&clip).and_then(|r| r.overflow),
+        Some(Overflow::Hidden),
+        "the clip that the max-height animates wraps the measured node"
+    );
+}

@@ -560,7 +560,7 @@ mod tests {
     use crate::test_support::{classify, P};
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, StyleApplication, StyleRules, StyleSheet, Tokenized};
+    use runtime_core::{resolve_style, StyleApplication, StyleRules, Tokenized};
 
     fn mount(props: SegmentedControlProps) -> (Rc<StyleRules>, Vec<Element>) {
         match classify(SegmentedControl(props)) {
@@ -641,8 +641,8 @@ mod tests {
     }
 
     /// The `styles` prop overrides one control's slots and wins over an
-    /// app-wide restyle; a SHEET override follows the slot's selection, so
-    /// it can style only the selected segment.
+    /// app-wide restyle; an override's `arm` follows the slot's selection,
+    /// so it can style only the selected segment.
     #[test]
     fn styles_prop_overrides_one_control_over_the_restyle() {
         with_test_world(|| {
@@ -651,11 +651,8 @@ mod tests {
             SegmentedControlStyles::restyle(|s| {
                 s.track().base(|_| StyleRules { background: lit("#111111"), ..Default::default() });
             });
-            let selected_only = Rc::new(
-                StyleSheet::new(|_| StyleRules::default())
-                    .variant("selected", "on", |_| StyleRules { background: lit("#444444"), ..Default::default() })
-                    .variant("selected", "off", |_| StyleRules::default()),
-            );
+            let selected_only = runtime_core::SlotOverride::from(StyleRules::default())
+                .arm(SegmentedControlSelected::On, StyleRules { background: lit("#444444"), ..Default::default() });
             let (track, mut segs) = mount(SegmentedControlProps {
                 styles: SegmentedControlSlotStyles::default()
                     .track(StyleRules { background: lit("#333333"), ..Default::default() })
@@ -666,7 +663,7 @@ mod tests {
             let (off, _) = seg_parts(segs.remove(1));
             let (on, _) = seg_parts(segs.remove(0));
             assert_eq!(bg(&on), hex("#444444"));
-            assert_ne!(bg(&off), hex("#444444"), "a sheet override follows the segment's selection");
+            assert_ne!(bg(&off), hex("#444444"), "an override arm follows the segment's selection");
             reset();
         });
     }

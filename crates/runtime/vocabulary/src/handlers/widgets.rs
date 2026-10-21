@@ -538,10 +538,14 @@ where
     };
     #[cfg(not(feature = "robot"))]
     let on_focus = prim.on_focus;
+    // Guarded like the other callbacks: removing a focused input fires its
+    // blur DURING the teardown that frees the scope (the web does this
+    // synchronously on DOM removal), and the author's handler writes that
+    // scope's signals.
     if let Some(on_focus) = on_focus {
         backend
             .borrow_mut()
-            .set_text_input_focus_handler(&node, on_focus);
+            .set_text_input_focus_handler(&node, alive.wrap1(on_focus));
     }
     {
         let b = backend.clone();

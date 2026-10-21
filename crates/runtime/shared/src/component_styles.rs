@@ -664,63 +664,72 @@ pub fn slot_names<S: ComponentStyles>() -> Vec<&'static str> {
 /// so it wins over every class layer, keeps the slot premintable, and needs
 /// no class of its own.
 ///
-/// Two forms: plain rules, or a sheet resolved against the slot's CURRENT
-/// variant selection — so one override can differ per axis value (a sheet
-/// with `variant selected { on(_t) { … } }` styles only the selected
-/// segment of a segmented control).
-#[derive(Clone)]
-pub enum SlotOverride {
-    /// Fixed rules.
-    Rules(Rc<StyleRules>),
-    /// A sheet resolved with the slot application's variant set.
-    Sheet(Rc<StyleSheet>),
+/// Plain rules, optionally with per-value arms matched against the slot's
+/// CURRENT axis selection — so one override can differ per axis value:
+///
+/// ```ignore
+/// SegmentedControlSlotStyles::default().segment(
+///     SlotOverride::from(StyleRules { … })
+///         .arm(SegmentedControlSelected::On, StyleRules { background: …, ..Default::default() }),
+/// )
+/// ```
+///
+/// Data, not a sheet: it resolves in Rust at apply time, so it must not
+/// depend on rule closures — a `--premint-only` bundle compiles every
+/// sheet's closures out, and an override that resolved one would panic.
+#[derive(Clone, Default)]
+pub struct SlotOverride {
+    base: Rc<StyleRules>,
+    /// `(axis, value, rules)`, merged over the base in insertion order when
+    /// the slot's application selects `axis = value`.
+    arms: Vec<(&'static str, &'static str, Rc<StyleRules>)>,
 }
 
 impl SlotOverride {
-    /// The override's rules for a slot application selecting `variants`.
-    pub fn resolve(&self, variants: &VariantSet) -> Rc<StyleRules> {
-        match self {
-            SlotOverride::Rules(r) => r.clone(),
-            SlotOverride::Sheet(s) => Rc::new(s.resolve(variants)),
-        }
+    /// Add rules that apply only while the slot selects `value` on its axis.
+    pub fn arm<A: AxisKey>(mut self, value: A, rules: StyleRules) -> Self {
+        self.arms.push((A::AXIS, value.as_variant_str(), Rc::new(rules)));
+        self
     }
 
-    /// Whether the override varies with the slot's variant selection.
-    pub fn is_sheet(&self) -> bool {
-        matches!(self, SlotOverride::Sheet(_))
+    /// The override's rules for a slot application selecting `variants`.
+    pub fn resolve(&self, variants: &VariantSet) -> Rc<StyleRules> {
+        let mut matching = self
+            .arms
+            .iter()
+            .filter(|(axis, value, _)| variants.0.get(*axis).is_some_and(|v| v == value))
+            .peekable();
+        if matching.peek().is_none() {
+            return self.base.clone();
+        }
+        let mut rules = (*self.base).clone();
+        for (_, _, arm) in matching {
+            rules = rules.merge(arm);
+        }
+        Rc::new(rules)
+    }
+
+    /// Whether the override varies with the slot's axis selection.
+    pub fn has_arms(&self) -> bool {
+        !self.arms.is_empty()
     }
 }
 
 impl std::fmt::Debug for SlotOverride {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SlotOverride::Rules(r) => f.debug_tuple("Rules").field(r).finish(),
-            SlotOverride::Sheet(_) => f.write_str("Sheet(..)"),
-        }
+        f.debug_struct("SlotOverride").field("base", &self.base).field("arms", &self.arms.len()).finish()
     }
 }
 
 impl From<StyleRules> for SlotOverride {
     fn from(r: StyleRules) -> Self {
-        SlotOverride::Rules(Rc::new(r))
+        SlotOverride { base: Rc::new(r), arms: Vec::new() }
     }
 }
 
 impl From<Rc<StyleRules>> for SlotOverride {
     fn from(r: Rc<StyleRules>) -> Self {
-        SlotOverride::Rules(r)
-    }
-}
-
-impl From<Rc<StyleSheet>> for SlotOverride {
-    fn from(s: Rc<StyleSheet>) -> Self {
-        SlotOverride::Sheet(s)
-    }
-}
-
-impl From<StyleSheet> for SlotOverride {
-    fn from(s: StyleSheet) -> Self {
-        SlotOverride::Sheet(Rc::new(s))
+        SlotOverride { base: r, arms: Vec::new() }
     }
 }
 

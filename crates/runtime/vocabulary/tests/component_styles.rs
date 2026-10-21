@@ -155,18 +155,10 @@ fn per_instance_overrides_layer_last_over_restyles_and_states() {
     // The override is the INLINE layer: the application stays premintable.
     assert!(app.inline().is_some());
     assert!(app.preminted_class_list().is_some(), "an override does not knock the slot off premint");
-    // A sheet works as an override too.
-    let sheet = Rc::new(StyleSheet::r#static(StyleRules { padding_top: Some(9.0.into()), ..Default::default() }));
-    let o = SegSlotStyles::default().track(sheet);
-    let app = app_of(SegStyles::track().overridden(o.track.as_ref()).into_style_prop());
-    assert_eq!(pad(&runtime_vocabulary::glue::resolve_style(&app)), 9.0);
-    // A sheet override follows the slot's selection: only the selected
-    // segment takes this one's background.
-    let per_state = Rc::new(
-        StyleSheet::new(|_| StyleRules::default())
-            .variant("selected", "on", |_| StyleRules { background: Some(Tokenized::Literal(Color("picked".into()))), ..Default::default() })
-            .variant("selected", "off", |_| StyleRules::default()),
-    );
+    // An override with an arm follows the slot's selection: only the
+    // selected segment takes this one's background.
+    let per_state = cs::SlotOverride::from(StyleRules::default())
+        .arm(SegSelected::On, StyleRules { background: Some(Tokenized::Literal(Color("picked".into()))), ..Default::default() });
     let o = SegSlotStyles::default().segment(per_state);
     let on = app_of(SegStyles::segment().set(SegSelected::On).overridden(o.segment.as_ref()).into_style_prop());
     let off = app_of(SegStyles::segment().set(SegSelected::Off).overridden(o.segment.as_ref()).into_style_prop());

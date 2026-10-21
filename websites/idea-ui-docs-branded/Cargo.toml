@@ -1,0 +1,49 @@
+# The idea-ui docs app under a second design language — "Ink" — installed
+# purely through component-style restyles at boot (`src/brand.rs`). Every
+# page, route and component is idea-ui-docs's own; only the boot hook
+# differs. It is the worked example the design-systems guide links for
+# "how to brand idea-ui".
+#
+# Run with: `idealyst dev --web --local -p idea-ui-docs-branded`
+[package]
+name = "idea-ui-docs-branded"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "idea-ui-docs under an alternate design language installed through component restyles"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Forwarded to idea-ui-docs so the CLI-generated wrappers' feature
+# switches reach the app they mount (see idea-ui-docs's manifest for what
+# each one does).
+runtime-server = ["idea-ui-docs/runtime-server"]
+sidecar = ["idea-ui-docs/sidecar"]
+terminal = ["idea-ui-docs/terminal"]
+
+[dependencies]
+# The app this build brands. Default features off for the same reason as
+# the GPU host: the `debug-stats` instrumentation is a graph-wide switch.
+idea-ui-docs = { workspace = true }
+# The platform surface for `src/main.rs`.
+idealyst = { workspace = true }
+# The restyle surface the brand installs through.
+idea-ui = { workspace = true }
+idea-theme = { workspace = true }
+runtime-core = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+
+[dev-dependencies]
+idea-theme = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "idea-ui Docs (Ink)"
+bundle_id = "io.idealyst.idea_ui_docs_branded"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]
+
+[package.metadata.idealyst.app.splash]
+duration_ms = 0

@@ -134,7 +134,7 @@ impl Default for TooltipProps {
 /// where it would without a Tooltip.
 ///
 /// - No `align_self`: the wrapper follows the parent's `align_items` like
-///   the bare trigger would. Not `hug_self()` (`align_self: Center`): that
+///   the bare trigger would. Not `align_self: Center` (what the pills hug with): that
 ///   overrides the parent, so a Tooltip centred its trigger in a column
 ///   and `Stack(align = Start)` could not pull it back.
 /// - `justify_content: Center`: in a row the parent's default stretch

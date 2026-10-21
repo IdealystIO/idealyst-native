@@ -9,7 +9,7 @@
 use runtime_core::component_styles::ComponentStyles;
 use runtime_core::{AxisValues, Reactive, SlotRestyle, StyleRules, Tokenized};
 
-use idea_theme::extensible::{tone_variant_arms, with_idea_theme, ResolutionCtx, Tone, ToneRef};
+use idea_theme::extensible::{tone_variant_arms, with_idea_theme, ResolutionCtx, ToneRef};
 
 use crate::modifiers::variant;
 

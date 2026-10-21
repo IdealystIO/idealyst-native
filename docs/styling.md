@@ -186,6 +186,75 @@ changes, with no additional ceremony.
 
 ---
 
+## Component styles: `component_styles!`
+
+A component library declares each component's styled sections once:
+
+```rust
+component_styles! {
+    /// The styled sections of [`Field`].
+    pub Field<IdeaThemeRef> {
+        axis appearance { #[default] outline, contained, bare }
+        slot input {
+            extend(input_tone_arms)          // optional: computed arms
+            base(t) { border_radius: t.radius.md() }
+            variant appearance { outline(_t) {} contained(t) { background: t.color.surface_alt() } bare(_t) {} }
+            state focused(t) { border_color: t.color.focus_ring() }
+        }
+        slot label { base(t) { color: t.color.text() } }
+    }
+}
+```
+
+Each `slot` body is the `stylesheet!` grammar (no `override` lines). The
+macro generates `FieldStyles` (the registry key, implementing
+`ComponentStyles`), one key newtype per axis (`FieldAppearance`, with an
+associated const per value and a `const fn define(&'static str)` that
+rejects a non-class-safe key at compile time), `FieldRestyle`, and
+`FieldSlotStyles` (per-instance overrides, added to a props struct by
+`#[props(styles = FieldStyles)]`).
+
+**Composition.** `FieldStyles::input()` returns a `SlotStyle` over the
+slot's *composed* sheet, cached per component in a thread-local registry
+keyed by the styles type's `TypeId` (two libraries can both ship a
+"Field" without colliding). Composing a slot runs, in order: the
+declaration, the slot's `extend` hook, every app restyle in registration
+order (a re-registration from the same call site replaces its entry), the
+component-level axis defaults for axes a slot only meets through a
+compound leg, and app axis defaults (`set_default`). Within the sheet,
+resolution is the stylesheet's: base, axis arms in axis-name order,
+states, then compounds — compounds outrank states.
+
+**Premint.** An unrestyled slot premints under the class the macro hashed
+from its declaration. A restyled one premints under a deterministic
+identity — the declaration's class plus a descriptor of each layer (its
+target — base, an axis value or a compound — and the content key of the
+rules it produced) — so
+the same restyle yields the same class in the dump build and in the
+shipped bundle. Under `--cfg idealyst_premint_dump` every linked
+component registers a composition hook in `PREMINT_COMPONENT_STYLES`;
+`premint::assembled_sheets()` runs them after `app()`, so a component no
+crawled route rendered still ships its CSS.
+
+**Restyle timing.** Restyles belong at boot. A restyle registered after
+one of the component's slots was handed to an element recomposes for new
+elements only, and debug builds warn once naming the component. Theme
+installs and swaps do not touch the registry (`invalidate_all` recomposes
+every component when a registered tone set changes).
+
+**Per-instance overrides.** `SlotStyle::overridden(Option<&SlotOverride>)`
+layers plain rules — plus optional per-value arms matched against the
+slot's current variant set — as the application's inline layer: it wins
+over every class layer and keeps the application premintable. It is data,
+not a sheet, because it resolves in Rust at apply time and a
+`--premint-only` bundle has no rule closures to call.
+
+**Unknown values.** Selecting an axis value no slot styles (an app value
+with no restyle arm) renders the base; debug builds warn once
+(`check_axis_value`).
+
+---
+
 ## Style tokens
 
 A **style token** is a named value that stylesheets read by name —
@@ -454,8 +523,8 @@ accessors are the embedding set's too (`t.color.surface()`, through
 sets share, or an embedding-set accessor that would hide one of the
 base's (`pub color: Color` beside a base with a `color` namespace), is a
 compile error. An app that embeds idea's set still calls
-`install_idea_theme` (it installs idea-ui's component sheets and default
-font) — the embedding is what lets both installs write idea's names.
+`install_idea_theme` (it registers the theme's tones and publishes its
+default font) — the embedding is what lets both installs write idea's names.
 
 Three more attributes shape how a struct maps onto tokens:
 

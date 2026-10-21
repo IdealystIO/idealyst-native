@@ -413,6 +413,7 @@ members = [
     "websites/docs-macro",
     "websites/idea-ui-docs",
     "websites/idea-ui-docs-gpu",
+    "websites/idea-ui-docs-branded",
     "websites/tutorial",
     "websites/website",
 
@@ -755,6 +756,7 @@ file-picker-demo = { path = "crates/sdk/client/file-picker/examples/file-picker-
 graphql-demo = { path = "crates/sdk/client/graphql/examples/graphql-demo", version = "1.5.2", registry = "idealyst" }
 i18n-demo = { path = "crates/sdk/client/i18n/examples/i18n-demo", version = "1.5.2", registry = "idealyst" }
 idea-ui-docs-gpu = { path = "websites/idea-ui-docs-gpu", version = "1.5.17", registry = "idealyst" }
+idea-ui-docs-branded = { path = "websites/idea-ui-docs-branded", version = "0.1.0", registry = "idealyst" }
 idea-ui-docs-gtk = { path = "crates/host/gtk/examples/idea-ui-docs-gtk", version = "1.5.16", registry = "idealyst" }
 idealyst-macros = { path = "crates/idealyst-macros", version = "1.5.2", registry = "idealyst" }
 jobs-demo = { path = "crates/sdk/server/jobs/examples/jobs-demo", version = "1.5.2", registry = "idealyst" }

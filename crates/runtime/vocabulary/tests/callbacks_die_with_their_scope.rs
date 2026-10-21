@@ -197,6 +197,7 @@ fn regression_scroll_toggle_and_input_callbacks_go_inert_after_unmount() {
         let hs = hits_for_build.clone();
         let ht = hits_for_build.clone();
         let hi = hits_for_build.clone();
+        let hf = hits_for_build.clone();
         view()
             .children(vec![
                 scroll_view()
@@ -216,6 +217,13 @@ fn regression_scroll_toggle_and_input_callbacks_go_inert_after_unmount() {
                         hi.borrow_mut().push("input");
                         inner.set(inner.get() + 1);
                     })
+                    // A focused input removed by a route change blurs
+                    // during the teardown (web: synchronously on DOM
+                    // removal), so its focus handler runs after the scope.
+                    .on_focus(move |_f| {
+                        hf.borrow_mut().push("focus");
+                        inner.set(inner.get() + 1);
+                    })
                     .build(),
             ])
             .build()
@@ -225,14 +233,16 @@ fn regression_scroll_toggle_and_input_callbacks_go_inert_after_unmount() {
     let scroll = h.scroll_handler(0).expect("scroll handler retained");
     let toggle_change = h.toggle_change(0);
     let input_change = h.text_input_change(0);
+    let input_focus = h.text_input_focus_handler(0);
 
     scroll(1.0, 2.0);
     toggle_change(true);
     input_change("x".into());
+    input_focus(true);
     h.world.flush();
     assert_eq!(
         *hits.borrow(),
-        ["scroll", "toggle", "input"],
+        ["scroll", "toggle", "input", "focus"],
         "callbacks must work while mounted",
     );
 
@@ -243,6 +253,7 @@ fn regression_scroll_toggle_and_input_callbacks_go_inert_after_unmount() {
     scroll(3.0, 4.0);
     toggle_change(false);
     input_change("y".into());
+    input_focus(false);
     h.world.flush();
     assert!(
         hits.borrow().is_empty(),

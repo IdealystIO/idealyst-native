@@ -333,7 +333,7 @@ pub fn emit(decl: ComponentStylesDecl, content_hash: u64) -> TokenStream2 {
             #[doc = #ov_doc]
             pub #slot_name: ::core::option::Option<::runtime_core::SlotOverride>
         });
-        let set_doc = format!("Set the `{slot_str}` slot's override (a `StyleRules`, or a sheet resolved at its defaults).");
+        let set_doc = format!("Set the `{slot_str}` slot's override (a `StyleRules`, or a `SlotOverride` with per-value arms).");
         override_setters.push(quote! {
             #[doc = #set_doc]
             pub fn #slot_name(mut self, o: impl ::core::convert::Into<::runtime_core::SlotOverride>) -> Self {

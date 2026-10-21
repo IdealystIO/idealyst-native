@@ -265,10 +265,7 @@ pub fn Typography(props: &TypographyProps) -> Element {
         let (tone, muted) = (props.tone.clone(), props.muted.clone());
         let pick = |t: Option<ToneRef>, m: bool| -> &'static str {
             match (t, m) {
-                (Some(t), _) => {
-                    use idea_theme::extensible::Tone;
-                    t.key()
-                }
+                (Some(t), _) => t.key(),
                 (None, true) => "muted",
                 (None, false) => "default",
             }

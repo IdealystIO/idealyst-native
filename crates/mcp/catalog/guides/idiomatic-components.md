@@ -80,7 +80,7 @@ It **skips** shapes that aren't reactive data:
 ### Per-field overrides
 
 - `#[prop(static)]` forces a bare `T` — use it for a genuinely build-time
-  value or a non-`Clone` type (e.g. a slot-override `Option<Rc<StyleSheet>>`).
+  value or a non-`Clone` type.
 - `#[prop(reactive)]` forces the wrap when the heuristic misses (e.g. a
   type alias hiding a data type, or a `Vec` you deliberately want live).
 
@@ -95,7 +95,7 @@ pub struct ButtonProps {
     pub on_click: Rc<dyn Fn()>,            // left alone (handler)
     pub children: Vec<Element>,            // left alone (children)
     #[prop(static)]
-    pub style: Option<Rc<StyleSheet>>,     // stays bare (non-Clone-friendly override)
+    pub icon_px: f32,                      // stays bare (build-time value)
 }
 ```
 
@@ -190,16 +190,16 @@ Because `#[props]` made data fields `Reactive<T>`, a value can be static or
 live. The idiomatic routing keeps the **static fast path** while letting a
 live value re-run in place. Two shapes cover almost everything:
 
-**Style-variant sink** (Divider, Stack) — a static value takes the build-time
-path; a live one is passed through `derived(...)` so the builder emits a
-reactive style source. Reading `.get()` *inside* the closure is what
-subscribes the apply-style effect:
+**Style-axis sink** (Divider, Stack, every idea-ui component) — a component
+declares its styled sections with `component_styles!` (see [[design-systems]])
+and hands a `Reactive` axis value straight to its slot. A static value takes
+the build-time path (and premints); a live one re-resolves the style in place:
 
 ```rust
-let style = match props.axis.clone() {
-    Reactive::Static(axis) => DividerStyle().axis(axis),
-    dynamic => DividerStyle().axis(derived(move || dynamic.get())),
-};
+// `#[props(styles = DividerStyles)]` added `styles: DividerSlotStyles`.
+let style = DividerStyles::root()
+    .set(props.axis.clone())                  // Reactive<DividerAxis>
+    .overridden(props.styles.root.as_ref());  // the per-instance override
 ui! { view(style = style) {} }
 ```
 
@@ -251,7 +251,7 @@ back as-is. Never append `.into_element()` to a `ui!` block: it converts an
 *builder* chained outside the macro (`view(…).on_key_down(…)`).
 
 > Depth note: the reactive **fast-path split** (static vs live, per-node
-> foreground re-resolution, layered `with_computed` style, slot overrides) is
+> foreground re-resolution, inline layers, tone-aware `extend` hooks) is
 > where the hard components earn their length. When you need it, read
 > `button.rs` and `card.rs` in `crates/ui/idea-ui/src/components/` — they're
 > the fully-commented reference. Most components don't need more than the two

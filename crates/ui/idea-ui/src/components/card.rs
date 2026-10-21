@@ -39,7 +39,7 @@ use runtime_core::{
     component, component_styles, ui, ChildList, Element, IdealystSchema, Length, Reactive, StyleRules,
 };
 
-use idea_theme::extensible::{Tone, ToneRef};
+use idea_theme::extensible::ToneRef;
 use idea_theme::theme::IdeaThemeRef;
 
 use crate::modifiers::marker_into_axis;
@@ -235,9 +235,8 @@ mod tests {
     use super::*;
     use crate::test_support::{classify, P, TStyle};
     use idea_theme::active_theme;
-    use idea_theme::extensible::tone;
-    use runtime_core::{Overflow, StyleApplication, StyleSheet, Tokenized};
-    use std::rc::Rc;
+    use idea_theme::extensible::{tone, Tone};
+    use runtime_core::{Overflow, StyleApplication, Tokenized};
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::resolve_style;
@@ -337,10 +336,10 @@ mod tests {
     fn style_override_overflow_clips_to_radius() {
         with_test_world(|| {
             theme();
-            let clip = Rc::new(StyleSheet::r#static(StyleRules {
+            let clip = StyleRules {
                 overflow: Some(Overflow::Hidden),
                 ..Default::default()
-            }));
+            };
             let clipped = CardProps {
                 styles: CardSlotStyles::default().root(clip),
                 ..Default::default()
@@ -367,10 +366,10 @@ mod tests {
     fn style_override_wins_over_variant() {
         with_test_world(|| {
             theme();
-            let ovr = Rc::new(StyleSheet::r#static(StyleRules {
+            let ovr = StyleRules {
                 background: Some(Tokenized::Literal(runtime_core::Color("#123456".into()))),
                 ..Default::default()
-            }));
+            };
             let props = CardProps {
                 styles: CardSlotStyles::default().root(ovr),
                 ..Default::default()
@@ -386,7 +385,7 @@ mod tests {
     });
     }
 
-    fn resolved(variant: CardVariant, style: Option<Rc<StyleSheet>>) -> StyleRules {
+    fn resolved(variant: CardVariant, style: Option<StyleRules>) -> StyleRules {
         let styles = match style {
             Some(s) => CardSlotStyles::default().root(s),
             None => CardSlotStyles::default(),
@@ -441,10 +440,10 @@ mod tests {
     fn outline_takes_a_dashed_border_from_a_style_override() {
         with_test_world(|| {
             theme();
-            let dashed = Rc::new(StyleSheet::r#static(StyleRules {
+            let dashed = StyleRules {
                 border_style: Some(runtime_core::BorderStyle::Dashed),
                 ..Default::default()
-            }));
+            };
             let r = resolved(variant::Outline.into(), Some(dashed));
             assert_eq!(r.border_style, Some(runtime_core::BorderStyle::Dashed));
             assert_eq!(widths(&r), [Some(1.0); 4], "the frame survives the override");

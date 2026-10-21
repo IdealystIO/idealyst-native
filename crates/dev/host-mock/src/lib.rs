@@ -1826,6 +1826,13 @@ impl Harness {
         self.shared.text_input_changes.borrow()[i].clone()
     }
 
+    /// The i-th focus handler `set_text_input_focus_handler` received, as
+    /// the backend holds it — call it with `true` / `false` the way a
+    /// focus or blur event would.
+    pub fn text_input_focus_handler(&self, i: usize) -> Rc<dyn Fn(bool)> {
+        self.shared.focus_handlers.borrow()[i].1.clone()
+    }
+
     /// The `on_blur` handler the i-th `create_text_input` received, or
     /// `None` when the author declared none (index-aligned with
     /// [`Harness::text_input_change`]; `create_text_area` pushes `None`).

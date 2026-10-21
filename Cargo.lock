@@ -6466,6 +6466,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "idea-ui-docs-branded"
+version = "0.1.0"
+dependencies = [
+ "idea-theme",
+ "idea-ui",
+ "idea-ui-docs",
+ "idealyst",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+]
+
+[[package]]
 name = "idea-ui-docs-derive"
 version = "1.5.2"
 dependencies = [

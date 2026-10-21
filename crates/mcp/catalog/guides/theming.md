@@ -288,11 +288,11 @@ time, on every platform and build. Use it for a stable per-user color:
 `Tag`, `Chip` and `Badge` — have the hues in their default sheets. The other
 tone components (`Button`, `Alert`, `Switch`, …) stay on the seven intents by
 default, because each tone is pre-rendered into the shipped CSS for every
-variant, and adding twelve hues to every sheet would add roughly 260 KB (uncompressed) of
-CSS to every app. To use a hue on one of those components, add it to that
-component's sheet (see the next sections):
-`install_button_sheet(ButtonSheetBuilder::new().add_tone(tone::Teal).build())`.
-A tone missing from a sheet renders that component's default appearance.
+variant, and adding twelve hues to every component would add roughly 260 KB
+(uncompressed) of CSS to every app. To use a hue on all of them, register it:
+`register_tone(tone::Teal)` at boot (or list it in `app_theme! { tones: [...] }`)
+— every tone-aware component then draws it. A tone nothing registered renders
+that component's default appearance, and debug builds warn once.
 
 Override a hue like any other field: `theme.palette.blue.solid_bg = …`. From a
 `stylesheet!`, the tokens are `t.palette.<hue>.<slot>()` (token names
@@ -330,12 +330,10 @@ the palette hues and custom tones cast none unless the tone overrides
 
 **`variant::Gradient`** paints the accent gradient with `gradient_text` on top.
 It is opt-in rather than built in, for the same CSS-size reason as the palette
-hues. Add it to the sheets that should offer it:
+hues. Add it to Button with a restyle at boot:
 
 ```rust
-let buttons = || ButtonSheetBuilder::new().add_variant(variant::Gradient);
-install_button_sheet(buttons().build());
-install_button_label_sheet(buttons().build_label());
+ButtonStyles::restyle(|s| s.tone_variant(ButtonVariant::Gradient, &variant::Gradient));
 // …then: Button(label = "Launch".into(), variant = variant::Gradient, …)
 ```
 
@@ -351,23 +349,28 @@ Box shadows render on web, iOS, macOS and the GPU backends; Android, Windows
 and Linux draw none, so a glow there is simply absent while every color still
 re-themes.
 
-## Custom tones and variants
+## Custom tones
 
 The seven built-in intents cover most needs, but you can add your own semantic
-palette (a "tone") with the `tone!` macro and register it via `app_theme! { tones:
-[Brand] }`. A component then accepts it directly, e.g. `Button(tone = Brand)`.
-Apps that only need to retune existing colors never touch this — it's for adding
-*new* palettes, not editing existing ones.
+palette (a "tone") with the `tone!` macro and list it in your theme:
+`app_theme! { pub MyTheme { idea: IdeaThemeDefaults, tones: [Brand] } }`.
+Installing that theme registers the tone, and that is all it takes:
+`Button(tone = Brand)`, `Badge(tone = Brand)`, `Field(tone = Brand)` and every
+other tone-aware component draw it, in every variant, and it premints with the
+rest. An app without its own theme type registers the tone directly with
+`register_tone(Brand)` at boot. Apps that only need to retune existing colors
+never touch this — it's for adding *new* palettes, not editing existing ones.
 
-## Overriding a single component's sheet
+## Restyling components and adding variants
 
-`install_idea_theme` installs a default stylesheet per component. To customize one
-component's sheet (e.g. add a custom tone to Button) call its installer *after*
-`install_idea_theme` returns:
-
-```rust
-install_button_sheet(ButtonSheetBuilder::new().add_tone(Brand.into()).build());
-```
+The theme sets values; components are restyled through their slots. Every idea-ui
+component declares its styled sections with `component_styles!` (`ButtonStyles`,
+`FieldStyles`, `TableStyles`, …): restyle a slot app-wide at boot, add your own
+variant value (`ButtonVariant::define("raised")` plus a restyle arm), change an
+axis default (`FieldStyles::set_default(FieldAppearance::Contained)`), or override
+a slot on one element through its `styles` prop. Restyles compose into the slot
+sheets, so they premint, and installing or swapping a theme leaves them in place.
+See [[design-systems]] for the whole surface and a full brand example.
 
 ## Reference theme tokens from your own stylesheet
 

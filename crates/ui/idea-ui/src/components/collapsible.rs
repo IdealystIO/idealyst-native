@@ -45,9 +45,10 @@
 
 use std::rc::Rc;
 
+use runtime_core::stylesheet;
 use runtime_core::{
     component, on_scope_drop, pressable, signal, text, ui, ChildList, Element,
-    component_styles, resolve_style, AlignItems, FlexDirection, FontWeight, IdealystSchema, IntoElement,
+    component_styles, AlignItems, FlexDirection, FontWeight, IdealystSchema, IntoElement,
     JustifyContent, LayoutSubscription, Length, Reactive, Ref, Signal, TextAlign, ViewHandle,
 };
 use idea_theme::compat::SignalModify as _;
@@ -191,46 +192,30 @@ component_styles! {
             }
         }
 
-        /// Measured-mode body: the chrome (padding, opacity, border-top)
-        /// transitions on the `open` flip, while `max-height` is driven per
-        /// frame by an `AnimatedValue<f32>` in `measured_body` — neither arm
-        /// declares `max_height`, so the animated inline writes never fight
-        /// a class-rule baseline. The `shown` arm's vertical padding and top
-        /// border are read back at build as the body's chrome (see
-        /// `measured_chrome_px`), so a restyle that changes them stays
-        /// unclipped.
-        ///
-        /// The chrome timings match [`COLLAPSIBLE_DURATION_DEFAULT_MS`], the
-        /// recommended tween length.
+        /// Measured-mode body: the padded, bordered column holding the
+        /// content. It sits in natural flow inside a clipping wrapper whose
+        /// `max-height` an `AnimatedValue` drives (see `measured_body`), and
+        /// it is the node whose height is measured — so its padding and
+        /// border (restyled or not) are inside the measurement, and a closed
+        /// body leaves no footprint because the wrapper clips it to zero.
+        /// The `open` axis fades it in and out.
         slot body_animated {
             base(t) {
                 flex_direction: FlexDirection::Column,
                 padding_horizontal: t.spacing.lg(),
+                padding_vertical: t.spacing.md(),
                 border_top_width: 1.0,
                 border_top_color: t.color.border(),
                 gap: t.spacing.sm(),
-                overflow: runtime_core::Overflow::Hidden,
             }
             variant open {
                 #[default]
-                closed(_t) {
-                    padding_top: Length::Px(0.0),
-                    padding_bottom: Length::Px(0.0),
-                    opacity: 0.0,
-                    border_top_width: 0.0,
-                }
-                shown(t) {
-                    padding_top: t.spacing.md(),
-                    padding_bottom: t.spacing.md(),
-                    opacity: 1.0,
-                    border_top_width: 1.0,
-                }
+                closed(_t) { opacity: 0.0 }
+                shown(_t) { opacity: 1.0 }
             }
             transitions {
                 border_top_color: 250ms EaseInOut,
                 opacity: 200ms EaseOut,
-                padding_top: 240ms EaseOut,
-                padding_bottom: 240ms EaseOut,
             }
         }
     }
@@ -240,35 +225,28 @@ component_styles! {
 /// Used by [`CollapsibleTransition::Measured`] for the AV tween.
 /// Override via `Collapsible.duration_ms`.
 ///
-/// Note: chrome transitions (padding, opacity, border-color) on the
-/// underlying stylesheet are baked into CSS at the framework's
-/// compile time — they don't currently track this constant per-
-/// instance. If you set `duration_ms` far from 240, the chrome will
-/// finish ahead of (or after) the height animation. The "right" fix
-/// is per-instance transition-timing overrides on
-/// `StyleApplication`; until that lands, keep `duration_ms` close to
-/// the default 240 to avoid visible mismatch.
+/// The body's fade (the `body_animated` slot's opacity transition) is a
+/// class-level timing and does not follow a per-instance `duration_ms`.
 pub const COLLAPSIBLE_DURATION_DEFAULT_MS: u32 = 240;
 
-/// Total vertical chrome (padding + border) on a Measured body when
-/// shown, read from the composed `body_animated` slot's `shown` arm (app
-/// restyles and this instance's override included). Used to translate the
-/// inner content's measured height into the outer's target max-height —
-/// the framework forces `box-sizing: border-box`, so the outer's
-/// max-height has to cover content + chrome to avoid clipping.
-fn measured_chrome_px(styles: &CollapsibleSlotStyles) -> f32 {
-    let shown = CollapsibleStyles::body_animated()
-        .set(CollapsibleOpen::Shown)
-        .overridden(styles.body_animated.as_ref())
-        .into_style_application();
-    let rules = resolve_style(&shown);
-    let px = |l: &Option<runtime_core::Tokenized<Length>>| match l.as_ref().map(|t| t.resolve()) {
-        Some(Length::Px(v)) => v,
-        _ => 0.0,
-    };
-    px(&rules.padding_top)
-        + px(&rules.padding_bottom)
-        + rules.border_top_width.as_ref().map_or(0.0, |w| w.resolve())
+// The clipping wrapper around a measured body: its `max-height` is the
+// animated value, and it clips the body below it. A `stylesheet!` so it
+// premints from link time, crawled or not.
+stylesheet! {
+    CollapsibleClipSheet<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            overflow: runtime_core::Overflow::Hidden,
+        }
+    }
+}
+
+// The measured wrapper inside the clip: a plain column, no padding, so
+// its measured height is its child's whole box.
+stylesheet! {
+    CollapsibleColumnSheet<()> {
+        base(_t) { flex_direction: FlexDirection::Column }
+    }
 }
 
 impl From<CollapsibleChevronSide> for CollapsibleChevron {
@@ -551,26 +529,6 @@ fn collapsible_body(
     }
 }
 
-/// Body for `CollapsibleTransition::Measured`. The wiring:
-///
-/// 1. Outer `view` (bound to `body_ref`) is what we animate — its
-///    `max_height` is driven by `av: AnimatedValue<f32>` via
-///    `AnimProp::MaxHeight`.
-/// 2. Inner `view` (bound to `content_ref`) holds the actual content.
-///    A `LayoutSubscription` on this inner view captures the natural
-///    content height into `natural_height: Signal<f32>` — re-fires on
-///    content changes so the target always tracks reality.
-/// 3. An `Effect` watches both `value` and `natural_height` and
-///    triggers a `TweenTo` on `av` whenever they change: target =
-///    `natural_height + MEASURED_CHROME_PX` when open, `0.0` when
-///    closed. The chrome offset compensates for `box-sizing:
-///    border-box` (framework universal) — without it, max-height
-///    would clip the bottom of content by padding + border height.
-///
-/// Why two views: the outer one carries the `overflow: hidden` + the
-/// animated max-height. The inner one is in the natural-flow layout
-/// so `ResizeObserver` (or platform equivalent) sees its full height
-/// regardless of the outer's max-height clamp.
 /// The `open` axis value tracking `value` live.
 fn open_axis(value: Signal<bool>) -> Reactive<CollapsibleOpen> {
     Reactive::Dynamic(Rc::new(move || {
@@ -582,13 +540,29 @@ fn open_axis(value: Signal<bool>) -> Reactive<CollapsibleOpen> {
     }))
 }
 
+/// Body for `CollapsibleTransition::Measured`. The wiring:
+///
+/// 1. The clipping wrapper (bound to `body_ref`) is what we animate — its
+///    `max_height` is driven by `av: AnimatedValue<f32>` via
+///    `AnimProp::MaxHeight`, and it clips everything below.
+/// 2. Inside it, a plain measured wrapper (bound to `content_ref`) in
+///    natural flow, so its layout reports its full height whatever the
+///    clamp. A `LayoutSubscription` on it captures that height into
+///    `natural_height` — re-firing on content changes.
+/// 3. Inside that, the padded, bordered body (the `body_animated` slot)
+///    with the content. The measured wrapper has no padding of its own:
+///    its height is the body's whole box, padding and border included,
+///    on every backend (web's `ResizeObserver` reports a content box,
+///    native frames a border box — the same number for an unpadded
+///    node). So a restyled body padding stays inside the target.
+/// 4. An `Effect` watches `value` and `natural_height` and tweens `av`
+///    to `natural_height` when open, `0.0` when closed.
 fn measured_body(
     value: Signal<bool>,
     duration_ms: u32,
     kids: Vec<Element>,
     styles: &CollapsibleSlotStyles,
 ) -> Element {
-    let chrome_px = measured_chrome_px(styles);
     // Per-instance signals + handles.
     let natural_height: Signal<f32> = signal(0.0);
     let body_ref: Ref<ViewHandle> = Ref::new();
@@ -655,54 +629,29 @@ fn measured_body(
     // re-tween to the new target.
     runtime_core::effect!({
         let open = value.get();
-        // Add chrome offset to the measured content height — the
-        // outer's `box-sizing: border-box` (framework universal)
-        // means max-height covers padding + border + content. The
-        // ResizeObserver on the inner reports only content height,
-        // so we'd clip the bottom of content by the chrome amount
-        // without this addition.
-        let target = if open {
-            let nh = natural_height.get();
-            if nh > 0.0 { nh + chrome_px } else { 0.0 }
-        } else {
-            0.0
-        };
+        // The measured node is the padded body itself, so its height is
+        // the whole target — padding and border included.
+        let target = if open { natural_height.get() } else { 0.0 };
         // `TweenTo` from the framework animation system — handles
-        // raf loop, easing, cancellation. The chrome transitions
-        // (padding, opacity, border) on the `body_animated` slot
-        // are baked at 200–240ms; keep `duration_ms` near 240 to
-        // avoid the chrome finishing visibly out of sync with the
-        // height.
+        // raf loop, easing, cancellation.
         av.animate(TweenTo::new(target, Duration::from_millis(duration_ms as u64)).ease_out());
     });
     // Scope-adopted: the reactive scope owns this effect and frees it on
     // teardown (the `_toggle` handle's drop is a no-op). No `mem::forget`.
 
-    // Outer view — `body_ref` binds for AnimatedValue (drives
-    // max-height per frame). The `open` axis switches between
-    // `closed` and `shown` based on `value`, so padding / opacity /
-    // border-top transition between the arms' values via the
-    // `body_animated` slot's declared transitions.
-    //
-    // Division of labor:
-    //   - max-height: driven by AV (animator-precise to natural height)
-    //   - padding-top/bottom, opacity, border-top: CSS transitions
-    //     on variant swap (handled by the browser)
-    //
-    // Both run concurrently over ~240ms — the body's chrome
-    // (padding, border) collapses with the height, so closed items
-    // leave zero visible footprint.
-    let outer_style = CollapsibleStyles::body_animated()
+    // clip (`body_ref`) > measured wrapper (`content_ref`) > padded body —
+    // see the wiring above. The body's `open` axis fades it. The view()
+    // builder chains `.bind(ref)`; the `ui!` macro has no `ref =` prop.
+    let body_style = CollapsibleStyles::body_animated()
         .set(open_axis(value))
         .overridden(styles.body_animated.as_ref());
-
-    // Inner view is in natural flow — its layout reports the
-    // intrinsic content height regardless of the outer's clamp.
-    // Use the framework's view() builder to chain `.bind(ref)` —
-    // the `ui!` macro doesn't expose a `ref =` prop.
-    let inner = runtime_core::view(kids).bind(content_ref).into_element();
-    runtime_core::view(vec![inner])
-        .with_style(outer_style)
+    let body = runtime_core::view(kids).with_style(body_style).into_element();
+    let measured = runtime_core::view(vec![body])
+        .with_style(CollapsibleColumnSheet::sheet())
+        .bind(content_ref)
+        .into_element();
+    runtime_core::view(vec![measured])
+        .with_style(CollapsibleClipSheet::sheet())
         .bind(body_ref)
         .into_element()
 }
@@ -935,47 +884,5 @@ pub fn Accordion(props: AccordionProps) -> Element {
 
     ui! {
         view(style = container_style) { item_views }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use idea_theme::testing::with_test_world;
-    use runtime_core::StyleRules;
-
-    fn install() {
-        use idea_theme::theme::{install_idea_theme, light_theme};
-        install_idea_theme(light_theme());
-    }
-
-    /// The measured body's max-height target is content + chrome. The
-    /// chrome comes from the composed `body_animated` slot, so an app that
-    /// restyles the open body's padding gets a target that still covers it
-    /// (a fixed constant would clip the restyled body's last lines).
-    #[test]
-    fn regression_measured_chrome_follows_a_restyled_body() {
-        with_test_world(|| {
-            runtime_core::component_styles::__reset::<CollapsibleStyles>();
-            install();
-            // Light theme: spacing-md (12) top + bottom, 1px top border.
-            assert_eq!(measured_chrome_px(&CollapsibleSlotStyles::default()), 25.0);
-
-            CollapsibleStyles::restyle(|s| {
-                s.body_animated().arm(CollapsibleOpen::Shown, |_t| StyleRules {
-                    padding_top: Some(Length::Px(20.0).into()),
-                    ..Default::default()
-                });
-            });
-            assert_eq!(measured_chrome_px(&CollapsibleSlotStyles::default()), 33.0);
-
-            // A per-instance override is counted too.
-            let one = CollapsibleSlotStyles::default().body_animated(StyleRules {
-                padding_bottom: Some(Length::Px(0.0).into()),
-                ..Default::default()
-            });
-            assert_eq!(measured_chrome_px(&one), 21.0);
-            runtime_core::component_styles::__reset::<CollapsibleStyles>();
-        });
     }
 }

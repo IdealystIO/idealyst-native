@@ -38,7 +38,7 @@ use runtime_core::{
 };
 
 use idea_theme::extensible::{
-    semantic_tones, tone_variant_arms, tone_variant_state_overlays, Tone, ToneRef,
+    semantic_tones, tone_variant_arms, tone_variant_state_overlays, ToneRef,
 };
 use idea_theme::theme::IdeaThemeRef;
 
@@ -660,7 +660,7 @@ mod tests {
     use crate::test_support::{classify, P, TStyle};
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, FillRule, StyleApplication, StyleRules, StyleSheet, Tokenized};
+    use runtime_core::{resolve_style, FillRule, StyleApplication, StyleRules, Tokenized};
 
     fn theme() {
         install_idea_theme(light_theme());
@@ -1112,15 +1112,15 @@ mod tests {
         }
     }
 
-    /// Build a one-off static override sheet setting a single color.
-    fn color_sheet(hex: &str) -> Rc<StyleSheet> {
-        Rc::new(StyleSheet::r#static(StyleRules {
+    /// A one-off override setting a single color.
+    fn color_sheet(hex: &str) -> StyleRules {
+        StyleRules {
             color: Some(Tokenized::Literal(Color(hex.into()))),
             ..Default::default()
-        }))
+        }
     }
 
-    // Slot override: `label_style` colour wins over the theme foreground and is
+    // Slot override: the `label` slot's colour wins over the theme foreground and is
     // stamped on the label's OWN node (native-safe). This is the "dark label on
     // a white/neutral button" case the CSS cascade can't do on native.
     #[test]
@@ -1148,10 +1148,10 @@ mod tests {
     fn style_overrides_container_box() {
         with_test_world(|| {
             theme();
-            let ovr = Rc::new(StyleSheet::r#static(StyleRules {
+            let ovr = StyleRules {
                 background: Some(Tokenized::Literal(Color("#ffffff".into()))),
                 ..Default::default()
-            }));
+            };
             let props = ButtonProps {
                 label: Reactive::Static("Go".into()),
                 styles: ButtonSlotStyles::default().root(ovr),
