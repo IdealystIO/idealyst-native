@@ -188,7 +188,9 @@ pub use components::button::{
     ButtonSlotStyles, ButtonStyles, ButtonVariant,
 };
 pub use components::breadcrumbs::{Breadcrumbs, BreadcrumbsProps, BreadcrumbsSlotStyles, BreadcrumbsStyles, Crumb};
-pub use components::calendar::{Calendar, CalendarProps, RangeCalendar, RangeCalendarProps};
+pub use components::calendar::{
+    Calendar, CalendarProps, CalendarSel, CalendarSlotStyles, CalendarStyles, RangeCalendar, RangeCalendarProps,
+};
 pub use components::card::{Card, CardPadding, CardProps, CardRestyle, CardSlotStyles, CardStyles, CardVariant};
 pub use components::date_input::{DateInput, DateInputProps, DateTimeInput, DateTimeInputProps};
 pub use components::date_picker::{

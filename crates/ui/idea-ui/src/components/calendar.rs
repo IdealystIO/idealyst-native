@@ -32,19 +32,238 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, effect, pressable, signal, text, ui, view, Element, FillRule, IconData,
-    IdealystSchema, IntoElement, Signal, StyleApplication,
+    component, component_styles, effect, pressable, signal, text, ui, view, AlignItems, Color, Cursor,
+    Element, FillRule, FlexDirection, FontWeight, IconData, IdealystSchema, IntoElement, JustifyContent, Length,
+    Reactive, Signal, TextAlign,
 };
+
+use crate::theme::IdeaThemeRef;
 
 use crate::variant;
 use idea_theme::extensible::tone;
 
 use crate::components::icon_button::{IconButton, IconButtonSize};
 use crate::date::{CivilDate, DateLabels, Weekday};
-use crate::stylesheets::{
-    CalendarDay, CalendarDayLabel, CalendarHeader, CalendarPanel, CalendarTitleButton,
-    CalendarWeekRow, CalendarWeekdayCell, CalendarZoomCell, CalendarZoomLabel,
-};
+
+component_styles! {
+    /// The styled sections of [`Calendar`] and [`RangeCalendar`] (and of
+    /// the date pickers' popup calendars). The `day` cell styles one grid
+    /// cell across composable axes: `sel` (selection/range role), `today`
+    /// and `blocked`; cells are fixed 36×36 so the grid is stable across
+    /// months and the range band reads as one row (the `mid` arm squares
+    /// its corners).
+    pub Calendar<IdeaThemeRef> {
+        /// The container — border off (`framed: off`) when embedded in a
+        /// popup panel that already draws chrome.
+        slot panel {
+            base(t) {
+                background: t.color.surface(),
+                flex_direction: FlexDirection::Column,
+                gap: t.spacing.xs(),
+                padding: t.spacing.sm(),
+                border_radius: t.radius.md(),
+                align_self: runtime_core::AlignSelf::FlexStart,
+            }
+            // `framed` — standalone (inline) calendars draw their own border;
+            // popup embeddings turn it off (the menu panel already has one).
+            variant framed {
+                #[default]
+                on(t) {
+                    border_width: 1.0,
+                    border_color: t.color.border(),
+                }
+                off(_t) {}
+            }
+        }
+
+        /// The prev / title / next row.
+        slot header {
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                gap: t.spacing.xs(),
+            }
+        }
+
+        /// The pressable month/year title in the header — opens the month/year
+        /// picker view. Styled like a quiet button.
+        slot title {
+            base(t) {
+                background: Color("transparent".into()),
+                color: t.color.text(),
+                font_size: t.typography.body_size(),
+                font_weight: FontWeight::SemiBold,
+                padding_vertical: t.spacing.xs(),
+                padding_horizontal: t.spacing.sm(),
+                border_radius: t.radius.sm(),
+                cursor: Cursor::Pointer,
+            }
+            state hovered(t) {
+                background: t.color.surface_alt(),
+            }
+            transitions { background: 150ms EaseOut }
+        }
+
+        /// A weekday column heading.
+        slot weekday {
+            base(t) {
+                width: 36.0,
+                color: t.color.text_muted(),
+                font_size: t.typography.body_sm_size(),
+                font_weight: FontWeight::Medium,
+                text_align: TextAlign::Center,
+            }
+        }
+
+        /// One row of cells.
+        slot week_row {
+            base(_t) {
+                flex_direction: FlexDirection::Row,
+            }
+        }
+
+        /// The day cell is the BOX — fill, ring, radius. Its numeral's colour
+        /// and size are on the numeral (the `day_label` slot), not here: a
+        /// `color` on a container reaches a text child through CSS inheritance
+        /// on web and through nothing at all on UIKit, where a `UILabel` draws
+        /// its own `textColor` whatever its superview says. Measured on an
+        /// iPhone 17 Pro Max simulator: the selected day's solid fill kept a
+        /// dark numeral. `Button` splits the same way (its `label` slot).
+        slot day {
+            base(t) {
+                width: 36.0,
+                height: 36.0,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                border_radius: t.radius.sm(),
+                background: Color("transparent".into()),
+                cursor: Cursor::Pointer,
+            }
+            // Selection / range role of the cell.
+            variant sel {
+                #[default]
+                off(_t) {}
+                // The single selection, or a range endpoint.
+                on(t) {
+                    background: t.intent.primary.solid_bg(),
+                }
+                // Interior of a selected range: soft wash, squared corners so
+                // consecutive cells read as one band.
+                mid(t) {
+                    background: t.intent.primary.soft_bg(),
+                    border_radius: Length::Px(0.0),
+                }
+            }
+            variant today {
+                #[default]
+                off(_t) {}
+                // Quiet marker that composes under every `sel` arm: a ring, not
+                // a fill, so "today + selected" still reads as selected.
+                on(t) {
+                    border_width: 1.0,
+                    border_color: t.intent.primary.fg(),
+                }
+            }
+            // Un-pickable (min/max/disabled-fn). Rendered as a plain view (no
+            // press handler), so this is a variant, not a pressed-state overlay.
+            variant blocked {
+                #[default]
+                off(_t) {}
+                on(_t) {
+                    opacity: 0.35,
+                    cursor: Cursor::Default,
+                }
+            }
+            state hovered(t) {
+                background: t.color.surface_alt(),
+            }
+            state focused(t) {
+                border_width: 1.0,
+                border_color: t.color.focus_ring(),
+            }
+            transitions {
+                background: 120ms EaseOut,
+            }
+        }
+
+        /// The day's numeral — see the `day` slot for why the colour is here.
+        /// Takes the cell's `sel` and `muted` axes so the two resolve in step.
+        /// `muted` is declared FIRST so that a selected day of an adjacent
+        /// month reads as selected: the later arm wins, and a muted numeral on
+        /// a solid fill would be the one unreadable combination.
+        slot day_label {
+            base(t) {
+                color: t.color.text(),
+                font_size: t.typography.body_size(),
+            }
+            // Leading/trailing days of the adjacent months.
+            variant muted {
+                #[default]
+                off(_t) {}
+                on(t) {
+                    color: t.color.text_muted(),
+                }
+            }
+            variant sel {
+                #[default]
+                off(_t) {}
+                on(t) {
+                    color: t.intent.primary.solid_text(),
+                }
+                mid(t) {
+                    color: t.intent.primary.fg(),
+                }
+            }
+            transitions {
+                color: 120ms EaseOut,
+            }
+        }
+
+        /// Month/year cells of the title-press zoomed-out view (3×4 month grid /
+        /// 4×4 year grid).
+        /// The box only — its label's colour is on the `zoom_label` slot, for
+        /// the reason given on the `day` slot.
+        slot zoom_cell {
+            base(t) {
+                width: 63.0,
+                height: 40.0,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                border_radius: t.radius.sm(),
+                background: Color("transparent".into()),
+                cursor: Cursor::Pointer,
+            }
+            variant active {
+                #[default]
+                off(_t) {}
+                on(t) {
+                    background: t.intent.primary.solid_bg(),
+                }
+            }
+            state hovered(t) {
+                background: t.color.surface_alt(),
+            }
+            transitions { background: 120ms EaseOut }
+        }
+
+        /// A month/year cell's label.
+        slot zoom_label {
+            base(t) {
+                color: t.color.text(),
+                font_size: t.typography.body_size(),
+            }
+            variant active {
+                #[default]
+                off(_t) {}
+                on(t) {
+                    color: t.intent.primary.solid_text(),
+                }
+            }
+            transitions { color: 120ms EaseOut }
+        }
+    }
+}
 
 /// Header nav chevrons (same inline-`IconData` shape as `Select`'s
 /// trigger chevron — no icon-pack dependency for built-in affordances).
@@ -61,8 +280,7 @@ pub(crate) const CHEVRON_RIGHT: IconData = IconData {
     filled: false,
 };
 
-/// Selection role of one day cell — maps onto the `CalendarDay` sheet's
-/// `sel` axis.
+/// Selection role of one day cell — maps onto the `day` slot's `sel` axis.
 #[derive(Copy, Clone, PartialEq)]
 pub(crate) enum DaySel {
     Off,
@@ -108,6 +326,18 @@ pub(crate) struct CalendarCore {
     pub sel_of: Rc<dyn Fn(CivilDate) -> DaySel>,
     pub on_pick: Rc<dyn Fn(CivilDate)>,
     pub framed: bool,
+    /// The instance's per-slot overrides.
+    pub styles: CalendarSlotStyles,
+}
+
+impl From<DaySel> for CalendarSel {
+    fn from(sel: DaySel) -> Self {
+        match sel {
+            DaySel::Off => CalendarSel::Off,
+            DaySel::On => CalendarSel::On,
+            DaySel::Mid => CalendarSel::Mid,
+        }
+    }
 }
 
 impl CalendarCore {
@@ -164,7 +394,7 @@ pub(crate) fn calendar_view(core: Rc<CalendarCore>) -> Element {
         })
     };
     let title = pressable(vec![text(title_source).into_element()], on_title)
-        .with_style(StyleApplication::new(CalendarTitleButton::sheet()))
+        .with_style(CalendarStyles::title().overridden(core.styles.title.as_ref()))
         .into_element();
 
     let header_children = vec![
@@ -189,7 +419,7 @@ pub(crate) fn calendar_view(core: Rc<CalendarCore>) -> Element {
         },
     ];
     let header = view(header_children)
-        .with_style(StyleApplication::new(CalendarHeader::sheet()))
+        .with_style(CalendarStyles::header().overridden(core.styles.header.as_ref()))
         .into_element();
 
     // --- body -------------------------------------------------------------
@@ -208,11 +438,9 @@ pub(crate) fn calendar_view(core: Rc<CalendarCore>) -> Element {
         }
     };
 
-    let framed = core.framed;
-    let panel_style = move || {
-        StyleApplication::new(CalendarPanel::sheet())
-            .with("framed", if framed { "on" } else { "off" }.to_string())
-    };
+    let panel_style = CalendarStyles::panel()
+        .set(CalendarFramed::from(core.framed))
+        .overridden(core.styles.panel.as_ref());
     ui! {
         view(style = panel_style) {
             header
@@ -235,14 +463,14 @@ fn day_grid(
         let wd = core.first_weekday.add(i);
         header_cells.push(
             text(core.labels.weekday_short(wd).to_string())
-                .with_style(StyleApplication::new(CalendarWeekdayCell::sheet()))
+                .with_style(CalendarStyles::weekday().overridden(core.styles.weekday.as_ref()))
                 .into_element(),
         );
     }
     let mut rows: Vec<Element> = Vec::with_capacity(7);
     rows.push(
         view(header_cells)
-            .with_style(StyleApplication::new(CalendarWeekRow::sheet()))
+            .with_style(CalendarStyles::week_row().overridden(core.styles.week_row.as_ref()))
             .into_element(),
     );
 
@@ -255,7 +483,7 @@ fn day_grid(
         }
         rows.push(
             view(cells)
-                .with_style(StyleApplication::new(CalendarWeekRow::sheet()))
+                .with_style(CalendarStyles::week_row().overridden(core.styles.week_row.as_ref()))
                 .into_element(),
         );
     }
@@ -269,31 +497,28 @@ fn day_cell(
     today: CivilDate,
     blocked: bool,
 ) -> Element {
-    let sel_of = core.sel_of.clone();
-    let sel_key = move || {
-        match sel_of(d) {
-            DaySel::Off => "off",
-            DaySel::On => "on",
-            DaySel::Mid => "mid",
+    // The selection is read live, so a pick re-styles the cells in place.
+    let sel = {
+        let sel_of = core.sel_of.clone();
+        move || -> Reactive<CalendarSel> {
+            let sel_of = sel_of.clone();
+            Reactive::Dynamic(Rc::new(move || CalendarSel::from(sel_of(d))))
         }
-        .to_string()
     };
-    let muted = if d.month != visible_month { "on" } else { "off" };
-    let cell_sel = sel_key.clone();
-    let style = move || {
-        StyleApplication::new(CalendarDay::sheet())
-            .with("sel", cell_sel())
-            .with("today", if d == today { "on" } else { "off" }.to_string())
-            .with("blocked", if blocked { "on" } else { "off" }.to_string())
-    };
-    // The numeral carries its own colour (see `CalendarDayLabel`), off
+    let style = CalendarStyles::day()
+        .set(sel())
+        .set(CalendarToday::from(d == today))
+        .set(CalendarBlocked::from(blocked))
+        .overridden(core.styles.day.as_ref());
+    // The numeral carries its own colour (see the `day_label` slot), off
     // the same selection read as the cell so the two never disagree.
     let label = text(d.day.to_string())
-        .with_style(move || {
-            StyleApplication::new(CalendarDayLabel::sheet())
-                .with("muted", muted.to_string())
-                .with("sel", sel_key())
-        })
+        .with_style(
+            CalendarStyles::day_label()
+                .set(CalendarMuted::from(d.month != visible_month))
+                .set(sel())
+                .overridden(core.styles.day_label.as_ref()),
+        )
         .into_element();
     if blocked {
         // A blocked day is inert — no press handler at all (a silent no-op
@@ -324,14 +549,10 @@ fn month_grid(core: &Rc<CalendarCore>, (_year, month): (i32, u8), zoom: Signal<Z
         for col in 0..3u8 {
             let m = row * 3 + col + 1;
             let label = core.labels.months_short[usize::from(m - 1)].clone();
-            let active = if m == month { "on" } else { "off" };
-            let style = move || {
-                StyleApplication::new(CalendarZoomCell::sheet()).with("active", active.to_string())
-            };
+            let active = CalendarActive::from(m == month);
+            let style = CalendarStyles::zoom_cell().set(active).overridden(core.styles.zoom_cell.as_ref());
             let label = text(label)
-                .with_style(move || {
-                    StyleApplication::new(CalendarZoomLabel::sheet()).with("active", active.to_string())
-                })
+                .with_style(CalendarStyles::zoom_label().set(active).overridden(core.styles.zoom_label.as_ref()))
                 .into_element();
             cells.push(
                 pressable(vec![label], move || {
@@ -345,7 +566,7 @@ fn month_grid(core: &Rc<CalendarCore>, (_year, month): (i32, u8), zoom: Signal<Z
         }
         rows.push(
             view(cells)
-                .with_style(StyleApplication::new(CalendarWeekRow::sheet()))
+                .with_style(CalendarStyles::week_row().overridden(core.styles.week_row.as_ref()))
                 .into_element(),
         );
     }
@@ -362,14 +583,10 @@ fn year_grid(core: &Rc<CalendarCore>, (year, _month): (i32, u8), zoom: Signal<Zo
         let mut cells: Vec<Element> = Vec::with_capacity(3);
         for col in 0..3i32 {
             let y = base + row * 3 + col;
-            let active = if y == year { "on" } else { "off" };
-            let style = move || {
-                StyleApplication::new(CalendarZoomCell::sheet()).with("active", active.to_string())
-            };
+            let active = CalendarActive::from(y == year);
+            let style = CalendarStyles::zoom_cell().set(active).overridden(core.styles.zoom_cell.as_ref());
             let label = text(y.to_string())
-                .with_style(move || {
-                    StyleApplication::new(CalendarZoomLabel::sheet()).with("active", active.to_string())
-                })
+                .with_style(CalendarStyles::zoom_label().set(active).overridden(core.styles.zoom_label.as_ref()))
                 .into_element();
             cells.push(
                 pressable(vec![label], move || {
@@ -383,7 +600,7 @@ fn year_grid(core: &Rc<CalendarCore>, (year, _month): (i32, u8), zoom: Signal<Zo
         }
         rows.push(
             view(cells)
-                .with_style(StyleApplication::new(CalendarWeekRow::sheet()))
+                .with_style(CalendarStyles::week_row().overridden(core.styles.week_row.as_ref()))
                 .into_element(),
         );
     }
@@ -405,7 +622,7 @@ pub(crate) fn initial_visible(selected: Option<CivilDate>) -> (i32, u8) {
 // (`Reactive<T>`); AUTO-SKIPPED: `value` (Signal source), `on_change` /
 // `is_date_disabled` (handlers). `labels` is structural (name lookups
 // happen at grid build) — `#[prop(static)]`.
-#[runtime_core::props]
+#[runtime_core::props(styles = CalendarStyles)]
 #[derive(IdealystSchema)]
 pub struct CalendarProps {
     /// Controlled selection. The host owns the signal; picking a day
@@ -442,6 +659,7 @@ impl Default for CalendarProps {
             first_weekday: runtime_core::Reactive::Static(Weekday::Monday),
             labels: None,
             framed: runtime_core::Reactive::Static(true),
+            styles: Default::default(),
         }
     }
 }
@@ -479,6 +697,7 @@ pub fn Calendar(props: CalendarProps) -> Element {
         }),
         on_pick: props.on_change.clone(),
         framed: props.framed.get(),
+        styles: props.styles.clone(),
     };
     calendar_view(Rc::new(core))
 }
@@ -488,7 +707,7 @@ pub fn Calendar(props: CalendarProps) -> Element {
 // ---------------------------------------------------------------------------
 
 // Same routing rationale as `CalendarProps`.
-#[runtime_core::props]
+#[runtime_core::props(styles = CalendarStyles)]
 #[derive(IdealystSchema)]
 pub struct RangeCalendarProps {
     /// Controlled committed range (chronologically ordered). The host
@@ -523,6 +742,7 @@ impl Default for RangeCalendarProps {
             first_weekday: runtime_core::Reactive::Static(Weekday::Monday),
             labels: None,
             framed: runtime_core::Reactive::Static(true),
+            styles: Default::default(),
         }
     }
 }
@@ -574,12 +794,14 @@ pub fn RangeCalendar(props: RangeCalendarProps) -> Element {
             }
         }),
         framed: props.framed.get(),
+        styles: props.styles.clone(),
     };
     calendar_view(Rc::new(core))
 }
 
 #[cfg(test)]
 mod tests {
+    use runtime_core::StyleApplication;
     use super::*;
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
@@ -613,12 +835,12 @@ mod tests {
             install_idea_theme(light_theme());
 
             let on = resolve_style(
-                &StyleApplication::new(CalendarDay::sheet()).with("sel", "on".to_string()),
+                &StyleApplication::new(CalendarStyles::day().sheet()).with("sel", "on".to_string()),
             );
             let mid = resolve_style(
-                &StyleApplication::new(CalendarDay::sheet()).with("sel", "mid".to_string()),
+                &StyleApplication::new(CalendarStyles::day().sheet()).with("sel", "mid".to_string()),
             );
-            let off = resolve_style(&StyleApplication::new(CalendarDay::sheet()));
+            let off = resolve_style(&StyleApplication::new(CalendarStyles::day().sheet()));
 
             // Endpoint = solid fill; interior = a different (soft) wash;
             // resting cells are transparent. If these collapse the range
@@ -643,27 +865,27 @@ mod tests {
     fn day_numeral_colour_lives_on_the_label() {
         with_test_world(|| {
             install_idea_theme(light_theme());
-            let off = resolve_style(&StyleApplication::new(CalendarDayLabel::sheet()));
+            let off = resolve_style(&StyleApplication::new(CalendarStyles::day_label().sheet()));
             let on = resolve_style(
-                &StyleApplication::new(CalendarDayLabel::sheet()).with("sel", "on".to_string()),
+                &StyleApplication::new(CalendarStyles::day_label().sheet()).with("sel", "on".to_string()),
             );
             assert_ne!(on.color, off.color, "a selected numeral inverts");
             // Selection beats the adjacent-month dimming: a muted numeral
             // on the solid fill would be the one unreadable pairing.
             let muted_sel = resolve_style(
-                &StyleApplication::new(CalendarDayLabel::sheet())
+                &StyleApplication::new(CalendarStyles::day_label().sheet())
                     .with("muted", "on".to_string())
                     .with("sel", "on".to_string()),
             );
             assert_eq!(muted_sel.color, on.color);
             let cell = resolve_style(
-                &StyleApplication::new(CalendarDay::sheet()).with("sel", "on".to_string()),
+                &StyleApplication::new(CalendarStyles::day().sheet()).with("sel", "on".to_string()),
             );
             assert!(cell.color.is_none(), "the cell carries no colour to inherit");
             let zoom_on = resolve_style(
-                &StyleApplication::new(CalendarZoomLabel::sheet()).with("active", "on".to_string()),
+                &StyleApplication::new(CalendarStyles::zoom_label().sheet()).with("active", "on".to_string()),
             );
-            let zoom_off = resolve_style(&StyleApplication::new(CalendarZoomLabel::sheet()));
+            let zoom_off = resolve_style(&StyleApplication::new(CalendarStyles::zoom_label().sheet()));
             assert_ne!(zoom_on.color, zoom_off.color);
         });
     }
@@ -675,12 +897,12 @@ mod tests {
             // `today on` + `sel on` must keep the selected fill (the today
             // marker is a ring, not a competing background).
             let both = resolve_style(
-                &StyleApplication::new(CalendarDay::sheet())
+                &StyleApplication::new(CalendarStyles::day().sheet())
                     .with("sel", "on".to_string())
                     .with("today", "on".to_string()),
             );
             let sel_only = resolve_style(
-                &StyleApplication::new(CalendarDay::sheet()).with("sel", "on".to_string()),
+                &StyleApplication::new(CalendarStyles::day().sheet()).with("sel", "on".to_string()),
             );
             assert_eq!(both.background, sel_only.background);
             assert!(both.border_top_color.is_some(), "today draws its ring");
@@ -696,15 +918,15 @@ mod tests {
             // CSS can style it under `--premint-only` (same constraint as
             // SelectMenu; see select.rs's premint test).
             for (name, sheet) in [
-                ("CalendarPanel", CalendarPanel::sheet()),
-                ("CalendarDay", CalendarDay::sheet()),
-                ("CalendarDayLabel", CalendarDayLabel::sheet()),
-                ("CalendarZoomCell", CalendarZoomCell::sheet()),
-                ("CalendarZoomLabel", CalendarZoomLabel::sheet()),
-                ("CalendarWeekdayCell", CalendarWeekdayCell::sheet()),
-                ("CalendarWeekRow", CalendarWeekRow::sheet()),
-                ("CalendarHeader", CalendarHeader::sheet()),
-                ("CalendarTitleButton", CalendarTitleButton::sheet()),
+                ("CalendarPanel", CalendarStyles::panel().sheet()),
+                ("CalendarDay", CalendarStyles::day().sheet()),
+                ("CalendarDayLabel", CalendarStyles::day_label().sheet()),
+                ("CalendarZoomCell", CalendarStyles::zoom_cell().sheet()),
+                ("CalendarZoomLabel", CalendarStyles::zoom_label().sheet()),
+                ("CalendarWeekdayCell", CalendarStyles::weekday().sheet()),
+                ("CalendarWeekRow", CalendarStyles::week_row().sheet()),
+                ("CalendarHeader", CalendarStyles::header().sheet()),
+                ("CalendarTitleButton", CalendarStyles::title().sheet()),
             ] {
                 assert!(
                     StyleApplication::new(sheet).preminted_class_list().is_some(),
