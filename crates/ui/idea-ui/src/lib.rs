@@ -284,7 +284,7 @@ pub use components::table::{
     CARD_ESTIMATE_PX, CARD_GAP_PX, CARD_LOAD_AHEAD_PX, COLUMN_RESET_DOUBLE_CLICK_NS,
     COLUMN_RESIZE_MIN_PX, GRIP_COLUMN_WIDTH_PX, SELECT_COLUMN_WIDTH_PX,
 };
-pub use components::tabs::{Tab, TabIndicator, Tabs, TabsProps};
+pub use components::tabs::{Tab, TabIndicator, Tabs, TabsActive, TabsPad, TabsProps, TabsSlotStyles, TabsStyles};
 pub use components::tag::{Tag, TagProps, TagRestyle, TagSlotStyles, TagStyles, TagVariant};
 pub use components::textarea::{Textarea, TextareaProps};
 pub use components::toast::{
@@ -315,7 +315,6 @@ pub use modifiers::{shape, size, variant};
 // namespace; `app_theme!` bundles an app theme.
 pub use idea_theme::{app_theme, color_token, tone, variant};
 
-pub use stylesheets::TabPanel;
 
 // The host functions remote code calling idea-ui's global functions needs:
 // an app hosting remote components adds them to its allowlist

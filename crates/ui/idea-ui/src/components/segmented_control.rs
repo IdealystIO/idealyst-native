@@ -769,14 +769,14 @@ mod tests {
     /// focus overlays — focus draws the themed ring.
     #[test]
     fn segmented_slots_are_their_own_not_the_tab_sheets() {
-        use crate::stylesheets::{TabBar, TabButton};
+        use crate::TabsStyles;
         use runtime_core::StateBits;
         with_test_world(|| {
             reset();
             install_idea_theme(light_theme());
             for (ours, tabs, what) in [
-                (SegmentedControlStyles::track().sheet(), TabBar::sheet(), "track"),
-                (SegmentedControlStyles::segment().sheet(), TabButton::sheet(), "segment"),
+                (SegmentedControlStyles::track().sheet(), TabsStyles::bar().sheet(), "track"),
+                (SegmentedControlStyles::segment().sheet(), TabsStyles::tab().sheet(), "segment"),
             ] {
                 assert_ne!(ours.premint_class(), tabs.premint_class(), "the {what} premints under its own class");
             }
