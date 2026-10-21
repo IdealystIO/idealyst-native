@@ -1963,6 +1963,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   the trigger spilled under the page numbers; the pager now sets the
   trigger's floor through its slot override.
 
+- **`idealyst dev --web` builds again outside the framework workspace**
+  (`backend-web`). The runtime-server transport's command-name match had
+  no arm for `wire::Command::MarkKeyboardAvoiding`, so `backend-web` 4.1.0
+  failed to compile with its `runtime-server` feature — the one a plain
+  (non-`--local`) web dev session turns on.
 - **Tables render in a `--premint-only` bundle** (`table`, `idea-ui`,
   `runtime-shared`). A column width (fixed or following a resize), a
   frozen column's offset, a pixel `inset_x`, a `scroll_y` table's

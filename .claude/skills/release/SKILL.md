@@ -251,6 +251,11 @@ cargo test -q -p runtime-vocabulary
 cargo test -q -p idea-ui
 cargo build -q -p idea-ui --example design_sync --features style-dump,catalog
 cargo check -q -p backend-web --target wasm32-unknown-unknown
+# The runtime-server transport is feature-gated and nothing in the workspace
+# builds it, yet a registry user's plain `idealyst dev --web` does: a
+# `wire::Command` variant without an arm in `dev_transport::command_kind`
+# shipped backend-web 4.1.0 uncompilable there.
+cargo check -q -p backend-web --target wasm32-unknown-unknown --features runtime-server
 cargo check -q -p backend-ios-mobile --target aarch64-apple-ios
 ```
 

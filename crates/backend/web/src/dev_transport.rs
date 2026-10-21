@@ -436,6 +436,7 @@ fn command_kind(c: &wire::Command) -> &'static str {
         UpdateTextInputSecure { .. } => "UpdateTextInputSecure",
         UpdateTextInputPlaceholder { .. } => "UpdateTextInputPlaceholder",
         UpdateTextInputKeyboard { .. } => "UpdateTextInputKeyboard",
+        MarkKeyboardAvoiding { .. } => "MarkKeyboardAvoiding",
         UpdateTextAreaValue { .. } => "UpdateTextAreaValue",
         UpdateToggleValue { .. } => "UpdateToggleValue",
         UpdateSliderValue { .. } => "UpdateSliderValue",
