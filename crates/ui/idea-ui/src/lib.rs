@@ -219,7 +219,7 @@ pub use components::menu::{
     MenuSeparator, MenuSeparatorProps, SubMenu, SubMenuProps, SubMenuSlot, SubMenuSlotCx,
 };
 pub use components::pagination::{Pagination, PaginationProps, PaginationSlotStyles, PaginationStyles};
-pub use components::tooltip::{Tooltip, TooltipProps};
+pub use components::tooltip::{Tooltip, TooltipProps, TooltipSlotStyles, TooltipStyles};
 pub use components::radio::{
     Radio, RadioAxis, RadioChecked, RadioDimmed, RadioGroup, RadioGroupProps, RadioOption, RadioProps,
     RadioRestyle, RadioSize, RadioSlotStyles, RadioStyles, RadioVariant,

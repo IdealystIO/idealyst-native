@@ -36,10 +36,52 @@ use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
     after_ms_detached, component, long_press, signal, ui, ChildList, Element, IdealystSchema,
     IntoElement, JustifyContent, LongPressRecognizer, Reactive, Ref, StyleRules, StyleSheet,
-    ViewHandle,
+    ViewHandle, component_styles, Color, FlexDirection, TextAlign,
 };
 
-use crate::stylesheets::{TooltipBubble, TooltipBubbleText};
+use crate::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`Tooltip`].
+    ///
+    /// The bubble's box and its label are separate slots, and the split is
+    /// load-bearing: painting the box on the text node gives a per-LINE
+    /// background on backends that lay text out inline (web: a wrapped
+    /// `text` paints one ragged rect per line), so the box is a real
+    /// container and every backend draws the same single rounded rect.
+    pub Tooltip<IdeaThemeRef> {
+        slot bubble {
+            base(t) {
+                background: t.color.surface(),
+                border_width: 1.0,
+                border_color: t.color.border(),
+                padding_vertical: t.spacing.xs(),
+                padding_horizontal: t.spacing.sm(),
+                border_radius: t.radius.md(),
+                flex_direction: FlexDirection::Column,
+                // Clamps the bubble so a long hint wraps into a readable column
+                // instead of running the width of the viewport.
+                max_width: 260.0,
+                shadow: runtime_core::Shadow {
+                    x: 0.0, y: 4.0, blur: 12.0, color: Color("rgba(15, 17, 21, 0.22)".into()).into(),
+                },
+            }
+            transitions {
+                background: 250ms EaseInOut,
+                border_color: 250ms EaseInOut,
+            }
+        }
+
+        slot text {
+            base(t) {
+                color: t.color.text(),
+                font_size: t.typography.body_sm_size(),
+                line_height: 18.0,
+                text_align: TextAlign::Left,
+            }
+        }
+    }
+}
 
 /// Default time (ms) a touch-triggered (long-press) tooltip stays up
 /// before auto-dismissing. Hover tooltips ignore this — they hide on
@@ -50,7 +92,7 @@ pub const TOOLTIP_DISMISS_MS: u32 = 1800;
 // enums, `offset`, `dismiss_ms`) → `Reactive<…>`. `text` is already `Reactive`
 // (routes to the `text()` sink, untouched); `children` is a `Vec<Element>`
 // (auto-skipped).
-#[runtime_core::props]
+#[runtime_core::props(styles = TooltipStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct TooltipProps {
@@ -83,6 +125,7 @@ impl Default for TooltipProps {
             offset: Reactive::Static(6.0),
             dismiss_ms: Reactive::Static(TOOLTIP_DISMISS_MS),
             children: Vec::new(),
+            styles: Default::default(),
         }
     }
 }
@@ -120,9 +163,13 @@ fn wrapper_sheet() -> Rc<StyleSheet> {
 /// padding hanging off the text box. Splitting box from label makes every
 /// backend draw the same surface, and puts the width clamp on the thing that
 /// actually wraps its content.
-fn bubble_box(text: Reactive<String>) -> Element {
-    let label = runtime_core::text(text).with_style(TooltipBubbleText()).into_element();
-    runtime_core::view(vec![label]).with_style(TooltipBubble()).into_element()
+fn bubble_box(text: Reactive<String>, styles: &TooltipSlotStyles) -> Element {
+    let label = runtime_core::text(text)
+        .with_style(TooltipStyles::text().overridden(styles.text.as_ref()))
+        .into_element();
+    runtime_core::view(vec![label])
+        .with_style(TooltipStyles::bubble().overridden(styles.bubble.as_ref()))
+        .into_element()
 }
 
 /// Renders the trigger wrapped in a hover/long-press anchor; shows a hint
@@ -133,6 +180,7 @@ pub fn Tooltip(props: TooltipProps) -> Element {
     let open = signal(false);
     let anchor_ref: Ref<ViewHandle> = Ref::new();
     let text = props.text;
+    let styles = props.styles.clone();
     // TODO(reactive-sweep): route `side`/`align`/`offset`/`dismiss_ms`
     // reactively into the bubble's `anchored_overlay` placement + the
     // long-press timer. They're consumed by value as builder args (inside the
@@ -178,7 +226,7 @@ pub fn Tooltip(props: TooltipProps) -> Element {
             {
                 runtime_core::anchored_overlay(
                     AnchorTarget::from(anchor_ref),
-                    vec![bubble_box(text.clone())],
+                    vec![bubble_box(text.clone(), &styles)],
                 )
                 .side(side)
                 .align(align)
@@ -242,7 +290,7 @@ mod tests {
     #[test]
     fn regression_tooltip_bubble_is_a_box_not_a_styled_text_node() {
         with_test_world(|| {
-            let (box_style, label) = match classify(bubble_box(Reactive::Static("hi".into()))) {
+            let (box_style, label) = match classify(bubble_box(Reactive::Static("hi".into()), &TooltipSlotStyles::default())) {
                 P::View { mut children, style, .. } => {
                     assert_eq!(children.len(), 1, "bubble box holds exactly the label");
                     (style.expect("bubble box must be styled"), children.remove(0))
