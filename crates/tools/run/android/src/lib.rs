@@ -35,6 +35,7 @@ use anyhow::{Context, Result};
 use build_ios::{capabilities, FrameworkSource, Manifest};
 
 mod kotlin_runtime;
+mod maven;
 
 const MAIN_ACTIVITY_LOCAL_JAVA: &str = include_str!("../templates/MainActivity.java");
 const NATIVE_BRIDGE_LOCAL_JAVA: &str = include_str!("../templates/NativeBridge.java");

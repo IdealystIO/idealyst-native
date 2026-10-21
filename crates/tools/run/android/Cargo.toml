@@ -15,6 +15,9 @@ serde_json = { workspace = true }
 # compiled to a `.flata` via `aapt2 compile --dir` and passed to
 # `aapt2 link -R` alongside the AAR-derived flats.
 icon-gen = { workspace = true }
+# Verifies AndroidX downloads against the repository's `.sha1` (see
+# `src/maven.rs`). Dependency-free, already in the workspace lockfile.
+sha1_smol = "1"
 
 [dev-dependencies]
 tempfile = "3"

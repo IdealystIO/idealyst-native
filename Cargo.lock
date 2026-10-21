@@ -10666,6 +10666,7 @@ dependencies = [
  "build-ios",
  "icon-gen",
  "serde_json",
+ "sha1_smol",
  "tempfile",
 ]
 

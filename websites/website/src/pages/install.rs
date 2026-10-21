@@ -112,7 +112,10 @@ fn per_platform() -> Element {
             Typography(content = "Android Studio (or the SDK + NDK installed separately). \
                 The CLI looks for `ANDROID_HOME` and `ANDROID_NDK_ROOT`; if neither is \
                 set, the Android build reports what it couldn't find. You also need `adb` \
-                on your PATH.".to_string())
+                on your PATH. AndroidX libraries come from your gradle cache when it has \
+                them; anything missing is downloaded once from Google's Maven repository \
+                into `~/.idealyst/maven`, so the first Android build needs a network \
+                connection unless Android Studio has already filled the cache.".to_string())
             Typography(content = "Web".to_string(), kind = idea_ui::typography_kind::H3)
             Typography(content = "Nothing extra. The CLI pulls in wasm-pack as part of \
                 its own build, and the wasm32 target compiles via your existing Rust \

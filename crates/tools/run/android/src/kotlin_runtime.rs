@@ -48,14 +48,25 @@
 //! # AndroidX resolution
 //!
 //! The runtime imports a handful of `androidx.*` classes
-//! (drawerlayout, fragment, recyclerview). We resolve those from the
-//! user's local gradle cache rather than fetching from Maven — every
-//! Android Studio installation populates the cache by default, so
-//! there is no extra setup. Missing artifacts fail loudly with a
-//! pointer at the file we expected. Third-party AndroidX requirements
-//! get merged into the same resolution pass (deduped by
-//! (group, artifact)). SDKs must declare the full transitive closure
-//! they need — we don't read AAR `.pom` files to chase dependencies.
+//! (drawerlayout, fragment, recyclerview). Each (group, artifact) is
+//! looked up, in order, in:
+//!
+//! 1. the user's gradle cache (`~/.gradle/caches/modules-2/files-2.1/`),
+//!    which Android Studio populates;
+//! 2. the idealyst Maven cache (`~/.idealyst/maven/`, same
+//!    `<group>/<artifact>/<version>/<sha1>/<file>` layout);
+//! 3. Google's Maven repository, then Maven Central — downloaded once,
+//!    checked against the repository's `.sha1`, and stored in the
+//!    idealyst cache, so later builds are offline. The version is the
+//!    one the gradle cache resolved for the artifact's group (AndroidX
+//!    groups only work in lockstep), else the newest stable. See
+//!    `locate_artifacts` and `crate::maven`.
+//!
+//! An artifact found nowhere fails the build with every place it looked.
+//! Third-party AndroidX requirements get merged into the same resolution
+//! pass (deduped by (group, artifact)). SDKs must declare the full
+//! transitive closure they need — we don't read `.pom` files to chase
+//! dependencies.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -93,6 +104,15 @@ const REQUIRED_ANDROIDX: &[(&str, &str)] = &[
     // RecyclerView pulls in core + customview.
     ("androidx.customview", "customview"),
     ("androidx.core", "core"),
+    // RecyclerView 1.3's runtime-scope dependency: its constructor calls
+    // `PoolingContainer`, so without it every `flat_list` crashes at
+    // `RecyclerView.<init>` with `NoClassDefFoundError:
+    // androidx/customview/poolingcontainer/PoolingContainer`.
+    ("androidx.customview", "customview-poolingcontainer"),
+    // PoolingContainer's own runtime dependency: it walks views with the
+    // `androidx.core.view.ViewGroupKt`/`ViewKt` extensions, which live in
+    // core-ktx, not core.
+    ("androidx.core", "core-ktx"),
     ("androidx.activity", "activity"),
     ("androidx.lifecycle", "lifecycle-common"),
     ("androidx.lifecycle", "lifecycle-runtime"),
@@ -668,9 +688,9 @@ fn find_kotlin_dist() -> Result<PathBuf> {
 }
 
 /// Resolve every required androidx artifact's source (.aar or .jar)
-/// and extract its `classes.jar` (for .aar) under `out_dir`. Uses
-/// the user's local gradle cache (`~/.gradle/caches/modules-2/files-2.1/`)
-/// as the source.
+/// and extract its `classes.jar` (for .aar) under `out_dir`. Sources are
+/// searched in the order the module docs list: gradle cache, idealyst
+/// Maven cache, then a download into the idealyst cache.
 ///
 /// `pairs` is the merged (first-party + third-party) list of
 /// (group, artifact) tuples. Order matters only for deterministic
@@ -679,19 +699,14 @@ fn resolve_androidx(
     out_dir: &Path,
     pairs: &[(String, String)],
 ) -> Result<Vec<ResolvedArtifact>> {
-    let cache = gradle_cache_dir()?;
+    let sources = ArtifactSources {
+        gradle: gradle_cache_dir(),
+        idealyst: crate::maven::idealyst_maven_cache()?,
+        fetcher: &crate::maven::Curl,
+    };
+    let sources_found = locate_artifacts(&sources, pairs)?;
     let mut out = Vec::with_capacity(pairs.len());
-    for (group, artifact) in pairs {
-        let source = find_artifact(&cache, group, artifact).with_context(|| {
-            format!(
-                "missing {}:{} in the gradle cache — \
-                 open a project that depends on it in Android Studio once to \
-                 populate {}",
-                group,
-                artifact,
-                cache.display()
-            )
-        })?;
+    for ((_, artifact), source) in pairs.iter().zip(sources_found) {
         let classes_jar = extract_classes(&source, out_dir, artifact)?;
         out.push(ResolvedArtifact {
             artifact: artifact.clone(),
@@ -700,6 +715,104 @@ fn resolve_androidx(
         });
     }
     Ok(out)
+}
+
+/// Where [`locate_artifacts`] looks, in order.
+struct ArtifactSources<'a> {
+    /// `~/.gradle/caches/modules-2/files-2.1`, when it exists.
+    gradle: Option<PathBuf>,
+    /// `~/.idealyst/maven` — downloads land here, in the gradle layout.
+    idealyst: PathBuf,
+    fetcher: &'a dyn crate::maven::Fetch,
+}
+
+/// Each pair's `.aar`/`.jar`, in `pairs` order.
+///
+/// Every pair the gradle cache holds is taken from it first. The rest come
+/// from the idealyst cache or a download, at the version the gradle cache
+/// resolved for the same group (highest, if it holds several): AndroidX
+/// versions a group in lockstep and moves classes between its artifacts
+/// across releases, so a lone newest artifact next to an older cached
+/// sibling can miss classes both expect (`core-ktx` 1.13+ is empty because
+/// its extensions moved into `core`; next to a cached `core` 1.12 that
+/// leaves no `ViewGroupKt`, and RecyclerView's first detach crashes).
+fn locate_artifacts(sources: &ArtifactSources, pairs: &[(String, String)]) -> Result<Vec<PathBuf>> {
+    let mut found: Vec<std::result::Result<PathBuf, String>> = pairs
+        .iter()
+        .map(|(group, artifact)| match &sources.gradle {
+            Some(cache) => find_artifact(cache, group, artifact).map_err(|e| format!("{e:#}")),
+            None => Err("no gradle cache at ~/.gradle/caches/modules-2/files-2.1".to_string()),
+        })
+        .collect();
+    let group_version = |group: &str, found: &[std::result::Result<PathBuf, String>]| {
+        pairs
+            .iter()
+            .zip(found)
+            .filter(|((g, _), _)| g == group)
+            .filter_map(|(_, f)| f.as_ref().ok().and_then(|p| cached_version(p)))
+            .max_by(|a, b| parse_version(a).cmp(&parse_version(b)))
+    };
+    for i in 0..pairs.len() {
+        if let Err(gradle_miss) = &found[i] {
+            let (group, artifact) = &pairs[i];
+            let preferred = group_version(group, &found);
+            let p = locate_missing(sources, group, artifact, preferred.as_deref(), gradle_miss)?;
+            found[i] = Ok(p);
+        }
+    }
+    Ok(found.into_iter().map(|f| f.expect("every miss was located or returned an error")).collect())
+}
+
+/// The `<version>` directory a cached binary sits under
+/// (`<group>/<artifact>/<version>/<hash>/<file>`).
+fn cached_version(binary: &Path) -> Option<String> {
+    Some(binary.parent()?.parent()?.file_name()?.to_string_lossy().into_owned())
+}
+
+/// An artifact the gradle cache lacks: the idealyst cache, else a verified
+/// download into it. With a `preferred` (group) version only that version
+/// counts as a cache hit — a cached copy at another version is the
+/// mismatch [`locate_artifacts`] exists to avoid. A cache hit never touches
+/// the network, so a build is offline once each artifact has been fetched.
+/// (When the repository doesn't publish the group version, the newest
+/// stable is downloaded, and later builds re-check the repository for the
+/// group version before reusing it.)
+fn locate_missing(
+    sources: &ArtifactSources,
+    group: &str,
+    artifact: &str,
+    preferred: Option<&str>,
+    gradle_miss: &str,
+) -> Result<PathBuf> {
+    if sources.idealyst.is_dir() {
+        match preferred {
+            Some(version) => {
+                for name in [artifact.to_string(), format!("{artifact}-jvm")] {
+                    let dir = sources.idealyst.join(group).join(name).join(version);
+                    if dir.is_dir() {
+                        if let Some(p) = find_binary_in_version(&dir)? {
+                            return Ok(p);
+                        }
+                    }
+                }
+            }
+            None => {
+                if let Ok(p) = find_artifact(&sources.idealyst, group, artifact) {
+                    return Ok(p);
+                }
+            }
+        }
+    }
+    crate::maven::fetch_from_maven(sources.fetcher, &sources.idealyst, group, artifact, preferred)
+        .with_context(|| {
+            format!(
+                "{group}:{artifact} is in neither the gradle cache ({gradle_miss}) nor {}, \
+                 and downloading it failed. Connect to the network for one build \
+                 (it is cached afterwards), or open a project that depends on it in \
+                 Android Studio to populate the gradle cache",
+                sources.idealyst.display()
+            )
+        })
 }
 
 /// Pull each AAR's `res/` directory out, compile it with `aapt2 compile`
@@ -854,18 +967,10 @@ fn read_aar_package(aar: &Path) -> Result<Option<String>> {
     Ok(Some(rest[..end].to_string()))
 }
 
-fn gradle_cache_dir() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .map(PathBuf::from)
-        .map_err(|_| anyhow::anyhow!("$HOME is not set"))?;
-    let p = home.join(".gradle/caches/modules-2/files-2.1");
-    if !p.is_dir() {
-        anyhow::bail!(
-            "no gradle cache at {}; install Android Studio and open any project once to populate it",
-            p.display()
-        );
-    }
-    Ok(p)
+fn gradle_cache_dir() -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let p = PathBuf::from(home).join(".gradle/caches/modules-2/files-2.1");
+    p.is_dir().then_some(p)
 }
 
 /// Walk `<cache>/<group>/<artifact>/<version>/<hash>/<artifact>-<version>.{aar|jar}`
@@ -1003,7 +1108,7 @@ fn extract_classes(
 mod tests {
     use super::{
         extensions_from_metadata, stage_extension_sources, ExtensionSource, BACKEND_KOTLIN_DIR,
-        BACKEND_PACKAGE, REQUIRED_ANDROIDX,
+        BACKEND_PACKAGE, REQUIRED_ANDROIDX, ArtifactSources, locate_artifacts,
     };
     use std::path::{Path, PathBuf};
 
@@ -1146,6 +1251,169 @@ mod tests {
                  ClassNotFoundException for one of its classes",
             );
         }
+    }
+
+    /// Regression: every `flat_list` on Android crashed at `RecyclerView.<init>`
+    /// with `NoClassDefFoundError: androidx/customview/poolingcontainer/
+    /// PoolingContainer` because RecyclerView's runtime-scope dependency was
+    /// never dexed. The lists below are the dependencies RecyclerView 1.3.2's
+    /// POM and customview-poolingcontainer 1.1.0's POM declare (KMP bases
+    /// mapped to their pinned `-jvm` variant; `kotlin-stdlib` comes from the
+    /// Kotlin distribution, not this list).
+    #[test]
+    fn regression_flat_list_recyclerview_runtime_closure_is_dexed() {
+        for (group, artifact) in [
+            // androidx.recyclerview:recyclerview:1.3.2
+            ("androidx.annotation", "annotation-jvm"),
+            ("androidx.collection", "collection-jvm"),
+            ("androidx.core", "core"),
+            ("androidx.customview", "customview"),
+            ("androidx.customview", "customview-poolingcontainer"),
+            // androidx.customview:customview-poolingcontainer:1.1.0
+            ("androidx.core", "core-ktx"),
+        ] {
+            assert!(
+                lists(group, artifact),
+                "REQUIRED_ANDROIDX must include {group}:{artifact} — RecyclerView \
+                 (every flat_list) needs it at runtime",
+            );
+        }
+    }
+
+    /// A `group/artifact/version/hash/file` tree under `root`, the layout
+    /// both caches share.
+    fn cached(root: &Path, group: &str, artifact: &str, version: &str, ext: &str) -> PathBuf {
+        let dir = root.join(group).join(artifact).join(version).join("0123abcd");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(format!("{artifact}-{version}.{ext}"));
+        std::fs::write(&file, b"bin").unwrap();
+        file
+    }
+
+    fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter().map(|(g, a)| (g.to_string(), a.to_string())).collect()
+    }
+
+    #[test]
+    fn a_gradle_cache_hit_never_reaches_the_network() {
+        let gradle = tempfile::tempdir().unwrap();
+        let idealyst = tempfile::tempdir().unwrap();
+        let hit = cached(gradle.path(), "androidx.core", "core", "1.12.0", "aar");
+        let sources = ArtifactSources {
+            gradle: Some(gradle.path().to_path_buf()),
+            idealyst: idealyst.path().to_path_buf(),
+            fetcher: &crate::maven::tests::NoNetwork,
+        };
+        let got = locate_artifacts(&sources, &pairs(&[("androidx.core", "core")])).unwrap();
+        assert_eq!(got, vec![hit]);
+    }
+
+    #[test]
+    fn an_idealyst_cache_hit_never_reaches_the_network() {
+        let gradle = tempfile::tempdir().unwrap();
+        let idealyst = tempfile::tempdir().unwrap();
+        let hit = cached(idealyst.path(), "androidx.customview", "customview-poolingcontainer", "1.1.0", "aar");
+        for gradle_dir in [Some(gradle.path().to_path_buf()), None] {
+            let sources = ArtifactSources {
+                gradle: gradle_dir,
+                idealyst: idealyst.path().to_path_buf(),
+                fetcher: &crate::maven::tests::NoNetwork,
+            };
+            let got = locate_artifacts(
+                &sources,
+                &pairs(&[("androidx.customview", "customview-poolingcontainer")]),
+            )
+            .unwrap();
+            assert_eq!(got, vec![hit.clone()]);
+        }
+    }
+
+    /// The idealyst cache serves a group-aligned hit without the network.
+    #[test]
+    fn an_idealyst_cache_hit_at_the_group_version_never_reaches_the_network() {
+        let gradle = tempfile::tempdir().unwrap();
+        let idealyst = tempfile::tempdir().unwrap();
+        let core = cached(gradle.path(), "androidx.core", "core", "1.12.0", "aar");
+        let ktx = cached(idealyst.path(), "androidx.core", "core-ktx", "1.12.0", "aar");
+        let sources = ArtifactSources {
+            gradle: Some(gradle.path().to_path_buf()),
+            idealyst: idealyst.path().to_path_buf(),
+            fetcher: &crate::maven::tests::NoNetwork,
+        };
+        // core-ktx listed first: the group version comes from the whole
+        // gradle pass, not from list order.
+        let got = locate_artifacts(
+            &sources,
+            &pairs(&[("androidx.core", "core-ktx"), ("androidx.core", "core")]),
+        )
+        .unwrap();
+        assert_eq!(got, vec![ktx, core]);
+    }
+
+    /// Regression: `core-ktx` resolved to the newest release (1.19.1, an
+    /// empty jar) next to the gradle cache's `core` 1.12.0, so
+    /// `androidx.core.view.ViewGroupKt` was on neither and every
+    /// `flat_list` crashed with `NoClassDefFoundError` when its
+    /// RecyclerView detached. A cached copy at another version — what the
+    /// first fix left in `~/.idealyst/maven` — must not be reused either.
+    #[test]
+    fn regression_missing_artifact_resolves_at_its_groups_cached_version() {
+        let gradle = tempfile::tempdir().unwrap();
+        let idealyst = tempfile::tempdir().unwrap();
+        cached(gradle.path(), "androidx.core", "core", "1.12.0", "aar");
+        cached(idealyst.path(), "androidx.core", "core-ktx", "1.19.1", "aar");
+        let mut repo = crate::maven::tests::FakeRepo::default();
+        let dir = "https://dl.google.com/android/maven2/androidx/core/core-ktx";
+        repo.files.insert(
+            format!("{dir}/maven-metadata.xml"),
+            b"<metadata><versioning><versions><version>1.12.0</version>\
+              <version>1.19.1</version></versions></versioning></metadata>"
+                .to_vec(),
+        );
+        let base = format!("{dir}/1.12.0/core-ktx-1.12.0");
+        repo.files.insert(format!("{base}.pom"), b"<project><packaging>aar</packaging></project>".to_vec());
+        repo.files.insert(format!("{base}.aar"), b"ktx".to_vec());
+        repo.files.insert(
+            format!("{base}.aar.sha1"),
+            sha1_smol::Sha1::from(b"ktx").digest().to_string().into_bytes(),
+        );
+        let sources = ArtifactSources {
+            gradle: Some(gradle.path().to_path_buf()),
+            idealyst: idealyst.path().to_path_buf(),
+            fetcher: &repo,
+        };
+        let got = locate_artifacts(
+            &sources,
+            &pairs(&[("androidx.core", "core"), ("androidx.core", "core-ktx")]),
+        )
+        .unwrap();
+        assert!(got[1].ends_with("core-ktx-1.12.0.aar"), "{}", got[1].display());
+    }
+
+    #[test]
+    fn a_miss_in_both_caches_downloads_into_the_idealyst_cache() {
+        let gradle = tempfile::tempdir().unwrap();
+        let idealyst = tempfile::tempdir().unwrap();
+        let repo = crate::maven::tests::FakeRepo::default();
+        let sources = ArtifactSources {
+            gradle: Some(gradle.path().to_path_buf()),
+            idealyst: idealyst.path().to_path_buf(),
+            fetcher: &repo,
+        };
+        // Nothing published: the error names both caches and the remedy.
+        let err = format!(
+            "{:#}",
+            locate_artifacts(&sources, &pairs(&[("androidx.customview", "customview-poolingcontainer")]))
+                .unwrap_err()
+        );
+        assert!(err.contains("neither the gradle cache") && err.contains("Connect to the network"), "{err}");
+        assert!(
+            repo.requested.borrow().iter().any(|u| u.starts_with(
+                "https://dl.google.com/android/maven2/androidx/customview/customview-poolingcontainer/"
+            )),
+            "the download goes to Google's Maven first: {:?}",
+            repo.requested.borrow()
+        );
     }
 
     /// `androidx.collection` (1.4+) and `androidx.annotation` (1.8+) are
