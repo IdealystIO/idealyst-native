@@ -1686,6 +1686,15 @@ fn regression_scroll_y_header_lays_out_above_the_rows_scroller() {
             };
             assert_eq!(body_prim.axis, axis, "the rows' scroller (scroll_x: {scroll_x})");
             assert!(body_prim.on_scroll.is_some(), "the body's scroll drives the head strip");
+            // The premint dump runs THIS lowering: the body scroller must
+            // carry the same premintable sheet the web lowering attaches,
+            // or a `--premint-only` web bundle has no CSS for it.
+            match body_prim.style.as_ref() {
+                Some(StyleProp::Sheet(app)) => {
+                    assert!(app.preminted_class_list().is_some(), "the body scroller's sheet premints")
+                }
+                _ => panic!("the body scroller carries a sheet application"),
+            }
             assert_eq!(body_kids.len(), 2, "body scroller: probe, content");
             let content = item_children(body_kids.pop().unwrap());
             let body_grid = item_children(content.into_iter().next().unwrap());

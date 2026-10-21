@@ -1430,6 +1430,7 @@ fn page_table() -> Element {
         shown: signal(20),
     };
     let (selected, last_resize, opened) = (page.selected, page.last_resize, page.opened);
+    let _ = phone_frame();
     ui! {
         Stack(axis = StackAxis::Column, gap = StackGap::Sm) {
             Typography(
@@ -1568,11 +1569,19 @@ fn narrow_projects(page: ProjectsPage) -> Element {
 
 /// The card form's bounded box in the demo — the list virtualizes inside
 /// it, as it would inside a phone screen's body.
+///
+/// A cached static sheet, built once by `page_table` whatever the width —
+/// the premint dump crawls the page at desktop width, and a sheet first
+/// built for the phone layout would have no CSS in a `--premint-only`
+/// bundle.
 fn phone_frame() -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::new(|_| StyleRules {
-        height: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(520.0))),
-        ..Default::default()
-    }))
+    static KEY: u8 = 0;
+    runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
+        Rc::new(StyleSheet::r#static(StyleRules {
+            height: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(520.0))),
+            ..Default::default()
+        }))
+    })
 }
 
 /// Built-in reorder demo: two groups of tasks in a scroll-x table with a

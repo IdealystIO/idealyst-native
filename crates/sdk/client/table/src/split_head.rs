@@ -366,8 +366,10 @@ pub(super) fn probe_sheet() -> Rc<runtime_shared::StyleSheet> {
     })
 }
 
-/// The body scroller on web: the probe's containing block.
-pub(super) fn web_body_scroller_sheet() -> Rc<runtime_shared::StyleSheet> {
+/// The body scroller: the probe's containing block. Both lowerings use
+/// it — the premint dump runs the native lowering, so a web-only sheet
+/// would have no CSS in a `--premint-only` bundle.
+pub(super) fn body_scroller_sheet() -> Rc<runtime_shared::StyleSheet> {
     static KEY: u8 = 0;
     runtime_shared::cached_stylesheet(&KEY as *const u8 as usize, || {
         runtime_shared::StyleSheet::r#static(StyleRules {
@@ -548,7 +550,7 @@ pub(super) fn web(
     let body_scroller = edge_watched_scroller(
         glue::scroll_view(vec![probe(&sync), body_table])
             .bind(sync.body_ref())
-            .with_style(StyleProp::Sheet(Box::new(StyleApplication::new(web_body_scroller_sheet())))),
+            .with_style(StyleProp::Sheet(Box::new(StyleApplication::new(body_scroller_sheet())))),
         scroller_axis(scroll_x, true),
         watch,
         Some(Rc::new(move |x, y| on_scroll.on_body_scroll(x, y))),

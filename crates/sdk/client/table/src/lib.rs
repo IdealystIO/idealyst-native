@@ -1751,6 +1751,10 @@ fn build_table(parts: TableParts) -> Element {
         parts;
     let watch = on_edges.filter(|_| scroll_x).map(EdgeWatch::new);
     apply_row_collapse(&mut rows, false);
+    // The web clip's sheet, built here too: the premint dump runs this
+    // (native) lowering, and emits CSS only for sheets it constructs —
+    // a `--premint-only` web bundle panics on a sheet it never saw.
+    let _ = clip_sheet();
     let columns_from_spans = resolve_spans(&rows);
     // Read before the rows are flattened: the specs ride the cells.
     let specs = column_specs(&rows, columns_from_spans, &columns);
@@ -1807,10 +1811,10 @@ fn build_table(parts: TableParts) -> Element {
         let body_scroller = edge_watched_scroller(
             glue::scroll_view(vec![split_head::probe(&sync), content])
                 .bind(sync.body_ref())
-                .with_style(StyleProp::Static(Rc::new(StyleRules {
-                    position: Some(glue::Position::Relative),
-                    ..native_styles::scroll_wrapper_rules(scroll_x)
-                }))),
+                .with_style(StyleProp::Sheet(Box::new(
+                    StyleApplication::new(split_head::body_scroller_sheet())
+                        .with_inline(native_styles::scroll_wrapper_rules(scroll_x)),
+                ))),
             scroller_axis(scroll_x, true),
             watch,
             Some(Rc::new(move |x, y| on_scroll.on_body_scroll(x, y))),
