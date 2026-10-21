@@ -1,27 +1,42 @@
-//! `Table` — themed wrapper over the `table` SDK.
+//! `Table` — themed wrapper over the `table` SDK, and the suite an app
+//! builds every data table from: a column model, resizable columns, a
+//! selection column, drag-to-reorder, sortable headers, an empty state,
+//! a pager footer, and a card form for phones.
 //!
 //! ```ignore
+//! let widths = signal(saved_widths);           // in the SCREEN, not the table's rebuild
+//! let selected = signal(BTreeSet::<RowId>::new());
 //! ui! {
-//!     Table {
+//!     Table(
+//!         scroll_x = true,
+//!         scroll_y = true,
+//!         variant = TableVariant::Plain,
+//!         inset_x = TableInset::by_breakpoint(TableInset::Px(16.0), TableInset::Px(24.0), TableInset::Px(28.0)),
+//!         columns = vec![
+//!             TableColumn::new("name").label("Name").width(220.0).resizable().pinned(ColumnPin::Left),
+//!             TableColumn::new("notes").label("Notes").fill().truncate(),
+//!             TableColumn::new("hours").label("Hours").width(80.0).align(CellAlign::Right),
+//!             TableColumn::actions("menu"),
+//!         ],
+//!         column_widths = Some(widths),
+//!         on_column_resize = Some(save_width),
+//!         selection = Some(selected),
+//!         on_reorder = Some(reorder),
+//!         empty = Some("Nobody yet".into()),
+//!         footer_slot = Some(ui! { TablePager(offset = offset, page_size = size, total = total, noun = "people".to_string(), on_offset = go) }),
+//!     ) {
 //!         TableRow {
-//!             TableCell(header = true, width = Some(160.0), truncate = true) { text { "Name".to_string() } }
-//!             TableCell(header = true) { text { "Notes".to_string() } }
-//!             TableCell(header = true, align = CellAlign::Right) { text { "Hours".to_string() } }
+//!             TableCell(header = true, text = Some("Name".to_string()), sort = rx!(sort_of("name")), on_sort = Some(sort_by("name")))
+//!             TableCell(header = true, text = Some("Notes".to_string()))
+//!             TableCell(header = true, text = Some("Hours".to_string()))
+//!             TableCell(header = true)
 //!         }
-//!         for row in rows {
-//!             TableRow(tone = row.tone()) {
-//!                 TableCell(width = Some(160.0), truncate = true, text = Some(row.name.clone()))
-//!                 TableCell(text = Some(row.notes.clone()))
-//!                 TableCell(align = CellAlign::Right, text = Some(row.hours.clone()))
-//!             }
-//!         }
-//!         if rows.is_empty() {
-//!             TableRow { TableCell(span = ColSpan::Rest, text = Some("Nobody yet".into())) }
-//!         }
-//!         TableFooter {
-//!             TableRow {
-//!                 TableCell(span = ColSpan::Columns(2), text = Some("Crew totals".into()))
-//!                 TableCell(align = CellAlign::Right, text = Some(total.clone()))
+//!         for p in people {
+//!             TableRow(id = Some(p.id.clone().into()), tone = p.tone(), on_row_click = Some(open(p.id.clone()))) {
+//!                 TableCell(text = Some(p.name.clone()))
+//!                 TableCell(text = Some(p.notes.clone()))
+//!                 TableCell(text = Some(p.hours.clone()), tone = p.hours_tone())
+//!                 TableCell { RowMenu(id = p.id.clone()) }
 //!             }
 //!         }
 //!     }
@@ -32,27 +47,116 @@
 //! - [`Table`] wraps the SDK's `<table>` with the themed surface
 //!   (rounded corners, hairline border, theme background), and owns the
 //!   table-wide settings: `variant`, `scroll_x`, `scroll_y`,
-//!   `max_height`, `inset_x`, `density`, and the frame slots.
+//!   `max_height`, `inset_x`, `density`, the frame slots — and the column
+//!   model and the columns it adds (`columns`, `column_widths`,
+//!   `on_column_resize`, `selection`, `on_reorder`, `empty`).
 //! - [`TableRow`] is a `<tr>`: `on_row_click` for a clickable row,
-//!   `tone` for a whole-row tint, `bind_to` for the row's handle.
+//!   `tone` for a whole-row tint, `bind_to` for the row's handle, and the
+//!   row's part in the table's columns — `id`, `selectable`, `draggable`,
+//!   `reorder_group`.
 //! - [`TableCell`] wraps `<td>` (or `<th>` when `header = true`) with
 //!   the cell-level padding + row divider, and wraps cell contents in
 //!   a themed `text` node so values without explicit Typography pick
-//!   up the right column treatment. Column layout lives here too —
-//!   `width`, `min_width`, `max_width`, `flex`, `align`, `truncate`,
-//!   `span`, `pinned`.
+//!   up the right column treatment. Per-cell column settings live here
+//!   too — `width`, `min_width`, `max_width`, `flex`, `align`, `truncate`,
+//!   `span`, `pinned`, `padding` — along with a value's `tone` and a
+//!   header's `sort`.
 //! - [`TableFooter`] holds footer rows (`<tfoot>` on web).
+//!
+//! Beside them: [`TablePager`] (the paged-table footer) and
+//! [`TableCards`] (the narrow form, from the same column specs).
 //!
 //! See [Table] / [TableRow] / [TableCell] / [TableFooter] for the full
 //! prop surface.
 //!
-//! # Columns: width, alignment, truncation
+//! # The column model
 //!
-//! A column is the cells at one position in every row, so its settings
-//! go on EVERY cell of it, header included — header and body cells that
-//! disagree about a width break the column on both lowerings. An app
-//! with many tables usually keeps one column definition and spreads it
-//! into each cell.
+//! `Table(columns = vec![TableColumn::new("name")…, …])` puts each
+//! column's settings on the TABLE: column `i` of the list is the `i`-th
+//! column the author wrote, and the table applies its spec to every cell
+//! of the column, header and body alike — exact `width`, `min_width`,
+//! `max_width`, `fill` (take the spare width), `resizable`, `pinned`,
+//! `align`, `truncate`, `padding`, and for the card form a `label` and a
+//! `card` slot. The cells carry none of it, so a header and its body
+//! cells can never disagree about a column. The columns the table adds
+//! (selection, grip) come before the author's and are never counted.
+//!
+//! - **Resizing.** A `resizable` column's header carries a drag handle on
+//!   its trailing edge, revealed while the header is hovered. Dragging
+//!   resizes the whole column live — header and every body cell, nothing
+//!   else re-styles — within the column's `min_width` (default
+//!   [`COLUMN_RESIZE_MIN_PX`]) and `max_width`. Release reports
+//!   `on_column_resize(id, Some(width))`; a double-click resets the
+//!   column to its spec width and reports `None`. The live widths live in
+//!   `column_widths` — a `Signal<ColumnWidths>` the screen owns and seeds
+//!   from its saved layout, so a resized column keeps its width when the
+//!   table is rebuilt from a new data snapshot. An entry overrides the
+//!   spec's `width`; a column with neither keeps its natural width.
+//! - **Frozen columns** are inset automatically: a pinned column clears
+//!   the widths of the pinned columns between it and its edge (give each
+//!   a `width`), and only the innermost draws the frozen block's edge.
+//! - **The actions column.** [`TableColumn::actions`] is the trailing row
+//!   menu column: [`ACTIONS_COLUMN_WIDTH_PX`] wide, frozen right, compact
+//!   icon padding (`CellPadding::Icon`), centred. Each row's last cell is
+//!   just `TableCell { IconButton(…) }`. Without a column model the same
+//!   cell is `TableCell(pinned = Some(ColumnPin::Right), width = …,
+//!   padding = CellPadding::Icon)`.
+//!
+//! # Selection, reorder, empty state
+//!
+//! - `Table(selection = Some(set))` adds a leading checkbox column. The
+//!   header box is tri-state over the VISIBLE rows — those the table was
+//!   built with whose `TableRow` has an `id` and is `selectable` — and
+//!   selects or clears exactly those, keeping ids from other pages. The
+//!   set is a `Signal<BTreeSet<RowId>>` the screen owns.
+//! - `Table(on_reorder = Some(cb))` adds a leading grip column and makes
+//!   draggable body rows reorderable (`dnd` SDK, scroll-aware pickup). The
+//!   lifted row rides above the rows it crosses while they slide aside to
+//!   open the gap; `cb(from, to)` gets ordinals over the draggable rows
+//!   ([`move_in_place`] is the matching list move). A row lands only
+//!   among rows with its `reorder_group`. The lift is the cell sheets'
+//!   `drag` axis, which sorts before `pinned` — a frozen column stays
+//!   frozen through the drag.
+//! - Both added columns freeze with the first author column when it is
+//!   pinned left, at their fixed widths, and take each row's tone, hover
+//!   and click like the row's own cells.
+//! - `Table(empty = Some("Nobody yet".into()))` — with no body rows, the
+//!   table keeps its header and adds one row: empty cells under the added
+//!   columns, then the message (muted) spanning every author column.
+//!
+//! # Sort headers and cell tones
+//!
+//! `TableCell(header = true, sort = Some(SortState::Asc), on_sort =
+//! Some(cb))` draws the direction beside the label (a faint up-down pair
+//! for a sortable column that is not the sort), makes the header a press
+//! target, and calls `cb(SortState::next(current))`. The sorting is the
+//! app's. `TableCell(tone = CellTone::Danger)` colours one value (an
+//! overdue date) on the cell and its text; a whole row takes
+//! `TableRow(tone = …)`.
+//!
+//! # Paged tables and the narrow form
+//!
+//! [`TablePager`] is the footer of a paged table — "26–50 of 312
+//! projects", a "Rows" picker and the page numbers. Put it in
+//! `footer_slot`: inside the frame, outside the scroller (pinned under a
+//! `scroll_y` table's rows), at the table's edge inset. `inset_x` is
+//! reactive — [`TableInset::by_breakpoint`] re-pads the edge cells in
+//! place as the page margin steps, so the table never rebuilds on a
+//! resize. A `scroll_y` table's scroller shows a vertical scrollbar only
+//! while its rows overflow (it scrolls on demand); reserving a gutter is
+//! a page-level choice, not the table's.
+//!
+//! Below `Sm` a table becomes [`TableCards`]: a virtualized list of
+//! cards laid out from the same column specs (title, opposite, labelled
+//! cells up to a cap, the rest behind "+N more"), with measured heights
+//! and load-on-scroll. See its module docs for the switch.
+//!
+//! # Per-cell columns: width, alignment, truncation
+//!
+//! Without a column model, a column's settings go on EVERY cell of it,
+//! header included — header and body cells that disagree about a width
+//! break the column on both lowerings. (The column model above does this
+//! for you.)
 //!
 //! - `width = Some(px)` holds the column at exactly that width. The
 //!   table's spare width goes to the columns WITHOUT one, so a table
@@ -203,29 +307,18 @@
 //! alone. Row tones read `color-table-row-{highlight,warning,danger}`
 //! and their `-hover` variants.
 //!
-//! # Row drag & drop — bring your own
+//! # Building your own row interaction
 //!
-//! This component deliberately ships NO drag-and-drop behavior. What
-//! it (and the `table` SDK underneath) exposes are the HANDLES a
-//! custom implementation needs, so apps own the interaction:
-//!
-//! - `TableRow(bind_to = Some(r))` (or `table::bind_row(&row, fill)`) —
-//!   the row's proxy surface handle (the `<tr>` on web, a row-spanning
-//!   backdrop view on native): row geometry for drop targeting / frame
-//!   reads, or an anchor for a hover card.
-//! - `table::visit_row_cells` + `table::set_cell_touch` — fan a drag
-//!   recognizer across a row's cells (row-level touch must live
-//!   per-cell; see the SDK docs for why).
-//! - `table::bind_cell` — per-cell node handles for binding animated
-//!   drag offsets (`AnimatedValue::bind`).
-//! - `table::map_cell_style` — layer reactive feedback over the
-//!   themed cell styles, composing over whatever style a cell already
-//!   carries. The cell sheets
-//!   ship inert `dragging` / `drop_target` axes (dim + highlight) so
-//!   a custom implementation can select themed arms instead of
-//!   inventing overrides.
-//! The idea-ui docs' data/table page carries a complete userland
-//! reorder implementation built from these plus the `dnd` SDK.
+//! For an interaction the table does not ship, the `table` SDK exposes
+//! the HANDLES it is built from: `TableRow(bind_to = Some(r))` (or
+//! `table::bind_row`) for a row's proxy surface — the `<tr>` on web, a
+//! row-spanning backdrop on native — for geometry and anchoring;
+//! `table::visit_row_cells` + `table::set_cell_touch` to fan a recognizer
+//! across a row's cells (row-level touch must live per cell);
+//! `table::bind_cell` for per-cell animated offsets; and
+//! `table::map_cell_style` to select themed axes over whatever a cell
+//! already carries (the cell sheets ship `dragging` / `drop_target`
+//! arms for a custom drag).
 //!
 //! # Layering
 //!
@@ -234,14 +327,40 @@
 //! HTML `<table>` on web) is generic and cross-platform; idea-ui
 //! supplies the opinionated visual that reads the active theme.
 
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use runtime_core::{
-    component, signal, text as text_node, ui, ChildList, Element, IdealystSchema,
-    IntoElement, Length, Reactive, Ref, Signal, StyleApplication, StyleRules, Tokenized,
-    VariantEnum, ViewHandle,
+    component, signal, tap, text as text_node, ui, ChildList, Element, IdealystSchema,
+    IntoElement, Length, Reactive, Ref, Signal, StyleApplication, StyleRules, TapRecognizer,
+    Tokenized, VariantEnum, ViewHandle,
 };
 use runtime_vocabulary::StyleProp;
+
+
+mod cards;
+mod columns;
+mod pager;
+mod reorder;
+mod rows;
+mod select;
+
+
+pub use cards::{TableCards, TableCardsProps, CARD_CELL_CAP, CARD_ESTIMATE_PX, CARD_GAP_PX, CARD_LOAD_AHEAD_PX};
+pub use columns::{
+    dragged_width, CardSlot, CellPadding, ColumnId, ColumnResizeCallback, ColumnWidths,
+    TableColumn, ACTIONS_COLUMN_WIDTH_PX, COLUMN_RESET_DOUBLE_CLICK_NS, COLUMN_RESIZE_MIN_PX,
+};
+pub use pager::{page_window_text, TablePager, TablePagerProps};
+pub use reorder::{move_in_place, slide_offset, GRIP_COLUMN_WIDTH_PX};
+pub use rows::RowId;
+pub use select::{select_all_state, toggle_select_all, SelectAllState, SELECT_COLUMN_WIDTH_PX};
+
+use columns::ColumnModel;
+use reorder::{Reorder, GRIP_ICON_PX, GRIP_MARK};
+use rows::{decorate_added_cell, row_meta, RowInteraction, RowMeta};
+use select::{select_all_box, select_row_box};
+use crate::components::icon::Icon;
 pub use table::ColSpan;
 use table::{table as sdk_table, table_cell as sdk_cell, table_foot as sdk_foot, table_row as sdk_row};
 use table::{
@@ -251,7 +370,7 @@ use table::{
 
 use crate::stylesheets::{
     Table as TableStyle, TableBodyCell, TableBodyText, TableCellInner, TableHeadCell, TableHeadText,
-    TableSlot,
+    TableSlot, TableSortIdle,
 };
 
 /// Which edge a [`TableCell`] freezes against in a
@@ -322,6 +441,63 @@ impl VariantEnum for RowTone {
 
     fn all_variants() -> &'static [Self] {
         &[RowTone::None, RowTone::Highlight, RowTone::Warning, RowTone::Danger]
+    }
+}
+
+/// One value's text colour in a [`TableCell`] — an overdue date, a
+/// failed check — without tinting the row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, IdealystSchema, runtime_core::Remote)]
+pub enum CellTone {
+    /// The table's body text colour.
+    #[default]
+    None,
+    /// Secondary — a placeholder dash, an empty value.
+    Muted,
+    /// Good — passed, paid, on time.
+    Success,
+    /// Needs a look — due soon.
+    Warning,
+    /// In trouble — overdue, failed.
+    Danger,
+}
+
+// The variant string IS the stylesheet arm the value selects.
+impl VariantEnum for CellTone {
+    fn as_variant_str(self) -> &'static str {
+        match self {
+            CellTone::None => "none",
+            CellTone::Muted => "muted",
+            CellTone::Success => "success",
+            CellTone::Warning => "warning",
+            CellTone::Danger => "danger",
+        }
+    }
+
+    fn all_variants() -> &'static [Self] {
+        &[CellTone::None, CellTone::Muted, CellTone::Success, CellTone::Warning, CellTone::Danger]
+    }
+}
+
+/// A sortable header's state — see [`TableCellProps::sort`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, IdealystSchema, runtime_core::Remote)]
+pub enum SortState {
+    /// Sortable, not the sort column.
+    #[default]
+    None,
+    /// Sorted ascending.
+    Asc,
+    /// Sorted descending.
+    Desc,
+}
+
+impl SortState {
+    /// What a press on the header asks for: ascending first, then it
+    /// flips between ascending and descending.
+    pub fn next(self) -> SortState {
+        match self {
+            SortState::Asc => SortState::Desc,
+            SortState::None | SortState::Desc => SortState::Asc,
+        }
     }
 }
 
@@ -409,6 +585,29 @@ pub enum TableInset {
 }
 
 impl TableInset {
+    /// A page margin that steps with the breakpoint: `base` below `Md`,
+    /// `md` from `Md`, `lg` from `Lg` up. Pass it as `Table(inset_x = …)`:
+    /// crossing a step re-pads the table's edge cells in place, so the
+    /// table (and anything it holds — a selection, a scroll position)
+    /// never rebuilds for a window resize.
+    ///
+    /// ```ignore
+    /// Table(inset_x = TableInset::by_breakpoint(TableInset::Px(16.0), TableInset::Px(24.0), TableInset::Px(28.0)))
+    /// ```
+    pub fn by_breakpoint(base: TableInset, md: TableInset, lg: TableInset) -> Reactive<TableInset> {
+        let bp = runtime_core::current_breakpoint();
+        Reactive::Dynamic(Rc::new(move || {
+            let bp = bp.get();
+            if bp.is_at_least(runtime_core::Breakpoint::Lg) {
+                lg
+            } else if bp.is_at_least(runtime_core::Breakpoint::Md) {
+                md
+            } else {
+                base
+            }
+        }))
+    }
+
     /// The sheets' `inset_left` / `inset_right` arm a token inset
     /// selects; `None` for [`TableInset::None`] and [`TableInset::Px`].
     fn arm(self) -> Option<&'static str> {
@@ -463,6 +662,34 @@ impl InsetSide {
 // Table
 // =============================================================================
 
+/// What a [`Table`] with no body rows says, in one full-width row under
+/// its header — see [`TableProps::empty`]. Text takes the muted body
+/// style; an element is laid out like a cell's rich children.
+pub enum TableEmpty {
+    /// A sentence, in the muted body text style.
+    Text(String),
+    /// Any content — a sentence with a link, an action.
+    Content(Element),
+}
+
+impl From<&str> for TableEmpty {
+    fn from(s: &str) -> Self {
+        TableEmpty::Text(s.to_string())
+    }
+}
+
+impl From<String> for TableEmpty {
+    fn from(s: String) -> Self {
+        TableEmpty::Text(s)
+    }
+}
+
+impl From<Element> for TableEmpty {
+    fn from(e: Element) -> Self {
+        TableEmpty::Content(e)
+    }
+}
+
 /// Themed table container. Wraps the `table` SDK's `<table>` with
 /// idea-ui's surface tokens (rounded corners + hairline border + theme
 /// background). Pass `TableRow`s (and optionally a `TableFooter`) as
@@ -496,9 +723,11 @@ pub struct TableProps {
     pub max_height: Option<f32>,
     /// The outer padding of every row's first and last cell (and of the
     /// frame slots), so the row dividers run the table's full width while
-    /// the text keeps a page margin — see [`TableInset`].
-    // STATIC — selected onto the edge cells when the table is built.
-    #[prop(static)]
+    /// the text keeps a page margin — see [`TableInset`]. Reactive: a
+    /// page margin that steps with the breakpoint re-pads the edge cells
+    /// in place ([`TableInset::by_breakpoint`]) — the table never
+    /// rebuilds for it.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub inset_x: TableInset,
     /// Row padding for every cell — `Compact`, `Standard` or
     /// `Comfortable`.
@@ -521,10 +750,84 @@ pub struct TableProps {
     #[prop(static)]
     pub header_slot: Option<Element>,
     /// Content drawn inside the frame BELOW the rows, outside the
-    /// scroller — a blank-state sentence, an "Add entry" action.
+    /// scroller — a pager ([`TablePager`]), an "Add entry" action. Pinned
+    /// under the rows of a `scroll_y` table.
     #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub footer_slot: Option<Element>,
+    /// The column model: column `i` describes the `i`-th column the
+    /// author wrote (the selection and grip columns the table adds are
+    /// not counted). The table applies each spec to every cell of its
+    /// column — width, floor, cap, fill, resize handle, frozen edge,
+    /// alignment, truncation, padding — so the cells carry none of it.
+    /// Empty (the default): each cell's own props size its column.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
+    pub columns: Vec<TableColumn>,
+    /// The table's live column widths, by column id. A resize drag writes
+    /// the dragged column's entry on every pointer move; an entry
+    /// overrides the column spec's `width`. Create it in the SCREEN (not
+    /// inside whatever rebuilds the table) and seed it with a saved
+    /// layout, so a resized column keeps its width across rebuilds. When
+    /// `None` the table keeps its own (lost on a rebuild).
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
+    pub column_widths: Option<Signal<ColumnWidths>>,
+    /// Fired when a resize drag is released, with the column and its new
+    /// width (whole px) — save it — and with `None` when a double-click
+    /// resets the column to its spec width.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub on_column_resize: Option<Rc<dyn Fn(ColumnId, Option<f32>)>>,
+    /// Adds a leading selection column: a tri-state header box that
+    /// selects every visible row, and a box per row with an `id` that is
+    /// `selectable`. The set is the screen's; the table only reads and
+    /// writes it. Frozen with the first column when that one is pinned.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
+    pub selection: Option<Signal<BTreeSet<RowId>>>,
+    /// Makes body rows draggable: adds a leading grip column (frozen with
+    /// the first column when that one is pinned), lifts the dragged row
+    /// above its neighbours while the others slide to open the gap, and
+    /// calls this with `(from, to)` — ordinals over the draggable body
+    /// rows — on drop. See [`move_in_place`].
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub on_reorder: Option<Rc<dyn Fn(usize, usize)>>,
+    /// What a table with no body rows says: one row under the header
+    /// spanning every column (past the selection and grip columns).
+    /// `Some("No crew yet".into())`, or any element. Decided from the
+    /// rows the table is built with.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
+    pub empty: Option<TableEmpty>,
+}
+
+/// What a row is to its table, by position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowKind {
+    /// A leading row of head cells — pinned by `scroll_y`.
+    Head,
+    /// A data row.
+    Body,
+    /// A row of a `TableFooter`.
+    Foot,
+    /// The empty-state row the table added.
+    Empty,
+}
+
+/// A column the table adds before the author's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Builtin {
+    Grip,
+    Select,
+}
+
+impl Builtin {
+    fn width(self) -> f32 {
+        match self {
+            Builtin::Grip => GRIP_COLUMN_WIDTH_PX,
+            Builtin::Select => SELECT_COLUMN_WIDTH_PX,
+        }
+    }
 }
 
 /// A themed data table — a header row plus body rows. Wraps the
@@ -553,6 +856,193 @@ pub fn Table(props: TableProps) -> Element {
     for c in props.children {
         ChildList::append_to(c, &mut children);
     }
+
+    // What each row is, in visit order (`table::visit_rows` over the
+    // children): the LEADING rows of head cells are the header; a
+    // footer section's rows are footer rows whatever they hold.
+    let mut kinds: Vec<RowKind> = Vec::new();
+    let mut metas: Vec<Option<Rc<RowMeta>>> = Vec::new();
+    {
+        let mut head_open = true;
+        for child in &children {
+            let foot = table::is_footer(child);
+            table::visit_rows(child, |row| {
+                let kind = if foot {
+                    RowKind::Foot
+                } else if head_open && row_is_head(row) {
+                    RowKind::Head
+                } else {
+                    head_open = false;
+                    RowKind::Body
+                };
+                kinds.push(kind);
+                metas.push(row_meta(row));
+            });
+        }
+    }
+
+    // The columns the table adds before the author's, in order.
+    let lead: Vec<Builtin> = [
+        props.on_reorder.is_some().then_some(Builtin::Grip),
+        props.selection.is_some().then_some(Builtin::Select),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    // The added columns freeze with the first author column.
+    let lead_pinned = match props.columns.first() {
+        Some(col) => col.pinned == Some(ColumnPin::Left),
+        None => first_cell_pinned_left(&children),
+    };
+    let lead_pin_width: f32 = if lead_pinned { lead.iter().map(|b| b.width()).sum() } else { 0.0 };
+
+    // The column model on the author's cells (before the added columns
+    // shift their positions).
+    let widths = props.column_widths.unwrap_or_else(|| signal(ColumnWidths::new()));
+    let model = ColumnModel::new(props.columns, widths, lead_pin_width);
+    if !model.is_empty() {
+        let last_head = kinds.iter().rposition(|k| *k == RowKind::Head);
+        let mut row_i = 0usize;
+        for child in children.iter_mut() {
+            table::visit_rows_mut(child, |row| {
+                let resize_here = Some(row_i) == last_head;
+                model.apply_to_row(row, resize_here.then(|| props.on_column_resize.clone()));
+                row_i += 1;
+            });
+        }
+    } else if lead_pin_width > 0.0 {
+        // No column model: the author pinned cells with their own
+        // `pin_offset`s, measured from the first author column. Push the
+        // left-frozen ones past the added columns.
+        for child in &children {
+            table::visit_rows(child, |row| {
+                table::visit_row_cells(row, |cell| {
+                    table::map_cell_application(
+                        cell,
+                        Rc::new(move |app| shift_left_pin(app, lead_pin_width)),
+                    );
+                });
+            });
+        }
+    }
+
+    // The added columns: a grip and a selection box per row, as the row
+    // calls for.
+    let body: Vec<(bool, Option<RowId>)> = kinds
+        .iter()
+        .zip(&metas)
+        .filter(|(k, _)| **k == RowKind::Body)
+        .map(|(_, m)| match m {
+            Some(m) => (m.draggable, m.group.clone()),
+            None => (true, None),
+        })
+        .collect();
+    let reorder = props.on_reorder.map(|cb| Reorder::new(&body, cb));
+    let selection = props.selection;
+    if !lead.is_empty() {
+        let visible: Rc<Vec<RowId>> = Rc::new(
+            kinds
+                .iter()
+                .zip(&metas)
+                .filter(|(k, _)| **k == RowKind::Body)
+                .filter_map(|(_, m)| m.as_ref().filter(|m| m.selectable).and_then(|m| m.id.clone()))
+                .collect(),
+        );
+        let first_head = kinds.iter().position(|k| *k == RowKind::Head);
+        let (mut row_i, mut body_i) = (0usize, 0usize);
+        for child in children.iter_mut() {
+            table::visit_rows_mut(child, |row| {
+                let kind = kinds[row_i];
+                let meta = metas[row_i].clone();
+                let mut added = Vec::with_capacity(lead.len());
+                let mut offset = 0.0_f32;
+                for b in &lead {
+                    let content: Option<Element> = match (b, kind) {
+                        (Builtin::Grip, RowKind::Body)
+                            if reorder.as_ref().and_then(|r| r.grip_handler(body_i)).is_some() =>
+                        {
+                            Some(grip_mark())
+                        }
+                        (Builtin::Select, RowKind::Head) if Some(row_i) == first_head => {
+                            selection.map(|s| select_all_box(s, visible.clone()))
+                        }
+                        (Builtin::Select, RowKind::Body) => meta
+                            .as_ref()
+                            .filter(|m| m.selectable)
+                            .and_then(|m| m.id.clone())
+                            .zip(selection)
+                            .map(|(id, s)| select_row_box(s, id)),
+                        _ => None,
+                    };
+                    let cell = builtin_cell(kind == RowKind::Head, b.width(), content);
+                    let cell = if lead_pinned { pin_builtin(cell, offset) } else { cell };
+                    offset += b.width();
+                    let cell = if kind == RowKind::Foot {
+                        table::map_cell_application(&cell, Rc::new(|app| app.with("section", "foot")));
+                        cell
+                    } else {
+                        cell
+                    };
+                    let touch = match b {
+                        Builtin::Grip if kind == RowKind::Body => {
+                            reorder.as_ref().and_then(|r| r.grip_handler(body_i))
+                        }
+                        _ => None,
+                    };
+                    let cell = match (&meta, kind) {
+                        (Some(m), RowKind::Body | RowKind::Foot) => decorate_added_cell(cell, m, touch),
+                        _ => match touch {
+                            Some(t) => {
+                                table::set_cell_touch(&cell, t);
+                                cell
+                            }
+                            None => cell,
+                        },
+                    };
+                    added.push(cell);
+                }
+                if let Some(cells) = table::row_cells_mut(row) {
+                    for (i, cell) in added.into_iter().enumerate() {
+                        cells.insert(i, cell);
+                    }
+                }
+                if kind == RowKind::Body {
+                    body_i += 1;
+                }
+                row_i += 1;
+            });
+        }
+    }
+
+    // The empty state: one row past the added columns, spanning the rest.
+    if let Some(empty) = props.empty.filter(|_| !kinds.contains(&RowKind::Body)) {
+        let mut cells: Vec<Element> = Vec::with_capacity(lead.len() + 1);
+        let mut offset = 0.0_f32;
+        for b in &lead {
+            let cell = builtin_cell(false, b.width(), None);
+            cells.push(if lead_pinned { pin_builtin(cell, offset) } else { cell });
+            offset += b.width();
+        }
+        cells.push(empty_cell(empty));
+        children.push(sdk_row(SdkTableRowProps { children: cells }).into_element());
+        kinds.push(RowKind::Empty);
+        metas.push(None);
+    }
+
+    // Reorder: every body row, once its cells are all in place.
+    if let Some(reorder) = &reorder {
+        let (mut row_i, mut body_i) = (0usize, 0usize);
+        for child in &children {
+            table::visit_rows(child, |row| {
+                if kinds[row_i] == RowKind::Body {
+                    reorder.wire_row(body_i, row);
+                    body_i += 1;
+                }
+                row_i += 1;
+            });
+        }
+    }
+
     // Density is a table-wide setting, but the cells are already built
     // when this body runs (the `ui!` children block builds them first),
     // so it is selected onto each built cell. A static selection keeps a
@@ -580,14 +1070,13 @@ pub fn Table(props: TableProps) -> Element {
             });
         });
     }
-    // A scroll-y table pins its header rows: the leading rows whose cells
-    // are all head cells. Static selection, so the cells stay preminted.
+    // A scroll-y table pins its header rows. Static selection, so the
+    // cells stay preminted.
     if props.scroll_y {
-        let mut head = true;
+        let mut row_i = 0usize;
         for child in &children {
             table::visit_rows(child, |row| {
-                head = head && row_is_head(row);
-                if head {
+                if kinds[row_i] == RowKind::Head {
                     table::visit_row_cells(row, |cell| {
                         table::map_cell_application(
                             cell,
@@ -595,13 +1084,15 @@ pub fn Table(props: TableProps) -> Element {
                         );
                     });
                 }
+                row_i += 1;
             });
         }
     }
     // Edge inset: the first and last cell of every row — a single-cell
-    // row (a `ColSpan::Rest` blank row) takes both sides.
+    // row takes both sides. A static inset is a static selection (the
+    // cells stay preminted); a live one re-pads the same cells in place.
     let inset = props.inset_x;
-    if inset != TableInset::None {
+    if !matches!(inset, Reactive::Static(TableInset::None)) {
         for child in &children {
             table::visit_rows(child, |row| {
                 let mut count = 0usize;
@@ -611,13 +1102,7 @@ pub fn Table(props: TableProps) -> Element {
                     let (first, last) = (i == 0, i + 1 == count);
                     i += 1;
                     if first || last {
-                        table::map_cell_application(
-                            cell,
-                            Rc::new(move |app| {
-                                let app = if first { inset.apply(app, InsetSide::Left) } else { app };
-                                if last { inset.apply(app, InsetSide::Right) } else { app }
-                            }),
-                        );
+                        apply_edge_inset(cell, &inset, first, last);
                     }
                 });
             });
@@ -643,9 +1128,11 @@ pub fn Table(props: TableProps) -> Element {
         for child in &children {
             table::visit_rows(child, |row| {
                 table::visit_row_cells(row, |cell| {
-                    let unpinned = table::cell_application(cell)
-                        .is_some_and(|app| !app.variants.0.contains_key("pinned"));
-                    if !unpinned {
+                    let watch = table::cell_application(cell).is_some_and(|app| {
+                        app.variants.0.contains_key("pinned")
+                            && app.variants.0.get("pin_edge").map(String::as_str) != Some("interior")
+                    });
+                    if watch {
                         table::map_cell_style(cell, Rc::new(move |app| pin_edge(app, edges)));
                     }
                 });
@@ -653,18 +1140,34 @@ pub fn Table(props: TableProps) -> Element {
         }
         edges
     });
-    let slot_style = move |edge: &'static str| {
-        let app = TableSlot().into_style_application().with("edge", edge);
-        inset.apply(inset.apply(app, InsetSide::Left), InsetSide::Right)
+    let slot_style = {
+        let inset = inset.clone();
+        move |edge: &'static str| {
+            let inset = inset.clone();
+            move || {
+                let app = TableSlot().into_style_application().with("edge", edge);
+                let i = inset.get();
+                i.apply(i.apply(app, InsetSide::Left), InsetSide::Right)
+            }
+        }
     };
     let header_slot = props.header_slot.map(|slot| {
         let style = slot_style("top");
-        ui! { view(style = style) { slot } }
+        slot_view(slot, &inset, style)
     });
     let footer_slot = props.footer_slot.map(|slot| {
         let style = slot_style("bottom");
-        ui! { view(style = style) { slot } }
+        slot_view(slot, &inset, style)
     });
+    // In grid-column mode every column is one track: the added columns
+    // at their fixed widths, the author's from the column model.
+    let mut sdk_columns: Vec<Option<table::ColumnSpec>> = lead
+        .iter()
+        .map(|b| {
+            Some(table::ColumnSpec::new(table::ColumnTrack { width: Some(b.width()), ..Default::default() }))
+        })
+        .collect();
+    sdk_columns.extend(model.specs());
     // SDK's `table()` returns a `Bound<TableHandle>`; chain
     // `.with_style(...)` to land the themed style on its surface view,
     // then convert to Element.
@@ -674,12 +1177,144 @@ pub fn Table(props: TableProps) -> Element {
         scroll_y: props.scroll_y,
         header_slot,
         footer_slot,
-        ..Default::default()
+        columns: sdk_columns,
     })
     .with_style(style);
     match edges {
         Some(edges) => table.on_scroll_edges(move |e| edges.set(e)).into_element(),
         None => table.into_element(),
+    }
+}
+
+/// A frame slot's view: its sheet resolved once for a static inset (the
+/// slot premints), followed live for a reactive one.
+fn slot_view(
+    slot: Element,
+    inset: &Reactive<TableInset>,
+    style: impl Fn() -> StyleApplication + 'static,
+) -> Element {
+    match inset {
+        Reactive::Static(_) => {
+            let app = style();
+            ui! { view(style = app) { slot } }
+        }
+        Reactive::Dynamic(_) => ui! { view(style = style) { slot } },
+    }
+}
+
+/// Pad one edge cell with the table's inset — see [`TableInset::apply`].
+fn apply_edge_inset(cell: &Element, inset: &Reactive<TableInset>, first: bool, last: bool) {
+    let pad = move |app: StyleApplication, i: TableInset| {
+        let app = if first { i.apply(app, InsetSide::Left) } else { app };
+        if last { i.apply(app, InsetSide::Right) } else { app }
+    };
+    match inset {
+        Reactive::Static(i) => {
+            let i = *i;
+            table::map_cell_application(cell, Rc::new(move |app| pad(app, i)));
+        }
+        Reactive::Dynamic(f) => {
+            let f = f.clone();
+            table::map_cell_style(cell, Rc::new(move |app| pad(app, f())));
+        }
+    }
+}
+
+/// Whether the first row's first cell is frozen to the left — how a table
+/// without a column model learns its added columns freeze with it.
+fn first_cell_pinned_left(children: &[Element]) -> bool {
+    let mut first_row = true;
+    let mut pinned = false;
+    for child in children.iter().filter(|c| !table::is_footer(c)) {
+        table::visit_rows(child, |row| {
+            if !first_row {
+                return;
+            }
+            first_row = false;
+            let mut first_cell = true;
+            table::visit_row_cells(row, |cell| {
+                if first_cell {
+                    first_cell = false;
+                    pinned = table::cell_application(cell)
+                        .is_some_and(|app| app.variants.0.get("pinned").map(String::as_str) == Some("left"));
+                }
+            });
+        });
+    }
+    pinned
+}
+
+/// Move a left-frozen cell's pin past `by` px of added columns, keeping
+/// its own `pin_offset`. Any other cell is returned untouched.
+fn shift_left_pin(app: StyleApplication, by: f32) -> StyleApplication {
+    if app.variants.0.get("pinned").map(String::as_str) != Some("left") {
+        return app;
+    }
+    let own = match app.overrides.left.as_ref().map(|l| l.resolve()) {
+        Some(Length::Px(v)) => v,
+        _ => 0.0,
+    };
+    app.with_overrides(StyleRules {
+        left: Some(Tokenized::Literal(Length::Px(own + by))),
+        ..Default::default()
+    })
+}
+
+/// A cell of a column the table adds: a fixed width, centred, compact
+/// padding.
+fn builtin_cell(header: bool, width: f32, content: Option<Element>) -> Element {
+    TableCell(TableCellProps {
+        header,
+        width: Reactive::Static(Some(width)),
+        align: CellAlign::Center,
+        padding: CellPadding::Icon,
+        children: content.into_iter().collect(),
+        ..Default::default()
+    })
+}
+
+/// Freeze an added column's cell `offset` px from the left edge. Its inner
+/// edge never draws: the author's first column, frozen beside it, draws
+/// the frozen block's edge.
+fn pin_builtin(cell: Element, offset: f32) -> Element {
+    table::map_cell_application(
+        &cell,
+        Rc::new(move |app| {
+            let app = app.with("pinned", "left").with("pin_edge", "interior");
+            if offset == 0.0 {
+                app
+            } else {
+                app.with_overrides(StyleRules {
+                    left: Some(Tokenized::Literal(Length::Px(offset))),
+                    ..Default::default()
+                })
+            }
+        }),
+    );
+    cell
+}
+
+/// The grip glyph a draggable row's grip cell shows.
+fn grip_mark() -> Element {
+    ui! {
+        Icon(data = GRIP_MARK, size = GRIP_ICON_PX, tone = Some(crate::tone::Neutral.into()))
+    }
+}
+
+/// The empty-state cell: everything past the added columns.
+fn empty_cell(empty: TableEmpty) -> Element {
+    match empty {
+        TableEmpty::Text(text) => TableCell(TableCellProps {
+            span: ColSpan::Rest,
+            text: Reactive::Static(Some(text)),
+            tone: Reactive::Static(CellTone::Muted),
+            ..Default::default()
+        }),
+        TableEmpty::Content(content) => TableCell(TableCellProps {
+            span: ColSpan::Rest,
+            children: vec![content],
+            ..Default::default()
+        }),
     }
 }
 
@@ -726,7 +1361,7 @@ fn pin_edge(app: StyleApplication, edges: Signal<table::ScrollEdges>) -> StyleAp
 /// row element — which is exactly what `on_row_click` and `tone` do (see
 /// [`make_row_cell_interactive`]).
 #[runtime_core::props]
-#[derive(Default, IdealystSchema)]
+#[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableRowProps {
     /// Cells in this row. Pass `TableCell`s.
@@ -759,6 +1394,40 @@ pub struct TableRowProps {
     /// web, a row-spanning backdrop view on native. Anchor a hover card
     /// or popover to a row with it, or read the row's frame.
     pub bind_to: Option<Ref<ViewHandle>>,
+    /// The row's identity: what `Table(selection = …)` holds for it. A row
+    /// without one has no selection box.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
+    pub id: Option<RowId>,
+    /// Whether the row takes part in `Table(selection = …)` — `false`
+    /// leaves its box out and select-all passes it by. Default `true`.
+    #[prop(static)]
+    pub selectable: bool,
+    /// Whether the row can be dragged in a `Table(on_reorder = …)` —
+    /// `false` (a group title, a locked row) gives it no grip and leaves
+    /// it out of the reorder ordinals. Default `true`.
+    #[prop(static)]
+    pub draggable: bool,
+    /// The group a draggable row reorders within: a row lands only among
+    /// rows with the same group. `None` (the default) is one group.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
+    pub reorder_group: Option<RowId>,
+}
+
+impl Default for TableRowProps {
+    fn default() -> Self {
+        Self {
+            children: Vec::new(),
+            on_row_click: None,
+            tone: Reactive::Static(RowTone::None),
+            bind_to: None,
+            id: None,
+            selectable: true,
+            draggable: true,
+            reorder_group: None,
+        }
+    }
 }
 
 /// A row within a [`Table`] — holds `TableCell`s. Use the first row as
@@ -773,20 +1442,8 @@ pub fn TableRow(props: TableRowProps) -> Element {
     // Tone first, so a clickable row's hover axes compose OVER it. A
     // static tone is a static selection (the sheet stays preminted); a
     // live one wraps each cell's style so the row re-tints in place.
-    match props.tone {
-        Reactive::Static(RowTone::None) => {}
-        Reactive::Static(tone) => {
-            let arm = tone.as_variant_str();
-            for cell in &children {
-                table::map_cell_application(cell, Rc::new(move |app| app.with("tone", arm)));
-            }
-        }
-        Reactive::Dynamic(f) => {
-            for cell in &children {
-                let f = f.clone();
-                table::map_cell_style(cell, Rc::new(move |app| app.with("tone", f().as_variant_str())));
-            }
-        }
+    for cell in &children {
+        rows::apply_row_tone(cell, &props.tone);
     }
 
     // A clickable row shares ONE hover flag across all its cells so
@@ -796,7 +1453,7 @@ pub fn TableRow(props: TableRowProps) -> Element {
     // + pointer cursor onto its themed style and attach the tap/hover
     // handlers. The signal is created in this row's scope, so it lives as
     // long as the cells that subscribe to it.
-    let children = if let Some(cb) = props.on_row_click {
+    let interaction = props.on_row_click.map(|on_click| RowInteraction {
         // TWO flags, not one. A pointer backend drives both — hover on
         // enter/leave, press on down/up — and folding them into a single
         // bool means whichever fires last wins: releasing a click would
@@ -805,20 +1462,35 @@ pub fn TableRow(props: TableRowProps) -> Element {
         // release leaves the row stuck lit with nothing able to correct
         // it. Kept apart, each reports only about itself and the tint is
         // their OR.
-        let hovered = signal(false);
-        let pressed = signal(false);
-        children
+        hovered: signal(false),
+        pressed: signal(false),
+        on_click,
+    });
+    let children = match &interaction {
+        Some(i) => children
             .into_iter()
-            .map(|cell| make_row_cell_interactive(cell, hovered, pressed, cb.clone()))
-            .collect()
-    } else {
-        children
+            .map(|cell| make_row_cell_interactive(cell, i.hovered, i.pressed, i.on_click.clone()))
+            .collect(),
+        None => children,
     };
 
     let row = sdk_row(SdkTableRowProps { children }).into_element();
     if let Some(r) = props.bind_to {
         table::bind_row(&row, move |h| runtime_core::fill_ref_while_mounted(r, h));
     }
+    // What the table needs to add its own cells to this row (selection
+    // box, drag grip) and treat them like the row's — see `rows`.
+    table::set_row_data(
+        &row,
+        Rc::new(RowMeta {
+            id: props.id,
+            selectable: props.selectable,
+            draggable: props.draggable,
+            group: props.reorder_group,
+            tone: props.tone,
+            interaction,
+        }),
+    );
     row
 }
 
@@ -1046,6 +1718,27 @@ pub struct TableCellProps {
     #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub span: ColSpan,
+    /// Horizontal padding — `Icon` is the compact padding of a column of
+    /// icons or icon buttons (a row menu). Give every cell of the column
+    /// the same value; `TableColumn::padding` does that for you.
+    // STRUCTURAL — selects the `cell_padding` arm at build time.
+    #[prop(static)]
+    pub padding: CellPadding,
+    /// The value's text colour — `Danger` for an overdue date, `Muted`
+    /// for a placeholder. Colours this cell only; a whole row takes
+    /// `TableRow(tone = …)`. Reactive.
+    pub tone: CellTone,
+    /// Makes a header cell a sort control: `Some(SortState::None)` for a
+    /// sortable column that is not the sort, `Some(Asc)` / `Some(Desc)`
+    /// for the one that is. The cell draws the direction beside its label
+    /// and a press calls `on_sort`. Reactive, so the arrow follows the
+    /// app's sort without a rebuild. Header cells only.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub sort: Option<SortState>,
+    /// Called with the sort a press asks for — [`SortState::next`] of the
+    /// current one. The sorting itself is the app's.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub on_sort: Option<Rc<dyn Fn(SortState)>>,
 }
 
 impl Default for TableCellProps {
@@ -1063,6 +1756,10 @@ impl Default for TableCellProps {
             align: CellAlign::Left,
             truncate: false,
             span: ColSpan::default(),
+            padding: CellPadding::Standard,
+            tone: Reactive::Static(CellTone::None),
+            sort: Reactive::Static(None),
+            on_sort: None,
         }
     }
 }
@@ -1080,7 +1777,24 @@ pub fn TableCell(props: TableCellProps) -> Element {
     // (Tag/Button) sit at natural width inside the cell instead of
     // stretching. Otherwise wrap the `text` prop in the role-
     // appropriate themed text node.
-    let cell_children: Vec<Element> = if !props.children.is_empty() {
+    let tone = if header { Reactive::Static(CellTone::None) } else { props.tone.clone() };
+    let sort = props.sort.clone();
+    let sortable = header && !matches!(sort, Reactive::Static(None));
+    let cell_children: Vec<Element> = if sortable {
+        // A sort header: the label and its direction side by side in the
+        // row-flex wrapper, which places them by the column's alignment.
+        let mut inner: Vec<Element> = Vec::with_capacity(props.children.len() + 1);
+        if props.children.is_empty() {
+            inner.extend(cell_text_children(header, props.text, align, truncate, tone.clone()));
+        } else {
+            for c in props.children {
+                ChildList::append_to(c, &mut inner);
+            }
+        }
+        inner.push(sort_indicator(sort.clone()));
+        let inner_style = TableCellInner().into_style_application().with("align", align);
+        vec![ui! { view(style = inner_style) { inner } }]
+    } else if !props.children.is_empty() {
         let mut inner: Vec<Element> = Vec::with_capacity(props.children.len());
         for c in props.children {
             ChildList::append_to(c, &mut inner);
@@ -1088,7 +1802,7 @@ pub fn TableCell(props: TableCellProps) -> Element {
         let inner_style = TableCellInner().into_style_application().with("align", align);
         vec![ui! { view(style = inner_style) { inner } }]
     } else {
-        cell_text_children(header, props.text, align, truncate)
+        cell_text_children(header, props.text, align, truncate, tone.clone())
     };
 
     // The column's sizing, for the table's grid columns. Only a cell that
@@ -1149,14 +1863,20 @@ pub fn TableCell(props: TableCellProps) -> Element {
         ColumnPin::Left => "left",
         ColumnPin::Right => "right",
     });
+    let padding = props.padding.as_variant_str();
     let app = if header {
         // `sticky_header: off` stated outright: the key marks a head cell
         // for `Table`, which pins the leading head rows of a scroll-y table.
         let app = TableHeadCell().into_style_application().with("sticky_header", "off");
-        select_cell_axes(app, pin_arm, align, truncate)
+        let app = select_cell_axes(app, pin_arm, align, truncate, padding);
+        if sortable { app.with("interactive", "on") } else { app }
     } else {
         let app = TableBodyCell().into_style_application();
-        select_cell_axes(app, pin_arm, align, truncate)
+        let app = select_cell_axes(app, pin_arm, align, truncate, padding);
+        match &tone {
+            Reactive::Static(CellTone::None) | Reactive::Dynamic(_) => app,
+            Reactive::Static(t) => app.with("text_tone", t.as_variant_str()),
+        }
     };
 
     // Geometry the sheet cannot enumerate — a column width, a pin inset —
@@ -1184,7 +1904,7 @@ pub fn TableCell(props: TableCellProps) -> Element {
             ..Default::default()
         })
     };
-    match (props.width, props.min_width) {
+    let cell = match (props.width, props.min_width) {
         (Reactive::Static(width), Reactive::Static(min_width)) => {
             let app = match geometry(width, min_width) {
                 Some(rules) => app.with_overrides(rules),
@@ -1205,7 +1925,106 @@ pub fn TableCell(props: TableCellProps) -> Element {
             };
             bound.with_style(StyleProp::SheetDynamic(Box::new(style))).into_element()
         }
+    };
+    // A live text tone follows its signal on the cell (what rich children
+    // inherit on web); the text node follows it on its own.
+    if let Reactive::Dynamic(f) = tone {
+        table::map_cell_style(&cell, Rc::new(move |app| app.with("text_tone", f().as_variant_str())));
     }
+    // A sort header's press asks for the next sort. On the cell's own
+    // node, so the whole header is the target and a resize handle inside
+    // it still claims its own drag first.
+    if let (true, Some(on_sort)) = (sortable, props.on_sort) {
+        let press = tap(TapRecognizer::new(), move || on_sort(sort.get().unwrap_or_default().next()));
+        table::set_cell_touch(&cell, Rc::new(move |ev| press(ev)));
+    }
+    cell
+}
+
+/// The direction glyph beside a sort header's label: an up or down arrow
+/// for the sort column, a faint up-down pair for a sortable one that is
+/// not.
+fn sort_indicator(sort: Reactive<Option<SortState>>) -> Element {
+    let state = move || sort.get().unwrap_or_default();
+    ui! {
+        match state() {
+            SortState::Asc => {
+                Icon(data = SORT_ASC_MARK, size = SORT_ICON_PX, tone = Some(crate::tone::Neutral.into()))
+            }
+            SortState::Desc => {
+                Icon(data = SORT_DESC_MARK, size = SORT_ICON_PX, tone = Some(crate::tone::Neutral.into()))
+            }
+            SortState::None => {
+                view(style = TableSortIdle()) {
+                    Icon(data = SORT_IDLE_MARK, size = SORT_ICON_PX, tone = Some(crate::tone::Neutral.into()))
+                }
+            }
+        }
+    }
+}
+
+/// The sort direction glyph's square size, px.
+const SORT_ICON_PX: f32 = 14.0;
+
+/// An arrow up (ascending).
+const SORT_ASC_MARK: runtime_core::IconData = runtime_core::IconData {
+    view_box: (24, 24),
+    paths: &["M12 19V5", "M5 12l7-7 7 7"],
+    fill_rule: runtime_core::FillRule::NonZero,
+    filled: false,
+};
+
+/// An arrow down (descending).
+const SORT_DESC_MARK: runtime_core::IconData = runtime_core::IconData {
+    view_box: (24, 24),
+    paths: &["M12 5v14", "M19 12l-7 7-7-7"],
+    fill_rule: runtime_core::FillRule::NonZero,
+    filled: false,
+};
+
+/// Up and down chevrons (sortable, not sorted).
+const SORT_IDLE_MARK: runtime_core::IconData = runtime_core::IconData {
+    view_box: (24, 24),
+    paths: &["M7 9l5-5 5 5", "M7 15l5 5 5-5"],
+    fill_rule: runtime_core::FillRule::NonZero,
+    filled: false,
+};
+
+/// Re-select the `align` / `truncate` arms on what a built cell holds — its
+/// text node or its rich-children wrapper — so a column spec applied by the
+/// table reaches the node a native text reads its alignment from. Only an
+/// axis the child's sheet already selects is touched, and a static sheet
+/// stays static.
+pub(super) fn reselect_content(cell: &Element, align: &'static str, truncate: &'static str) {
+    use runtime_vocabulary::prims::{PrimCell, TextPrim, ViewPrim};
+    let remap = move |slot: &mut Option<StyleProp>| {
+        let pick = move |app: StyleApplication| {
+            let app = if app.variants.0.contains_key("align") { app.with("align", align) } else { app };
+            if app.variants.0.contains_key("truncate") {
+                app.with("truncate", truncate)
+            } else {
+                app
+            }
+        };
+        *slot = match slot.take() {
+            Some(StyleProp::Sheet(app)) => Some(StyleProp::Sheet(Box::new(pick(*app)))),
+            Some(StyleProp::SheetDynamic(f)) => Some(StyleProp::SheetDynamic(Box::new(move || pick(f())))),
+            other => other,
+        };
+    };
+    table::visit_cell_content(cell, |child| {
+        let mut el = child;
+        while let Element::Owned { element, .. } = el {
+            el = element;
+        }
+        if let Element::Item { data, .. } = el {
+            if let Some(t) = data.downcast_ref::<PrimCell<TextPrim>>() {
+                t.with_mut(|p| remap(&mut p.style));
+            } else if let Some(v) = data.downcast_ref::<PrimCell<ViewPrim>>() {
+                v.with_mut(|p| remap(&mut p.style));
+            }
+        }
+    });
 }
 
 /// Select the build-time axes every cell carries, on either sheet.
@@ -1214,8 +2033,9 @@ fn select_cell_axes(
     pin_arm: Option<&'static str>,
     align: &'static str,
     truncate: &'static str,
+    padding: &'static str,
 ) -> StyleApplication {
-    let app = app.with("align", align).with("truncate", truncate);
+    let app = app.with("align", align).with("truncate", truncate).with("cell_padding", padding);
     match pin_arm {
         Some(arm) => app.with("pinned", arm),
         None => app,
@@ -1230,6 +2050,7 @@ fn cell_text_children(
     content: Reactive<Option<String>>,
     align: &'static str,
     truncate: &'static str,
+    tone: Reactive<CellTone>,
 ) -> Vec<Element> {
     let style = if header {
         TableHeadText().into_style_application()
@@ -1238,13 +2059,17 @@ fn cell_text_children(
     }
     .with("align", align)
     .with("truncate", truncate);
-    match content {
-        Reactive::Static(None) => Vec::new(),
-        Reactive::Static(Some(s)) => vec![text_node(s).with_style(style).into_element()],
-        Reactive::Dynamic(f) => {
-            vec![text_node(move || f().unwrap_or_default()).with_style(style).into_element()]
-        }
-    }
+    let text = match content {
+        Reactive::Static(None) => return Vec::new(),
+        Reactive::Static(Some(s)) => text_node(s),
+        Reactive::Dynamic(f) => text_node(move || f().unwrap_or_default()),
+    };
+    let text = match tone {
+        Reactive::Static(CellTone::None) => text.with_style(style),
+        Reactive::Static(t) => text.with_style(style.with("text_tone", t.as_variant_str())),
+        Reactive::Dynamic(f) => text.with_style(move || style.clone().with("text_tone", f().as_variant_str())),
+    };
+    vec![text.into_element()]
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

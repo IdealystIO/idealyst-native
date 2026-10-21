@@ -4,6 +4,7 @@
 //! Introspection goes through `test_support::classify`.
 
 use super::*;
+use std::collections::BTreeSet;
 use runtime_core::Cursor;
 use crate::test_support::{classify, P};
 use idea_theme::testing::with_test_world;
@@ -1378,7 +1379,18 @@ fn regression_scroll_y_pins_the_header_row_and_stacks_the_corner_on_top() {
         assert!(z(frozen) < z(head), "rows slide under the header row");
         assert!(z(head) < z(corner), "the header row slides under the corner");
         assert!(z(body) < z(frozen), "body cells slide under the frozen column");
-        assert_eq!(z_of(corner), Some(3));
+        // A row lifted by a reorder drag rides above other rows' frozen
+        // cells and still slides under the header row.
+        let lifted = runtime_core::resolve_style(
+            &TableBodyCell().into_style_application().with("drag", "lifted"),
+        );
+        let lifted_frozen = runtime_core::resolve_style(
+            &TableBodyCell().into_style_application().with("drag", "lifted").with("pinned", "left"),
+        );
+        assert!(z(frozen) < z(&lifted), "a lifted row rides above frozen cells");
+        assert!(z(&lifted) < z(&lifted_frozen), "its own frozen cell stays above its scrolling ones");
+        assert!(z(&lifted_frozen) < z(head), "and the lifted row slides under the header");
+        assert_eq!(z_of(corner), Some(5));
     });
 }
 
@@ -1508,7 +1520,7 @@ fn regression_inset_x_pads_only_the_edge_cells() {
                     ..Default::default()
                 })]),
             ],
-            inset_x: TableInset::Xl,
+            inset_x: Reactive::Static(TableInset::Xl),
             ..Default::default()
         });
         let lg = px_of(&rules_of(body_cell("x")).padding_left).expect("base cell padding");
@@ -1538,7 +1550,7 @@ fn inset_x_px_is_exact_and_reaches_the_slots() {
     with_test_world(|| {
         let t = Table(TableProps {
             children: vec![row_of(vec![body_cell("1"), body_cell("2")])],
-            inset_x: TableInset::Px(28.0),
+            inset_x: Reactive::Static(TableInset::Px(28.0)),
             header_slot: Some(runtime_core::text("note".to_string()).into_element()),
             ..Default::default()
         });
@@ -1567,11 +1579,747 @@ fn token_inset_keeps_edge_cells_preminted() {
     with_test_world(|| {
         let t = Table(TableProps {
             children: vec![row_of(vec![head_cell("A"), head_cell("B")]), row_of(vec![body_cell("1"), body_cell("2")])],
-            inset_x: TableInset::Xxl,
+            inset_x: Reactive::Static(TableInset::Xxl),
             ..Default::default()
         });
         for c in grid_cells(t) {
             assert!(cell_app(c).preminted_class_list().is_some());
         }
+    });
+}
+
+// =========================================================================
+// The column model, the added columns (selection, grip), the empty
+// state, live inset, sort headers and cell tones.
+// =========================================================================
+
+fn text_of(cell: &str) -> Element {
+    body_cell(cell)
+}
+
+/// A row with an id (and optional settings), of plain body cells.
+fn id_row(id: &str, cells: &[&str], selectable: bool, draggable: bool) -> Element {
+    TableRow(TableRowProps {
+        children: cells.iter().map(|c| text_of(c)).collect(),
+        id: Some(RowId::from(id)),
+        selectable,
+        draggable,
+        ..Default::default()
+    })
+}
+
+/// The raw view payload of a built element (Owned-peeled, through a
+/// `CellMarker`) — for reading a handler `classify` collapses to a bool.
+fn view_prim(el: Element) -> runtime_vocabulary::prims::ViewPrim {
+    use runtime_vocabulary::prims::{PrimCell, ViewPrim};
+    match cell_node(el) {
+        Element::Item { data, .. } => data
+            .downcast_ref::<PrimCell<ViewPrim>>()
+            .expect("a view payload")
+            .take(),
+        _ => panic!("expected a view item"),
+    }
+}
+
+/// Every pressable's click under `el`, depth first.
+fn pressables(el: Element) -> Vec<Rc<dyn Fn()>> {
+    let mut out = Vec::new();
+    match classify(el) {
+        P::Pressable { on_click, children, .. } => {
+            out.push(on_click);
+            for c in children {
+                out.extend(pressables(c));
+            }
+        }
+        P::View { children, .. } | P::Fragment { children } => {
+            for c in children {
+                out.extend(pressables(c));
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// Whether a grid child is a row proxy's backdrop (a bound row — the
+/// reorder drop target — puts one ahead of its cells on native): it
+/// carries raw placement rules, never a cell sheet.
+fn is_backdrop(el: &Element) -> bool {
+    use runtime_vocabulary::prims::{PrimCell, ViewPrim};
+    let mut el = el;
+    while let Element::Owned { element, .. } = el {
+        el = element;
+    }
+    match el {
+        Element::Item { data, .. } => data.downcast_ref::<PrimCell<ViewPrim>>().is_some_and(|c| {
+            let mut raw = false;
+            c.with_mut(|p| raw = matches!(p.style, Some(StyleProp::Static(_))));
+            raw
+        }),
+        _ => false,
+    }
+}
+
+/// The content nodes of a cell.
+fn cell_content(cell: Element) -> Vec<Element> {
+    match classify(cell_node(cell)) {
+        P::View { children, .. } => children,
+        _ => panic!("native cell must classify as a View"),
+    }
+}
+
+/// The grid node's live rules (`display: grid` + tracks).
+fn grid_rules_of(t: Element) -> StyleRules {
+    let outer = match peel_owned_keepalive(t) {
+        Element::Item { children, .. } => children,
+        _ => panic!("table lowers to its outer view"),
+    };
+    match classify(outer.into_iter().next().expect("outer wraps the grid")) {
+        P::View { style, .. } => (*style.expect("the grid is styled").resolve()).clone(),
+        _ => panic!("grid view"),
+    }
+}
+
+fn touch(phase: runtime_core::TouchPhase, x: f32, t_ns: u64) -> runtime_core::TouchEvent {
+    runtime_core::TouchEvent {
+        id: runtime_core::TouchId(1),
+        phase,
+        position: runtime_core::TouchPoint::new(x, 0.0),
+        window_position: runtime_core::TouchPoint::new(x, 0.0),
+        timestamp_ns: t_ns,
+        force: None,
+    }
+}
+
+/// CrewForge (proposal item 1): every sized column was rebuilt a layer
+/// below idea-ui so its header and body cells could share one width. One
+/// table-level spec now sizes the column's header AND body cells, and
+/// sets its alignment and truncation on the cell and the text a native
+/// backend reads — with nothing on the cells themselves.
+#[test]
+fn regression_column_model_one_spec_sizes_header_and_body() {
+    with_test_world(|| {
+        let t = Table(TableProps {
+            columns: vec![
+                TableColumn::new("hours").width(160.0).align(CellAlign::Right).truncate(),
+                TableColumn::new("notes"),
+            ],
+            children: vec![
+                row_of(vec![head_cell("Hours"), head_cell("Notes")]),
+                row_of(vec![body_cell("12.5"), body_cell("x")]),
+            ],
+            ..Default::default()
+        });
+        let cells = grid_cells(t);
+        let mut it = cells.into_iter();
+        let (h0, h1, b0) = (it.next().unwrap(), it.next().unwrap(), it.next().unwrap());
+        for (name, cell) in [("header", h0), ("body", b0)] {
+            let app = cell_app(cell);
+            let r = runtime_core::resolve_style(&app);
+            assert_eq!(px_of(&r.width), Some(160.0), "{name} cell takes the column width");
+            assert_eq!(px_of(&r.max_width), Some(160.0), "{name}: an exact column");
+            assert_eq!(r.text_align, Some(runtime_core::TextAlign::Right), "{name} aligns");
+            assert_eq!(r.max_lines, Some(1), "{name} truncates");
+        }
+        assert!(rules_of(h1).width.is_none(), "an unsized column keeps its natural width");
+        // The text node — what a native text reads its alignment from.
+        let t = Table(TableProps {
+            columns: vec![TableColumn::new("hours").align(CellAlign::Right).truncate()],
+            children: vec![row_of(vec![body_cell("12.5")])],
+            ..Default::default()
+        });
+        let text = cell_text_rules(grid_cells(t).remove(0));
+        assert_eq!(text.text_align, Some(runtime_core::TextAlign::Right));
+        assert_eq!(text.max_lines, Some(1));
+    });
+}
+
+/// A `fill` column takes the width the others leave: the table lays out
+/// as grid tracks, the fixed column exact and the fill column `1fr`.
+#[test]
+fn column_model_fill_column_lays_the_table_out_as_tracks() {
+    use runtime_core::TrackSize;
+    with_test_world(|| {
+        let t = Table(TableProps {
+            columns: vec![TableColumn::new("name").width(160.0), TableColumn::new("notes").fill().min_width(80.0)],
+            children: vec![row_of(vec![head_cell("Name"), head_cell("Notes")])],
+            ..Default::default()
+        });
+        let rules = grid_rules_of(t);
+        assert_eq!(
+            rules.grid_template_columns,
+            Some(vec![
+                TrackSize::Px(160.0),
+                TrackSize::Minmax(Box::new(TrackSize::Px(80.0)), Box::new(TrackSize::Fr(1.0))),
+            ])
+        );
+    });
+}
+
+/// A resizable column's header carries the drag handle (revealed by the
+/// header's hover, so the cell reports hover and anchors the handle);
+/// its cells follow the width map live — header and body alike — and
+/// nothing else in the table re-styles.
+#[test]
+fn resizable_column_follows_the_width_map_across_header_and_body() {
+    with_test_world(|| {
+        let widths = signal(ColumnWidths::new());
+        let t = Table(TableProps {
+            columns: vec![TableColumn::new("name").width(120.0).resizable(), TableColumn::new("notes")],
+            column_widths: Some(widths),
+            children: vec![
+                row_of(vec![head_cell("Name"), head_cell("Notes")]),
+                row_of(vec![body_cell("Ana"), body_cell("x")]),
+            ],
+            ..Default::default()
+        });
+        let mut cells = grid_cells(t).into_iter();
+        let head = cells.next().unwrap();
+        let notes_head = cells.next().unwrap();
+        let body = cells.next().unwrap();
+        let head_view = view_prim(head);
+        assert!(head_view.on_hover.is_some(), "the header reports hover to reveal its handle");
+        let head_style = match head_view.style {
+            Some(StyleProp::SheetDynamic(f)) => f,
+            _ => panic!("a resizable column's header follows the width map"),
+        };
+        let head_app = head_style();
+        assert_eq!(head_app.variants.0.get("anchor").map(String::as_str), Some("on"));
+        assert_eq!(
+            runtime_core::resolve_style(&head_app).position,
+            Some(runtime_core::Position::Relative),
+            "the header cell anchors the absolutely-placed handle"
+        );
+        let body_style = match classify(cell_node(body)) {
+            P::View { style, .. } => style.expect("styled"),
+            _ => panic!("view"),
+        };
+        let w = |app: StyleApplication| px_of(&runtime_core::resolve_style(&app).width);
+        assert_eq!(w(head_style()), Some(120.0), "the spec width until something resizes it");
+        assert_eq!(w(body_style.application()), Some(120.0));
+        let mut next = ColumnWidths::new();
+        next.insert(ColumnId::from("name"), 200.0);
+        widths.set(next);
+        idea_theme::testing::commit();
+        assert_eq!(w(head_style()), Some(200.0), "the header follows the drag");
+        assert_eq!(w(body_style.application()), Some(200.0), "and so does every body cell");
+        let notes = match classify(cell_node(notes_head)) {
+            P::View { style, .. } => style.expect("styled"),
+            _ => panic!("view"),
+        };
+        assert!(!notes.is_reactive(), "a column that is not resizable stays static");
+    });
+}
+
+/// The handle's gesture: a drag writes the column's entry on every move
+/// (clamped to its bounds) and reports the width on release; a press
+/// without movement reports nothing; a double-click resets the column to
+/// its spec; a cancelled drag restores what it found.
+#[test]
+fn resize_handle_drags_reports_resets_and_cancels() {
+    use runtime_core::TouchPhase::{Began, Cancelled, Ended, Moved};
+    with_test_world(|| {
+        let widths = signal(ColumnWidths::new());
+        let heard: Rc<std::cell::RefCell<Vec<Option<f32>>>> = Default::default();
+        let sink = heard.clone();
+        let t = Table(TableProps {
+            columns: vec![TableColumn::new("name").width(120.0).min_width(60.0).max_width(300.0).resizable()],
+            column_widths: Some(widths),
+            on_column_resize: Some(Rc::new(move |id: ColumnId, w| {
+                assert_eq!(id.as_str(), "name");
+                sink.borrow_mut().push(w);
+            })),
+            children: vec![row_of(vec![head_cell("Name")])],
+            ..Default::default()
+        });
+        let head = grid_cells(t).remove(0);
+        let handle = cell_content(head).pop().expect("the handle is the header's last child");
+        let on_touch = view_prim(handle).on_touch.expect("the handle takes the drag");
+        let entry = || widths.with_untracked(|w| w.get(&ColumnId::from("name")).copied());
+
+        // A press without movement: nothing written, nothing reported.
+        let send = |phase, x, t| {
+            on_touch(&touch(phase, x, t));
+            idea_theme::testing::commit();
+        };
+        send(Began, 100.0, 1_000_000_000);
+        send(Ended, 100.0, 1_010_000_000);
+        assert_eq!(entry(), None);
+        assert!(heard.borrow().is_empty());
+
+        // A drag from the spec width (nothing laid out to measure here).
+        send(Began, 100.0, 2_000_000_000);
+        send(Moved, 140.0, 2_010_000_000);
+        assert_eq!(entry(), Some(160.0), "live: the entry moves with the pointer");
+        send(Moved, 900.0, 2_020_000_000);
+        assert_eq!(entry(), Some(300.0), "clamped to the column's max_width");
+        send(Ended, 900.0, 2_030_000_000);
+        assert_eq!(*heard.borrow(), vec![Some(300.0)], "released: the width is reported");
+
+        // A cancelled drag puts the entry back.
+        send(Began, 0.0, 5_000_000_000);
+        send(Moved, -500.0, 5_010_000_000);
+        assert_eq!(entry(), Some(60.0), "clamped to the column's floor");
+        send(Cancelled, -500.0, 5_020_000_000);
+        assert_eq!(entry(), Some(300.0), "cancel restores");
+
+        // A double-click resets to the spec width and reports `None`.
+        send(Began, 0.0, 9_000_000_000);
+        send(Ended, 0.0, 9_050_000_000);
+        send(Began, 0.0, 9_200_000_000);
+        assert_eq!(entry(), None, "reset: the entry is gone, so the spec width applies");
+        assert_eq!(heard.borrow().last(), Some(&None));
+    });
+}
+
+/// Frozen columns in the model inset by the widths of the frozen columns
+/// between them and their edge, and only the innermost draws the frozen
+/// block's edge. The actions preset is frozen right, compact, fixed.
+#[test]
+fn frozen_columns_inset_by_the_widths_before_them() {
+    with_test_world(|| {
+        let t = Table(TableProps {
+            scroll_x: true,
+            columns: vec![
+                TableColumn::new("a").width(120.0).pinned(ColumnPin::Left),
+                TableColumn::new("b").width(80.0).pinned(ColumnPin::Left),
+                TableColumn::new("c"),
+                TableColumn::actions("menu"),
+            ],
+            children: vec![row_of(vec![body_cell("1"), body_cell("2"), body_cell("3"), body_cell("⋮")])],
+            ..Default::default()
+        });
+        let cells: Vec<_> = any_grid_cells(t, true, false, true).into_iter().map(cell_app).collect();
+        let r: Vec<_> = cells.iter().map(runtime_core::resolve_style).collect();
+        assert_eq!(px_of(&r[0].left), Some(0.0));
+        assert_eq!(px_of(&r[1].left), Some(120.0), "b clears a");
+        assert_eq!(cells[0].variants.0.get("pin_edge").map(String::as_str), Some("interior"));
+        assert!(is_transparent(&r[0].border_right_color), "a's edge is inside the frozen block");
+        assert!(!is_transparent(&r[1].border_right_color), "b draws the frozen block's edge");
+        assert_eq!(r[2].position, None);
+        assert_eq!(r[3].position, Some(runtime_core::Position::Sticky));
+        assert_eq!(px_of(&r[3].right), Some(0.0), "the actions column is frozen right");
+        assert_eq!(px_of(&r[3].width), Some(ACTIONS_COLUMN_WIDTH_PX));
+        let lg = px_of(&rules_of(body_cell("x")).padding_left).unwrap();
+        assert!(px_of(&r[3].padding_left).unwrap() < lg, "compact icon padding");
+        assert_eq!(r[3].text_align, Some(runtime_core::TextAlign::Center));
+    });
+}
+
+/// CrewForge (item 4): the row menu was a hand-built cell on the raw SDK.
+/// `TableCell(padding = CellPadding::Icon, pinned = Right, width = …)` is
+/// the same column without a column model.
+#[test]
+fn regression_actions_cell_is_a_table_cell() {
+    with_test_world(|| {
+        let r = rules_of(TableCell(TableCellProps {
+            pinned: Some(ColumnPin::Right),
+            width: Reactive::Static(Some(ACTIONS_COLUMN_WIDTH_PX)),
+            padding: CellPadding::Icon,
+            align: CellAlign::Center,
+            ..Default::default()
+        }));
+        assert_eq!(r.position, Some(runtime_core::Position::Sticky));
+        assert_eq!(px_of(&r.width), Some(ACTIONS_COLUMN_WIDTH_PX));
+        let lg = px_of(&rules_of(body_cell("x")).padding_left).unwrap();
+        assert!(px_of(&r.padding_left).unwrap() < lg);
+        assert!(cell_app(TableCell(TableCellProps { padding: CellPadding::Icon, ..Default::default() }))
+            .preminted_class_list()
+            .is_some(), "the padding arm premints");
+    });
+}
+
+/// The selection and grip columns freeze with a pinned first column, at
+/// their fixed widths, and the author's frozen column clears them both.
+#[test]
+fn added_columns_freeze_with_a_pinned_first_column() {
+    with_test_world(|| {
+        idea_theme::theme::install_idea_theme(crate::light_theme());
+        let t = Table(TableProps {
+            scroll_x: true,
+            columns: vec![TableColumn::new("name").width(160.0).pinned(ColumnPin::Left), TableColumn::new("x")],
+            selection: Some(signal(BTreeSet::new())),
+            on_reorder: Some(Rc::new(|_, _| {})),
+            children: vec![
+                row_of(vec![head_cell("Name"), head_cell("X")]),
+                id_row("a", &["Ana", "1"], true, true),
+            ],
+            ..Default::default()
+        });
+        let cells: Vec<_> =
+            any_grid_cells(t, true, false, true).into_iter().filter(|c| !is_backdrop(c)).collect();
+        assert_eq!(cells.len(), 8, "grip + select + 2 columns, two rows");
+        let r: Vec<_> = cells.into_iter().map(|c| runtime_core::resolve_style(&cell_app(c))).collect();
+        for row in [0, 4] {
+            assert_eq!(px_of(&r[row].left), Some(0.0), "the grip pins first");
+            assert_eq!(px_of(&r[row].width), Some(GRIP_COLUMN_WIDTH_PX));
+            assert_eq!(px_of(&r[row + 1].left), Some(GRIP_COLUMN_WIDTH_PX), "then the selection");
+            assert_eq!(px_of(&r[row + 1].width), Some(SELECT_COLUMN_WIDTH_PX));
+            assert_eq!(
+                px_of(&r[row + 2].left),
+                Some(GRIP_COLUMN_WIDTH_PX + SELECT_COLUMN_WIDTH_PX),
+                "the author's frozen column clears both"
+            );
+            assert!(is_transparent(&r[row].border_right_color), "no edge inside the frozen block");
+            assert!(is_transparent(&r[row + 1].border_right_color));
+        }
+    });
+}
+
+/// Without a column model the added columns still freeze with a pinned
+/// first cell, and the author's own `pin_offset`s are moved past them.
+#[test]
+fn added_columns_shift_author_pin_offsets() {
+    with_test_world(|| {
+        idea_theme::theme::install_idea_theme(crate::light_theme());
+        let pinned = |text: &str, offset: Option<f32>| {
+            TableCell(TableCellProps {
+                text: Reactive::Static(Some(text.into())),
+                pinned: Some(ColumnPin::Left),
+                pin_offset: offset,
+                width: Reactive::Static(Some(100.0)),
+                ..Default::default()
+            })
+        };
+        let t = Table(TableProps {
+            scroll_x: true,
+            selection: Some(signal(BTreeSet::new())),
+            children: vec![TableRow(TableRowProps {
+                children: vec![pinned("a", None), pinned("b", Some(100.0))],
+                id: Some(RowId::from("r")),
+                ..Default::default()
+            })],
+            ..Default::default()
+        });
+        let r: Vec<_> = any_grid_cells(t, true, false, true).into_iter().map(rules_of).collect();
+        assert_eq!(px_of(&r[0].left), Some(0.0));
+        assert_eq!(px_of(&r[1].left), Some(SELECT_COLUMN_WIDTH_PX));
+        assert_eq!(px_of(&r[2].left), Some(SELECT_COLUMN_WIDTH_PX + 100.0));
+    });
+}
+
+/// CrewForge (item 2): a selection column of hand-built cells. The table
+/// adds it: a box in the header and in each row with an id that is
+/// selectable; other rows get an empty cell, so every row keeps its
+/// columns.
+#[test]
+fn regression_selection_column_boxes_only_selectable_rows() {
+    with_test_world(|| {
+        idea_theme::theme::install_idea_theme(crate::light_theme());
+        let selection = signal(BTreeSet::new());
+        let t = Table(TableProps {
+            selection: Some(selection),
+            children: vec![
+                row_of(vec![head_cell("Name")]),
+                id_row("a", &["Ana"], true, true),
+                id_row("b", &["Bo"], false, true),
+                row_of(vec![body_cell("no id")]),
+            ],
+            ..Default::default()
+        });
+        let cells = grid_cells(t);
+        assert_eq!(cells.len(), 8);
+        let boxes: Vec<usize> = cells
+            .into_iter()
+            .step_by(2)
+            .map(|c| cell_content(c).into_iter().map(pressables).map(|p| p.len()).sum())
+            .collect();
+        assert_eq!(boxes, vec![1, 1, 0, 0], "header and the selectable row");
+    });
+}
+
+/// The header box is tri-state over the visible selectable rows and
+/// toggles exactly those, keeping ids from elsewhere (another page).
+#[test]
+fn select_all_box_toggles_the_visible_rows() {
+    with_test_world(|| {
+        idea_theme::theme::install_idea_theme(crate::light_theme());
+        let selection = signal(BTreeSet::from([RowId::from("elsewhere")]));
+        let t = Table(TableProps {
+            selection: Some(selection),
+            children: vec![
+                row_of(vec![head_cell("Name")]),
+                id_row("a", &["Ana"], true, true),
+                id_row("b", &["Bo"], true, true),
+                id_row("c", &["Cy"], false, true),
+            ],
+            ..Default::default()
+        });
+        let mut cells = grid_cells(t).into_iter();
+        let header_box = cell_content(cells.next().unwrap()).into_iter().flat_map(pressables).next().unwrap();
+        cells.next();
+        let a_box = cell_content(cells.next().unwrap()).into_iter().flat_map(pressables).next().unwrap();
+        a_box();
+        idea_theme::testing::commit();
+        assert_eq!(selection.get(), BTreeSet::from([RowId::from("a"), RowId::from("elsewhere")]));
+        header_box();
+        idea_theme::testing::commit();
+        assert_eq!(
+            selection.get(),
+            BTreeSet::from([RowId::from("a"), RowId::from("b"), RowId::from("elsewhere")]),
+            "some → all of the visible selectable rows (not c)"
+        );
+        header_box();
+        idea_theme::testing::commit();
+        assert_eq!(selection.get(), BTreeSet::from([RowId::from("elsewhere")]), "all → none of them");
+    });
+}
+
+/// A cell the table adds takes its row's tone and, on a clickable row,
+/// the row's hover tint and tap — the whole row lights and answers.
+#[test]
+fn added_cells_take_the_row_tone_and_click() {
+    with_test_world(|| {
+        idea_theme::theme::install_idea_theme(crate::light_theme());
+        let t = Table(TableProps {
+            selection: Some(signal(BTreeSet::new())),
+            children: vec![TableRow(TableRowProps {
+                children: vec![body_cell("Ana")],
+                id: Some(RowId::from("a")),
+                tone: Reactive::Static(RowTone::Warning),
+                on_row_click: Some(Rc::new(|| {})),
+                ..Default::default()
+            })],
+            ..Default::default()
+        });
+        let select_cell = grid_cells(t).remove(0);
+        match classify(cell_node(select_cell)) {
+            P::View { on_touch, on_hover, style, .. } => {
+                assert!(on_touch && on_hover, "the row's tap and hover");
+                let r = runtime_core::resolve_style(&style.expect("styled").application());
+                assert_eq!(bg_token(&r).as_deref(), Some("color-table-row-warning"));
+                assert_eq!(r.cursor, Some(runtime_core::Cursor::Pointer));
+            }
+            _ => panic!("view"),
+        }
+    });
+}
+
+/// CrewForge (item 6): the blank row counted the columns by hand (select,
+/// grip and actions included) for its colspan. With no body rows the
+/// table adds one row: empty cells under its added columns, then the
+/// message spanning every author column.
+#[test]
+fn regression_empty_state_spans_past_the_added_columns() {
+    with_test_world(|| {
+        idea_theme::theme::install_idea_theme(crate::light_theme());
+        let t = Table(TableProps {
+            selection: Some(signal(BTreeSet::new())),
+            empty: Some("Nobody yet".into()),
+            children: vec![row_of(vec![head_cell("A"), head_cell("B"), head_cell("C")])],
+            ..Default::default()
+        });
+        let cells = grid_cells(t);
+        assert_eq!(cells.len(), 6, "4 header cells, then the blank select cell and the message");
+        let mut it = cells.into_iter().skip(4);
+        assert!(cell_content(it.next().unwrap()).is_empty());
+        let message = it.next().unwrap();
+        assert_eq!(rules_of(message).grid_column, Some(runtime_core::GridPlacement::Lines(2, 5)));
+        let t = Table(TableProps {
+            empty: Some("Nobody yet".into()),
+            children: vec![row_of(vec![head_cell("A")])],
+            ..Default::default()
+        });
+        let text = cell_text_rules(grid_cells(t).pop().unwrap());
+        let muted = crate::light_theme().colors.text_muted.value().0.to_ascii_lowercase();
+        assert_eq!(text.color.as_ref().map(|c| c.resolve().0.to_ascii_lowercase()), Some(muted));
+    });
+}
+
+#[test]
+fn empty_state_stays_out_of_a_table_with_rows() {
+    with_test_world(|| {
+        let t = Table(TableProps {
+            empty: Some("Nobody yet".into()),
+            children: vec![row_of(vec![head_cell("A")]), row_of(vec![body_cell("Ana")])],
+            ..Default::default()
+        });
+        assert_eq!(grid_cells(t).len(), 2);
+    });
+}
+
+/// CrewForge (item 7): a breakpoint change in the page margin rebuilt the
+/// whole table, because `inset_x` was static. A live inset re-pads the
+/// edge cells in place; the cells between keep their static style.
+#[test]
+fn regression_live_inset_repads_edge_cells_without_a_rebuild() {
+    with_test_world(|| {
+        let inset = signal(TableInset::Px(16.0));
+        let t = Table(TableProps {
+            inset_x: Reactive::Dynamic(Rc::new(move || inset.get())),
+            header_slot: Some(runtime_core::text("note".to_string()).into_element()),
+            children: vec![row_of(vec![body_cell("1"), body_cell("2"), body_cell("3")])],
+            ..Default::default()
+        });
+        let mut surface = match peel_owned_keepalive(t) {
+            Element::Item { children, .. } => children,
+            _ => panic!("surface"),
+        };
+        let holder = surface.pop().expect("grid holder");
+        let slot = surface.pop().expect("header slot");
+        let mut cells = grid_cells(holder).into_iter();
+        let first = match classify(cell_node(cells.next().unwrap())) {
+            P::View { style, .. } => style.unwrap(),
+            _ => panic!("view"),
+        };
+        let middle = match classify(cell_node(cells.next().unwrap())) {
+            P::View { style, .. } => style.unwrap(),
+            _ => panic!("view"),
+        };
+        let slot = match classify(slot) {
+            P::View { style, .. } => style.unwrap(),
+            _ => panic!("view"),
+        };
+        let pad = |s: &crate::test_support::TStyle| px_of(&s.resolve().padding_left);
+        assert!(first.is_reactive() && !middle.is_reactive());
+        assert_eq!(pad(&first), Some(16.0));
+        assert_eq!(pad(&slot), Some(16.0));
+        inset.set(TableInset::Px(28.0));
+        idea_theme::testing::commit();
+        assert_eq!(pad(&first), Some(28.0), "the edge cell re-pads in place");
+        assert_eq!(pad(&slot), Some(28.0), "and so does the slot");
+        inset.set(TableInset::Xl);
+        idea_theme::testing::commit();
+        assert_eq!(pad(&first), Some(crate::light_theme().spacing.xl), "token arms too");
+    });
+}
+
+/// CrewForge (item 5): sort headers were hand-built. A header cell with
+/// `sort` draws the direction beside its label, is a press target, and
+/// asks for the next sort.
+#[test]
+fn regression_sort_header_draws_direction_and_asks_for_the_next() {
+    use runtime_core::TouchPhase::{Began, Ended};
+    with_test_world(|| {
+        let asked: Rc<std::cell::Cell<Option<SortState>>> = Default::default();
+        let sink = asked.clone();
+        let sort = signal(Some(SortState::Asc));
+        let cell = TableCell(TableCellProps {
+            header: true,
+            text: Reactive::Static(Some("Name".into())),
+            sort: Reactive::Dynamic(Rc::new(move || sort.get())),
+            on_sort: Some(Rc::new(move |s| sink.set(Some(s)))),
+            ..Default::default()
+        });
+        let view = view_prim(cell);
+        let app = match view.style {
+            Some(StyleProp::Sheet(app)) => *app,
+            _ => panic!("a static sheet"),
+        };
+        assert_eq!(runtime_core::resolve_style(&app).cursor, Some(runtime_core::Cursor::Pointer));
+        let on_touch = view.on_touch.expect("the header is a press target");
+        on_touch(&touch(Began, 5.0, 1));
+        on_touch(&touch(Ended, 5.0, 2));
+        assert_eq!(asked.get(), Some(SortState::Desc), "ascending asks for descending");
+        sort.set(Some(SortState::Desc));
+        idea_theme::testing::commit();
+        on_touch(&touch(Began, 5.0, 3));
+        on_touch(&touch(Ended, 5.0, 4));
+        assert_eq!(asked.get(), Some(SortState::Asc));
+    });
+}
+
+#[test]
+fn sort_state_cycles_asc_desc() {
+    assert_eq!(SortState::None.next(), SortState::Asc);
+    assert_eq!(SortState::Asc.next(), SortState::Desc);
+    assert_eq!(SortState::Desc.next(), SortState::Asc);
+}
+
+/// CrewForge (item 9): an overdue date needed app CSS. `TableCell(tone =
+/// …)` colours one value — on the cell and its text — and leaves the row
+/// alone.
+#[test]
+fn regression_cell_tone_colours_one_value() {
+    with_test_world(|| {
+        let make = || {
+            TableCell(TableCellProps {
+                text: Reactive::Static(Some("Overdue".into())),
+                tone: Reactive::Static(CellTone::Danger),
+                ..Default::default()
+            })
+        };
+        let danger = crate::light_theme().intents.danger.fg.value().0.to_ascii_lowercase();
+        let colour = |r: &StyleRules| r.color.as_ref().map(|c| c.resolve().0.to_ascii_lowercase());
+        assert_eq!(colour(&cell_text_rules(make())), Some(danger.clone()), "the text node");
+        let app = cell_app(make());
+        assert!(app.preminted_class_list().is_some(), "a static tone premints");
+        assert_eq!(colour(&runtime_core::resolve_style(&app)), Some(danger), "the cell (rich children inherit it on web)");
+        assert!(is_transparent(&runtime_core::resolve_style(&app).background), "no row tint");
+    });
+}
+
+/// A landed (deep-linked) row is a `RowTone::Highlight`, and it re-tints
+/// in place when the landing moves — no app CSS.
+#[test]
+fn landed_row_is_a_reactive_highlight_tone() {
+    with_test_world(|| {
+        let landed = signal(false);
+        let cells = row_cells(TableRow(TableRowProps {
+            children: vec![body_cell("x")],
+            tone: Reactive::Dynamic(Rc::new(move || if landed.get() { RowTone::Highlight } else { RowTone::None })),
+            ..Default::default()
+        }));
+        let style = match classify(cells.into_iter().next().unwrap()) {
+            P::View { style, .. } => style.unwrap(),
+            _ => panic!("view"),
+        };
+        landed.set(true);
+        idea_theme::testing::commit();
+        assert_eq!(
+            bg_token(&runtime_core::resolve_style(&style.application())).as_deref(),
+            Some("color-table-row-highlight")
+        );
+    });
+}
+
+/// Hover across a frozen segment on a plain table: a frozen cell takes
+/// the row's hover tint like its neighbours, and stays opaque at rest.
+#[test]
+fn plain_table_hover_reaches_frozen_cells() {
+    with_test_world(|| {
+        let base = TableBodyCell().into_style_application().with("frame", "plain").with("pinned", "left");
+        let rest = runtime_core::resolve_style(&base.clone().with("row_hovered", "off"));
+        let hover = runtime_core::resolve_style(&base.with("row_hovered", "on"));
+        assert_eq!(bg_token(&rest).as_deref(), Some("color-surface"), "opaque at rest");
+        assert_eq!(bg_token(&hover).as_deref(), Some("color-surface-alt"), "tinted with its row");
+        let head = TableHeadCell().into_style_application().with("frame", "plain").with("pinned", "left");
+        let head_hover = runtime_core::resolve_style(&head.with("row_hovered", "on"));
+        assert_eq!(bg_token(&head_hover).as_deref(), Some("color-surface-alt"));
+    });
+}
+
+/// CrewForge (item 3): the grip was a hand-built cell. A reorderable
+/// table adds a grip column: a grip on each draggable body row, an empty
+/// cell elsewhere, and every body cell follows the drag.
+#[test]
+fn regression_reorder_adds_a_grip_to_draggable_rows() {
+    with_test_world(|| {
+        let t = Table(TableProps {
+            on_reorder: Some(Rc::new(|_, _| {})),
+            children: vec![
+                row_of(vec![head_cell("Name")]),
+                id_row("a", &["Ana"], true, true),
+                id_row("b", &["Group"], true, false),
+                id_row("c", &["Cy"], true, true),
+            ],
+            ..Default::default()
+        });
+        // A draggable row binds its proxy surface (the drop target), which
+        // on native is a row-spanning backdrop view ahead of its cells:
+        // skip those — they carry raw placement rules, not a cell sheet.
+        let cells: Vec<_> = grid_cells(t)
+            .into_iter()
+            .filter_map(|c| match classify(cell_node(c)) {
+                P::View { style: Some(crate::test_support::TStyle::Rules(_)), .. } => None,
+                P::View { children, on_touch, .. } => Some((children.len(), on_touch)),
+                _ => panic!("view"),
+            })
+            .collect();
+        let grips: Vec<_> = cells.into_iter().step_by(2).collect();
+        assert_eq!(grips[0], (0, false), "the header's grip cell is empty");
+        assert_eq!(grips[1], (1, true), "a draggable row's grip holds the glyph and the drag");
+        assert_eq!(grips[2], (0, false), "a row that does not drag has no grip");
+        assert_eq!(grips[3], (1, true));
     });
 }
