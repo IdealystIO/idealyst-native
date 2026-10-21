@@ -18,6 +18,7 @@
 //! width. Resetting a column (double-click its handle) removes its entry,
 //! so it falls back to the spec.
 
+use super::styles::TableStyles;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -29,7 +30,6 @@ use runtime_core::{
 };
 
 use super::{CellAlign, ColumnPin};
-use crate::stylesheets::TableResizeHandle;
 
 /// The narrowest a resize drag takes a column when its spec sets no
 /// `min_width`, px. Wide enough that a column never collapses past its
@@ -475,7 +475,7 @@ pub(super) fn ColumnResizeHandle(props: &ColumnResizeHandleProps) -> Element {
     };
 
     let style = move || {
-        TableResizeHandle()
+        TableStyles::resize_handle()
             .into_style_application()
             .with("revealed", if heading_hovered.get() || in_drag.get() { "on" } else { "off" })
     };

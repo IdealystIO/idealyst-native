@@ -119,7 +119,6 @@ pub mod recipes;
 /// tests — see the module docs. Hidden: test support, not surface.
 #[doc(hidden)]
 pub mod test_support;
-pub mod stylesheets;
 pub mod theme;
 mod theme_runtime;
 
@@ -282,7 +281,8 @@ pub use components::table::{
     ColumnPin, ColumnResizeCallback, ColumnWidths, RowId, RowTone, SelectAllState, SortState,
     Table, TableCards, TableCardsProps, TableCell, TableCellProps, TableColumn, TableDensity,
     TableEmpty, TableFooter, TableFooterProps, TableInset, TablePager, TablePagerProps,
-    TableProps, TableRow, TableRowProps, TableVariant, ACTIONS_COLUMN_WIDTH_PX, CARD_CELL_CAP,
+    TableProps, TableRestyle, TableRow, TableRowProps, TableSlotStyles, TableStyles, TableTone, TableVariant,
+    ACTIONS_COLUMN_WIDTH_PX, CARD_CELL_CAP,
     CARD_ESTIMATE_PX, CARD_GAP_PX, CARD_LOAD_AHEAD_PX, COLUMN_RESET_DOUBLE_CLICK_NS,
     COLUMN_RESIZE_MIN_PX, GRIP_COLUMN_WIDTH_PX, SELECT_COLUMN_WIDTH_PX,
 };

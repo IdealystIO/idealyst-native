@@ -6,6 +6,7 @@
 //! `scroll_y` table — and takes the table's edge inset, so it lines up
 //! with the first and last columns.
 
+use super::styles::{TableSlotStyles, TableStyles};
 use std::rc::Rc;
 
 use runtime_core::{component, rx, signal, ui, Element, IdealystSchema, Length, Reactive, StyleRules};
@@ -13,7 +14,6 @@ use runtime_core::{component, rx, signal, ui, Element, IdealystSchema, Length, R
 use crate::components::pagination::Pagination;
 use crate::components::select::{Select, SelectOption, SelectSize, SelectSlotStyles};
 use crate::components::typography::Typography;
-use crate::stylesheets::{TablePagerBar, TablePagerGroup};
 
 /// The "Rows" picker's width floor: a three-digit page size and its
 /// chevron, and no wider. It replaces the trigger's own `min_width` through
@@ -35,7 +35,7 @@ pub fn page_window_text(offset: usize, page_size: usize, total: usize) -> String
 }
 
 /// Props for [`TablePager`].
-#[runtime_core::props]
+#[runtime_core::props(styles = TableStyles)]
 #[derive(IdealystSchema)]
 pub struct TablePagerProps {
     /// The window's offset into the whole set — the index of its first
@@ -69,6 +69,7 @@ impl Default for TablePagerProps {
             on_offset: Rc::new(|_| {}),
             page_sizes: Vec::new(),
             on_page_size: None,
+            styles: Default::default(),
         }
     }
 }
@@ -124,15 +125,18 @@ pub fn TablePager(props: &TablePagerProps) -> Element {
         let current = (offset.get() / size + 1).min(pages);
         (pages, current, size)
     };
+    let bar = TableStyles::pager_bar().overridden(props.styles.pager_bar.as_ref());
+    let group_override = props.styles.pager_group.clone();
+    let group = move || TableStyles::pager_group().overridden(group_override.as_ref());
     ui! {
-        view(style = TablePagerBar()) {
-            view(style = TablePagerGroup()) {
+        view(style = bar) {
+            view(style = group()) {
                 Typography(content = range, kind = typography_kind::BodySm)
                 Typography(content = of_total, kind = typography_kind::BodySm, muted = true)
             }
-            view(style = TablePagerGroup()) {
+            view(style = group()) {
                 if !sizes.is_empty() {
-                    view(style = TablePagerGroup()) {
+                    view(style = group()) {
                         Typography(content = "Rows".to_string(), kind = typography_kind::BodySm, muted = true)
                         Select(
                             value = size_text,

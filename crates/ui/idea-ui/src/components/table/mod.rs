@@ -219,7 +219,7 @@
 //! (columns lay out at natural width, overflow sideways, and the table
 //! still fills the scroller when narrow). `TableCell(pinned =
 //! ColumnPin::Left)` / `Right` freezes that cell's column against the
-//! scroller edge — a `pinned` axis on the cell stylesheets
+//! scroller edge — a `pinned` axis on the cell slots
 //! (`position: Sticky` + an inset + an opaque background), which
 //! the browser pins natively on web and the shared sticky registry
 //! pins on native. Every backend raises the frozen cells above the
@@ -358,6 +358,14 @@ pub use select::{select_all_state, toggle_select_all, SelectAllState, SELECT_COL
 
 use columns::ColumnModel;
 use reorder::{Reorder, GRIP_ICON_PX, GRIP_MARK};
+mod styles;
+pub use styles::*;
+
+/// A whole-row tint for [`TableRow`] — the body cells' `tone` axis. Composes
+/// with the clickable-row hover and with frozen columns (see the module
+/// docs). An app adds its own tint with `TableTone::define("…")` and a
+/// restyle arm on `body_cell`.
+pub type RowTone = TableTone;
 use rows::{decorate_added_cell, row_meta, RowInteraction, RowMeta};
 use select::{select_all_box, select_row_box};
 use crate::components::icon::Icon;
@@ -368,10 +376,6 @@ use table::{
     TableProps as SdkTableProps, TableRowProps as SdkTableRowProps,
 };
 
-use crate::stylesheets::{
-    Table as TableStyle, TableBodyCell, TableBodyText, TableCellInner, TableHeadCell, TableHeadText,
-    TableSlot, TableSortIdle,
-};
 
 /// Which edge a [`TableCell`] freezes against in a
 /// `Table(scroll_x = true)` — see the module docs. (Named `ColumnPin`
@@ -410,37 +414,6 @@ impl VariantEnum for CellAlign {
 
     fn all_variants() -> &'static [Self] {
         &[CellAlign::Left, CellAlign::Center, CellAlign::Right]
-    }
-}
-
-/// A whole-row tint for [`TableRow`]. Composes with the clickable-row
-/// hover and with frozen columns — see the module docs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, IdealystSchema, runtime_core::Remote)]
-pub enum RowTone {
-    /// No tint.
-    #[default]
-    None,
-    /// A row picked out for attention — the selected or current item.
-    Highlight,
-    /// A row that needs a look — a flagged timesheet line.
-    Warning,
-    /// A row in trouble — an alarm, a failed check.
-    Danger,
-}
-
-// The variant string IS the stylesheet arm the value selects.
-impl VariantEnum for RowTone {
-    fn as_variant_str(self) -> &'static str {
-        match self {
-            RowTone::None => "none",
-            RowTone::Highlight => "highlight",
-            RowTone::Warning => "warning",
-            RowTone::Danger => "danger",
-        }
-    }
-
-    fn all_variants() -> &'static [Self] {
-        &[RowTone::None, RowTone::Highlight, RowTone::Warning, RowTone::Danger]
     }
 }
 
@@ -498,65 +471,6 @@ impl SortState {
             SortState::Asc => SortState::Desc,
             SortState::None | SortState::Desc => SortState::Asc,
         }
-    }
-}
-
-/// Row padding for a whole [`Table`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, IdealystSchema, runtime_core::Remote)]
-pub enum TableDensity {
-    /// Tight rows for dense grids.
-    Compact,
-    /// The default.
-    #[default]
-    Standard,
-    /// Roomy rows — a single line of text lands in the 44–52pt touch
-    /// target band, for clickable rows and phone lists.
-    Comfortable,
-}
-
-// The variant string IS the stylesheet arm the value selects.
-impl VariantEnum for TableDensity {
-    fn as_variant_str(self) -> &'static str {
-        match self {
-            TableDensity::Compact => "compact",
-            TableDensity::Standard => "standard",
-            TableDensity::Comfortable => "comfortable",
-        }
-    }
-
-    fn all_variants() -> &'static [Self] {
-        &[TableDensity::Compact, TableDensity::Standard, TableDensity::Comfortable]
-    }
-}
-
-/// The [`Table`]'s outer treatment.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, IdealystSchema, runtime_core::Remote)]
-pub enum TableVariant {
-    /// A card: hairline frame, rounded corners, the surface fill, a
-    /// tinted header band. The default.
-    #[default]
-    Framed,
-    /// No card: no frame, no rounded corners, no header band and no
-    /// fill of its own — the table sits on the surface around it, and
-    /// the row dividers are its only lines. In a `scroll_x` table a
-    /// frozen column draws its inner edge only while columns are
-    /// scrolled beneath it. Frozen cells still paint `color-surface`
-    /// (content slides beneath them), so sit a plain table on that
-    /// surface.
-    Plain,
-}
-
-// The variant string IS the stylesheet arm the value selects.
-impl VariantEnum for TableVariant {
-    fn as_variant_str(self) -> &'static str {
-        match self {
-            TableVariant::Framed => "framed",
-            TableVariant::Plain => "plain",
-        }
-    }
-
-    fn all_variants() -> &'static [Self] {
-        &[TableVariant::Framed, TableVariant::Plain]
     }
 }
 
@@ -694,7 +608,7 @@ impl From<Element> for TableEmpty {
 /// idea-ui's surface tokens (rounded corners + hairline border + theme
 /// background). Pass `TableRow`s (and optionally a `TableFooter`) as
 /// children.
-#[runtime_core::props]
+#[runtime_core::props(styles = TableStyles)]
 #[derive(Default, IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableProps {
@@ -841,9 +755,10 @@ pub fn Table(props: TableProps) -> Element {
     // ignore `border-radius` on a collapsed-border table. The sheet's
     // clip keeps the corner cells inside the rounded frame.
     let frame = props.variant.as_variant_str();
-    let style = TableStyle()
+    let style = TableStyles::frame()
+        .overridden(props.styles.frame.as_ref())
         .into_style_application()
-        .with("frame", frame)
+        .with("variant", frame)
         .with("scroll", if props.scroll_y { "fill" } else { "off" });
     let style = match props.max_height.filter(|_| props.scroll_y) {
         Some(h) => style.with_overrides(StyleRules {
@@ -1113,7 +1028,7 @@ pub fn Table(props: TableProps) -> Element {
         for child in &children {
             table::visit_rows(child, |row| {
                 table::visit_row_cells(row, |cell| {
-                    table::map_cell_application(cell, Rc::new(|app| app.with("frame", "plain")));
+                    table::map_cell_application(cell, Rc::new(|app| app.with("variant", "plain")));
                 });
             });
         }
@@ -1142,10 +1057,15 @@ pub fn Table(props: TableProps) -> Element {
     });
     let slot_style = {
         let inset = inset.clone();
+        let slot_override = props.styles.frame_slot.clone();
         move |edge: &'static str| {
             let inset = inset.clone();
+            let slot_override = slot_override.clone();
             move || {
-                let app = TableSlot().into_style_application().with("edge", edge);
+                let app = TableStyles::frame_slot()
+                    .overridden(slot_override.as_ref())
+                    .into_style_application()
+                    .with("edge", edge);
                 let i = inset.get();
                 i.apply(i.apply(app, InsetSide::Left), InsetSide::Right)
             }
@@ -1638,7 +1558,7 @@ pub fn TableFooter(props: TableFooterProps) -> Element {
 // `children` is a LIST (auto-skipped). The `#[prop(static)]` fields are
 // STRUCTURAL — each picks an SDK element, a grid placement, or a style
 // arm on several nodes at build time (see each field).
-#[runtime_core::props]
+#[runtime_core::props(styles = TableStyles)]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableCellProps {
@@ -1650,8 +1570,8 @@ pub struct TableCellProps {
     // `when`/rebuild, not a style closure). Kept bare for now.
     #[prop(static)]
     pub header: bool,
-    /// Convenience text content. The themed `TableHeadText` /
-    /// `TableBodyText` styling lands on the inner text node so the
+    /// Convenience text content. The themed `head_text` /
+    /// `body_text` styling lands on the inner text node so the
     /// caller doesn't need to wire Typography for the common case.
     /// `Reactive<String>` — static literal, `Signal<String>`, or
     /// `rx!(...)` all work.
@@ -1760,6 +1680,7 @@ impl Default for TableCellProps {
             tone: Reactive::Static(CellTone::None),
             sort: Reactive::Static(None),
             on_sort: None,
+            styles: Default::default(),
         }
     }
 }
@@ -1785,24 +1706,30 @@ pub fn TableCell(props: TableCellProps) -> Element {
         // row-flex wrapper, which places them by the column's alignment.
         let mut inner: Vec<Element> = Vec::with_capacity(props.children.len() + 1);
         if props.children.is_empty() {
-            inner.extend(cell_text_children(header, props.text, align, truncate, tone.clone()));
+            inner.extend(cell_text_children(header, props.text, align, truncate, tone.clone(), &props.styles));
         } else {
             for c in props.children {
                 ChildList::append_to(c, &mut inner);
             }
         }
         inner.push(sort_indicator(sort.clone()));
-        let inner_style = TableCellInner().into_style_application().with("align", align);
+        let inner_style = TableStyles::cell_inner()
+            .overridden(props.styles.cell_inner.as_ref())
+            .into_style_application()
+            .with("align", align);
         vec![ui! { view(style = inner_style) { inner } }]
     } else if !props.children.is_empty() {
         let mut inner: Vec<Element> = Vec::with_capacity(props.children.len());
         for c in props.children {
             ChildList::append_to(c, &mut inner);
         }
-        let inner_style = TableCellInner().into_style_application().with("align", align);
+        let inner_style = TableStyles::cell_inner()
+            .overridden(props.styles.cell_inner.as_ref())
+            .into_style_application()
+            .with("align", align);
         vec![ui! { view(style = inner_style) { inner } }]
     } else {
-        cell_text_children(header, props.text, align, truncate, tone.clone())
+        cell_text_children(header, props.text, align, truncate, tone.clone(), &props.styles)
     };
 
     // The column's sizing, for the table's grid columns. Only a cell that
@@ -1867,11 +1794,14 @@ pub fn TableCell(props: TableCellProps) -> Element {
     let app = if header {
         // `sticky_header: off` stated outright: the key marks a head cell
         // for `Table`, which pins the leading head rows of a scroll-y table.
-        let app = TableHeadCell().into_style_application().with("sticky_header", "off");
+        let app = TableStyles::head_cell()
+            .overridden(props.styles.head_cell.as_ref())
+            .into_style_application()
+            .with("sticky_header", "off");
         let app = select_cell_axes(app, pin_arm, align, truncate, padding);
         if sortable { app.with("interactive", "on") } else { app }
     } else {
-        let app = TableBodyCell().into_style_application();
+        let app = TableStyles::body_cell().overridden(props.styles.body_cell.as_ref()).into_style_application();
         let app = select_cell_axes(app, pin_arm, align, truncate, padding);
         match &tone {
             Reactive::Static(CellTone::None) | Reactive::Dynamic(_) => app,
@@ -1955,7 +1885,7 @@ fn sort_indicator(sort: Reactive<Option<SortState>>) -> Element {
                 Icon(data = SORT_DESC_MARK, size = SORT_ICON_PX, tone = Some(crate::tone::Neutral.into()))
             }
             SortState::None => {
-                view(style = TableSortIdle()) {
+                view(style = TableStyles::sort_idle()) {
                     Icon(data = SORT_IDLE_MARK, size = SORT_ICON_PX, tone = Some(crate::tone::Neutral.into()))
                 }
             }
@@ -2051,11 +1981,12 @@ fn cell_text_children(
     align: &'static str,
     truncate: &'static str,
     tone: Reactive<CellTone>,
+    styles: &TableSlotStyles,
 ) -> Vec<Element> {
     let style = if header {
-        TableHeadText().into_style_application()
+        TableStyles::head_text().overridden(styles.head_text.as_ref()).into_style_application()
     } else {
-        TableBodyText().into_style_application()
+        TableStyles::body_text().overridden(styles.body_text.as_ref()).into_style_application()
     }
     .with("align", align)
     .with("truncate", truncate);

@@ -5,14 +5,14 @@
 //! idea-ui cell wraps its text in a shrink-wrapped inline span, so that
 //! span's own `text_align: Left` can't win — the *cell's* alignment is
 //! what positions the inline span. The fix pins `text_align: Left` on the
-//! cell stylesheet (`TableHeadCell`), not just the inner text node. This
+//! cell stylesheet (`head_cell`), not just the inner text node. This
 //! test asserts both head and body cells resolve to the same Left
 //! alignment so they can't drift apart again.
 //!
 //! Bug it guards: catalog-docs props tables rendered centered headers
 //! over left-aligned body cells.
 
-use idea_ui::stylesheets::{TableBodyCell, TableHeadCell};
+use idea_ui::TableStyles;
 
 use runtime_core::{resolve_style, StyleApplication, TextAlign};
 
@@ -31,8 +31,8 @@ fn resolved_text_align(app: StyleApplication) -> Option<TextAlign> {
 
 #[test]
 fn head_and_body_cells_share_left_text_align() {
-    let head = resolved_text_align(static_app(TableHeadCell()));
-    let body = resolved_text_align(static_app(TableBodyCell()));
+    let head = resolved_text_align(static_app(TableStyles::head_cell()));
+    let body = resolved_text_align(static_app(TableStyles::body_cell()));
 
     assert_eq!(
         head,

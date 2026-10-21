@@ -38,6 +38,7 @@
 //! }
 //! ```
 
+use super::styles::{TableSlotStyles, TableStyles};
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -53,10 +54,6 @@ use super::{CardSlot, ColumnId, RowId, TableColumn};
 use crate::components::button::Button;
 use crate::components::modal::{Modal, ModalPresentation};
 use crate::components::typography::Typography;
-use crate::stylesheets::{
-    TableCard, TableCardField, TableCardFields, TableCardLabel, TableCardMore, TableCardOpposite,
-    TableCardTitle, TableCardTitleLine, TableCardsEmpty, TableCardsList, TableDetailRow,
-};
 use crate::typography_kind;
 
 /// How many labelled cells a card shows before the rest move behind
@@ -123,7 +120,7 @@ impl CardPlan {
 }
 
 /// Props for [`TableCards`].
-#[runtime_core::props]
+#[runtime_core::props(styles = TableStyles)]
 #[derive(IdealystSchema)]
 pub struct TableCardsProps {
     /// The table's column specs — the same list the wide `Table` takes.
@@ -168,6 +165,7 @@ impl Default for TableCardsProps {
             on_end_reached: None,
             selection: None,
             empty: None,
+            styles: Default::default(),
         }
     }
 }
@@ -181,6 +179,9 @@ struct CardsModel {
     selection: Option<Signal<BTreeSet<RowId>>>,
     /// The row whose detail sheet is open.
     detail_row: Signal<Option<usize>>,
+    /// The instance's per-slot overrides (the `card*` / `cards_*` /
+    /// `detail_row` slots).
+    styles: TableSlotStyles,
 }
 
 /// A virtualizer key for a row id: stable across inserts and reorders,
@@ -201,6 +202,7 @@ pub fn TableCards(props: &TableCardsProps) -> Element {
         on_row_click: props.on_row_click.clone(),
         selection: props.selection,
         detail_row: signal(None),
+        styles: props.styles.clone(),
     });
     // The list's data: each row's id, plus the generation of the data it
     // was read from. The generation moves on every change to the app's
@@ -226,7 +228,7 @@ pub fn TableCards(props: &TableCardsProps) -> Element {
     )
     .gap(CARD_GAP_PX)
     .end_reached_threshold(CARD_LOAD_AHEAD_PX)
-    .with_style(TableCardsList());
+    .with_style(TableStyles::cards_list().overridden(props.styles.cards_list.as_ref()));
     let list = match props.on_end_reached.clone() {
         Some(cb) => list.on_end_reached(move || cb()).into_element(),
         None => list.into_element(),
@@ -236,10 +238,13 @@ pub fn TableCards(props: &TableCardsProps) -> Element {
     let count = props.row_count.clone();
     let detail_model = model.clone();
     let detail_row = model.detail_row;
+    let list_style = TableStyles::cards_list().overridden(props.styles.cards_list.as_ref());
+    let empty_override = props.styles.cards_empty.clone();
+    let empty_style = move || TableStyles::cards_empty().overridden(empty_override.as_ref());
     ui! {
-        view(style = TableCardsList()) {
+        view(style = list_style) {
             if has_empty && count.get() == 0 {
-                view(style = TableCardsEmpty()) {
+                view(style = empty_style()) {
                     Typography(content = empty_text.clone(), kind = typography_kind::Body, muted = true)
                 }
             }
@@ -262,15 +267,23 @@ fn detail_sheet(model: &Rc<CardsModel>) -> Element {
     };
     let cell = model.cell.clone();
     let title = model.plan.title.clone();
-    let rows = model.plan.detail.clone();
+    let title_style = TableStyles::card_title().overridden(model.styles.card_title.as_ref());
+    let rows: Vec<_> = model
+        .plan
+        .detail
+        .iter()
+        .map(|(id, label)| {
+            (id.clone(), label.clone(), TableStyles::detail_row().overridden(model.styles.detail_row.as_ref()))
+        })
+        .collect();
     ui! {
-        view(style = TableCardTitle()) {
+        view(style = title_style) {
             if let Some(id) = &title {
                 cell(i, id)
             }
         }
-        for (id, label) in rows {
-            view(style = TableDetailRow()) {
+        for (id, label, row_style) in rows {
+            view(style = row_style) {
                 Typography(content = label.clone(), kind = typography_kind::Caption, muted = true)
                 cell(i, &id)
             }
@@ -300,6 +313,7 @@ impl Default for TableCardItemProps {
                 on_row_click: None,
                 selection: None,
                 detail_row: signal(None),
+                styles: Default::default(),
             }),
             index: 0,
         }
@@ -320,35 +334,57 @@ fn TableCardItem(props: &TableCardItemProps) -> Element {
     let opposite = plan.opposite.clone().map(|id| (model.cell)(i, &id));
     let actions = plan.actions.clone().map(|id| (model.cell)(i, &id));
     let has_fields = !plan.shown.is_empty();
-    let fields: Vec<(String, Element)> =
-        plan.shown.iter().map(|(id, label)| (label.clone(), (model.cell)(i, id))).collect();
+    // Each section's slot style, built here because the branches below
+    // each take their own.
+    let styles = &model.styles;
+    let opposite = opposite
+        .map(|o| (o, TableStyles::card_opposite().overridden(styles.card_opposite.as_ref())));
+    let fields: Vec<_> = plan
+        .shown
+        .iter()
+        .map(|(id, label)| {
+            (
+                label.clone(),
+                (model.cell)(i, id),
+                TableStyles::card_field().overridden(styles.card_field.as_ref()),
+                TableStyles::card_label().overridden(styles.card_label.as_ref()),
+            )
+        })
+        .collect();
+    let fields_style = TableStyles::card_fields().overridden(styles.card_fields.as_ref());
     let more = plan.more();
+    let more_style = TableStyles::card_more().overridden(styles.card_more.as_ref());
+    let title_line_style = TableStyles::card_title_line().overridden(styles.card_title_line.as_ref());
+    let title_style = TableStyles::card_title().overridden(styles.card_title.as_ref());
     let select = model.selection.map(|s| select_row_box(s, (model.row_id)(i)));
     let detail_row = model.detail_row;
     let clickable = model.on_row_click.is_some();
-    let card_style = TableCard().into_style_application().with("interactive", if clickable { "on" } else { "off" });
+    let card_style = TableStyles::card()
+        .overridden(styles.card.as_ref())
+        .into_style_application()
+        .with("interactive", if clickable { "on" } else { "off" });
     let card = ui! {
         view(style = card_style) {
-            view(style = TableCardTitleLine()) {
+            view(style = title_line_style) {
                 select
-                view(style = TableCardTitle()) { title }
-                if let Some(o) = opposite {
-                    view(style = TableCardOpposite()) { o }
+                view(style = title_style) { title }
+                if let Some((o, opposite_style)) = opposite {
+                    view(style = opposite_style) { o }
                 }
                 actions
             }
             if has_fields {
-                view(style = TableCardFields()) {
-                    for (label, value) in fields {
-                        view(style = TableCardField()) {
-                            text(style = TableCardLabel()) { label }
+                view(style = fields_style) {
+                    for (label, value, field_style, label_style) in fields {
+                        view(style = field_style) {
+                            text(style = label_style) { label }
                             value
                         }
                     }
                 }
             }
             if more > 0 {
-                view(style = TableCardMore()) {
+                view(style = more_style) {
                     Button(
                         label = format!("+{more} more"),
                         on_click = Rc::new(move || detail_row.set(Some(i))) as Rc<dyn Fn()>,
@@ -423,7 +459,7 @@ mod tests {
     #[test]
     fn regression_more_control_sits_at_the_leading_edge() {
         idea_theme::testing::with_test_world(|| {
-            let r = runtime_core::resolve_style(&TableCardMore().into_style_application());
+            let r = runtime_core::resolve_style(&TableStyles::card_more().into_style_application());
             assert_eq!(r.flex_direction, Some(runtime_core::FlexDirection::Row));
             assert_eq!(r.justify_content, Some(runtime_core::JustifyContent::FlexStart));
         });

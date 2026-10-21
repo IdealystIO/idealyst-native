@@ -100,11 +100,11 @@ fn premint_must_not_reach_table_cell_styles() {
     .expect("read table/mod.rs");
     // The application is built explicitly per role (so the `pinned`
     // axis can select on it)…
-    for sheet in ["TableHeadCell", "TableBodyCell"] {
-        let needle = format!("let app = {sheet}().into_style_application()");
+    for slot in ["head_cell", "body_cell"] {
+        let needle = format!("let app = TableStyles::{slot}()");
         assert!(
             src.contains(&needle),
-            "the {sheet} cell application must be derived explicitly \
+            "the {slot} cell application must be derived explicitly \
              before hand-off"
         );
     }
@@ -171,7 +171,7 @@ fn regression_clickable_row_overlay_premints_via_axes() {
         );
 
         // The hovered arm resolves to the themed row highlight.
-        let hovered_app = TableBodyCell()
+        let hovered_app = TableStyles::body_cell()
             .into_style_application()
             .with("interactive", "on")
             .with("row_hovered", "on");
@@ -198,7 +198,7 @@ fn regression_clickable_row_overlay_premints_via_axes() {
 #[test]
 fn head_cell_background_reads_the_table_header_token() {
     with_test_world(|| {
-        let app = TableHeadCell().into_style_application();
+        let app = TableStyles::head_cell().into_style_application();
         let rules = runtime_core::resolve_style(&app);
         let bg = rules.background.as_ref().expect("head cells paint a background");
         assert_eq!(
@@ -241,7 +241,7 @@ fn regression_reactive_cell_style_still_takes_the_row_hover() {
             ..Default::default()
         })
         .with_style(|| {
-            TableBodyCell().into_style_application().with_overrides(StyleRules {
+            TableStyles::body_cell().into_style_application().with_overrides(StyleRules {
                 width: Some(runtime_core::Tokenized::Literal(
                     runtime_core::Length::Px(240.0),
                 )),
@@ -1148,7 +1148,7 @@ fn is_transparent(c: &Option<Tokenized<runtime_core::Color>>) -> bool {
 fn plain_table_surface_has_no_frame() {
     with_test_world(|| {
         let plain = runtime_core::resolve_style(
-            &TableStyle().into_style_application().with("frame", "plain"),
+            &TableStyles::frame().into_style_application().with("variant", "plain"),
         );
         for w in [
             &plain.border_top_width,
@@ -1160,7 +1160,7 @@ fn plain_table_surface_has_no_frame() {
         }
         assert!(is_transparent(&plain.background), "plain paints no fill of its own");
 
-        let framed = runtime_core::resolve_style(&TableStyle().into_style_application());
+        let framed = runtime_core::resolve_style(&TableStyles::frame().into_style_application());
         assert_eq!(framed.border_top_width.as_ref().map(|w| w.resolve()), Some(1.0));
         assert_eq!(bg_token(&framed).as_deref(), Some("color-surface"));
     });
@@ -1255,8 +1255,8 @@ fn plain_scroll_table_watches_only_the_frozen_cells() {
 fn pin_edge_shows_only_the_edge_with_content_behind_it() {
     with_test_world(|| {
         let edges = signal(table::ScrollEdges::default());
-        let left = TableBodyCell().into_style_application().with("pinned", "left");
-        let right = TableBodyCell().into_style_application().with("pinned", "right");
+        let left = TableStyles::body_cell().into_style_application().with("pinned", "left");
+        let right = TableStyles::body_cell().into_style_application().with("pinned", "right");
         let colours = || {
             let l = runtime_core::resolve_style(&pin_edge(left.clone(), edges));
             let r = runtime_core::resolve_style(&pin_edge(right.clone(), edges));
@@ -1272,7 +1272,7 @@ fn pin_edge_shows_only_the_edge_with_content_behind_it() {
 
         let shown = pin_edge(left.clone(), edges);
         assert!(shown.preminted_class_list().is_some(), "both arms premint");
-        let unpinned = TableBodyCell().into_style_application();
+        let unpinned = TableStyles::body_cell().into_style_application();
         assert!(
             !pin_edge(unpinned, edges).variants.0.contains_key("pin_edge"),
             "an unfrozen cell is returned untouched"
@@ -1382,10 +1382,10 @@ fn regression_scroll_y_pins_the_header_row_and_stacks_the_corner_on_top() {
         // A row lifted by a reorder drag rides above other rows' frozen
         // cells and still slides under the header row.
         let lifted = runtime_core::resolve_style(
-            &TableBodyCell().into_style_application().with("drag", "lifted"),
+            &TableStyles::body_cell().into_style_application().with("drag", "lifted"),
         );
         let lifted_frozen = runtime_core::resolve_style(
-            &TableBodyCell().into_style_application().with("drag", "lifted").with("pinned", "left"),
+            &TableStyles::body_cell().into_style_application().with("drag", "lifted").with("pinned", "left"),
         );
         assert!(z(frozen) < z(&lifted), "a lifted row rides above frozen cells");
         assert!(z(&lifted) < z(&lifted_frozen), "its own frozen cell stays above its scrolling ones");
@@ -1431,7 +1431,7 @@ fn regression_scroll_y_pins_a_header_row_with_dynamic_cell_styles() {
         let dynamic_head = table::table_cell(Default::default())
             .with_style(StyleProp::SheetDynamic(Box::new(move || {
                 let _ = width.get();
-                TableHeadCell().into_style_application().with("sticky_header", "off")
+                TableStyles::head_cell().into_style_application().with("sticky_header", "off")
             })))
             .into_element();
         let t = Table(TableProps {
@@ -2278,12 +2278,12 @@ fn landed_row_is_a_reactive_highlight_tone() {
 #[test]
 fn plain_table_hover_reaches_frozen_cells() {
     with_test_world(|| {
-        let base = TableBodyCell().into_style_application().with("frame", "plain").with("pinned", "left");
+        let base = TableStyles::body_cell().into_style_application().with("variant", "plain").with("pinned", "left");
         let rest = runtime_core::resolve_style(&base.clone().with("row_hovered", "off"));
         let hover = runtime_core::resolve_style(&base.with("row_hovered", "on"));
         assert_eq!(bg_token(&rest).as_deref(), Some("color-surface"), "opaque at rest");
         assert_eq!(bg_token(&hover).as_deref(), Some("color-surface-alt"), "tinted with its row");
-        let head = TableHeadCell().into_style_application().with("frame", "plain").with("pinned", "left");
+        let head = TableStyles::head_cell().into_style_application().with("variant", "plain").with("pinned", "left");
         let head_hover = runtime_core::resolve_style(&head.with("row_hovered", "on"));
         assert_eq!(bg_token(&head_hover).as_deref(), Some("color-surface-alt"));
     });
@@ -2321,5 +2321,68 @@ fn regression_reorder_adds_a_grip_to_draggable_rows() {
         assert_eq!(grips[1], (1, true), "a draggable row's grip holds the glyph and the drag");
         assert_eq!(grips[2], (0, false), "a row that does not drag has no grip");
         assert_eq!(grips[3], (1, true));
+    });
+}
+
+/// The table-level axes are open: an app defines its own density, row
+/// tone and variant (`TableDensity::define`, …) and gives them a look with
+/// a restyle arm on the cell slots. `Table` / `TableRow` select the arm
+/// on cells that are already built, and the restyled cells still premint.
+/// A head and a body cell are separate slots of one `TableStyles`.
+#[test]
+fn app_defined_table_axes_reach_built_cells_and_premint() {
+    const SPACIOUS: TableDensity = TableDensity::define("spacious");
+    const INFO: TableTone = TableTone::define("info");
+    with_test_world(|| {
+        runtime_core::component_styles::__reset::<TableStyles>();
+        idea_theme::theme::install_idea_theme(crate::light_theme());
+        TableStyles::restyle(|s| {
+            s.head_cell().arm(SPACIOUS, |t| StyleRules {
+                padding_top: Some(t.spacing.xl()),
+                padding_bottom: Some(t.spacing.xl()),
+                ..Default::default()
+            });
+            s.body_cell().arm(SPACIOUS, |t| StyleRules {
+                padding_top: Some(t.spacing.xl()),
+                padding_bottom: Some(t.spacing.xl()),
+                ..Default::default()
+            });
+            s.body_cell().arm(INFO, |t| StyleRules {
+                background: Some(t.intent.info.soft_bg()),
+                ..Default::default()
+            });
+        });
+        let head = TableRow(TableRowProps {
+            children: vec![TableCell(TableCellProps {
+                header: true,
+                text: Reactive::Static(Some("h".into())),
+                ..Default::default()
+            })],
+            ..Default::default()
+        });
+        let body = TableRow(TableRowProps {
+            children: vec![body_cell("b")],
+            tone: Reactive::Static(INFO),
+            ..Default::default()
+        });
+        let cells = grid_cells(Table(TableProps {
+            children: vec![head, body],
+            density: SPACIOUS,
+            ..Default::default()
+        }));
+        let xl = crate::light_theme().spacing.xl;
+        let mut apps = cells.into_iter().map(cell_app);
+        let head_app = apps.next().expect("a head cell");
+        let body_app = apps.next().expect("a body cell");
+        for app in [&head_app, &body_app] {
+            assert!(app.preminted_class_list().is_some(), "a restyled cell premints");
+            assert_eq!(px_of(&runtime_core::resolve_style(app).padding_top), Some(xl));
+        }
+        assert_eq!(
+            bg_token(&runtime_core::resolve_style(&body_app)).as_deref(),
+            Some("intent-info-soft-bg"),
+            "the app's row tone paints the body cell"
+        );
+        runtime_core::component_styles::__reset::<TableStyles>();
     });
 }
