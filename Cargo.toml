@@ -651,7 +651,7 @@ canvas3d-wgpu = { path = "crates/sdk/client/canvas3d/wgpu", version = "4.0.0", r
 toolbar = { path = "crates/sdk/client/toolbar", version = "5.0.0", registry = "idealyst" }
 pdf = { path = "crates/sdk/client/pdf", version = "3.0.0", registry = "idealyst" }
 form = { path = "crates/sdk/client/form", version = "4.0.0", registry = "idealyst" }
-table = { path = "crates/sdk/client/table", version = "6.0.0", registry = "idealyst" }
+table = { path = "crates/sdk/client/table", version = "6.0.1", registry = "idealyst" }
 virtualized = { path = "crates/sdk/client/virtualized", version = "3.0.0", registry = "idealyst" }
 offload = { path = "crates/sdk/client/offload", version = "2.0.2", registry = "idealyst" }
 menu = { path = "crates/sdk/client/menu", version = "5.0.0", registry = "idealyst" }
