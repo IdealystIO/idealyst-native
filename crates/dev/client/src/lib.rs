@@ -354,6 +354,15 @@ where
         self.backend.borrow().supports_screenshot()
     }
 
+    /// Whether the wrapped real backend switches style states,
+    /// breakpoints and container queries itself
+    /// (`StyleOps::handles_states_natively`). Every transport ships this
+    /// in its `AppToDev::Hello` so the session's recorder answers the
+    /// same and the style engine takes the path it takes `--local`.
+    pub fn handles_states_natively(&self) -> bool {
+        self.backend.borrow().handles_states_natively()
+    }
+
     /// Handle a [`DevToApp::CaptureScreenshot`]: capture the real
     /// backend's surface and reply with an [`AppToDev::ScreenshotResult`]
     /// carrying the same `request_id`. Native backends invoke the
@@ -1125,6 +1134,53 @@ where
                     }
                 }
                 self.backend.borrow_mut().apply_styled_states(&n, &b, &o);
+            }
+            Command::ApplyStyledVariants { node, base, states, breakpoints, containers } => {
+                let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
+                // Same graceful-degrade rationale as `ApplyStyle`: a
+                // missing overlay drops that overlay, a missing base skips
+                // the apply.
+                let Some(b) = self.styles.get(&base).cloned() else {
+                    warn_unknown_style(base, "ApplyStyledVariants(base)");
+                    return Ok(());
+                };
+                let styles = &self.styles;
+                let lookup = |sid: StyleId, ctx: &str| {
+                    let found = styles.get(&sid).cloned();
+                    if found.is_none() {
+                        warn_unknown_style(sid, ctx);
+                    }
+                    found
+                };
+                let states: Vec<(StateBits, Rc<StyleRules>)> = states
+                    .into_iter()
+                    .filter_map(|(bits, sid)| {
+                        let bits = bits
+                            .into_iter()
+                            .fold(StateBits::NONE, |acc, b| acc.with(convert::wire_state_bit(b)));
+                        lookup(sid, "ApplyStyledVariants(state)").map(|r| (bits, r))
+                    })
+                    .collect();
+                let breakpoints: Vec<(runtime_shared::Breakpoint, Rc<StyleRules>)> = breakpoints
+                    .into_iter()
+                    .filter_map(|(bp, sid)| {
+                        lookup(sid, "ApplyStyledVariants(breakpoint)")
+                            .map(|r| (convert::wire_breakpoint(bp), r))
+                    })
+                    .collect();
+                let containers: Vec<(f32, Rc<StyleRules>)> = containers
+                    .into_iter()
+                    .filter_map(|(min, sid)| {
+                        lookup(sid, "ApplyStyledVariants(container)").map(|r| (min, r))
+                    })
+                    .collect();
+                self.backend
+                    .borrow_mut()
+                    .apply_styled_variants(&n, &b, &states, &breakpoints, &containers);
+            }
+            Command::MarkContainer { node } => {
+                let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
+                self.backend.borrow_mut().mark_container(&n);
             }
             Command::AttachStates { node } => {
                 // Idempotency: snapshot replay re-emits `AttachStates`

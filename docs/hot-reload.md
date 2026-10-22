@@ -109,13 +109,13 @@ is; some is not yet. Measured against the same app in `--local`:
 |---|---|
 | Window size | The sidecar had no viewport at all, so every breakpoint classified as `Xs` and the app painted its MOBILE layout at any width. |
 | Platform identity | The recorder answered `Custom("")`, whose `is_apple()`/`is_mobile()`/`is_tv()` predicates are all `false`. It now reports the CLIENT's platform. |
+| Hover / pressed / focus styling, container queries | The recorder answered `handles_states_natively() == false` for every client, so the engine waited for state reports a browser never sends (its `attach_states` is a no-op; CSS does that job) and resolved container overlays at width 0. The browser now says in its `Hello` that it switches states itself; the recorder answers the same and ships every overlay axis (`ApplyStyledVariants`, `MarkContainer`) for its CSS to switch, as under `--local`. A native client keeps the event-driven path. |
 | Every style property | The wire carried only part of `StyleRules`: borders, shadows, cursor and leading, then alignment (`align_self`, `align_content`), wrapping, gaps, grid, text decoration and transform, `user_select`, `pointer_events`, caret color and every `*_transition` were dropped. All of them cross now, and a property added to `StyleRules` does not compile until it does. |
 
 **Still different, in rough order of how much you notice:**
 
 | | Why |
 |---|---|
-| No hover / pressed / focus styling | The recorder reports `handles_states_natively() == false`, so the engine takes the event-driven path — and the browser's `attach_states` is an intentional no-op, because on web CSS pseudo-classes normally do this job. The loop is built and broken at one point. |
 | Anchored overlays appear centred | `CreatePortal` collapses an `Anchor` target to viewport-centre — the sidecar cannot hand the client a live anchor node. |
 | Closed overlays stay in the DOM | `ReleaseNode` does not call `release_portal`, so backdrops keep swallowing clicks. |
 | Virtualized lists render nothing | `apply_create_virtualizer` is a stub; the node is never registered, so every later op about it is skipped. |

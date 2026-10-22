@@ -836,6 +836,42 @@ impl caps::StyleOps for WireRecordingBackend {
         WireRecordingBackend::apply_styled_states(self, node, base, overlays)
     }
 
+    /// The CLIENT's answer, not the recorder's. A browser client's CSS
+    /// switches `:hover` / `:active` / `:focus-visible`, `@media` and
+    /// `@container` itself and its `attach_states` is a deliberate no-op,
+    /// so answering `false` for it took the event-driven path with
+    /// nothing ever reporting a state: no hover, press or focus styling
+    /// in wire mode, and container overlays frozen at width 0. Answering
+    /// `true` hands the recorder every overlay
+    /// ([`Self::apply_styled_variants`]) for the client to switch, as
+    /// that backend does under `--local`. A native client answers
+    /// `false` and keeps the `AttachStates` / `StateChanged` loop.
+    fn handles_states_natively(&self) -> bool {
+        crate::session_native_style_states()
+    }
+
+    fn apply_styled_variants(
+        &mut self,
+        node: &Self::Node,
+        base: &Rc<StyleRules>,
+        state_overlays: &[(StateBits, Rc<StyleRules>)],
+        breakpoint_overlays: &[(runtime_shared::Breakpoint, Rc<StyleRules>)],
+        container_overlays: &[(f32, Rc<StyleRules>)],
+    ) {
+        WireRecordingBackend::apply_styled_variants(
+            self,
+            node,
+            base,
+            state_overlays,
+            breakpoint_overlays,
+            container_overlays,
+        )
+    }
+
+    fn mark_container(&mut self, node: &Self::Node) {
+        WireRecordingBackend::mark_container(self, node)
+    }
+
 
 
 

@@ -1159,6 +1159,27 @@ thread_local! {
     /// unset state.
     static SESSION_PLATFORM: std::cell::Cell<Option<runtime_shared::host::Platform>> =
         const { std::cell::Cell::new(None) };
+
+    /// Whether this session's CLIENT switches style states, breakpoints
+    /// and container queries itself (`AppToDev::Hello::native_style_states`
+    /// — a browser). The recorder's `handles_states_natively` answers
+    /// with it, so the engine takes the same path it takes when that
+    /// backend runs `--local`. Set before the first mount, like
+    /// `SESSION_PLATFORM`.
+    static SESSION_NATIVE_STYLE_STATES: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Set whether the calling session-thread's client handles style states
+/// natively. Session-thread only, like [`set_session_platform`].
+pub fn set_session_native_style_states(native: bool) {
+    SESSION_NATIVE_STYLE_STATES.with(|c| c.set(native));
+}
+
+/// Whether the calling session-thread's client handles style states
+/// natively. `false` (the event-driven path) until its Hello says so.
+pub fn session_native_style_states() -> bool {
+    SESSION_NATIVE_STYLE_STATES.with(|c| c.get())
 }
 
 /// Set the calling session-thread's client platform. Must run on the
@@ -1884,6 +1905,49 @@ impl WireRecordingBackend {
             base: base_id,
             overlays: wire_overlays,
         });
+    }
+
+    /// Every overlay axis, for a client that switches them itself
+    /// (`Command::ApplyStyledVariants`). Only reached when
+    /// [`crate::session_native_style_states`] is on.
+    pub fn apply_styled_variants(
+        &mut self,
+        node: &NodeId,
+        base: &Rc<StyleRules>,
+        state_overlays: &[(StateBits, Rc<StyleRules>)],
+        breakpoint_overlays: &[(runtime_shared::Breakpoint, Rc<StyleRules>)],
+        container_overlays: &[(f32, Rc<StyleRules>)],
+    ) {
+        let mut state = self.inner.borrow_mut();
+        let base = Self::intern_style(&mut state, base);
+        let states = state_overlays
+            .iter()
+            .map(|(bits, rules)| {
+                (convert_out::expand_state_bits(*bits), Self::intern_style(&mut state, rules))
+            })
+            .collect();
+        let breakpoints = breakpoint_overlays
+            .iter()
+            .map(|(bp, rules)| {
+                (convert_out::breakpoint_to_wire(*bp), Self::intern_style(&mut state, rules))
+            })
+            .collect();
+        let containers = container_overlays
+            .iter()
+            .map(|(min, rules)| (*min, Self::intern_style(&mut state, rules)))
+            .collect();
+        state.emit(Command::ApplyStyledVariants {
+            node: *node,
+            base,
+            states,
+            breakpoints,
+            containers,
+        });
+    }
+
+    pub fn mark_container(&mut self, node: &NodeId) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::MarkContainer { node: *node });
     }
 
     pub fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {

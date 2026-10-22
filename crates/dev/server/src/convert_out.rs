@@ -120,6 +120,19 @@ pub fn expand_state_bits(bits: StateBits) -> Vec<WireStateBit> {
     out
 }
 
+/// `Breakpoint` → its wire mirror. Reverse:
+/// `dev_client::convert::wire_breakpoint`.
+pub fn breakpoint_to_wire(b: runtime_shared::Breakpoint) -> wire::WireBreakpoint {
+    use runtime_shared::Breakpoint as B;
+    match b {
+        B::Xs => wire::WireBreakpoint::Xs,
+        B::Sm => wire::WireBreakpoint::Sm,
+        B::Md => wire::WireBreakpoint::Md,
+        B::Lg => wire::WireBreakpoint::Lg,
+        B::Xl => wire::WireBreakpoint::Xl,
+    }
+}
+
 fn color_to_wire(c: &Color) -> WireColor {
     WireColor(c.0.clone())
 }

@@ -148,6 +148,8 @@ where
 
     // --- on_open --------------------------------------------------
     let socket_for_open = socket.clone();
+    // Read once, here: the open handler must not borrow the replayer.
+    let native_style_states = wire.borrow().handles_states_natively();
     let on_open = listen("open", Box::new(move |_evt| {
         let hello = AppToDev::Hello {
             app_name: env!("CARGO_PKG_NAME").to_string(),
@@ -175,6 +177,11 @@ where
             // so the web client can't serve a real-surface capture; the
             // server keeps using the wgpu replay for this session.
             supports_screenshot: false,
+            // The browser's CSS switches `:hover` / `:active` /
+            // `:focus-visible`, `@media` and `@container`; reported so
+            // the sidecar's recorder hands it every overlay instead of
+            // waiting on state reports this backend never sends.
+            native_style_states,
         };
         if let Ok(bytes) = serde_json::to_vec(&hello) {
             // Send as binary to match the dev server's send format.
@@ -446,6 +453,8 @@ fn command_kind(c: &wire::Command) -> &'static str {
         UnregisterStyle { .. } => "UnregisterStyle",
         ApplyStyle { .. } => "ApplyStyle",
         ApplyStyledStates { .. } => "ApplyStyledStates",
+        ApplyStyledVariants { .. } => "ApplyStyledVariants",
+        MarkContainer { .. } => "MarkContainer",
         AttachStates { .. } => "AttachStates",
         OnNodeUnstyled { .. } => "OnNodeUnstyled",
         ApplyPresence { .. } => "ApplyPresence",

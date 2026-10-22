@@ -249,6 +249,16 @@ pub enum AppToDev {
         /// clients report `false`.
         #[serde(default)]
         supports_screenshot: bool,
+        /// Whether this client's real backend switches interaction
+        /// states, breakpoints and container queries itself
+        /// (`StyleOps::handles_states_natively` — a browser, through
+        /// CSS). The session's recorder then reports the same, so the
+        /// style engine hands it every overlay and the recorder ships
+        /// them as [`Command::ApplyStyledVariants`]; otherwise the engine
+        /// resolves states from [`AppToDev::StateChanged`] reports.
+        /// `#[serde(default)]` → an older client reports `false`.
+        #[serde(default)]
+        native_style_states: bool,
     },
 
     /// A user-driven event fired against a registered handler.
@@ -833,6 +843,36 @@ pub enum Command {
         node: NodeId,
         base: StyleId,
         overlays: Vec<(WireStateBit, StyleId)>,
+    },
+    /// Apply a base style plus every overlay axis, for the client's
+    /// backend to switch between itself (PROTOCOL_VERSION 25). Mirrors
+    /// `StyleOps::apply_styled_variants`.
+    ///
+    /// Only emitted to a client that reported
+    /// [`AppToDev::Hello::native_style_states`] — a browser, whose CSS
+    /// owns `:hover` / `:active` / `:focus-visible`, `@media` and
+    /// `@container`. Such a client never reports state changes (its
+    /// `attach_states` is a no-op), so the event-driven path
+    /// ([`Command::AttachStates`] + [`AppToDev::StateChanged`]) would
+    /// leave every state overlay dark, and container overlays can only
+    /// resolve where the container's width is known.
+    ///
+    /// Each state overlay carries its full bit set: an overlay keyed on
+    /// `HOVERED | FOCUSED` applies only while both hold, which a list of
+    /// single bits cannot say.
+    ApplyStyledVariants {
+        node: NodeId,
+        base: StyleId,
+        states: Vec<(Vec<WireStateBit>, StyleId)>,
+        breakpoints: Vec<(WireBreakpoint, StyleId)>,
+        /// `(min container width in px, style)`, ascending.
+        containers: Vec<(f32, StyleId)>,
+    },
+    /// Mark the node as a container-query containment context
+    /// (PROTOCOL_VERSION 25). Mirrors `StyleOps::mark_container`; only
+    /// meaningful alongside [`Command::ApplyStyledVariants`].
+    MarkContainer {
+        node: NodeId,
     },
     /// Hook up native state events for the node (hover, press,
     /// focus). The app reports state transitions via
@@ -1783,6 +1823,16 @@ pub enum WireStateBit {
     Disabled,
 }
 
+/// Wire mirror of `runtime_shared::Breakpoint`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum WireBreakpoint {
+    Xs,
+    Sm,
+    Md,
+    Lg,
+    Xl,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum WireColorScheme {
     Light,
@@ -2492,7 +2542,12 @@ mod tests {
         });
         let bytes = serde_json::to_vec(&legacy).unwrap();
         match codec::decode::<AppToDev>(&bytes).expect("decode legacy Hello") {
-            AppToDev::Hello { supports_screenshot, .. } => assert!(!supports_screenshot),
+            AppToDev::Hello { supports_screenshot, native_style_states, .. } => {
+                assert!(!supports_screenshot);
+                // An older client gets the event-driven style path it
+                // always had.
+                assert!(!native_style_states);
+            }
             other => panic!("wrong variant: {other:?}"),
         }
     }
@@ -2649,6 +2704,7 @@ mod tests {
             identity: ClientIdentity::default(),
             viewport: None,
             supports_screenshot: false,
+            native_style_states: false,
         };
         let bytes = codec::encode(&h).unwrap();
         match codec::decode::<AppToDev>(&bytes).unwrap() {
@@ -2670,6 +2726,7 @@ mod tests {
             },
             viewport: None,
             supports_screenshot: false,
+            native_style_states: false,
         };
         let bytes = codec::encode(&h).unwrap();
         match codec::decode::<AppToDev>(&bytes).unwrap() {

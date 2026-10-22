@@ -72,6 +72,7 @@ impl MockClient {
             identity,
             viewport: None,
             supports_screenshot: false,
+            native_style_states: false,
         };
         ws.send(Message::Binary(
             serde_json::to_vec(&hello).expect("encode AppToDev::Hello").into(),

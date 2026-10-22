@@ -315,6 +315,7 @@ fn run_with_budget(
         identity: wire::ClientIdentity::default(),
         viewport: None,
         supports_screenshot: false,
+        native_style_states: false,
     };
     let bytes = serde_json::to_vec(&hello).unwrap();
     ws.send(Message::Binary(bytes.into())).ok();
@@ -391,6 +392,7 @@ fn server_hello_carries_primary_session_in_single_process_mode() {
         },
         viewport: None,
         supports_screenshot: false,
+        native_style_states: false,
     };
     ws_a.send(Message::Binary(serde_json::to_vec(&hello_a).unwrap().into()))
         .unwrap();
@@ -414,6 +416,7 @@ fn server_hello_carries_primary_session_in_single_process_mode() {
         identity: wire::ClientIdentity::default(),
         viewport: None,
         supports_screenshot: false,
+        native_style_states: false,
     };
     ws_b.send(Message::Binary(serde_json::to_vec(&hello_b).unwrap().into()))
         .unwrap();
@@ -484,6 +487,7 @@ fn an_overlay_patch_crosses_a_real_socket_and_the_version_announces_it() {
             },
             viewport: None,
             supports_screenshot: false,
+            native_style_states: false,
         })
         .unwrap()
         .into(),

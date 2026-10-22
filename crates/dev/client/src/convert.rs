@@ -154,6 +154,18 @@ pub fn wire_state_bit(b: WireStateBit) -> StateBits {
     }
 }
 
+/// Wire-to-framework reverse of `dev_server::convert_out::breakpoint_to_wire`.
+pub fn wire_breakpoint(b: wire::WireBreakpoint) -> runtime_shared::Breakpoint {
+    use runtime_shared::Breakpoint as B;
+    match b {
+        wire::WireBreakpoint::Xs => B::Xs,
+        wire::WireBreakpoint::Sm => B::Sm,
+        wire::WireBreakpoint::Md => B::Md,
+        wire::WireBreakpoint::Lg => B::Lg,
+        wire::WireBreakpoint::Xl => B::Xl,
+    }
+}
+
 pub fn axis_name_to_wire_state(axis: &'static str) -> Option<WireStateBit> {
     match axis {
         "__state_hovered" => Some(WireStateBit::Hovered),

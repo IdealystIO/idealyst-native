@@ -171,6 +171,11 @@ pub enum SidecarIn {
         /// `identity.platform`). See `SessionFacts::platform`.
         #[serde(default)]
         platform: wire::WirePlatform,
+        /// Whether the client switches style states itself
+        /// (`AppToDev::Hello`'s `native_style_states`). See
+        /// `SessionFacts::native_style_states`.
+        #[serde(default)]
+        native_style_states: bool,
     },
     /// Tell the sidecar to shut down the named session's thread. The
     /// thread drops its `Owner` (firing teardown effects) and exits.
@@ -620,6 +625,7 @@ impl Sidecar {
             viewport: facts.viewport,
             initial_url: facts.initial_url,
             platform: facts.platform,
+            native_style_states: facts.native_style_states,
         });
     }
 
@@ -737,12 +743,18 @@ pub struct SessionFacts {
     /// drawing this platform's screen, and `platform()` branches have
     /// to answer for the viewer's machine, not ours.
     pub platform: wire::WirePlatform,
+    /// Whether the client's backend switches interaction states,
+    /// breakpoints and container queries itself (a browser's CSS). The
+    /// session's recorder reports the same from
+    /// `StyleOps::handles_states_natively`, so the style engine takes
+    /// the path it takes for that backend under `--local`.
+    pub native_style_states: bool,
 }
 
 impl SessionFacts {
     /// Facts for a client that reported only a viewport.
     pub fn viewport_only(viewport: Option<wire::WireViewport>) -> Self {
-        Self { viewport, initial_url: None, platform: wire::WirePlatform::default() }
+        Self { viewport, ..Self::default() }
     }
 }
 
@@ -786,6 +798,14 @@ impl SessionTracker {
     pub fn set_platform(&self, id: &str, platform: wire::WirePlatform) {
         if let Ok(mut g) = self.inner.lock() {
             g.entry(id.to_string()).or_default().platform = platform;
+        }
+    }
+
+    /// Record whether the client handles style states natively. Same
+    /// replay reasoning as the platform.
+    pub fn set_native_style_states(&self, id: &str, native: bool) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.entry(id.to_string()).or_default().native_style_states = native;
         }
     }
 
@@ -1060,10 +1080,8 @@ mod runtime {
         // `Hello` so the host can pair the symbol. See
         // `SidecarOut::Hello::app_reference`.
         let app_reference = app as *const () as u64;
-        run_loop(app_reference, move |session, rx, out, viewport, initial_url, platform| {
-            run_session_thread_newcore(
-                session, rx, out, app, register, viewport, initial_url, platform,
-            )
+        run_loop(app_reference, move |session, rx, out, facts| {
+            run_session_thread_newcore(session, rx, out, app, register, facts)
         })
     }
 
@@ -1077,9 +1095,7 @@ mod runtime {
                 String,
                 mpsc::Receiver<SessionMsg>,
                 Arc<Mutex<std::io::Stdout>>,
-                Option<wire::WireViewport>,
-                Option<String>,
-                wire::WirePlatform,
+                crate::SessionFacts,
             ) + Send
             + Sync
             + Clone
@@ -1162,7 +1178,15 @@ mod runtime {
             };
 
             match msg {
-                SidecarIn::CreateSession { session, viewport, initial_url, platform } => {
+                SidecarIn::CreateSession {
+                    session,
+                    viewport,
+                    initial_url,
+                    platform,
+                    native_style_states,
+                } => {
+                    let facts =
+                        crate::SessionFacts { viewport, initial_url, platform, native_style_states };
                     if sessions.contains_key(&session) {
                         eprintln!(
                             "[runtime-server-app] CreateSession({session}): already exists; ignoring"
@@ -1190,7 +1214,7 @@ mod runtime {
                         .name(format!("aas-session-{session}"))
                         .stack_size(16 * 1024 * 1024)
                         .spawn(move || {
-                            body(session_for_thread, rx, out_clone, viewport, initial_url, platform);
+                            body(session_for_thread, rx, out_clone, facts);
                         })
                         .expect("spawn session thread");
                     sessions.insert(session.clone(), SessionHandle { tx, join });
@@ -1411,10 +1435,14 @@ mod runtime {
         out: Arc<Mutex<std::io::Stdout>>,
         app: fn() -> crate::newcore::SceneElement,
         register: fn(&mut crate::newcore::SceneRegistry),
-        initial_viewport: Option<wire::WireViewport>,
-        initial_url: Option<String>,
-        platform: wire::WirePlatform,
+        facts: crate::SessionFacts,
     ) {
+        let crate::SessionFacts {
+            viewport: initial_viewport,
+            initial_url,
+            platform,
+            native_style_states,
+        } = facts;
         // Thread-level installs: IPC sink for
         // device-frame round-trips, the Tokio-backed async executor,
         // and the session viewport (read by `RecordingViewOps::frame`).
@@ -1422,6 +1450,9 @@ mod runtime {
         // Before ANY mount: this session thread paints for `platform`,
         // and author code reads that during the first build.
         crate::set_session_platform(crate::platform_from_wire(platform));
+        // Same: the style engine asks `handles_states_natively` per node
+        // as it attaches styles, from the first build on.
+        crate::set_session_native_style_states(native_style_states);
         let recorder = WireRecordingBackend::new();
         crate::async_executor::install();
         if let Some(v) = initial_viewport {
@@ -1887,6 +1918,7 @@ mod session_facts_tests {
             viewport: None,
             initial_url: Some("/projects/42".into()),
             platform: wire::WirePlatform::Web,
+            native_style_states: true,
         };
         let json = serde_json::to_string(&frame).unwrap();
         let back: SidecarIn = serde_json::from_str(&json).unwrap();
@@ -1972,6 +2004,28 @@ mod session_facts_tests {
 
     /// The tracker carries it for the respawn replay, apart per
     /// session, like the viewport and the URL beside it.
+    /// A browser session that a sidecar respawn re-creates must come back
+    /// on the declarative style path, or every hover / press / focus style
+    /// disappears after the first hot-patch fallback.
+    #[test]
+    fn create_session_carries_native_style_states_through_a_respawn() {
+        let tracker = SessionTracker::new();
+        tracker.set_native_style_states("web_1", true);
+        assert!(tracker.facts("web_1").native_style_states);
+        assert!(!tracker.facts("ios_1").native_style_states);
+
+        let frame = SidecarIn::CreateSession {
+            session: "web_1".into(),
+            viewport: None,
+            initial_url: None,
+            platform: wire::WirePlatform::Web,
+            native_style_states: true,
+        };
+        let back: SidecarIn =
+            serde_json::from_str(&serde_json::to_string(&frame).unwrap()).unwrap();
+        assert!(matches!(back, SidecarIn::CreateSession { native_style_states: true, .. }));
+    }
+
     #[test]
     fn the_tracker_keeps_each_sessions_platform() {
         let tracker = SessionTracker::new();
