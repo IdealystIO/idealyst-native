@@ -725,6 +725,13 @@ pub struct BuildOptions {
     /// subsecond patch can link against. Dev-only; set by the `--local`
     /// web loop when the hot-patch tier is armed.
     pub hot_patch: bool,
+    /// Take ADDITIVE hot patches (`idealyst dev --experimental-build`):
+    /// a save whose shape moved only by new items is patched, verified
+    /// after its replay (`build_web::hotpatch_additive`), instead of
+    /// rebuilt (`dev_overlay::Workspace::additive`). Off by default;
+    /// without it every shape change rebuilds. Meaningful only with
+    /// [`Self::hot_patch`].
+    pub experimental_build: bool,
     /// Premint static styles on every rebuild (`idealyst dev … --premint`).
     /// Each build runs the native style dump and refreshes
     /// `pkg/premint.css` alongside the wasm, and the wasm compiles with
@@ -814,6 +821,7 @@ pub fn start(
             head_script: None,
             runtime_server_url: None,
             hot_patch: false,
+            experimental_build: false,
             premint: false,
             premint_only: false,
             premint_report: false,
@@ -1024,6 +1032,11 @@ fn resume_snapshot(
         inputs: inputs.clone(),
         archives: ws.crates.iter().map(|(p, c)| (p.clone(), c.archive.clone())).collect(),
         patched: ws.patched.clone(),
+        added: ws
+            .added
+            .iter()
+            .map(|(p, names)| (p.clone(), names.iter().map(|n| n.name.clone()).collect()))
+            .collect(),
         replay: replay
             .into_iter()
             .map(|p| resume::Replayed { hot: p.kind == PatchKind::Hot, json: p.json })
@@ -1339,6 +1352,31 @@ impl HotPatchBase {
         self.builder.as_ref().map_or(self.serial, |b| b.serial().max(self.serial))
     }
 
+    /// A rebuild is starting: pause this base's background seeds
+    /// ([`build_web::hotpatch_build::WasmPatchBuilder::pause_seeds`]). An
+    /// indexing job that already finished is collected first, since its
+    /// seeds are running; one still indexing starts them only once it is
+    /// done, and is waited for in [`Self::rebuilt`].
+    fn pause_seeds(&mut self) {
+        if self.indexing.as_ref().is_some_and(|j| j.is_finished()) {
+            if let Some(Ok(Ok(builder))) = self.indexing.take().map(|j| j.join()) {
+                self.builder = Some(builder);
+                self.resumed_objects.clear();
+            }
+        }
+        if let Some(builder) = &self.builder {
+            builder.pause_seeds();
+        }
+    }
+
+    /// The rebuild failed: the page still runs this base, so its seeds go
+    /// on.
+    fn resume_seeds(&self) {
+        if let Some(builder) = &self.builder {
+            builder.resume_seeds();
+        }
+    }
+
     fn rebuilt(&mut self, artifact: build_web::BuildArtifact) {
         self.serial = self.serial();
         self.resumed_objects.clear();
@@ -1622,6 +1660,25 @@ fn watch_loop(
             let mut ws = unscanned_workspace(&dir);
             ws.install(state.archives.clone().into_iter().collect());
             ws.patched = state.patched.iter().filter(|p| ws.crates.contains_key(*p)).cloned().collect();
+            // Names patches added to the resumed base: still missing from
+            // its metadata, so a save that uses one must rebuild. Kept as
+            // `pub` names — the use check matches every reach the same way.
+            ws.added = state
+                .added
+                .iter()
+                .filter(|(p, _)| ws.crates.contains_key(*p))
+                .map(|(p, names)| {
+                    let names = names
+                        .iter()
+                        .map(|name| dev_overlay::AddedName {
+                            name: name.clone(),
+                            reach: dev_overlay::Reach::Public,
+                            prefix: false,
+                        })
+                        .collect();
+                    (p.clone(), names)
+                })
+                .collect();
             base.serial = state.serial;
             base.resumed_objects = state.objects.clone();
             base_inputs = Some(state.inputs.clone());
@@ -1643,6 +1700,8 @@ fn watch_loop(
             ws
         }
     };
+    // Kept across every workspace a rebuild installs (`rebuild_with_snapshot`).
+    ws.additive = opts.experimental_build;
     let record = |ws: &dev_overlay::Workspace, base: &HotPatchBase, inputs: Option<&Vec<(PathBuf, resume::FileStamp)>>| {
         if let Some((persister, environment)) = &persist {
             persister.write(resume_snapshot(ws, base, &signal, inputs, environment, &kept));
@@ -1798,6 +1857,7 @@ fn watch_loop(
             }
             let build_started = std::time::SystemTime::now();
             let mut rebuilt_ok = false;
+            base.pause_seeds();
             // `None`: superseded. `Some(failed)` otherwise.
             let outcome = rebuild_with_snapshot(&mut ws, scan, &reporter, || build_wasm(&dir, &opts), |built| {
                 rebuilt_ok = built.is_ok();
@@ -1865,6 +1925,11 @@ fn watch_loop(
                     }
                 })
             });
+            // A failed rebuild left this base in place: its seeds go on.
+            // (A successful one replaced the builder, and its seeds with it.)
+            if !rebuilt_ok {
+                base.resume_seeds();
+            }
             let Some(failed) = outcome else {
                 return superseded(dev_events::SupersededWork::Rebuild);
             };
@@ -2251,7 +2316,11 @@ fn rebuild_with_snapshot<T, R>(
     let r = then(built);
     let fresh = scan.finish(reporter);
     if ok {
+        // The session's choice of tiers outlives the workspace a rebuild
+        // re-reads from `cargo metadata`.
+        let additive = ws.additive;
         *ws = fresh;
+        ws.additive = additive;
     }
     r
 }
@@ -2392,10 +2461,11 @@ fn patch_crates(
         .map(|package| {
             let name = ws.crate_name(package).unwrap_or(package.as_str()).to_string();
             let key = plan.source_keys.get(package).cloned();
+            let additive = plan.added.contains_key(package) || ws.added_since_base(package);
             if plan.edited.contains(package) {
-                build_web::hotpatch_build::PatchCrate::new(name, key)
+                build_web::hotpatch_build::PatchCrate::new(name, key).with_additions(additive)
             } else {
-                build_web::hotpatch_build::PatchCrate::carried(name, key)
+                build_web::hotpatch_build::PatchCrate::carried(name, key).with_additions(additive)
             }
         })
         .collect()
@@ -3802,6 +3872,25 @@ mod tests {
         assert_eq!(app_before, fresh(&root));
     }
 
+    /// `--experimental-build` is the session's, not the workspace's: a
+    /// rebuild installs a workspace re-read from `cargo metadata`, and
+    /// the next save must still be decided with additive patches on (or
+    /// off) as the session started.
+    #[test]
+    fn a_rebuild_keeps_the_sessions_additive_choice() {
+        for additive in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().canonicalize().unwrap();
+            two_crate_workspace(&root);
+            let memo = Arc::new(dev_overlay::ScanMemo::default());
+            let mut ws = load_workspace(&root, &memo);
+            ws.additive = additive;
+            let scan = RebuildScan::start(&ws, &root, &memo);
+            rebuild_with_snapshot(&mut ws, scan, &dev_events::Reporter::new(), || Ok(()), |b| b).unwrap();
+            assert_eq!(ws.additive, additive);
+        }
+    }
+
     /// The memo hands back only SCANS. An overlay patch advances a
     /// workspace archive to the new sources' digests but keeps the old
     /// build's site keys; a rebuild must re-key it from a fresh scan, so
@@ -4240,6 +4329,7 @@ mod tests {
             head_script: None,
             runtime_server_url: None,
             hot_patch: false,
+            experimental_build: false,
             premint,
             premint_only: only,
             premint_report: report,
@@ -4657,3 +4747,4 @@ mod tests {
     }
 
 }
+

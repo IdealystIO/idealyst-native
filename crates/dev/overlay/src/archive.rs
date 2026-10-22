@@ -135,6 +135,67 @@ pub struct FileDigest {
     /// default: empty never matches, so those saves are decided in full.
     #[serde(default)]
     pub client: String,
+    /// The file's items as digests (`runtime_macros_parse::outline`):
+    /// what decides whether a save whose shape moved only ADDED items
+    /// (see `runtime_macros_parse::additive`). `None` when the file did
+    /// not parse, and an older document's default: then no save of the
+    /// file is additive.
+    #[serde(default)]
+    pub outline: Option<Vec<OutlineRecord>>,
+    /// Every identifier the file mentions, sorted
+    /// (`runtime_macros_parse::idents`). A name an additive save
+    /// introduces must be in none of the files it could reach, or it
+    /// could change what an existing mention resolves to. `None` when
+    /// the file did not lex, and an older document's default: then no
+    /// name is fresh against it.
+    #[serde(default)]
+    pub idents: Option<Vec<String>>,
+}
+
+/// [`runtime_macros_parse::OutlineEntry`], as the archive stores it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutlineRecord {
+    pub scope: String,
+    pub head: String,
+    #[serde(default)]
+    pub members: Vec<String>,
+    #[serde(default)]
+    pub open: bool,
+    #[serde(default)]
+    pub import: bool,
+}
+
+impl From<runtime_macros_parse::OutlineEntry> for OutlineRecord {
+    fn from(e: runtime_macros_parse::OutlineEntry) -> Self {
+        Self { scope: e.scope, head: e.head, members: e.members, open: e.open, import: e.import }
+    }
+}
+
+impl From<&OutlineRecord> for runtime_macros_parse::OutlineEntry {
+    fn from(r: &OutlineRecord) -> Self {
+        Self {
+            scope: r.scope.clone(),
+            head: r.head.clone(),
+            members: r.members.clone(),
+            open: r.open,
+            import: r.import,
+        }
+    }
+}
+
+/// The digest an outline is recorded and compared under.
+pub fn outline_digest(text: &str) -> String {
+    digest(text.as_bytes())
+}
+
+/// [`FileDigest::outline`] of a source text.
+pub fn outline_of(text: &str) -> Option<Vec<OutlineRecord>> {
+    runtime_macros_parse::outline(text, &outline_digest).map(|o| o.into_iter().map(Into::into).collect())
+}
+
+/// [`FileDigest::idents`] of a source text.
+pub fn idents_of(text: &str) -> Option<Vec<String>> {
+    runtime_macros_parse::idents(text).map(|s| s.into_iter().collect())
 }
 
 /// [`runtime_macros_parse::ConstFacts`], with each value as a digest.
@@ -297,7 +358,12 @@ pub fn read_set(dir: &Path, sources: &CrateSources) -> Option<DescriptorSet> {
 /// shape still holds the values, so every const edit against it would
 /// read as a shape change at best — and it has no `consts` to decide
 /// one with.
-pub const OVERLAY_VERSION: u32 = 6;
+///
+/// `7` added [`FileDigest::outline`] and [`FileDigest::idents`], which
+/// decide an additive shape edit. A `6` document has neither, and its
+/// saves would only ever rebuild a shape change; rescanning is cheaper
+/// than carrying that difference around.
+pub const OVERLAY_VERSION: u32 = 7;
 
 /// One `ui!` site as a build recorded it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -527,6 +593,8 @@ pub fn scan_sources_reusing(
                         downstream: BTreeMap::new(),
                         consts: ConstDigest { opaque: true, ..ConstDigest::default() },
                         client: String::new(),
+                        outline: None,
+                        idents: None,
                     },
                 );
                 continue;
@@ -548,9 +616,11 @@ pub fn scan_sources_reusing(
         let downstream = downstream_digests(text);
         let consts = ConstDigest::of(text);
         let client = client_digest(text);
+        let outline = outline_of(text);
+        let idents = idents_of(text);
         set.files.insert(
             relative.clone(),
-            FileDigest { content, skeleton, shape, sheets, downstream, consts, client },
+            FileDigest { content, skeleton, shape, sheets, downstream, consts, client, outline, idents },
         );
         for (ordinal, mut site) in sites.into_iter().enumerate() {
             let key = site.id.key();

@@ -31,6 +31,12 @@
 //! compiler that would have picked up the logic change is how a dev
 //! loop starts lying about what is running.
 //!
+//! A session whose patch builder verifies additive patches (the web's)
+//! asks one question more of a moved shape: did it move ONLY by new items
+//! ([`decide_additive`], `runtime_macros_parse::additive`)? New code that
+//! nothing existing can name changes no layout the process holds, so
+//! those saves are hot patches too.
+//!
 //! The asymmetry is deliberate. A wrong REBUILD costs seconds. A wrong
 //! PATCH means the screen and the source disagree with nothing to say
 //! so, and every subsequent edit is reasoned about against a program
@@ -117,6 +123,20 @@ pub enum Reason {
     /// the old body, so their copies would stay old with nothing to say
     /// so. `item` names the function.
     DownstreamBody { file: String, item: String },
+    /// The file's shape moved, the session takes additive patches, and
+    /// this save is not one: an existing item changed, or a new one is
+    /// of a kind that could change existing code (`why` says which; see
+    /// `runtime_macros_parse::additive`).
+    NotAdditive { file: String, why: String },
+    /// An additive save introduces `name`, and `user` — a file of the
+    /// crate, or of one that could see the name — already mentions an
+    /// identifier it could resolve to. Existing code might now mean
+    /// something else.
+    AddedNameInUse { file: String, item: String, name: String, user: String },
+    /// A crate the save edits mentions `name`, which an earlier patch of
+    /// this base ADDED to `package`. The patch would compile the save
+    /// against the base build's metadata, which does not have it.
+    UsesAddedItem { file: String, package: String, name: String },
     /// A local package that is not a member of the app's cargo workspace
     /// — a `[patch]` pointing a dependency at a checkout. It is watched,
     /// so a save there rebuilds, but it is never patched: cargo builds it
@@ -135,6 +155,18 @@ impl std::fmt::Display for Reason {
             Reason::ShapeChanged { file } => {
                 write!(f, "{file} changed outside its function bodies")
             }
+            Reason::NotAdditive { file, why } => {
+                write!(f, "{file} changed outside its function bodies, and not only by adding items: {why}")
+            }
+            Reason::AddedNameInUse { file, item, name, user } => write!(
+                f,
+                "{file} adds `{item}`, whose name `{name}` {user} already mentions — existing code \
+                 there could resolve to it"
+            ),
+            Reason::UsesAddedItem { file, package, name } => write!(
+                f,
+                "{file} uses `{name}`, which a patch added to {package} since the last build"
+            ),
             Reason::PremintStylesheet { file } => write!(
                 f,
                 "{file} changed a `stylesheet!`, and this session preminted its class names"
@@ -186,17 +218,51 @@ pub fn decide_with(
     changed: &[ChangedFile],
     premint: bool,
 ) -> Decision {
-    let decision = decide_in(archive, changed, premint);
+    decide_core(archive, changed, premint, false).0
+}
+
+/// One item an additive save adds, and the file it is in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileAddition {
+    pub file: String,
+    pub addition: runtime_macros_parse::Addition,
+}
+
+/// [`decide_with`], for a session that takes ADDITIVE hot patches: a
+/// save whose shape moved only by new items (see
+/// `runtime_macros_parse::additive`), each of whose names is fresh in
+/// this crate, is a [`Decision::HotPatch`] rather than a rebuild. The
+/// additions come back beside the decision — empty unless the decision
+/// is a hot patch that needs them — so the caller can check the names
+/// against every crate that could see them.
+///
+/// Only a caller whose patch builder verifies an additive patch after
+/// its replay may use this (`build_web::hotpatch_additive`).
+pub fn decide_additive(
+    archive: Option<&DescriptorSet>,
+    changed: &[ChangedFile],
+    premint: bool,
+) -> (Decision, Vec<FileAddition>) {
+    decide_core(archive, changed, premint, true)
+}
+
+fn decide_core(
+    archive: Option<&DescriptorSet>,
+    changed: &[ChangedFile],
+    premint: bool,
+    additive: bool,
+) -> (Decision, Vec<FileAddition>) {
+    let (decision, added) = decide_in(archive, changed, premint, additive);
     let (Decision::HotPatch(_), true, Some(archive)) = (&decision, premint, archive) else {
-        return decision;
+        return (decision, added);
     };
     for file in changed {
         let recorded = archive.files.get(&file.path).map(|f| f.sheets.as_str());
         if recorded != Some(crate::archive::sheets_digest(&file.text).as_str()) {
-            return Decision::Rebuild(Reason::PremintStylesheet { file: file.path.clone() });
+            return (Decision::Rebuild(Reason::PremintStylesheet { file: file.path.clone() }), Vec::new());
         }
     }
-    decision
+    (decision, added)
 }
 
 /// Decide what a save means.
@@ -205,21 +271,26 @@ pub fn decide_with(
 /// the two arguments, which is what lets the decision table be tested
 /// exhaustively without a build.
 pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decision {
-    decide_in(archive, changed, false)
+    decide_in(archive, changed, false, false).0
 }
 
 /// [`decide`], knowing whether the session preminted its stylesheets —
 /// which decides whether a const a `stylesheet!` reads was baked at
 /// session start ([`const_value_rebuild`]).
-fn decide_in(archive: Option<&DescriptorSet>, changed: &[ChangedFile], premint: bool) -> Decision {
+fn decide_in(
+    archive: Option<&DescriptorSet>,
+    changed: &[ChangedFile],
+    premint: bool,
+    additive: bool,
+) -> (Decision, Vec<FileAddition>) {
     let Some(archive) = archive else {
-        return Decision::Rebuild(Reason::NoArchive);
+        return (Decision::Rebuild(Reason::NoArchive), Vec::new());
     };
     // A document from an older producer has no per-site keys or
     // ordinals, so nothing here can address a patch. Rebuilding
     // regenerates it in the current format.
     if archive.overlay_version != crate::archive::OVERLAY_VERSION {
-        return Decision::Rebuild(Reason::NoArchive);
+        return (Decision::Rebuild(Reason::NoArchive), Vec::new());
     }
 
     // The archive's sites by file, in the ordinal order the producer
@@ -238,16 +309,24 @@ fn decide_in(archive: Option<&DescriptorSet>, changed: &[ChangedFile], premint: 
     // because a save can touch several files and the answer is the most
     // expensive one any of them needs.
     let mut body_only: Vec<String> = Vec::new();
+    let mut added: Vec<FileAddition> = Vec::new();
     for file in changed {
         let Some(recorded) = archive.files.get(&file.path) else {
-            return Decision::Rebuild(Reason::UnknownFile { file: file.path.clone() });
+            return (Decision::Rebuild(Reason::UnknownFile { file: file.path.clone() }), Vec::new());
         };
-        match decide_file(archive, &by_file, recorded, file) {
+        match decide_file(archive, &by_file, recorded, file, additive) {
             FileOutcome::Unchanged => {}
             FileOutcome::Patches(mut site_patches) => patches.append(&mut site_patches),
             FileOutcome::BodyOnly => body_only.push(file.path.clone()),
-            FileOutcome::Rebuild(why) => return Decision::Rebuild(why),
+            FileOutcome::Additive(additions) => {
+                body_only.push(file.path.clone());
+                added.extend(additions.into_iter().map(|addition| FileAddition { file: file.path.clone(), addition }));
+            }
+            FileOutcome::Rebuild(why) => return (Decision::Rebuild(why), Vec::new()),
         }
+    }
+    if let Some(why) = added_name_in_use(archive, &added) {
+        return (Decision::Rebuild(why), Vec::new());
     }
 
     // Most expensive outcome wins. A save that edits a literal in one
@@ -256,14 +335,46 @@ fn decide_in(archive: Option<&DescriptorSet>, changed: &[ChangedFile], premint: 
     // as well would address the pre-patch binary's site keys.
     if !body_only.is_empty() {
         if let Some(why) = const_value_rebuild(archive, changed, &body_only, premint) {
-            return Decision::Rebuild(why);
+            return (Decision::Rebuild(why), Vec::new());
         }
-        Decision::HotPatch(body_only)
+        (Decision::HotPatch(body_only), added)
     } else if patches.is_empty() {
-        Decision::Unchanged
+        (Decision::Unchanged, Vec::new())
     } else {
-        Decision::Patch(patches)
+        (Decision::Patch(patches), Vec::new())
     }
+}
+
+/// The first name an additive save introduces that a file it can reach
+/// — as the running build compiled it — already mentions. Code that
+/// mentions a name could resolve to the new item instead of what it
+/// resolved to before (a glob import shadowed, a prelude item shadowed),
+/// so the save rebuilds. A file the scan could not lex mentions
+/// everything. A private name reaches its own module only
+/// ([`module_files`]); any other, the whole crate.
+pub(crate) fn added_name_in_use(archive: &DescriptorSet, added: &[FileAddition]) -> Option<Reason> {
+    for a in added {
+        for name in &a.addition.names {
+            for (path, recorded) in &archive.files {
+                if name.reach == runtime_macros_parse::Reach::Module && !module_files(&a.file, path) {
+                    continue;
+                }
+                let hit = match &recorded.idents {
+                    None => true,
+                    Some(idents) => idents.iter().any(|i| name.collides_with(i)),
+                };
+                if hit {
+                    return Some(Reason::AddedNameInUse {
+                        file: a.file.clone(),
+                        item: a.addition.label.clone(),
+                        name: name.name.clone(),
+                        user: path.clone(),
+                    });
+                }
+            }
+        }
+    }
+    None
 }
 
 /// What ONE changed file needs, before the save's files are combined.
@@ -275,6 +386,9 @@ enum FileOutcome {
     /// Not expressible as an overlay patch, but only function bodies
     /// moved: the hot-patch tier.
     BodyOnly,
+    /// Bodies moved, and the shape moved only by these new items: the
+    /// hot-patch tier too, in a session that takes additive patches.
+    Additive(Vec<runtime_macros_parse::Addition>),
     Rebuild(Reason),
 }
 
@@ -283,6 +397,7 @@ fn decide_file(
     by_file: &BTreeMap<&str, Vec<&ArchivedSite>>,
     recorded: &FileDigest,
     file: &ChangedFile,
+    additive: bool,
 ) -> FileOutcome {
     if recorded.content == crate::archive::digest(file.text.as_bytes()) {
         return FileOutcome::Unchanged;
@@ -309,7 +424,7 @@ fn decide_file(
         // crate from source, so every literal in this file arrives with
         // it, and diffing would only risk a patch addressed at keys the
         // patched binary no longer carries.
-        return body_only_or_rebuild(recorded, file);
+        return body_only_or_rebuild(recorded, file, additive);
     }
 
     // Match by ORDINAL, not by site key. A body gaining a line moves
@@ -325,7 +440,7 @@ fn decide_file(
     // the hot-patch tier's to take if the shape agrees.
     let archived = by_file.get(file.path.as_str()).cloned().unwrap_or_default();
     if archived.len() != sites.len() {
-        return body_only_or_rebuild(recorded, file);
+        return body_only_or_rebuild(recorded, file, additive);
     }
     let mut patches = Vec::new();
     for (before, mut site) in archived.iter().zip(sites) {
@@ -347,7 +462,7 @@ fn decide_file(
             // The two numbering walks disagreed — a bug in this crate's
             // own pass, not in the author's code. The overlay cannot
             // address this site; a compiler can.
-            return body_only_or_rebuild(recorded, file);
+            return body_only_or_rebuild(recorded, file, additive);
         };
         match diff(&before.descriptor, &after) {
             Ok(patch) if patch.edits.is_empty() => {}
@@ -361,7 +476,7 @@ fn decide_file(
             // literal becoming a closure. That is new CODE inside a
             // function body — the hot-patch tier's case, not a rebuild's,
             // when nothing outside the bodies moved.
-            Err(_) => return body_only_or_rebuild(recorded, file),
+            Err(_) => return body_only_or_rebuild(recorded, file, additive),
         }
     }
     FileOutcome::Patches(patches)
@@ -376,14 +491,58 @@ fn decide_file(
 /// corruption rather than a stale screen. So anything this cannot prove
 /// is body-only rebuilds: a shape that moved is `ShapeChanged`, and a
 /// file whose shape cannot be computed is `DoesNotParse`.
-fn body_only_or_rebuild(recorded: &FileDigest, file: &ChangedFile) -> FileOutcome {
+///
+/// With `additive` on, a moved shape gets one more question: did it move
+/// ONLY by new items (`runtime_macros_parse::additions`)? Those patch —
+/// the crate-wide freshness of their names is [`added_name_in_use`]'s
+/// check, and what source cannot show is the patch builder's.
+fn body_only_or_rebuild(recorded: &FileDigest, file: &ChangedFile, additive: bool) -> FileOutcome {
     let Some(shape) = runtime_macros_parse::shape_of(&file.text) else {
         return FileOutcome::Rebuild(Reason::DoesNotParse { file: file.path.clone() });
     };
-    if crate::archive::digest(shape.as_bytes()) != recorded.shape {
+    if crate::archive::digest(shape.as_bytes()) == recorded.shape {
+        return FileOutcome::BodyOnly;
+    }
+    if !additive {
         return FileOutcome::Rebuild(Reason::ShapeChanged { file: file.path.clone() });
     }
-    FileOutcome::BodyOnly
+    let not_additive = |why: String| FileOutcome::Rebuild(Reason::NotAdditive { file: file.path.clone(), why });
+    let Some(outline) = &recorded.outline else {
+        return not_additive("this build could not outline the file".into());
+    };
+    let old: Vec<runtime_macros_parse::OutlineEntry> = outline.iter().map(Into::into).collect();
+    match runtime_macros_parse::additions(&old, &file.text, &crate::archive::outline_digest) {
+        // Every item matches, yet the shape moved: something outside the
+        // items did (an inner attribute, `#![…]`).
+        Ok(added) if added.is_empty() => FileOutcome::Rebuild(Reason::ShapeChanged { file: file.path.clone() }),
+        Ok(added) => FileOutcome::Additive(added),
+        Err(why) => not_additive(why),
+    }
+}
+
+/// Whether `other` is a file of the module `file` defines, or of one of
+/// its submodules: where a private item of `file` is visible. `src/a.rs`
+/// is module `a`, whose submodules live under `src/a/`; `lib.rs`,
+/// `main.rs` and `mod.rs` define the module of their directory. (A
+/// `#[path]` module elsewhere is not followed: the const check already
+/// treats such a crate as unreadable, and here the miss would only be a
+/// child declared outside its parent's directory.)
+fn module_files(file: &str, other: &str) -> bool {
+    if other == file {
+        return true;
+    }
+    let (dir, stem) = match file.rsplit_once('/') {
+        Some((dir, name)) => (dir, name.strip_suffix(".rs").unwrap_or(name)),
+        None => ("", file.strip_suffix(".rs").unwrap_or(file)),
+    };
+    let module_dir = if matches!(stem, "lib" | "main" | "mod") {
+        if dir.is_empty() { String::new() } else { format!("{dir}/") }
+    } else if dir.is_empty() {
+        format!("{stem}/")
+    } else {
+        format!("{dir}/{stem}/")
+    };
+    other.starts_with(&module_dir)
 }
 
 /// The half of the hot-patch question the shape no longer answers: did
@@ -500,6 +659,8 @@ pub fn advance_archive(archive: &mut DescriptorSet, changed: &[ChangedFile]) {
                 downstream: crate::archive::downstream_digests(&file.text),
                 consts: crate::archive::ConstDigest::of(&file.text),
                 client: crate::archive::client_digest(&file.text),
+                outline: crate::archive::outline_of(&file.text),
+                idents: crate::archive::idents_of(&file.text),
             },
         );
         if rekey {
@@ -1796,5 +1957,53 @@ mod archive_tests {
         assert_eq!(loaded.package, "archive-fixture");
         assert_eq!(loaded.sites.len(), 1);
         assert_eq!(loaded, crate::archive::scan_crate(dir.path()).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod additive_tests {
+    use super::*;
+
+    #[test]
+    fn a_private_item_is_visible_in_its_module_and_submodules_only() {
+        assert!(module_files("src/app.rs", "src/app.rs"));
+        assert!(module_files("src/app.rs", "src/app/child.rs"));
+        assert!(!module_files("src/app.rs", "src/components.rs"));
+        assert!(!module_files("src/app.rs", "src/app_two.rs"));
+        assert!(module_files("src/lib.rs", "src/components.rs"), "the crate root's children are the crate");
+        assert!(module_files("src/ui/mod.rs", "src/ui/card.rs"));
+        assert!(!module_files("src/ui/mod.rs", "src/other.rs"));
+    }
+
+    /// `app.rs` adds a private `fn render_more` and imports `component`;
+    /// `components.rs` mentions both names. A private name cannot reach
+    /// that module, so the save is additive — the same name `pub(crate)`
+    /// can, so it is not.
+    #[test]
+    fn freshness_is_checked_where_the_name_can_reach() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"reach\"\nversion = \"0.1.0\"\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        let app = "use runtime_core::{ui, Element};\npub fn app() -> Element { ui! { view {} } }\n";
+        std::fs::write(dir.path().join("src/app.rs"), app).unwrap();
+        std::fs::write(
+            dir.path().join("src/components.rs"),
+            "use runtime_core::component;\n#[component]\nfn Card() -> Element { render_more() }\nfn render_more() -> Element { todo!() }\n",
+        )
+        .unwrap();
+        let archive = crate::archive::scan_crate(dir.path()).unwrap();
+        let save = |text: String| vec![ChangedFile { path: "src/app.rs".into(), text }];
+
+        let private = app.replace("{ui, Element}", "{component, ui, Element}") + "fn render_more() {}\n";
+        let (decision, added) = decide_additive(Some(&archive), &save(private), false);
+        assert_eq!(decision, Decision::HotPatch(vec!["src/app.rs".into()]));
+        let names: Vec<&str> = added.iter().flat_map(|a| a.addition.names.iter().map(|n| n.name.as_str())).collect();
+        assert_eq!(names, vec!["component", "render_more"]);
+
+        let crate_wide = app.to_string() + "pub(crate) fn render_more() {}\n";
+        assert!(matches!(
+            decide_additive(Some(&archive), &save(crate_wide), false).0,
+            Decision::Rebuild(Reason::AddedNameInUse { ref user, .. }) if user == "src/components.rs"
+        ));
     }
 }

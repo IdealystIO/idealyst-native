@@ -49,6 +49,7 @@ use build_ios::{
 mod premint;
 pub use premint::PREMINT_CSS_NAME;
 
+pub mod hotpatch_additive;
 pub mod hotpatch_aliases;
 pub mod hotpatch_base;
 pub mod hotpatch_build;

@@ -18,7 +18,9 @@
 //! type — compiled into a framework rlib that is NOT re-emitted — keep
 //! the old layout. The result is silent memory corruption, not a stale
 //! render. Rebuild-and-respawn is the only correct answer for those,
-//! and [`shape_of`] is how the dev loop tells them apart.
+//! and [`shape_of`] is how the dev loop tells them apart. The one shape
+//! change the web's dev loop lets through is adding items, which
+//! [`crate::additive`] decides.
 //!
 //! # What "blanked" means
 //!
@@ -112,7 +114,7 @@ pub fn shape_of(text: &str) -> Option<String> {
     Some(file.to_token_stream().to_string())
 }
 
-struct BlankBodies;
+pub(crate) struct BlankBodies;
 
 /// Every `stylesheet!` invocation in item position, as token text,
 /// values included. `None` when the file does not parse.
@@ -134,7 +136,7 @@ pub fn stylesheet_tokens(text: &str) -> Option<String> {
     Some(out)
 }
 
-fn is_stylesheet(mac: &syn::Macro) -> bool {
+pub(crate) fn is_stylesheet(mac: &syn::Macro) -> bool {
     mac.path.segments.last().is_some_and(|s| s.ident == "stylesheet")
 }
 

@@ -7,8 +7,8 @@ the sorting is worth more than any of the individual mechanisms.
 | Tier | What changed | What happens | Order of magnitude |
 |---|---|---|---|
 | **Overlay patch** | Only literals inside `ui!` bodies | The running app (the sidecar, or the page in `--local`) edits its own mounted tree. No compiler at all. | ~1–10 ms |
-| **Hot patch** | Only function BODIES | The edited crate is re-emitted (with its dependents, for a library crate of the app's workspace), a patch (a dylib natively, a wasm side module on the web) is linked, a jump table rebinds the patched functions, and the mounted tree is re-run in place. No respawn, no reconnect, no page reload, and app state survives. | ~0.5–2 s on a small app, ~9–10 s on a large one ([measured](#what-a-save-costs-on-the-web)) |
-| **Rebuild** | Anything that moves a file's SHAPE | Wire mode: `cargo build` + SIGKILL + respawn; clients keep their sockets and re-snapshot. `--local`: the bundle is rebuilt and the page reloads, so page state resets. | seconds to minutes |
+| **Hot patch** | Only function BODIES — or, with `--experimental-build` on the web, only NEW items ([Adding items](#adding-items)) | The edited crate is re-emitted (with its dependents, for a library crate of the app's workspace), a patch (a dylib natively, a wasm side module on the web) is linked, a jump table rebinds the patched functions, and the mounted tree is re-run in place. No respawn, no reconnect, no page reload, and app state survives. | ~0.5–2 s on a small app, ~9–10 s on a large one ([measured](#what-a-save-costs-on-the-web)) |
+| **Rebuild** | Anything else that moves a file's SHAPE | Wire mode: `cargo build` + SIGKILL + respawn; clients keep their sockets and re-snapshot. `--local`: the bundle is rebuilt and the page reloads, so page state resets. | seconds to minutes |
 
 The last boundary is a safety boundary, not a speed tier. See
 [Why a shape change cannot be patched](#why-a-shape-change-cannot-be-patched).
@@ -169,6 +169,10 @@ premint (below)
 - **consts** — every blanked const value as a digest, plus where the
   file reads each const (`runtime_macros_parse::const_facts`). See
   [Const values](#const-values).
+- **outline** and **idents** — the file's items as digests, and every
+  identifier it mentions (`runtime_macros_parse::{outline, idents}`).
+  They decide whether a moved shape moved ONLY by new items. See
+  [Adding items](#adding-items).
 
 Tokens rather than text for the shape, so reindenting a function is free
 while reformatting a signature is not.
@@ -260,6 +264,94 @@ depending on it copy into their own code``.
 The overlay tier never handles a const edit. A const's literal is not a
 `ui!` literal, so no compiled tag points at it.
 
+### Adding items
+
+EXPERIMENTAL, and off unless `idealyst dev --web --local` is started with
+`--experimental-build`. Without the flag every save below that moves a
+file's shape rebuilds.
+
+With the flag, a save whose shape moved ONLY because
+it added items is a hot patch, not a rebuild: a new helper and the edit
+that first calls it, a new `#[component]`, a new type with its impls, a
+new `stylesheet!`. Nothing outside the edited crate can name the new
+items yet — no other crate's source changed — so every dependent's
+compiled code, and the base metadata a patch compiles it against, are
+still exact. The new code is just more code in the patch, which the
+tier already carries (a body edit that instantiates a new generic does
+the same). As a rebuild, the same save recompiles every crate above the
+edited one: 45 s for a `pub fn` added to `crewforge-core`, 25 s in
+`app-kit`, in the 2026-10-21 CrewForge study.
+
+What the decision checks, from source (`runtime_macros_parse::additive`,
+`dev_overlay::decide_additive`):
+
+- **Every existing item is unchanged and in order.** Items are compared
+  by digest, scoped by inline module; an inherent `impl` block may gain
+  members. Imports compare as a set, one per imported name: each the file
+  had must still be there, and a name added to an import list
+  (`use runtime_core::{component, ui}`) is an addition. A changed
+  signature, a removed item or import, or a reordered item rebuilds
+  (`Reason::NotAdditive`).
+- **Each new item is a kind that cannot change existing code.** Accepted:
+  `fn`, `struct` / `enum` / `union` / `type`, a named `const`, a trait,
+  an inline `mod`, a named `use`, a local `macro_rules!`, `stylesheet!`,
+  an inherent `impl`, and a trait `impl` FOR A TYPE THE SAME SAVE ADDS.
+  Attributes must be ones the check knows (`derive`, `doc`, `cfg`,
+  `inline`, lints, `#[component]`, `#[props]`, …). Refused: a `static`
+  (no storage a later patch could keep), a `const _` or an unknown item
+  or attribute macro (they can expand to anything), a trait `impl` for an
+  EXISTING type (it can change which impl existing code calls),
+  `#[server]` and `#[component(lazy)]`, a glob `use`, `mod name;`.
+- **Every name a new item introduces is fresh** where it can reach. A
+  private name must not be mentioned in its own module — its file and
+  its submodules' files; a `pub(crate)` one anywhere in the crate; a
+  `pub` one in the crate or in any crate that depends on it
+  (`Reason::AddedNameInUse`). Code that mentions a
+  name could resolve to the new item instead of what it resolved to
+  before — `use other::*` beside a new `struct Bar`, a new `fn drop`
+  shadowing the prelude's, a dependent's `use lib::*`. A `#[component]`'s
+  or `stylesheet!`'s name counts as a prefix, since the macro derives
+  `<Name>Props`, `__<Name>_hot_impl`, `<name>_style` from it.
+- **No crate uses an item a patch added to another.** Once patched in,
+  a library's new `pub fn` is still missing from the base build's
+  metadata. A save that starts calling it from another crate — in a
+  later save, or the same one — rebuilds at once
+  (`Reason::UsesAddedItem`) instead of failing a patch replay first.
+
+What only the compiled patch can show is checked after the replay,
+against the base module, before anything is linked
+(`build_web::hotpatch_additive`):
+
+- **No existing function was renumbered.** A symbol is a path whose
+  anonymous parts are numbered in source order (`{impl#3}`, a `const
+  _`). An item inserted ahead of them renumbers them: the patch then
+  compiles an unchanged item to a name the base does not have, and a
+  dependent's base code, which calls it by the old name, keeps the old
+  copy. Harmless while the bodies match; a silent stale edit when the
+  same save changed it. So a patch whose functions include a name the
+  base does not have, under a path the base does have, is refused.
+  Closures and generic instantiations are left out (body edits renumber
+  and drop them legitimately), and so are `inventory::submit!`
+  constructors (the page never runs a patch's constructors).
+- **No new writable state.** A writable `static` the base does not have
+  would get a fresh copy in every later patch, losing its value each
+  time. A `thread_local!` or `static` inside a new function's body is
+  caught here. `inventory::submit!` nodes are exempt for the reason
+  above.
+
+A refusal from either half rebuilds, with the reason in the log, so a
+save that cannot be patched costs what it always did. A save whose new
+code nothing calls yet (a `pub fn` added for a later save) changes no
+function the page runs: its patch can redirect nothing, and the page acks
+it without loading anything. `wasm_patch_additive.rs` in `build-web`
+compiles and runs each of these cases, including the renumbered method's
+stale value an unverified patch would have produced;
+`wasm_patch_additive_bench.rs` times an additive save against the
+rebuild it replaces.
+
+Wire mode does not take additive patches even with the flag: its builder
+does not run the post-replay check, so a new item there still rebuilds.
+
 A decision table, by example:
 
 | Edit | Tier |
@@ -274,7 +366,8 @@ A decision table, by example:
 | Edit a free function's body | Hot patch |
 | Add a comment or blank line outside a body | Hot patch |
 | Change a prop's type, or add a prop | Rebuild |
-| Add or rename any item | Rebuild |
+| Add an item — a `fn`, a type and its impls, a `#[component]`, a `stylesheet!`, a method on an existing type — whose names no existing code mentions | Rebuild — a hot patch with `--experimental-build` on the web ([Adding items](#adding-items)) |
+| Rename or remove an item, or add one whose name existing code already mentions | Rebuild |
 | Change a `const`'s value (`const HEADLINE: &str = "…"`, an `impl`'s associated const, a trait's default), when only function bodies read it | Hot patch |
 | Change a `const`'s value when it is read at compile time: an array length, a const generic, an enum discriminant, a `static`, a `const fn`, an unknown macro, or (premint only) a `stylesheet!` | Rebuild ([Const values](#const-values)) |
 | Change a `const`'s type or name | Rebuild |
@@ -291,7 +384,9 @@ A decision table, by example:
 | The body of a `#[server]` / `#[channel]` / `#[subscription]` / `#[sse]` fn, or an item under `#[cfg(feature = "server")]` (in any crate) | Nothing for the client — it compiles only the stub generated from the signature. The server's watcher rebuilds and restarts the server; the page keeps its state. The macro counts when it is written `#[server::server]` or imported from the `server` crate in that module. A signature edit still rebuilds |
 | A `const`'s value in such a library crate, read only by its own plain bodies (a `#[component]`, a plain `fn`) | Hot patch |
 | A `const`'s value in such a library crate that a dependent reads, or that a generic / `#[inline]` body of the library reads | Rebuild — the dependent copies the old value from the base build's metadata |
-| Any shape edit in such a library crate (a new prop on a shared component) | Rebuild |
+| A new item in such a library crate | Rebuild — a hot patch with `--experimental-build` on the web, as in the app crate ([Adding items](#adding-items)) |
+| With `--experimental-build`, a later save in ANOTHER crate that starts using that new item | Rebuild — the patch would compile that crate against the base build's metadata, which does not have the item |
+| Any other shape edit in such a library crate (a new prop on a shared component) | Rebuild |
 | Edit a file of a local package outside the app's workspace (a `[patch]` checkout of the framework), or a `Cargo.toml` | Rebuild |
 
 A few rows the table above does not make obvious, each a limitation of
@@ -703,12 +798,16 @@ of the crate's base sources (see
 function's body is digested with every relocation replaced by what it
 refers to, data by content. A seed counts as the crate's baseline only when
 the crate's sources on disk matched the base both before and after it ran.
+A crate the patch only carries whose seed never delivered a baseline (a
+save took it off the queue, or landed while it ran) gets one from the
+patch's own replay of it, when that replay compiled exactly the base's
+sources: the key the base was seeded with, which the disk still holds.
 The filter is off for a patch, which then redirects every function as
-before, when any crate in it has no baseline (its seed has not finished,
-or a save landed while it ran), when an object cannot be digested, and
-when the trimmed patch would leave a redirected function without its table
-slot or pair nothing. The `[hotpatch]` line's `diff` step is the digest
-time.
+before, when an EDITED crate in it has no baseline (it was edited before
+its seed ran — the log names it, once per base), when an object cannot be
+digested, and when the trimmed patch would leave a redirected function
+without its table slot or pair nothing. The `[hotpatch]` line's `diff`
+step is the digest time.
 
 ### The app root has to be a `#[component]`
 
@@ -947,7 +1046,10 @@ dependents (the slowest dependent alone 32.6 s), where later patches took
 3.6 s. Right after the base is indexed, every crate of the workspace is
 replayed once in the background with no edit, while the page loads: the
 app crate first, then the crates the most edits would re-emit (those
-depending on the most workspace crates). One line says when it is done:
+depending on the most workspace crates). A rebuild pauses the running seeds before its cargo starts —
+left running, they competed with it and read rlibs it was rewriting
+(`E0463`) — and a failed rebuild resumes them. One line says when it is
+done:
 
 ```text
 [hotpatch] replay cache seeded for 31 crate(s) in 38412 ms, slowest `crewforge_screen_projects` 32610 ms
@@ -958,8 +1060,10 @@ that only CARRIES a crate (every dependent of an edited library) reuses
 them and replays nothing but the edited crate. Seeds run a few at a time
 (a quarter of the cores, at most four; `IDEALYST_HOTPATCH_SEED_JOBS=<n>`
 overrides it) at the lowest CPU priority, and a save always comes first:
-the seeds it needs are waited for (killing one would only make the save
-replay it cold), the others are killed and seeded again after the patch.
+the seeds of crates it carries unchanged are waited for (killing one
+would only make the save replay it cold); one of a crate the save EDITED
+is killed and not queued again, since it compiled sources that are gone;
+the others are killed and seeded again after the patch.
 Two replays of one crate never run at once. Measured on CrewForge with
 the app crate seeded alone: first save 39.1 s save to screen (rustc
 34.4 s) without the seed, 18.3 s (rustc 11.7 s) with it.
@@ -1484,9 +1588,10 @@ framework's own generic instantiations over that type — compiled into an
 rlib that is never re-emitted — keep the other. The symptom is memory
 corruption, not a stale render.
 
-So a hot patch is attempted ONLY on an explicit body-only decision. A
-missing or unreadable descriptor set means "cannot tell", and cannot-tell
-respawns.
+So a hot patch is attempted ONLY on an explicit body-only decision — or,
+with `--experimental-build` on the web, an explicit additive one, which
+adds code and changes no existing layout ([Adding items](#adding-items)). A missing or unreadable
+descriptor set means "cannot tell", and cannot-tell respawns.
 
 The archives the decision reads always describe what is RUNNING. After a
 patch or a rebuild the dev loop installs archives scanned from the
@@ -1886,6 +1991,9 @@ terminal host's own `.idealyst/terminal.log`.
   patch bug.
 - `--split` on `dev --web --local` stands the web hot-patch tier down;
   body edits rebuild and reload.
+- `--experimental-build` on `dev --web --local` hot patches a save that
+  only adds items instead of rebuilding ([Adding items](#adding-items)).
+  Off by default.
 - `IDEALYST_HOTPATCH_NO_SEED=1` skips the background replays that warm
   the replay cache after each base build; `IDEALYST_HOTPATCH_SEED_JOBS=<n>`
   sets how many run at once (see

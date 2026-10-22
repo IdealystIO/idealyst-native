@@ -149,10 +149,16 @@ pub fn apply_patch(url: &str, table_json: &str) {
             return;
         }
     };
+    // A patch that redirects nothing changed no function the page runs:
+    // an additive save whose new items nothing calls yet. The running
+    // code already is the source's, so it is applied by doing nothing —
+    // and acked as applied, so the session does not wait on it.
     if table.map.is_empty() {
-        web_glue::dom::console::warn_1(
-            &"[idealyst] hot patch: the jump table redirects nothing — ignoring".into(),
-        );
+        ack(&[
+            ("kind", JsValue::from_str("hot_patch")),
+            ("carried", JsValue::from_f64(0.0)),
+            ("redirected", JsValue::from_f64(0.0)),
+        ]);
         return;
     }
     let entries = table.map.len();

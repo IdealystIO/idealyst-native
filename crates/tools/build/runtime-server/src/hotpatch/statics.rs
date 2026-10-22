@@ -126,6 +126,7 @@ impl std::error::Error for Ambiguous {}
 #[derive(Debug, Default, Clone)]
 pub struct ProgramStatics {
     groups: HashMap<String, HashSet<String>>,
+    names: HashSet<String>,
 }
 
 impl ProgramStatics {
@@ -134,8 +135,57 @@ impl ProgramStatics {
         for name in names {
             groups.entry(static_key(name)).or_default().insert(name.to_string());
         }
-        Self { groups }
+        let names = groups.values().flatten().cloned().collect();
+        Self { groups, names }
     }
+
+    /// Whether the program has a static of exactly this name — answered
+    /// without demangling it.
+    pub fn has_name(&self, name: &str) -> bool {
+        self.names.contains(name)
+    }
+
+    /// Whether the program has any static under this [`static_key`].
+    pub fn has_key(&self, key: &str) -> bool {
+        self.groups.contains_key(key)
+    }
+}
+
+/// Whether a [`static_key`] is one of `inventory::submit!`'s: the
+/// registry node (`__INVENTORY`) and the constructor pointer (`__CTOR`)
+/// every submission declares in an anonymous `const _` of its own.
+///
+/// These are the one group of same-named statics an ADDITIVE patch can
+/// grow (a new `#[component]` brings a catalog submission), and the one
+/// group whose pairing cannot mislead on the web: the page never runs a
+/// patch's constructors, so no code in a patch reads or writes a node,
+/// and the running program's registry stays the base's list. See
+/// [`pair_registrations_open`].
+pub fn is_registration_key(key: &str) -> bool {
+    key.ends_with("::_::__INVENTORY") || key.ends_with("::_::__CTOR")
+}
+
+/// [`pair`], except that a group of [`is_registration_key`] statics may
+/// differ from the program's: its members that match by exact name are
+/// bound, and the rest keep storage of their own.
+///
+/// Only for a patch whose constructors never run — the web's. A native
+/// loader runs a constructor new to the binary, and a node bound to the
+/// wrong storage would be pushed onto a registry list it is already on;
+/// that side keeps [`pair`].
+pub fn pair_registrations_open<'a>(
+    patch: impl IntoIterator<Item = &'a str>,
+    program: &ProgramStatics,
+) -> Result<HashSet<String>, Ambiguous> {
+    let (open, strict): (Vec<&str>, Vec<&str>) =
+        patch.into_iter().partition(|name| is_registration_key(&static_key(name)));
+    let mut bound = pair(strict, program)?;
+    for name in open {
+        if program.groups.get(&static_key(name)).is_some_and(|g| g.contains(name)) {
+            bound.insert(name.to_string());
+        }
+    }
+    Ok(bound)
 }
 
 /// Decide which of the patch's statics are bound to the running
@@ -188,6 +238,27 @@ mod tests {
         assert_eq!(static_key(&format!("_{VISITS}")), "probe::visits::VISITS", "Mach-O spelling");
         assert_eq!(static_key("_ZN5probe6visits6VISITS17h0123456789abcdefE"), "probe::visits::VISITS");
         assert_eq!(static_key("plain_c_symbol"), "plain_c_symbol");
+    }
+
+    /// `inventory::submit!` nodes, `probe::_::__INVENTORY`, in the
+    /// anonymous consts `_`, `_`#1 and `_`#2 of one module.
+    fn inventory_node(disambiguator: &str) -> String {
+        format!("_RNvNvCsfcO1eJHpGpx_5probe{disambiguator}1__11___INVENTORY")
+    }
+
+    #[test]
+    fn a_grown_registration_group_binds_what_matches_and_nothing_else() {
+        let (a, b, c) = (inventory_node(""), inventory_node("s_"), inventory_node("s0_"));
+        assert_eq!(static_key(&a), "probe::_::__INVENTORY");
+        assert_eq!(static_key(&c), "probe::_::__INVENTORY");
+        assert!(is_registration_key(&static_key(&a)));
+        let program = ProgramStatics::new([a.as_str(), b.as_str()]);
+        assert!(pair([a.as_str(), b.as_str(), c.as_str()], &program).is_err(), "strict pairing refuses growth");
+        let bound = pair_registrations_open([a.as_str(), b.as_str(), c.as_str()], &program).unwrap();
+        assert!(bound.contains(&a) && bound.contains(&b));
+        assert!(!bound.contains(&c), "a new node is bound to nothing");
+        // Every other group stays strict.
+        assert!(pair_registrations_open([VISITS, VISITS_2], &ProgramStatics::new([VISITS])).is_err());
     }
 
     #[test]

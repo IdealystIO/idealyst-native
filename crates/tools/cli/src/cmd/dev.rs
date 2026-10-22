@@ -385,6 +385,16 @@ pub struct Args {
     #[arg(long, hide = true)]
     pub no_split: bool,
 
+    /// Web + `--local` only, EXPERIMENTAL: hot patch a save that only ADDS
+    /// items — a new helper and its first call, a new `#[component]`, a
+    /// type with its impls, a name added to an import list — instead of
+    /// rebuilding every crate above the edit. Each such patch is checked
+    /// from source and again after it compiles, and anything either check
+    /// cannot prove safe rebuilds as it does without the flag. Off by
+    /// default. See "Adding items" in docs/hot-reload.md.
+    #[arg(long)]
+    pub experimental_build: bool,
+
     /// Disable the Robot bridge in dev mode. By DEFAULT `idealyst dev` hosts a
     /// `robot-relay` and wires the launched app to dial it (web-local injects
     /// the URL; desktop-native apps inherit it), so the MCP server / inspector /
@@ -1831,6 +1841,7 @@ fn launch_web(
                     wasm_split: true,
                     // Set only by the --local web loop when the hot-patch tier is armed.
                     hot_patch: false,
+                    experimental_build: false,
                     debuginfo: build_web::DebugInfo::default(),
                     dev_opt: build_web::DevOpt::default(),
                     reporter: dev_events::global(),
@@ -1935,6 +1946,7 @@ fn launch_web(
                     // packaging tail. Splitting stays the default.
                     wasm_split: args.split,
                     hot_patch: hot_patch_armed(args),
+                    experimental_build: hot_patch_armed(args) && args.experimental_build,
                     debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
                 dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
                 reporter: dev_events::global(),
@@ -2561,6 +2573,7 @@ fn full_stack_bundle_options(
         // Wire mode's browser runs none of the app's code, so there is
         // nothing in the page for a patch to redirect.
         hot_patch: !wire && hot_patch_armed(args),
+        experimental_build: !wire && hot_patch_armed(args) && args.experimental_build,
         debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
         dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
         reporter: dev_events::global(),
@@ -4611,6 +4624,7 @@ impl Args {
             premint_report: self.premint_report,
             no_split: self.no_split,
             split: self.split,
+            experimental_build: self.experimental_build,
             debuginfo: self.debuginfo.clone(),
             dev_opt: self.dev_opt.clone(),
             no_robot: self.no_robot,
