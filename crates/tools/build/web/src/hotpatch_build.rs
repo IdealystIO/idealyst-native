@@ -1040,26 +1040,57 @@ impl WasmPatchBuilder {
     /// program in the page's memory.
     ///
     fn link(&self, objects: &[PathBuf], out: &Path) -> Result<()> {
-        let mut cmd = Command::new(&self.wasm_ld);
-        cmd.args(PATCH_LINK_ARGS);
-        cmd.arg("-o").arg(out);
-        cmd.args(objects);
-
-        let output = cmd
-            .output()
-            .with_context(|| format!("exec {} — the patch link", self.wasm_ld.display()))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "linking the patch failed ({}).\n{}\n\
-                 An undefined symbol here usually means the edit calls something rustc never \
-                 codegened into the base — a rebuild picks it up.",
-                output.status,
-                stderr.trim(),
-            );
-        }
-        Ok(())
+        link_patch(&self.wasm_ld, objects, out)
     }
+}
+
+/// [`WasmPatchBuilder::link`]'s link, with the linker named.
+///
+/// The objects go in a response file, not on the command line: an
+/// untrimmed patch of a crate thirty others depend on is ~9,000 object
+/// paths, past macOS's ARG_MAX (`Argument list too long`, os error 7 —
+/// CrewForge's `crewforge-core`).
+pub fn link_patch(wasm_ld: &Path, objects: &[PathBuf], out: &Path) -> Result<()> {
+    let mut cmd = Command::new(wasm_ld);
+    cmd.args(PATCH_LINK_ARGS);
+    cmd.arg("-o").arg(out);
+    let rsp = out.with_extension("objects.rsp");
+    std::fs::write(&rsp, response_file(objects))
+        .with_context(|| format!("write the patch link's response file {}", rsp.display()))?;
+    cmd.arg(format!("@{}", rsp.display()));
+
+    let output = cmd.output().with_context(|| format!("exec {} — the patch link", wasm_ld.display()));
+    let _ = std::fs::remove_file(&rsp);
+    let output = output?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "linking the patch failed ({}).\n{}\n\
+             An undefined symbol here usually means the edit calls something rustc never \
+             codegened into the base — a rebuild picks it up.",
+            output.status,
+            stderr.trim(),
+        );
+    }
+    Ok(())
+}
+
+/// A response file naming `objects`, one per line, as lld reads one
+/// (`@file`): each path double-quoted, with `\` and `"` escaped, so a
+/// space in a path is not a separator.
+fn response_file(objects: &[PathBuf]) -> String {
+    let mut out = String::new();
+    for o in objects {
+        out.push('"');
+        for c in o.display().to_string().chars() {
+            if matches!(c, '"' | '\\') {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out.push_str("\"\n");
+    }
+    out
 }
 
 /// Whether `facts` were digested from exactly `objects` — the files a
