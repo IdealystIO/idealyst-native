@@ -310,11 +310,12 @@ crate-type = ["rlib"]
 # registration seams compile.
 sidecar = ["dep:dev-server"]
 # `dev-session`: enabled by nothing. It lists the framework features
-# `idealyst dev --web` turns on, which is what makes Cargo.lock record
-# the packages they pull in — cargo locks a dependency's feature only when
-# a feature of this crate names it, so without this every dev build
-# re-resolves them from the registry.
-dev-session = ["idealyst/hot-reload", "idealyst/hydrate", "idealyst/robot", "idealyst/ui-overlay", "runtime-core/dev"]
+# `idealyst dev --web` turns on — in both modes, `--local` and the default
+# runtime-server one — which is what makes Cargo.lock record the packages
+# they pull in: cargo locks a dependency's feature only when a feature of
+# this crate names it, so without this every dev build re-resolves them
+# from the registry.
+dev-session = ["idealyst/hot-reload", "idealyst/hydrate", "idealyst/robot", "idealyst/runtime-server", "idealyst/ui-overlay", "runtime-core/dev"]
 
 [dependencies]
 # The platform surface, used by `src/main.rs` only. It carries whatever
@@ -942,6 +943,32 @@ mod tests {
             manifest.contains("idealyst = { path = \"/framework/crates/idealyst\" }"),
             "the facade must be a dependency of every scaffolded project: {manifest}"
         );
+    }
+
+    /// A scaffolded project's `dev-session` feature list must name every
+    /// framework feature an `idealyst dev --web` build turns on, in both
+    /// modes. It named only the `--local` ones, so the default
+    /// runtime-server mode's `idealyst/runtime-server` (and `dev-client`
+    /// with it) went unlocked: every wire-mode build re-resolved it from
+    /// the registry and warned about it. Read from the same functions the
+    /// dev command builds with, so a feature added there fails here until
+    /// the template names it.
+    #[test]
+    fn regression_scaffold_dev_session_covers_both_web_dev_modes() {
+        let source = FrameworkSource::Workspace { root: PathBuf::from("/framework") };
+        let manifest = project_cargo_toml("my-app", "My App", "com.example.my_app", &source);
+        let line = manifest
+            .lines()
+            .find(|l| l.starts_with("dev-session = ["))
+            .expect("the scaffold declares dev-session");
+        let mut wanted: Vec<String> = crate::cmd::dev::web_dev_features_with(false, true);
+        wanted.extend(crate::cmd::dev::wire_web_features());
+        // build-web adds `idealyst/hydrate` itself to every dev bundle.
+        wanted.push("hydrate".to_string());
+        for f in wanted {
+            let spec = if f.contains('/') { f.clone() } else { format!("idealyst/{f}") };
+            assert!(line.contains(&format!("\"{spec}\"")), "dev-session must name `{spec}`: {line}");
+        }
     }
 
     fn scaffold_library(name: &str) -> tempfile::TempDir {

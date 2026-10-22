@@ -1412,6 +1412,16 @@ fn local_web_features(args: &Args) -> Vec<String> {
     f
 }
 
+/// Cargo features for a runtime-server (wire mode) web dev bundle: the
+/// thin wire client. A framework feature — build-web resolves it to
+/// `idealyst/runtime-server` (`FRAMEWORK_FEATURES`), so the user crate
+/// needn't declare it. The scaffold's `dev-session` list must name it
+/// (see `scaffold_template`'s test), or every wire-mode build re-resolves
+/// the packages it pulls in from the registry.
+pub(crate) fn wire_web_features() -> Vec<String> {
+    vec!["runtime-server".to_string()]
+}
+
 /// Cargo features for a `--local` web dev bundle.
 ///
 /// `hot_patch` adds the tier's EMISSION half: `#[component]` splits each
@@ -1420,7 +1430,7 @@ fn local_web_features(args: &Args) -> Vec<String> {
 /// it. Spelled as one framework feature for the same reason
 /// `ui-overlay` is — the app depends on the `idealyst` facade, and
 /// naming a package it does not depend on is a hard cargo error.
-fn web_dev_features_with(no_robot: bool, hot_patch: bool) -> Vec<String> {
+pub(crate) fn web_dev_features_with(no_robot: bool, hot_patch: bool) -> Vec<String> {
     let mut f = web_dev_features(no_robot);
     if hot_patch {
         f.push("hot-reload".to_string());
@@ -1804,12 +1814,7 @@ fn launch_web(
                     // respawn — happens in the native sidecar and
                     // reaches this bundle as ordinary wire commands.
                     // See docs/hot-reload.md.
-                    features: vec![
-                        // A framework feature: build-web resolves it to
-                        // `idealyst/runtime-server` (`FRAMEWORK_FEATURES`),
-                        // so the user crate needn't declare it.
-                        "runtime-server".to_string(),
-                    ],
+                    features: wire_web_features(),
                     bundle_out_dir: None,
                     robot_relay_url: None,
                     head_script: None,
@@ -2509,7 +2514,7 @@ fn full_stack_bundle_options(
     // nobody iterates on.
     let wire = runtime_server_port.is_some();
     let features = if wire {
-        vec!["runtime-server".to_string()]
+        wire_web_features()
     } else {
         local_web_features(args)
     };

@@ -2008,6 +2008,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **New projects lock the runtime-server dev build's packages**
+  (`idealyst-cli`). The `idealyst new` template's `dev-session` feature
+  list named only the `--local` web features, so the default
+  runtime-server `idealyst dev --web` re-resolved `idealyst/runtime-server`'s
+  packages from the registry on every build and warned about it. Existing
+  projects: add `"idealyst/runtime-server"` to `dev-session`.
 - **file-picker reads a picked file in Chrome on macOS** (`file-picker`).
   A web pick went through `showOpenFilePicker()`, and Chrome on macOS
   refused the chosen handle's `getFile()` with `NotAllowedError` (a fresh
