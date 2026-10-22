@@ -9,6 +9,10 @@
 
 use runtime_shared::accessibility::{AccessibilityProps, LiveRegionPriority, Role};
 use runtime_shared::primitives;
+use runtime_shared::style::{
+    AlignContent, AlignSelf, DisplayKind, FlexWrap, GridPlacement, OverscrollBehavior,
+    PointerEvents, ScrollbarVisibility, TextTransform, TrackSize, Transition, UserSelect,
+};
 use runtime_shared::{
     AlignItems, AssetId, AssetSource, AssetTag, Color, Easing, FlexDirection, FontFamily,
     FontStyle, FontWeight, Gradient, GradientKind, GradientStop, JustifyContent, Length, ObjectFit,
@@ -57,9 +61,7 @@ pub fn keyboard_kind_to_wire(
 pub fn easing_to_wire(e: Easing) -> WireEasing {
     match e {
         Easing::Linear => WireEasing::Linear,
-        // CSS-default Ease collapses to EaseInOut on the wire — same
-        // perceptual category, simplifies the wire enum.
-        Easing::Ease => WireEasing::EaseInOut,
+        Easing::Ease => WireEasing::Ease,
         Easing::EaseIn => WireEasing::EaseIn,
         Easing::EaseOut => WireEasing::EaseOut,
         Easing::EaseInOut => WireEasing::EaseInOut,
@@ -127,20 +129,11 @@ fn length_to_wire(l: Length) -> WireLength {
         Length::Px(v) => WireLength::Px(v),
         Length::Percent(v) => WireLength::Pct(v),
         Length::Auto => WireLength::Auto,
-        // `WireLength` has no pill: the wire is resolved BEFORE the
-        // client knows the box, which is exactly the case
-        // `FULL_RADIUS_FALLBACK_PX` exists for — every other backend
-        // that resolves at style time (macOS, Windows, Roku, Android,
-        // the GPU engine) collapses it the same way, and this module
-        // was the one missed.
-        //
-        // Lossy in the direction this module is already lossy in (see
-        // the module docs on `Tokenized`): a box taller than
-        // `2 * 999` renders as a 999px-radius rectangle rather than a
-        // pill. That is the behaviour the sentinel always had, so
-        // nothing regresses; a true pill on the wire needs a `Full`
-        // variant on `WireLength` and a client that resolves it.
-        Length::Full => WireLength::Px(Length::FULL_RADIUS_FALLBACK_PX),
+        // The pill crosses as itself: the client resolves it against the
+        // box it lays out, as `--local` does. Collapsing it here to
+        // `FULL_RADIUS_FALLBACK_PX` drew a 999px-radius rectangle on any
+        // box taller than 1998px.
+        Length::Full => WireLength::Full,
     }
 }
 
@@ -209,79 +202,373 @@ fn tokenized_f32(t: &Tokenized<f32>) -> f32 {
     *t.value()
 }
 
+/// `StyleRules` → its wire form. Tokens resolve to their current value
+/// (see the module docs); everything else crosses unchanged.
+///
+/// **Exhaustive by construction.** `StyleRules` is destructured with no
+/// `..` and `WireStyleRules` is built with no `..Default::default()`, so
+/// a property added to `StyleRules` is a compile error here until it is
+/// mapped — and one added to `WireStyleRules` is a compile error until it
+/// is filled. `dev_client::convert::wire_style_to_rules` does the same in
+/// the other direction. That is what keeps a wire-mode app from silently
+/// dropping a property `--local` honours (it once dropped 63 of them);
+/// `wire/tests/style_parity.rs` round-trips a value for every field.
 pub fn style_rules_to_wire(r: &StyleRules) -> WireStyleRules {
+    let StyleRules {
+        background,
+        color,
+        caret_color,
+        font_size,
+        display,
+        grid_template_columns,
+        grid_row,
+        grid_column,
+        flex_direction,
+        flex_wrap,
+        justify_content,
+        align_items,
+        align_content,
+        gap,
+        row_gap,
+        column_gap,
+        flex_grow,
+        flex_shrink,
+        flex_basis,
+        align_self,
+        width,
+        height,
+        min_width,
+        min_height,
+        max_width,
+        max_height,
+        aspect_ratio,
+        padding_top,
+        padding_right,
+        padding_bottom,
+        padding_left,
+        margin_top,
+        margin_right,
+        margin_bottom,
+        margin_left,
+        border_top_left_radius,
+        border_top_right_radius,
+        border_bottom_left_radius,
+        border_bottom_right_radius,
+        border_top_width,
+        border_right_width,
+        border_bottom_width,
+        border_left_width,
+        border_top_color,
+        border_right_color,
+        border_bottom_color,
+        border_left_color,
+        border_style,
+        position,
+        top,
+        right,
+        bottom,
+        left,
+        z_index,
+        font_family,
+        font_weight,
+        font_style,
+        line_height,
+        letter_spacing,
+        text_align,
+        underline,
+        strikethrough,
+        text_transform,
+        max_lines,
+        opacity,
+        overflow,
+        overscroll_behavior,
+        scrollbar,
+        object_fit,
+        shadow,
+        text_shadow,
+        background_gradient,
+        transform,
+        transform_origin,
+        cursor,
+        user_select,
+        pointer_events,
+        background_transition,
+        color_transition,
+        caret_color_transition,
+        opacity_transition,
+        transform_transition,
+        width_transition,
+        height_transition,
+        max_width_transition,
+        max_height_transition,
+        min_width_transition,
+        min_height_transition,
+        top_transition,
+        right_transition,
+        bottom_transition,
+        left_transition,
+        padding_top_transition,
+        padding_right_transition,
+        padding_bottom_transition,
+        padding_left_transition,
+        margin_top_transition,
+        margin_right_transition,
+        margin_bottom_transition,
+        margin_left_transition,
+        border_top_left_radius_transition,
+        border_top_right_radius_transition,
+        border_bottom_left_radius_transition,
+        border_bottom_right_radius_transition,
+        border_top_width_transition,
+        border_right_width_transition,
+        border_bottom_width_transition,
+        border_left_width_transition,
+        border_top_color_transition,
+        border_right_color_transition,
+        border_bottom_color_transition,
+        border_left_color_transition,
+        shadow_transition,
+    } = r;
+    let len = |l: &Option<Tokenized<Length>>| l.as_ref().map(tokenized_length);
+    let col = |c: &Option<Tokenized<Color>>| c.as_ref().map(tokenized_color);
+    let num = |n: &Option<Tokenized<f32>>| n.as_ref().map(tokenized_f32);
+    let tr = |t: &Option<Transition>| t.map(transition_to_wire);
+
     WireStyleRules {
-        background: r.background.as_ref().map(tokenized_color),
-        color: r.color.as_ref().map(tokenized_color),
-        font_size: r.font_size.as_ref().map(tokenized_length),
+        background: col(background),
+        color: col(color),
+        font_size: len(font_size),
 
-        flex_direction: r.flex_direction.map(flex_direction_to_wire),
-        justify_content: r.justify_content.map(justify_content_to_wire),
-        align_items: r.align_items.map(align_items_to_wire),
-        gap: r.gap.as_ref().map(tokenized_length),
+        flex_direction: flex_direction.map(flex_direction_to_wire),
+        justify_content: justify_content.map(justify_content_to_wire),
+        align_items: align_items.map(align_items_to_wire),
+        gap: len(gap),
 
-        flex_grow: r.flex_grow.as_ref().map(tokenized_f32),
-        flex_shrink: r.flex_shrink.as_ref().map(tokenized_f32),
-        flex_basis: r.flex_basis.as_ref().map(tokenized_length),
+        flex_grow: num(flex_grow),
+        flex_shrink: num(flex_shrink),
+        flex_basis: len(flex_basis),
 
-        width: r.width.as_ref().map(tokenized_length),
-        height: r.height.as_ref().map(tokenized_length),
-        min_width: r.min_width.as_ref().map(tokenized_length),
-        min_height: r.min_height.as_ref().map(tokenized_length),
-        max_width: r.max_width.as_ref().map(tokenized_length),
-        max_height: r.max_height.as_ref().map(tokenized_length),
-        aspect_ratio: r.aspect_ratio,
+        width: len(width),
+        height: len(height),
+        min_width: len(min_width),
+        min_height: len(min_height),
+        max_width: len(max_width),
+        max_height: len(max_height),
+        aspect_ratio: *aspect_ratio,
 
-        padding_top: r.padding_top.as_ref().map(tokenized_length),
-        padding_right: r.padding_right.as_ref().map(tokenized_length),
-        padding_bottom: r.padding_bottom.as_ref().map(tokenized_length),
-        padding_left: r.padding_left.as_ref().map(tokenized_length),
-        margin_top: r.margin_top.as_ref().map(tokenized_length),
-        margin_right: r.margin_right.as_ref().map(tokenized_length),
-        margin_bottom: r.margin_bottom.as_ref().map(tokenized_length),
-        margin_left: r.margin_left.as_ref().map(tokenized_length),
+        padding_top: len(padding_top),
+        padding_right: len(padding_right),
+        padding_bottom: len(padding_bottom),
+        padding_left: len(padding_left),
+        margin_top: len(margin_top),
+        margin_right: len(margin_right),
+        margin_bottom: len(margin_bottom),
+        margin_left: len(margin_left),
 
-        border_top_left_radius: r.border_top_left_radius.as_ref().map(tokenized_length),
-        border_top_right_radius: r.border_top_right_radius.as_ref().map(tokenized_length),
-        border_bottom_left_radius: r.border_bottom_left_radius.as_ref().map(tokenized_length),
-        border_bottom_right_radius: r.border_bottom_right_radius.as_ref().map(tokenized_length),
+        border_top_left_radius: len(border_top_left_radius),
+        border_top_right_radius: len(border_top_right_radius),
+        border_bottom_left_radius: len(border_bottom_left_radius),
+        border_bottom_right_radius: len(border_bottom_right_radius),
 
-        opacity: r.opacity.as_ref().map(tokenized_f32),
-        font_weight: r.font_weight.map(font_weight_to_wire),
-        font_family: r.font_family.as_ref().map(font_family_to_wire),
-        text_align: r.text_align.map(text_align_to_wire),
+        opacity: num(opacity),
+        font_weight: font_weight.map(font_weight_to_wire),
+        font_family: font_family.as_ref().map(font_family_to_wire),
+        text_align: text_align.map(text_align_to_wire),
 
-        position: r.position.map(position_to_wire),
-        top: r.top.as_ref().map(tokenized_length),
-        right: r.right.as_ref().map(tokenized_length),
-        bottom: r.bottom.as_ref().map(tokenized_length),
-        left: r.left.as_ref().map(tokenized_length),
+        position: position.map(position_to_wire),
+        top: len(top),
+        right: len(right),
+        bottom: len(bottom),
+        left: len(left),
 
-        overflow: r.overflow.map(overflow_to_wire),
-        transform: r.transform.as_ref().map(|t| {
-            t.iter().map(transform_to_wire).collect()
-        }),
-        background_gradient: r.background_gradient.as_ref().map(gradient_to_wire),
-        object_fit: r.object_fit.map(object_fit_to_wire),
+        overflow: overflow.map(overflow_to_wire),
+        transform: transform.as_ref().map(|t| t.iter().map(transform_to_wire).collect()),
+        background_gradient: background_gradient.as_ref().map(gradient_to_wire),
+        object_fit: object_fit.map(object_fit_to_wire),
 
-        // Definition. See `WireStyleRules`' v19 block for why these
-        // matter more than their count suggests.
-        border_top_width: r.border_top_width.as_ref().map(tokenized_f32),
-        border_right_width: r.border_right_width.as_ref().map(tokenized_f32),
-        border_bottom_width: r.border_bottom_width.as_ref().map(tokenized_f32),
-        border_left_width: r.border_left_width.as_ref().map(tokenized_f32),
-        border_top_color: r.border_top_color.as_ref().map(tokenized_color),
-        border_right_color: r.border_right_color.as_ref().map(tokenized_color),
-        border_bottom_color: r.border_bottom_color.as_ref().map(tokenized_color),
-        border_left_color: r.border_left_color.as_ref().map(tokenized_color),
-        shadow: r.shadow.as_ref().map(shadow_to_wire),
-        text_shadow: r.text_shadow.as_ref().map(shadow_to_wire),
-        cursor: r.cursor.map(cursor_to_wire),
-        line_height: r.line_height.as_ref().map(tokenized_f32),
-        letter_spacing: r.letter_spacing.as_ref().map(tokenized_f32),
-        border_style: r.border_style.map(border_style_to_wire),
-        max_lines: r.max_lines,
-        z_index: r.z_index,
+        border_top_width: num(border_top_width),
+        border_right_width: num(border_right_width),
+        border_bottom_width: num(border_bottom_width),
+        border_left_width: num(border_left_width),
+        border_top_color: col(border_top_color),
+        border_right_color: col(border_right_color),
+        border_bottom_color: col(border_bottom_color),
+        border_left_color: col(border_left_color),
+        shadow: shadow.as_ref().map(shadow_to_wire),
+        text_shadow: text_shadow.as_ref().map(shadow_to_wire),
+        cursor: cursor.map(cursor_to_wire),
+        line_height: num(line_height),
+        letter_spacing: num(letter_spacing),
+        border_style: border_style.map(border_style_to_wire),
+        max_lines: *max_lines,
+        z_index: *z_index,
+
+        caret_color: col(caret_color),
+        display: display.map(display_to_wire),
+        grid_template_columns: grid_template_columns
+            .as_ref()
+            .map(|t| t.iter().map(track_size_to_wire).collect()),
+        grid_row: grid_row.map(grid_placement_to_wire),
+        grid_column: grid_column.map(grid_placement_to_wire),
+        flex_wrap: flex_wrap.map(flex_wrap_to_wire),
+        align_content: align_content.map(align_content_to_wire),
+        row_gap: len(row_gap),
+        column_gap: len(column_gap),
+        align_self: align_self.map(align_self_to_wire),
+        font_style: font_style.map(font_style_to_wire),
+        underline: *underline,
+        strikethrough: *strikethrough,
+        text_transform: text_transform.map(text_transform_to_wire),
+        overscroll_behavior: overscroll_behavior.map(overscroll_behavior_to_wire),
+        scrollbar: scrollbar.map(scrollbar_to_wire),
+        transform_origin: transform_origin.map(|(x, y)| (length_to_wire(x), length_to_wire(y))),
+        user_select: user_select.map(user_select_to_wire),
+        pointer_events: pointer_events.map(pointer_events_to_wire),
+
+        background_transition: tr(background_transition),
+        color_transition: tr(color_transition),
+        caret_color_transition: tr(caret_color_transition),
+        opacity_transition: tr(opacity_transition),
+        transform_transition: tr(transform_transition),
+        width_transition: tr(width_transition),
+        height_transition: tr(height_transition),
+        max_width_transition: tr(max_width_transition),
+        max_height_transition: tr(max_height_transition),
+        min_width_transition: tr(min_width_transition),
+        min_height_transition: tr(min_height_transition),
+        top_transition: tr(top_transition),
+        right_transition: tr(right_transition),
+        bottom_transition: tr(bottom_transition),
+        left_transition: tr(left_transition),
+        padding_top_transition: tr(padding_top_transition),
+        padding_right_transition: tr(padding_right_transition),
+        padding_bottom_transition: tr(padding_bottom_transition),
+        padding_left_transition: tr(padding_left_transition),
+        margin_top_transition: tr(margin_top_transition),
+        margin_right_transition: tr(margin_right_transition),
+        margin_bottom_transition: tr(margin_bottom_transition),
+        margin_left_transition: tr(margin_left_transition),
+        border_top_left_radius_transition: tr(border_top_left_radius_transition),
+        border_top_right_radius_transition: tr(border_top_right_radius_transition),
+        border_bottom_left_radius_transition: tr(border_bottom_left_radius_transition),
+        border_bottom_right_radius_transition: tr(border_bottom_right_radius_transition),
+        border_top_width_transition: tr(border_top_width_transition),
+        border_right_width_transition: tr(border_right_width_transition),
+        border_bottom_width_transition: tr(border_bottom_width_transition),
+        border_left_width_transition: tr(border_left_width_transition),
+        border_top_color_transition: tr(border_top_color_transition),
+        border_right_color_transition: tr(border_right_color_transition),
+        border_bottom_color_transition: tr(border_bottom_color_transition),
+        border_left_color_transition: tr(border_left_color_transition),
+        shadow_transition: tr(shadow_transition),
+    }
+}
+
+fn transition_to_wire(t: Transition) -> wire::WireTransition {
+    wire::WireTransition { duration_ms: t.duration_ms, easing: easing_to_wire(t.easing) }
+}
+
+fn display_to_wire(d: DisplayKind) -> wire::WireDisplay {
+    match d {
+        DisplayKind::Flex => wire::WireDisplay::Flex,
+        DisplayKind::Grid => wire::WireDisplay::Grid,
+    }
+}
+
+fn track_size_to_wire(t: &TrackSize) -> wire::WireTrackSize {
+    use wire::WireTrackSize as W;
+    match t {
+        TrackSize::Auto => W::Auto,
+        TrackSize::MinContent => W::MinContent,
+        TrackSize::MaxContent => W::MaxContent,
+        TrackSize::Fr(v) => W::Fr(*v),
+        TrackSize::Px(v) => W::Px(*v),
+        TrackSize::Minmax(lo, hi) => {
+            W::Minmax(Box::new(track_size_to_wire(lo)), Box::new(track_size_to_wire(hi)))
+        }
+        TrackSize::FitContent(v) => W::FitContent(*v),
+    }
+}
+
+fn grid_placement_to_wire(p: GridPlacement) -> wire::WireGridPlacement {
+    match p {
+        GridPlacement::Line(l) => wire::WireGridPlacement::Line(l),
+        GridPlacement::Lines(a, b) => wire::WireGridPlacement::Lines(a, b),
+    }
+}
+
+fn flex_wrap_to_wire(w: FlexWrap) -> wire::WireFlexWrap {
+    match w {
+        FlexWrap::NoWrap => wire::WireFlexWrap::NoWrap,
+        FlexWrap::Wrap => wire::WireFlexWrap::Wrap,
+        FlexWrap::WrapReverse => wire::WireFlexWrap::WrapReverse,
+    }
+}
+
+fn align_content_to_wire(a: AlignContent) -> wire::WireAlignContent {
+    use wire::WireAlignContent as W;
+    match a {
+        AlignContent::FlexStart => W::FlexStart,
+        AlignContent::FlexEnd => W::FlexEnd,
+        AlignContent::Center => W::Center,
+        AlignContent::Stretch => W::Stretch,
+        AlignContent::SpaceBetween => W::SpaceBetween,
+        AlignContent::SpaceAround => W::SpaceAround,
+    }
+}
+
+fn align_self_to_wire(a: AlignSelf) -> wire::WireAlignSelf {
+    use wire::WireAlignSelf as W;
+    match a {
+        AlignSelf::Auto => W::Auto,
+        AlignSelf::FlexStart => W::FlexStart,
+        AlignSelf::FlexEnd => W::FlexEnd,
+        AlignSelf::Center => W::Center,
+        AlignSelf::Stretch => W::Stretch,
+        AlignSelf::Baseline => W::Baseline,
+    }
+}
+
+fn text_transform_to_wire(t: TextTransform) -> wire::WireTextTransform {
+    use wire::WireTextTransform as W;
+    match t {
+        TextTransform::None => W::None,
+        TextTransform::Uppercase => W::Uppercase,
+        TextTransform::Lowercase => W::Lowercase,
+        TextTransform::Capitalize => W::Capitalize,
+    }
+}
+
+fn overscroll_behavior_to_wire(o: OverscrollBehavior) -> wire::WireOverscrollBehavior {
+    use wire::WireOverscrollBehavior as W;
+    match o {
+        OverscrollBehavior::Auto => W::Auto,
+        OverscrollBehavior::Contain => W::Contain,
+        OverscrollBehavior::None => W::None,
+    }
+}
+
+fn scrollbar_to_wire(s: ScrollbarVisibility) -> wire::WireScrollbarVisibility {
+    match s {
+        ScrollbarVisibility::Auto => wire::WireScrollbarVisibility::Auto,
+        ScrollbarVisibility::Hidden => wire::WireScrollbarVisibility::Hidden,
+    }
+}
+
+fn user_select_to_wire(u: UserSelect) -> wire::WireUserSelect {
+    use wire::WireUserSelect as W;
+    match u {
+        UserSelect::Auto => W::Auto,
+        UserSelect::None => W::None,
+        UserSelect::Text => W::Text,
+        UserSelect::All => W::All,
+    }
+}
+
+fn pointer_events_to_wire(p: PointerEvents) -> wire::WirePointerEvents {
+    match p {
+        PointerEvents::Auto => wire::WirePointerEvents::Auto,
+        PointerEvents::None => wire::WirePointerEvents::None,
     }
 }
 
@@ -563,29 +850,24 @@ pub fn virtual_layout_to_wire(l: runtime_shared::VirtualLayout) -> wire::WireVir
 mod tests {
     use super::*;
 
-    /// Every `Length` variant reaches the wire, and the pill reaches it
-    /// as the sentinel every other style-time backend uses.
+    /// Every `Length` variant reaches the wire, the pill as itself.
     ///
-    /// This is a REGRESSION test, and the regression it pins is a build
-    /// failure rather than a wrong pixel: `Length::Full` was added to
-    /// `runtime-shared` and swept into macOS, Windows, Roku, Android,
-    /// the CPU backend and the GPU engine — and not into this crate, so
-    /// `dev-server` stopped compiling against its own workspace's
-    /// `runtime-shared` and took `idealyst dev` down with it. A
-    /// wildcard arm here would have hidden that; an exhaustive match
-    /// plus this test is what makes the NEXT variant fail loudly in one
-    /// place instead of quietly in two.
+    /// The match in `length_to_wire` has no wildcard so a new `Length`
+    /// variant is a build failure here rather than a wrong pixel (this
+    /// crate once stopped compiling — and took `idealyst dev` with it —
+    /// when `Length::Full` landed everywhere but here).
+    ///
+    /// `regression_a_pill_radius_crosses_as_a_pill`: the pill used to
+    /// collapse to `FULL_RADIUS_FALLBACK_PX`, so a wire-mode client drew
+    /// a 999px-radius rectangle where `--local` drew a pill.
     #[test]
-    fn every_length_reaches_the_wire_and_the_pill_reaches_it_as_the_sentinel() {
+    fn regression_a_pill_radius_crosses_as_a_pill() {
         // `matches!` rather than `assert_eq!`: `WireLength` is a
         // serialization type in another crate and derives no `PartialEq`.
         assert!(matches!(length_to_wire(Length::Px(16.0)), WireLength::Px(v) if v == 16.0));
         assert!(matches!(length_to_wire(Length::Percent(50.0)), WireLength::Pct(v) if v == 50.0));
         assert!(matches!(length_to_wire(Length::Auto), WireLength::Auto));
-        assert!(matches!(
-            length_to_wire(Length::Full),
-            WireLength::Px(v) if v == Length::FULL_RADIUS_FALLBACK_PX
-        ));
+        assert!(matches!(length_to_wire(Length::Full), WireLength::Full));
     }
 }
 

@@ -2336,12 +2336,9 @@ fn length_to_wire_token(l: runtime_shared::Length) -> wire::WireLength {
         runtime_shared::Length::Px(v) => wire::WireLength::Px(v),
         runtime_shared::Length::Percent(v) => wire::WireLength::Pct(v),
         runtime_shared::Length::Auto => wire::WireLength::Auto,
-        // Same collapse, same reason, as `convert_out::length_to_wire`
-        // — a `radius-pill` TOKEN reaches the client as the sentinel
-        // rather than as a variant the wire cannot carry.
-        runtime_shared::Length::Full => {
-            wire::WireLength::Px(runtime_shared::Length::FULL_RADIUS_FALLBACK_PX)
-        }
+        // As in `convert_out::length_to_wire`: a `radius-pill` token
+        // crosses as the pill and the client resolves it per box.
+        runtime_shared::Length::Full => wire::WireLength::Full,
     }
 }
 
@@ -2403,18 +2400,17 @@ impl WireRecordingBackend {
 
 #[cfg(test)]
 mod length_token_tests {
-    /// A `radius-pill` TOKEN reaches the client as the same sentinel a
+    /// A `radius-pill` TOKEN reaches the client as the pill, like a
     /// literal pill does. The two converters are separate functions on
     /// separate paths (one records a style, one publishes the theme), so
-    /// they can drift — see `convert_out`'s counterpart for why the
-    /// missing arm was a build failure rather than a wrong pixel.
+    /// they can drift — see `convert_out`'s counterpart.
     #[test]
-    fn a_pill_token_reaches_the_wire_as_the_sentinel() {
+    fn a_pill_token_reaches_the_wire_as_a_pill() {
         // `matches!` rather than `assert_eq!`: `WireLength` is a
         // serialization type in another crate and derives no `PartialEq`.
         assert!(matches!(
             super::length_to_wire_token(runtime_shared::Length::Full),
-            wire::WireLength::Px(v) if v == runtime_shared::Length::FULL_RADIUS_FALLBACK_PX
+            wire::WireLength::Full
         ));
         assert!(matches!(
             super::length_to_wire_token(runtime_shared::Length::Auto),

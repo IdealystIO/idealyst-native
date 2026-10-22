@@ -65,13 +65,10 @@ pub use payload_serde::{
 /// Numbers 9 and 11 were never shipped. The per-version change list
 /// lives in the commit history.
 ///
-/// `WireStyleRules` does not yet carry every `StyleRules` property:
-/// the `*_transition` fields, `display` / the grid placement family,
-/// `flex_wrap`, `align_self`, `align_content`, the row/column gaps,
-/// text decoration and transform, `user_select`, `pointer_events` and
-/// `caret_color` are still absent, so a wire-mode app can render
-/// differently from `--local` there. See `docs/hot-reload.md`.
-pub const PROTOCOL_VERSION: u32 = 24;
+/// [`WireStyleRules`] carries every `StyleRules` property; the
+/// conversions on both ends are exhaustive destructures, so a new
+/// property cannot compile until it crosses (see `WireStyleRules`).
+pub const PROTOCOL_VERSION: u32 = 25;
 
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
@@ -1001,9 +998,9 @@ pub enum Command {
         kind: WireAssetTag,
     },
     /// Register a typeface (font family with a weight/style table).
-    /// Sent after the per-face assets have been registered. Subsequent
-    /// `ApplyStyle` commands reference the family by [`TypefaceId`]
-    /// once the wire's `WireStyleRules` grows a `font_family` slot.
+    /// Sent after the per-face assets have been registered. Styles then
+    /// name the family by [`TypefaceId`] through
+    /// [`WireFontFamily::Typeface`] in `WireStyleRules::font_family`.
     RegisterTypeface {
         id: TypefaceId,
         family_name: String,
@@ -1112,12 +1109,20 @@ pub struct WirePageMetadata {
 // Wire styles and theme
 // ---------------------------------------------------------------------------
 
-/// Subset of `runtime_core::StyleRules` carried over the wire.
+/// `runtime_shared::StyleRules` as it crosses the wire: one field per
+/// property, every property present.
 ///
-/// **Prototype scope.** Only the fields the iOS / Android backends
-/// look at most often are mirrored. Tokenized values are resolved on
-/// the dev side before serialization — the wire only carries
-/// concrete literals. Extending this is mechanical.
+/// Tokenized values are resolved on the dev side before serialization —
+/// the wire carries concrete literals, and the client re-applies on a
+/// theme swap instead of relying on a token cascade.
+///
+/// Completeness is enforced by the compiler, not by review:
+/// `dev_server::convert_out::style_rules_to_wire` destructures
+/// `StyleRules` and `dev_client::convert::wire_style_to_rules`
+/// destructures this struct, both without `..`, and each builds the
+/// other side as a full literal. Adding a property to either struct
+/// breaks both builds until it is mapped end to end;
+/// `wire/tests/style_parity.rs` then proves the value survives.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WireStyleRules {
     pub background: Option<WireColor>,
@@ -1235,6 +1240,237 @@ pub struct WireStyleRules {
     /// predates it decodes `None` and stacks in tree order.
     #[serde(default)]
     pub z_index: Option<i32>,
+
+    // --- Every remaining `StyleRules` property (PROTOCOL_VERSION 25).
+    // From here on each field is `skip_serializing_if = "Option::is_none"`:
+    // a style sets a handful of its ~110 properties, so an unset one
+    // costs no bytes. (The fields above serialize `null` when unset; they
+    // stay that way because the frozen catch-up golden in
+    // `mock-backend/tests/goldens/` pins those exact bytes.)
+    //
+    // The conversions in `dev-server`'s `convert_out` and `dev-client`'s
+    // `convert` destructure both `StyleRules` and this struct without
+    // `..`, so a property added to either one is a compile error until
+    // it crosses the wire. ---
+    /// Caret color for text inputs (`StyleRules::caret_color`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caret_color: Option<WireColor>,
+    /// Which algorithm lays out this node's children.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<WireDisplay>,
+    /// Grid column tracks (meaningful under `display: Grid`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid_template_columns: Option<Vec<WireTrackSize>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid_row: Option<WireGridPlacement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid_column: Option<WireGridPlacement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flex_wrap: Option<WireFlexWrap>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align_content: Option<WireAlignContent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_gap: Option<WireLength>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_gap: Option<WireLength>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align_self: Option<WireAlignSelf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_style: Option<WireFontStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underline: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strikethrough: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_transform: Option<WireTextTransform>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overscroll_behavior: Option<WireOverscrollBehavior>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scrollbar: Option<WireScrollbarVisibility>,
+    /// `(x, y)` origin for `transform`, relative to the node's own box.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform_origin: Option<(WireLength, WireLength)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_select: Option<WireUserSelect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pointer_events: Option<WirePointerEvents>,
+
+    // Transitions: one per animatable property, as in `StyleRules`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caret_color_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_width_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_height_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_width_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_height_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bottom_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub padding_top_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub padding_right_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub padding_bottom_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub padding_left_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin_top_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin_right_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin_bottom_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin_left_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_top_left_radius_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_top_right_radius_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_bottom_left_radius_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_bottom_right_radius_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_top_width_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_right_width_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_bottom_width_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_left_width_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_top_color_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_right_color_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_bottom_color_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_left_color_transition: Option<WireTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_transition: Option<WireTransition>,
+}
+
+/// Wire mirror of `runtime_shared::style::Transition`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct WireTransition {
+    pub duration_ms: u32,
+    pub easing: WireEasing,
+}
+
+/// Wire mirror of `runtime_shared::style::DisplayKind`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireDisplay {
+    Flex,
+    Grid,
+}
+
+/// Wire mirror of `runtime_shared::style::TrackSize`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WireTrackSize {
+    Auto,
+    MinContent,
+    MaxContent,
+    Fr(f32),
+    Px(f32),
+    Minmax(Box<WireTrackSize>, Box<WireTrackSize>),
+    FitContent(f32),
+}
+
+/// Wire mirror of `runtime_shared::style::GridPlacement`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireGridPlacement {
+    Line(i16),
+    Lines(i16, i16),
+}
+
+/// Wire mirror of `runtime_shared::style::FlexWrap`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireFlexWrap {
+    NoWrap,
+    Wrap,
+    WrapReverse,
+}
+
+/// Wire mirror of `runtime_shared::style::AlignContent`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireAlignContent {
+    FlexStart,
+    FlexEnd,
+    Center,
+    Stretch,
+    SpaceBetween,
+    SpaceAround,
+}
+
+/// Wire mirror of `runtime_shared::style::AlignSelf`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireAlignSelf {
+    Auto,
+    FlexStart,
+    FlexEnd,
+    Center,
+    Stretch,
+    Baseline,
+}
+
+/// Wire mirror of `runtime_shared::style::TextTransform`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireTextTransform {
+    None,
+    Uppercase,
+    Lowercase,
+    Capitalize,
+}
+
+/// Wire mirror of `runtime_shared::style::OverscrollBehavior`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireOverscrollBehavior {
+    Auto,
+    Contain,
+    None,
+}
+
+/// Wire mirror of `runtime_shared::style::ScrollbarVisibility`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireScrollbarVisibility {
+    Auto,
+    Hidden,
+}
+
+/// Wire mirror of `runtime_shared::style::UserSelect`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireUserSelect {
+    Auto,
+    None,
+    Text,
+    All,
+}
+
+/// Wire mirror of `runtime_shared::style::PointerEvents`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WirePointerEvents {
+    Auto,
+    None,
 }
 
 /// Wire mirror of `runtime_shared::style::BorderStyle`.
@@ -1435,6 +1671,10 @@ pub enum WireLength {
     Pct(f32),
     /// CSS-style auto / intrinsic, where applicable.
     Auto,
+    /// `Length::Full` — a corner radius of half the box's shorter side
+    /// (a pill). Carried as-is so the CLIENT resolves it against the box
+    /// it actually lays out, exactly as `--local` does.
+    Full,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -1490,6 +1730,8 @@ pub enum WireTextAlign {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum WireEasing {
     Linear,
+    /// CSS `ease` — its own curve (0.25, 0.1, 0.25, 1.0), not `EaseInOut`.
+    Ease,
     EaseIn,
     EaseOut,
     EaseInOut,
