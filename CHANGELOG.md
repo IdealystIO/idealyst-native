@@ -2039,6 +2039,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Wire-mode hot patches of a crate with a `#[component]` in it apply
+  instead of respawning** (`build-runtime-server`). Every component's
+  catalog entry declares an `inventory` constructor that reads its node
+  with a load folded into the page offset, which the native static binder
+  cannot redirect to the running binary, so it refused the patch and the
+  sidecar respawned (a rebuild). The binary already ran that constructor
+  and the patch never calls it, so references from inside it now stay on
+  the patch's own copy; the same load in code that does run still refuses.
 - **`idealyst mcp` exits when its client goes, and compiles the catalog once
   at start** (`mcp-server`). The catalog extractor ran in tokio's blocking
   pool, and a runtime's shutdown waits for blocking tasks, so after the

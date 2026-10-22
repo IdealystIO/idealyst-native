@@ -37,8 +37,17 @@
 //! A `PAGEOFF12` folded into a load or store (`ldr w8, [x8, S@PAGEOFF]`)
 //! has no GOT form without one more instruction, and an object cannot
 //! grow one in place; the patch is refused and the dev loop rebuilds.
-//! Debug builds (`opt-level = 0`, the dev profile) always materialize the
-//! address with an `add`.
+//! Debug builds (`opt-level = 0`, the dev profile) mostly materialize the
+//! address with an `add`, but not always: an `inventory::submit!`
+//! constructor reads its node's first field with `ldr x0, [x8,
+//! __INVENTORY@PAGEOFF]`. That is the next rule's business.
+//!
+//! Code that cannot run is not bound. A constructor the binary already
+//! ran is never called by the patch (below), so inside its body a
+//! reference to a static the patch defines is left on the patch's own
+//! copy, folded load or not. Every `#[component]` declares such a
+//! constructor for its catalog entry, so without this rule every patch of
+//! a file with one in it was refused.
 //!
 //! A GOT slot holds one address, so a reference with an addend
 //! (`S+8@PAGE`) is pointed at a symbol of its own whose value already
@@ -221,6 +230,57 @@ enum Target {
     InPlace { name: String, host: u64, tls: bool },
 }
 
+/// The body of a function the patch never calls, as an address range of
+/// one section.
+struct Dormant {
+    section: usize,
+    start: u64,
+    end: u64,
+}
+
+impl Dormant {
+    fn covers(&self, section: usize, address: u64) -> bool {
+        self.section == section && (self.start..self.end).contains(&address)
+    }
+}
+
+/// The constructors in this object that [`rewrite`] points at
+/// [`CTOR_RAN`]: the ones the binary already ran. Each runs from its
+/// symbol to the next named symbol of its section, or the section's end;
+/// a label the compiler made up (`ltmp…`) can sit inside a body, so only
+/// a named symbol ends one.
+fn dormant_code(bytes: &[u8], obj: &MachO, ran: &dyn Fn(&str) -> bool) -> Vec<Dormant> {
+    let mut out = Vec::new();
+    for section in &obj.sections {
+        if section.flags & 0xff != S_MOD_INIT_FUNC_POINTERS {
+            continue;
+        }
+        for i in 0..section.nreloc as usize {
+            let info = read_u32(bytes, section.reloff as usize + i * 8 + 4);
+            if info & (1 << 27) == 0 || info >> 28 != UNSIGNED {
+                continue;
+            }
+            let Some(ctor) = obj.symbols.get((info & 0x00ff_ffff) as usize) else { continue };
+            if !ctor.is_defined() || !ran(obj.name(bytes, ctor)) {
+                continue;
+            }
+            let Some(home) = (ctor.n_sect as usize).checked_sub(1).and_then(|i| obj.sections.get(i)) else {
+                continue;
+            };
+            let end = obj
+                .symbols
+                .iter()
+                .filter(|s| s.is_defined() && s.n_sect == ctor.n_sect && s.value > ctor.value)
+                .filter(|s| !is_temporary(obj.name(bytes, s)))
+                .map(|s| s.value)
+                .min()
+                .unwrap_or(home.addr + home.size);
+            out.push(Dormant { section: ctor.n_sect as usize, start: ctor.value, end });
+        }
+    }
+    out
+}
+
 /// Apply `plan` to one object. `None` when no relocation needed a change.
 fn rewrite(
     bytes: &[u8],
@@ -235,6 +295,7 @@ fn rewrite(
     let mut changed = false;
     let first_new = obj.symbols.len() as u32;
     // Sections holding a static this object defines and the plan binds.
+    let dormant = dormant_code(bytes, obj, ran);
     let bound_sections: HashSet<usize> = plan
         .iter()
         .filter(|(_, t)| matches!(t, Target::Renamed { .. }))
@@ -288,6 +349,12 @@ fn rewrite(
                 continue;
             }
             let Some(target) = plan.get(&symbolnum) else { continue };
+            if matches!(target, Target::Renamed { .. })
+                && dormant.iter().any(|d| d.covers(section.index, section.addr + address as u64))
+            {
+                // Never runs; the patch's own copy satisfies the linker.
+                continue;
+            }
             let (name, host, renamed, tls) = match target {
                 Target::Renamed { name, host } => (name, *host, true, false),
                 Target::InPlace { name, host, tls } => (name, *host, false, *tls),
@@ -458,6 +525,8 @@ struct MachO {
 }
 
 struct Section {
+    /// This section's number in `n_sect` terms (1-based).
+    index: usize,
     /// File offset of this `section_64` header.
     header_at: usize,
     segment: String,
@@ -507,6 +576,7 @@ impl MachO {
                     for s in 0..nsects {
                         let h = at + 72 + s * 80;
                         sections.push(Section {
+                            index: sections.len() + 1,
                             header_at: h,
                             name: fixed_name(&b[h..h + 16]).to_string(),
                             segment: fixed_name(&b[h + 16..h + 32]).to_string(),
@@ -712,6 +782,44 @@ mod link_tests {
         let cache = cache(&[("_S", 0x1_0000_4000, SymbolKind::Data)], &["_S"]);
         let err = bind(&[tip], &cache, &dir.join("bound")).unwrap_err();
         assert!(format!("{err:#}").contains("a load or store addresses `_S` directly"), "{err:#}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The constructor `inventory::submit!` declares for every
+    /// `#[component]` reads its node's first field with a load folded into
+    /// the page offset, so every patch of a file with a component in it was
+    /// refused (wire mode respawned instead). The binary already ran that
+    /// constructor and the patch never calls it, so its references stay on
+    /// the patch's own copy; the same load in code that does run still
+    /// refuses.
+    #[test]
+    fn regression_a_constructor_the_binary_ran_may_load_its_node_directly() {
+        let dir = scratch("ctor");
+        let source = |caller: &str| {
+            format!(
+                ".text\n.p2align 2\n_ctor:\n  adrp x8, _NODE@PAGE\n  adrp x1, _NODE@PAGE\n  add x1, x1, _NODE@PAGEOFF\n  ldr x0, [x8, _NODE@PAGEOFF]\n  ret\n\
+                 .globl _f\n.p2align 2\n_f:\n  adrp x8, _NODE@PAGE\n  {caller}\n  ret\n\
+                 .data\n.globl _NODE\n.p2align 3\n_NODE:\n  .quad 0\n  .quad 0\n\
+                 .section __DATA,__mod_init_func,mod_init_funcs\n.p2align 3\n  .quad _ctor\n"
+            )
+        };
+        let cache = cache(
+            &[("_NODE", 0x1_0000_4000, SymbolKind::Data), ("_ctor", 0x1_0000_1000, SymbolKind::Text)],
+            &["_NODE"],
+        );
+
+        let tip = assemble(&dir, &source("add x8, x8, _NODE@PAGEOFF"));
+        let (objs, bindings) = bind(&[tip], &cache, &dir.join("bound")).unwrap();
+        assert!(bindings.ctor_ran);
+        let rewritten = relocs(&objs[0]);
+        let (ctor, live): (Vec<_>, Vec<_>) = rewritten.iter().partition(|r| r.0 < 16);
+        assert!(ctor.iter().all(|r| r.2 == "_NODE" && (r.1 == PAGE21 || r.1 == PAGEOFF12)), "{ctor:?}");
+        assert!(live.iter().all(|r| r.2 == "_NODE$idealyst_host"), "the running code is still bound: {live:?}");
+        link(&dir, &objs, &cache, &bindings);
+
+        let tip = assemble(&dir, &source("ldr x0, [x8, _NODE@PAGEOFF]"));
+        let err = bind(&[tip], &cache, &dir.join("bound")).unwrap_err();
+        assert!(format!("{err:#}").contains("a load or store addresses `_NODE` directly"), "{err:#}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
