@@ -759,7 +759,7 @@ dependencies = [
 
 [[package]]
 name = "audio-engine"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "cpal",
  "crossbeam-queue",
@@ -3597,7 +3597,7 @@ dependencies = [
 
 [[package]]
 name = "dev-reload"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -6549,7 +6549,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.18.1"
+version = "1.18.2"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7905,7 +7905,7 @@ dependencies = [
 
 [[package]]
 name = "microphone"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "cpal",
  "futures-channel",
