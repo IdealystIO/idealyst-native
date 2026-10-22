@@ -3647,7 +3647,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "9.1.0"
+version = "10.0.0"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -6549,7 +6549,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.18.0"
+version = "1.18.1"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",

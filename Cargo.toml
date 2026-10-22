@@ -568,7 +568,7 @@ build-linux = { path = "crates/tools/build/linux", version = "1.6.1", registry =
 run-linux = { path = "crates/tools/run/linux", version = "1.5.2", registry = "idealyst" }
 build-windows = { path = "crates/tools/build/windows", version = "2.0.0", registry = "idealyst" }
 run-windows = { path = "crates/tools/run/windows", version = "2.0.0", registry = "idealyst" }
-dev-tui = { path = "crates/tools/dev-tui", version = "9.1.0", registry = "idealyst" }
+dev-tui = { path = "crates/tools/dev-tui", version = "10.0.0", registry = "idealyst" }
 lint = { path = "crates/tools/lint", version = "1.5.2", registry = "idealyst" }
 configure = { path = "crates/tools/configure", version = "1.5.2", registry = "idealyst" }
 icon-gen = { path = "crates/tools/icon-gen", version = "1.5.2", registry = "idealyst" }
@@ -779,7 +779,7 @@ swap-demo = { path = "crates/sdk/client/navigators/swap/examples/swap-demo", ver
 todo-sync-demo = { path = "crates/sdk/client/sync/examples/todo-sync-demo", version = "1.5.2", registry = "idealyst" }
 toolbar-demo = { path = "crates/sdk/client/toolbar/examples/toolbar-demo", version = "1.5.2", registry = "idealyst" }
 video-compose-demo = { path = "crates/sdk/client/video-compose/examples/video-compose-demo", version = "1.5.2", registry = "idealyst" }
-idealyst-cli = { path = "crates/tools/cli", version = "1.18.0", registry = "idealyst" }
+idealyst-cli = { path = "crates/tools/cli", version = "1.18.1", registry = "idealyst" }
 ota-publish = { path = "crates/ota/publish", version = "0.1.0", registry = "idealyst" }
 
 # Dev profile: `opt-level = "z"` works around a wasm OOB seen at
