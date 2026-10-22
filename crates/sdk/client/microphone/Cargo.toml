@@ -37,11 +37,14 @@ capabilities = ["microphone"]
 # AVFoundation is needed at runtime for the iOS `AVAudioSession` activation (a
 # capture requirement). The classes resolve via objc_getClass, but the CLI
 # links the framework into the final app from this list (same mechanism
-# `camera` uses). The microphone permission grant now lives in the
-# `permissions` SDK, which links AVFoundation itself for its AVCaptureDevice
-# request.
+# `camera` uses). AudioToolbox carries the C API cpal's CoreAudio host calls
+# (`AudioComponentInstanceNew`, `AudioUnitRender`, `AudioOutputUnitStart`,
+# …): coreaudio-sys's `#[link]` does not reach the Xcode link of a
+# staticlib, so without it here a device build fails with those symbols
+# undefined. The microphone permission grant now lives in the `permissions`
+# SDK, which links AVFoundation itself for its AVCaptureDevice request.
 [package.metadata.idealyst.ios]
-frameworks = ["AVFoundation"]
+frameworks = ["AVFoundation", "AudioToolbox"]
 
 [dependencies]
 thiserror = { workspace = true }

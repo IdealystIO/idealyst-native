@@ -2059,6 +2059,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   content centred, so one icon button of any size lines up with the
   column.
 
+- **iOS device builds of apps using `microphone` link** (`microphone`,
+  `audio-engine`). cpal's CoreAudio host calls AudioToolbox
+  (`AudioComponentInstanceNew`, `AudioUnitRender`, …), which `coreaudio-sys`
+  links from its build script — a request the staticlib drops, and the iOS
+  link only takes the frameworks SDKs declare. `microphone` declared only
+  AVFoundation, so a device build failed with those symbols undefined;
+  both cpal SDKs now declare AudioToolbox, and run-ios's declarations test
+  checks SDKs that pull such a crate.
 - **`Microphone::open` with a sample rate no longer deadlocks a real iPad,
   and delivers that rate on every native target** (`microphone`). The
   native backends passed a requested rate to cpal, which asked the device

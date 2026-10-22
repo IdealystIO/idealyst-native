@@ -416,6 +416,12 @@ const BASE_CLOSURE_ROOTS: &[&str] = &["runtime-core", "runtime-shared", "backend
 /// in the staticlib count: proc-macros and build-only deps run on the host.
 /// Returns `(name, Cargo.toml path, lib.rs path)`.
 fn base_closure_workspace_crates() -> Vec<(String, PathBuf, PathBuf)> {
+    let meta = ios_metadata();
+    base_closure_from(&meta)
+}
+
+/// `cargo metadata` for the iOS device target with every feature on.
+fn ios_metadata() -> serde_json::Value {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let output = std::process::Command::new(cargo)
         .args([
@@ -434,8 +440,10 @@ fn base_closure_workspace_crates() -> Vec<(String, PathBuf, PathBuf)> {
         "cargo metadata failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let meta: serde_json::Value = serde_json::from_slice(&output.stdout).expect("metadata JSON");
+    serde_json::from_slice(&output.stdout).expect("metadata JSON")
+}
 
+fn base_closure_from(meta: &serde_json::Value) -> Vec<(String, PathBuf, PathBuf)> {
     let packages = meta["packages"].as_array().expect("packages");
     let by_id: std::collections::HashMap<&str, &serde_json::Value> = packages
         .iter()
@@ -556,4 +564,87 @@ fn scanner_sees_apple_core_coretext_and_corefoundation_on_ios() {
     for fw in ["CoreText", "CoreFoundation", "CoreGraphics"] {
         assert!(linked.contains(fw), "{fw} not seen; linked on iOS: {linked:?}");
     }
+}
+
+/// Registry crates whose BUILD SCRIPT links an Apple framework
+/// (`cargo:rustc-link-lib=framework=…`), invisible to the `#[link]` scan
+/// above, with the framework each needs on iOS.
+const SYS_CRATE_FRAMEWORKS: &[(&str, &str)] = &[
+    // cpal's CoreAudio host: `AudioComponentInstanceNew`, `AudioUnitRender`,
+    // `AudioOutputUnitStart`, `AudioSessionGetProperty`, …
+    ("coreaudio-sys", "AudioToolbox"),
+];
+
+/// Every SDK whose iOS dependency closure contains a crate of
+/// [`SYS_CRATE_FRAMEWORKS`] declares that crate's framework — itself, or
+/// through a workspace crate in its closure (the run tool unions the
+/// declarations of the whole closure), unless the base set has it.
+///
+/// # The bug this prevents
+///
+/// `microphone` and `audio-engine` reach CoreAudio through cpal, whose
+/// `coreaudio-sys` links AudioToolbox from its build script. Neither SDK
+/// declared it, and the staticlib drops the link, so every iOS DEVICE
+/// build of an app using them failed with `_AudioUnitRender` and the
+/// rest undefined (found building `mic-demo` for an iPad).
+#[test]
+fn regression_sys_crate_frameworks_are_declared_by_the_sdks_that_pull_them() {
+    let meta = ios_metadata();
+    let packages = meta["packages"].as_array().expect("packages");
+    let by_id: std::collections::HashMap<&str, &serde_json::Value> =
+        packages.iter().map(|p| (p["id"].as_str().unwrap(), p)).collect();
+    let nodes: std::collections::HashMap<&str, &serde_json::Value> = meta["resolve"]["nodes"]
+        .as_array()
+        .expect("resolve nodes")
+        .iter()
+        .map(|n| (n["id"].as_str().unwrap(), n))
+        .collect();
+    let sdk_root = repo_root().join("crates").join("sdk");
+    let base = base_frameworks();
+
+    let mut missing = Vec::new();
+    for pkg in packages {
+        let manifest = PathBuf::from(pkg["manifest_path"].as_str().unwrap());
+        if !pkg["source"].is_null() || !manifest.starts_with(&sdk_root) {
+            continue;
+        }
+        // The SDK's normal-dependency closure on iOS.
+        let mut stack = vec![pkg["id"].as_str().unwrap()];
+        let mut seen = std::collections::HashSet::new();
+        let mut declared = BTreeSet::new();
+        let mut needed = BTreeSet::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let dep_pkg = by_id[id];
+            let name = dep_pkg["name"].as_str().unwrap();
+            if let Some((_, framework)) = SYS_CRATE_FRAMEWORKS.iter().find(|(c, _)| *c == name) {
+                needed.insert(framework.to_string());
+            }
+            if dep_pkg["source"].is_null() {
+                let path = PathBuf::from(dep_pkg["manifest_path"].as_str().unwrap());
+                let toml: toml::Value = fs::read_to_string(&path).unwrap().parse().unwrap();
+                declared.extend(declared_ios_frameworks(&toml));
+            }
+            let Some(node) = nodes.get(id) else { continue };
+            for dep in node["deps"].as_array().into_iter().flatten() {
+                let normal = dep["dep_kinds"].as_array().into_iter().flatten().any(|k| k["kind"].is_null());
+                if normal {
+                    stack.push(dep["pkg"].as_str().unwrap());
+                }
+            }
+        }
+        for framework in needed {
+            if !declared.contains(&framework) && !base.contains(&framework) {
+                missing.push(format!("{} needs {framework}", pkg["name"].as_str().unwrap()));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "SDKs pull a crate that links a framework from its build script, but declare no \
+         [package.metadata.idealyst.ios] frameworks entry for it:\n  {}",
+        missing.join("\n  ")
+    );
 }

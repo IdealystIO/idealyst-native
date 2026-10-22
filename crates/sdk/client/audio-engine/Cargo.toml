@@ -30,8 +30,11 @@ license.workspace = true
 # objc2) to put the app's session in the Ambient category. The iOS link is
 # done by Xcode/swiftc from a staticlib, so the framework must be declared
 # here (run-ios `sdk_framework_declarations` checks the `#[link]` matches).
+# AudioToolbox carries the C API cpal's CoreAudio host calls
+# (`AudioComponentInstanceNew`, `AudioOutputUnitStart`, …); coreaudio-sys's
+# own `#[link]` does not reach that link either.
 [package.metadata.idealyst.ios]
-frameworks = ["AVFoundation"]
+frameworks = ["AVFoundation", "AudioToolbox"]
 
 [dependencies]
 thiserror = { workspace = true }
