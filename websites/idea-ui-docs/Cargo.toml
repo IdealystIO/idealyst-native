@@ -1,6 +1,6 @@
 [package]
 name = "idea-ui-docs"
-version = "10.0.0"
+version = "11.0.0"
 edition.workspace = true
 license.workspace = true
 description = "Self-referencing documentation app for idea-ui"

@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "android-navigator-helpers"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1390,7 +1390,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-tv"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1464,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1485,14 +1485,14 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-rs-shell"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-ios-mobile",
 ]
 
 [[package]]
 name = "backend-ios-tv"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-ios-core",
  "block2 0.5.1",
@@ -1529,7 +1529,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1607,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "4.1.1"
+version = "5.0.0"
 dependencies = [
  "css",
  "dev-client",
@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "build-runtime-server"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -2065,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "build-web"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "brotli 7.0.0",
@@ -2313,7 +2313,7 @@ dependencies = [
 
 [[package]]
 name = "canvas-native"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -2347,7 +2347,7 @@ dependencies = [
 
 [[package]]
 name = "canvas-vello"
-version = "5.0.0"
+version = "6.0.0"
 dependencies = [
  "backend-linux",
  "canvas-core",
@@ -2418,7 +2418,7 @@ dependencies = [
 
 [[package]]
 name = "canvas3d-wgpu"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "bytemuck",
  "canvas-core",
@@ -2683,7 +2683,7 @@ dependencies = [
 
 [[package]]
 name = "codeblock"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
@@ -3534,7 +3534,7 @@ dependencies = [
 
 [[package]]
 name = "dev-client"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "host-mock",
  "mock-backend",
@@ -3567,7 +3567,7 @@ dependencies = [
 
 [[package]]
 name = "dev-http"
-version = "3.1.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3582,7 +3582,7 @@ dependencies = [
 
 [[package]]
 name = "dev-overlay"
-version = "1.9.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "runtime-macros-parse",
@@ -3597,7 +3597,7 @@ dependencies = [
 
 [[package]]
 name = "dev-reload"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3616,7 +3616,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -3646,7 +3646,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "8.0.0"
+version = "9.0.0"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -4480,7 +4480,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "form"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -5692,7 +5692,7 @@ dependencies = [
 
 [[package]]
 name = "headless-screenshot"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "base64",
  "dev-client",
@@ -5781,7 +5781,7 @@ dependencies = [
 
 [[package]]
 name = "host-android-mobile"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-android-mobile",
  "log",
@@ -5795,7 +5795,7 @@ dependencies = [
 
 [[package]]
 name = "host-appkit"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-apple-core",
  "backend-macos",
@@ -5819,7 +5819,7 @@ dependencies = [
 
 [[package]]
 name = "host-ios-mobile"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-ios-core",
  "backend-ios-mobile",
@@ -5851,7 +5851,7 @@ dependencies = [
 
 [[package]]
 name = "host-macos-desktop"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-macos",
  "log",
@@ -5877,7 +5877,7 @@ dependencies = [
 
 [[package]]
 name = "host-terminal"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-terminal",
  "crossterm",
@@ -5889,7 +5889,7 @@ dependencies = [
 
 [[package]]
 name = "host-web"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-web",
  "js-sys",
@@ -5907,7 +5907,7 @@ dependencies = [
 
 [[package]]
 name = "host-wgpu"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "host-android-mobile",
  "host-ios-mobile",
@@ -5960,7 +5960,7 @@ dependencies = [
 
 [[package]]
 name = "host-winit"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "host-wgpu-accesskit",
  "log",
@@ -6440,7 +6440,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "10.0.0"
+version = "11.0.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6469,7 +6469,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-branded"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "idea-theme",
  "idea-ui",
@@ -6491,7 +6491,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.19"
+version = "1.5.20"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6501,7 +6501,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.18"
+version = "1.5.19"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6532,7 +6532,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-web",
  "dev-client",
@@ -6548,7 +6548,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.16.1"
+version = "1.17.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -6803,7 +6803,7 @@ dependencies = [
 
 [[package]]
 name = "ios-navigator-helpers"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-ios-core",
  "backend-ios-mobile",
@@ -7588,7 +7588,7 @@ checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
 
 [[package]]
 name = "maps"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-ios-mobile",
  "backend-web",
@@ -7612,7 +7612,7 @@ dependencies = [
 
 [[package]]
 name = "maps-ios"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-ios-mobile",
  "maps-core",
@@ -7632,7 +7632,7 @@ dependencies = [
 
 [[package]]
 name = "markdown"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
@@ -7861,7 +7861,7 @@ dependencies = [
 
 [[package]]
 name = "menu"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "backend-ios-mobile",
  "backend-linux",
@@ -10785,7 +10785,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros-parse"
-version = "1.12.1"
+version = "1.13.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10804,7 +10804,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-server-shell-native"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "dev-client",
  "runtime-shared",
@@ -11174,7 +11174,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "screen-recorder"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "ashpd",
  "backend-android-mobile",
@@ -12169,7 +12169,7 @@ dependencies = [
 
 [[package]]
 name = "stack-navigator"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "android-navigator-helpers",
  "backend-android-mobile",
@@ -12393,7 +12393,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "svg"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -13267,7 +13267,7 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "toolbar"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "backend-linux",
  "backend-macos",
@@ -14087,7 +14087,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -14120,7 +14120,7 @@ dependencies = [
 
 [[package]]
 name = "video-compose"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "canvas-core",
  "canvas-vello",
@@ -14764,7 +14764,7 @@ dependencies = [
 
 [[package]]
 name = "webview"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -15603,7 +15603,7 @@ dependencies = [
 
 [[package]]
 name = "wire"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "dev-client",
  "dev-server",
