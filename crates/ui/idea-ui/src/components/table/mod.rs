@@ -127,8 +127,9 @@
 //!   hovered (transparent, still grabbable, otherwise); where the primary
 //!   pointer cannot hover, the grips stay shown.
 //! - Both added columns freeze with the first author column when it is
-//!   pinned left, at their fixed widths, and take each row's tone, hover
-//!   and click like the row's own cells.
+//!   pinned left, at their fixed widths (the leading one grown by the
+//!   edge inset — see "Edge inset"), and take each row's tone, hover and
+//!   click like the row's own cells.
 //! - `Table(empty = Some("Nobody yet".into()))` — with no body rows, the
 //!   table keeps its header and adds one row: empty cells under the added
 //!   columns, then the message (muted) spanning every author column.
@@ -305,10 +306,14 @@
 //! `Table(inset_left = TableInset::Px(16.0))` lines the text up with the
 //! page margin and leaves the trailing edge alone.
 //!
-//! An icon column at an edge — [`TableColumn::actions`], the selection
-//! and grip columns, any `CellPadding::Icon` cell — keeps its compact
-//! padding: its width is sized for its icon, so the inset is not added to
-//! it.
+//! An author's icon column at an edge — [`TableColumn::actions`], any
+//! `CellPadding::Icon` cell — keeps its compact padding: its width is
+//! sized for its icon, so the inset is not added to it. The column the
+//! table adds at the leading edge (selection or grip) does take the
+//! inset, so its box starts at the page margin with the text below it:
+//! its track grows by what the inset adds over its compact padding, so
+//! the box keeps its room, and the frozen columns and band titles past
+//! it move by the same amount. A live inset re-sizes it in place.
 //!
 //! # Plain tables
 //!
@@ -928,12 +933,39 @@ pub fn Table(props: TableProps) -> Element {
         Some(col) => col.pinned == Some(ColumnPin::Left),
         None => first_cell_pinned_left(&children),
     };
-    let lead_pin_width: f32 = if lead_pinned { lead.iter().map(|b| b.width()).sum() } else { 0.0 };
+    // The first added column is the row's first cell, so it takes the
+    // leading edge inset like any first cell; its track grows by what the
+    // inset adds over its compact padding, so its icon keeps its room.
+    // Every width and pin measured past it grows with it.
+    let lead_inset = side_inset(&props.inset_left, &props.inset_x);
+    let lead_growth: Reactive<f32> = match &lead_inset {
+        _ if lead.is_empty() => Reactive::Static(0.0),
+        Reactive::Static(TableInset::None) => Reactive::Static(0.0),
+        Reactive::Static(i @ TableInset::Px(_)) => Reactive::Static(added_column_growth(*i)),
+        // A token inset resolves through the theme, so its growth
+        // follows the theme's spacing.
+        Reactive::Static(i) => {
+            let i = *i;
+            Reactive::Dynamic(Rc::new(move || added_column_growth(i)))
+        }
+        Reactive::Dynamic(f) => {
+            let f = f.clone();
+            Reactive::Dynamic(Rc::new(move || added_column_growth(f())))
+        }
+    };
+    // Added column `k`'s width, and its distance from the leading edge.
+    let lead_width = |k: usize| grown(lead[k].width(), (k == 0).then_some(&lead_growth));
+    let lead_offset = |k: usize| {
+        let before: f32 = lead[..k].iter().map(|b| b.width()).sum();
+        grown(before, (k > 0).then_some(&lead_growth))
+    };
+    let lead_pin_width: Reactive<f32> =
+        if lead_pinned && !lead.is_empty() { lead_offset(lead.len()) } else { Reactive::Static(0.0) };
 
     // The column model on the author's cells (before the added columns
     // shift their positions).
     let widths = props.column_widths.unwrap_or_else(|| signal(ColumnWidths::new()));
-    let model = ColumnModel::new(props.columns, widths, lead_pin_width);
+    let model = ColumnModel::new(props.columns, widths, lead_pin_width.clone());
     if !model.is_empty() {
         let last_head = kinds.iter().rposition(|k| *k == RowKind::Head);
         let mut row_i = 0usize;
@@ -944,17 +976,21 @@ pub fn Table(props: TableProps) -> Element {
                 row_i += 1;
             });
         }
-    } else if lead_pin_width > 0.0 {
+    } else if !matches!(lead_pin_width, Reactive::Static(w) if w == 0.0) {
         // No column model: the author pinned cells with their own
         // `pin_offset`s, measured from the first author column. Push the
         // left-frozen ones past the added columns.
         for child in &children {
             table::visit_rows(child, |row| {
-                table::visit_row_cells(row, |cell| {
-                    table::map_cell_application(
-                        cell,
-                        Rc::new(move |app| shift_left_pin(app, lead_pin_width)),
-                    );
+                table::visit_row_cells(row, |cell| match &lead_pin_width {
+                    Reactive::Static(w) => {
+                        let w = *w;
+                        table::map_cell_application(cell, Rc::new(move |app| shift_left_pin(app, w)));
+                    }
+                    Reactive::Dynamic(f) => {
+                        let f = f.clone();
+                        table::map_cell_style(cell, Rc::new(move |app| shift_left_pin(app, f())));
+                    }
                 });
             });
         }
@@ -978,7 +1014,7 @@ pub fn Table(props: TableProps) -> Element {
     for meta in metas.iter().flatten() {
         if let Some(band) = &meta.band {
             let mut lead_of = band.lead.borrow_mut();
-            lead_of.pin = lead_pin_width;
+            lead_of.pin = lead_pin_width.clone();
             if lead.is_empty() {
                 lead_of.inset = side_inset(&props.inset_left, &props.inset_x);
             }
@@ -1012,8 +1048,7 @@ pub fn Table(props: TableProps) -> Element {
                 // A hover-revealed grip follows its row's pointer.
                 let row_hover = (grip_on_hover && grip_touch.is_some()).then(|| signal(false));
                 let mut added = Vec::with_capacity(lead.len());
-                let mut offset = 0.0_f32;
-                for b in &lead {
+                for (k, b) in lead.iter().enumerate() {
                     let content: Option<Element> = match (b, kind) {
                         (Builtin::Grip, RowKind::Body) if grip_touch.is_some() => Some(grip_mark(row_hover)),
                         (Builtin::Select, RowKind::Head) if Some(row_i) == first_head => {
@@ -1027,9 +1062,8 @@ pub fn Table(props: TableProps) -> Element {
                             .map(|(id, s)| select_row_box(s, id)),
                         _ => None,
                     };
-                    let cell = builtin_cell(kind == RowKind::Head, b.width(), content);
-                    let cell = if lead_pinned { pin_builtin(cell, offset) } else { cell };
-                    offset += b.width();
+                    let cell = builtin_cell(kind == RowKind::Head, lead_width(k), content);
+                    let cell = if lead_pinned { pin_builtin(cell, lead_offset(k)) } else { cell };
                     let cell = if kind == RowKind::Foot {
                         table::map_cell_application(&cell, Rc::new(|app| app.with("section", "foot")));
                         cell
@@ -1073,11 +1107,9 @@ pub fn Table(props: TableProps) -> Element {
     // The empty state: one row past the added columns, spanning the rest.
     if let Some(empty) = props.empty.filter(|_| !kinds.contains(&RowKind::Body)) {
         let mut cells: Vec<Element> = Vec::with_capacity(lead.len() + 1);
-        let mut offset = 0.0_f32;
-        for b in &lead {
-            let cell = builtin_cell(false, b.width(), None);
-            cells.push(if lead_pinned { pin_builtin(cell, offset) } else { cell });
-            offset += b.width();
+        for k in 0..lead.len() {
+            let cell = builtin_cell(false, lead_width(k), None);
+            cells.push(if lead_pinned { pin_builtin(cell, lead_offset(k)) } else { cell });
         }
         cells.push(empty_cell(empty));
         children.push(sdk_row(SdkTableRowProps { children: cells }).into_element());
@@ -1169,9 +1201,11 @@ pub fn Table(props: TableProps) -> Element {
     // Edge inset: the first and last cell of every row — a single-cell
     // row takes both sides. A static inset is a static selection (the
     // cells stay preminted); a live one re-pads the same cells in place.
-    // An icon column at the edge (`CellPadding::Icon` — the actions,
-    // selection and grip columns) keeps its compact padding: its width is
-    // sized for its icon, and the inset would squeeze the icon out of it.
+    // An author's icon column at the edge (`CellPadding::Icon`, e.g. the
+    // actions column) keeps its compact padding: its width is sized for
+    // its icon, and the inset would squeeze the icon out of it. The added
+    // column at the leading edge takes the inset: its track grew by the
+    // difference (`lead_growth`), so its icon keeps its room.
     let inset_left = side_inset(&props.inset_left, &props.inset_x);
     let inset_right = side_inset(&props.inset_right, &props.inset_x);
     let pads = |i: &Reactive<TableInset>| !matches!(i, Reactive::Static(TableInset::None));
@@ -1184,7 +1218,8 @@ pub fn Table(props: TableProps) -> Element {
                 table::visit_row_cells(row, |cell| {
                     let (first, last) = (i == 0, i + 1 == count);
                     i += 1;
-                    if (!first && !last) || is_icon_cell(cell) {
+                    let added = first && !lead.is_empty();
+                    if (!first && !last) || (is_icon_cell(cell) && !added) {
                         return;
                     }
                     if first && pads(&inset_left) {
@@ -1276,11 +1311,16 @@ pub fn Table(props: TableProps) -> Element {
         }
     }
     // In grid-column mode every column is one track: the added columns
-    // at their fixed widths, the author's from the column model.
-    let mut sdk_columns: Vec<Option<table::ColumnSpec>> = lead
-        .iter()
-        .map(|b| {
-            Some(table::ColumnSpec::new(table::ColumnTrack { width: Some(b.width()), ..Default::default() }))
+    // at their widths (`lead_width`), the author's from the column model.
+    let mut sdk_columns: Vec<Option<table::ColumnSpec>> = (0..lead.len())
+        .map(|k| match lead_width(k) {
+            Reactive::Static(w) => {
+                Some(table::ColumnSpec::new(table::ColumnTrack { width: Some(w), ..Default::default() }))
+            }
+            Reactive::Dynamic(f) => Some(table::ColumnSpec::live(move || table::ColumnTrack {
+                width: Some(f()),
+                ..Default::default()
+            })),
         })
         .collect();
     sdk_columns.extend(model.specs());
@@ -1324,6 +1364,36 @@ fn side_inset(side: &Reactive<TableInset>, both: &Reactive<TableInset>) -> React
                 TableInset::None => both.get(),
                 own => own,
             }))
+        }
+    }
+}
+
+/// How much an added column's track grows when it is the row's first
+/// cell and takes `inset` as its leading padding in place of its compact
+/// icon padding — so its content keeps the width it has without an inset.
+/// Negative for an inset narrower than the icon padding.
+fn added_column_growth(inset: TableInset) -> f32 {
+    if inset == TableInset::None {
+        return 0.0;
+    }
+    let pad = |app: StyleApplication| {
+        match runtime_core::resolve_style(&app).padding_left.as_ref().map(|l| l.resolve()) {
+            Some(Length::Px(v)) => v,
+            _ => 0.0,
+        }
+    };
+    let icon = TableStyles::body_cell().into_style_application().with("cell_padding", "icon");
+    pad(inset.apply(icon.clone(), InsetSide::Left)) - pad(icon)
+}
+
+/// `base`, plus `growth` when given.
+fn grown(base: f32, growth: Option<&Reactive<f32>>) -> Reactive<f32> {
+    match growth {
+        None => Reactive::Static(base),
+        Some(Reactive::Static(g)) => Reactive::Static(base + g),
+        Some(Reactive::Dynamic(f)) => {
+            let f = f.clone();
+            Reactive::Dynamic(Rc::new(move || base + f()))
         }
     }
 }
@@ -1390,12 +1460,16 @@ fn shift_left_pin(app: StyleApplication, by: f32) -> StyleApplication {
     })
 }
 
-/// A cell of a column the table adds: a fixed width, centred, compact
+/// A cell of a column the table adds: its width, centred, compact
 /// padding.
-fn builtin_cell(header: bool, width: f32, content: Option<Element>) -> Element {
+fn builtin_cell(header: bool, width: Reactive<f32>, content: Option<Element>) -> Element {
+    let width = match width {
+        Reactive::Static(w) => Reactive::Static(Some(w)),
+        Reactive::Dynamic(f) => Reactive::Dynamic(Rc::new(move || Some(f()))),
+    };
     TableCell(TableCellProps {
         header,
-        width: Reactive::Static(Some(width)),
+        width,
         align: CellAlign::Center,
         padding: CellPadding::Icon,
         children: content.into_iter().collect(),
@@ -1406,21 +1480,27 @@ fn builtin_cell(header: bool, width: f32, content: Option<Element>) -> Element {
 /// Freeze an added column's cell `offset` px from the left edge. Its inner
 /// edge never draws: the author's first column, frozen beside it, draws
 /// the frozen block's edge.
-fn pin_builtin(cell: Element, offset: f32) -> Element {
-    table::map_cell_application(
-        &cell,
-        Rc::new(move |app| {
-            let app = app.with("pinned", "left").with("pin_edge", "interior");
-            if offset == 0.0 {
-                app
-            } else {
-                app.with_inline_merged(StyleRules {
-                    left: Some(Tokenized::Literal(Length::Px(offset))),
-                    ..Default::default()
-                })
-            }
-        }),
-    );
+fn pin_builtin(cell: Element, offset: Reactive<f32>) -> Element {
+    let left = |app: StyleApplication, offset: f32| {
+        if offset == 0.0 {
+            app
+        } else {
+            app.with_inline_merged(StyleRules {
+                left: Some(Tokenized::Literal(Length::Px(offset))),
+                ..Default::default()
+            })
+        }
+    };
+    let pinned = |app: StyleApplication| app.with("pinned", "left").with("pin_edge", "interior");
+    match offset {
+        Reactive::Static(offset) => {
+            table::map_cell_application(&cell, Rc::new(move |app| left(pinned(app), offset)));
+        }
+        Reactive::Dynamic(f) => {
+            table::map_cell_application(&cell, Rc::new(pinned));
+            table::map_cell_style(&cell, Rc::new(move |app| left(app, f())));
+        }
+    }
     cell
 }
 

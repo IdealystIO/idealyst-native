@@ -1710,13 +1710,25 @@ fn inset_left_and_right_pad_one_edge_each() {
     });
 }
 
+/// The compact padding of an icon column (`CellPadding::Icon`), px.
+fn icon_pad() -> f32 {
+    px_of(
+        &runtime_core::resolve_style(
+            &TableStyles::body_cell().into_style_application().with("cell_padding", "icon"),
+        )
+        .padding_right,
+    )
+    .expect("the icon padding")
+}
+
 /// CrewForge: `inset_x` re-added the page gutter to the right of the
 /// frozen actions column, squeezing its icon button out of the fixed
-/// width (they dropped `inset_x`). An icon column at an edge — the
-/// actions column, the selection and grip columns — keeps its compact
-/// padding; the inset pads the text columns' edges only.
+/// width (they dropped `inset_x`). An author's icon column at the edge
+/// (the actions column) keeps its compact padding; the added selection
+/// column at the leading edge takes the inset but grows by it, so its
+/// box keeps the same room.
 #[test]
-fn regression_edge_inset_leaves_the_icon_columns_alone() {
+fn regression_edge_inset_never_squeezes_an_icon_column() {
     with_test_world(|| {
         let selection = runtime_core::signal(BTreeSet::<RowId>::new());
         let t = Table(TableProps {
@@ -1729,22 +1741,119 @@ fn regression_edge_inset_leaves_the_icon_columns_alone() {
             inset_x: Reactive::Static(TableInset::Px(28.0)),
             ..Default::default()
         });
-        let icon = px_of(
-            &runtime_core::resolve_style(
-                &TableStyles::body_cell().into_style_application().with("cell_padding", "icon"),
-            )
-            .padding_right,
-        )
-        .expect("the icon padding");
+        let icon = icon_pad();
         for (i, c) in grid_cells(t).into_iter().enumerate() {
             let r = rules_of(c);
             let (l, rt) = (px_of(&r.padding_left).unwrap(), px_of(&r.padding_right).unwrap());
             match i % 3 {
-                0 => assert_eq!((l, rt), (icon, icon), "the selection column keeps its padding"),
+                0 => {
+                    let w = px_of(&r.width).unwrap();
+                    assert_eq!(w - l - rt, SELECT_COLUMN_WIDTH_PX - 2.0 * icon, "the box keeps its room");
+                }
                 1 => assert_ne!(l, 28.0, "the name column is not an edge any more"),
                 _ => assert_eq!((l, rt), (icon, icon), "the actions column keeps its padding"),
             }
         }
+    });
+}
+
+/// CrewForge (want_2cd1b106): the selection and grip columns the table
+/// adds sat left of the page gutter — the edge inset skipped them and
+/// their tracks were fixed, so no prop could move them. The leading added
+/// column now takes the inset like any first cell, its track grows by
+/// what the inset adds over its compact padding, and everything measured
+/// past it — the next added column's pin, the author's frozen columns,
+/// the grid track — moves with it.
+#[test]
+fn regression_leading_added_column_takes_the_edge_inset() {
+    with_test_world(|| {
+        idea_theme::theme::install_idea_theme(crate::light_theme());
+        let t = Table(TableProps {
+            scroll_x: true,
+            columns: vec![TableColumn::new("name").width(160.0).pinned(ColumnPin::Left), TableColumn::new("x")],
+            selection: Some(signal(BTreeSet::new())),
+            on_reorder: Some(Rc::new(|_, _| {})),
+            inset_x: Reactive::Static(TableInset::Px(28.0)),
+            children: vec![
+                row_of(vec![head_cell("Name"), head_cell("X")]),
+                id_row("a", &["Ana", "1"], true, true),
+            ],
+            ..Default::default()
+        });
+        let grow = 28.0 - icon_pad();
+        let cells: Vec<_> =
+            any_grid_cells(t, true, false, true).into_iter().filter(|c| !is_backdrop(c)).collect();
+        assert_eq!(cells.len(), 8, "grip + select + 2 columns, two rows");
+        let r: Vec<_> = cells.into_iter().map(|c| runtime_core::resolve_style(&cell_app(c))).collect();
+        for row in [0, 4] {
+            assert_eq!(px_of(&r[row].padding_left), Some(28.0), "the grip starts at the gutter");
+            assert_eq!(px_of(&r[row].width), Some(GRIP_COLUMN_WIDTH_PX + grow));
+            assert_eq!(px_of(&r[row + 1].padding_left), Some(icon_pad()), "the selection is not an edge");
+            assert_eq!(px_of(&r[row + 1].left), Some(GRIP_COLUMN_WIDTH_PX + grow));
+            assert_eq!(px_of(&r[row + 1].width), Some(SELECT_COLUMN_WIDTH_PX));
+            assert_eq!(
+                px_of(&r[row + 2].left),
+                Some(GRIP_COLUMN_WIDTH_PX + SELECT_COLUMN_WIDTH_PX + grow),
+                "the author's frozen column clears both"
+            );
+        }
+    });
+}
+
+/// A live inset (a page margin stepping with the breakpoint) re-sizes the
+/// leading added column in place, and moves the frozen columns and the
+/// band's pin past it — no rebuild.
+#[test]
+fn live_inset_resizes_the_leading_added_column() {
+    with_test_world(|| {
+        idea_theme::theme::install_idea_theme(crate::light_theme());
+        let inset = signal(TableInset::Px(16.0));
+        let g = TableGroup(TableGroupProps {
+            children: vec![id_row("a", &["Ana", "Lead"], true, true)],
+            title: Reactive::Static("Operations".into()),
+            ..Default::default()
+        });
+        let t = Table(TableProps {
+            scroll_x: true,
+            selection: Some(signal(BTreeSet::new())),
+            inset_x: Reactive::Dynamic(Rc::new(move || inset.get())),
+            columns: vec![TableColumn::new("name").width(160.0).pinned(ColumnPin::Left), TableColumn::new("role")],
+            children: vec![row_of(vec![head_cell("Name"), head_cell("Role")]), g],
+            ..Default::default()
+        });
+        let cells: Vec<_> = any_grid_cells(t, true, false, true).into_iter().filter(|c| !is_backdrop(c)).collect();
+        let style_of = |c: Element| match classify(cell_node(c)) {
+            P::View { style, .. } => style.expect("styled"),
+            _ => panic!("view"),
+        };
+        // header: select, name, role; band: select, band cell.
+        let mut cells = cells.into_iter();
+        let select = style_of(cells.next().unwrap());
+        let name = style_of(cells.next().unwrap());
+        let band_cell = cells.nth(2).expect("the band's cell");
+        let band_lead = match classify(cell_content(band_cell).into_iter().next().unwrap()) {
+            P::View { children, .. } => match classify(children.into_iter().next().unwrap()) {
+                P::View { style, .. } => style.expect("styled"),
+                _ => panic!("band lead"),
+            },
+            _ => panic!("the band content is a row"),
+        };
+        let icon = icon_pad();
+        let check = |inset_px: f32| {
+            let grow = inset_px - icon;
+            let s = select.resolve();
+            assert_eq!(px_of(&s.padding_left), Some(inset_px));
+            assert_eq!(px_of(&s.width), Some(SELECT_COLUMN_WIDTH_PX + grow));
+            assert_eq!(px_of(&name.resolve().left), Some(SELECT_COLUMN_WIDTH_PX + grow));
+            assert_eq!(px_of(&band_lead.resolve().left), Some(SELECT_COLUMN_WIDTH_PX + grow));
+        };
+        check(16.0);
+        inset.set(TableInset::Px(28.0));
+        idea_theme::testing::commit();
+        check(28.0);
+        inset.set(TableInset::Xl);
+        idea_theme::testing::commit();
+        check(crate::light_theme().spacing.xl);
     });
 }
 
@@ -2857,6 +2966,32 @@ fn group_drag_puts_the_grip_on_the_band() {
             })
             .collect();
         assert_eq!(grips, vec![true, false, true, false], "bands drag; their rows do not without on_reorder");
+    });
+}
+
+/// CrewForge (want_c80885d4): the band's trailing + centred 20px from the
+/// table's edge while the rows' ⋯ in the actions column centred at 26px —
+/// the band padded only its right side. The trailing box takes the
+/// actions column's geometry, so one icon button of any size centres
+/// over the column.
+#[test]
+fn regression_band_trailing_action_centres_over_the_actions_column() {
+    with_test_world(|| {
+        let r = runtime_core::resolve_style(&TableStyles::band_trail().into_style_application());
+        let (min_w, l, rt) = (
+            px_of(&r.min_width).expect("the trail spans the actions column"),
+            px_of(&r.padding_left).unwrap(),
+            px_of(&r.padding_right).unwrap(),
+        );
+        assert_eq!(r.justify_content, Some(runtime_core::JustifyContent::Center));
+        let icon = icon_pad();
+        assert_eq!((min_w, l, rt), (ACTIONS_COLUMN_WIDTH_PX, icon, icon), "the actions column's box");
+        // A centred, symmetric box: a button that fits centres at half
+        // its width from the edge — where the actions column centres it.
+        for button in [24.0_f32, 32.0, ACTIONS_COLUMN_WIDTH_PX - 2.0 * icon] {
+            let from_edge = rt + (min_w - l - rt - button) / 2.0 + button / 2.0;
+            assert_eq!(from_edge, ACTIONS_COLUMN_WIDTH_PX / 2.0, "a {button}px button");
+        }
     });
 }
 

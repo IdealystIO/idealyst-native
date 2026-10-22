@@ -450,9 +450,10 @@ Table(
                     variant for an edge-to-edge list.".to_string())
                 inset_table()
                 P(content = "`inset_left` / `inset_right` pad one edge only, over `inset_x` on that \
-                    side. An icon column at an edge — the actions column, the selection and grip \
-                    columns — keeps its compact padding instead of taking the inset, so the menu \
-                    button keeps its width.".to_string())
+                    side. The actions column at an edge keeps its compact padding instead of \
+                    taking the inset, so the menu button keeps its width. The selection or grip \
+                    column the table adds at the leading edge takes the inset and widens by it, \
+                    so its box starts at the page margin with the text.".to_string())
                 one_sided_inset_table()
                 CodePanel(src = r##"Table(
     variant = TableVariant::Plain,

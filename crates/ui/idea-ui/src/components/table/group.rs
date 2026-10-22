@@ -157,7 +157,7 @@ pub fn TableGroup(props: TableGroupProps) -> Element {
     let lead_style = move || {
         let lead = lead_of.borrow();
         let app = TableStyles::band_lead().into_style_application().with_inline_merged(runtime_core::StyleRules {
-            left: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(lead.pin))),
+            left: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(lead.pin.get()))),
             ..Default::default()
         });
         lead.inset.get().apply(app, InsetSide::Left)

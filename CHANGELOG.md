@@ -15,6 +15,18 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **A table's leading added column takes the edge inset** (`idea-ui`).
+  With `Table(inset_x = …)` or `inset_left`, the selection or grip column
+  the table adds at the leading edge used to keep its compact padding and
+  sit in the page gutter. It now takes the inset like any first cell, so
+  its box starts at the page margin with the text below it. Its track
+  grows by what the inset adds over its compact padding, so the box keeps
+  its room, and the frozen columns and band titles past it move with it.
+  A live inset (`TableInset::by_breakpoint`) re-sizes it in place. An
+  author's icon column at an edge (`TableColumn::actions`) still keeps its
+  compact padding. Migration: drop any restyle that pushed the selection
+  column in by the gutter, or it is inset twice.
+
 - **idea-ui components are styled through `component_styles!` slots; the
   shared modifier refs and sheet builders are gone** (`idea-ui`,
   `idea-theme`, `runtime-shared`, `runtime-vocabulary`, `runtime-macros`).
@@ -2038,6 +2050,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A `TableGroup` band's trailing action centres over the actions
+  column** (`idea-ui`). The band's trailing box padded only its right side
+  (8px), so a 24px + centred 20px from the table's edge while the rows' ⋯
+  in `TableColumn::actions` centred at 26px. The box now takes the actions
+  column's geometry: its width, its compact padding on both sides, its
+  content centred, so one icon button of any size lines up with the
+  column.
 
 - **A save by rename no longer rebuilds the runtime-server sidecar**
   (`dev-server`). `sed -i` and editors' atomic writes put the new contents

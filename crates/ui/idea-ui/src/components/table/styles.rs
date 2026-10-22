@@ -836,9 +836,14 @@ component_styles! {
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 gap: t.spacing.xs(),
-                // The compact icon padding, so a trailing icon button sits
-                // over the actions column's (`TableColumn::actions`).
-                padding_right: t.spacing.sm(),
+                // The actions column's geometry (`TableColumn::actions`):
+                // its width, its compact icon padding, its content
+                // centred — so a single trailing icon button sits over
+                // the rows' menu buttons whatever its size. Several
+                // controls overflow the width and end at the padding.
+                min_width: super::columns::ACTIONS_COLUMN_WIDTH_PX,
+                padding_horizontal: t.spacing.sm(),
+                justify_content: JustifyContent::Center,
             }
         }
 

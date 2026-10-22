@@ -25,7 +25,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use runtime_core::{
-    component, signal, ui, Element, IdealystSchema, Memo, Ref, Signal, TouchEvent, TouchPhase,
+    component, signal, ui, Element, IdealystSchema, Memo, Reactive, Ref, Signal, TouchEvent, TouchPhase,
     TouchResponse, VariantEnum, ViewHandle,
 };
 
@@ -514,8 +514,9 @@ pub(super) struct ColumnModel {
     cols: Vec<TableColumn>,
     widths: Signal<ColumnWidths>,
     sizes: Vec<ColWidth>,
-    /// Width of the frozen columns the table added before the author's.
-    lead_pin: f32,
+    /// Width of the frozen columns the table added before the author's —
+    /// live while the leading edge inset is.
+    lead_pin: Reactive<f32>,
 }
 
 /// The inline geometry a column puts on each of its cells, and whether it
@@ -526,7 +527,7 @@ struct Geometry {
 }
 
 impl ColumnModel {
-    pub(super) fn new(cols: Vec<TableColumn>, widths: Signal<ColumnWidths>, lead_pin: f32) -> Self {
+    pub(super) fn new(cols: Vec<TableColumn>, widths: Signal<ColumnWidths>, lead_pin: Reactive<f32>) -> Self {
         let sizes = cols
             .iter()
             .map(|c| {
@@ -607,18 +608,18 @@ impl ColumnModel {
                 col.id
             );
         }
-        let lead = if col.pinned == Some(ColumnPin::Left) { self.lead_pin } else { 0.0 };
-        let has_inset = col.pinned.is_some() && (lead > 0.0 || !before.is_empty());
+        let lead = if col.pinned == Some(ColumnPin::Left) { self.lead_pin.clone() } else { Reactive::Static(0.0) };
+        let has_inset = col.pinned.is_some() && (!matches!(lead, Reactive::Static(w) if w == 0.0) || !before.is_empty());
         let has_size = col.width.is_some() || col.min_width.is_some() || size.is_live() || size.get().is_some();
         if !has_inset && !has_size {
             return None;
         }
-        let live = size.is_live() || before.iter().any(ColWidth::is_live);
+        let live = size.is_live() || before.iter().any(ColWidth::is_live) || !lead.is_static();
         let (pin, fill, min) = (col.pinned, col.fill, col.min_width);
         let rules = move || {
             let px = |v: f32| Tokenized::Literal(Length::Px(v));
             let w = size.get();
-            let inset = (lead + before.iter().filter_map(|b| b.get()).sum::<f32>()).max(0.0);
+            let inset = (lead.get() + before.iter().filter_map(|b| b.get()).sum::<f32>()).max(0.0);
             let inset = has_inset.then(|| px(inset));
             let (width, min_width) = if fill { (None, w.or(min)) } else { (w, min) };
             StyleRules {

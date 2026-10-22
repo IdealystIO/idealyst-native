@@ -113,13 +113,13 @@ pub(super) struct BandMeta {
 /// See [`BandMeta::lead`].
 #[derive(Clone)]
 pub(super) struct BandLead {
-    pub pin: f32,
+    pub pin: Reactive<f32>,
     pub inset: Reactive<super::TableInset>,
 }
 
 impl Default for BandLead {
     fn default() -> Self {
-        BandLead { pin: 0.0, inset: Reactive::Static(super::TableInset::None) }
+        BandLead { pin: Reactive::Static(0.0), inset: Reactive::Static(super::TableInset::None) }
     }
 }
 
