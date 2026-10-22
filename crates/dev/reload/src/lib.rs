@@ -725,6 +725,13 @@ pub struct BuildOptions {
     /// subsecond patch can link against. Dev-only; set by the `--local`
     /// web loop when the hot-patch tier is armed.
     pub hot_patch: bool,
+    /// Take ADDITIVE hot patches (`idealyst dev --experimental-build`):
+    /// a save whose shape moved only by new items is patched, verified
+    /// after its replay (`build_web::hotpatch_additive`), instead of
+    /// rebuilt (`dev_overlay::Workspace::additive`). Off by default;
+    /// without it every shape change rebuilds. Meaningful only with
+    /// [`Self::hot_patch`].
+    pub experimental_build: bool,
     /// Premint static styles on every rebuild (`idealyst dev … --premint`).
     /// Each build runs the native style dump and refreshes
     /// `pkg/premint.css` alongside the wasm, and the wasm compiles with
@@ -814,6 +821,7 @@ pub fn start(
             head_script: None,
             runtime_server_url: None,
             hot_patch: false,
+            experimental_build: false,
             premint: false,
             premint_only: false,
             premint_report: false,
@@ -1024,6 +1032,11 @@ fn resume_snapshot(
         inputs: inputs.clone(),
         archives: ws.crates.iter().map(|(p, c)| (p.clone(), c.archive.clone())).collect(),
         patched: ws.patched.clone(),
+        added: ws
+            .added
+            .iter()
+            .map(|(p, names)| (p.clone(), names.iter().map(|n| n.name.clone()).collect()))
+            .collect(),
         replay: replay
             .into_iter()
             .map(|p| resume::Replayed { hot: p.kind == PatchKind::Hot, json: p.json })
@@ -1190,24 +1203,7 @@ fn load_workspace(dir: &Path, memo: &dev_overlay::ScanMemo) -> dev_overlay::Work
 }
 
 /// [`load_workspace`] without the scan: the crates and their graph only.
-///
-/// Additive hot patches are on (`dev_overlay::Workspace::additive`):
-/// this loop's builder verifies them after the replay
-/// (`build_web::hotpatch_additive`). `IDEALYST_HOTPATCH_ADDITIVE=0`
-/// turns them off, so every shape change rebuilds as before.
 fn unscanned_workspace(dir: &Path) -> dev_overlay::Workspace {
-    let mut ws = unscanned_workspace_graph(dir);
-    ws.additive = additive_patches_enabled(std::env::var("IDEALYST_HOTPATCH_ADDITIVE").ok().as_deref());
-    ws
-}
-
-/// Whether `IDEALYST_HOTPATCH_ADDITIVE` leaves additive patches on: any
-/// value but `0`, `false` or `off`, or none.
-fn additive_patches_enabled(env: Option<&str>) -> bool {
-    !env.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off"))
-}
-
-fn unscanned_workspace_graph(dir: &Path) -> dev_overlay::Workspace {
     let package = dir_package_name(dir);
     match cargo_metadata(&dir.join("Cargo.toml")) {
         Ok(meta) => dev_overlay::Workspace::from_metadata(&meta, dir),
@@ -1639,6 +1635,25 @@ fn watch_loop(
             let mut ws = unscanned_workspace(&dir);
             ws.install(state.archives.clone().into_iter().collect());
             ws.patched = state.patched.iter().filter(|p| ws.crates.contains_key(*p)).cloned().collect();
+            // Names patches added to the resumed base: still missing from
+            // its metadata, so a save that uses one must rebuild. Kept as
+            // `pub` names — the use check matches every reach the same way.
+            ws.added = state
+                .added
+                .iter()
+                .filter(|(p, _)| ws.crates.contains_key(*p))
+                .map(|(p, names)| {
+                    let names = names
+                        .iter()
+                        .map(|name| dev_overlay::AddedName {
+                            name: name.clone(),
+                            reach: dev_overlay::Reach::Public,
+                            prefix: false,
+                        })
+                        .collect();
+                    (p.clone(), names)
+                })
+                .collect();
             base.serial = state.serial;
             base.resumed_objects = state.objects.clone();
             base_inputs = Some(state.inputs.clone());
@@ -1660,6 +1675,8 @@ fn watch_loop(
             ws
         }
     };
+    // Kept across every workspace a rebuild installs (`rebuild_with_snapshot`).
+    ws.additive = opts.experimental_build;
     let record = |ws: &dev_overlay::Workspace, base: &HotPatchBase, inputs: Option<&Vec<(PathBuf, resume::FileStamp)>>| {
         if let Some((persister, environment)) = &persist {
             persister.write(resume_snapshot(ws, base, &signal, inputs, environment, &kept));
@@ -2268,7 +2285,11 @@ fn rebuild_with_snapshot<T, R>(
     let r = then(built);
     let fresh = scan.finish(reporter);
     if ok {
+        // The session's choice of tiers outlives the workspace a rebuild
+        // re-reads from `cargo metadata`.
+        let additive = ws.additive;
         *ws = fresh;
+        ws.additive = additive;
     }
     r
 }
@@ -3820,6 +3841,25 @@ mod tests {
         assert_eq!(app_before, fresh(&root));
     }
 
+    /// `--experimental-build` is the session's, not the workspace's: a
+    /// rebuild installs a workspace re-read from `cargo metadata`, and
+    /// the next save must still be decided with additive patches on (or
+    /// off) as the session started.
+    #[test]
+    fn a_rebuild_keeps_the_sessions_additive_choice() {
+        for additive in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().canonicalize().unwrap();
+            two_crate_workspace(&root);
+            let memo = Arc::new(dev_overlay::ScanMemo::default());
+            let mut ws = load_workspace(&root, &memo);
+            ws.additive = additive;
+            let scan = RebuildScan::start(&ws, &root, &memo);
+            rebuild_with_snapshot(&mut ws, scan, &dev_events::Reporter::new(), || Ok(()), |b| b).unwrap();
+            assert_eq!(ws.additive, additive);
+        }
+    }
+
     /// The memo hands back only SCANS. An overlay patch advances a
     /// workspace archive to the new sources' digests but keeps the old
     /// build's site keys; a rebuild must re-key it from a fresh scan, so
@@ -4258,6 +4298,7 @@ mod tests {
             head_script: None,
             runtime_server_url: None,
             hot_patch: false,
+            experimental_build: false,
             premint,
             premint_only: only,
             premint_report: report,
@@ -4676,14 +4717,3 @@ mod tests {
 
 }
 
-#[cfg(test)]
-mod additive_switch_tests {
-    #[test]
-    fn additive_patches_are_on_unless_switched_off() {
-        assert!(super::additive_patches_enabled(None));
-        assert!(super::additive_patches_enabled(Some("1")));
-        for off in ["0", "false", "OFF", " off "] {
-            assert!(!super::additive_patches_enabled(Some(off)), "{off:?}");
-        }
-    }
-}

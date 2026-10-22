@@ -7,7 +7,7 @@ the sorting is worth more than any of the individual mechanisms.
 | Tier | What changed | What happens | Order of magnitude |
 |---|---|---|---|
 | **Overlay patch** | Only literals inside `ui!` bodies | The running app (the sidecar, or the page in `--local`) edits its own mounted tree. No compiler at all. | ~1–10 ms |
-| **Hot patch** | Only function BODIES — or, on the web, only NEW items ([Adding items](#adding-items)) | The edited crate is re-emitted (with its dependents, for a library crate of the app's workspace), a patch (a dylib natively, a wasm side module on the web) is linked, a jump table rebinds the patched functions, and the mounted tree is re-run in place. No respawn, no reconnect, no page reload, and app state survives. | ~0.5–2 s on a small app, ~9–10 s on a large one ([measured](#what-a-save-costs-on-the-web)) |
+| **Hot patch** | Only function BODIES — or, with `--experimental-build` on the web, only NEW items ([Adding items](#adding-items)) | The edited crate is re-emitted (with its dependents, for a library crate of the app's workspace), a patch (a dylib natively, a wasm side module on the web) is linked, a jump table rebinds the patched functions, and the mounted tree is re-run in place. No respawn, no reconnect, no page reload, and app state survives. | ~0.5–2 s on a small app, ~9–10 s on a large one ([measured](#what-a-save-costs-on-the-web)) |
 | **Rebuild** | Anything else that moves a file's SHAPE | Wire mode: `cargo build` + SIGKILL + respawn; clients keep their sockets and re-snapshot. `--local`: the bundle is rebuilt and the page reloads, so page state resets. | seconds to minutes |
 
 The last boundary is a safety boundary, not a speed tier. See
@@ -268,7 +268,11 @@ The overlay tier never handles a const edit. A const's literal is not a
 
 ### Adding items
 
-On the web (`dev --web --local`), a save whose shape moved ONLY because
+EXPERIMENTAL, and off unless `idealyst dev --web --local` is started with
+`--experimental-build`. Without the flag every save below that moves a
+file's shape rebuilds.
+
+With the flag, a save whose shape moved ONLY because
 it added items is a hot patch, not a rebuild: a new helper and the edit
 that first calls it, a new `#[component]`, a new type with its impls, a
 new `stylesheet!`. Nothing outside the edited crate can name the new
@@ -347,9 +351,8 @@ stale value an unverified patch would have produced;
 `wasm_patch_additive_bench.rs` times an additive save against the
 rebuild it replaces.
 
-Wire mode does not take additive patches: its builder does not run the
-post-replay check, so a new item there still rebuilds.
-`IDEALYST_HOTPATCH_ADDITIVE=0` turns them off on the web too.
+Wire mode does not take additive patches even with the flag: its builder
+does not run the post-replay check, so a new item there still rebuilds.
 
 A decision table, by example:
 
@@ -365,7 +368,7 @@ A decision table, by example:
 | Edit a free function's body | Hot patch |
 | Add a comment or blank line outside a body | Hot patch |
 | Change a prop's type, or add a prop | Rebuild |
-| Add an item — a `fn`, a type and its impls, a `#[component]`, a `stylesheet!`, a method on an existing type — whose names no existing code mentions | Hot patch on the web (`--local`); rebuild in wire mode ([Adding items](#adding-items)) |
+| Add an item — a `fn`, a type and its impls, a `#[component]`, a `stylesheet!`, a method on an existing type — whose names no existing code mentions | Rebuild — a hot patch with `--experimental-build` on the web ([Adding items](#adding-items)) |
 | Rename or remove an item, or add one whose name existing code already mentions | Rebuild |
 | Change a `const`'s value (`const HEADLINE: &str = "…"`, an `impl`'s associated const, a trait's default), when only function bodies read it | Hot patch |
 | Change a `const`'s value when it is read at compile time: an array length, a const generic, an enum discriminant, a `static`, a `const fn`, an unknown macro, or (premint only) a `stylesheet!` | Rebuild ([Const values](#const-values)) |
@@ -383,8 +386,8 @@ A decision table, by example:
 | The body of a `#[server]` / `#[channel]` / `#[subscription]` / `#[sse]` fn, or an item under `#[cfg(feature = "server")]` (in any crate) | Nothing for the client — it compiles only the stub generated from the signature. The server's watcher rebuilds and restarts the server; the page keeps its state. The macro counts when it is written `#[server::server]` or imported from the `server` crate in that module. A signature edit still rebuilds |
 | A `const`'s value in such a library crate, read only by its own plain bodies (a `#[component]`, a plain `fn`) | Hot patch |
 | A `const`'s value in such a library crate that a dependent reads, or that a generic / `#[inline]` body of the library reads | Rebuild — the dependent copies the old value from the base build's metadata |
-| A new item in such a library crate | Hot patch on the web, as in the app crate ([Adding items](#adding-items)) |
-| A later save in ANOTHER crate that starts using that new item | Rebuild — the patch would compile that crate against the base build's metadata, which does not have the item |
+| A new item in such a library crate | Rebuild — a hot patch with `--experimental-build` on the web, as in the app crate ([Adding items](#adding-items)) |
+| With `--experimental-build`, a later save in ANOTHER crate that starts using that new item | Rebuild — the patch would compile that crate against the base build's metadata, which does not have the item |
 | Any other shape edit in such a library crate (a new prop on a shared component) | Rebuild |
 | Edit a file of a local package outside the app's workspace (a `[patch]` checkout of the framework), or a `Cargo.toml` | Rebuild |
 
@@ -1579,8 +1582,8 @@ rlib that is never re-emitted — keep the other. The symptom is memory
 corruption, not a stale render.
 
 So a hot patch is attempted ONLY on an explicit body-only decision — or,
-on the web, an explicit additive one, which adds code and changes no
-existing layout ([Adding items](#adding-items)). A missing or unreadable
+with `--experimental-build` on the web, an explicit additive one, which
+adds code and changes no existing layout ([Adding items](#adding-items)). A missing or unreadable
 descriptor set means "cannot tell", and cannot-tell respawns.
 
 The archives the decision reads always describe what is RUNNING. After a
@@ -1981,8 +1984,9 @@ terminal host's own `.idealyst/terminal.log`.
   patch bug.
 - `--split` on `dev --web --local` stands the web hot-patch tier down;
   body edits rebuild and reload.
-- `IDEALYST_HOTPATCH_ADDITIVE=0` makes a save that adds items rebuild
-  instead of hot patching ([Adding items](#adding-items)).
+- `--experimental-build` on `dev --web --local` hot patches a save that
+  only adds items instead of rebuilding ([Adding items](#adding-items)).
+  Off by default.
 - `IDEALYST_HOTPATCH_NO_SEED=1` skips the background replays that warm
   the replay cache after each base build; `IDEALYST_HOTPATCH_SEED_JOBS=<n>`
   sets how many run at once (see

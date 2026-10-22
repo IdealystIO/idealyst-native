@@ -112,6 +112,11 @@ pub(crate) struct State {
     pub archives: BTreeMap<String, Option<dev_overlay::DescriptorSet>>,
     /// Every crate a hot patch re-emitted since the base.
     pub patched: BTreeSet<String>,
+    /// The names hot patches added to each package since the base
+    /// (`dev_overlay::Workspace::added`). Defaulted: a state written
+    /// before additive patches existed added none.
+    #[serde(default)]
+    pub added: BTreeMap<String, Vec<String>>,
     /// What a page loading the base is replayed, in order.
     pub replay: Vec<Replayed>,
     /// The newest hot patch's file name under the served `pkg/hotpatch/`,
@@ -453,6 +458,7 @@ mod tests {
             inputs,
             archives: BTreeMap::new(),
             patched: BTreeSet::new(),
+            added: BTreeMap::new(),
             replay: vec![Replayed {
                 hot: true,
                 json: "{}".into(),
@@ -461,6 +467,23 @@ mod tests {
             serial: 3,
             objects: vec![("app".into(), "key".into(), vec![tmp.join("app.o")])],
         }
+    }
+
+    /// The names patches added survive a restart; a state written before
+    /// they were recorded still loads, with none.
+    #[test]
+    fn added_names_round_trip_and_default_to_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = state(tmp.path(), Vec::new());
+        s.added = BTreeMap::from([("lab-shared".to_string(), vec!["shared_extra".to_string()])]);
+        let path = tmp.path().join("hp/resume.json");
+        save(&path, &s).unwrap();
+        assert_eq!(load(&path).map(|l| l.added), Some(s.added.clone()));
+
+        let mut older = serde_json::to_value(&s).unwrap();
+        older.as_object_mut().unwrap().remove("added");
+        std::fs::write(&path, serde_json::to_vec(&older).unwrap()).unwrap();
+        assert_eq!(load(&path).map(|l| l.added), Some(BTreeMap::new()));
     }
 
     #[test]

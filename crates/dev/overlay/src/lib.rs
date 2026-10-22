@@ -31,6 +31,8 @@ pub use decide::{
     advance_archive, decide, decide_additive, load_archive, load_archive_from, wire_payload,
     ChangedFile, Decision, FileAddition, Reason, SitePatch,
 };
+/// The names an additive save adds, as [`Workspace::added`] holds them.
+pub use runtime_macros_parse::{AddedName, Reach};
 pub use workspace::{
     HotPatchPlan, Route, SavedFile, ScanMemo, Workspace, WorkspaceCrate, WorkspaceDecision,
 };
