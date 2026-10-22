@@ -800,12 +800,16 @@ of the crate's base sources (see
 function's body is digested with every relocation replaced by what it
 refers to, data by content. A seed counts as the crate's baseline only when
 the crate's sources on disk matched the base both before and after it ran.
+A crate the patch only carries whose seed never delivered a baseline (a
+save took it off the queue, or landed while it ran) gets one from the
+patch's own replay of it, when that replay compiled exactly the base's
+sources: the key the base was seeded with, which the disk still holds.
 The filter is off for a patch, which then redirects every function as
-before, when any crate in it has no baseline (its seed has not finished,
-or a save landed while it ran), when an object cannot be digested, and
-when the trimmed patch would leave a redirected function without its table
-slot or pair nothing. The `[hotpatch]` line's `diff` step is the digest
-time.
+before, when an EDITED crate in it has no baseline (it was edited before
+its seed ran — the log names it, once per base), when an object cannot be
+digested, and when the trimmed patch would leave a redirected function
+without its table slot or pair nothing. The `[hotpatch]` line's `diff`
+step is the digest time.
 
 ### The app root has to be a `#[component]`
 
@@ -1044,7 +1048,10 @@ dependents (the slowest dependent alone 32.6 s), where later patches took
 3.6 s. Right after the base is indexed, every crate of the workspace is
 replayed once in the background with no edit, while the page loads: the
 app crate first, then the crates the most edits would re-emit (those
-depending on the most workspace crates). One line says when it is done:
+depending on the most workspace crates). A rebuild pauses the running seeds before its cargo starts —
+left running, they competed with it and read rlibs it was rewriting
+(`E0463`) — and a failed rebuild resumes them. One line says when it is
+done:
 
 ```text
 [hotpatch] replay cache seeded for 31 crate(s) in 38412 ms, slowest `crewforge_screen_projects` 32610 ms
@@ -1055,8 +1062,10 @@ that only CARRIES a crate (every dependent of an edited library) reuses
 them and replays nothing but the edited crate. Seeds run a few at a time
 (a quarter of the cores, at most four; `IDEALYST_HOTPATCH_SEED_JOBS=<n>`
 overrides it) at the lowest CPU priority, and a save always comes first:
-the seeds it needs are waited for (killing one would only make the save
-replay it cold), the others are killed and seeded again after the patch.
+the seeds of crates it carries unchanged are waited for (killing one
+would only make the save replay it cold); one of a crate the save EDITED
+is killed and not queued again, since it compiled sources that are gone;
+the others are killed and seeded again after the patch.
 Two replays of one crate never run at once. Measured on CrewForge with
 the app crate seeded alone: first save 39.1 s save to screen (rustc
 34.4 s) without the seed, 18.3 s (rustc 11.7 s) with it.

@@ -1352,6 +1352,31 @@ impl HotPatchBase {
         self.builder.as_ref().map_or(self.serial, |b| b.serial().max(self.serial))
     }
 
+    /// A rebuild is starting: pause this base's background seeds
+    /// ([`build_web::hotpatch_build::WasmPatchBuilder::pause_seeds`]). An
+    /// indexing job that already finished is collected first, since its
+    /// seeds are running; one still indexing starts them only once it is
+    /// done, and is waited for in [`Self::rebuilt`].
+    fn pause_seeds(&mut self) {
+        if self.indexing.as_ref().is_some_and(|j| j.is_finished()) {
+            if let Some(Ok(Ok(builder))) = self.indexing.take().map(|j| j.join()) {
+                self.builder = Some(builder);
+                self.resumed_objects.clear();
+            }
+        }
+        if let Some(builder) = &self.builder {
+            builder.pause_seeds();
+        }
+    }
+
+    /// The rebuild failed: the page still runs this base, so its seeds go
+    /// on.
+    fn resume_seeds(&self) {
+        if let Some(builder) = &self.builder {
+            builder.resume_seeds();
+        }
+    }
+
     fn rebuilt(&mut self, artifact: build_web::BuildArtifact) {
         self.serial = self.serial();
         self.resumed_objects.clear();
@@ -1832,6 +1857,7 @@ fn watch_loop(
             }
             let build_started = std::time::SystemTime::now();
             let mut rebuilt_ok = false;
+            base.pause_seeds();
             // `None`: superseded. `Some(failed)` otherwise.
             let outcome = rebuild_with_snapshot(&mut ws, scan, &reporter, || build_wasm(&dir, &opts), |built| {
                 rebuilt_ok = built.is_ok();
@@ -1899,6 +1925,11 @@ fn watch_loop(
                     }
                 })
             });
+            // A failed rebuild left this base in place: its seeds go on.
+            // (A successful one replaced the builder, and its seeds with it.)
+            if !rebuilt_ok {
+                base.resume_seeds();
+            }
             let Some(failed) = outcome else {
                 return superseded(dev_events::SupersededWork::Rebuild);
             };

@@ -30,6 +30,10 @@
 //!   that changes nothing the program runs is a patch with an empty jump
 //!   table, not a failed pairing.
 //!
+//! The same fixture also pins one seeding regression, for body edits and
+//! additive ones alike:
+//! [`regression_a_carried_crate_whose_seed_was_overtaken_still_trims`].
+//!
 //! `#[ignore]`d like its siblings: it needs the `wasm32-unknown-unknown`
 //! target and `node` on `PATH`.
 //!
@@ -282,6 +286,63 @@ impl Drop for Base {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// A carried crate whose background seed was overtaken by a save — the
+/// sources moved while it ran, so it delivered no baseline — used to
+/// leave every patch of the base untrimmed: the plan needs a baseline for
+/// every crate it carries. The patch's own replay of that crate compiled
+/// the base's sources, so it now becomes the baseline, and the patch
+/// redirects only what changed: `__Probe_hot_impl` (calls the edited
+/// `lib_value`), not `__Other_hot_impl`.
+#[test]
+#[ignore = "compiles two crates for wasm32 and runs them in node; run with --ignored"]
+fn regression_a_carried_crate_whose_seed_was_overtaken_still_trims() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let base = Base::build("seed-overtaken");
+    let slots = build_web::hotpatch_wasm::base_slots(&std::fs::read(&base.served).unwrap()).unwrap();
+    let slot = |end: &str| *slots.iter().find(|(k, _)| k.ends_with(end)).unwrap_or_else(|| panic!("no slot {end}")).1 as u64;
+    let (probe_slot, other_slot) = (slot("5probe16___Probe_hot_impl"), slot("5probe16___Other_hot_impl"));
+
+    // While the seeds run, the app's sources read as moving.
+    let seeding = Arc::new(AtomicBool::new(true));
+    let file = base.dir.join("lib/src/lib.rs");
+    let busy = seeding.clone();
+    let probe: SourceProbe = Arc::new(move |name: &str| {
+        if name == "probe" {
+            return Some(if busy.load(Ordering::SeqCst) { "moving" } else { "base" }.to_string());
+        }
+        let pristine = std::fs::read_to_string(&file).unwrap() == LIB_RS;
+        Some(if pristine { "base" } else { "edited" }.to_string())
+    });
+    let builder = WasmPatchBuilder::new(
+        &base.served,
+        Some(&base.aliases),
+        Some(&base.data),
+        &base.captures,
+        "probe",
+        base.dir.join("patches"),
+    )
+    .unwrap()
+    .with_source_probe(probe);
+    builder.seed_all(vec![
+        PatchCrate::carried("probe_lib", Some("base".into())),
+        PatchCrate::carried("probe", Some("base".into())),
+    ]);
+    builder.wait_for_seeds();
+    seeding.store(false, Ordering::SeqCst);
+
+    let patch = base
+        .patch(&builder, &LIB_RS.replace(BODY_MARK, "    7"), false)
+        .unwrap_or_else(|e| panic!("the patch did not build:\n{e:#}"));
+    assert!(patch.jump_table.map.contains_key(&probe_slot), "{:?}", patch.jump_table.map);
+    assert!(
+        !patch.jump_table.map.contains_key(&other_slot),
+        "an unchanged function was redirected: the patch was not trimmed ({} entries)",
+        patch.jump_table.map.len()
+    );
+    let out = base.run(&patch);
+    assert!(out.contains("probe=7\n") && out.contains("other=20\n"), "{out}");
 }
 
 fn verified(patch: &BuiltPatch) -> bool {

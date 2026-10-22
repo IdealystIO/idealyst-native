@@ -214,6 +214,10 @@ struct SeedState {
     /// Every crate queued, seeded or replayed against this base: never
     /// queued again.
     known: std::collections::HashSet<String>,
+    /// Crates whose running seed a save killed because the save EDITED
+    /// them: the seed compiled sources that are gone, so it is not queued
+    /// again (it could neither be a baseline nor be reused).
+    stale: std::collections::HashSet<String>,
     paused: bool,
     stopped: bool,
     /// The current run of seeds, for the one line that reports it.
@@ -270,11 +274,23 @@ impl SeedQueue {
         let mut st = lock.lock().unwrap();
         st.paused = true;
         let needed = |name: &str| plan.iter().any(|k| k.crate_name == name);
+        // Waited for only when the save compiles the sources the seed is
+        // compiling: a crate the save carries unchanged. One the save
+        // EDITED is killed — its seed's sources are gone, so its objects
+        // could not be reused nor its digests be a baseline, and waiting
+        // for it only delayed the save (up to a whole replay of the crate).
+        let same_sources =
+            |seed: &PatchCrate| plan.iter().any(|k| k.crate_name == seed.crate_name && k.source_key == seed.source_key);
+        let mut stale = Vec::new();
         for (krate, kill) in &st.running {
-            if !needed(&krate.crate_name) {
+            if !same_sources(krate) {
                 kill.store(true, Ordering::SeqCst);
+                if needed(&krate.crate_name) {
+                    stale.push(krate.crate_name.clone());
+                }
             }
         }
+        st.stale.extend(stale);
         // The save replays these itself, which warms them.
         st.queue.retain(|k| !needed(&k.crate_name));
         for k in plan {
@@ -395,7 +411,7 @@ fn seed_worker(
             None => {}
             // Killed to make way for a save: seeded after it.
             Some(Err(e)) if e.is::<replay::Cancelled>() => {
-                if !st.stopped {
+                if !st.stopped && !st.stale.remove(&krate.crate_name) {
                     st.queue.push_front(krate);
                 }
             }
@@ -494,6 +510,14 @@ pub struct WasmPatchBuilder {
     /// asks of every function a patch defines, hundreds of thousands on
     /// CrewForge, whether the base has it.
     base_names: std::cell::OnceCell<std::collections::HashSet<String>>,
+    /// Per crate, the source key of the sources this base was built from
+    /// — what each crate was seeded with ([`Self::seed_all`]). A patch that
+    /// replays a crate still at this key compiled the base's sources, so
+    /// its digests can stand in for a baseline the seed never delivered.
+    base_keys: std::cell::RefCell<std::collections::HashMap<String, String>>,
+    /// Crates already named in a "this patch redirects every function"
+    /// line, so a session says it once per crate per base.
+    untrimmed_said: std::cell::RefCell<std::collections::HashSet<String>>,
     reporter: dev_events::Reporter,
 }
 
@@ -560,6 +584,8 @@ impl WasmPatchBuilder {
             analyzed: Default::default(),
             base_items: Default::default(),
             base_names: Default::default(),
+            base_keys: Default::default(),
+            untrimmed_said: Default::default(),
             reporter,
         })
     }
@@ -672,6 +698,13 @@ impl WasmPatchBuilder {
     /// A crate already queued, seeded or replayed against this base is not
     /// queued again.
     pub fn seed_all(&self, crates: Vec<PatchCrate>) {
+        let mut keys = self.base_keys.borrow_mut();
+        for k in &crates {
+            if let Some(key) = &k.source_key {
+                keys.entry(k.crate_name.clone()).or_insert_with(|| key.clone());
+            }
+        }
+        drop(keys);
         self.seeds.push(crates);
     }
 
@@ -687,6 +720,22 @@ impl WasmPatchBuilder {
             }
         }
         self.seeds.file_into(&self.objects, &self.baselines);
+    }
+
+    /// Stop every running seed (it goes back on the queue) and start no
+    /// more until [`Self::resume_seeds`]: a rebuild is about to rewrite
+    /// the rlibs and objects they read. Left running, a seed competes
+    /// with that rebuild's cargo for the whole build, and one reading an
+    /// rlib cargo is rewriting fails (`E0463: can't find crate`), leaving
+    /// the crate unseeded until the next base.
+    pub fn pause_seeds(&self) {
+        self.seeds.pause_for(&[]);
+    }
+
+    /// Undo [`Self::pause_seeds`]: the rebuild failed, so this base is
+    /// still the one the page runs.
+    pub fn resume_seeds(&self) {
+        self.seeds.resume();
     }
 
     /// [`Self::seed_all`] of one crate.
@@ -938,6 +987,21 @@ impl WasmPatchBuilder {
     /// (redirect everything) unless every crate has a baseline and every
     /// object could be digested.
     fn redirect_plan(&self, per_crate: &[(&PatchCrate, Vec<PathBuf>)]) -> Option<Trim> {
+        for (krate, objs) in per_crate {
+            if !self.baselines.borrow().contains_key(&krate.crate_name) && !self.heal_baseline(krate, objs) {
+                if self.untrimmed_said.borrow_mut().insert(krate.crate_name.clone()) {
+                    self.reporter.log(
+                        "hotpatch",
+                        format!(
+                            "no baseline for `{}` against this base (edited before its background seed \
+                             ran), so its patches redirect every function until the next rebuild",
+                            krate.crate_name
+                        ),
+                    );
+                }
+                return None;
+            }
+        }
         let baselines = self.baselines.borrow();
         let mut nows: Vec<Arc<CrateFns>> = Vec::with_capacity(per_crate.len());
         for (krate, objs) in per_crate {
@@ -978,6 +1042,30 @@ impl WasmPatchBuilder {
         let plan = crate::hotpatch_fndiff::plan(&pairs)?;
         drop(pairs);
         Some(Trim { plan, crates: nows })
+    }
+
+    /// Give `krate` a baseline from this patch's own replay of it, when
+    /// that replay compiled exactly the base's sources: its source key is
+    /// the one the base was seeded with, and the sources on disk still say
+    /// so (the probe the seeds check). That is what a seed would have
+    /// produced. The case it rescues: a save that needs a crate whose seed
+    /// was still queued takes the seed off the queue (`SeedQueue::pause_for`),
+    /// and a crate a patch only CARRIES — a dependent of the edited one —
+    /// would otherwise have no baseline until the next rebuild, leaving
+    /// every patch of the base untrimmed.
+    fn heal_baseline(&self, krate: &PatchCrate, objs: &[PathBuf]) -> bool {
+        let Some(key) = &krate.source_key else { return false };
+        if self.base_keys.borrow().get(&krate.crate_name) != Some(key) {
+            return false;
+        }
+        if let Some(probe) = &self.seeds.probe {
+            if probe(&krate.crate_name).as_ref() != Some(key) {
+                return false;
+            }
+        }
+        let Some(fns) = self.digest(&krate.crate_name, objs) else { return false };
+        self.baselines.borrow_mut().insert(krate.crate_name.clone(), (key.clone(), Arc::new(fns)));
+        true
     }
 
     fn digest(&self, crate_name: &str, objs: &[PathBuf]) -> Option<CrateFns> {
@@ -1722,6 +1810,62 @@ mod tests {
         sorted.sort();
         assert_eq!(sorted, vec!["end app", "end other", "start app", "start other", "start other"], "{t:?}");
         assert_eq!(&t[2..], ["end app", "start other", "end other"], "{t:?}");
+        q.stop();
+    }
+
+    /// A save that EDITED a crate whose seed is running kills that seed
+    /// rather than waiting for it: the seed compiled the sources the save
+    /// just replaced, so it could be neither a baseline nor reused. Waiting
+    /// cost CrewForge's app-kit saves up to 18 s; nor is it queued again.
+    #[test]
+    fn a_save_kills_the_running_seed_of_a_crate_it_edited() {
+        let caps = FakeCaptures::with_delay(&["app"], "2");
+        let q = queue(&caps, 1);
+        q.push(vec![PatchCrate::carried("app", Some("base".into()))]);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while trace(&caps).is_empty() {
+            assert!(Instant::now() < deadline, "the seed never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Killed, not waited for: it never reached its end. (Not timed: the
+        // stand-in rustc is a shell script whose `sleep` keeps the pipes open
+        // past the kill — see `stopping_kills_running_seeds_and_drops_the_queue`.)
+        q.pause_for(&[PatchCrate::new("app", Some("edited".into()))]);
+        assert!(caps.calls().is_empty(), "the save waited for a stale seed to finish");
+        q.resume();
+        std::thread::sleep(Duration::from_millis(300));
+        wait_idle(&q);
+        assert_eq!(trace(&caps), vec!["start app"], "the stale seed ran to its end or again");
+        q.stop();
+    }
+
+    /// A rebuild pauses every seed (`WasmPatchBuilder::pause_seeds`): the
+    /// running ones are killed and requeued, none starts while it builds,
+    /// and a failed rebuild resumes them where they were. Left running,
+    /// they competed with the rebuild's cargo and read rlibs it was
+    /// rewriting (`E0463`), costing those crates their baseline.
+    #[test]
+    fn a_rebuild_pauses_every_seed_and_a_failed_one_resumes_them() {
+        let caps = FakeCaptures::with_delay(&["a", "b", "c"], "0.6");
+        let q = queue(&caps, 2);
+        q.push(vec![PatchCrate::carried("a", None), PatchCrate::carried("b", None), PatchCrate::carried("c", None)]);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while trace(&caps).iter().filter(|l| l.starts_with("start")).count() < 2 {
+            assert!(Instant::now() < deadline, "the seeds never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        q.pause_for(&[]);
+        let paused = trace(&caps);
+        assert!(!paused.iter().any(|l| l.starts_with("end")), "a seed ran on through the rebuild: {paused:?}");
+        std::thread::sleep(Duration::from_millis(900));
+        assert_eq!(trace(&caps), paused, "a seed started while paused");
+
+        q.resume();
+        wait_idle(&q);
+        let mut ended: Vec<String> = trace(&caps).into_iter().filter(|l| l.starts_with("end")).collect();
+        ended.sort();
+        assert_eq!(ended, vec!["end a", "end b", "end c"], "every seed ran once resumed");
         q.stop();
     }
 
