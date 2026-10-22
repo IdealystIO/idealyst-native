@@ -3647,7 +3647,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "10.0.0"
+version = "11.0.0"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -6410,7 +6410,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme-editor"
-version = "9.0.0"
+version = "10.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6421,7 +6421,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "12.0.1"
+version = "13.0.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6441,7 +6441,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "11.0.1"
+version = "12.0.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6470,7 +6470,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-branded"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "idea-theme",
  "idea-ui",
@@ -6492,7 +6492,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.20"
+version = "1.5.21"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6502,7 +6502,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.19"
+version = "1.5.20"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6522,7 +6522,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-nav"
-version = "9.0.0"
+version = "10.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6549,7 +6549,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -12811,7 +12811,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "6.0.1"
+version = "7.0.0"
 dependencies = [
  "backend-ssr",
  "runtime-scene",
