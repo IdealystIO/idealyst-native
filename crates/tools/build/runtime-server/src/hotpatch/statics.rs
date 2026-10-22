@@ -126,6 +126,7 @@ impl std::error::Error for Ambiguous {}
 #[derive(Debug, Default, Clone)]
 pub struct ProgramStatics {
     groups: HashMap<String, HashSet<String>>,
+    names: HashSet<String>,
 }
 
 impl ProgramStatics {
@@ -134,7 +135,14 @@ impl ProgramStatics {
         for name in names {
             groups.entry(static_key(name)).or_default().insert(name.to_string());
         }
-        Self { groups }
+        let names = groups.values().flatten().cloned().collect();
+        Self { groups, names }
+    }
+
+    /// Whether the program has a static of exactly this name — answered
+    /// without demangling it.
+    pub fn has_name(&self, name: &str) -> bool {
+        self.names.contains(name)
     }
 
     /// Whether the program has any static under this [`static_key`].

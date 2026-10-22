@@ -114,28 +114,51 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-/// The checks of the module docs for `crate_name`, given the base's
-/// function names (its table), its alias map, and every function the
-/// patch's objects define.
-pub fn verify(
-    crate_name: &str,
-    base: impl IntoIterator<Item = impl AsRef<str>>,
-    aliases: &AliasMap,
-    patch: &HashSet<String>,
-) -> Result<(), Refusal> {
-    let mut base_groups: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for name in base {
-        let name = name.as_ref();
-        if owned_item(name, crate_name) {
-            base_groups.entry(static_key(name)).or_default().insert(name.to_string());
+/// The base's functions of one crate's items, grouped by path with the
+/// numbers erased: what [`verify`] compares a patch against. The base
+/// does not change between patches, so the dev loop builds one per crate
+/// and keeps it for the builder's life.
+#[derive(Debug, Default, Clone)]
+pub struct BaseItems {
+    groups: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl BaseItems {
+    /// `crate_name`'s items among the base's function names (its table).
+    pub fn of(crate_name: &str, base: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
+        let mut groups: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for name in base {
+            let name = name.as_ref();
+            if owned_item(name, crate_name) {
+                groups.entry(static_key(name)).or_default().insert(name.to_string());
+            }
         }
+        Self { groups }
     }
+}
+
+/// The checks of the module docs for `crate_name`: `base` its items in
+/// the base ([`BaseItems::of`]), `in_base` whether the base has a
+/// function of that name at all, `patch` every function the patch's
+/// objects define, `aliases` the base's alias map.
+///
+/// Only a name the base does NOT have can be refused, so a name it has
+/// is passed over without being demangled — nearly all of a patch's tens
+/// of thousands.
+pub fn verify<'a>(
+    crate_name: &str,
+    base: &BaseItems,
+    in_base: &dyn Fn(&str) -> bool,
+    aliases: &AliasMap,
+    patch: impl IntoIterator<Item = &'a str>,
+) -> Result<(), Refusal> {
     let mut names: Vec<&str> = patch
-        .iter()
+        .into_iter()
+        .filter(|n| !in_base(n))
         // A patch function defined under another name of the same base
         // function counts as that function.
-        .map(|n| aliases.get(n).unwrap_or(n).as_str())
-        .filter(|n| owned_item(n, crate_name))
+        .map(|n| aliases.get(n).map_or(n, String::as_str))
+        .filter(|n| !in_base(n) && owned_item(n, crate_name))
         .collect();
     names.sort_unstable();
     for name in names {
@@ -143,7 +166,7 @@ pub fn verify(
         if key.ends_with("::_::__ctor") {
             continue;
         }
-        if base_groups.get(&key).is_some_and(|group| !group.contains(name)) {
+        if base.groups.get(&key).is_some_and(|group| !group.contains(name)) {
             return Err(Refusal::Renamed { key, symbol: name.to_string() });
         }
     }
@@ -154,6 +177,14 @@ pub fn verify(
 /// in `crate_name`: its path mentions the crate, and it is not a
 /// closure, a shim or a generic instantiation.
 fn owned_item(symbol: &str, crate_name: &str) -> bool {
+    // Both manglings spell every path segment as `<len><name>`, the crate
+    // root included, so a symbol that never names the crate cannot be one
+    // of its items, and is ruled out without being demangled.
+    let mut needle = crate_name.len().to_string();
+    needle.push_str(crate_name);
+    if !symbol.contains(&needle) {
+        return false;
+    }
     let Ok(d) = rustc_demangle::try_demangle(symbol) else { return false };
     let full = format!("{d}");
     let alt = format!("{d:#}");
@@ -223,7 +254,7 @@ mod tests {
     fn an_appended_function_passes() {
         let base = [HELPER, TOTAL_IMPL0, CLOSURE];
         let patch = set(&[HELPER, TOTAL_IMPL0, OTHER]);
-        assert_eq!(verify("probe", base, &AliasMap::new(), &patch), Ok(()));
+        assert_eq!(verify("probe", &BaseItems::of("probe", base), &|n: &str| base.contains(&n), &AliasMap::new(), patch.iter().map(String::as_str)), Ok(()));
     }
 
     /// An `impl` inserted ahead of `impl Row` renumbers it: the patch
@@ -233,7 +264,7 @@ mod tests {
         let base = [HELPER, TOTAL_IMPL0];
         let patch = set(&[HELPER, TOTAL_IMPL1]);
         assert_eq!(
-            verify("probe", base, &AliasMap::new(), &patch),
+            verify("probe", &BaseItems::of("probe", base), &|n: &str| base.contains(&n), &AliasMap::new(), patch.iter().map(String::as_str)),
             Err(Refusal::Renamed { key: static_key(TOTAL_IMPL0), symbol: TOTAL_IMPL1.into() })
         );
     }
@@ -244,7 +275,7 @@ mod tests {
     fn a_grown_group_is_refused() {
         let base = [TOTAL_IMPL0];
         let patch = set(&[TOTAL_IMPL0, TOTAL_IMPL1]);
-        assert!(matches!(verify("probe", base, &AliasMap::new(), &patch), Err(Refusal::Renamed { .. })));
+        assert!(matches!(verify("probe", &BaseItems::of("probe", base), &|n: &str| base.contains(&n), &AliasMap::new(), patch.iter().map(String::as_str)), Err(Refusal::Renamed { .. })));
     }
 
     /// An edit that drops the last call to a private fn leaves rustc
@@ -252,21 +283,21 @@ mod tests {
     #[test]
     fn a_function_no_longer_compiled_is_not_a_rename() {
         let base = [HELPER, TOTAL_IMPL0];
-        assert_eq!(verify("probe", base, &AliasMap::new(), &set(&[HELPER])), Ok(()));
+        assert_eq!(verify("probe", &BaseItems::of("probe", base), &|n: &str| base.contains(&n), &AliasMap::new(), [HELPER]), Ok(()));
     }
 
     #[test]
     fn closures_and_other_crates_are_not_checked() {
         let base = [HELPER, CLOSURE, FOREIGN];
         let patch = set(&[HELPER]);
-        assert_eq!(verify("probe", base, &AliasMap::new(), &patch), Ok(()));
+        assert_eq!(verify("probe", &BaseItems::of("probe", base), &|n: &str| base.contains(&n), &AliasMap::new(), patch.iter().map(String::as_str)), Ok(()));
     }
 
     #[test]
     fn a_function_the_patch_defines_under_an_alias_is_present() {
         let alias = "_RNvCsfcO1eJHpGpx_5probe7helper2";
         let aliases = AliasMap::from([(alias.to_string(), HELPER.to_string())]);
-        assert_eq!(verify("probe", [HELPER], &aliases, &set(&[alias])), Ok(()));
+        assert_eq!(verify("probe", &BaseItems::of("probe", [HELPER]), &|n: &str| n == HELPER, &aliases, [alias]), Ok(()));
     }
 
     #[test]

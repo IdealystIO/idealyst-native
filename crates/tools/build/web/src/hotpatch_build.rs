@@ -485,6 +485,15 @@ pub struct WasmPatchBuilder {
     /// Per crate, the source key and digests of its last analyzed
     /// objects, so a crate carried unchanged is not digested again.
     analyzed: std::cell::RefCell<Baselines>,
+    /// Per crate, its items in the base, for verifying an additive patch
+    /// ([`crate::hotpatch_additive::BaseItems`]): demangling the base's
+    /// every function name is the expensive half of that check, and the
+    /// base does not change between patches.
+    base_items: std::cell::RefCell<std::collections::HashMap<String, Arc<crate::hotpatch_additive::BaseItems>>>,
+    /// The base's function names as a hash set, for the same check: it
+    /// asks of every function a patch defines, hundreds of thousands on
+    /// CrewForge, whether the base has it.
+    base_names: std::cell::OnceCell<std::collections::HashSet<String>>,
     reporter: dev_events::Reporter,
 }
 
@@ -549,6 +558,8 @@ impl WasmPatchBuilder {
             objects: Default::default(),
             baselines: Default::default(),
             analyzed: Default::default(),
+            base_items: Default::default(),
+            base_names: Default::default(),
             reporter,
         })
     }
@@ -751,21 +762,23 @@ impl WasmPatchBuilder {
         timings.push(("cargo", started.elapsed()));
         checkpoint()?;
 
-        // A crate a patch added items to must still compile its existing
-        // items to the base's symbols, and declare no new state.
-        if in_build.iter().any(|k| k.additive) {
-            let started = Instant::now();
-            self.verify_additive(&per_crate)?;
-            timings.push(("verify-additive", started.elapsed()));
-            checkpoint()?;
-        }
-
         // Which functions differ from the base, when every crate of the
         // patch has a baseline to tell (see `hotpatch_fndiff`).
         let started = Instant::now();
         let plan = self.redirect_plan(&per_crate);
         timings.push(("diff", started.elapsed()));
         checkpoint()?;
+
+        // A crate a patch added items to must still compile its existing
+        // items to the base's symbols, and declare no new state. After the
+        // plan, whose digests already list every function the patch
+        // defines.
+        if in_build.iter().any(|k| k.additive) {
+            let started = Instant::now();
+            self.verify_additive(&per_crate, plan.as_ref())?;
+            timings.push(("verify-additive", started.elapsed()));
+            checkpoint()?;
+        }
 
         let serial = self.serial.get() + 1;
         self.serial.set(serial);
@@ -863,17 +876,57 @@ impl WasmPatchBuilder {
     /// [`crate::hotpatch_additive`]'s checks over every crate of the patch
     /// a patch of this base added items to. An `Err` refuses the patch,
     /// and the dev loop rebuilds.
-    fn verify_additive(&self, per_crate: &[(&PatchCrate, Vec<PathBuf>)]) -> Result<()> {
-        let all: Vec<&PathBuf> = per_crate.iter().flat_map(|(_, objs)| objs.iter()).collect();
-        let defined = crate::hotpatch_additive::defined_functions(&all)
-            .context("reading the patch's functions to verify an additive edit")?;
-        for (krate, objs) in per_crate.iter().filter(|(k, _)| k.additive) {
+    ///
+    /// The functions the patch defines come from `plan`'s digests when
+    /// there is one (they cover every object), and from the objects'
+    /// symbol tables otherwise.
+    fn verify_additive(&self, per_crate: &[(&PatchCrate, Vec<PathBuf>)], plan: Option<&Trim>) -> Result<()> {
+        let read;
+        let defined: Vec<&str> = match plan {
+            Some(trim) => trim.crates.iter().flat_map(|c| c.fns.keys().map(String::as_str)).collect(),
+            None => {
+                let all: Vec<&PathBuf> = per_crate.iter().flat_map(|(_, objs)| objs.iter()).collect();
+                read = crate::hotpatch_additive::defined_functions(&all)
+                    .context("reading the patch's functions to verify an additive edit")?;
+                read.iter().map(String::as_str).collect()
+            }
+        };
+        for (i, (krate, objs)) in per_crate.iter().enumerate().filter(|(_, (k, _))| k.additive) {
             let refuse = |why: String| {
                 anyhow::anyhow!("the items added to `{}` cannot be patched in: {why}; rebuilding", krate.crate_name)
             };
-            crate::hotpatch_additive::verify(&krate.crate_name, self.base_slots.keys(), &self.aliases, &defined)
+            let base = self
+                .base_items
+                .borrow_mut()
+                .entry(krate.crate_name.clone())
+                .or_insert_with(|| {
+                    Arc::new(crate::hotpatch_additive::BaseItems::of(&krate.crate_name, self.base_slots.keys()))
+                })
+                .clone();
+            let names = self.base_names.get_or_init(|| self.base_slots.keys().cloned().collect());
+            let in_base = |name: &str| names.contains(name);
+            crate::hotpatch_additive::verify(&krate.crate_name, &base, &in_base, &self.aliases, defined.iter().copied())
                 .map_err(|r| refuse(r.to_string()))?;
-            let state = crate::hotpatch_statics::new_state_statics(objs, &self.base.statics)?;
+            // Only an object defining a data symbol the running program has
+            // nothing under can declare new state; the plan's digests name
+            // every object's symbols, so the rest are never parsed.
+            let suspects: Vec<PathBuf> = match plan {
+                Some(trim) => trim.crates[i]
+                    .objects
+                    .iter()
+                    .filter(|o| {
+                        o.defines.iter().any(|d| {
+                            !self.base.statics.has_name(d) && {
+                                let key = build_runtime_server::hotpatch::statics::static_key(d);
+                                key != *d && !self.base.statics.has_key(&key)
+                            }
+                        })
+                    })
+                    .map(|o| o.path.clone())
+                    .collect(),
+                None => objs.clone(),
+            };
+            let state = crate::hotpatch_statics::new_state_statics(&suspects, &self.base.statics)?;
             if !state.is_empty() {
                 return Err(refuse(crate::hotpatch_additive::Refusal::NewState { statics: state }.to_string()));
             }
