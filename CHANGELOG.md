@@ -730,7 +730,24 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
-- **`axis_values!` names app-defined axis values** (`runtime-macros`,
+- **`idealyst dev --web --local --experimental-build`: a save that only
+  ADDS items hot patches instead of rebuilding** (`idealyst-cli`,
+  `dev-reload`, `dev-overlay`, `runtime-macros-parse`, `build-web`,
+  `build-runtime-server`, `backend-web`). A new helper and the edit that
+  first calls it, a new `#[component]`, a new type with its impls, a
+  `stylesheet!`, a name added to an import list: nothing outside the
+  edited crate can name them yet, so the patch carries them like any new
+  code. Checked twice, and anything either check cannot prove rebuilds as
+  before — from source (every existing item unchanged and in order, each
+  new item of a kind that cannot change existing code, each new name
+  unused wherever it can reach; a later save using the item from another
+  crate rebuilds), and after the compile against the running module (no
+  existing function renumbered by the insertion, no new writable
+  `static`). On CrewForge: a `pub fn` added to `crewforge-core` 34 s →
+  10–13 s, to `app-kit` 16.5 s → ~2 s, to a screen crate 8.9 s → ~1.9 s.
+  Off by default; web `--local` only. See "Adding items" in
+  `docs/hot-reload.md`.
+ (`runtime-macros`,
   `runtime-core`). `axis_values! { impl ChipLook { Glow } }` (in the axis
   type's crate) or `axis_values! { pub trait AppLooks for ButtonVariant
   { Raised } }` (from any crate) adds values named like the built-ins —
@@ -2008,6 +2025,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A hot patch of a crate many others depend on no longer falls back to a
+  rebuild on macOS** (`build-web`). The patch link passed every object on
+  wasm-ld's command line; an untrimmed patch of a crate ~30 others depend
+  on is thousands of objects, past macOS's `ARG_MAX` (`Argument list too
+  long`), so every patch of such a crate rebuilt instead. The objects now
+  go in a response file.
+- **Hot patches stay trimmed when a save races the background seeds**
+  (`build-web`, `dev-reload`). A crate a patch only carries whose seed
+  never delivered a baseline now gets one from the patch's own compile, so
+  the patch redirects only what changed instead of every function
+  (35,059 on a CrewForge library patch). A save no longer waits for the
+  running seed of a crate it edited (it compiles sources that are gone;
+  the wait cost up to 18 s). A rebuild pauses the seeds rather than racing
+  them for the CPU and the rlibs it rewrites. A patch that still has to
+  redirect everything names the crate that has no baseline.
 - **New projects lock the runtime-server dev build's packages**
   (`idealyst-cli`). The `idealyst new` template's `dev-session` feature
   list named only the `--local` web features, so the default
