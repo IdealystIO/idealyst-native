@@ -1600,6 +1600,16 @@ itself runs alongside the compile), so a save made while it compiled is
 decided afterwards as the change it is; a failed rebuild leaves them
 alone, so the next save is still decided against the build on screen.
 
+A failed FIRST build does not end the session either. The web loop
+reports it (`build_finished` with the error, on the page's overlay and in
+the panel), starts watching anyway, and builds again on the next save —
+or, under `--no-watch`, the next rebuild request — until a build
+succeeds. That build is the session's first bundle (generation 1, so a
+page left waiting reloads onto it) and a full build, since the hot tiers
+need a base to patch; the loop proper starts from it. A full-stack
+server beside it keeps running meanwhile, and its own failed first build
+already waited for the next good one the same way.
+
 ## Watching a session
 
 Everything the dev loop does — the change it saw, the tier it chose, each

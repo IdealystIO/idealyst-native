@@ -2059,6 +2059,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   content centred, so one icon button of any size lines up with the
   column.
 
+- **A failed first web build no longer ends `idealyst dev`** (`dev-reload`,
+  `idealyst-cli`). `dev_reload::start_with` returned the first build's
+  error, so a session launched on an app that did not compile exited —
+  in a full-stack session stopping the server with it — and fixing the
+  code meant starting `idealyst dev` again. The failure is now reported
+  and the watcher starts anyway: the next save (under `--no-watch`, the
+  next rebuild request) builds again until one succeeds, and that build
+  becomes the session's first bundle. Under `--premint` the stylesheet
+  link is served even when the failed build left no CSS yet.
 - **The panel shows a `--no-watch` session's saves as queued, not as
   deciding** (`dev-tui` — `RunOptions::no_watch`, `State::Held` and
   `Model::no_watch` are new, a major for `dev-tui`, whose only consumer is

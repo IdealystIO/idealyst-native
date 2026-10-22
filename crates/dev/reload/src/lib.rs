@@ -809,9 +809,11 @@ pub fn build_once(dir: &Path, opts: &BuildOptions) -> Result<()> {
 ///
 /// The returned `JoinHandle` owns the watch thread. Callers usually
 /// hold it for the lifetime of the dev server; dropping it before
-/// then ends watching. Build/watch errors are logged to stderr but
-/// never propagate — a failing build shouldn't tear the dev server
-/// down; the user fixes the code and the next change re-triggers.
+/// then ends watching. Build errors are reported, never returned — a
+/// failing build doesn't tear the dev server down, the first build's
+/// included: the watcher starts anyway, and the next save (or rebuild
+/// request) builds again, until one succeeds (see
+/// [`recover_first_build`]).
 pub fn start(
     dir: &Path,
     signal: Arc<ReloadSignal>,
@@ -870,33 +872,28 @@ pub fn start_with(
     };
     // The initial build's result is irrelevant: gen 1 is the browsers'
     // first bundle whether the passes ran or were skipped.
-    let (initial, start) = match resumed {
-        Some((artifact, state)) => (artifact, Start::Resumed(Box::new(state))),
+    let first = match resumed {
+        Some((artifact, state)) => Some((artifact, Start::Resumed(Box::new(state)))),
         None => {
             // About to be replaced: a session killed mid-build must not
             // leave a state describing the base this build overwrites.
             resume::clear(&state_path);
             match build_wasm(dir, &opts) {
-                Ok(a) => (a, Start::Built(build_started)),
+                Ok(a) => Some((a, Start::Built(build_started))),
                 Err(e) => {
-                    // Said as an event too, so a status view shows the
-                    // failure before the error ends the session.
                     reporter.emit(dev_events::DevEvent::BuildFinished {
                         target: TARGET.into(),
                         outcome: dev_events::BuildOutcome::Failed { error: format!("{e:#}") },
                         ms: started.elapsed().as_millis() as u64,
                     });
-                    return Err(e).context("initial web build failed");
+                    None
                 }
             }
         }
     };
-    signal.set(1);
-    reporter.emit(dev_events::DevEvent::BuildFinished {
-        target: TARGET.into(),
-        outcome: dev_events::BuildOutcome::Ready { gen: 1 },
-        ms: started.elapsed().as_millis() as u64,
-    });
+    if first.is_some() {
+        first_bundle_ready(&signal, &reporter, started);
+    }
     // Registered before the thread starts, so a rebuild requested the
     // moment this returns is not lost.
     let (tx, rx) = mpsc::channel();
@@ -905,8 +902,131 @@ pub fn start_with(
     let dir_owned = dir.to_path_buf();
     thread::Builder::new()
         .name("idealyst-watch".into())
-        .spawn(move || watch_loop(dir_owned, signal, opts, initial, start, tx, rx))
+        .spawn(move || {
+            let first = match first {
+                Some(first) => first,
+                None => match recover_first_build(&dir_owned, &signal, &opts, &tx, &rx) {
+                    Some(first) => first,
+                    None => return,
+                },
+            };
+            watch_loop(dir_owned, signal, opts, first.0, first.1, tx, rx)
+        })
         .context("spawn watch thread")
+}
+
+/// The first bundle is built: browsers waiting at generation 0 load it.
+fn first_bundle_ready(signal: &ReloadSignal, reporter: &dev_events::Reporter, started: std::time::Instant) {
+    signal.set(1);
+    reporter.emit(dev_events::DevEvent::BuildFinished {
+        target: TARGET.into(),
+        outcome: dev_events::BuildOutcome::Ready { gen: 1 },
+        ms: started.elapsed().as_millis() as u64,
+    });
+}
+
+/// After a failed first build: watch the same roots [`watch_loop`]
+/// would, and build again on each save (under `--no-watch`, on each
+/// rebuild request) until a build succeeds. Its bundle is then the
+/// session's first, and the loop proper starts from it — a full build,
+/// since the hot tiers need a base to patch. `None` when the inbox
+/// closed first (the session is ending).
+///
+/// Without this the session ended on a first-build error, and with it
+/// the full-stack server it was serving beside: a typo in the app at
+/// launch meant fixing it and restarting `idealyst dev`, where any later
+/// build error only waits for the next save.
+fn recover_first_build(
+    dir: &Path,
+    signal: &ReloadSignal,
+    opts: &BuildOptions,
+    tx: &mpsc::Sender<WatchMsg>,
+    rx: &mpsc::Receiver<WatchMsg>,
+) -> Option<(build_web::BuildArtifact, Start)> {
+    let reporter = opts.reporter.clone();
+    reporter.log(
+        "dev-reload",
+        "the first build failed; still watching — the next save builds again",
+    );
+    let queued: Option<Queued> = opts.no_watch.then(Queued::default);
+    let holds = queued.clone();
+    let hold_reporter = reporter.clone();
+    let tx = tx.clone();
+    let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), move |r| match &holds {
+        Some(q) => {
+            q.hold(event_paths(&r), r.is_ok(), TARGET, &hold_reporter);
+        }
+        None => {
+            let _ = tx.send(WatchMsg::Fs(r));
+        }
+    }) {
+        Ok(d) => d,
+        Err(e) => {
+            reporter.error("dev-reload", format!("could not start file watcher: {e}"));
+            return None;
+        }
+    };
+    let watch_paths = watch_roots(&dir.join("Cargo.toml"));
+    for path in &watch_paths {
+        if let Err(e) = debouncer.watcher().watch(path, RecursiveMode::Recursive) {
+            reporter.warn("dev-reload", format!("cannot watch {}: {e}", path.display()));
+        }
+    }
+    reporter.emit(dev_events::DevEvent::Watching {
+        target: TARGET.into(),
+        roots: display_all(&watch_paths),
+        rewatch: false,
+    });
+
+    retry_first_build(rx, queued.as_ref(), || {
+        reporter.emit(dev_events::DevEvent::BuildStarted {
+            target: TARGET.into(),
+            cause: dev_events::BuildCause::Initial,
+        });
+        let started = std::time::Instant::now();
+        let build_started = std::time::SystemTime::now();
+        match build_wasm(dir, opts) {
+            Ok(artifact) => {
+                first_bundle_ready(signal, &reporter, started);
+                Some((artifact, Start::Built(build_started)))
+            }
+            Err(e) => {
+                reporter.emit(dev_events::DevEvent::BuildFinished {
+                    target: TARGET.into(),
+                    outcome: dev_events::BuildOutcome::Failed { error: format!("{e:#}") },
+                    ms: started.elapsed().as_millis() as u64,
+                });
+                None
+            }
+        }
+    })
+}
+
+/// [`recover_first_build`]'s loop: `build` on every message that names
+/// work — a save, or a rebuild request (which, under `--no-watch`,
+/// releases the queued saves) — until it returns a result. A save that
+/// arrives as several batches builds once: whatever else is already in
+/// the inbox is folded into the attempt.
+fn retry_first_build<A>(
+    rx: &mpsc::Receiver<WatchMsg>,
+    queued: Option<&Queued>,
+    mut build: impl FnMut() -> Option<A>,
+) -> Option<A> {
+    while let Ok(msg) = rx.recv() {
+        let work = match release(msg, queued) {
+            WatchMsg::Rebuild => true,
+            WatchMsg::Fs(r) => names_work(&event_paths(&r), r.is_ok()),
+            WatchMsg::Paths(paths) => !paths.is_empty(),
+        };
+        if !work {
+            continue;
+        }
+        while rx.try_recv().is_ok() {}
+        if let Some(built) = build() {
+            return Some(built);
+        }
+    }
+    None
 }
 
 /// How the session's first base came to be.
@@ -3433,6 +3553,65 @@ mod tests {
         })
     }
 
+    fn save_of(path: &str) -> WatchMsg {
+        WatchMsg::Fs(Ok(vec![notify_debouncer_mini::DebouncedEvent {
+            path: PathBuf::from(path),
+            kind: notify_debouncer_mini::DebouncedEventKind::Any,
+        }]))
+    }
+
+    /// Regression: a session whose FIRST web build failed ended (taking a
+    /// full-stack server down with it) instead of waiting for the fix, as
+    /// a later failed build does. The retry loop builds again on the next
+    /// save — not on an editor's scratch file — until a build succeeds.
+    #[test]
+    fn regression_a_failed_first_build_waits_for_the_next_save() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(save_of("/w/src/.app.rs.swp")).unwrap();
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = attempts.clone();
+        let worker = std::thread::spawn(move || {
+            retry_first_build(&rx, None, || {
+                // The first retry still fails; the second is fixed.
+                match count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => None,
+                    n => Some(n),
+                }
+            })
+        });
+        let tries = || attempts.load(std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(tries(), 0, "a scratch file is not a save");
+        tx.send(save_of("/w/src/app.rs")).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(tries(), 1, "the save built again");
+        tx.send(save_of("/w/src/app.rs")).unwrap();
+        let built = worker.join().unwrap();
+        assert_eq!(built, Some(1), "the fixed build is the session's first");
+    }
+
+    /// Under `--no-watch` saves are held, so only a rebuild request builds
+    /// again; and with the inbox closed (the session ending) the loop
+    /// gives up rather than wait forever.
+    #[test]
+    fn a_failed_first_build_under_no_watch_waits_for_a_rebuild_request() {
+        let (tx, rx) = mpsc::channel();
+        let queued = Queued::default();
+        let (reporter, _q) = capture();
+        assert!(queued.hold(vec![PathBuf::from("/w/src/app.rs")], true, TARGET, &reporter));
+        tx.send(WatchMsg::Rebuild).unwrap();
+        let mut attempts = 0;
+        let built = retry_first_build(&rx, Some(&queued), || {
+            attempts += 1;
+            Some(attempts)
+        });
+        assert_eq!(built, Some(1));
+        assert!(queued.take().is_empty(), "the request released the queued save");
+
+        drop(tx);
+        assert_eq!(retry_first_build(&rx, Some(&queued), || Some(())), None);
+    }
+
     /// A reporter whose events a test can read back.
     fn capture() -> (dev_events::Reporter, dev_events::Queue) {
         let r = dev_events::Reporter::new();
@@ -4557,6 +4736,51 @@ mod tests {
             dev_opt: build_web::DevOpt::default(),
             reporter: dev_events::Reporter::new(),
         }
+    }
+
+    /// Regression: `start_with` returned the first build's error, so a
+    /// session that launched on a broken app ended (and a full-stack
+    /// session stopped its server) instead of waiting for the fix. A
+    /// project whose build fails at once — its manifest does not parse —
+    /// now leaves a watcher running that builds again on request, and the
+    /// generation stays 0 until a build succeeds.
+    #[test]
+    fn regression_a_failed_first_build_leaves_the_watcher_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package\nnot a manifest").unwrap();
+        let (reporter, q) = capture();
+        let signal = ReloadSignal::new();
+        let handle = start_with(tmp.path(), signal.clone(), BuildOptions { reporter, ..opts(false, false, false) })
+            .expect("a failed first build still starts the watcher");
+
+        let mut seen = Vec::new();
+        let failures = |seen: &[dev_events::DevEvent]| {
+            seen.iter()
+                .filter(|e| matches!(e, dev_events::DevEvent::BuildFinished { outcome: dev_events::BuildOutcome::Failed { .. }, .. }))
+                .count()
+        };
+        let wait_for = |seen: &mut Vec<dev_events::DevEvent>, done: &dyn Fn(&[dev_events::DevEvent]) -> bool| {
+            for _ in 0..600 {
+                seen.extend(events(&q));
+                if done(seen) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            panic!("timed out; events: {seen:?}");
+        };
+        wait_for(&mut seen, &|s| s.iter().any(|e| matches!(e, dev_events::DevEvent::Watching { .. })));
+        assert_eq!(failures(&seen), 1, "{seen:?}");
+        assert!(!handle.is_finished(), "the watcher is running");
+
+        assert!(signal.request_rebuild(), "a rebuild can be requested");
+        wait_for(&mut seen, &|s| failures(s) == 2);
+        assert!(
+            seen.iter().filter(|e| matches!(e, dev_events::DevEvent::BuildStarted { .. })).count() >= 2,
+            "{seen:?}"
+        );
+        assert_eq!(signal.current(), 0, "no bundle yet");
+        assert!(!handle.is_finished(), "still waiting for a build that succeeds");
     }
 
     /// The dev loop passes the split choice straight through — a

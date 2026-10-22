@@ -1985,8 +1985,9 @@ fn launch_web(
             //
             // `dev_reload::start_with` does the first build
             // synchronously and then keeps a watcher thread alive in
-            // the returned handle. Forget the handle: it lives as
-            // long as the HTTP serve loop below.
+            // the returned handle — after a failed first build too: it
+            // is reported, and the next save builds again. Forget the
+            // handle: it lives as long as the HTTP serve loop below.
             //
             // `runtime-core/dev` is what activates the Robot
             // bridge auto-start + the MCP catalog inventory. It's
@@ -2046,7 +2047,17 @@ fn launch_web(
         //    server restarts — not worth per-reload HTML rewriting.)
         if args.premint || args.premint_only || args.premint_report {
             let css_path = dir.join("pkg").join(build_web::PREMINT_CSS_NAME);
-            match std::fs::read_to_string(&css_path) {
+            // A first build that failed wrote no CSS yet; the build that
+            // recovers it will, under the same name, so the link goes in
+            // anyway — only the font-family dedup attribute is lost.
+            let css = std::fs::read_to_string(&css_path).or_else(|e| {
+                if args.no_build {
+                    Err(e)
+                } else {
+                    Ok(String::new())
+                }
+            });
+            match css {
                 Ok(css) => {
                     let tag = build_web::premint_css_link_tag(
                         build_web::PREMINT_CSS_NAME,
@@ -2866,7 +2877,7 @@ fn launch_web_with_backend(
                     // dropping its handle detaches it.
                     dev_reload::start_with(&dir, signal, opts)
                         .map(drop)
-                        .context("web bundle initial build + watcher start failed")
+                        .context("web bundle watcher failed to start")
                 }
             })
             .expect("spawn the web build thread")
