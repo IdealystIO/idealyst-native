@@ -2039,6 +2039,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A save by rename no longer rebuilds the runtime-server sidecar**
+  (`dev-server`). `sed -i` and editors' atomic writes put the new contents
+  in a temp file and rename it over the original; the temp file's events
+  can arrive as a batch of their own. The change loop showed that batch as
+  an empty `changed:` and still handed it to the host, which rebuilt, and
+  the real save then waited behind the rebuild. Scratch files are now
+  dropped as each batch arrives, so the save is decided like any other —
+  usually a hot patch — and `--no-watch` no longer queues them.
 - **Wire-mode hot patches of a crate with a `#[component]` in it apply
   instead of respawning** (`build-runtime-server`). Every component's
   catalog entry declares an `inventory` constructor that reads its node

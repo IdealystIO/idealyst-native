@@ -156,8 +156,17 @@ pub fn spawn_change_loop_with(
             let reporter = dev_events::global();
             match msg {
                 Msg::Fs(Ok(ref ev)) if !ev.is_empty() => {
+                    // An editor's scratch file is never the save. A save by
+                    // rename (`sed -i`, an editor's atomic write) can arrive
+                    // as a batch of only its temp file, with the file itself
+                    // in the next; acted on, the temp batch rebuilt, and the
+                    // real save then waited behind that rebuild.
+                    let paths: Vec<PathBuf> =
+                        ev.iter().map(|e| e.path.clone()).filter(|p| !is_scratch(p)).collect();
+                    if paths.is_empty() {
+                        continue;
+                    }
                     reporter.log("dev-server", format!("change detected ({} event(s))", ev.len()));
-                    let paths: Vec<PathBuf> = ev.iter().map(|e| e.path.clone()).collect();
                     if no_watch {
                         for p in paths {
                             if !queued.contains(&p) {
@@ -165,9 +174,6 @@ pub fn spawn_change_loop_with(
                             }
                         }
                         let saved = saved_paths(&queued);
-                        if saved.is_empty() {
-                            continue;
-                        }
                         reporter.log(
                             "dev-server",
                             format!(
@@ -211,18 +217,14 @@ pub fn spawn_change_loop_with(
     })
 }
 
-/// The paths a status view shows for a save: each once, without an
-/// editor's scratch files.
+/// Whether a changed path is an editor's scratch file.
+fn is_scratch(path: &std::path::Path) -> bool {
+    path.file_name().and_then(|n| n.to_str()).map_or(true, dev_events::is_scratch_file)
+}
+
+/// The paths a status view shows for a save: each once.
 fn saved_paths(paths: &[PathBuf]) -> Vec<String> {
-    let mut saved: Vec<String> = paths
-        .iter()
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| !dev_events::is_scratch_file(n))
-        })
-        .map(|p| p.display().to_string())
-        .collect();
+    let mut saved: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
     saved.dedup();
     saved
 }

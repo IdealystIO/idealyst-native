@@ -84,3 +84,33 @@ fn without_no_watch_saves_apply_and_a_request_rebuilds() {
     let forced = calls.recv_timeout(PATIENT).expect("the request reached the host");
     assert!(forced.is_empty(), "{forced:?}");
 }
+
+#[test]
+fn regression_a_batch_of_only_scratch_files_is_not_a_save() {
+    // `sed -i` on macOS writes `.!<pid>!<name>` and renames it over the
+    // file; the temp file's events can arrive as a batch of their own.
+    // That batch reached the host, which rebuilt, and the real save
+    // waited behind the rebuild.
+    let (_dir, src) = tree();
+    let (_trigger, triggers) = mpsc::channel();
+    let (calls_tx, calls) = mpsc::channel::<Vec<PathBuf>>();
+    let _loop = spawn_change_loop_with(
+        vec![src.clone()],
+        Duration::from_millis(100),
+        false,
+        triggers,
+        Box::new(move |paths| {
+            let _ = calls_tx.send(paths.to_vec());
+        }),
+    );
+    std::thread::sleep(Duration::from_millis(500));
+
+    std::fs::write(src.join(".!4242!app.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(src.join("sedAb12Cd"), "fn a() {}\n").unwrap();
+    std::fs::write(src.join("app.rs~"), "fn a() {}\n").unwrap();
+    assert!(calls.recv_timeout(QUIET).is_err(), "a scratch-only batch reached the host");
+
+    std::fs::rename(src.join(".!4242!app.rs"), src.join("app.rs")).unwrap();
+    let saved = calls.recv_timeout(PATIENT).expect("the renamed-in save reached the host");
+    assert_eq!(names(&saved), vec!["app.rs"], "only the file itself, never its scratch: {saved:?}");
+}
