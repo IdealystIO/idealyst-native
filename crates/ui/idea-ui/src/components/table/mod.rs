@@ -1327,6 +1327,27 @@ pub fn Table(props: TableProps) -> Element {
     // SDK's `table()` returns a `Bound<TableHandle>`; chain
     // `.with_style(...)` to land the themed style on its surface view,
     // then convert to Element.
+    // The corner above a classic vertical scrollbar, beside the split
+    // head's strip: the head cells' band and divider (a plain table's
+    // opaque surface), no padding, growing into whatever the strip leaves
+    // — so the header runs across the scrollbar instead of stopping short.
+    let head_corner = props.scroll_y.then(|| {
+        let app = TableStyles::head_cell()
+            .overridden(props.styles.head_cell.as_ref())
+            .into_style_application()
+            .with("sticky_header", "on");
+        let app = if plain { app.with("variant", "plain") } else { app };
+        let zero = || Some(Tokenized::Literal(Length::Px(0.0)));
+        let app = app.with_inline_merged(StyleRules {
+            flex_grow: Some(Tokenized::Literal(1.0)),
+            flex_basis: zero(),
+            min_width: zero(),
+            padding_left: zero(),
+            padding_right: zero(),
+            ..Default::default()
+        });
+        StyleProp::Sheet(Box::new(app))
+    });
     let table = sdk_table(SdkTableProps {
         children,
         scroll_x: props.scroll_x,
@@ -1334,6 +1355,7 @@ pub fn Table(props: TableProps) -> Element {
         header_slot,
         footer_slot,
         columns: sdk_columns,
+        head_corner,
     })
     .with_style(style);
     match edges {

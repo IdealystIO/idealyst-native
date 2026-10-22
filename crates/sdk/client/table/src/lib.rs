@@ -287,6 +287,15 @@ pub struct TableProps {
     /// …)`) sets this so one spec drives the header and every body cell
     /// of a column, whatever the cells say.
     pub columns: Vec<Option<ColumnSpec>>,
+    /// Web, [`scroll_y`](Self::scroll_y) with a [`table_head`]: the style
+    /// of the HEAD CORNER — the box beside the head strip, above the rows'
+    /// vertical scrollbar. The strip ends where the body's visible columns
+    /// end, so a classic scrollbar leaves that corner outside every head
+    /// cell; give it the head cells' band and divider (no padding) and it
+    /// carries the header across. The corner GROWS into the row's
+    /// remainder — the style needs no width — and is zero wide with an
+    /// overlay scrollbar. `None` draws no corner. Native ignores it.
+    pub head_corner: Option<StyleProp>,
 }
 
 /// Props for a footer section (`<tfoot>` on web). Holds one or more
@@ -725,6 +734,7 @@ pub struct TableBound {
     footer_slot: Option<Element>,
     columns: Vec<Option<ColumnSpec>>,
     on_edges: Option<Rc<dyn Fn(ScrollEdges)>>,
+    head_corner: Option<StyleProp>,
 }
 table_wrapper_common!(TableBound);
 
@@ -753,6 +763,7 @@ impl IntoElement for TableBound {
             footer_slot: self.footer_slot,
             columns: self.columns,
             on_edges: self.on_edges,
+            head_corner: self.head_corner,
         })
     }
 }
@@ -803,6 +814,7 @@ pub fn table(mut props: TableProps) -> TableBound {
         footer_slot: props.footer_slot.take(),
         columns: std::mem::take(&mut props.columns),
         on_edges: None,
+        head_corner: props.head_corner.take(),
     }
 }
 
@@ -953,6 +965,7 @@ struct TableParts {
     footer_slot: Option<Element>,
     columns: Vec<Option<ColumnSpec>>,
     on_edges: Option<Rc<dyn Fn(ScrollEdges)>>,
+    head_corner: Option<StyleProp>,
 }
 
 impl TableParts {
@@ -1553,6 +1566,7 @@ pub mod item_lowering {
             footer_slot,
             columns: Vec::new(),
             on_edges: None,
+            head_corner: None,
         })
     }
 
@@ -1573,6 +1587,7 @@ pub mod item_lowering {
             footer_slot: None,
             columns: Vec::new(),
             on_edges: None,
+            head_corner: None,
         })
     }
 
@@ -1583,7 +1598,7 @@ pub mod item_lowering {
         let specs = column_specs(&parts.rows, columns, &parts.columns);
         let grid = needs_grid(&specs);
         let wrapped = parts.wrapped();
-        let TableParts { mut rows, style, scroll_x, scroll_y, header_slot, footer_slot, on_edges, .. } =
+        let TableParts { mut rows, style, scroll_x, scroll_y, header_slot, footer_slot, on_edges, head_corner, .. } =
             parts;
         apply_row_collapse(&mut rows, !grid);
         let watch = on_edges.filter(|_| scroll_x).map(EdgeWatch::new);
@@ -1598,6 +1613,7 @@ pub mod item_lowering {
                 header_slot,
                 footer_slot,
                 watch,
+                head_corner,
             );
         }
         // The `<table>` is the scrolled content, so its width is the
@@ -1747,7 +1763,7 @@ fn build_cell(
 #[cfg(not(target_arch = "wasm32"))]
 fn build_table(parts: TableParts) -> Element {
     let wrapped = parts.wrapped();
-    let TableParts { mut rows, style, scroll_x, scroll_y, header_slot, footer_slot, columns, on_edges } =
+    let TableParts { mut rows, style, scroll_x, scroll_y, header_slot, footer_slot, columns, on_edges, .. } =
         parts;
     let watch = on_edges.filter(|_| scroll_x).map(EdgeWatch::new);
     apply_row_collapse(&mut rows, false);

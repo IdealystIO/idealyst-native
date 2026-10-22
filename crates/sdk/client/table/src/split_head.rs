@@ -7,9 +7,12 @@
 //! surface (author style)
 //! ├─ header slot
 //! ├─ frame (role="table" on web)
-//! │  ├─ head strip — horizontal scroll_view, no scrollbar, as wide as the
-//! │  │  │            body's viewport
-//! │  │  └─ head content (as wide as the body's grid) > head grid
+//! │  ├─ head row
+//! │  │  ├─ head strip — horizontal scroll_view, no scrollbar, as wide as
+//! │  │  │  │            the body's viewport
+//! │  │  │  └─ head content (as wide as the body's grid) > head grid
+//! │  │  └─ head corner (web, when the theme gives one) — the rest of the
+//! │  │                 row: the width of a classic scrollbar, or nothing
 //! │  └─ body scroller (vertical, or both axes with scroll_x)
 //! │     ├─ probe (absolute, zero height: the viewport's width)
 //! │     └─ body grid
@@ -27,19 +30,18 @@
 //!   become the body's measured widths, exactly. From then on the head
 //!   follows every change of the body (a resize, a fill column, a
 //!   resize drag); the floors are the head's widths as first laid out.
-//! - **Width.** On web a classic vertical scrollbar takes width from the
-//!   body's viewport (the probe), so the head would end short of the
-//!   frame and leave the corner above the scrollbar unpainted — the
-//!   header's band and divider cut off. The head runs the frame's FULL
-//!   width instead (the outer probe, a zero-height view in the frame),
-//!   and the scrollbar's width — the GUTTER, frame minus viewport — goes
-//!   to the head's LAST column: its track, and the head content, are
-//!   that much wider than the body's. Every other column keeps the
-//!   body's x, and so does a column frozen to the right: it pins to the
-//!   strip's edge, a gutter further right, and is a gutter wider. With
-//!   overlay scrollbars (and on native) the gutter is zero. The cost: a
-//!   right-aligned label in the last column sits a gutter right of its
-//!   column's body cells while the scrollbar shows.
+//! - **Width.** The head content is as wide as the body grid, and the head
+//!   strip as wide as the body scroller's VIEWPORT (the probe) — on web a
+//!   classic vertical scrollbar takes width from the viewport, and the
+//!   head must end where the body's visible columns end, or a column
+//!   frozen to the right would pin at a different x in the head. That
+//!   leaves the strip short of the frame by the scrollbar's width, so the
+//!   corner above the scrollbar would show no header band or divider: the
+//!   theme hands the table a [`TableProps::head_corner`](super::TableProps)
+//!   style (the head cells' band and divider, no padding, growing), and
+//!   the corner takes whatever the row has left beside the strip — a
+//!   classic scrollbar's width, zero with an overlay one. Nothing is
+//!   measured for it, and no column moves.
 //! - **Horizontal scroll.** The strip is a scroller too, kept at the
 //!   body's horizontal offset (and the body at the strip's, when the
 //!   strip is scrolled — a trackpad over the header). Frozen columns pin
@@ -73,10 +75,8 @@ pub(super) struct HeadSync {
     forced: glue::Signal<Option<Vec<f32>>>,
     /// The body grid's width — the head content's.
     body_width: glue::Signal<Option<f32>>,
-    /// The body scroller's viewport width.
+    /// The body scroller's viewport width — the head strip's.
     viewport: glue::Signal<Option<f32>>,
-    /// The frame's full width (web; the outer probe) — the head strip's.
-    outer: glue::Signal<Option<f32>>,
     head_ref: Ref<ScrollViewHandle>,
     body_ref: Ref<ScrollViewHandle>,
     body_x: Cell<f32>,
@@ -89,16 +89,6 @@ pub(super) struct HeadSync {
     forced_on: Cell<bool>,
     armed: Cell<bool>,
     subs: RefCell<Vec<LayoutSubscription>>,
-}
-
-/// The vertical scrollbar's width: the frame's width past the body's
-/// viewport. Zero until both are measured, with an overlay scrollbar, and
-/// under a pixel (sub-pixel rounding between the two measurements).
-fn gutter(outer: Option<f32>, viewport: Option<f32>) -> f32 {
-    match (outer, viewport) {
-        (Some(o), Some(v)) if o - v >= 1.0 => o - v,
-        _ => 0.0,
-    }
 }
 
 /// Slack under which two horizontal offsets are the same — a programmatic
@@ -114,7 +104,6 @@ impl HeadSync {
             forced: glue::signal(None),
             body_width: glue::signal(None),
             viewport: glue::signal(None),
-            outer: glue::signal(None),
             head_ref: Ref::new(),
             body_ref: Ref::new(),
             body_x: Cell::new(0.0),
@@ -196,12 +185,6 @@ impl HeadSync {
         Box::new(move |h| sync.watch(h, Rc::new(|s, w| s.viewport.set(Some(w)))))
     }
 
-    /// A binder that watches the frame's full width (the outer probe).
-    pub(super) fn outer_probe(self: &Rc<Self>) -> Box<dyn FnOnce(ViewHandle)> {
-        let sync = self.clone();
-        Box::new(move |h| sync.watch(h, Rc::new(|s, w| s.outer.set(Some(w)))))
-    }
-
     /// Take the next step once a side is fully measured: floor the body at
     /// the head's natural widths, then force the head to the body's.
     fn settle(&self) {
@@ -223,20 +206,14 @@ impl HeadSync {
 
     /// The head grid's column specs: column `i`'s own spec until the body
     /// is measured, then exactly the body's width.
-    /// The LAST column also takes the gutter (see the module docs).
     pub(super) fn head_specs(self: &Rc<Self>, specs: &[Option<ColumnSpec>]) -> Vec<Option<ColumnSpec>> {
-        let last = specs.len().saturating_sub(1);
         specs
             .iter()
             .enumerate()
             .map(|(i, spec)| {
                 let (forced, spec) = (self.forced, spec.clone());
-                let (outer, viewport) = (self.outer, self.viewport);
                 Some(ColumnSpec::live(move || match forced.with(|f| f.as_ref().and_then(|f| f.get(i).copied())) {
-                    Some(w) => {
-                        let extra = if i == last { gutter(outer.get(), viewport.get()) } else { 0.0 };
-                        ColumnTrack { width: Some(w + extra), ..Default::default() }
-                    }
+                    Some(w) => ColumnTrack { width: Some(w), ..Default::default() },
                     None => spec.as_ref().map(ColumnSpec::get).unwrap_or_default(),
                 }))
             })
@@ -256,30 +233,25 @@ impl HeadSync {
         }))
     }
 
-    /// The head strip's style: as wide as the body's viewport and the
-    /// gutter beside it — the frame's width.
+    /// The head strip's style: as wide as the body's viewport.
     pub(super) fn strip_style(self: &Rc<Self>) -> StyleProp {
-        let (viewport, outer) = (self.viewport, self.outer);
+        let viewport = self.viewport;
         StyleProp::SheetDynamic(Box::new(move || {
             let app = StyleApplication::new(strip_sheet());
-            let (o, v) = (outer.get(), viewport.get());
-            match v {
-                Some(w) => app.with_inline(StyleRules { width: Some(px(w + gutter(o, v))), ..Default::default() }),
+            match viewport.get() {
+                Some(w) => app.with_inline(StyleRules { width: Some(px(w)), ..Default::default() }),
                 None => app,
             }
         }))
     }
 
-    /// The head content's style: as wide as the body grid, and the gutter.
+    /// The head content's style: as wide as the body grid.
     pub(super) fn content_style(self: &Rc<Self>) -> StyleProp {
-        let (width, viewport, outer) = (self.body_width, self.viewport, self.outer);
+        let width = self.body_width;
         StyleProp::SheetDynamic(Box::new(move || {
             let app = StyleApplication::new(head_content_sheet());
             match width.get() {
-                Some(w) => app.with_inline(StyleRules {
-                    width: Some(px(w + gutter(outer.get(), viewport.get()))),
-                    ..Default::default()
-                }),
+                Some(w) => app.with_inline(StyleRules { width: Some(px(w)), ..Default::default() }),
                 None => app,
             }
         }))
@@ -423,27 +395,31 @@ pub(super) fn take_head(rows: Vec<Element>) -> (Vec<Element>, Vec<Element>) {
     rows.into_iter().partition(is_head)
 }
 
-/// The frame's outer probe: in flow, zero height, stretched across the
-/// frame — so its width is the frame's, scrollbar included.
-fn outer_probe_sheet() -> Rc<runtime_shared::StyleSheet> {
+/// The head row: the strip, then the corner beside it.
+fn head_row_sheet() -> Rc<runtime_shared::StyleSheet> {
     static KEY: u8 = 0;
     runtime_shared::cached_stylesheet(&KEY as *const u8 as usize, || {
         runtime_shared::StyleSheet::r#static(StyleRules {
-            height: Some(px(0.0)),
+            flex_direction: Some(glue::FlexDirection::Row),
+            align_items: Some(glue::AlignItems::Stretch),
             flex_shrink: Some(glue::Tokenized::Literal(0.0)),
             ..Default::default()
         })
-        .premint_as("table.v1.outer_probe")
+        .premint_as("table.v1.head_row")
     })
 }
 
-/// The outer probe view (web).
-fn outer_probe(sync: &Rc<HeadSync>) -> Element {
-    let fill = sync.outer_probe();
-    runtime_vocabulary::builders::view()
-        .style(StyleProp::Sheet(Box::new(StyleApplication::new(outer_probe_sheet()))))
-        .on_handle(move |h| fill(h))
-        .build()
+/// The head strip, and the corner beside it when there is one.
+fn head_with_corner(strip: Element, corner: Option<StyleProp>) -> Element {
+    match corner {
+        None => strip,
+        Some(style) => {
+            let corner = runtime_vocabulary::builders::view().style(style).build();
+            glue::view(vec![strip, corner])
+                .with_style(StyleProp::Sheet(Box::new(StyleApplication::new(head_row_sheet()))))
+                .into_element()
+        }
+    }
 }
 
 /// The probe view.
@@ -540,6 +516,7 @@ pub(super) fn web(
     header_slot: Option<Element>,
     footer_slot: Option<Element>,
     watch: Option<Rc<EdgeWatch>>,
+    head_corner: Option<StyleProp>,
 ) -> Element {
     let sync = HeadSync::new(columns);
     let (mut head, mut body) = take_head(rows);
@@ -620,7 +597,7 @@ pub(super) fn web(
         PrimCell::new(TableFramePrim {
             style: Some(StyleProp::Sheet(Box::new(StyleApplication::new(frame_sheet())))),
         }),
-        vec![outer_probe(&sync), head_strip(&sync, head_table), body_scroller],
+        vec![head_with_corner(head_strip(&sync, head_table), head_corner), body_scroller],
     );
     surface_with_slots(frame, style, header_slot, footer_slot)
 }
@@ -667,6 +644,42 @@ mod tests {
     }
 
     /// Run `f` in `world`, then commit what it staged.
+    /// Regression: a classic vertical scrollbar narrows the body's
+    /// viewport and the strip ends there (so a right-frozen column pins at
+    /// the body's x), which left the corner above the scrollbar without a
+    /// header band or divider. A theme's corner style now sits BESIDE the
+    /// strip in one row and grows into the remainder; without one the strip
+    /// stands alone, as before.
+    #[test]
+    fn regression_the_head_corner_sits_beside_the_strip() {
+        let world = World::new();
+        let (with, without) = world.enter(|| {
+            let strip = || glue::view(vec![]).into_element();
+            let corner = StyleProp::Static(Rc::new(StyleRules {
+                flex_grow: Some(glue::Tokenized::Literal(1.0)),
+                ..Default::default()
+            }));
+            (head_with_corner(strip(), Some(corner)), head_with_corner(strip(), None))
+        });
+        match &with {
+            Element::Item { children, .. } => {
+                assert_eq!(children.len(), 2, "the strip, then the corner");
+                match &children[1] {
+                    Element::Item { data, .. } => {
+                        let style = data.downcast_ref::<PrimCell<prims::ViewPrim>>().expect("the corner is a view").take().style;
+                        assert!(matches!(style, Some(StyleProp::Static(ref r)) if r.flex_grow.is_some()), "it carries the theme's style");
+                    }
+                    _ => panic!("corner item"),
+                }
+            }
+            _ => panic!("head row item"),
+        }
+        match &without {
+            Element::Item { children, .. } => assert!(children.is_empty(), "no corner: the strip itself, unwrapped"),
+            _ => panic!("strip item"),
+        }
+    }
+
     fn step<R>(world: &World, f: impl FnOnce() -> R) -> R {
         let r = world.enter(f);
         world.flush();
@@ -715,54 +728,6 @@ mod tests {
         assert_eq!(world.enter(|| widths(&head)), vec![Some(120.0), Some(300.0)], "a wider body column widens the head's");
     }
 
-    /// Regression: on web a classic vertical scrollbar narrows the body's
-    /// viewport, and the head strip ended at the viewport, so the header's
-    /// band and divider stopped short of the scrollbar. The head now spans
-    /// the frame: the strip is the viewport plus the gutter, and the
-    /// gutter goes to the head's last column (and its content) only.
-    #[test]
-    fn regression_the_head_runs_over_the_scrollbar_gutter() {
-        let world = World::new();
-        let (sync, head) = step(&world, || {
-            let sync = HeadSync::new(2);
-            let head = sync.head_specs(&[None, None]);
-            (sync, head)
-        });
-        step(&world, || {
-            record_body(&sync, 0, 100.0);
-            record_body(&sync, 1, 200.0);
-        });
-        step(&world, || {
-            record_head(&sync, 0, 100.0);
-            record_head(&sync, 1, 200.0);
-        });
-        // A 15 px classic scrollbar: frame 1168, viewport 1153.
-        step(&world, || {
-            sync.body_width.set(Some(300.0));
-            sync.viewport.set(Some(1153.0));
-            sync.outer.set(Some(1168.0));
-        });
-        let width_of = |style: StyleProp| {
-            world.enter(|| match style {
-                StyleProp::SheetDynamic(f) => f().inline().and_then(|r| r.width.clone()),
-                _ => panic!("a dynamic sheet"),
-            })
-        };
-        assert_eq!(
-            world.enter(|| widths(&head)),
-            vec![Some(100.0), Some(215.0)],
-            "the last column takes the gutter; the others keep the body's x"
-        );
-        assert_eq!(width_of(sync.strip_style()), Some(px(1168.0)), "the strip spans the frame");
-        assert_eq!(width_of(sync.content_style()), Some(px(315.0)), "the content is the body grid and the gutter");
-
-        // An overlay scrollbar takes no width: nothing is added.
-        step(&world, || sync.outer.set(Some(1153.0)));
-        assert_eq!(world.enter(|| widths(&head)), vec![Some(100.0), Some(200.0)]);
-        assert_eq!(width_of(sync.strip_style()), Some(px(1153.0)));
-        assert_eq!(width_of(sync.content_style()), Some(px(300.0)));
-    }
-
     /// A body cell's sizer carries the head's floor; the head's does not.
     #[test]
     fn only_the_body_sizer_is_floored() {
@@ -797,19 +762,5 @@ mod tests {
             assert_eq!(sync.body_x.get(), 140.0, "scrolling the strip moves the body");
             assert_eq!(sync.body_y.get(), 30.0, "…keeping its vertical offset");
         });
-    }
-}
-
-#[cfg(test)]
-mod gutter_tests {
-    use super::gutter;
-
-    #[test]
-    fn the_gutter_is_the_frame_past_the_viewport() {
-        assert_eq!(gutter(Some(1168.0), Some(1153.0)), 15.0, "a classic scrollbar");
-        assert_eq!(gutter(Some(1168.0), Some(1168.0)), 0.0, "an overlay scrollbar");
-        assert_eq!(gutter(Some(1168.4), Some(1168.0)), 0.0, "sub-pixel rounding is not a scrollbar");
-        assert_eq!(gutter(None, Some(1168.0)), 0.0, "not measured yet");
-        assert_eq!(gutter(Some(1168.0), None), 0.0);
     }
 }
