@@ -395,6 +395,16 @@ pub struct Args {
     #[arg(long)]
     pub experimental_build: bool,
 
+    /// Do not act on saves as they happen. Every watcher of the session
+    /// (the web bundle, a full-stack server, the runtime-server host,
+    /// app icons) queues them, and a rebuild request applies the queue
+    /// as one save — through the same patch-or-rebuild decision a save
+    /// takes. Request one with `r` in the panel, or from an agent through
+    /// the session's control endpoint (`idealyst mcp`'s `rebuild_dev`).
+    /// A request with nothing queued forces a rebuild.
+    #[arg(long)]
+    pub no_watch: bool,
+
     /// Disable the Robot bridge in dev mode. By DEFAULT `idealyst dev` hosts a
     /// `robot-relay` and wires the launched app to dial it (web-local injects
     /// the URL; desktop-native apps inherit it), so the MCP server / inspector /
@@ -676,6 +686,8 @@ pub fn run(args: Args) -> Result<()> {
     // shape ("missing targets") regardless of how they invoked.
     let manifest = parse_manifest(&dir)?;
     let active_targets = resolve_targets(&args, &manifest.app.targets)?;
+    // Before any watcher starts: each reads it (`dev_log::no_watch`).
+    crate::dev_log::set_no_watch(args.no_watch);
 
     // The session's reporting, before anything reports. Every line from
     // here on is an event (see `crate::dev_log`); the terminal shows it
@@ -752,7 +764,48 @@ pub fn run(args: Args) -> Result<()> {
         crate::memory_limit::prepare_web_pipeline(&session.reporter);
     }
     // After the session line: a late subscriber's snapshot starts at it.
-    crate::dev_log::serve_events(&dir);
+    let events_url = crate::dev_log::serve_events(&dir);
+    // In the machine's session registry, with a control endpoint, so a
+    // tool (`idealyst mcp` for an agent) finds and drives this session as
+    // one it started itself. Kept for the rest of `run`: dropping it
+    // removes the entry; the Ctrl-C path, which exits, removes the file.
+    let _registration = {
+        let mut entry = dev_events::sessions::SessionEntry::new(
+            std::process::id(),
+            dir.display().to_string(),
+            String::new(),
+            String::new(),
+        );
+        entry.app = manifest.app.name.clone();
+        entry.targets = active_targets.iter().map(|t| t.as_str().to_string()).collect();
+        entry.local = args.local;
+        entry.no_watch = args.no_watch;
+        entry.experimental_build = args.experimental_build;
+        entry.started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        entry.cli_version = env!("CARGO_PKG_VERSION").to_string();
+        entry.log_file = Some(log_path.display().to_string());
+        entry.events_url = events_url;
+        entry.launched_by = std::env::var(dev_events::sessions::LAUNCHED_BY_ENV).unwrap_or_else(|_| "user".into());
+        let registration = crate::dev_control::start(
+            entry,
+            crate::dev_control::Actions {
+                status: Box::new(|| {
+                    crate::dev_log::session_events()
+                        .map(|b| b.subscribe().snapshot.iter().filter_map(|l| serde_json::from_str(l).ok()).collect())
+                        .unwrap_or_default()
+                }),
+                rebuild: Box::new(crate::dev_log::request_rebuild),
+            },
+        );
+        match &registration {
+            Some(r) => remove_on_exit(vec![r.path().to_path_buf()]),
+            None => crate::dlog!("dev", "this session is not in the session registry: its control endpoint did not start"),
+        }
+        registration
+    };
 
 
     // Full-stack projects declare a server (`server_bin` / `server_manifest`).
@@ -823,6 +876,12 @@ pub fn run(args: Args) -> Result<()> {
     // skip the handler entirely.
     if !interactive {
         install_ctrlc_handler(children.clone())?;
+    } else {
+        // The panel holds the terminal raw, so the keyboard sends it no
+        // SIGINT; one from outside (`kill -INT`, an agent stopping this
+        // session through `idealyst mcp`) quits the panel as `q` does, and
+        // the teardown below runs with the terminal restored.
+        ctrlc::set_handler(dev_tui::request_quit).context("install the panel's SIGINT handler")?;
     }
 
 
@@ -869,8 +928,13 @@ pub fn run(args: Args) -> Result<()> {
         // (`dev_events::child`) instead of plain text. Nothing it prints
         // reaches the terminal directly, so the panel or a `--terminal`
         // app can own the TTY; its lines land in the session log.
+        if args.no_watch {
+            cmd.env(dev_events::child::NO_WATCH_ENV, "1");
+        }
+        // Stdin is how a rebuild request reaches the host: one
+        // `dev_events::child::REBUILD_LINE` per request (see below).
         cmd.env(dev_events::child::ENV, dev_events::child::ENV_STDERR)
-            .stdin(std::process::Stdio::null())
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         let mut child = cmd
@@ -882,6 +946,18 @@ pub fn run(args: Args) -> Result<()> {
                 )
             })?;
         forward_child_output(&mut child, "runtime-server-host");
+        // The host's change loop takes rebuild requests on its stdin: the
+        // panel's `r` and the control endpoint reach the app's code this
+        // way in runtime-server mode, and `--no-watch` saves are applied by
+        // it.
+        if let Some(stdin) = child.stdin.take() {
+            let stdin = std::sync::Mutex::new(stdin);
+            crate::dev_log::register_rebuilder(std::sync::Arc::new(move || {
+                use std::io::Write;
+                let Ok(mut stdin) = stdin.lock() else { return false };
+                writeln!(stdin, "{}", dev_events::child::REBUILD_LINE).and_then(|()| stdin.flush()).is_ok()
+            }));
+        }
         crate::dlog!(
             "dev",
             "runtime-server host running ({}); port file {}",
@@ -1842,6 +1918,7 @@ fn launch_web(
                     // Set only by the --local web loop when the hot-patch tier is armed.
                     hot_patch: false,
                     experimental_build: false,
+                    no_watch: args.no_watch,
                     debuginfo: build_web::DebugInfo::default(),
                     dev_opt: build_web::DevOpt::default(),
                     reporter: dev_events::global(),
@@ -1947,6 +2024,7 @@ fn launch_web(
                     wasm_split: args.split,
                     hot_patch: hot_patch_armed(args),
                     experimental_build: hot_patch_armed(args) && args.experimental_build,
+                    no_watch: args.no_watch,
                     debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
                 dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
                 reporter: dev_events::global(),
@@ -2131,11 +2209,12 @@ fn sync_dev_web_overlay(
                 watch_paths.push(project_dir.join("Cargo.toml"));
                 let project_owned = project_dir.to_path_buf();
                 let overlay_owned = overlay_dir.clone();
-                let handle = dev_reload::start_watch(
+                let (handle, control) = dev_reload::start_watch_with(
                     watch_paths,
                     signal,
                     "icon",
                     dev_events::global(),
+                    crate::dev_log::no_watch(),
                     move || {
                     let cfg = icon_gen::load_config_from_manifest(&project_owned)?;
                     let Some(cfg) = cfg else {
@@ -2148,6 +2227,7 @@ fn sync_dev_web_overlay(
                     Ok(dev_reload::Rebuilt::Changed)
                     },
                 )?;
+                crate::dev_log::register_rebuilder(std::sync::Arc::new(move || control.request_rebuild()));
                 std::mem::forget(handle);
             }
         }
@@ -2574,6 +2654,7 @@ fn full_stack_bundle_options(
         // nothing in the page for a patch to redirect.
         hot_patch: !wire && hot_patch_armed(args),
         experimental_build: !wire && hot_patch_armed(args) && args.experimental_build,
+        no_watch: args.no_watch,
         debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
         dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
         reporter: dev_events::global(),
@@ -3517,9 +3598,20 @@ fn spawn_server_build(
             });
             // Watched from here on, failed first build or not: the next
             // save is how a broken server gets fixed.
-            match dev_reload::start_watch(roots, server_signal, "server", reporter, build) {
-                // Detached for the session's lifetime.
-                Ok(handle) => drop(handle),
+            match dev_reload::start_watch_with(
+                roots,
+                server_signal,
+                "server",
+                reporter,
+                crate::dev_log::no_watch(),
+                build,
+            ) {
+                // Detached for the session's lifetime; a rebuild request
+                // reaches it through its control.
+                Ok((handle, control)) => {
+                    drop(handle);
+                    crate::dev_log::register_rebuilder(std::sync::Arc::new(move || control.request_rebuild()));
+                }
                 Err(e) => crate::dlog!("dev web", "server watcher did not start: {e:#}"),
             }
             ok
@@ -4625,6 +4717,7 @@ impl Args {
             no_split: self.no_split,
             split: self.split,
             experimental_build: self.experimental_build,
+            no_watch: self.no_watch,
             debuginfo: self.debuginfo.clone(),
             dev_opt: self.dev_opt.clone(),
             no_robot: self.no_robot,

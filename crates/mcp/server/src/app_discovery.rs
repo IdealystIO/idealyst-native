@@ -273,7 +273,7 @@ fn parse_registration_file(path: &Path) -> Option<DiscoveredApp> {
 /// `kill(pid, 0)` — succeeds if the process is alive (or alive but
 /// not signalable by us → EPERM); fails with ESRCH when gone.
 #[cfg(unix)]
-fn pid_is_live(pid: u32) -> bool {
+pub(crate) fn pid_is_live(pid: u32) -> bool {
     // SAFETY: `kill` with sig 0 is a no-op signal check on POSIX.
     let rc = unsafe { libc::kill(pid as i32, 0) };
     if rc == 0 {
@@ -284,7 +284,7 @@ fn pid_is_live(pid: u32) -> bool {
 }
 
 #[cfg(not(unix))]
-fn pid_is_live(_pid: u32) -> bool {
+pub(crate) fn pid_is_live(_pid: u32) -> bool {
     // Windows: punt for now; treat every registration as live and
     // rely on the bridge's RAII Drop to clean up on graceful exit.
     // Real liveness check would use `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`

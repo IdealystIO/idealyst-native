@@ -277,26 +277,51 @@ pub fn emit(event: DevEvent) {
     dev_events::global().emit(event);
 }
 
+/// One way to ask a watcher to rebuild: `true` when the watcher took the
+/// request.
+type Rebuilder = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// The session's rebuild triggers — one per watcher that can rebuild on
-/// request. The panel's `r` fires them all.
-fn rebuilders() -> &'static Mutex<Vec<Arc<dev_reload::ReloadSignal>>> {
-    static R: OnceLock<Mutex<Vec<Arc<dev_reload::ReloadSignal>>>> = OnceLock::new();
+/// request: the web bundle's loop, a full-stack server's watcher, the
+/// icon watcher, the runtime-server host. The panel's `r` and the
+/// session's control endpoint fire them all.
+fn rebuilders() -> &'static Mutex<Vec<Rebuilder>> {
+    static R: OnceLock<Mutex<Vec<Rebuilder>>> = OnceLock::new();
     R.get_or_init(Default::default)
 }
 
 /// Register a watcher's signal as a rebuild target.
 pub fn register_rebuild(signal: Arc<dev_reload::ReloadSignal>) {
+    register_rebuilder(Arc::new(move || signal.request_rebuild()));
+}
+
+/// Register any rebuild target (see [`Rebuilder`]).
+pub fn register_rebuilder(rebuild: Rebuilder) {
     if let Ok(mut r) = rebuilders().lock() {
-        r.push(signal);
+        r.push(rebuild);
     }
 }
 
-/// Ask every registered watcher to rebuild. Returns how many took the
-/// request.
+/// `idealyst dev --no-watch`: every watcher of the session queues saves
+/// until a rebuild request applies them. Set once, before any watcher
+/// starts.
+static NO_WATCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_no_watch(on: bool) {
+    NO_WATCH.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether this session runs `--no-watch` ([`set_no_watch`]).
+pub fn no_watch() -> bool {
+    NO_WATCH.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Ask every registered watcher to rebuild — or, under `--no-watch`,
+/// to apply what it has queued. Returns how many took the request.
 pub fn request_rebuild() -> usize {
     let n = rebuilders()
         .lock()
-        .map(|r| r.iter().filter(|s| s.request_rebuild()).count())
+        .map(|r| r.iter().filter(|rebuild| rebuild()).count())
         .unwrap_or(0);
     if n == 0 {
         dlog("dev", "rebuild requested, but no watcher is running (a --no-build session?)");

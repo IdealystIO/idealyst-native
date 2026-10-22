@@ -53,6 +53,9 @@ dotenvy = "0.15"
 # bypasses the handler; the dev-host has its own parent-PID
 # watchdog for that case.
 ctrlc = { version = "3", features = ["termination"] }
+# The session's loopback control endpoint (`dev_control`): rebuild and
+# status for a tool that found the session in the registry.
+tiny_http = "0.12"
 # Dev-mode infrastructure. Both crates are intentionally small and
 # usable independently — `dev-http` for plain static serving,
 # `dev-reload` for the watch+wasm-pack loop. The CLI is the wiring.

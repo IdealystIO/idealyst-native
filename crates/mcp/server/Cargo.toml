@@ -54,6 +54,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # crashed processes.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# The session registry and the control-endpoint client (`dev_sessions`).
+dev-events = { workspace = true }
 
 [dev-dependencies]
 # The author surface + `#[component]` for the `catalog_service::tests`

@@ -732,6 +732,13 @@ pub struct BuildOptions {
     /// without it every shape change rebuilds. Meaningful only with
     /// [`Self::hot_patch`].
     pub experimental_build: bool,
+    /// Do not act on saves as they happen (`idealyst dev --no-watch`):
+    /// the watcher queues them, and a rebuild request — the panel's `r`,
+    /// or an agent through the session's control endpoint — applies the
+    /// queue as ONE save, through the same decision a save takes (overlay
+    /// patch, hot patch or rebuild). A request with nothing queued forces
+    /// a rebuild, as it does without the flag.
+    pub no_watch: bool,
     /// Premint static styles on every rebuild (`idealyst dev … --premint`).
     /// Each build runs the native style dump and refreshes
     /// `pkg/premint.css` alongside the wasm, and the wasm compiles with
@@ -822,6 +829,7 @@ pub fn start(
             runtime_server_url: None,
             hot_patch: false,
             experimental_build: false,
+            no_watch: false,
             premint: false,
             premint_only: false,
             premint_report: false,
@@ -1588,11 +1596,21 @@ fn watch_loop(
     // For the edits a resumed session finds made while none ran.
     let offline_tx = tx.clone();
     let mut seen = SeenContent::default();
+    // `--no-watch`: saves wait here, never in the inbox — so one that lands
+    // while a requested rebuild runs is held for the NEXT request rather
+    // than folded into this one (see `release`).
+    let queued: Option<Queued> = opts.no_watch.then(Queued::default);
+    let holds = queued.clone();
+    let hold_reporter = reporter.clone();
     let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), move |r| {
         match seen.classify(&r) {
             // Nothing moved since the watcher last looked: neither work
             // nor a supersession. See `SeenContent`.
             Batch::Unchanged => {}
+            _ if holds.is_some() => {
+                let q = holds.as_ref().expect("checked");
+                q.hold(event_paths(&r), r.is_ok(), TARGET, &hold_reporter);
+            }
             Batch::Save => notify_save(&tx, &counted, true, WatchMsg::Fs(r)),
             Batch::Other => notify_save(&tx, &counted, false, WatchMsg::Fs(r)),
         }
@@ -1695,7 +1713,12 @@ fn watch_loop(
                     "dev-reload",
                     format!("{} source file(s) changed since the last session: deciding them as a save", moved.len()),
                 );
-                notify_save(&offline_tx, &saves, true, WatchMsg::Paths(moved));
+                match &queued {
+                    Some(q) => {
+                        q.hold(moved, true, TARGET, &reporter);
+                    }
+                    None => notify_save(&offline_tx, &saves, true, WatchMsg::Paths(moved)),
+                }
             }
             ws
         }
@@ -1719,6 +1742,7 @@ fn watch_loop(
     }
 
     while let Ok(first) = rx.recv() {
+        let first = release(first, queued.as_ref());
         // Set when a superseded rebuild left a new bundle on disk that no
         // page was reloaded onto. The save must then end in a reload: an
         // overlay or hot patch decided against that bundle would be
@@ -2652,6 +2676,70 @@ impl SaveLog {
 /// save the work in flight cannot see and yet is not superseded by.
 /// Logging first could let a save land between the drain and the send,
 /// after the snapshot, and its result would be applied without it.
+/// The saves a `--no-watch` session holds back ([`BuildOptions::no_watch`]):
+/// the paths every batch named, until a rebuild request takes them.
+#[derive(Clone, Default)]
+struct Queued(Arc<Mutex<Vec<PathBuf>>>);
+
+impl Queued {
+    /// Hold a batch back. Says so — `change_detected` opens the target's
+    /// episode in every status view, and a log line says what to do — and
+    /// returns `false` for a batch that names no work (only an editor's
+    /// scratch files, or a watcher error), which is not queued.
+    fn hold(&self, paths: Vec<PathBuf>, ok: bool, target: &str, reporter: &dev_events::Reporter) -> bool {
+        if !names_work(&paths, ok) {
+            return false;
+        }
+        let total = {
+            let mut q = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            for p in paths {
+                if !q.contains(&p) {
+                    q.push(p);
+                }
+            }
+            q.clone()
+        };
+        reporter.emit(dev_events::DevEvent::ChangeDetected {
+            target: target.into(),
+            paths: display_all(&saved_paths(&total)),
+            crates: Vec::new(),
+            folded: 0,
+        });
+        reporter.log(
+            format!("dev-reload {target}"),
+            format!(
+                "{} file(s) changed and queued (--no-watch); a rebuild request applies them",
+                saved_paths(&total).len()
+            ),
+        );
+        true
+    }
+
+    /// Everything held back, emptying the queue.
+    fn take(&self) -> Vec<PathBuf> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+}
+
+/// What a `--no-watch` loop runs for a message that reached its inbox.
+/// Saves never do (the watcher holds them in `queued`); a rebuild request
+/// becomes the queued saves as ONE save, decided like any other — or,
+/// with nothing queued, stays a forced rebuild. Without `--no-watch`
+/// every message is its own.
+fn release(msg: WatchMsg, queued: Option<&Queued>) -> WatchMsg {
+    match (msg, queued) {
+        (WatchMsg::Rebuild, Some(q)) => {
+            let held = q.take();
+            if held.is_empty() {
+                WatchMsg::Rebuild
+            } else {
+                WatchMsg::Paths(held)
+            }
+        }
+        (msg, _) => msg,
+    }
+}
+
 fn notify_save<M>(tx: &mpsc::Sender<M>, saves: &SaveLog, save: bool, msg: M) {
     let _ = tx.send(msg);
     if save {
@@ -2748,9 +2836,9 @@ fn run_save<M>(
 /// Spawn a watcher on `paths` that runs `on_change` for each
 /// debounced event batch, and bumps `signal` after each successful
 /// call so connected browsers reload. Used by paths that aren't the
-/// full wasm rebuild — currently the icon-source watcher in
-/// `cmd::dev`, which re-runs `icon_gen::sync_web_icons` when the
-/// project's SVG/PNG changes.
+/// full wasm rebuild — the icon-source watcher in `cmd::dev`, which
+/// re-runs `icon_gen::sync_web_icons` when the project's SVG/PNG
+/// changes, and a full-stack project's server.
 ///
 /// `label` appears in `[dev-reload <label>]` log lines so the user
 /// can tell which watcher fired. Failed callbacks log to stderr but
@@ -2765,15 +2853,47 @@ pub fn start_watch<F>(
     signal: Arc<ReloadSignal>,
     label: &'static str,
     reporter: dev_events::Reporter,
-    mut on_change: F,
+    on_change: F,
 ) -> Result<JoinHandle<()>>
 where
     F: FnMut() -> Result<Rebuilt> + Send + 'static,
 {
-    thread::Builder::new()
+    start_watch_with(paths, signal, label, reporter, false, on_change).map(|(handle, _)| handle)
+}
+
+/// A way into a [`start_watch_with`] watcher's loop from outside it.
+#[derive(Clone)]
+pub struct WatchControl {
+    tx: mpsc::Sender<WatchMsg>,
+}
+
+impl WatchControl {
+    /// Run the watcher's callback now, as if a save had needed it — or,
+    /// under `--no-watch`, apply the saves it has queued. `false` when
+    /// the watcher is gone.
+    pub fn request_rebuild(&self) -> bool {
+        self.tx.send(WatchMsg::Rebuild).is_ok()
+    }
+}
+
+/// [`start_watch`], with `--no-watch` ([`BuildOptions::no_watch`]: saves
+/// are queued until a rebuild request), and the handle that requests one.
+pub fn start_watch_with<F>(
+    paths: Vec<PathBuf>,
+    signal: Arc<ReloadSignal>,
+    label: &'static str,
+    reporter: dev_events::Reporter,
+    no_watch: bool,
+    mut on_change: F,
+) -> Result<(JoinHandle<()>, WatchControl)>
+where
+    F: FnMut() -> Result<Rebuilt> + Send + 'static,
+{
+    let (tx, rx) = mpsc::channel::<WatchMsg>();
+    let control = WatchControl { tx: tx.clone() };
+    let handle = thread::Builder::new()
         .name(format!("idealyst-watch-{label}"))
         .spawn(move || {
-            let (tx, rx) = mpsc::channel();
             let saves = Arc::new(SaveLog::default());
             let counted = saves.clone();
             // The bundle watcher's two filters (see `watch_loop`):
@@ -2782,11 +2902,18 @@ where
             // a temp-then-rename save starts a full server build on the
             // temp file's batch, then another for the real save.
             let mut seen = SeenContent::default();
+            let queued: Option<Queued> = no_watch.then(Queued::default);
+            let holds = queued.clone();
+            let hold_reporter = reporter.clone();
             let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), move |r| {
                 match seen.classify(&r) {
                     Batch::Unchanged => {}
-                    Batch::Save => notify_save(&tx, &counted, true, r),
-                    Batch::Other => notify_save(&tx, &counted, false, r),
+                    _ if holds.is_some() => {
+                        let q = holds.as_ref().expect("checked");
+                        q.hold(event_paths(&r), r.is_ok(), label, &hold_reporter);
+                    }
+                    Batch::Save => notify_save(&tx, &counted, true, WatchMsg::Fs(r)),
+                    Batch::Other => notify_save(&tx, &counted, false, WatchMsg::Fs(r)),
                 }
             }) {
                 Ok(d) => d,
@@ -2823,33 +2950,58 @@ where
             // disk without waking anyone; the run that finally finishes the
             // save must wake consumers even if it changes nothing more.
             let mut owed = false;
-            while let Ok(events) = rx.recv() {
-                let mut first = vec![events];
+            while let Ok(msg) = rx.recv() {
+                let mut first = vec![release(msg, queued.as_ref())];
                 first.extend(drain(&rx));
-                if first.iter().all(|b| b.is_err()) {
+                if first.iter().all(|m| matches!(m, WatchMsg::Fs(Err(_)))) {
                     continue;
                 }
                 run_save(&rx, &saves, first, Duration::from_millis(MAX_COALESCE_MS), |batches, token| {
-                    let folded = batches.len().saturating_sub(1);
+                    let forced = batches.iter().any(|m| matches!(m, WatchMsg::Rebuild));
+                    let mut paths: Vec<PathBuf> = Vec::new();
+                    let mut any_ok = false;
+                    let mut fs_batches = 0usize;
+                    for m in batches {
+                        match m {
+                            WatchMsg::Fs(r) => {
+                                fs_batches += 1;
+                                any_ok |= r.is_ok();
+                                paths.extend(event_paths(r));
+                            }
+                            WatchMsg::Paths(p) => {
+                                fs_batches += 1;
+                                any_ok = true;
+                                paths.extend(p.iter().cloned());
+                            }
+                            WatchMsg::Rebuild => {}
+                        }
+                    }
+                    let folded = fs_batches.saturating_sub(1);
                     // The callback re-runs one whole build, so the paths do
                     // not steer it; they are what a status view shows as the
                     // save (the full-stack server's row, the page's badge).
-                    let paths: Vec<PathBuf> = batches.iter().flat_map(event_paths).collect();
                     // Only scratch files: the temp half of a temp-and-rename
                     // save, whose real file arrives in its own batch. A run
-                    // the last attempt owes a wake-up still goes ahead.
-                    if !owed && !names_work(&paths, batches.iter().any(|b| b.is_ok())) {
+                    // the last attempt owes a wake-up, or one a rebuild
+                    // request asked for, still goes ahead.
+                    if !forced && !owed && !names_work(&paths, any_ok) {
                         return Attempt::Finished;
                     }
-                    reporter.emit(dev_events::DevEvent::ChangeDetected {
-                        target: label.into(),
-                        paths: display_all(&saved_paths(&paths)),
-                        crates: Vec::new(),
-                        folded,
-                    });
+                    if fs_batches > 0 {
+                        reporter.emit(dev_events::DevEvent::ChangeDetected {
+                            target: label.into(),
+                            paths: display_all(&saved_paths(&paths)),
+                            crates: Vec::new(),
+                            folded,
+                        });
+                    }
                     reporter.emit(dev_events::DevEvent::BuildStarted {
                         target: label.into(),
-                        cause: dev_events::BuildCause::Save { folded },
+                        cause: if fs_batches == 0 {
+                            dev_events::BuildCause::Forced
+                        } else {
+                            dev_events::BuildCause::Save { folded }
+                        },
                     });
                     let started = std::time::Instant::now();
                     // Not killed mid-run: the callback is opaque (a cargo
@@ -2898,7 +3050,8 @@ where
                 });
             }
         })
-        .context("spawn watch thread")
+        .context("spawn watch thread")?;
+    Ok((handle, control))
 }
 
 /// The cargo target dir a bundle build of `dir` with `opts` compiles into
@@ -3687,6 +3840,71 @@ mod tests {
         built_rx.recv_timeout(Duration::from_secs(20)).expect("an edit builds");
     }
 
+    /// `--no-watch`: a save is queued, not built — and reported, so a
+    /// status view and an agent see it — and a rebuild request runs the
+    /// callback once for everything queued. A request with nothing queued
+    /// still forces a build, as the panel's `r` always did.
+    #[test]
+    fn under_no_watch_saves_wait_for_a_rebuild_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let (reporter, q) = capture();
+        let (built_tx, built_rx) = mpsc::channel();
+        let (_watch, control) =
+            start_watch_with(vec![src.clone()], ReloadSignal::new(), "server", reporter, true, move || {
+                let _ = built_tx.send(());
+                Ok(Rebuilt::Unchanged)
+            })
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !events(&q).iter().any(|e| matches!(e, dev_events::DevEvent::Watching { .. })) {
+            assert!(std::time::Instant::now() < deadline, "the watcher never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let quiet = Duration::from_millis(DEBOUNCE_MS * 4 + 500);
+
+        std::fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(src.join("lib.rs"), "pub fn f() {}\n").unwrap();
+        assert!(built_rx.recv_timeout(quiet).is_err(), "a save built under --no-watch");
+        let queued = events(&q).into_iter().rev().find_map(|e| match e {
+            dev_events::DevEvent::ChangeDetected { paths, .. } => Some(paths),
+            _ => None,
+        });
+        let queued = queued.expect("the queued save was not reported");
+        assert!(queued.iter().any(|p| p.ends_with("main.rs")) && queued.iter().any(|p| p.ends_with("lib.rs")), "{queued:?}");
+
+        // One request: one build, for both files.
+        assert!(control.request_rebuild());
+        built_rx.recv_timeout(Duration::from_secs(20)).expect("the request applied the queue");
+        assert!(built_rx.recv_timeout(quiet).is_err(), "the queue built twice");
+
+        // Nothing queued: the request still builds.
+        assert!(control.request_rebuild());
+        built_rx.recv_timeout(Duration::from_secs(20)).expect("a request with nothing queued forces a build");
+        assert!(events(&q).iter().any(|e| matches!(
+            e,
+            dev_events::DevEvent::BuildStarted { cause: dev_events::BuildCause::Forced, .. }
+        )));
+    }
+
+    #[test]
+    fn a_rebuild_request_takes_the_queue_or_forces_a_build() {
+        let q = Queued::default();
+        let reporter = dev_events::Reporter::new();
+        assert!(matches!(release(WatchMsg::Rebuild, Some(&q)), WatchMsg::Rebuild), "nothing queued: forced");
+        assert!(q.hold(vec![PathBuf::from("/w/src/a.rs"), PathBuf::from("/w/src/b.rs")], true, "web", &reporter));
+        assert!(q.hold(vec![PathBuf::from("/w/src/a.rs")], true, "web", &reporter), "a file saved twice");
+        assert!(!q.hold(vec![PathBuf::from("/w/src/.a.rs.swp")], true, "web", &reporter), "scratch files are no work");
+        match release(WatchMsg::Rebuild, Some(&q)) {
+            WatchMsg::Paths(p) => assert_eq!(p, vec![PathBuf::from("/w/src/a.rs"), PathBuf::from("/w/src/b.rs")]),
+            _ => panic!("the queue was not released"),
+        }
+        assert!(q.take().is_empty(), "releasing empties the queue");
+        // Without --no-watch every message is its own.
+        assert!(matches!(release(WatchMsg::Rebuild, None), WatchMsg::Rebuild));
+    }
+
     /// A save is reported by the files it saved, once each — not by the
     /// scratch files the editor (or `sed -i`) wrote beside them, which the
     /// live panel showed as `.!21378!app.rs, app.rs`.
@@ -4330,6 +4548,7 @@ mod tests {
             runtime_server_url: None,
             hot_patch: false,
             experimental_build: false,
+            no_watch: false,
             premint,
             premint_only: only,
             premint_report: report,

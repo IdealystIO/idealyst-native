@@ -17,6 +17,7 @@ mod config;
 mod core_mode;
 mod dev_config;
 mod dev_hooks;
+mod dev_control;
 mod dev_log;
 mod framework_source;
 mod headless_client;

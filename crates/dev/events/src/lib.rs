@@ -90,6 +90,7 @@ pub mod plain;
 pub mod page;
 pub mod process;
 pub mod snapshot;
+pub mod sessions;
 
 use std::collections::VecDeque;
 use std::io::Write;

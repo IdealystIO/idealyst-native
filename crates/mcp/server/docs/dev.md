@@ -1,6 +1,8 @@
 # Dev sessions
 
-These tools launch, watch and stop `idealyst dev` from MCP. The loop is `run_dev` → `wait_for_app` → Robot tools → `stop_dev`, with `read_dev_log` to follow the build.
+These tools launch, watch and stop `idealyst dev` from MCP. The loop is `run_dev` → `wait_for_app` → Robot tools → `stop_dev`, with `read_dev_log` and `dev_status` to follow the build.
+
+They work on a session a PERSON started in a terminal too, not only on ones `run_dev` started: every `idealyst dev` (CLI 1.18 and later) registers itself in `~/.idealyst/dev-sessions/<pid>.json` and runs a loopback control endpoint, so `list_dev_sessions` shows it, `read_dev_log`, `dev_status` and `rebuild_dev` take its `pid`, and `stop_dev` stops it when told `include_external: true`. A person who watches a session themselves (often with `--no-watch`, so saves wait) and wants an agent to drive its rebuilds needs nothing else.
 
 ## list_apps
 
@@ -24,6 +26,8 @@ Arguments:
 - `bridge_port`: pin the Robot bridge to a fixed port instead of an ephemeral one.
 - `screenshot_dir`: where the relay saves screenshot PNGs.
 - `no_build` (web only): skip the initial build and just serve.
+- `no_watch`: saves are queued, not applied; `rebuild_dev` applies the queue as one save (overlay patch, hot patch or rebuild, as the save would have been). See `rebuild_dev`.
+- `experimental_build` (web `local` only): a save that only ADDS items — a helper and its first call, a new component, a type and its impls — hot patches instead of rebuilding. See "Adding items" in the framework's `docs/hot-reload.md`.
 - `dir`: project directory; defaults to the server's working directory.
 
 Returns `{ id, pid, dir, platforms, local, no_robot, log_path, status }`. Output goes to `~/.idealyst/dev-logs/<name>-<id>.log` (`log_path`); follow it with `read_dev_log`. The process runs until `stop_dev`.
@@ -43,17 +47,41 @@ On timeout it returns an error that says which wait failed: an app registered bu
 
 ## read_dev_log
 
-Reads the tail of a `run_dev` session's log: the way to follow build progress and see compile errors without filesystem access.
+Reads the tail of a session's log: the way to follow build progress and see compile errors without filesystem access. Name the session by `session_id` (from `run_dev`: the log this server captured) or `pid` (any session in `list_dev_sessions`, a person's included: its `dev.log`).
 
 - `lines`: lines from the end, default 100, max 2000.
 - `filter`: case-insensitive substring applied BEFORE the tail, so `filter: "error"` returns the last N matching lines, which jumps straight to a compile failure.
 
-Logs stay readable after the session exits and is pruned from `list_dev_sessions` (the file is found by globbing `~/.idealyst/dev-logs/`). Returns `{ session_id, log_path, lines, content }`.
+A `run_dev` session's log stays readable after it exits and is pruned from `list_dev_sessions` (the file is found by globbing `~/.idealyst/dev-logs/`). Returns `{ session_id, pid, log_path, lines, content }`.
 
 ## list_dev_sessions
 
-Sessions this server launched with `run_dev`: `[{ id, pid, dir, platforms, local, no_robot, log_path, uptime_secs, status }]`, where `status` is `running` or `exited(<code>)`. An exited session is reported once, with its exit status, then dropped on the next call. Apps launched from a terminal show up in `list_apps`, not here.
+Every running `idealyst dev` session on this machine: the ones a person started and the ones this server launched with `run_dev`.
+
+`[{ pid, session_id, started_by, dir, app, targets, local, no_watch, experimental_build, log_path, uptime_secs, control }]`:
+
+- `started_by` is `this server`, `a person`, or `another idealyst mcp`; `session_id` is set only for this server's own.
+- `no_watch` says saves wait for `rebuild_dev`.
+- `control` is false for a session this server launched that has not registered yet (it registers as soon as it starts reporting), or one whose `idealyst` predates the registry. That one shows this server's `{ id, platforms, status, … }`, where `status` is `running` or `exited(<code>)`. An exited session is reported once, then dropped.
+
+A session that crashed leaves its registry entry behind; it is pruned here once its pid is gone.
+
+## dev_status
+
+One session's current state, from its control endpoint: `{ session, events }`. `session` is its registry entry (project, targets, `no_watch`, `experimental_build`, log path, …). `events` is the session as the events that describe it now — the same snapshot its `/__idealyst/events` stream opens with: the `session_started`, each server's address, and per target the latest episode — what changed (`change_detected`), what it needed (`decided`), and how it ended (`build_finished`, `patch_built`, `overlay_pushed`, …) with up to 64 diagnostics. A target whose latest episode has a `change_detected` and no outcome is mid-build — or, under `--no-watch`, has saves waiting for `rebuild_dev`.
+
+Takes `session_id` or `pid`.
+
+## rebuild_dev
+
+Asks a session to rebuild now, exactly as pressing `r` in its terminal panel does: every watcher it runs (the web bundle, a full-stack server, the runtime-server host, app icons) gets the request. Under `--no-watch`, a watcher with queued saves applies them as ONE save, through the same decision a save takes — so a literal edit still lands as an overlay patch and a body edit as a hot patch; with nothing queued, it rebuilds. Returns as soon as the request is taken (`{ requested: { accepted, no_watch } }`); `dev_status` shows the progress and outcome, `read_dev_log` the detail.
+
+Takes `session_id` or `pid`, and works on a person's session as on this server's own. A session started with `--no-build` has no watcher to take the request, and says so.
 
 ## stop_dev
 
-Stops one tracked session (`session_id`) or all of them (`all: true`), and returns their final info. On unix the whole dev process GROUP is signalled (the `idealyst dev` process and its cargo builds, web servers and simulators): SIGINT first so simulators and servers shut down cleanly, escalating to SIGKILL after a grace window. A stopped session is removed from `list_dev_sessions`.
+Stops a session and returns what happened. Name it by `session_id` or `pid`, or pass `all: true`.
+
+- This server's own sessions stop as they always have: on unix the whole dev process GROUP is signalled (the `idealyst dev` process and its cargo builds, web servers and simulators), SIGINT first so simulators and servers shut down cleanly, escalating to SIGKILL after a grace window.
+- A session a PERSON started is stopped only with `include_external: true` — it is someone's terminal. It is stopped by signal, not through its control endpoint, so this works on a session that has hung and no longer answers: SIGINT to its process group (or to it alone, if it does not lead one), 10 seconds for its own teardown (a terminal panel restores the terminal), then SIGKILL. Its registry entry is removed. The result says `Gracefully`, `Killed` or `AlreadyGone`.
+- `all: true` stops this server's sessions; with `include_external: true`, every session on the machine.

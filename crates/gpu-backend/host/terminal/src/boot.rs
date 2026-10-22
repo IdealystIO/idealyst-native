@@ -210,7 +210,7 @@ where
                     _ => {}
                 }
             }
-            if quit {
+            if quit || crate::take_quit_request() {
                 break;
             }
 

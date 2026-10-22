@@ -730,6 +730,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Agents drive the dev sessions a person started; `idealyst dev
+  --no-watch` builds only on request** (`idealyst-cli`, `mcp-server`,
+  `dev-events`, `dev-reload`, `dev-server`, `host-terminal`, `dev-tui`).
+  Every `idealyst dev` registers in `~/.idealyst/dev-sessions/` with a
+  token-guarded loopback control endpoint. `idealyst mcp`'s
+  `list_dev_sessions` lists them all, new `dev_status` and `rebuild_dev`
+  read and rebuild any of them, `read_dev_log` takes a `pid`, and
+  `stop_dev` stops a person's session by signal with `include_external:
+  true` (graceful, then SIGKILL after 10 s — for a hung one). Under
+  `--no-watch` saves queue, and a rebuild request (`r`, `rebuild_dev`)
+  applies them as one save. `run_dev` gains `no_watch` and
+  `experimental_build`. The interactive panel now quits cleanly on an
+  external SIGINT. See "Rebuilding only on request" and "Every session is
+  reachable" in `docs/hot-reload.md`.
 - **`idealyst dev --web --local --experimental-build`: a save that only
   ADDS items hot patches instead of rebuilding** (`idealyst-cli`,
   `dev-reload`, `dev-overlay`, `runtime-macros-parse`, `build-web`,

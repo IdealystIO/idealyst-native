@@ -15,7 +15,7 @@ cannot drift.
 | --- | --- | --- |
 | `mcp-catalog` | [`catalog/`](./catalog) | The catalog data model + resolution. Eight inventory slices (Component / Primitive / Utility / State / Guide / Method / Animation / Type). The `#[component]` macro submits to these slices at compile time. |
 | `catalog-scan` | [`catalog-scan/`](./catalog-scan) | Reads a workspace's catalog entries from **source**, with no build: it runs the catalog macros' own expansion (`runtime-macros-expand`) over the items they are attached to and reads the `inventory::submit!` literals back. Entries are byte-identical to a compiled catalog's (pinned by `mcp-catalog`'s `source_scan_reads_exactly_what_the_compiled_macros_register`). Used by `idealyst mcp`'s refresh, `catalog-json --scan` and `catalog-scan`. |
-| `mcp-server` | [`server/`](./server) | Stdio MCP server (`idealyst mcp`). Surfaces catalog tools (`list_components`, `describe_component`, `find_uses`, …) and the `idealyst://catalog` resource, **plus** the Robot tools (`find_element`, `click`, `type_text`, `get_snapshot`, …) that drive a running app, **plus** the dev-session tools (`run_dev` / `list_dev_sessions` / `stop_dev` / `read_dev_log` / `wait_for_app`) that launch, observe, and tear down `idealyst dev` from MCP. Reaches the app's Robot bridge via discovery (`~/.idealyst/apps/`) or an explicit `--robot-port`. Consumed by Claude Code / IDE plugins. |
+| `mcp-server` | [`server/`](./server) | Stdio MCP server (`idealyst mcp`). Surfaces catalog tools (`list_components`, `describe_component`, `find_uses`, …) and the `idealyst://catalog` resource, **plus** the Robot tools (`find_element`, `click`, `type_text`, `get_snapshot`, …) that drive a running app, **plus** the dev-session tools (`run_dev` / `list_dev_sessions` / `dev_status` / `rebuild_dev` / `stop_dev` / `read_dev_log` / `wait_for_app`) that launch, observe, rebuild, and tear down `idealyst dev` from MCP — its own sessions and a person's. Reaches the app's Robot bridge via discovery (`~/.idealyst/apps/`) or an explicit `--robot-port`. Consumed by Claude Code / IDE plugins. |
 
 ## How the catalog gets populated
 
@@ -127,12 +127,22 @@ A client that can't hold a foreground terminal can still run the app:
 log under `~/.idealyst/dev-logs/`) and tracks the process. It mirrors
 the CLI flags worth driving from MCP — `platforms` (`web`/`ios`/
 `android`/`macos`/`terminal`), `all`, `local`, `no_robot`,
-`bridge_port`, `screenshot_dir`, `no_build`. `list_dev_sessions` shows
-what's tracked + each session's status, and `stop_dev` (by `session_id`
+`bridge_port`, `screenshot_dir`, `no_build`, `no_watch`,
+`experimental_build`. `list_dev_sessions` shows every `idealyst dev`
+on the machine — the ones this server started and the ones a person
+started in a terminal (found through the session registry,
+`~/.idealyst/dev-sessions/`) — and `stop_dev` (by `session_id`, `pid`,
 or `all`) tears a session back down — on unix the whole `idealyst dev`
 process **group** (its cargo builds, web servers, simulators) gets a
-graceful SIGINT escalating to SIGKILL. The server also best-effort stops
-any sessions it still owns when it shuts down.
+graceful SIGINT escalating to SIGKILL. A session this server did not
+start is stopped only with `include_external: true`. The server also
+best-effort stops any sessions it still owns when it shuts down.
+
+`dev_status` reads a session's current state (the change, the decision,
+the build or patch and its errors) and `rebuild_dev` does what the
+panel's `r` does — for a `--no-watch` session, applies the saves it
+queued. Both work on a person's session through its control endpoint,
+so an agent can drive the rebuilds of a session it did not start.
 
 `read_dev_log` tails a session's log (with a case-insensitive `filter`,
 e.g. `"error"`, applied before the tail) so you can follow the build /

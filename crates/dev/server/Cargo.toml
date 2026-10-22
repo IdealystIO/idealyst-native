@@ -168,6 +168,8 @@ tokio = { version = "1", features = ["rt", "net", "time", "io-util"], optional =
 pollster = { version = "0.3", optional = true }
 
 [dev-dependencies]
+# `tests/change_loop.rs` watches a real temporary source tree.
+tempfile = "3"
 # Used by the `dump_wire` example to pretty-print the captured
 # command stream as JSON.
 serde_json = { workspace = true }

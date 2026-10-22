@@ -286,6 +286,14 @@ pub fn run(events: Queue, opts: RunOptions) -> Result<(), host_terminal::RunErro
     )
 }
 
+/// Quit a running [`run`] as if the user pressed `q`: the terminal is
+/// restored and `run` returns. Safe from a signal handler — how a SIGINT
+/// from outside (`kill -INT`, an agent stopping the session) ends a
+/// session whose terminal the panel holds in raw mode.
+pub fn request_quit() {
+    host_terminal::request_quit();
+}
+
 /// The framework panics on first render without an installed theme; the
 /// panel uses none of its tokens, so the default light palette is as good
 /// as any. Public for tests that mount the panel without [`run`].

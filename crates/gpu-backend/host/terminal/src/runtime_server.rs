@@ -160,7 +160,7 @@ pub fn run_runtime_server(url: String, opts: RunOptions) -> Result<(), RunError>
                     _ => {}
                 }
             }
-            if quit {
+            if quit || crate::take_quit_request() {
                 break;
             }
 

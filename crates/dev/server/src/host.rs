@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::sidecar::{Sidecar, SidecarIn};
 use crate::{
-    serve_with_sidecar_and_tracker, spawn_change_loop, SessionMode, SessionTracker, SidecarSlot,
+    serve_with_sidecar_and_tracker, spawn_change_loop_with, SessionMode, SessionTracker, SidecarSlot,
     WireRecordingBackend,
 };
 
@@ -368,9 +368,26 @@ pub fn run(
         );
     }
 
-    spawn_change_loop(
+    // Rebuild requests from `idealyst dev` (the panel's `r`, an agent
+    // through the session's control endpoint): one `rebuild` line on
+    // stdin each. Run by hand, stdin is a terminal or closed, and nothing
+    // asks.
+    let (rebuild_tx, rebuild_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { return };
+            if line.trim() == dev_events::child::REBUILD_LINE && rebuild_tx.send(()).is_err() {
+                return;
+            }
+        }
+    });
+    let no_watch = std::env::var_os(dev_events::child::NO_WATCH_ENV).is_some();
+    spawn_change_loop_with(
         vec![user_src.clone()],
         std::time::Duration::from_millis(100),
+        no_watch,
+        rebuild_rx,
         Box::new(move |changed: &[std::path::PathBuf]| {
             // What does this save cost? Three live answers, cheapest
             // first, decided before anything expensive starts:

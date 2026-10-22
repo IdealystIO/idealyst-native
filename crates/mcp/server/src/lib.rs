@@ -13,6 +13,7 @@ mod app_discovery;
 mod catalog_service;
 mod catalog_status;
 mod dev_runner;
+mod dev_sessions;
 pub mod lint;
 mod robot_bridge;
 mod schema_minify;

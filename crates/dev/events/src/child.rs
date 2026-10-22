@@ -21,6 +21,15 @@ pub const ENV: &str = "IDEALYST_DEV_EVENTS";
 /// The value of [`ENV`] asking for marked lines on stderr.
 pub const ENV_STDERR: &str = "stderr";
 
+/// Set (to anything) on the runtime-server host by `idealyst dev
+/// --no-watch`: the host's change loop queues saves until a rebuild
+/// request applies them (`dev_server::spawn_change_loop_with`).
+pub const NO_WATCH_ENV: &str = "IDEALYST_DEV_NO_WATCH";
+
+/// The line `idealyst dev` writes to the runtime-server host's stdin to
+/// request a rebuild — or, under `--no-watch`, to apply the queued saves.
+pub const REBUILD_LINE: &str = "rebuild";
+
 /// Starts every marked line. A record separator, so it can never be the
 /// start of a line a human or a compiler printed.
 pub const MARK: &str = "\u{1e}idealyst-event ";

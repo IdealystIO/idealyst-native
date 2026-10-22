@@ -1856,7 +1856,8 @@ could not start, the block says why.
   took, what it did, and `✓ page` once the page acked it.
 - `e` expands the last build error to rustc's full rendering, `l` opens
   the log pane (the raw lines a plain terminal would have shown, cargo's
-  included), `r` asks every watcher to rebuild now, `c` clears the saves,
+  included), `r` asks every watcher to rebuild now (under `--no-watch`,
+  to apply the saves it queued), `c` clears the saves,
   the log and the error, `q` (or Esc, Ctrl-C) quits the session. In a
   session with a server, the log pane shows the dev loop's lines by
   default — builds, decisions, patches, errors, the server's build — and
@@ -1983,6 +1984,48 @@ native targets' build crates still print plain lines; they arrive as
 write straight to the terminal while the interactive panel is up lands in
 a log file instead — the session log until the panel starts, then the
 terminal host's own `.idealyst/terminal.log`.
+
+### Rebuilding only on request — `--no-watch`
+
+`idealyst dev --no-watch` still watches, but a save only queues: the
+session reports it (`change_detected`, and a log line `N file(s) changed
+and queued (--no-watch); a rebuild request applies them`) and builds
+nothing. A rebuild request — the panel's `r`, or `rebuild_dev` from
+`idealyst mcp` (next section) — applies everything queued as one save,
+through the same decision a watched save takes, so a body edit still hot
+patches. With nothing queued, the request rebuilds. Every watcher of the
+session queues: the web `--local` loop, a full-stack server's watcher,
+the icon watcher, and in wire mode the runtime-server host, which takes
+its rebuild requests from the CLI as `rebuild` lines on its stdin.
+
+### Every session is reachable — the session registry
+
+Each `idealyst dev`, whether a person started it in a terminal or
+`idealyst mcp`'s `run_dev` did, registers itself in
+`~/.idealyst/dev-sessions/<pid>.json` (owner-only; `dev_events::sessions`)
+and removes the file when it exits. The entry names the project, the
+app, the targets, the flags (`local`, `no_watch`, `experimental_build`),
+the session log, the event stream, who started it (`launched_by`: `user`,
+or `mcp`), and a control endpoint on a loopback port that answers
+
+- `GET /status` — the entry (without its token) and the session's state
+  as events, the same snapshot `/__idealyst/events` opens with;
+- `POST /rebuild` — the panel's `r` (202, or 409 when no watcher is
+  running yet).
+
+Every request carries `Authorization: Bearer <token>` from the entry. A
+web page can reach any loopback port, so the endpoint refuses a request
+without the token, and any request carrying an `Origin` header at all.
+
+This is how an agent drives a session it did not start:
+`list_dev_sessions` lists them all, `dev_status` and `rebuild_dev` go
+through the endpoint, and `read_dev_log` reads the entry's log. Stopping
+one goes by pid, not by endpoint, so it works on a session too hung to
+answer: `stop_dev` with `include_external: true` sends SIGINT (to the
+process group when the session leads one), then SIGKILL after 10 s. The
+interactive panel quits on that SIGINT as it does on its own Ctrl-C,
+restoring the terminal. A crashed session's entry is pruned by the next
+reader that finds its pid gone.
 
 ## Escape hatches and diagnostics
 

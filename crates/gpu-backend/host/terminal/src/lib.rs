@@ -269,6 +269,25 @@ fn grid_to_rows(grid: &Grid) -> Vec<String> {
         .collect()
 }
 
+/// Set by [`request_quit`]; the run loop takes it once per frame.
+static QUIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Ask a running [`run`] (or [`run_runtime_server`]) loop to quit as if
+/// the user pressed `q`: it finishes its frame, restores the terminal and
+/// returns. Safe from any thread, a signal handler's included — a process
+/// that holds the terminal in raw mode gets no SIGINT from the keyboard,
+/// so an external `kill -INT` (a supervisor, an agent stopping the
+/// session) arrives this way rather than by killing it mid-frame with the
+/// terminal still raw.
+pub fn request_quit() {
+    QUIT_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether [`request_quit`] was called since the last check; clears it.
+pub(crate) fn take_quit_request() -> bool {
+    QUIT_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
 fn is_quit_key(key: &KeyEvent) -> bool {
     if key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
@@ -518,6 +537,17 @@ fn to_ct(c: Rgba) -> CtColor {
     }
 }
 
+
+#[cfg(test)]
+mod quit_request_tests {
+    #[test]
+    fn a_quit_request_is_taken_once() {
+        assert!(!super::take_quit_request());
+        super::request_quit();
+        assert!(super::take_quit_request());
+        assert!(!super::take_quit_request(), "taken, then cleared");
+    }
+}
 
 #[cfg(test)]
 mod key_tests {

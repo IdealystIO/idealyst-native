@@ -95,17 +95,55 @@ pub fn spawn_rebuild_loop(config: RebuildConfig) -> std::thread::JoinHandle<()> 
 pub fn spawn_change_loop(
     watch_paths: Vec<PathBuf>,
     debounce: Duration,
+    on_change: Box<dyn FnMut(&[PathBuf]) + Send>,
+) -> std::thread::JoinHandle<()> {
+    // A trigger channel whose sender is already gone: no requests.
+    let (_, triggers) = std_mpsc::channel();
+    spawn_change_loop_with(watch_paths, debounce, false, triggers, on_change)
+}
+
+/// What reaches a change loop: a burst of file events, or a request to
+/// act now.
+enum Msg {
+    Fs(DebounceEventResult),
+    Trigger,
+}
+
+/// [`spawn_change_loop`], taking rebuild requests on `triggers` — the
+/// host feeds it the `rebuild` lines `idealyst dev` writes to its stdin
+/// (the panel's `r`, an agent through the session's control endpoint).
+///
+/// A request calls `on_change` with every path changed since the last
+/// call, or with none when nothing has, which the host answers with a
+/// rebuild. With `no_watch` (`idealyst dev --no-watch`) a burst of file
+/// events is only reported and remembered; it reaches `on_change` with
+/// the next request, all of it at once.
+pub fn spawn_change_loop_with(
+    watch_paths: Vec<PathBuf>,
+    debounce: Duration,
+    no_watch: bool,
+    triggers: std_mpsc::Receiver<()>,
     mut on_change: Box<dyn FnMut(&[PathBuf]) + Send>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let (tx, rx) = std_mpsc::channel::<DebounceEventResult>();
-        let mut debouncer = match new_debouncer(debounce, tx) {
+        let (tx, rx) = std_mpsc::channel::<Msg>();
+        let fs_tx = tx.clone();
+        let mut debouncer = match new_debouncer(debounce, move |r| {
+            let _ = fs_tx.send(Msg::Fs(r));
+        }) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("[dev-server] failed to start change watcher: {}", e);
                 return;
             }
         };
+        std::thread::spawn(move || {
+            for () in triggers {
+                if tx.send(Msg::Trigger).is_err() {
+                    return;
+                }
+            }
+        });
         for path in &watch_paths {
             if let Err(e) = debouncer.watcher().watch(path, RecursiveMode::Recursive) {
                 eprintln!("[dev-server] watch {:?} failed: {}", path, e);
@@ -113,37 +151,80 @@ pub fn spawn_change_loop(
                 eprintln!("[dev-server] watching {:?}", path);
             }
         }
-        for evt in rx {
-            match evt {
-                Ok(ref ev) if !ev.is_empty() => {
-                    let reporter = dev_events::global();
+        let mut queued: Vec<PathBuf> = Vec::new();
+        for msg in rx {
+            let reporter = dev_events::global();
+            match msg {
+                Msg::Fs(Ok(ref ev)) if !ev.is_empty() => {
                     reporter.log("dev-server", format!("change detected ({} event(s))", ev.len()));
                     let paths: Vec<PathBuf> = ev.iter().map(|e| e.path.clone()).collect();
-                    let mut saved: Vec<String> = paths
-                        .iter()
-                        .filter(|p| {
-                            p.file_name()
-                                .and_then(|n| n.to_str())
-                                .is_some_and(|n| !dev_events::is_scratch_file(n))
-                        })
-                        .map(|p| p.display().to_string())
-                        .collect();
-                    saved.dedup();
+                    if no_watch {
+                        for p in paths {
+                            if !queued.contains(&p) {
+                                queued.push(p);
+                            }
+                        }
+                        let saved = saved_paths(&queued);
+                        if saved.is_empty() {
+                            continue;
+                        }
+                        reporter.log(
+                            "dev-server",
+                            format!(
+                                "{} file(s) changed and queued (--no-watch); a rebuild request applies them",
+                                saved.len()
+                            ),
+                        );
+                        reporter.emit(dev_events::DevEvent::ChangeDetected {
+                            target: crate::EVENTS_TARGET.into(),
+                            paths: saved,
+                            crates: Vec::new(),
+                            folded: 0,
+                        });
+                        continue;
+                    }
                     reporter.emit(dev_events::DevEvent::ChangeDetected {
                         target: crate::EVENTS_TARGET.into(),
-                        paths: saved,
+                        paths: saved_paths(&paths),
                         crates: Vec::new(),
                         folded: 0,
                     });
                     on_change(&paths);
                 }
-                Ok(_) => {}
-                Err(e) => {
+                Msg::Fs(Ok(_)) => {}
+                Msg::Fs(Err(e)) => {
                     eprintln!("[dev-server] watch error: {:?}", e);
+                }
+                Msg::Trigger => {
+                    let paths = std::mem::take(&mut queued);
+                    reporter.log(
+                        "dev-server",
+                        match paths.len() {
+                            0 => "rebuild requested".to_string(),
+                            n => format!("rebuild requested: applying {n} queued change(s)"),
+                        },
+                    );
+                    on_change(&paths);
                 }
             }
         }
     })
+}
+
+/// The paths a status view shows for a save: each once, without an
+/// editor's scratch files.
+fn saved_paths(paths: &[PathBuf]) -> Vec<String> {
+    let mut saved: Vec<String> = paths
+        .iter()
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| !dev_events::is_scratch_file(n))
+        })
+        .map(|p| p.display().to_string())
+        .collect();
+    saved.dedup();
+    saved
 }
 
 fn run(mut config: RebuildConfig) {

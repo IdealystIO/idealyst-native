@@ -60,6 +60,12 @@ pub struct DevLaunch {
     pub screenshot_dir: Option<PathBuf>,
     /// `--no-build`: web only — skip the initial build.
     pub no_build: bool,
+    /// `--no-watch`: saves are queued until a rebuild request
+    /// (`rebuild_dev`) applies them.
+    pub no_watch: bool,
+    /// `--experimental-build`: web `--local` only — a save that only adds
+    /// items hot patches instead of rebuilding.
+    pub experimental_build: bool,
 }
 
 /// A live (or recently-exited) `idealyst dev` session the server is
@@ -194,6 +200,14 @@ impl DevRunner {
         if launch.no_build {
             cmd.arg("--no-build");
         }
+        if launch.no_watch {
+            cmd.arg("--no-watch");
+        }
+        if launch.experimental_build {
+            cmd.arg("--experimental-build");
+        }
+        // Its registry entry says an agent started it.
+        cmd.env(dev_events::sessions::LAUNCHED_BY_ENV, "mcp");
 
         self.spawn_tracked(cmd, id, dir, launch, log_path, log, log_err)
     }
@@ -296,6 +310,16 @@ impl DevRunner {
 
     /// Stop one session by id. Graceful SIGINT → escalate to SIGKILL.
     /// Removes it from the table. Returns its final info.
+    /// The id of the session this server launched as process `pid`.
+    pub fn id_of_pid(&self, pid: u32) -> Option<u64> {
+        self.sessions.lock().unwrap().iter().find(|s| s.child.id() == pid).map(|s| s.id)
+    }
+
+    /// The process of session `id`, while it runs.
+    pub fn pid_of(&self, id: u64) -> Option<u32> {
+        self.sessions.lock().unwrap().iter().find(|s| s.id == id && s.exit_status.is_none()).map(|s| s.child.id())
+    }
+
     pub fn stop(&self, id: u64) -> Result<DevSessionInfo, String> {
         let mut guard = self.sessions.lock().unwrap();
         let idx = guard
