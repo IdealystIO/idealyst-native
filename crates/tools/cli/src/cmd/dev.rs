@@ -1165,6 +1165,7 @@ pub fn run(args: Args) -> Result<()> {
             on_rebuild: Some(std::sync::Arc::new(|| {
                 crate::dev_log::request_rebuild();
             })),
+            no_watch: args.no_watch,
         };
         // Blocks. host-terminal handles raw mode + alternate screen for
         // the duration; on quit it restores everything before returning.

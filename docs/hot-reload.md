@@ -1998,6 +1998,14 @@ session queues: the web `--local` loop, a full-stack server's watcher,
 the icon watcher, and in wire mode the runtime-server host, which takes
 its rebuild requests from the CLI as `rebuild` lines on its stdin.
 
+Each queued save's `change_detected` names the whole queue so far, and
+no decision follows it until a request. The panel shows that as a
+target status of `queued: <files> · r applies` and one `queued` row in
+the save history, rewritten as the queue grows; the request's decision
+turns that row into the save's result. An agent reading `dev_status`
+sees the same `change_detected` with nothing after it — the session's
+registry entry (`no_watch: true`) says why.
+
 ### Every session is reachable — the session registry
 
 Each `idealyst dev`, whether a person started it in a terminal or

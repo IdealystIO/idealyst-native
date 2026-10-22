@@ -61,6 +61,9 @@ pub struct RunOptions {
     pub targets: Vec<String>,
     /// What `r` does: ask the session's watchers to rebuild.
     pub on_rebuild: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// `idealyst dev --no-watch`: saves are queued until a rebuild
+    /// request, and the panel shows them as queued, not as deciding.
+    pub no_watch: bool,
 }
 
 /// A key the panel acts on. `q`, Esc and Ctrl-C are the terminal host's:
@@ -129,7 +132,11 @@ impl Controller {
         Rc::new(Self {
             events,
             on_rebuild: opts.on_rebuild,
-            model: RefCell::new(Model::new(&opts.targets)),
+            model: RefCell::new({
+                let mut model = Model::new(&opts.targets);
+                model.no_watch = opts.no_watch;
+                model
+            }),
             toggles: Cell::new(Toggles::default()),
             keys: RefCell::new(VecDeque::new()),
             frame: Cell::new(0),

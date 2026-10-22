@@ -59,6 +59,9 @@ use dev_events::{
 pub const HISTORY_CAP: usize = 20;
 /// Lines kept for the log pane.
 pub const LOG_CAP: usize = 2_000;
+/// The tier a `--no-watch` save's row shows until a rebuild request
+/// applies it.
+pub const QUEUED: &str = "queued";
 
 /// What a target is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +74,10 @@ pub enum State {
     Ready { ms: u64 },
     /// Files changed; the decision is coming.
     Changed { files: Vec<String> },
+    /// `idealyst dev --no-watch`: saves are queued, and nothing happens
+    /// until a rebuild request (`r`, an agent's `rebuild_dev`) applies
+    /// them.
+    Held { files: Vec<String> },
     /// Overlay patches are on their way to the page.
     ApplyingOverlay { sites: usize },
     /// A hot patch is compiling.
@@ -245,6 +252,10 @@ pub struct Model {
     pub server_log: Option<String>,
     /// The session's Robot relay, once it reported (a `--local` session).
     pub robot: Option<Robot>,
+    /// `idealyst dev --no-watch`: a save is queued, not acted on, so a
+    /// `change_detected` is not followed by a decision until a rebuild
+    /// request applies the queue.
+    pub no_watch: bool,
 }
 
 impl Model {
@@ -382,6 +393,29 @@ impl Model {
             DevEvent::Watching { target, .. } => {
                 if self.target(target).state == State::Starting {
                     self.set(target, State::Watching);
+                }
+            }
+            // Under `--no-watch` every queued save repeats the whole queue,
+            // and nothing decides it until a rebuild request: one "queued"
+            // row, rewritten as the queue grows. The request's own
+            // `change_detected` lands on that row too, and the decision
+            // that follows turns it into the save's result.
+            DevEvent::ChangeDetected { target, paths, .. } if self.no_watch => {
+                let files: Vec<String> = paths.iter().map(|p| file_name(p)).collect();
+                self.set(target, State::Held { files: files.clone() });
+                let at_ms = self.now_ms;
+                match self.save(target) {
+                    Some(s) if s.ms.is_none() && s.tier == QUEUED => s.files = files,
+                    _ => self.push_save(Save {
+                        at_ms,
+                        target: target.clone(),
+                        files,
+                        tier: QUEUED.into(),
+                        ms: None,
+                        detail: String::new(),
+                        acked: false,
+                        failed: false,
+                    }),
                 }
             }
             DevEvent::ChangeDetected { target, paths, .. } => {
@@ -862,6 +896,59 @@ mod tests {
             (save.tier.as_str(), save.ms, save.detail.as_str(), save.acked),
             ("overlay", Some(12), "1 site", true)
         );
+    }
+
+    #[test]
+    fn regression_under_no_watch_queued_saves_are_one_queued_row_not_deciding() {
+        // A `--no-watch` session reports each queued save (the whole queue
+        // so far) as `change_detected`. The panel showed "change: … ·
+        // deciding" for saves nothing would decide until `r`, and a fresh
+        // "…" row for every one of them.
+        let mut m = started();
+        m.no_watch = true;
+        let change = |at, paths: &[&str]| {
+            (at, DevEvent::ChangeDetected {
+                target: web(),
+                paths: paths.iter().map(|p| p.to_string()).collect(),
+                crates: vec![],
+                folded: 0,
+            })
+        };
+        run(&mut m, vec![change(1000, &["/cf/schema.rs"]), change(2000, &["/cf/schema.rs", "/cf/equipment.rs"])]);
+        let both = vec!["schema.rs".to_string(), "equipment.rs".to_string()];
+        assert_eq!(m.targets[0].state, State::Held { files: both.clone() });
+        assert_eq!(m.history.len(), 1, "one row for the queue: {:?}", m.history);
+        assert_eq!((m.history[0].tier.as_str(), &m.history[0].files), (QUEUED, &both));
+
+        // The rebuild request applies the queue: its `change_detected`
+        // lands on the queued row, and the decision makes it the save.
+        run(
+            &mut m,
+            vec![
+                change(5000, &["/cf/schema.rs", "/cf/equipment.rs"]),
+                (5010, DevEvent::Decided {
+                    target: web(),
+                    decision: Decision::HotPatch { crates: vec!["core".into()], files: vec![] },
+                }),
+                (9000, DevEvent::PatchBuilt {
+                    target: web(),
+                    files: vec![],
+                    crates: vec![],
+                    redirected: 3,
+                    steps: vec![],
+                    skipped: vec![],
+                    bytes: 1,
+                    ms: 3990,
+                }),
+            ],
+        );
+        assert_eq!(m.history.len(), 1, "{:?}", m.history);
+        assert_eq!(m.history[0].tier, "hot patch");
+
+        // The next save starts a new queued row.
+        run(&mut m, vec![change(10_000, &["/cf/materials.rs"])]);
+        assert_eq!(m.history.len(), 2);
+        assert_eq!((m.history[0].tier.as_str(), m.history[1].tier.as_str()), (QUEUED, "hot patch"));
     }
 
     /// A save overtaken mid-patch closes its row as superseded; the

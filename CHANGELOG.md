@@ -2059,6 +2059,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   content centred, so one icon button of any size lines up with the
   column.
 
+- **The panel shows a `--no-watch` session's saves as queued, not as
+  deciding** (`dev-tui` — `RunOptions::no_watch`, `State::Held` and
+  `Model::no_watch` are new, a major for `dev-tui`, whose only consumer is
+  the CLI). A queued save is reported as `change_detected`, which the panel
+  took for a save in flight: its status read `change: … · deciding` until
+  `r`, and every save opened another `…` row. It now reads
+  `queued: <files> · r applies`, with one `queued` row that the rebuild
+  request's decision turns into the save's result.
 - **A save by rename no longer rebuilds the runtime-server sidecar**
   (`dev-server`). `sed -i` and editors' atomic writes put the new contents
   in a temp file and rename it over the original; the temp file's events

@@ -378,6 +378,7 @@ fn status(t: &Target, now_ms: u64, frame: u64) -> (String, Tone) {
         State::Watching => ("● watching".into(), Tone::Muted),
         State::Ready { ms } => (format!("● ready · built in {}", secs(*ms)), Tone::Muted),
         State::Changed { files } => (format!("{spin} change: {} · deciding", files.join(", ")), Tone::Busy),
+        State::Held { files } => (format!("○ queued: {} · r applies", files.join(", ")), Tone::Busy),
         State::ApplyingOverlay { sites } => {
             (format!("{spin} applying overlay · {} · {elapsed}", sites_word(*sites)), Tone::Busy)
         }

@@ -105,6 +105,7 @@ impl Harness {
                     on_rebuild: Some(Arc::new(move || {
                         rebuilds.fetch_add(1, Ordering::SeqCst);
                     })),
+                    no_watch: false,
                 },
             );
             *for_build.borrow_mut() = Some(controller.clone());
