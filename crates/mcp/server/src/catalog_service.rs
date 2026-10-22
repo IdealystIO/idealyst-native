@@ -833,6 +833,11 @@ pub struct ConfigureVscodeRequest {
 const EXTERNAL_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl CatalogService {
+    /// Stop every dev session `run_dev` started, as the server shuts down.
+    pub(crate) fn stop_owned_dev_sessions(&self) {
+        self.dev_runner.stop_all();
+    }
+
     /// The running, registered session a tool names: by the id `run_dev`
     /// gave it, or by process id.
     fn resolve_session(&self, session_id: Option<u64>, pid: Option<u32>) -> Result<crate::dev_sessions::Live, String> {

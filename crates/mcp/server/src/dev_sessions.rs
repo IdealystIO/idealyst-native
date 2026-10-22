@@ -7,7 +7,6 @@
 //! Stopping a session goes by its pid, not its endpoint: the case it is
 //! for is a session too wedged to answer.
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use dev_events::sessions::{self, SessionEntry};
@@ -19,7 +18,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// A registered session whose process is alive.
 #[derive(Debug, Clone)]
 pub struct Live {
-    pub path: PathBuf,
     pub entry: SessionEntry,
 }
 
@@ -36,7 +34,7 @@ pub(crate) fn live_in(dir: &std::path::Path) -> Vec<Live> {
         .into_iter()
         .filter_map(|(path, entry)| {
             if crate::app_discovery::pid_is_live(entry.pid) {
-                Some(Live { path, entry })
+                Some(Live { entry })
             } else {
                 let _ = std::fs::remove_file(&path);
                 None

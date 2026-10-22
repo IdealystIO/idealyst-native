@@ -160,6 +160,23 @@ pub async fn run_stdio_with_full_options(opts: ServerOptions) -> Result<()> {
         .inspect_err(|e| tracing::error!("serving error: {:?}", e))?;
     let peer = service.peer().clone();
 
+    let _watcher = start_catalog_work(&svc, &peer, &opts)?;
+
+    let served = service.waiting().await;
+    shut_down(&svc);
+    served?;
+    Ok(())
+}
+
+/// The catalog work a server starts once it is bound: the first
+/// extraction (in the background) and, with watch paths, the watcher that
+/// re-extracts on each change. Returns the watcher, which stops when
+/// dropped.
+fn start_catalog_work(
+    svc: &CatalogService,
+    peer: &rmcp::service::Peer<rmcp::RoleServer>,
+    opts: &ServerOptions,
+) -> Result<Option<watch::WatcherHandle>> {
     // The first catalog extraction runs in the BACKGROUND, after stdio is
     // bound — never before it.
     //
@@ -194,18 +211,28 @@ pub async fn run_stdio_with_full_options(opts: ServerOptions) -> Result<()> {
     // If a watcher was configured, spawn it. Whether it uses the
     // subprocess flavor or the in-process flavor depends on
     // `opts.subprocess`.
-    let _watcher = if !opts.watch_paths.is_empty() {
+    let watcher = if !opts.watch_paths.is_empty() {
         Some(if let Some(factory) = opts.subprocess.clone() {
-            watch::spawn_subprocess(svc.clone(), peer.clone(), opts.watch_paths.clone(), factory)?
+            // `false`: the preload above is this start's extraction.
+            watch::spawn_subprocess(svc.clone(), peer.clone(), opts.watch_paths.clone(), factory, false)?
         } else {
             watch::spawn(svc.clone(), peer.clone(), opts.watch_paths.clone())?
         })
     } else {
         None
     };
+    Ok(watcher)
+}
 
-    service.waiting().await?;
-    Ok(())
+/// What the server does once its client has gone (stdin closed or the
+/// transport failed): end the work that only existed for that client —
+/// catalog extractions still compiling, and the dev sessions `run_dev`
+/// started. Explicit here, not left to drops: the watcher's thread holds
+/// clones of the service and is not joined, so a drop-time cleanup could
+/// race the process exit.
+fn shut_down(svc: &CatalogService) {
+    watch::kill_extractors();
+    svc.stop_owned_dev_sessions();
 }
 
 /// Convenience wrapper: catalog-only, optionally with Robot tools
@@ -274,10 +301,13 @@ pub async fn run_stdio_with_subprocess(
         peer,
         paths,
         std::sync::Arc::new(subprocess_cmd),
+        true,
     )?;
 
-    running.waiting().await?;
+    let served = running.waiting().await;
     drop(watcher_handle);
+    watch::kill_extractors();
+    served?;
     Ok(())
 }
 
@@ -326,4 +356,63 @@ fn init_tracing() {
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .try_init();
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn regression_a_watched_start_extracts_the_catalog_once() {
+        // With watch paths, the background preload and the watcher's own
+        // first reload each ran an extractor at start: two compiles of the
+        // project at once on every `idealyst mcp` launch.
+        let extractions = Arc::new(AtomicUsize::new(0));
+        let watched = std::env::temp_dir().join(format!("idealyst-watched-start-{}", std::process::id()));
+        std::fs::create_dir_all(&watched).unwrap();
+        let opts = ServerOptions::new()
+            .with_subprocess_catalog({
+                let extractions = extractions.clone();
+                move || {
+                    extractions.fetch_add(1, Ordering::SeqCst);
+                    let mut c = std::process::Command::new("sh");
+                    c.arg("-c").arg(r#"printf '%s' '{"components":[]}'"#);
+                    c
+                }
+            })
+            .with_watch(vec![watched.clone()]);
+
+        // A served service on an in-memory transport; the client's half of
+        // the handshake is written up front.
+        let (server_io, mut client_io) = tokio::io::duplex(1 << 20);
+        client_io
+            .write_all(
+                concat!(
+                    r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
+                    "\n",
+                    r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+                    "\n",
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let svc = CatalogService::with_robot_mode(false, None);
+        let running = svc.clone().serve(tokio::io::split(server_io)).await.unwrap();
+
+        let _watcher = start_catalog_work(&svc, running.peer(), &opts).unwrap();
+        for _ in 0..500 {
+            if extractions.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        // The watcher thread's first reload, if it ran one, starts at once.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(extractions.load(Ordering::SeqCst), 1, "extractions run at start");
+        let _ = std::fs::remove_dir_all(&watched);
+    }
 }

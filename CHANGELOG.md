@@ -2039,6 +2039,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`idealyst mcp` exits when its client goes, and compiles the catalog once
+  at start** (`mcp-server`). The catalog extractor ran in tokio's blocking
+  pool, and a runtime's shutdown waits for blocking tasks, so after the
+  client closed stdin the server stayed up — still compiling — until the
+  extraction finished: minutes on a large workspace. Extractors are now
+  child processes in their own process group, killed with everything they
+  started when the client goes; the dev sessions `run_dev` started are
+  stopped at the same point. A watched start also ran two extractions at
+  once (the background preload and the watcher's own first reload); it
+  runs one.
 - **A hot patch of a crate many others depend on no longer falls back to a
   rebuild on macOS** (`build-web`). The patch link passed every object on
   wasm-ld's command line; an untrimmed patch of a crate ~30 others depend

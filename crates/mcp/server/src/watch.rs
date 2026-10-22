@@ -127,7 +127,10 @@ fn is_meaningful(events: &[DebouncedEvent]) -> bool {
 /// short-lived extractor process restarts.
 ///
 /// `cmd_factory` is called once per reload to produce a fresh
-/// `Command`. The child is expected to print
+/// `Command`. With `initial_extract` the watcher also extracts once at
+/// start; a caller that already runs [`preload_subprocess_catalog`]
+/// passes `false`, or every start would compile the project twice at
+/// once. The child is expected to print
 /// `mcp_catalog::catalog_json()` to stdout and exit zero.
 /// Non-zero exits and JSON parse failures are logged but
 /// non-fatal — the previous good catalog stays in place.
@@ -136,6 +139,7 @@ pub(crate) fn spawn_subprocess(
     peer: Peer<RoleServer>,
     paths: Vec<PathBuf>,
     cmd_factory: Arc<dyn Fn() -> std::process::Command + Send + Sync + 'static>,
+    initial_extract: bool,
 ) -> Result<WatcherHandle> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<DebouncedEvent>>();
     let mut debouncer = new_debouncer(Duration::from_millis(250), move |res| match res {
@@ -163,12 +167,13 @@ pub(crate) fn spawn_subprocess(
                 .build()
                 .expect("watch thread runtime");
             rt.block_on(async move {
-                // Do an initial subprocess extract so the live
-                // catalog matches what the *extractor* sees, not
-                // what this server process's own inventory holds.
-                // Useful when the server binary itself doesn't
-                // depend on the user crate.
-                run_subprocess_reload(&svc, &peer, cmd_factory.as_ref()).await;
+                // The initial extract makes the live catalog what the
+                // *extractor* sees, not what this server process's own
+                // inventory holds — the server binary need not depend
+                // on the user crate.
+                if initial_extract {
+                    run_subprocess_reload(&svc, &peer, cmd_factory.as_ref()).await;
+                }
 
                 while let Some(events) = rx.recv().await {
                     if !is_meaningful(&events) {
@@ -201,18 +206,11 @@ pub(crate) async fn preload_subprocess_catalog(
     // callers need to know both that one is running and what it costs.
     let started = std::time::Instant::now();
     svc.mark_build_started().await;
-    let mut cmd = cmd_factory();
-    let output = match tokio::task::spawn_blocking(move || cmd.output()).await {
-        Ok(Ok(out)) => out,
-        Ok(Err(e)) => {
+    let output = match run_extractor(cmd_factory()).await {
+        Ok(out) => out,
+        Err(e) => {
             tracing::warn!("subprocess spawn failed: {:?}", e);
             svc.mark_build_failed(format!("could not run the catalog extractor: {e}"))
-                .await;
-            return;
-        }
-        Err(e) => {
-            tracing::warn!("subprocess join failed: {:?}", e);
-            svc.mark_build_failed(format!("catalog extractor did not complete: {e}"))
                 .await;
             return;
         }
@@ -261,18 +259,11 @@ async fn run_subprocess_reload(
     // that becoming a silently wrong answer.
     let started = std::time::Instant::now();
     svc.mark_build_started().await;
-    let mut cmd = cmd_factory();
-    let output = match tokio::task::spawn_blocking(move || cmd.output()).await {
-        Ok(Ok(out)) => out,
-        Ok(Err(e)) => {
+    let output = match run_extractor(cmd_factory()).await {
+        Ok(out) => out,
+        Err(e) => {
             tracing::warn!("subprocess spawn failed: {:?}", e);
             svc.mark_build_failed(format!("could not run the catalog extractor: {e}"))
-                .await;
-            return;
-        }
-        Err(e) => {
-            tracing::warn!("subprocess join failed: {:?}", e);
-            svc.mark_build_failed(format!("catalog extractor did not complete: {e}"))
                 .await;
             return;
         }
@@ -311,6 +302,89 @@ async fn run_subprocess_reload(
     }
     if let Err(e) = peer.notify_tool_list_changed().await {
         tracing::warn!("failed to notify tool list_changed: {:?}", e);
+    }
+}
+
+/// Process groups of the catalog extractors running right now, for
+/// [`kill_extractors`].
+#[cfg(unix)]
+static RUNNING_EXTRACTORS: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+
+/// Run one catalog extractor to completion and collect its output.
+///
+/// The child is a `tokio::process` child, not `spawn_blocking(cmd.output())`:
+/// a runtime's shutdown waits for every blocking task, so an extraction in
+/// the blocking pool kept `idealyst mcp` alive after its client closed
+/// stdin, for as long as the compile took. Dropping this future (a runtime
+/// shutting down drops its tasks) kills the extractor.
+///
+/// On unix the extractor leads its own process group, because it runs
+/// cargo, which runs rustc: ending the extraction means ending all of them,
+/// which killing only the extractor's pid would not do.
+async fn run_extractor(mut cmd: std::process::Command) -> std::io::Result<std::process::Output> {
+    use std::process::Stdio;
+    // stdin is null, as `Command::output` sets it: the server's own stdin
+    // is the MCP transport and must not be shared with a child.
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let mut cmd = tokio::process::Command::from(cmd);
+    cmd.kill_on_drop(true);
+    let child = cmd.spawn()?;
+    #[cfg(unix)]
+    let mut group = child.id().map(ExtractorGroup::track);
+    let output = child.wait_with_output().await;
+    #[cfg(unix)]
+    if let Some(group) = group.as_mut() {
+        group.finished = true;
+    }
+    output
+}
+
+/// One running extractor's process group, registered for
+/// [`kill_extractors`] while it runs. Dropped before the extractor
+/// finished, it kills the group.
+#[cfg(unix)]
+struct ExtractorGroup {
+    pgid: i32,
+    finished: bool,
+}
+
+#[cfg(unix)]
+impl ExtractorGroup {
+    fn track(pid: u32) -> Self {
+        let pgid = pid as i32;
+        RUNNING_EXTRACTORS.lock().unwrap_or_else(|e| e.into_inner()).push(pgid);
+        Self { pgid, finished: false }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ExtractorGroup {
+    fn drop(&mut self) {
+        RUNNING_EXTRACTORS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|&g| g != self.pgid);
+        // Not after a normal finish: the group id is free for reuse once
+        // its leader is reaped.
+        if !self.finished {
+            unsafe { libc::killpg(self.pgid, libc::SIGKILL) };
+        }
+    }
+}
+
+/// Kill every catalog extractor still running, with everything it
+/// started. The server calls this once its client has gone: an
+/// extractor compiles the project, and nothing is left to read the
+/// catalog it would produce. Extractions on the watcher's own thread
+/// are never dropped before the process exits, so this is what ends
+/// them. Unix only; elsewhere an extractor is killed when its task
+/// is dropped.
+pub(crate) fn kill_extractors() {
+    #[cfg(unix)]
+    for pgid in std::mem::take(&mut *RUNNING_EXTRACTORS.lock().unwrap_or_else(|e| e.into_inner())) {
+        unsafe { libc::killpg(pgid, libc::SIGKILL) };
     }
 }
 
@@ -360,8 +434,105 @@ mod tests {
         format!("'{}'", s.replace('\'', r"'\''"))
     }
 
+    /// Held by every test that runs an extractor: [`kill_extractors`]
+    /// kills every extractor in the process, including another test's.
+    static EXTRACTIONS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// An extractor that starts a grandchild (as the real one starts
+    /// cargo and rustc), writes the grandchild's pid to `pid_file`, and
+    /// waits on it for a minute.
+    fn long_extractor(pid_file: &std::path::Path) -> impl Fn() -> std::process::Command + Send + Sync + 'static {
+        sh(format!("sleep 60 & echo $! > {}; wait", quoted(&pid_file.display().to_string())))
+    }
+
+    /// A fresh path for `long_extractor`'s pid file.
+    fn pid_file(test: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("idealyst-extractor-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    /// The pid `long_extractor` wrote, once it has.
+    fn grandchild_pid(pid_file: &std::path::Path) -> i32 {
+        for _ in 0..500 {
+            if let Some(pid) = std::fs::read_to_string(pid_file).ok().and_then(|s| s.trim().parse().ok()) {
+                return pid;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the extractor never started");
+    }
+
+    /// Whether `pid` is gone, waiting up to five seconds for it to go.
+    /// The grandchild is re-parented to init once its shell dies, which
+    /// reaps it, so it cannot linger as a zombie.
+    fn gone(pid: i32) -> bool {
+        for _ in 0..500 {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[test]
+    fn regression_shutdown_does_not_wait_for_a_running_extractor() {
+        // `idealyst mcp` stayed up after its client closed stdin for as
+        // long as the startup extraction took (minutes on a large
+        // workspace): the extractor ran in the blocking pool, and the
+        // runtime's shutdown waits for blocking tasks.
+        let _one = EXTRACTIONS.blocking_lock();
+        let pid_file = pid_file("shutdown");
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let factory = long_extractor(&pid_file);
+        rt.spawn(async move {
+            let svc = CatalogService::with_robot_mode(false, None);
+            preload_subprocess_catalog(&svc, &factory).await;
+        });
+        let grandchild = grandchild_pid(&pid_file);
+
+        let started = std::time::Instant::now();
+        drop(rt);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "shutting the runtime down waited {:?} for the extractor",
+            started.elapsed()
+        );
+        assert!(gone(grandchild), "the extractor's own children outlived the server");
+    }
+
+    #[tokio::test]
+    async fn regression_kill_extractors_ends_an_extraction_and_its_children() {
+        // The watcher's extractions run on a thread the server never
+        // joins, so no drop ends them: shutdown has to.
+        let _one = EXTRACTIONS.lock().await;
+        let pid_file = pid_file("kill");
+        let svc = CatalogService::with_robot_mode(false, None);
+        let task = {
+            let svc = svc.clone();
+            let factory = long_extractor(&pid_file);
+            tokio::spawn(async move { preload_subprocess_catalog(&svc, &factory).await })
+        };
+        let grandchild = tokio::task::spawn_blocking({
+            let pid_file = pid_file.clone();
+            move || grandchild_pid(&pid_file)
+        })
+        .await
+        .unwrap();
+
+        kill_extractors();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the extraction kept running after kill_extractors")
+            .unwrap();
+        assert!(gone(grandchild), "the extractor's own children survived kill_extractors");
+        assert!(svc.status().await.last_error.is_some(), "a killed extraction is a failed one");
+    }
+
     #[tokio::test]
     async fn regression_warning_only_rebuild_is_not_stale() {
+        let _one = EXTRACTIONS.lock().await;
         // The extractor succeeded (exit 0, valid JSON) while printing a
         // dead-code warning on stderr. That is a good build.
         let svc = CatalogService::with_robot_mode(false, None);
@@ -378,6 +549,7 @@ mod tests {
 
     #[tokio::test]
     async fn regression_stale_marker_quotes_the_error_not_the_first_warning() {
+        let _one = EXTRACTIONS.lock().await;
         let svc = CatalogService::with_robot_mode(false, None);
         // A good build first, so the next failure is STALE (not UNAVAILABLE).
         preload_subprocess_catalog(&svc, &sh("printf '%s' '{\"components\":[]}'".into())).await;
@@ -399,6 +571,7 @@ mod tests {
 
     #[tokio::test]
     async fn regression_failure_with_only_warnings_names_the_exit_status() {
+        let _one = EXTRACTIONS.lock().await;
         // The process died (here: exit 137, as a SIGKILL'd child reports
         // through a shell) having printed nothing but warnings. The
         // reason must be the exit, not the warning.
