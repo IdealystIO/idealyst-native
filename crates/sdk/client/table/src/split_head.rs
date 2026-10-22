@@ -27,11 +27,19 @@
 //!   become the body's measured widths, exactly. From then on the head
 //!   follows every change of the body (a resize, a fill column, a
 //!   resize drag); the floors are the head's widths as first laid out.
-//! - **Width.** The head content is as wide as the body grid, and the head
-//!   strip as wide as the body scroller's VIEWPORT (the probe) — on web a
-//!   classic vertical scrollbar takes width from the viewport, and the
-//!   head must end where the body's visible columns end, or a column
-//!   frozen to the right would pin at a different x in the head.
+//! - **Width.** On web a classic vertical scrollbar takes width from the
+//!   body's viewport (the probe), so the head would end short of the
+//!   frame and leave the corner above the scrollbar unpainted — the
+//!   header's band and divider cut off. The head runs the frame's FULL
+//!   width instead (the outer probe, a zero-height view in the frame),
+//!   and the scrollbar's width — the GUTTER, frame minus viewport — goes
+//!   to the head's LAST column: its track, and the head content, are
+//!   that much wider than the body's. Every other column keeps the
+//!   body's x, and so does a column frozen to the right: it pins to the
+//!   strip's edge, a gutter further right, and is a gutter wider. With
+//!   overlay scrollbars (and on native) the gutter is zero. The cost: a
+//!   right-aligned label in the last column sits a gutter right of its
+//!   column's body cells while the scrollbar shows.
 //! - **Horizontal scroll.** The strip is a scroller too, kept at the
 //!   body's horizontal offset (and the body at the strip's, when the
 //!   strip is scrolled — a trackpad over the header). Frozen columns pin
@@ -65,8 +73,10 @@ pub(super) struct HeadSync {
     forced: glue::Signal<Option<Vec<f32>>>,
     /// The body grid's width — the head content's.
     body_width: glue::Signal<Option<f32>>,
-    /// The body scroller's viewport width — the head strip's.
+    /// The body scroller's viewport width.
     viewport: glue::Signal<Option<f32>>,
+    /// The frame's full width (web; the outer probe) — the head strip's.
+    outer: glue::Signal<Option<f32>>,
     head_ref: Ref<ScrollViewHandle>,
     body_ref: Ref<ScrollViewHandle>,
     body_x: Cell<f32>,
@@ -79,6 +89,16 @@ pub(super) struct HeadSync {
     forced_on: Cell<bool>,
     armed: Cell<bool>,
     subs: RefCell<Vec<LayoutSubscription>>,
+}
+
+/// The vertical scrollbar's width: the frame's width past the body's
+/// viewport. Zero until both are measured, with an overlay scrollbar, and
+/// under a pixel (sub-pixel rounding between the two measurements).
+fn gutter(outer: Option<f32>, viewport: Option<f32>) -> f32 {
+    match (outer, viewport) {
+        (Some(o), Some(v)) if o - v >= 1.0 => o - v,
+        _ => 0.0,
+    }
 }
 
 /// Slack under which two horizontal offsets are the same — a programmatic
@@ -94,6 +114,7 @@ impl HeadSync {
             forced: glue::signal(None),
             body_width: glue::signal(None),
             viewport: glue::signal(None),
+            outer: glue::signal(None),
             head_ref: Ref::new(),
             body_ref: Ref::new(),
             body_x: Cell::new(0.0),
@@ -175,6 +196,12 @@ impl HeadSync {
         Box::new(move |h| sync.watch(h, Rc::new(|s, w| s.viewport.set(Some(w)))))
     }
 
+    /// A binder that watches the frame's full width (the outer probe).
+    pub(super) fn outer_probe(self: &Rc<Self>) -> Box<dyn FnOnce(ViewHandle)> {
+        let sync = self.clone();
+        Box::new(move |h| sync.watch(h, Rc::new(|s, w| s.outer.set(Some(w)))))
+    }
+
     /// Take the next step once a side is fully measured: floor the body at
     /// the head's natural widths, then force the head to the body's.
     fn settle(&self) {
@@ -196,14 +223,20 @@ impl HeadSync {
 
     /// The head grid's column specs: column `i`'s own spec until the body
     /// is measured, then exactly the body's width.
+    /// The LAST column also takes the gutter (see the module docs).
     pub(super) fn head_specs(self: &Rc<Self>, specs: &[Option<ColumnSpec>]) -> Vec<Option<ColumnSpec>> {
+        let last = specs.len().saturating_sub(1);
         specs
             .iter()
             .enumerate()
             .map(|(i, spec)| {
                 let (forced, spec) = (self.forced, spec.clone());
+                let (outer, viewport) = (self.outer, self.viewport);
                 Some(ColumnSpec::live(move || match forced.with(|f| f.as_ref().and_then(|f| f.get(i).copied())) {
-                    Some(w) => ColumnTrack { width: Some(w), ..Default::default() },
+                    Some(w) => {
+                        let extra = if i == last { gutter(outer.get(), viewport.get()) } else { 0.0 };
+                        ColumnTrack { width: Some(w + extra), ..Default::default() }
+                    }
                     None => spec.as_ref().map(ColumnSpec::get).unwrap_or_default(),
                 }))
             })
@@ -223,25 +256,30 @@ impl HeadSync {
         }))
     }
 
-    /// The head strip's style: as wide as the body's viewport.
+    /// The head strip's style: as wide as the body's viewport and the
+    /// gutter beside it — the frame's width.
     pub(super) fn strip_style(self: &Rc<Self>) -> StyleProp {
-        let viewport = self.viewport;
+        let (viewport, outer) = (self.viewport, self.outer);
         StyleProp::SheetDynamic(Box::new(move || {
             let app = StyleApplication::new(strip_sheet());
-            match viewport.get() {
-                Some(w) => app.with_inline(StyleRules { width: Some(px(w)), ..Default::default() }),
+            let (o, v) = (outer.get(), viewport.get());
+            match v {
+                Some(w) => app.with_inline(StyleRules { width: Some(px(w + gutter(o, v))), ..Default::default() }),
                 None => app,
             }
         }))
     }
 
-    /// The head content's style: as wide as the body grid.
+    /// The head content's style: as wide as the body grid, and the gutter.
     pub(super) fn content_style(self: &Rc<Self>) -> StyleProp {
-        let width = self.body_width;
+        let (width, viewport, outer) = (self.body_width, self.viewport, self.outer);
         StyleProp::SheetDynamic(Box::new(move || {
             let app = StyleApplication::new(head_content_sheet());
             match width.get() {
-                Some(w) => app.with_inline(StyleRules { width: Some(px(w)), ..Default::default() }),
+                Some(w) => app.with_inline(StyleRules {
+                    width: Some(px(w + gutter(outer.get(), viewport.get()))),
+                    ..Default::default()
+                }),
                 None => app,
             }
         }))
@@ -383,6 +421,29 @@ pub(super) fn body_scroller_sheet() -> Rc<runtime_shared::StyleSheet> {
 /// Split a table's children into its header sections and the rest.
 pub(super) fn take_head(rows: Vec<Element>) -> (Vec<Element>, Vec<Element>) {
     rows.into_iter().partition(is_head)
+}
+
+/// The frame's outer probe: in flow, zero height, stretched across the
+/// frame — so its width is the frame's, scrollbar included.
+fn outer_probe_sheet() -> Rc<runtime_shared::StyleSheet> {
+    static KEY: u8 = 0;
+    runtime_shared::cached_stylesheet(&KEY as *const u8 as usize, || {
+        runtime_shared::StyleSheet::r#static(StyleRules {
+            height: Some(px(0.0)),
+            flex_shrink: Some(glue::Tokenized::Literal(0.0)),
+            ..Default::default()
+        })
+        .premint_as("table.v1.outer_probe")
+    })
+}
+
+/// The outer probe view (web).
+fn outer_probe(sync: &Rc<HeadSync>) -> Element {
+    let fill = sync.outer_probe();
+    runtime_vocabulary::builders::view()
+        .style(StyleProp::Sheet(Box::new(StyleApplication::new(outer_probe_sheet()))))
+        .on_handle(move |h| fill(h))
+        .build()
 }
 
 /// The probe view.
@@ -559,7 +620,7 @@ pub(super) fn web(
         PrimCell::new(TableFramePrim {
             style: Some(StyleProp::Sheet(Box::new(StyleApplication::new(frame_sheet())))),
         }),
-        vec![head_strip(&sync, head_table), body_scroller],
+        vec![outer_probe(&sync), head_strip(&sync, head_table), body_scroller],
     );
     surface_with_slots(frame, style, header_slot, footer_slot)
 }
@@ -688,5 +749,19 @@ mod tests {
             assert_eq!(sync.body_x.get(), 140.0, "scrolling the strip moves the body");
             assert_eq!(sync.body_y.get(), 30.0, "…keeping its vertical offset");
         });
+    }
+}
+
+#[cfg(test)]
+mod gutter_tests {
+    use super::gutter;
+
+    #[test]
+    fn the_gutter_is_the_frame_past_the_viewport() {
+        assert_eq!(gutter(Some(1168.0), Some(1153.0)), 15.0, "a classic scrollbar");
+        assert_eq!(gutter(Some(1168.0), Some(1168.0)), 0.0, "an overlay scrollbar");
+        assert_eq!(gutter(Some(1168.4), Some(1168.0)), 0.0, "sub-pixel rounding is not a scrollbar");
+        assert_eq!(gutter(None, Some(1168.0)), 0.0, "not measured yet");
+        assert_eq!(gutter(Some(1168.0), None), 0.0);
     }
 }
