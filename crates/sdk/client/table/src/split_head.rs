@@ -715,6 +715,54 @@ mod tests {
         assert_eq!(world.enter(|| widths(&head)), vec![Some(120.0), Some(300.0)], "a wider body column widens the head's");
     }
 
+    /// Regression: on web a classic vertical scrollbar narrows the body's
+    /// viewport, and the head strip ended at the viewport, so the header's
+    /// band and divider stopped short of the scrollbar. The head now spans
+    /// the frame: the strip is the viewport plus the gutter, and the
+    /// gutter goes to the head's last column (and its content) only.
+    #[test]
+    fn regression_the_head_runs_over_the_scrollbar_gutter() {
+        let world = World::new();
+        let (sync, head) = step(&world, || {
+            let sync = HeadSync::new(2);
+            let head = sync.head_specs(&[None, None]);
+            (sync, head)
+        });
+        step(&world, || {
+            record_body(&sync, 0, 100.0);
+            record_body(&sync, 1, 200.0);
+        });
+        step(&world, || {
+            record_head(&sync, 0, 100.0);
+            record_head(&sync, 1, 200.0);
+        });
+        // A 15 px classic scrollbar: frame 1168, viewport 1153.
+        step(&world, || {
+            sync.body_width.set(Some(300.0));
+            sync.viewport.set(Some(1153.0));
+            sync.outer.set(Some(1168.0));
+        });
+        let width_of = |style: StyleProp| {
+            world.enter(|| match style {
+                StyleProp::SheetDynamic(f) => f().inline().and_then(|r| r.width.clone()),
+                _ => panic!("a dynamic sheet"),
+            })
+        };
+        assert_eq!(
+            world.enter(|| widths(&head)),
+            vec![Some(100.0), Some(215.0)],
+            "the last column takes the gutter; the others keep the body's x"
+        );
+        assert_eq!(width_of(sync.strip_style()), Some(px(1168.0)), "the strip spans the frame");
+        assert_eq!(width_of(sync.content_style()), Some(px(315.0)), "the content is the body grid and the gutter");
+
+        // An overlay scrollbar takes no width: nothing is added.
+        step(&world, || sync.outer.set(Some(1153.0)));
+        assert_eq!(world.enter(|| widths(&head)), vec![Some(100.0), Some(200.0)]);
+        assert_eq!(width_of(sync.strip_style()), Some(px(1153.0)));
+        assert_eq!(width_of(sync.content_style()), Some(px(300.0)));
+    }
+
     /// A body cell's sizer carries the head's floor; the head's does not.
     #[test]
     fn only_the_body_sizer_is_floored() {

@@ -2059,6 +2059,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   content centred, so one icon button of any size lines up with the
   column.
 
+- **A split-head table's header reaches over the vertical scrollbar**
+  (`table`, web). A classic scrollbar narrows the body's viewport, and the
+  head strip ended at the viewport, so the header's band and divider
+  stopped short of the scrollbar, leaving the corner above it unpainted.
+  The head now spans the frame (measured by a zero-height probe), and the
+  scrollbar's width goes to the head's last column; every other column
+  keeps the body's x. With overlay scrollbars, and on native, nothing
+  changes. A right-aligned label in the last column sits a scrollbar's
+  width right of its body cells while the scrollbar shows.
 - **iOS device builds of apps using `microphone` link** (`microphone`,
   `audio-engine`). cpal's CoreAudio host calls AudioToolbox
   (`AudioComponentInstanceNew`, `AudioUnitRender`, …), which `coreaudio-sys`
