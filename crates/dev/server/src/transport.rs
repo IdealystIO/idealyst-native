@@ -622,7 +622,8 @@ fn accept_new(
                 // initial route — making every deep link render the
                 // home screen while the address bar still says
                 // `/projects/42`. See `SessionFacts::initial_url`.
-                let (app_name, color_scheme, initial_url, identity, viewport) = hello;
+                let (app_name, color_scheme, initial_url, identity, viewport, native_style_states) =
+                    hello;
                 let label = identity
                     .device_label
                     .as_deref()
@@ -671,6 +672,10 @@ fn accept_new(
                         // the session as the wrong platform would
                         // change layout under the user.
                         t.set_platform(&session_id, identity.platform);
+                        // And again: re-created on the event-driven path,
+                        // a browser session would lose every hover,
+                        // press and focus style.
+                        t.set_native_style_states(&session_id, native_style_states);
                     }
                     if !single_process_mode {
                         if let Some(slot) = sidecar_slot {
@@ -686,6 +691,7 @@ fn accept_new(
                                             viewport,
                                             initial_url: initial_url.clone(),
                                             platform: identity.platform,
+                                            native_style_states,
                                         },
                                     );
                                 }
@@ -766,7 +772,7 @@ fn accept_new(
 /// Wait synchronously for the first `AppToDev::Hello` frame on a
 /// newly-accepted socket. Returns the parsed Hello fields as a tuple
 /// keyed positionally (app_name, color_scheme, initial_url, identity,
-/// viewport).
+/// viewport, native_style_states).
 fn read_hello(
     ws: &mut WebSocket<TcpStream>,
 ) -> Result<
@@ -776,6 +782,7 @@ fn read_hello(
         Option<String>,
         ClientIdentity,
         Option<wire::WireViewport>,
+        bool,
     ),
     TransportError,
 > {
@@ -820,6 +827,7 @@ fn extract_hello(
         Option<String>,
         ClientIdentity,
         Option<wire::WireViewport>,
+        bool,
     ),
     TransportError,
 > {
@@ -830,8 +838,9 @@ fn extract_hello(
             initial_url,
             identity,
             viewport,
+            native_style_states,
             ..
-        } => Ok((app_name, color_scheme, initial_url, identity, viewport)),
+        } => Ok((app_name, color_scheme, initial_url, identity, viewport, native_style_states)),
         other => Err(TransportError::Decode(format!(
             "expected AppToDev::Hello, got {:?}",
             other

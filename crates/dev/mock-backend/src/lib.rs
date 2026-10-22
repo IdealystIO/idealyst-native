@@ -105,6 +105,14 @@ pub struct MockNode {
     /// The most recent rules `apply_style` landed on this node, so tests
     /// can assert WHAT was styled, not just that something was.
     pub last_style: Option<Rc<StyleRules>>,
+    /// The overlays of the most recent `apply_styled_variants` — what a
+    /// backend that switches states/breakpoints/containers itself (a
+    /// browser) was handed to switch between.
+    pub state_overlays: Vec<(StateBits, Rc<StyleRules>)>,
+    pub breakpoint_overlays: Vec<(runtime_shared::Breakpoint, Rc<StyleRules>)>,
+    pub container_overlays: Vec<(f32, Rc<StyleRules>)>,
+    /// `mark_container` landed on this node.
+    pub is_container: bool,
     /// Per-frame animated writes (`set_animated_*`), as
     /// `("{prop:?}", value)`. Lets animation-over-wire tests assert that
     /// tween deltas arrive.
@@ -136,6 +144,10 @@ impl MockNode {
             children: Vec::new(),
             styles_applied: 0,
             last_style: None,
+            state_overlays: Vec::new(),
+            breakpoint_overlays: Vec::new(),
+            container_overlays: Vec::new(),
+            is_container: false,
             animated: Vec::new(),
             safe_area_sides: None,
             safe_area_apply_count: 0,
@@ -165,11 +177,22 @@ pub struct MockBackend {
     /// `MockNode`) so `MockNode` stays `Debug` (`Rc<dyn Any>` isn't).
     #[allow(clippy::type_complexity)]
     external_payloads: HashMap<u64, (String, Rc<dyn std::any::Any>)>,
+    /// What `StyleOps::handles_states_natively` answers. `false` is the
+    /// native-toolkit shape (event-driven states); `true` is a browser's
+    /// (CSS switches every overlay).
+    native_states: bool,
 }
 
 impl MockBackend {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A mock shaped like a browser: it reports
+    /// `handles_states_natively() == true` and records every overlay
+    /// `apply_styled_variants` hands it.
+    pub fn with_native_states() -> Self {
+        Self { native_states: true, ..Self::default() }
     }
 
     fn mint(&mut self, kind: NodeKind) -> u64 {
@@ -721,6 +744,33 @@ impl caps::StyleOps for MockBackend {
         }
     }
 
+    fn handles_states_natively(&self) -> bool {
+        self.native_states
+    }
+
+    fn apply_styled_variants(
+        &mut self,
+        node: &u64,
+        base: &Rc<StyleRules>,
+        state_overlays: &[(StateBits, Rc<StyleRules>)],
+        breakpoint_overlays: &[(runtime_shared::Breakpoint, Rc<StyleRules>)],
+        container_overlays: &[(f32, Rc<StyleRules>)],
+    ) {
+        if let Some(n) = self.node_mut(*node) {
+            n.styles_applied += 1;
+            n.last_style = Some(base.clone());
+            n.state_overlays = state_overlays.to_vec();
+            n.breakpoint_overlays = breakpoint_overlays.to_vec();
+            n.container_overlays = container_overlays.to_vec();
+        }
+    }
+
+    fn mark_container(&mut self, node: &u64) {
+        if let Some(n) = self.node_mut(*node) {
+            n.is_container = true;
+        }
+    }
+
 }
 
 impl caps::TextInputOps for MockBackend {
@@ -885,16 +935,36 @@ impl WireHarness {
     where
         F: FnOnce() -> runtime_scene::Element + 'static,
     {
+        Self::mount_on(MockBackend::new(), app)
+    }
+
+    /// Like [`mount`](Self::mount), against a client backend that
+    /// switches style states, breakpoints and container queries itself —
+    /// a browser's shape ([`MockBackend::with_native_states`]).
+    pub fn mount_native_states<F>(app: F) -> Self
+    where
+        F: FnOnce() -> runtime_scene::Element + 'static,
+    {
+        Self::mount_on(MockBackend::with_native_states(), app)
+    }
+
+    fn mount_on<F>(backend: MockBackend, app: F) -> Self
+    where
+        F: FnOnce() -> runtime_scene::Element + 'static,
+    {
         // Same scheduler the sidecar installs — deferred microtasks
         // (navigator chrome et al.) queue instead of re-entering the
         // recorder borrow, and `drain_commands` flushes them.
         dev_server::scheduler::install();
 
+        let (tx, rx) = mpsc::channel();
+        let client = WireBackend::new(backend, tx);
+        // What the client's `AppToDev::Hello` reports and the sidecar's
+        // session thread installs before its first mount.
+        dev_server::set_session_native_style_states(client.handles_states_natively());
+
         let recorder = WireRecordingBackend::new();
         let session = dev_server::newcore::SceneSession::mount(&recorder, |_r| {}, app);
-
-        let (tx, rx) = mpsc::channel();
-        let client = WireBackend::new(MockBackend::new(), tx);
 
         let mut h = Self {
             client,
@@ -916,6 +986,7 @@ impl WireHarness {
         F: FnOnce() -> runtime_scene::Element + 'static,
     {
         dev_server::scheduler::install();
+        dev_server::set_session_native_style_states(false);
 
         let recorder = WireRecordingBackend::new();
         let session = dev_server::newcore::SceneSession::mount(&recorder, register, app);

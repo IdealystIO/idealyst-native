@@ -199,9 +199,17 @@ impl<B: AllCaps + 'static> RuntimeServerShell<B> {
         // that owns the client, and hand it to the worker for its Hello —
         // the worker thread can't touch the `!Send` client itself.
         let supports_screenshot = client.borrow().supports_screenshot();
+        let native_style_states = client.borrow().handles_states_natively();
         let options_for_worker = options;
         std::thread::spawn(move || {
-            ws_worker_loop(url, inbound_tx, outbound_rx, options_for_worker, supports_screenshot);
+            ws_worker_loop(
+                url,
+                inbound_tx,
+                outbound_rx,
+                options_for_worker,
+                supports_screenshot,
+                native_style_states,
+            );
         });
 
         Self {
@@ -477,6 +485,7 @@ fn ws_worker_loop(
     outbound_rx: mpsc::Receiver<AppToDev>,
     options: RuntimeServerShellOptions,
     supports_screenshot: bool,
+    native_style_states: bool,
 ) {
     eprintln!("[runtime-server-shell] worker starting; url={:?}", url);
     loop {
@@ -507,6 +516,7 @@ fn ws_worker_loop(
             },
             viewport: options.viewport.clone(),
             supports_screenshot,
+            native_style_states,
         };
         let _ = ws_send(&mut ws, &hello);
         eprintln!("[runtime-server-shell] connected");

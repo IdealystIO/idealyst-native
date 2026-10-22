@@ -2014,6 +2014,36 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   runtime-server `idealyst dev --web` re-resolved `idealyst/runtime-server`'s
   packages from the registry on every build and warned about it. Existing
   projects: add `"idealyst/runtime-server"` to `dev-session`.
+- **A runtime-server app styles like `--local`: every style property
+  crosses the wire** (`wire`, `dev-server`, `dev-client`). Under plain
+  `idealyst dev` the recorder sent only part of `StyleRules`, so a
+  button's `align_self: FlexStart` was ignored (it stretched full width),
+  `text_transform: Uppercase` rendered as typed, grids collapsed to flex
+  and nothing eased. `WireStyleRules` now carries every property —
+  `caret_color`, `display` and the grid placement family, `flex_wrap`,
+  `align_content`, `align_self`, `row_gap` / `column_gap`, `font_style`,
+  `underline`, `strikethrough`, `text_transform`, `overscroll_behavior`,
+  `scrollbar`, `transform_origin`, `user_select`, `pointer_events` and
+  all 36 `*_transition`s. Two lossy values are exact now too: a pill
+  radius (`Length::Full`) crosses as a pill rather than a 999px radius,
+  and an `Easing::Ease` transition keeps the CSS `ease` curve rather than
+  `ease-in-out`. Both conversions destructure `StyleRules` without `..`,
+  so a property added later does not compile until the wire carries it.
+  `PROTOCOL_VERSION` is 25: upgrade the `idealyst` CLI and the app's
+  framework crates together.
+- **Hover, press and focus styles and container queries work in a
+  runtime-server browser session** (`wire`, `dev-server`, `dev-client`,
+  `runtime-server-shell-native`, `backend-web`). The sidecar's recorder
+  answered `handles_states_natively() == false` for every client, so the
+  style engine applied each node's base rules and waited for state
+  reports — which a browser never sends, because its CSS switches
+  `:hover` / `:active` / `:focus-visible` itself. Container overlays
+  resolved at width 0. A client now reports `native_style_states` in its
+  `AppToDev::Hello`; for a browser the recorder answers `true` and ships
+  every state, breakpoint and container overlay
+  (`Command::ApplyStyledVariants`, `Command::MarkContainer`), so the page
+  styles as it does under `--local`. Native clients keep the event-driven
+  path. Same `PROTOCOL_VERSION` 25.
 - **file-picker reads a picked file in Chrome on macOS** (`file-picker`).
   A web pick went through `showOpenFilePicker()`, and Chrome on macOS
   refused the chosen handle's `getFile()` with `NotAllowedError` (a fresh

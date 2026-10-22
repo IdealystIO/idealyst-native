@@ -57,6 +57,7 @@ where
         // back to its hardcoded default when this is `None`.
         viewport: None,
         supports_screenshot: wire.supports_screenshot(),
+        native_style_states: wire.handles_states_natively(),
     };
     send(&mut ws, &hello)?;
 

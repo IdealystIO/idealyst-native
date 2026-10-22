@@ -10,6 +10,10 @@ use runtime_shared::accessibility::{
     AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
 };
 use runtime_shared::primitives;
+use runtime_shared::style::{
+    AlignContent, AlignSelf, DisplayKind, FlexWrap, GridPlacement, OverscrollBehavior,
+    PointerEvents, ScrollbarVisibility, TextTransform, TrackSize, Transition, UserSelect,
+};
 use runtime_shared::{
     AlignItems, AssetId as CoreAssetId, AssetSource, AssetTag, Color, Easing, FlexDirection,
     FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop, JustifyContent,
@@ -35,6 +39,7 @@ pub fn wire_length(l: WireLength) -> Length {
         WireLength::Px(v) => Length::Px(v),
         WireLength::Pct(v) => Length::Percent(v),
         WireLength::Auto => Length::Auto,
+        WireLength::Full => Length::Full,
     }
 }
 
@@ -109,6 +114,7 @@ pub fn wire_keyboard_kind(
 pub fn wire_easing(e: WireEasing) -> Easing {
     match e {
         WireEasing::Linear => Easing::Linear,
+        WireEasing::Ease => Easing::Ease,
         WireEasing::EaseIn => Easing::EaseIn,
         WireEasing::EaseOut => Easing::EaseOut,
         WireEasing::EaseInOut => Easing::EaseInOut,
@@ -145,6 +151,18 @@ pub fn wire_state_bit(b: WireStateBit) -> StateBits {
         WireStateBit::Pressed => StateBits::PRESSED,
         WireStateBit::Focused => StateBits::FOCUSED,
         WireStateBit::Disabled => StateBits::DISABLED,
+    }
+}
+
+/// Wire-to-framework reverse of `dev_server::convert_out::breakpoint_to_wire`.
+pub fn wire_breakpoint(b: wire::WireBreakpoint) -> runtime_shared::Breakpoint {
+    use runtime_shared::Breakpoint as B;
+    match b {
+        wire::WireBreakpoint::Xs => B::Xs,
+        wire::WireBreakpoint::Sm => B::Sm,
+        wire::WireBreakpoint::Md => B::Md,
+        wire::WireBreakpoint::Lg => B::Lg,
+        wire::WireBreakpoint::Xl => B::Xl,
     }
 }
 
@@ -232,95 +250,372 @@ pub fn wire_screen_options(
 /// Materialize a wire style into a concrete `StyleRules`. Tokenized
 /// values are emitted as `Tokenized::Literal` since the dev side
 /// already resolved tokens against the active theme.
+///
+/// **Exhaustive by construction**, mirroring
+/// `dev_server::convert_out::style_rules_to_wire`: `WireStyleRules` is
+/// destructured with no `..` and `StyleRules` is built as a literal with
+/// no `..Default::default()`. A field added to either struct is a compile
+/// error here until it is mapped, so no property can cross the wire and
+/// then be dropped on the floor (or never cross at all) without someone
+/// deciding so in code.
 pub fn wire_style_to_rules(w: WireStyleRules) -> StyleRules {
-    let mut s = StyleRules::default();
+    let WireStyleRules {
+        background,
+        color,
+        font_size,
+        flex_direction,
+        justify_content,
+        align_items,
+        gap,
+        flex_grow,
+        flex_shrink,
+        flex_basis,
+        width,
+        height,
+        min_width,
+        min_height,
+        max_width,
+        max_height,
+        aspect_ratio,
+        padding_top,
+        padding_right,
+        padding_bottom,
+        padding_left,
+        margin_top,
+        margin_right,
+        margin_bottom,
+        margin_left,
+        border_top_left_radius,
+        border_top_right_radius,
+        border_bottom_left_radius,
+        border_bottom_right_radius,
+        opacity,
+        font_weight,
+        font_family,
+        text_align,
+        position,
+        top,
+        right,
+        bottom,
+        left,
+        overflow,
+        transform,
+        background_gradient,
+        object_fit,
+        border_top_width,
+        border_right_width,
+        border_bottom_width,
+        border_left_width,
+        border_top_color,
+        border_right_color,
+        border_bottom_color,
+        border_left_color,
+        shadow,
+        text_shadow,
+        cursor,
+        line_height,
+        letter_spacing,
+        border_style,
+        max_lines,
+        z_index,
+        caret_color,
+        display,
+        grid_template_columns,
+        grid_row,
+        grid_column,
+        flex_wrap,
+        align_content,
+        row_gap,
+        column_gap,
+        align_self,
+        font_style,
+        underline,
+        strikethrough,
+        text_transform,
+        overscroll_behavior,
+        scrollbar,
+        transform_origin,
+        user_select,
+        pointer_events,
+        background_transition,
+        color_transition,
+        caret_color_transition,
+        opacity_transition,
+        transform_transition,
+        width_transition,
+        height_transition,
+        max_width_transition,
+        max_height_transition,
+        min_width_transition,
+        min_height_transition,
+        top_transition,
+        right_transition,
+        bottom_transition,
+        left_transition,
+        padding_top_transition,
+        padding_right_transition,
+        padding_bottom_transition,
+        padding_left_transition,
+        margin_top_transition,
+        margin_right_transition,
+        margin_bottom_transition,
+        margin_left_transition,
+        border_top_left_radius_transition,
+        border_top_right_radius_transition,
+        border_bottom_left_radius_transition,
+        border_bottom_right_radius_transition,
+        border_top_width_transition,
+        border_right_width_transition,
+        border_bottom_width_transition,
+        border_left_width_transition,
+        border_top_color_transition,
+        border_right_color_transition,
+        border_bottom_color_transition,
+        border_left_color_transition,
+        shadow_transition,
+    } = w;
+    let len = |l: Option<WireLength>| l.map(|l| Tokenized::Literal(wire_length(l)));
+    let col = |c: Option<WireColor>| c.map(|c| Tokenized::Literal(wire_color_to_color(c)));
+    let num = |n: Option<f32>| n.map(Tokenized::Literal);
+    let tr = |t: Option<wire::WireTransition>| t.map(wire_transition);
 
-    s.background = w.background.map(|c| Tokenized::Literal(wire_color_to_color(c)));
-    s.color = w.color.map(|c| Tokenized::Literal(wire_color_to_color(c)));
-    s.font_size = w.font_size.map(|l| Tokenized::Literal(wire_length(l)));
+    StyleRules {
+        background: col(background),
+        color: col(color),
+        caret_color: col(caret_color),
+        font_size: len(font_size),
 
-    s.flex_direction = w.flex_direction.map(wire_flex_direction);
-    s.justify_content = w.justify_content.map(wire_justify_content);
-    s.align_items = w.align_items.map(wire_align_items);
-    s.gap = w.gap.map(|l| Tokenized::Literal(wire_length(l)));
+        display: display.map(wire_display),
+        grid_template_columns: grid_template_columns
+            .map(|t| t.into_iter().map(wire_track_size).collect()),
+        grid_row: grid_row.map(wire_grid_placement),
+        grid_column: grid_column.map(wire_grid_placement),
 
-    s.flex_grow = w.flex_grow.map(Tokenized::Literal);
-    s.flex_shrink = w.flex_shrink.map(Tokenized::Literal);
-    s.flex_basis = w.flex_basis.map(|l| Tokenized::Literal(wire_length(l)));
+        flex_direction: flex_direction.map(wire_flex_direction),
+        flex_wrap: flex_wrap.map(wire_flex_wrap),
+        justify_content: justify_content.map(wire_justify_content),
+        align_items: align_items.map(wire_align_items),
+        align_content: align_content.map(wire_align_content),
+        gap: len(gap),
+        row_gap: len(row_gap),
+        column_gap: len(column_gap),
 
-    s.width = w.width.map(|l| Tokenized::Literal(wire_length(l)));
-    s.height = w.height.map(|l| Tokenized::Literal(wire_length(l)));
-    s.min_width = w.min_width.map(|l| Tokenized::Literal(wire_length(l)));
-    s.min_height = w.min_height.map(|l| Tokenized::Literal(wire_length(l)));
-    s.max_width = w.max_width.map(|l| Tokenized::Literal(wire_length(l)));
-    s.max_height = w.max_height.map(|l| Tokenized::Literal(wire_length(l)));
-    s.aspect_ratio = w.aspect_ratio;
+        flex_grow: num(flex_grow),
+        flex_shrink: num(flex_shrink),
+        flex_basis: len(flex_basis),
+        align_self: align_self.map(wire_align_self),
 
-    s.padding_top = w.padding_top.map(|l| Tokenized::Literal(wire_length(l)));
-    s.padding_right = w.padding_right.map(|l| Tokenized::Literal(wire_length(l)));
-    s.padding_bottom = w.padding_bottom.map(|l| Tokenized::Literal(wire_length(l)));
-    s.padding_left = w.padding_left.map(|l| Tokenized::Literal(wire_length(l)));
+        width: len(width),
+        height: len(height),
+        min_width: len(min_width),
+        min_height: len(min_height),
+        max_width: len(max_width),
+        max_height: len(max_height),
+        aspect_ratio,
 
-    s.margin_top = w.margin_top.map(|l| Tokenized::Literal(wire_length(l)));
-    s.margin_right = w.margin_right.map(|l| Tokenized::Literal(wire_length(l)));
-    s.margin_bottom = w.margin_bottom.map(|l| Tokenized::Literal(wire_length(l)));
-    s.margin_left = w.margin_left.map(|l| Tokenized::Literal(wire_length(l)));
+        padding_top: len(padding_top),
+        padding_right: len(padding_right),
+        padding_bottom: len(padding_bottom),
+        padding_left: len(padding_left),
 
-    s.border_top_left_radius = w
-        .border_top_left_radius
-        .map(|l| Tokenized::Literal(wire_length(l)));
-    s.border_top_right_radius = w
-        .border_top_right_radius
-        .map(|l| Tokenized::Literal(wire_length(l)));
-    s.border_bottom_left_radius = w
-        .border_bottom_left_radius
-        .map(|l| Tokenized::Literal(wire_length(l)));
-    s.border_bottom_right_radius = w
-        .border_bottom_right_radius
-        .map(|l| Tokenized::Literal(wire_length(l)));
+        margin_top: len(margin_top),
+        margin_right: len(margin_right),
+        margin_bottom: len(margin_bottom),
+        margin_left: len(margin_left),
 
-    s.opacity = w.opacity.map(Tokenized::Literal);
-    s.font_weight = w.font_weight.map(wire_font_weight);
-    s.font_family = w.font_family.map(wire_font_family);
-    s.text_align = w.text_align.map(wire_text_align);
+        border_top_left_radius: len(border_top_left_radius),
+        border_top_right_radius: len(border_top_right_radius),
+        border_bottom_left_radius: len(border_bottom_left_radius),
+        border_bottom_right_radius: len(border_bottom_right_radius),
 
-    // PROTOCOL_VERSION 8 additions. These are what made the runtime-server-hosted
-    // welcome example show only the headline text — sun glare / vignette
-    // / planets all depend on position:absolute + transform +
-    // background_gradient + overflow:hidden, none of which crossed the
-    // wire in v7.
-    s.position = w.position.map(wire_position);
-    s.top = w.top.map(|l| Tokenized::Literal(wire_length(l)));
-    s.right = w.right.map(|l| Tokenized::Literal(wire_length(l)));
-    s.bottom = w.bottom.map(|l| Tokenized::Literal(wire_length(l)));
-    s.left = w.left.map(|l| Tokenized::Literal(wire_length(l)));
-    s.overflow = w.overflow.map(wire_overflow);
-    s.transform = w.transform.map(|t| t.into_iter().map(wire_transform).collect());
-    s.background_gradient = w.background_gradient.map(wire_gradient);
-    s.object_fit = w.object_fit.map(wire_object_fit);
+        border_top_width: num(border_top_width),
+        border_right_width: num(border_right_width),
+        border_bottom_width: num(border_bottom_width),
+        border_left_width: num(border_left_width),
+        border_top_color: col(border_top_color),
+        border_right_color: col(border_right_color),
+        border_bottom_color: col(border_bottom_color),
+        border_left_color: col(border_left_color),
+        border_style: border_style.map(wire_border_style),
 
-    // Definition (v19). Absent, a wire-mode app renders flat: no
-    // borders on cards/inputs/dividers, no shadows, the default arrow
-    // over every button, and text at the browser's default leading.
-    s.border_top_width = w.border_top_width.map(Tokenized::Literal);
-    s.border_right_width = w.border_right_width.map(Tokenized::Literal);
-    s.border_bottom_width = w.border_bottom_width.map(Tokenized::Literal);
-    s.border_left_width = w.border_left_width.map(Tokenized::Literal);
-    s.border_top_color = w.border_top_color.map(|c| Tokenized::Literal(wire_color_to_color(c)));
-    s.border_right_color = w.border_right_color.map(|c| Tokenized::Literal(wire_color_to_color(c)));
-    s.border_bottom_color =
-        w.border_bottom_color.map(|c| Tokenized::Literal(wire_color_to_color(c)));
-    s.border_left_color = w.border_left_color.map(|c| Tokenized::Literal(wire_color_to_color(c)));
-    s.shadow = w.shadow.map(wire_shadow);
-    s.text_shadow = w.text_shadow.map(wire_shadow);
-    s.cursor = w.cursor.map(wire_cursor);
-    s.line_height = w.line_height.map(Tokenized::Literal);
-    s.letter_spacing = w.letter_spacing.map(Tokenized::Literal);
-    s.border_style = w.border_style.map(wire_border_style);
-    s.max_lines = w.max_lines;
-    s.z_index = w.z_index;
+        position: position.map(wire_position),
+        top: len(top),
+        right: len(right),
+        bottom: len(bottom),
+        left: len(left),
+        z_index,
 
-    s
+        font_family: font_family.map(wire_font_family),
+        font_weight: font_weight.map(wire_font_weight),
+        font_style: font_style.map(wire_font_style),
+        line_height: num(line_height),
+        letter_spacing: num(letter_spacing),
+        text_align: text_align.map(wire_text_align),
+        underline,
+        strikethrough,
+        text_transform: text_transform.map(wire_text_transform),
+        max_lines,
+
+        opacity: num(opacity),
+        overflow: overflow.map(wire_overflow),
+        overscroll_behavior: overscroll_behavior.map(wire_overscroll_behavior),
+        scrollbar: scrollbar.map(wire_scrollbar),
+        object_fit: object_fit.map(wire_object_fit),
+        shadow: shadow.map(wire_shadow),
+        text_shadow: text_shadow.map(wire_shadow),
+        background_gradient: background_gradient.map(wire_gradient),
+        transform: transform.map(|t| t.into_iter().map(wire_transform).collect()),
+        transform_origin: transform_origin.map(|(x, y)| (wire_length(x), wire_length(y))),
+
+        cursor: cursor.map(wire_cursor),
+        user_select: user_select.map(wire_user_select),
+        pointer_events: pointer_events.map(wire_pointer_events),
+
+        background_transition: tr(background_transition),
+        color_transition: tr(color_transition),
+        caret_color_transition: tr(caret_color_transition),
+        opacity_transition: tr(opacity_transition),
+        transform_transition: tr(transform_transition),
+        width_transition: tr(width_transition),
+        height_transition: tr(height_transition),
+        max_width_transition: tr(max_width_transition),
+        max_height_transition: tr(max_height_transition),
+        min_width_transition: tr(min_width_transition),
+        min_height_transition: tr(min_height_transition),
+        top_transition: tr(top_transition),
+        right_transition: tr(right_transition),
+        bottom_transition: tr(bottom_transition),
+        left_transition: tr(left_transition),
+        padding_top_transition: tr(padding_top_transition),
+        padding_right_transition: tr(padding_right_transition),
+        padding_bottom_transition: tr(padding_bottom_transition),
+        padding_left_transition: tr(padding_left_transition),
+        margin_top_transition: tr(margin_top_transition),
+        margin_right_transition: tr(margin_right_transition),
+        margin_bottom_transition: tr(margin_bottom_transition),
+        margin_left_transition: tr(margin_left_transition),
+        border_top_left_radius_transition: tr(border_top_left_radius_transition),
+        border_top_right_radius_transition: tr(border_top_right_radius_transition),
+        border_bottom_left_radius_transition: tr(border_bottom_left_radius_transition),
+        border_bottom_right_radius_transition: tr(border_bottom_right_radius_transition),
+        border_top_width_transition: tr(border_top_width_transition),
+        border_right_width_transition: tr(border_right_width_transition),
+        border_bottom_width_transition: tr(border_bottom_width_transition),
+        border_left_width_transition: tr(border_left_width_transition),
+        border_top_color_transition: tr(border_top_color_transition),
+        border_right_color_transition: tr(border_right_color_transition),
+        border_bottom_color_transition: tr(border_bottom_color_transition),
+        border_left_color_transition: tr(border_left_color_transition),
+        shadow_transition: tr(shadow_transition),
+    }
+}
+
+pub fn wire_transition(t: wire::WireTransition) -> Transition {
+    Transition { duration_ms: t.duration_ms, easing: wire_easing(t.easing) }
+}
+
+pub fn wire_display(d: wire::WireDisplay) -> DisplayKind {
+    match d {
+        wire::WireDisplay::Flex => DisplayKind::Flex,
+        wire::WireDisplay::Grid => DisplayKind::Grid,
+    }
+}
+
+pub fn wire_track_size(t: wire::WireTrackSize) -> TrackSize {
+    use wire::WireTrackSize as W;
+    match t {
+        W::Auto => TrackSize::Auto,
+        W::MinContent => TrackSize::MinContent,
+        W::MaxContent => TrackSize::MaxContent,
+        W::Fr(v) => TrackSize::Fr(v),
+        W::Px(v) => TrackSize::Px(v),
+        W::Minmax(lo, hi) => {
+            TrackSize::Minmax(Box::new(wire_track_size(*lo)), Box::new(wire_track_size(*hi)))
+        }
+        W::FitContent(v) => TrackSize::FitContent(v),
+    }
+}
+
+pub fn wire_grid_placement(p: wire::WireGridPlacement) -> GridPlacement {
+    match p {
+        wire::WireGridPlacement::Line(l) => GridPlacement::Line(l),
+        wire::WireGridPlacement::Lines(a, b) => GridPlacement::Lines(a, b),
+    }
+}
+
+pub fn wire_flex_wrap(w: wire::WireFlexWrap) -> FlexWrap {
+    match w {
+        wire::WireFlexWrap::NoWrap => FlexWrap::NoWrap,
+        wire::WireFlexWrap::Wrap => FlexWrap::Wrap,
+        wire::WireFlexWrap::WrapReverse => FlexWrap::WrapReverse,
+    }
+}
+
+pub fn wire_align_content(a: wire::WireAlignContent) -> AlignContent {
+    use wire::WireAlignContent as W;
+    match a {
+        W::FlexStart => AlignContent::FlexStart,
+        W::FlexEnd => AlignContent::FlexEnd,
+        W::Center => AlignContent::Center,
+        W::Stretch => AlignContent::Stretch,
+        W::SpaceBetween => AlignContent::SpaceBetween,
+        W::SpaceAround => AlignContent::SpaceAround,
+    }
+}
+
+pub fn wire_align_self(a: wire::WireAlignSelf) -> AlignSelf {
+    use wire::WireAlignSelf as W;
+    match a {
+        W::Auto => AlignSelf::Auto,
+        W::FlexStart => AlignSelf::FlexStart,
+        W::FlexEnd => AlignSelf::FlexEnd,
+        W::Center => AlignSelf::Center,
+        W::Stretch => AlignSelf::Stretch,
+        W::Baseline => AlignSelf::Baseline,
+    }
+}
+
+pub fn wire_text_transform(t: wire::WireTextTransform) -> TextTransform {
+    use wire::WireTextTransform as W;
+    match t {
+        W::None => TextTransform::None,
+        W::Uppercase => TextTransform::Uppercase,
+        W::Lowercase => TextTransform::Lowercase,
+        W::Capitalize => TextTransform::Capitalize,
+    }
+}
+
+pub fn wire_overscroll_behavior(o: wire::WireOverscrollBehavior) -> OverscrollBehavior {
+    use wire::WireOverscrollBehavior as W;
+    match o {
+        W::Auto => OverscrollBehavior::Auto,
+        W::Contain => OverscrollBehavior::Contain,
+        W::None => OverscrollBehavior::None,
+    }
+}
+
+pub fn wire_scrollbar(s: wire::WireScrollbarVisibility) -> ScrollbarVisibility {
+    match s {
+        wire::WireScrollbarVisibility::Auto => ScrollbarVisibility::Auto,
+        wire::WireScrollbarVisibility::Hidden => ScrollbarVisibility::Hidden,
+    }
+}
+
+pub fn wire_user_select(u: wire::WireUserSelect) -> UserSelect {
+    use wire::WireUserSelect as W;
+    match u {
+        W::Auto => UserSelect::Auto,
+        W::None => UserSelect::None,
+        W::Text => UserSelect::Text,
+        W::All => UserSelect::All,
+    }
+}
+
+pub fn wire_pointer_events(p: wire::WirePointerEvents) -> PointerEvents {
+    match p {
+        wire::WirePointerEvents::Auto => PointerEvents::Auto,
+        wire::WirePointerEvents::None => PointerEvents::None,
+    }
 }
 
 pub fn wire_border_style(b: wire::WireBorderStyle) -> runtime_shared::style::BorderStyle {

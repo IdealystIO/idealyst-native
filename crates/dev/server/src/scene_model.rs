@@ -53,9 +53,12 @@ pub struct SceneModel {
     /// replay bailed `UnknownStyle(id)` → all-white screenshot. Pruned
     /// when no node references the id any more (see `gc_retired_styles`).
     retired_styles: HashMap<StyleId, WireStyleRules>,
-    /// Per-node style application command (`ApplyStyle` or
-    /// `ApplyStyledStates`). Cleared by `OnNodeUnstyled`.
+    /// Per-node style application command (`ApplyStyle`,
+    /// `ApplyStyledStates` or `ApplyStyledVariants`). Cleared by
+    /// `OnNodeUnstyled`.
     node_style: HashMap<NodeId, Command>,
+    /// Nodes marked as container-query contexts (`MarkContainer`).
+    node_container: HashSet<NodeId>,
     /// Nodes with `AttachStates` wired up.
     node_attach_states: HashSet<NodeId>,
     /// Per-node `SetDisabled` value.
@@ -371,8 +374,12 @@ impl SceneModel {
                 }
             }
             Command::ApplyStyle { node, .. }
-            | Command::ApplyStyledStates { node, .. } => {
+            | Command::ApplyStyledStates { node, .. }
+            | Command::ApplyStyledVariants { node, .. } => {
                 self.node_style.insert(*node, cmd.clone());
+            }
+            Command::MarkContainer { node } => {
+                self.node_container.insert(*node);
             }
             Command::AttachStates { node } => {
                 self.node_attach_states.insert(*node);
@@ -539,6 +546,7 @@ impl SceneModel {
                 self.children.remove(node);
                 self.parent_of.remove(node);
                 self.node_style.remove(node);
+                self.node_container.remove(node);
                 self.node_attach_states.remove(node);
                 self.node_disabled.remove(node);
                 self.node_presence.remove(node);
@@ -665,9 +673,9 @@ impl SceneModel {
     ///   5. Per-navigator: `NavigatorAttachInitial` + `NavigatorPush`,
     ///      then style-slot applications.
     ///   6. `Finish { root }` if a root was set.
-    /// StyleIds a single `ApplyStyle`/`ApplyStyledStates` command
-    /// references (the base style plus any overlay styles). Empty for
-    /// other commands.
+    /// StyleIds a single `ApplyStyle` / `ApplyStyledStates` /
+    /// `ApplyStyledVariants` command references (the base style plus any
+    /// overlay styles). Empty for other commands.
     fn style_ids_of(cmd: &Command) -> Vec<StyleId> {
         match cmd {
             Command::ApplyStyle { style, .. } => vec![*style],
@@ -675,6 +683,15 @@ impl SceneModel {
                 let mut v = Vec::with_capacity(1 + overlays.len());
                 v.push(*base);
                 v.extend(overlays.iter().map(|(_, sid)| *sid));
+                v
+            }
+            Command::ApplyStyledVariants { base, states, breakpoints, containers, .. } => {
+                let mut v =
+                    Vec::with_capacity(1 + states.len() + breakpoints.len() + containers.len());
+                v.push(*base);
+                v.extend(states.iter().map(|(_, sid)| *sid));
+                v.extend(breakpoints.iter().map(|(_, sid)| *sid));
+                v.extend(containers.iter().map(|(_, sid)| *sid));
                 v
             }
             _ => Vec::new(),
@@ -805,7 +822,12 @@ impl SceneModel {
             }
         }
 
-        // 4a. Style applications.
+        // 4a. Container contexts, then style applications.
+        for id in &node_ids {
+            if self.node_container.contains(id) {
+                out.push(Command::MarkContainer { node: *id });
+            }
+        }
         for id in &node_ids {
             if let Some(cmd) = self.node_style.get(id) {
                 out.push(cmd.clone());
@@ -1179,6 +1201,53 @@ mod tests {
             reg_idx < apply_idx,
             "RegisterStyle must come before the ApplyStyle that resolves it",
         );
+    }
+
+    /// A late-joining browser client gets the same declarative styling
+    /// the live one did: the snapshot replays the container mark and the
+    /// node's `ApplyStyledVariants`, and an overlay style unregistered
+    /// while still applied stays registered ahead of it — the same
+    /// retention `ApplyStyle` gets, extended to every overlay axis.
+    #[test]
+    fn snapshot_replays_styled_variants_and_keeps_their_overlay_styles() {
+        let mut model = SceneModel::new();
+        let node = wire::NodeId(1);
+        model.apply(&Command::CreateView { id: node, a11y: Default::default() });
+        model.apply(&Command::MarkContainer { node });
+        for id in [10, 11, 12, 13] {
+            model.apply(&register_style(id));
+        }
+        model.apply(&Command::ApplyStyledVariants {
+            node,
+            base: wire::StyleId(10),
+            states: vec![(vec![wire::WireStateBit::Hovered], wire::StyleId(11))],
+            breakpoints: vec![(wire::WireBreakpoint::Md, wire::StyleId(12))],
+            containers: vec![(400.0, wire::StyleId(13))],
+        });
+        model.apply(&Command::Finish { root: node });
+        for id in [11, 12, 13] {
+            model.apply(&Command::UnregisterStyle { id: wire::StyleId(id) });
+        }
+
+        let snap = model.snapshot_commands();
+        let pos = |pred: &dyn Fn(&Command) -> bool| snap.iter().position(|c| pred(c));
+        let apply = pos(&|c| matches!(c, Command::ApplyStyledVariants { node: n, .. } if *n == node))
+            .expect("the node's ApplyStyledVariants replays");
+        assert!(
+            pos(&|c| matches!(c, Command::MarkContainer { node: n } if *n == node)).is_some(),
+            "the container mark replays",
+        );
+        for id in [10, 11, 12, 13] {
+            let reg = pos(&|c| {
+                matches!(c, Command::RegisterStyle { id: sid, .. } if *sid == wire::StyleId(id))
+            })
+            .unwrap_or_else(|| panic!("style {id} stays registered while applied"));
+            assert!(reg < apply, "style {id} registers before the apply that names it");
+        }
+
+        model.apply(&Command::ReleaseNode { node });
+        assert!(model.retired_styles.is_empty(), "releasing the node frees its overlay styles");
+        assert!(!model.node_container.contains(&node), "and its container mark");
     }
 
     /// Bound check: once the styled node is released, the retired style is

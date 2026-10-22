@@ -1159,6 +1159,27 @@ thread_local! {
     /// unset state.
     static SESSION_PLATFORM: std::cell::Cell<Option<runtime_shared::host::Platform>> =
         const { std::cell::Cell::new(None) };
+
+    /// Whether this session's CLIENT switches style states, breakpoints
+    /// and container queries itself (`AppToDev::Hello::native_style_states`
+    /// — a browser). The recorder's `handles_states_natively` answers
+    /// with it, so the engine takes the same path it takes when that
+    /// backend runs `--local`. Set before the first mount, like
+    /// `SESSION_PLATFORM`.
+    static SESSION_NATIVE_STYLE_STATES: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Set whether the calling session-thread's client handles style states
+/// natively. Session-thread only, like [`set_session_platform`].
+pub fn set_session_native_style_states(native: bool) {
+    SESSION_NATIVE_STYLE_STATES.with(|c| c.set(native));
+}
+
+/// Whether the calling session-thread's client handles style states
+/// natively. `false` (the event-driven path) until its Hello says so.
+pub fn session_native_style_states() -> bool {
+    SESSION_NATIVE_STYLE_STATES.with(|c| c.get())
 }
 
 /// Set the calling session-thread's client platform. Must run on the
@@ -1886,6 +1907,49 @@ impl WireRecordingBackend {
         });
     }
 
+    /// Every overlay axis, for a client that switches them itself
+    /// (`Command::ApplyStyledVariants`). Only reached when
+    /// [`crate::session_native_style_states`] is on.
+    pub fn apply_styled_variants(
+        &mut self,
+        node: &NodeId,
+        base: &Rc<StyleRules>,
+        state_overlays: &[(StateBits, Rc<StyleRules>)],
+        breakpoint_overlays: &[(runtime_shared::Breakpoint, Rc<StyleRules>)],
+        container_overlays: &[(f32, Rc<StyleRules>)],
+    ) {
+        let mut state = self.inner.borrow_mut();
+        let base = Self::intern_style(&mut state, base);
+        let states = state_overlays
+            .iter()
+            .map(|(bits, rules)| {
+                (convert_out::expand_state_bits(*bits), Self::intern_style(&mut state, rules))
+            })
+            .collect();
+        let breakpoints = breakpoint_overlays
+            .iter()
+            .map(|(bp, rules)| {
+                (convert_out::breakpoint_to_wire(*bp), Self::intern_style(&mut state, rules))
+            })
+            .collect();
+        let containers = container_overlays
+            .iter()
+            .map(|(min, rules)| (*min, Self::intern_style(&mut state, rules)))
+            .collect();
+        state.emit(Command::ApplyStyledVariants {
+            node: *node,
+            base,
+            states,
+            breakpoints,
+            containers,
+        });
+    }
+
+    pub fn mark_container(&mut self, node: &NodeId) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::MarkContainer { node: *node });
+    }
+
     pub fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
         let mut state = self.inner.borrow_mut();
         for r in rules {
@@ -2336,12 +2400,9 @@ fn length_to_wire_token(l: runtime_shared::Length) -> wire::WireLength {
         runtime_shared::Length::Px(v) => wire::WireLength::Px(v),
         runtime_shared::Length::Percent(v) => wire::WireLength::Pct(v),
         runtime_shared::Length::Auto => wire::WireLength::Auto,
-        // Same collapse, same reason, as `convert_out::length_to_wire`
-        // — a `radius-pill` TOKEN reaches the client as the sentinel
-        // rather than as a variant the wire cannot carry.
-        runtime_shared::Length::Full => {
-            wire::WireLength::Px(runtime_shared::Length::FULL_RADIUS_FALLBACK_PX)
-        }
+        // As in `convert_out::length_to_wire`: a `radius-pill` token
+        // crosses as the pill and the client resolves it per box.
+        runtime_shared::Length::Full => wire::WireLength::Full,
     }
 }
 
@@ -2403,18 +2464,17 @@ impl WireRecordingBackend {
 
 #[cfg(test)]
 mod length_token_tests {
-    /// A `radius-pill` TOKEN reaches the client as the same sentinel a
+    /// A `radius-pill` TOKEN reaches the client as the pill, like a
     /// literal pill does. The two converters are separate functions on
     /// separate paths (one records a style, one publishes the theme), so
-    /// they can drift — see `convert_out`'s counterpart for why the
-    /// missing arm was a build failure rather than a wrong pixel.
+    /// they can drift — see `convert_out`'s counterpart.
     #[test]
-    fn a_pill_token_reaches_the_wire_as_the_sentinel() {
+    fn a_pill_token_reaches_the_wire_as_a_pill() {
         // `matches!` rather than `assert_eq!`: `WireLength` is a
         // serialization type in another crate and derives no `PartialEq`.
         assert!(matches!(
             super::length_to_wire_token(runtime_shared::Length::Full),
-            wire::WireLength::Px(v) if v == runtime_shared::Length::FULL_RADIUS_FALLBACK_PX
+            wire::WireLength::Full
         ));
         assert!(matches!(
             super::length_to_wire_token(runtime_shared::Length::Auto),
