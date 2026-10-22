@@ -2059,6 +2059,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   content centred, so one icon button of any size lines up with the
   column.
 
+- **A table that only scrolls sideways shows no vertical scrollbar**
+  (`table`, web). A split-head table's rows scroller was sized to its
+  rows, and a classic horizontal scrollbar is drawn inside that height,
+  so the bar covered the last rows and brought up a vertical scrollbar
+  with nothing to scroll. The scroller's starting height now takes the
+  bar too (its outer height past its client height, measured by a
+  holder and a column probe); it still shrinks under a bounded table.
+  Overlay scrollbars and native are unchanged.
 - **A split-head table's header reaches over the vertical scrollbar**
   (`table`, web). A classic scrollbar narrows the body's viewport, and the
   head strip ended at the viewport, so the header's band and divider

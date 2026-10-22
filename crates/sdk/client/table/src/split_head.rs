@@ -77,6 +77,13 @@ pub(super) struct HeadSync {
     body_width: glue::Signal<Option<f32>>,
     /// The body scroller's viewport width — the head strip's.
     viewport: glue::Signal<Option<f32>>,
+    /// The body grid's height — the rows'.
+    body_height: glue::Signal<Option<f32>>,
+    /// The body scroller's outer height (its holder's).
+    outer_height: glue::Signal<Option<f32>>,
+    /// The body scroller's client height (the column probe's): the outer
+    /// height less a horizontal scrollbar.
+    client_height: glue::Signal<Option<f32>>,
     head_ref: Ref<ScrollViewHandle>,
     body_ref: Ref<ScrollViewHandle>,
     body_x: Cell<f32>,
@@ -89,6 +96,22 @@ pub(super) struct HeadSync {
     forced_on: Cell<bool>,
     armed: Cell<bool>,
     subs: RefCell<Vec<LayoutSubscription>>,
+}
+
+/// The height a classic horizontal scrollbar takes from the body scroller:
+/// its outer height past its client height. Zero until both are measured,
+/// with an overlay scrollbar, and under a pixel (rounding).
+///
+/// Why it matters: the scroller is sized to its rows, and on web a classic
+/// horizontal scrollbar is drawn INSIDE that height — so a table that only
+/// scrolls sideways showed a vertical scrollbar too, for the rows the bar
+/// covered. The scroller's starting height takes the bar as well; it still
+/// shrinks under a bounded table, where vertical scrolling is real.
+fn scrollbar_allowance(outer: Option<f32>, client: Option<f32>) -> f32 {
+    match (outer, client) {
+        (Some(o), Some(c)) if o - c >= 1.0 => o - c,
+        _ => 0.0,
+    }
 }
 
 /// Slack under which two horizontal offsets are the same — a programmatic
@@ -104,6 +127,9 @@ impl HeadSync {
             forced: glue::signal(None),
             body_width: glue::signal(None),
             viewport: glue::signal(None),
+            body_height: glue::signal(None),
+            outer_height: glue::signal(None),
+            client_height: glue::signal(None),
             head_ref: Ref::new(),
             body_ref: Ref::new(),
             body_x: Cell::new(0.0),
@@ -124,18 +150,18 @@ impl HeadSync {
         self.subs.borrow_mut().clear();
     }
 
-    /// Track `handle`'s laid-out width into `record`.
-    fn watch(self: &Rc<Self>, handle: ViewHandle, record: Rc<dyn Fn(&HeadSync, f32)>) {
+    /// Track `handle`'s laid-out width and height into `record`.
+    fn watch(self: &Rc<Self>, handle: ViewHandle, record: Rc<dyn Fn(&HeadSync, f32, f32)>) {
         if !self.armed.get() {
             return;
         }
         if let Some(frame) = handle.frame().filter(|f| f.width > 0.0) {
-            record(self, frame.width);
+            record(self, frame.width, frame.height);
         }
         let weak = Rc::downgrade(self);
-        let sub = handle.on_layout(move |w, _h| {
+        let sub = handle.on_layout(move |w, h| {
             if let Some(sync) = weak.upgrade().filter(|s| s.armed.get()) {
-                record(&sync, w);
+                record(&sync, w, h);
             }
         });
         self.subs.borrow_mut().push(sub);
@@ -147,7 +173,7 @@ impl HeadSync {
         Box::new(move |h| {
             sync.watch(
                 h,
-                Rc::new(move |s, w| {
+                Rc::new(move |s, w, _h| {
                     // Natural widths only: once forced, the head's cells
                     // report the body's widths back.
                     if !s.forced_on.get() {
@@ -165,7 +191,7 @@ impl HeadSync {
         Box::new(move |h| {
             sync.watch(
                 h,
-                Rc::new(move |s, w| {
+                Rc::new(move |s, w, _h| {
                     s.body.borrow_mut()[i] = Some(w);
                     s.settle();
                 }),
@@ -176,13 +202,69 @@ impl HeadSync {
     /// A binder that watches the body grid's width.
     pub(super) fn body_grid(self: &Rc<Self>) -> Box<dyn FnOnce(ViewHandle)> {
         let sync = self.clone();
-        Box::new(move |h| sync.watch(h, Rc::new(|s, w| s.body_width.set(Some(w)))))
+        Box::new(move |h| {
+            sync.watch(
+                h,
+                Rc::new(|s, w, h| {
+                    s.body_width.set(Some(w));
+                    s.body_height.set(Some(h));
+                }),
+            )
+        })
     }
 
     /// A binder that watches the body scroller's viewport (the probe).
     pub(super) fn probe(self: &Rc<Self>) -> Box<dyn FnOnce(ViewHandle)> {
         let sync = self.clone();
-        Box::new(move |h| sync.watch(h, Rc::new(|s, w| s.viewport.set(Some(w)))))
+        Box::new(move |h| sync.watch(h, Rc::new(|s, w, _h| s.viewport.set(Some(w)))))
+    }
+
+    /// A binder that watches the body scroller's client height (the
+    /// column probe) — its height less a horizontal scrollbar.
+    pub(super) fn client_probe(self: &Rc<Self>) -> Box<dyn FnOnce(ViewHandle)> {
+        let sync = self.clone();
+        Box::new(move |h| sync.watch_height(h, Rc::new(|s, h| s.client_height.set(Some(h)))))
+    }
+
+    /// A binder that watches the body scroller's outer height (its holder).
+    pub(super) fn scroller_holder(self: &Rc<Self>) -> Box<dyn FnOnce(ViewHandle)> {
+        let sync = self.clone();
+        Box::new(move |h| sync.watch_height(h, Rc::new(|s, h| s.outer_height.set(Some(h)))))
+    }
+
+    /// [`watch`](Self::watch) for a box that may lay out zero WIDE (the
+    /// column probe): its height is recorded whatever its width.
+    fn watch_height(self: &Rc<Self>, handle: ViewHandle, record: Rc<dyn Fn(&HeadSync, f32)>) {
+        if !self.armed.get() {
+            return;
+        }
+        if let Some(frame) = handle.frame() {
+            record(self, frame.height);
+        }
+        let weak = Rc::downgrade(self);
+        let sub = handle.on_layout(move |_w, h| {
+            if let Some(sync) = weak.upgrade().filter(|s| s.armed.get()) {
+                record(&sync, h);
+            }
+        });
+        self.subs.borrow_mut().push(sub);
+    }
+
+    /// The body scroller's style: shrinkable as ever, but its starting
+    /// height is the rows AND a horizontal scrollbar, when one shows — see
+    /// [`scrollbar_allowance`].
+    pub(super) fn body_scroller_style(self: &Rc<Self>) -> StyleProp {
+        let (rows, outer, client) = (self.body_height, self.outer_height, self.client_height);
+        StyleProp::SheetDynamic(Box::new(move || {
+            let app = StyleApplication::new(body_scroller_sheet());
+            match (rows.get(), scrollbar_allowance(outer.get(), client.get())) {
+                (Some(rows), bar) if bar > 0.0 => app.with_inline(StyleRules {
+                    flex_basis: Some(glue::Tokenized::Literal(glue::Length::Px(rows + bar))),
+                    ..Default::default()
+                }),
+                _ => app,
+            }
+        }))
     }
 
     /// Take the next step once a side is fully measured: floor the body at
@@ -422,6 +504,45 @@ fn head_with_corner(strip: Element, corner: Option<StyleProp>) -> Element {
     }
 }
 
+/// The column probe in the body scroller: absolutely placed down the
+/// scroller's padding box at zero width, so its height is the client
+/// height (a horizontal scrollbar excluded) whatever the rows' height.
+fn client_probe_sheet() -> Rc<runtime_shared::StyleSheet> {
+    static KEY: u8 = 0;
+    runtime_shared::cached_stylesheet(&KEY as *const u8 as usize, || {
+        runtime_shared::StyleSheet::r#static(StyleRules {
+            position: Some(glue::Position::Absolute),
+            left: Some(px(0.0)),
+            top: Some(px(0.0)),
+            bottom: Some(px(0.0)),
+            width: Some(px(0.0)),
+            ..Default::default()
+        })
+        .premint_as("table.v1.client_probe")
+    })
+}
+
+/// The column probe view.
+fn client_probe(sync: &Rc<HeadSync>) -> Element {
+    let fill = sync.client_probe();
+    runtime_vocabulary::builders::view()
+        .style(StyleProp::Sheet(Box::new(StyleApplication::new(client_probe_sheet()))))
+        .on_handle(move |h| fill(h))
+        .build()
+}
+
+/// The holder around the body scroller: content-sized and shrinkable like
+/// the frame (so a bounded table still caps the rows), measured for the
+/// scroller's outer height.
+fn scroller_holder(sync: &Rc<HeadSync>, scroller: Element) -> Element {
+    let fill = sync.scroller_holder();
+    runtime_vocabulary::builders::view()
+        .children(vec![scroller])
+        .style(StyleProp::Sheet(Box::new(StyleApplication::new(frame_sheet()))))
+        .on_handle(move |h| fill(h))
+        .build()
+}
+
 /// The probe view.
 pub(super) fn probe(sync: &Rc<HeadSync>) -> Element {
     let fill = sync.probe();
@@ -586,9 +707,9 @@ pub(super) fn web(
 
     let on_scroll = sync.clone();
     let body_scroller = edge_watched_scroller(
-        glue::scroll_view(vec![probe(&sync), body_table])
+        glue::scroll_view(vec![probe(&sync), client_probe(&sync), body_table])
             .bind(sync.body_ref())
-            .with_style(StyleProp::Sheet(Box::new(StyleApplication::new(body_scroller_sheet())))),
+            .with_style(sync.body_scroller_style()),
         scroller_axis(scroll_x, true),
         watch,
         Some(Rc::new(move |x, y| on_scroll.on_body_scroll(x, y))),
@@ -597,7 +718,7 @@ pub(super) fn web(
         PrimCell::new(TableFramePrim {
             style: Some(StyleProp::Sheet(Box::new(StyleApplication::new(frame_sheet())))),
         }),
-        vec![head_with_corner(head_strip(&sync, head_table), head_corner), body_scroller],
+        vec![head_with_corner(head_strip(&sync, head_table), head_corner), scroller_holder(&sync, body_scroller)],
     );
     surface_with_slots(frame, style, header_slot, footer_slot)
 }
@@ -678,6 +799,16 @@ mod tests {
             Element::Item { children, .. } => assert!(children.is_empty(), "no corner: the strip itself, unwrapped"),
             _ => panic!("strip item"),
         }
+    }
+
+    /// The scroller's starting height takes a classic horizontal
+    /// scrollbar (outer past client), and nothing for an overlay one.
+    #[test]
+    fn the_scrollbar_allowance_is_outer_past_client() {
+        assert_eq!(scrollbar_allowance(Some(309.0), Some(294.0)), 15.0);
+        assert_eq!(scrollbar_allowance(Some(294.0), Some(294.0)), 0.0);
+        assert_eq!(scrollbar_allowance(Some(294.4), Some(294.0)), 0.0, "rounding");
+        assert_eq!(scrollbar_allowance(None, Some(294.0)), 0.0);
     }
 
     fn step<R>(world: &World, f: impl FnOnce() -> R) -> R {
