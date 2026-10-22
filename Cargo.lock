@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "build-runtime-server"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3547,7 +3547,7 @@ dependencies = [
 
 [[package]]
 name = "dev-events"
-version = "1.10.0"
+version = "1.11.0"
 dependencies = [
  "dev-events",
  "schemars",
@@ -3567,7 +3567,7 @@ dependencies = [
 
 [[package]]
 name = "dev-http"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3597,7 +3597,7 @@ dependencies = [
 
 [[package]]
 name = "dev-reload"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3616,7 +3616,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -3647,7 +3647,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "9.0.0"
+version = "9.1.0"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -5878,7 +5878,7 @@ dependencies = [
 
 [[package]]
 name = "host-terminal"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "backend-terminal",
  "crossterm",
@@ -6421,7 +6421,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "12.0.0"
+version = "12.0.1"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6441,7 +6441,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "11.0.0"
+version = "11.0.1"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6549,7 +6549,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.17.0"
+version = "1.18.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7719,7 +7719,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "1.15.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "base64",
