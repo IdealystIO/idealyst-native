@@ -118,10 +118,16 @@ isn't.
 ## Configuration
 
 [`AudioStreamConfig`] is all-optional; `None` fields defer to the device's
-preferred value (the cheapest path — no resampling). Requests that the
-device can't honour surface as `MicError::UnsupportedConfig` rather than a
-silent substitution, so the `sample_rate` / `channels` you read off each
-buffer are authoritative.
+preferred value (the cheapest path — no resampling). An explicit sample
+rate or channel count is what every buffer carries, on every target: web
+and Android get it from the platform (`AudioContext({ sampleRate })`,
+`AudioRecord`), and the native targets open the device at its own format
+and convert in the SDK — a channel remap and a windowed-sinc resample, so
+48 kHz speech downsampled to 16 kHz is filtered, not aliased. The device
+is never asked for a rate it doesn't run: on iOS that request deadlocked
+`AudioUnitStart` on real hardware, and on macOS it retunes the input
+device for every app. The `sample_rate` / `channels` on each buffer are
+the ones to trust.
 
 ```rust
 use microphone::AudioStreamConfig;

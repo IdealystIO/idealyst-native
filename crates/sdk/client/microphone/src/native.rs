@@ -96,30 +96,22 @@ pub(crate) async fn open(
         .map_err(|e| MicError::Backend(format!("default_input_config: {e}")))?;
     let sample_format = supported.sample_format();
 
-    // Start from the device default, then apply explicit requests. cpal
-    // validates the result when it builds the stream — an unsupported
-    // rate/channel surfaces as a build error we map to UnsupportedConfig.
-    let mut stream_config: cpal::StreamConfig = supported.config();
-    if let Some(sr) = config.sample_rate {
-        stream_config.sample_rate = cpal::SampleRate(sr);
-    }
-    if let Some(ch) = config.channels {
-        stream_config.channels = ch;
-    }
-
-    let sample_rate = stream_config.sample_rate.0;
-    let channels = stream_config.channels;
+    // The device runs at its own format; a requested rate or channel count
+    // is produced by converting what it captures (see `crate::convert` for
+    // why the device is never asked for it).
+    let stream_config: cpal::StreamConfig = supported.config();
+    let plan = plan(stream_config.sample_rate.0, stream_config.channels, &config)?;
 
     // Dispatch on the device's native sample format, converting each
     // format to normalized f32 in the per-type helper. Only one arm runs,
     // so each may move `callback`.
     let stream = match sample_format {
-        SampleFormat::F32 => build::<f32>(&device, &stream_config, sample_rate, channels, callback),
-        SampleFormat::I16 => build::<i16>(&device, &stream_config, sample_rate, channels, callback),
-        SampleFormat::U16 => build::<u16>(&device, &stream_config, sample_rate, channels, callback),
-        SampleFormat::I32 => build::<i32>(&device, &stream_config, sample_rate, channels, callback),
-        SampleFormat::I8 => build::<i8>(&device, &stream_config, sample_rate, channels, callback),
-        SampleFormat::U8 => build::<u8>(&device, &stream_config, sample_rate, channels, callback),
+        SampleFormat::F32 => build::<f32>(&device, &stream_config, &plan, callback),
+        SampleFormat::I16 => build::<i16>(&device, &stream_config, &plan, callback),
+        SampleFormat::U16 => build::<u16>(&device, &stream_config, &plan, callback),
+        SampleFormat::I32 => build::<i32>(&device, &stream_config, &plan, callback),
+        SampleFormat::I8 => build::<i8>(&device, &stream_config, &plan, callback),
+        SampleFormat::U8 => build::<u8>(&device, &stream_config, &plan, callback),
         other => {
             return Err(MicError::UnsupportedConfig(format!(
                 "device sample format {other:?} not handled"
@@ -138,15 +130,34 @@ pub(crate) async fn open(
     })
 }
 
+/// The device's format and what the caller gets: the request where it
+/// names a value, the device's own where it does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Plan {
+    device_rate: u32,
+    device_channels: u16,
+    rate: u32,
+    channels: u16,
+}
+
+fn plan(device_rate: u32, device_channels: u16, config: &AudioStreamConfig) -> Result<Plan, MicError> {
+    let rate = config.sample_rate.unwrap_or(device_rate);
+    let channels = config.channels.unwrap_or(device_channels);
+    if rate == 0 || channels == 0 {
+        return Err(MicError::UnsupportedConfig(format!("{rate} Hz, {channels} channel(s)")));
+    }
+    Ok(Plan { device_rate, device_channels, rate, channels })
+}
+
 /// Build a cpal input stream for native sample type `T`, converting every
-/// sample to normalized f32 before handing the chunk to `callback`. A
-/// reusable scratch `Vec` holds the converted frames so steady-state
-/// capture doesn't allocate per chunk.
+/// sample to normalized f32 — and, when the plan asks for another rate or
+/// channel count, to that — before handing the chunk to `callback`.
+/// Reusable buffers hold the converted frames so steady-state capture
+/// doesn't allocate per chunk.
 fn build<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    sample_rate: u32,
-    channels: u16,
+    plan: &Plan,
     mut callback: BoxedCallback,
 ) -> Result<cpal::Stream, MicError>
 where
@@ -154,18 +165,24 @@ where
     f32: FromSample<T>,
 {
     let mut scratch: Vec<f32> = Vec::new();
+    let mut converter =
+        crate::convert::Converter::new(plan.device_rate, plan.device_channels, plan.rate, plan.channels);
+    let (sample_rate, channels) = (plan.rate, plan.channels);
     device
         .build_input_stream(
             config,
             move |data: &[T], _: &cpal::InputCallbackInfo| {
                 scratch.clear();
                 scratch.extend(data.iter().map(|&s| f32::from_sample(s)));
-                let buffer = AudioBuffer {
-                    samples: &scratch,
-                    sample_rate,
-                    channels,
+                let samples = match &mut converter {
+                    Some(c) => c.process(&scratch),
+                    None => &scratch,
                 };
-                callback(&buffer);
+                // The resampler's first chunk can be all filter priming.
+                if samples.is_empty() {
+                    return;
+                }
+                callback(&AudioBuffer { samples, sample_rate, channels });
             },
             |err| {
                 // A stream error (device unplugged, xrun) isn't fatal to
@@ -256,5 +273,38 @@ mod ios_session {
             }
             Ok(SessionGuard)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: `open` passed a requested rate to cpal, which asked the
+    /// device for it. On a 1st-gen iPad Pro a 16 kHz request deadlocked
+    /// `AudioUnitStart` against the RemoteIO thread (`0x8BADF00D`). The
+    /// device is now always opened at its own format and the SDK converts.
+    /// The deadlock itself needs the hardware's timing to reproduce, so
+    /// this pins the decision that avoids it.
+    #[test]
+    fn regression_a_requested_rate_is_converted_never_asked_of_the_device() {
+        let config = AudioStreamConfig::default().with_sample_rate(16_000).mono();
+        let p = plan(48_000, 2, &config).unwrap();
+        assert_eq!((p.device_rate, p.device_channels), (48_000, 2), "the device keeps its own format");
+        assert_eq!((p.rate, p.channels), (16_000, 1), "the caller gets what it asked for");
+    }
+
+    #[test]
+    fn an_unset_request_is_the_device_format() {
+        let p = plan(44_100, 1, &AudioStreamConfig::default()).unwrap();
+        assert_eq!((p.rate, p.channels), (44_100, 1));
+    }
+
+    #[test]
+    fn a_zero_rate_or_channel_count_is_unsupported() {
+        let zero_rate = AudioStreamConfig::default().with_sample_rate(0);
+        assert!(matches!(plan(48_000, 1, &zero_rate), Err(MicError::UnsupportedConfig(_))));
+        let zero_channels = AudioStreamConfig::default().with_channels(0);
+        assert!(matches!(plan(48_000, 1, &zero_channels), Err(MicError::UnsupportedConfig(_))));
     }
 }

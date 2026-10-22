@@ -51,3 +51,39 @@ async fn captures_frames_from_default_device() {
     assert!(n_chunks > 0, "expected at least one capture callback");
     assert!(n_frames > 0, "expected at least one frame of audio");
 }
+
+/// A requested rate is delivered by converting the device's capture, at
+/// the requested rate and channel count, at real-time pace — the path a
+/// 16 kHz dictation stream takes on every native target.
+#[tokio::test]
+#[ignore = "requires a real microphone + permission"]
+async fn captures_at_a_requested_rate_the_device_does_not_run() {
+    let frames = Arc::new(AtomicUsize::new(0));
+    let formats = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (frames_cb, formats_cb) = (frames.clone(), formats.clone());
+
+    let config = AudioStreamConfig::default().with_sample_rate(16_000).mono();
+    let stream = match Microphone::new()
+        .open(config, move |buf| {
+            frames_cb.fetch_add(buf.frame_count(), Ordering::Relaxed);
+            formats_cb.lock().unwrap().push((buf.sample_rate, buf.channels));
+        })
+        .await
+    {
+        Ok(s) => s,
+        Err(MicError::NoInputDevice) => {
+            eprintln!("skip: no input device on this host");
+            return;
+        }
+        Err(e) => panic!("open failed: {e}"),
+    };
+    std::thread::sleep(Duration::from_millis(1000));
+    stream.stop();
+
+    let formats = formats.lock().unwrap();
+    assert!(!formats.is_empty(), "expected capture callbacks");
+    assert!(formats.iter().all(|f| *f == (16_000, 1)), "{formats:?}");
+    let n = frames.load(Ordering::Relaxed);
+    eprintln!("captured {n} frames at 16 kHz in 1 s");
+    assert!((8_000..=20_000).contains(&n), "about a second of 16 kHz audio, got {n} frames");
+}

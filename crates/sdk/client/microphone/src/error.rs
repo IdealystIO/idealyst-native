@@ -16,8 +16,9 @@ pub enum MicError {
     NoInputDevice,
 
     /// The requested [`AudioStreamConfig`](crate::AudioStreamConfig) (a
-    /// sample rate / channel count) isn't supported by the device. The
-    /// string carries the backend's detail.
+    /// sample rate / channel count) can't be produced: a zero rate or
+    /// channel count anywhere, or one the browser or `AudioRecord` refuses
+    /// on web / Android. The string carries the backend's detail.
     #[error("requested audio configuration is unsupported: {0}")]
     UnsupportedConfig(String),
 

@@ -7,10 +7,14 @@
 /// preferred value. Construct with [`AudioStreamConfig::default`] (device
 /// defaults) or the small builders below.
 ///
-/// These are *requests*. A backend that can't honour an explicit value
-/// returns [`MicError::UnsupportedConfig`](crate::MicError::UnsupportedConfig)
-/// rather than silently substituting — so the actual rate/channels you
-/// observe on each [`AudioBuffer`](crate::AudioBuffer) are authoritative.
+/// An explicit rate or channel count is what every
+/// [`AudioBuffer`](crate::AudioBuffer) carries, on every backend: the web
+/// and Android get it from the platform's own resampler, and the native
+/// backends (iOS, macOS, Windows, Linux) open the device at its own format
+/// and convert in this SDK — the device is never asked for a rate it does
+/// not run. Only a value no backend can produce (a rate or channel count
+/// of zero) is [`MicError::UnsupportedConfig`](crate::MicError::UnsupportedConfig).
+/// The rate and channels on each buffer are still the ones to trust.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AudioStreamConfig {
     /// Desired sample rate in Hz (e.g. `16_000`, `44_100`, `48_000`).

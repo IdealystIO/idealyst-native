@@ -2059,6 +2059,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   content centred, so one icon button of any size lines up with the
   column.
 
+- **`Microphone::open` with a sample rate no longer deadlocks a real iPad,
+  and delivers that rate on every native target** (`microphone`). The
+  native backends passed a requested rate to cpal, which asked the device
+  for it. On a 1st-gen iPad Pro a 16 kHz request deadlocked: the first
+  RemoteIO buffer had an unexpected size, coreaudio-rs's input proc called
+  `AudioUnitGetProperty` from the IO thread while `AudioUnitStart` held the
+  unit's lock on the main thread, and the watchdog killed the app
+  (`0x8BADF00D`). On macOS the same request retuned the input device's rate
+  for every app. iOS, macOS, Windows and Linux now open the device at its
+  own format and convert in the SDK — a channel remap and a windowed-sinc
+  resample filtered at the lower Nyquist — so `with_sample_rate(16_000)`
+  yields 16 kHz buffers everywhere, as the web and Android backends already
+  did through their platforms' resamplers. `UnsupportedConfig` from a
+  native `open` now means only a zero rate or channel count.
 - **A failed first web build no longer ends `idealyst dev`** (`dev-reload`,
   `idealyst-cli`). `dev_reload::start_with` returned the first build's
   error, so a session launched on an app that did not compile exited —

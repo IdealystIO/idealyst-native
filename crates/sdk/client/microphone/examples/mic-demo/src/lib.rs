@@ -116,8 +116,12 @@ pub fn app() -> Element {
         status.set("Requesting microphone…".to_string());
         runtime_core::driver::spawn_async(async move {
             let mic = Microphone::new();
+            // 16 kHz mono, the rate speech services take: no device runs at
+            // it, so every target produces it by resampling — the path a
+            // real iPad once deadlocked on (the meter should read 16000 Hz).
+            let config = AudioStreamConfig::default().with_sample_rate(16_000).mono();
             let result = mic
-                .open(AudioStreamConfig::default().mono(), |buf: &AudioBuffer| {
+                .open(config, |buf: &AudioBuffer| {
                     let mut peak = 0.0f32;
                     for &s in buf.samples {
                         let a = s.abs();
