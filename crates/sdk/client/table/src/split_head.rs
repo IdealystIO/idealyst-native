@@ -801,6 +801,34 @@ mod tests {
         }
     }
 
+    /// Regression: the rows scroller's starting height was its rows', and a
+    /// classic horizontal scrollbar is drawn inside that height, so it
+    /// covered the last rows and brought up a vertical scrollbar with
+    /// nothing to scroll. The starting height now adds the bar's height;
+    /// with an overlay scrollbar it stays the rows'.
+    #[test]
+    fn regression_the_rows_scroller_starts_tall_enough_for_a_horizontal_scrollbar() {
+        let world = World::new();
+        let sync = world.enter(|| HeadSync::new(1));
+        let basis = || {
+            world.enter(|| match sync.body_scroller_style() {
+                StyleProp::SheetDynamic(f) => f().inline().and_then(|r| r.flex_basis.clone()),
+                _ => panic!("a dynamic sheet"),
+            })
+        };
+        // 294 px of rows; the holder 309 px tall, the probe's client 294.
+        step(&world, || {
+            sync.body_height.set(Some(294.0));
+            sync.outer_height.set(Some(309.0));
+            sync.client_height.set(Some(294.0));
+        });
+        assert_eq!(basis(), Some(glue::Tokenized::Literal(glue::Length::Px(309.0))), "the rows and the bar");
+
+        // An overlay scrollbar takes no height: no starting height is set.
+        step(&world, || sync.outer_height.set(Some(294.0)));
+        assert_eq!(basis(), None);
+    }
+
     /// The scroller's starting height takes a classic horizontal
     /// scrollbar (outer past client), and nothing for an overlay one.
     #[test]
