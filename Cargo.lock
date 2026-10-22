@@ -2074,6 +2074,7 @@ dependencies = [
  "dev-events",
  "flate2",
  "icon-gen",
+ "rustc-demangle",
  "serde_json",
  "sha2 0.10.9",
  "subsecond-types",

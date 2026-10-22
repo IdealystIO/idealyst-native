@@ -46,6 +46,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod additive;
 pub mod ast;
 pub mod consts;
 pub mod describe;
@@ -59,6 +60,7 @@ pub mod server_only;
 pub mod shape;
 pub mod split;
 
+pub use additive::{additions, idents, outline, AddedName, Addition, OutlineEntry, Reach};
 pub use ast::{is_a11y_attr, MatchArm, Prop, Ui, UiNode};
 pub use consts::{compile_time_reach, const_facts, library_reach, ConstFacts, ConstValue};
 pub use describe::describe;

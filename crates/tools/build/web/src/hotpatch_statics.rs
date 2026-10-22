@@ -128,7 +128,10 @@ pub fn bind(objects: &[PathBuf], program: &ProgramStatics, out_dir: &Path) -> Re
             }
         }
     }
-    let paired = statics::pair(named.iter().copied(), program).map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Registration groups may differ from the program's: the page never
+    // runs a patch's constructors (see `statics::is_registration_key`).
+    let paired =
+        statics::pair_registrations_open(named.iter().copied(), program).map_err(|e| anyhow::anyhow!("{e}"))?;
     let bound: HashSet<&str> = paired.iter().map(String::as_str).filter(|n| state.contains(n)).collect();
     if bound.is_empty() {
         return Ok(objects.to_vec());
@@ -146,6 +149,35 @@ pub fn bind(objects: &[PathBuf], program: &ProgramStatics, out_dir: &Path) -> Re
             }
         }
     }
+    Ok(out)
+}
+
+/// The writable statics `objects` define that the running program has
+/// nothing under — new storage. A body edit never brings one (the shape
+/// keeps every `static`), but an ADDITIVE patch's crate is checked for
+/// them: such a static would get a fresh copy in every later patch,
+/// losing its state each time. `inventory::submit!`'s nodes are left
+/// out; nothing in a web patch touches them
+/// (`statics::is_registration_key`).
+pub fn new_state_statics(objects: &[PathBuf], program: &ProgramStatics) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for path in objects {
+        let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        let object = Object::parse(&bytes).with_context(|| format!("parse {}", path.display()))?;
+        for sym in &object.symbols {
+            let Some(def) = sym.data_def() else { continue };
+            if !rustc_demangle_ok(&sym.name) {
+                continue;
+            }
+            let segment = object.segments.get(def.segment as usize).map(String::as_str).unwrap_or("");
+            let key = statics::static_key(&sym.name);
+            if is_state_segment(segment) && !statics::is_registration_key(&key) && !program.has_key(&key) {
+                out.push(key);
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
     Ok(out)
 }
 

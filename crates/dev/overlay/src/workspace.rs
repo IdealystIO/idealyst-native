@@ -144,6 +144,16 @@ pub struct Workspace {
     /// what its own save touched. Cleared by a rebuild
     /// ([`Self::forget_patches`]).
     pub patched: BTreeSet<String>,
+    /// Whether a save whose shape moved only by new items may be a hot
+    /// patch ([`crate::decide::decide_additive`]). Off unless the dev
+    /// loop's patch builder verifies such a patch after its replay.
+    pub additive: bool,
+    /// The names hot patches have ADDED to each package since the base
+    /// build. The base build's metadata does not have them, and a patch
+    /// compiles every dependent against that metadata, so a save that
+    /// starts using one in another crate must rebuild
+    /// ([`Reason::UsesAddedItem`]). Cleared by a rebuild.
+    pub added: BTreeMap<String, Vec<runtime_macros_parse::AddedName>>,
 }
 
 /// Where a saved path belongs.
@@ -190,6 +200,11 @@ pub struct HotPatchPlan {
     /// applied for an edited crate). A crate whose key matches its last
     /// replay against the same base need not be replayed again.
     pub source_keys: BTreeMap<String, String>,
+    /// Per package, the names this save ADDS there (an additive save;
+    /// empty for a body-only one). The patch builder verifies a crate
+    /// with additions — this save's or an earlier patch's
+    /// ([`Workspace::added_since_base`]) — after its replay.
+    pub added: BTreeMap<String, Vec<runtime_macros_parse::AddedName>>,
 }
 
 impl Workspace {
@@ -322,6 +337,8 @@ impl Workspace {
             crates,
             outside,
             patched: BTreeSet::new(),
+            additive: false,
+            added: BTreeMap::new(),
         })
     }
 
@@ -346,6 +363,8 @@ impl Workspace {
             crates,
             outside: BTreeMap::new(),
             patched: BTreeSet::new(),
+            additive: false,
+            added: BTreeMap::new(),
         }
     }
 
@@ -441,11 +460,19 @@ impl Workspace {
                 let mut source_keys = a.source_keys;
                 // The later decision saw the later sources.
                 source_keys.extend(b.source_keys);
+                let mut added = a.added;
+                for (package, names) in b.added {
+                    let into = added.entry(package).or_default();
+                    into.extend(names);
+                    into.sort();
+                    into.dedup();
+                }
                 HotPatch(HotPatchPlan {
                     edited: edited.into_iter().collect(),
                     replay: self.replay_set(&carried),
                     files,
                     source_keys,
+                    added,
                 })
             }
             (HotPatch(p), _) | (_, HotPatch(p)) => HotPatch(p),
@@ -468,6 +495,7 @@ impl Workspace {
         let mut touched: BTreeSet<String> = BTreeSet::new();
         let mut body_edited = false;
         let mut files = Vec::new();
+        let mut added: BTreeMap<String, Vec<crate::decide::FileAddition>> = BTreeMap::new();
         for (package, saved) in &by_package {
             let Some(krate) = self.crates.get(*package) else {
                 let file = saved.first().map(|s| s.file.path.clone()).unwrap_or_default();
@@ -482,7 +510,16 @@ impl Workspace {
                 .iter()
                 .map(|s| ChangedFile { path: s.file.path.clone(), text: s.file.text.clone() })
                 .collect();
-            match decide_with(Some(archive), &changed, premint) {
+            let decision = if self.additive {
+                let (decision, here) = crate::decide::decide_additive(Some(archive), &changed, premint);
+                if !here.is_empty() {
+                    added.insert(package.to_string(), here);
+                }
+                decision
+            } else {
+                decide_with(Some(archive), &changed, premint)
+            };
+            match decision {
                 Decision::Unchanged => {}
                 // Escalated, a patchable file is a body edit: the hot
                 // patch re-emits it from source.
@@ -515,6 +552,10 @@ impl Workspace {
             };
         }
 
+        if let Some(why) = self.additive_rebuild(&by_package, &added) {
+            return WorkspaceDecision::Rebuild(why);
+        }
+
         // A library crate's edit must leave every body its dependents
         // compile from metadata exactly as the base build saw it.
         for package in &touched {
@@ -524,9 +565,16 @@ impl Workspace {
             let archive = self.crates[package].archive.as_ref().expect("checked above");
             for s in &by_package[package.as_str()] {
                 let recorded = archive.files.get(&s.file.path);
-                let now = crate::archive::downstream_digests(&s.file.text);
+                let mut now = crate::archive::downstream_digests(&s.file.text);
                 let empty = BTreeMap::new();
                 let before = recorded.map(|r| &r.downstream).unwrap_or(&empty);
+                // A body an additive save ADDS is one no dependent can
+                // instantiate yet: none of them can name it (its name is
+                // fresh in every one, `additive_rebuild`), and their
+                // replays read the base metadata, which does not have it.
+                if added.get(package.as_str()).is_some_and(|a| a.iter().any(|f| f.file == s.file.path)) {
+                    now.retain(|label, _| before.contains_key(label));
+                }
                 if let Some(item) = first_difference(before, &now) {
                     return WorkspaceDecision::Rebuild(Reason::DownstreamBody {
                         file: self.display(package, &s.file.path),
@@ -559,24 +607,133 @@ impl Workspace {
             source_keys.insert(package.clone(), archive.build_key_with(&saved_here));
         }
         files.sort();
+        let added = added
+            .into_iter()
+            .map(|(package, adds)| {
+                let mut names: Vec<runtime_macros_parse::AddedName> =
+                    adds.into_iter().flat_map(|f| f.addition.names).collect();
+                names.sort();
+                names.dedup();
+                (package, names)
+            })
+            .collect();
         WorkspaceDecision::HotPatch(HotPatchPlan {
             edited: touched.into_iter().collect(),
             replay,
             files,
             source_keys,
+            added,
         })
     }
 
+    /// The workspace half of an additive save's checks, which a single
+    /// crate's decision cannot make:
+    ///
+    /// - a `pub` name the save adds must be fresh in every crate that
+    ///   depends on its package too — a dependent's `use lib::*` would
+    ///   otherwise bring it in over whatever an existing mention there
+    ///   resolved to (a prelude item, another glob's);
+    /// - no saved file may mention a name a patch added to ANOTHER
+    ///   package, earlier in this base or in this very save: that crate
+    ///   is compiled against the base build's metadata, which lacks it,
+    ///   so the patch could only fail to build.
+    fn additive_rebuild(
+        &self,
+        by_package: &BTreeMap<&str, Vec<&SavedFile>>,
+        added: &BTreeMap<String, Vec<crate::decide::FileAddition>>,
+    ) -> Option<Reason> {
+        for (package, adds) in added {
+            let dependents = self.replay_set(&BTreeSet::from([package.clone()]));
+            for dependent in dependents.iter().filter(|d| *d != package) {
+                let Some(archive) = self.crates.get(dependent).and_then(|c| c.archive.as_ref()) else {
+                    let first = adds.first()?;
+                    return Some(Reason::NotAdditive {
+                        file: self.display(package, &first.file),
+                        why: format!("{dependent}, which depends on it, has no archive to check names against"),
+                    });
+                };
+                let public: Vec<crate::decide::FileAddition> = adds
+                    .iter()
+                    .map(|f| {
+                        let mut f = f.clone();
+                        f.addition.names.retain(|n| n.reach == runtime_macros_parse::Reach::Public);
+                        f
+                    })
+                    .collect();
+                if let Some(why) = crate::decide::added_name_in_use(archive, &public) {
+                    return Some(match why {
+                        Reason::AddedNameInUse { file, item, name, user } => Reason::AddedNameInUse {
+                            file: self.display(package, &file),
+                            item,
+                            name,
+                            user: self.display(dependent, &user),
+                        },
+                        other => other,
+                    });
+                }
+            }
+        }
+
+        // Names from other packages this save's files must not mention.
+        let mut foreign: Vec<(&str, &runtime_macros_parse::AddedName)> = Vec::new();
+        for (package, names) in &self.added {
+            foreign.extend(names.iter().map(|n| (package.as_str(), n)));
+        }
+        for (package, adds) in added {
+            for f in adds {
+                foreign.extend(
+                    f.addition.names.iter().filter(|n| n.reach == runtime_macros_parse::Reach::Public).map(|n| (package.as_str(), n)),
+                );
+            }
+        }
+        if foreign.is_empty() {
+            return None;
+        }
+        for (package, saved) in by_package {
+            for s in saved {
+                let idents = crate::archive::idents_of(&s.file.text).unwrap_or_default();
+                for (owner, name) in &foreign {
+                    if owner == package {
+                        continue;
+                    }
+                    if idents.iter().any(|i| *i == name.name) {
+                        return Some(Reason::UsesAddedItem {
+                            file: self.display(package, &s.file.path),
+                            package: owner.to_string(),
+                            name: name.name.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Whether a hot patch of this base has added items to `package` —
+    /// the patch builder verifies such a crate after every replay of it,
+    /// not only the one that added them.
+    pub fn added_since_base(&self, package: &str) -> bool {
+        self.added.get(package).is_some_and(|n| !n.is_empty())
+    }
+
     /// Record a hot patch that reached the page: every crate it
-    /// re-emitted rides along in each later patch of this base.
+    /// re-emitted rides along in each later patch of this base, and the
+    /// names it added are remembered against it.
     pub fn note_patched(&mut self, plan: &HotPatchPlan) {
         self.patched.extend(plan.replay.iter().cloned());
+        for (package, names) in &plan.added {
+            let into = self.added.entry(package.clone()).or_default();
+            into.extend(names.iter().cloned());
+            into.sort();
+            into.dedup();
+        }
     }
 
     /// A rebuild compiled every edit into a new base; nothing needs
     /// carrying any more.
     pub fn forget_patches(&mut self) {
         self.patched.clear();
+        self.added.clear();
     }
 
     /// The edited crates plus every workspace crate that depends on one
@@ -1667,5 +1824,194 @@ pub async fn ping() -> Result<String, ServerError> {
             ws.replay_set(&BTreeSet::from(["core".to_string()])),
             vec!["core", "api", "ui-shared", "app"]
         );
+    }
+
+    // ── Additive saves ──────────────────────────────────────────────
+
+    fn additive_fixture() -> Fixture {
+        let mut f = fixture();
+        f.ws.additive = true;
+        f
+    }
+
+    fn added_names(plan: &HotPatchPlan, package: &str) -> Vec<String> {
+        plan.added.get(package).into_iter().flatten().map(|n| n.name.clone()).collect()
+    }
+
+    /// Off, a new item is a shape change, as it always was: only a dev
+    /// loop whose builder verifies an additive patch turns this on.
+    #[test]
+    fn without_additive_a_new_item_still_rebuilds() {
+        let f = fixture();
+        let edit = format!("{SHARED}\npub fn shared_extra(n: i32) -> i32 {{ n + 1 }}\n");
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+            WorkspaceDecision::Rebuild(Reason::ShapeChanged { .. })
+        ));
+    }
+
+    /// The study's "shape" edit: a new `pub fn` at the end of a library
+    /// file. It patches, carries the library's dependents, and names
+    /// what it added so the builder verifies the crate.
+    #[test]
+    fn a_new_pub_fn_in_a_library_is_a_hot_patch() {
+        let f = additive_fixture();
+        let edit = format!("{SHARED}\npub fn shared_extra(n: i32) -> i32 {{ n + 1 }}\n");
+        match f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false) {
+            WorkspaceDecision::HotPatch(plan) => {
+                assert_eq!(plan.edited, vec!["lab-shared"]);
+                assert_eq!(plan.replay, vec!["lab-shared", "app"]);
+                assert_eq!(added_names(&plan, "lab-shared"), vec!["shared_extra"]);
+            }
+            other => panic!("expected a hot patch, got {other:?}"),
+        }
+    }
+
+    /// The everyday one: a helper added and called from an existing body
+    /// in the same save.
+    #[test]
+    fn a_helper_and_its_first_call_are_one_hot_patch() {
+        let f = additive_fixture();
+        let edit = SHARED.replace("format!(\"v1 {}\", n)", "format!(\"v1 {}\", bumped(n))")
+            + "\nfn bumped(n: i32) -> i32 { n + 1 }\n";
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+            WorkspaceDecision::HotPatch(_)
+        ));
+    }
+
+    /// A generic body is what a dependent compiles from metadata, so an
+    /// EDIT to one rebuilds. A NEW one no dependent can name yet.
+    #[test]
+    fn a_new_generic_fn_in_a_library_is_not_a_downstream_body() {
+        let f = additive_fixture();
+        let edit = format!("{SHARED}\npub fn wrap_twice<T: Clone>(t: T) -> Vec<T> {{ vec![t.clone(), t] }}\n");
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+            WorkspaceDecision::HotPatch(_)
+        ));
+        // Editing an EXISTING generic body still rebuilds.
+        let edit = SHARED.replace("vec![t]", "vec![t.clone(), t]");
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+            WorkspaceDecision::Rebuild(Reason::DownstreamBody { .. })
+        ));
+    }
+
+    /// `app` defines `wrap_here`. A `pub fn wrap_here` in the library
+    /// could take over `lab_shared::*` imports there — the name is not
+    /// fresh in a dependent, so it rebuilds.
+    #[test]
+    fn a_pub_name_a_dependent_already_mentions_rebuilds() {
+        let f = additive_fixture();
+        let edit = format!("{SHARED}\npub fn wrap_here() {{}}\n");
+        match f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false) {
+            WorkspaceDecision::Rebuild(Reason::AddedNameInUse { name, user, .. }) => {
+                assert_eq!(name, "wrap_here");
+                assert_eq!(user, "src/lib.rs");
+            }
+            other => panic!("expected AddedNameInUse, got {other:?}"),
+        }
+    }
+
+    /// The same name kept private cannot reach the app: it patches.
+    #[test]
+    fn a_private_name_only_needs_to_be_fresh_in_its_own_crate() {
+        let f = additive_fixture();
+        let edit = format!("{SHARED}\nfn wrap_here() {{}}\n");
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+            WorkspaceDecision::HotPatch(_)
+        ));
+    }
+
+    /// The library itself mentions `format` (the macro). A new `fn
+    /// format` there would be what an existing mention resolves to.
+    #[test]
+    fn a_name_its_own_crate_already_mentions_rebuilds() {
+        let f = additive_fixture();
+        let edit = format!("{SHARED}\nfn format() {{}}\n");
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+            WorkspaceDecision::Rebuild(Reason::AddedNameInUse { .. })
+        ));
+    }
+
+    #[test]
+    fn a_changed_item_beside_a_new_one_is_not_additive() {
+        let f = additive_fixture();
+        let edit = SHARED.replace("pub fn quick() -> u32", "pub fn quick() -> u64")
+            + "\npub fn shared_extra() {}\n";
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+            WorkspaceDecision::Rebuild(Reason::NotAdditive { .. })
+        ));
+    }
+
+    /// A component added to the app crate itself.
+    #[test]
+    fn a_new_component_in_the_tip_is_a_hot_patch() {
+        let f = additive_fixture();
+        let edit = format!("{APP}\n#[component]\nfn Banner(label: String) -> Element {{ ui! {{ text {{ \"{{label}}\" }} }} }}\n");
+        match f.ws.decide(&saved(&f, "src/lib.rs", edit), false) {
+            WorkspaceDecision::HotPatch(plan) => assert_eq!(added_names(&plan, "app"), vec!["Banner"]),
+            other => panic!("expected a hot patch, got {other:?}"),
+        }
+    }
+
+    /// Patched in, the library's new fn is not in the base build's
+    /// metadata, which every dependent's replay reads. A later save that
+    /// starts calling it from the app cannot compile as a patch: it
+    /// rebuilds at once, instead of after a failed replay.
+    #[test]
+    fn regression_a_dependent_using_an_item_a_patch_added_rebuilds() {
+        let mut f = additive_fixture();
+        let edit = format!("{SHARED}\npub fn shared_extra(n: i32) -> i32 {{ n + 1 }}\n");
+        let WorkspaceDecision::HotPatch(plan) = f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false) else {
+            panic!("the addition should patch");
+        };
+        f.ws.note_patched(&plan);
+        assert!(f.ws.added_since_base("lab-shared"));
+
+        let uses = APP.replace("fn Root() -> Element {", "fn Root() -> Element {\n    let _n = lab_shared::shared_extra(1);");
+        match f.ws.decide(&saved(&f, "src/lib.rs", uses.clone()), false) {
+            WorkspaceDecision::Rebuild(Reason::UsesAddedItem { package, name, .. }) => {
+                assert_eq!(package, "lab-shared");
+                assert_eq!(name, "shared_extra");
+            }
+            other => panic!("expected UsesAddedItem, got {other:?}"),
+        }
+        // A body edit in the app that does not use it still patches.
+        let other = APP.replace("fn Root() -> Element {", "fn Root() -> Element {\n    let _n = 2;");
+        assert!(matches!(f.ws.decide(&saved(&f, "src/lib.rs", other), false), WorkspaceDecision::HotPatch(_)));
+
+        // A rebuild puts it in the base: the next use is ordinary.
+        f.ws.forget_patches();
+        assert!(!f.ws.added_since_base("lab-shared"));
+    }
+
+    /// The same, inside one save: the library adds the fn and the app
+    /// calls it.
+    #[test]
+    fn a_save_that_adds_an_item_and_uses_it_from_a_dependent_rebuilds() {
+        let f = additive_fixture();
+        let mut save = saved(&f, "lab-shared/src/lib.rs", format!("{SHARED}\npub fn shared_extra() -> i32 {{ 1 }}\n"));
+        save.extend(saved(&f, "src/lib.rs", APP.replace("fn Root() -> Element {", "fn Root() -> Element {\n    let _n = lab_shared::shared_extra();")));
+        assert!(matches!(
+            f.ws.decide(&save, false),
+            WorkspaceDecision::Rebuild(Reason::UsesAddedItem { .. })
+        ));
+    }
+
+    /// Two additive decisions merge into one plan with both crates'
+    /// names.
+    #[test]
+    fn merged_additive_plans_keep_every_addition() {
+        let f = additive_fixture();
+        let a = f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", format!("{SHARED}\npub fn one_more() {{}}\n")), false);
+        let b = f.ws.decide(&saved(&f, "src/lib.rs", format!("{APP}\nfn two_more() {{}}\n")), false);
+        let WorkspaceDecision::HotPatch(plan) = f.ws.merge(a, b) else { panic!("merge of two hot patches") };
+        assert_eq!(added_names(&plan, "lab-shared"), vec!["one_more"]);
+        assert_eq!(added_names(&plan, "app"), vec!["two_more"]);
     }
 }

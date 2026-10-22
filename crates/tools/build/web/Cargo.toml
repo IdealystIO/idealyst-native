@@ -39,6 +39,10 @@ wasmparser = { workspace = true }
 # seeds the symbol mangling, and the jump table pairs symbols by name —
 # so this is one mechanism, not two.
 build-runtime-server = { workspace = true }
+# Demangling the base's and a patch's symbols, to check an ADDITIVE
+# patch left every existing function's name alone
+# (`hotpatch_additive`).
+rustc-demangle = "0.1"
 # `JumpTable` — subsecond's own type. The dev server serializes it and
 # the page hands the deserialized value straight to `apply_patch`, so a
 # shape of our own would be a mismatch nothing checks.

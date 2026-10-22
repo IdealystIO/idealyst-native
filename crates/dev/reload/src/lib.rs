@@ -1190,7 +1190,24 @@ fn load_workspace(dir: &Path, memo: &dev_overlay::ScanMemo) -> dev_overlay::Work
 }
 
 /// [`load_workspace`] without the scan: the crates and their graph only.
+///
+/// Additive hot patches are on (`dev_overlay::Workspace::additive`):
+/// this loop's builder verifies them after the replay
+/// (`build_web::hotpatch_additive`). `IDEALYST_HOTPATCH_ADDITIVE=0`
+/// turns them off, so every shape change rebuilds as before.
 fn unscanned_workspace(dir: &Path) -> dev_overlay::Workspace {
+    let mut ws = unscanned_workspace_graph(dir);
+    ws.additive = additive_patches_enabled(std::env::var("IDEALYST_HOTPATCH_ADDITIVE").ok().as_deref());
+    ws
+}
+
+/// Whether `IDEALYST_HOTPATCH_ADDITIVE` leaves additive patches on: any
+/// value but `0`, `false` or `off`, or none.
+fn additive_patches_enabled(env: Option<&str>) -> bool {
+    !env.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off"))
+}
+
+fn unscanned_workspace_graph(dir: &Path) -> dev_overlay::Workspace {
     let package = dir_package_name(dir);
     match cargo_metadata(&dir.join("Cargo.toml")) {
         Ok(meta) => dev_overlay::Workspace::from_metadata(&meta, dir),
@@ -2392,10 +2409,11 @@ fn patch_crates(
         .map(|package| {
             let name = ws.crate_name(package).unwrap_or(package.as_str()).to_string();
             let key = plan.source_keys.get(package).cloned();
+            let additive = plan.added.contains_key(package) || ws.added_since_base(package);
             if plan.edited.contains(package) {
-                build_web::hotpatch_build::PatchCrate::new(name, key)
+                build_web::hotpatch_build::PatchCrate::new(name, key).with_additions(additive)
             } else {
-                build_web::hotpatch_build::PatchCrate::carried(name, key)
+                build_web::hotpatch_build::PatchCrate::carried(name, key).with_additions(additive)
             }
         })
         .collect()
@@ -4656,4 +4674,16 @@ mod tests {
         assert_eq!(signal.patches_since(2).len(), 0);
     }
 
+}
+
+#[cfg(test)]
+mod additive_switch_tests {
+    #[test]
+    fn additive_patches_are_on_unless_switched_off() {
+        assert!(super::additive_patches_enabled(None));
+        assert!(super::additive_patches_enabled(Some("1")));
+        for off in ["0", "false", "OFF", " off "] {
+            assert!(!super::additive_patches_enabled(Some(off)), "{off:?}");
+        }
+    }
 }

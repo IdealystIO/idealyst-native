@@ -91,18 +91,33 @@ pub struct PatchCrate {
     /// carried only as a dependent is skipped; an EDITED one fails the
     /// patch, and the rebuild decides whether the edit matters.
     pub edited: bool,
+    /// Whether a patch of this base has ADDED items to the crate — this
+    /// save, or an earlier one. Its replay is then verified against the
+    /// base module before anything is linked (`hotpatch_additive`).
+    pub additive: bool,
 }
 
 impl PatchCrate {
     pub fn new(crate_name: impl Into<String>, source_key: Option<String>) -> Self {
-        Self { crate_name: crate_name.into(), source_key, edited: true }
+        Self { crate_name: crate_name.into(), source_key, edited: true, additive: false }
     }
 
     /// A crate re-emitted only to carry another's edit.
     pub fn carried(crate_name: impl Into<String>, source_key: Option<String>) -> Self {
-        Self { crate_name: crate_name.into(), source_key, edited: false }
+        Self { crate_name: crate_name.into(), source_key, edited: false, additive: false }
+    }
+
+    /// This crate, with items a patch of this base added to it
+    /// ([`Self::additive`]).
+    pub fn with_additions(mut self, additive: bool) -> Self {
+        self.additive = additive;
+        self
     }
 }
+
+/// A wasm module with no sections: the patch of a save that changed
+/// nothing the running program calls.
+const EMPTY_MODULE: &[u8] = b"\0asm\x01\0\0\0";
 
 /// A patch ready to be served and applied.
 #[derive(Debug, Clone)]
@@ -736,6 +751,15 @@ impl WasmPatchBuilder {
         timings.push(("cargo", started.elapsed()));
         checkpoint()?;
 
+        // A crate a patch added items to must still compile its existing
+        // items to the base's symbols, and declare no new state.
+        if in_build.iter().any(|k| k.additive) {
+            let started = Instant::now();
+            self.verify_additive(&per_crate)?;
+            timings.push(("verify-additive", started.elapsed()));
+            checkpoint()?;
+        }
+
         // Which functions differ from the base, when every crate of the
         // patch has a baseline to tell (see `hotpatch_fndiff`).
         let started = Instant::now();
@@ -747,6 +771,23 @@ impl WasmPatchBuilder {
         self.serial.set(serial);
         std::fs::create_dir_all(&self.out_dir)
             .with_context(|| format!("create {}", self.out_dir.display()))?;
+
+        // Every function that differs is new to the base: the save only
+        // ADDED code, and nothing the running program calls changed. There
+        // is nothing to link or redirect; the page acks an empty table as
+        // applied without fetching the module, which is written anyway (an
+        // empty one) so the URL the event names exists.
+        if plan.as_ref().is_some_and(|t| t.plan.redirect.iter().all(|f| !self.has_base_slot(f))) {
+            let path = self.out_dir.join(format!("patch-{serial}.wasm"));
+            std::fs::write(&path, EMPTY_MODULE).with_context(|| format!("write the patch {}", path.display()))?;
+            return Ok(BuiltPatch {
+                path,
+                jump_table: WasmJumpTable { map: Default::default(), ifunc_count: 0 },
+                timings,
+                crates: carried,
+                skipped,
+            });
+        }
 
         // The trimmed patch first; the whole one whenever the trimmed one
         // cannot be shown to redirect everything it must.
@@ -811,6 +852,33 @@ impl WasmPatchBuilder {
             crates: carried,
             skipped,
         })
+    }
+
+    /// Whether the base's table has a slot for `name`, under that name or
+    /// the one its alias map gives it.
+    fn has_base_slot(&self, name: &str) -> bool {
+        self.base_slots.contains_key(name) || self.aliases.get(name).is_some_and(|c| self.base_slots.contains_key(c))
+    }
+
+    /// [`crate::hotpatch_additive`]'s checks over every crate of the patch
+    /// a patch of this base added items to. An `Err` refuses the patch,
+    /// and the dev loop rebuilds.
+    fn verify_additive(&self, per_crate: &[(&PatchCrate, Vec<PathBuf>)]) -> Result<()> {
+        let all: Vec<&PathBuf> = per_crate.iter().flat_map(|(_, objs)| objs.iter()).collect();
+        let defined = crate::hotpatch_additive::defined_functions(&all)
+            .context("reading the patch's functions to verify an additive edit")?;
+        for (krate, objs) in per_crate.iter().filter(|(k, _)| k.additive) {
+            let refuse = |why: String| {
+                anyhow::anyhow!("the items added to `{}` cannot be patched in: {why}; rebuilding", krate.crate_name)
+            };
+            crate::hotpatch_additive::verify(&krate.crate_name, self.base_slots.keys(), &self.aliases, &defined)
+                .map_err(|r| refuse(r.to_string()))?;
+            let state = crate::hotpatch_statics::new_state_statics(objs, &self.base.statics)?;
+            if !state.is_empty() {
+                return Err(refuse(crate::hotpatch_additive::Refusal::NewState { statics: state }.to_string()));
+            }
+        }
+        Ok(())
     }
 
     /// The plan for a patch of these crates and their objects: `None`
@@ -933,10 +1001,7 @@ impl WasmPatchBuilder {
                 .context("pairing the patch's functions to the base's table slots")?;
         steps.push(("jump-table", started.elapsed()));
         if let Some(plan) = plan {
-            let has_base_slot = |name: &String| {
-                self.base_slots.contains_key(name)
-                    || self.aliases.get(name).is_some_and(|c| self.base_slots.contains_key(c))
-            };
+            let has_base_slot = |name: &String| self.has_base_slot(name);
             let missing: Vec<&String> =
                 plan.plan.slotted.iter().filter(|r| has_base_slot(r) && !patch_slots.contains_key(*r)).collect();
             if !missing.is_empty() || jump_table.is_empty() {
