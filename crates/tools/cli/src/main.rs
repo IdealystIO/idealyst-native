@@ -96,8 +96,9 @@ enum Command {
     /// `catalog-json`.
     #[command(name = "catalog-scan")]
     CatalogScan(cmd::catalog_scan::Args),
-    /// Configure a project aspect. Currently: `devcontainer` (initialize or
-    /// update a devcontainer + its idealyst-managed sidecar services).
+    /// Configure a project aspect: `devcontainer` (a devcontainer and its
+    /// idealyst-managed sidecar services) or `vscode` (workspace settings
+    /// and extension recommendations).
     Configure(cmd::configure::Args),
     /// Diagnose the local toolchain (Rust, web, iOS, Android; Roku pending).
     Doctor(cmd::doctor::Args),

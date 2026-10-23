@@ -1,342 +1,481 @@
-//! Cargo / wasm-pack orchestration for the `POST /compile` handler.
+//! Turns a submitted set of files into a served web bundle, through the
+//! framework's own pipeline: `idealyst build --web`, the command a real
+//! app ships with. What the preview runs is therefore exactly what that
+//! code would be as an app — same entry point, same boot, same backend.
 //!
-//! Compilation is serialized through a process-wide `Mutex` because
-//! cargo writes to a single `target/` directory; concurrent
-//! invocations would step on each other. The mutex is fine for a
-//! single-tenant dev fiddle — for a real multi-user deployment
-//! you'd swap this for a per-user worker pool with isolated target
-//! dirs.
+//! The build happens in a working copy of `template/` at `.work/`. The
+//! submitted entry file becomes `src/app.rs` and any other file
+//! `src/app/<path>`, which is where `mod widgets;` inside `app.rs`
+//! resolves — the layout a scaffolded project has. The working copy sits
+//! at the template's depth, so the template's relative path deps resolve
+//! from it, and inside the framework checkout, so the CLI resolves the
+//! framework from the checkout and cargo finds the repo's registry config.
 //!
-//! Project model: the request carries a `files` map of
-//! `<path-under-src/>` → contents. Each path is written into
-//! `template/src/snippet/<path>` — the snippet sub-module the
-//! template wraps. The user's entry file is conventionally
-//! `lib.rs`; the server quietly renames it to `mod.rs` on disk so
-//! Rust's submodule resolution picks it up under `mod snippet;`.
+//! Builds are serialized: there is one working copy, and one cargo target
+//! directory (the CLI's per-workspace `target/idealyst-web-*`), which is
+//! what keeps a rebuild warm — editing one file recompiles only the
+//! snippet crate (under a second on an M-series Mac).
 //!
-//! Output cache: results are keyed by sha256 over the canonical
-//! sorted (path, contents) list. A repeat compile of the same
-//! project tree returns the cached hash without re-invoking cargo.
+//! Outputs are content-addressed under `compiled/<hash>/`, keyed by the
+//! files plus a stamp of the framework source (see [`framework_stamp`]),
+//! so the same code against the same framework is served without a build.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Single, global compile lock. Held for the duration of a build.
-static COMPILE_LOCK: Mutex<()> = Mutex::new(());
+/// The file every submission must contain: it defines `pub fn app()`.
+pub const ENTRY_FILE: &str = "app.rs";
 
-/// Outcome of a compile request, JSON-encoded into `POST /compile`'s
-/// response body. `hash` is the cache-dir basename — the browser
-/// loads `/compiled/<hash>/index.html` in the simulator iframe.
-pub struct CompileOk {
-    pub hash: String,
+/// Bounds on a submission. Generous for teaching code; small enough that
+/// a bad client cannot fill the disk through the cache.
+const MAX_FILES: usize = 32;
+const MAX_TOTAL_BYTES: usize = 256 * 1024;
+
+/// How many bundles `compiled/` keeps. The oldest beyond this are removed
+/// after each build.
+const MAX_CACHED_BUNDLES: usize = 400;
+
+/// The package name in `template/Cargo.toml`; diagnostics from any other
+/// package (framework warnings) are not the learner's.
+const SNIPPET_PACKAGE: &str = "fiddle-snippet";
+
+/// Inserted into every served `index.html`: reports runtime failures —
+/// a panic's message reaches `console.error` through the boot's panic
+/// hook — to the embedding page as `{"source":"idealyst-fiddle", ...}`
+/// JSON strings, so an editor can show them beside the code.
+const ERROR_BRIDGE: &str = r#"<script>
+(function () {
+  function post(kind, text) {
+    try {
+      parent.postMessage(JSON.stringify({ source: "idealyst-fiddle", kind: kind, text: String(text) }), "*");
+    } catch (_) {}
+  }
+  var error = console.error.bind(console);
+  console.error = function () {
+    error.apply(console, arguments);
+    post("error", Array.prototype.map.call(arguments, String).join(" "));
+  };
+  addEventListener("error", function (e) { post("error", e.message); });
+  addEventListener("unhandledrejection", function (e) { post("error", e.reason); });
+})();
+</script>
+"#;
+
+/// One compiler message about the submitted files, with its location in
+/// the learner's terms (`app.rs`, `widgets.rs`), not the template's.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Diagnostic {
+    /// `error` or `warning`.
+    pub level: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// The submitted file the primary span is in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// 1-based, as rustc reports it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    /// 1-based, as rustc reports it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+    /// rustc's full rendering, with paths rewritten to the submitted ones.
+    pub rendered: String,
 }
 
-/// Output mode the user picked in the editor. Picks which cargo
-/// feature the template builds against — see
-/// `template/src/lib.rs` for what each mode does.
-#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    /// wgpu canvas + host-web + iOS skin. The default; matches what
-    /// the docs Simulator embeds.
-    Simulator,
-    /// Plain DOM mount via backend-web. Native `<div>` / `<button>` /
-    /// `<input>` rendering — the snippet as a real web app.
-    Web,
+/// What `POST /compile` answers. A compile error is a normal outcome,
+/// not a server failure.
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Outcome {
+    Built {
+        /// The bundle's directory under `compiled/`.
+        hash: String,
+        /// Where the preview loads from: `/compiled/<hash>/`.
+        url: String,
+        /// Build time; 0 when served from the cache.
+        ms: u64,
+        cached: bool,
+        /// Warnings about the submitted files (the build still succeeded).
+        diagnostics: Vec<Diagnostic>,
+    },
+    Failed {
+        diagnostics: Vec<Diagnostic>,
+        /// The tail of the build's output, for failures with no compiler
+        /// diagnostic (a toolchain problem, a link error).
+        log: String,
+    },
 }
 
-impl Default for Mode {
-    fn default() -> Self {
-        Self::Simulator
+pub struct Compiler {
+    /// `examples/fiddle/`.
+    root: PathBuf,
+    /// The `idealyst` executable.
+    cli: PathBuf,
+    /// The framework checkout, when the fiddle runs inside one.
+    workspace: Option<PathBuf>,
+    /// Held for the whole write-files-then-build sequence.
+    lock: Mutex<()>,
+}
+
+impl Compiler {
+    pub fn new(root: PathBuf, cli: PathBuf) -> Result<Self> {
+        let workspace = root.parent().and_then(Path::parent).map(Path::to_path_buf);
+        let compiler = Compiler { root, cli, workspace, lock: Mutex::new(()) };
+        compiler.prepare_work_dir()?;
+        Ok(compiler)
     }
-}
 
-impl Mode {
-    fn feature(self) -> &'static str {
-        match self {
-            Mode::Simulator => "simulator",
-            Mode::Web => "web",
+    pub fn compiled_dir(&self) -> PathBuf {
+        self.root.join("compiled")
+    }
+
+    fn work_dir(&self) -> PathBuf {
+        self.root.join(".work")
+    }
+
+    /// Refresh `.work/` from `template/`: the manifest and the fixed
+    /// sources. Its `Cargo.lock` and `src/app*` are left alone — the
+    /// lock keeps resolution stable across restarts, and the app files
+    /// are rewritten by every build.
+    fn prepare_work_dir(&self) -> Result<()> {
+        let template = self.root.join("template");
+        let work = self.work_dir();
+        fs::create_dir_all(work.join("src"))
+            .with_context(|| format!("creating {}", work.display()))?;
+        for rel in ["Cargo.toml", "src/main.rs", "src/lib.rs"] {
+            fs::copy(template.join(rel), work.join(rel))
+                .with_context(|| format!("copying template/{rel} into .work/"))?;
         }
-    }
-    fn tag(self) -> &'static str {
-        match self {
-            Mode::Simulator => "sim",
-            Mode::Web => "web",
+        let lock = work.join("Cargo.lock");
+        if !lock.exists() && template.join("Cargo.lock").exists() {
+            fs::copy(template.join("Cargo.lock"), &lock).context("seeding .work/Cargo.lock")?;
         }
-    }
-}
-
-/// Conventional entry path the editor uses for the project's root
-/// file. Mapped to `snippet/mod.rs` on disk so Rust's `mod snippet;`
-/// declaration picks it up; the user never has to care about the
-/// `mod.rs` convention.
-const ENTRY_PATH: &str = "lib.rs";
-
-/// Compile a multi-file project by writing each file into the
-/// template's `src/snippet/` directory (replacing any previous
-/// snippet tree), invoking wasm-pack with the right feature flag,
-/// and materializing the resulting bundle into `compiled/<hash>/`.
-///
-/// `files` keys are paths relative to the user's logical `src/`
-/// directory. Each must be a relative `.rs` path with no `..`
-/// components; non-`.rs` files are rejected. The map must contain
-/// the entry file at [`ENTRY_PATH`] (`"lib.rs"`), or the snippet
-/// has no `app()` to call.
-///
-/// The hash includes the mode AND the latest mtime of any
-/// "upstream" workspace crate the snippet links against, so editing
-/// upstream framework code automatically invalidates the cache.
-pub fn compile(
-    files: &BTreeMap<String, String>,
-    mode: Mode,
-    fiddle_root: &Path,
-) -> Result<CompileOk> {
-    validate_files(files)?;
-
-    let upstream_mtime = upstream_max_mtime(fiddle_root);
-    let hash = files_hash(files, mode, upstream_mtime);
-    let cache_dir = fiddle_root.join("compiled").join(&hash);
-
-    if cache_dir.join("index.html").exists() {
-        return Ok(CompileOk { hash });
+        Ok(())
     }
 
-    let _guard = COMPILE_LOCK
-        .lock()
-        .map_err(|_| anyhow::anyhow!("compile lock poisoned"))?;
-
-    if cache_dir.join("index.html").exists() {
-        return Ok(CompileOk { hash });
-    }
-
-    let template_dir = fiddle_root.join("template");
-    let snippet_dir = template_dir.join("src/snippet");
-
-    // Wipe the previous snippet tree before writing the new one.
-    // Files the user deleted between runs would otherwise linger
-    // and either silently break orphan `mod foo;` declarations or
-    // be picked up by their old contents. `remove_dir_all` is a
-    // no-op when the dir doesn't exist yet (first compile).
-    if snippet_dir.exists() {
-        fs::remove_dir_all(&snippet_dir)
-            .with_context(|| format!("clearing {}", snippet_dir.display()))?;
-    }
-    fs::create_dir_all(&snippet_dir)
-        .with_context(|| format!("creating {}", snippet_dir.display()))?;
-
-    for (rel_path, contents) in files {
-        let on_disk = disk_path_for(&snippet_dir, rel_path);
-        if let Some(parent) = on_disk.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("creating parent dir {}", parent.display())
-            })?;
-        }
-        fs::write(&on_disk, wrap_with_prelude(contents))
-            .with_context(|| format!("writing {}", on_disk.display()))?;
-    }
-
-    // Snippet.rs (the legacy single-file path) is a stale leftover
-    // from the v1 compile worker. Delete it if it's there — `mod
-    // snippet;` resolves to the directory we just wrote.
-    let legacy = template_dir.join("src/snippet.rs");
-    if legacy.exists() {
-        let _ = fs::remove_file(&legacy);
-    }
-
-    fs::create_dir_all(&cache_dir)
-        .with_context(|| format!("creating cache dir {}", cache_dir.display()))?;
-    let pkg_dir = cache_dir.join("pkg");
-
-    let output = Command::new("wasm-pack")
-        .arg("build")
-        .arg(&template_dir)
-        .args(["--target", "web", "--dev", "--out-name", "snippet"])
-        .arg("--out-dir")
-        .arg(&pkg_dir)
-        .arg("--")
-        .args(["--no-default-features", "--features", mode.feature()])
-        .output()
-        .context("invoking wasm-pack — is it on PATH? (`cargo install wasm-pack`)")?;
-    if !output.status.success() {
-        let _ = fs::remove_dir_all(&cache_dir);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let combined = if stderr.trim().is_empty() {
-            stdout.into_owned()
-        } else if stdout.trim().is_empty() {
-            stderr.into_owned()
-        } else {
-            format!("{stderr}\n---\n{stdout}")
+    pub fn compile(&self, files: &BTreeMap<String, String>) -> Result<Outcome> {
+        validate(files)?;
+        let stamp = format!("{}{}", framework_stamp(self.workspace.as_deref()), cli_stamp(&self.cli));
+        let hash = bundle_hash(files, &stamp);
+        let bundle = self.compiled_dir().join(&hash);
+        let built = |ms, cached, diagnostics| Outcome::Built {
+            url: format!("/compiled/{hash}/"),
+            hash: hash.clone(),
+            ms,
+            cached,
+            diagnostics,
         };
-        bail!("wasm-pack failed ({}):\n{}", output.status, combined.trim_end());
+        if bundle.join("index.html").exists() {
+            return Ok(built(0, true, Vec::new()));
+        }
+
+        let _guard = self.lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // A request for the same files may have built it while we waited.
+        if bundle.join("index.html").exists() {
+            return Ok(built(0, true, Vec::new()));
+        }
+
+        self.write_app_files(files)?;
+        let staging = self.compiled_dir().join(format!(".staging-{hash}"));
+        let _ = fs::remove_dir_all(&staging);
+        let events = self.work_dir().join("events.jsonl");
+        let started = Instant::now();
+        let output = Command::new(&self.cli)
+            .args(["build", "--web", "--no-split", "--out-dir"])
+            .arg(&staging)
+            .arg("--events-file")
+            .arg(&events)
+            .arg(self.work_dir())
+            .output()
+            .with_context(|| format!("running {} — is the idealyst CLI installed?", self.cli.display()))?;
+        let ms = started.elapsed().as_millis() as u64;
+
+        let diagnostics = fs::read_to_string(&events)
+            .map(|text| snippet_diagnostics(&text))
+            .unwrap_or_default();
+        if !output.status.success() {
+            let _ = fs::remove_dir_all(&staging);
+            let log = tail(&String::from_utf8_lossy(&output.stderr), 40);
+            return Ok(Outcome::Failed { diagnostics, log });
+        }
+
+        rewrite_index(&staging.join("index.html"))?;
+        let _ = fs::remove_dir_all(&bundle);
+        fs::rename(&staging, &bundle)
+            .with_context(|| format!("moving the bundle into {}", bundle.display()))?;
+        self.evict_old_bundles();
+        Ok(built(ms, false, diagnostics))
     }
 
-    let mut index = fs::File::create(cache_dir.join("index.html"))
-        .with_context(|| format!("writing index.html in {}", cache_dir.display()))?;
-    index.write_all(IFRAME_SHELL.as_bytes())?;
+    /// Replace the working copy's `src/app.rs` + `src/app/` with the
+    /// submission. Clearing first matters: a file dropped from the
+    /// submission must not linger and satisfy a stale `mod` line.
+    fn write_app_files(&self, files: &BTreeMap<String, String>) -> Result<()> {
+        let src = self.work_dir().join("src");
+        let _ = fs::remove_file(src.join(ENTRY_FILE));
+        let _ = fs::remove_dir_all(src.join("app"));
+        for (rel, contents) in files {
+            let path = if rel == ENTRY_FILE { src.join(ENTRY_FILE) } else { src.join("app").join(rel) };
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;
+        }
+        Ok(())
+    }
 
-    Ok(CompileOk { hash })
-}
-
-/// Map an editor-side `<rel_path>` (relative to the user's logical
-/// `src/`) to the on-disk path under `template/src/snippet/`. The
-/// only rewrite is the entry file: `lib.rs` becomes `mod.rs` so the
-/// template's `mod snippet;` declaration finds it.
-fn disk_path_for(snippet_dir: &Path, rel_path: &str) -> PathBuf {
-    if rel_path == ENTRY_PATH {
-        snippet_dir.join("mod.rs")
-    } else {
-        snippet_dir.join(rel_path)
+    fn evict_old_bundles(&self) {
+        let Ok(entries) = fs::read_dir(self.compiled_dir()) else { return };
+        let mut bundles: Vec<(std::time::SystemTime, PathBuf)> = entries
+            .flatten()
+            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+            .collect();
+        if bundles.len() <= MAX_CACHED_BUNDLES {
+            return;
+        }
+        bundles.sort();
+        let excess = bundles.len() - MAX_CACHED_BUNDLES;
+        for (_, path) in bundles.into_iter().take(excess) {
+            let _ = fs::remove_dir_all(path);
+        }
     }
 }
 
-/// Reject paths that could escape `snippet/` or aren't Rust source.
-/// Cheap whitelist — anything outside `.rs` files at relative paths
-/// without `..` components gets a 400 before we touch the disk.
-fn validate_files(files: &BTreeMap<String, String>) -> Result<()> {
-    if !files.contains_key(ENTRY_PATH) {
-        bail!(
-            "project missing entry file `{ENTRY_PATH}` — every snippet \
-             needs a top-level `lib.rs` that defines `pub fn app() -> Element`."
-        );
+/// Reject anything that is not a small set of relative `.rs` paths with
+/// the entry file present. Paths are joined under `.work/src/`, so `..`,
+/// absolute paths and empty segments are refused outright.
+fn validate(files: &BTreeMap<String, String>) -> Result<()> {
+    if !files.contains_key(ENTRY_FILE) {
+        bail!("the submission needs an `{ENTRY_FILE}` that defines `pub fn app() -> Element`");
+    }
+    if files.len() > MAX_FILES {
+        bail!("at most {MAX_FILES} files per submission");
+    }
+    let total: usize = files.values().map(String::len).sum();
+    if total > MAX_TOTAL_BYTES {
+        bail!("the submission is {total} bytes; the limit is {MAX_TOTAL_BYTES}");
     }
     for rel in files.keys() {
-        if rel.is_empty() {
-            bail!("empty path in files map");
-        }
-        if rel.starts_with('/') || rel.contains('\\') {
-            bail!("invalid path {rel:?} — paths must be relative POSIX-style");
-        }
-        for seg in rel.split('/') {
-            if seg.is_empty() || seg == "." || seg == ".." {
-                bail!("invalid path {rel:?} — `..` / empty segments not allowed");
-            }
-        }
-        if !rel.ends_with(".rs") {
-            bail!("invalid path {rel:?} — only `.rs` files are supported");
+        let segments_ok = rel
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != ".." && !seg.contains('\\'));
+        if !segments_ok || !rel.ends_with(".rs") || (rel != ENTRY_FILE && rel.starts_with("app.rs/")) {
+            bail!("invalid path {rel:?}: use relative `.rs` paths like `widgets.rs` or `ui/card.rs`");
         }
     }
     Ok(())
 }
 
-/// Inject the snippet runtime prelude at the top of each user
-/// file. Same prelude as v1 (`use crate::__rt::*;`); applying it
-/// uniformly across every `.rs` means sibling files can use the
-/// re-exported framework types without their own boilerplate.
-fn wrap_with_prelude(contents: &str) -> String {
-    format!(
-        "//! Auto-generated per /compile request — overwritten on every build.\n\
-         \n\
-         #![allow(unused_imports)]\n\
-         #![allow(dead_code)]\n\
-         \n\
-         use crate::__rt::*;\n\
-         \n\
-         {contents}\n"
-    )
+/// What the framework source looks like right now: `HEAD` plus a digest
+/// of uncommitted changes under `crates/` and the lockfile. Editing the
+/// framework changes the stamp, so a cached bundle built against the old
+/// source is never served for it. Outside a git checkout the stamp is
+/// empty and the cache lives until it is cleared.
+fn framework_stamp(workspace: Option<&Path>) -> String {
+    let Some(ws) = workspace else { return String::new() };
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(ws)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| o.stdout)
+            .unwrap_or_default()
+    };
+    let mut h = Sha256::new();
+    h.update(git(&["rev-parse", "HEAD"]));
+    h.update(git(&["diff", "HEAD", "--", "crates", "Cargo.lock"]));
+    h.update(git(&["ls-files", "--others", "--exclude-standard", "--", "crates"]));
+    hex(&h.finalize()[..8])
 }
 
-/// Canonical hash over the project tree. We sort by path inside the
-/// `BTreeMap` iterator order (already sorted by key), then digest
-/// each (path, contents) pair with a delimiter so collisions
-/// across "ab|cd" vs. "a|bcd" are impossible.
-fn files_hash(
-    files: &BTreeMap<String, String>,
-    mode: Mode,
-    upstream_mtime: u64,
-) -> String {
+/// The building CLI's identity: its size and modification time. The CLI
+/// writes the served page and drives the pipeline, so a rebuilt binary can
+/// change a bundle even when no framework source did (and its source can
+/// be edited before the binary is rebuilt). A bare name on `PATH` is
+/// resolved first.
+fn cli_stamp(cli: &Path) -> String {
+    let resolved = if cli.components().count() > 1 {
+        Some(cli.to_path_buf())
+    } else {
+        std::env::var_os("PATH").and_then(|paths| {
+            std::env::split_paths(&paths).map(|dir| dir.join(cli)).find(|p| p.is_file())
+        })
+    };
+    resolved
+        .and_then(|p| fs::metadata(p).ok())
+        .map(|m| {
+            let modified = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            format!("{}:{modified}", m.len())
+        })
+        .unwrap_or_default()
+}
+
+fn bundle_hash(files: &BTreeMap<String, String>, stamp: &str) -> String {
     let mut h = Sha256::new();
+    h.update(stamp.as_bytes());
     for (path, contents) in files {
+        h.update(b"\0");
         h.update(path.as_bytes());
         h.update(b"\0");
         h.update(contents.as_bytes());
-        h.update(b"\x1e"); // ASCII record separator
     }
-    h.update(b"\0");
-    h.update(upstream_mtime.to_le_bytes());
-    let digest = h.finalize();
-    let mut s = String::with_capacity(20);
-    for byte in &digest[..8] {
-        s.push_str(&format!("{byte:02x}"));
-    }
-    s.push('-');
-    s.push_str(mode.tag());
-    s
+    hex(&h.finalize()[..10])
 }
 
-fn upstream_max_mtime(fiddle_root: &Path) -> u64 {
-    let Some(workspace_root) = workspace_root_from(fiddle_root) else {
-        return 0;
-    };
-    let watched: &[&str] = &[
-        "crates/framework/core/src",
-        "crates/framework/theme/src",
-        "crates/ui/idea-ui/src",
-        "crates/backend/web/src",
-        "crates/host/web/src",
-        "crates/render/wgpu/src",
-        "crates/render/api/src",
-        "crates/skin/ios-sim/src",
-        "Cargo.lock",
-        "examples/fiddle/template/src/lib.rs",
-        "examples/fiddle/template/Cargo.toml",
-    ];
-    let mut max = 0u64;
-    for rel in watched {
-        scan_max_mtime(&workspace_root.join(rel), &mut max);
-    }
-    max
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn scan_max_mtime(path: &Path, max: &mut u64) {
-    let Ok(meta) = std::fs::metadata(path) else { return };
-    if let Ok(mt) = meta.modified() {
-        if let Ok(d) = mt.duration_since(std::time::UNIX_EPOCH) {
-            *max = (*max).max(d.as_secs());
-        }
-    }
-    if meta.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
-                scan_max_mtime(&entry.path(), max);
+/// The snippet's own diagnostics from the build's events file (one JSON
+/// envelope per line, `idealyst build --events-file`), with paths mapped
+/// back to the submitted names. Errors come first.
+fn snippet_diagnostics(events: &str) -> Vec<Diagnostic> {
+    let mut out: Vec<Diagnostic> = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("diagnostic"))
+        .filter_map(|v| v.get("diagnostic").cloned())
+        .filter(|d| {
+            d.get("package")
+                .and_then(|p| p.as_str())
+                .is_some_and(|p| p.contains(&format!("#{SNIPPET_PACKAGE}@")))
+        })
+        .filter_map(|d| {
+            let level = d.get("level")?.as_str()?.to_string();
+            if level != "error" && level != "warning" {
+                return None;
             }
-        }
+            let file = d.get("file").and_then(|f| f.as_str()).map(submitted_path);
+            Some(Diagnostic {
+                level,
+                message: d.get("message")?.as_str()?.to_string(),
+                code: d.get("code").and_then(|c| c.as_str()).map(String::from),
+                file,
+                line: d.get("line").and_then(|l| l.as_u64()).map(|l| l as u32),
+                column: d.get("column").and_then(|c| c.as_u64()).map(|c| c as u32),
+                rendered: d
+                    .get("rendered")
+                    .and_then(|r| r.as_str())
+                    .map(|r| r.replace("src/app/", "").replace("src/app.rs", ENTRY_FILE))
+                    .unwrap_or_default(),
+            })
+        })
+        .collect();
+    // A summary line ("aborting due to 2 previous errors") has no span and
+    // repeats what the real errors say.
+    out.retain(|d| d.file.is_some() || !d.message.starts_with("aborting due to"));
+    out.sort_by_key(|d| d.level != "error");
+    out
+}
+
+/// `src/app.rs` → `app.rs`; `src/app/widgets.rs` → `widgets.rs`.
+fn submitted_path(build_path: &str) -> String {
+    if build_path == "src/app.rs" {
+        ENTRY_FILE.to_string()
+    } else {
+        build_path.strip_prefix("src/app/").unwrap_or(build_path).to_string()
     }
 }
 
-fn workspace_root_from(fiddle_root: &Path) -> Option<PathBuf> {
-    fiddle_root.parent()?.parent().map(|p| p.to_path_buf())
+/// The staged `index.html` assumes it is served at the site root
+/// (`<base href="/">`, `/pkg/...`). A bundle is served from
+/// `/compiled/<hash>/`, so its references become relative, and the error
+/// bridge goes in ahead of the app's own script.
+fn rewrite_index(path: &Path) -> Result<()> {
+    let html = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let html = served_index(&html);
+    fs::write(path, html).with_context(|| format!("writing {}", path.display()))
 }
 
-pub fn fiddle_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+fn served_index(html: &str) -> String {
+    let html = html
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("<base href=\"/\""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // `./`, not bare `pkg/`: an ES module import of a bare path is a
+    // package specifier and fails to resolve.
+    let html = html.replace("\"/pkg/", "\"./pkg/").replace("'/pkg/", "'./pkg/");
+    match html.find("</head>") {
+        Some(at) => format!("{}{ERROR_BRIDGE}{}", &html[..at], &html[at..]),
+        None => html,
+    }
 }
 
-const IFRAME_SHELL: &str = r#"<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Idealyst snippet</title>
-    <style>
-      html, body, #app { height: 100%; margin: 0; }
-      body { background: transparent; }
-    </style>
-  </head>
-  <body>
-    <div id="app"></div>
-    <script type="module">
-      import init from "./pkg/snippet.js";
-      init();
-    </script>
-  </body>
-</html>
-"#;
+fn tail(text: &str, lines: usize) -> String {
+    let all: Vec<&str> = text.lines().collect();
+    all[all.len().saturating_sub(lines)..].join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn files(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn a_submission_needs_the_entry_file_and_safe_relative_paths() {
+        assert!(validate(&files(&[("app.rs", "")])).is_ok());
+        assert!(validate(&files(&[("app.rs", ""), ("ui/card.rs", "")])).is_ok());
+        assert!(validate(&files(&[("lib.rs", "")])).is_err());
+        for bad in ["../x.rs", "/etc/x.rs", "a//b.rs", "x.txt", "./x.rs"] {
+            assert!(validate(&files(&[("app.rs", ""), (bad, "")])).is_err(), "{bad} refused");
+        }
+    }
+
+    #[test]
+    fn the_hash_follows_the_files_and_the_framework_stamp() {
+        let a = files(&[("app.rs", "fn a() {}")]);
+        let b = files(&[("app.rs", "fn b() {}")]);
+        assert_eq!(bundle_hash(&a, "s1"), bundle_hash(&a, "s1"));
+        assert_ne!(bundle_hash(&a, "s1"), bundle_hash(&b, "s1"));
+        assert_ne!(bundle_hash(&a, "s1"), bundle_hash(&a, "s2"));
+    }
+
+    #[test]
+    fn diagnostics_keep_the_snippets_own_and_name_the_submitted_files() {
+        let events = [
+            r#"{"v":1,"seq":1,"at_ms":0,"type":"diagnostic","target":"web","diagnostic":{"level":"warning","message":"unused import","file":"crates/x/src/lib.rs","line":1,"column":1,"package":"path+file:///w/crates/x#runtime-x@1.0.0","rendered":"w"}}"#,
+            r#"{"v":1,"seq":2,"at_ms":0,"type":"diagnostic","target":"web","diagnostic":{"level":"warning","message":"unused variable","file":"src/app/widgets.rs","line":3,"column":9,"package":"path+file:///w/.work#fiddle-snippet@0.0.1","rendered":"--> src/app/widgets.rs:3:9"}}"#,
+            r#"{"v":1,"seq":3,"at_ms":0,"type":"diagnostic","target":"web","diagnostic":{"level":"error","message":"cannot find value `x`","code":"E0425","file":"src/app.rs","line":8,"column":75,"package":"path+file:///w/.work#fiddle-snippet@0.0.1","rendered":"--> src/app.rs:8:75"}}"#,
+            r#"{"v":1,"seq":4,"at_ms":0,"type":"diagnostic","target":"web","diagnostic":{"level":"error","message":"aborting due to 1 previous error","package":"path+file:///w/.work#fiddle-snippet@0.0.1","rendered":"a"}}"#,
+            r#"{"v":1,"seq":5,"at_ms":0,"type":"cargo_progress"}"#,
+        ]
+        .join("\n");
+        let d = snippet_diagnostics(&events);
+        assert_eq!(d.len(), 2, "framework warnings and the abort summary are dropped");
+        assert_eq!(d[0].level, "error", "errors first");
+        assert_eq!(d[0].file.as_deref(), Some("app.rs"));
+        assert_eq!((d[0].line, d[0].column), (Some(8), Some(75)));
+        assert_eq!(d[0].rendered, "--> app.rs:8:75");
+        assert_eq!(d[1].file.as_deref(), Some("widgets.rs"));
+    }
+
+    #[test]
+    fn the_served_index_is_relative_and_carries_the_error_bridge() {
+        let staged = "<html>\n  <head>\n    <base href=\"/\" />\n    <link href=\"/pkg/premint.css\">\n  </head>\n  <body>\n    <script type=\"module\">import init from \"/pkg/app.js\"; init();</script>\n  </body>\n</html>";
+        let served = served_index(staged);
+        assert!(!served.contains("<base"));
+        assert!(served.contains("\"./pkg/premint.css\""));
+        assert!(served.contains("from \"./pkg/app.js\""));
+        assert!(served.find("idealyst-fiddle").unwrap() < served.find("</head>").unwrap());
+    }
+}

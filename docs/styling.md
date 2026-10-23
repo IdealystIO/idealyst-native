@@ -1388,15 +1388,15 @@ macOS never draws its native ring on framework views.
 
 ```rust
 stylesheet! {
-    pub Row<()> {
-        base(t) {
+    pub Row<IdeaThemeRef> {
+        base(_t) {
             // Reserve the ring's width at rest, so focusing does not
             // move the layout.
             border_width: 1.0,
-            border_color: Color::TRANSPARENT,
+            border_color: "transparent",
         }
         state focused(t) {
-            border_color: t.color("focus-ring"),
+            border_color: t.color.focus_ring(),
         }
     }
 }
@@ -1408,7 +1408,7 @@ focus is. That default ring is drawn outside the box, so an ancestor
 with `overflow: hidden` clips it, and its colour ignores the theme. Both
 are reasons to declare your own.
 
-Draw the ring with a border, as above, or with `box_shadow`. If you use a
+Draw the ring with a border, as above, or with `shadow`. If you use a
 border, give `base` the same `border_width` and a transparent colour.
 Otherwise focusing adds the border's width and shifts everything after
 the element.

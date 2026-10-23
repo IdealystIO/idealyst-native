@@ -8,14 +8,17 @@ use runtime_core::{ui, Element};
 
 use crate::common::{CodePanel, DocsLink, LessonPage};
 use crate::routes::{A11Y_DEFAULTS_ROUTE, A11Y_MODEL_ROUTE};
-use crate::shell;
 
 pub fn defaults() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = A11Y_DEFAULTS_ROUTE.name(),
             title = "Accessible by default".to_string(),
             lead = "Default roles and platform label-derivation cover the common case.".to_string(),
+            learn = vec![
+                "The roles each primitive gets for free",
+                "How platforms derive labels for you",
+            ],
         ) {
             Typography(
                 content = "The framework carries one accessibility model and each backend maps \
@@ -47,15 +50,20 @@ pub fn defaults() -> Element {
                 doc_file = "accessibility.md".to_string(),
             )
         }
-    })
+    }
 }
 
 pub fn model() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = A11Y_MODEL_ROUTE.name(),
             title = "The accessibility model".to_string(),
             lead = "AccessibilityProps: roles, traits, live regions, and actions.".to_string(),
+            learn = vec![
+                "Roles and traits",
+                "Live regions and accessibility actions",
+                "Setting AccessibilityProps on a primitive",
+            ],
         ) {
             Typography(
                 content = "When you do need to override, the per-element data is \
@@ -114,5 +122,5 @@ pub fn model() -> Element {
                 doc_file = "accessibility.md".to_string(),
             )
         }
-    })
+    }
 }

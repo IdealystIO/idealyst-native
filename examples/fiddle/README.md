@@ -1,108 +1,81 @@
 # Fiddle
 
-Interactive Rust playground for Idealyst snippets. One binary serves
-the editor UI **and** runs the compilations — no separate backend, no
-toolchain in the browser.
+Write Idealyst code in the browser and see it run. The fiddle server builds
+submitted code with **`idealyst build --web`** — the command a real app ships
+with — so a preview is not an approximation of the code: it *is* the code,
+compiled and running on the web backend.
+
+It serves two front ends:
+
+- **The course** (`websites/tutorial`): every lesson's editable example posts
+  its `app.rs` here and frames the result.
+- **The standalone editor** (`webapp/`): a multi-file project with a file
+  tree, built the same way.
 
 ```
-┌──────────────────┐        ┌───────────────────────────┐
-│ editor (webapp/) │  HTTP  │  fiddle server (this bin) │
-│  ── source ──── ─┼───────▶│  /compile  → wasm-pack    │
-│  ◀── hash ───────┼────────│            ↳ template/    │
-│  ── iframe ─────▶│  HTTP  │  /compiled/<hash>/        │
-└──────────────────┘        └───────────────────────────┘
-        ▲                                  │
-        │      (iframe loads)              │
-        └──────────────────────────────────┘
+ editor (course or webapp/)                     fiddle server (this crate)
+ ── POST /compile {files} ───────────────────▶  write files into .work/src/
+                                                 idealyst build --web .work
+ ◀── {status: built, url} | {failed, diagnostics}
+ ── <iframe src=/compiled/<hash>/> ──────────▶  serve the bundle
 ```
 
-## One-time setup
+## Run it
 
 ```sh
-cargo install wasm-pack       # the compile worker shells out to it
-wasm-pack build examples/fiddle/webapp --target web --dev
+cargo build -p idealyst-cli          # a CLI built from this checkout
+IDEALYST_BIN=target/debug/idealyst cargo run -p fiddle
+# [fiddle] serving on http://127.0.0.1:8787
 ```
 
-The second line builds the editor UI itself (Idealyst-built; see
-`webapp/src/lib.rs`). It produces `examples/fiddle/webapp/pkg/`,
-which the server serves at `/pkg/...`.
+`IDEALYST_BIN` defaults to `idealyst` on `PATH`; point it at a CLI built from
+the same checkout as the framework source the fiddle builds against.
+`FIDDLE_ADDR` changes the listen address (the default port is 8787, clear of
+the 8080 / 8081 that `idealyst dev` takes).
 
-## Run
+The standalone editor is an idealyst app too. Build it once, then open
+<http://127.0.0.1:8787>:
 
 ```sh
-cargo run -p fiddle
-# → [fiddle] serving on http://0.0.0.0:8081
+target/debug/idealyst build --web examples/fiddle/webapp
 ```
 
-Open <http://127.0.0.1:8081>. Edit the source, hit **Run**, the
-iframe reloads with the freshly-compiled snippet.
+## How a compile works
 
-## How the round trip works
+1. `POST /compile` with `{ "files": { "app.rs": "...", "widgets.rs": "..." } }`.
+   `app.rs` is required and must define `pub fn app() -> Element`.
+2. The server hashes the files together with a stamp of the framework source
+   (`HEAD` plus uncommitted changes under `crates/`) and of the CLI binary. A
+   bundle already built for that hash is answered at once.
+3. Otherwise it writes `app.rs` to `.work/src/app.rs` and every other file to
+   `.work/src/app/<path>` — where `mod widgets;` inside `app.rs` resolves, as
+   in a scaffolded project — and runs
+   `idealyst build --web --no-split --events-file … .work`.
+4. On success the bundle moves to `compiled/<hash>/` (its `index.html`
+   rewritten to load from there, with a small script that forwards runtime
+   errors to the embedding page as `postMessage`). The reply is
+   `{ "status": "built", "url": "/compiled/<hash>/", "ms", "cached", "diagnostics" }`.
+5. On a compile error the reply is `{ "status": "failed", "diagnostics": [...] }`:
+   rustc's messages for the submitted files, read from the build's
+   `--events-file` as data, with their file, line and column in the
+   submitted names.
 
-1. Editor `POST`s `{ "source": "..." }` to `/compile`.
-2. Server hashes the source. If `compiled/<hash>/index.html` exists,
-   responds immediately with `{ "hash": "..." }`.
-3. On cache miss: writes the source into
-   `template/src/snippet.rs`, runs `wasm-pack build template/`, copies
-   the output to `compiled/<hash>/pkg/`, writes a tiny `index.html`
-   shim that imports `./pkg/snippet.js`.
-4. Editor flips the iframe `src` to `/compiled/<hash>/?t=<bust>`.
-5. Iframe loads the snippet wasm, which mounts a `host-web` simulator
-   on a canvas and renders the user's `pub fn app() -> Element`
-   inside the iOS skin.
+`.work/` is a copy of `template/`, a real idealyst app (`src/main.rs` is
+`idealyst::entry!`, `src/lib.rs` declares `mod app;`). Submitted code can use
+what the template depends on: `runtime_core` and `idea_ui`. It renders the
+builtin primitives and idea-ui; an SDK whose payload needs a registered
+handler needs a line in the template's `register_scene_extensions`.
 
-The cache key is `sha256(source)[:8]`, so re-running unchanged source
-is basically instant.
+A rebuild after a one-file edit takes about a second on an M-series Mac: the
+framework stays compiled in the CLI's per-workspace target directory, and
+only the snippet crate rebuilds. Builds are serialized — there is one working
+copy.
 
-## Writing a snippet
+## Limits
 
-The user code lives inside a synthetic `mod snippet` wrapping. The
-ambient prelude (injected by the compile worker) is:
-
-```rust
-use crate::__rt::*;
-```
-
-which re-exports the symbols most snippets reach for —
-`runtime_core::{view, button, text, signal, ui!, ...}` (the author surface,
-which the template aliases onto `runtime-core`), `idea_ui::{Card, Stack,
-Typography, ...}`, and `std::rc::Rc`. Anything outside that prelude needs the
-usual fully-qualified path. Snippets must define:
-
-```rust
-pub fn app() -> Element { /* ... */ }
-```
-
-## Caveats (v1)
-
-- **Editor is single-line.** The framework's `TextInput` renders as
-  `<input type="text">`. Paste works; pressing Enter doesn't insert
-  a newline. A multi-line `TextArea` primitive is the next obvious
-  thing to add.
-- **One process, one user.** Compilation is serialized through a
-  `Mutex` — the template's `target/` directory is shared, so
-  parallel compiles would race.
-- **Trusts the snippet.** Snippets are compiled inside the template
-  crate's normal cargo invocation. `include_str!("/etc/passwd")` and
-  similar build-time macros would read the host filesystem. Fine for
-  a localhost dev fiddle; not fine if you ever expose this to the
-  open internet.
-- **wgpu navigator dispatchers** are still WIP in `render-wgpu` —
-  a snippet whose `app()` uses a navigator will render the initial
-  screen but log "navigator push not yet wired" on transitions. Static
-  layouts, buttons, switches, sliders, scroll views all work.
-- **Writes stage until the flush.** A snippet handler that reads back a
-  signal it just wrote sees the previous value; two `set(get() + 1)`
-  calls in one handler net +1. Use `update(|n| n + 1)` to compose.
-- **No SDK is registered but `codeblock` / `webview`** (the editor's own
-  needs). A snippet payload with no registered scene handler panics at
-  realize — add its `register` call to the template's boot seam
-  (`template/src/lib.rs`) first.
-
-## Why the `[workspace]` markers in `template/` and `webapp/`
-
-Each of those sub-crates carries an empty `[workspace]` section so
-the parent workspace's cargo doesn't try to merge them in. The
-template gets its own warm `target/` (per-compile rebuilds stay
-incremental); the webapp's wasm-pack build doesn't trip over the
-workspace's shared lockfile.
+- **It runs what it is sent.** Submitted code compiles with your user's
+  permissions, and a proc macro or `include_str!` in it runs on the host.
+  Serve it on localhost, or behind a sandbox.
+- **Web only, for now.** The preview is the web backend. Native previews
+  (the wgpu simulator, a device) are not wired in yet.
+- `compiled/` keeps the 400 most recent bundles. `POST /clear-cache` empties it.

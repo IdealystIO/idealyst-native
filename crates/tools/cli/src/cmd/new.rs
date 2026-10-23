@@ -99,9 +99,11 @@ pub(super) fn print_next_steps(name: &str, kind: Kind) {
         Kind::Project => {
             eprintln!("Next steps:");
             eprintln!("  cd {name}");
+            // `build` takes its platforms as flags (`--ios`); a bare
+            // `idealyst build ios` reads `ios` as the project directory.
             eprintln!("  idealyst dev          # hot-reload web preview");
-            eprintln!("  idealyst build ios    # produce a staticlib (requires Xcode)");
-            eprintln!("  idealyst build android  # produce a cdylib (requires ANDROID_NDK_HOME)");
+            eprintln!("  idealyst run ios      # build + launch in the iOS simulator (requires Xcode)");
+            eprintln!("  idealyst run android  # build + install on an emulator or device (requires the Android NDK)");
         }
         Kind::Library => {
             eprintln!("Next steps:");

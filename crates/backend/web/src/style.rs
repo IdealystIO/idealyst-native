@@ -160,10 +160,10 @@ impl WebBackend {
             head.append_child(&elem).expect("append style to head");
             self.style_element = Some(elem);
 
-            // Seed the resets at indices 0–5. We never delete or
+            // Seed the resets at indices 0–7. We never delete or
             // shift these, so the rule recycler in `insert_rule`
             // doesn't need to know about them — it appends or
-            // recycles at index ≥ 6.
+            // recycles at index ≥ 8.
             let sheet = self
                 .style_element
                 .as_ref()
@@ -246,11 +246,15 @@ impl WebBackend {
             let _ = sheet.insert_rule_with_index(css::GRAPHICS_FILL_RESET, 5);
 
             // Index 6 — every framework container is a flex column, as on
-            // native. See `css::VIEW_FLEX_RESET`. These seven fixed resets
-            // occupy indices 0–6; author rules append at sheet length
-            // (index 7+) or recycle deleted author slots, so these indices
-            // never collide.
+            // native. See `css::VIEW_FLEX_RESET`.
             let _ = sheet.insert_rule_with_index(css::VIEW_FLEX_RESET, 6);
+
+            // Index 7 — no UA margin on `<pre>` (a `code_block`), as on
+            // native. See `css::PRE_MARGIN_RESET`. These eight fixed resets
+            // occupy indices 0–7; author rules append at sheet length
+            // (index 8+) or recycle deleted author slots, so these indices
+            // never collide.
+            let _ = sheet.insert_rule_with_index(css::PRE_MARGIN_RESET, 7);
         }
         self.style_element.as_ref().unwrap().clone()
     }

@@ -5605,6 +5605,63 @@ where
     }
 }
 
+// The kernel's handles — what `signal()` and `memo()` return to app code.
+// A tracked read inside the source closure is what subscribes the
+// style-apply effect, so the style re-resolves when the handle changes.
+impl<E: VariantEnum + PartialEq> IntoVariantSource<E> for runtime_world::Signal<E> {
+    fn into_variant_source(self) -> Box<dyn Fn() -> &'static str> {
+        Box::new(move || self.get().as_variant_str())
+    }
+    fn is_reactive(&self) -> bool {
+        true
+    }
+}
+
+impl<E: VariantEnum + PartialEq> IntoVariantSource<E> for runtime_world::ReadSignal<E> {
+    fn into_variant_source(self) -> Box<dyn Fn() -> &'static str> {
+        Box::new(move || self.get().as_variant_str())
+    }
+    fn is_reactive(&self) -> bool {
+        true
+    }
+}
+
+impl<E: VariantEnum + PartialEq> IntoVariantSource<E> for runtime_world::Memo<E> {
+    fn into_variant_source(self) -> Box<dyn Fn() -> &'static str> {
+        Box::new(move || self.get().as_variant_str())
+    }
+    fn is_reactive(&self) -> bool {
+        true
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> IntoOverrideSource<T> for runtime_world::Signal<T> {
+    fn into_override_source(self) -> Box<dyn Fn() -> T> {
+        Box::new(move || self.get())
+    }
+    fn is_reactive(&self) -> bool {
+        true
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> IntoOverrideSource<T> for runtime_world::ReadSignal<T> {
+    fn into_override_source(self) -> Box<dyn Fn() -> T> {
+        Box::new(move || self.get())
+    }
+    fn is_reactive(&self) -> bool {
+        true
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> IntoOverrideSource<T> for runtime_world::Memo<T> {
+    fn into_override_source(self) -> Box<dyn Fn() -> T> {
+        Box::new(move || self.get())
+    }
+    fn is_reactive(&self) -> bool {
+        true
+    }
+}
+
 impl<T: Clone + 'static> IntoOverrideSource<T> for T {
     fn into_override_source(self) -> Box<dyn Fn() -> T> {
         Box::new(move || self.clone())

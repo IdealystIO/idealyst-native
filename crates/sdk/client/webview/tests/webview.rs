@@ -3,11 +3,12 @@
 //!
 //! The host target exercises the NON-web arm of [`webview::register`]:
 //! the External-placeholder degradation path (`create_external` +
-//! style/ref-fill/teardown). The web (`<iframe>`) handler is
-//! `WebBackend`-concrete and is covered by the wasm32 check gate.
+//! style/ref-fill/teardown). The web (`<iframe>`) handler is selected
+//! on a `Registry<WebBackend>` and is covered by `tests/web_webview.rs`.
 
-// Host-only: `webview::register` is `WebBackend`-concrete on wasm32, where
-// the browser suite (`tests/web_webview.rs`) covers the real handler instead.
+// Host-only: on wasm32 the browser suite (`tests/web_webview.rs`) covers
+// both legs — the `<iframe>` handler and the placeholder a non-DOM
+// registry gets.
 #![cfg(not(target_arch = "wasm32"))]
 
 use host_mock::Harness;

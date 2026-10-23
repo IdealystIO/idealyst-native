@@ -1,7 +1,7 @@
-//! Foundations — the unifying mental model that sits above the
-//! per-primitive tracks. Two steps: how signals, the UI, and the theme are
-//! all one reactive engine; and an under-the-hood look at the flush, which
-//! is the boundary every one of those pieces commits at.
+//! The two framing lessons of the Reactivity chapter (`crate::course`):
+//! 2.1, how signals, the UI and the theme are all one reactive engine, and
+//! 2.6, an under-the-hood look at the flush, the boundary every one of
+//! those pieces commits at.
 //!
 //! Like the rest of the tutorial, the lessons here teach the framework's
 //! own surface. The chrome (`Typography`, `Callout`, ...) is idea-ui; the
@@ -13,15 +13,19 @@ use runtime_core::{ui, Element};
 use crate::common::{Callout, CodePanel, DocsLink, LessonPage};
 use crate::demo::FlushDemo;
 use crate::routes::{CORE_ENGINE_ROUTE, CORE_FLUSH_ROUTE};
-use crate::shell;
 
 pub fn engine() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = CORE_ENGINE_ROUTE.name(),
             title = "One reactive engine".to_string(),
             lead = "Signals and effects power reactive UI \u{2014} and in Idealyst, the style \
                 system too.".to_string(),
+            learn = vec![
+                "How signals, the UI and styles share one engine",
+                "Why tokens are reactive values",
+                "The one boundary everything commits at",
+            ],
         ) {
             Typography(
                 content = "Signals and effects are the reactive core, the same primitives many \
@@ -91,15 +95,20 @@ pub fn engine() -> Element {
                 doc_file = "reactivity.md".to_string(),
             )
         }
-    })
+    }
 }
 
 pub fn flush_boundary() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = CORE_FLUSH_ROUTE.name(),
             title = "Under the hood: the flush".to_string(),
             lead = "Why a theme switch that touches fifty tokens costs one update.".to_string(),
+            learn = vec![
+                "Why staging collapses fan-out into one update",
+                "How a web theme change is a variable write",
+                "Why cost scales with tokens, not nodes",
+            ],
         ) {
             Typography(
                 content = "Theming is the workload that shows why the commit point exists. A \
@@ -151,7 +160,7 @@ pub fn flush_boundary() -> Element {
 /* a theme switch rewrites only the :root variables — N writes, total: */
 :root { --color-surface: #14161c; --color-text: #e8eaf0; }
 
-/* every .card-* recolors through the cascade. No element is touched. */"##.to_string())
+/* every .card-* recolors through the cascade. No element is touched. */"##.to_string(), shell = true)
             Typography(
                 content = "Switching the theme updates the :root variables with one setProperty \
                     per changed token, and the browser's cascade repaints every element that reads \
@@ -197,5 +206,5 @@ pub fn flush_boundary() -> Element {
                 doc_file = "migrating-to-runtime-v2.md".to_string(),
             )
         }
-    })
+    }
 }

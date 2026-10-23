@@ -1,14 +1,38 @@
-//! Route constants + the sidebar index. One route per tutorial step.
-//!
-//! `SECTIONS` is the single source of truth: the sidebar walks it in
-//! order to render track headers + step links, and [`flat_order`]
-//! flattens it into the linear step sequence that drives prev/next
-//! navigation at the bottom of each step.
+//! Route constants, one per written lesson. Their order, numbering and
+//! grouping into chapters live in [`crate::course`].
 
 use runtime_core::Route;
 
 // ---- Intro ----
 pub const HOME_ROUTE: Route<()> = Route::<()>::new("home", "/");
+
+// ---- Getting started: install, scaffold, run ----
+pub const START_INSTALL_ROUTE: Route<()> = Route::<()>::new("start-install", "/start/install");
+pub const START_CREATE_ROUTE: Route<()> = Route::<()>::new("start-create", "/start/create");
+pub const START_RUN_ROUTE: Route<()> = Route::<()>::new("start-run", "/start/run");
+pub const START_EDITOR_ROUTE: Route<()> = Route::<()>::new("start-editor", "/start/editor");
+pub const START_MCP_ROUTE: Route<()> = Route::<()>::new("start-mcp", "/start/ai-assisted");
+pub const START_ANATOMY_ROUTE: Route<()> = Route::<()>::new("start-anatomy", "/start/anatomy");
+
+// ---- Building UI: primitives, components, state, control flow ----
+pub const UI_PRIMITIVES_ROUTE: Route<()> = Route::<()>::new("ui-primitives", "/ui/primitives");
+pub const UI_COMPONENTS_ROUTE: Route<()> = Route::<()>::new("ui-components", "/ui/components");
+pub const UI_CHILDREN_ROUTE: Route<()> = Route::<()>::new("ui-children", "/ui/children");
+pub const UI_STATE_ROUTE: Route<()> = Route::<()>::new("ui-state", "/ui/state");
+pub const UI_FLOW_ROUTE: Route<()> = Route::<()>::new("ui-flow", "/ui/conditions-and-lists");
+pub const UI_REACTIVE_PROPS_ROUTE: Route<()> = Route::<()>::new("ui-reactive-props", "/ui/reactive-props");
+
+// ---- Styling: stylesheets, layout, themes ----
+pub const STY_SHEETS_ROUTE: Route<()> = Route::<()>::new("sty-sheets", "/styling/stylesheets");
+pub const STY_LAYOUT_ROUTE: Route<()> = Route::<()>::new("sty-layout", "/styling/layout");
+pub const STY_THEMES_ROUTE: Route<()> = Route::<()>::new("sty-themes", "/styling/themes");
+
+// ---- Component stylesheets: variants, states, slots, restyling ----
+pub const CS_VARIANTS_ROUTE: Route<()> = Route::<()>::new("cs-variants", "/component-styles/variants");
+pub const CS_STATES_ROUTE: Route<()> = Route::<()>::new("cs-states", "/component-styles/states");
+pub const CS_OVERRIDES_ROUTE: Route<()> = Route::<()>::new("cs-overrides", "/component-styles/overrides");
+pub const CS_SLOTS_ROUTE: Route<()> = Route::<()>::new("cs-slots", "/component-styles/slots");
+pub const CS_RESTYLE_ROUTE: Route<()> = Route::<()>::new("cs-restyle", "/component-styles/restyle");
 
 // ---- Idealyst 101: the unifying mental model ----
 pub const CORE_ENGINE_ROUTE: Route<()> = Route::<()>::new("core-engine", "/core/engine");
@@ -26,11 +50,6 @@ pub const RX_FLUSH_ROUTE: Route<()> = Route::<()>::new("rx-flush", "/reactivity/
 pub const RX_EFFECTS_ROUTE: Route<()> = Route::<()>::new("rx-effects", "/reactivity/effects");
 pub const RX_DERIVED_ROUTE: Route<()> = Route::<()>::new("rx-derived", "/reactivity/derived");
 
-// ---- Track 2: Stylesheets ----
-pub const ST_TOKENS_ROUTE: Route<()> = Route::<()>::new("st-tokens", "/styles/tokens");
-pub const ST_STYLESHEETS_ROUTE: Route<()> = Route::<()>::new("st-stylesheets", "/styles/stylesheets");
-pub const ST_VARIANTS_ROUTE: Route<()> = Route::<()>::new("st-variants", "/styles/variants");
-
 // ---- Track 3: Media queries ----
 pub const MQ_BREAKPOINTS_ROUTE: Route<()> = Route::<()>::new("mq-breakpoints", "/media/breakpoints");
 pub const MQ_MOBILE_FIRST_ROUTE: Route<()> = Route::<()>::new("mq-mobile-first", "/media/mobile-first");
@@ -45,111 +64,3 @@ pub const A11Y_MODEL_ROUTE: Route<()> = Route::<()>::new("a11y-model", "/accessi
 pub const ADV_BACKENDS_ROUTE: Route<()> = Route::<()>::new("adv-backends", "/advanced/custom-backends");
 pub const ADV_CLI_ROUTE: Route<()> = Route::<()>::new("adv-cli", "/advanced/interactive-cli");
 pub const ADV_EMBEDDED_ROUTE: Route<()> = Route::<()>::new("adv-embedded", "/advanced/embedded-rendering");
-
-pub struct IndexEntry {
-    pub route: &'static Route<()>,
-    pub label: &'static str,
-}
-
-pub struct IndexSection {
-    pub title: &'static str,
-    pub entries: &'static [IndexEntry],
-}
-
-/// Sidebar layout. `title` is the track header; entries render in
-/// order beneath. Order here is also the linear step sequence.
-pub const SECTIONS: &[IndexSection] = &[
-    IndexSection {
-        title: "",
-        entries: &[IndexEntry { route: &HOME_ROUTE, label: "Quick start" }],
-    },
-    IndexSection {
-        title: "Foundations",
-        entries: &[
-            IndexEntry { route: &CORE_ENGINE_ROUTE, label: "One reactive engine" },
-            IndexEntry { route: &CORE_FLUSH_ROUTE, label: "Under the hood: the flush" },
-        ],
-    },
-    IndexSection {
-        title: "Architecture",
-        entries: &[
-            IndexEntry { route: &ARCH_OVERVIEW_ROUTE, label: "The layered model" },
-            IndexEntry { route: &ARCH_BACKENDS_ROUTE, label: "Direct vs hosted runtime" },
-            IndexEntry { route: &ARCH_CATALOG_ROUTE, label: "Catalog, docs & MCP" },
-            IndexEntry { route: &ARCH_SDKS_ROUTE, label: "SDKs" },
-        ],
-    },
-    IndexSection {
-        title: "Reactivity",
-        entries: &[
-            IndexEntry { route: &RX_SIGNALS_ROUTE, label: "Signals" },
-            IndexEntry { route: &RX_FLUSH_ROUTE, label: "The flush boundary" },
-            IndexEntry { route: &RX_EFFECTS_ROUTE, label: "Effects" },
-            IndexEntry { route: &RX_DERIVED_ROUTE, label: "Derived state" },
-        ],
-    },
-    IndexSection {
-        title: "Stylesheets",
-        entries: &[
-            IndexEntry { route: &ST_TOKENS_ROUTE, label: "Style tokens" },
-            IndexEntry { route: &ST_STYLESHEETS_ROUTE, label: "Defining a stylesheet" },
-            IndexEntry { route: &ST_VARIANTS_ROUTE, label: "Variants & states" },
-        ],
-    },
-    IndexSection {
-        title: "Media queries",
-        entries: &[
-            IndexEntry { route: &MQ_BREAKPOINTS_ROUTE, label: "Breakpoint overlays" },
-            IndexEntry { route: &MQ_MOBILE_FIRST_ROUTE, label: "Mobile-first" },
-            IndexEntry { route: &MQ_SIGNAL_ROUTE, label: "The breakpoint signal" },
-            IndexEntry { route: &MQ_CONTAINER_ROUTE, label: "Container queries" },
-        ],
-    },
-    IndexSection {
-        title: "Accessibility",
-        entries: &[
-            IndexEntry { route: &A11Y_DEFAULTS_ROUTE, label: "Accessible by default" },
-            IndexEntry { route: &A11Y_MODEL_ROUTE, label: "The accessibility model" },
-        ],
-    },
-    IndexSection {
-        title: "Advanced",
-        entries: &[
-            IndexEntry { route: &ADV_BACKENDS_ROUTE, label: "Custom backends" },
-            IndexEntry { route: &ADV_CLI_ROUTE, label: "Interactive CLIs" },
-            IndexEntry { route: &ADV_EMBEDDED_ROUTE, label: "Embedded rendering" },
-        ],
-    },
-];
-
-/// Flatten `SECTIONS` into the linear step sequence (route, label),
-/// in sidebar order. Drives the prev/next footer on each step.
-pub fn flat_order() -> Vec<(&'static Route<()>, &'static str)> {
-    let mut out = Vec::new();
-    for section in SECTIONS {
-        for entry in section.entries {
-            out.push((entry.route, entry.label));
-        }
-    }
-    out
-}
-
-/// The (prev, next) neighbors of `current` in the linear step
-/// sequence, or `None` at the ends.
-pub fn neighbors(
-    current: &str,
-) -> (
-    Option<(&'static Route<()>, &'static str)>,
-    Option<(&'static Route<()>, &'static str)>,
-) {
-    let order = flat_order();
-    let idx = order.iter().position(|(r, _)| r.name() == current);
-    match idx {
-        Some(i) => {
-            let prev = if i > 0 { Some(order[i - 1]) } else { None };
-            let next = order.get(i + 1).copied();
-            (prev, next)
-        }
-        None => (None, None),
-    }
-}

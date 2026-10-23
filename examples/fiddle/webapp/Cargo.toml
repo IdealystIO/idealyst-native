@@ -3,47 +3,32 @@ name = "fiddle-webapp"
 version = "0.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Idealyst-built editor UI for the fiddle server. Compiles to wasm via `wasm-pack build webapp/`; the resulting `pkg/` is served by the fiddle binary."
+description = "The fiddle's standalone editor: a multi-file project, a Rust-highlighted editor, and a live preview of the server-built bundle. An idealyst app — `idealyst build --web` stages it at `dist/web`, which the fiddle server serves at `/`."
+publish = false
 
-# `[workspace]` makes this its own workspace root (same reason as
-# the snippet template — keeps our `target/` from being yanked into
-# the parent workspace's shared dir).
+# Its own workspace root, so the parent workspace's lockfile and target
+# directory stay out of it.
 [workspace]
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [dependencies]
-# `runtime-core` is aliased to `runtime_core` at the crate root (the author
-# surface); `runtime-vocabulary` because the `ui!`/`stylesheet!` emissions spell
-# absolute `::runtime_vocabulary::glue::…` paths.
-runtime-core = { path = "../../../crates/runtime/core", features = ["async-driver"] }
+idealyst = { path = "../../../crates/idealyst" }
+runtime-core = { path = "../../../crates/runtime/core" }
 runtime-vocabulary = { path = "../../../crates/runtime/vocabulary" }
+runtime-scene = { path = "../../../crates/runtime/scene" }
 idea-ui = { path = "../../../crates/ui/idea-ui" }
+# The editor (`code_editor` + `codeblock::rust`) and the preview frame.
 codeblock = { path = "../../../crates/sdk/client/codeblock" }
 webview = { path = "../../../crates/sdk/client/webview" }
+# `POST /compile`, and reading its JSON reply.
+net = { path = "../../../crates/sdk/client/net" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { path = "../../../crates/backend/web", features = ["async-driver"] }
-wasm-bindgen = "0.2"
-# `fetch` from wasm calls into the browser via web-sys; the future
-# returned by `JsFuture::from(promise)` runs on `wasm-bindgen-futures`.
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-web-sys = { version = "0.3", features = [
-    "console",
-    "Headers",
-    "Request",
-    "RequestInit",
-    "Response",
-    "Window",
-] }
-console_error_panic_hook = "0.1"
-lol_alloc = "0.4"
-# Same size-conservative dev profile as the rest of the workspace.
-
-[profile.dev]
-opt-level = "z"
-
-[package.metadata.wasm-pack.profile.release]
-wasm-opt = false
+[package.metadata.idealyst.app]
+name      = "Idealyst Fiddle"
+bundle_id = "io.idealyst.fiddle_editor"
+version   = "0.0.1"
+targets   = ["web"]

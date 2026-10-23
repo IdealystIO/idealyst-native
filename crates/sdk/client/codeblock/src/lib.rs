@@ -92,6 +92,7 @@ use runtime_vocabulary::style_attach::{attach_style, IntoStyleProp, StyleProp, S
 
 pub mod decoration;
 pub mod editor;
+pub mod rust;
 
 pub use decoration::{
     flatten, Decoration, DecoratedRun, DecorationStyle, Underline, UnderlineStyle,

@@ -7,8 +7,8 @@
 //!
 //! # Implementation
 //!
-//! - **Web (wasm32)** — [`register`] installs a `WebBackend`-concrete
-//!   handler: one `<iframe>` per mount (inline `border: 0` only —
+//! - **Web (wasm32)** — [`register`] installs, on a `Registry<WebBackend>`,
+//!   the DOM handler: one `<iframe>` per mount (inline `border: 0` only —
 //!   size/positioning stays with the author's stylesheet), reactive
 //!   `src` through a world effect, message/load/error DOM listeners
 //!   owned by the mount and detached at unmount (see [`web_util`]; all
@@ -395,8 +395,9 @@ where
 
 /// Placeholder handler for hosts with no real webview renderer — the
 /// External degradation path (`create_external` renders each backend's
-/// "not supported" box; SSR renders a bare `<div>`).
-#[cfg(not(target_arch = "wasm32"))]
+/// "not supported" box; SSR renders a bare `<div>`). Compiled on wasm32
+/// too: a wasm host that is not the DOM backend (the wgpu simulator) has
+/// no `<iframe>` to make and degrades the same way.
 fn mount_placeholder<H>(
     cx: &mut MountCx<'_, H>,
     prim: &Rc<WebViewPrim>,
@@ -448,12 +449,27 @@ fn mount_webview_linux(
 /// Register the webview payload handler on a scene registry. Pass this
 /// as the boot registration seam (the `register` argument of
 /// `backend_web::newcore::start_in` / `backend_ssr::newcore::
-/// render_path_with`).
-#[cfg(not(target_arch = "wasm32"))]
+/// render_path_with`, or one line of an app's generic
+/// `register_scene_extensions<H>`).
+///
+/// Generic on every target, and the real renderer is picked by REGISTRY
+/// TYPE, not by `cfg` alone: the DOM `<iframe>` handler needs
+/// `Registry<WebBackend>`, but a wasm32 build can also mount through
+/// another host (the wgpu simulator), and an app's
+/// `register_scene_extensions<H>` names no backend at all. A registry
+/// that matches no real leg gets the placeholder.
 pub fn register<H>(registry: &mut Registry<H>)
 where
     H: ExternalOps + StyleServices + 'static,
 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_web::WebBackend>>() {
+            reg.register::<WebViewPrim, _>(web_leg::mount_webview_web);
+            return;
+        }
+    }
     #[cfg(all(target_os = "linux", feature = "linux-webkit", not(target_arch = "wasm32")))]
     {
         let any: &mut dyn Any = registry;
@@ -475,19 +491,12 @@ where
     registry.register::<WebViewPrim, _>(mount_placeholder::<H>);
 }
 
-/// Register the webview payload handler on the web backend's scene
-/// registry — the real `<iframe>` renderer.
-#[cfg(target_arch = "wasm32")]
-pub fn register(registry: &mut Registry<backend_web::WebBackend>) {
-    registry.register::<WebViewPrim, _>(web_leg::mount_webview_web);
-}
-
 /// Declare this SDK's payload kind **late-bound** instead of installing
 /// its handler — the boot half of lazy registration. Pair with
 /// [`register_from_chunk`] from inside a `#[component(lazy)]` body.
 ///
-/// Only web code-splits, so on every other target this installs the
-/// handler eagerly exactly as [`register`] does. That is deliberate:
+/// Only the web DOM backend code-splits, so on every other registry
+/// this installs the handler eagerly exactly as [`register`] does. That is deliberate:
 /// deferring a kind nothing later registers leaves the payload parked
 /// behind a placeholder forever, with no panic and no log, and native
 /// has no chunk to arrive. Calling `defer` is therefore always safe —
@@ -496,14 +505,18 @@ pub fn defer<H>(registry: &mut Registry<H>)
 where
     H: Host + ExternalOps + StyleServices + 'static,
 {
+    // Only the DOM handler arrives in a chunk (`register_from_chunk` is
+    // `WebBackend`-concrete); deferring on any other registry would park
+    // the kind with nothing ever installing it.
     #[cfg(target_arch = "wasm32")]
     {
-        registry.defer::<WebViewPrim>();
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_web::WebBackend>>() {
+            reg.defer::<WebViewPrim>();
+            return;
+        }
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        register(registry);
-    }
+    register(registry);
 }
 
 /// Install the web payload handler from inside a lazy chunk — the chunk

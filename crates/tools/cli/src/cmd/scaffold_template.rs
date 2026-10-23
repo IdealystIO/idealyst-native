@@ -387,7 +387,10 @@ fn project_index_html(title: &str, lib_name: &str) -> String {
     <title>{title}</title>
     <style>
       html, body, #app {{ height: 100%; margin: 0; }}
-      body {{ background: #f7f8fb; }}
+      /* The platform UI font, as the native backends use for text with no
+         font set. Without it an app with no theme font renders in the
+         browser's serif default on the web alone. */
+      body {{ background: #f7f8fb; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }}
       /* Mount is a flex column so the app's root view fills the viewport
          height; without it the root sizes to content and short screens stop
          short of full height on tall windows. */
@@ -903,6 +906,15 @@ fn pascal_case(s: &str) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// Regression: the scaffolded page set no font, so an app without a
+    /// theme font rendered its text in the browser's serif default on the
+    /// web, unlike every native backend.
+    #[test]
+    fn regression_scaffold_index_sets_the_platform_ui_font() {
+        let html = project_index_html("My App", "my_app");
+        assert!(html.contains("font-family: system-ui"), "got:\n{html}");
+    }
 
     /// The scaffold must emit an entry point.
     ///

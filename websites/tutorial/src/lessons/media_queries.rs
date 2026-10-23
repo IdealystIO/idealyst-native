@@ -11,14 +11,18 @@ use crate::common::{Callout, CodePanel, DocsLink, LessonPage};
 use crate::routes::{
     MQ_BREAKPOINTS_ROUTE, MQ_CONTAINER_ROUTE, MQ_MOBILE_FIRST_ROUTE, MQ_SIGNAL_ROUTE,
 };
-use crate::shell;
 
 pub fn breakpoints() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = MQ_BREAKPOINTS_ROUTE.name(),
             title = "Breakpoint overlays".to_string(),
             lead = "Declare responsive style with breakpoint blocks in a stylesheet.".to_string(),
+            learn = vec![
+                "Add breakpoint blocks to a stylesheet",
+                "The sm, md, lg and xl names",
+                "How one declaration renders on web and native",
+            ],
         ) {
             Typography(
                 content = "A breakpoint block adds rules that apply only once the viewport is \
@@ -57,15 +61,20 @@ pub fn breakpoints() -> Element {
                 doc_file = "styling.md".to_string(),
             )
         }
-    })
+    }
 }
 
 pub fn mobile_first() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = MQ_MOBILE_FIRST_ROUTE.name(),
             title = "Mobile-first".to_string(),
             lead = "Widen a narrow base; min-width only, by design.".to_string(),
+            learn = vec![
+                "Write the narrow layout as the base",
+                "Widen it with min-width breakpoints",
+                "Why there is no max-width",
+            ],
         ) {
             Typography(
                 content = "The model is mobile-first and min-width only. There is intentionally \
@@ -98,15 +107,19 @@ pub fn mobile_first() -> Element {
                 doc_file = "../crates/runtime/shared/src/breakpoint.rs".to_string(),
             )
         }
-    })
+    }
 }
 
 pub fn signal_escape() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = MQ_SIGNAL_ROUTE.name(),
             title = "The breakpoint signal".to_string(),
             lead = "current_breakpoint() \u{2014} the imperative escape hatch.".to_string(),
+            learn = vec![
+                "Read the active breakpoint with current_breakpoint()",
+                "When to branch in code instead of style",
+            ],
         ) {
             Typography(
                 content = "Some layout changes can't be expressed as a style overlay \u{2014} \
@@ -134,15 +147,20 @@ pub fn signal_escape() -> Element {
                 doc_file = "../crates/runtime/shared/src/breakpoint.rs".to_string(),
             )
         }
-    })
+    }
 }
 
 pub fn container_queries() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = MQ_CONTAINER_ROUTE.name(),
             title = "Container queries".to_string(),
             lead = "Respond to the box you're in, not the window you're in.".to_string(),
+            learn = vec![
+                "Respond to a container's size instead of the window's",
+                "How container queries render on each platform",
+                "The inline-size rule",
+            ],
         ) {
             Typography(
                 content = "Breakpoints key off the whole viewport. A container query keys off the \
@@ -184,5 +202,5 @@ pub fn container_queries() -> Element {
                 doc_file = "../crates/runtime/shared/src/container_query.rs".to_string(),
             )
         }
-    })
+    }
 }

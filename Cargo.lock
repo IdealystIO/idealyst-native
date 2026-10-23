@@ -10830,6 +10830,7 @@ dependencies = [
  "pollster 0.4.0",
  "raw-window-handle",
  "runtime-tls",
+ "runtime-world",
  "rustc-hash 2.1.2",
  "serde",
  "serde_json",
@@ -13697,14 +13698,20 @@ dependencies = [
 name = "tutorial"
 version = "1.5.2"
 dependencies = [
+ "clipboard",
  "codeblock",
  "dev-server",
  "idea-ui",
  "idea-ui-nav",
  "idealyst",
+ "net",
  "runtime-core",
+ "runtime-scene",
  "runtime-vocabulary",
+ "serde",
+ "serde_json",
  "swap-navigator",
+ "webview",
 ]
 
 [[package]]

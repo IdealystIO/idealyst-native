@@ -28,7 +28,12 @@ pub enum ScrollAxis {
     /// Left-to-right scrolling.
     Horizontal,
     /// Both at once: the content may overflow the viewport in either
-    /// direction and the reader pans freely.
+    /// direction. A drag, swipe or wheel gesture that starts mostly along
+    /// one axis (by 2:1 or more) stays locked to it, so scrolling down a
+    /// wide table does not drift it sideways; a diagonal one pans freely.
+    /// Every backend does this — UIKit's directional lock, Android's
+    /// two-axis scroller, AppKit's predominant-axis scrolling, and on the
+    /// web the browser's own touch railing plus a wheel lock.
     Both,
 }
 

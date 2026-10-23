@@ -5,8 +5,8 @@
 //! Architecture track composes these into per-concept diagrams.
 
 use runtime_core::{
-    component, stylesheet, ui, AlignItems, Color, Element, FlexDirection, FontWeight, Length,
-    StyleApplication, TextAlign, TextTransform, Tokenized,
+    component, stylesheet, ui, AlignItems, Element, FlexDirection, FontWeight, Length,
+    StyleApplication, TextAlign, TextTransform,
 };
 use idea_ui::IdeaThemeRef;
 

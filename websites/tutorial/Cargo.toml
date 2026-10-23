@@ -30,6 +30,8 @@ runtime-core = { workspace = true }
 # The macro emission spells absolute `::runtime_vocabulary::glue::…`
 # paths.
 runtime-vocabulary = { workspace = true }
+# `register_scene_extensions` is generic over the scene `Registry`'s host.
+runtime-scene = { workspace = true }
 
 idea-ui = { workspace = true }
 idea-ui-nav = { workspace = true }
@@ -40,6 +42,14 @@ swap-navigator = { workspace = true }
 # payload panics at realize, so the seam is load-bearing rather than a
 # nicety.
 codeblock = { workspace = true }
+# The live examples (`src/fiddle.rs`): `net` posts the code to the fiddle
+# server, `webview` frames the bundle it builds, serde reads the reply.
+net = { workspace = true }
+# The Copy buttons on code panels and terminal steps.
+clipboard = { workspace = true }
+webview = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Recorder backend for the runtime-server sidecar wrapper. Optional —
 # pulled in only by the `sidecar` feature (host-side sidecar build);

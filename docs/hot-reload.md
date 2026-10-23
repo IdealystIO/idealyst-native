@@ -1905,7 +1905,10 @@ The stream is an open hook. Four ways in, all carrying the same objects:
    render.
 3. **A file or a pipe** — `idealyst dev --events-file <path>` (any UI
    mode) or `--events json` (stdout; not with the panel, which paints
-   there): one object per line.
+   there): one object per line. A one-off web build writes the same
+   objects with `idealyst build --web --events-file <path>` — the way a
+   tool driving builds reads compiler diagnostics as data (the fiddle
+   server in `examples/fiddle` does).
 4. **A command** — `[hooks]` in `dev.toml` maps an event kind to a shell
    command, run in the project directory with the event's JSON on stdin
    and its kind in `IDEALYST_EVENT_KIND`. A kind is an event's `type`, or

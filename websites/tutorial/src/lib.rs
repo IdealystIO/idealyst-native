@@ -1,20 +1,26 @@
-//! `tutorial` — a step-by-step teacher for idealyst-native's core
-//! concepts, built with the framework itself.
+//! `tutorial` — a step-by-step teacher for idealyst-native, built with
+//! the framework itself.
 //!
-//! Three core tracks (Reactivity, Stylesheets, Media queries) teach the
-//! framework's author surface *directly* — signals, the flush boundary,
-//! effects, `stylesheet!`, breakpoint overlays — without leaning on the
-//! `idea-ui` component kit for the concepts themselves. (The tutorial's
-//! own chrome does use idea-ui; that's the shell, not the lesson.) An
-//! Advanced track is scaffolded for the deeper topics (custom backends,
-//! interactive CLIs, embedded rendering) that come later.
+//! It opens hands-on: **Getting started** (install the CLI, scaffold a
+//! project, run it), **Building UI** (primitives, `ui!`, components,
+//! state, control flow), **Styling** (`stylesheet!`, layout, themes) and
+//! **Component stylesheets** (variants, interaction states, overrides,
+//! `component_styles!` slots, restyling and extending idea-ui). Then the
+//! deeper tracks — Foundations, Architecture, Reactivity, Media queries,
+//! Accessibility — teach how the engine works underneath.
 //!
-//! Every Rust snippet in the Reactivity and Foundations tracks is
-//! `include_str!`-ed from a real module in [`samples`], so `cargo check`
-//! is the gate on the teaching material: a sample that stops compiling
-//! stops shipping. The interactive panels in [`demo`] run the same
-//! mechanisms live, which is how a reader can watch a staged write land
-//! at the flush instead of taking the prose's word for it.
+//! The hands-on lessons are built around [`fiddle::Fiddle`]: an editable
+//! `app.rs` whose preview is that code compiled by the fiddle server
+//! (`examples/fiddle`, `idealyst build --web`) and framed live. Each
+//! fiddle's starting code is a module in [`fiddles`], so it compiles as
+//! part of this crate — a starter that drifts from the framework's surface
+//! fails `cargo check -p tutorial` before it reaches a reader.
+//!
+//! Every other Rust snippet is `include_str!`-ed from a real module in
+//! [`samples`], under the same gate. The interactive panels in [`demo`]
+//! run the reactivity mechanisms live, which is how a reader can watch a
+//! staged write land at the flush instead of taking the prose's word for
+//! it.
 //!
 //! The shell is a swap navigator (outlet model) wrapped in an
 //! `idea_ui_nav::AppShell`: the sidebar lists the tracks and steps,
@@ -23,10 +29,10 @@
 //! breakpoint styling (real `@media` on web + SSR). Each step ends with
 //! a prev/next bar derived from the linear order in `routes`.
 
-use idea_ui::{install_idea_theme, light_theme};
+use idea_ui::{install_idea_theme, light_theme, Card, CardPadding, CardSlotStyles, CardVariant};
 use idea_ui_nav::AppShell;
 use runtime_core::{
-    component, effect, signal, ui, Breakpoint, Element, Ref, Route, Screen, Signal,
+    component, effect, rx, signal, ui, Breakpoint, Element, Ref, Route, Screen, Signal,
 };
 use swap_navigator::{MountPolicy, SwapBuilder, SwapHandle, SwapNavigator};
 
@@ -39,22 +45,20 @@ fn titled(route: &'static Route<()>, el: Element) -> Screen {
     Screen::new(el)
 }
 
-/// Sidebar `IndexEntry::label` for a route name — drives the mobile
-/// header's reactive title (`shell::mobile_header`).
-pub(crate) fn label_for_route(route_name: &'static str) -> Option<&'static str> {
-    for section in routes::SECTIONS {
-        for entry in section.entries {
-            if entry.route.name() == route_name {
-                return Some(entry.label);
-            }
-        }
-    }
-    None
+/// A lesson's numbered title (`1.2 Components & props`) for a route name
+/// — the mobile header's reactive title (`shell::mobile_header`).
+pub(crate) fn label_for_route(route_name: &'static str) -> Option<String> {
+    let (c, i, lesson) = course::find(route_name)?;
+    Some(format!("{} {}", course::lesson_number(c, i), lesson.title))
 }
 
 mod chart;
 mod common;
+mod course;
 mod demo;
+mod fiddle;
+mod fiddles;
+mod terminal;
 mod lessons;
 mod routes;
 mod samples;
@@ -64,9 +68,13 @@ mod styles;
 use routes::{
     A11Y_DEFAULTS_ROUTE, A11Y_MODEL_ROUTE, ADV_BACKENDS_ROUTE, ADV_CLI_ROUTE, ADV_EMBEDDED_ROUTE,
     ARCH_BACKENDS_ROUTE, ARCH_CATALOG_ROUTE, ARCH_OVERVIEW_ROUTE, ARCH_SDKS_ROUTE,
-    CORE_ENGINE_ROUTE, CORE_FLUSH_ROUTE, HOME_ROUTE, MQ_BREAKPOINTS_ROUTE, MQ_CONTAINER_ROUTE,
+    CORE_ENGINE_ROUTE, CORE_FLUSH_ROUTE, CS_OVERRIDES_ROUTE, CS_RESTYLE_ROUTE, CS_SLOTS_ROUTE,
+    CS_STATES_ROUTE, CS_VARIANTS_ROUTE, HOME_ROUTE, MQ_BREAKPOINTS_ROUTE, MQ_CONTAINER_ROUTE,
     MQ_MOBILE_FIRST_ROUTE, MQ_SIGNAL_ROUTE, RX_DERIVED_ROUTE, RX_EFFECTS_ROUTE, RX_FLUSH_ROUTE,
-    RX_SIGNALS_ROUTE, ST_STYLESHEETS_ROUTE, ST_TOKENS_ROUTE, ST_VARIANTS_ROUTE,
+    RX_SIGNALS_ROUTE, START_ANATOMY_ROUTE, START_CREATE_ROUTE, START_EDITOR_ROUTE,
+    START_INSTALL_ROUTE, START_MCP_ROUTE, START_RUN_ROUTE, STY_LAYOUT_ROUTE,
+    STY_SHEETS_ROUTE, STY_THEMES_ROUTE, UI_CHILDREN_ROUTE, UI_COMPONENTS_ROUTE, UI_FLOW_ROUTE,
+    UI_PRIMITIVES_ROUTE, UI_REACTIVE_PROPS_ROUTE, UI_STATE_ROUTE,
 };
 
 #[component]
@@ -90,6 +98,14 @@ pub fn app() -> Element {
     // App-level dark-mode state — lifted out of any screen scope so it
     // survives navigation. Captured by the sidebar builder below.
     let is_dark: Signal<bool> = signal(false);
+    // The reader's background, picked on the course landing page. Owned
+    // here so the choice survives navigating into a lesson and back.
+    let background: Signal<String> = signal(String::from("new"));
+    // Whether the pinned sidebar is hidden — app-level, so it survives
+    // navigation; provided so the toggle beside each page's title
+    // (`shell::sidebar_toggle`) reaches it.
+    let sidebar_hidden: Signal<bool> = signal(false);
+    runtime_core::provide(shell::SidebarHidden(sidebar_hidden));
 
     // Pin the sidebar at wide viewports: align the framework's `Lg`
     // breakpoint with the tutorial's 900-dp collapse point so
@@ -102,7 +118,31 @@ pub fn app() -> Element {
     });
 
     let builder = SwapNavigator::new(&HOME_ROUTE)
-        .screen(HOME_ROUTE, move |_| titled(&HOME_ROUTE, lessons::home::page()))
+        .screen(HOME_ROUTE, move |_| titled(&HOME_ROUTE, lessons::home::page(background)))
+        // Getting started
+        .screen(START_INSTALL_ROUTE, move |_| titled(&START_INSTALL_ROUTE, lessons::getting_started::install()))
+        .screen(START_CREATE_ROUTE, move |_| titled(&START_CREATE_ROUTE, lessons::getting_started::create()))
+        .screen(START_RUN_ROUTE, move |_| titled(&START_RUN_ROUTE, lessons::getting_started::run()))
+        .screen(START_EDITOR_ROUTE, move |_| titled(&START_EDITOR_ROUTE, lessons::getting_started::editor()))
+        .screen(START_MCP_ROUTE, move |_| titled(&START_MCP_ROUTE, lessons::getting_started::mcp()))
+        .screen(START_ANATOMY_ROUTE, move |_| titled(&START_ANATOMY_ROUTE, lessons::getting_started::anatomy()))
+        // Building UI
+        .screen(UI_PRIMITIVES_ROUTE, move |_| titled(&UI_PRIMITIVES_ROUTE, lessons::building_ui::primitives()))
+        .screen(UI_COMPONENTS_ROUTE, move |_| titled(&UI_COMPONENTS_ROUTE, lessons::building_ui::components()))
+        .screen(UI_CHILDREN_ROUTE, move |_| titled(&UI_CHILDREN_ROUTE, lessons::building_ui::children()))
+        .screen(UI_STATE_ROUTE, move |_| titled(&UI_STATE_ROUTE, lessons::building_ui::state()))
+        .screen(UI_FLOW_ROUTE, move |_| titled(&UI_FLOW_ROUTE, lessons::building_ui::control_flow()))
+        .screen(UI_REACTIVE_PROPS_ROUTE, move |_| titled(&UI_REACTIVE_PROPS_ROUTE, lessons::building_ui::reactive_props()))
+        // Styling
+        .screen(STY_SHEETS_ROUTE, move |_| titled(&STY_SHEETS_ROUTE, lessons::styling::stylesheets()))
+        .screen(STY_LAYOUT_ROUTE, move |_| titled(&STY_LAYOUT_ROUTE, lessons::styling::layout()))
+        .screen(STY_THEMES_ROUTE, move |_| titled(&STY_THEMES_ROUTE, lessons::styling::themes()))
+        // Component stylesheets
+        .screen(CS_VARIANTS_ROUTE, move |_| titled(&CS_VARIANTS_ROUTE, lessons::component_styles::variants()))
+        .screen(CS_STATES_ROUTE, move |_| titled(&CS_STATES_ROUTE, lessons::component_styles::states()))
+        .screen(CS_OVERRIDES_ROUTE, move |_| titled(&CS_OVERRIDES_ROUTE, lessons::component_styles::overrides()))
+        .screen(CS_SLOTS_ROUTE, move |_| titled(&CS_SLOTS_ROUTE, lessons::component_styles::slots()))
+        .screen(CS_RESTYLE_ROUTE, move |_| titled(&CS_RESTYLE_ROUTE, lessons::component_styles::restyle()))
         // Foundations
         .screen(CORE_ENGINE_ROUTE, move |_| titled(&CORE_ENGINE_ROUTE, lessons::foundations::engine()))
         .screen(CORE_FLUSH_ROUTE, move |_| titled(&CORE_FLUSH_ROUTE, lessons::foundations::flush_boundary()))
@@ -116,10 +156,6 @@ pub fn app() -> Element {
         .screen(RX_FLUSH_ROUTE, move |_| titled(&RX_FLUSH_ROUTE, lessons::reactivity::flush()))
         .screen(RX_EFFECTS_ROUTE, move |_| titled(&RX_EFFECTS_ROUTE, lessons::reactivity::effects()))
         .screen(RX_DERIVED_ROUTE, move |_| titled(&RX_DERIVED_ROUTE, lessons::reactivity::derived()))
-        // Stylesheets
-        .screen(ST_TOKENS_ROUTE, move |_| titled(&ST_TOKENS_ROUTE, lessons::stylesheets::tokens()))
-        .screen(ST_STYLESHEETS_ROUTE, move |_| titled(&ST_STYLESHEETS_ROUTE, lessons::stylesheets::stylesheets()))
-        .screen(ST_VARIANTS_ROUTE, move |_| titled(&ST_VARIANTS_ROUTE, lessons::stylesheets::variants()))
         // Media queries
         .screen(MQ_BREAKPOINTS_ROUTE, move |_| titled(&MQ_BREAKPOINTS_ROUTE, lessons::media_queries::breakpoints()))
         .screen(MQ_MOBILE_FIRST_ROUTE, move |_| titled(&MQ_MOBILE_FIRST_ROUTE, lessons::media_queries::mobile_first()))
@@ -155,9 +191,17 @@ pub fn app() -> Element {
 
             let sidebar_el = shell::sidebar(active_route, is_dark);
             let header = shell::mobile_header(active_route, drawer_open);
+            // The page sits on a white elevated card, inset from the
+            // secondary-colored backdrop the sidebar shares.
             let body: Element = ui! {
-                view(style = shell::outlet_grow_style) {
-                    { nav_ctx.outlet }
+                view(style = shell::ContentBackdrop()) {
+                    Card(
+                        variant = CardVariant::Elevated,
+                        padding = CardPadding::None,
+                        styles = CardSlotStyles::default().root(shell::content_card_rules()),
+                    ) {
+                        { nav_ctx.outlet }
+                    }
                 }
             };
             let content: Element = ui! {
@@ -171,7 +215,7 @@ pub fn app() -> Element {
                     sidebar = vec![sidebar_el],
                     is_open = drawer_open,
                     pin_at = Breakpoint::Lg,
-                    width = 280.0,
+                    width = rx!(shell::sidebar_width(sidebar_hidden)),
                 ) {
                     { content }
                 }
@@ -184,33 +228,45 @@ pub fn app() -> Element {
 // =============================================================================
 // Registration seams the CLI-generated wrappers call before mount.
 //
-// Runtime v2 has no separate "external primitive" concept: the scene
-// `Registry` treats primitives and third-party payloads uniformly, so an
-// SDK registers its handler exactly the way `register_builtins` registers
-// a core primitive. The tutorial's one such SDK is `codeblock` (the
-// syntax-tinted code panels), and its `register` IS the seam — no wrapper
-// fn needed. A payload with no registered handler panics at realize, so a
-// missing seam fails loudly instead of silently drawing a placeholder.
+// The scene `Registry` treats primitives and third-party payloads
+// uniformly, so an SDK registers its handler exactly the way
+// `register_builtins` registers a core primitive. The tutorial renders two
+// SDK payloads: `codeblock` (the code panels and the fiddle's editor) and
+// `webview` (the fiddle's preview frame). Both `register`s are generic and
+// pick a backend's real leg by registry type, so one seam serves every
+// platform. A payload with no registered handler panics at realize, so a
+// missing line fails loudly instead of silently drawing a placeholder.
 // =============================================================================
 
 /// Web / macOS / iOS / terminal wrappers: `start_in`, `hydrate_in`,
 /// `newcore::run_with`, `newcore::run_in_view`, `newcore::run` all take
 /// this as their `register` argument (invoked after
 /// `runtime_vocabulary::register_builtins`).
-pub use codeblock::register as register_scene_extensions;
+pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_scene::Host
+        + runtime_vocabulary::caps::TextOps
+        + runtime_vocabulary::caps::ExternalOps
+        + runtime_vocabulary::style_attach::StyleServices
+        + 'static,
+{
+    codeblock::register(registry);
+    webview::register(registry);
+}
 
 /// SSR / SSG wrappers (`backend_ssr::newcore::render_path_with`,
-/// `render_all`). Same generic handler — the code panels render the same
-/// `<pre>`/span DOM server-side as they do in the browser.
-pub use codeblock::register as register_ssr_scene_handlers;
+/// `render_all`). The same seam: the code panels render the same
+/// `<pre>`/span DOM server-side as in the browser, and the preview frame
+/// takes webview's placeholder until the client mounts.
+pub use register_scene_extensions as register_ssr_scene_handlers;
 
 /// The `idealyst dev` sidecar's wire recorder
-/// (`dev_server::sidecar::run_newcore`). Same handler again, specialised
-/// to the recording backend, so a dev session serializes real code
-/// panels over the wire.
+/// (`dev_server::sidecar::run_newcore`). Same seam again, specialised to
+/// the recording backend, so a dev session serializes real code panels
+/// over the wire.
 #[cfg(feature = "sidecar")]
 pub fn register_scene_extensions_recorder(registry: &mut dev_server::newcore::SceneRegistry) {
-    codeblock::register(registry);
+    register_scene_extensions(registry);
 }
 
 /// Android: the generated wrapper's attach branch mounts `scene_app()`

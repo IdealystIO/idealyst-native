@@ -12,19 +12,22 @@ use runtime_core::{ui, Element};
 use crate::chart::{ChartArrow, ChartBox, ChartLabel, ChartRow};
 use crate::common::{Callout, CodePanel, DocsLink, LessonPage};
 use crate::routes::{ARCH_BACKENDS_ROUTE, ARCH_CATALOG_ROUTE, ARCH_OVERVIEW_ROUTE, ARCH_SDKS_ROUTE};
-use crate::shell;
 
 // =============================================================================
 // Step 1 — the layered model (the whole map).
 // =============================================================================
 
 pub fn overview() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = ARCH_OVERVIEW_ROUTE.name(),
             title = "The layered model".to_string(),
             lead = "One reactive core, one capability interface to every platform, and the \
                 tooling built around it.".to_string(),
+            learn = vec![
+                "The layers between your app and the platform",
+                "Why the backend is the only boundary",
+            ],
         ) {
             Typography(
                 content = "Read the diagram top-down. You author your app once against the Core. \
@@ -98,7 +101,7 @@ pub fn overview() -> Element {
                 )
             }
         }
-    })
+    }
 }
 
 // =============================================================================
@@ -106,12 +109,17 @@ pub fn overview() -> Element {
 // =============================================================================
 
 pub fn backends() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = ARCH_BACKENDS_ROUTE.name(),
             title = "Direct vs hosted runtime".to_string(),
             lead = "One backend interface, satisfied two ways — and the second way is where \
                 hot reload and cross-device state come from.".to_string(),
+            learn = vec![
+                "The direct path: your app runs on the device",
+                "The hosted path: your app runs elsewhere and drives the device",
+                "Why one interface serves both",
+            ],
         ) {
             Typography(
                 content = "A backend is the framework's single point of contact with the \
@@ -213,7 +221,7 @@ pub fn backends() -> Element {
                 doc_file = "backend.md".to_string(),
             )
         }
-    })
+    }
 }
 
 // =============================================================================
@@ -221,12 +229,17 @@ pub fn backends() -> Element {
 // =============================================================================
 
 pub fn catalog() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = ARCH_CATALOG_ROUTE.name(),
             title = "Catalog, docs & MCP".to_string(),
             lead = "A registry of every component and type — with compile-time safeguards — that \
                 feeds two consumers: the docs and the MCP server.".to_string(),
+            learn = vec![
+                "What the catalog records about your code",
+                "How recipes keep generated code reliable",
+                "Auto-docs and MCP, side by side",
+            ],
         ) {
             Typography(
                 content = "The catalog is peripheral but critical. It's a registry of every \
@@ -291,7 +304,7 @@ recipe!(Button, fn example() {
                 doc_file = "framework-mcp-spec.md".to_string(),
             )
         }
-    })
+    }
 }
 
 // =============================================================================
@@ -299,12 +312,17 @@ recipe!(Button, fn example() {
 // =============================================================================
 
 pub fn sdks() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = ARCH_SDKS_ROUTE.name(),
             title = "SDKs".to_string(),
             lead = "Optimized, cross-platform capabilities built on the Core — and composable into \
                 bigger ones.".to_string(),
+            learn = vec![
+                "What an SDK is, and how it builds on the core",
+                "How SDKs compose",
+                "Why SDKs stay minimal and unopinionated",
+            ],
         ) {
             Typography(
                 content = "SDKs are peripheral but first-class. They build on the \
@@ -349,5 +367,5 @@ pub fn sdks() -> Element {
                 )
             }
         }
-    })
+    }
 }

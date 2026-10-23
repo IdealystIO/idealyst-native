@@ -6,14 +6,18 @@ use runtime_core::{ui, Element};
 
 use crate::common::{Callout, DocsLink, LessonPage};
 use crate::routes::{ADV_BACKENDS_ROUTE, ADV_CLI_ROUTE, ADV_EMBEDDED_ROUTE};
-use crate::shell;
 
 pub fn custom_backends() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = ADV_BACKENDS_ROUTE.name(),
             title = "Custom backends".to_string(),
             lead = "Satisfy the backend traits to bring idealyst to a new platform.".to_string(),
+            learn = vec![
+                "The traits a backend implements",
+                "How node creation, updates and styles reach a platform",
+                "Where the flush driver fits",
+            ],
         ) {
             Typography(
                 content = "The backend traits are the framework's only seam to a platform, and \
@@ -51,15 +55,18 @@ pub fn custom_backends() -> Element {
                 doc_file = "backend.md".to_string(),
             )
         }
-    })
+    }
 }
 
 pub fn interactive_cli() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = ADV_CLI_ROUTE.name(),
             title = "Interactive CLIs".to_string(),
             lead = "The same tree, rendered as a terminal UI.".to_string(),
+            learn = vec![
+                "How the same tree renders in a terminal",
+            ],
         ) {
             Typography(
                 content = "The terminal backend renders the same author tree into an \
@@ -84,15 +91,18 @@ pub fn interactive_cli() -> Element {
                 doc_file = "backend.md".to_string(),
             )
         }
-    })
+    }
 }
 
 pub fn embedded() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = ADV_EMBEDDED_ROUTE.name(),
             title = "Embedded rendering".to_string(),
             lead = "Painting to a framebuffer on bare metal via the CPU renderer.".to_string(),
+            learn = vec![
+                "How the CPU renderer paints to a framebuffer",
+            ],
         ) {
             Typography(
                 content = "idealyst runs all the way down to microcontrollers. The CPU \
@@ -117,5 +127,5 @@ pub fn embedded() -> Element {
                 doc_file = "backend.md".to_string(),
             )
         }
-    })
+    }
 }

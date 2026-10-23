@@ -1,136 +1,137 @@
-//! Tiny hand-rolled Rust tokenizer for the fiddle's editor pane.
+//! A small Rust tokenizer for the two code surfaces: [`decorations`] for a
+//! [`code_editor`](crate::code_editor) and [`spans`] for a
+//! [`code_block`](crate::code_block).
 //!
-//! Not a real parser — just enough to produce colored runs we can
-//! feed to the [`runtime_core::code_block`] primitive. Recognizes:
+//! It is a lexer, not a parser — enough to tint what helps a reader scan:
+//! comments (line and nested block), literals (strings, chars, numbers,
+//! lifetimes) and keywords. Everything else — identifiers, types,
+//! punctuation, whitespace — is [`Token::Plain`] and renders in the
+//! surface's own ink.
 //!
-//! - Line comments (`// …`) and block comments (`/* … */`, nested).
-//! - Strings (`"…"`, with `\…` escapes) and chars (`'…'`).
-//! - Lifetimes (`'static`, `'a`).
-//! - Numbers (`123`, `0x1F`, `0b10`, `1_000`, `1.5e10`).
-//! - Keywords (the standard Rust set).
-//! - Identifiers (split into "looks like a type" via uppercase
-//!   first letter, vs. ordinary ident).
-//! - Punctuation, whitespace.
-//!
-//! Output is a flat `Vec<(String, Color)>` — consecutive runs of
-//! the same color stay separate so the consumer can decide whether
-//! to coalesce. The render side ([`runtime_core::CodeBlock`])
-//! emits one `<span>` per tuple, which is fine for thousand-token
-//! files; if it becomes a bottleneck the coalescing pass goes here.
+//! [`tokens`] is the single source of truth: its ranges tile the input
+//! exactly (every byte in one range, in order), and every range boundary
+//! sits on an ASCII byte or the ends, so slicing never splits a UTF-8
+//! character. Both outputs are derived from it.
 
-use codeblock::Decoration;
-use runtime_core::Color;
+use std::ops::Range;
 
-/// Subdued three-accent palette. Most code reads as default-ink
-/// black; only the categories whose color actually helps you scan
-/// (literals vs. identifiers vs. comments) get their own tint.
-///
-/// - **Default ink** — identifiers, types, punctuation, even the
-///   whitespace runs. The eye groups them as "the code" without
-///   needing per-token differentiation.
-/// - **Comment** — flat gray so commented-out chunks visually
-///   recede.
-/// - **Literal** — strings, chars, numbers, lifetimes. A single
-///   teal so anywhere data is embedded in source is consistent;
-///   the eye doesn't have to parse three separate hues.
-/// - **Keyword** — a subtle purple-blue for control flow (`fn`,
-///   `let`, `match`, `if`, …). Different enough from default ink
-///   to scan, muted enough not to "shout".
-const C_DEFAULT: &str = "#1f2328";
-const C_COMMENT: &str = "#8c959f";
-const C_LITERAL: &str = "#1f6e5f";
-const C_KEYWORD: &str = "#5a4fcf";
+use runtime_shared::Color;
 
-/// Tokenize a Rust source string into `(text, color)` runs that
-/// re-concatenate to the original input. Round-trip is exact —
-/// every byte of `src` appears once in some span.
-pub fn highlight_rust(src: &str) -> Vec<(String, Color)> {
-    let mut out: Vec<(String, Color)> = Vec::new();
+use crate::decoration::Decoration;
+
+/// What a range of source is, for tinting.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Token {
+    /// `// …` and `/* … */` (nested).
+    Comment,
+    /// Strings, chars, numbers and lifetimes.
+    Literal,
+    /// Rust keywords, including the reserved ones.
+    Keyword,
+    /// Identifiers, types, punctuation, whitespace.
+    Plain,
+}
+
+/// The colors each [`Token`] renders in. `ink` is [`Token::Plain`]'s, used
+/// by [`spans`] only — [`decorations`] leaves plain text undecorated so it
+/// takes the editor's own text color.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Palette {
+    /// [`Token::Plain`] — identifiers, types, punctuation.
+    pub ink: &'static str,
+    /// [`Token::Comment`].
+    pub comment: &'static str,
+    /// [`Token::Literal`].
+    pub literal: &'static str,
+    /// [`Token::Keyword`].
+    pub keyword: &'static str,
+}
+
+impl Palette {
+    /// A restrained palette for a light surface.
+    pub const LIGHT: Palette = Palette {
+        ink: "#1f2328",
+        comment: "#8c959f",
+        literal: "#1f6e5f",
+        keyword: "#5a4fcf",
+    };
+
+    /// The same roles for a dark surface.
+    pub const DARK: Palette = Palette {
+        ink: "#e6e8ee",
+        comment: "#8b94a3",
+        literal: "#5eead4",
+        keyword: "#c4b5fd",
+    };
+
+    /// The color `token` renders in.
+    pub fn color(&self, token: Token) -> &'static str {
+        match token {
+            Token::Comment => self.comment,
+            Token::Literal => self.literal,
+            Token::Keyword => self.keyword,
+            Token::Plain => self.ink,
+        }
+    }
+}
+
+/// Tokenize `src` into ranges that tile it exactly. Adjacent ranges may
+/// share a kind; nothing merges them.
+pub fn tokens(src: &str) -> Vec<(Range<usize>, Token)> {
+    let mut out = Vec::new();
     let bytes = src.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
-
-        // Multi-char openers come first so single-char prefixes
-        // (`/`, `'`) don't get classified as punctuation.
-        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            let end = line_end(bytes, i);
-            push(&mut out, &src[i..end], C_COMMENT);
-            i = end;
-            continue;
-        }
-        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-            let end = block_comment_end(bytes, i);
-            push(&mut out, &src[i..end], C_COMMENT);
-            i = end;
-            continue;
-        }
-        if b == b'"' {
-            let end = string_end(bytes, i);
-            push(&mut out, &src[i..end], C_LITERAL);
-            i = end;
-            continue;
-        }
-        if b == b'\'' {
-            // Either a char literal (`'x'` / `'\n'` / `'\u{1F600}'`)
-            // or a lifetime (`'static`, `'a`). Char literals are
-            // string-style; lifetimes share the literal accent
-            // since they're also "data attached to a binding."
-            if let Some(end) = char_literal_end(bytes, i) {
-                push(&mut out, &src[i..end], C_LITERAL);
-                i = end;
-                continue;
+        // Multi-byte openers first, so `/` and `'` are not taken as
+        // punctuation.
+        let (end, kind) = if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            (line_end(bytes, i), Token::Comment)
+        } else if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            (block_comment_end(bytes, i), Token::Comment)
+        } else if b == b'"' {
+            (string_end(bytes, i), Token::Literal)
+        } else if b == b'\'' {
+            // A char literal (`'x'`, `'\n'`, `'\u{1F600}'`) or a lifetime
+            // (`'static`); a stray quote is plain.
+            match char_literal_end(bytes, i).or_else(|| lifetime_end(bytes, i)) {
+                Some(end) => (end, Token::Literal),
+                None => (i + 1, Token::Plain),
             }
-            if let Some(end) = lifetime_end(bytes, i) {
-                push(&mut out, &src[i..end], C_LITERAL);
-                i = end;
-                continue;
-            }
-            // Stray `'` — fold into default ink so the round-trip
-            // is still exact.
-            push(&mut out, "'", C_DEFAULT);
-            i += 1;
-            continue;
-        }
-        if b.is_ascii_digit() {
-            let end = number_end(bytes, i);
-            push(&mut out, &src[i..end], C_LITERAL);
-            i = end;
-            continue;
-        }
-        if is_ident_start(b) {
+        } else if b.is_ascii_digit() {
+            (number_end(bytes, i), Token::Literal)
+        } else if is_ident_start(b) {
             let end = ident_end(bytes, i);
-            let word = &src[i..end];
-            // Two-bucket policy: keywords get the accent; everything
-            // else (idents, types, the bool literals `true`/`false`
-            // — which `is_keyword` classifies as keywords for the
-            // parser, but read as default-ink data here) stays
-            // default. Identifier types staying default keeps the
-            // page calm; if the user really wants types differentiated
-            // they'll tell us.
-            let color = if is_keyword(word) { C_KEYWORD } else { C_DEFAULT };
-            push(&mut out, word, color);
-            i = end;
-            continue;
-        }
-        if b.is_ascii_whitespace() {
-            let end = ws_end(bytes, i);
-            push(&mut out, &src[i..end], C_DEFAULT);
-            i = end;
-            continue;
-        }
-        // Punctuation runs (`=>` / `..=` / `::`) stay default —
-        // we don't accent them because that's where the
-        // GitHub-style palette starts to look "rainbow."
-        let end = punct_end(bytes, i);
-        push(&mut out, &src[i..end], C_DEFAULT);
+            let kind = if is_keyword(&src[i..end]) { Token::Keyword } else { Token::Plain };
+            (end, kind)
+        } else if b.is_ascii_whitespace() {
+            (ws_end(bytes, i), Token::Plain)
+        } else {
+            (punct_end(bytes, i), Token::Plain)
+        };
+        out.push((i..end, kind));
         i = end;
     }
     out
 }
 
-fn push(out: &mut Vec<(String, Color)>, text: &str, color_hex: &str) {
-    out.push((text.to_string(), Color(color_hex.to_string())));
+/// `code_editor` decorations for `src`: one color range per non-plain
+/// token. Pass as `code_editor(..).decorate(|s| rust::decorations(s, &Palette::LIGHT))`.
+pub fn decorations(src: &str, palette: &Palette) -> Vec<Decoration> {
+    tokens(src)
+        .into_iter()
+        .filter(|(_, kind)| *kind != Token::Plain)
+        .map(|(range, kind)| Decoration::color(range, palette.color(kind)))
+        .collect()
+}
+
+/// `code_block` runs for `src`: every token with its color, plain ones in
+/// `palette.ink`. The runs re-concatenate to `src`.
+pub fn spans(src: &str, palette: &Palette) -> Vec<(String, Color)> {
+    tokens(src)
+        .into_iter()
+        .map(|(range, kind)| (src[range].to_string(), Color(palette.color(kind).into())))
+        .collect()
 }
 
 fn line_end(bytes: &[u8], start: usize) -> usize {
@@ -405,35 +406,52 @@ fn is_keyword(word: &str) -> bool {
     )
 }
 
-/// The same tokenization expressed as `code_editor` decorations: byte
-/// ranges into `src` rather than a concatenated run list.
-///
-/// Derived from [`highlight_rust`] by accumulating span lengths, so
-/// there is exactly one tokenizer to keep correct. Default-ink runs are
-/// dropped rather than emitted as explicit decorations — undecorated
-/// text already renders in the editor's own text color, and skipping
-/// them roughly halves the decoration count on typical source.
-pub fn highlight_rust_decorations(src: &str) -> Vec<Decoration> {
-    let mut at = 0usize;
-    let mut out = Vec::new();
-    for (text, color) in highlight_rust(src) {
-        let end = at + text.len();
-        if color.0 != C_DEFAULT {
-            out.push(Decoration::color(at..end, color.0));
-        }
-        at = end;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kinds(src: &str) -> Vec<(&str, Token)> {
+        tokens(src).into_iter().map(|(r, k)| (&src[r], k)).collect()
     }
-    // The accumulator is only correct because `highlight_rust`'s runs
-    // re-concatenate to `src` exactly (its own documented round-trip).
-    // If that ever stops holding, every range past the break point
-    // paints the wrong characters — silently, and worse the further
-    // down the file you look. This crate is wasm-only, so it has no
-    // host test binary to assert it in; the debug build is where the
-    // check can actually run.
-    debug_assert_eq!(
-        at,
-        src.len(),
-        "highlight_rust runs must re-concatenate to the source exactly"
-    );
-    out
+
+    #[test]
+    fn ranges_tile_the_source_exactly() {
+        let src = "fn main() {\n    // hi ✓\n    let s = \"a\\\"b\"; let c = '\\n'; /* /* x */ */ 'a: loop {}\n}";
+        let mut at = 0;
+        for (range, _) in tokens(src) {
+            assert_eq!(range.start, at, "ranges are contiguous");
+            assert!(range.end > range.start, "no empty range");
+            at = range.end;
+        }
+        assert_eq!(at, src.len());
+        let joined: String = spans(src, &Palette::LIGHT).into_iter().map(|(t, _)| t).collect();
+        assert_eq!(joined, src);
+    }
+
+    #[test]
+    fn classifies_comments_literals_and_keywords() {
+        let k = kinds("let n = 0x1F; // done");
+        assert!(k.contains(&("let", Token::Keyword)));
+        assert!(k.contains(&("n", Token::Plain)));
+        assert!(k.contains(&("0x1F", Token::Literal)));
+        assert!(k.contains(&("// done", Token::Comment)));
+        assert!(kinds("&'static str").contains(&("'static", Token::Literal)));
+        assert!(kinds("'x'").contains(&("'x'", Token::Literal)));
+    }
+
+    #[test]
+    fn non_ascii_text_never_splits_a_character() {
+        // Every range is sliced, which panics on a non-boundary.
+        let src = "text { \"héllo 👋\" } → «done»";
+        for (range, _) in tokens(src) {
+            let _ = &src[range];
+        }
+    }
+
+    #[test]
+    fn decorations_skip_plain_text() {
+        let decs = decorations("let x", &Palette::LIGHT);
+        assert_eq!(decs.len(), 1, "only the keyword is decorated");
+        assert_eq!(decs[0].range, 0..3);
+    }
 }

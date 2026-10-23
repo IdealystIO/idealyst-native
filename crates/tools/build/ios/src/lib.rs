@@ -400,7 +400,7 @@ pub enum Target {
 }
 
 impl Target {
-    /// Parse one of `web | ios | android | roku | macos | terminal`
+    /// Parse one of `web | ios | android | roku | macos | terminal | linux | windows`
     /// (case-insensitive) from the `targets = [...]` array. Anything
     /// else is an error rather than a silent skip — typos in the
     /// manifest should be noisy.

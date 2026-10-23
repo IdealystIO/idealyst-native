@@ -2694,3 +2694,66 @@ fn content_key_distinguishes_fit_content_tracks() {
     assert_ne!(fit.content_key(), cols(TrackSize::FitContent(120.0)).content_key());
     assert_eq!(fit.content_key(), cols(TrackSize::FitContent(100.0)).content_key());
 }
+
+/// A variant axis for the kernel-handle tests below.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum Tone {
+    Quiet,
+    Loud,
+}
+
+impl VariantEnum for Tone {
+    fn as_variant_str(self) -> &'static str {
+        match self {
+            Tone::Quiet => "quiet",
+            Tone::Loud => "loud",
+        }
+    }
+}
+
+/// Regression: the style setters accepted only this crate's legacy
+/// `Signal`, so `Sheet().tone(sig)` with the handle an app gets from
+/// `signal()` (the kernel's) did not compile — although the styling docs
+/// and guide show exactly that. The kernel handles are now sources: they
+/// report reactive, read the committed value, and follow a flushed write.
+#[test]
+fn regression_kernel_signal_drives_a_variant_and_an_override() {
+    let world = runtime_world::World::new();
+    world.enter(|| {
+        let tone = runtime_world::signal(Tone::Quiet);
+        let pad = runtime_world::signal(4.0_f32);
+
+        let variant = IntoVariantSource::<Tone>::is_reactive(&tone);
+        let tone_source = IntoVariantSource::<Tone>::into_variant_source(tone);
+        let pad_reactive = IntoOverrideSource::<f32>::is_reactive(&pad);
+        let pad_source = IntoOverrideSource::<f32>::into_override_source(pad);
+        assert!(variant && pad_reactive, "a signal is a reactive source");
+        assert_eq!(tone_source(), "quiet");
+        assert_eq!(pad_source(), 4.0);
+
+        tone.set(Tone::Loud);
+        pad.set(12.0);
+        world.flush();
+        assert_eq!(tone_source(), "loud", "the source reads the committed value");
+        assert_eq!(pad_source(), 12.0);
+    });
+}
+
+/// The read-only halves an app passes down — `read_only()` and a `memo` —
+/// are sources too.
+#[test]
+fn read_only_signals_and_memos_are_style_sources() {
+    let world = runtime_world::World::new();
+    world.enter(|| {
+        let count = runtime_world::signal(0_i32);
+        let loud = runtime_world::memo(move || if count.get() >= 3 { Tone::Loud } else { Tone::Quiet });
+        let from_memo = loud.into_variant_source();
+        let from_read = runtime_world::signal(Tone::Loud).read_only().into_variant_source();
+        assert_eq!(from_memo(), "quiet");
+        assert_eq!(from_read(), "loud");
+
+        count.set(3);
+        world.flush();
+        assert_eq!(from_memo(), "loud", "the memo source follows its inputs");
+    });
+}

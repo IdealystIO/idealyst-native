@@ -69,6 +69,13 @@ embed-font-bytes = []
 # `thread_local!` that costs Android one pthread key per process
 # instead of one per static (bionic allows 128).
 runtime-tls = { workspace = true }
+# The reactive kernel. An author's `signal()` / `memo()` handles are its
+# types, and the style setters (`IntoVariantSource` / `IntoOverrideSource`
+# in `style.rs`) must accept them; those traits live here, and a coherent
+# impl for a foreign handle type can only be written beside the trait.
+# The kernel depends on nothing of ours (`runtime-tls`, `rustc-hash`), so
+# this adds no cycle.
+runtime-world = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Bitflags for `AccessibilityTraits` (one u16 of orthogonal a11y flags

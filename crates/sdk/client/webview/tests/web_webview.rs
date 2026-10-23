@@ -155,3 +155,45 @@ async fn regression_unmount_detaches_and_frees_the_listeners() {
     sleep(30).await;
     assert!(m.messages.borrow().is_empty(), "nothing reaches on_message after unmount");
 }
+
+/// The registration seam every `idealyst::entry!` app writes is generic
+/// over the host (`register_scene_extensions<H>`), and names no backend.
+fn generic_seam<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_vocabulary::caps::ExternalOps
+        + runtime_vocabulary::style_attach::StyleServices
+        + 'static,
+{
+    webview::register(registry);
+}
+
+/// Regression: on wasm32 `register` took `&mut Registry<WebBackend>`, so an
+/// app's generic `register_scene_extensions<H>` could not call it at all —
+/// the webview was usable only from a hand-written `start_in` boot. The DOM
+/// handler is now picked by registry type, so the generic seam still mounts
+/// the real `<iframe>`.
+#[wasm_bindgen_test]
+async fn regression_generic_registration_seam_mounts_the_iframe() {
+    let host = fresh_host();
+    backend_web::newcore::start_in("#app", generic_seam, || {
+        WebView(WebViewProps { url: url("about:blank"), ..Default::default() }).into_element()
+    });
+    sleep(30).await;
+    assert!(
+        host.query_selector("iframe[data-external-kind='webview::WebViewProps']")
+            .unwrap()
+            .is_some(),
+        "a generic seam on the DOM backend registers the <iframe> handler"
+    );
+    backend_web::newcore::stop();
+}
+
+/// A wasm32 registry that is not the DOM backend's has no `<iframe>` to
+/// make, and takes the placeholder leg instead of failing to compile.
+#[wasm_bindgen_test]
+fn a_non_dom_registry_on_wasm_gets_the_placeholder() {
+    let h = host_mock::Harness::with_registry(|r| generic_seam(r));
+    let _realized: runtime_scene::Realized<u32> =
+        h.mount(WebView(WebViewProps::default()).into_element());
+    assert_eq!(h.ops().join("\n"), "create n0 external webview::WebViewProps");
+}

@@ -5283,3 +5283,44 @@ async fn two_axis_scroll_view_pans_both_ways_and_pins_a_sticky_corner() {
     assert_eq!(style.get_property_value("overflow-y").unwrap(), "auto");
     node.unchecked_ref::<web_glue::dom::Element>().remove();
 }
+
+/// Regression: a mostly-vertical wheel or trackpad gesture over a two-axis
+/// scroller drifted it sideways on the web, while iOS and Android lock such
+/// a drag to its axis. The scroller now takes a locked wheel event itself
+/// (scrolling only that axis), and leaves a diagonal one to the browser.
+/// A synthetic wheel event never scrolls an element natively, so any
+/// movement here is the lock's own.
+#[wasm_bindgen_test]
+async fn regression_two_axis_scroll_view_locks_a_wheel_gesture_to_its_axis() {
+    use runtime_shared::ScrollAxis;
+    install_mount();
+    crate::install_scheduler();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let app = doc.get_element_by_id("app").unwrap();
+    let node = crate::primitives::scroll_view::create(&mut backend, ScrollAxis::Both, None);
+    let scroller: web_glue::dom::HtmlElement = node.clone().dyn_into().unwrap();
+    scroller.style().set_property("width", "300px").unwrap();
+    scroller.style().set_property("height", "200px").unwrap();
+    scroller.style().set_property("align-items", "flex-start").unwrap();
+    let body = doc.create_element("div").unwrap();
+    body.set_attribute("style", "width:1000px;height:900px;flex-shrink:0").unwrap();
+    scroller.append_child(&body).unwrap();
+    app.append_child(&node).unwrap();
+
+    let num = |v: f64| web_glue::JsValue::from(v);
+    let wheel = |dx: f64, dy: f64| -> web_glue::dom::Event {
+        synth_event("WheelEvent", "wheel", &[("deltaX", num(dx)), ("deltaY", num(dy)), ("deltaMode", num(0.0))])
+    };
+    // Mostly down: taken, and only the vertical axis moves.
+    assert!(fire(&scroller, &wheel(6.0, 80.0)), "a locked wheel event is taken from the browser");
+    assert_eq!((scroller.scroll_left(), scroller.scroll_top()), (0, 80), "only the vertical axis scrolled");
+    // The same gesture wobbling sideways stays locked to vertical.
+    assert!(fire(&scroller, &wheel(30.0, 20.0)));
+    assert_eq!((scroller.scroll_left(), scroller.scroll_top()), (0, 100));
+
+    // A pause ends the gesture; a diagonal one is the browser's to pan.
+    sleep_ms(200).await;
+    assert!(!fire(&scroller, &wheel(40.0, 40.0)), "a diagonal gesture is left to the browser");
+    node.unchecked_ref::<web_glue::dom::Element>().remove();
+}

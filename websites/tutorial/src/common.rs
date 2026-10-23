@@ -1,31 +1,63 @@
-//! Tutorial chrome components — `CodePanel`, `Callout`, `DocsLink`,
-//! `StepNav`, `LessonPage`. Each is a `#[component]` so its tag and props
+//! Course chrome components — `CodePanel`, `Callout`, `ReactNote`,
+//! `DocsLink`, `StepNav`, `LessonPage`. Each is a `#[component]` so its tag and props
 //! struct are wired into `ui!` dispatch automatically (the macro emits
 //! `pub type Foo = FooProps` + the matching `BuildElement` impl).
 //!
 //! Author paragraphs and sub-headings as `Typography(content = …, kind
 //! = …)` directly — there's no point hiding it behind a wrapper.
 
+use codeblock::rust::Palette;
+use std::rc::Rc;
+
+use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::{
-    component, switch, ui, Color, Element, IntoElement, Route, StyleApplication, Tokenized,
+    component, memo, signal, switch, ui, Breakpoint, Color, Element, IntoElement, Route, Signal,
+    StyleApplication, Tokenized, ViewportPlacement,
 };
+
+/// From this breakpoint up the lesson workspace docks beside the prose at
+/// a fixed width; below it, it is a drawer. One step above the sidebar's
+/// pin (`Lg`), so a pinned sidebar, the prose and the workspace never
+/// share a width too narrow for all three.
+const WORKSPACE_DOCK_AT: Breakpoint = Breakpoint::Xl;
 // `IdeaTheme as _` brings the theme trait into scope so `theme_is_dark`
 // below can call `colors()` on the downcast `IdeaThemeRef` carrier.
-use idea_ui::{IdeaTheme as _, Stack, StackGap, Typography};
+use idea_ui::{Button, ButtonSize, ButtonVariant, IdeaTheme as _, Stack, StackGap, Typography};
 
-use crate::routes;
+use crate::course;
 use crate::styles::{
     Callout as CalloutBox,
     CodePanel as CodePanelBox,
     CodeText,
+    CopyCorner,
     DocsLink as DocsLinkBox,
+    Eyebrow,
+    EyebrowRow,
+    EyebrowSpacer,
+    HeaderNext,
+    HeaderNextText,
+    LearnArrow,
+    LearnCard,
+    LearnRow,
+    LearnText,
+    LessonMeta,
+    LessonMetaRow,
+    LessonProse,
+    LessonSplit,
+    LessonWorkspace,
+    DrawerBar,
+    DrawerOpener,
+    DrawerPanel,
+    DrawerScrim,
+    ReactNote as ReactNoteBox,
     PagePad,
     StepNavLink,
     StepNavRow,
 };
 
-/// GitHub blob base for the deep-dive reference docs. The tutorial
+/// GitHub blob bases for the deep-dive reference docs. The tutorial
 /// teaches the concept; these links point at the verbose reference.
+const REPO_BASE: &str = "https://github.com/IdealystIO/idealyst-native/blob/master";
 const DOCS_BASE: &str = "https://github.com/IdealystIO/idealyst-native/blob/master/docs/";
 
 // =============================================================================
@@ -35,29 +67,10 @@ const DOCS_BASE: &str = "https://github.com/IdealystIO/idealyst-native/blob/mast
 #[derive(Default)]
 pub struct CodePanelProps {
     pub src: String,
+    /// A terminal transcript or plain listing: one ink, no Rust tints
+    /// (a `for` in a comment column is not a keyword).
+    pub shell: bool,
 }
-
-#[derive(Copy, Clone)]
-struct Palette {
-    ink: &'static str,
-    comment: &'static str,
-    string: &'static str,
-    accent: &'static str,
-}
-
-const LIGHT_PALETTE: Palette = Palette {
-    ink: "#1f2328",
-    comment: "#8a8270",
-    string: "#1f6e5f",
-    accent: "#5a4fcf",
-};
-
-const DARK_PALETTE: Palette = Palette {
-    ink: "#e8eaf0",
-    comment: "#9099a8",
-    string: "#5eead4",
-    accent: "#c4b5fd",
-};
 
 /// Read the active theme's background and decide whether we're in a dark
 /// theme. idea-ui's light themes start with near-white backgrounds; dark
@@ -69,7 +82,7 @@ const DARK_PALETTE: Palette = Palette {
 /// `set_idea_theme` nor subscribes the `switch` scrutinee below (Tokenized
 /// registry reads are not world-tracked), which would leave dark
 /// code panels wearing the light palette's ink.
-fn theme_is_dark() -> bool {
+pub(crate) fn theme_is_dark() -> bool {
     if idea_ui::theme_installed() {
         let theme = idea_ui::active_theme();
         if let Some(t) = theme.downcast_ref::<idea_ui::IdeaThemeRef>() {
@@ -93,97 +106,45 @@ fn is_dark_color(s: &str) -> bool {
     luma < 128.0
 }
 
-fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
-    let keywords = [
-        "fn", "let", "pub", "use", "mod", "struct", "enum", "impl", "trait", "for", "in", "if",
-        "else", "match", "return", "move", "self", "Self", "async", "await", "true", "false",
-    ];
-
-    let mut out: Vec<(String, Color)> = Vec::new();
-    let mut buf = String::new();
-    let bytes = src.as_bytes();
-    let mut i = 0;
-
-    let flush_ident = |buf: &mut String, out: &mut Vec<(String, Color)>, palette: &Palette| {
-        if buf.is_empty() {
-            return;
-        }
-        let color = if keywords.contains(&buf.as_str()) {
-            palette.accent
-        } else {
-            palette.ink
-        };
-        out.push((std::mem::take(buf), Color(color.into())));
-    };
-
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            flush_ident(&mut buf, &mut out, &palette);
-            let mut j = i;
-            while j < bytes.len() && bytes[j] != b'\n' {
-                j += 1;
-            }
-            out.push((src[i..j].to_string(), Color(palette.comment.into())));
-            i = j;
-            continue;
-        }
-        if b == b'"' {
-            flush_ident(&mut buf, &mut out, &palette);
-            let mut j = i + 1;
-            while j < bytes.len() {
-                if bytes[j] == b'\\' && j + 1 < bytes.len() {
-                    j += 2;
-                    continue;
-                }
-                if bytes[j] == b'"' {
-                    j += 1;
-                    break;
-                }
-                j += 1;
-            }
-            out.push((src[i..j].to_string(), Color(palette.string.into())));
-            i = j;
-            continue;
-        }
-        if b.is_ascii_alphabetic() || b == b'_' {
-            buf.push(b as char);
-            i += 1;
-            continue;
-        }
-        flush_ident(&mut buf, &mut out, &palette);
-        let mut j = i;
-        while j < bytes.len() {
-            let c = bytes[j];
-            if c == b'/' && j + 1 < bytes.len() && bytes[j + 1] == b'/' {
-                break;
-            }
-            if c == b'"' || c.is_ascii_alphabetic() || c == b'_' {
-                break;
-            }
-            j += 1;
-        }
-        out.push((src[i..j].to_string(), Color(palette.ink.into())));
-        i = j;
-    }
-    flush_ident(&mut buf, &mut out, &palette);
-    out
+/// Copy `text` to the system clipboard. Fire-and-forget: a failure (an
+/// insecure origin on the web) leaves the clipboard as it was, and the
+/// code is still on screen to select by hand.
+pub(crate) fn copy_to_clipboard(text: String) {
+    runtime_core::spawn_then(async move { clipboard::set_text(&text).await }, |_| {});
 }
 
 #[component]
 pub fn CodePanel(props: &CodePanelProps) -> Element {
-    let panel_style = CodePanelBox();
     let src = props.src.clone();
+    let shell = props.shell;
+    let for_copy = src.clone();
+    let copy: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(move || copy_to_clipboard(for_copy.clone()));
     // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the code block per palette
     let dynamic = switch(theme_is_dark, move |&is_dark| {
-        let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
-        let spans = highlight(&src, palette);
-        let code_style = move || StyleApplication::new(CodeText::sheet());
+        let palette = if is_dark { Palette::DARK } else { Palette::LIGHT };
+        let spans = if shell {
+            vec![(src.clone(), Color(palette.ink.into()))]
+        } else {
+            codeblock::rust::spans(&src, &palette)
+        };
         codeblock::code_block(spans)
-            .with_style(code_style)
+            .with_style(move || StyleApplication::new(CodeText::sheet()))
             .into_element()
     });
-    ui! { view(style = panel_style) { dynamic } }
+    ui! {
+        view(style = CodePanelBox()) {
+            dynamic
+            view(style = CopyCorner()) {
+                Button(
+                    label = "Copy",
+                    on_click = copy,
+                    variant = ButtonVariant::Outlined,
+                    size = ButtonSize::Sm,
+                    tone = idea_ui::tone::Neutral,
+                )
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -214,6 +175,102 @@ pub fn Callout(props: CalloutProps) -> Element {
     }
 }
 
+/// Where a lesson's workspace is.
+#[derive(Clone, Copy, PartialEq)]
+enum WorkspacePlace {
+    /// Beside the prose, from `WORKSPACE_DOCK_AT` up.
+    Docked,
+    /// Narrower: in the open drawer.
+    Drawer,
+    /// Narrower, drawer closed: only the button that opens it shows.
+    Closed,
+}
+
+/// The workspace in its place. A `match` rather than an `if` chain: each
+/// arm is its own closure, so each takes its own handle on the builder.
+fn workspace_region(build: Workspace, drawer_open: Signal<bool>) -> Element {
+    let docked = build.clone();
+    let drawer = build;
+    let place = memo(move || {
+        if runtime_core::current_breakpoint().get().is_at_least(WORKSPACE_DOCK_AT) {
+            WorkspacePlace::Docked
+        } else if drawer_open.get() {
+            WorkspacePlace::Drawer
+        } else {
+            WorkspacePlace::Closed
+        }
+    });
+    ui! {
+        match place.get() {
+            WorkspacePlace::Docked => {
+                view(style = LessonWorkspace()) {
+                    { docked() }
+                }
+            }
+            WorkspacePlace::Drawer => { workspace_drawer(drawer.clone(), drawer_open) }
+            WorkspacePlace::Closed => { drawer_opener(drawer_open) }
+        }
+    }
+}
+
+/// The workspace in a drawer over the whole window, from its right edge:
+/// the scrim dims everything (sidebar included), and a tap on it, Escape,
+/// back or the Close button closes it.
+fn workspace_drawer(build: Workspace, open: Signal<bool>) -> Element {
+    let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+    ui! {
+        overlay(
+            placement = ViewportPlacement::Right,
+            backdrop = BackdropMode::Dismiss,
+            on_dismiss = move || open.set(false),
+            backdrop_style = DrawerScrim(),
+            style = DrawerPanel(),
+        ) {
+            view(style = DrawerBar()) {
+                Button(
+                    label = "Close",
+                    on_click = close,
+                    variant = ButtonVariant::Ghost,
+                    size = ButtonSize::Sm,
+                    tone = idea_ui::tone::Neutral,
+                )
+            }
+            { build() }
+        }
+    }
+}
+
+/// The button, floating at the page's bottom-right, that opens the drawer.
+fn drawer_opener(open: Signal<bool>) -> Element {
+    let open_it: Rc<dyn Fn()> = Rc::new(move || open.set(true));
+    ui! {
+        view(style = DrawerOpener()) {
+            Button(label = "Open the editor \u{2192}", on_click = open_it, size = ButtonSize::Sm)
+        }
+    }
+}
+
+// =============================================================================
+// ReactNote — a "Coming from React" aside. The course landing page points
+// React developers at these; they map a React habit onto the framework.
+// =============================================================================
+
+#[derive(Default)]
+pub struct ReactNoteProps {
+    pub children: Vec<Element>,
+}
+
+#[component]
+pub fn ReactNote(props: ReactNoteProps) -> Element {
+    let children = props.children;
+    ui! {
+        view(style = ReactNoteBox()) {
+            Typography(content = "Coming from React".to_string(), kind = idea_ui::typography_kind::Overline)
+            children
+        }
+    }
+}
+
 // =============================================================================
 // DocsLink — "read more in the docs" cross-link card.
 // =============================================================================
@@ -228,7 +285,12 @@ pub struct DocsLinkProps {
 #[component]
 pub fn DocsLink(props: &DocsLinkProps) -> Element {
     let style = CalloutBox();
-    let url = format!("{DOCS_BASE}{}", props.doc_file);
+    // `docs/`-relative by default; a leading `/` names a path from the
+    // repository root (`/README.md`, `/crates/…`).
+    let url = match props.doc_file.strip_prefix('/') {
+        Some(from_root) => format!("{REPO_BASE}/{from_root}"),
+        None => format!("{DOCS_BASE}{}", props.doc_file),
+    };
     let link_style = move || StyleApplication::new(DocsLinkBox::sheet());
     let link_text = format!("{} \u{2197}", props.link_label);
     let summary = props.summary.clone();
@@ -260,7 +322,7 @@ fn step_link(route: &'static Route<()>, label: String) -> Element {
 
 #[component]
 pub fn StepNav(props: &StepNavProps) -> Element {
-    let (prev, next) = routes::neighbors(props.current);
+    let (prev, next) = course::neighbors(props.current);
     let row = StepNavRow();
     // Each side resolves to a link OR an empty view — deliberately not an
     // in-macro `if`, whose empty branch is laid out `position: absolute`.
@@ -268,11 +330,11 @@ pub fn StepNav(props: &StepNavProps) -> Element {
     // out-of-flow) placeholder would let a lone "next →" drift to the left
     // edge on the first and last steps. The empty view keeps the slot.
     let prev_el = match prev {
-        Some((r, l)) => step_link(r, format!("\u{2190} {l}")),
+        Some((n, l)) => step_link(l.route.expect("written"), format!("\u{2190} {n} {}", l.title)),
         None => runtime_core::view(Vec::<Element>::new()).into_element(),
     };
     let next_el = match next {
-        Some((r, l)) => step_link(r, format!("{l} \u{2192}")),
+        Some((n, l)) => step_link(l.route.expect("written"), format!("{n} {} \u{2192}", l.title)),
         None => runtime_core::view(Vec::<Element>::new()).into_element(),
     };
     ui! {
@@ -289,30 +351,106 @@ pub fn StepNav(props: &StepNavProps) -> Element {
 // reading column. By-value so it can move children out.
 // =============================================================================
 
+/// Builds a lesson's workspace; see [`LessonPageProps::workspace`].
+pub type Workspace = Rc<dyn Fn() -> Element>;
+
+/// A lesson's workspace from its builder:
+/// `workspace = workspace(|| ui! { Fiddle(source = …) })`.
+pub fn workspace(build: impl Fn() -> Element + 'static) -> Option<Workspace> {
+    Some(Rc::new(build))
+}
+
 #[derive(Default)]
 pub struct LessonPageProps {
     pub current: &'static str,
     pub title: String,
     pub lead: String,
+    /// "You'll learn" bullets, shown in a card under the lead.
+    pub learn: Vec<&'static str>,
+    /// The lesson's workspace — a `Fiddle` or a `Terminal` — as a builder
+    /// (make one with [`workspace`]). Wide, it is a fixed-width column
+    /// beside the prose that stays put while the prose scrolls; narrow, it
+    /// opens in a drawer over the whole window. A builder because the two
+    /// places are different parents: the drawer is a viewport `overlay`,
+    /// which a docked element cannot move into.
+    pub workspace: Option<Workspace>,
     pub children: Vec<Element>,
 }
 
 #[component]
 pub fn LessonPage(props: LessonPageProps) -> Element {
-    let pad = PagePad();
-    let title = props.title;
-    let lead = props.lead;
     let current = props.current;
     let children = props.children;
+    let learn = props.learn;
+    let workspace = props.workspace;
+    let listed = course::find(current);
+    // A lesson listed in the course takes its title from the outline, so
+    // the page, the sidebar and the landing page cannot name it differently.
+    let title = listed.map_or(props.title, |(_, _, lesson)| lesson.title.to_string());
+    let lead = props.lead;
+    let eyebrow = listed
+        .map(|(c, i, _)| format!("Lesson {}", course::lesson_number(c, i)))
+        .unwrap_or_default();
+    // "12 min   Builds on 0.6 Anatomy of a project" — the lesson before
+    // this one in the course.
+    let minutes = listed.map(|(_, _, lesson)| format!("{} min", lesson.minutes)).unwrap_or_default();
+    let builds_on = listed
+        .and_then(|_| course::neighbors(current).0)
+        .map(|(n, prev)| format!("Builds on {n} {}", prev.title))
+        .unwrap_or_default();
+    let has_learn = !learn.is_empty();
+    // The workspace docks beside the prose from `WORKSPACE_DOCK_AT` up;
+    // narrower, it opens in a drawer from the window's right edge. A
+    // Fiddle keeps its draft across the rebuild either move causes (see
+    // `fiddle::Fiddle`).
+    let drawer_open: Signal<bool> = signal(false);
+    // The header's Next button: the next written lesson, if there is one.
+    let next = course::neighbors(current).1.and_then(|(n, lesson)| {
+        lesson.route.map(|route| (route, format!("Next: {n} {} \u{2192}", lesson.title)))
+    });
+
     ui! {
-        view(style = pad) {
-            Stack(gap = StackGap::Sm) {
-                Typography(content = title, kind = idea_ui::typography_kind::H1)
-                Typography(content = lead, kind = idea_ui::typography_kind::BodyLg, muted = true)
+        view(style = LessonSplit()) {
+            scroll_view(style = LessonProse()) {
+                view(style = PagePad()) {
+                    Stack(gap = StackGap::Sm) {
+                        view(style = EyebrowRow()) {
+                            { crate::shell::sidebar_toggle() }
+                            text(style = Eyebrow()) { eyebrow }
+                            view(style = EyebrowSpacer()) {}
+                            if let Some((route, label)) = next {
+                                link(route = route, params = ()) {
+                                    view(style = HeaderNext()) {
+                                        text(style = HeaderNextText()) { label }
+                                    }
+                                }
+                            }
+                        }
+                        Typography(content = title, kind = idea_ui::typography_kind::H1)
+                        view(style = LessonMetaRow()) {
+                            text(style = LessonMeta()) { minutes }
+                            text(style = LessonMeta()) { builds_on }
+                        }
+                    }
+                    Typography(content = lead, kind = idea_ui::typography_kind::BodyLg, muted = true)
+                    if has_learn {
+                        view(style = LearnCard()) {
+                            text(style = Eyebrow()) { "You'll learn" }
+                            for item in learn {
+                                view(style = LearnRow()) {
+                                    text(style = LearnArrow()) { "\u{2192}" }
+                                    text(style = LearnText()) { item }
+                                }
+                            }
+                        }
+                    }
+                    children
+                    StepNav(current = current)
+                }
             }
-            children
-            StepNav(current = current)
+            if let Some(build) = workspace {
+                workspace_region(build, drawer_open)
+            }
         }
     }
 }
-

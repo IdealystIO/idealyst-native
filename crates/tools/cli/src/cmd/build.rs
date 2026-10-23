@@ -173,6 +173,15 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub out_dir: Option<PathBuf>,
 
+    /// Web only: also write the build's events — progress, compiler
+    /// diagnostics with their file/line/column, stage timings, the
+    /// outcome — as one JSON object per line to this file (created
+    /// fresh). The same objects `idealyst dev --events-file` writes, so a
+    /// tool driving builds reads diagnostics as data instead of parsing
+    /// rustc's rendering. The plain lines on stderr are unchanged.
+    #[arg(long, value_name = "PATH")]
+    pub events_file: Option<PathBuf>,
+
     /// Accepted for compatibility: data pruning is on by default for
     /// release web builds (see `--no-data-prune`).
     #[arg(long)]
@@ -605,6 +614,18 @@ fn build_terminal_target(dir: &std::path::Path, args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// The web build's reporter: plain lines on stderr, as this command has
+/// always printed, plus a JSON-lines sink when `--events-file` asks.
+fn build_reporter(events_file: Option<&Path>) -> Result<dev_events::Reporter> {
+    let reporter = dev_events::Reporter::default();
+    if let Some(path) = events_file {
+        let sink = dev_events::JsonLines::file(path)
+            .with_context(|| format!("cannot write the events file {}", path.display()))?;
+        reporter.add_sink(std::sync::Arc::new(sink));
+    }
+    Ok(reporter)
+}
+
 fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
     let source = crate::framework_source::resolve(dir)?;
 
@@ -622,7 +643,7 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
             .unwrap_or_else(|| dir.join("dist").join(Target::Web.as_str())),
     );
 
-    let reporter = dev_events::Reporter::default();
+    let reporter = build_reporter(args.events_file.as_deref())?;
     crate::memory_limit::prepare_web_pipeline(&reporter);
     let artifact = build_web::build(
         dir,
@@ -967,7 +988,39 @@ fn build_runtime_server_host(dir: &std::path::Path, args: &Args) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_prune_data_min;
+    use super::{build_reporter, resolve_prune_data_min};
+
+    /// `--events-file` receives every event the web pipeline reports, one
+    /// JSON envelope per line, including a diagnostic's location fields —
+    /// the contract a tool driving `idealyst build` (the fiddle's compile
+    /// server) reads errors through.
+    #[test]
+    fn events_file_receives_diagnostics_as_json_lines() {
+        let dir = std::env::temp_dir().join(format!("idealyst-build-events-{}", std::process::id()));
+        let path = dir.join("events.jsonl");
+        let reporter = build_reporter(Some(&path)).expect("events file opens");
+        reporter.emit(dev_events::DevEvent::Diagnostic {
+            target: "web".into(),
+            diagnostic: dev_events::Diagnostic {
+            level: "error".into(),
+            message: "cannot find value `x` in this scope".into(),
+            code: Some("E0425".into()),
+            file: Some("src/app.rs".into()),
+            line: Some(7),
+            column: Some(13),
+            package: None,
+            rendered: "error[E0425]: cannot find value `x` in this scope".into(),
+            ansi: None,
+            },
+        });
+        let text = std::fs::read_to_string(&path).expect("events file written");
+        let _ = std::fs::remove_dir_all(&dir);
+        let line = text.lines().next().expect("one event line");
+        let v: serde_json::Value = serde_json::from_str(line).expect("a JSON object");
+        assert_eq!(v.get("type").and_then(|t| t.as_str()), Some("diagnostic"));
+        assert_eq!(v.pointer("/diagnostic/file").and_then(|f| f.as_str()), Some("src/app.rs"));
+        assert_eq!(v.pointer("/diagnostic/line").and_then(|l| l.as_u64()), Some(7));
+    }
 
     /// Pruning is on for release builds and `--no-data-prune` turns it
     /// off. It was off by default while the splitter's choice of what to

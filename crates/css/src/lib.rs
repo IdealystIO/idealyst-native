@@ -72,6 +72,14 @@ pub const FORM_FONT_RESET: &str =
 /// [`ObjectFit`]: runtime_shared::ObjectFit
 pub const IMG_FIT_RESET: &str = ":where(img) { object-fit: contain; }";
 
+/// `<pre>` margin reset. The UA stylesheet gives `<pre>` a `1em` top and
+/// bottom margin, which no native backend has: a `code_block` (rendered as
+/// a `<pre>`) sat a font-height lower on the web than on iOS, Android or
+/// macOS, and a line-number gutter beside a code editor drifted off its
+/// lines by exactly that much. `:where(pre)` is specificity 0, so an author
+/// margin still wins.
+pub const PRE_MARGIN_RESET: &str = ":where(pre) { margin: 0; }";
+
 /// Default text color: the installed theme's `color-text`
 /// ([`runtime_shared::THEME_TEXT_COLOR_TOKEN`]), falling back to the
 /// framework light theme's text color
@@ -125,7 +133,8 @@ pub const VIEW_MARKER_ATTR: &str = "data-iv";
 
 /// The full base reset stylesheet ([`BOX_SIZING_RESET`] + [`BUTTON_RESET`]
 /// + [`FORM_FONT_RESET`] + [`IMG_FIT_RESET`] +
-/// [`DEFAULT_TEXT_COLOR_RESET`] + [`VIEW_FLEX_RESET`]). The SSR backend emits this
+/// [`DEFAULT_TEXT_COLOR_RESET`] + [`VIEW_FLEX_RESET`] + [`PRE_MARGIN_RESET`]).
+/// The SSR backend emits this
 /// once in `<head>`; the web backend inserts the rules at low sheet indices.
 ///
 /// Host-surface theming (body background, scrollbar) is **not** part of
@@ -139,7 +148,7 @@ pub const VIEW_MARKER_ATTR: &str = "data-iv";
 /// default text color, names the token every backend already defaults to
 /// and falls back to a concrete color when that token isn't installed.
 pub fn base_reset_css() -> String {
-    format!("{BOX_SIZING_RESET}{BUTTON_RESET}{FORM_FONT_RESET}{IMG_FIT_RESET}{DEFAULT_TEXT_COLOR_RESET}{VIEW_FLEX_RESET}")
+    format!("{BOX_SIZING_RESET}{BUTTON_RESET}{FORM_FONT_RESET}{IMG_FIT_RESET}{DEFAULT_TEXT_COLOR_RESET}{VIEW_FLEX_RESET}{PRE_MARGIN_RESET}")
 }
 
 /// Default inline style for a `Link` primitive's `<a>`: strip the
@@ -2302,6 +2311,13 @@ mod tests {
             )
         );
         assert!(base_reset_css().contains(DEFAULT_TEXT_COLOR_RESET));
+    }
+
+    /// Regression: a `<pre>` (every `code_block`) kept the UA `1em` margin
+    /// on the web and sat a font-height lower than on native.
+    #[test]
+    fn regression_base_reset_zeroes_the_pre_margin() {
+        assert!(base_reset_css().contains(":where(pre) { margin: 0; }"));
     }
 
     #[test]

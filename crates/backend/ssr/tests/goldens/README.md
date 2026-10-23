@@ -142,3 +142,10 @@ core's testimony with no way to recover it. So:
   exactly. Pinned by `regression_views_are_flex_columns_like_native`
   (backend-ssr) and backend-web's
   `regression_unstyled_view_is_a_flex_column_like_native`.
+
+**Amended 2026-10-23** (`<pre>` margin reset): every `.head.css` gained
+exactly one rule, `:where(pre) { margin: 0; }`, appended to the base reset
+(`css::PRE_MARGIN_RESET`, right after `VIEW_FLEX_RESET`). The UA stylesheet's
+`1em` `<pre>` margin put every `code_block` a font-height lower on the web
+than on native. No `.html` byte moved, so hydration adoption is untouched.
+Pinned by `regression_base_reset_zeroes_the_pre_margin` in the `css` crate.

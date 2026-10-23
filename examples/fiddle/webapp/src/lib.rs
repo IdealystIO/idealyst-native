@@ -8,13 +8,13 @@
 //!   clicking a file sets the active path and loads its contents
 //!   into the editor buffer.
 //! - **Editor** (center, flex-grow). One `code_editor` bound to the
-//!   active file's contents, handed the Rust tokenizer as a
-//!   `&str -> Vec<Decoration>` function. The primitive owns both of
-//!   its layers and the metrics they share; this file only supplies
-//!   the ranges and the box styling. Mode toggle + Run + status pane
+//!   active file's contents, decorated by `codeblock::rust`. The
+//!   primitive owns both of its layers and the metrics they share; this
+//!   file only supplies the ranges and the box styling. Run + status pane
 //!   sit below.
-//! - **Preview** (right, 360×720). `WebView` URL driven by a
-//!   signal pointing at `/compiled/<hash>/`.
+//! - **Preview** (right, 360×780). `WebView` URL driven by a
+//!   signal pointing at `/compiled/<hash>/` — a real web build of the
+//!   project (`idealyst build --web` on the server).
 //!
 //! Styles are declared via one `stylesheet!` block (each rule emits
 //! a thread-local cached `*_style()` function the framework can
@@ -22,7 +22,6 @@
 //! `.with_style(...)`.
 
 mod fetch;
-mod highlight;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,7 +30,7 @@ use runtime_core::stylesheet;
 use runtime_core::{
     button, signal, switch, text, ui, AlignItems, AlignSelf, Color, FlexDirection,
     FontWeight, JustifyContent, KeyEvent, KeyOutcome, Length, Overflow, Element, Ref,
-    Signal,
+    ScopeAlive, Signal, spawn_then_in,
 };
 use codeblock::code_editor;
 use idea_ui::{install_idea_theme, light_theme};
@@ -42,14 +41,9 @@ use idea_ui::{install_idea_theme, light_theme};
 // type — `IdeaThemeRef` is the idea-ui convention.
 #[allow(unused_imports)]
 use idea_ui::theme::IdeaThemeRef;
-use wasm_bindgen::prelude::*;
 
-use crate::fetch::Mode;
-use crate::highlight::highlight_rust_decorations;
+use crate::fetch::Built;
 
-#[global_allocator]
-static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> =
-    unsafe { lol_alloc::AssumeSingleThreaded::new(lol_alloc::FreeListAllocator::new()) };
 
 // =============================================================================
 // Stylesheets — one block, one `*_style()` per row. The framework
@@ -69,7 +63,7 @@ const EDITOR_FONT_SIZE: f32 = 13.0;
 const EDITOR_LINE_HEIGHT: f32 = 20.0;
 const EDITOR_PADDING: f32 = 12.0;
 /// Glyph color for source the tokenizer leaves undecorated — the same
-/// default ink `highlight.rs` drops rather than emitting per token.
+/// ink `codeblock::rust::decorations` leaves undecorated.
 const EDITOR_INK: &str = "#1f2328";
 
 stylesheet! {
@@ -168,15 +162,6 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub ModeRow<IdeaThemeRef> {
-        base(_t) {
-            flex_direction: FlexDirection::Row,
-            gap: Length::Px(8.0),
-        }
-    }
-}
-
-stylesheet! {
     pub StatusPane<IdeaThemeRef> {
         base(_t) {
             height: Length::Px(140.0),
@@ -190,13 +175,8 @@ stylesheet! {
     }
 }
 
-// Simulator aspect (iPhone-portrait 390 × 844 logical, matches
-// `variant-phone`). The iframe is sized to this ratio so neither
-// mode (simulator canvas in sim mode, snippet DOM in web mode)
-// shows internal scrollbars around the preview content. Pick a
-// width that fits the editor column comfortably and derive the
-// height; the simulator template's wrapper inside is 100% × 100%
-// so the canvas matches whatever we hand it here.
+// A phone-portrait preview (390 × 844 logical, the `variant-phone`
+// aspect), scaled to fit beside the editor.
 const PREVIEW_WIDTH_PX: f32 = 360.0;
 const PREVIEW_HEIGHT_PX: f32 = PREVIEW_WIDTH_PX * 844.0 / 390.0;
 
@@ -268,42 +248,34 @@ stylesheet! {
 // editor has something to render on first load.
 // =============================================================================
 
-const STARTER_LIB_RS: &str = include_str!("starter/lib.rs");
+const STARTER_APP_RS: &str = include_str!("starter/app.rs");
 const STARTER_WIDGETS_RS: &str = include_str!("starter/widgets.rs");
-const STARTER_ENTRY: &str = "lib.rs";
+/// The entry file the server requires (`examples/fiddle/src/compile.rs`).
+const STARTER_ENTRY: &str = "app.rs";
 
 fn starter_files() -> BTreeMap<String, String> {
     let mut m = BTreeMap::new();
-    m.insert(STARTER_ENTRY.to_string(), STARTER_LIB_RS.to_string());
+    m.insert(STARTER_ENTRY.to_string(), STARTER_APP_RS.to_string());
     m.insert("widgets.rs".to_string(), STARTER_WIDGETS_RS.to_string());
     m
 }
 
-#[wasm_bindgen(start)]
-pub fn start() {
-    console_error_panic_hook::set_once();
-    backend_web::install_scheduler();
-    backend_web::install_async_executor();
-    backend_web::install_render_loop();
-
-    // Registration is explicit and MANDATORY on the scene registry: an
-    // unregistered payload panics at realize. `codeblock` renders the syntax
-    // overlay behind the editor, `webview` hosts the preview iframe.
-    backend_web::newcore::start_in(
-        "#app",
-        |registry| {
-            codeblock::register(registry);
-            webview::register(registry);
-        },
-        app,
-    );
+/// The scene registration seam `idealyst::entry!` calls. Registration is
+/// mandatory: an unregistered payload panics at realize. `codeblock` draws
+/// the editor, `webview` the preview frame.
+pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
+where
+    H: runtime_scene::Host
+        + runtime_vocabulary::caps::TextOps
+        + runtime_vocabulary::caps::ExternalOps
+        + runtime_vocabulary::style_attach::StyleServices
+        + 'static,
+{
+    codeblock::register(registry);
+    webview::register(registry);
 }
 
-fn app() -> Element {
-    // Theme install belongs INSIDE `app()`, not alongside the scheduler
-    // installs above: it reads the ambient theme context, which only
-    // exists inside the mounted world (`start_in` enters it before
-    // calling this).
+pub fn app() -> Element {
     install_idea_theme(light_theme());
 
     // Root signals — owned at the app level so they survive every
@@ -314,16 +286,15 @@ fn app() -> Element {
     // starter entry's text; the tree's click handler refreshes it
     // when the user picks a different file. Kept separate from
     // `files` so per-keystroke updates don't churn the whole map.
-    let buffer: Signal<String> = signal(STARTER_LIB_RS.to_string());
+    let buffer: Signal<String> = signal(STARTER_APP_RS.to_string());
     let iframe_url: Signal<String> = signal("about:blank".to_string());
     let status: Signal<String> = signal("Press Run to compile".to_string());
     let is_compiling: Signal<bool> = signal(false);
-    let mode_sim: Signal<bool> = signal(true);
     let expanded: Signal<BTreeSet<String>> = signal(BTreeSet::new());
 
     let tree = file_tree_panel(files, active, expanded, buffer);
     let editor = editor_panel(files, active, buffer);
-    let controls = controls_panel(files, mode_sim, is_compiling, status, iframe_url);
+    let controls = controls_panel(files, is_compiling, status, iframe_url);
     let preview = preview_panel(iframe_url);
 
     ui! {
@@ -388,9 +359,9 @@ fn file_tree_panel(
             text(style = tree_header_style()) { "Files" }
             scroll_view { body }
             text(style = tree_hint_style()) {
-                "Tip: idea-ui components (Stack, Heading, Body, Card, …) \
-                 are in scope alongside framework primitives. Reach for \
-                 idea-ui when you want styled, opinionated shapes."
+                "app.rs must define pub fn app() -> Element. Every file \
+                 imports what it uses, exactly as in a project made by \
+                 idealyst new; runtime_core and idea_ui are available."
             }
         }
     }
@@ -616,7 +587,7 @@ fn editor_panel(
     // two layers' scroll offsets silently diverging the moment a line
     // ran past the panel's width.
     let editor = code_editor(buffer, on_change)
-        .decorate(highlight_rust_decorations)
+        .decorate(|src| codeblock::rust::decorations(src, &codeblock::rust::Palette::LIGHT))
         .on_key_down(on_key_down)
         .bind(textarea_ref)
         .font(EDITOR_FONT_FAMILY, EDITOR_FONT_SIZE)
@@ -636,27 +607,15 @@ fn editor_panel(
 }
 
 // =============================================================================
-// Controls — mode toggle + Run + status pane.
+// Controls — Run + status pane.
 // =============================================================================
 
 fn controls_panel(
     files: Signal<BTreeMap<String, String>>,
-    mode_sim: Signal<bool>,
     is_compiling: Signal<bool>,
     status: Signal<String>,
     iframe_url: Signal<String>,
 ) -> Element {
-    let sim_button = button("Simulator", move || mode_sim.set(true))
-        .disabled(move || mode_sim.get());
-    let web_button = button("Web", move || mode_sim.set(false))
-        .disabled(move || !mode_sim.get());
-    let mode_row = ui! {
-        view(style = mode_row_style()) {
-            sim_button
-            web_button
-        }
-    };
-
     // Reactive `text(closure)` is the canonical pattern for a
     // Text whose body reads from a signal — the framework wraps
     // the closure in an Effect at walk time, which fires
@@ -668,23 +627,25 @@ fn controls_panel(
         }
     };
 
+    // Taken in the panel's body: the reply lands only while the panel is
+    // mounted, and `is_compiling` rebuilding the Run button must not cancel it.
+    let alive = ScopeAlive::current();
     let on_run = move || {
         let project = files.get();
-        let picked = if mode_sim.get() { Mode::Simulator } else { Mode::Web };
         is_compiling.set(true);
-        status.set(match picked {
-            Mode::Simulator => "Compiling for simulator…".to_string(),
-            Mode::Web => "Compiling for web…".to_string(),
-        });
-        wasm_bindgen_futures::spawn_local(async move {
-            match fetch::compile(&project, picked).await {
-                Ok(hash) => {
-                    iframe_url.set(format!(
-                        "/compiled/{hash}/?t={}",
-                        js_sys::Date::now() as u64
-                    ));
-                    status.set(format!("Built {hash}"));
+        status.set("Compiling…".to_string());
+        spawn_then_in(&alive, fetch::compile(project), move |reply| {
+            match reply {
+                Ok(Built::Ok { url, ms, warnings }) => {
+                    iframe_url.set(url);
+                    let took = if ms == 0 { "cached".to_string() } else { format!("{ms} ms") };
+                    status.set(if warnings.is_empty() {
+                        format!("Built ({took})")
+                    } else {
+                        format!("Built ({took}) with warnings:\n{warnings}")
+                    });
                 }
+                Ok(Built::Failed(report)) => status.set(report),
                 Err(err) => status.set(err),
             }
             is_compiling.set(false);
@@ -694,7 +655,6 @@ fn controls_panel(
 
     ui! {
         view(style = controls_col_style()) {
-            mode_row
             run_button
             status_pane
         }

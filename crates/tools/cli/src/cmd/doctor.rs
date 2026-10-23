@@ -120,7 +120,8 @@ struct Check {
 
 fn checks() -> Vec<Check> {
     vec![
-        // ---- Core: every build shells `cargo`; the framework is git-fetched.
+        // ---- Core: every build shells `cargo`; the framework resolves from the
+        // idealyst registry (or a local checkout).
         Check {
             id: "rustc",
             category: Category::Core,

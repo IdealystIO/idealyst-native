@@ -1,9 +1,10 @@
-# Per-compile output cache — fully reproducible from `template/`
-# given a source string, so no point committing.
+# Built bundles — reproducible from a submission, never committed.
 compiled/
+# The server's working copy of `template/` (see src/compile.rs).
+.work/
 
 # Template + webapp each have their own `[workspace]` and therefore
-# their own `target/`. Same standard exclusion.
+# their own `target/`.
 template/target/
 webapp/target/
-webapp/pkg/
+webapp/dist/

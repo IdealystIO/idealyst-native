@@ -13,17 +13,22 @@
 use idea_ui::{typography_kind, Typography};
 use runtime_core::{ui, Element};
 
-use crate::common::{Callout, CodePanel, DocsLink, LessonPage};
+use crate::common::{Callout, CodePanel, DocsLink, LessonPage, ReactNote};
 use crate::demo::{DependencyDemo, DiamondDemo, FlushDemo, StagedWriteDemo};
 use crate::routes::{RX_DERIVED_ROUTE, RX_EFFECTS_ROUTE, RX_FLUSH_ROUTE, RX_SIGNALS_ROUTE};
-use crate::shell;
 
 pub fn signals() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = RX_SIGNALS_ROUTE.name(),
             title = "Signals".to_string(),
             lead = "The Copy handle that everything reactive is built on.".to_string(),
+            learn = vec![
+                "Why a read never sees a staged write",
+                "How update composes where set doesn't",
+                "What set's equality guard skips",
+                "Who owns a signal, and when it's freed",
+            ],
         ) {
             Typography(
                 content = "A Signal<T> is the framework's reactive primitive: a Copy handle to a \
@@ -59,6 +64,16 @@ pub fn signals() -> Element {
                     though the handler wrote twice.".to_string()
             )
             StagedWriteDemo()
+
+            ReactNote {
+                Typography(
+                    content = "Components run once and never re-render. A signal write doesn't schedule \
+                        the component again; it re-runs only the effects that read the signal \u{2014} \
+                        a text node, a style, an effect you wrote. There are no hooks rules either: \
+                        create a signal anywhere, in a branch or a loop, and pass it around freely.".to_string(),
+                    muted = true,
+                )
+            }
 
             Callout(label = "set() is equality-guarded".to_string()) {
                 Typography(
@@ -101,15 +116,20 @@ pub fn signals() -> Element {
                 doc_file = "reactivity.md".to_string(),
             )
         }
-    })
+    }
 }
 
 pub fn flush() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = RX_FLUSH_ROUTE.name(),
             title = "The flush boundary".to_string(),
             lead = "Where staged writes become one logical update.".to_string(),
+            learn = vec![
+                "Where staged writes commit",
+                "Who drives the flush on each platform",
+                "Why there is no batch()",
+            ],
         ) {
             Typography(
                 content = "A flush is the moment the world commits. It drains every staged write, \
@@ -177,15 +197,20 @@ pub fn flush() -> Element {
                 doc_file = "migrating-to-runtime-v2.md".to_string(),
             )
         }
-    })
+    }
 }
 
 pub fn effects() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = RX_EFFECTS_ROUTE.name(),
             title = "Effects".to_string(),
             lead = "Closures the flush re-runs when the signals they read change.".to_string(),
+            learn = vec![
+                "Run code when the signals it reads change",
+                "Clean up before each re-run and at teardown",
+                "Read a signal without subscribing",
+            ],
         ) {
             Typography(
                 content = "An effect is a closure that re-runs when a signal it read on its last \
@@ -221,6 +246,17 @@ pub fn effects() -> Element {
             )
             CodePanel(src = include_str!("../samples/rx_effects_cleanup.rs").to_string())
 
+            ReactNote {
+                Typography(
+                    content = "An effect is useEffect without the dependency array: it re-runs when any \
+                        signal it read last time changes, and only then. Its cleanup works like \
+                        useEffect's \u{2014} return a closure from effect(..), or call on_cleanup \
+                        inside it \u{2014} and runs before each re-run and when the component goes \
+                        away.".to_string(),
+                    muted = true,
+                )
+            }
+
             Callout(label = "Reading without subscribing".to_string()) {
                 Typography(
                     content = "Subscriptions are rebuilt from each run, so untrack(|| sig.get()) \
@@ -240,15 +276,20 @@ pub fn effects() -> Element {
                 doc_file = "reactivity.md".to_string(),
             )
         }
-    })
+    }
 }
 
 pub fn derived() -> Element {
-    shell::layout(ui! {
+    ui! {
         LessonPage(
             current = RX_DERIVED_ROUTE.name(),
             title = "Derived state".to_string(),
             lead = "memo \u{2014} a cached, equality-guarded value that stays in sync.".to_string(),
+            learn = vec![
+                "Cache a derived value with memo",
+                "Why memos settle before effects",
+                "Why a memo is read-only and pure",
+            ],
         ) {
             Typography(
                 content = "Computed state is a memo: a cached derived value that recomputes when \
@@ -287,5 +328,5 @@ pub fn derived() -> Element {
                 doc_file = "reactivity.md".to_string(),
             )
         }
-    })
+    }
 }

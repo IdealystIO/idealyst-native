@@ -184,6 +184,28 @@ genuinely single-widget decorated editor can register a concrete handler
 for this payload the way `code_block` does, with no author-visible
 change.
 
+## Rust highlighting: `codeblock::rust`
+
+A small Rust lexer for both surfaces, so an app showing or editing Rust
+does not carry its own. It tints comments, literals and keywords and
+leaves the rest in the surface's ink; `Palette::LIGHT` / `Palette::DARK`
+(or your own) pick the colors.
+
+```rust
+use codeblock::rust::{self, Palette};
+
+// An editor: decorations re-run on every edit.
+code_editor(src, move |next| src.set(next))
+    .decorate(|text| rust::decorations(text, &Palette::LIGHT));
+
+// A read-only block: colored runs.
+code_block(rust::spans(SOURCE, &Palette::DARK));
+```
+
+`rust::tokens` is the underlying lexer — byte ranges that tile the input
+exactly, each a `Token` kind — for a caller that layers its own ranges
+(diagnostics, search hits) over the syntax colors.
+
 ## Why a third-party primitive, not a framework one
 
 It used to be `Element::CodeBlock` in `runtime-core`. A measurement

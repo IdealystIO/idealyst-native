@@ -1,5 +1,5 @@
 use idea_ui::{dark_theme, set_idea_theme};
-use runtime_core::{stylesheet, Color, FlexDirection, Tokenized};
+use runtime_core::{stylesheet, FlexDirection};
 use idea_ui::IdeaThemeRef;
 
 // A rule stores a token REFERENCE, not a concrete value. Resolving it is
