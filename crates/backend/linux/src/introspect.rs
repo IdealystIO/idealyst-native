@@ -122,7 +122,9 @@ impl LinuxBackend {
     /// The framework primitive kind for a node, as the `role` hint.
     fn node_role(&self, id: u64) -> Option<&'static str> {
         Some(match self.nodes.get(&id)?.kind {
-            NodeKind::View => "view",
+            // An anchor is a view natively; web's is a `display: contents`
+            // element, which the parity harness also treats as a view.
+            NodeKind::View | NodeKind::Anchor => "view",
             NodeKind::Text => "text",
             NodeKind::Pressable => "pressable",
             NodeKind::Other => "other",

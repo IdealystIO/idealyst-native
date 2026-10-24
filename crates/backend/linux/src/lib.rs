@@ -247,6 +247,10 @@ enum NodeKind {
     Pressable,
     Text,
     Other,
+    /// A reactive anchor (`Host::create_anchor`) or presence placeholder:
+    /// an `IdealystView` on a `runtime_layout` contents node. See
+    /// [`LinuxBackend::create_anchor_impl`].
+    Anchor,
 }
 
 /// Per-node backend state. Transform is split static/animated so a
@@ -1352,6 +1356,7 @@ impl LinuxBackend {
                 }
             }
         }
+        self.size_anchors(&ids);
         for id in &ids {
             self.rebuild_transform(*id, true);
         }
@@ -1473,6 +1478,7 @@ impl LinuxBackend {
                 }
             }
         }
+        self.size_anchors(&ids);
         for nid in &ids {
             self.rebuild_transform(*nid, true);
         }
@@ -1586,8 +1592,31 @@ impl LinuxBackend {
     }
 
     fn wrap(&mut self, widget: gtk4::Widget, kind: NodeKind) -> LinuxNode {
-        let id = self.alloc_id();
         let layout = self.layout.new_node();
+        self.wrap_with_layout(widget, kind, layout)
+    }
+
+    /// [`wrap`](Self::wrap) a native control and give Taffy its intrinsic
+    /// size through [`widget_measure`].
+    ///
+    /// A wrapped widget with no measure fn has NO size source: Taffy's
+    /// default measure is zero, so a `button` laid out 0×0 (its label still
+    /// drew, overflowing the empty box) and a `slider` / `toggle` got its
+    /// cross-axis stretch width but zero height. Every native control that
+    /// sizes to its content goes through here.
+    fn wrap_measured(&mut self, widget: gtk4::Widget, kind: NodeKind) -> LinuxNode {
+        let node = self.wrap(widget.clone(), kind);
+        if let Some(layout) = self.nodes.get(&node.id).map(|s| s.layout) {
+            self.layout.set_measure_fn(
+                layout,
+                Rc::new(move |known, available| widget_measure(&widget, known, available)),
+            );
+        }
+        node
+    }
+
+    fn wrap_with_layout(&mut self, widget: gtk4::Widget, kind: NodeKind, layout: LayoutNode) -> LinuxNode {
+        let id = self.alloc_id();
         self.nodes.insert(
             id,
             NodeState {
@@ -1607,6 +1636,72 @@ impl LinuxBackend {
             },
         );
         LinuxNode { id, widget }
+    }
+
+    /// A reactive anchor (`Host::create_anchor`): the node the scene swaps
+    /// an `if` / `for` region's subtree under. The author never wrote it, so
+    /// it must not exist for layout or hit-testing — web renders it
+    /// `display: contents`. A plain view in its place is a flex item: a
+    /// `height: 100%` child resolved against its content height, and a
+    /// `position: absolute; top: 0; bottom: 0` child against its ZERO height
+    /// (absolute children contribute no size), so a panel under
+    /// `if open { … }` collapsed while the same panel without the `if` filled
+    /// its layer.
+    ///
+    /// So the layout node is a `runtime_layout` contents node — its children
+    /// link into the real ancestor, and its own `frame_of` is that ancestor's
+    /// box at the origin, so their frames apply unchanged under this widget —
+    /// and the widget is input-transparent: its empty area never claims a
+    /// click, its children pick as usual. It paints nothing (it is never
+    /// styled). Its GTK box is grown to cover its children in
+    /// [`size_anchors`](Self::size_anchors).
+    pub(crate) fn create_anchor_impl(&mut self) -> LinuxNode {
+        let widget = IdealystView::new();
+        widget.set_input_transparent(true);
+        let layout = self.layout.new_contents_node();
+        self.wrap_with_layout(widget.upcast::<gtk4::Widget>(), NodeKind::Anchor, layout)
+    }
+
+    /// Size each anchor among `ids` to its ancestor's box grown to cover its
+    /// children's frames. Runs after a frame pass has written every frame.
+    ///
+    /// Not the bare contents-node frame: a `GtkFixed` scroll document sizes
+    /// itself from its children's boxes, so an anchor directly under a
+    /// `scroll_view` — framed to the scroll VIEWPORT, its real ancestor —
+    /// would cap the document at one viewport and the page could not scroll.
+    /// The larger box is harmless: the anchor paints nothing and is
+    /// input-transparent. `st.frame` keeps the contents-node frame, which is
+    /// what handles and the robot report.
+    fn size_anchors(&self, ids: &[u64]) {
+        for id in ids {
+            let Some(st) = self.nodes.get(id) else { continue };
+            if st.kind != NodeKind::Anchor {
+                continue;
+            }
+            let (w, h) = self.anchor_extent(*id);
+            if let Some(v) = st.widget.downcast_ref::<IdealystView>() {
+                v.set_layout_size((w.round() as i32).max(0), (h.round() as i32).max(0));
+            }
+        }
+    }
+
+    /// `(width, height)` an anchor's widget must span: its own frame, unioned
+    /// with every child's far edge (a nested anchor sits at the origin and
+    /// contributes its own extent).
+    fn anchor_extent(&self, id: u64) -> (f32, f32) {
+        let Some(st) = self.nodes.get(&id) else { return (0.0, 0.0) };
+        let (mut w, mut h) = (st.frame.2, st.frame.3);
+        for c in self.children.get(&id).into_iter().flatten() {
+            let Some(cs) = self.nodes.get(c) else { continue };
+            let (cw, ch) = if cs.kind == NodeKind::Anchor {
+                self.anchor_extent(*c)
+            } else {
+                (cs.frame.0 + cs.frame.2, cs.frame.1 + cs.frame.3)
+            };
+            w = w.max(cw);
+            h = h.max(ch);
+        }
+        (w, h)
     }
 
     fn placeholder(&mut self, message: &str) -> LinuxNode {
@@ -2355,7 +2450,7 @@ impl LinuxBackend {
         let button = gtk4::Button::with_label(label);
         let fire = on_click.fire.clone();
         button.connect_clicked(move |_| (fire)());
-        self.wrap(button.upcast::<gtk4::Widget>(), NodeKind::Other)
+        self.wrap_measured(button.upcast::<gtk4::Widget>(), NodeKind::Other)
     }
 
     fn create_pressable(
@@ -2723,7 +2818,7 @@ impl LinuxBackend {
 
         // 3. Per-kind visuals.
         match kind {
-            NodeKind::View | NodeKind::Pressable => {
+            NodeKind::View | NodeKind::Pressable | NodeKind::Anchor => {
                 let pm = build_paint_model(style);
                 if let Some(st) = self.nodes.get(&id) {
                     if let Some(v) = st.widget.downcast_ref::<IdealystView>() {
@@ -3574,7 +3669,7 @@ impl LinuxBackend {
                 (fire)(s.is_active());
             }
         });
-        let node = self.wrap(switch.upcast::<gtk4::Widget>(), NodeKind::Other);
+        let node = self.wrap_measured(switch.upcast::<gtk4::Widget>(), NodeKind::Other);
         self.echo_guards.insert(node.id, echo_guard);
         node
     }
@@ -3608,7 +3703,7 @@ impl LinuxBackend {
                 (fire)(s.value() as f32);
             }
         });
-        let node = self.wrap(scale.upcast::<gtk4::Widget>(), NodeKind::Other);
+        let node = self.wrap_measured(scale.upcast::<gtk4::Widget>(), NodeKind::Other);
         self.echo_guards.insert(node.id, echo_guard);
         node
     }
@@ -3766,13 +3861,21 @@ impl LinuxBackend {
 
     fn create_activity_indicator(
         &mut self,
-        _size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+        size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
         _color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> LinuxNode {
         let spinner = gtk4::Spinner::new();
+        // The native control sizes macOS uses (`NSControlSize::Small` /
+        // `Regular`): 16 and 32 px. GTK's spinner is 16 px natively; the
+        // request raises the measured size for `Large`.
+        let side = match size {
+            runtime_shared::primitives::activity_indicator::ActivityIndicatorSize::Small => 16,
+            runtime_shared::primitives::activity_indicator::ActivityIndicatorSize::Large => 32,
+        };
+        spinner.set_size_request(side, side);
         spinner.start();
-        self.wrap(spinner.upcast::<gtk4::Widget>(), NodeKind::Other)
+        self.wrap_measured(spinner.upcast::<gtk4::Widget>(), NodeKind::Other)
     }
 
     fn create_virtualizer(
