@@ -406,6 +406,18 @@ impl GpuSurface {
             }
         }
     }
+
+    /// GL (GTK4) only: copy the last rendered frame target into the GLArea's
+    /// framebuffer — the blit [`new`](Self::new) already registers in GTK's
+    /// render signal, so callers never need it for presenting. Only valid
+    /// inside that signal (context current, the area's FBO bound); a blit
+    /// anywhere else is not composited. No-op on the swapchain path.
+    #[cfg(target_os = "linux")]
+    pub fn blit_to_fbo(&self) {
+        if let Some(gl) = &self.gl {
+            gl.blit_to_fbo();
+        }
+    }
 }
 
 /// GL (GTK4): the adopted context must be current to DROP anything derived
