@@ -5061,7 +5061,7 @@ dependencies = [
 
 [[package]]
 name = "gpu-surface"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "backend-linux",
  "js-sys",

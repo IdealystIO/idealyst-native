@@ -649,7 +649,7 @@ charts-core = { path = "crates/sdk/client/charts/core", version = "1.6.1", regis
 charts = { path = "crates/sdk/client/charts", version = "3.0.0", registry = "idealyst" }
 canvas-native = { path = "crates/sdk/client/canvas/native", features = ["self-register"], version = "5.0.0", registry = "idealyst" }
 canvas-vello = { path = "crates/sdk/client/canvas/vello", version = "6.0.0", registry = "idealyst" }
-gpu-surface = { path = "crates/sdk/client/gpu-surface", version = "4.0.0", registry = "idealyst" }
+gpu-surface = { path = "crates/sdk/client/gpu-surface", version = "4.1.0", registry = "idealyst" }
 canvas3d = { path = "crates/sdk/client/canvas3d", version = "2.0.0", registry = "idealyst" }
 canvas3d-core = { path = "crates/sdk/client/canvas3d/core", version = "2.0.0", registry = "idealyst" }
 canvas3d-wgpu = { path = "crates/sdk/client/canvas3d/wgpu", version = "4.0.0", registry = "idealyst" }

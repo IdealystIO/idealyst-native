@@ -742,6 +742,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **wgpu on a `graphics` view works on Linux (GTK4)** (`gpu-surface` 4.1.0).
+  `gpu_surface::connect(ev, req, alpha, label).await` brings up a GPU on any
+  `graphics` target — a swapchain natively, GTK4's lent GL context on Linux,
+  WebGPU then WebGL2 on web — and the app presents with `begin_present` /
+  `finish_present` the same way everywhere. A `GpuSurface` built on a GTK
+  context now registers its framebuffer blit in GTK's render signal itself;
+  before, only `gpu_surface::mount` did, so an app running its own wgpu loop
+  on a plain `graphics` view stayed on the placeholder clear. The web
+  `GpuSurface` gains `resize(size, scale)` to match native.
+
 - **`idealyst mcp design` — an idea-ui design MCP** (`mcp-design-server`,
   `idealyst-cli`, `mcp-server`). A second stdio server with opinionated
   guidance for apps built on idea-ui: fourteen design skills (house rules,
