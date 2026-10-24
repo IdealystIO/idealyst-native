@@ -1,5 +1,7 @@
 //! `gpu-surface` — the wgpu bring-up, frame target and present path shared by
-//! the framework's GPU renderers (`canvas-vello`, `canvas3d-wgpu`).
+//! the framework's GPU renderers (`canvas-vello`, `canvas3d-wgpu`), and by apps
+//! that draw on a `graphics` primitive with their own wgpu pipelines
+//! ([`connect`]).
 //!
 //! A renderer mounts through `mount` (native: blocking bring-up; web: async,
 //! rAF-paced): it supplies a `paint` closure (run inside a reactive effect, so
@@ -56,6 +58,39 @@ pub use web::{
     canvas_from_surface, claim_webgl, debug_flag, drive, marker, mount, web_dpr, webgpu_present,
     BuildFuture, GpuBackend, GpuSurface, PresentFrame, RenderFn, SurfaceState, WebGpuProbe,
 };
+
+/// Bring up a GPU on a `graphics` primitive's `on_ready` event, on any target —
+/// the one call an app driving its own `graphics` view needs.
+///
+/// - **Native**: [`GpuSurface::new`] (a swapchain on a window handle or
+///   composition visual; on GTK4, the adopted `GtkGLArea` context with the
+///   in-signal present already registered). Resolves immediately.
+/// - **Web**: WebGPU probed headlessly, then the `<canvas>` claimed; when the
+///   probe fails, WebGL2 via [`claim_webgl`] (crate feature `webgl`). A failure
+///   after the WebGPU claim is final — the canvas is bound by then.
+///
+/// Draw each frame into [`GpuSurface::target_view`] ([`TARGET_FORMAT`],
+/// sRGB-encoded bytes, alpha as `frame_alpha` declares), then present with
+/// [`GpuSurface::begin_present`] / [`GpuSurface::finish_present`]. Call
+/// `resize` from `on_resize`; drop the surface from `on_lost`.
+pub async fn connect(
+    ev: runtime_shared::primitives::graphics::OnReadyEvent,
+    req: Requirements,
+    frame_alpha: FrameAlpha,
+    label: &'static str,
+) -> Option<GpuSurface> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        GpuSurface::new(ev.target, ev.size, ev.scale, req, frame_alpha, label)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        match WebGpuProbe::run(req, label).await {
+            Some(probe) => probe.claim(ev, frame_alpha),
+            None => claim_webgl(ev, frame_alpha, label).await,
+        }
+    }
+}
 
 /// Format of the frame target every renderer draws into. Non-sRGB on purpose:
 /// it stores already-sRGB-encoded bytes (see the crate docs).

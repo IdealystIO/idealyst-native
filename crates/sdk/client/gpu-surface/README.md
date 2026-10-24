@@ -1,11 +1,39 @@
 # gpu-surface
 
 The shared wgpu plumbing behind the framework's GPU renderers (`canvas-vello`,
-`canvas3d-wgpu`). It turns a `graphics` primitive into a working device and a
-frame to draw into, and puts that frame on screen. Apps don't use it directly; a
-renderer crate does.
+`canvas3d-wgpu`), and the way an app draws with its own wgpu pipelines on a
+`graphics` primitive. It turns the primitive into a working device and a frame
+to draw into, and puts that frame on screen.
 
-## What it gives a renderer
+## From an app
+
+```rust
+graphics(on_ready = move |ev: OnReadyEvent| {
+    spawn(async move {
+        // Native resolves immediately (block on it); web awaits the browser.
+        let gpu = gpu_surface::connect(ev, Requirements::NONE, FrameAlpha::Premultiplied, "my-app").await;
+        // build pipelines on gpu.device targeting gpu_surface::TARGET_FORMAT …
+    });
+}, on_resize = move |ev: OnResizeEvent| gpu.resize(ev.size, ev.scale), on_lost = …)
+```
+
+Each frame: `gpu.make_current()`, render into `gpu.target_view()`, then
+
+```rust
+let frame = gpu.begin_present(&mut encoder);
+gpu.queue.submit([encoder.finish()]);
+if let Some(frame) = frame { gpu.finish_present(frame); }
+```
+
+The same code runs on every target. `connect` picks the bring-up: a swapchain
+on a window handle or composition visual, the adopted `GtkGLArea` context on
+Linux (GTK4 lends no per-widget window), or WebGPU-then-WebGL2 on web. On GTK,
+`GpuSurface::new` registers the framebuffer blit in GTK's render signal itself,
+since GTK composites nothing drawn outside it. A renderer state should hold the
+`GpuSurface` as its first field so the GL context is current while its other
+GPU objects drop.
+
+## What it gives a renderer crate
 
 ```rust
 // native: blocking bring-up on the deferred on_ready tick
@@ -79,7 +107,10 @@ steps aside on the iOS Simulator and the Android emulator, and it sets
     validation for every blit and compositor variant);
   - `tests/gpu.rs`, which uses a headless device to check the actual bytes:
     premultiply and unpremultiply, the V-flip with no re-encode, and overlay
-    compositing over transparent and opaque frames.
+    compositing over transparent and opaque frames;
+  - `tests/gtk_gl_present.rs` (Linux), which builds a `GpuSurface` on a live
+    `GtkGLArea` without `mount`, presents a red-over-blue frame and reads back
+    what GTK composites. Skips without a display or GL.
 - `headless_device_with_limits(Some(wgpu::Limits::downlevel_webgl2_defaults()))`
   creates a device that rejects anything WebGL2 can't do. Renderers use it to
   prove their pipelines are WebGL2-safe without a browser.

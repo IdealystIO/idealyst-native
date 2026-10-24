@@ -5063,6 +5063,7 @@ dependencies = [
 name = "gpu-surface"
 version = "4.0.0"
 dependencies = [
+ "backend-linux",
  "js-sys",
  "log",
  "naga",

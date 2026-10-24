@@ -6,7 +6,8 @@ license.workspace = true
 
 # `gpu-surface` — turns the framework's `graphics` primitive into a ready wgpu
 # device + presentable frame target, for SDK renderers that draw with wgpu
-# (`canvas-vello`, `canvas3d-wgpu`).
+# (`canvas-vello`, `canvas3d-wgpu`) and for apps drawing on a `graphics`
+# primitive with their own wgpu pipelines (`connect`).
 #
 # What it owns, so each renderer doesn't re-derive it:
 # - the surface lifecycle (`on_ready` / `on_resize` / `on_lost` → a renderer
@@ -84,6 +85,13 @@ naga = { version = "29", features = ["wgsl-in"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # `pop_error_scope` is async; tests block on it.
 pollster = "0.4"
+
+# `tests/gtk_gl_present.rs` needs a live `GtkGLArea` — the only source of the
+# lent GL context the Linux path adopts — and borrows `backend-linux`'s
+# `build_gl_area_for_test` for it. `backend-linux` does not depend on this
+# crate, so the dev-only edge is acyclic. `gtk4` comes via `backend_linux::gtk4`.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+backend-linux = { path = "../../../backend/linux" }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

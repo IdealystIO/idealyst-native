@@ -807,9 +807,22 @@ only supports swapchains gets `None` from `into_surface()` and
 degrades, rather than a fabricated handle that fails inside
 `create_surface`.
 
-Working with a `GlTarget`: `make_current()` (binds the context
-*and* the target framebuffer), draw, `present()`. Two properties
-must feed your base transform:
+**Drawing with wgpu? Use `gpu-surface`** and skip both shapes:
+`gpu_surface::connect(ev, Requirements::NONE, alpha, "my-app").await`
+brings a device up on whatever the target is (swapchain, GTK's lent
+GL context, WebGPU with a WebGL2 fallback on web). Draw into
+`gpu.target_view()`, present with `begin_present` / `finish_present`,
+call `gpu.resize(size, scale)` from `on_resize`, drop it in `on_lost`.
+On GTK it registers the in-signal blit and the vertical flip for
+you. Call `gpu.make_current()` before GPU work outside its own
+methods — a no-op everywhere but GTK.
+
+Working with a `GlTarget` directly: GtkGLArea only composites what
+is drawn inside its own render pass, so register the draw with
+`on_render(cb)` — the backend runs `cb` with the context current
+and the target framebuffer bound — and call `present()` to schedule
+a pass. A frame drawn out-of-band after `make_current()` is not
+reliably shown. Two properties must feed your base transform:
 
 - `framebuffer()` — render into this FBO, not the default `0`.
   Re-read after every `make_current()`; it changes on resize.
