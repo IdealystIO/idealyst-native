@@ -6583,6 +6583,7 @@ dependencies = [
  "libc",
  "lint",
  "mcp-catalog",
+ "mcp-design-server",
  "mcp-server",
  "ota-index",
  "ota-publish",
@@ -7715,6 +7716,38 @@ dependencies = [
  "runtime-vocabulary",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "mcp-design-recipes-check"
+version = "0.1.0"
+dependencies = [
+ "backend-ssr",
+ "icons-lucide",
+ "idea-ui",
+ "idea-ui-nav",
+ "lint",
+ "mcp-design-server",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
+ "stack-navigator",
+ "swap-navigator",
+]
+
+[[package]]
+name = "mcp-design-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mcp-server",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

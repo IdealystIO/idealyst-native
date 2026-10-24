@@ -16,7 +16,7 @@ mod dev_runner;
 mod dev_sessions;
 pub mod lint;
 mod robot_bridge;
-mod schema_minify;
+pub mod schema_minify;
 mod tool_docs;
 mod watch;
 

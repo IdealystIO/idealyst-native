@@ -138,6 +138,12 @@ pub enum Command {
     /// the framework's MCP server. Idempotent — overwrites any
     /// existing `.mcp.json` with the canonical default contents.
     Install(InstallArgs),
+    /// Serve the idea-ui design MCP on stdio: opinionated design skills,
+    /// whole-screen recipes compiled against idea-ui, and prompts for
+    /// designing screens, brand themes, navigation and reviews. Needs no
+    /// project — the content ships inside the CLI. Register it next to
+    /// `idealyst mcp` with `idealyst mcp install --design`.
+    Design,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -163,12 +169,18 @@ pub struct InstallArgs {
     /// exists.
     #[arg(long)]
     pub force: bool,
+
+    /// Also register the idea-ui design MCP (`idealyst mcp design`) as
+    /// `idealyst-design`. For projects built on idea-ui.
+    #[arg(long)]
+    pub design: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
     if let Some(cmd) = args.command {
         return match cmd {
             Command::Install(install_args) => run_install(install_args),
+            Command::Design => run_design(),
         };
     }
     if args.check {
@@ -541,6 +553,37 @@ fn default_watch_paths(project_roots: &[std::path::PathBuf]) -> Vec<std::path::P
     paths
 }
 
+/// The `.mcp.json` server name `install --design` registers the design MCP
+/// under.
+const DESIGN_SERVER_NAME: &str = "idealyst-design";
+
+/// The `.mcp.json` body `install` writes.
+fn install_body(args: &InstallArgs) -> serde_json::Value {
+    let mut servers = serde_json::Map::new();
+    servers.insert(
+        args.name.clone(),
+        serde_json::json!({ "command": args.command, "args": ["mcp"] }),
+    );
+    if args.design {
+        servers.insert(
+            DESIGN_SERVER_NAME.to_string(),
+            serde_json::json!({ "command": args.command, "args": ["mcp", "design"] }),
+        );
+    }
+    serde_json::json!({ "mcpServers": servers })
+}
+
+/// `idealyst mcp design` — the design MCP has no project state, so none of
+/// the catalog/robot flags apply.
+fn run_design() -> Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    rt.block_on(mcp_design_server::run_stdio())
+        .map_err(|e| anyhow::anyhow!("design mcp server exited: {e:?}"))
+}
+
 fn run_install(args: InstallArgs) -> Result<()> {
     let target = args.dir.join(".mcp.json");
     if target.exists() && !args.force {
@@ -550,14 +593,7 @@ fn run_install(args: InstallArgs) -> Result<()> {
         );
     }
 
-    let body = serde_json::json!({
-        "mcpServers": {
-            args.name.clone(): {
-                "command": args.command,
-                "args": ["mcp"],
-            }
-        }
-    });
+    let body = install_body(&args);
     let pretty = serde_json::to_string_pretty(&body)? + "\n";
     std::fs::write(&target, pretty)
         .with_context(|| format!("write {}", target.display()))?;
@@ -567,6 +603,9 @@ fn run_install(args: InstallArgs) -> Result<()> {
         "[idealyst mcp install] Server name: {}, command: {}",
         args.name, args.command
     );
+    if args.design {
+        eprintln!("[idealyst mcp install] Also registered `{DESIGN_SERVER_NAME}` (idealyst mcp design).");
+    }
     eprintln!(
         "[idealyst mcp install] Run `idealyst dev` to launch the app; the bridge \
          port is written to .idealyst/bridge.port and the MCP server discovers \
@@ -709,6 +748,24 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn install_args(design: bool) -> InstallArgs {
+        InstallArgs { dir: ".".into(), name: "idealyst".into(), command: "idealyst".into(), force: false, design }
+    }
+
+    /// `install` writes only the framework server unless asked for the
+    /// design one — a project without idea-ui gains nothing from it.
+    #[test]
+    fn install_registers_design_server_only_when_asked() {
+        let plain = install_body(&install_args(false));
+        assert_eq!(plain["mcpServers"].as_object().unwrap().len(), 1);
+        assert_eq!(plain["mcpServers"]["idealyst"]["args"], serde_json::json!(["mcp"]));
+
+        let with = install_body(&install_args(true));
+        assert_eq!(with["mcpServers"]["idealyst"]["args"], serde_json::json!(["mcp"]));
+        assert_eq!(with["mcpServers"][DESIGN_SERVER_NAME]["args"], serde_json::json!(["mcp", "design"]));
+        assert_eq!(with["mcpServers"][DESIGN_SERVER_NAME]["command"], "idealyst");
     }
 
     /// Regression: `idealyst mcp` with NO flags must default to the

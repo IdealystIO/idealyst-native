@@ -186,6 +186,10 @@ members = [
     "crates/mcp/catalog",
     "crates/mcp/catalog-scan",
     "crates/mcp/server",
+    # idea-ui design guidance MCP (`idealyst mcp design`) + the crate that
+    # compiles and server-renders every recipe it serves.
+    "crates/mcp/design-server",
+    "crates/mcp/design-server/recipes-check",
 
     # UI — component library + extras.
     "crates/ui/idea-theme",
@@ -524,6 +528,7 @@ runtime-macros-expand = { path = "crates/runtime/macros-expand", version = "1.6.
 mcp-catalog = { path = "crates/mcp/catalog", version = "1.29.0", registry = "idealyst" }
 catalog-scan = { path = "crates/mcp/catalog-scan", version = "1.1.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server", version = "2.0.0", registry = "idealyst" }
+mcp-design-server = { path = "crates/mcp/design-server", version = "0.1.0", registry = "idealyst" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "3.0.0", registry = "idealyst" }
 web-glue = { path = "crates/runtime/web-glue", version = "2.1.0", registry = "idealyst" }

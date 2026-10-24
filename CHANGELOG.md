@@ -742,6 +742,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`idealyst mcp design` — an idea-ui design MCP** (`mcp-design-server`,
+  `idealyst-cli`, `mcp-server`). A second stdio server with opinionated
+  guidance for apps built on idea-ui: fourteen design skills (house rules,
+  adaptive layouts, navigation, screens, layout, color and type, forms,
+  states, overlays, brand, stylesheets, platform conventions, review),
+  nine whole-screen recipes and four prompts (`design_screen`,
+  `brand_theme`, `plan_navigation`, `design_review`). Every recipe is
+  compiled against idea-ui and server-rendered at phone and desktop widths
+  by `mcp-design-recipes-check`, so a served recipe can't drift from the
+  API. Register it with `idealyst mcp install --design`. `mcp-server`'s
+  `schema_minify` module is now public so both servers advertise the same
+  trimmed schemas.
+
 - **Agents drive the dev sessions a person started; `idealyst dev
   --no-watch` builds only on request** (`idealyst-cli`, `mcp-server`,
   `dev-events`, `dev-reload`, `dev-server`, `host-terminal`, `dev-tui`).

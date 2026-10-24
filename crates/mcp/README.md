@@ -15,6 +15,8 @@ cannot drift.
 | --- | --- | --- |
 | `mcp-catalog` | [`catalog/`](./catalog) | The catalog data model + resolution. Eight inventory slices (Component / Primitive / Utility / State / Guide / Method / Animation / Type). The `#[component]` macro submits to these slices at compile time. |
 | `catalog-scan` | [`catalog-scan/`](./catalog-scan) | Reads a workspace's catalog entries from **source**, with no build: it runs the catalog macros' own expansion (`runtime-macros-expand`) over the items they are attached to and reads the `inventory::submit!` literals back. Entries are byte-identical to a compiled catalog's (pinned by `mcp-catalog`'s `source_scan_reads_exactly_what_the_compiled_macros_register`). Used by `idealyst mcp`'s refresh, `catalog-json --scan` and `catalog-scan`. |
+| `mcp-design-server` | [`design-server/`](./design-server) | Stdio MCP server (`idealyst mcp design`) with **opinionated idea-ui design guidance**: design skills (`content/skills/*.md`), whole-screen recipes (`content/recipes/*.rs`) and four prompts (`design_screen`, `brand_theme`, `plan_navigation`, `design_review`). Static content shipped in the CLI — no project, no catalog. See [The design server](#the-design-server). |
+| `mcp-design-recipes-check` | [`design-server/recipes-check/`](./design-server/recipes-check) | Not published. Compiles every design recipe as a module against idea-ui and server-renders it at the phone/tablet/desktop widths its `//! render:` lines declare. |
 | `mcp-server` | [`server/`](./server) | Stdio MCP server (`idealyst mcp`). Surfaces catalog tools (`list_components`, `describe_component`, `find_uses`, …) and the `idealyst://catalog` resource, **plus** the Robot tools (`find_element`, `click`, `type_text`, `get_snapshot`, …) that drive a running app, **plus** the dev-session tools (`run_dev` / `list_dev_sessions` / `dev_status` / `rebuild_dev` / `stop_dev` / `read_dev_log` / `wait_for_app`) that launch, observe, rebuild, and tear down `idealyst dev` from MCP — its own sessions and a person's. Reaches the app's Robot bridge via discovery (`~/.idealyst/apps/`) or an explicit `--robot-port`. Consumed by Claude Code / IDE plugins. |
 
 ## How the catalog gets populated
@@ -152,3 +154,37 @@ the gap between `run_dev` (returns once the build starts) and the Robot
 tools (need the app actually up). The loop: `run_dev` → `wait_for_app`
 (or `read_dev_log` if it's slow / failing) → drive it with the Robot
 tools → `stop_dev`.
+
+## The design server
+
+`idealyst mcp` is deliberately neutral: it describes what the framework
+and the project's catalog *are*. `idealyst mcp design` is the opinionated
+layer for apps built on idea-ui — how to choose a shell and navigator, lay
+out a screen, handle loading/empty/error, write forms, adapt a layout from
+phone to desktop (push/pop ⇄ split view, drawer/tabs ⇄ sidebar, sheet ⇄
+dialog), respect platform conventions, and carry the user's brand through
+theme tokens and component restyles. The look always comes from the user;
+the guidance is about structure and use, so it can be specific to idea-ui
+where the base server can't.
+
+| Surface | What |
+| --- | --- |
+| `list_design_skills` / `read_design_skill(name, section?)` | The skills — `principles` (embedded in every prompt), `setup`, `adaptive`, `navigation`, `screens`, `layout`, `color-and-type`, `forms`, `states`, `overlays`, `brand`, `stylesheets`, `platforms`, `review`. |
+| `list_design_recipes(tag?)` / `get_design_recipe(name)` | Whole app modules (`pub fn app() -> Element`) — shells, page frame, list→detail, settings, states, dashboard, sign-in, brand module. |
+| `search_design(query)` | Ranked skill sections and recipes. |
+| prompts | `design_screen`, `brand_theme`, `plan_navigation`, `design_review` — each opens with `principles` and its skill's full text. |
+| resources | `idea-ui-design://skill/<name>`, `idea-ui-design://recipe/<name>`. |
+
+**Recipes can't drift.** `mcp-design-recipes-check` compiles every
+`content/recipes/*.rs` as a module (a `build.rs` lists them — no registry
+to keep in step) and renders each one through `backend-ssr` at the
+viewports its header declares (`//! render: /path @phone => text, !absent`).
+Every recipe must declare a phone and a desktop check, so a layout that
+breaks at one width fails CI. `CHECKED_AGAINST_IDEA_UI` is asserted
+against the workspace idea-ui.
+
+Register it next to the base server with `idealyst mcp install --design`
+(server name `idealyst-design`). Its tool list is held to the same kind of
+budget tests as `mcp-server`'s (`service.rs`), and content
+cross-references (`read_design_skill("…")`, "the `x` recipe") are checked
+to resolve.

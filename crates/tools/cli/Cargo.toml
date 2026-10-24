@@ -157,6 +157,8 @@ dialoguer = "0.11"
 # launcher rather than a different server. (The user's app, when
 # it depends on runtime-core/mcp, populates the inventory.)
 mcp-server = { workspace = true }
+# `idealyst mcp design` — the idea-ui design guidance server.
+mcp-design-server = { workspace = true }
 mcp-catalog = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 

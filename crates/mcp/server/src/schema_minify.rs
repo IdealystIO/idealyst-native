@@ -22,7 +22,7 @@
 use serde_json::{Map, Value};
 
 /// Minify a tool's input schema in place.
-pub(crate) fn minify(schema: &mut Map<String, Value>) {
+pub fn minify(schema: &mut Map<String, Value>) {
     schema.remove("$schema");
     strip_struct_docs(schema);
     if let Some(Value::Object(defs)) = schema.get_mut("$defs") {
