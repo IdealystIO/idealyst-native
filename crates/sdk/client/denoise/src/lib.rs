@@ -119,6 +119,7 @@ pub struct Denoiser {
     weights: Weights,
     atten_lim_db: Option<f32>,
     post_filter: bool,
+    thresholds: Option<(f32, f32, f32)>,
 }
 
 impl Denoiser {
@@ -132,6 +133,7 @@ impl Denoiser {
             weights: Weights::Embedded,
             atten_lim_db: None,
             post_filter: false,
+            thresholds: None,
         }
     }
 
@@ -149,6 +151,7 @@ impl Denoiser {
             weights: Weights::Bytes(weights),
             atten_lim_db: None,
             post_filter: false,
+            thresholds: None,
         }
     }
 
@@ -167,6 +170,22 @@ impl Denoiser {
         self
     }
 
+    /// Set the model's local-SNR thresholds, in dB, which decide per frame
+    /// how much of the model runs:
+    ///
+    /// - below `min_db`, the frame is taken for noise only and **zeroed** — a
+    ///   hard gate, which is what chops quiet word endings and breaths whose
+    ///   SNR estimate dips under it. Lower it to let them through;
+    /// - above `max_erb_db`, the frame is taken for clean speech and passed
+    ///   untouched;
+    /// - above `max_df_db`, the second (deep-filtering) stage is skipped.
+    ///
+    /// Upstream defaults: `(-10.0, 30.0, 20.0)`.
+    pub fn thresholds(mut self, min_db: f32, max_erb_db: f32, max_df_db: f32) -> Self {
+        self.thresholds = Some((min_db, max_erb_db, max_df_db));
+        self
+    }
+
     /// Start denoising `input`, returning a new **48 kHz mono** [`AudioStream`]
     /// of the enhanced signal.
     ///
@@ -179,7 +198,11 @@ impl Denoiser {
     /// clone tears down the pipeline. Fails with [`DenoiseError`] if the model
     /// can't load/build.
     pub async fn process(&self, input: &AudioStream) -> Result<AudioStream, DenoiseError> {
-        let cfg = Config { atten_lim_db: self.atten_lim_db, post_filter: self.post_filter };
+        let cfg = Config {
+            atten_lim_db: self.atten_lim_db,
+            post_filter: self.post_filter,
+            thresholds: self.thresholds,
+        };
         let (out, writer) = AudioStream::new();
         let handle = imp::start(input, writer, cfg, self.weights).await?;
         // Keep the pipeline alive exactly as long as the output stream: the

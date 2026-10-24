@@ -42,6 +42,9 @@ pub(crate) struct Config {
     pub atten_lim_db: Option<f32>,
     /// Enable DeepFilterNet's speech post-filter.
     pub post_filter: bool,
+    /// libDF's local-SNR thresholds: `(min, max_erb, max_df)` in dB. `None` =
+    /// upstream's defaults, (-10, 30, 20).
+    pub thresholds: Option<(f32, f32, f32)>,
 }
 
 /// Where the DeepFilterNet model comes from. Embedding is native-only — the web
@@ -87,6 +90,9 @@ impl Engine {
         }
         if cfg.post_filter {
             rp = rp.with_post_filter(ENABLED_POST_FILTER_BETA);
+        }
+        if let Some((min, max_erb, max_df)) = cfg.thresholds {
+            rp = rp.with_thresholds(min, max_erb, max_df);
         }
 
         // Build the tract plan from the chosen weights. The model is built
