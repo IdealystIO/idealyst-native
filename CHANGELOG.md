@@ -11,6 +11,20 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **A `#[server]` fn keeps its wire signature on the server build too**
+  (`server-macros`, `server`). A fn with extractors (`Auth<_>`, `State<_>`,
+  `#[ctx]` …) used to be `me(user: Auth<Principal>)` under the `server`
+  feature and `me()` without it, so any client crate compiled in the same
+  cargo invocation as the server binary (`cargo check --workspace`,
+  rust-analyzer: Cargo unifies features) failed at every call site. It is
+  now `me()` on both builds; on the server it resolves the extractors from
+  the current request and runs the body in-process (an unresolvable
+  extractor fails the call with the same error a remote caller gets).
+  **Server code that called such a fn with explicit extractor arguments no
+  longer compiles** — call it with the wire args, or factor the body into a
+  plain fn. `#[channel]` / `#[subscription]` / `#[sse]` names are the client
+  hooks on every build; their bodies are reachable only through the route.
+
 Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.

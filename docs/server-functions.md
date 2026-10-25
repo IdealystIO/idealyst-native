@@ -58,6 +58,12 @@ pub async fn add(a: i32, b: i32) -> Result<i32, ServerError> {
 }
 ```
 
+A fn with extractors (`async fn me(user: Auth<Principal>)`) differs on the
+server half only: the body is emitted as a private `__server_impl_me(user)`,
+and `me()` — the wire signature — resolves `user` from the current request
+and calls it. So `me()` is the name on both builds (see "Calls need no gate"
+below).
+
 The cfg key is a Cargo feature literally named `server` **on the crate that
 contains the `#[server]` fn**. The server binary builds with
 `--features server`; every client target builds with default features.
@@ -85,17 +91,28 @@ gates.
 
 ### What still needs a gate, and why
 
-The macro can only see the item it is attached to. Three things sit outside
+The macro can only see the item it is attached to. Two things sit outside
 its reach:
 
 | What | Why | Fix |
 |---|---|---|
 | Server-only helper fns / modules (session stores, db setup, `install_*` calls) | module-level items, invisible to the macro | wrap in `#[cfg(feature = "server")]` (see login-demo's `srv` module) — or put them in a server-only crate |
-| Client-only code calling the stubs in the same crate | on the server build the real fn has the *extractor-bearing* signature, so a stub-shaped call (`me()` vs `me(user: Auth<…>)`) won't compile | gate the UI with `#[cfg(not(feature = "server"))]`, or use the layered crate shape (§2) so the UI crate never builds with the feature |
 | Server-only dependencies in `Cargo.toml` | a proc macro cannot declare features or mark deps optional | `optional = true` + list them in the `server` feature (§2) |
 
-The layered project shape makes the first two disappear; the third is
+The layered project shape makes the first disappear; the second is
 one-time-per-crate plumbing.
+
+Calls need no gate. A `#[server]` fn has its **wire signature on every
+build** — `me()`, never `me(user: Auth<…>)` — so client code compiles even
+when Cargo's feature unification turns `server` on for it (a
+`cargo check --workspace` that builds the UI crate and the server binary
+together, or rust-analyzer). On the server build that call runs the body
+in-process: the extractors resolve from the current request (an `Auth` with
+no session in scope fails the call as `401`, a missing `State` as `500`, the
+same errors a remote caller gets), and the dispatch hook / middleware does
+not run again — the request that is already executing passed it. A
+`#[channel]` / `#[subscription]` / `#[sse]` name is the client hook on every
+build; its body is only reachable through its route.
 
 ---
 
@@ -972,11 +989,10 @@ let sse = server::use_sse::<Note>(notifications());
 Prefer SSE for one-way streams (progress, notifications, LLM tokens); reach
 for `#[channel]` only when the client→server direction is real.
 
-**Streaming caveat**: the client stubs return client-only reactive types, so
-— unlike plain `#[server]` fns — code consuming them cannot compile under the
-server feature. In a colocated crate that code must sit in the
-`#[cfg(not(feature = "server"))]` UI region; in the layered shape it lives in
-the UI crate and needs nothing.
+The stream stubs exist on every build, `server` included (`use_socket` /
+`use_sse` and their handle types are part of the always-present client
+surface), so code consuming them compiles under the server feature too; the
+endpoint's body is emitted under a private name only its route reaches.
 
 ---
 
@@ -1056,22 +1072,16 @@ drift diagnostic.
 
 Honest limitations of today's implementation, in priority order:
 
-1. **Colocated crates pay a signature-asymmetry tax.** Because the server
-   build exposes the extractor-bearing signature under the same name, client
-   code in the same crate must be cfg-gated. *Direction under consideration:*
-   emit the wire signature on both builds (server side resolving extractors
-   from the ambient request context internally), which would make stub-shaped
-   call sites compile everywhere and eliminate most hand-written gates.
-2. **No module-level attributes.** Server-only helper modules are gated with
+1. **No module-level attributes.** Server-only helper modules are gated with
    raw `#[cfg(feature = "server")]`; letting `#[server]` annotate `mod`/`use`
    items would keep authors inside one vocabulary. Per-fn `tags(...)` +
    `require_tag` (§5) now cover declarative group *membership*, but a
    module-level `#[api(prefix = …, guard = …)]` that applies a prefix/tags
    to everything inside still doesn't exist — each fn declares its own.
-3. **No CLI scaffolding for the layered shape** (DESIGN.md Phase 6). The
+2. **No CLI scaffolding for the layered shape** (DESIGN.md Phase 6). The
    recommended api/ui/server-bin split and the Cargo feature plumbing are
    hand-assembled today, which is why the examples are colocated.
-4. **Cargo plumbing is irreducible.** A proc macro can't declare features or
+3. **Cargo plumbing is irreducible.** A proc macro can't declare features or
    optional deps, and Cargo doesn't evaluate custom cfgs for dependency
    gating — the `server` feature block in §2 will remain, whatever else
    improves; scaffolding can stamp it out, syntax can't.
