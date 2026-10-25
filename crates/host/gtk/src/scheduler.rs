@@ -20,11 +20,18 @@ use std::time::Duration;
 use gtk4::glib;
 use runtime_core::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
 
-/// Install the GTK scheduler. Call once, on the main thread, before the
-/// app mounts (i.e. before any author `effect!` runs). Idempotent at the
-/// framework level (`install_scheduler` uses a `OnceLock`).
+/// Install the GTK scheduler and the main-thread async executor. Call once,
+/// on the main thread, before the app mounts (i.e. before any author
+/// `effect!` runs). Idempotent at the framework level (both slots are
+/// first-install-wins).
+///
+/// The executor rides along for the same reason the Apple and Android
+/// schedulers install theirs: without it `spawn_async` blocks the main thread
+/// until the future completes, and a socket's receive loop never does. See
+/// [`crate::async_executor`].
 pub fn install() {
     install_scheduler(Box::new(GtkScheduler));
+    crate::async_executor::install();
 }
 
 /// Zero-sized; all live state is the per-source GLib closure. The

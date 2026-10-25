@@ -40,3 +40,11 @@ runtime-shared = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk4 = { version = "0.9", features = ["v4_12"] }
 backend-linux = { workspace = true }
+# The async executor's blocking fallback for a future spawned off the GTK main
+# thread — the same fallback `runtime_core::driver::spawn_async` uses.
+pollster = "0.4"
+
+# `tests/spawn_async_does_not_block.rs` drives the executor on a real GTK main
+# loop and reaches `gtk4` / the dispatch hook through `backend_linux`.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+backend-linux = { workspace = true }

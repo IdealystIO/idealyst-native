@@ -5814,6 +5814,7 @@ version = "3.0.0"
 dependencies = [
  "backend-linux",
  "gtk4",
+ "pollster 0.4.0",
  "runtime-core",
  "runtime-scene",
  "runtime-shared",

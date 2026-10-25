@@ -2074,6 +2074,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Linux: a long-lived async task no longer freezes the window**
+  (`host-gtk`). host-gtk installed no async executor, so `spawn_async`
+  fell back to blocking the GTK main thread until the future finished; a
+  `use_socket` / `use_sse` receive loop never finishes, so the window
+  stopped drawing for good the moment a live connection opened. host-gtk
+  now installs a main-thread executor (from `install_scheduler`, like the
+  Apple and Android hosts): futures run to their next `.await`, wakers from
+  any thread re-poll on the main loop, and each poll flushes staged writes.
+
 - **Linux: `on_key_down` on a `text_input` / `text_area` sees Enter**
   (`backend-linux` 3.0.2). The author's key controller ran in GTK's bubble
   phase, after the entry's inner `GtkText` had consumed Enter as its
