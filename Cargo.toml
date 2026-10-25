@@ -596,7 +596,7 @@ backend-web = { path = "crates/backend/web", version = "5.0.0", registry = "idea
 backend-ssr = { path = "crates/backend/ssr", version = "3.0.1", registry = "idealyst" }
 backend-email = { path = "crates/backend/email", version = "3.0.0", registry = "idealyst" }
 backend-windows = { path = "crates/backend/windows", version = "4.0.0", registry = "idealyst" }
-backend-linux = { path = "crates/backend/linux", version = "3.0.0", registry = "idealyst" }
+backend-linux = { path = "crates/backend/linux", version = "3.0.1", registry = "idealyst" }
 host-gtk = { path = "crates/host/gtk", version = "3.0.0", registry = "idealyst" }
 welcome = { path = "examples/welcome" }
 idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "12.0.0", registry = "idealyst" }

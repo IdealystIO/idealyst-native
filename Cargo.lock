@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "backend-image-source",
  "gtk4",

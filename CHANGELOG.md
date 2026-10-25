@@ -2075,7 +2075,7 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 ### Fixed
 
 - **Linux: a panel under an `if` / `for` lays out as on web, and native
-  controls have a size** (`backend-linux`). Every reactive region's anchor
+  controls have a size** (`backend-linux` 3.0.1). Every reactive region's anchor
   was a plain flex box sized to its content, so inside a full-window
   `position: absolute; inset: 0` layer a `height: 100%` panel under
   `if open { … }` came out at content height and a `top: 0; bottom: 0`
