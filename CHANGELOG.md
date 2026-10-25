@@ -2088,6 +2088,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Debug builds say when `spawn_then` / `after_ms_scoped` drop work**
+  (`runtime-vocabulary`). A `spawn_then` whose scope ended before its task
+  finished drops the result, and `after_ms_scoped` / `raf_loop_scoped`
+  outside an effect, build or scoped timer (e.g. in a `spawn_then`
+  callback) do nothing — both by design, both silent, both read as "the
+  request succeeded but the handler never ran". A debug build now logs one
+  warning per call site naming it and the alternative (`spawn_then_in`,
+  `after_ms_detached`); `spawn_then_in` dying with the scope it names stays
+  silent. Release builds are unchanged.
+
 - **The Robot `screenshot` verb answers on Linux** (`runtime-shared`). GTK
   hands back a capture on a later main-loop turn, and the bridge verb read
   its result straight after calling the capture, so on GTK it always failed
