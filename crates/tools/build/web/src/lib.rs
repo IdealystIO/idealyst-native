@@ -3017,6 +3017,9 @@ fn cargo_build_wasm(
     if !features.is_empty() {
         cmd.arg("--features").arg(features.join(","));
     }
+    // Before compiling, not at the bindgen step after it: a mismatched
+    // wasm-bindgen CLI otherwise costs a whole build to discover.
+    preflight_wasm_bindgen_cli(reporter, project_dir, bin_name, &features)?;
     // The progress bar's total: this build's dependency closure, resolved
     // beside the build with the same features and platform.
     let closure = dev_events::process::Closure {
@@ -3222,6 +3225,105 @@ fn wasm_bindgen_flags(split: bool, hot_patch: bool) -> &'static [&'static str] {
 /// Hybrid mode: run `wasm-bindgen --target web` to turn the
 /// glue-extracted wasm into the JS-callable wasm-bindgen output. The flags are
 /// [`wasm_bindgen_flags`]'s decision.
+/// Fail before compiling when this build will run wasm-bindgen and the
+/// installed CLI can't process its module.
+///
+/// A HYBRID build (the app links wasm-bindgen on wasm32 — wgpu, web-sys)
+/// runs the wasm-bindgen CLI over the linked module, and the CLI only
+/// accepts a module from EXACTLY its own version ("rust Wasm file schema
+/// version: 0.2.129 / this binary schema version: 0.2.125"). An ordinary
+/// `cargo update` moves the library; the CLI stays. Without this check the
+/// mismatch surfaced only after the whole compile.
+///
+/// Whether the build is hybrid is asked of `cargo tree -p <app>` on wasm32
+/// with the build's own features: it resolves features per package the way
+/// `cargo build --bin` does. Not `cargo metadata`, which unifies features
+/// across the whole workspace and so reports `web-glue`'s optional
+/// wasm-bindgen bridge for an own-mode app that shares a workspace with a
+/// hybrid one. When the probe itself fails the build proceeds — this check
+/// never blocks a build it can't reason about. Checked once per process per
+/// (app, features), so a dev session's rebuilds pay for it once.
+fn preflight_wasm_bindgen_cli(
+    reporter: &dev_events::Reporter,
+    project_dir: &Path,
+    package: &str,
+    features: &[String],
+) -> Result<()> {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static CHECKED: Mutex<Option<HashSet<(PathBuf, String)>>> = Mutex::new(None);
+    let key = (project_dir.to_path_buf(), format!("{package}|{}", features.join(",")));
+    if CHECKED.lock().ok().is_some_and(|c| c.as_ref().is_some_and(|c| c.contains(&key))) {
+        return Ok(());
+    }
+    let mut tree = Command::new("cargo");
+    tree.current_dir(project_dir)
+        .args(["tree", "-q", "-p", package, "--target", "wasm32-unknown-unknown"])
+        .args(["-e", "normal,build", "-i", "wasm-bindgen", "--depth", "0"]);
+    if !features.is_empty() {
+        tree.arg("--features").arg(features.join(","));
+    }
+    let Ok(out) = tree.output() else { return Ok(()) };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let locked = if out.status.success() {
+        match locked_wasm_bindgen(&stdout) {
+            Some(v) => Some(v),
+            None => return Ok(()),
+        }
+    } else if stderr.contains("did not match any packages") {
+        None // own mode: nothing to check
+    } else {
+        return Ok(());
+    };
+    let installed = Command::new("wasm-bindgen")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| installed_wasm_bindgen(&String::from_utf8_lossy(&o.stdout)));
+    bindgen_cli_verdict(locked.as_deref(), installed.as_deref()).map_err(|msg| anyhow::anyhow!(msg))?;
+    if let Some(v) = &locked {
+        reporter.log("build-web", format!("hybrid build: wasm-bindgen {v} (CLI matches)"));
+    }
+    if let Ok(mut c) = CHECKED.lock() {
+        c.get_or_insert_with(HashSet::new).insert(key);
+    }
+    Ok(())
+}
+
+/// `wasm-bindgen v0.2.129` (the `cargo tree -i --depth 0` line) → `0.2.129`.
+fn locked_wasm_bindgen(tree_out: &str) -> Option<String> {
+    let line = tree_out.lines().find(|l| l.trim_start().starts_with("wasm-bindgen v"))?;
+    let v = line.trim_start().strip_prefix("wasm-bindgen v")?;
+    Some(v.split_whitespace().next()?.to_string())
+}
+
+/// `wasm-bindgen 0.2.125` (the CLI's `--version`) → `0.2.125`.
+fn installed_wasm_bindgen(version_out: &str) -> Option<String> {
+    let v = version_out.trim().strip_prefix("wasm-bindgen ")?;
+    Some(v.split_whitespace().next()?.to_string())
+}
+
+/// Whether a build whose wasm32 graph locks wasm-bindgen `locked` (`None`:
+/// an own-mode build, no CLI needed) can run with the CLI at `installed`.
+fn bindgen_cli_verdict(locked: Option<&str>, installed: Option<&str>) -> Result<(), String> {
+    let Some(locked) = locked else { return Ok(()) };
+    let install = format!("cargo install -f wasm-bindgen-cli --version {locked}");
+    match installed {
+        Some(i) if i == locked => Ok(()),
+        Some(i) => Err(format!(
+            "this app links wasm-bindgen {locked} on wasm32 (a hybrid build), but the installed \
+             wasm-bindgen CLI is {i}; the CLI only accepts a module from its own version, so the \
+             bindgen step would fail after compiling. Install the matching CLI:\n\n    {install}"
+        )),
+        None => Err(format!(
+            "this app links wasm-bindgen {locked} on wasm32 (a hybrid build), which needs the \
+             wasm-bindgen CLI at exactly that version, and none is on PATH:\n\n    {install}"
+        )),
+    }
+}
+
 fn wasm_bindgen_build(
     reporter: &dev_events::Reporter,
     original_wasm: &Path,
@@ -5819,5 +5921,42 @@ mod parallel_stage_tests {
         })
         .unwrap_err();
         assert!(err.to_string().contains("wasm-opt failed"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod wasm_bindgen_preflight_tests {
+    use super::*;
+
+    /// Regression (Idea Chat): `cargo update` moved the wasm-bindgen library
+    /// to 0.2.129 with the 0.2.125 CLI installed, and `idealyst build --web`
+    /// compiled everything before the bindgen step refused the module. The
+    /// verdict now runs before compiling and names the install command.
+    #[test]
+    fn regression_a_mismatched_wasm_bindgen_cli_fails_before_the_build() {
+        let err = bindgen_cli_verdict(Some("0.2.129"), Some("0.2.125")).unwrap_err();
+        assert!(err.contains("0.2.129") && err.contains("0.2.125"), "{err}");
+        assert!(err.contains("cargo install -f wasm-bindgen-cli --version 0.2.129"), "{err}");
+
+        let err = bindgen_cli_verdict(Some("0.2.129"), None).unwrap_err();
+        assert!(err.contains("none is on PATH") && err.contains("--version 0.2.129"), "{err}");
+    }
+
+    #[test]
+    fn own_mode_and_matching_cli_pass() {
+        assert!(bindgen_cli_verdict(None, None).is_ok(), "own mode needs no CLI");
+        assert!(bindgen_cli_verdict(None, Some("0.2.1")).is_ok());
+        assert!(bindgen_cli_verdict(Some("0.2.129"), Some("0.2.129")).is_ok());
+    }
+
+    #[test]
+    fn versions_parse_from_cargo_tree_and_the_cli() {
+        assert_eq!(locked_wasm_bindgen("wasm-bindgen v0.2.128\n").as_deref(), Some("0.2.128"));
+        assert_eq!(
+            locked_wasm_bindgen("wasm-bindgen v0.2.128 (registry `crates-io`)\n").as_deref(),
+            Some("0.2.128")
+        );
+        assert_eq!(installed_wasm_bindgen("wasm-bindgen 0.2.125\n").as_deref(), Some("0.2.125"));
+        assert_eq!(installed_wasm_bindgen("something else"), None);
     }
 }

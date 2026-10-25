@@ -2088,6 +2088,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`idealyst build --web` checks the wasm-bindgen CLI before compiling**
+  (`build-web`). A hybrid build (the app links wasm-bindgen on wasm32 —
+  wgpu, web-sys) needs the wasm-bindgen CLI at exactly the locked library's
+  version, and an ordinary `cargo update` moves only the library; the
+  mismatch used to surface after the whole compile ("rust Wasm file schema
+  version: 0.2.129 / this binary schema version: 0.2.125"). The build now
+  asks `cargo tree -p <app>` (per-package features, like the build) whether
+  wasm-bindgen is in the wasm32 graph and, when the CLI differs or is
+  missing, stops at once with the install command. Own-mode builds are
+  unaffected.
+
 - **Debug builds say when `spawn_then` / `after_ms_scoped` drop work**
   (`runtime-vocabulary`). A `spawn_then` whose scope ended before its task
   finished drops the result, and `after_ms_scoped` / `raf_loop_scoped`

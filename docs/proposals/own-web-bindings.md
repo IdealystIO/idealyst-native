@@ -983,6 +983,12 @@ crates; and, likely, any app on the `maps` SDK, whose `maps-web` still exports
 the deprecated `build_map_iframe -> web_sys::Element` (no example app uses
 maps on web, so this was not measured).
 
+`idealyst build --web` checks that version before compiling: when the app's
+wasm32 graph (`cargo tree -p <app>` with the build's features) contains
+wasm-bindgen and the installed CLI differs or is missing, the build stops at
+once with the `cargo install -f wasm-bindgen-cli --version <locked>` to run,
+instead of after the compile at the bindgen step.
+
 ### Phases 5 + 6 verification
 
 Machine and toolchain as phase 1; Chrome 154 with a matching chromedriver.
