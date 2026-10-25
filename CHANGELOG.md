@@ -2088,6 +2088,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`codeblock::rust` tints raw and byte strings correctly** (`codeblock`).
+  `r#"a"b"#` closed at its inner `"`, and the closing `"#` opened a string
+  that tinted the rest of the file. Raw strings (any number of `#`), byte
+  strings and byte chars are now lexed as literals. `Token` and `Palette`
+  are `#[non_exhaustive]`: build a custom palette from `Palette::LIGHT` /
+  `DARK` and set its fields.
+
 - **`idealyst build --web` checks the wasm-bindgen CLI before compiling**
   (`build-web`). A hybrid build (the app links wasm-bindgen on wasm32 —
   wgpu, web-sys) needs the wasm-bindgen CLI at exactly the locked library's

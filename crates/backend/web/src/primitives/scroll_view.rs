@@ -392,11 +392,9 @@ mod tests {
         }
     }
 
-    /// Reads back what `create` writes: `auto` on both is the two-axis
-    /// mount, `auto` on X alone the horizontal one, and `hidden` (or an
-    /// unset property) the vertical default.
-    /// `create` mounts `overflow: auto` on exactly the axes that scroll,
-    /// `hidden` on the rest — a two-axis scroller is `auto` on both.
+    /// A two-axis scroller's wheel/trackpad gesture locks to the axis it
+    /// starts along (a diagonal start pans freely), carries sub-pixel
+    /// remainders, and hands the wheel to the page at the locked axis' end.
     #[test]
     fn a_wheel_gesture_locks_to_the_axis_it_starts_along() {
         let mut lock = WheelLock::new();
@@ -421,6 +419,8 @@ mod tests {
         assert!(!locked_axis_can_take(5.0, 0.0, 0.0), "an axis with nothing to scroll never takes it");
     }
 
+    /// `create` mounts `overflow: auto` on exactly the axes that scroll,
+    /// `hidden` on the rest — a two-axis scroller is `auto` on both.
     #[test]
     fn each_axis_mounts_its_own_overflow() {
         assert_eq!(overflow_declaration(ScrollAxis::Vertical), "overflow-y: auto; overflow-x: hidden");

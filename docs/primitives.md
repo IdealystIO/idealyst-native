@@ -630,7 +630,10 @@ scroller:
   owns both axes);
 - `on_end_reached` watches the bottom.
 
-Mechanism per backend: `overflow: auto` on both axes (web, SSR); a
+Mechanism per backend: `overflow: auto` on both axes (web, SSR), with a
+wheel/trackpad gesture on web locked to the axis it starts along — a
+diagonal start pans freely, and the wheel passes to the page at the locked
+axis' end — matching the native directional lock; a
 `UIScrollView` with directional lock (iOS); an `NSScrollView` with both
 scrollers (macOS); a two-axis `FrameLayout` scroller,
 `RustTwoAxisScrollView` (Android); a `GtkScrolledWindow` scrolling both
