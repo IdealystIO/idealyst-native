@@ -2088,6 +2088,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **The Robot `screenshot` verb answers on Linux** (`runtime-shared`). GTK
+  hands back a capture on a later main-loop turn, and the bridge verb read
+  its result straight after calling the capture, so on GTK it always failed
+  with "capture_screenshot did not complete synchronously" — no picture of a
+  running Linux app for the MCP robot tools or `idealyst test --parity`. The
+  bridge gains async verbs (`robot::bridge::register_async_command`, answered
+  through a `CommandReply`); the TCP and relay transports hold the request
+  open until the reply is sent, and `screenshot` is one.
+
 - **Generated platform wrappers follow the app's framework for crates only
   they add** (`build-ios`, used by every `idealyst build` / `run` target).
   The wrapper pinned every framework crate the app's graph resolved, but a

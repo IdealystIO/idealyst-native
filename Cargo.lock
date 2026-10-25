@@ -1510,6 +1510,7 @@ name = "backend-linux"
 version = "3.0.2"
 dependencies = [
  "backend-image-source",
+ "base64",
  "gtk4",
  "image",
  "inventory",
@@ -1522,6 +1523,7 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
+ "serde_json",
  "wgpu",
  "wgpu-hal",
  "wgpu-types",

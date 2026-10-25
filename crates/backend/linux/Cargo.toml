@@ -104,3 +104,6 @@ wgpu = { version = "29", default-features = false, features = ["gles", "wgsl"] }
 wgpu-hal = { version = "29", features = ["gles"] }
 wgpu-types = "29"
 pollster = "0.4"
+# `tests/robot_screenshot.rs` reads the bridge's JSON reply and decodes its PNG.
+serde_json = { workspace = true }
+base64 = "0.22"
