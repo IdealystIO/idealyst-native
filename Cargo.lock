@@ -1950,6 +1950,7 @@ name = "build-ios"
 version = "1.7.0"
 dependencies = [
  "anyhow",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",

@@ -2088,6 +2088,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Generated platform wrappers follow the app's framework for crates only
+  they add** (`build-ios`, used by every `idealyst build` / `run` target).
+  The wrapper pinned every framework crate the app's graph resolved, but a
+  crate only the WRAPPER names — a host shell like `host-gtk` — kept the
+  CLI's own requirement, so an app on runtime-core 2.x got `host-gtk =
+  "3.0"`, a second `runtime-vocabulary` and 28 × E0277. Such a crate now
+  takes the newest release whose framework dependencies accept the app's
+  resolved versions (read from the registry index, only when the app's
+  majors differ from the CLI's), and when none does the build says which
+  release needs what. Note for apps that stay on runtime-core 2.x: that
+  selects host-gtk 2.0 / backend-linux 2.0.x, which do not carry the
+  `create_anchor` layout fix (backend-linux 3.0.1).
+
 - **Linux: a long-lived async task no longer freezes the window**
   (`host-gtk`). host-gtk installed no async executor, so `spawn_async`
   fell back to blocking the GTK main thread until the future finished; a
