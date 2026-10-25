@@ -289,6 +289,13 @@ fn regression_linux_text_area_parity() {
         if label.text() != "Write a note" {
             return Err(format!("placeholder text is {:?}", label.text()));
         }
+        // An overlay child maps on a later frame than the window does, so
+        // wait for it (bounded) rather than race the first map.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !shown(&label) && Instant::now() < deadline {
+            ctx.iteration(false);
+            std::thread::sleep(Duration::from_millis(1));
+        }
         if !shown(&label) {
             return Err("placeholder exists but is not shown on an empty text_area".into());
         }

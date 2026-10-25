@@ -3312,6 +3312,13 @@ impl LinuxBackend {
 
         if let Some(handler) = on_key_down {
             let keys = gtk4::EventControllerKey::new();
+            // CAPTURE, not the default bubble phase: the key reaches the
+            // entry's inner `GtkText` first otherwise, and it consumes Enter
+            // as its `activate` action — the author never saw Enter, so a
+            // submit-on-Enter field did nothing. Capture runs from the
+            // toplevel down, before any handler on the text itself, which is
+            // also what lets `PreventDefault` stop the key.
+            keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
             let entry_for_keys = entry.clone();
             keys.connect_key_pressed(move |_, keyval, _code, state| {
                 let (start, end) = entry_for_keys
@@ -3540,6 +3547,10 @@ impl LinuxBackend {
         let mut pending_controllers: Vec<gtk4::EventController> = Vec::new();
         if let Some(handler) = on_key_down {
             let keys = gtk4::EventControllerKey::new();
+            // CAPTURE, for the same reason as the entry's: in the bubble
+            // phase the text view's own key handling (installed first)
+            // inserts Enter's newline before this controller runs.
+            keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
             let buffer_for_keys = buffer.clone();
             keys.connect_key_pressed(move |_, keyval, _code, state| {
                 // Character offsets, like the entry's `selection_bounds`.
@@ -3560,7 +3571,8 @@ impl LinuxBackend {
                     selection_end: end,
                 };
                 // `PreventDefault` stops the key before the text view's own
-                // handling — an Enter that submits inserts no newline.
+                // handling (this controller runs in capture) — an Enter that
+                // submits inserts no newline.
                 match (handler)(&ev) {
                     KeyOutcome::PreventDefault => gtk4::glib::Propagation::Stop,
                     KeyOutcome::Default => gtk4::glib::Propagation::Proceed,

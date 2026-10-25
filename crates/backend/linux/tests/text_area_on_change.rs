@@ -152,8 +152,11 @@ fn regression_linux_text_area_on_change_never_fires() {
         .observe_controllers()
         .into_iter()
         .filter_map(|c| c.ok()?.downcast::<gtk4::EventControllerKey>().ok())
-        .next()
-        .expect("text_area installs a key controller when on_key_down is set");
+        // The author's controller is the capture-phase one; a bubble-phase
+        // controller would run after the text view inserted the newline
+        // (see `key_down_sees_enter.rs`).
+        .find(|k| k.propagation_phase() == gtk4::PropagationPhase::Capture)
+        .expect("text_area installs a capture-phase key controller when on_key_down is set");
     let stopped: bool = controller.emit_by_name(
         "key-pressed",
         &[&gtk4::gdk::Key::Return.into_glib(), &0u32, &gtk4::gdk::ModifierType::empty()],
