@@ -2075,7 +2075,7 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 ### Fixed
 
 - **Linux: `on_key_down` on a `text_input` / `text_area` sees Enter**
-  (`backend-linux`). The author's key controller ran in GTK's bubble
+  (`backend-linux` 3.0.2). The author's key controller ran in GTK's bubble
   phase, after the entry's inner `GtkText` had consumed Enter as its
   `activate` action (and after a text view had inserted the newline), so
   submit-on-Enter fields did nothing and `PreventDefault` could not stop a
