@@ -335,9 +335,19 @@ fn generate_wrapper(
     // (Cargo cycle) — they're pulled in here at the generated wrapper,
     // which sits above both. Nothing registers them client-side: their
     // scene handlers run on the host (see `attachRuntimeServerUrl` below).
-    let drawer_navigator_dep = source.dep("crates/sdk/client/navigators/drawer", &[]);
-    let codeblock_dep = source.dep("crates/sdk/client/codeblock", &[]);
-    let table_dep = source.dep("crates/sdk/client/table", &[]);
+    //
+    // Resolved only for the runtime-server wrapper, the one that names
+    // them: the drawer is not published, so asking a registry source for
+    // it panics, and a local build — every registry-sourced app's — never
+    // got as far as compiling.
+    let (drawer_navigator_dep, codeblock_dep, table_dep) = match mode {
+        BuildMode::RuntimeServer => (
+            source.dep("crates/sdk/client/navigators/drawer", &[]),
+            source.dep("crates/sdk/client/codeblock", &[]),
+            source.dep("crates/sdk/client/table", &[]),
+        ),
+        BuildMode::Local => Default::default(),
+    };
 
     let cargo_toml = match mode {
         BuildMode::Local => format!(
@@ -1050,6 +1060,14 @@ mod regression_tests {
     }
 
     fn run_generator(mode: BuildMode) -> (std::path::PathBuf, tempfile::TempDir) {
+        run_generator_with(mode, None)
+    }
+
+    /// [`run_generator`] against `source` (default: a workspace checkout).
+    fn run_generator_with(
+        mode: BuildMode,
+        source: Option<FrameworkSource>,
+    ) -> (std::path::PathBuf, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project_dir = tmp.path().join("project");
         let wrapper_dir = tmp.path().join("wrapper");
@@ -1063,7 +1081,7 @@ mod regression_tests {
         // existence check passes — we never actually invoke it.
         std::fs::write(toolchain_bin.join("aarch64-linux-android21-clang"), b"").unwrap();
         let manifest = fake_manifest();
-        let source = FrameworkSource::Workspace { root: workspace_root };
+        let source = source.unwrap_or(FrameworkSource::Workspace { root: workspace_root });
         generate_wrapper(
             &wrapper_dir,
             &project_dir,
@@ -1077,6 +1095,28 @@ mod regression_tests {
         )
         .expect("generate wrapper");
         (wrapper_dir, tmp)
+    }
+
+    /// A registry-sourced app's local wrapper resolves only published
+    /// crates. The drawer navigator is not published, and the
+    /// runtime-server SDKs it sits beside are never linked locally, so
+    /// a registry source without them must still generate — it panicked
+    /// for every registry-sourced app before (CrewForge, CLI 1.18.3).
+    #[test]
+    fn local_wrapper_from_a_registry_source_skips_the_runtime_server_sdks() {
+        let source = FrameworkSource::Registry {
+            registry: "idealyst".to_string(),
+            versions: build_ios::FrameworkVersions::new([
+                ("crates/runtime/core", "runtime-core", "3.2.0"),
+                ("crates/runtime/shared", "runtime-shared", "3.1.0"),
+                ("crates/backend/android/mobile", "backend-android-mobile", "4.1.0"),
+            ]),
+        };
+        let (wrapper, _tmp) = run_generator_with(BuildMode::Local, Some(source));
+        let cargo = std::fs::read_to_string(wrapper.join("Cargo.toml")).unwrap();
+        for sdk in ["drawer-navigator", "codeblock", "table ="] {
+            assert!(!cargo.contains(sdk), "local wrapper names `{sdk}`:\n{cargo}");
+        }
     }
 
     fn parse(toml_text: &str) -> toml::Value {

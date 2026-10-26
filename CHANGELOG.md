@@ -2075,6 +2075,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **An Android scroll view's alignment arranges its content**
+  (`backend-android-mobile`). The author's `align_items`,
+  `justify_content`, `gap` and `flex_wrap` landed on the outer scroller,
+  whose only child is the inner content node, so `align_items: center`
+  centred the inner and it hugged its content: a `width: 100%` column
+  collapsed to its narrowest word. They now arrange the children, as on
+  web, and the inner always spans the scroller across its axis.
+
+- **A registry-sourced app builds for Android locally** (`build-android`,
+  `idealyst-cli`). The generated wrapper asked the registry for the drawer
+  navigator, which is not published, and panicked before compiling. The
+  runtime-server-only SDKs are now resolved only for a runtime-server
+  build.
+
 - **A column no longer keeps a text's min-content height** (`runtime-layout`).
   Taffy 0.7–0.11 cached a flex item's min-content layout under a key that
   ignored the available space, so the final layout reused it: a column
