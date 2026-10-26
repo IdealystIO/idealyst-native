@@ -7,6 +7,7 @@
 mod a11y;
 mod animation;
 pub(crate) mod app_state;
+mod cookies;
 pub(crate) mod hosted_root;
 /// Cooperative main-thread async executor. Gated on `async-driver` since it
 /// needs `runtime_shared::driver` (which the feature brings in). Mirrors the
@@ -956,6 +957,7 @@ impl AndroidBackend {
             app_key: None,
             app_pointer: None,
         };
+        cookies::install(&backend);
         backend.install_viewport_resize_listener();
         soft_keyboard::install(&backend);
         app_state::install(&backend);
