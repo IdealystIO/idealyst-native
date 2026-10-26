@@ -2051,6 +2051,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A screen-pinned Android app fills the screen**
+  (`backend-android-mobile` 4.0.1). Pinning empties the status bar and
+  the tablet taskbar but keeps reporting both insets, so the app sat
+  between a blank top strip and a black 60dp slab. The app now hides the
+  system bars while pinned and gets them back when unpinned, unless
+  `set_fullscreen(true)` is on. Pick it up with
+  `cargo update -p backend-android-mobile`.
+
 - **A `TableGroup` band's trailing action centres over the actions
   column** (`idea-ui`). The band's trailing box padded only its right side
   (8px), so a 24px + centred 20px from the table's edge while the rows' ⋯

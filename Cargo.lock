@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "android_logger",
  "backend-android-core",
