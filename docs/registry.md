@@ -308,6 +308,13 @@ is ignored (every module is read), and fn signature changes are not detected.
 For a false positive, `--skip-api-check <CRATE>` keeps the crate at its subject
 level; its findings still print, labelled `(API check waived)`.
 
+A crate whose recorded commit is not in the local clone (released from a
+machine that has not pushed) stops the plan: its history cannot be read.
+`--skip <CRATE>` leaves it out without reading it. It is never published
+while skipped, since a release from this clone would lack the unpushed
+work, and a plan that has to republish it (a dependency of it goes major)
+fails instead.
+
 A major bump drags its dependents into the plan. A dependent with a library
 target goes **major** too (transitively, and raising a smaller bump it earned
 itself): its new release requires the new major, whose types are in its API, so

@@ -205,11 +205,16 @@ subject?
   was and the comment rides into its next real release — `backend-web` was
   excluded this way four releases running. Say so in the release commit.
   `--only` is a `build`/`publish` flag; `plan` does not take it, so plan
-  without and subtract in your head. `--only` also skips reading every
-  other crate's history, so when `plan` dies with "is <sha> still in this
-  history?" (a crate released from a clone that never pushed), a
-  `publish --only <crate>` of the crates you need still works — the plan
-  it prints is the one to check.
+  without and subtract in your head.
+- **`--skip <CRATE>`** (repeatable, on `plan`/`build`/`publish`) leaves a crate
+  out without reading its history. It is the answer when `plan` dies with "is
+  <sha> still in this history?": that crate was released from a clone that
+  never pushed, so its change detection cannot run here, and a release of it
+  from here would lack the unpushed work. Find every such crate at once:
+  check each `releases.json` commit with `git cat-file -e <sha>^{commit}`.
+  If the plan must republish a skipped crate (a dependency of it goes major),
+  it fails rather than leave it on the old major. Name the skip in the
+  release commit; it ends once the other clone pushes.
 - **`--force <CRATE>`** releases a crate at a patch bump although its directory
   is unchanged. Reach for it only when the *published manifest* is wrong and
   the source is right — an under-declared internal requirement is the case it

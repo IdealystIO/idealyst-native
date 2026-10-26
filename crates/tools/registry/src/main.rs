@@ -162,6 +162,15 @@ struct RemoteArgs {
     /// print, so the waiver is visible in the plan.
     #[arg(long = "skip-api-check", value_name = "CRATE")]
     skip_api_check: Vec<String>,
+    /// Leave this crate out of the release without reading its history.
+    /// For a crate whose recorded release commit is not in this clone (it
+    /// was released from a machine that has not pushed): its change
+    /// detection cannot run here, and releasing it from here would publish
+    /// a version that lacks the unpushed work. If the plan needs to
+    /// republish it anyway (a dependency of it goes major), the plan fails
+    /// instead of leaving it on the old major.
+    #[arg(long = "skip", value_name = "CRATE")]
+    skip: Vec<String>,
     /// The registry's name as consumers spell it in `.cargo/config.toml`.
     #[arg(long, env = "IDEALYST_REGISTRY_NAME", default_value = "idealyst")]
     registry_name: String,
@@ -668,9 +677,23 @@ fn plan_from_state(
     state: &ReleaseState,
     only: &[String],
 ) -> Result<BTreeMap<String, Release>> {
+    for name in &r.skip {
+        if !ws.packages.contains_key(name) {
+            bail!("--skip {name}: no such workspace member");
+        }
+        if only.contains(name) {
+            bail!("--skip {name} and --only {name} contradict each other");
+        }
+    }
+    if !r.skip.is_empty() {
+        println!("skipped, history not read: {}", r.skip.join(", "));
+    }
     let mut plan: BTreeMap<String, Release> = BTreeMap::new();
     for p in ws.publishable() {
         if !only.is_empty() && !only.contains(&p.name) {
+            continue;
+        }
+        if r.skip.contains(&p.name) {
             continue;
         }
         let Some(prev) = state.crates.get(&p.name) else {
@@ -743,7 +766,25 @@ fn plan_from_state(
     apply_bump_overrides(&mut plan, &r.bump)?;
 
     drag_in_dependents_of_majors(ws, &state, &mut plan)?;
+    refuse_skipped(&plan, &r.skip)?;
     Ok(plan)
+}
+
+/// Fail when the plan has to publish a crate the release was told to skip:
+/// a `--force` or `--bump` naming it, or a dependency of it going major.
+/// Leaving a dragged-in dependent out would keep it on the old major, and a
+/// consumer would build two copies of the dependency.
+fn refuse_skipped(plan: &BTreeMap<String, Release>, skip: &[String]) -> Result<()> {
+    let needed: Vec<&str> = skip.iter().filter(|s| plan.contains_key(*s)).map(String::as_str).collect();
+    if needed.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "the plan must republish {} (named with --force/--bump, or a dependency goes major), \
+         but it is skipped. Release it from a clone that has its recorded commit, or leave \
+         the crates that drag it in out of this release with --only.",
+        needed.join(", "),
+    )
 }
 
 /// Bring the dependents of every major-bumped crate into the plan.
@@ -1351,6 +1392,7 @@ mod tests {
             force: vec![],
             bump: vec![],
             skip_api_check: vec![],
+            skip: vec![],
             registry_name: "idealyst".into(),
         };
 
@@ -1616,6 +1658,7 @@ mod tests {
             force: vec![],
             bump: vec![],
             skip_api_check: vec![],
+            skip: vec![],
             registry_name: "idealyst".into(),
         };
 
@@ -1626,6 +1669,28 @@ mod tests {
         if let Err(e) = plan_from_state(&ws, &r, &state, &["fixed".to_string()]) {
             panic!("--only must not read the unpushed crate's history: {e}");
         }
+        // A full plan with the crate skipped reads every other crate's history
+        // and leaves it out.
+        let skipping = RemoteArgs { skip: vec!["unpushed".into()], ..r };
+        let plan = plan_from_state(&ws, &skipping, &state, &[])
+            .unwrap_or_else(|e| panic!("--skip must not read the skipped crate's history: {e}"));
+        assert!(!plan.contains_key("unpushed"), "{:?}", plan.keys().collect::<Vec<_>>());
+        let Err(err) = plan_from_state(&ws, &skipping, &state, &["unpushed".to_string()]) else {
+            panic!("--skip and --only on one crate must be refused");
+        };
+        assert!(err.to_string().contains("contradict"), "{err}");
+    }
+
+    /// A skipped crate that a major would drag in cannot be left out
+    /// quietly: it would stay on the old major beside the new one.
+    #[test]
+    fn a_skipped_crate_the_plan_must_republish_fails_the_plan() {
+        let (ws, state) = idea_ui_family();
+        let mut plan = BTreeMap::from([("idea-ui".to_string(), planned(Bump::Major, (4, 1, 0)))]);
+        drag_in_dependents_of_majors(&ws, &state, &mut plan).unwrap();
+        let err = refuse_skipped(&plan, &["idea-ui-nav".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("idea-ui-nav"), "{err}");
+        assert!(refuse_skipped(&plan, &["css".to_string()]).is_ok(), "not in the plan: fine");
     }
 
     /// `--force` exists for a published manifest that is wrong while the
