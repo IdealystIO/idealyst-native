@@ -109,6 +109,11 @@ mod border_dash_policy;
 /// tests run on the host; the JNI calls live in `imp/style.rs`.
 mod text_truncation_policy;
 
+/// What a `.safe_area(...)` view still owes after the host root's own
+/// system-bar margins. Un-gated like `sticky_compute` so the regression
+/// tests run on the host; the JNI half lives in `imp/mod.rs`.
+mod safe_area_policy;
+
 /// Soft-keyboard (IME) overlap state + viewport/transition math. Un-gated
 /// like `sticky_compute` so the regression tests run on the host; the
 /// JNI half (`RustKeyboardInsets` install + per-frame reports) lives in

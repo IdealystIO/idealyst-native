@@ -373,6 +373,7 @@ fn measure_textview(
         // frame too small for the glyphs to render in.
         let w_dp = measured_w_px as f32 / density;
         let h_dp = measured_h_px as f32 / density;
+        super::super::restore_after_probe(env, &view_obj);
         runtime_layout::Size {
             width: known_dimensions.width.unwrap_or(w_dp.ceil()),
             height: known_dimensions.height.unwrap_or(h_dp.ceil()),

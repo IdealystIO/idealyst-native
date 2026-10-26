@@ -2059,6 +2059,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `set_fullscreen(true)` is on. Pick it up with
   `cargo update -p backend-android-mobile`.
 
+- **Android `.safe_area(...)` no longer insets a second time**
+  (`backend-android-mobile` 4.0.2). The host root already sits inside the
+  system bars, but safe-area views padded by the bars again — a tablet's
+  taskbar left a band its own height above it — and fell back to guessed
+  24dp insets. A safe-area view now owes only the part of a display cutout
+  the bars do not cover, which is zero while the bars are shown.
+
+- **Android labels no longer render cut to their first word after the
+  keyboard closes** (`backend-android-mobile` 4.0.2). Sizing a label
+  measures it at a probe width; when the following layout left its frame
+  unchanged, Android's measure cache skipped re-measuring and the label
+  kept the probe's wrapped layout. The probe is now undone at the label's
+  laid-out frame.
+
 - **A `TableGroup` band's trailing action centres over the actions
   column** (`idea-ui`). The band's trailing box padded only its right side
   (8px), so a 24px + centred 20px from the table's edge while the rows' ⋯

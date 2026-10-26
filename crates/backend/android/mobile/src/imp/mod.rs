@@ -638,11 +638,46 @@ fn measure_external_view(
             .call_method(&view_obj, "getMeasuredHeight", "()I", &[])
             .and_then(|v| v.i())
             .unwrap_or(0);
+        restore_after_probe(env, &view_obj);
         runtime_layout::Size {
             width: w_px as f32 / density,
             height: h_px as f32 / density,
         }
     })
+}
+
+/// Put a view back at its laid-out frame after a Taffy probe measured it.
+///
+/// A probe is a real `View.measure`, so a `TextView` rebuilds its text
+/// layout at the probe's width — `AT_MOST 0` for min-content wraps a
+/// label to a character a line. Nothing guarantees a later measure at
+/// the real frame: when the relayout leaves the frame unchanged (the
+/// soft keyboard closing), Android's measure cache can answer
+/// `EXACTLY(frame)` without calling `onMeasure`, and the label draws the
+/// probe's layout in its full-size frame, cut to its first word. So the
+/// probe is undone here: `forceLayout` bypasses the cache and the
+/// measure rebuilds the layout at the frame the view is drawn in. A view
+/// not yet laid out has no frame to restore, and its first layout
+/// measures it fresh.
+pub(crate) fn restore_after_probe(env: &mut JNIEnv, view: &JObject) {
+    const EXACTLY: i32 = 0x4000_0000; // 1 << 30
+    let size = |env: &mut JNIEnv, m: &str| {
+        env.call_method(view, m, "()I", &[]).and_then(|v| v.i()).unwrap_or(0)
+    };
+    let (w, h) = (size(env, "getWidth"), size(env, "getHeight"));
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let _ = env.call_method(view, "forceLayout", "()V", &[]);
+    let _ = env.call_method(
+        view,
+        "measure",
+        "(II)V",
+        &[
+            JValue::Int(EXACTLY | (w & 0x3fff_ffff)),
+            JValue::Int(EXACTLY | (h & 0x3fff_ffff)),
+        ],
+    );
 }
 
 /// Install a `text_area`-specific measure_fn: measure the EditText's content
@@ -1456,19 +1491,24 @@ impl AndroidBackend {
         self.run_layout_pass();
     }
 
-    /// Read system safe-area insets (status bar, navigation bar,
-    /// display cutout) from the host root's `WindowInsets`. Returns
-    /// values in dp so they match Taffy's coordinate space.
+    /// The safe-area insets a `.safe_area(...)` view still owes, in dp:
+    /// the part of the display cutout that the host root does not
+    /// already keep clear of.
     ///
-    /// On API 30+ uses `WindowInsets.getInsets(systemBars | displayCutout)`
-    /// which reports the unconsumed insets regardless of
-    /// `fitsSystemWindows`. The pre-30 deprecated
-    /// `getSystemWindowInset*` accessors return zero when the
-    /// activity isn't in edge-to-edge mode (system "consumed" them);
-    /// the new path always returns the real values.
+    /// The root never sits under a system bar. With the keyboard
+    /// tracker installed the window is edge to edge and
+    /// `RustKeyboardInsets` re-applies the system-bar insets as margins
+    /// on the root; without it the window fits the bars itself. Reporting
+    /// the bars again here insets the content twice — a tablet's taskbar
+    /// left a band its own height above it. What can still overlap the
+    /// root is a cutout the bars do not cover: hidden bars (pinned or
+    /// fullscreen) draw into it under `SHORT_EDGES`. So each side is the
+    /// cutout minus the bars, which is zero whenever the bars are shown.
+    ///
+    /// `getRootWindowInsets` is null before the host is attached; that
+    /// reads as no inset.
     fn platform_safe_area_insets(&self) -> runtime_shared::EdgeInsets {
         let host = self.root.as_obj();
-        let mut final_insets = runtime_shared::EdgeInsets::ZERO;
         let result = with_env(|env| -> Option<runtime_shared::EdgeInsets> {
             let density = density_of(env, &host).unwrap_or(1.0);
             let insets_obj = env
@@ -1483,126 +1523,36 @@ impl AndroidBackend {
             if insets_obj.is_null() {
                 return None;
             }
-            // Prefer `WindowInsets.getInsets(int typeMask)` (API 30+)
-            // which honors edge-to-edge / non-edge-to-edge alike. The
-            // mask is `Type.systemBars() | Type.displayCutout()` —
-            // `systemBars` is 0x1|0x2|0x4 = 7 (statusBars|navigationBars|captionBar)
-            // and `displayCutout` is 0x80 = 128. So mask = 135.
-            // `android.view.WindowInsets$Type.systemBars()` returns 7;
-            // we hardcode the bits to avoid the static-method lookup
-            // round-trip. These constants are stable in the AOSP
-            // source since they were added in API 30.
-            let type_mask: i32 = 7 | 128;
-            // First try the API-30+ `getInsets(int)` returning Insets.
-            let insets_struct = env
-                .call_method(
-                    &insets_obj,
-                    "getInsets",
-                    "(I)Landroid/graphics/Insets;",
-                    &[jni::objects::JValue::Int(type_mask)],
-                )
-                .ok()
-                .and_then(|v| v.l().ok());
-            let (top_px, right_px, bottom_px, left_px) = match insets_struct {
-                Some(ref s) if !s.is_null() => {
-                    // Insets is a final class with public int fields
-                    // (top, left, bottom, right).
-                    let mut read_field = |name: &str| -> i32 {
-                        env.get_field(s, name, "I").and_then(|v| v.i()).unwrap_or(0)
-                    };
-                    (
-                        read_field("top"),
-                        read_field("right"),
-                        read_field("bottom"),
-                        read_field("left"),
+            // `WindowInsets.getInsets(int)` is API 30+. Below it there is
+            // no hidden-bars cutout to report, so no inset.
+            // `Type.systemBars()` is 7 (statusBars | navigationBars |
+            // captionBar) and `Type.displayCutout()` is 128; the bits are
+            // hardcoded to skip the static-method lookups, and have been
+            // stable since API 30.
+            let mut insets_of = |type_mask: i32| -> Option<[i32; 4]> {
+                let s = env
+                    .call_method(
+                        &insets_obj,
+                        "getInsets",
+                        "(I)Landroid/graphics/Insets;",
+                        &[jni::objects::JValue::Int(type_mask)],
                     )
-                }
-                _ => {
-                    // Fallback for pre-API-30: deprecated getSystemWindowInset*.
-                    let mut read = |name: &str| -> i32 {
-                        env.call_method(&insets_obj, name, "()I", &[])
-                            .and_then(|v| v.i())
-                            .unwrap_or(0)
-                    };
-                    (
-                        read("getSystemWindowInsetTop"),
-                        read("getSystemWindowInsetRight"),
-                        read("getSystemWindowInsetBottom"),
-                        read("getSystemWindowInsetLeft"),
-                    )
-                }
+                    .ok()
+                    .and_then(|v| v.l().ok())
+                    .filter(|s| !s.is_null())?;
+                // Insets is a final class with public int fields.
+                let mut field = |name: &str| -> i32 {
+                    env.get_field(&s, name, "I").and_then(|v| v.i()).unwrap_or(0)
+                };
+                Some([field("top"), field("right"), field("bottom"), field("left")])
             };
-            // Some activity configurations report all-zero insets
-            // (system "consumed" the bars and resized the activity
-            // view above them). On Android's emulator with default
-            // gesture nav, that means the activity's view ends right
-            // at the gesture bar's top edge — but the gesture
-            // indicator pill still renders OVER the bottom of the
-            // activity's content. Children at the activity's bottom
-            // (sidebar toggle in our docs example) end up half-hidden
-            // by the pill. Fall back to Android's standard system
-            // resource lookups so authors get reasonable bottom
-            // breathing room regardless of edge-to-edge state.
-            let (mut top, mut right, mut bottom, mut left) = (
-                top_px as f32 / density,
-                right_px as f32 / density,
-                bottom_px as f32 / density,
-                left_px as f32 / density,
-            );
-            if top == 0.0 && bottom == 0.0 && left == 0.0 && right == 0.0 {
-                if let Some((sb, nb)) = read_system_bar_dimens(env, &host) {
-                    log::info!(
-                        "[safe-area] fallback dimens status_bar={}dp nav_bar={}dp",
-                        sb, nb
-                    );
-                    top = sb;
-                    bottom = nb;
-                }
-                // Last-resort fallback: even when `getIdentifier`
-                // returns 0 (some OEM ROMs strip the platform dimen),
-                // the gesture/nav bar still overlays the bottom of the
-                // activity. A conservative 24dp keeps the toggle row /
-                // last-item area out from under the indicator pill.
-                if bottom == 0.0 {
-                    bottom = 24.0;
-                }
-            }
+            let bars = insets_of(7)?;
+            let cutout = insets_of(128)?;
+            let [top, right, bottom, left] =
+                crate::safe_area_policy::owed_insets(bars, cutout, density);
             Some(runtime_shared::EdgeInsets { top, right, bottom, left })
         });
-        final_insets = result.unwrap_or(runtime_shared::EdgeInsets::ZERO);
-        // Even after the `Insets`/deprecated/`Resources` fallbacks, if
-        // we still see 0 it means `getRootWindowInsets` returned null
-        // (host hasn't been attached to a window yet, e.g. very early
-        // in mount). Apply a conservative bottom inset so the
-        // sidebar's toggle row isn't permanently hidden behind the
-        // gesture pill. The next inset-changed cycle will replace
-        // this with real measurements.
-        if final_insets.top == 0.0
-            && final_insets.bottom == 0.0
-            && final_insets.left == 0.0
-            && final_insets.right == 0.0
-        {
-            final_insets.top = 24.0;
-            final_insets.bottom = 24.0;
-        }
-        // INTERIM (non-edge-to-edge): this Android activity lays its
-        // content out BELOW the status bar already — the window insets
-        // are effectively consumed at the top. So a `.safe_area(TOP)`
-        // surface (e.g. the drawer sidebar) must NOT re-add the
-        // status-bar inset, or it double-insets (~2× the bar height; the
-        // sidebar brand sat far too low). Zero the top so `.safe_area(TOP)`
-        // is a no-op here and the system's own layout inset is the single
-        // source of top spacing. The bottom is intentionally KEPT: the
-        // gesture / navigation pill overlays content even when not
-        // edge-to-edge, so a bottom inset is genuinely needed.
-        //
-        // When the app adopts edge-to-edge (deferred to a dedicated
-        // effort), this must instead report the view's real *unconsumed*
-        // top inset — matching iOS's per-view `safeAreaInsets`, which is
-        // already correct because iOS surfaces are full-screen under the
-        // notch. iOS is a separate backend and unaffected by this.
-        final_insets.top = 0.0;
-        final_insets
+        result.unwrap_or(runtime_shared::EdgeInsets::ZERO)
     }
 
     /// Run the layout pass: for every Taffy root (the framework's
@@ -2100,73 +2050,6 @@ pub(crate) static ANDROID_VIRTUAL_GRID_OPS: AndroidVirtualGridOps = AndroidVirtu
 runtime_tls::thread_local! {
     pub(crate) static ANDROID_BACKEND_SELF: std::cell::RefCell<Option<std::rc::Weak<std::cell::RefCell<AndroidBackend>>>> =
         const { std::cell::RefCell::new(None) };
-}
-
-/// Read Android's well-known `status_bar_height` / `navigation_bar_height`
-/// dimens from the platform's internal resources. Used as a fallback
-/// when `WindowInsets` reports all zeros (some activities consume
-/// insets at the system level but the gesture/nav bar still renders
-/// over content). Returns `(status_bar_dp, navigation_bar_dp)`.
-fn read_system_bar_dimens(
-    env: &mut JNIEnv,
-    host: &JObject,
-) -> Option<(f32, f32)> {
-    let density = density_of(env, host).unwrap_or(1.0);
-    let context = env
-        .call_method(host, "getContext", "()Landroid/content/Context;", &[])
-        .ok()
-        .and_then(|v| v.l().ok())?;
-    if context.is_null() {
-        return None;
-    }
-    let resources = env
-        .call_method(&context, "getResources", "()Landroid/content/res/Resources;", &[])
-        .ok()
-        .and_then(|v| v.l().ok())?;
-    let read_dimen = |env: &mut JNIEnv, name: &str| -> f32 {
-        let id_name = match env.new_string(name) {
-            Ok(s) => s,
-            Err(_) => return 0.0,
-        };
-        let android_str = match env.new_string("android") {
-            Ok(s) => s,
-            Err(_) => return 0.0,
-        };
-        let dimen_str = match env.new_string("dimen") {
-            Ok(s) => s,
-            Err(_) => return 0.0,
-        };
-        let res_id: i32 = env
-            .call_method(
-                &resources,
-                "getIdentifier",
-                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I",
-                &[
-                    jni::objects::JValue::Object(&id_name),
-                    jni::objects::JValue::Object(&dimen_str),
-                    jni::objects::JValue::Object(&android_str),
-                ],
-            )
-            .and_then(|v| v.i())
-            .unwrap_or(0);
-        if res_id == 0 {
-            return 0.0;
-        }
-        let px: i32 = env
-            .call_method(
-                &resources,
-                "getDimensionPixelSize",
-                "(I)I",
-                &[jni::objects::JValue::Int(res_id)],
-            )
-            .and_then(|v| v.i())
-            .unwrap_or(0);
-        px as f32 / density
-    };
-    Some((
-        read_dimen(env, "status_bar_height"),
-        read_dimen(env, "navigation_bar_height"),
-    ))
 }
 
 /// Walk the subtree rooted at `view`, checking each view's pointer
