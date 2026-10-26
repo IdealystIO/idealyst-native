@@ -3486,6 +3486,13 @@ impl AndroidBackend {
         } else {
             self.layout.set_style(layout_node, style);
         }
+        // A scroll view's content-arranging rules belong to the inner that
+        // holds its children — see `scroll_axis_policy::inner_forwarded_rules`.
+        if let Some(inner) = self.scroll_view_inner.get(&key).cloned() {
+            let inner_layout = self.layout_for_view(&inner);
+            self.layout
+                .set_style(inner_layout, &crate::scroll_axis_policy::inner_forwarded_rules(style));
+        }
 
         // Position::Sticky → register against the enclosing
         // ScrollView so the per-scroll-event sticky listener pins

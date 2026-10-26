@@ -13,7 +13,10 @@
 //! one of them, and a sticky child finds only the inner scroller, so a
 //! `top` + `left` corner cell can pin on one axis at most.
 
-use runtime_shared::{AlignItems, AlignSelf, FlexDirection, Length, ScrollAxis, StyleRules, Tokenized};
+use runtime_shared::{
+    AlignItems, AlignSelf, FlexDirection, FlexWrap, JustifyContent, Length, ScrollAxis, StyleRules,
+    Tokenized,
+};
 
 /// JNI class name of the outer scroller for `axis`.
 pub(crate) fn scroller_class(axis: ScrollAxis) -> &'static str {
@@ -76,14 +79,44 @@ pub(crate) fn inner_content_rules(axis: ScrollAxis) -> StyleRules {
     rules.flex_shrink = Some(Tokenized::Literal(0.0));
     let full = || Some(Tokenized::Literal(Length::Percent(100.0)));
     match axis {
-        ScrollAxis::Vertical => rules.min_height = full(),
-        ScrollAxis::Horizontal => rules.min_width = full(),
+        // The inner spans the scroller across its axis whatever the
+        // author's `align_items` on the scroll view: that alignment is for
+        // the content (`inner_forwarded_rules`), and an inner it centred
+        // would hug its content, collapsing any `width: 100%` child.
+        ScrollAxis::Vertical => {
+            rules.align_self = Some(AlignSelf::Stretch);
+            rules.min_height = full();
+        }
+        ScrollAxis::Horizontal => {
+            rules.align_self = Some(AlignSelf::Stretch);
+            rules.min_width = full();
+        }
         ScrollAxis::Both => {
             rules.align_self = Some(AlignSelf::FlexStart);
             rules.min_width = full();
             rules.min_height = full();
         }
     }
+    rules
+}
+
+/// The scroll view's own rules that arrange its CONTENT, moved onto the
+/// inner — the node that holds the children. On web a scroll view's
+/// `align_items` / `justify_content` / `gap` / `flex_wrap` lay out its
+/// children; on Android the author's style lands on the outer, whose only
+/// child is the inner, so without this they arranged the inner instead
+/// (a centred column collapsed to its narrowest — the kiosk's form
+/// picker). Each unset rule falls back to the inner's own default, so a
+/// rule removed on a reactive re-apply does not linger (`set_style`
+/// merges).
+pub(crate) fn inner_forwarded_rules(author: &StyleRules) -> StyleRules {
+    let mut rules = StyleRules::default();
+    rules.align_items = Some(author.align_items.unwrap_or(AlignItems::Stretch));
+    rules.justify_content = Some(author.justify_content.unwrap_or(JustifyContent::FlexStart));
+    rules.flex_wrap = Some(author.flex_wrap.unwrap_or(FlexWrap::NoWrap));
+    rules.gap = Some(author.gap.clone().unwrap_or(Tokenized::Literal(Length::Px(0.0))));
+    rules.row_gap = author.row_gap.clone();
+    rules.column_gap = author.column_gap.clone();
     rules
 }
 
@@ -230,6 +263,43 @@ mod tests {
         assert!((t.frame_of(inner).height - 300.0).abs() < 0.5, "got {}", t.frame_of(inner).height);
         assert!((t.frame_of(grow).height - 300.0).abs() < 0.5, "got {}", t.frame_of(grow).height);
         assert!((t.frame_of(form).y - 100.0).abs() < 0.5, "form centred, got y {}", t.frame_of(form).y);
+    }
+
+    /// A scroll view's `align_items: Center` centres its content, as on
+    /// web, rather than the inner: a `width: 100%` / `max_width: 880`
+    /// column fills to its cap and sits in the middle (the kiosk's form
+    /// picker collapsed to its narrowest word).
+    #[test]
+    fn scroll_view_alignment_arranges_the_content_not_the_inner() {
+        let mut t = LayoutTree::new();
+        let panel = t.new_node();
+        let mut pr = StyleRules::default();
+        pr.width = px(1200.0);
+        pr.height = px(600.0);
+        t.set_style(panel, &pr);
+        let outer = t.new_node();
+        t.add_child(panel, outer);
+        let mut author = StyleRules::default();
+        author.flex_grow = Some(Tokenized::Literal(1.0));
+        author.flex_direction = Some(FlexDirection::Column);
+        author.align_items = Some(AlignItems::Center);
+        t.set_style(outer, &author);
+        let inner = t.new_node();
+        t.add_child(outer, inner);
+        t.set_overflow_scroll_axis(outer, ScrollAxis::Vertical);
+        t.set_style(inner, &inner_content_rules(ScrollAxis::Vertical));
+        t.set_style(inner, &inner_forwarded_rules(&author));
+        let column = t.new_node();
+        t.add_child(inner, column);
+        let mut cr = StyleRules::default();
+        cr.width = Some(Tokenized::Literal(Length::Percent(100.0)));
+        cr.max_width = px(880.0);
+        cr.height = px(200.0);
+        t.set_style(column, &cr);
+        t.compute(panel, 1200.0, 600.0);
+        assert!((t.frame_of(inner).width - 1200.0).abs() < 0.5, "inner spans the viewport, got {}", t.frame_of(inner).width);
+        assert!((t.frame_of(column).width - 880.0).abs() < 0.5, "column fills to its cap, got {}", t.frame_of(column).width);
+        assert!((t.frame_of(column).x - 160.0).abs() < 0.5, "column centred, got x {}", t.frame_of(column).x);
     }
 
     #[test]
