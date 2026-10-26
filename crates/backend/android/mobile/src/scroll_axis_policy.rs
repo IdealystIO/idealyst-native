@@ -40,6 +40,13 @@ pub(crate) const SCROLL_CONTAINER_CLASSES: [&str; 3] = [
 
 /// Layout rules for the inner content container of an `axis` scroller.
 ///
+/// - Every axis floors the inner at the viewport on each axis it scrolls
+///   (`min_height` / `min_width: 100%`), as web scroll content fills its
+///   scroller: a `flex_grow` child then has the viewport to grow into, so
+///   content that fits can still centre itself in it (`margin: auto`, a
+///   centring parent). Without the floor the inner is exactly its
+///   content's size and nothing in it can grow. `flex_shrink: 0` keeps
+///   the floor a floor: taller content still overflows.
 /// - Vertical / Both stack children downward (`Column`): the inner's
 ///   height is the sum of its children, so it overflows the viewport and
 ///   the scroller has somewhere to go. With Taffy's default `Row` the
@@ -62,9 +69,20 @@ pub(crate) fn inner_content_rules(axis: ScrollAxis) -> StyleRules {
         ScrollAxis::Vertical | ScrollAxis::Both => FlexDirection::Column,
     });
     rules.align_items = Some(AlignItems::Stretch);
-    if axis == ScrollAxis::Both {
-        rules.align_self = Some(AlignSelf::FlexStart);
-        rules.min_width = Some(Tokenized::Literal(Length::Percent(100.0)));
+    // Never shrink below the content: an explicit `min_*` replaces the
+    // automatic minimum (the content size), which is what keeps the inner
+    // from shrinking to the viewport, and content clipped to the viewport
+    // has nothing left to scroll.
+    rules.flex_shrink = Some(Tokenized::Literal(0.0));
+    let full = || Some(Tokenized::Literal(Length::Percent(100.0)));
+    match axis {
+        ScrollAxis::Vertical => rules.min_height = full(),
+        ScrollAxis::Horizontal => rules.min_width = full(),
+        ScrollAxis::Both => {
+            rules.align_self = Some(AlignSelf::FlexStart);
+            rules.min_width = full();
+            rules.min_height = full();
+        }
     }
     rules
 }
@@ -176,6 +194,42 @@ mod tests {
         assert!((outer.height - 300.0).abs() < 0.5, "got {}", outer.height);
         assert!((inner.width - 393.0).abs() < 0.5, "got {}", inner.width);
         assert!((inner.height - 1000.0).abs() < 0.5, "got {}", inner.height);
+    }
+
+    /// Content shorter than a vertical viewport still fills it, so a
+    /// `flex_grow` child can grow into the viewport and centre what it
+    /// holds — the sign-in form's `margin: auto` column sat at the top of
+    /// a tablet with the inner only as tall as the form.
+    #[test]
+    fn vertical_scroll_content_shorter_than_the_viewport_fills_it() {
+        let mut t = LayoutTree::new();
+        let panel = t.new_node();
+        let mut pr = StyleRules::default();
+        pr.width = px(393.0);
+        pr.height = px(300.0);
+        t.set_style(panel, &pr);
+        let outer = t.new_node();
+        t.add_child(panel, outer);
+        let inner = t.new_node();
+        t.add_child(outer, inner);
+        t.set_overflow_scroll_axis(outer, ScrollAxis::Vertical);
+        t.set_style(inner, &inner_content_rules(ScrollAxis::Vertical));
+        let grow = t.new_node();
+        let mut gr = StyleRules::default();
+        gr.flex_grow = Some(Tokenized::Literal(1.0));
+        t.set_style(grow, &gr);
+        t.add_child(inner, grow);
+        let form = t.new_node();
+        let mut fr = StyleRules::default();
+        fr.height = px(100.0);
+        fr.margin_top = Some(Tokenized::Literal(Length::Auto));
+        fr.margin_bottom = Some(Tokenized::Literal(Length::Auto));
+        t.set_style(form, &fr);
+        t.add_child(grow, form);
+        t.compute(panel, 393.0, 852.0);
+        assert!((t.frame_of(inner).height - 300.0).abs() < 0.5, "got {}", t.frame_of(inner).height);
+        assert!((t.frame_of(grow).height - 300.0).abs() < 0.5, "got {}", t.frame_of(grow).height);
+        assert!((t.frame_of(form).y - 100.0).abs() < 0.5, "form centred, got y {}", t.frame_of(form).y);
     }
 
     #[test]

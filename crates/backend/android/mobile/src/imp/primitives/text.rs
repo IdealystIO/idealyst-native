@@ -88,7 +88,7 @@ pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
                 .unwrap_or(match available_space.width {
                     runtime_layout::AvailableSpace::Definite(w) => w,
                     runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
-                    runtime_layout::AvailableSpace::MinContent => 0.0,
+                    runtime_layout::AvailableSpace::MinContent => min_content_width(&view_for_measure),
                 });
             measure_textview(&view_for_measure, avail_w, known_dimensions)
         }),
@@ -304,6 +304,38 @@ pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_shared::TextRun]) {
             &[JValue::Object(&sp)],
         );
     });
+}
+
+/// The TextView's min-content width in dp — its widest word, from the
+/// Kotlin `RustTextMeasure.minContentWidth`. A single-line view, or a
+/// runtime without the class (a stale staged Kotlin runtime), answers 0:
+/// the `AT_MOST 0` probe, which truncates a one-line label to its
+/// ellipsis.
+fn min_content_width(view: &GlobalRef) -> f32 {
+    with_env(|env| {
+        let view_obj = view.as_obj();
+        let density = super::super::density_of(env, &view_obj).unwrap_or(1.0);
+        let class = match env.find_class("io/idealyst/runtime/RustTextMeasure") {
+            Ok(c) => c,
+            Err(_) => {
+                let _ = env.exception_clear();
+                return 0.0;
+            }
+        };
+        let px = env
+            .call_static_method(
+                &class,
+                "minContentWidth",
+                "(Landroid/widget/TextView;)I",
+                &[JValue::Object(&view_obj)],
+            )
+            .and_then(|v| v.i())
+            .unwrap_or_else(|_| {
+                let _ = env.exception_clear();
+                0
+            });
+        px as f32 / density
+    })
 }
 
 /// Ask the TextView (via JNI) how big it wants to be for a given
