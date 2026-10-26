@@ -28,46 +28,43 @@ fn the_schema_carries_its_version() {
     assert!(schema["$id"].as_str().unwrap().ends_with(&format!("/v{SCHEMA_VERSION}.json")));
 }
 
+/// Every `type` the schema allows, read from the schema itself. The schema
+/// is derived from `DevEvent`, so this is the enum's variant set, which a
+/// match here cannot enumerate (`DevEvent` is `#[non_exhaustive]`).
+fn schema_types(schema: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
+    match schema {
+        serde_json::Value::Object(map) => {
+            if let Some(tag) = map.get("properties").and_then(|p| p.get("type")) {
+                if let Some(c) = tag.get("const").and_then(|c| c.as_str()) {
+                    out.insert(c.to_string());
+                }
+                for e in tag.get("enum").and_then(|e| e.as_array()).into_iter().flatten() {
+                    if let Some(e) = e.as_str() {
+                        out.insert(e.to_string());
+                    }
+                }
+            }
+            map.values().for_each(|v| schema_types(v, out));
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|v| schema_types(v, out)),
+        _ => {}
+    }
+}
+
 #[test]
 fn every_variant_validates() {
     let v = validator();
     let every = common::every_event();
-    // The list must stay exhaustive: this match fails to compile when
-    // a variant is added, pointing here.
-    let mut seen = std::collections::BTreeSet::new();
-    for event in &every {
-        seen.insert(match event {
-            DevEvent::SessionStarted { .. } => "session_started",
-            DevEvent::ServerReady { .. } => "server_ready",
-            DevEvent::StreamRoute { .. } => "stream_route",
-            DevEvent::Watching { .. } => "watching",
-            DevEvent::ChangeDetected { .. } => "change_detected",
-            DevEvent::Decided { .. } => "decided",
-            DevEvent::OverlayPushed { .. } => "overlay_pushed",
-            DevEvent::PatchBuilt { .. } => "patch_built",
-            DevEvent::PatchFailed { .. } => "patch_failed",
-            DevEvent::Superseded { .. } => "superseded",
-            DevEvent::BuildStarted { .. } => "build_started",
-            DevEvent::StageStarted { .. } => "stage_started",
-            DevEvent::StageFinished { .. } => "stage_finished",
-            DevEvent::CargoProgress { .. } => "cargo_progress",
-            DevEvent::UnitBuilt { .. } => "unit_built",
-            DevEvent::UnitDirty { .. } => "unit_dirty",
-            DevEvent::Diagnostic { .. } => "diagnostic",
-            DevEvent::BuildTimed { .. } => "build_timed",
-            DevEvent::BuildFinished { .. } => "build_finished",
-            DevEvent::PageAck { .. } => "page_ack",
-            DevEvent::SidecarApplied { .. } => "sidecar_applied",
-            DevEvent::RobotRelay { .. } => "robot_relay",
-            DevEvent::RobotApps { .. } => "robot_apps",
-            DevEvent::ServerDown { .. } => "server_down",
-            DevEvent::Warning { .. } => "warning",
-            DevEvent::Error { .. } => "error",
-            DevEvent::Log { .. } => "log",
-            DevEvent::Output { .. } => "output",
-        });
-    }
-    assert_eq!(seen.len(), 28, "`common::every_event` is missing a variant: has {seen:?}");
+    // The list must stay exhaustive: a variant added to `DevEvent` without
+    // a fixture in `common::every_event` fails here.
+    let seen: std::collections::BTreeSet<String> = every
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap()["type"].as_str().unwrap().to_string())
+        .collect();
+    let mut all = std::collections::BTreeSet::new();
+    schema_types(&json_schema(), &mut all);
+    assert!(all.len() >= 28, "the schema walk found too few event types: {all:?}");
+    assert_eq!(seen, all, "`common::every_event` does not cover every DevEvent variant");
     for (i, event) in every.into_iter().enumerate() {
         let envelope = Envelope { v: SCHEMA_VERSION, seq: i as u64 + 1, at_ms: 5, event };
         check(&v, &serde_json::to_value(&envelope).unwrap());

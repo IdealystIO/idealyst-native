@@ -688,6 +688,8 @@ impl Model {
             | DevEvent::BuildTimed { .. }
             | DevEvent::UnitBuilt { .. }
             | DevEvent::UnitDirty { .. } => {}
+            // A newer event type than this panel knows: nothing to show.
+            _ => {}
         }
     }
 

@@ -15,6 +15,12 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **`dev_events::DevEvent` is `#[non_exhaustive]`** (`dev-events` 2.0).
+  New event types are additive on the wire, and now in Rust too: a
+  `match` on `DevEvent` outside the crate needs a `_` arm that ignores
+  types it does not know. In exchange, a future event type ships as a
+  minor instead of a major that drags every dev-tooling crate along.
+
 - **A table's leading added column takes the edge inset** (`idea-ui`).
   With `Table(inset_x = …)` or `inset_left`, the selection or grip column
   the table adds at the leading edge used to keep its compact padding and
@@ -741,6 +747,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **`idealyst dev --metrics` records what every save cost**
+  (`idealyst-cli`, `dev-events`). One record per save and per initial
+  build, appended across sessions to
+  `target/idealyst/<package>/build-metrics.md` and `.jsonl`: the files
+  saved and their kind, the tier chosen and why, each stage's time, every
+  crate cargo recompiled with its compile time and cargo's reason, and the
+  root causes (a changed file, a features/flags change, a first build at a
+  new hash) apart from crates rebuilt only because a dependency was.
+  `--metrics-diffs` adds each save's diff. New events `unit_built` (every
+  session) and `unit_dirty` (under `--metrics`). See "Build metrics" in
+  `docs/hot-reload.md`.
 
 - **Agents drive the dev sessions a person started; `idealyst dev
   --no-watch` builds only on request** (`idealyst-cli`, `mcp-server`,

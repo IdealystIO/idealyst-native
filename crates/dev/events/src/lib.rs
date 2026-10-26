@@ -515,9 +515,16 @@ impl SessionServer {
 /// `target` names the row a status view files the event under: `web`
 /// for the browser bundle, [`SERVER_TARGET`] for a full-stack server's
 /// build and watcher, the platform name for native targets.
+///
+/// `#[non_exhaustive]` because the stream grows: a new event type is
+/// additive on the wire ([`SCHEMA_VERSION`]), and must be in Rust too, or
+/// every published crate that matched the enum exhaustively stops
+/// compiling against the new release. Consumers match with a `_` arm that
+/// ignores what they do not know.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum DevEvent {
     /// The session is configured and about to start its targets.
     SessionStarted {
