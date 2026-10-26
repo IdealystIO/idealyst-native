@@ -60,6 +60,10 @@ use std::rc::Rc;
 
 use taffy::prelude::*;
 use taffy::TaffyTree;
+use taffy::{
+    compute_leaf_layout, ExpandedDimension, ExpandedLengthPercentage, ExpandedLengthPercentageAuto,
+    GridTemplateComponent, LayoutInput, LayoutOutput, MinMax,
+};
 
 // Re-export Taffy types backends need to write measure functions.
 // Keeps `taffy` as a non-public dep of consumers.
@@ -88,6 +92,19 @@ use runtime_shared::{
 /// Returns the size the node would like to be.
 pub type MeasureFn =
     Rc<dyn Fn(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>>;
+
+/// Lay out a leaf the way Taffy's own leaf algorithm does — its size,
+/// min/max and padding around the measured content — with the node's
+/// [`MeasureFn`], if any, as the content measure. Taffy 0.15 hands the
+/// whole leaf to the closure passed to `compute_layout_with_measure`
+/// (0.7 applied the style itself and only asked the closure for the
+/// content), so every call site routes through here.
+fn measure_leaf(inputs: LayoutInput, style: &Style, f: Option<&MeasureFn>) -> LayoutOutput {
+    compute_leaf_layout(inputs, style, |_, _| 0.0, |known, available| match f {
+        Some(f) => f(known, available),
+        None => Size::ZERO,
+    })
+}
 
 /// The measure_fn every native `virtual_grid` installs on its scroller
 /// node: the grid's intrinsic size
@@ -329,8 +346,8 @@ impl LayoutTree {
         let mut style = Style::default();
         style.display = Display::Flex;
         style.flex_direction = FlexDirection::Column;
-        style.align_items = Some(AlignItems::Stretch);
-        style.justify_content = Some(JustifyContent::FlexStart);
+        style.align_items = AlignItems::STRETCH;
+        style.justify_content = JustifyContent::FLEX_START;
         // Default cross-axis clamp: never grow wider than the parent's
         // inline size. This is the CSS/web default a block/flex box
         // gets for free (it fills, and content wraps to the available
@@ -343,7 +360,7 @@ impl LayoutTree {
         // `max_width` overrides it. A `Percent` of an *indefinite*
         // parent resolves to no constraint, so this is a no-op until
         // some ancestor has a definite width — exactly when web clamps.
-        style.max_size.width = Dimension::Percent(1.0);
+        style.max_size.width = LengthPercentageAuto::percent(1.0);
         let id = self
             .tree
             .new_leaf(style)
@@ -357,7 +374,7 @@ impl LayoutTree {
     }
 
     /// Create a layout-TRANSPARENT node: CSS `display: contents`, which
-    /// taffy 0.7 has no equivalent of.
+    /// Taffy has no equivalent of.
     ///
     /// The node exists in the backend's native tree (a reactive hole's
     /// anchor is a real view there, because the scene holds it as the
@@ -657,8 +674,8 @@ impl LayoutTree {
     fn reset_grid_item(&mut self, child: NodeId) {
         self.grid_items.insert(child);
         if let Ok(mut style) = self.tree.style(child).cloned() {
-            if style.min_size.width == Dimension::Auto {
-                style.min_size.width = Dimension::Length(0.0);
+            if style.min_size.width == LengthPercentageAuto::auto() {
+                style.min_size.width = LengthPercentageAuto::length(0.0);
                 let _ = self.tree.set_style(child, style);
             }
         }
@@ -675,10 +692,10 @@ impl LayoutTree {
         if self.auto_width.contains(&child.0) || self.auto_height.contains(&child.0) {
             if let Ok(mut style) = self.tree.style(child.0).cloned() {
                 if self.auto_width.contains(&child.0) {
-                    style.size.width = Dimension::Auto;
+                    style.size.width = Dimension::auto();
                 }
                 if self.auto_height.contains(&child.0) {
-                    style.size.height = Dimension::Auto;
+                    style.size.height = Dimension::auto();
                 }
                 let _ = self.tree.set_style(child.0, style);
             }
@@ -793,10 +810,10 @@ impl LayoutTree {
             .style(node.0)
             .cloned()
             .unwrap_or(Style::default());
-        style.padding.top = LengthPercentage::Length(author[0] + top);
-        style.padding.right = LengthPercentage::Length(author[1] + right);
-        style.padding.bottom = LengthPercentage::Length(author[2] + self.bottom_extra_of(node.0));
-        style.padding.left = LengthPercentage::Length(author[3] + left);
+        style.padding.top = LengthPercentage::length(author[0] + top);
+        style.padding.right = LengthPercentage::length(author[1] + right);
+        style.padding.bottom = LengthPercentage::length(author[2] + self.bottom_extra_of(node.0));
+        style.padding.left = LengthPercentage::length(author[3] + left);
         self.tree.set_style(node.0, style).expect("taffy set_style");
     }
 
@@ -841,13 +858,13 @@ impl LayoutTree {
             let Some(mut style) = self.tree.style(id).ok().cloned() else { continue };
             // A percent author padding never combined with the extras on this
             // side (see the `author_padding` field doc).
-            let LengthPercentage::Length(old) = style.padding.bottom else { continue };
+            let ExpandedLengthPercentage::Length(old) = style.padding.bottom.expand() else { continue };
             let author = self.author_padding.get(&id).map(|a| a[2]).unwrap_or(0.0);
             let new = author + self.bottom_extra_of(id);
             if old == new {
                 continue;
             }
-            style.padding.bottom = LengthPercentage::Length(new);
+            style.padding.bottom = LengthPercentage::length(new);
             self.tree.set_style(id, style).expect("taffy set_style");
             changed = true;
         }
@@ -1013,14 +1030,14 @@ impl LayoutTree {
             };
         }
         if let Some(jc) = rules.justify_content {
-            style.justify_content = Some(match jc {
-                FwJustifyContent::FlexStart => JustifyContent::FlexStart,
-                FwJustifyContent::FlexEnd => JustifyContent::FlexEnd,
-                FwJustifyContent::Center => JustifyContent::Center,
-                FwJustifyContent::SpaceBetween => JustifyContent::SpaceBetween,
-                FwJustifyContent::SpaceAround => JustifyContent::SpaceAround,
-                FwJustifyContent::SpaceEvenly => JustifyContent::SpaceEvenly,
-            });
+            style.justify_content = match jc {
+                FwJustifyContent::FlexStart => JustifyContent::FLEX_START,
+                FwJustifyContent::FlexEnd => JustifyContent::FLEX_END,
+                FwJustifyContent::Center => JustifyContent::CENTER,
+                FwJustifyContent::SpaceBetween => JustifyContent::SPACE_BETWEEN,
+                FwJustifyContent::SpaceAround => JustifyContent::SPACE_AROUND,
+                FwJustifyContent::SpaceEvenly => JustifyContent::SPACE_EVENLY,
+            };
         } else {
             // No explicit rule. A grid container's tracks should FILL the
             // container — `justify-content: stretch` grows `auto` tracks
@@ -1032,30 +1049,30 @@ impl LayoutTree {
             // matching `table-layout: auto`. Flex keeps the `FlexStart`
             // default. Set deterministically so a grid→flex revert can't
             // leave a stale `Stretch`.
-            style.justify_content = Some(if matches!(rules.display, Some(FwDisplayKind::Grid)) {
-                JustifyContent::Stretch
+            style.justify_content = if matches!(rules.display, Some(FwDisplayKind::Grid)) {
+                JustifyContent::STRETCH
             } else {
-                JustifyContent::FlexStart
-            });
+                JustifyContent::FLEX_START
+            };
         }
         if let Some(ai) = rules.align_items {
-            style.align_items = Some(match ai {
-                FwAlignItems::FlexStart => AlignItems::FlexStart,
-                FwAlignItems::FlexEnd => AlignItems::FlexEnd,
-                FwAlignItems::Center => AlignItems::Center,
-                FwAlignItems::Stretch => AlignItems::Stretch,
-                FwAlignItems::Baseline => AlignItems::Baseline,
-            });
+            style.align_items = match ai {
+                FwAlignItems::FlexStart => AlignItems::FLEX_START,
+                FwAlignItems::FlexEnd => AlignItems::FLEX_END,
+                FwAlignItems::Center => AlignItems::CENTER,
+                FwAlignItems::Stretch => AlignItems::STRETCH,
+                FwAlignItems::Baseline => AlignItems::BASELINE,
+            };
         }
         if let Some(ac) = rules.align_content {
-            style.align_content = Some(match ac {
-                FwAlignContent::FlexStart => AlignContent::FlexStart,
-                FwAlignContent::FlexEnd => AlignContent::FlexEnd,
-                FwAlignContent::Center => AlignContent::Center,
-                FwAlignContent::Stretch => AlignContent::Stretch,
-                FwAlignContent::SpaceBetween => AlignContent::SpaceBetween,
-                FwAlignContent::SpaceAround => AlignContent::SpaceAround,
-            });
+            style.align_content = match ac {
+                FwAlignContent::FlexStart => AlignContent::FLEX_START,
+                FwAlignContent::FlexEnd => AlignContent::FLEX_END,
+                FwAlignContent::Center => AlignContent::CENTER,
+                FwAlignContent::Stretch => AlignContent::STRETCH,
+                FwAlignContent::SpaceBetween => AlignContent::SPACE_BETWEEN,
+                FwAlignContent::SpaceAround => AlignContent::SPACE_AROUND,
+            };
         }
         if let Some(gap) = rules.gap.as_ref().map(|t| t.value()) {
             let lp = length_to_lp(*gap);
@@ -1082,11 +1099,11 @@ impl LayoutTree {
         if let Some(asf) = rules.align_self {
             style.align_self = match asf {
                 FwAlignSelf::Auto => None,
-                FwAlignSelf::FlexStart => Some(AlignSelf::FlexStart),
-                FwAlignSelf::FlexEnd => Some(AlignSelf::FlexEnd),
-                FwAlignSelf::Center => Some(AlignSelf::Center),
-                FwAlignSelf::Stretch => Some(AlignSelf::Stretch),
-                FwAlignSelf::Baseline => Some(AlignSelf::Baseline),
+                FwAlignSelf::FlexStart => Some(AlignSelf::FLEX_START),
+                FwAlignSelf::FlexEnd => Some(AlignSelf::FLEX_END),
+                FwAlignSelf::Center => Some(AlignSelf::CENTER),
+                FwAlignSelf::Stretch => Some(AlignSelf::STRETCH),
+                FwAlignSelf::Baseline => Some(AlignSelf::BASELINE),
             };
         }
 
@@ -1111,13 +1128,13 @@ impl LayoutTree {
             self.auto_height.remove(&node.0);
         }
         if let Some(w) = rules.min_width.as_ref().map(|t| *t.value()) {
-            style.min_size.width = length_to_dim(w);
+            style.min_size.width = length_to_lpa(Some(w));
         } else if self.grid_items.contains(&node.0) {
             // Grid item with no author min-width: reset the CSS `auto`
             // default (which Taffy floors at content size) to 0 so the
             // column can shrink and wrap. Re-applied here on every
             // restyle so a reactive cell keeps the reset.
-            style.min_size.width = Dimension::Length(0.0);
+            style.min_size.width = LengthPercentageAuto::length(0.0);
         } else if let Some(w) = Self::definite_length_of(rules.width.as_ref())
             // A scroll container is exempt: `set_overflow_scroll` seeds it
             // `flex_basis: 0` + `flex_grow: 1` so it FILLS its parent, and
@@ -1156,10 +1173,10 @@ impl LayoutTree {
             // Deliberately AFTER the grid-item arm: a grid item's min stays 0
             // so tracks can still shrink and wrap. Authors who want a sized
             // box to shrink say so with `min_width` or `flex_shrink`.
-            style.min_size.width = Dimension::Length(w);
+            style.min_size.width = LengthPercentageAuto::length(w);
         }
         if let Some(h) = rules.min_height.as_ref().map(|t| *t.value()) {
-            style.min_size.height = length_to_dim(h);
+            style.min_size.height = length_to_lpa(Some(h));
         }
         // NOTE: deliberately NO height counterpart to the width floor above.
         // The cross axis already carries framework seeding of its own — a
@@ -1170,12 +1187,12 @@ impl LayoutTree {
         // speculatively broke two existing regressions, so it stays out until
         // something actually measures a cross-axis divergence.
         if let Some(w) = rules.max_width.as_ref().map(|t| *t.value()) {
-            style.max_size.width = length_to_dim(w);
+            style.max_size.width = length_to_lpa(Some(w));
             // Author owns max-width now — stop applying the default clamp.
             self.auto_max_width.remove(&node.0);
         }
         if let Some(h) = rules.max_height.as_ref().map(|t| *t.value()) {
-            style.max_size.height = length_to_dim(h);
+            style.max_size.height = length_to_lpa(Some(h));
         }
         if let Some(ar) = rules.aspect_ratio {
             style.aspect_ratio = Some(ar);
@@ -1194,7 +1211,7 @@ impl LayoutTree {
             if let FwLength::Px(px) = v {
                 self.author_padding.entry(node.0).or_insert([0.0; 4])[0] = px;
                 let extra = self.safe_area_extra.get(&node.0).map(|e| e[0]).unwrap_or(0.0);
-                style.padding.top = LengthPercentage::Length(px + extra);
+                style.padding.top = LengthPercentage::length(px + extra);
             } else {
                 style.padding.top = length_to_lp(v);
             }
@@ -1203,7 +1220,7 @@ impl LayoutTree {
             if let FwLength::Px(px) = v {
                 self.author_padding.entry(node.0).or_insert([0.0; 4])[1] = px;
                 let extra = self.safe_area_extra.get(&node.0).map(|e| e[1]).unwrap_or(0.0);
-                style.padding.right = LengthPercentage::Length(px + extra);
+                style.padding.right = LengthPercentage::length(px + extra);
             } else {
                 style.padding.right = length_to_lp(v);
             }
@@ -1212,7 +1229,7 @@ impl LayoutTree {
             if let FwLength::Px(px) = v {
                 self.author_padding.entry(node.0).or_insert([0.0; 4])[2] = px;
                 let extra = self.bottom_extra_of(node.0);
-                style.padding.bottom = LengthPercentage::Length(px + extra);
+                style.padding.bottom = LengthPercentage::length(px + extra);
             } else {
                 style.padding.bottom = length_to_lp(v);
             }
@@ -1221,7 +1238,7 @@ impl LayoutTree {
             if let FwLength::Px(px) = v {
                 self.author_padding.entry(node.0).or_insert([0.0; 4])[3] = px;
                 let extra = self.safe_area_extra.get(&node.0).map(|e| e[3]).unwrap_or(0.0);
-                style.padding.left = LengthPercentage::Length(px + extra);
+                style.padding.left = LengthPercentage::length(px + extra);
             } else {
                 style.padding.left = length_to_lp(v);
             }
@@ -1269,8 +1286,8 @@ impl LayoutTree {
         // (Taffy measures it at the pre-cap width — see the field docs). The
         // default `Percent(1.0)` clamp is NOT a definite cap, so it never
         // triggers this; only an author `Length` max-width does.
-        if matches!(style.size.width, Dimension::Percent(_))
-            && matches!(style.max_size.width, Dimension::Length(_))
+        if matches!(style.size.width.expand(), ExpandedDimension::Percent(_))
+            && matches!(style.max_size.width.expand(), ExpandedLengthPercentageAuto::Length(_))
         {
             self.capped_percent_width.insert(node.0);
         } else {
@@ -1350,9 +1367,9 @@ impl LayoutTree {
             || !self.auto_width.contains(&node)
             || self.hscroll_content.contains(&node);
         style.max_size.width = if exempt {
-            Dimension::Auto
+            LengthPercentageAuto::auto()
         } else {
-            Dimension::Percent(1.0)
+            LengthPercentageAuto::percent(1.0)
         };
     }
 
@@ -1363,8 +1380,8 @@ impl LayoutTree {
         self.hscroll_content.insert(node);
         if self.auto_max_width.contains(&node) {
             if let Ok(mut style) = self.tree.style(node).cloned() {
-                if style.max_size.width != Dimension::Auto {
-                    style.max_size.width = Dimension::Auto;
+                if style.max_size.width != LengthPercentageAuto::auto() {
+                    style.max_size.width = LengthPercentageAuto::auto();
                     let _ = self.tree.set_style(node, style);
                 }
             }
@@ -1521,8 +1538,8 @@ impl LayoutTree {
             .cloned()
             .unwrap_or(Style::default());
         style.max_size.height = match value {
-            Some(h) => Dimension::Length(h.max(0.0)),
-            None => Dimension::Auto,
+            Some(h) => LengthPercentageAuto::length(h.max(0.0)),
+            None => LengthPercentageAuto::auto(),
         };
         let _ = self.tree.set_style(node.0, style);
     }
@@ -1550,10 +1567,10 @@ impl LayoutTree {
             .cloned()
             .unwrap_or(Style::default());
         if width >= 0.0 {
-            style.min_size.width = Dimension::Length(width);
+            style.min_size.width = LengthPercentageAuto::length(width);
         }
         if height >= 0.0 {
-            style.min_size.height = Dimension::Length(height);
+            style.min_size.height = LengthPercentageAuto::length(height);
         }
         // flex_basis seeds the main-axis content size for flex items.
         // Without a measure_func, Taffy needs *some* hint of what the
@@ -1603,10 +1620,10 @@ impl LayoutTree {
             .cloned()
             .unwrap_or(Style::default());
         if self.auto_width.contains(&root.0) {
-            style.size.width = Dimension::Length(width);
+            style.size.width = Dimension::length(width);
         }
         if self.auto_height.contains(&root.0) {
-            style.size.height = Dimension::Length(height);
+            style.size.height = Dimension::length(height);
         }
         self.tree.set_style(root.0, style).expect("taffy set_style");
 
@@ -1624,12 +1641,7 @@ impl LayoutTree {
             .compute_layout_with_measure(
                 root.0,
                 space,
-                |known_dimensions, available_space, node_id, _ctx, _style| {
-                    match measure_fns.get(&node_id) {
-                        Some(f) => f(known_dimensions, available_space),
-                        None => Size::ZERO,
-                    }
-                },
+                |inputs, node_id, _ctx, style| measure_leaf(inputs, style, measure_fns.get(&node_id)),
             )
             .expect("taffy compute_layout");
 
@@ -1713,7 +1725,7 @@ impl LayoutTree {
                 let mut auto_idx = 0usize;
                 for c in children.iter() {
                     use taffy::style::GridPlacement as Gp;
-                    let col: Option<usize> = match self.tree.style(*c).map(|s| s.grid_column) {
+                    let col: Option<usize> = match self.tree.style(*c).map(|s| s.grid_column.clone()) {
                         Ok(gc) => match (gc.start, gc.end) {
                             (Gp::Line(l), Gp::Auto) => {
                                 // 1-based CSS line → 0-based column;
@@ -1743,8 +1755,8 @@ impl LayoutTree {
                     let Some(col) = col else { continue };
                     // An author `min_width` floors its column (a browser
                     // honours `min-width` on a cell the same way).
-                    if let Ok(Dimension::Length(min)) =
-                        self.tree.style(*c).map(|s| s.min_size.width)
+                    if let Ok(ExpandedLengthPercentageAuto::Length(min)) =
+                        self.tree.style(*c).map(|s| s.min_size.width.expand())
                     {
                         cols[col].floor = cols[col].floor.max(min);
                     }
@@ -1764,10 +1776,7 @@ impl LayoutTree {
                             width: AvailableSpace::MaxContent,
                             height: AvailableSpace::MaxContent,
                         },
-                        |kd, av, id, _c, _s| match measure_fns.get(&id) {
-                            Some(f) => f(kd, av),
-                            None => Size::ZERO,
-                        },
+                        |inputs, id, _c, style| measure_leaf(inputs, style, measure_fns.get(&id)),
                     );
                     cols[col].max_content = cols[col]
                         .max_content
@@ -1786,10 +1795,10 @@ impl LayoutTree {
                 for (cell, col) in exact_cells {
                     if let Ok(mut cs) = self.tree.style(cell).cloned() {
                         let track = widths[col];
-                        cs.size.width = Dimension::Length(track);
-                        if let Dimension::Length(m) = cs.max_size.width {
+                        cs.size.width = Dimension::length(track);
+                        if let ExpandedLengthPercentageAuto::Length(m) = cs.max_size.width.expand() {
                             if m < track {
-                                cs.max_size.width = Dimension::Length(track);
+                                cs.max_size.width = LengthPercentageAuto::length(track);
                             }
                         }
                         let _ = self.tree.set_style(cell, cs);
@@ -1799,9 +1808,9 @@ impl LayoutTree {
                     s.grid_template_columns = widths
                         .iter()
                         .map(|px| {
-                            TrackSizingFunction::Single(NonRepeatedTrackSizingFunction {
-                                min: MinTrackSizingFunction::Fixed(LengthPercentage::Length(*px)),
-                                max: MaxTrackSizingFunction::Fixed(LengthPercentage::Length(*px)),
+                            GridTemplateComponent::Single(MinMax {
+                                min: MinTrackSizingFunction::length(*px),
+                                max: MaxTrackSizingFunction::length(*px),
                             })
                         })
                         .collect();
@@ -1814,11 +1823,8 @@ impl LayoutTree {
                 // tree's layout; lay it out once more from the root with
                 // the pinned px columns.
                 self.tree
-                    .compute_layout_with_measure(root.0, space, |kd, av, id, _c, _s| {
-                        match measure_fns.get(&id) {
-                            Some(f) => f(kd, av),
-                            None => Size::ZERO,
-                        }
+                    .compute_layout_with_measure(root.0, space, |inputs, id, _c, style| {
+                        measure_leaf(inputs, style, measure_fns.get(&id))
                     })
                     .expect("taffy compute_layout (table final pass)");
             }
@@ -1849,12 +1855,12 @@ impl LayoutTree {
                 };
                 let resolved_w = layout.size.width;
                 // Cap bound iff the resolved width reached the definite max.
-                let bound = matches!(style.max_size.width, Dimension::Length(m)
+                let bound = matches!(style.max_size.width.expand(), ExpandedLengthPercentageAuto::Length(m)
                     if resolved_w + 0.5 >= m && resolved_w.is_finite());
                 if bound {
                     pins.push((n, style.size.width));
                     let mut pinned = style.clone();
-                    pinned.size.width = Dimension::Length(resolved_w);
+                    pinned.size.width = Dimension::length(resolved_w);
                     let _ = self.tree.set_style(n, pinned);
                 }
             }
@@ -1864,12 +1870,7 @@ impl LayoutTree {
                     .compute_layout_with_measure(
                         root.0,
                         space,
-                        |known_dimensions, available_space, node_id, _ctx, _style| {
-                            match measure_fns.get(&node_id) {
-                                Some(f) => f(known_dimensions, available_space),
-                                None => Size::ZERO,
-                            }
-                        },
+                        |inputs, node_id, _ctx, style| measure_leaf(inputs, style, measure_fns.get(&node_id)),
                     )
                     .expect("taffy compute_layout (capped-width pass)");
                 self.measure_fns = measure_fns;
@@ -2109,12 +2110,12 @@ impl Default for LayoutTree {
 
 fn length_to_lp(l: FwLength) -> LengthPercentage {
     match l {
-        FwLength::Px(v) => LengthPercentage::Length(v),
-        FwLength::Percent(v) => LengthPercentage::Percent(v / 100.0),
+        FwLength::Px(v) => LengthPercentage::length(v),
+        FwLength::Percent(v) => LengthPercentage::percent(v / 100.0),
         // `Full` is a corner-radius concept (see `Length::resolve_radius`);
         // it describes a shape, not a layout size, so it has no meaning to
         // Taffy. Treated as the same "not a layout length" as `Auto`.
-        FwLength::Auto | FwLength::Full => LengthPercentage::Length(0.0),
+        FwLength::Auto | FwLength::Full => LengthPercentage::length(0.0),
     }
 }
 
@@ -2233,17 +2234,17 @@ fn table_column_widths(w: f32, cols: &[TableColumnInput]) -> Vec<f32> {
 
 fn length_to_lpa(l: Option<FwLength>) -> LengthPercentageAuto {
     match l {
-        Some(FwLength::Px(v)) => LengthPercentageAuto::Length(v),
-        Some(FwLength::Percent(v)) => LengthPercentageAuto::Percent(v / 100.0),
-        Some(FwLength::Auto) | Some(FwLength::Full) | None => LengthPercentageAuto::Auto,
+        Some(FwLength::Px(v)) => LengthPercentageAuto::length(v),
+        Some(FwLength::Percent(v)) => LengthPercentageAuto::percent(v / 100.0),
+        Some(FwLength::Auto) | Some(FwLength::Full) | None => LengthPercentageAuto::auto(),
     }
 }
 
 fn length_to_dim(l: FwLength) -> Dimension {
     match l {
-        FwLength::Px(v) => Dimension::Length(v),
-        FwLength::Percent(v) => Dimension::Percent(v / 100.0),
-        FwLength::Auto | FwLength::Full => Dimension::Auto,
+        FwLength::Px(v) => Dimension::length(v),
+        FwLength::Percent(v) => Dimension::percent(v / 100.0),
+        FwLength::Auto | FwLength::Full => Dimension::auto(),
     }
 }
 
@@ -2262,33 +2263,31 @@ fn length_to_dim(l: FwLength) -> Dimension {
 
 fn track_min(t: &FwTrackSize) -> MinTrackSizingFunction {
     match t {
-        FwTrackSize::Auto => MinTrackSizingFunction::Auto,
-        FwTrackSize::MinContent => MinTrackSizingFunction::MinContent,
-        FwTrackSize::MaxContent => MinTrackSizingFunction::MaxContent,
+        FwTrackSize::Auto => MinTrackSizingFunction::auto(),
+        FwTrackSize::MinContent => MinTrackSizingFunction::min_content(),
+        FwTrackSize::MaxContent => MinTrackSizingFunction::max_content(),
         // `fr` has no min form in CSS; a bare flex track floors at auto.
-        FwTrackSize::Fr(_) => MinTrackSizingFunction::Auto,
-        FwTrackSize::Px(v) => MinTrackSizingFunction::Fixed(LengthPercentage::Length(*v)),
+        FwTrackSize::Fr(_) => MinTrackSizingFunction::auto(),
+        FwTrackSize::Px(v) => MinTrackSizingFunction::length(*v),
         FwTrackSize::Minmax(lo, _) => track_min(lo),
-        FwTrackSize::FitContent(_) => MinTrackSizingFunction::Auto,
+        FwTrackSize::FitContent(_) => MinTrackSizingFunction::auto(),
     }
 }
 
 fn track_max(t: &FwTrackSize) -> MaxTrackSizingFunction {
     match t {
-        FwTrackSize::Auto => MaxTrackSizingFunction::Auto,
-        FwTrackSize::MinContent => MaxTrackSizingFunction::MinContent,
-        FwTrackSize::MaxContent => MaxTrackSizingFunction::MaxContent,
-        FwTrackSize::Fr(v) => MaxTrackSizingFunction::Fraction(*v),
-        FwTrackSize::Px(v) => MaxTrackSizingFunction::Fixed(LengthPercentage::Length(*v)),
+        FwTrackSize::Auto => MaxTrackSizingFunction::auto(),
+        FwTrackSize::MinContent => MaxTrackSizingFunction::min_content(),
+        FwTrackSize::MaxContent => MaxTrackSizingFunction::max_content(),
+        FwTrackSize::Fr(v) => MaxTrackSizingFunction::fr(*v),
+        FwTrackSize::Px(v) => MaxTrackSizingFunction::length(*v),
         FwTrackSize::Minmax(_, hi) => track_max(hi),
-        FwTrackSize::FitContent(v) => {
-            MaxTrackSizingFunction::FitContent(LengthPercentage::Length(*v))
-        }
+        FwTrackSize::FitContent(v) => MaxTrackSizingFunction::fit_content_px(*v),
     }
 }
 
-fn track_sizing_function(t: &FwTrackSize) -> TrackSizingFunction {
-    TrackSizingFunction::Single(NonRepeatedTrackSizingFunction {
+fn track_sizing_function(t: &FwTrackSize) -> GridTemplateComponent<String> {
+    GridTemplateComponent::Single(MinMax {
         min: track_min(t),
         max: track_max(t),
     })
@@ -5845,7 +5844,7 @@ mod tests {
         t.set_safe_area_extra(outside, 0.0, 0.0, 34.0, 0.0);
         t.add_child(root, outside);
         t.set_keyboard_padding(avoider, 300.0);
-        assert_eq!(t.tree.style(outside.0).unwrap().padding.bottom, LengthPercentage::Length(34.0));
+        assert_eq!(t.tree.style(outside.0).unwrap().padding.bottom, LengthPercentage::length(34.0));
     }
 
     /// Mid-move the keyboard covers less than the inset: only the uncovered
@@ -5854,8 +5853,8 @@ mod tests {
     fn keyboard_padding_partially_covering_the_inset_keeps_the_remainder() {
         let (mut t, _root, avoider, bar) = avoider_tree();
         t.set_keyboard_padding(avoider, 20.0);
-        assert_eq!(t.tree.style(bar.0).unwrap().padding.bottom, LengthPercentage::Length(8.0 + 14.0));
-        assert_eq!(t.tree.style(avoider.0).unwrap().padding.bottom, LengthPercentage::Length(20.0));
+        assert_eq!(t.tree.style(bar.0).unwrap().padding.bottom, LengthPercentage::length(8.0 + 14.0));
+        assert_eq!(t.tree.style(avoider.0).unwrap().padding.bottom, LengthPercentage::length(20.0));
     }
 
     /// Styles and safe-area extras applied WHILE the keyboard is up already
@@ -5868,16 +5867,16 @@ mod tests {
         let mut cr = StyleRules::default();
         cr.padding_bottom = Some(px(12.0));
         t.set_style(bar, &cr);
-        assert_eq!(t.tree.style(bar.0).unwrap().padding.bottom, LengthPercentage::Length(12.0));
+        assert_eq!(t.tree.style(bar.0).unwrap().padding.bottom, LengthPercentage::length(12.0));
         t.set_safe_area_extra(bar, 0.0, 0.0, 40.0, 0.0);
-        assert_eq!(t.tree.style(bar.0).unwrap().padding.bottom, LengthPercentage::Length(12.0));
+        assert_eq!(t.tree.style(bar.0).unwrap().padding.bottom, LengthPercentage::length(12.0));
         let mut ar = StyleRules::default();
         ar.padding_bottom = Some(px(4.0));
         t.set_style(avoider, &ar);
-        assert_eq!(t.tree.style(avoider.0).unwrap().padding.bottom, LengthPercentage::Length(304.0));
+        assert_eq!(t.tree.style(avoider.0).unwrap().padding.bottom, LengthPercentage::length(304.0));
         t.set_keyboard_padding(avoider, 0.0);
-        assert_eq!(t.tree.style(bar.0).unwrap().padding.bottom, LengthPercentage::Length(52.0));
-        assert_eq!(t.tree.style(avoider.0).unwrap().padding.bottom, LengthPercentage::Length(4.0));
+        assert_eq!(t.tree.style(bar.0).unwrap().padding.bottom, LengthPercentage::length(52.0));
+        assert_eq!(t.tree.style(avoider.0).unwrap().padding.bottom, LengthPercentage::length(4.0));
     }
 
     #[test]
@@ -5887,5 +5886,131 @@ mod tests {
         assert!(t.set_keyboard_padding(avoider, 100.0));
         assert!(!t.set_keyboard_padding(avoider, 100.0));
         assert_eq!(t.keyboard_padding(avoider), 100.0);
+    }
+
+    /// The kiosk pin pad's tree. While sizing `plate` as a row item, Taffy
+    /// lays its subtree out at min-content width. Taffy 0.7–0.11 cached that
+    /// pass under a key without the available space, and the final
+    /// definite-width layout reused it, so `pane` kept the text's
+    /// min-content height (75 lines, 1275) while the text's own frame was
+    /// correct: 5578 of scroll content against 1192 on device. Fixed in Taffy
+    /// 0.12 ("cache key now includes the axis, parent size, and available
+    /// space"). Each of these is needed to trigger it: `root` a row,
+    /// `centre`'s and `step`'s `width: 100%`, `step`'s `max_width: 420`, and
+    /// the fixed-size `pad` sibling.
+    fn pin_pad_tree(min_content_width: f32) -> (LayoutTree, LayoutNode, [LayoutNode; 3]) {
+        let mut t = LayoutTree::new();
+        let node = |t: &mut LayoutTree, set: &dyn Fn(&mut StyleRules)| {
+            let n = t.new_node();
+            let mut r = StyleRules::default();
+            set(&mut r);
+            t.set_style(n, &r);
+            n
+        };
+        let column = |r: &mut StyleRules| r.flex_direction = Some(FwFlexDirection::Column);
+        let root = node(&mut t, &|r| {
+            r.flex_direction = Some(FwFlexDirection::Row);
+            r.width = Some(px(1280.0));
+            r.height = Some(px(652.0));
+        });
+        let plate = node(&mut t, &|r| {
+            column(r);
+            r.flex_grow = Some(1.0f32.into());
+            r.flex_shrink = Some(1.0f32.into());
+            r.min_width = Some(px(0.0));
+            r.min_height = Some(px(0.0));
+        });
+        let outer = node(&mut t, &|r| {
+            column(r);
+            r.flex_grow = Some(1.0f32.into());
+            r.min_height = Some(px(0.0));
+        });
+        // What the Android scroller's `inner_content_rules(Vertical)` sets.
+        let inner = node(&mut t, &|r| {
+            column(r);
+            r.align_items = Some(FwAlignItems::Stretch);
+        });
+        let body = node(&mut t, &|r| {
+            column(r);
+            r.width = Some(pct(100.0));
+            r.align_items = Some(FwAlignItems::Center);
+            r.flex_grow = Some(1.0f32.into());
+            r.flex_shrink = Some(0.0f32.into());
+        });
+        let centre = node(&mut t, &|r| {
+            column(r);
+            r.width = Some(pct(100.0));
+            r.flex_grow = Some(1.0f32.into());
+            r.align_items = Some(FwAlignItems::Center);
+        });
+        let step = node(&mut t, &|r| {
+            column(r);
+            r.width = Some(pct(100.0));
+            r.max_width = Some(px(420.0));
+            r.flex_shrink = Some(0.0f32.into());
+        });
+        let pane = node(&mut t, &|r| {
+            column(r);
+            r.width = Some(pct(100.0));
+            r.align_items = Some(FwAlignItems::Center);
+        });
+        let text = t.new_node();
+        // A wrapping text view: 600 wide on one line, 17 per line, 8 per
+        // character, its min-content width as given.
+        t.set_measure_fn(
+            text,
+            Rc::new(move |known: Size<Option<f32>>, avail: Size<AvailableSpace>| {
+                let w = known.width.unwrap_or(match avail.width {
+                    AvailableSpace::Definite(w) => w,
+                    AvailableSpace::MaxContent => f32::INFINITY,
+                    AvailableSpace::MinContent => min_content_width,
+                });
+                let mw = 600f32.min(w).max(8.0);
+                Size {
+                    width: known.width.unwrap_or(mw),
+                    height: known.height.unwrap_or((600.0 / mw).ceil() * 17.0),
+                }
+            }),
+        );
+        let pad = node(&mut t, &|r| {
+            r.width = Some(px(420.0));
+            r.height = Some(px(300.0));
+        });
+        let rail = node(&mut t, &|r| r.width = Some(px(360.0)));
+        for (parent, child) in [
+            (root, plate),
+            (plate, outer),
+            (outer, inner),
+            (inner, body),
+            (body, centre),
+            (centre, step),
+            (step, pane),
+            (pane, text),
+            (pane, pad),
+            (root, rail),
+        ] {
+            t.add_child(parent, child);
+        }
+        t.compute(root, 1280.0, 652.0);
+        (t, root, [pane, text, pad])
+    }
+
+    #[test]
+    fn regression_a_min_content_pass_does_not_leak_its_height_into_the_final_layout() {
+        let (t, _, [pane, text, pad]) = pin_pad_tree(0.0);
+        let (pane, text, pad) = (t.frame_of(pane), t.frame_of(text), t.frame_of(pad));
+        assert_eq!((text.width, text.height), (420.0, 34.0), "two lines at the 420 cap");
+        assert_eq!(pad.height, 300.0);
+        assert_eq!(pane.height, text.height + pad.height, "taffy 0.7.7: 1575 (1275 + 300)");
+    }
+
+    /// The leak is not only a width-0 min-content probe's: with a sane
+    /// min-content width it shrinks (436 on Taffy 0.7.7) but stays.
+    #[test]
+    fn regression_the_min_content_leak_is_not_only_a_zero_width_probe() {
+        let (t, _, [pane, text, pad]) = pin_pad_tree(80.0);
+        let (pane, text, pad) = (t.frame_of(pane), t.frame_of(text), t.frame_of(pad));
+        assert_eq!(pane.height, text.height + pad.height, "taffy 0.7.7: 436");
+        assert_eq!(pane.height, 334.0);
     }
 }
