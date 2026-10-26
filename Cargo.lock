@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "4.0.2"
+version = "4.1.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -10755,7 +10755,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "runtime-shared",
  "taffy",
