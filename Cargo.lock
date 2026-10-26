@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "build-runtime-server"
-version = "3.1.1"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -2065,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "build-web"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "anyhow",
  "brotli 7.0.0",
@@ -3547,7 +3547,7 @@ dependencies = [
 
 [[package]]
 name = "dev-events"
-version = "1.11.0"
+version = "2.0.0"
 dependencies = [
  "dev-events",
  "schemars",
@@ -3567,7 +3567,7 @@ dependencies = [
 
 [[package]]
 name = "dev-http"
-version = "5.0.0"
+version = "6.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3597,7 +3597,7 @@ dependencies = [
 
 [[package]]
 name = "dev-reload"
-version = "5.0.1"
+version = "6.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3616,7 +3616,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "4.1.0"
+version = "5.0.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -3647,7 +3647,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "11.0.0"
+version = "12.0.0"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -6441,7 +6441,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "12.0.0"
+version = "13.0.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6470,7 +6470,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-branded"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "idea-theme",
  "idea-ui",
@@ -6492,7 +6492,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.21"
+version = "1.5.22"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6502,7 +6502,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.20"
+version = "1.5.21"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6549,7 +6549,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.18.3"
+version = "1.19.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7720,7 +7720,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "base64",

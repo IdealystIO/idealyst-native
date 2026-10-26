@@ -1,6 +1,6 @@
 [package]
 name = "dev-http"
-version = "5.0.0"
+version = "6.0.0"
 edition.workspace = true
 license.workspace = true
 description = "Static-file HTTP server for `idealyst dev` — single-threaded, sync, with livereload coordination hooks"
