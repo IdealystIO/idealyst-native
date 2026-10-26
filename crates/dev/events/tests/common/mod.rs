@@ -1,7 +1,7 @@
 //! Shared test data.
 
 use dev_events::{
-    BuildCause, BuildOutcome, CrateTiming, Decision, DevEvent, Diagnostic, HotTier, Mode, PageAck,
+    BuildCause, BuildOutcome, CrateTiming, Decision, DevEvent, Diagnostic, DirtyReason, HotTier, Mode, PageAck,
     RelayState, RobotApp, ServerDown, ServerKind, SessionServer, SidecarUpdate, StreamRoute,
     SupersededWork, Timing, SERVER_TARGET,
 };
@@ -74,6 +74,27 @@ pub fn every_event() -> Vec<DevEvent> {
         DevEvent::StageStarted { target: web(), stage: "cargo".into() },
         DevEvent::StageFinished { target: web(), stage: "cargo".into(), ms: 1 },
         DevEvent::CargoProgress { target: web(), compiled: 1, total: None, current: Some("a".into()) },
+        DevEvent::UnitDirty {
+            target: web(),
+            package: "a".into(),
+            version: "0.1.0".into(),
+            unit: "a".into(),
+            reason: DirtyReason { kind: "file_changed".into(), detail: "/a/src/app.rs".into() },
+        },
+        DevEvent::UnitBuilt {
+            target: web(),
+            package: "a".into(),
+            version: "0.1.0".into(),
+            kind: "lib".into(),
+            ms: Some(812),
+        },
+        DevEvent::UnitBuilt {
+            target: web(),
+            package: "b".into(),
+            version: "1.2.3".into(),
+            kind: "custom-build".into(),
+            ms: None,
+        },
         DevEvent::Diagnostic {
             target: web(),
             diagnostic: Diagnostic {

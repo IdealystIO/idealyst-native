@@ -19,6 +19,7 @@ mod dev_config;
 mod dev_hooks;
 mod dev_control;
 mod dev_log;
+mod dev_metrics;
 mod framework_source;
 mod headless_client;
 mod memory_limit;

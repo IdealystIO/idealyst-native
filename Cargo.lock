@@ -6567,6 +6567,7 @@ dependencies = [
  "build-web",
  "build-windows",
  "catalog-scan",
+ "chrono",
  "clap",
  "configure",
  "ctrlc",

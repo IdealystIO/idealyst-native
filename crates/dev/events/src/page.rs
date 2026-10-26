@@ -13,7 +13,8 @@ use crate::{DevEvent, ServerKind};
 ///
 /// Left out: history (log and subprocess lines, warnings), bookkeeping a
 /// page has no use for (watch sets, per-stage timings, the addresses of
-/// servers other than the one serving a full-stack page), and the page's
+/// servers other than the one serving a full-stack page, which units cargo
+/// recompiled and why), and the page's
 /// own acks, which it already knows.
 pub fn wants(event: &DevEvent) -> bool {
     match event {
@@ -42,6 +43,8 @@ pub fn wants(event: &DevEvent) -> bool {
         | DevEvent::StreamRoute { .. }
         | DevEvent::StageFinished { .. }
         | DevEvent::BuildTimed { .. }
+        | DevEvent::UnitBuilt { .. }
+        | DevEvent::UnitDirty { .. }
         | DevEvent::PageAck { .. }
         | DevEvent::Warning { .. }
         | DevEvent::Log { .. }

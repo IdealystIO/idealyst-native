@@ -1998,6 +1998,51 @@ write straight to the terminal while the interactive panel is up lands in
 a log file instead — the session log until the panel starts, then the
 terminal host's own `.idealyst/terminal.log`.
 
+### Build metrics — `--metrics`
+
+`idealyst dev --metrics` records what every save cost, to answer why one
+rebuild takes seconds and the next takes minutes. Each save, and the
+initial build, is one record, appended across sessions to
+`<project>/target/idealyst/<package>/build-metrics.md` (one section per
+save, to read) and `build-metrics.jsonl` (the same records as JSON, to
+analyse). A record holds:
+
+- the files saved, each with its kind (`rust source`, `manifest`,
+  `lockfile`, `build script`, `config`, `asset`, `deleted`), and the
+  crates the watcher attributed them to;
+- the tier the watcher chose and its reason (`rebuild — src/app.rs
+  changed outside its function bodies`), and a hot patch that failed;
+- how it ended (overlay pushed, hot patch built, rebuilt and reloaded,
+  superseded, failed) and the time from detection to that end;
+- each build stage's time, and for a hot patch each re-emitted crate's;
+- for a cargo build, every crate cargo **recompiled**, slowest first, with
+  its compile time and cargo's own reason, plus the **root causes**: the
+  reasons other than "a dependency was rebuilt", each with the crates it
+  dirtied. A slow rebuild usually traces to one of: `file_changed` in a
+  crate low in the graph, `features_changed` / `rustflags_changed` /
+  `profile_configuration_changed`, or `no_prior_build`, a unit with no
+  fingerprint at its current hash. The last one appears when two builds
+  sharing a target dir resolve different features, or when the unit's
+  artifacts were removed. It typically means the whole tree is rebuilt.
+
+`--metrics-diffs` adds each saved file's diff against what it held at the
+previous save, or when the session started watching it. That keeps a copy
+of every watched text file in memory for the session.
+
+The reasons come from cargo's fingerprint log
+(`CARGO_LOG=cargo::core::compiler::fingerprint=info`), which `--metrics`
+sets on the session's cargo builds (never when you set `CARGO_LOG`
+yourself). `dev_events::cargo::CargoStream` turns it into `unit_dirty`
+events and keeps it off the terminal. Every recompiled unit is a
+`unit_built` event, timed from cargo's `Compiling` line for its package.
+Units build in parallel, so the times do not sum to the build's.
+`unit_built` is emitted in every session. `unit_dirty` is emitted only
+under `--metrics`, or in a process with `IDEALYST_EXPLAIN_REBUILDS=1`,
+which is how the runtime-server host inherits it. Per-crate times cover
+the builds the session runs through `dev_events::process::run_cargo`: the
+web bundle, a full-stack server and the runtime-server sidecar. Native
+targets' builds report their stages only.
+
 ### Rebuilding only on request — `--no-watch`
 
 `idealyst dev --no-watch` still watches, but a save only queues: the

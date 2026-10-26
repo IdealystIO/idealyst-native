@@ -144,6 +144,9 @@ impl SessionState {
             // History, not state: a late consumer does not need old log
             // lines to render the present.
             DevEvent::Warning { .. } | DevEvent::Log { .. } | DevEvent::Output { .. } => {}
+            // Per-unit history, hundreds to a build: nothing a consumer
+            // joining later needs to know the session's present.
+            DevEvent::UnitBuilt { .. } | DevEvent::UnitDirty { .. } => {}
         }
     }
 

@@ -297,6 +297,28 @@ pub struct CrateTiming {
     pub ms: Option<u64>,
 }
 
+/// Why cargo recompiled a unit ([`DevEvent::UnitDirty`]).
+///
+/// `kind` is a short snake_case label ([`cargo::dirty_reason`] lists
+/// them); `detail` is what cargo said, or for a changed file just its
+/// path. Cargo's log format is not a stable interface, so an
+/// unrecognised reason still arrives, as the snake_case of cargo's own
+/// variant name with the raw text in `detail`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct DirtyReason {
+    pub kind: String,
+    pub detail: String,
+}
+
+impl DirtyReason {
+    /// Whether the unit is dirty only because something it depends on was
+    /// rebuilt — the consequence of another unit's reason, not a cause.
+    pub fn is_propagated(&self) -> bool {
+        matches!(self.kind.as_str(), cargo::DEPENDENCY_REBUILT | "unit_dependency_info_changed")
+    }
+}
+
 /// A rustc diagnostic, from cargo's JSON message stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -585,6 +607,37 @@ pub enum DevEvent {
         total: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         current: Option<String>,
+    },
+    /// Cargo finished compiling one unit it did not find fresh: a
+    /// package's library, binary, proc macro or build script. Fresh units
+    /// are not reported (they are counted in [`DevEvent::CargoProgress`]).
+    ///
+    /// `kind` is the unit's first cargo target kind (`lib`, `bin`,
+    /// `proc-macro`, `custom-build`, …). `ms` is the time since cargo's
+    /// `Compiling <package>` line, so a package's build script and its
+    /// library share a start and the larger of the two is the package's
+    /// wall time. Units run in parallel, so these do not add up to the
+    /// build's time. `None` when cargo printed no `Compiling` line for it.
+    UnitBuilt {
+        target: String,
+        package: String,
+        version: String,
+        kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ms: Option<u64>,
+    },
+    /// Why cargo decided a unit had to be recompiled, from its fingerprint
+    /// log. Only emitted when rebuild explanation is on
+    /// ([`process::set_explain_rebuilds`]); see [`cargo`] for the kinds.
+    UnitDirty {
+        target: String,
+        package: String,
+        version: String,
+        /// The unit's cargo target name (`build-script-build` for a build
+        /// script).
+        unit: String,
+        #[serde(flatten)]
+        reason: DirtyReason,
     },
     /// rustc said something.
     Diagnostic { target: String, diagnostic: Diagnostic },

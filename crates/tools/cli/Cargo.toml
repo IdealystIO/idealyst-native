@@ -34,6 +34,8 @@ anyhow = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = "0.8"
+# `dev --metrics` stamps each record with the local time.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # `idealyst update` compares the running version with the registry's.
 semver = { version = "1", features = ["serde"] }
 # Unified SDK config loader — `dev`/`worker` read the merged `idealyst.toml`

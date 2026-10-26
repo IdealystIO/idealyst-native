@@ -628,6 +628,31 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub events_file: Option<PathBuf>,
 
+    /// Record what every save cost, for finding out why one rebuild takes
+    /// seconds and the next takes minutes. Each save (and the initial
+    /// build) becomes one record: the files saved and their kind, the tier
+    /// the watcher chose and why, each build stage's time, and — for a
+    /// rebuild — every crate cargo recompiled with its compile time and
+    /// cargo's own reason it was dirty, with the root causes (a changed
+    /// file, a features or flags change, a first build at a new hash) set
+    /// apart from the crates rebuilt only because a dependency was.
+    ///
+    /// Appended, across sessions, to
+    /// `target/idealyst/<package>/build-metrics.md` (to read) and
+    /// `build-metrics.jsonl` (the same records as JSON). Per-crate times
+    /// cover the builds the session runs through cargo itself: the web
+    /// bundle, a full-stack server and the runtime-server sidecar. Native
+    /// targets' records have their stages only. See "Build metrics" in
+    /// docs/hot-reload.md.
+    #[arg(long)]
+    pub metrics: bool,
+
+    /// `--metrics`, plus each save's diff against what the file held at
+    /// the previous save (or when the session started watching it). Keeps
+    /// a copy of every watched text file in memory for the session.
+    #[arg(long)]
+    pub metrics_diffs: bool,
+
     /// Print the JSON Schema of the event objects (`--events`,
     /// `--events-file`, `/__idealyst/events`, the page's `dev-state`,
     /// hook stdin) and exit. The schema is versioned: within one major
@@ -712,6 +737,19 @@ pub fn run(args: Args) -> Result<()> {
     let hooks = crate::dev_config::DevConfig::load(&dir).map(|c| c.hooks).unwrap_or_default();
     if let Some(sink) = crate::dev_hooks::HookSink::new(hooks, dir.clone()) {
         session.reporter.subscribe(Box::new(sink));
+    }
+    // Before `session_started`, which heads the session's records.
+    if args.metrics || args.metrics_diffs {
+        let config = crate::dev_metrics::Config {
+            project_dir: dir.clone(),
+            out_dir: log_path.parent().map(Path::to_path_buf).unwrap_or_else(|| dir.clone()),
+            diffs: args.metrics_diffs,
+        };
+        let shown = config.markdown();
+        match crate::dev_metrics::start(config, &session.reporter) {
+            Ok(()) => crate::dlog!("dev", "build metrics → {}", shown.display()),
+            Err(e) => crate::dlog!("dev", "--metrics: cannot record to {}: {e:#}", shown.display()),
+        }
     }
 
     // Ambient lint pass: idiom-drift findings (including the
@@ -930,6 +968,10 @@ pub fn run(args: Args) -> Result<()> {
         // app can own the TTY; its lines land in the session log.
         if args.no_watch {
             cmd.env(dev_events::child::NO_WATCH_ENV, "1");
+        }
+        // `--metrics`: the host's cargo builds report why they recompiled.
+        if dev_events::process::explain_rebuilds() {
+            cmd.env(dev_events::process::EXPLAIN_REBUILDS_ENV, "1");
         }
         // Stdin is how a rebuild request reaches the host: one
         // `dev_events::child::REBUILD_LINE` per request (see below).
@@ -4760,6 +4802,8 @@ impl Args {
             interactive: self.interactive,
             events: self.events.clone(),
             events_file: self.events_file.clone(),
+            metrics: self.metrics,
+            metrics_diffs: self.metrics_diffs,
             events_schema: self.events_schema,
             // Compatibility flags only — `run` validates them once up
             // front (`core_mode::validate_flags`) and no worker reads

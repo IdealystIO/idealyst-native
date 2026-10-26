@@ -685,7 +685,9 @@ impl Model {
             DevEvent::StreamRoute { .. }
             | DevEvent::Output { .. }
             | DevEvent::StageFinished { .. }
-            | DevEvent::BuildTimed { .. } => {}
+            | DevEvent::BuildTimed { .. }
+            | DevEvent::UnitBuilt { .. }
+            | DevEvent::UnitDirty { .. } => {}
         }
     }
 

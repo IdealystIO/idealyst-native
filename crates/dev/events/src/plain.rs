@@ -109,7 +109,9 @@ pub fn render(event: &DevEvent) -> Option<String> {
         },
         DevEvent::StageStarted { .. }
         | DevEvent::StageFinished { .. }
-        | DevEvent::CargoProgress { .. } => return None,
+        | DevEvent::CargoProgress { .. }
+        | DevEvent::UnitBuilt { .. }
+        | DevEvent::UnitDirty { .. } => return None,
         DevEvent::Diagnostic { diagnostic, .. } => diagnostic
             .ansi
             .as_deref()
@@ -238,6 +240,13 @@ fn describe(event: &DevEvent) -> Option<String> {
             format!("[{target}] ready (gen {gen}) in {ms} ms")
         }
         DevEvent::PageAck { target, ack } => format!("[{target} page] {}", describe_ack(ack)),
+        DevEvent::UnitBuilt { target, package, version, kind, ms } => match ms {
+            Some(ms) => format!("[{target}] compiled {package} {version} ({kind}) in {ms} ms"),
+            None => format!("[{target}] compiled {package} {version} ({kind})"),
+        },
+        DevEvent::UnitDirty { target, package, version, unit, reason } => {
+            format!("[{target}] dirty {package} {version} ({unit}): {} {}", reason.kind, reason.detail)
+        }
         _ => return None,
     })
 }

@@ -59,6 +59,28 @@ pub fn cargo_color_wanted() -> bool {
     }
 }
 
+/// Set to `1` in a process's environment to turn rebuild explanation on
+/// there ([`explain_rebuilds`]) — how `idealyst dev --metrics` reaches the
+/// runtime-server host it spawns.
+pub const EXPLAIN_REBUILDS_ENV: &str = "IDEALYST_EXPLAIN_REBUILDS";
+
+static EXPLAIN_REBUILDS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Ask every [`run_cargo`] from now on to report why each unit it
+/// recompiles was dirty ([`crate::DevEvent::UnitDirty`]). Off by default:
+/// cargo's fingerprint log costs it a little time, and nothing but a
+/// metrics recorder wants it.
+pub fn set_explain_rebuilds(on: bool) {
+    EXPLAIN_REBUILDS.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether rebuild explanation is on: [`set_explain_rebuilds`], or
+/// [`EXPLAIN_REBUILDS_ENV`] inherited from a parent that set it.
+pub fn explain_rebuilds() -> bool {
+    EXPLAIN_REBUILDS.load(std::sync::atomic::Ordering::SeqCst)
+        || std::env::var_os(EXPLAIN_REBUILDS_ENV).is_some_and(|v| v == "1")
+}
+
 /// What a captured cargo build reported, beyond its exit status.
 #[derive(Debug, Clone, Default)]
 pub struct CargoSummary {
@@ -113,6 +135,12 @@ pub fn run_cargo(
         "--message-format=json"
     })
     .arg(if color { "--color=always" } else { "--color=never" });
+    // On the command, never the process: a `CARGO_LOG` someone set
+    // themselves is theirs and wins. `CargoStream` turns the log into
+    // `UnitDirty` events whichever of the two set it.
+    if explain_rebuilds() && std::env::var_os("CARGO_LOG").is_none() {
+        cmd.env("CARGO_LOG", crate::cargo::FINGERPRINT_LOG);
+    }
     let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let stream = Arc::new(Mutex::new(CargoStream::new(target)));
 
@@ -456,6 +484,82 @@ mod tests {
     /// stale lock, and the build ran with no total — the E2E caught a
     /// renamed copy of the lab reporting progress with no bar. The lookup
     /// now waits for cargo's first message.
+    /// Against real cargo: with explanation on, an edit to a path
+    /// dependency is reported as that dependency's changed file, its
+    /// dependent as propagated, both as rebuilt units, and none of cargo's
+    /// log reaches the output stream. Real cargo because the log format is
+    /// cargo's, not ours — a cargo that changes it fails this test.
+    #[test]
+    fn explained_rebuild_names_the_edited_file_and_the_units_it_rebuilt() {
+        let tmp = std::env::temp_dir().join(format!("dev-events-explain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let write = |rel: &str, text: &str| {
+            let p = tmp.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        write("dep/Cargo.toml", "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[workspace]\n");
+        write("dep/src/lib.rs", "pub fn f() {}\n");
+        write(
+            "app/Cargo.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[workspace]\n\
+             [dependencies]\ndep = { path = \"../dep\" }\n",
+        );
+        write("app/src/lib.rs", "pub fn g() { dep::f() }\n");
+        let cargo = || {
+            let mut c = Command::new("cargo");
+            c.args(["build", "--offline"])
+                .current_dir(tmp.join("app"))
+                .env("CARGO_TARGET_DIR", tmp.join("target"))
+                .env_remove("CARGO_LOG");
+            c
+        };
+        assert!(cargo().arg("-q").status().unwrap().success());
+        // Past the fingerprint's mtime resolution on every filesystem.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        write("dep/src/lib.rs", "pub fn f() { let _ = 1; }\n");
+
+        set_explain_rebuilds(true);
+        let r = Reporter::new();
+        let q = crate::Queue::new();
+        r.add_sink(Arc::new(q.clone()));
+        let (status, _) = run_cargo(&mut cargo(), &r, "web", None).unwrap();
+        set_explain_rebuilds(false);
+        let events: Vec<DevEvent> = q.drain().into_iter().map(|e| e.event).collect();
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(status.success());
+
+        let dirty: Vec<(String, String)> = events
+            .iter()
+            .filter_map(|e| match e {
+                DevEvent::UnitDirty { package, reason, .. } => Some((package.clone(), reason.kind.clone())),
+                _ => None,
+            })
+            .collect();
+        assert!(dirty.contains(&("dep".into(), "file_changed".into())), "{dirty:?}");
+        assert!(dirty.contains(&("app".into(), crate::cargo::DEPENDENCY_REBUILT.into())), "{dirty:?}");
+        let mut built: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                DevEvent::UnitBuilt { package, ms, .. } => {
+                    assert!(ms.is_some(), "{package} has no Compiling line");
+                    Some(package.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        built.sort();
+        assert_eq!(built, vec!["app", "dep"]);
+        let leaked: Vec<&String> = events
+            .iter()
+            .filter_map(|e| match e {
+                DevEvent::Output { line, .. } if line.contains("fingerprint") || line.contains("Caused by") => Some(line),
+                _ => None,
+            })
+            .collect();
+        assert!(leaked.is_empty(), "cargo's log reached the output: {leaked:?}");
+    }
+
     #[test]
     fn regression_the_total_survives_a_build_that_writes_its_lock() {
         let dir = std::env::temp_dir().join(format!("dev-events-lock-{}", std::process::id()));
