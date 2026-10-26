@@ -748,6 +748,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Android keeps cookies** (`backend-android-mobile`). `net`'s Android
+  transport is a bare `HttpURLConnection`, which drops cookies unless a
+  default `java.net.CookieHandler` is installed. The backend installs one
+  (`RustCookies`) before the app mounts, so session cookies work as they
+  do on the other platforms.
+
 - **`idealyst dev --metrics` records what every save cost**
   (`idealyst-cli`, `dev-events`). One record per save and per initial
   build, appended across sessions to
@@ -2068,6 +2074,27 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A column no longer keeps a text's min-content height** (`runtime-layout`).
+  Taffy 0.7–0.11 cached a flex item's min-content layout under a key that
+  ignored the available space, so the final layout reused it: a column
+  took the height of its text measured at min-content width, while the
+  text's own frame was right (a kiosk pin pad's scroll content measured
+  5578 against 1192). `runtime-layout` now uses Taffy 0.15, whose cache key
+  includes the available space.
+
+- **Scroll content that fits fills its scroller** (`backend-android-mobile`).
+  A vertical scroller's inner container was exactly its content's height,
+  so a `flex_grow` child had nowhere to grow and `margin: auto` content sat
+  at the top. The inner now floors at the viewport on each axis it
+  scrolls, and still grows past it for content that scrolls.
+
+- **Android min-content text measures at its widest word**
+  (`backend-android-mobile`). A `MinContent` probe measured a multi-line
+  `TextView` at width 0, which breaks inside words: one glyph per line and
+  an enormous height. It now measures at the widest whitespace-separated
+  run, as CSS min-content does. A single-line label keeps measuring to its
+  ellipsis.
 
 - **A screen-pinned Android app fills the screen**
   (`backend-android-mobile` 4.0.1). Pinning empties the status bar and
