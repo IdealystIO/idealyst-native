@@ -113,7 +113,9 @@ struct BuildArgs {
     verify: bool,
     /// Restrict the release to these crates. Their dependencies are NOT
     /// pulled in — use it to re-cut a single crate, or to rehearse the
-    /// pipeline on one leaf.
+    /// pipeline on one leaf. Other crates' history is not read at all, so a
+    /// crate whose recorded release commit is missing from this checkout
+    /// does not block releasing the named ones.
     #[arg(long = "only", value_name = "CRATE")]
     only: Vec<String>,
     /// Stage a release from an uncommitted tree. The recorded commit will
@@ -171,19 +173,19 @@ fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Migrate { dry_run, remote } => migrate(&ws, dry_run, &remote),
         Cmd::Plan(r) => {
-            let plan = plan(&ws, &r)?;
+            let plan = plan(&ws, &r, &[])?;
             report(&ws, &plan);
             Ok(())
         }
         Cmd::Build { remote, build: b } => {
-            let plan = scoped(plan(&ws, &remote)?, &b.only);
+            let plan = scoped(plan(&ws, &remote, &b.only)?, &b.only);
             report(&ws, &plan);
             build(&ws, &plan, &remote, &b, false)?;
             println!("\nstaged in {}", b.out.display());
             Ok(())
         }
         Cmd::Publish { remote, build: b, execute } => {
-            let plan = scoped(plan(&ws, &remote)?, &b.only);
+            let plan = scoped(plan(&ws, &remote, &b.only)?, &b.only);
             report(&ws, &plan);
             let state = build(&ws, &plan, &remote, &b, execute)?;
             if !execute {
@@ -638,7 +640,12 @@ enum Forced {
     Requested,
 }
 
-fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
+/// `only` (from `--only`), when non-empty, skips change detection for every
+/// other crate. The result is narrowed to `only` by [`scoped`] anyway, and
+/// reading a skipped crate's history can fail outright: its recorded release
+/// commit may be one this checkout never received (published from another
+/// clone, never pushed).
+fn plan(ws: &Workspace, r: &RemoteArgs, only: &[String]) -> Result<BTreeMap<String, Release>> {
     let state = if r.from_scratch {
         ReleaseState::default()
     } else {
@@ -651,9 +658,21 @@ fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
             }
         }
     };
+    plan_from_state(ws, r, &state, only)
+}
 
+/// [`plan`] against an already-fetched registry state.
+fn plan_from_state(
+    ws: &Workspace,
+    r: &RemoteArgs,
+    state: &ReleaseState,
+    only: &[String],
+) -> Result<BTreeMap<String, Release>> {
     let mut plan: BTreeMap<String, Release> = BTreeMap::new();
     for p in ws.publishable() {
+        if !only.is_empty() && !only.contains(&p.name) {
+            continue;
+        }
         let Some(prev) = state.crates.get(&p.name) else {
             // Never published: ship the manifest version as-is.
             plan.insert(
@@ -1558,6 +1577,55 @@ mod tests {
         assert!(apply_bump_overrides(&mut plan, &["css".to_string()]).is_err(), "no level");
         assert!(apply_bump_overrides(&mut plan, &["css=huge".to_string()]).is_err(), "bad level");
         assert_eq!(plan["css"].bump, Bump::Patch, "a rejected spec changes nothing");
+    }
+
+    /// `backend-linux 3.0.2` was published from a clone that never pushed, so
+    /// its recorded commit is missing here and reading its history fails. A
+    /// `--only` release of an unrelated crate must not read it at all.
+    #[test]
+    fn regression_only_skips_a_crate_released_from_an_unpushed_commit() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let head = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        let mut ws = bare_ws(&[("unpushed", "3.0.2"), ("fixed", "4.0.0")]);
+        ws.root = repo;
+        let state = ReleaseState {
+            crates: BTreeMap::from([
+                (
+                    "unpushed".to_string(),
+                    Released { version: "3.0.2".into(), commit: "0".repeat(40) },
+                ),
+                (
+                    "fixed".to_string(),
+                    Released { version: "4.0.0".into(), commit: head.trim().into() },
+                ),
+            ]),
+        };
+        let r = RemoteArgs {
+            bucket: None,
+            distribution_id: None,
+            url: "https://crates.idealyst.io".into(),
+            from_scratch: false,
+            force: vec![],
+            bump: vec![],
+            skip_api_check: vec![],
+            registry_name: "idealyst".into(),
+        };
+
+        let Err(err) = plan_from_state(&ws, &r, &state, &[]) else {
+            panic!("a full plan reads the unpushed crate's history and must fail");
+        };
+        assert!(err.to_string().contains("still in this history"), "{err}");
+        if let Err(e) = plan_from_state(&ws, &r, &state, &["fixed".to_string()]) {
+            panic!("--only must not read the unpushed crate's history: {e}");
+        }
     }
 
     /// `--force` exists for a published manifest that is wrong while the

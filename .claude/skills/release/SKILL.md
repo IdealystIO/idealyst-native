@@ -205,7 +205,11 @@ subject?
   was and the comment rides into its next real release — `backend-web` was
   excluded this way four releases running. Say so in the release commit.
   `--only` is a `build`/`publish` flag; `plan` does not take it, so plan
-  without and subtract in your head.
+  without and subtract in your head. `--only` also skips reading every
+  other crate's history, so when `plan` dies with "is <sha> still in this
+  history?" (a crate released from a clone that never pushed), a
+  `publish --only <crate>` of the crates you need still works — the plan
+  it prints is the one to check.
 - **`--force <CRATE>`** releases a crate at a patch bump although its directory
   is unchanged. Reach for it only when the *published manifest* is wrong and
   the source is right — an under-declared internal requirement is the case it
