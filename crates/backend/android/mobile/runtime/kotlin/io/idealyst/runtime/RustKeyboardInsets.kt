@@ -178,6 +178,7 @@ class RustKeyboardInsets private constructor(private val root: View) :
             ViewCompat.setOnApplyWindowInsetsListener(root, cb)
             ViewCompat.requestApplyInsets(root)
             installed = true
+            RustSystemUi.watchPinning(activity, root)
             return true
         }
     }

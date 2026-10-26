@@ -397,7 +397,9 @@ runtime_tls::thread_local! {
 ///   no navigation, and no transient-bar flash (the swipe never reaches
 ///   the reveal-bars path). The bottom home gesture stays mandatory.
 ///   Pair with a navigator's `back_enabled(false)` as the commit-time
-///   safety net.
+///   safety net. Independently of this call, a screen-pinned (lock-task)
+///   app hides the bars too — pinning empties them but keeps their
+///   insets — and gets them back when unpinned unless full-screen is on.
 /// - **iOS** — hides the status bar and the home indicator on the
 ///   root view controller.
 /// - **macOS** — toggles native window full-screen.

@@ -1,6 +1,7 @@
 package io.idealyst.runtime
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.Context
 import android.graphics.Rect
 import android.os.Build
@@ -30,6 +31,12 @@ object RustSystemUi {
      *  host Activity. */
     private var exclusionListener: View.OnLayoutChangeListener? = null
 
+    /** The author's `set_fullscreen` request. */
+    private var fullscreenRequested = false
+
+    /** The task is screen-pinned or in lock-task (kiosk) mode. */
+    private var pinned = false
+
     /**
      * Enter (`enabled = true`) or leave immersive full-screen.
      *
@@ -48,8 +55,8 @@ object RustSystemUi {
      *    because the swipe never reaches the "reveal bars" path. The
      *    bottom home gesture stays mandatory and is unaffected.
      *
-     * Leaving restores the bars, the edge-to-edge fitting, and the
-     * default gesture areas.
+     * Leaving restores the default gesture areas, and the bars unless the
+     * task is pinned ([watchPinning]).
      */
     @JvmStatic
     fun setFullscreen(context: Context, enabled: Boolean) {
@@ -61,45 +68,94 @@ object RustSystemUi {
             )
             return
         }
-        val window = activity.window
-        val decor = window.decorView
         // WindowInsetsController / exclusion rects must be touched on the
         // UI thread. The framework calls this from a main-thread event
         // handler, so runOnUiThread runs inline; it's a guard for any
         // off-thread caller.
         activity.runOnUiThread {
-            val controller = WindowInsetsControllerCompat(window, decor)
-            if (enabled) {
-                WindowCompat.setDecorFitsSystemWindows(window, false)
-                // Draw into the display cutout so the window background fills
-                // behind it (API 28+); without this the cutout strip letterboxes
-                // black while the bars are hidden — leaving a black band at the
-                // top even though the app paints the rest of the screen.
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    window.attributes = window.attributes.apply {
-                        layoutInDisplayCutoutMode =
-                            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                    }
-                }
-                controller.hide(WindowInsetsCompat.Type.systemBars())
-                controller.systemBarsBehavior =
-                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                applyEdgeExclusion(decor)
-            } else {
-                clearEdgeExclusion(decor)
-                controller.show(WindowInsetsCompat.Type.systemBars())
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    window.attributes = window.attributes.apply {
-                        layoutInDisplayCutoutMode =
-                            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
-                    }
-                }
-                // Stay edge to edge when the keyboard tracker owns the
-                // insets: it keeps the root inside the bars itself, and
-                // fitting windows would hand the IME back to the system's
-                // one-step window resize (see RustKeyboardInsets).
-                WindowCompat.setDecorFitsSystemWindows(window, !RustKeyboardInsets.installed)
+            fullscreenRequested = enabled
+            val decor = activity.window.decorView
+            if (enabled) applyEdgeExclusion(decor) else clearEdgeExclusion(decor)
+            applyBars(activity)
+        }
+    }
+
+    /**
+     * Hide the system bars while the task is pinned (screen pinning or
+     * lock-task mode), so the app fills the screen.
+     *
+     * Pinning empties the status bar and the taskbar but leaves both
+     * reporting their full insets as visible, and dispatches no insets
+     * change — so the host root stays inset by margins around a blank
+     * 24dp strip and a black 60dp taskbar slab. Hiding the bars is what
+     * makes the system report zero insets (and dispatch them).
+     *
+     * There is no pinning callback. Pinning lays the window out, so the
+     * lock-task state is re-read on every global layout. Unpinning does
+     * not (the hidden bars stay hidden, nothing moves), so while pinned
+     * the state is also polled every [PIN_POLL_MS].
+     */
+    @JvmStatic
+    fun watchPinning(activity: Activity, root: View) {
+        val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return
+        lateinit var poll: Runnable
+        val sync = {
+            val now = am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+            if (now != pinned) {
+                pinned = now
+                applyBars(activity)
+                // One poll chain at a time: a quick unpin + re-pin can
+                // land while the previous chain's last check is pending.
+                root.removeCallbacks(poll)
+                if (now) root.postDelayed(poll, PIN_POLL_MS)
             }
+        }
+        poll = Runnable {
+            sync()
+            if (pinned) {
+                root.removeCallbacks(poll)
+                root.postDelayed(poll, PIN_POLL_MS)
+            }
+        }
+        root.viewTreeObserver.addOnGlobalLayoutListener { sync() }
+        sync()
+    }
+
+    /** How often a pinned app checks whether it has been unpinned. */
+    private const val PIN_POLL_MS = 500L
+
+    /** Show or hide the bars for `fullscreenRequested || pinned`. */
+    private fun applyBars(activity: Activity) {
+        val window = activity.window
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        if (fullscreenRequested || pinned) {
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            // Draw into the display cutout so the window background fills
+            // behind it (API 28+); without this the cutout strip letterboxes
+            // black while the bars are hidden — leaving a black band at the
+            // top even though the app paints the rest of the screen.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                window.attributes = window.attributes.apply {
+                    layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                window.attributes = window.attributes.apply {
+                    layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+                }
+            }
+            // Stay edge to edge when the keyboard tracker owns the
+            // insets: it keeps the root inside the bars itself, and
+            // fitting windows would hand the IME back to the system's
+            // one-step window resize (see RustKeyboardInsets).
+            WindowCompat.setDecorFitsSystemWindows(window, !RustKeyboardInsets.installed)
         }
     }
 
