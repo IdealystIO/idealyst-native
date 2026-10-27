@@ -32,7 +32,12 @@ use std::time::{Duration, Instant, SystemTime};
 /// What a caller wants launched. Mirrors the subset of `idealyst dev`
 /// flags that make sense to drive from MCP: target platforms, the
 /// `--local` mode toggle, and the robot knobs.
+///
+/// `#[non_exhaustive]` because it grows with the CLI's flags: build one
+/// with `DevLaunch::default()` and set the fields you need, so a new
+/// option is not a breaking change.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct DevLaunch {
     /// Project directory (the `dir` positional). `None` → the MCP
     /// server's current working directory (the project it was started
