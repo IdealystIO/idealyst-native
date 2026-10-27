@@ -241,18 +241,20 @@ struct DiscoveredExtensions {
     androidx: Vec<(String, String)>,
 }
 
-/// Walk the wrapper's dep tree via `cargo metadata` and collect every
-/// package's `[package.metadata.idealyst.android]` block.
+/// Run `cargo metadata` on the wrapper: the dependency graph every
+/// `[package.metadata.idealyst.android]` block is read from (Kotlin/Java
+/// sources and AndroidX here, manifest fragments and resources in
+/// `sdk_manifest`). Run once per build and shared.
 ///
 /// The wrapper is generated under `target/idealyst/.../<project>/android/
 /// wrapper/` and depends on the user's project crate, which transitively
 /// pulls in every third-party SDK. So `cargo metadata` on the wrapper
 /// gives us the full set of SDKs the app will mount at runtime — the
 /// exact same scope that `cargo build` will compile.
-fn discover_extensions(wrapper_manifest: &Path) -> Result<DiscoveredExtensions> {
+pub fn cargo_metadata(wrapper_manifest: &Path) -> Result<Value> {
     if !wrapper_manifest.is_file() {
         anyhow::bail!(
-            "no wrapper crate at {} — the Kotlin runtime is read from the backend it resolves",
+            "no wrapper crate at {} — the Android build reads its dependency graph from it",
             wrapper_manifest.display(),
         );
     }
@@ -275,13 +277,11 @@ fn discover_extensions(wrapper_manifest: &Path) -> Result<DiscoveredExtensions> 
             String::from_utf8_lossy(&output.stderr),
         );
     }
-    let json: Value = serde_json::from_slice(&output.stdout)
-        .with_context(|| "parse cargo metadata JSON")?;
-    extensions_from_metadata(&json)
+    serde_json::from_slice(&output.stdout).with_context(|| "parse cargo metadata JSON")
 }
 
-/// The pure half of [`discover_extensions`]: everything it collects, from
-/// `cargo metadata` JSON.
+/// Everything the Kotlin/Java/AndroidX side collects from
+/// [`cargo_metadata`]'s JSON.
 fn extensions_from_metadata(json: &Value) -> Result<DiscoveredExtensions> {
     let mut out = DiscoveredExtensions::default();
     let Some(packages) = json.get("packages").and_then(|v| v.as_array()) else {
@@ -463,14 +463,15 @@ fn staged_relpath_from(declared: &str) -> Result<PathBuf> {
 /// later aapt2 link, and return the inputs the rest of the pipeline
 /// needs.
 ///
-/// `wrapper_manifest` is the Cargo.toml of the generated wrapper crate
-/// for this build. `cargo metadata` runs against it to discover any
-/// third-party SDK Kotlin sources and additional AndroidX requirements.
+/// `metadata` is [`cargo_metadata`] of the generated wrapper crate at
+/// `wrapper_manifest`: the graph third-party SDK Kotlin sources and
+/// additional AndroidX requirements are discovered from.
 pub fn build_runtime(
     build_dir: &Path,
     android_jar: &Path,
     build_tools: &Path,
     wrapper_manifest: &Path,
+    metadata: &Value,
 ) -> Result<RuntimeArtifacts> {
     let kotlin_src_root = build_dir.join("kotlin");
     fs::create_dir_all(&kotlin_src_root)
@@ -483,7 +484,7 @@ pub fn build_runtime(
     // `extension-java/` (kept separate from the user's `java/` tree so we
     // can mix-and-match per call without disturbing the user's source
     // layout).
-    let extensions = discover_extensions(wrapper_manifest)?;
+    let extensions = extensions_from_metadata(metadata)?;
     if extensions.backend_kotlin.is_empty() {
         anyhow::bail!(
             "{} does not depend on {BACKEND_PACKAGE}, so there is no Kotlin runtime to compile",

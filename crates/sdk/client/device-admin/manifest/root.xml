@@ -1,0 +1,8 @@
+<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+<!-- PackageInstaller sessions (install_apk) and uninstall(): apps targeting
+     API 26+ / 28+ must hold these even as device owner. -->
+<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+<uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+<!-- installed_version() and launch() look up OTHER packages (the kiosk),
+     which Android 11+ package visibility hides without this. -->
+<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />

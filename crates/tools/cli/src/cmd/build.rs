@@ -5,7 +5,7 @@
 //! `--android`, optional `--aas` (build the dev-host binary even
 //! though it's not a deploy target), plus `--release` to flip every
 //! platform into its production pipeline (wasm-opt for web,
-//! xcodebuild Release for iOS, `assembleRelease` for Android).
+//! xcodebuild Release for iOS, a release cdylib for Android).
 //!
 //! With no platform flags, the active set falls back to
 //! `[package.metadata.idealyst.app].targets`. Builds run sequentially
@@ -31,7 +31,9 @@ pub struct Args {
     #[arg(long)]
     pub ios: bool,
 
-    /// Build for Android (cdylib + Gradle wrapper).
+    /// Build for Android: a signed APK at `<project>/dist/android/`, signed
+    /// with `[package.metadata.idealyst.app.android.signing]` (the debug
+    /// keystore when unset).
     #[arg(long)]
     pub android: bool,
 
@@ -765,22 +767,41 @@ fn build_ios_target(dir: &std::path::Path, args: &Args) -> Result<()> {
 
 fn build_android_target(dir: &std::path::Path, args: &Args) -> Result<()> {
     let source = crate::framework_source::resolve(dir)?;
-    let artifact = build_android::build(
+    let packaged = run_android::package(
         dir,
-        build_android::BuildOptions {
+        &run_android::PackageOptions {
             release: args.release,
-            api_level: 21,
-            mode: build_android::BuildMode::Local,
+            mode: run_android::RunMode::Local,
             source,
+            runtime_server_port: None,
             user_features: Vec::new(),
+            robot_relay_url: None,
+            // A distribution APK keeps Android's secure default; only the
+            // `run`/`dev` APK talks to an `http://` dev server.
+            cleartext: false,
         },
     )?;
+    let manifest = parse_manifest(dir)?;
+    let out = android_dist_apk(dir, &manifest);
+    std::fs::create_dir_all(out.parent().expect("dist path has a parent"))?;
+    std::fs::copy(&packaged.apk, &out)
+        .with_context(|| format!("copy {} → {}", packaged.apk.display(), out.display()))?;
     eprintln!(
-        "[build android] success → {} (abi: {})",
-        artifact.dylib.display(),
-        artifact.abi,
+        "[build android] success → {} ({} {} / versionCode {})",
+        out.display(),
+        packaged.package,
+        packaged.version_name,
+        packaged.version_code,
     );
     Ok(())
+}
+
+/// Where `idealyst build --android` leaves the APK:
+/// `<project>/dist/android/<name>-<version>.apk`.
+pub(crate) fn android_dist_apk(dir: &Path, manifest: &build_ios::Manifest) -> PathBuf {
+    dir.join("dist")
+        .join(Target::Android.as_str())
+        .join(format!("{}-{}.apk", manifest.name, manifest.app.version))
 }
 
 fn build_roku_target(dir: &std::path::Path, _args: &Args) -> Result<()> {

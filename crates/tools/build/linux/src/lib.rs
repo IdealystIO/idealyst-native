@@ -371,6 +371,7 @@ mod regression_tests {
                 macos: Default::default(),
                 permissions: Default::default(),
                 links: Default::default(),
+                android: Default::default(),
             },
         }
     }

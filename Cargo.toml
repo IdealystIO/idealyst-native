@@ -278,6 +278,9 @@ members = [
     "crates/sdk/client/share",
     "crates/sdk/client/deep-link",
     "crates/sdk/client/connectivity",
+    "crates/sdk/client/device-admin",
+    "crates/sdk/client/device-admin/examples/kiosk-agent",
+    "crates/sdk/client/device-admin/examples/kiosk-app",
     "crates/sdk/client/haptics",
     "crates/sdk/client/datetime",
     "crates/sdk/client/audio",
@@ -688,6 +691,7 @@ location = { path = "crates/sdk/client/location", version = "3.0.0", registry = 
 share = { path = "crates/sdk/client/share", version = "3.0.0", registry = "idealyst" }
 deep-link = { path = "crates/sdk/client/deep-link", version = "4.0.0", registry = "idealyst" }
 connectivity = { path = "crates/sdk/client/connectivity", version = "3.0.0", registry = "idealyst" }
+device-admin = { path = "crates/sdk/client/device-admin", version = "0.1.0", registry = "idealyst" }
 haptics = { path = "crates/sdk/client/haptics", version = "3.0.0", registry = "idealyst" }
 datetime = { path = "crates/sdk/client/datetime", version = "1.6.1", registry = "idealyst" }
 audio = { path = "crates/sdk/client/audio", version = "3.0.0", registry = "idealyst" }

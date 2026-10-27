@@ -92,6 +92,10 @@ run-ios = { workspace = true }
 build-runtime-server = { workspace = true }
 build-android = { workspace = true }
 run-android = { workspace = true }
+# `idealyst android provisioning-qr`: renders the device-owner provisioning
+# payload as a terminal (unicode) and SVG QR code. Already in the lockfile
+# through the `qr` SDK; no image backend needed.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 build-roku = { workspace = true }
 run-roku = { workspace = true }
 build-sim = { workspace = true }

@@ -89,6 +89,10 @@ If you're new to the codebase, read the docs in this order:
 
 ## Platforms
 
+- [`android-packaging.md`](./android-packaging.md). How an Android APK is
+  built: the app's `[package.metadata.idealyst.app.android]` (versionCode,
+  kiosk attributes, release signing), the manifest fragments and resources
+  an SDK can contribute, and device-owner QR provisioning.
 - [`windows.md`](./windows.md). The Windows backend's two renderers (GDI+,
   the default, and the opt-in Direct2D one) and how to choose between them;
   running Windows builds on a Mac with Wine, including the Wine-Staging +

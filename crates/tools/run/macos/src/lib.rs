@@ -882,6 +882,7 @@ mod tests {
             macos,
             permissions: Default::default(),
             links: Default::default(),
+            android: Default::default(),
         }
     }
 

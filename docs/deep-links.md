@@ -70,8 +70,11 @@ rules:
   `*.` entry covers.
 
 Fingerprints: `keytool -list -v -keystore <keystore>` prints the SHA-256.
-`idealyst run android` signs with `~/.android/debug.keystore`, so its
-fingerprint is the one that verifies dev builds. A Play Store build is signed
+Android builds sign with the app's release keystore when
+`[package.metadata.idealyst.app.android.signing]` names one, and with
+`~/.android/debug.keystore` otherwise (see
+[`android-packaging.md`](./android-packaging.md)); list the fingerprint of
+each key that signs builds you want verified. A Play Store build is signed
 with Play's app-signing key; add that fingerprint too.
 
 ## 3. How a URL maps to a screen

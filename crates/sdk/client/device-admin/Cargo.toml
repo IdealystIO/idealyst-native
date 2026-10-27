@@ -1,0 +1,77 @@
+[package]
+name = "device-admin"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# Device management: Android device-owner policy (lock task, kiosk home
+# screen, keyguard/status bar, user restrictions, silent APK installs,
+# reboot, wipe) and a small iOS counterpart (Single App Mode, managed app
+# configuration).
+#
+#   - Android:  DevicePolicyManager / PackageInstaller / lock task, through a
+#               Kotlin helper (runtime/kotlin) reached over JNI.
+#   - iOS:      UIAccessibilityRequestGuidedAccessSession + NSUserDefaults
+#               managed configuration.
+#   - others:   every call is Err(Unsupported).
+#
+# The policy logic is in Kotlin because the receiver and provisioning
+# activities a device owner needs must be JVM classes; Rust is the typed
+# surface and a one-method JNI transport.
+
+[package.metadata.idealyst.android]
+runtime_kotlin = [
+    "runtime/kotlin/io/idealyst/deviceadmin/RustDeviceAdmin.kt",
+    "runtime/kotlin/io/idealyst/deviceadmin/AdminReceiver.kt",
+    "runtime/kotlin/io/idealyst/deviceadmin/ProvisioningActivities.kt",
+    "runtime/kotlin/io/idealyst/deviceadmin/BootReceiver.kt",
+]
+# The device-admin receiver, the two QR-provisioning activities and the boot
+# receiver (inside <application>), their permissions (inside <manifest>), and
+# the receiver's policy list. Spliced into every app that depends on this
+# crate; all of it is inert until the app is made device owner.
+manifest_application = ["manifest/application.xml"]
+manifest_root = ["manifest/root.xml"]
+res = ["res/xml/device_admin.xml"]
+
+[package.metadata.idealyst.ios]
+frameworks = ["UIKit"]
+
+[features]
+# Compile-checked usage recipes for the catalog / MCP / docs surface. Off in
+# production builds, so recipes cost nothing there.
+catalog = ["dep:runtime-core", "dep:runtime-vocabulary", "runtime-core/catalog", "runtime-core/async-driver"]
+
+[dependencies]
+thiserror = { workspace = true }
+# Replies and events cross the JNI boundary as JSON; managed configuration
+# and provisioning extras are JSON objects.
+serde_json = { workspace = true }
+# The UI-thread listener registry, at one pthread key per process on Android.
+runtime-tls = { workspace = true }
+# Recipes only (`catalog`). `runtime-vocabulary` is direct because the
+# recipes' `ui!` emission spells absolute `::runtime_vocabulary::glue::…`
+# paths.
+runtime-core = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+# Parks an asynchronous call's sender until the Kotlin side reports back.
+futures-channel = "0.3"
+# Failures reported to logcat through the backend's logger (stderr is not
+# captured on Android).
+log = "0.4"
+# Events reach listeners through the host's async executor
+# (`driver::spawn_async`): its polls fire the backend's post-dispatch flush,
+# so a listener's signal writes commit. A bare JNI callback gets no flush.
+runtime-shared = { workspace = true, features = ["async-driver"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.5"
+block2 = "0.5"
+futures-channel = "0.3"
+
+[dev-dependencies]
+pollster = "0.4"

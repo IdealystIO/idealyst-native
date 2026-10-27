@@ -10,9 +10,13 @@
 //!   zip                   → splice classes.dex + lib/arm64-v8a/<so> into apk
 //!   zip                   → splice the app's assets/ as apk assets/<path>
 //!   zipalign              → page-align the .so for direct mmap
-//!   apksigner             → sign with the debug keystore
+//!   apksigner             → sign (release key or the debug keystore)
 //!   emulator -avd / adb   → boot a sim if none, install, launch
 //! ```
+//!
+//! [`package`] is everything up to the signed APK; [`run`] packages and
+//! then installs + launches. `idealyst build --android` calls [`package`]
+//! for a release APK.
 //!
 //! Why no Gradle: same reason we skipped Xcode projects. The APK is
 //! a build artifact derivable from the user's platform-agnostic
@@ -20,9 +24,11 @@
 //! be a regenerated artifact in any case; cutting it out drops a
 //! large dependency surface and makes builds noticeably faster.
 //!
-//! Limited to emulator + connected dev devices today. Release
-//! signing (Play Store upload) needs a real keystore + version
-//! management; debug keystore is the right default for development.
+//! Signing and `versionCode` come from the app's
+//! `[package.metadata.idealyst.app.android]` (see `build_ios::android_app`):
+//! a configured release keystore signs every build of the app — `run` too,
+//! because Android refuses to update an install signed with a different
+//! certificate — and the debug keystore is the default when none is set.
 
 use std::collections::HashMap;
 use std::fs;
@@ -32,10 +38,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use build_ios::android_app::AndroidAppMetadata;
 use build_ios::{capabilities, FrameworkSource, Manifest};
 
 mod kotlin_runtime;
 mod maven;
+pub mod provisioning;
+mod sdk_manifest;
+
+use sdk_manifest::SdkManifestContributions;
 
 const MAIN_ACTIVITY_LOCAL_JAVA: &str = include_str!("../templates/MainActivity.java");
 const NATIVE_BRIDGE_LOCAL_JAVA: &str = include_str!("../templates/NativeBridge.java");
@@ -108,6 +119,33 @@ impl RunMode {
     }
 }
 
+/// What [`package`] builds. [`RunOptions`] minus the device choice, plus
+/// whether the manifest is the development one.
+#[derive(Clone, Debug)]
+pub struct PackageOptions {
+    pub release: bool,
+    pub mode: RunMode,
+    pub source: FrameworkSource,
+    pub runtime_server_port: Option<u16>,
+    pub user_features: Vec<String>,
+    pub robot_relay_url: Option<String>,
+    /// Allow cleartext HTTP (`android:usesCleartextTraffic`). On for
+    /// `idealyst run`/`dev`, so a dev build reaches an `http://` server on the
+    /// developer's machine; off for a distribution APK, which keeps Android's
+    /// secure default.
+    pub cleartext: bool,
+}
+
+/// A signed APK, ready to install.
+#[derive(Debug)]
+pub struct PackagedApk {
+    pub apk: PathBuf,
+    /// The app's package name (`manifest.app.bundle_id`).
+    pub package: String,
+    pub version_code: u32,
+    pub version_name: String,
+}
+
 #[derive(Debug)]
 pub struct RunArtifact {
     pub apk: PathBuf,
@@ -117,9 +155,78 @@ pub struct RunArtifact {
 }
 
 pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
+    let packaged = package(
+        project_dir,
+        &PackageOptions {
+            release: opts.release,
+            mode: opts.mode,
+            source: opts.source.clone(),
+            runtime_server_port: opts.runtime_server_port,
+            user_features: opts.user_features.clone(),
+            robot_relay_url: opts.robot_relay_url.clone(),
+            cleartext: true,
+        },
+    )?;
+    let sdk = find_android_sdk()?;
+    let adb = sdk.join("platform-tools/adb");
+    let signed_apk = packaged.apk;
+
+    // ── Ensure a device is online; boot an emulator if not ───────
+    let serial = ensure_device(&adb, &sdk, opts.avd.as_deref())?;
+    eprintln!("[run-android] using device {serial}");
+
+    // ── Optional `adb reverse` so the device's localhost reaches the
+    //    host's dev-server. Only meaningful in runtime-server mode; the
+    //    same port we bake into manifest meta-data as
+    //    `IdealystRuntimeServerUrl`. Harmless on physical devices because
+    //    USB ADB supports reverse tunnels too. ─
+    if let Some(port) = opts.runtime_server_port {
+        adb_reverse(&adb, &serial, port)?;
+    }
+    // Same tunnel for the robot relay: the device dials `ws://127.0.0.1:<port>`
+    // (baked into the manifest) and `adb reverse` forwards it to the host
+    // relay. Parse the port out of the relay URL.
+    if let Some(url) = &opts.robot_relay_url {
+        if let Some(port) = url.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()) {
+            adb_reverse(&adb, &serial, port)?;
+        }
+    }
+
+    // ── adb install + launch ────────────────────────────────────
+    adb_install(&adb, &serial, &signed_apk)?;
+    let component = format!("{}/.MainActivity", packaged.package);
+    adb_launch(&adb, &serial, &component)?;
+
+    // Surface the emulator window. Matches the iOS launcher, which
+    // does `open -a Simulator` so the user doesn't have to alt-tab
+    // out of the terminal to see the result. No-op for physical
+    // devices (the qemu-system process doesn't exist) and a no-op
+    // on non-macOS hosts.
+    bring_emulator_to_front();
+
+    Ok(RunArtifact {
+        apk: signed_apk,
+        serial,
+    })
+}
+
+/// Build the Rust cdylib and assemble, align and sign the APK. No device
+/// involved.
+pub fn package(project_dir: &Path, opts: &PackageOptions) -> Result<PackagedApk> {
     let project_dir = fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
     let manifest = build_ios::parse_manifest(&project_dir)?;
+
+    // Resolve signing and the versionCode before the cdylib build, so
+    // a missing keystore password or an unorderable version fails fast.
+    let bundle_id = manifest.app.require_bundle_id()?;
+    let signing = resolve_signing(&project_dir, &manifest.app.android, &home_dir()?, |k| {
+        std::env::var_os(k)
+    })?;
+    let version_code = manifest
+        .app
+        .android
+        .resolved_version_code(&manifest.app.version)?;
 
     // ── 1. Build the Rust cdylib ─────────────────────────────────
     let so = build_android::build(
@@ -149,8 +256,6 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             android_jar.display(),
         );
     }
-    let adb = sdk.join("platform-tools/adb");
-
     // ── 3. Lay out build dir ─────────────────────────────────────
     // runtime-server and Local builds live in sibling dirs so their (different)
     // staged Java sources + APKs don't stomp each other.
@@ -229,11 +334,17 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     let icon_attrs =
         sync_android_icons_into_res(&project_dir, &project_res, &build_tools, &project_icon_flat)?;
 
+    // One `cargo metadata` over the wrapper's dependency graph feeds every
+    // SDK-declared input: manifest fragments + resources here, and (below)
+    // the Kotlin runtime sources and AndroidX artifacts.
+    let wrapper_manifest = so.wrapper_dir.join("Cargo.toml");
+    let metadata = kotlin_runtime::cargo_metadata(&wrapper_manifest)?;
+    let sdk_contrib = SdkManifestContributions::from_metadata(&metadata)?;
+
     // Capability-derived `<uses-permission>` + `<service>` entries, discovered
-    // from the wrapper's dependency graph (the same manifest the Kotlin-runtime
-    // discovery below walks).
+    // from the same dependency graph.
     let (mut uses_permissions, services) =
-        android_manifest_entries(&so.wrapper_dir.join("Cargo.toml"), &manifest.app.permissions);
+        android_manifest_entries(&wrapper_manifest, &manifest.app.permissions);
 
     // The Robot bridge (auto-started whenever the `robot`/`dev` feature is on)
     // binds a localhost TCP listener, and Android only permits creating a
@@ -253,24 +364,35 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
 
     fs::write(
         &manifest_xml,
-        render(manifest_tmpl, &[
-            ("PACKAGE", manifest.app.require_bundle_id()?),
-            ("APP_NAME", &xml_escape(&manifest.app.name)),
-            ("APP_ID", &xml_escape(manifest.app.require_bundle_id()?)),
-            ("AAS_URL", &xml_escape(&aas_url)),
-            (
-                "ROBOT_RELAY_URL",
-                &xml_escape(opts.robot_relay_url.as_deref().unwrap_or("")),
-            ),
-            ("IDEALYST_ENV", &xml_escape(&forwarded_env(|k| std::env::var(k).ok()))),
-            ("ICON_ATTRS", &icon_attrs),
-            ("USES_PERMISSIONS", &uses_permissions),
-            ("SERVICES", &services),
-            // Only the local template carries the splice; the runtime-server
-            // shell forwards no links (its Activity has no link handling).
-            ("INTENT_FILTERS", &manifest.app.links.android_intent_filters()),
-        ]),
+        render_manifest(
+            manifest_tmpl,
+            &ManifestInputs {
+                package: bundle_id,
+                app_name: &manifest.app.name,
+                aas_url: &aas_url,
+                robot_relay_url: opts.robot_relay_url.as_deref().unwrap_or(""),
+                idealyst_env: &forwarded_env(|k| std::env::var(k).ok()),
+                icon_attrs: &icon_attrs,
+                uses_permissions: &uses_permissions,
+                services: &services,
+                // Only the local template carries the splice; the
+                // runtime-server shell forwards no links (its Activity has no
+                // link handling).
+                intent_filters: &manifest.app.links.android_intent_filters(),
+                cleartext: opts.cleartext,
+                android: &manifest.app.android,
+                sdk: &sdk_contrib,
+            },
+        ),
     )?;
+
+    // SDK-declared resource files (`metadata.idealyst.android.res`), compiled
+    // into their own `.flata` and linked beside the project's icon flat.
+    let sdk_res = build_dir.join("sdk-res");
+    let sdk_res_flat = build_dir.join("sdk-res.flata");
+    if sdk_contrib.stage_res(&sdk_res)? {
+        aapt2_compile_dir(&build_tools, &sdk_res, &sdk_res_flat, "SDK resources")?;
+    }
 
     // ── 5. Prepare AAR resources + Kotlin runtime ────────────────
     // The backend ships a small Kotlin runtime (RustDrawerLayout,
@@ -285,12 +407,12 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // any third-party SDK Kotlin runtime sources + AndroidX
     // requirements (declared in each SDK's
     // `[package.metadata.idealyst.android]`).
-    let wrapper_manifest = so.wrapper_dir.join("Cargo.toml");
     let mut runtime = kotlin_runtime::build_runtime(
         &build_dir,
         &android_jar,
         &build_tools,
         &wrapper_manifest,
+        &metadata,
     )?;
     // Splice the project's compiled icon flat into the aapt2-link
     // resource set. Empty when no icons were generated — `aapt2
@@ -299,6 +421,9 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // string in that case which we filter out.
     if project_icon_flat.is_file() {
         runtime.aar_resource_flats.push(project_icon_flat.clone());
+    }
+    if sdk_res_flat.is_file() {
+        runtime.aar_resource_flats.push(sdk_res_flat.clone());
     }
 
     // ── 6. aapt2 link → APK + generated R.java ───────────────────
@@ -310,6 +435,10 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         &runtime.aar_resource_flats,
         &runtime.aar_extra_packages,
         &runtime.r_java_dir,
+        &AppVersion {
+            code: version_code,
+            name: &manifest.app.version,
+        },
         &unsigned_apk,
     )?;
 
@@ -365,55 +494,13 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
 
     // ── 10. apksigner sign ──────────────────────────────────────
     let signed_apk = build_dir.join(format!("{}.apk", manifest.name));
-    let keystore = home_dir()?.join(".android/debug.keystore");
-    if !keystore.is_file() {
-        anyhow::bail!(
-            "{} not found. Android Studio creates this on first launch — \
-             open Studio once, or generate manually: \
-             keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android \
-             -keypass android -keyalg RSA -alias androiddebugkey -dname 'CN=Android Debug' \
-             -validity 10000",
-            keystore.display(),
-        );
-    }
-    run_apksigner(&build_tools, &aligned_apk, &keystore, &signed_apk)?;
+    run_apksigner(&build_tools, &aligned_apk, &signing, &signed_apk)?;
 
-    // ── 11. Ensure a device is online; boot an emulator if not ───
-    let serial = ensure_device(&adb, &sdk, opts.avd.as_deref())?;
-    eprintln!("[run-android] using device {serial}");
-
-    // ── 11.5. Optional `adb reverse` so the device's localhost
-    //          reaches the host's dev-server. Only meaningful in
-    //          runtime-server mode; the same port we bake into manifest
-    //          meta-data as `IdealystRuntimeServerUrl`. Harmless on physical
-    //          devices because USB ADB supports reverse tunnels too. ─
-    if let Some(port) = opts.runtime_server_port {
-        adb_reverse(&adb, &serial, port)?;
-    }
-    // Same tunnel for the robot relay: the device dials `ws://127.0.0.1:<port>`
-    // (baked into the manifest above) and `adb reverse` forwards it to the host
-    // relay. Parse the port out of the relay URL.
-    if let Some(url) = &opts.robot_relay_url {
-        if let Some(port) = url.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()) {
-            adb_reverse(&adb, &serial, port)?;
-        }
-    }
-
-    // ── 12. adb install + launch ────────────────────────────────
-    adb_install(&adb, &serial, &signed_apk)?;
-    let component = format!("{}/.MainActivity", manifest.app.require_bundle_id()?);
-    adb_launch(&adb, &serial, &component)?;
-
-    // Surface the emulator window. Matches the iOS launcher, which
-    // does `open -a Simulator` so the user doesn't have to alt-tab
-    // out of the terminal to see the result. No-op for physical
-    // devices (the qemu-system process doesn't exist) and a no-op
-    // on non-macOS hosts.
-    bring_emulator_to_front();
-
-    Ok(RunArtifact {
+    Ok(PackagedApk {
         apk: signed_apk,
-        serial,
+        package: bundle_id.to_string(),
+        version_code,
+        version_name: manifest.app.version.clone(),
     })
 }
 
@@ -649,21 +736,7 @@ fn sync_android_icons_into_res(
     if icon_gen::sync_android_icons(Some(&block), res_dir)?.is_none() {
         return Ok(String::new());
     }
-    eprintln!(
-        "[run-android] aapt2 compile (project icons) → {}",
-        out_flat.display()
-    );
-    let status = Command::new(build_tools.join("aapt2"))
-        .arg("compile")
-        .arg("--dir")
-        .arg(res_dir)
-        .arg("-o")
-        .arg(out_flat)
-        .status()
-        .with_context(|| "spawn aapt2 compile for project icons")?;
-    if !status.success() {
-        anyhow::bail!("aapt2 compile project icons exited with {status}");
-    }
+    aapt2_compile_dir(build_tools, res_dir, out_flat, "project icons")?;
     // Leading space + attr pair so the template can splice this
     // directly into the `<application … {{ICON_ATTRS}}>` opening
     // tag without breaking when icons aren't configured (empty
@@ -672,6 +745,7 @@ fn sync_android_icons_into_res(
         .to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_aapt2_link(
     build_tools: &Path,
     manifest_xml: &Path,
@@ -679,6 +753,7 @@ fn run_aapt2_link(
     aar_flats: &[PathBuf],
     extra_packages: &[String],
     r_java_out_dir: &Path,
+    version: &AppVersion<'_>,
     out_apk: &Path,
 ) -> Result<()> {
     eprintln!(
@@ -698,6 +773,10 @@ fn run_aapt2_link(
         .arg(MIN_SDK_VERSION.to_string())
         .arg("--target-sdk-version")
         .arg(TARGET_SDK_VERSION.to_string())
+        .arg("--version-code")
+        .arg(version.code.to_string())
+        .arg("--version-name")
+        .arg(version.name)
         .arg("--java")
         .arg(r_java_out_dir)
         .arg("--auto-add-overlay");
@@ -842,25 +921,118 @@ fn run_zipalign(build_tools: &Path, input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_apksigner(
-    build_tools: &Path,
-    input: &Path,
-    keystore: &Path,
-    output: &Path,
-) -> Result<()> {
-    eprintln!("[run-android] apksigner sign → {}", output.display());
-    // The debug keystore's password is `android` by convention. If
-    // a user has rotated it we'll surface the apksigner failure;
-    // they can regenerate by deleting `~/.android/debug.keystore`
-    // (Android Studio re-creates on next open).
+/// `versionCode` + `versionName`, stamped by `aapt2 link`.
+struct AppVersion<'a> {
+    code: u32,
+    name: &'a str,
+}
+
+/// The key an APK is signed with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SigningKey {
+    /// `~/.android/debug.keystore`, password `android` by convention.
+    Debug { keystore: PathBuf },
+    /// The app's configured release key; passwords come from the named env
+    /// vars, which apksigner reads itself (`env:VAR`).
+    Release {
+        keystore: PathBuf,
+        alias: String,
+        store_password_env: String,
+        key_password_env: Option<String>,
+    },
+}
+
+/// The app's release key when `[package.metadata.idealyst.app.android.signing]`
+/// is set (its keystore must exist and its password env vars must be set),
+/// else the debug keystore under `home`.
+fn resolve_signing(
+    project_dir: &Path,
+    android: &AndroidAppMetadata,
+    home: &Path,
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<SigningKey> {
+    let Some(signing) = &android.signing else {
+        let keystore = home.join(".android/debug.keystore");
+        if !keystore.is_file() {
+            anyhow::bail!(
+                "{} not found. Android Studio creates this on first launch — \
+                 open Studio once, or generate manually: \
+                 keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android \
+                 -keypass android -keyalg RSA -alias androiddebugkey -dname 'CN=Android Debug' \
+                 -validity 10000",
+                keystore.display(),
+            );
+        }
+        return Ok(SigningKey::Debug { keystore });
+    };
+    let keystore = signing.keystore_path(project_dir);
+    if !keystore.is_file() {
+        anyhow::bail!(
+            "release keystore {} (from [package.metadata.idealyst.app.android.signing]) not found",
+            keystore.display()
+        );
+    }
+    for var in std::iter::once(&signing.store_password_env).chain(signing.key_password_env.iter()) {
+        if env(var).is_none() {
+            anyhow::bail!(
+                "${var} is not set; it holds a password for the release keystore {} \
+                 ([package.metadata.idealyst.app.android.signing])",
+                keystore.display()
+            );
+        }
+    }
+    Ok(SigningKey::Release {
+        keystore,
+        alias: signing.alias.clone(),
+        store_password_env: signing.store_password_env.clone(),
+        key_password_env: signing.key_password_env.clone(),
+    })
+}
+
+/// `apksigner sign` arguments for `key`, minus `--out` and the input APK.
+fn apksigner_key_args(key: &SigningKey) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = vec!["sign".into(), "--ks".into()];
+    match key {
+        // The debug keystore's password is `android` by convention. If a user
+        // has rotated it we surface the apksigner failure; they can regenerate
+        // by deleting `~/.android/debug.keystore` (Android Studio re-creates it
+        // on next open).
+        SigningKey::Debug { keystore } => {
+            args.push(keystore.into());
+            args.extend(["--ks-pass", "pass:android", "--key-pass", "pass:android"].map(Into::into));
+        }
+        SigningKey::Release {
+            keystore,
+            alias,
+            store_password_env,
+            key_password_env,
+        } => {
+            args.push(keystore.into());
+            args.push("--ks-key-alias".into());
+            args.push(alias.into());
+            args.push("--ks-pass".into());
+            args.push(format!("env:{store_password_env}").into());
+            // No `--key-pass`: apksigner then uses the keystore password for
+            // the key, the usual single-password keystore.
+            if let Some(var) = key_password_env {
+                args.push("--key-pass".into());
+                args.push(format!("env:{var}").into());
+            }
+        }
+    }
+    args
+}
+
+fn run_apksigner(build_tools: &Path, input: &Path, key: &SigningKey, output: &Path) -> Result<()> {
+    let which = match key {
+        SigningKey::Debug { .. } => "debug keystore".to_string(),
+        SigningKey::Release { keystore, alias, .. } => {
+            format!("release key {alias} in {}", keystore.display())
+        }
+    };
+    eprintln!("[run-android] apksigner sign ({which}) → {}", output.display());
     let status = Command::new(build_tools.join("apksigner"))
-        .arg("sign")
-        .arg("--ks")
-        .arg(keystore)
-        .arg("--ks-pass")
-        .arg("pass:android")
-        .arg("--key-pass")
-        .arg("pass:android")
+        .args(apksigner_key_args(key))
         .arg("--out")
         .arg(output)
         .arg(input)
@@ -870,6 +1042,85 @@ fn run_apksigner(
         anyhow::bail!("apksigner exited with {status}");
     }
     Ok(())
+}
+
+/// `aapt2 compile --dir <res_dir> -o <out_flat>`.
+fn aapt2_compile_dir(build_tools: &Path, res_dir: &Path, out_flat: &Path, what: &str) -> Result<()> {
+    eprintln!("[run-android] aapt2 compile ({what}) → {}", out_flat.display());
+    let status = Command::new(build_tools.join("aapt2"))
+        .arg("compile")
+        .arg("--dir")
+        .arg(res_dir)
+        .arg("-o")
+        .arg(out_flat)
+        .status()
+        .with_context(|| format!("spawn aapt2 compile for {what}"))?;
+    if !status.success() {
+        anyhow::bail!("aapt2 compile ({what}) exited with {status}");
+    }
+    Ok(())
+}
+
+/// Everything substituted into an `AndroidManifest*.xml` template.
+struct ManifestInputs<'a> {
+    package: &'a str,
+    app_name: &'a str,
+    aas_url: &'a str,
+    robot_relay_url: &'a str,
+    idealyst_env: &'a str,
+    icon_attrs: &'a str,
+    uses_permissions: &'a str,
+    services: &'a str,
+    intent_filters: &'a str,
+    cleartext: bool,
+    android: &'a AndroidAppMetadata,
+    sdk: &'a SdkManifestContributions,
+}
+
+fn render_manifest(template: &str, i: &ManifestInputs<'_>) -> String {
+    let sdk_root = i.sdk.render_root(i.package);
+    let sdk_application = i.sdk.render_application(i.package);
+    render(template, &[
+        ("PACKAGE", i.package),
+        ("APP_NAME", &xml_escape(i.app_name)),
+        ("APP_ID", &xml_escape(i.package)),
+        ("AAS_URL", &xml_escape(i.aas_url)),
+        ("ROBOT_RELAY_URL", &xml_escape(i.robot_relay_url)),
+        ("IDEALYST_ENV", &xml_escape(i.idealyst_env)),
+        ("ICON_ATTRS", i.icon_attrs),
+        ("USES_PERMISSIONS", i.uses_permissions),
+        ("SERVICES", i.services),
+        ("INTENT_FILTERS", i.intent_filters),
+        ("CLEARTEXT", if i.cleartext { "true" } else { "false" }),
+        ("MAIN_ACTIVITY_ATTRS", &main_activity_attrs(i.android)),
+        ("HOME_INTENT_FILTER", home_intent_filter(i.android)),
+        ("SDK_MANIFEST_ROOT", &sdk_root),
+        ("SDK_MANIFEST_APPLICATION", &sdk_application),
+    ])
+}
+
+/// Extra attributes on the main `<activity>` opening tag, each with a
+/// leading space (empty when the app sets none).
+fn main_activity_attrs(android: &AndroidAppMetadata) -> String {
+    match android.lock_task_mode {
+        Some(mode) => format!(" android:lockTaskMode=\"{}\"", mode.manifest_value()),
+        None => String::new(),
+    }
+}
+
+/// The HOME intent filter for an app declared as a home screen. A separate
+/// filter from the LAUNCHER one: a filter matches only when all its
+/// categories match, and HOME intents carry `DEFAULT` too.
+fn home_intent_filter(android: &AndroidAppMetadata) -> &'static str {
+    if android.home_launcher {
+        "<intent-filter>
+                <action android:name=\"android.intent.action.MAIN\" />
+                <category android:name=\"android.intent.category.HOME\" />
+                <category android:name=\"android.intent.category.DEFAULT\" />
+            </intent-filter>"
+    } else {
+        ""
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1187,6 +1438,8 @@ mod tests {
     }
 
     use super::{local_robot_build_needs_internet, render, ANDROID_MANIFEST_LOCAL_XML};
+    use super::{apksigner_key_args, render_manifest, resolve_signing, ManifestInputs, SigningKey};
+    use super::{AndroidAppMetadata, SdkManifestContributions};
     use super::{splice_assets_into_apk, stage_apk_assets, APK_ASSETS_STAGING};
     use std::fs;
     use std::process::Command;
@@ -1227,14 +1480,163 @@ mod tests {
     /// The dev/run manifest must enable cleartext HTTP so a dev build can
     /// reach a server-function / `#[sse]` host running over `http://` on the
     /// developer's machine (the emulator's `http://10.0.2.2:<port>` loopback
-    /// alias). Release packaging is generated elsewhere and keeps the secure
-    /// default, so this is local-development only.
+    /// alias); a release APK keeps Android's secure default.
     #[test]
-    fn local_manifest_enables_cleartext_for_dev() {
-        assert!(
-            ANDROID_MANIFEST_LOCAL_XML.contains("android:usesCleartextTraffic=\"true\""),
-            "dev manifest must allow cleartext so the app can reach a local http dev server"
+    fn cleartext_is_on_for_dev_and_off_for_release() {
+        let meta = AndroidAppMetadata::default();
+        let sdk = SdkManifestContributions::default();
+        let dev = render_manifest(ANDROID_MANIFEST_LOCAL_XML, &inputs(&meta, &sdk, true));
+        let release = render_manifest(ANDROID_MANIFEST_LOCAL_XML, &inputs(&meta, &sdk, false));
+        assert!(dev.contains("android:usesCleartextTraffic=\"true\""), "{dev}");
+        assert!(release.contains("android:usesCleartextTraffic=\"false\""), "{release}");
+    }
+
+    fn inputs<'a>(
+        android: &'a AndroidAppMetadata,
+        sdk: &'a SdkManifestContributions,
+        cleartext: bool,
+    ) -> ManifestInputs<'a> {
+        ManifestInputs {
+            package: "com.example.kiosk",
+            app_name: "Kiosk & Co",
+            aas_url: "",
+            robot_relay_url: "",
+            idealyst_env: "",
+            icon_attrs: "",
+            uses_permissions: "",
+            services: "",
+            intent_filters: "",
+            cleartext,
+            android,
+            sdk,
+        }
+    }
+
+    const ANDROID_NS: &str = "http://schemas.android.com/apk/res/android";
+
+    /// Every placeholder in both templates is filled and the result is a
+    /// well-formed manifest, with the app's kiosk attributes on the main
+    /// activity and SDK fragments under the right parents.
+    #[test]
+    fn manifest_carries_kiosk_attributes_and_sdk_components_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("manifest")).unwrap();
+        fs::write(
+            tmp.path().join("manifest/app.xml"),
+            r#"<receiver android:name="io.fake.Admin" android:permission="android.permission.BIND_DEVICE_ADMIN" android:exported="true" />"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("manifest/root.xml"),
+            r#"<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />"#,
+        )
+        .unwrap();
+        let sdk = SdkManifestContributions::from_metadata(&serde_json::json!({ "packages": [{
+            "name": "fake-sdk",
+            "manifest_path": tmp.path().join("Cargo.toml").display().to_string(),
+            "metadata": { "idealyst": { "android": {
+                "manifest_application": ["manifest/app.xml"],
+                "manifest_root": ["manifest/root.xml"],
+            } } },
+        }]}))
+        .unwrap();
+        let kiosk = AndroidAppMetadata {
+            lock_task_mode: Some(build_ios::android_app::LockTaskMode::IfWhitelisted),
+            home_launcher: true,
+            ..Default::default()
+        };
+
+        for template in [ANDROID_MANIFEST_LOCAL_XML, super::ANDROID_MANIFEST_AAS_XML] {
+            let xml = render_manifest(template, &inputs(&kiosk, &sdk, true));
+            assert!(!xml.contains("{{"), "unfilled placeholder:\n{xml}");
+            let doc = roxmltree::Document::parse(&xml).unwrap_or_else(|e| panic!("{e}\n{xml}"));
+            fn child<'a, 'i>(n: roxmltree::Node<'a, 'i>, tag: &str) -> Vec<roxmltree::Node<'a, 'i>> {
+                n.children().filter(|c| c.has_tag_name(tag)).collect()
+            }
+            let manifest = doc.root_element();
+            let perms = child(manifest, "uses-permission");
+            assert!(perms.iter().any(|p| p.attribute((ANDROID_NS, "name"))
+                == Some("android.permission.RECEIVE_BOOT_COMPLETED")));
+            let app = child(manifest, "application")[0];
+            let receivers = child(app, "receiver");
+            assert_eq!(receivers.len(), 1, "{xml}");
+            assert_eq!(receivers[0].attribute((ANDROID_NS, "name")), Some("io.fake.Admin"));
+            let activity = child(app, "activity")[0];
+            assert_eq!(activity.attribute((ANDROID_NS, "lockTaskMode")), Some("if_whitelisted"));
+            let has_category = |f: &roxmltree::Node<'_, '_>, c: &str| {
+                child(*f, "category").iter().any(|n| n.attribute((ANDROID_NS, "name")) == Some(c))
+            };
+            let filters = child(activity, "intent-filter");
+            assert!(filters.iter().any(|f| has_category(f, "android.intent.category.LAUNCHER")));
+            assert!(filters.iter().any(|f| has_category(f, "android.intent.category.HOME")
+                && has_category(f, "android.intent.category.DEFAULT")));
+        }
+
+        // An app that sets neither gets neither.
+        let plain = render_manifest(
+            ANDROID_MANIFEST_LOCAL_XML,
+            &inputs(&AndroidAppMetadata::default(), &SdkManifestContributions::default(), true),
         );
+        assert!(!plain.contains("lockTaskMode"));
+        assert!(!plain.contains("category.HOME"));
+        roxmltree::Document::parse(&plain).unwrap();
+    }
+
+    fn release_meta(key_env: Option<&str>) -> AndroidAppMetadata {
+        AndroidAppMetadata {
+            signing: Some(build_ios::android_app::AndroidSigning {
+                keystore: "keys/release.jks".into(),
+                alias: "rel".into(),
+                store_password_env: "STORE_PW".into(),
+                key_password_env: key_env.map(str::to_string),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn release_signing_reads_passwords_from_the_environment_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("keys")).unwrap();
+        fs::write(tmp.path().join("keys/release.jks"), b"ks").unwrap();
+        let env = |k: &str| (k == "STORE_PW").then(|| std::ffi::OsString::from("secret"));
+
+        let key = resolve_signing(tmp.path(), &release_meta(None), tmp.path(), env).unwrap();
+        let args: Vec<String> = apksigner_key_args(&key)
+            .into_iter()
+            .map(|a| a.into_string().unwrap())
+            .collect();
+        assert!(args.windows(2).any(|w| w == ["--ks-key-alias", "rel"]), "{args:?}");
+        assert!(args.windows(2).any(|w| w == ["--ks-pass", "env:STORE_PW"]), "{args:?}");
+        assert!(!args.iter().any(|a| a.contains("secret")), "a password leaked into argv");
+        assert!(!args.iter().any(|a| a == "--key-pass"));
+
+        let err = resolve_signing(tmp.path(), &release_meta(Some("KEY_PW")), tmp.path(), env)
+            .unwrap_err();
+        assert!(format!("{err}").contains("$KEY_PW is not set"), "{err}");
+        let err = resolve_signing(tmp.path(), &release_meta(None), tmp.path(), |_| None).unwrap_err();
+        assert!(format!("{err}").contains("$STORE_PW"), "{err}");
+
+        fs::remove_file(tmp.path().join("keys/release.jks")).unwrap();
+        let err = resolve_signing(tmp.path(), &release_meta(None), tmp.path(), env).unwrap_err();
+        assert!(format!("{err}").contains("not found"), "{err}");
+    }
+
+    #[test]
+    fn no_signing_block_uses_the_debug_keystore() {
+        let tmp = tempfile::tempdir().unwrap();
+        let none = AndroidAppMetadata::default();
+        assert!(resolve_signing(tmp.path(), &none, tmp.path(), |_| None).is_err());
+        fs::create_dir_all(tmp.path().join(".android")).unwrap();
+        fs::write(tmp.path().join(".android/debug.keystore"), b"ks").unwrap();
+        let key = resolve_signing(tmp.path(), &none, tmp.path(), |_| None).unwrap();
+        assert_eq!(
+            key,
+            SigningKey::Debug { keystore: tmp.path().join(".android/debug.keystore") }
+        );
+        let args: Vec<String> =
+            apksigner_key_args(&key).into_iter().map(|a| a.into_string().unwrap()).collect();
+        assert!(args.windows(2).any(|w| w == ["--ks-pass", "pass:android"]));
     }
 
     /// Regression: a local-mode dev/robot build must get INTERNET injected so

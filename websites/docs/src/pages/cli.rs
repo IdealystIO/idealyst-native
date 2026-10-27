@@ -47,9 +47,13 @@ pub fn page() -> Element {
                 title = "Build".to_string(),
                 body = "Build production artifacts for one or more platforms. Pass `--release` \
                         for a release profile; pass per-target boolean flags (`--web`, `--ios`, \
-                        `--android`, `--macos`, `--roku`) to pick targets.".to_string(),
+                        `--android`, `--macos`, `--roku`) to pick targets. `--android` \
+                        writes a signed APK to `dist/android/<name>-<version>.apk`, signed \
+                        with the keystore in `[package.metadata.idealyst.app.android.signing]` \
+                        (the debug keystore when unset).".to_string(),
                 code = "idealyst build --release --web\n\
-                        idealyst build --release --ios".to_string(),
+                        idealyst build --release --ios\n\
+                        idealyst build --release --android".to_string(),
             )
 
             SectionWithCode(
@@ -104,7 +108,9 @@ pub fn page() -> Element {
                                drops only superseded output. `sync` regenerates derived assets \
                                (icons, splash screens) from the project config. `doctor` checks \
                                your toolchain per target. `brs` collects and emits BrightScript \
-                               methods for the Roku backend. `scaffold <platform>` is reserved \
+                               methods for the Roku backend. `android provisioning-qr` prints the QR \
+                               code that makes a device-owner app (the `device-admin` SDK) the \
+                               owner of a freshly reset device. `scaffold <platform>` is reserved \
                                for exporting a generated wrapper project into the repo; it is \
                                not implemented yet and only prints a notice.".to_string(),
                     muted = true,
@@ -114,7 +120,8 @@ pub fn page() -> Element {
                             idealyst clean --stale\n\
                             idealyst sync\n\
                             idealyst doctor\n\
-                            idealyst brs".to_string(),
+                            idealyst brs\n\
+                            idealyst android provisioning-qr --download-url https://example.com/agent.apk".to_string(),
                 )
             }
         }

@@ -10,6 +10,9 @@
     <!-- Capability-derived permissions, injected from SDKs declared in
          the dependency graph (`[package.metadata.idealyst].capabilities`). -->
     {{USES_PERMISSIONS}}
+    <!-- Elements SDKs splice inside <manifest>
+         (`[package.metadata.idealyst.android].manifest_root`). -->
+    {{SDK_MANIFEST_ROOT}}
     <application
         android:label="{{APP_NAME}}"
         android:hasCode="true"{{ICON_ATTRS}}>
@@ -28,11 +31,17 @@
         <activity android:name="{{PACKAGE}}.MainActivity"
                   android:exported="true"
                   android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|uiMode|density|navigation|fontScale|layoutDirection"
-                  android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+                  android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"{{MAIN_ACTIVITY_ATTRS}}>
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- HOME + DEFAULT when the app is a home screen
+                 (`[package.metadata.idealyst.app.android].home_launcher`). -->
+            {{HOME_INTENT_FILTER}}
         </activity>
+        <!-- Components SDKs splice inside <application>
+             (`[package.metadata.idealyst.android].manifest_application`). -->
+        {{SDK_MANIFEST_APPLICATION}}
     </application>
 </manifest>

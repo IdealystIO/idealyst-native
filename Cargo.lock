@@ -3661,6 +3661,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "device-admin"
+version = "0.1.0"
+dependencies = [
+ "block2 0.5.1",
+ "futures-channel",
+ "jni 0.21.1",
+ "log",
+ "ndk-context",
+ "objc2 0.5.2",
+ "pollster 0.4.0",
+ "runtime-core",
+ "runtime-shared",
+ "runtime-tls",
+ "runtime-vocabulary",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dialoguer"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6582,6 +6601,7 @@ dependencies = [
  "ota-index",
  "ota-publish",
  "pathdiff",
+ "qrcode",
  "quote",
  "remote-bundle",
  "rmcp",
@@ -7103,6 +7123,28 @@ name = "khronos_api"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
+
+[[package]]
+name = "kiosk-agent"
+version = "0.1.0"
+dependencies = [
+ "device-admin",
+ "idealyst",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+]
+
+[[package]]
+name = "kiosk-app"
+version = "0.1.0"
+dependencies = [
+ "device-admin",
+ "idealyst",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+]
 
 [[package]]
 name = "kqueue"
@@ -10681,6 +10723,7 @@ dependencies = [
  "build-android",
  "build-ios",
  "icon-gen",
+ "roxmltree",
  "serde_json",
  "sha1_smol",
  "tempfile",

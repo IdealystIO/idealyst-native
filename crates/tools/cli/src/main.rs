@@ -115,6 +115,9 @@ enum Command {
     Scaffold(cmd::scaffold::Args),
     /// Roku: transpile `#[method]`-tagged functions to BrightScript.
     Brs(cmd::brs::Args),
+    /// Android tooling: `provisioning-qr` prints the QR code that makes a
+    /// device-owner app the owner of a freshly reset device.
+    Android(cmd::android::Args),
     /// Remote-component bundles: signing keys (`keygen`), and signing,
     /// verifying or inspecting a bundle. Release builds are
     /// `idealyst build --remote`.
@@ -198,6 +201,7 @@ fn main() -> anyhow::Result<()> {
         Command::Icon(args) => cmd::icon::run(args),
         Command::Scaffold(args) => cmd::scaffold::run(args),
         Command::Brs(args) => cmd::brs::run(args),
+        Command::Android(args) => cmd::android::run(args),
         Command::Remote(args) => cmd::remote::run(args),
         Command::Ota(args) => cmd::ota::run(args),
         Command::Mcp(args) => cmd::mcp::run(args),

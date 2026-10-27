@@ -890,6 +890,7 @@ pub(crate) mod tests_support {
                 macos: Default::default(),
                 permissions: Default::default(),
                 links: Default::default(),
+                android: Default::default(),
             },
         }
     }
@@ -925,6 +926,7 @@ mod tests {
                 macos: Default::default(),
                 permissions: Default::default(),
                 links: Default::default(),
+                android: Default::default(),
             },
         }
     }

@@ -1,0 +1,38 @@
+<!-- The device-admin receiver a device owner is bound through
+     (`dpm set-device-owner <app>/io.idealyst.deviceadmin.AdminReceiver`).
+     Inert until the app is made an admin. -->
+<receiver android:name="io.idealyst.deviceadmin.AdminReceiver"
+    android:permission="android.permission.BIND_DEVICE_ADMIN"
+    android:exported="true">
+    <meta-data android:name="android.app.device_admin" android:resource="@xml/device_admin" />
+    <intent-filter>
+        <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+        <action android:name="android.app.action.PROFILE_PROVISIONING_COMPLETE" />
+    </intent-filter>
+</receiver>
+<!-- QR provisioning on Android 10+ requires both activities. The
+     BIND_DEVICE_ADMIN permission lets only the system launch them. -->
+<activity android:name="io.idealyst.deviceadmin.ProvisioningModeActivity"
+    android:permission="android.permission.BIND_DEVICE_ADMIN"
+    android:exported="true"
+    android:theme="@android:style/Theme.Translucent.NoTitleBar">
+    <intent-filter>
+        <action android:name="android.app.action.GET_PROVISIONING_MODE" />
+        <category android:name="android.intent.category.DEFAULT" />
+    </intent-filter>
+</activity>
+<activity android:name="io.idealyst.deviceadmin.PolicyComplianceActivity"
+    android:permission="android.permission.BIND_DEVICE_ADMIN"
+    android:exported="true"
+    android:theme="@android:style/Theme.Translucent.NoTitleBar">
+    <intent-filter>
+        <action android:name="android.app.action.ADMIN_POLICY_COMPLIANCE" />
+        <category android:name="android.intent.category.DEFAULT" />
+    </intent-filter>
+</activity>
+<!-- Reports `boot_completed`; queued until the app's Rust side listens. -->
+<receiver android:name="io.idealyst.deviceadmin.BootReceiver" android:exported="false">
+    <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+    </intent-filter>
+</receiver>

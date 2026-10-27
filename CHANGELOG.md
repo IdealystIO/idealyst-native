@@ -748,6 +748,40 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`device-admin` SDK: Android device-owner policy, and an iOS subset**
+  (`device-admin` 0.1). An app that is the device owner can lock a kiosk
+  app onto the screen (`set_lock_task_packages`, `set_lock_task_features`,
+  `start_lock_task`), make it the persistent home screen, disable the
+  keyguard and status bar, set user restrictions and global settings,
+  install and uninstall APKs silently after checking the signing
+  certificate (`install_apk`), reboot, wipe, and relinquish device owner.
+  OS events (provisioning, admin, lock task, installs, boot) are queued on
+  the device while the app's Rust side is not running and replayed to
+  `events` listeners. On iOS, `start_lock_task` requests Single App Mode,
+  and `managed_config` / `set_managed_feedback` exchange the MDM's app
+  configuration. `examples/kiosk-agent` and `examples/kiosk-app` are a
+  working pair; see the crate README.
+
+- **SDKs can add manifest components and resources on Android**
+  (`run-android`). New `[package.metadata.idealyst.android]` keys:
+  `manifest_application` and `manifest_root` (XML fragments spliced
+  inside `<application>` / `<manifest>`, validated at build time) and
+  `res` (resource files compiled into the APK). See
+  `docs/android-packaging.md`.
+
+- **Android release signing, versionCode and kiosk attributes**
+  (`build-ios`, `run-android`, `idealyst-cli`).
+  `[package.metadata.idealyst.app.android]` takes a `signing` block
+  (keystore, alias, password env vars), `version_code`, `lock_task_mode`
+  and `home_launcher`. Every APK now carries a versionCode and versionName.
+  The code is derived from `app.version` as major × 1,000,000 +
+  minor × 1,000 + patch unless set explicitly, so `0.0.1` stays `1`.
+  `idealyst build --android` now produces a signed APK at
+  `dist/android/<name>-<version>.apk` with cleartext HTTP off; it used to
+  stop at the `.so`. New `idealyst android provisioning-qr` prints the QR
+  code that provisions a device-owner app, reading the receiver and
+  certificate from the APK.
+
 - **Android keeps cookies** (`backend-android-mobile`). `net`'s Android
   transport is a bare `HttpURLConnection`, which drops cookies unless a
   default `java.net.CookieHandler` is installed. The backend installs one

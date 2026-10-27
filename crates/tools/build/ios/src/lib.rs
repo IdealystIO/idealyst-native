@@ -42,6 +42,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 /// Copying the app crate's `assets/` into each platform's output (`asset!`).
+pub mod android_app;
 pub mod app_assets;
 pub mod capabilities;
 pub mod links;
@@ -248,6 +249,10 @@ pub struct AppMetadata {
     /// types, the associated-domains entitlement, the Android intent
     /// filters and the web build's `.well-known` files. See [`links`].
     pub links: links::LinksMetadata,
+    /// Android-only app knobs — versionCode, the kiosk attributes on the
+    /// main activity, release signing — from
+    /// `[package.metadata.idealyst.app.android]`. See [`android_app`].
+    pub android: android_app::AndroidAppMetadata,
 }
 
 /// macOS-target-specific config from `[package.metadata.idealyst.app.macos]`.
@@ -593,6 +598,8 @@ struct RawAppMetadata {
     permissions: Option<std::collections::BTreeMap<String, String>>,
     #[serde(default)]
     links: Option<links::RawLinksMetadata>,
+    #[serde(default)]
+    android: Option<android_app::RawAndroidAppMetadata>,
 }
 
 #[derive(Default, Deserialize)]
@@ -733,6 +740,8 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         macos,
         permissions: app_raw.permissions.unwrap_or_default(),
         links: links::LinksMetadata::from_raw(app_raw.links.unwrap_or_default())?,
+        android: android_app::AndroidAppMetadata::from_raw(app_raw.android.unwrap_or_default())
+            .with_context(|| format!("{}", path.display()))?,
     };
 
     Ok(Manifest {
@@ -1243,6 +1252,7 @@ mod regression_tests {
                 macos: Default::default(),
                 permissions: Default::default(),
                 links: Default::default(),
+                android: Default::default(),
             },
         }
     }

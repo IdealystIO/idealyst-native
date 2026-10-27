@@ -18,6 +18,9 @@ icon-gen = { workspace = true }
 # Verifies AndroidX downloads against the repository's `.sha1` (see
 # `src/maven.rs`). Dependency-free, already in the workspace lockfile.
 sha1_smol = "1"
+# Validates SDK-contributed manifest fragments (`src/sdk_manifest.rs`) so a
+# malformed or misplaced element names its SDK instead of failing in aapt2.
+roxmltree = "0.20"
 
 [dev-dependencies]
 tempfile = "3"
