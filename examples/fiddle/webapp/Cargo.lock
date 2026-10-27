@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "4.0.0"
+version = "4.1.1"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -879,12 +879,6 @@ dependencies = [
  "pkg-config",
  "system-deps",
 ]
-
-[[package]]
-name = "grid"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36119f3a540b086b4e436bb2b588cf98a68863470e0e880f4d0842f112a3183a"
 
 [[package]]
 name = "gsk4"
@@ -2123,7 +2117,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "runtime-shared",
  "taffy",
@@ -2582,14 +2576,13 @@ dependencies = [
 
 [[package]]
 name = "taffy"
-version = "0.7.7"
+version = "0.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab4f4d046dd956a47a7e1a2947083d7ac3e6aa3cfaaead36173ceaa5ab11878c"
+checksum = "31f7bd2d97198df05186f93a3a3c306845f40e8b3c22bf9279cdd7e5cf5fea7d"
 dependencies = [
- "arrayvec",
- "grid",
  "serde",
  "slotmap",
+ "smallvec",
 ]
 
 [[package]]
