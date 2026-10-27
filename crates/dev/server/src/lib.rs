@@ -84,7 +84,7 @@ pub use transport::{
 };
 #[cfg(feature = "robot")]
 pub use transport::serve_with_robot_bridge;
-pub use watch::{spawn_change_loop, spawn_change_loop_with, spawn_rebuild_loop, RebuildCommand, RebuildConfig};
+pub use watch::{spawn_change_loop, spawn_change_loop_numbered, spawn_change_loop_with, spawn_rebuild_loop, RebuildCommand, RebuildConfig};
 
 /// The runtime-server (Application-as-a-Server) **server-side backend**:
 /// an alias for [`WireRecordingBackend`]. Instead of driving native

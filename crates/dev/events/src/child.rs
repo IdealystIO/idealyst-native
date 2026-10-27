@@ -30,6 +30,37 @@ pub const NO_WATCH_ENV: &str = "IDEALYST_DEV_NO_WATCH";
 /// request a rebuild — or, under `--no-watch`, to apply the queued saves.
 pub const REBUILD_LINE: &str = "rebuild";
 
+/// Starts the line written just before [`REBUILD_LINE`] for a numbered
+/// request (`rebuild-request 7`), see [`rebuild_lines`]. A separate line,
+/// not an argument of `rebuild`: a host built before numbering ignores it
+/// and still rebuilds on the line after.
+pub const REBUILD_REQUEST_PREFIX: &str = "rebuild-request ";
+
+/// What `idealyst dev` writes to the host's stdin for session request
+/// `request` ([`crate::DevEvent::RebuildRequested`]).
+pub fn rebuild_lines(request: u64) -> String {
+    format!("{REBUILD_REQUEST_PREFIX}{request}\n{REBUILD_LINE}\n")
+}
+
+/// The host's reading of its stdin, line by line.
+#[derive(Debug, Default)]
+pub struct RebuildLines {
+    pending: Option<u64>,
+}
+
+impl RebuildLines {
+    /// `Some` when `line` asks for a rebuild, carrying the request number
+    /// a [`REBUILD_REQUEST_PREFIX`] line just before it gave, if any.
+    pub fn feed(&mut self, line: &str) -> Option<Option<u64>> {
+        let line = line.trim();
+        if let Some(n) = line.strip_prefix(REBUILD_REQUEST_PREFIX.trim_end()) {
+            self.pending = n.trim().parse().ok();
+            return None;
+        }
+        (line == REBUILD_LINE).then(|| self.pending.take())
+    }
+}
+
 /// Starts every marked line. A record separator, so it can never be the
 /// start of a line a human or a compiler printed.
 pub const MARK: &str = "\u{1e}idealyst-event ";
@@ -94,6 +125,21 @@ pub fn forward(reporter: &Reporter, source: &str, line: &str) {
 
 #[cfg(test)]
 mod tests {
+
+    /// Each rebuild line takes the number given just before it, once; a
+    /// bare `rebuild` (an older `idealyst dev`) is unnumbered.
+    #[test]
+    fn rebuild_lines_carry_the_request_number_to_the_next_rebuild() {
+        let mut r = RebuildLines::default();
+        let mut got = Vec::new();
+        for line in rebuild_lines(7).lines().chain(["rebuild", "noise"]).chain(rebuild_lines(8).lines()) {
+            if let Some(req) = r.feed(line) {
+                got.push(req);
+            }
+        }
+        assert_eq!(got, vec![Some(7), None, Some(8)]);
+    }
+
     use super::*;
     use crate::Queue;
 

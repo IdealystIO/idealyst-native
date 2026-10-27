@@ -11,11 +11,12 @@ use std::sync::Arc;
 use dev_events::sessions::{self, SessionEntry};
 
 /// What the endpoint does for the session: read its state, and request a
-/// rebuild (returning how many watchers took it). Supplied by the caller
-/// so the request handling is testable without a session.
+/// rebuild (returning the request's number and the targets that took
+/// it). Supplied by the caller so the request handling is testable
+/// without a session.
 pub struct Actions {
     pub status: Box<dyn Fn() -> Vec<serde_json::Value> + Send + Sync>,
-    pub rebuild: Box<dyn Fn() -> usize + Send + Sync>,
+    pub rebuild: Box<dyn Fn() -> crate::dev_log::Requested + Send + Sync>,
 }
 
 /// Answer one request: `(status code, JSON body)`. `authorization` is the
@@ -42,9 +43,16 @@ pub fn handle(
             (200, body.to_string())
         }
         ("POST", "/rebuild") => {
-            let accepted = (actions.rebuild)();
-            let body = serde_json::json!({ "accepted": accepted, "no_watch": entry.no_watch });
-            (if accepted > 0 { 202 } else { 409 }, body.to_string())
+            // `request` is what a wait on this rebuild's outcome names
+            // (`RebuildTaken` events carry it).
+            let r = (actions.rebuild)();
+            let body = serde_json::json!({
+                "accepted": r.targets.len(),
+                "request": r.request,
+                "targets": r.targets,
+                "no_watch": entry.no_watch,
+            });
+            (if r.targets.is_empty() { 409 } else { 202 }, body.to_string())
         }
         _ => (404, r#"{"error":"GET /status or POST /rebuild"}"#.into()),
     }
@@ -139,8 +147,8 @@ mod tests {
         Actions {
             status: Box::new(|| vec![serde_json::json!({"type": "session_started"})]),
             rebuild: Box::new(move || {
-                rebuilds.fetch_add(1, Ordering::SeqCst);
-                1
+                let n = rebuilds.fetch_add(1, Ordering::SeqCst) as u64 + 1;
+                crate::dev_log::Requested { request: n, targets: vec!["web".into()] }
             }),
         }
     }
@@ -165,6 +173,7 @@ mod tests {
         assert_eq!(code, 202);
         assert_eq!(n.load(Ordering::SeqCst), 1);
         assert!(body.contains(r#""accepted":1"#), "{body}");
+        assert!(body.contains(r#""request":1"#), "the request's number is what a wait names: {body}");
         let (code, body) = handle("GET", "/status", Some("Bearer tok"), false, &e, &a);
         assert_eq!(code, 200);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();

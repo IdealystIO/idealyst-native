@@ -1063,7 +1063,8 @@ overrides it) at the lowest CPU priority, and a save always comes first:
 the seeds of crates it carries unchanged are waited for (killing one
 would only make the save replay it cold); one of a crate the save EDITED
 is killed and not queued again, since it compiled sources that are gone;
-the others are killed and seeded again after the patch.
+the others are killed and seeded again after the patch. Waiting for
+seeds is the patch's `seed-wait` step, apart from its `cargo`.
 Two replays of one crate never run at once. Measured on CrewForge with
 the app crate seeded alone: first save 39.1 s save to screen (rustc
 34.4 s) without the seed, 18.3 s (rustc 11.7 s) with it.
@@ -1960,12 +1961,18 @@ The event types, by what they say:
 | `server_ready` | a server is listening (`livereload`, `runtime_server_bridged`, `full_stack` — once the project's server accepts connections, again after each restart —, `reload_stream`, `events`) |
 | `stream_route` | how a full-stack page reaches the stream: `same_origin` (the app server proxies it) or `port` |
 | `watching` | the watch set, and again when a save changes the dependency graph |
+| `watcher_ready` | the watcher that announced `watching` is taking saves. Between the two the web loop scans the workspace (seconds on a large one), and a save made then is held and reported right after this. Not re-sent on a rewatch |
+| `rebuild_requested` | a rebuild was requested (the panel's `r`, `POST /rebuild`): the session's number for it (`request`, from 1) and the `targets` whose watchers took it |
+| `rebuild_taken` | a target's watcher took request `request` into the work it is starting, so this episode's outcome answers it. Sent before that work's first event, and again by each restart of superseded work. A watcher takes requests in order; one made while a build runs is taken by the next build |
 | `change_detected` | files changed, with their crates; `folded` counts the extra batches in the same save |
 | `decided` | the tier: `overlay`, `hot_patch`, `rebuild` (with the reason), `unchanged` |
 | `overlay_pushed` / `patch_built` / `patch_failed` | a patch was sent (with timings, functions redirected, bytes), or could not be built |
+| `patch_step` | one step of a hot patch ended, with its time, as it ends — so a patch that fails or is superseded still says where its time went. In order: `decide` (the decision and reading the edited sources), `base-index` (waiting for the base's index, on a save that beat it), `seed-wait` (waiting for replay-cache seeds of crates the patch carries), `cargo` (the replays), `diff`, `verify-additive`, `link`, `resolve`, `jump-table`, `strip+write`, `scan-wait` (waiting for the edited crates' archive scan), `install`. The waits appear only when the patch waited; a trimmed patch that could not be trusted repeats `link` / `resolve` / `jump-table` for the whole one. A built patch's `patch_built.steps` lists the same steps, and they sum to about its `ms` |
 | `superseded` | a newer save arrived while a save's `overlay`, `hot_patch` or `rebuild` was in flight. That work is abandoned and never reaches a page, and a new `change_detected` follows with every file changed since. It ends the episode, so a superseded rebuild has no `build_finished` |
 | `build_started` / `stage_started` / `stage_finished` / `build_timed` / `build_finished` | a build: cause, each stage (`cargo`, `hotpatch-base-prep`, `wasm-bindgen`, `wasm-split`, `stage+fingerprint`, …), the summary, the outcome. After a rebuild's `build_finished`, an `archive-scan` stage of `web` covers any wait for the rebuild's archive scan, which the next save's decision needs (see [Workspace crates](#workspace-crates)) |
 | `cargo_progress` | packages compiled so far, of the build's total; the crate in flight |
+| `unit_built` | cargo recompiled a unit (not a fresh one): its package, version, kind, and the time since its `Compiling` line |
+| `unit_dirty` | why cargo recompiled a unit, from its fingerprint log: `file_changed`, `dependency_rebuilt`, `features_changed`, `no_prior_build`, … Only under `--metrics` (see "Build metrics") |
 | `diagnostic` | a rustc diagnostic: level, message, code, primary `file:line:column`, rendered text |
 | `page_ack` | the page (or, in runtime-server mode, the sidecar) applied something: `connected`, `reloading`, `overlay` (updated / waiting), `hot_patch` (redirected / carried), `failed` |
 | `sidecar_applied` | runtime-server mode: the host hot-patched or respawned the sidecar |
@@ -1974,6 +1981,14 @@ The event types, by what they say:
 | `robot_apps` | the apps connected to the relay, as a whole list on each change (each with an `id`, its `platform`, a `label` such as the browser, and whether it is the `active` one requests go to); empty when none is connected |
 | `warning` / `error` | something went wrong, with its source |
 | `log` / `output` | a CLI line not typed yet, and a subprocess line verbatim — so nothing is lost |
+
+**A save made while the first build runs.** The watches are registered
+after the first build, and the workspace the watcher decides against is
+scanned after it too. So a save made in that window raises no event, and
+the scan reads its new bytes as if the bundle had been built from them.
+The web loop looks for watched files modified since the build began and
+rebuilds with them (`decided: rebuild — saved while the first build ran`).
+A full-stack server's watcher does the same check and rebuilds the server.
 
 **Where the progress total comes from.** Cargo has no unit total on
 stable (`--unit-graph` is unstable), so `cargo_progress.total` is the size
@@ -2014,7 +2029,9 @@ analyse). A record holds:
   changed outside its function bodies`), and a hot patch that failed;
 - how it ended (overlay pushed, hot patch built, rebuilt and reloaded,
   superseded, failed) and the time from detection to that end;
-- each build stage's time, and for a hot patch each re-emitted crate's;
+- each build stage's time; for a hot patch each step's (`patch_step`),
+  whether it was built, failed or superseded, and for a built one each
+  re-emitted crate's replay time;
 - for a cargo build, every crate cargo **recompiled**, slowest first, with
   its compile time and cargo's own reason, plus the **root causes**: the
   reasons other than "a dependency was rebuilt", each with the crates it
@@ -2059,7 +2076,9 @@ through the same decision a watched save takes, so a body edit still hot
 patches. With nothing queued, the request rebuilds. Every watcher of the
 session queues: the web `--local` loop, a full-stack server's watcher,
 the icon watcher, and in wire mode the runtime-server host, which takes
-its rebuild requests from the CLI as `rebuild` lines on its stdin.
+its rebuild requests from the CLI as `rebuild` lines on its stdin, each
+after a `rebuild-request <n>` line naming the request (a host that
+predates numbering ignores that line and still rebuilds).
 
 Each queued save's `change_detected` names the whole queue so far, and
 no decision follows it until a request. The panel shows that as a
@@ -2082,7 +2101,13 @@ or `mcp`), and a control endpoint on a loopback port that answers
 - `GET /status` — the entry (without its token) and the session's state
   as events, the same snapshot `/__idealyst/events` opens with;
 - `POST /rebuild` — the panel's `r` (202, or 409 when no watcher is
-  running yet).
+  running yet), answering `{ accepted, request, targets, no_watch }`:
+  `request` is the number its `rebuild_requested` and `rebuild_taken`
+  events carry, which is how a wait on this request's outcome finds it.
+  `targets` names the watchers that took it. The web watcher takes a
+  request during its first build and applies it as its first work; the
+  runtime-server host and a full-stack server join `targets` once their
+  first build is up.
 
 Every request carries `Authorization: Bearer <token>` from the entry. A
 web page can reach any loopback port, so the endpoint refuses a request
@@ -2147,8 +2172,10 @@ reader that finds its pid gone.
   build and, on failure, what it could not resolve; the rebuild it falls
   back to follows.
 - `[dev] …` lines name the tier a save took and, on a rebuild, why.
-- `[hotpatch] timing: rustc …ms stub …ms link …ms jt …ms` breaks the
-  patch build down.
+- `[hotpatch] <files> · N function(s) redirected · decide …ms · cargo …ms
+  · link …ms · … (total …ms)` breaks a built patch down, step by step
+  (see `patch_step` under [Hooking into a dev session](#hooking-into-a-dev-session)); with several crates it
+  ends with each one's replay time, or `reused`.
 - `[dev-hot] call #N … jt_entries=… jt_hit=…` prints the first few
   dispatches after each patch. `jt_hit=None` on a function you expected
   to change means the table has no entry for it.

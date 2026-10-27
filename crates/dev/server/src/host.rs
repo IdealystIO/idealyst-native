@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::sidecar::{Sidecar, SidecarIn};
 use crate::{
-    serve_with_sidecar_and_tracker, spawn_change_loop_with, SessionMode, SessionTracker, SidecarSlot,
+    serve_with_sidecar_and_tracker, spawn_change_loop_numbered, SessionMode, SessionTracker, SidecarSlot,
     WireRecordingBackend,
 };
 
@@ -375,15 +375,18 @@ pub fn run(
     let (rebuild_tx, rebuild_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         use std::io::BufRead;
+        let mut lines = dev_events::child::RebuildLines::default();
         for line in std::io::stdin().lock().lines() {
             let Ok(line) = line else { return };
-            if line.trim() == dev_events::child::REBUILD_LINE && rebuild_tx.send(()).is_err() {
-                return;
+            if let Some(request) = lines.feed(&line) {
+                if rebuild_tx.send(request).is_err() {
+                    return;
+                }
             }
         }
     });
     let no_watch = std::env::var_os(dev_events::child::NO_WATCH_ENV).is_some();
-    spawn_change_loop_with(
+    spawn_change_loop_numbered(
         vec![user_src.clone()],
         std::time::Duration::from_millis(100),
         no_watch,

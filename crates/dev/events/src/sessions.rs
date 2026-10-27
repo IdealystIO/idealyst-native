@@ -67,6 +67,11 @@ pub struct SessionEntry {
     /// Who started it: `"user"`, or `"mcp"` for `idealyst mcp`'s
     /// `run_dev` ([`LAUNCHED_BY_ENV`]).
     pub launched_by: String,
+    /// Its watchers announce [`crate::DevEvent::WatcherReady`] once they
+    /// take saves. False in the entry of a session from before the event,
+    /// whose watchers never send it — a consumer must not wait for it then.
+    #[serde(default)]
+    pub reports_watcher_ready: bool,
 }
 
 /// Set by whatever starts `idealyst dev` on someone's behalf, to say so
@@ -93,6 +98,7 @@ impl SessionEntry {
             control_url: control_url.into(),
             token: token.into(),
             launched_by: "user".into(),
+            reports_watcher_ready: false,
         }
     }
 

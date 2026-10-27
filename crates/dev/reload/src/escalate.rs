@@ -211,7 +211,6 @@ mod tests {
         Ok(PatchEvent {
             json: "{\"hot\":1}".into(),
             redirected: 1,
-            steps: Vec::new(),
             crates: Vec::new(),
             skipped: Vec::new(),
             bytes: 1,
@@ -241,7 +240,7 @@ mod tests {
         *signal.rebuild.lock().unwrap() = Some(tx);
         let reporter = dev_events::Reporter::new();
         let builds = std::cell::Cell::new(0);
-        let mut build = |crates: &[build_web::hotpatch_build::PatchCrate]| {
+        let mut build = |crates: &[build_web::hotpatch_build::PatchCrate], _: crate::OnStep<'_>| {
             builds.set(builds.get() + 1);
             assert_eq!(crates.len(), 1, "the app crate is re-emitted");
             built()
@@ -301,7 +300,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         *signal.rebuild.lock().unwrap() = Some(tx);
         let reporter = dev_events::Reporter::new();
-        let mut unarmed = |_: &[build_web::hotpatch_build::PatchCrate]| {
+        let mut unarmed = |_: &[build_web::hotpatch_build::PatchCrate], _: crate::OnStep<'_>| {
             Err(PatchFailure::Failed("the hot-patch tier is not armed".into()))
         };
 
@@ -326,7 +325,7 @@ mod tests {
         std::fs::write(&file, screen("after")).unwrap();
         let signal = Arc::new(ReloadSignal::default());
         let reporter = dev_events::Reporter::new();
-        let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| built();
+        let mut build = |_: &[build_web::hotpatch_build::PatchCrate], _: crate::OnStep<'_>| built();
         let saved = read_saved(&ws, &[file.clone()]);
         handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| false);
         assert_eq!(signal.escalation.lock().unwrap().pending.len(), 1);

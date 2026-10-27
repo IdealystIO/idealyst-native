@@ -551,6 +551,24 @@ pub enum DevEvent {
     /// The watcher is watching `roots`. `rewatch` is true when a save
     /// changed the dependency graph and the set was re-resolved.
     Watching { target: String, roots: Vec<String>, rewatch: bool },
+    /// The watcher that announced [`DevEvent::Watching`] is taking saves.
+    /// Between the two it prepares (the web loop scans the workspace for
+    /// patchable crates, seconds on a large one), and a save made then is
+    /// held until this, then reported as usual. A consumer waiting for a
+    /// save to show up waits for this first. Not re-sent on a rewatch.
+    WatcherReady { target: String },
+    /// A rebuild was requested (the panel's `r`, or the session's control
+    /// endpoint) and handed to the watchers in `targets`. `request` numbers
+    /// requests within the session, from 1, and is what the control
+    /// endpoint answers with: each target reports the work that applies
+    /// it with [`DevEvent::RebuildTaken`].
+    RebuildRequested { request: u64, targets: Vec<String> },
+    /// `target`'s watcher took rebuild request `request` into the work it
+    /// is starting: the episode this event is in is the one that applies
+    /// it, and its outcome answers the request. Re-sent at each restart
+    /// of superseded work. A target takes requests in the order they were
+    /// made, so one that took a later request has applied this one.
+    RebuildTaken { target: String, request: u64 },
     /// Files changed. Emitted once per coalesced save, before the
     /// decision.
     ChangeDetected {
@@ -571,6 +589,8 @@ pub enum DevEvent {
         files: Vec<String>,
         crates: Vec<CrateTiming>,
         redirected: usize,
+        /// Every step the patch took, in order: the same list its
+        /// [`DevEvent::PatchStep`]s reported, summing to about `ms`.
         steps: Vec<Timing>,
         /// Crates of the plan the base never compiled.
         skipped: Vec<String>,
@@ -580,6 +600,11 @@ pub enum DevEvent {
     },
     /// A body edit could not be patched; the watcher rebuilds instead.
     PatchFailed { target: String, files: Vec<String>, reason: String },
+    /// One step of a hot patch ended (`decide`, `seed-wait`, `cargo`,
+    /// `link`, `scan-wait`, …), reported as it ends. A patch that is
+    /// superseded or fails says where its time went through these alone:
+    /// only a built one has a [`DevEvent::PatchBuilt`] listing them.
+    PatchStep { target: String, step: String, ms: u64 },
     /// Files changed again while a save's work was in flight, so that
     /// work is abandoned and its result never reaches a page: the watcher
     /// starts over on every file changed since, with a new

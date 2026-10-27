@@ -15,6 +15,10 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **`mcp_server::DevLaunch` is `#[non_exhaustive]`** (`mcp-server` 4.0).
+  Build one with `DevLaunch::default()` and set its fields; a struct
+  literal no longer compiles. A new launch option is then a minor.
+
 - **`dev_events::DevEvent` is `#[non_exhaustive]`** (`dev-events` 2.0).
   New event types are additive on the wire, and now in Rust too: a
   `match` on `DevEvent` outside the crate needs a `_` arm that ignores
@@ -747,6 +751,45 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **`wait_for_build`: an agent waits for a save to land** (`mcp-server`,
+  `dev-events`, `dev-reload`, `idealyst-cli`). It reads the session's typed
+  event stream instead of its log, answers at once when the build asked
+  for is already in, and always returns by its timeout (`building` with
+  progress if still running). Builds are tracked by a `cursor` (the
+  event `seq`), since patches move no page generation. A failed build
+  reports cargo's error, the rustc errors located, and the session's
+  `dev.log`. New event `watcher_ready` says a watcher is taking saves, so
+  a wait does not call a save `idle` while the watcher is still starting.
+
+- **`rebuild_dev` returns a request number, and `wait_for_build` waits on
+  it** (`mcp-server`, `dev-events`, `dev-reload`, `dev-server`,
+  `idealyst-cli`). `POST /rebuild` answers `{ request, targets, … }`; each
+  watcher reports the work that applies a request (new events
+  `rebuild_requested` and `rebuild_taken`), so `wait_for_build` with
+  `request: n` ends when that request's builds do. Two agents' requests
+  no longer wait on each other: a request made while another's build runs
+  is applied by the next build, which the first agent does not wait for.
+  The runtime-server host takes the number on a `rebuild-request <n>`
+  line before its `rebuild` line, which an older host ignores.
+  `dev_server::spawn_change_loop_numbered` is the change loop taking
+  numbered requests.
+
+- **`run_dev` takes `metrics` / `metrics_diffs`, and `read_build_metrics`
+  reads the records** (`mcp-server` 4). By session or by project
+  directory; a summary per save by default, the full records with
+  `detail`.
+
+- **Hot patches report where their time went** (`dev-events`,
+  `dev-reload`, `build-web`, `idealyst-cli`). New event `patch_step`
+  reports each step (`decide`, `base-index`, `seed-wait`, `cargo`,
+  `link`, `resolve`, `jump-table`, `scan-wait`, `install`, …) as it
+  ends, so a patch that fails or is superseded still says what it spent.
+  `patch_built.steps` now lists the same steps and sums to about its `ms`;
+  waiting on seeds is `seed-wait`, no longer counted in `cargo`. Build
+  metrics keep a hot patch's steps whatever its outcome and show them in
+  `build-metrics.md`. `WasmPatchBuilder::build_crates_reporting` takes a
+  callback for each step.
 
 - **`device-admin` SDK: Android device-owner policy, and an iOS subset**
   (`device-admin` 0.1). An app that is the device owner can lock a kiosk
@@ -2108,6 +2151,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A save made while the first build ran is no longer lost**
+  (`dev-reload`, `idealyst-cli`). The watches are registered after the
+  first build, so such a save raised no event, and the workspace scan read
+  its new bytes as the baseline: the page kept the old code and nothing
+  said so. The web loop now rebuilds with every watched file modified
+  since the build began, and a full-stack server's watcher rebuilds the
+  server for them.
 
 - **An Android scroll view's alignment arranges its content**
   (`backend-android-mobile`). The author's `align_items`,

@@ -58,7 +58,10 @@ pub fn render(event: &DevEvent) -> Option<String> {
                 (label, _) => format!("[dev-reload {label}] watching {list}"),
             }
         }
-        DevEvent::ChangeDetected { .. } => return None,
+        DevEvent::ChangeDetected { .. }
+        | DevEvent::WatcherReady { .. }
+        | DevEvent::RebuildRequested { .. }
+        | DevEvent::RebuildTaken { .. } => return None,
         DevEvent::Decided { decision, .. } => match decision {
             Decision::Unchanged => "[dev] no UI or code change in this save, no rebuild".into(),
             Decision::Rebuild { reason: Some(why) } => format!("[dev] rebuilding: {why}"),
@@ -109,6 +112,7 @@ pub fn render(event: &DevEvent) -> Option<String> {
         },
         DevEvent::StageStarted { .. }
         | DevEvent::StageFinished { .. }
+        | DevEvent::PatchStep { .. }
         | DevEvent::CargoProgress { .. }
         | DevEvent::UnitBuilt { .. }
         | DevEvent::UnitDirty { .. } => return None,
@@ -231,8 +235,14 @@ fn describe(event: &DevEvent) -> Option<String> {
             Decision::Rebuild { .. } => format!("[{target}] decided: rebuild"),
             Decision::Unchanged => return None,
         },
+        DevEvent::WatcherReady { target } => format!("[{target}] watcher ready for saves"),
+        DevEvent::RebuildRequested { request, targets } => {
+            format!("[dev] rebuild request {request} sent to {}", targets.join(", "))
+        }
+        DevEvent::RebuildTaken { target, request } => format!("[{target}] applying rebuild request {request}"),
         DevEvent::StageStarted { .. } => return None,
         DevEvent::StageFinished { target, stage, ms } => format!("[{target}] {stage} {ms} ms"),
+        DevEvent::PatchStep { target, step, ms } => format!("[{target}] hot patch {step} {ms} ms"),
         DevEvent::BuildStarted { target, cause: BuildCause::Initial | BuildCause::OneShot } => {
             format!("[{target}] build")
         }

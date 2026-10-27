@@ -11,6 +11,7 @@
 mod adb;
 mod app_discovery;
 mod build_metrics;
+mod build_wait;
 mod catalog_service;
 mod catalog_status;
 mod dev_runner;

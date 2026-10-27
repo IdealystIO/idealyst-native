@@ -127,8 +127,12 @@ pub struct BuiltPatch {
     /// Base table index → patch element index, plus how far to grow the
     /// table.
     pub jump_table: WasmJumpTable,
-    /// Per-step wall time, for the `[hotpatch]` timing line. A save that
-    /// stops being subsecond should say which step grew.
+    /// Per-step wall time in order, for the `[hotpatch]` timing line. A
+    /// save that stops being subsecond should say which step grew.
+    /// `seed-wait` is there only when the patch waited for a seed; a
+    /// trimmed patch that could not be trusted leaves its `link`,
+    /// `resolve` and `jump-table` ahead of the whole patch's, since that
+    /// time was spent too.
     pub timings: Vec<(&'static str, Duration)>,
     /// Each crate the patch carries, in link order, with its replay's
     /// wall time — or `None` when its objects were reused.
@@ -171,6 +175,21 @@ impl BuiltPatch {
     /// two cannot drift.
     pub fn timing_line(&self) -> String {
         dev_events::plain::patch_timing_line(&self.steps(), &self.crate_timings(), &self.skipped)
+    }
+}
+
+/// A patch's steps so far. Each is handed to `on_step` as it ends, so the
+/// caller learns where a cancelled or failed patch spent its time, which
+/// no [`BuiltPatch`] exists to say.
+struct Steps<'a> {
+    done: Vec<(&'static str, Duration)>,
+    on_step: &'a dyn Fn(&'static str, Duration),
+}
+
+impl Steps<'_> {
+    fn push(&mut self, name: &'static str, took: Duration) {
+        (self.on_step)(name, took);
+        self.done.push((name, took));
     }
 }
 
@@ -773,6 +792,18 @@ impl WasmPatchBuilder {
         crates: &[PatchCrate],
         cancel: &(dyn Fn() -> bool + Sync),
     ) -> Result<BuiltPatch> {
+        self.build_crates_reporting(crates, cancel, &|_, _| {})
+    }
+
+    /// [`Self::build_crates_cancellable`], handing each step to `on_step`
+    /// as it ends ([`BuiltPatch::timings`] names them). A patch that is
+    /// cancelled or fails has reported every step it finished.
+    pub fn build_crates_reporting(
+        &self,
+        crates: &[PatchCrate],
+        cancel: &(dyn Fn() -> bool + Sync),
+        on_step: &dyn Fn(&'static str, Duration),
+    ) -> Result<BuiltPatch> {
         if crates.is_empty() {
             bail!("a patch of no crates");
         }
@@ -782,7 +813,7 @@ impl WasmPatchBuilder {
             }
             Ok(())
         };
-        let mut timings = Vec::new();
+        let mut timings = Steps { done: Vec::new(), on_step };
 
         // Seeds make way: the ones this patch needs are waited for (their
         // wait is part of this save), the rest are killed and run again
@@ -797,6 +828,13 @@ impl WasmPatchBuilder {
         }
         let _resume = Resume(&self.seeds);
         self.seeds.file_into(&self.objects, &self.baselines);
+        // Its own step: a seed of a crate the save carries can take as
+        // long as a replay, and inside `cargo` it read as a slow compile.
+        let waited = started.elapsed();
+        if waited >= Duration::from_millis(1) {
+            timings.push("seed-wait", waited);
+        }
+        let started = Instant::now();
         let (in_build, skipped) = in_this_build(&self.captures_dir, crates)?;
         checkpoint()?;
         let replayed = collect_objects(&self.captures_dir, &self.objects, &in_build, cancel)?;
@@ -808,14 +846,14 @@ impl WasmPatchBuilder {
             carried.push((krate.crate_name.clone(), took));
             per_crate.push((krate, objs));
         }
-        timings.push(("cargo", started.elapsed()));
+        timings.push("cargo", started.elapsed());
         checkpoint()?;
 
         // Which functions differ from the base, when every crate of the
         // patch has a baseline to tell (see `hotpatch_fndiff`).
         let started = Instant::now();
         let plan = self.redirect_plan(&per_crate);
-        timings.push(("diff", started.elapsed()));
+        timings.push("diff", started.elapsed());
         checkpoint()?;
 
         // A crate a patch added items to must still compile its existing
@@ -825,7 +863,7 @@ impl WasmPatchBuilder {
         if in_build.iter().any(|k| k.additive) {
             let started = Instant::now();
             self.verify_additive(&per_crate, plan.as_ref())?;
-            timings.push(("verify-additive", started.elapsed()));
+            timings.push("verify-additive", started.elapsed());
             checkpoint()?;
         }
 
@@ -845,7 +883,7 @@ impl WasmPatchBuilder {
             return Ok(BuiltPatch {
                 path,
                 jump_table: WasmJumpTable { map: Default::default(), ifunc_count: 0 },
-                timings,
+                timings: timings.done,
                 crates: carried,
                 skipped,
             });
@@ -854,7 +892,7 @@ impl WasmPatchBuilder {
         // The trimmed patch first; the whole one whenever the trimmed one
         // cannot be shown to redirect everything it must.
         let trimmed = match &plan {
-            Some(plan) => match self.assemble(&objects, serial, Some(plan), &checkpoint) {
+            Some(plan) => match self.assemble(&objects, serial, Some(plan), &checkpoint, &mut timings) {
                 Ok(Some(done)) => Some(done),
                 Ok(None) => None,
                 Err(e) if e.is::<replay::Cancelled>() => return Err(e),
@@ -868,13 +906,12 @@ impl WasmPatchBuilder {
             },
             None => None,
         };
-        let (resolved, jump_table, steps) = match trimmed {
+        let (resolved, jump_table) = match trimmed {
             Some(done) => done,
             None => self
-                .assemble(&objects, serial, None, &checkpoint)?
+                .assemble(&objects, serial, None, &checkpoint, &mut timings)?
                 .expect("an untrimmed patch always pairs or fails"),
         };
-        timings.extend(steps);
 
         // Then serve it without them. The `name` section is more than half
         // of a real patch (33 of 60 MB on CrewForge) and nothing at run
@@ -905,12 +942,12 @@ impl WasmPatchBuilder {
                 let _ = std::fs::remove_file(self.out_dir.join(format!("patch-{old}.wasm")));
             }
         }
-        timings.push(("strip+write", started.elapsed()));
+        timings.push("strip+write", started.elapsed());
 
         Ok(BuiltPatch {
             path,
             jump_table,
-            timings,
+            timings: timings.done,
             crates: carried,
             skipped,
         })
@@ -1086,16 +1123,16 @@ impl WasmPatchBuilder {
     /// plan must redirect, and whose address the patch's objects take, has
     /// a slot in the base but none in the patch (its address-taker was not
     /// kept), or nothing pairs at all. Without a
-    /// plan, everything, as before digests.
-    #[allow(clippy::type_complexity)]
+    /// plan, everything, as before digests. Each step goes to `steps` as
+    /// it ends, an untrusted result's included.
     fn assemble(
         &self,
         objects: &[PathBuf],
         serial: u64,
         plan: Option<&Trim>,
         checkpoint: &dyn Fn() -> Result<()>,
-    ) -> Result<Option<(Vec<u8>, WasmJumpTable, Vec<(&'static str, Duration)>)>> {
-        let mut steps = Vec::new();
+        steps: &mut Steps<'_>,
+    ) -> Result<Option<(Vec<u8>, WasmJumpTable)>> {
         let linked = self.out_dir.join(format!("patch-{serial}.linked.wasm"));
         let started = Instant::now();
         // A trimmed patch links only the objects its plan needs.
@@ -1115,7 +1152,7 @@ impl WasmPatchBuilder {
             .context("binding the patch's statics to the running module's")?[..];
         self.link(objects, &linked)?;
         let _ = std::fs::remove_dir_all(&bound_dir);
-        steps.push(("link", started.elapsed()));
+        steps.push("link", started.elapsed());
         if let Err(e) = checkpoint() {
             let _ = std::fs::remove_file(&linked);
             return Err(e);
@@ -1131,7 +1168,7 @@ impl WasmPatchBuilder {
         // Read, not rewritten: the page supplies each import as the plan
         // appended here says (see `hotpatch_prepare`).
         let resolved = crate::hotpatch_prepare::prepare(&raw, &self.base)?.wasm;
-        steps.push(("resolve", started.elapsed()));
+        steps.push("resolve", started.elapsed());
         checkpoint()?;
 
         // Pair while the names are still there: the jump table matches
@@ -1140,7 +1177,7 @@ impl WasmPatchBuilder {
         let (jump_table, patch_slots) =
             build_jump_table_keeping(&self.base_slots, &resolved, &self.aliases, plan.map(|p| &p.plan.redirect))
                 .context("pairing the patch's functions to the base's table slots")?;
-        steps.push(("jump-table", started.elapsed()));
+        steps.push("jump-table", started.elapsed());
         if let Some(plan) = plan {
             let has_base_slot = |name: &String| self.has_base_slot(name);
             let missing: Vec<&String> =
@@ -1157,7 +1194,7 @@ impl WasmPatchBuilder {
                 );
                 return Ok(None);
             }
-            return Ok(Some((resolved, jump_table, steps)));
+            return Ok(Some((resolved, jump_table)));
         }
         if jump_table.is_empty() {
             bail!(
@@ -1167,7 +1204,7 @@ impl WasmPatchBuilder {
                  nothing pointing a `fn` pointer at one."
             );
         }
-        Ok(Some((resolved, jump_table, steps)))
+        Ok(Some((resolved, jump_table)))
     }
 
     /// Link the patch's objects — and ONLY those — into a PIC side

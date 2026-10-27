@@ -277,28 +277,30 @@ pub fn emit(event: DevEvent) {
     dev_events::global().emit(event);
 }
 
-/// One way to ask a watcher to rebuild: `true` when the watcher took the
-/// request.
-type Rebuilder = Arc<dyn Fn() -> bool + Send + Sync>;
+/// One way to ask a watcher to rebuild, for session request `n`: `true`
+/// when the watcher took the request.
+type Rebuilder = Arc<dyn Fn(u64) -> bool + Send + Sync>;
 
-/// The session's rebuild triggers — one per watcher that can rebuild on
-/// request: the web bundle's loop, a full-stack server's watcher, the
-/// icon watcher, the runtime-server host. The panel's `r` and the
-/// session's control endpoint fire them all.
-fn rebuilders() -> &'static Mutex<Vec<Rebuilder>> {
-    static R: OnceLock<Mutex<Vec<Rebuilder>>> = OnceLock::new();
+/// The session's rebuild triggers, each with the event target its
+/// watcher reports as — one per watcher that can rebuild on request: the
+/// web bundle's loop, a full-stack server's watcher, the icon watcher,
+/// the runtime-server host. The panel's `r` and the session's control
+/// endpoint fire them all.
+fn rebuilders() -> &'static Mutex<Vec<(String, Rebuilder)>> {
+    static R: OnceLock<Mutex<Vec<(String, Rebuilder)>>> = OnceLock::new();
     R.get_or_init(Default::default)
 }
 
-/// Register a watcher's signal as a rebuild target.
+/// Register a watcher's signal as the web bundle's rebuild target.
 pub fn register_rebuild(signal: Arc<dev_reload::ReloadSignal>) {
-    register_rebuilder(Arc::new(move || signal.request_rebuild()));
+    register_rebuilder("web", Arc::new(move |n| signal.request_rebuild_numbered(n)));
 }
 
-/// Register any rebuild target (see [`Rebuilder`]).
-pub fn register_rebuilder(rebuild: Rebuilder) {
+/// Register any rebuild target (see [`Rebuilder`]) under the event target
+/// its watcher reports as.
+pub fn register_rebuilder(target: &str, rebuild: Rebuilder) {
     if let Ok(mut r) = rebuilders().lock() {
-        r.push(rebuild);
+        r.push((target.to_string(), rebuild));
     }
 }
 
@@ -316,17 +318,39 @@ pub fn no_watch() -> bool {
     NO_WATCH.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// A rebuild request, as [`request_rebuild`] made it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Requested {
+    /// Numbers the request within the session, from 1.
+    pub request: u64,
+    /// The targets whose watchers took it.
+    pub targets: Vec<String>,
+}
+
 /// Ask every registered watcher to rebuild — or, under `--no-watch`,
-/// to apply what it has queued. Returns how many took the request.
-pub fn request_rebuild() -> usize {
-    let n = rebuilders()
-        .lock()
-        .map(|r| r.iter().filter(|rebuild| rebuild()).count())
-        .unwrap_or(0);
-    if n == 0 {
-        dlog("dev", "rebuild requested, but no watcher is running (a --no-build session?)");
+/// to apply what it has queued — and announce the request
+/// ([`DevEvent::RebuildRequested`]) to the targets that took it. Each
+/// reports the work that applies it ([`DevEvent::RebuildTaken`]).
+pub fn request_rebuild() -> Requested {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let request = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let requested = Requested { request, targets: send_request(&rebuilders(), request) };
+    if requested.targets.is_empty() {
+        dlog("dev", "rebuild requested, but no watcher is running yet (--no-build, or its first build has not finished)");
+    } else {
+        emit(DevEvent::RebuildRequested { request, targets: requested.targets.clone() });
     }
-    n
+    requested
+}
+
+/// Send request `n` to every rebuilder; the targets that took it.
+fn send_request(rebuilders: &Mutex<Vec<(String, Rebuilder)>>, n: u64) -> Vec<String> {
+    let mut targets: Vec<String> = rebuilders
+        .lock()
+        .map(|r| r.iter().filter(|(_, rebuild)| rebuild(n)).map(|(t, _)| t.clone()).collect())
+        .unwrap_or_default();
+    targets.dedup();
+    targets
 }
 
 /// `dlog!("tag", "fmt {}", arg)` — shorthand for the common
@@ -341,6 +365,24 @@ macro_rules! dlog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A request names the targets whose watchers took it, so a wait on
+    /// it does not wait for one that is gone; every taker gets the same
+    /// number.
+    #[test]
+    fn a_rebuild_request_names_the_targets_that_took_it() {
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let taker = |target: &'static str, took: bool| -> (String, Rebuilder) {
+            let got = got.clone();
+            (target.into(), Arc::new(move |n| {
+                got.lock().unwrap().push((target, n));
+                took
+            }))
+        };
+        let r = Mutex::new(vec![taker("web", true), taker("server", false), taker("icon", true)]);
+        assert_eq!(send_request(&r, 7), vec!["web".to_string(), "icon".to_string()]);
+        assert_eq!(*got.lock().unwrap(), vec![("web", 7), ("server", 7), ("icon", 7)]);
+    }
 
     #[test]
     fn plain_is_the_default_and_the_panel_needs_a_tty() {

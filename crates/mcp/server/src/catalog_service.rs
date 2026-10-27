@@ -617,6 +617,27 @@ pub struct ReadBuildMetricsArgs {
     pub detail: bool,
 }
 
+/// Args for `wait_for_build` — block until a session's build or save has
+/// landed.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct WaitForBuildArgs {
+    /// From `run_dev`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<u64>,
+    /// From `list_dev_sessions` (any session, a person's included).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// A `cursor` from an earlier answer: wait for an outcome after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<u64>,
+    /// A `request` from `rebuild_dev`: wait for the builds that apply it, not later ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<u64>,
+    /// Longest wait (default 120, max 600); a build still running then is `building`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
 /// Args for `read_dev_log` — tail a tracked dev session's log file.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadDevLogArgs {
@@ -1929,13 +1950,22 @@ impl CatalogService {
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
         };
         match tokio::task::spawn_blocking(move || crate::dev_sessions::rebuild(&live.entry)).await {
-            Ok(Ok(v)) => Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&json!({
-                    "requested": v,
-                    "next": "dev_status shows the build's progress and outcome",
-                }))
-                .unwrap(),
-            )])),
+            Ok(Ok(v)) => {
+                // A session that numbers requests answers with `request`;
+                // an older one only with how many watchers took it.
+                let next = match v.get("request").and_then(|r| r.as_u64()) {
+                    Some(n) => format!(
+                        "wait_for_build with request: {n} waits for the builds that apply this request \
+                         (a later request, another agent's, is not waited for)"
+                    ),
+                    None => "wait_for_build waits for its outcome (pass the cursor from before this call as `after`)".into(),
+                };
+                let mut out = json!({ "requested": v, "next": next });
+                if let Some(n) = v.get("request") {
+                    out["request"] = n.clone();
+                }
+                Ok(CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&out).unwrap())]))
+            }
             Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(e)])),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("rebuild request failed: {e}"))])),
         }
@@ -2058,6 +2088,48 @@ impl CatalogService {
         };
         let out = crate::build_metrics::read(&path, query);
         Ok(CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&out).unwrap())]))
+    }
+
+    #[tool(description = "Wait until a dev session's save or build lands and return how it ended; always returns by its timeout.")]
+    async fn wait_for_build(
+        &self,
+        Parameters(args): Parameters<WaitForBuildArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let live = match self.resolve_session(args.session_id, args.pid) {
+            Ok(l) => l,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+        let Some(url) = live.entry.events_url.clone() else {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "the session (pid {}) publishes no event stream (its idealyst predates it); \
+                 follow it with dev_status or read_dev_log",
+                live.entry.pid
+            ))]));
+        };
+        let timeout = args
+            .timeout_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(crate::build_wait::DEFAULT_TIMEOUT);
+        let session = crate::build_wait::Session {
+            events_url: url,
+            log_file: live.entry.log_file.clone(),
+            no_watch: live.entry.no_watch,
+            reports_watcher_ready: live.entry.reports_watcher_ready,
+        };
+        let on = match (args.request, args.after) {
+            (Some(_), Some(_)) => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "pass `request` (from rebuild_dev) or `after` (a cursor), not both",
+                )]))
+            }
+            (Some(n), None) => crate::build_wait::On::Request(n),
+            (None, after) => crate::build_wait::On::After(after),
+        };
+        match tokio::task::spawn_blocking(move || crate::build_wait::wait(session, on, timeout)).await {
+            Ok(Ok(v)) => Ok(CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&v).unwrap())])),
+            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("wait failed: {e}"))])),
+        }
     }
 
     #[tool(description = "Tail a dev session's log, optionally filtered (e.g. to compile errors).")]

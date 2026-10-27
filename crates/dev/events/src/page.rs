@@ -40,8 +40,12 @@ pub fn wants(event: &DevEvent) -> bool {
         // The other servers are addresses the page already knows.
         DevEvent::ServerReady { kind, .. } => *kind == ServerKind::FullStack,
         DevEvent::Watching { .. }
+        | DevEvent::WatcherReady { .. }
+        | DevEvent::RebuildRequested { .. }
+        | DevEvent::RebuildTaken { .. }
         | DevEvent::StreamRoute { .. }
         | DevEvent::StageFinished { .. }
+        | DevEvent::PatchStep { .. }
         | DevEvent::BuildTimed { .. }
         | DevEvent::UnitBuilt { .. }
         | DevEvent::UnitDirty { .. }

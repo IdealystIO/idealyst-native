@@ -12,6 +12,10 @@
 //!   build) that started it through its outcome and the page's acks —
 //!   with cargo progress collapsed to the latest count, and at most
 //!   [`MAX_DIAGNOSTICS`] diagnostics;
+//! - per target, the last episode that applied a rebuild request, once a
+//!   later episode has replaced it, and the last [`MAX_REQUESTS`]
+//!   [`DevEvent::RebuildRequested`]s, so a consumer waiting on a request
+//!   finds its outcome after other saves have followed it;
 //! - the Robot relay's state and the latest list of apps connected to it;
 //! - the last few [`DevEvent::Error`]s and [`DevEvent::ServerDown`]s.
 //!
@@ -30,6 +34,10 @@ pub const MAX_DIAGNOSTICS: usize = 64;
 /// Errors kept outside any episode.
 const MAX_ERRORS: usize = 8;
 
+/// Rebuild requests kept. Each is a handful of bytes; a consumer waits on
+/// one it made moments ago.
+pub const MAX_REQUESTS: usize = 32;
+
 #[derive(Debug, Default, Clone)]
 struct Episode {
     events: Vec<Envelope>,
@@ -45,7 +53,16 @@ pub struct SessionState {
     session: Option<Envelope>,
     servers: BTreeMap<(String, String), Envelope>,
     watching: BTreeMap<String, Envelope>,
+    /// Per target, the watcher's `watcher_ready`: kept so a consumer that
+    /// attaches later knows the watcher is taking saves. A new watcher's
+    /// `watching` (not a rewatch) clears it.
+    ready: BTreeMap<String, Envelope>,
     targets: BTreeMap<String, Episode>,
+    /// Per target, the latest closed episode that applied a rebuild
+    /// request ([`DevEvent::RebuildTaken`]), once a newer episode replaced
+    /// it in `targets`.
+    answered: BTreeMap<String, Episode>,
+    requests: Vec<Envelope>,
     errors: Vec<Envelope>,
 }
 
@@ -67,16 +84,20 @@ impl SessionState {
                 let kind = serde_json::to_string(kind).unwrap_or_default();
                 self.servers.insert((target.clone(), kind), e);
             }
-            DevEvent::Watching { target, .. } => {
+            DevEvent::Watching { target, rewatch, .. } => {
+                if !rewatch {
+                    self.ready.remove(target);
+                }
                 self.watching.insert(target.clone(), e);
+            }
+            DevEvent::WatcherReady { target } => {
+                self.ready.insert(target.clone(), e);
             }
             // How the page reaches the stream: state, like an address.
             DevEvent::StreamRoute { target, .. } => {
                 self.servers.insert((target.clone(), "stream_route".into()), e);
             }
-            DevEvent::ChangeDetected { target, .. } => {
-                self.targets.insert(target.clone(), Episode { events: vec![e], closed: false });
-            }
+            DevEvent::ChangeDetected { target, .. } => self.begin(target, e),
             DevEvent::BuildStarted { target, cause } => {
                 let ep = self.targets.entry(target.clone()).or_default();
                 // A save's build continues the save's episode; the initial
@@ -84,10 +105,27 @@ impl SessionState {
                 let continues = !ep.closed
                     && !ep.events.is_empty()
                     && matches!(cause, BuildCause::Save { .. });
-                if !continues {
-                    *ep = Episode::default();
+                if continues {
+                    ep.events.push(e);
+                } else {
+                    self.begin(target, e);
                 }
-                ep.events.push(e);
+            }
+            DevEvent::RebuildRequested { .. } => {
+                self.requests.push(e);
+                if self.requests.len() > MAX_REQUESTS {
+                    self.requests.remove(0);
+                }
+            }
+            // Joins the open episode, or opens one: the watcher sends it
+            // before the work that applies the request reports anything.
+            DevEvent::RebuildTaken { target, .. } => {
+                let open = self.targets.get(target).is_some_and(|ep| !ep.closed && !ep.events.is_empty());
+                if open {
+                    self.targets.get_mut(target).expect("checked").events.push(e);
+                } else {
+                    self.begin(target, e);
+                }
             }
             DevEvent::CargoProgress { target, .. } => {
                 let ep = self.targets.entry(target.clone()).or_default();
@@ -123,6 +161,7 @@ impl SessionState {
             }
             DevEvent::StageStarted { target, .. }
             | DevEvent::StageFinished { target, .. }
+            | DevEvent::PatchStep { target, .. }
             | DevEvent::BuildTimed { target, .. }
             | DevEvent::PatchFailed { target, .. }
             | DevEvent::PageAck { target, .. } => {
@@ -150,6 +189,27 @@ impl SessionState {
         }
     }
 
+    /// Start `target`'s next episode with `e`. The requests an OPEN
+    /// episode took carry into it: a watcher reports taking a request
+    /// first, then the change or build that applies it. A closed episode
+    /// that applied a request is kept in `answered`, unless it closed by
+    /// being superseded, which applied nothing (its restart takes the
+    /// request again).
+    fn begin(&mut self, target: &str, e: Envelope) {
+        let old = self.targets.remove(target).unwrap_or_default();
+        let took = |x: &Envelope| matches!(x.event, DevEvent::RebuildTaken { .. });
+        let mut events = Vec::new();
+        if !old.closed {
+            events.extend(old.events.iter().filter(|x| took(x)).cloned());
+        } else if old.events.iter().any(took)
+            && !old.events.last().is_some_and(|x| matches!(x.event, DevEvent::Superseded { .. }))
+        {
+            self.answered.insert(target.to_string(), old);
+        }
+        events.push(e);
+        self.targets.insert(target.to_string(), Episode { events, closed: false });
+    }
+
     /// The events that describe the present, in sequence order.
     pub fn snapshot(&self) -> Vec<Envelope> {
         let mut out: Vec<Envelope> = self
@@ -157,7 +217,10 @@ impl SessionState {
             .iter()
             .chain(self.servers.values())
             .chain(self.watching.values())
+            .chain(self.ready.values())
+            .chain(self.answered.values().flat_map(|ep| ep.events.iter()))
             .chain(self.targets.values().flat_map(|ep| ep.events.iter()))
+            .chain(self.requests.iter())
             .chain(self.errors.iter())
             .cloned()
             .collect();
@@ -180,6 +243,73 @@ mod tests {
             .iter()
             .map(|e| serde_json::to_value(&e.event).unwrap()["type"].as_str().unwrap().to_string())
             .collect()
+    }
+
+    /// A consumer that attaches after the watcher became ready learns it
+    /// from the snapshot; a new watcher (not a rewatch) clears it.
+    #[test]
+    fn the_snapshot_says_whether_each_watcher_is_taking_saves() {
+        let watching = |rewatch| DevEvent::Watching { target: "web".into(), roots: vec![], rewatch };
+        let ready = || DevEvent::WatcherReady { target: "web".into() };
+        let mut s = SessionState::new();
+        for (i, e) in [watching(false), ready(), watching(true)].into_iter().enumerate() {
+            s.apply(&env(i as u64 + 1, e));
+        }
+        assert_eq!(types(&s.snapshot()), vec!["watcher_ready", "watching"], "a rewatch keeps the readiness");
+        s.apply(&env(4, watching(false)));
+        assert_eq!(types(&s.snapshot()), vec!["watching"], "a new watcher is not ready yet");
+    }
+
+    /// A consumer waiting on a rebuild request finds the build that
+    /// applied it after a later save replaced it as the latest episode.
+    /// The build reports taking the request before it starts, and a
+    /// superseded attempt is not kept as the one that applied it.
+    #[test]
+    fn regression_a_rebuild_requests_outcome_outlives_the_saves_after_it() {
+        let web = || "web".to_string();
+        let taken = || DevEvent::RebuildTaken { target: web(), request: 1 };
+        let forced = || DevEvent::BuildStarted { target: web(), cause: BuildCause::Forced };
+        let mut s = SessionState::new();
+        let events = vec![
+            DevEvent::RebuildRequested { request: 1, targets: vec![web()] },
+            taken(),
+            forced(),
+            DevEvent::Superseded { target: web(), work: crate::SupersededWork::Rebuild, ms: 3 },
+            taken(),
+            forced(),
+            DevEvent::BuildFinished { target: web(), outcome: BuildOutcome::Reloaded { gen: 2 }, ms: 9 },
+            DevEvent::ChangeDetected { target: web(), paths: vec!["a.rs".into()], crates: vec![], folded: 0 },
+            DevEvent::Decided { target: web(), decision: Decision::Overlay { sites: 1 } },
+            DevEvent::OverlayPushed { target: web(), sites: 1, ms: 1 },
+        ];
+        for (i, e) in events.into_iter().enumerate() {
+            s.apply(&env(i as u64 + 1, e));
+        }
+        let snap = s.snapshot();
+        assert_eq!(
+            snap.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![1, 5, 6, 7, 8, 9, 10],
+            "the request, the restart that applied it (not the superseded attempt), then the latest save"
+        );
+    }
+
+    /// A watcher reports taking the request, then the change or forced
+    /// build that applies it, which starts a new episode: the request
+    /// must stay in it.
+    #[test]
+    fn a_taken_request_stays_in_the_episode_its_build_starts() {
+        let web = || "web".to_string();
+        let mut s = SessionState::new();
+        let events = vec![
+            DevEvent::BuildFinished { target: web(), outcome: BuildOutcome::Ready { gen: 1 }, ms: 9 },
+            DevEvent::RebuildTaken { target: web(), request: 4 },
+            DevEvent::ChangeDetected { target: web(), paths: vec!["a.rs".into()], crates: vec![], folded: 0 },
+            DevEvent::Decided { target: web(), decision: Decision::Rebuild { reason: None } },
+        ];
+        for (i, e) in events.into_iter().enumerate() {
+            s.apply(&env(i as u64 + 1, e));
+        }
+        assert_eq!(types(&s.snapshot()), vec!["rebuild_taken", "change_detected", "decided"]);
     }
 
     #[test]

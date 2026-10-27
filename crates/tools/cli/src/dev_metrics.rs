@@ -124,6 +124,7 @@ fn wanted(event: &DevEvent) -> bool {
             | DevEvent::OverlayPushed { .. }
             | DevEvent::PatchBuilt { .. }
             | DevEvent::PatchFailed { .. }
+            | DevEvent::PatchStep { .. }
             | DevEvent::Superseded { .. }
             | DevEvent::BuildStarted { .. }
             | DevEvent::StageFinished { .. }
@@ -214,11 +215,21 @@ pub struct RootCause {
     pub packages: Vec<String>,
 }
 
+/// A hot patch the save attempted. Only a built one has `crates`,
+/// `redirected` and `bytes`; one that failed or was superseded has the
+/// steps it finished, and `total_ms` says how long it ran.
 #[derive(Debug, Clone, Serialize)]
 pub struct HotPatchRecord {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub crates: Vec<CrateTiming>,
-    pub redirected: usize,
-    pub bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redirected: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    /// In order, from the decision to the push: `decide`, `base-index`,
+    /// `seed-wait`, `cargo`, `diff`, `verify-additive`, `link`, `resolve`,
+    /// `jump-table`, `strip+write`, `scan-wait`, `install`, each present
+    /// when the patch took it.
     pub steps: Vec<Timing>,
 }
 
@@ -250,6 +261,8 @@ struct Episode {
     cargo: Option<CargoRecord>,
     units: BTreeMap<(String, String), UnitAcc>,
     hot_patch: Option<HotPatchRecord>,
+    /// `patch_step`s so far: all a hot patch that is never built leaves.
+    patch_steps: Vec<Timing>,
     diffs: Vec<FileDiff>,
 }
 
@@ -344,8 +357,8 @@ impl Recorder {
                 if let Some(ep) = self.open.get_mut(target) {
                     ep.hot_patch = Some(HotPatchRecord {
                         crates: crates.clone(),
-                        redirected: *redirected,
-                        bytes: *bytes,
+                        redirected: Some(*redirected),
+                        bytes: Some(*bytes),
                         steps: steps.clone(),
                     });
                 }
@@ -353,6 +366,11 @@ impl Recorder {
             }
             DevEvent::PatchFailed { target, reason, .. } => {
                 self.open_or_new(target, at).patch_failed = Some(reason.clone());
+            }
+            DevEvent::PatchStep { target, step, ms } => {
+                if let Some(ep) = self.open.get_mut(target) {
+                    ep.patch_steps.push(Timing { name: step.clone(), ms: *ms });
+                }
             }
             DevEvent::Superseded { target, work, ms } => {
                 let outcome = format!("superseded ({}) after {}", work.as_str(), fmt_ms(*ms));
@@ -603,7 +621,14 @@ fn finish(app: &str, target: &str, ep: Episode, at: u64, outcome: String, failed
         total_ms: at.saturating_sub(ep.opened_at_ms),
         stages: ep.stages,
         cargo,
-        hot_patch: ep.hot_patch,
+        hot_patch: ep.hot_patch.or_else(|| {
+            (!ep.patch_steps.is_empty()).then(|| HotPatchRecord {
+                crates: Vec::new(),
+                redirected: None,
+                bytes: None,
+                steps: ep.patch_steps,
+            })
+        }),
         diffs: ep.diffs,
     }
 }
@@ -652,15 +677,22 @@ pub fn markdown(r: &Record) -> String {
         facts.push(format!("**Stages:** {}", stages.join(" · ")));
     }
     if let Some(p) = &r.hot_patch {
-        let crates: Vec<String> = p
-            .crates
-            .iter()
-            .map(|c| match c.ms {
-                Some(ms) => format!("{} {}", c.name, fmt_ms(ms)),
-                None => format!("{} (reused)", c.name),
-            })
-            .collect();
-        facts.push(format!("**Patched crates:** {} · {} bytes", crates.join(", "), p.bytes));
+        if !p.steps.is_empty() {
+            let steps: Vec<String> = p.steps.iter().map(|t| format!("{} {}", t.name, fmt_ms(t.ms))).collect();
+            facts.push(format!("**Hot patch steps:** {}", steps.join(" · ")));
+        }
+        if !p.crates.is_empty() {
+            let crates: Vec<String> = p
+                .crates
+                .iter()
+                .map(|c| match c.ms {
+                    Some(ms) => format!("{} {}", c.name, fmt_ms(ms)),
+                    None => format!("{} (reused)", c.name),
+                })
+                .collect();
+            let bytes = p.bytes.map(|b| format!(" · {b} bytes")).unwrap_or_default();
+            facts.push(format!("**Patched crates:** {}{bytes}", crates.join(", ")));
+        }
     }
     s.push_str(&facts.join("  \n"));
     s.push('\n');
@@ -1180,6 +1212,67 @@ mod tests {
         assert_eq!(recs[3]["total_ms"], 599);
         assert_eq!(recs[3]["hot_patch"]["crates"][0]["ms"], 550);
         assert_eq!(recs[0]["changes"][0]["path"], "/elsewhere/src/lib.rs", "outside the project: absolute");
+    }
+
+    /// Regression: a hot patch that was superseded, or that failed and fell
+    /// back to a rebuild, left no timing in its record (CrewForge: a 17.9 s
+    /// superseded patch with nothing but its total, and a 15.2 s save whose
+    /// stages accounted for 4 s). Its `patch_step`s are the record's
+    /// `hot_patch.steps` whatever ended it, beside the rebuild's own stages.
+    #[test]
+    fn regression_an_unbuilt_hot_patch_keeps_its_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("out")).unwrap();
+        let mut r = recorder(dir.path(), false);
+        let change = || DevEvent::ChangeDetected {
+            target: web(),
+            paths: vec!["/elsewhere/src/lib.rs".into()],
+            crates: vec![],
+            folded: 0,
+        };
+        let decided = || DevEvent::Decided {
+            target: web(),
+            decision: Decision::HotPatch { crates: vec!["a".into()], files: vec![] },
+        };
+        let step = |name: &str, ms| DevEvent::PatchStep { target: web(), step: name.into(), ms };
+        feed(
+            &mut r,
+            vec![
+                (0, change()),
+                (1, decided()),
+                (3, step("decide", 3)),
+                (1_500, step("seed-wait", 1_497)),
+                (17_900, DevEvent::Superseded {
+                    target: web(),
+                    work: dev_events::SupersededWork::HotPatch,
+                    ms: 17_900,
+                }),
+                (18_000, change()),
+                (18_001, decided()),
+                (18_004, step("decide", 3)),
+                (29_000, step("scan-wait", 10_996)),
+                (29_001, DevEvent::PatchFailed { target: web(), files: vec![], reason: "no capture".into() }),
+                (29_002, DevEvent::BuildStarted { target: web(), cause: BuildCause::Save { folded: 0 } }),
+                (31_000, DevEvent::BuildTimed {
+                    target: web(),
+                    stages: vec![Timing { name: "cargo".into(), ms: 1_500 }],
+                    total_ms: 1_998,
+                }),
+                (31_001, DevEvent::BuildFinished { target: web(), outcome: BuildOutcome::Unchanged, ms: 1_999 }),
+            ],
+        );
+        let recs = records(dir.path());
+        assert_eq!(recs.len(), 2);
+        let names = |rec: &serde_json::Value| -> Vec<String> {
+            rec["hot_patch"]["steps"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect()
+        };
+        assert_eq!(names(&recs[0]), ["decide", "seed-wait"]);
+        assert_eq!(recs[0]["hot_patch"]["steps"][1]["ms"], 1_497);
+        assert!(recs[0]["hot_patch"].get("bytes").is_none(), "nothing was built: {}", recs[0]);
+        assert_eq!(names(&recs[1]), ["decide", "scan-wait"]);
+        assert_eq!(recs[1]["stages"][0]["name"], "cargo", "the rebuild's stages stay its own");
+        let md = std::fs::read_to_string(dir.path().join("out").join(MARKDOWN_FILE)).unwrap();
+        assert!(md.contains("**Hot patch steps:** decide 3 ms · seed-wait 1.5 s"), "{md}");
     }
 
     /// Under `--metrics-diffs` each save records what changed since the

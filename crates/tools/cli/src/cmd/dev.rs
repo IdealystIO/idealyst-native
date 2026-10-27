@@ -826,6 +826,8 @@ pub fn run(args: Args) -> Result<()> {
         entry.cli_version = env!("CARGO_PKG_VERSION").to_string();
         entry.log_file = Some(log_path.display().to_string());
         entry.events_url = events_url;
+        // This session's watchers (dev-reload) send `watcher_ready`.
+        entry.reports_watcher_ready = true;
         entry.launched_by = std::env::var(dev_events::sessions::LAUNCHED_BY_ENV).unwrap_or_else(|_| "user".into());
         let registration = crate::dev_control::start(
             entry,
@@ -973,8 +975,8 @@ pub fn run(args: Args) -> Result<()> {
         if dev_events::process::explain_rebuilds() {
             cmd.env(dev_events::process::EXPLAIN_REBUILDS_ENV, "1");
         }
-        // Stdin is how a rebuild request reaches the host: one
-        // `dev_events::child::REBUILD_LINE` per request (see below).
+        // Stdin is how a rebuild request reaches the host:
+        // `dev_events::child::rebuild_lines` per request (see below).
         cmd.env(dev_events::child::ENV, dev_events::child::ENV_STDERR)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -994,11 +996,15 @@ pub fn run(args: Args) -> Result<()> {
         // it.
         if let Some(stdin) = child.stdin.take() {
             let stdin = std::sync::Mutex::new(stdin);
-            crate::dev_log::register_rebuilder(std::sync::Arc::new(move || {
-                use std::io::Write;
-                let Ok(mut stdin) = stdin.lock() else { return false };
-                writeln!(stdin, "{}", dev_events::child::REBUILD_LINE).and_then(|()| stdin.flush()).is_ok()
-            }));
+            crate::dev_log::register_rebuilder(
+                // `dev_server::EVENTS_TARGET`, the target the host reports as.
+                "runtime-server",
+                std::sync::Arc::new(move |n| {
+                    use std::io::Write;
+                    let Ok(mut stdin) = stdin.lock() else { return false };
+                    stdin.write_all(dev_events::child::rebuild_lines(n).as_bytes()).and_then(|()| stdin.flush()).is_ok()
+                }),
+            );
         }
         crate::dlog!(
             "dev",
@@ -2281,7 +2287,7 @@ fn sync_dev_web_overlay(
                     Ok(dev_reload::Rebuilt::Changed)
                     },
                 )?;
-                crate::dev_log::register_rebuilder(std::sync::Arc::new(move || control.request_rebuild()));
+                crate::dev_log::register_rebuilder("icon", std::sync::Arc::new(move |n| control.request_rebuild_numbered(n)));
                 std::mem::forget(handle);
             }
         }
@@ -3640,6 +3646,7 @@ fn spawn_server_build(
                 cause: dev_events::BuildCause::Initial,
             });
             let started = std::time::Instant::now();
+            let build_began = std::time::SystemTime::now();
             let outcome = match build() {
                 Ok(_) => dev_events::BuildOutcome::Ready { gen: 1 },
                 Err(e) => dev_events::BuildOutcome::Failed { error: format!("{e:#}") },
@@ -3652,11 +3659,12 @@ fn spawn_server_build(
             });
             // Watched from here on, failed first build or not: the next
             // save is how a broken server gets fixed.
+            let watched = roots.clone();
             match dev_reload::start_watch_with(
                 roots,
                 server_signal,
                 "server",
-                reporter,
+                reporter.clone(),
                 crate::dev_log::no_watch(),
                 build,
             ) {
@@ -3664,7 +3672,22 @@ fn spawn_server_build(
                 // reaches it through its control.
                 Ok((handle, control)) => {
                     drop(handle);
-                    crate::dev_log::register_rebuilder(std::sync::Arc::new(move || control.request_rebuild()));
+                    // A save made while the first build ran, before the
+                    // watches above existed, raised no event: build it now.
+                    // Under `--no-watch` the next rebuild request builds
+                    // anyway.
+                    let missed = dev_reload::modified_since(&watched, build_began);
+                    if !missed.is_empty() && !crate::dev_log::no_watch() {
+                        reporter.log(
+                            "dev-reload server",
+                            format!("{} file(s) saved while the first build ran: rebuilding", missed.len()),
+                        );
+                        control.request_rebuild();
+                    }
+                    crate::dev_log::register_rebuilder(
+                        dev_events::SERVER_TARGET,
+                        std::sync::Arc::new(move |n| control.request_rebuild_numbered(n)),
+                    );
                 }
                 Err(e) => crate::dlog!("dev web", "server watcher did not start: {e:#}"),
             }

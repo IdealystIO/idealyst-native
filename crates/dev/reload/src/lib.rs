@@ -172,10 +172,40 @@ enum WatchMsg {
             notify_debouncer_mini::notify::Error,
         >,
     ),
-    Rebuild,
+    /// A rebuild request: build now. Numbered when it came through the
+    /// session's request counter ([`dev_events::DevEvent::RebuildRequested`]),
+    /// and then reported taken by the work that applies it.
+    Rebuild(Option<u64>),
     /// Files that changed while no session ran, handed to a resumed
     /// session's loop as a save (see `resume`).
     Paths(Vec<PathBuf>),
+    /// Rebuild request `n`, applied by the saves it released from a
+    /// `--no-watch` queue (see [`release`]): the batch answers the request
+    /// and is decided like any save.
+    Request(u64),
+}
+
+/// The numbered rebuild requests in `batch`, each once, in order.
+fn request_ids(batch: &[WatchMsg]) -> Vec<u64> {
+    let mut ids: Vec<u64> = batch
+        .iter()
+        .filter_map(|m| match m {
+            WatchMsg::Rebuild(Some(n)) | WatchMsg::Request(n) => Some(*n),
+            _ => None,
+        })
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// Report that `target` took rebuild requests `ids` into the work it is
+/// starting. Sent before that work's first event, and again by each
+/// restart of superseded work.
+fn report_taken(reporter: &dev_events::Reporter, target: &str, ids: &[u64]) {
+    for &request in ids {
+        reporter.emit(dev_events::DevEvent::RebuildTaken { target: target.into(), request });
+    }
 }
 
 /// What a page should do with a pushed patch.
@@ -296,8 +326,19 @@ impl ReloadSignal {
     /// save had needed it. Returns `false` when no watch loop is running
     /// (a `--no-build` session, or before the initial build finished).
     pub fn request_rebuild(&self) -> bool {
+        self.send_rebuild(None)
+    }
+
+    /// [`Self::request_rebuild`], for session request `request`
+    /// ([`dev_events::DevEvent::RebuildRequested`]): the work that applies
+    /// it reports [`dev_events::DevEvent::RebuildTaken`].
+    pub fn request_rebuild_numbered(&self, request: u64) -> bool {
+        self.send_rebuild(Some(request))
+    }
+
+    fn send_rebuild(&self, request: Option<u64>) -> bool {
         match self.rebuild.lock().unwrap().as_ref() {
-            Some(tx) => tx.send(WatchMsg::Rebuild).is_ok(),
+            Some(tx) => tx.send(WatchMsg::Rebuild(request)).is_ok(),
             None => false,
         }
     }
@@ -865,39 +906,37 @@ pub fn start_with(
     // for A/B timing or a base you no longer trust. Read the way
     // `IDEALYST_HOTPATCH_NO_SEED` is: empty or `0` means unset.
     let resume_on = seeding_enabled(std::env::var_os("IDEALYST_DEV_NO_RESUME"));
-    let resumed = if resumable(&opts) && resume_on {
-        try_resume(dir, &opts, &signal, &state_path)
-    } else {
-        None
-    };
-    // The initial build's result is irrelevant: gen 1 is the browsers'
-    // first bundle whether the passes ran or were skipped.
-    let first = match resumed {
-        Some((artifact, state)) => Some((artifact, Start::Resumed(Box::new(state)))),
-        None => {
-            // About to be replaced: a session killed mid-build must not
-            // leave a state describing the base this build overwrites.
-            resume::clear(&state_path);
-            match build_wasm(dir, &opts) {
-                Ok(a) => Some((a, Start::Built(build_started))),
-                Err(e) => {
-                    reporter.emit(dev_events::DevEvent::BuildFinished {
-                        target: TARGET.into(),
-                        outcome: dev_events::BuildOutcome::Failed { error: format!("{e:#}") },
-                        ms: started.elapsed().as_millis() as u64,
-                    });
-                    None
+    let (first, tx, rx) = with_inbox(&signal, || {
+        let resumed = if resumable(&opts) && resume_on {
+            try_resume(dir, &opts, &signal, &state_path)
+        } else {
+            None
+        };
+        // The initial build's result is irrelevant: gen 1 is the browsers'
+        // first bundle whether the passes ran or were skipped.
+        match resumed {
+            Some((artifact, state)) => Some((artifact, Start::Resumed(Box::new(state)))),
+            None => {
+                // About to be replaced: a session killed mid-build must not
+                // leave a state describing the base this build overwrites.
+                resume::clear(&state_path);
+                match build_wasm(dir, &opts) {
+                    Ok(a) => Some((a, Start::Built(build_started))),
+                    Err(e) => {
+                        reporter.emit(dev_events::DevEvent::BuildFinished {
+                            target: TARGET.into(),
+                            outcome: dev_events::BuildOutcome::Failed { error: format!("{e:#}") },
+                            ms: started.elapsed().as_millis() as u64,
+                        });
+                        None
+                    }
                 }
             }
         }
-    };
+    });
     if first.is_some() {
         first_bundle_ready(&signal, &reporter, started);
     }
-    // Registered before the thread starts, so a rebuild requested the
-    // moment this returns is not lost.
-    let (tx, rx) = mpsc::channel();
-    *signal.rebuild.lock().unwrap() = Some(tx.clone());
 
     let dir_owned = dir.to_path_buf();
     thread::Builder::new()
@@ -913,6 +952,19 @@ pub fn start_with(
             watch_loop(dir_owned, signal, opts, first.0, first.1, tx, rx)
         })
         .context("spawn watch thread")
+}
+
+/// Open the watch loop's inbox, then run `first_build`. The inbox opens
+/// first so a rebuild request sent while the first build runs queues for
+/// the loop, which takes it as its first work, instead of being refused
+/// as having no watcher to go to.
+fn with_inbox<T>(
+    signal: &ReloadSignal,
+    first_build: impl FnOnce() -> T,
+) -> (T, mpsc::Sender<WatchMsg>, mpsc::Receiver<WatchMsg>) {
+    let (tx, rx) = mpsc::channel();
+    *signal.rebuild.lock().unwrap() = Some(tx.clone());
+    (first_build(), tx, rx)
 }
 
 /// The first bundle is built: browsers waiting at generation 0 load it.
@@ -977,8 +1029,11 @@ fn recover_first_build(
         roots: display_all(&watch_paths),
         rewatch: false,
     });
+    // The retry loop takes saves at once: nothing to prepare.
+    reporter.emit(dev_events::DevEvent::WatcherReady { target: TARGET.into() });
 
-    retry_first_build(rx, queued.as_ref(), || {
+    retry_first_build(rx, queued.as_ref(), |requests| {
+        report_taken(&reporter, TARGET, requests);
         reporter.emit(dev_events::DevEvent::BuildStarted {
             target: TARGET.into(),
             cause: dev_events::BuildCause::Initial,
@@ -1006,23 +1061,27 @@ fn recover_first_build(
 /// work — a save, or a rebuild request (which, under `--no-watch`,
 /// releases the queued saves) — until it returns a result. A save that
 /// arrives as several batches builds once: whatever else is already in
-/// the inbox is folded into the attempt.
+/// the inbox is folded into the attempt. `build` is given the numbered
+/// rebuild requests the attempt applies.
 fn retry_first_build<A>(
     rx: &mpsc::Receiver<WatchMsg>,
     queued: Option<&Queued>,
-    mut build: impl FnMut() -> Option<A>,
+    mut build: impl FnMut(&[u64]) -> Option<A>,
 ) -> Option<A> {
     while let Ok(msg) = rx.recv() {
-        let work = match release(msg, queued) {
-            WatchMsg::Rebuild => true,
-            WatchMsg::Fs(r) => names_work(&event_paths(&r), r.is_ok()),
+        let mut batch = release(msg, queued);
+        let work = batch.iter().any(|m| match m {
+            WatchMsg::Rebuild(_) | WatchMsg::Request(_) => true,
+            WatchMsg::Fs(r) => names_work(&event_paths(r), r.is_ok()),
             WatchMsg::Paths(paths) => !paths.is_empty(),
-        };
+        });
         if !work {
             continue;
         }
-        while rx.try_recv().is_ok() {}
-        if let Some(built) = build() {
+        while let Ok(more) = rx.try_recv() {
+            batch.extend(release(more, queued));
+        }
+        if let Some(built) = build(&request_ids(&batch)) {
             return Some(built);
         }
     }
@@ -1243,6 +1302,40 @@ const TARGET: &str = "web";
 /// Best-effort: if cargo can't be run, or its output doesn't parse,
 /// fall back to the single-crate set. A dev session that watches
 /// too little beats one that refuses to start.
+/// Every file under `roots` (a root may be a directory or a file)
+/// modified at or after `since`, sorted. Hidden entries and `target/` are
+/// skipped, as the watcher's own scratch-file filter would.
+///
+/// For a caller that builds BEFORE it starts watching: a save made in
+/// between raises no event, so it is found by this instead.
+pub fn modified_since(roots: &[PathBuf], since: std::time::SystemTime) -> Vec<PathBuf> {
+    let mut out = BTreeSet::new();
+    let mut stack: Vec<PathBuf> = roots.to_vec();
+    while let Some(path) = stack.pop() {
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if meta.is_dir() {
+            let Ok(entries) = std::fs::read_dir(&path) else { continue };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with('.') || name == "target" {
+                    continue;
+                }
+                stack.push(entry.path());
+            }
+            continue;
+        }
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if dev_events::is_scratch_file(&name) {
+            continue;
+        }
+        if meta.modified().is_ok_and(|m| m >= since) {
+            out.insert(path);
+        }
+    }
+    out.into_iter().collect()
+}
+
 pub fn watch_roots(manifest_path: &Path) -> Vec<PathBuf> {
     let dir = manifest_path.parent().unwrap_or(Path::new("."));
     let dirs = match package_dirs(manifest_path) {
@@ -1639,11 +1732,14 @@ impl HotPatchBase {
 
     /// Build a patch re-emitting `crates`, or say why it cannot.
     /// Abandoned — replays killed — as soon as `cancel` says a newer save
-    /// overtook it.
+    /// overtook it. Each step goes to `on_step` as it ends; `base-index`
+    /// is the wait for this base's index, when the first save comes before
+    /// [`Self::warm`]'s indexing has finished.
     fn patch(
         &mut self,
         crates: &[build_web::hotpatch_build::PatchCrate],
         cancel: &(dyn Fn() -> bool + Sync),
+        on_step: OnStep<'_>,
     ) -> std::result::Result<build_web::hotpatch_build::BuiltPatch, PatchFailure> {
         if !self.armed {
             return Err(PatchFailure::Failed(
@@ -1655,11 +1751,16 @@ impl HotPatchBase {
         if let Some(why) = &self.retired {
             return Err(PatchFailure::Failed(why.clone()));
         }
+        let started = std::time::Instant::now();
         self.ensure_builder()?;
+        let waited = started.elapsed();
+        if waited >= Duration::from_millis(1) {
+            on_step("base-index", waited);
+        }
         self.builder
             .as_ref()
             .expect("just built")
-            .build_crates_cancellable(crates, cancel)
+            .build_crates_reporting(crates, cancel, on_step)
             .map_err(|e| {
                 if e.is::<build_web::hotpatch_build::Cancelled>() {
                     PatchFailure::Superseded
@@ -1784,9 +1885,33 @@ fn watch_loop(
     });
     // What the base was built from, when it can be resumed at all.
     let mut base_inputs: Option<Vec<(PathBuf, resume::FileStamp)>>;
+    // Files saved after the first build began (see `Start::Built` below):
+    // the archives do not describe what the bundle runs, so the save that
+    // names one rebuilds rather than being decided against them.
+    let mut stale_after_build: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
     let mut ws = match start {
         Start::Built(build_started) => {
             let ws = load_workspace(&dir, &memo);
+            // Saved after the build began: the scan above read the new
+            // bytes, so the archives describe sources the served bundle was
+            // not built from, and a save of them would be decided against
+            // the wrong baseline ("no change"). A save made before the
+            // watches above were registered raised no event at all. Either
+            // way these files are a save, and it must rebuild.
+            let missed = modified_since(&watch_paths, build_started);
+            if !missed.is_empty() {
+                reporter.log(
+                    "dev-reload",
+                    format!("{} file(s) saved while the first build ran: rebuilding with them", missed.len()),
+                );
+                stale_after_build.extend(missed.iter().cloned());
+                match &queued {
+                    Some(q) => {
+                        q.hold(missed, true, TARGET, &reporter);
+                    }
+                    None => notify_save(&offline_tx, &saves, true, WatchMsg::Paths(missed)),
+                }
+            }
             // Its archives were scanned AFTER the build, so its sources
             // are held to the same "older than the build" rule.
             base_inputs = persist.is_some().then(|| {
@@ -1860,6 +1985,9 @@ fn watch_loop(
             format!("workspace crates patchable with {}: {}", ws.tip, libs.join(", ")),
         );
     }
+    // Saves made while the workspace was scanned above waited in `rx`;
+    // from here they are taken, the held ones first.
+    reporter.emit(dev_events::DevEvent::WatcherReady { target: TARGET.into() });
 
     while let Ok(first) = rx.recv() {
         let first = release(first, queued.as_ref());
@@ -1868,13 +1996,14 @@ fn watch_loop(
         // overlay or hot patch decided against that bundle would be
         // applied to a page still running the one before it.
         let mut reload_owed = false;
-        run_save(&rx, &saves, vec![first], Duration::from_millis(MAX_COALESCE_MS), |batch, token| {
+        run_save(&rx, &saves, first, Duration::from_millis(MAX_COALESCE_MS), |batch, token| {
             // Every batch's paths, not only the first's: a multi-file save
             // arrives as several batches, and a file only a later batch
             // names must still be in the decision (else its crate's other
             // edits go out as an overlay patch alone, or not at all).
             // A restart after a superseded attempt gets the union too.
-            let forced = batch.iter().any(|m| matches!(m, WatchMsg::Rebuild));
+            let requests = request_ids(batch);
+            let mut forced = batch.iter().any(|m| matches!(m, WatchMsg::Rebuild(_)));
             let mut changed_paths = Vec::new();
             let mut any_ok = false;
             let mut fs_batches = 0usize;
@@ -1890,13 +2019,17 @@ fn watch_loop(
                         any_ok = true;
                         changed_paths.extend(paths.iter().cloned());
                     }
-                    WatchMsg::Rebuild => {}
+                    WatchMsg::Rebuild(_) | WatchMsg::Request(_) => {}
                 }
             }
             let folded = fs_batches.saturating_sub(1);
+            // A request whose released saves are no work still asks for a
+            // build, as one with nothing queued does.
+            forced |= !requests.is_empty() && !names_work(&changed_paths, any_ok);
             if !forced && !reload_owed && !names_work(&changed_paths, any_ok) {
                 return Attempt::Finished;
             }
+            report_taken(&reporter, TARGET, &requests);
 
             // Read now, inside the attempt: a restart decides the files'
             // FINAL contents.
@@ -1923,8 +2056,19 @@ fn watch_loop(
             };
             let is_superseded = || token.is_superseded();
 
+            let stale_hit = changed_paths.iter().any(|p| stale_after_build.contains(p));
             let cause = if forced {
                 dev_events::BuildCause::Forced
+            } else if stale_hit {
+                reporter.emit(dev_events::DevEvent::Decided {
+                    target: TARGET.into(),
+                    decision: dev_events::Decision::Rebuild {
+                        reason: Some(
+                            "saved while the first build ran, so the served bundle may not have it".into(),
+                        ),
+                    },
+                });
+                dev_events::BuildCause::Save { folded }
             } else if reload_owed {
                 reporter.emit(dev_events::DevEvent::Decided {
                     target: TARGET.into(),
@@ -1946,15 +2090,14 @@ fn watch_loop(
                 // `stylesheet!` at start; a sheet edit there must rebuild
                 // even when the shape says body-only.
                 let premint = opts.premint || opts.premint_only;
-                let mut build_patch = |crates: &[build_web::hotpatch_build::PatchCrate]| {
-                    let patch = base.patch(crates, &is_superseded)?;
+                let mut build_patch = |crates: &[build_web::hotpatch_build::PatchCrate], on_step: OnStep<'_>| {
+                    let patch = base.patch(crates, &is_superseded, on_step)?;
                     let json = base.event_json(&patch).map_err(|e| {
                         PatchFailure::Failed(format!("cannot encode the patch event ({e:#})"))
                     })?;
                     Ok(PatchEvent {
                         json,
                         redirected: patch.jump_table.map.len(),
-                        steps: patch.steps(),
                         crates: patch.crate_timings(),
                         skipped: patch.skipped.clone(),
                         bytes: patch.bytes(),
@@ -1983,6 +2126,10 @@ fn watch_loop(
             };
 
             reporter.emit(dev_events::DevEvent::BuildStarted { target: TARGET.into(), cause });
+            // A rebuild reads every source again just before it starts
+            // (`RebuildScan::start`), so the archives it installs describe
+            // them: nothing saved before now is stale any more.
+            stale_after_build.clear();
             // Not killed when superseded: the build writes the served
             // bundle in place (`pkg/` output, the staged copy), and a
             // kill mid-packaging would leave a half-written bundle for the
@@ -2265,14 +2412,45 @@ impl From<String> for PatchFailure {
     }
 }
 
-/// A built hot patch, as the loop pushes and reports it.
+/// A built hot patch, as the loop pushes and reports it. Its steps are
+/// not here: [`handle_save`] collected them as they ended.
 struct PatchEvent {
     json: String,
     redirected: usize,
-    steps: Vec<dev_events::Timing>,
     crates: Vec<dev_events::CrateTiming>,
     skipped: Vec<String>,
     bytes: u64,
+}
+
+/// Where a hot patch's builder hands each step as it ends.
+type OnStep<'a> = &'a dyn Fn(&'static str, Duration);
+
+/// A hot patch's steps. Each is reported as a `patch_step` when it ends,
+/// so a patch that is superseded or fails still says where its time went,
+/// and kept for the `patch_built` that lists them all.
+struct PatchSteps<'a> {
+    reporter: &'a dev_events::Reporter,
+    done: std::cell::RefCell<Vec<dev_events::Timing>>,
+}
+
+impl<'a> PatchSteps<'a> {
+    fn new(reporter: &'a dev_events::Reporter) -> Self {
+        Self { reporter, done: Default::default() }
+    }
+
+    fn push(&self, name: &'static str, took: Duration) {
+        let step = dev_events::Timing::new(name, took);
+        self.reporter.emit(dev_events::DevEvent::PatchStep {
+            target: TARGET.into(),
+            step: step.name.clone(),
+            ms: step.ms,
+        });
+        self.done.borrow_mut().push(step);
+    }
+
+    fn take(&self) -> Vec<dev_events::Timing> {
+        std::mem::take(&mut self.done.borrow_mut())
+    }
 }
 
 /// Decide a save and apply it if it can be patched: an overlay patch, or
@@ -2300,6 +2478,7 @@ fn handle_save(
     reporter: &dev_events::Reporter,
     build_patch: &mut dyn FnMut(
         &[build_web::hotpatch_build::PatchCrate],
+        OnStep<'_>,
     ) -> std::result::Result<PatchEvent, PatchFailure>,
     superseded: &(dyn Fn() -> bool + Sync),
 ) -> Handled {
@@ -2363,6 +2542,9 @@ fn handle_save(
             });
             let read = ws.read_sources(plan.edited.iter().map(String::as_str));
             let tip = ws.tip.clone();
+            let steps = PatchSteps::new(reporter);
+            steps.push("decide", started.elapsed());
+            let on_step = |name: &'static str, took: Duration| steps.push(name, took);
             // The scan stops when the patch does. The replays are killed
             // within milliseconds of a newer save, but the join below used
             // to wait out the whole crate's scan first — 1.4 s on
@@ -2376,8 +2558,16 @@ fn handle_save(
                 let scan = scope.spawn(|| {
                     dev_overlay::Workspace::scan_read_reusing(dir, &tip, read, superseded, memo)
                 });
-                let built = build_patch(&crates);
-                (built, scan.join().expect("the archive scan panicked"))
+                let built = build_patch(&crates, &on_step);
+                // Usually done during the compile; a patch that outran it
+                // (a small crate's, or one that failed early) waits here.
+                let joining = std::time::Instant::now();
+                let scanned = scan.join().expect("the archive scan panicked");
+                let waited = joining.elapsed();
+                if waited >= Duration::from_millis(1) {
+                    steps.push("scan-wait", waited);
+                }
+                (built, scanned)
             });
             match built {
                 // Built, but from sources a newer save has already moved:
@@ -2396,15 +2586,17 @@ fn handle_save(
                     // arrived stays arrived), and it was false just above,
                     // so it was false every time the scan asked.
                     let scanned = scanned.expect("a scan is only cancelled once the patch is superseded");
+                    let installing = std::time::Instant::now();
                     ws.install(scanned);
                     ws.note_patched(&plan);
+                    steps.push("install", installing.elapsed());
                     // Before the push, for the reason the overlay arm gives.
                     reporter.emit(dev_events::DevEvent::PatchBuilt {
                         target: TARGET.into(),
                         files: plan.files.clone(),
                         crates: event.crates,
                         redirected: event.redirected,
-                        steps: event.steps,
+                        steps: steps.take(),
                         skipped: event.skipped,
                         bytes: event.bytes,
                         ms: started.elapsed().as_millis() as u64,
@@ -2846,17 +3038,17 @@ impl Queued {
 /// becomes the queued saves as ONE save, decided like any other — or,
 /// with nothing queued, stays a forced rebuild. Without `--no-watch`
 /// every message is its own.
-fn release(msg: WatchMsg, queued: Option<&Queued>) -> WatchMsg {
+fn release(msg: WatchMsg, queued: Option<&Queued>) -> Vec<WatchMsg> {
     match (msg, queued) {
-        (WatchMsg::Rebuild, Some(q)) => {
+        (WatchMsg::Rebuild(request), Some(q)) => {
             let held = q.take();
             if held.is_empty() {
-                WatchMsg::Rebuild
+                vec![WatchMsg::Rebuild(request)]
             } else {
-                WatchMsg::Paths(held)
+                std::iter::once(WatchMsg::Paths(held)).chain(request.map(WatchMsg::Request)).collect()
             }
         }
-        (msg, _) => msg,
+        (msg, _) => vec![msg],
     }
 }
 
@@ -2992,7 +3184,13 @@ impl WatchControl {
     /// under `--no-watch`, apply the saves it has queued. `false` when
     /// the watcher is gone.
     pub fn request_rebuild(&self) -> bool {
-        self.tx.send(WatchMsg::Rebuild).is_ok()
+        self.tx.send(WatchMsg::Rebuild(None)).is_ok()
+    }
+
+    /// [`Self::request_rebuild`], for session request `request`; see
+    /// [`ReloadSignal::request_rebuild_numbered`].
+    pub fn request_rebuild_numbered(&self, request: u64) -> bool {
+        self.tx.send(WatchMsg::Rebuild(Some(request))).is_ok()
     }
 }
 
@@ -3065,19 +3263,21 @@ where
                 roots: display_all(&paths),
                 rewatch: false,
             });
+            reporter.emit(dev_events::DevEvent::WatcherReady { target: label.into() });
 
             // A superseded run that CHANGED the artifact left it changed on
             // disk without waking anyone; the run that finally finishes the
             // save must wake consumers even if it changes nothing more.
             let mut owed = false;
             while let Ok(msg) = rx.recv() {
-                let mut first = vec![release(msg, queued.as_ref())];
+                let mut first = release(msg, queued.as_ref());
                 first.extend(drain(&rx));
                 if first.iter().all(|m| matches!(m, WatchMsg::Fs(Err(_)))) {
                     continue;
                 }
                 run_save(&rx, &saves, first, Duration::from_millis(MAX_COALESCE_MS), |batches, token| {
-                    let forced = batches.iter().any(|m| matches!(m, WatchMsg::Rebuild));
+                    let requests = request_ids(batches);
+                    let forced = !requests.is_empty() || batches.iter().any(|m| matches!(m, WatchMsg::Rebuild(_)));
                     let mut paths: Vec<PathBuf> = Vec::new();
                     let mut any_ok = false;
                     let mut fs_batches = 0usize;
@@ -3093,7 +3293,7 @@ where
                                 any_ok = true;
                                 paths.extend(p.iter().cloned());
                             }
-                            WatchMsg::Rebuild => {}
+                            WatchMsg::Rebuild(_) | WatchMsg::Request(_) => {}
                         }
                     }
                     let folded = fs_batches.saturating_sub(1);
@@ -3107,6 +3307,7 @@ where
                     if !forced && !owed && !names_work(&paths, any_ok) {
                         return Attempt::Finished;
                     }
+                    report_taken(&reporter, label, &requests);
                     if fs_batches > 0 {
                         reporter.emit(dev_events::DevEvent::ChangeDetected {
                             target: label.into(),
@@ -3546,7 +3747,6 @@ mod tests {
         Ok(PatchEvent {
             json: "{}".into(),
             redirected: 1,
-            steps: vec![dev_events::Timing { name: "cargo".into(), ms: 5 }],
             crates: Vec::new(),
             skipped: Vec::new(),
             bytes: 10,
@@ -3571,7 +3771,7 @@ mod tests {
         let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = attempts.clone();
         let worker = std::thread::spawn(move || {
-            retry_first_build(&rx, None, || {
+            retry_first_build(&rx, None, |_| {
                 // The first retry still fails; the second is fixed.
                 match count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
                     0 => None,
@@ -3599,9 +3799,10 @@ mod tests {
         let queued = Queued::default();
         let (reporter, _q) = capture();
         assert!(queued.hold(vec![PathBuf::from("/w/src/app.rs")], true, TARGET, &reporter));
-        tx.send(WatchMsg::Rebuild).unwrap();
+        tx.send(WatchMsg::Rebuild(Some(3))).unwrap();
         let mut attempts = 0;
-        let built = retry_first_build(&rx, Some(&queued), || {
+        let built = retry_first_build(&rx, Some(&queued), |requests| {
+            assert_eq!(requests, &[3], "the attempt applies the request that released the queue");
             attempts += 1;
             Some(attempts)
         });
@@ -3609,7 +3810,7 @@ mod tests {
         assert!(queued.take().is_empty(), "the request released the queued save");
 
         drop(tx);
-        assert_eq!(retry_first_build(&rx, Some(&queued), || Some(())), None);
+        assert_eq!(retry_first_build(&rx, Some(&queued), |_| Some(())), None);
     }
 
     /// A reporter whose events a test can read back.
@@ -3639,7 +3840,7 @@ mod tests {
         std::fs::write(&file, "pub fn v() -> u32 { 2 }\n").unwrap();
         let saved = read_saved(&ws, &[file.clone()]);
         let signal = ReloadSignal::new();
-        let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| {
+        let mut build = |_: &[build_web::hotpatch_build::PatchCrate], _: OnStep<'_>| {
             // The author saves again while rustc runs.
             std::fs::write(&file, "pub fn v() -> u32 { 3 }\n").unwrap();
             patched_ok()
@@ -3659,8 +3860,10 @@ mod tests {
     }
 
     /// A body edit that patches reports its decision, then the patch
-    /// with the plan's files and the builder's timings — what the panel
-    /// and the JSON sink read to say "patched in N ms".
+    /// with the plan's files and its timings — what the panel and the
+    /// JSON sink read to say "patched in N ms". The builder's steps sit
+    /// between the loop's own `decide` and `install`, each also reported
+    /// as it ended.
     #[test]
     fn a_patched_save_reports_its_decision_and_the_patch() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3671,10 +3874,12 @@ mod tests {
         let saved = read_saved(&ws, &[file]);
         let signal = ReloadSignal::new();
         let (reporter, q) = capture();
-        let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| patched_ok();
+        let mut build = |_: &[build_web::hotpatch_build::PatchCrate], on_step: OnStep<'_>| {
+            on_step("cargo", Duration::from_millis(5));
+            patched_ok()
+        };
         handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| false);
         let got = events(&q);
-        assert_eq!(got.len(), 2, "{got:?}");
         assert_eq!(
             got[0],
             dev_events::DevEvent::Decided {
@@ -3685,12 +3890,60 @@ mod tests {
                 },
             }
         );
-        let dev_events::DevEvent::PatchBuilt { files, redirected, steps, bytes, .. } = &got[1] else {
-            panic!("expected the built patch, got {:?}", got[1]);
+        let Some(dev_events::DevEvent::PatchBuilt { files, redirected, steps, bytes, .. }) = got.last() else {
+            panic!("expected the built patch last, got {got:?}");
         };
         assert_eq!(files, &vec!["lab-shared/src/lib.rs".to_string()]);
         assert_eq!((*redirected, *bytes), (1, 10));
-        assert_eq!(steps[0].name, "cargo");
+        let names: Vec<&str> = steps.iter().map(|t| t.name.as_str()).filter(|n| *n != "scan-wait").collect();
+        assert_eq!(names, ["decide", "cargo", "install"]);
+        assert_eq!(steps.iter().find(|t| t.name == "cargo").map(|t| t.ms), Some(5));
+        assert_eq!(patch_steps(&got), steps.iter().map(|t| t.name.clone()).collect::<Vec<_>>());
+    }
+
+    /// The `patch_step`s in `events`, by name.
+    fn patch_steps(events: &[dev_events::DevEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                dev_events::DevEvent::PatchStep { step, .. } => Some(step.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Regression: a hot patch that failed or was superseded reported no
+    /// timing at all — its steps only reached the `patch_built` it never
+    /// sent — so `--metrics` could not say where a 15 s save that fell
+    /// back to a rebuild, or a 17.9 s superseded patch, spent its time.
+    /// Every step it finished is reported as it ends.
+    #[test]
+    fn regression_an_unbuilt_hot_patch_still_reports_its_steps() {
+        for superseded in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().canonicalize().unwrap();
+            let mut ws = two_crate_workspace(&root);
+            let file = root.join("lab-shared/src/lib.rs");
+            std::fs::write(&file, "pub fn v() -> u32 { 2 }\n").unwrap();
+            let saved = read_saved(&ws, &[file]);
+            let signal = ReloadSignal::new();
+            let (reporter, q) = capture();
+            let mut build = |_: &[build_web::hotpatch_build::PatchCrate], on_step: OnStep<'_>| {
+                on_step("seed-wait", Duration::from_millis(7));
+                on_step("cargo", Duration::from_millis(9));
+                if superseded {
+                    Err(PatchFailure::Superseded)
+                } else {
+                    Err(PatchFailure::Failed("no capture".into()))
+                }
+            };
+            handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| superseded);
+            let got = events(&q);
+            assert!(!got.iter().any(|e| matches!(e, dev_events::DevEvent::PatchBuilt { .. })), "{got:?}");
+            let names: Vec<String> = patch_steps(&got).into_iter().filter(|n| n != "scan-wait").collect();
+            assert_eq!(names, ["decide", "seed-wait", "cargo"], "superseded: {superseded}");
+            assert!(got.contains(&dev_events::DevEvent::PatchStep { target: "web".into(), step: "cargo".into(), ms: 9 }));
+        }
     }
 
     /// A patch that cannot be built says why and hands the save to the
@@ -3707,7 +3960,7 @@ mod tests {
         let signal = ReloadSignal::new();
         let (reporter, q) = capture();
         let mut build =
-            |_: &[build_web::hotpatch_build::PatchCrate]| Err(PatchFailure::Failed("no capture".to_string()));
+            |_: &[build_web::hotpatch_build::PatchCrate], _: OnStep<'_>| Err(PatchFailure::Failed("no capture".to_string()));
         assert!(matches!(
             handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| false),
             Handled::Rebuild
@@ -3734,7 +3987,7 @@ mod tests {
         let saved = read_saved(&ws, &[file]);
         let signal = ReloadSignal::new();
         let (reporter, q) = capture();
-        let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| patched_ok();
+        let mut build = |_: &[build_web::hotpatch_build::PatchCrate], _: OnStep<'_>| patched_ok();
         assert!(matches!(
             handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| false),
             Handled::Rebuild
@@ -3800,7 +4053,7 @@ mod tests {
         let reporter = dev_events::Reporter::new();
         let at_report = Arc::new(Mutex::new(None));
         reporter.add_sink(Arc::new(PushedAtReport(signal.clone(), at_report.clone())));
-        let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| patched_ok();
+        let mut build = |_: &[build_web::hotpatch_build::PatchCrate], _: OnStep<'_>| patched_ok();
         assert!(matches!(
             handle_save(&mut ws, &dir, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| false),
             Handled::Done
@@ -3874,6 +4127,38 @@ mod tests {
 
     /// A release on another thread wakes a page's stream that is waiting
     /// on the generation — the SSE writer blocks in `wait_past_either`.
+    /// Regression (live, welcome): a save made between the first build and
+    /// the watch registering raised no event, and the archives scanned
+    /// after it took the new bytes as the baseline, so the page ran the old
+    /// code and nothing ever said so. The loop finds such files by mtime;
+    /// this is the half a unit test can reach (the loop itself needs a real
+    /// wasm build, and is checked by running a session).
+    #[test]
+    fn regression_files_saved_since_the_build_began_are_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("nested")).unwrap();
+        std::fs::create_dir_all(src.join("target")).unwrap();
+        let manifest = dir.path().join("Cargo.toml");
+        for p in [src.join("old.rs"), manifest.clone()] {
+            std::fs::write(&p, "old").unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        let since = std::time::SystemTime::now();
+        std::thread::sleep(Duration::from_millis(20));
+        for p in [
+            src.join("nested/saved.rs"),
+            src.join(".saved.rs.swp"),
+            src.join("target/out.rs"),
+        ] {
+            std::fs::write(&p, "new").unwrap();
+        }
+        let roots = vec![src.clone(), manifest.clone()];
+        assert_eq!(modified_since(&roots, since), vec![src.join("nested/saved.rs")]);
+        std::fs::write(&manifest, "edited").unwrap();
+        assert_eq!(modified_since(&roots, since), vec![manifest.clone(), src.join("nested/saved.rs")]);
+    }
+
     #[test]
     fn releasing_a_hold_wakes_waiters() {
         let signal = ReloadSignal::new();
@@ -3907,11 +4192,19 @@ mod tests {
         // The watch is registered once `watching` is out.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut seen = Vec::new();
-        while !seen.iter().any(|e| matches!(e, dev_events::DevEvent::Watching { .. })) {
-            assert!(std::time::Instant::now() < deadline, "the watcher never started");
+        while !seen.iter().any(|e| matches!(e, dev_events::DevEvent::WatcherReady { .. })) {
+            assert!(std::time::Instant::now() < deadline, "the watcher never said it takes saves");
             seen.extend(events(&q));
             std::thread::sleep(Duration::from_millis(10));
         }
+        // `watcher_ready` follows `watching`: a consumer waiting for saves
+        // to be taken waits for it (`wait_for_build`).
+        let at = |f: fn(&dev_events::DevEvent) -> bool| seen.iter().position(f).unwrap();
+        assert!(
+            at(|e| matches!(e, dev_events::DevEvent::Watching { .. }))
+                < at(|e| matches!(e, dev_events::DevEvent::WatcherReady { target } if target == "server")),
+            "{seen:?}"
+        );
         std::fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
         std::fs::write(src.join(".main.rs.swp"), "x").unwrap();
         built_rx.recv_timeout(Duration::from_secs(20)).expect("the save ran the build");
@@ -4019,6 +4312,49 @@ mod tests {
         built_rx.recv_timeout(Duration::from_secs(20)).expect("an edit builds");
     }
 
+    /// Two agents' rebuild requests: the second arrives while the first's
+    /// build runs. It must not join that build (whose outcome then answers
+    /// the first agent alone) but be taken by the next one, so a wait on
+    /// request 1 ends when the first build does.
+    #[test]
+    fn a_request_made_during_a_build_is_taken_by_the_next_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let (reporter, q) = capture();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (gate_tx, gate_rx) = mpsc::channel::<()>();
+        let (_watch, control) =
+            start_watch_with(vec![dir.path().to_path_buf()], ReloadSignal::new(), "server", reporter, false, move || {
+                let _ = started_tx.send(());
+                let _ = gate_rx.recv_timeout(Duration::from_secs(20));
+                Ok(Rebuilt::Unchanged)
+            })
+            .unwrap();
+        assert!(control.request_rebuild_numbered(1));
+        started_rx.recv_timeout(Duration::from_secs(20)).expect("request 1 never built");
+        assert!(control.request_rebuild_numbered(2));
+        gate_tx.send(()).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(20)).expect("request 2 never built");
+        gate_tx.send(()).unwrap();
+        let mut seen = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while seen.iter().filter(|e| matches!(e, dev_events::DevEvent::BuildFinished { .. })).count() < 2 {
+            assert!(std::time::Instant::now() < deadline, "the builds never finished: {seen:?}");
+            seen.extend(events(&q));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let order: Vec<String> = seen
+            .iter()
+            .filter_map(|e| match e {
+                dev_events::DevEvent::RebuildTaken { request, .. } => Some(format!("taken {request}")),
+                dev_events::DevEvent::BuildStarted { .. } => Some("started".into()),
+                dev_events::DevEvent::BuildFinished { .. } => Some("finished".into()),
+                dev_events::DevEvent::Superseded { .. } => Some("superseded".into()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(order, ["taken 1", "started", "finished", "taken 2", "started", "finished"]);
+    }
+
     /// `--no-watch`: a save is queued, not built — and reported, so a
     /// status view and an agent see it — and a rebuild request runs the
     /// callback once for everything queued. A request with nothing queued
@@ -4053,10 +4389,15 @@ mod tests {
         let queued = queued.expect("the queued save was not reported");
         assert!(queued.iter().any(|p| p.ends_with("main.rs")) && queued.iter().any(|p| p.ends_with("lib.rs")), "{queued:?}");
 
-        // One request: one build, for both files.
-        assert!(control.request_rebuild());
+        // One request: one build, for both files, reported as applying it.
+        assert!(control.request_rebuild_numbered(7));
         built_rx.recv_timeout(Duration::from_secs(20)).expect("the request applied the queue");
         assert!(built_rx.recv_timeout(quiet).is_err(), "the queue built twice");
+        let applied = events(&q);
+        let at = |f: &dyn Fn(&dev_events::DevEvent) -> bool| applied.iter().position(|e| f(e));
+        let taken = at(&|e| matches!(e, dev_events::DevEvent::RebuildTaken { request: 7, .. }));
+        let started = at(&|e| matches!(e, dev_events::DevEvent::BuildStarted { .. }));
+        assert!(taken.is_some() && taken < started, "request 7 must be taken before its build starts: {applied:?}");
 
         // Nothing queued: the request still builds.
         assert!(control.request_rebuild());
@@ -4071,17 +4412,19 @@ mod tests {
     fn a_rebuild_request_takes_the_queue_or_forces_a_build() {
         let q = Queued::default();
         let reporter = dev_events::Reporter::new();
-        assert!(matches!(release(WatchMsg::Rebuild, Some(&q)), WatchMsg::Rebuild), "nothing queued: forced");
+        assert!(matches!(release(WatchMsg::Rebuild(None), Some(&q))[..], [WatchMsg::Rebuild(None)]), "nothing queued: forced");
         assert!(q.hold(vec![PathBuf::from("/w/src/a.rs"), PathBuf::from("/w/src/b.rs")], true, "web", &reporter));
         assert!(q.hold(vec![PathBuf::from("/w/src/a.rs")], true, "web", &reporter), "a file saved twice");
         assert!(!q.hold(vec![PathBuf::from("/w/src/.a.rs.swp")], true, "web", &reporter), "scratch files are no work");
-        match release(WatchMsg::Rebuild, Some(&q)) {
-            WatchMsg::Paths(p) => assert_eq!(p, vec![PathBuf::from("/w/src/a.rs"), PathBuf::from("/w/src/b.rs")]),
-            _ => panic!("the queue was not released"),
+        match &release(WatchMsg::Rebuild(Some(5)), Some(&q))[..] {
+            [WatchMsg::Paths(p), WatchMsg::Request(5)] => {
+                assert_eq!(p, &vec![PathBuf::from("/w/src/a.rs"), PathBuf::from("/w/src/b.rs")])
+            }
+            _ => panic!("the queue was not released, or the request it answers was lost"),
         }
         assert!(q.take().is_empty(), "releasing empties the queue");
         // Without --no-watch every message is its own.
-        assert!(matches!(release(WatchMsg::Rebuild, None), WatchMsg::Rebuild));
+        assert!(matches!(release(WatchMsg::Rebuild(Some(6)), None)[..], [WatchMsg::Rebuild(Some(6))]));
     }
 
     /// A save is reported by the files it saved, once each — not by the
@@ -4136,7 +4479,21 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         *signal.rebuild.lock().unwrap() = Some(tx);
         assert!(signal.request_rebuild());
-        assert!(matches!(rx.try_recv(), Ok(WatchMsg::Rebuild)));
+        assert!(matches!(rx.try_recv(), Ok(WatchMsg::Rebuild(None))));
+        assert!(signal.request_rebuild_numbered(9));
+        assert!(matches!(rx.try_recv(), Ok(WatchMsg::Rebuild(Some(9)))));
+    }
+
+    /// Regression: the web watcher opened its inbox only after the first
+    /// build returned, so an agent's `rebuild_dev` during that build was
+    /// refused (no watcher to go to) and its request number went
+    /// nowhere. The request now queues and the loop takes it first.
+    #[test]
+    fn regression_a_rebuild_requested_during_the_first_build_is_queued() {
+        let signal = ReloadSignal::new();
+        let (took, _tx, rx) = with_inbox(&signal, || signal.request_rebuild_numbered(3));
+        assert!(took, "a request during the first build must be accepted");
+        assert!(matches!(rx.try_recv(), Ok(WatchMsg::Rebuild(Some(3)))));
     }
 
     /// Regression: a FAILED rebuild still rescanned, so the archives
@@ -4611,7 +4968,7 @@ mod tests {
         // Atomic, not a `Cell`: the scan beside the patch asks it too, from
         // its own thread.
         let newer_save = std::sync::atomic::AtomicBool::new(false);
-        let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| {
+        let mut build = |_: &[build_web::hotpatch_build::PatchCrate], _: OnStep<'_>| {
             // The author saves again while rustc runs; the build finishes
             // anyway (it was not polling), and the check before the push
             // catches it.
@@ -4660,7 +5017,7 @@ mod tests {
         let before = listing();
         let signal = ReloadSignal::new();
         let (reporter, _) = capture();
-        let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| Err(PatchFailure::Superseded);
+        let mut build = |_: &[build_web::hotpatch_build::PatchCrate], _: OnStep<'_>| Err(PatchFailure::Superseded);
         let got = handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| true);
         assert!(matches!(got, Handled::Superseded(dev_events::SupersededWork::HotPatch)), "{got:?}");
         assert_eq!(listing(), before, "the scan ran on after the patch was superseded");
@@ -4678,7 +5035,7 @@ mod tests {
         let saved = read_saved(&ws, &[file]);
         let signal = ReloadSignal::new();
         let (reporter, q) = capture();
-        let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| Err(PatchFailure::Superseded);
+        let mut build = |_: &[build_web::hotpatch_build::PatchCrate], _: OnStep<'_>| Err(PatchFailure::Superseded);
         let got = handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| true);
         assert!(matches!(got, Handled::Superseded(dev_events::SupersededWork::HotPatch)), "{got:?}");
         assert!(!events(&q).iter().any(|e| matches!(e, dev_events::DevEvent::PatchFailed { .. })));
@@ -4701,7 +5058,7 @@ mod tests {
         assert!(matches!(ws.decide(&saved, false), dev_overlay::WorkspaceDecision::Patch(_)));
         let signal = ReloadSignal::new();
         let (reporter, _) = capture();
-        let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| patched_ok();
+        let mut build = |_: &[build_web::hotpatch_build::PatchCrate], _: OnStep<'_>| patched_ok();
         let got = handle_save(&mut ws, &dir, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| true);
         assert!(matches!(got, Handled::Superseded(dev_events::SupersededWork::Overlay)), "{got:?}");
         assert!(signal.patches_since(0).is_empty());
@@ -4769,7 +5126,7 @@ mod tests {
             }
             panic!("timed out; events: {seen:?}");
         };
-        wait_for(&mut seen, &|s| s.iter().any(|e| matches!(e, dev_events::DevEvent::Watching { .. })));
+        wait_for(&mut seen, &|s| s.iter().any(|e| matches!(e, dev_events::DevEvent::WatcherReady { .. })));
         assert_eq!(failures(&seen), 1, "{seen:?}");
         assert!(!handle.is_finished(), "the watcher is running");
 

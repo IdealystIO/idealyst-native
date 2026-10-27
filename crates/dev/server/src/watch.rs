@@ -106,7 +106,8 @@ pub fn spawn_change_loop(
 /// act now.
 enum Msg {
     Fs(DebounceEventResult),
-    Trigger,
+    /// A rebuild request, numbered when `idealyst dev` numbered it.
+    Trigger(Option<u64>),
 }
 
 /// [`spawn_change_loop`], taking rebuild requests on `triggers` — the
@@ -123,6 +124,28 @@ pub fn spawn_change_loop_with(
     debounce: Duration,
     no_watch: bool,
     triggers: std_mpsc::Receiver<()>,
+    on_change: Box<dyn FnMut(&[PathBuf]) + Send>,
+) -> std::thread::JoinHandle<()> {
+    let (numbered, requests) = std_mpsc::channel();
+    std::thread::spawn(move || {
+        for () in triggers {
+            if numbered.send(None).is_err() {
+                return;
+            }
+        }
+    });
+    spawn_change_loop_numbered(watch_paths, debounce, no_watch, requests, on_change)
+}
+
+/// [`spawn_change_loop_with`], taking numbered rebuild requests: a
+/// `Some(n)` is session request `n`
+/// (`dev_events::DevEvent::RebuildRequested`), and the loop reports
+/// `RebuildTaken` for it before `on_change` applies it.
+pub fn spawn_change_loop_numbered(
+    watch_paths: Vec<PathBuf>,
+    debounce: Duration,
+    no_watch: bool,
+    triggers: std_mpsc::Receiver<Option<u64>>,
     mut on_change: Box<dyn FnMut(&[PathBuf]) + Send>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
@@ -138,8 +161,8 @@ pub fn spawn_change_loop_with(
             }
         };
         std::thread::spawn(move || {
-            for () in triggers {
-                if tx.send(Msg::Trigger).is_err() {
+            for request in triggers {
+                if tx.send(Msg::Trigger(request)).is_err() {
                     return;
                 }
             }
@@ -201,7 +224,13 @@ pub fn spawn_change_loop_with(
                 Msg::Fs(Err(e)) => {
                     eprintln!("[dev-server] watch error: {:?}", e);
                 }
-                Msg::Trigger => {
+                Msg::Trigger(request) => {
+                    if let Some(request) = request {
+                        reporter.emit(dev_events::DevEvent::RebuildTaken {
+                            target: crate::EVENTS_TARGET.into(),
+                            request,
+                        });
+                    }
                     let paths = std::mem::take(&mut queued);
                     reporter.log(
                         "dev-server",

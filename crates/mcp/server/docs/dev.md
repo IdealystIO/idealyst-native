@@ -1,6 +1,6 @@
 # Dev sessions
 
-These tools launch, watch and stop `idealyst dev` from MCP. The loop is `run_dev` → `wait_for_app` → Robot tools → `stop_dev`, with `read_dev_log` and `dev_status` to follow the build, and `read_build_metrics` to see what each save cost.
+These tools launch, watch and stop `idealyst dev` from MCP. The loop is `run_dev` → `wait_for_app` → Robot tools → `stop_dev`, with `wait_for_build` to block until a save or build has landed (never by polling a log), `read_dev_log` and `dev_status` for detail, and `read_build_metrics` to see what each save cost.
 
 They work on a session a PERSON started in a terminal too, not only on ones `run_dev` started: every `idealyst dev` (CLI 1.18 and later) registers itself in `~/.idealyst/dev-sessions/<pid>.json` and runs a loopback control endpoint, so `list_dev_sessions` shows it, `read_dev_log`, `dev_status` and `rebuild_dev` take its `pid`, and `stop_dev` stops it when told `include_external: true`. A person who watches a session themselves (often with `--no-watch`, so saves wait) and wants an agent to drive its rebuilds needs nothing else.
 
@@ -36,7 +36,7 @@ Returns `{ id, pid, dir, platforms, local, no_robot, log_path, status }`. Output
 
 Rust edits are picked up WITHOUT re-running this tool. The default runtime-server mode hot-patches the running app on save and keeps component state. `local` mode's watcher rebuilds and reloads: web does a full page reload, native platforms restart the app, and state is lost.
 
-The tool returns as soon as the build starts; use `wait_for_app` before calling Robot tools.
+The tool returns as soon as the build starts: `wait_for_build` waits for the first build to finish (and reports its errors if it fails), then `wait_for_app` before calling Robot tools.
 
 ## wait_for_app
 
@@ -46,6 +46,31 @@ Blocks until a running app registers its Robot bridge, then returns it in `list_
 - `timeout_secs` defaults to 60, max 600.
 
 On timeout it returns an error that says which wait failed: an app registered but never answered a ping (the page or process hasn't dialed in — for web, `run_dev` needs `local=true` and something must load the page), or nothing registered at all, with the state of `~/.idealyst/apps` (missing, not creatable, not writable, or empty). For the latter, `read_dev_log` shows whether the build is still running or failed, and warns if the relay could not write its registration. Errors immediately when robot control is disabled (`--no-robot`).
+
+## wait_for_build
+
+Blocks until a session's build or save has landed, then says how it ended. Use it after every save, and after `run_dev` for the first build, instead of polling `read_dev_log` or `dev_status`: it reads the session's typed event stream, so it knows every way a save can end, and it ALWAYS returns, at the latest when its timeout runs out.
+
+Name the session by `session_id` or `pid` (a person's session works too).
+
+- `after`: a `cursor` from an earlier answer. The wait is for an outcome that arrives after it: the build of a save made after the cursor, a build that was already running when the cursor was taken, or a `--no-watch` queue that `rebuild_dev` applies. If that outcome is already in, the answer is immediate. If nothing is building and nothing new starts within 1.5 s, the answer is `idle`: a save that changed no bytes, or a cursor taken after the save it meant to cover, never waits out the timeout for a build that will not come.
+- `request`: the `request` number `rebuild_dev` returned. The wait is for the builds that apply that request, one per watcher it went to (the web bundle, a full-stack server, …), and for nothing after them: when two agents request rebuilds, and the second request arrives while the first's build runs, that build answers the first agent and the next build the second. If the request was already applied, even with later saves built since, the answer is immediate. A number the session never gave answers `unknown_request` at once. Pass `request` or `after`, not both.
+- Without `after`: a build in progress is waited for. With nothing building, the same 1.5 s for a save made just before the call to be noticed, then `idle`.
+- `timeout_secs`: default 120, max 600.
+
+The loop: `wait_for_build` → keep its `cursor` → edit and save → `wait_for_build` with `after: <cursor>` → … A save that lands as a hot patch or overlay patch moves no page generation, so the cursor, not `gen`, is how a build is tracked.
+
+Returns `{ status, cursor, builds, next }`, plus `building`, `preparing`, `queued`, `last`, `log` where they apply:
+
+- `status`: `finished`, `failed`, `building` (still running at the timeout: call again with `after`, or `request`, from `next`; with `request`, `waiting_for` names the targets that have not applied it yet), `preparing` (the session's watcher is still starting up, scanning the workspace, which takes seconds after the first build on a large one: a save made now is held and applied once it is ready, so the wait does not answer `idle` until it is; call again), `queued` (`--no-watch` saves wait for `rebuild_dev`; waiting would wait for nothing), `idle` (nothing built after the cursor; `last` holds each target's latest outcome), `unknown_request` (a `request` this session never gave), or `session_ended` (the session exited mid-wait).
+- `builds`: per target, `{ target, id, closed_seq, outcome, failed, tier, reason, gen, ms, error, hot_patch_failed, superseded, errors, requests }`. `id` is the `seq` of the event that started the build, `closed_seq` the one that ended it. `outcome` is `ready`, `reloaded`, `unchanged`, `premint_refreshed`, `hot_patch`, `overlay_patch`, `no_change`, `sidecar_hot_patch`, `sidecar_respawn`, or `failed`. `gen` is the page generation a rebuild loaded. A save superseded by a newer one is followed to the restart's outcome (`superseded` counts them). A hot patch that could not be built shows `hot_patch_failed`, and the rebuild that replaced it is the outcome. `requests` lists the `rebuild_dev` requests a build applied.
+- On `failed`: `error` is how the build stopped (`cargo exited with 101`), `errors` the rustc errors (up to 20, each `{ message, code, location, rendered }`, `location` as `file:line:col`), and `log` the session's `dev.log`, the full output: `read_dev_log` with `filter: "error"` reads it.
+- `building`: per target in progress, `{ id, tier, stage, compiled, total, current, errors_so_far }`.
+- `cursor`: the highest event `seq` seen; pass it as `after` next time. `next` says what to call next.
+
+A full-stack session builds the web bundle and the server on separate watchers. The wait answers once neither has started anything for 400 ms after the last outcome, so both are in `builds`.
+
+Errors only when the session cannot be found or its event stream does not answer (a session whose `idealyst` predates the stream says so); everything after that is an answer.
 
 ## read_dev_log
 
@@ -70,6 +95,7 @@ Returns `{ path, total, matching, records }`. A summary is `{ started, target, t
 
 - `changes`: the saved files, each with its `kind` (`rust source`, `manifest`, `lockfile`, `build script`, `config`, `asset`, `deleted`).
 - `tier` and `reason`: what the watcher decided (`overlay`, `hot patch`, `rebuild`, `unchanged`) and why; absent for the initial build (`trigger: "initial"`).
+- `hot_patch`: a hot patch the save attempted: `steps`, each `{ name, ms }` in order (`decide`, `seed-wait`, `cargo`, `link`, `scan-wait`, `install`, …), kept when the patch failed or was superseded; and for a built one `crates` (each re-emitted crate's replay `ms`, `null` when its objects were reused), `redirected` and `bytes`.
 - `cargo`: `{ recompiled, packages_seen, root_causes, slowest }`. `root_causes` are the reasons other than "a dependency was rebuilt", each `{ kind, detail, packages, package_count }`. `slowest` is the ten slowest recompiled crates with `ms` and reason kinds.
 
 Reading a slow rebuild: the root causes say what started it. `file_changed` names an edited file in a crate low in the graph. `features_changed`, `rustflags_changed` and `profile_configuration_changed` say how the crates are compiled changed. `no_prior_build` across many crates means cargo had no build of them with these settings: two builds sharing a target dir with different features, or removed artifacts. Crate times overlap (cargo builds in parallel), so they do not sum to `total_ms`.
@@ -96,7 +122,7 @@ Takes `session_id` or `pid`.
 
 ## rebuild_dev
 
-Asks a session to rebuild now, exactly as pressing `r` in its terminal panel does: every watcher it runs (the web bundle, a full-stack server, the runtime-server host, app icons) gets the request. Under `--no-watch`, a watcher with queued saves applies them as ONE save, through the same decision a save takes — so a literal edit still lands as an overlay patch and a body edit as a hot patch; with nothing queued, it rebuilds. Returns as soon as the request is taken (`{ requested: { accepted, no_watch } }`); `dev_status` shows the progress and outcome, `read_dev_log` the detail.
+Asks a session to rebuild now, exactly as pressing `r` in its terminal panel does: every watcher it runs (the web bundle, a full-stack server, the runtime-server host, app icons) gets the request. Under `--no-watch`, a watcher with queued saves applies them as ONE save, through the same decision a save takes — so a literal edit still lands as an overlay patch and a body edit as a hot patch; with nothing queued, it rebuilds. Returns as soon as the request is taken: `{ request, requested: { accepted, request, targets, no_watch } }`, where `request` is the session's number for this request and `targets` the watchers that took it. To wait for the outcome, call `wait_for_build` with `request: <request>`: it waits for exactly the builds that apply it, not a later request's. A session from an older CLI returns no `request`; wait on it with `after:` a cursor taken before the request. `read_dev_log` has the detail.
 
 Takes `session_id` or `pid`, and works on a person's session as on this server's own. A session started with `--no-build` has no watcher to take the request, and says so.
 

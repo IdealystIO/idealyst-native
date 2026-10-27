@@ -44,6 +44,9 @@ pub fn every_event() -> Vec<DevEvent> {
         },
         DevEvent::ServerReady { target: "session".into(), kind: ServerKind::Events, url: "http://127.0.0.1:1/__idealyst/events".into() },
         DevEvent::Watching { target: web(), roots: vec!["/a".into()], rewatch: true },
+        DevEvent::WatcherReady { target: web() },
+        DevEvent::RebuildRequested { request: 1, targets: vec![web()] },
+        DevEvent::RebuildTaken { target: web(), request: 1 },
         DevEvent::ChangeDetected {
             target: web(),
             paths: vec!["/a/src/app.rs".into()],
@@ -69,6 +72,7 @@ pub fn every_event() -> Vec<DevEvent> {
             ms: 310,
         },
         DevEvent::PatchFailed { target: web(), files: vec![], reason: "r".into() },
+        DevEvent::PatchStep { target: web(), step: "cargo".into(), ms: 300 },
         DevEvent::Superseded { target: web(), work: SupersededWork::HotPatch, ms: 120 },
         DevEvent::BuildStarted { target: web(), cause: BuildCause::Forced },
         DevEvent::StageStarted { target: web(), stage: "cargo".into() },
