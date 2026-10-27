@@ -10,6 +10,7 @@
 
 mod adb;
 mod app_discovery;
+mod build_metrics;
 mod catalog_service;
 mod catalog_status;
 mod dev_runner;

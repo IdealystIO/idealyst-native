@@ -555,6 +555,12 @@ pub struct RunDevArgs {
     /// Web `--local`: hot patch saves that only add items (experimental).
     #[serde(default)]
     pub experimental_build: bool,
+    /// Record what every save cost; read with `read_build_metrics`.
+    #[serde(default)]
+    pub metrics: bool,
+    /// `metrics`, plus each save's diff.
+    #[serde(default)]
+    pub metrics_diffs: bool,
 }
 
 /// Args for `stop_dev` — stop one tracked dev session by id, or all of
@@ -585,6 +591,30 @@ pub struct DevSessionArgs {
     /// From `list_dev_sessions`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+}
+
+/// Args for `read_build_metrics` — the records `idealyst dev --metrics`
+/// wrote for a session's project, or for a project directory.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReadBuildMetricsArgs {
+    /// From `run_dev`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<u64>,
+    /// From `list_dev_sessions` (any session, a person's included).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// Project dir, for a project with no running session (default: the server's cwd).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    /// Newest records to return (default 10, max 200).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<usize>,
+    /// Only cargo builds: rebuilds, initial and forced builds.
+    #[serde(default)]
+    pub rebuilds_only: bool,
+    /// Full records (every recompiled crate, diffs) instead of summaries.
+    #[serde(default)]
+    pub detail: bool,
 }
 
 /// Args for `read_dev_log` — tail a tracked dev session's log file.
@@ -1837,6 +1867,8 @@ impl CatalogService {
             no_build: args.no_build,
             no_watch: args.no_watch,
             experimental_build: args.experimental_build,
+            metrics: args.metrics,
+            metrics_diffs: args.metrics_diffs,
         };
         match self.dev_runner.start(launch) {
             Ok(info) => Ok(CallToolResult::success(vec![Content::text(
@@ -1983,6 +2015,49 @@ impl CatalogService {
                 "stop_dev needs `session_id`, `pid`, or `all: true`".to_string(),
             )])),
         }
+    }
+
+    #[tool(description = "What each save cost in a `metrics` dev session: tier, time, and the crates cargo recompiled and why.")]
+    async fn read_build_metrics(
+        &self,
+        Parameters(args): Parameters<ReadBuildMetricsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        // A session's records sit beside its `dev.log`; a project's are
+        // found from its package name, running or not.
+        let path = if args.session_id.is_some() || args.pid.is_some() {
+            let live = match self.resolve_session(args.session_id, args.pid) {
+                Ok(l) => l,
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "{e} — for a session that has stopped, pass the project's `dir` instead"
+                    ))]))
+                }
+            };
+            match live.entry.log_file.as_deref().and_then(|l| crate::build_metrics::beside_log(std::path::Path::new(l))) {
+                Some(p) => Ok(p),
+                None => crate::build_metrics::for_project(std::path::Path::new(&live.entry.dir)),
+            }
+        } else {
+            let dir = match args.dir {
+                Some(d) => std::path::PathBuf::from(d),
+                None => match std::env::current_dir() {
+                    Ok(d) => d,
+                    Err(e) => return Ok(CallToolResult::error(vec![Content::text(format!("cannot resolve current directory: {e}"))])),
+                },
+            };
+            crate::build_metrics::for_project(&dir)
+        };
+        let path = match path {
+            Ok(p) => p,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+        let query = crate::build_metrics::Query {
+            last: args.last.unwrap_or(crate::build_metrics::DEFAULT_LAST),
+            rebuilds_only: args.rebuilds_only,
+            detail: args.detail,
+        };
+        let out = crate::build_metrics::read(&path, query);
+        Ok(CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&out).unwrap())]))
     }
 
     #[tool(description = "Tail a dev session's log, optionally filtered (e.g. to compile errors).")]

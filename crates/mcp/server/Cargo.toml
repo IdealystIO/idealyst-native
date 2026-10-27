@@ -36,6 +36,8 @@ serde_json = { workspace = true }
 # Decode `screenshot` PNG base64 so the tool can save it to disk and
 # return only the path — never streaming the base64 into the model.
 base64 = "0.22"
+# `read_build_metrics` finds a project's records by its package name.
+toml = "0.8"
 # Shared render-parity model + diff (also used by the robot-test harness), for
 # the `compare_native_parity` tool.
 native-parity = { workspace = true }
@@ -58,6 +60,7 @@ libc = "0.2"
 dev-events = { workspace = true }
 
 [dev-dependencies]
+tempfile = "3"
 # The author surface + `#[component]` for the `catalog_service::tests`
 # module, which links a few synthetic components and asserts they
 # round-trip through the `list_components` tool's in-process catalog

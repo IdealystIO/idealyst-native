@@ -66,6 +66,38 @@ pub struct DevLaunch {
     /// `--experimental-build`: web `--local` only — a save that only adds
     /// items hot patches instead of rebuilding.
     pub experimental_build: bool,
+    /// `--metrics`: record what every save cost (`read_build_metrics`).
+    pub metrics: bool,
+    /// `--metrics-diffs`: `--metrics` plus each save's diff.
+    pub metrics_diffs: bool,
+}
+
+/// The `idealyst dev` flags `launch` asks for, after the project dir.
+fn dev_flags(launch: &DevLaunch) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> =
+        launch.platforms.iter().map(|p| format!("--{}", p.to_lowercase()).into()).collect();
+    let switches = [
+        (launch.all, "--all"),
+        (launch.local, "--local"),
+        (launch.no_robot, "--no-robot"),
+        (launch.headless_client, "--headless-client"),
+        (launch.no_build, "--no-build"),
+        (launch.no_watch, "--no-watch"),
+        (launch.experimental_build, "--experimental-build"),
+        // `--metrics-diffs` implies `--metrics`; the CLI takes either.
+        (launch.metrics && !launch.metrics_diffs, "--metrics"),
+        (launch.metrics_diffs, "--metrics-diffs"),
+    ];
+    args.extend(switches.into_iter().filter(|(on, _)| *on).map(|(_, flag)| flag.into()));
+    if let Some(port) = launch.bridge_port {
+        args.push("--bridge-port".into());
+        args.push(port.to_string().into());
+    }
+    if let Some(sdir) = &launch.screenshot_dir {
+        args.push("--screenshot-dir".into());
+        args.push(sdir.into());
+    }
+    args
 }
 
 /// A live (or recently-exited) `idealyst dev` session the server is
@@ -176,36 +208,7 @@ impl DevRunner {
         let mut cmd = Command::new(&exe);
         cmd.arg("dev").arg(&dir);
         validate_platforms(&launch.platforms)?;
-        for p in &launch.platforms {
-            cmd.arg(format!("--{}", p.to_lowercase()));
-        }
-        if launch.all {
-            cmd.arg("--all");
-        }
-        if launch.local {
-            cmd.arg("--local");
-        }
-        if launch.no_robot {
-            cmd.arg("--no-robot");
-        }
-        if launch.headless_client {
-            cmd.arg("--headless-client");
-        }
-        if let Some(port) = launch.bridge_port {
-            cmd.arg("--bridge-port").arg(port.to_string());
-        }
-        if let Some(sdir) = &launch.screenshot_dir {
-            cmd.arg("--screenshot-dir").arg(sdir);
-        }
-        if launch.no_build {
-            cmd.arg("--no-build");
-        }
-        if launch.no_watch {
-            cmd.arg("--no-watch");
-        }
-        if launch.experimental_build {
-            cmd.arg("--experimental-build");
-        }
+        cmd.args(dev_flags(&launch));
         // Its registry entry says an agent started it.
         cmd.env(dev_events::sessions::LAUNCHED_BY_ENV, "mcp");
 
@@ -526,6 +529,27 @@ mod tests {
         let p = dev_log_path("demo", 3).unwrap();
         assert!(p.ends_with("demo-3.log"), "{p:?}");
         assert!(p.to_string_lossy().contains(".idealyst"));
+    }
+
+    #[test]
+    fn launch_options_become_dev_flags() {
+        let flags = |l: DevLaunch| -> Vec<String> {
+            dev_flags(&l).into_iter().map(|f| f.to_string_lossy().into_owned()).collect()
+        };
+        assert_eq!(
+            flags(DevLaunch { platforms: vec!["Web".into()], local: true, metrics: true, ..Default::default() }),
+            ["--web", "--local", "--metrics"]
+        );
+        assert_eq!(
+            flags(DevLaunch { metrics: true, metrics_diffs: true, ..Default::default() }),
+            ["--metrics-diffs"],
+            "diffs imply metrics"
+        );
+        assert_eq!(
+            flags(DevLaunch { no_watch: true, bridge_port: Some(9000), ..Default::default() }),
+            ["--no-watch", "--bridge-port", "9000"]
+        );
+        assert!(flags(DevLaunch::default()).is_empty());
     }
 
     #[test]

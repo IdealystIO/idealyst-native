@@ -1,6 +1,6 @@
 # Dev sessions
 
-These tools launch, watch and stop `idealyst dev` from MCP. The loop is `run_dev` → `wait_for_app` → Robot tools → `stop_dev`, with `read_dev_log` and `dev_status` to follow the build.
+These tools launch, watch and stop `idealyst dev` from MCP. The loop is `run_dev` → `wait_for_app` → Robot tools → `stop_dev`, with `read_dev_log` and `dev_status` to follow the build, and `read_build_metrics` to see what each save cost.
 
 They work on a session a PERSON started in a terminal too, not only on ones `run_dev` started: every `idealyst dev` (CLI 1.18 and later) registers itself in `~/.idealyst/dev-sessions/<pid>.json` and runs a loopback control endpoint, so `list_dev_sessions` shows it, `read_dev_log`, `dev_status` and `rebuild_dev` take its `pid`, and `stop_dev` stops it when told `include_external: true`. A person who watches a session themselves (often with `--no-watch`, so saves wait) and wants an agent to drive its rebuilds needs nothing else.
 
@@ -28,6 +28,8 @@ Arguments:
 - `no_build` (web only): skip the initial build and just serve.
 - `no_watch`: saves are queued, not applied; `rebuild_dev` applies the queue as one save (overlay patch, hot patch or rebuild, as the save would have been). See `rebuild_dev`.
 - `experimental_build` (web `local` only): a save that only ADDS items — a helper and its first call, a new component, a type and its impls — hot patches instead of rebuilding. See "Adding items" in the framework's `docs/hot-reload.md`.
+- `metrics`: record what every save cost — its tier and why, each stage's time, and for a cargo build every crate recompiled with its compile time and cargo's reason. Read the records with `read_build_metrics`.
+- `metrics_diffs`: `metrics`, plus each saved file's diff against the previous save. Keeps a copy of every watched text file in memory for the session.
 - `dir`: project directory; defaults to the server's working directory.
 
 Returns `{ id, pid, dir, platforms, local, no_robot, log_path, status }`. Output goes to `~/.idealyst/dev-logs/<name>-<id>.log` (`log_path`); follow it with `read_dev_log`. The process runs until `stop_dev`.
@@ -53,6 +55,26 @@ Reads the tail of a session's log: the way to follow build progress and see comp
 - `filter`: case-insensitive substring applied BEFORE the tail, so `filter: "error"` returns the last N matching lines, which jumps straight to a compile failure.
 
 A `run_dev` session's log stays readable after it exits and is pruned from `list_dev_sessions` (the file is found by globbing `~/.idealyst/dev-logs/`). Returns `{ session_id, pid, log_path, lines, content }`.
+
+## read_build_metrics
+
+What each save cost, from the records a session started with `metrics` (or `idealyst dev --metrics`) appends: one per save and one per initial build, in `<project>/target/idealyst/<package>/build-metrics.jsonl`. Records accumulate across sessions, so this is how to tell a seconds-long rebuild from a minutes-long one and why.
+
+Name the records by `session_id` or `pid` (a running session, a person's included), or by `dir` (a project, whether or not a session runs; default the server's working directory).
+
+- `last`: the newest N matching records, oldest first. Default 10, max 200.
+- `rebuilds_only`: only records whose work ran cargo — rebuilds and the initial and forced builds, not overlay or hot patches.
+- `detail`: the records as written, with every recompiled crate and the diffs. Without it each record is a summary.
+
+Returns `{ path, total, matching, records }`. A summary is `{ started, target, trigger, tier, reason, outcome, failed, total_ms, changes, stages, cargo, hot_patch, diffed_files }`, each present when the record has it:
+
+- `changes`: the saved files, each with its `kind` (`rust source`, `manifest`, `lockfile`, `build script`, `config`, `asset`, `deleted`).
+- `tier` and `reason`: what the watcher decided (`overlay`, `hot patch`, `rebuild`, `unchanged`) and why; absent for the initial build (`trigger: "initial"`).
+- `cargo`: `{ recompiled, packages_seen, root_causes, slowest }`. `root_causes` are the reasons other than "a dependency was rebuilt", each `{ kind, detail, packages, package_count }`. `slowest` is the ten slowest recompiled crates with `ms` and reason kinds.
+
+Reading a slow rebuild: the root causes say what started it. `file_changed` names an edited file in a crate low in the graph. `features_changed`, `rustflags_changed` and `profile_configuration_changed` say how the crates are compiled changed. `no_prior_build` across many crates means cargo had no build of them with these settings: two builds sharing a target dir with different features, or removed artifacts. Crate times overlap (cargo builds in parallel), so they do not sum to `total_ms`.
+
+Per-crate detail covers the builds the session runs through cargo itself: the web bundle, a full-stack server, the runtime-server sidecar. Native targets' records have stage times only. With no records yet the result has `total: 0` and a `note` on how to start recording.
 
 ## list_dev_sessions
 

@@ -2025,6 +2025,11 @@ analyse). A record holds:
   sharing a target dir resolve different features, or when the unit's
   artifacts were removed. It typically means the whole tree is rebuilt.
 
+From `idealyst mcp`, `run_dev` takes `metrics` / `metrics_diffs`, and
+`read_build_metrics` returns the records (by session, or by project
+directory once the session has stopped): a summary per save by default,
+the full records with `detail`.
+
 `--metrics-diffs` adds each saved file's diff against what it held at the
 previous save, or when the session started watching it. That keeps a copy
 of every watched text file in memory for the session.
