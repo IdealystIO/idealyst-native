@@ -1,6 +1,6 @@
 [package]
 name = "run-roku"
-version = "1.5.2"
+version = "2.0.0"
 edition.workspace = true
 license.workspace = true
 description = "Roku side-loader: zips a build-roku package directory, uploads it to a device in developer mode via the standard HTTP digest /plugin_install endpoint, and optionally tails the debug console on port 8085"

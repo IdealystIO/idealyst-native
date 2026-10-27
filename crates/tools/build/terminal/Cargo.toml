@@ -1,6 +1,6 @@
 [package]
 name = "build-terminal"
-version = "1.5.2"
+version = "2.0.0"
 edition.workspace = true
 license.workspace = true
 description = "Terminal-host build orchestration for `idealyst dev --terminal`: generates a binary wrapper around a user's app crate on host-terminal and builds it."

@@ -1,6 +1,6 @@
 [package]
 name = "build-roku"
-version = "1.5.2"
+version = "2.0.0"
 edition.workspace = true
 license.workspace = true
 description = "Roku build orchestration: collects #[method]-transpiled BrightScript + a UI command stream into an installable Roku package"

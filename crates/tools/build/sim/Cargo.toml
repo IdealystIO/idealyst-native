@@ -1,6 +1,6 @@
 [package]
 name = "build-sim"
-version = "1.6.0"
+version = "2.0.0"
 edition.workspace = true
 license.workspace = true
 description = "Templates and builds the wgpu sim wrapper for `idealyst run sim` / `idealyst build sim`."
