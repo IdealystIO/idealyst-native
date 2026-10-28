@@ -59,6 +59,16 @@ let sub = stream.subscribe(|frame| {
 // drop `sub` to stop tapping; drop `stream` to stop capture.
 ```
 
+To let the user pick among every attached camera, list them and open one by
+id. `devices()` requests permission first (browsers hide cameras until it is
+granted); an unknown id is `NoCamera`:
+
+```rust
+let cam = Camera::new();
+let cams = cam.devices().await?; // Vec<CameraDevice { id, label, facing }>
+let stream = cam.open(CameraConfig::new().with_device(&cams[0].id)).await?;
+```
+
 ### Record the screen → `MediaStream`
 
 ```rust
@@ -84,6 +94,11 @@ let handle = mic.open(AudioStreamConfig::default().mono(), |buf| {
     // buf.samples: interleaved f32 in [-1.0, 1.0]
 }).await?;
 ```
+
+Capture uses the default input unless you pick one: `mic.devices().await?`
+lists `MicDevice { id, label }` (requesting permission first), and
+`AudioStreamConfig::new().with_device(&id)` captures from it. An unknown id is
+`NoInputDevice`.
 
 Use `open_stream` when a *consumer* needs an `AudioStream` (recording it to a
 file, or a future audio-playback layer that binds the platform's native audio

@@ -207,13 +207,13 @@ sdk!(
     "camera",
     SdkCategory::Media,
     SdkKind::Api,
-    "Cross-platform camera capture → a `MediaStream`."
+    "Cross-platform camera capture → a `MediaStream`; list cameras with `devices()` and open one by id."
 );
 sdk!(
     "microphone",
     SdkCategory::Media,
     SdkKind::Api,
-    "Cross-platform microphone capture → an audio stream."
+    "Cross-platform microphone capture → an audio stream; list inputs with `devices()` and capture from one by id."
 );
 sdk!(
     "denoise",
