@@ -15,6 +15,16 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **`CameraConfig` and `AudioStreamConfig` gained a `device` field**
+  (`camera` 4.0, `microphone` 4.0). A struct literal that names every field
+  stops compiling; add `..Default::default()` or use the builders.
+
+- **Windows: `Back` on a webcam is `NoCamera`** (`camera`). Media
+  Foundation opened the first camera for every facing, so `back()` on a
+  laptop silently opened the front webcam. It now follows the
+  `CameraFacing` rule every other backend already did: a webcam reports no
+  facing, so `Default` and `Front` open it and `Back` is `NoCamera`.
+
 - **`mcp_server::DevLaunch` is `#[non_exhaustive]`** (`mcp-server` 4.0).
   Build one with `DevLaunch::default()` and set its fields; a struct
   literal no longer compiles. A new launch option is then a minor.
@@ -751,6 +761,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **List and choose cameras and microphones** (`camera`, `microphone`).
+  `Camera::devices()` returns every attached camera as
+  `CameraDevice { id, label, facing }` and
+  `CameraConfig::with_device(id)` opens one; `Microphone::devices()`
+  returns `MicDevice { id, label }` and `AudioStreamConfig::with_device(id)`
+  captures from one. Every backend behaves alike: listing requests the
+  permission first (browsers hide devices until it is granted), labels are
+  never empty and repeated names are numbered, and an id no device has is
+  `NoCamera` / `NoInputDevice` rather than a fallback. Apple lists through
+  `AVCaptureDeviceDiscoverySession`, Android through Camera2 /
+  `AudioManager.getDevices` (+ `AudioRecord.setPreferredDevice`), web
+  through `enumerateDevices` + an exact `deviceId` constraint, Linux
+  through GStreamer's device monitor, Windows through
+  `MFEnumDeviceSources`, and desktop microphones through cpal.
 
 - **`wait_for_build`: an agent waits for a save to land** (`mcp-server`,
   `dev-events`, `dev-reload`, `idealyst-cli`). It reads the session's typed

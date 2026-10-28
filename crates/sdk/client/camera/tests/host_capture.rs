@@ -71,3 +71,49 @@ async fn captures_frames_from_default_camera() {
     assert!(n_frames > 0, "expected at least one capture callback");
     assert_eq!(n_bad, 0, "every frame must be tightly-packed RGBA8");
 }
+
+/// Lists the host's cameras and opens each by its id: every listed id must
+/// open (a picker that offers a camera `open` then refuses is broken), and an
+/// id no camera has must be `NoCamera`.
+#[tokio::test]
+#[ignore = "requires a real camera + permission"]
+async fn every_listed_camera_opens_by_id() {
+    let cam = Camera::new();
+    let devices = match cam.devices().await {
+        Ok(d) => d,
+        Err(CameraError::PermissionDenied) => {
+            eprintln!("skip: camera permission not granted");
+            return;
+        }
+        Err(CameraError::Unsupported) => {
+            eprintln!("skip: no camera backend for this target");
+            return;
+        }
+        Err(e) => panic!("devices failed: {e}"),
+    };
+    eprintln!("cameras: {devices:#?}");
+    for d in &devices {
+        assert!(!d.id.is_empty() && !d.label.is_empty(), "id and label are never empty: {d:?}");
+        let stream = cam
+            .open(CameraConfig::new().with_device(&d.id))
+            .await
+            .unwrap_or_else(|e| panic!("listed camera {:?} must open: {e}", d.label));
+        let frames = Arc::new(AtomicUsize::new(0));
+        let counter = frames.clone();
+        let sub = stream.subscribe(move |_| {
+            counter.fetch_add(1, Ordering::Relaxed);
+        });
+        // External webcams can take a few seconds to deliver a first frame.
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        while frames.load(Ordering::Relaxed) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        eprintln!("{:?}: first frame after polling, {} so far", d.label, frames.load(Ordering::Relaxed));
+        drop(sub);
+        drop(stream);
+        assert!(frames.load(Ordering::Relaxed) > 0, "{:?} delivered no frames", d.label);
+    }
+
+    let missing = cam.open(CameraConfig::new().with_device("no-such-camera")).await;
+    assert!(matches!(missing, Err(CameraError::NoCamera)), "an unknown id is NoCamera");
+}

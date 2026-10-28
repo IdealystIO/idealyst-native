@@ -23,7 +23,7 @@ use objc2::runtime::{AnyObject, Bool, NSObjectProtocol};
 use objc2::{class, declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_foundation::{NSObject, NSString};
 
-use crate::{CameraConfig, CameraError, CameraFacing, NativeSource};
+use crate::{CameraConfig, CameraDevice, CameraError, CameraFacing, DeviceFacing, NativeSource};
 use media_stream::FrameWriter;
 
 // ---------------------------------------------------------------------------
@@ -67,7 +67,13 @@ extern "C" {
 extern "C" {
     /// Serial queue for delegate callbacks. In libSystem (always linked).
     fn dispatch_queue_create(label: *const std::ffi::c_char, attr: *mut c_void) -> *mut c_void;
+    /// Looks up the `AVCaptureDeviceType*` constants the running OS exports
+    /// (see [`listed_device_types`]). In libSystem.
+    fn dlsym(handle: *mut c_void, symbol: *const std::ffi::c_char) -> *mut c_void;
 }
+
+/// `RTLD_DEFAULT` on Apple platforms: search every loaded image.
+const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
 
 /// `CMVideoDimensions` — `{ int32 width; int32 height; }`. Returned by value
 /// from `CMVideoFormatDescriptionGetDimensions`; only crosses the C ABI, so
@@ -125,6 +131,27 @@ const DEVICE_TYPE_WIDE_ANGLE: &str = "AVCaptureDeviceTypeBuiltInWideAngleCamera"
 // AVCaptureDevicePosition.
 const POSITION_BACK: i64 = 1;
 const POSITION_FRONT: i64 = 2;
+
+/// The physical camera types [`devices`] lists, by exported symbol name.
+/// Virtual multi-lens devices (Dual / Triple) are left out: they front the
+/// same lenses already listed. Each name is looked up at runtime, so a type
+/// the running OS predates (`External` before iOS 17 / macOS 14) is skipped
+/// rather than passed to the discovery session, which rejects unknown types.
+const LISTED_DEVICE_TYPES: &[&std::ffi::CStr] = &[
+    c"AVCaptureDeviceTypeBuiltInWideAngleCamera",
+    c"AVCaptureDeviceTypeBuiltInUltraWideCamera",
+    c"AVCaptureDeviceTypeBuiltInTelephotoCamera",
+    c"AVCaptureDeviceTypeBuiltInTrueDepthCamera",
+    c"AVCaptureDeviceTypeContinuityCamera",
+    // USB / external webcams: `External` from iOS 17 / macOS 14, the macOS
+    // `ExternalUnknown` before it (deprecated, still exported, for older Macs).
+    c"AVCaptureDeviceTypeExternal",
+];
+#[cfg(target_os = "macos")]
+const LEGACY_EXTERNAL_TYPE: &std::ffi::CStr = c"AVCaptureDeviceTypeExternalUnknown";
+/// `AVCaptureDevicePositionUnspecified` — what every macOS / external webcam
+/// reports.
+const POSITION_UNSPECIFIED: i64 = 0;
 
 // ---------------------------------------------------------------------------
 // Delegate. Receives `captureOutput:didOutputSampleBuffer:fromConnection:`
@@ -621,6 +648,74 @@ fn map_permission(status: permissions::PermissionStatus) -> Result<(), CameraErr
 }
 
 // ---------------------------------------------------------------------------
+// Enumeration.
+// ---------------------------------------------------------------------------
+
+/// Every attached camera, via an `AVCaptureDeviceDiscoverySession` over
+/// [`LISTED_DEVICE_TYPES`]. The session (not the deprecated
+/// `devicesWithMediaType:`) is the supported listing API on both iOS and
+/// macOS.
+pub(crate) async fn devices() -> Result<Vec<CameraDevice>, CameraError> {
+    // SAFETY: documented AVFoundation calls on the objects they return;
+    // `listed_device_types` hands back live `NSString` constants.
+    unsafe {
+        let types = listed_device_types();
+        let types: Retained<AnyObject> = msg_send_id![
+            class!(NSArray),
+            arrayWithObjects: types.as_ptr(),
+            count: types.len(),
+        ];
+        let media_type = NSString::from_str(AV_MEDIA_TYPE_VIDEO);
+        let discovery: Retained<AnyObject> = msg_send_id![
+            class!(AVCaptureDeviceDiscoverySession),
+            discoverySessionWithDeviceTypes: &*types,
+            mediaType: &*media_type,
+            position: POSITION_UNSPECIFIED,
+        ];
+        let list: Retained<AnyObject> = msg_send_id![&*discovery, devices];
+        let count: usize = msg_send![&*list, count];
+        let mut out = Vec::with_capacity(count);
+        for i in 0..count {
+            let device: Retained<AnyObject> = msg_send_id![&*list, objectAtIndex: i];
+            let id: Retained<NSString> = msg_send_id![&*device, uniqueID];
+            let label: Retained<NSString> = msg_send_id![&*device, localizedName];
+            let position: i64 = msg_send![&*device, position];
+            out.push(CameraDevice {
+                id: id.to_string(),
+                label: label.to_string(),
+                facing: match position {
+                    POSITION_FRONT => DeviceFacing::Front,
+                    POSITION_BACK => DeviceFacing::Back,
+                    _ => DeviceFacing::Unreported,
+                },
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// The `AVCaptureDeviceType` constants from [`LISTED_DEVICE_TYPES`] that the
+/// running OS exports, as `NSString` pointers (process-lifetime constants).
+unsafe fn listed_device_types() -> Vec<*const AnyObject> {
+    let lookup = |name: &std::ffi::CStr| -> Option<*const AnyObject> {
+        // The symbol is an `NSString *const`; dlsym returns its address.
+        let slot = dlsym(RTLD_DEFAULT, name.as_ptr()) as *const *const AnyObject;
+        if slot.is_null() || (*slot).is_null() {
+            None
+        } else {
+            Some(*slot)
+        }
+    };
+    #[allow(unused_mut)]
+    let mut types: Vec<*const AnyObject> = LISTED_DEVICE_TYPES.iter().filter_map(|n| lookup(n)).collect();
+    #[cfg(target_os = "macos")]
+    if lookup(c"AVCaptureDeviceTypeExternal").is_none() {
+        types.extend(lookup(LEGACY_EXTERNAL_TYPE));
+    }
+    types
+}
+
+// ---------------------------------------------------------------------------
 // Open.
 // ---------------------------------------------------------------------------
 
@@ -646,7 +741,10 @@ pub(crate) async fn open(
             let _: () = msg_send![&*session, setSessionPreset: &*preset];
         }
 
-        let device = device_for_facing(config.facing)?;
+        let device = match &config.device {
+            Some(id) => device_with_id(id)?,
+            None => device_for_facing(config.facing)?,
+        };
 
         let input: Option<Retained<AnyObject>> = msg_send_id![
             class!(AVCaptureDeviceInput),
@@ -802,6 +900,15 @@ unsafe fn device_for_facing(facing: CameraFacing) -> Result<Retained<AnyObject>,
             Ok(device)
         }
     }
+}
+
+/// The camera with this `uniqueID` (an id from [`devices`]), or
+/// [`CameraError::NoCamera`] when none is attached.
+unsafe fn device_with_id(id: &str) -> Result<Retained<AnyObject>, CameraError> {
+    let id = NSString::from_str(id);
+    let device: Option<Retained<AnyObject>> =
+        msg_send_id![class!(AVCaptureDevice), deviceWithUniqueID: &*id];
+    device.ok_or(CameraError::NoCamera)
 }
 
 /// Apply an explicit resolution (via `device.activeFormat`) and/or frame

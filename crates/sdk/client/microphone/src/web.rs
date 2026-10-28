@@ -22,7 +22,7 @@ use web_glue::dom::{MediaStream, MediaStreamTrack};
 use web_glue::js::Object;
 use web_glue::{Closure, JsCast, JsError, JsFuture, JsValue};
 
-use crate::{AudioBuffer, AudioStreamConfig, BoxedCallback, MicError};
+use crate::{AudioBuffer, AudioStreamConfig, BoxedCallback, MicDevice, MicError};
 
 /// Number of frames per `onaudioprocess` block. 4096 ≈ 85 ms at 48 kHz —
 /// a balance between callback overhead and latency. Must be a power of two
@@ -40,6 +40,13 @@ web_glue::import! {
     // `mediaDevices.getUserMedia(constraints)` → its Promise.
     #[catch]
     fn js_get_user_media(md: u32, c: u32) -> u32 = "(m, c) => G.add(G.get(m).getUserMedia(G.get(c)))";
+    // `enumerateDevices()` narrowed to audio inputs → a Promise of
+    // `[{ id, label }]`. Chrome adds `default` / `communications` entries that
+    // alias a real input listed separately; they are dropped so each input
+    // appears once, as on every other platform.
+    #[catch]
+    fn js_list_inputs(md: u32) -> u32 =
+        "(m) => G.add(G.get(m).enumerateDevices().then((all) => all            .filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default'              && d.deviceId !== 'communications')            .map((d) => ({ id: d.deviceId, label: d.label }))))";
     // `navigator.permissions.query({ name: 'microphone' })` → its Promise, 0
     // when the Permissions API is absent.
     #[catch]
@@ -140,6 +147,52 @@ pub(crate) async fn request_permission() -> Result<(), MicError> {
     let stream = get_user_media(&AudioStreamConfig::default()).await?;
     stop_tracks(&stream);
     Ok(())
+}
+
+/// The browser's audio inputs. Until the page holds the microphone
+/// permission, `enumerateDevices` hides them — at most one entry, with an
+/// empty id and label — so when it does, [`request_permission`] opens the
+/// default input once to obtain the grant, and the list is read again. With
+/// no input at all there is no hidden entry, and the result is the empty list.
+pub(crate) async fn devices() -> Result<Vec<MicDevice>, MicError> {
+    let mut list = list_inputs().await?;
+    if list.iter().any(|d| d.id.is_empty() || d.label.is_empty()) {
+        request_permission().await?;
+        list = list_inputs().await?;
+    }
+    Ok(list
+        .into_iter()
+        .filter(|d| !d.id.is_empty())
+        .map(|mut d| {
+            if d.label.is_empty() {
+                d.label = "Microphone".into();
+            }
+            d
+        })
+        .collect())
+}
+
+async fn list_inputs() -> Result<Vec<MicDevice>, MicError> {
+    // SAFETY: the result is 0 or a fresh handle.
+    let devices = match unsafe { js_media_devices() } {
+        0 => return Err(MicError::Unsupported),
+        h => unsafe { JsValue::from_raw(h) },
+    };
+    // SAFETY: a live handle; the result is a fresh Promise handle.
+    let promise = unsafe { js_list_inputs(devices.raw()) }
+        .map(|p| unsafe { JsValue::from_raw(p) })
+        .map_err(|e| MicError::Backend(format!("enumerateDevices: {}", err_string(&e))))?;
+    let list = JsFuture::new(&promise)
+        .await
+        .map_err(|e| MicError::Backend(format!("enumerateDevices rejected: {}", err_string(&e))))?;
+    let list: web_glue::js::Array = list.unchecked_into();
+    Ok(list
+        .iter()
+        .map(|d| {
+            let text = |key: &str| d.get(key).ok().and_then(|v| v.as_string()).unwrap_or_default();
+            MicDevice { id: text("id"), label: text("label") }
+        })
+        .collect())
 }
 
 /// `navigator.permissions.query({name:"microphone"})` — the passive status read
@@ -251,9 +304,12 @@ async fn get_user_media(config: &AudioStreamConfig) -> Result<MediaStream, MicEr
 /// or an object carrying explicit `sampleRate` / `channelCount` preferences and
 /// the browser audio-processing flags (`noiseSuppression`, `echoCancellation`,
 /// `autoGainControl`) — each emitted only when the caller set it, so an unset
-/// field leaves the browser default (all three default to `true`).
+/// field leaves the browser default (all three default to `true`). A pinned
+/// input is the one hard constraint (`deviceId: { exact }`): a preference
+/// would let the browser capture from another input when that one is gone.
 fn audio_constraint(config: &AudioStreamConfig) -> JsValue {
-    if config.sample_rate.is_none()
+    if config.device.is_none()
+        && config.sample_rate.is_none()
         && config.channels.is_none()
         && config.noise_suppression.is_none()
         && config.echo_cancellation.is_none()
@@ -262,6 +318,11 @@ fn audio_constraint(config: &AudioStreamConfig) -> JsValue {
         return JsValue::from_bool(true);
     }
     let obj = Object::new();
+    if let Some(id) = &config.device {
+        let exact = Object::new();
+        let _ = exact.set("exact", &JsValue::from_str(id));
+        let _ = obj.set("deviceId", exact.as_js());
+    }
     if let Some(sr) = config.sample_rate {
         let _ = obj.set("sampleRate", &JsValue::from_f64(sr as f64));
     }
@@ -281,7 +342,8 @@ fn audio_constraint(config: &AudioStreamConfig) -> JsValue {
 }
 
 /// Map a rejected `getUserMedia` to a [`MicError`]. The DOMException name
-/// distinguishes a user/policy denial from no device / device busy.
+/// distinguishes a user/policy denial from no device / device busy (a pinned
+/// id no input has fails its `deviceId` constraint: `NoInputDevice`).
 fn map_gum_error(err: JsError) -> MicError {
     let name = err.get("name").ok().and_then(|v| v.as_string()).unwrap_or_default();
     match name.as_str() {

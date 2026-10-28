@@ -17,7 +17,7 @@
 //! dispatch queue. Consumers read via `latest()` / `subscribe` exactly as they
 //! would for a real camera.
 
-use crate::{CameraConfig, CameraError, CameraFacing, NativeSource};
+use crate::{CameraConfig, CameraDevice, CameraError, CameraFacing, DeviceFacing, NativeSource};
 use media_stream::FrameWriter;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -57,6 +57,20 @@ pub(crate) async fn request_permission() -> Result<(), CameraError> {
     Ok(())
 }
 
+/// The two synthetic cameras, a front and a back, like a phone's. Their ids
+/// are what [`open`] accepts as a pinned device.
+const SIM_DEVICES: [(&str, &str, DeviceFacing, CameraFacing); 2] = [
+    ("sim-front", "Simulated front camera", DeviceFacing::Front, CameraFacing::Front),
+    ("sim-back", "Simulated back camera", DeviceFacing::Back, CameraFacing::Back),
+];
+
+pub(crate) async fn devices() -> Result<Vec<CameraDevice>, CameraError> {
+    Ok(SIM_DEVICES
+        .iter()
+        .map(|&(id, label, facing, _)| CameraDevice { id: id.into(), label: label.into(), facing })
+        .collect())
+}
+
 /// Start the synthetic stream. Honors `config` resolution/fps where given
 /// (clamped), defers to a sensible default otherwise — same contract as a real
 /// backend, where the observed `VideoFrame` dimensions are authoritative.
@@ -67,7 +81,16 @@ pub(crate) async fn open(
     let w = config.width.unwrap_or(DEFAULT_W).clamp(16, MAX_DIM);
     let h = config.height.unwrap_or(DEFAULT_H).clamp(16, MAX_DIM);
     let fps = config.fps.unwrap_or(DEFAULT_FPS).clamp(1, 60);
-    let facing = config.facing;
+    // A pinned device picks its synthetic camera; `Camera::open` has already
+    // rejected a pinned device combined with a front/back facing.
+    let facing = match &config.device {
+        Some(id) => SIM_DEVICES
+            .iter()
+            .find(|d| d.0 == id)
+            .map(|d| d.3)
+            .ok_or(CameraError::NoCamera)?,
+        None => config.facing,
+    };
     let period = Duration::from_micros(1_000_000 / fps as u64);
 
     let running = Arc::new(AtomicBool::new(true));

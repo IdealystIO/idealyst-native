@@ -46,11 +46,13 @@ fn config_default_is_device_defaults() {
     let c = AudioStreamConfig::default();
     assert_eq!(c.sample_rate, None);
     assert_eq!(c.channels, None);
+    assert_eq!(c.device, None, "the platform default input unless one is picked");
 }
 
 #[test]
 fn config_builders_compose() {
-    let c = AudioStreamConfig::new().with_sample_rate(16_000).mono();
+    let c = AudioStreamConfig::new().with_sample_rate(16_000).mono().with_device("mic-1");
     assert_eq!(c.sample_rate, Some(16_000));
     assert_eq!(c.channels, Some(1));
+    assert_eq!(c.device.as_deref(), Some("mic-1"));
 }

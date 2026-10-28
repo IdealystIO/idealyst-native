@@ -87,3 +87,42 @@ async fn captures_at_a_requested_rate_the_device_does_not_run() {
     eprintln!("captured {n} frames at 16 kHz in 1 s");
     assert!((8_000..=20_000).contains(&n), "about a second of 16 kHz audio, got {n} frames");
 }
+
+/// Lists the host's inputs and captures from each by its id: every listed id
+/// must open and deliver audio (a picker that offers an input `open` then
+/// refuses is broken), and an id no input has must be `NoInputDevice` rather
+/// than a silent fallback to the default.
+#[tokio::test]
+#[ignore = "requires a real microphone + permission"]
+async fn every_listed_input_captures_by_id() {
+    let mic = Microphone::new();
+    let inputs = match mic.devices().await {
+        Ok(d) => d,
+        Err(MicError::PermissionDenied) => {
+            eprintln!("skip: microphone permission not granted");
+            return;
+        }
+        Err(e) => panic!("devices failed: {e}"),
+    };
+    eprintln!("inputs: {inputs:#?}");
+    for d in &inputs {
+        assert!(!d.id.is_empty() && !d.label.is_empty(), "id and label are never empty: {d:?}");
+        let chunks = Arc::new(AtomicUsize::new(0));
+        let counter = chunks.clone();
+        let stream = mic
+            .open(AudioStreamConfig::new().with_device(&d.id), move |_| {
+                counter.fetch_add(1, Ordering::Relaxed);
+            })
+            .await
+            .unwrap_or_else(|e| panic!("listed input {:?} must open: {e}", d.label));
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while chunks.load(Ordering::Relaxed) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        stream.stop();
+        assert!(chunks.load(Ordering::Relaxed) > 0, "{:?} delivered no audio", d.label);
+    }
+
+    let missing = mic.open(AudioStreamConfig::new().with_device("no-such-input"), |_| {}).await;
+    assert!(matches!(missing, Err(MicError::NoInputDevice)), "an unknown id is NoInputDevice");
+}

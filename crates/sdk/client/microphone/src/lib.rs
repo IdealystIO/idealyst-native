@@ -27,10 +27,28 @@
 //! # }
 //! ```
 //!
+//! # Choosing a microphone
+//!
+//! Capture uses the platform's default input unless you pick one. To let the
+//! user choose, list the inputs with [`Microphone::devices`] and capture from
+//! one by id:
+//!
+//! ```no_run
+//! # async fn demo() -> Result<(), microphone::MicError> {
+//! use microphone::{AudioStreamConfig, Microphone};
+//! let mic = Microphone::new();
+//! let inputs = mic.devices().await?; // [{ id, label }, ..]
+//! let audio = mic.open_stream(AudioStreamConfig::new().with_device(&inputs[0].id)).await?;
+//! # let _ = audio;
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! # Architecture
 //!
 //! The platform-agnostic surface ([`Microphone`], [`MicStream`],
-//! [`AudioBuffer`], [`AudioStreamConfig`], [`MicError`]) lives here.
+//! [`AudioBuffer`], [`AudioStreamConfig`], [`MicDevice`], [`MicError`]) lives
+//! here.
 //! Exactly one cfg-gated backend module is compiled per target and
 //! supplies the `imp` submodule the public API delegates to:
 //!
@@ -60,10 +78,11 @@
 
 mod buffer;
 mod config;
+mod devices;
 mod error;
 
 pub use buffer::AudioBuffer;
-pub use config::AudioStreamConfig;
+pub use config::{AudioStreamConfig, MicDevice};
 pub use error::MicError;
 
 // The live-source surface, re-exported so a microphone user has everything
@@ -203,12 +222,27 @@ impl Microphone {
         imp::permission_status().await
     }
 
+    /// List the audio inputs attached to the device, to let the user pick
+    /// one: pass a [`MicDevice::id`] to [`AudioStreamConfig::with_device`].
+    ///
+    /// Requests microphone permission first, like [`open`](Self::open), on
+    /// every platform: browsers hide inputs (and their names) until it is
+    /// granted, so the list is only complete after the grant. A denial is
+    /// [`MicError::PermissionDenied`]. No input attached is an empty list,
+    /// not an error. Labels are never empty, and repeated names are numbered
+    /// ("USB Audio", "USB Audio 2") so every entry reads differently.
+    pub async fn devices(&self) -> Result<Vec<MicDevice>, MicError> {
+        Ok(devices::number_repeated_labels(imp::devices().await?))
+    }
+
     /// Open a live capture stream. `callback` fires with each chunk of
     /// PCM frames (see [`AudioBuffer`]) until the returned [`MicStream`]
     /// is dropped (or [`stop`](MicStream::stop)ped).
     ///
     /// Requests permission if it hasn't been granted yet, so this can
-    /// surface the OS prompt. The callback runs on the audio thread on
+    /// surface the OS prompt. [`AudioStreamConfig::device`] picks the input
+    /// (from [`devices`](Self::devices)); unset, it is the platform default.
+    /// The callback runs on the audio thread on
     /// native/Android targets and on the main thread on web — keep it
     /// fast and non-blocking; copy samples out rather than processing
     /// heavily in place.

@@ -46,6 +46,30 @@ pub struct AudioStreamConfig {
     /// normally lifts web input to a usable level). Native / Android no-op —
     /// see [`noise_suppression`](Self::noise_suppression).
     pub auto_gain_control: Option<bool>,
+
+    /// A specific microphone to capture from: the [`id`](MicDevice::id) of
+    /// one entry from [`Microphone::devices`](crate::Microphone::devices).
+    /// `None` = the platform's default input. An id no attached microphone
+    /// has is [`MicError::NoInputDevice`](crate::MicError::NoInputDevice) —
+    /// never a silent fallback to the default.
+    pub device: Option<String>,
+}
+
+/// One audio input attached to the device, from
+/// [`Microphone::devices`](crate::Microphone::devices).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MicDevice {
+    /// The platform's identifier for this input. Pass it to
+    /// [`AudioStreamConfig::with_device`] to capture from it. Opaque — its
+    /// format differs per platform (a web `deviceId`, an Android
+    /// `AudioDeviceInfo` id, the CoreAudio / WASAPI / ALSA device name). Web,
+    /// Apple, Windows and Linux ids survive relaunches, so an app can store
+    /// the user's choice; Android reassigns ids when an input reconnects, so
+    /// there a stored id can go stale (opening it is then `NoInputDevice`).
+    pub id: String,
+    /// A human-readable name to show in a picker ("MacBook Pro Microphone",
+    /// "Built-in microphone", "USB headset"). Never empty.
+    pub label: String,
 }
 
 impl AudioStreamConfig {
@@ -90,6 +114,13 @@ impl AudioStreamConfig {
     /// (see [`auto_gain_control`](Self::auto_gain_control)).
     pub fn with_auto_gain_control(mut self, on: bool) -> Self {
         self.auto_gain_control = Some(on);
+        self
+    }
+
+    /// Capture from the input with this [`MicDevice::id`], from
+    /// [`Microphone::devices`](crate::Microphone::devices).
+    pub fn with_device(mut self, id: impl Into<String>) -> Self {
+        self.device = Some(id.into());
         self
     }
 

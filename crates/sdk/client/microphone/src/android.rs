@@ -11,16 +11,20 @@
 //! Init result (granted+initialized / permission-denied / build-failed) is
 //! reported back to the awaiting `open()` over a `futures-channel` oneshot
 //! before the read loop begins.
+//!
+//! Inputs are listed with `AudioManager.getDevices(GET_DEVICES_INPUTS)`, and a
+//! chosen one is applied with `AudioRecord.setPreferredDevice` before
+//! recording starts.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use futures_channel::oneshot;
-use jni::objects::{JObject, JValue};
+use jni::objects::{JObject, JObjectArray, JString, JValue};
 use jni::JavaVM;
 
-use crate::{AudioBuffer, AudioStreamConfig, BoxedCallback, MicError};
+use crate::{AudioBuffer, AudioStreamConfig, BoxedCallback, MicDevice, MicError};
 
 // android.media / AudioFormat constants (stable platform values).
 const AUDIO_SOURCE_MIC: i32 = 1; // MediaRecorder.AudioSource.MIC
@@ -30,6 +34,7 @@ const ENCODING_PCM_16BIT: i32 = 2; // AudioFormat.ENCODING_PCM_16BIT
 const STATE_INITIALIZED: i32 = 1; // AudioRecord.STATE_INITIALIZED
 const PERMISSION_GRANTED: i32 = 0; // PackageManager.PERMISSION_GRANTED
 const RECORD_AUDIO: &str = "android.permission.RECORD_AUDIO";
+const GET_DEVICES_INPUTS: i32 = 1; // AudioManager.GET_DEVICES_INPUTS
 
 /// Default capture rate when the caller doesn't pin one. 44.1 kHz is the
 /// one rate every Android device is guaranteed to support for input.
@@ -101,6 +106,72 @@ pub(crate) async fn permission_status() -> crate::MicPermission {
     }
 }
 
+/// Every input a microphone app can record from (see
+/// [`crate::devices::android_input_label`]), after the permission grant.
+pub(crate) async fn devices() -> Result<Vec<MicDevice>, MicError> {
+    request_permission().await?;
+    let vm = java_vm()?;
+    let mut env = vm.attach_current_thread().map_err(map_jni)?;
+    let ctx = ndk_context::android_context();
+    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+    Ok(recordable_inputs(&mut env, &activity)?
+        .into_iter()
+        .map(|(id, label, _)| MicDevice { id: id.to_string(), label })
+        .collect())
+}
+
+/// `(id, label, AudioDeviceInfo)` for each recordable input, in
+/// `getDevices` order.
+fn recordable_inputs<'a>(
+    env: &mut jni::JNIEnv<'a>,
+    activity: &JObject<'_>,
+) -> Result<Vec<(i32, String, JObject<'a>)>, MicError> {
+    let service = env.new_string("audio").map_err(map_jni)?;
+    let manager = env
+        .call_method(
+            activity,
+            "getSystemService",
+            "(Ljava/lang/String;)Ljava/lang/Object;",
+            &[JValue::Object(&JObject::from(service))],
+        )
+        .and_then(|v| v.l())
+        .map_err(map_jni)?;
+    let infos = env
+        .call_method(
+            &manager,
+            "getDevices",
+            "(I)[Landroid/media/AudioDeviceInfo;",
+            &[JValue::Int(GET_DEVICES_INPUTS)],
+        )
+        .and_then(|v| v.l())
+        .map_err(map_jni)?;
+    let infos = JObjectArray::from(infos);
+    let len = env.get_array_length(&infos).map_err(map_jni)?;
+    let mut out = Vec::new();
+    for i in 0..len {
+        let info = env.get_object_array_element(&infos, i).map_err(map_jni)?;
+        let id = env.call_method(&info, "getId", "()I", &[]).and_then(|v| v.i()).map_err(map_jni)?;
+        let kind = env.call_method(&info, "getType", "()I", &[]).and_then(|v| v.i()).map_err(map_jni)?;
+        let product = env
+            .call_method(&info, "getProductName", "()Ljava/lang/CharSequence;", &[])
+            .and_then(|v| v.l())
+            .map_err(map_jni)?;
+        let product = if product.is_null() {
+            String::new()
+        } else {
+            let text = env
+                .call_method(&product, "toString", "()Ljava/lang/String;", &[])
+                .and_then(|v| v.l())
+                .map_err(map_jni)?;
+            String::from(env.get_string(&JString::from(text)).map_err(map_jni)?)
+        };
+        if let Some(label) = crate::devices::android_input_label(kind, &product) {
+            out.push((id, label, info));
+        }
+    }
+    Ok(out)
+}
+
 pub(crate) async fn open(
     config: AudioStreamConfig,
     callback: BoxedCallback,
@@ -165,6 +236,25 @@ fn reader_thread(
         }
     }
 
+    // A pinned input must be one `devices()` lists; one that's gone (an id
+    // goes stale when the input reconnects) is `NoInputDevice`.
+    let preferred = match &config.device {
+        None => None,
+        Some(id) => match recordable_inputs(&mut env, &activity) {
+            Ok(inputs) => match inputs.into_iter().find(|(i, _, _)| i.to_string() == *id) {
+                Some((_, _, info)) => Some(info),
+                None => {
+                    let _ = init_tx.send(Err(MicError::NoInputDevice));
+                    return;
+                }
+            },
+            Err(e) => {
+                let _ = init_tx.send(Err(e));
+                return;
+            }
+        },
+    };
+
     let sample_rate = config.sample_rate.unwrap_or(DEFAULT_SAMPLE_RATE);
     let channels = config.channels.unwrap_or(1).max(1);
     let channel_config = if channels >= 2 {
@@ -173,7 +263,7 @@ fn reader_thread(
         CHANNEL_IN_MONO
     };
 
-    let record = match build_audio_record(&mut env, sample_rate, channels, channel_config) {
+    let record = match build_audio_record(&mut env, sample_rate, channels, channel_config, preferred.as_ref()) {
         Ok((record, frames_per_read)) => {
             let _ = init_tx.send(Ok(()));
             (record, frames_per_read)
@@ -261,14 +351,15 @@ fn check_self_permission(
     Ok(result == PERMISSION_GRANTED)
 }
 
-/// Build, validate, and start an `AudioRecord`. Returns it alongside the
-/// per-read length in shorts. Errors map device rejections to
-/// [`MicError::UnsupportedConfig`].
+/// Build, validate, and start an `AudioRecord`, routed to `preferred` (an
+/// `AudioDeviceInfo`) when given. Returns it alongside the per-read length in
+/// shorts. Errors map device rejections to [`MicError::UnsupportedConfig`].
 fn build_audio_record<'a>(
     env: &mut jni::JNIEnv<'a>,
     sample_rate: u32,
     channels: u16,
     channel_config: i32,
+    preferred: Option<&JObject<'_>>,
 ) -> Result<(JObject<'a>, usize), MicError> {
     // int minBytes = AudioRecord.getMinBufferSize(rate, chanCfg, fmt);
     let min_bytes = env
@@ -321,6 +412,23 @@ fn build_audio_record<'a>(
         return Err(MicError::UnsupportedConfig(format!(
             "AudioRecord did not initialize (state={state}) for rate={sample_rate} channels={channels}"
         )));
+    }
+
+    // Routing must be set before recording starts.
+    if let Some(info) = preferred {
+        let routed = env
+            .call_method(
+                &record,
+                "setPreferredDevice",
+                "(Landroid/media/AudioDeviceInfo;)Z",
+                &[JValue::Object(info)],
+            )
+            .and_then(|v| v.z())
+            .map_err(map_jni)?;
+        if !routed {
+            let _ = env.call_method(&record, "release", "()V", &[]);
+            return Err(MicError::NoInputDevice);
+        }
     }
 
     env.call_method(&record, "startRecording", "()V", &[])

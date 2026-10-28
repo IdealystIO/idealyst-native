@@ -78,9 +78,32 @@ object RustCamera2Helper {
 
     private val sessions = ConcurrentHashMap<Long, Session>()
 
+    /**
+     * Every camera, flattened as `[id0, lensFacing0, id1, lensFacing1, …]`
+     * where `lensFacing` is `CameraCharacteristics.LENS_FACING` as a decimal
+     * string (`-1` when unreported). Rust's `devices()` builds the list from
+     * it. Needs no permission and no looper, so it runs on the caller's thread.
+     */
+    @JvmStatic
+    fun listCameras(context: Context): Array<String> {
+        val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val out = ArrayList<String>()
+        for (id in manager.cameraIdList) {
+            val lens = manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING)
+            out.add(id)
+            out.add((lens ?: -1).toString())
+        }
+        return out.toTypedArray()
+    }
+
+    /**
+     * Open [cameraId] when non-null (an id from [listCameras]); otherwise the
+     * camera [facing] resolves to.
+     */
     @JvmStatic
     fun open(
         context: Context,
+        cameraId: String?,
         facing: Int,
         width: Int,
         height: Int,
@@ -89,7 +112,7 @@ object RustCamera2Helper {
     ) {
         Handler(Looper.getMainLooper()).post {
             try {
-                start(context, facing, width, height, fps, token)
+                start(context, cameraId, facing, width, height, fps, token)
             } catch (t: Throwable) {
                 cleanup(token)
                 nativeError(token, ERR_EXCEPTION, t.message ?: t.toString())
@@ -104,6 +127,7 @@ object RustCamera2Helper {
 
     private fun start(
         context: Context,
+        requestedId: String?,
         facing: Int,
         width: Int,
         height: Int,
@@ -111,9 +135,13 @@ object RustCamera2Helper {
         token: Long,
     ) {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val cameraId = pickCameraId(manager, facing)
+        val cameraId = if (requestedId != null) {
+            requestedId.takeIf { it in manager.cameraIdList }
+        } else {
+            pickCameraId(manager, facing)
+        }
         if (cameraId == null) {
-            nativeError(token, ERR_NO_CAMERA, "no camera matching facing=$facing")
+            nativeError(token, ERR_NO_CAMERA, "no camera ${requestedId ?: "matching facing=$facing"}")
             return
         }
 

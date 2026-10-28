@@ -154,3 +154,28 @@ async fn regression_camera_teardown_cancels_its_frame_under_a_fake_clock() {
     assert_eq!(pending, Some(0.0), "dropping the stream must cancel the pump's queued frame");
     assert_eq!(errors, "", "no frame may fire into the dropped pump");
 }
+
+/// Device selection on web: `devices()` must list the fake camera with a real
+/// id and label (browsers hide both until the permission is granted, so the
+/// backend obtains it first), every listed id must open, and an id no camera
+/// has must be `NoCamera`, as on every other backend.
+#[wasm_bindgen_test]
+async fn web_lists_cameras_and_opens_each_by_id() {
+    let cam = Camera::new();
+    let devices = cam.devices().await.expect("devices lists");
+    assert!(!devices.is_empty(), "the fake camera is listed");
+    for d in &devices {
+        assert!(!d.id.is_empty() && !d.label.is_empty(), "id and label are filled in: {d:?}");
+        let stream = cam
+            .open(CameraConfig::new().with_device(&d.id))
+            .await
+            .unwrap_or_else(|e| panic!("listed camera {:?} must open: {e}", d.label));
+        drop(stream);
+    }
+    let missing = cam.open(CameraConfig::new().with_device("no-such-camera")).await;
+    assert!(
+        matches!(missing, Err(CameraError::NoCamera)),
+        "an unknown id is NoCamera, got {:?}",
+        missing.as_ref().map(|_| "an open stream")
+    );
+}

@@ -51,7 +51,7 @@ everywhere:
 | Android | `Camera2` + `ImageReader` (via a Kotlin shim) | `YUV_420_888` → `RGBA8` |
 | Web (wasm32) | `getUserMedia` + a `<video>`/`<canvas>` frame pump | canvas `RGBA8` |
 | desktop Linux | GStreamer **V4L2** (`v4l2src ! videoconvert ! appsink`) | device layout → `RGBA8` |
-| desktop Windows | Media Foundation: `MFEnumDeviceSources` + an `IMFSourceReader` with video processing, on a capture thread (the first camera for every facing) | `RGB32` (BGRX, row order per stride) → `RGBA8` |
+| desktop Windows | Media Foundation: `MFEnumDeviceSources` + an `IMFSourceReader` with video processing, on a capture thread | `RGB32` (BGRX, row order per stride) → `RGBA8` |
 
 **iOS Simulator note:** the iOS Simulator has no camera hardware
 (`AVCaptureSession` finds no device), so on the simulator `Camera::open` returns
@@ -214,6 +214,58 @@ On Apple, an explicit resolution is honoured by selecting a matching
 matches a `Camera2` output size; on web it's passed as a `getUserMedia`
 constraint.
 
+## Choosing a camera
+
+`front()` / `back()` pick by facing. To let the user choose among every
+attached camera — two webcams on a desktop, a monitor's built-in camera, the
+ultra-wide on a phone — list them with [`Camera::devices`] and open one by id:
+
+```rust
+use camera::{Camera, CameraConfig};
+
+# async fn demo() -> Result<(), camera::CameraError> {
+let cam = Camera::new();
+for d in cam.devices().await? {
+    println!("{} ({:?})", d.label, d.facing); // "FaceTime HD Camera (Unreported)"
+}
+let first = &cam.devices().await?[0];
+let stream = cam.open(CameraConfig::new().with_device(&first.id)).await?;
+# let _ = stream;
+# Ok(())
+# }
+```
+
+Each [`CameraDevice`] carries:
+
+- `id` — opaque, and stable across launches, so an app can store the user's
+  choice: an `AVCaptureDevice.uniqueID` on Apple, a Camera2 id on Android, a
+  `deviceId` on web (per origin), the `/dev/videoN` path on Linux, the Media
+  Foundation symbolic link on Windows.
+- `label` — never empty. Android names no cameras, so there it is built from
+  the facing ("Back camera"). Repeated names are numbered ("USB Camera",
+  "USB Camera 2") on every platform.
+- `facing` — `Front`, `Back`, or `Unreported` (desktop and USB webcams, every
+  V4L2 and Media Foundation device).
+
+The rules are the same on every backend:
+
+- `devices()` requests camera permission first, like `open()`: browsers hide
+  cameras and their names until it is granted (the web backend opens the
+  default camera once to obtain it, then stops it). A denial is
+  `PermissionDenied`; no camera attached is an empty list.
+- An id no attached camera has is `NoCamera` — never a fallback to another
+  camera.
+- A pinned device together with `front()` / `back()` is `UnsupportedConfig`:
+  the device already decides the facing.
+
+What each platform lists: Apple — the physical cameras from an
+`AVCaptureDeviceDiscoverySession` (wide, ultra-wide, telephoto, TrueDepth,
+Continuity and external cameras, whichever the running OS knows; the virtual
+Dual/Triple devices front the same lenses and are left out); Android — every
+Camera2 id; web — `enumerateDevices()` video inputs; Linux — GStreamer's
+`Video/Source` devices; Windows — `MFEnumDeviceSources`; iOS Simulator — a
+synthetic front and back camera.
+
 ## Tests
 
 - `tests/portable.rs` — frame size math + config builders; runs anywhere.
@@ -239,8 +291,8 @@ constraint.
   a host with a camera. V4L2 access is filesystem-permission-based (the user
   must read `/dev/videoN`, usually via the `video` group) — there is no OS
   prompt. V4L2 exposes no front/back facing metadata, so a camera there
-  counts as user-facing: `Default` and `Front` open the primary video source,
-  and `Back` is `NoCamera` (as on a Mac, and as on web for a webcam that
+  counts as user-facing: `Default` and `Front` open the primary video source
+  (a pinned device id opens that one), and `Back` is `NoCamera` (as on a Mac, and as on web for a webcam that
   reports no facing). The PipeWire/xdg-desktop-portal path
   (`pipewiresrc`) is a **documented follow-on** — it needs the
   `gst-plugin-pipewire` GStreamer plugin and slots in as an alternate source
@@ -263,6 +315,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] **iOS** — on a **device**, permission prompt with the app's reason; preview shows live frames at the requested resolution; preview AND `latest()` RGBA frames are upright in all four interface orientations on an iPhone and an iPad, and re-orient on rotation; the front camera is unmirrored (matches web); front/back switch works; deny → `PermissionDenied`. On the **Simulator** the synthetic gradient/bouncing-ball stream renders (no hardware). ⚠️ device path not yet re-confirmed since permission moved to the `permissions` SDK — verify the prompt still appears.
 - [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: permission prompt fires (delegated to `permissions`; host must forward `onRequestPermissionsResult`); `open()` yields RGBA8 frames after grant; frames are upright in all four display rotations (front and back, unmirrored) and re-orient on rotation, including 180° flips; deny → `PermissionDenied`.
 - [ ] **macOS** — hardware-verified against the built-in camera (`host_capture`); confirm the prompt still appears now that the grant routes through the `permissions` SDK.
+- [ ] **Device selection** — `devices()` lists every attached camera with a non-empty id and label, and each opens by id; an unknown id is `NoCamera`. macOS hardware-verified (`every_listed_camera_opens_by_id`: built-in + a monitor's camera); Linux verified in a camera-less container (empty list, unknown id); web covered by `web_lists_cameras_and_opens_each_by_id`; iOS, Android and Windows compile-checked only.
 - [ ] **desktop Linux** — synthetic-frame verified headless (`videotestsrc_delivers_mapped_rgba_frame`); on a host with a webcam run `cargo test -p camera imp::tests::live_v4l2 -- --ignored --nocapture` (needs read access to `/dev/videoN`) and confirm real RGBA8 frames arrive.
 
 **Permissions**
@@ -278,5 +331,7 @@ verification note above). Tick each item as you exercise it.
 [`native_source`]: ../media-stream/src/lib.rs
 [`CameraConfig`]: src/config.rs
 [`CameraFacing`]: src/config.rs
+[`CameraDevice`]: src/config.rs
+[`Camera::devices`]: src/lib.rs
 [`Camera::request_permission`]: src/lib.rs
 [`Camera::open`]: src/lib.rs

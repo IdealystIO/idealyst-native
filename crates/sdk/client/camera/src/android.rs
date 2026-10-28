@@ -39,11 +39,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use futures_channel::oneshot;
-use jni::objects::{JByteBuffer, JClass, JObject, JString, JValue};
+use jni::objects::{JByteBuffer, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jboolean, jint, jlong, JNI_FALSE};
 use jni::{JNIEnv, JavaVM};
 
-use crate::{CameraConfig, CameraError, CameraFacing, NativeSource};
+use crate::{CameraConfig, CameraDevice, CameraError, CameraFacing, NativeSource};
 use media_stream::FrameWriter;
 
 // CameraConfig::facing as the int the Kotlin shim understands.
@@ -112,6 +112,31 @@ pub(crate) async fn request_permission() -> Result<(), CameraError> {
     }
 }
 
+/// Every Camera2 camera, from the shim's `listCameras` (`[id, lensFacing, …]`).
+/// Camera2 names no cameras, so each label comes from its facing.
+pub(crate) async fn devices() -> Result<Vec<CameraDevice>, CameraError> {
+    let vm = java_vm()?;
+    let mut env = vm.attach_current_thread().map_err(jni_err)?;
+    let activity = android_context();
+    let flat = env
+        .call_static_method(
+            "io/idealyst/camera/RustCamera2Helper",
+            "listCameras",
+            "(Landroid/content/Context;)[Ljava/lang/String;",
+            &[JValue::Object(&activity)],
+        )
+        .and_then(|v| v.l())
+        .map_err(jni_err)?;
+    let flat = JObjectArray::from(flat);
+    let len = env.get_array_length(&flat).map_err(jni_err)?;
+    let mut strings = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        let item = JString::from(env.get_object_array_element(&flat, i).map_err(jni_err)?);
+        strings.push(String::from(env.get_string(&item).map_err(jni_err)?));
+    }
+    Ok(crate::devices::from_camera2_list(&strings))
+}
+
 pub(crate) async fn open(
     config: CameraConfig,
     writer: FrameWriter,
@@ -137,14 +162,21 @@ pub(crate) async fn open(
         CameraFacing::Front => FACING_FRONT,
         CameraFacing::Back => FACING_BACK,
     };
+    // A pinned camera id (null when unset): the shim reports one it doesn't
+    // have as "no camera".
+    let camera_id = match &config.device {
+        Some(id) => JObject::from(env.new_string(id).map_err(jni_err)?),
+        None => JObject::null(),
+    };
     // 0 = "device default" for width/height/fps; the shim picks a supported
     // size/rate when a dimension is 0.
     let launch = env.call_static_method(
         "io/idealyst/camera/RustCamera2Helper",
         "open",
-        "(Landroid/content/Context;IIIIJ)V",
+        "(Landroid/content/Context;Ljava/lang/String;IIIIJ)V",
         &[
             JValue::Object(&activity),
+            JValue::Object(&camera_id),
             JValue::Int(facing),
             JValue::Int(config.width.unwrap_or(0) as jint),
             JValue::Int(config.height.unwrap_or(0) as jint),

@@ -9,7 +9,7 @@
 //! same `request_permission` / `open` / `StreamHandle` contract the other
 //! backends satisfy.
 
-use crate::{CameraConfig, CameraError, NativeSource};
+use crate::{CameraConfig, CameraDevice, CameraError, NativeSource};
 use media_stream::FrameWriter;
 
 /// No resources are held; the type exists only to satisfy the `imp`
@@ -19,6 +19,10 @@ pub(crate) struct StreamHandle {
 }
 
 pub(crate) async fn request_permission() -> Result<(), CameraError> {
+    Err(CameraError::Unsupported)
+}
+
+pub(crate) async fn devices() -> Result<Vec<CameraDevice>, CameraError> {
     Err(CameraError::Unsupported)
 }
 

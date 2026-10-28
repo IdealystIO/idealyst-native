@@ -137,11 +137,53 @@ let _ = AudioStreamConfig::new().mono();                 // force 1 channel
 let _ = AudioStreamConfig::new().with_sample_rate(16_000).mono();
 ```
 
+## Choosing a microphone
+
+Capture uses the platform's default input unless you pick one. To let the
+user choose — a USB headset, a Bluetooth headset, a monitor's microphone —
+list the inputs with [`Microphone::devices`] and capture from one by id:
+
+```rust
+use microphone::{AudioStreamConfig, Microphone};
+
+# async fn demo() -> Result<(), microphone::MicError> {
+let mic = Microphone::new();
+let inputs = mic.devices().await?; // [{ id, label }, ..]
+let audio = mic.open_stream(AudioStreamConfig::new().with_device(&inputs[0].id)).await?;
+# let _ = audio;
+# Ok(())
+# }
+```
+
+Each [`MicDevice`] carries an opaque `id` and a `label` that is never empty
+(repeated names are numbered: "USB Audio", "USB Audio 2"). What each platform
+lists, and what the id is:
+
+| Target | Inputs | `id` |
+| --- | --- | --- |
+| macOS / iOS / Windows / Linux | cpal's inputs on the default host (CoreAudio / WASAPI / ALSA) | the device name, with `#2`, `#3`… on a repeated name |
+| Web | `enumerateDevices()` audio inputs, without Chrome's `default` / `communications` aliases | the `deviceId` (per origin) |
+| Android | `AudioManager.getDevices(GET_DEVICES_INPUTS)`, minus inputs a microphone can't record from (telephony uplink, tuners, remote submix) | the `AudioDeviceInfo` id, applied with `AudioRecord.setPreferredDevice` |
+
+Ids survive relaunches everywhere except Android, which reassigns them when an
+input reconnects — a stored Android id can go stale. On Android, built-in and
+wired inputs are named by kind ("Built-in microphone", "Wired headset") because
+their product name is the phone's model; Bluetooth and USB inputs use the
+accessory's name.
+
+The rules are the same on every backend:
+
+- `devices()` requests microphone permission first, like `open()`: browsers
+  hide inputs and their names until it is granted. A denial is
+  `PermissionDenied`; no input attached is an empty list.
+- An id no attached input has is `NoInputDevice` — never a fallback to the
+  default input.
+
 ## Tests
 
 - `tests/portable.rs` — framing math + config builders; runs anywhere.
 - `tests/host_capture.rs` — opens the host's default device and asserts
-  the callback fires. `#[ignore]`d (needs real hardware + permission); run
+  the callback fires, and captures from every listed input by id. `#[ignore]`d (needs real hardware + permission); run
   it with:
 
   ```text
@@ -167,12 +209,16 @@ verification note above). Tick each item as you exercise it.
 - [x] **Windows** — `host_capture` on a Windows 11 VM (WASAPI, the "Line In" device): 47 chunks / 21 056 frames in 500 ms. Windows asks for microphone access the first time (the VM rebooted to apply it).
 - [ ] **macOS** — host-verified via `host_capture`: capturing yields non-silent PCM at the configured rate/channels; confirm the prompt still appears now that the grant routes through the `permissions` SDK.
 
+- [ ] **Device selection** — `devices()` lists every input with a non-empty id and label, and each captures by id; an unknown id is `NoInputDevice`. macOS hardware-verified (`every_listed_input_captures_by_id`: built-in, a monitor's and a virtual input); web covered by `web_lists_inputs_and_captures_from_each_by_id`; iOS, Android, Windows and Linux compile-checked only.
+
 **Permissions**
 - [ ] Permission prompt still surfaces (grant flow now delegated to the `permissions` SDK); the build-injected `NSMicrophoneUsageDescription` / `RECORD_AUDIO` carries the app's configured reason.
 
 [`cpal`]: https://crates.io/crates/cpal
 [`AudioBuffer`]: src/buffer.rs
 [`AudioStreamConfig`]: src/config.rs
+[`MicDevice`]: src/config.rs
+[`Microphone::devices`]: src/lib.rs
 [`AudioCallback`]: src/lib.rs
 [`Microphone::request_permission`]: src/lib.rs
 [`Microphone::open`]: src/lib.rs

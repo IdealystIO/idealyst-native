@@ -26,7 +26,7 @@ use web_glue::js::Object;
 use web_glue::{Closure, JsCast, JsError, JsFuture, JsValue};
 
 use crate::facing::{satisfies, ObservedFacing};
-use crate::{CameraConfig, CameraError, CameraFacing, NativeSource};
+use crate::{CameraConfig, CameraDevice, CameraError, CameraFacing, DeviceFacing, NativeSource};
 use media_stream::FrameWriter;
 
 web_glue::import! {
@@ -53,6 +53,13 @@ web_glue::import! {
            const f = t && t.getSettings ? t.getSettings().facingMode : ''; \
            if (typeof f !== 'string' || f === '') return 0; \
            return f === 'user' ? 1 : f === 'environment' ? 2 : 3; }";
+    // `enumerateDevices()` narrowed to cameras → a Promise of
+    // `[{ id, label, facing }]`. `facing` is the `js_track_facing` code, read
+    // from `InputDeviceInfo.getCapabilities()` where the engine has it (not
+    // Firefox): 0 when nothing is reported.
+    #[catch]
+    fn js_list_cameras(md: u32) -> u32 =
+        "(m) => G.add(G.get(m).enumerateDevices().then((all) => all            .filter((d) => d.kind === 'videoinput').map((d) => { let f = 0;              try { const c = d.getCapabilities ? d.getCapabilities() : null;                const fm = c && Array.isArray(c.facingMode) ? c.facingMode : [];                f = fm.includes('user') ? 1 : fm.includes('environment') ? 2 : fm.length ? 3 : 0; }              catch (_) {}              return { id: d.deviceId, label: d.label, facing: f }; })))";
     fn js_video_width(v: u32) -> u32 = "(v) => G.get(v).videoWidth >>> 0";
     fn js_video_height(v: u32) -> u32 = "(v) => G.get(v).videoHeight >>> 0";
     // Detach the source.
@@ -131,6 +138,62 @@ pub(crate) async fn request_permission() -> Result<(), CameraError> {
     } else {
         Ok(())
     }
+}
+
+/// The browser's cameras. Until the page holds the camera permission,
+/// `enumerateDevices` hides them — at most one entry, with an empty id and
+/// label — so when it does, open the default camera once to obtain the grant
+/// (stopping it straight away), then list again. With no camera at all there
+/// is no hidden entry, and the result is the empty list.
+pub(crate) async fn devices() -> Result<Vec<CameraDevice>, CameraError> {
+    let mut list = list_cameras().await?;
+    if list.iter().any(|d| d.id.is_empty() || d.label.is_empty()) {
+        let grant = get_user_media(&CameraConfig::default()).await?;
+        stop_tracks(&grant);
+        list = list_cameras().await?;
+    }
+    Ok(list
+        .into_iter()
+        .filter(|d| !d.id.is_empty())
+        .map(|mut d| {
+            if d.label.is_empty() {
+                d.label = crate::devices::unnamed_label(d.facing).into();
+            }
+            d
+        })
+        .collect())
+}
+
+async fn list_cameras() -> Result<Vec<CameraDevice>, CameraError> {
+    // SAFETY: the result is 0 or a fresh handle.
+    let devices = match unsafe { js_media_devices() } {
+        0 => return Err(CameraError::Unsupported),
+        h => unsafe { JsValue::from_raw(h) },
+    };
+    // SAFETY: a live handle; the result is a fresh Promise handle.
+    let promise = unsafe { js_list_cameras(devices.raw()) }
+        .map(|p| unsafe { JsValue::from_raw(p) })
+        .map_err(|e| CameraError::Backend(format!("enumerateDevices: {}", err_string(&e))))?;
+    let list = JsFuture::new(&promise)
+        .await
+        .map_err(|e| CameraError::Backend(format!("enumerateDevices rejected: {}", err_string(&e))))?;
+    let list: web_glue::js::Array = list.unchecked_into();
+    Ok(list
+        .iter()
+        .map(|d| {
+            let text = |key: &str| d.get(key).ok().and_then(|v| v.as_string()).unwrap_or_default();
+            let code = d.get("facing").ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u32;
+            CameraDevice {
+                id: text("id"),
+                label: text("label"),
+                facing: match ObservedFacing::from_web_code(code) {
+                    ObservedFacing::User => DeviceFacing::Front,
+                    ObservedFacing::Environment => DeviceFacing::Back,
+                    ObservedFacing::Other | ObservedFacing::Unreported => DeviceFacing::Unreported,
+                },
+            }
+        })
+        .collect())
 }
 
 pub(crate) async fn open(
@@ -242,7 +305,7 @@ async fn get_user_media(config: &CameraConfig) -> Result<MediaStream, CameraErro
         .map(|p| unsafe { JsValue::from_raw(p) })
         .map_err(|e| CameraError::Backend(format!("getUserMedia: {}", err_string(&e))))?;
 
-    let value = JsFuture::new(&promise).await.map_err(map_gum_error)?;
+    let value = JsFuture::new(&promise).await.map_err(|e| map_gum_error(e, config))?;
     let stream = value
         .dyn_into::<MediaStream>()
         .map_err(|_| CameraError::Backend("getUserMedia did not return a MediaStream".into()))?;
@@ -264,7 +327,9 @@ async fn get_user_media(config: &CameraConfig) -> Result<MediaStream, CameraErro
 
 /// Build the `video` member of the constraints. `true` for device defaults,
 /// or an object carrying explicit `width`/`height`/`frameRate`/`facingMode`
-/// the browser treats as preferences.
+/// the browser treats as preferences. A pinned device is the one hard
+/// constraint (`deviceId: { exact }`): a preference would let the browser
+/// open a different camera when that one is gone.
 fn video_constraint(config: &CameraConfig) -> JsValue {
     let facing = match config.facing {
         CameraFacing::Default => None,
@@ -275,10 +340,16 @@ fn video_constraint(config: &CameraConfig) -> JsValue {
         && config.height.is_none()
         && config.fps.is_none()
         && facing.is_none()
+        && config.device.is_none()
     {
         return JsValue::from_bool(true);
     }
     let obj = Object::new();
+    if let Some(id) = &config.device {
+        let exact = Object::new();
+        let _ = exact.set("exact", &JsValue::from_str(id));
+        let _ = obj.set("deviceId", exact.as_js());
+    }
     if let Some(w) = config.width {
         let _ = obj.set("width", &JsValue::from_f64(w as f64));
     }
@@ -295,10 +366,16 @@ fn video_constraint(config: &CameraConfig) -> JsValue {
 }
 
 /// Map a rejected `getUserMedia` to a [`CameraError`]. The DOMException name
-/// distinguishes a user/policy denial from no device / over-constrained.
-fn map_gum_error(err: JsError) -> CameraError {
+/// distinguishes a user/policy denial from no device / over-constrained. A
+/// pinned device id no camera has fails its `deviceId` constraint, which is
+/// [`CameraError::NoCamera`], as on every other backend.
+fn map_gum_error(err: JsError, config: &CameraConfig) -> CameraError {
     let name = err.get("name").ok().and_then(|v| v.as_string()).unwrap_or_default();
+    let constraint = err.get("constraint").ok().and_then(|v| v.as_string()).unwrap_or_default();
     match name.as_str() {
+        "OverconstrainedError" if config.device.is_some() && constraint == "deviceId" => {
+            CameraError::NoCamera
+        }
         "NotAllowedError" | "SecurityError" | "PermissionDeniedError" => {
             CameraError::PermissionDenied
         }

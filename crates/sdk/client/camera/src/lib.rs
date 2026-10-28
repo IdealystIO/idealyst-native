@@ -31,10 +31,27 @@
 //! # }
 //! ```
 //!
+//! # Choosing a camera
+//!
+//! [`CameraConfig::front`] / [`back`](CameraConfig::back) pick by facing.
+//! To let the user choose among every attached camera, list them with
+//! [`Camera::devices`] and open one by id:
+//!
+//! ```no_run
+//! # async fn demo() -> Result<(), camera::CameraError> {
+//! let cam = camera::Camera::new();
+//! let devices = cam.devices().await?; // [{ id, label, facing }, ..]
+//! let picked = &devices[0];
+//! let stream = cam.open(camera::CameraConfig::new().with_device(&picked.id)).await?;
+//! # let _ = stream;
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! # Architecture
 //!
 //! The platform-agnostic surface ([`Camera`], [`CameraConfig`],
-//! [`CameraFacing`], [`CameraError`]) lives here; the live-source surface
+//! [`CameraFacing`], [`CameraDevice`], [`CameraError`]) lives here; the live-source surface
 //! ([`MediaStream`], [`VideoFrame`], …) is re-exported from `media-stream`.
 //! Exactly one cfg-gated backend module is compiled per target; each pushes
 //! frames into a [`FrameWriter`](media_stream::FrameWriter):
@@ -70,6 +87,7 @@
 #![deny(missing_docs)]
 
 mod config;
+mod devices;
 mod error;
 // Requested vs. observed facing: the check web and desktop Linux run on the
 // camera they opened (iOS/macOS/Android resolve facing from lens metadata).
@@ -88,7 +106,7 @@ mod orientation;
 #[cfg(any(test, all(target_os = "android", not(target_arch = "wasm32"))))]
 mod android_rotation;
 
-pub use config::{CameraConfig, CameraFacing};
+pub use config::{CameraConfig, CameraDevice, CameraFacing, DeviceFacing};
 pub use error::CameraError;
 
 // The live-source surface is the shared `media-stream` vocabulary. Re-export
@@ -102,8 +120,8 @@ pub(crate) type NativeSource = std::rc::Rc<dyn std::any::Any>;
 
 // ---------------------------------------------------------------------------
 // Backend selector. Exactly one compiles per target; each supplies an `imp`
-// module with `request_permission()`, `open(config, FrameWriter)`, and a
-// `StreamHandle` whose `Drop` stops capture.
+// module with `request_permission()`, `devices()`, `open(config,
+// FrameWriter)`, and a `StreamHandle` whose `Drop` stops capture.
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
@@ -178,13 +196,34 @@ impl Camera {
         imp::request_permission().await
     }
 
+    /// List the cameras attached to the device, to let the user pick one:
+    /// pass a [`CameraDevice::id`] to [`CameraConfig::with_device`].
+    ///
+    /// Requests camera permission first, like [`open`](Camera::open), on
+    /// every platform: browsers hide cameras (and their names) until it is
+    /// granted, so the list is only complete after the grant. A denial is
+    /// [`CameraError::PermissionDenied`]. No camera attached is an empty list,
+    /// not an error. Labels are never empty, and repeated names are numbered
+    /// ("USB Camera", "USB Camera 2") so every entry reads differently.
+    pub async fn devices(&self) -> Result<Vec<CameraDevice>, CameraError> {
+        imp::request_permission().await?;
+        Ok(devices::number_repeated_labels(imp::devices().await?))
+    }
+
     /// Open the camera and return a live [`MediaStream`]. Capture runs while
     /// any clone of the stream is alive; dropping the last one stops it.
     ///
     /// Requests permission if needed (can surface the OS prompt). Tap frames
     /// with [`MediaStream::subscribe`] / [`MediaStream::latest`], or hand the
     /// stream to a display / compositing consumer.
+    ///
+    /// [`CameraConfig::device`] opens one specific camera (from
+    /// [`devices`](Camera::devices)); otherwise [`CameraConfig::facing`]
+    /// chooses.
     pub async fn open(&self, config: CameraConfig) -> Result<MediaStream, CameraError> {
+        if let Some(e) = config.conflict() {
+            return Err(e);
+        }
         let (stream, writer) = MediaStream::new();
         let (handle, native) = imp::open(config, writer).await?;
         if let Some(src) = native {

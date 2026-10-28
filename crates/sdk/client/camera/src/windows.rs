@@ -1,9 +1,11 @@
 //! Windows camera capture — Media Foundation.
 //!
-//! - **Device**: `MFEnumDeviceSources` (video capture sources). Desktop
-//!   webcams report no reliable front/back, so every facing opens the first
-//!   camera — the same rule as desktop Linux. None attached →
-//!   [`CameraError::NoCamera`].
+//! - **Device**: `MFEnumDeviceSources` (video capture sources), listed by
+//!   [`devices`] with each camera's symbolic link as its id and its friendly
+//!   name as its label. A pinned id opens that camera. Otherwise desktop
+//!   webcams report no reliable front/back, so `Default` and `Front` open the
+//!   first camera and `Back` is [`CameraError::NoCamera`] — the same rule as
+//!   desktop Linux. None attached → [`CameraError::NoCamera`].
 //! - **Frames**: an `IMFSourceReader` with video processing on, asked for
 //!   `RGB32` (BGRX) at the native mode closest to the requested size / fps.
 //!   A capture thread reads samples synchronously and writes each frame to the
@@ -20,19 +22,19 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use media_stream::FrameWriter;
-use windows::core::GUID;
+use windows::core::{GUID, PWSTR};
 use windows::Win32::Foundation::E_ACCESSDENIED;
 use windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFAttributes, IMFMediaSource, IMFMediaType, IMFSourceReader, MFCreateAttributes,
     MFCreateMediaType, MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources, MFMediaType_Video, MFStartup,
-    MFVideoFormat_RGB32, MFSTARTUP_FULL, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
-    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
+    MFVideoFormat_RGB32, MFSTARTUP_FULL, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
     MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
     MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_VERSION,
 };
 use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_MULTITHREADED};
 
-use crate::{CameraConfig, CameraError, NativeSource};
+use crate::{CameraConfig, CameraDevice, CameraError, CameraFacing, DeviceFacing, NativeSource};
 
 /// Stops the capture thread on drop.
 pub(crate) struct StreamHandle {
@@ -55,6 +57,39 @@ pub(crate) async fn request_permission() -> Result<(), CameraError> {
     } else {
         Err(CameraError::PermissionDenied)
     }
+}
+
+/// Every Media Foundation video capture source. Enumerated on a short-lived
+/// thread of its own: Media Foundation needs COM, and initializing it as a
+/// multithreaded apartment on the caller's thread would change the apartment
+/// of an app's UI thread.
+pub(crate) async fn devices() -> Result<Vec<CameraDevice>, CameraError> {
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::Builder::new()
+        .name("camera-devices".into())
+        .spawn(move || {
+            let _ = tx.try_send(unsafe { list_devices() });
+        })
+        .map_err(|e| CameraError::Backend(format!("device list thread: {e}")))?;
+    rx.recv()
+        .await
+        .map_err(|_| CameraError::Backend("the device list thread exited without a result".into()))?
+}
+
+unsafe fn list_devices() -> Result<Vec<CameraDevice>, CameraError> {
+    let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    MFStartup(MF_VERSION, MFSTARTUP_FULL).map_err(map)?;
+    let mut out = Vec::new();
+    for activate in camera_activates()? {
+        let id = string_attr(&activate, &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK).map_err(map)?;
+        let label = string_attr(&activate, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME).unwrap_or_default();
+        out.push(CameraDevice {
+            id,
+            label: if label.is_empty() { "Camera".into() } else { label },
+            facing: DeviceFacing::Unreported,
+        });
+    }
+    Ok(out)
 }
 
 pub(crate) async fn open(
@@ -158,12 +193,15 @@ fn write_frame(writer: &FrameWriter, bytes: &[u8], (w, h): (u32, u32), stride: i
     writer.write_rgba8(w, h, rgba);
 }
 
-/// The first camera's reader, delivering RGB32 at the native mode closest to
+/// The chosen camera's reader, delivering RGB32 at the native mode closest to
 /// the request: `(reader, (width, height), stride)`.
 unsafe fn open_reader(config: &CameraConfig) -> Result<(IMFSourceReader, (u32, u32), i32), CameraError> {
     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     MFStartup(MF_VERSION, MFSTARTUP_FULL).map_err(map)?;
-    let source = first_camera()?;
+    let source = match &config.device {
+        Some(id) => camera_with_id(id)?,
+        None => first_camera(config.facing)?,
+    };
     let mut attrs: Option<IMFAttributes> = None;
     MFCreateAttributes(&mut attrs, 1).map_err(map)?;
     let attrs = attrs.ok_or_else(|| CameraError::Backend("no attributes".into()))?;
@@ -210,7 +248,36 @@ unsafe fn pair(t: &IMFMediaType, key: &GUID) -> windows::core::Result<(u32, u32)
     Ok(((v >> 32) as u32, v as u32))
 }
 
-unsafe fn first_camera() -> Result<IMFMediaSource, CameraError> {
+/// The first camera, for a facing a webcam satisfies (one reporting no facing
+/// counts as user-facing — see `CameraFacing`): `Back` is `NoCamera`.
+unsafe fn first_camera(facing: CameraFacing) -> Result<IMFMediaSource, CameraError> {
+    if facing == CameraFacing::Back {
+        return Err(CameraError::NoCamera);
+    }
+    let first = camera_activates()?.into_iter().next().ok_or(CameraError::NoCamera)?;
+    first.ActivateObject::<IMFMediaSource>().map_err(map)
+}
+
+/// The camera whose symbolic link is `id` (an id from [`devices`]).
+unsafe fn camera_with_id(id: &str) -> Result<IMFMediaSource, CameraError> {
+    let found = camera_activates()?.into_iter().find(|a| {
+        string_attr(a, &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK).is_ok_and(|link| link == id)
+    });
+    found.ok_or(CameraError::NoCamera)?.ActivateObject::<IMFMediaSource>().map_err(map)
+}
+
+/// A string attribute of a device activation object.
+unsafe fn string_attr(activate: &IMFActivate, key: &GUID) -> windows::core::Result<String> {
+    let mut value = PWSTR::null();
+    let mut len = 0u32;
+    activate.GetAllocatedString(key, &mut value, &mut len)?;
+    let s = value.to_string().unwrap_or_default();
+    CoTaskMemFree(Some(value.0 as *const _));
+    Ok(s)
+}
+
+/// Every video capture source's activation object, in Media Foundation's order.
+unsafe fn camera_activates() -> Result<Vec<IMFActivate>, CameraError> {
     let mut attrs: Option<IMFAttributes> = None;
     MFCreateAttributes(&mut attrs, 1).map_err(map)?;
     let attrs = attrs.ok_or_else(|| CameraError::Backend("no attributes".into()))?;
@@ -224,16 +291,13 @@ unsafe fn first_camera() -> Result<IMFMediaSource, CameraError> {
         if !devices.is_null() {
             CoTaskMemFree(Some(devices as *const _));
         }
-        return Err(CameraError::NoCamera);
+        return Ok(Vec::new());
     }
     let list = std::slice::from_raw_parts_mut(devices, count as usize);
-    let first = list.first().cloned().flatten();
-    for d in list.iter_mut() {
-        d.take();
-    }
+    // `take` moves each reference out, so freeing the array releases nothing twice.
+    let out = list.iter_mut().filter_map(|d| d.take()).collect();
     CoTaskMemFree(Some(devices as *const _));
-    let first = first.ok_or(CameraError::NoCamera)?;
-    first.ActivateObject::<IMFMediaSource>().map_err(map)
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -276,5 +340,30 @@ mod tests {
             }
             Err(e) => panic!("expected NoCamera or a stream, got {e:?}"),
         }
+    }
+
+    /// Listing never errors for lack of a camera (the VM has none: an empty
+    /// list), every listed camera opens by id, and an unknown id is `NoCamera`.
+    #[test]
+    fn listed_cameras_open_by_id_and_unknown_ids_are_no_camera() {
+        let devices = pollster::block_on(devices()).expect("listing succeeds");
+        for d in &devices {
+            assert!(!d.id.is_empty() && !d.label.is_empty(), "{d:?}");
+            let (_stream, writer) = MediaStream::new();
+            let opened = pollster::block_on(open(CameraConfig::new().with_device(&d.id), writer));
+            assert!(opened.is_ok(), "{} must open by id", d.label);
+        }
+        let (_stream, writer) = MediaStream::new();
+        let missing = pollster::block_on(open(CameraConfig::new().with_device("no-such-camera"), writer));
+        assert!(matches!(missing, Err(CameraError::NoCamera)));
+    }
+
+    /// `Back` on a desktop webcam (which reports no facing) is `NoCamera`,
+    /// as on macOS, Linux and web — never a silent open of the front webcam.
+    #[test]
+    fn regression_back_on_a_desktop_webcam_is_no_camera() {
+        let (_stream, writer) = MediaStream::new();
+        let back = pollster::block_on(open(CameraConfig::new().back(), writer));
+        assert!(matches!(back, Err(CameraError::NoCamera)));
     }
 }

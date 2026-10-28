@@ -68,7 +68,7 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app::{AppSink, AppSinkCallbacks};
 
-use crate::{CameraConfig, CameraError, CameraFacing, NativeSource};
+use crate::{CameraConfig, CameraDevice, CameraError, CameraFacing, DeviceFacing, NativeSource};
 use media_stream::FrameWriter;
 
 /// One-time, thread-safe, idempotent `gst::init()`. Stores the outcome so a
@@ -96,8 +96,9 @@ fn make(name: &str) -> Result<gst::Element, CameraError> {
 
 /// A discovered V4L2 video source.
 struct VideoDevice {
+    /// The public id: the node path (`/dev/video0`), see [`device_id`].
+    id: String,
     /// Human-readable name from the device monitor (e.g. "Integrated Camera").
-    #[allow(dead_code)] // Kept for diagnostics / future facing heuristics.
     name: String,
     /// The GStreamer `Device`. A preconfigured `v4l2src` — its `device`
     /// property already pointing at the right `/dev/videoN` — is made from it
@@ -127,6 +128,7 @@ fn enumerate_devices() -> Result<Vec<VideoDevice>, CameraError> {
     let mut list = Vec::new();
     for device in monitor.devices() {
         list.push(VideoDevice {
+            id: device_id(&device),
             name: device.display_name().to_string(),
             device,
         });
@@ -134,6 +136,41 @@ fn enumerate_devices() -> Result<Vec<VideoDevice>, CameraError> {
     monitor.stop();
 
     Ok(list)
+}
+
+/// A camera's id: its V4L2 node path, which the v4l2 device provider reports
+/// as `device.path` (`api.v4l2.path` from the PipeWire provider), falling back
+/// to the display name for a provider that reports neither. The path is what
+/// `/dev/videoN` users already know and is stable while the camera stays
+/// plugged into the same port.
+fn device_id(device: &gst::Device) -> String {
+    device
+        .properties()
+        .and_then(|props| {
+            ["device.path", "api.v4l2.path"]
+                .iter()
+                .find_map(|key| props.get::<String>(*key).ok())
+        })
+        .unwrap_or_else(|| device.display_name().to_string())
+}
+
+/// Every V4L2 camera. V4L2 reports no facing, so each is
+/// [`DeviceFacing::Unreported`].
+pub(crate) async fn devices() -> Result<Vec<CameraDevice>, CameraError> {
+    Ok(enumerate_devices()?
+        .into_iter()
+        .map(|d| CameraDevice { id: d.id, label: d.name, facing: DeviceFacing::Unreported })
+        .collect())
+}
+
+/// The `v4l2src` for the camera with this id, or [`CameraError::NoCamera`].
+fn source_for_id(id: &str) -> Result<gst::Element, CameraError> {
+    let devices = enumerate_devices()?;
+    let found = devices.iter().find(|d| d.id == id).ok_or(CameraError::NoCamera)?;
+    found
+        .device
+        .create_element(None)
+        .map_err(|e| CameraError::Backend(format!("v4l2src creation failed: {e}")))
 }
 
 /// Resolve a [`CameraFacing`] to a preconfigured `v4l2src` source element.
@@ -423,7 +460,7 @@ pub(crate) async fn request_permission() -> Result<(), CameraError> {
     }
 }
 
-/// Open the primary V4L2 camera and start capture. Returns the RAII
+/// Open the pinned V4L2 camera (else the primary one) and start capture. Returns the RAII
 /// [`StreamHandle`] and `None` for the native source (no zero-copy surface on
 /// the V4L2 path — see the module note). Frames flow into `writer` as
 /// tightly-packed `RGBA8` until the handle drops.
@@ -434,7 +471,10 @@ pub(crate) async fn open(
     request_permission().await?;
     ensure_gst()?;
 
-    let source = source_for_facing(config.facing)?;
+    let source = match &config.device {
+        Some(id) => source_for_id(id)?,
+        None => source_for_facing(config.facing)?,
+    };
     let handle = open_source(source, &config, writer)?;
     Ok((handle, None))
 }
@@ -457,6 +497,16 @@ mod tests {
         // Empty is valid (no camera). Non-empty is valid too (a dev box with a
         // webcam). Either way we must not have panicked getting here.
         let _ = devices.len();
+    }
+
+    /// Every listed camera has a non-empty id, and an id no camera has is
+    /// `NoCamera` rather than a fallback to the primary camera.
+    #[test]
+    fn listed_ids_are_filled_and_unknown_ids_are_no_camera() {
+        for d in enumerate_devices().expect("enumeration") {
+            assert!(!d.id.is_empty(), "{} has an id", d.name);
+        }
+        assert!(matches!(source_for_id("/dev/no-such-camera"), Err(CameraError::NoCamera)));
     }
 
     /// **The core proof**: the real appsink map/deliver path produces a mapped,

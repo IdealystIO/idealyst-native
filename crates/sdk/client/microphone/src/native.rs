@@ -6,7 +6,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 
-use crate::{AudioBuffer, AudioStreamConfig, BoxedCallback, MicError};
+use crate::{AudioBuffer, AudioStreamConfig, BoxedCallback, MicDevice, MicError};
 
 /// Keeps the capture alive. Dropping it stops the stream (cpal tears the
 /// platform stream down in `Stream`'s `Drop`).
@@ -72,6 +72,30 @@ fn map_status(status: permissions::PermissionStatus) -> crate::MicPermission {
     }
 }
 
+/// Every cpal input on the default host, after the permission grant (which
+/// is what lets macOS and iOS name their inputs). Ids come from
+/// [`crate::devices::ids_for_names`].
+pub(crate) async fn devices() -> Result<Vec<MicDevice>, MicError> {
+    request_permission().await?;
+    Ok(named_inputs(&cpal::default_host())?
+        .into_iter()
+        .map(|(id, name, _)| MicDevice { id, label: name })
+        .collect())
+}
+
+/// `(id, name, device)` for every input that reports a name, in cpal's order.
+/// An input that can't report its name can't be told apart, so it is skipped.
+fn named_inputs(host: &cpal::Host) -> Result<Vec<(String, String, cpal::Device)>, MicError> {
+    let inputs: Vec<(String, cpal::Device)> = host
+        .input_devices()
+        .map_err(|e| MicError::Backend(format!("input_devices: {e}")))?
+        .filter_map(|d| d.name().ok().map(|n| (n, d)))
+        .collect();
+    let names: Vec<String> = inputs.iter().map(|(n, _)| n.clone()).collect();
+    let ids = crate::devices::ids_for_names(&names);
+    Ok(ids.into_iter().zip(inputs).map(|(id, (name, d))| (id, name, d)).collect())
+}
+
 pub(crate) async fn open(
     config: AudioStreamConfig,
     callback: BoxedCallback,
@@ -87,9 +111,14 @@ pub(crate) async fn open(
     };
 
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or(MicError::NoInputDevice)?;
+    let device = match &config.device {
+        Some(id) => named_inputs(&host)?
+            .into_iter()
+            .find(|(d_id, _, _)| d_id == id)
+            .map(|(_, _, d)| d)
+            .ok_or(MicError::NoInputDevice)?,
+        None => host.default_input_device().ok_or(MicError::NoInputDevice)?,
+    };
 
     let supported = device
         .default_input_config()

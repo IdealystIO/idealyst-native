@@ -11,7 +11,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use microphone::{AudioBuffer, AudioStreamConfig, Microphone};
+use microphone::{AudioBuffer, AudioStreamConfig, MicError, Microphone};
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 use web_glue::dom::{MediaStream as WebMediaStream, MediaStreamTrack, MediaStreamTrackState};
 use web_glue::js::Function;
@@ -82,4 +82,27 @@ async fn microphone_callback_receives_pcm() {
     assert_eq!(channels, 1, "mono by default");
     assert_eq!(len, 4096, "one ScriptProcessor block");
     mic.stop();
+}
+
+/// Input selection on web: `devices()` must list the fake microphone with a
+/// real id and label (browsers hide both until the permission is granted, so
+/// the backend obtains it first), without Chrome's `default` /
+/// `communications` aliases; every listed id must capture; and an id no input
+/// has must be `NoInputDevice`, as on every other backend.
+#[wasm_bindgen_test]
+async fn web_lists_inputs_and_captures_from_each_by_id() {
+    let mic = Microphone::new();
+    let inputs = mic.devices().await.expect("devices lists");
+    assert!(!inputs.is_empty(), "the fake microphone is listed");
+    for d in &inputs {
+        assert!(!d.id.is_empty() && !d.label.is_empty(), "id and label are filled in: {d:?}");
+        assert!(d.id != "default" && d.id != "communications", "aliases are dropped: {d:?}");
+        let stream = mic
+            .open(AudioStreamConfig::new().with_device(&d.id), |_| {})
+            .await
+            .unwrap_or_else(|e| panic!("listed input {:?} must open: {e}", d.label));
+        stream.stop();
+    }
+    let missing = mic.open(AudioStreamConfig::new().with_device("no-such-input"), |_| {}).await;
+    assert!(matches!(missing, Err(MicError::NoInputDevice)), "an unknown id is NoInputDevice");
 }
