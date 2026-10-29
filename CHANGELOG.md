@@ -29,6 +29,18 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **A two-axis `scroll_view` locks a wheel or trackpad gesture to its
+  axis on the web** (`backend-web`). A gesture that starts mostly along one
+  axis (2:1 or more) stays on it, so a vertical trackpad swipe down a wide
+  table no longer drifts it sideways; a diagonal one pans freely. iOS,
+  Android and macOS already locked; browsers rail a touch drag but not a
+  wheel. At the end of the locked axis the event goes to the page (or an
+  outer scroller) as before.
+
+- **`<pre>` has no browser margin on the web** (`css`, `backend-web`): a
+  `code_block` sits flush like on native. The base reset gained
+  `css::PRE_MARGIN_RESET`.
+
 - **Root-relative `image()` srcs load again** (`runtime-shared`,
   `runtime-vocabulary`, `runtime-core`, `backend-web`, `backend-ssr`,
   `render-wgpu`, `server`, `idea-ui`). Since the shared src contract
@@ -796,6 +808,23 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **Style setters take `signal()` / `memo()` handles** (`runtime-shared`).
+  A variant or override source can be a kernel `Signal`, `ReadSignal` or
+  `Memo`, and re-resolves the style when it changes.
+
+- **`codeblock::rust`** (`codeblock`): a Rust lexer (`tokens`), a light
+  and dark `Palette`, and `decorations` for a `code_editor`, so a Rust
+  snippet highlights without a syntax-highlighting dependency.
+
+- **`idealyst build --web --events-file <path>`** (`idealyst-cli`): writes
+  the build's events, compiler diagnostics with file/line/column included,
+  as JSON lines, the same objects `idealyst dev --events-file` writes.
+
+- **`webview::register` is generic over the registry** (`webview`). A
+  wasm32 host that is not the DOM backend (the wgpu simulator), or an
+  app's generic `register_scene_extensions<H>`, gets the "not supported"
+  placeholder instead of a compile error.
 
 - **List and choose cameras and microphones** (`camera`, `microphone`).
   `Camera::devices()` returns every attached camera as
@@ -2234,6 +2263,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A web app with no theme font renders in the platform UI font**
+  (`idealyst-cli`). The generated `index.html` set no font, so text fell
+  back to the browser's serif default on the web only.
+
+- **`idealyst mcp` dev tooling stays within bounds** (`mcp-server`,
+  `dev-events`, `idealyst-cli`). `read_build_metrics` answers under 24K
+  (oldest records dropped first and counted), names each record's `kind`,
+  and a query by session reads only that session's records. `dev_status`
+  returns a per-target summary (`detail` for the raw snapshot). `stop_dev`
+  stops a session left by an exited `idealyst mcp`. A second `idealyst dev`
+  in a directory with a live session is refused, so two never share a
+  target dir. A no-op rebuild keeps an uncompressed bundle's staged `pkg/`
+  instead of re-copying it.
 
 - **A save made while the first build ran is no longer lost**
   (`dev-reload`, `idealyst-cli`). The watches are registered after the
