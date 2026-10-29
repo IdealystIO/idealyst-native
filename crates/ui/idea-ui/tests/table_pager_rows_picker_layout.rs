@@ -197,3 +197,47 @@ fn regression_table_pager_rows_picker_stays_clear_of_the_page_numbers() {
     let (cx, _, cw, _) = abs[&chevron];
     assert!(cx >= tx && cx + cw <= tx + tw, "the chevron sits inside the trigger:\n{}", h.tree(root));
 }
+
+/// Mount a pager over `total` rows, 20 to a page, offering 20 and 50.
+/// Returns its live tree and its press surfaces.
+fn mount_pager(total: usize, noun: &str) -> (String, usize) {
+    let noun = noun.to_string();
+    let (_, h, root) = lay_out(move || {
+        ui! {
+            TablePager(
+                offset = 0,
+                page_size = 20,
+                total = total,
+                noun = noun.clone(),
+                on_offset = Rc::new(|_| {}) as Rc<dyn Fn(usize)>,
+                page_sizes = vec![20, 50],
+                on_page_size = Some(Rc::new(|_| {}) as Rc<dyn Fn(usize)>),
+            )
+        }
+    });
+    let mut presses = Vec::new();
+    pressables(&h, root, &mut presses);
+    (h.live_tree(root), presses.len())
+}
+
+/// CrewForge (want_06c7bf4e): a pager whose rows all fit on one page
+/// drew "1–6 of 6 projects · Rows [20] · ‹ 1 ›", and an empty set "0 of
+/// 0 contacts" with page buttons. Everything on one page reads as a count
+/// with nothing to press; an empty set says so in words.
+#[test]
+fn regression_a_pager_with_one_page_shows_a_count_and_no_controls() {
+    let (tree, presses) = mount_pager(6, "projects");
+    assert!(tree.contains("\"6 projects\""), "one page reads as a count:\n{tree}");
+    assert!(!tree.contains("of 6"), "no range over everything:\n{tree}");
+    assert_eq!(presses, 0, "no Rows picker, no page numbers:\n{tree}");
+
+    let (tree, presses) = mount_pager(0, "contacts");
+    assert!(tree.contains("\"No contacts\""), "an empty set says so:\n{tree}");
+    assert!(!tree.contains("0 of 0"), "never \"0 of 0\":\n{tree}");
+    assert_eq!(presses, 0, "nothing to press on an empty set:\n{tree}");
+
+    // 30 rows, 20 to a page: two pages, and 20 vs 50 changes what shows.
+    let (tree, presses) = mount_pager(30, "projects");
+    assert!(tree.contains("\"of 30 projects\""), "several pages keep the range:\n{tree}");
+    assert!(presses >= 3, "the Rows picker and the page buttons:\n{tree}");
+}

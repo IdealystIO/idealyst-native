@@ -722,7 +722,7 @@ TableFooter {
                     Prop {
                         name: "tone",
                         ty: "Reactive<RowTone>",
-                        desc: "Whole-row tint: None (default), Highlight, Warning or Danger. Keeps the clickable-row hover and stays opaque on frozen columns. Applies to body cells.",
+                        desc: "Whole-row tint: None (default), Highlight, Warning or Danger, or an app tone (`TableTone::define`) styled with `TableStyles::restyle(|s| { s.row_tone(MY_TONE, resting, hovered); })`. Keeps the clickable-row hover and stays opaque on frozen columns. Applies to body cells.",
                     },
                     Prop {
                         name: "bind_to",
@@ -878,7 +878,10 @@ TableFooter {
         ui! {
             Section(title = "TablePager and TableCards".to_string()) {
                 P(content = "`TablePager(offset, page_size, total, noun, on_offset, page_sizes, on_page_size)` — \
-                    the paged table's footer: the range, a Rows picker and the page numbers. \
+                    the paged table's footer: the range, a Rows picker and the page numbers. A set \
+                    that fits on one page reads as a count (\"6 projects\", \"No projects\") with no \
+                    page numbers, and the Rows picker shows only while a page size would change \
+                    what is shown. \
                     `TableCards(columns, row_count, row_id, cell, max_cells, on_row_click, \
                     on_end_reached, selection, empty)` — the narrow form: a virtualized list of \
                     cards with measured heights, laid out from the same column specs, loading the \

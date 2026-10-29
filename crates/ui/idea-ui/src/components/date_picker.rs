@@ -217,7 +217,9 @@ impl Default for DatePickerProps {
 #[component]
 pub fn DatePicker(props: DatePickerProps) -> Element {
     let value = props.value;
-    let on_change = props.on_change.clone();
+    // Re-anchored: a pick closes the popup that fired it (see
+    // `anchor_to_component`).
+    let on_change = super::anchor_to_component(props.on_change.clone());
 
     let open: Signal<bool> = signal(false);
     let trigger_ref: Ref<PressableHandle> = Ref::new();
@@ -350,7 +352,9 @@ impl Default for DateTimePickerProps {
 #[component]
 pub fn DateTimePicker(props: DateTimePickerProps) -> Element {
     let value = props.value;
-    let on_change = props.on_change.clone();
+    // Re-anchored: a pick closes the popup that fired it (see
+    // `anchor_to_component`).
+    let on_change = super::anchor_to_component(props.on_change.clone());
 
     let open: Signal<bool> = signal(false);
     let trigger_ref: Ref<PressableHandle> = Ref::new();
@@ -518,7 +522,9 @@ impl Default for DateRangePickerProps {
 #[component]
 pub fn DateRangePicker(props: DateRangePickerProps) -> Element {
     let value = props.value;
-    let on_change = props.on_change.clone();
+    // Re-anchored: a pick closes the popup that fired it (see
+    // `anchor_to_component`).
+    let on_change = super::anchor_to_component(props.on_change.clone());
 
     let open: Signal<bool> = signal(false);
     let trigger_ref: Ref<PressableHandle> = Ref::new();

@@ -53,6 +53,8 @@ document.defaultView = { localStorage: {
 const input = require("fs").readFileSync(0, "utf8").split("\n").filter(Boolean);
 for (const line of input) {
   if (line.startsWith("!storage ")) Object.assign(stored, JSON.parse(line.slice("!storage ".length)));
+  // `!webdriver` builds the overlay in a browser under automation.
+  if (line === "!webdriver") document.defaultView.navigator = { webdriver: true };
 }
 
 __OVERLAY__
@@ -68,7 +70,7 @@ const capture = {
   subscribe(f) { this.subs.push(f); },
 };
 const o = idealystStatusOverlay(document, capture);
-const lines = input.filter(l => !l.startsWith("!storage "));
+const lines = input.filter(l => !l.startsWith("!storage ") && l !== "!webdriver");
 const out = [];
 for (const line of lines) {
   if (line.startsWith("!robot ")) {
@@ -423,4 +425,33 @@ fn the_overlay_collapses_to_a_glyph_and_remembers_it() {
         return skip();
     };
     assert_eq!(out[0]["expanded"], false, "a reload starts collapsed when it was left collapsed");
+}
+
+/// CrewForge (want_e63dd4cc): a Playwright run against the dev bundle
+/// could not click "Clear this project's rate" in the last row's menu —
+/// `<idealyst-dev-overlay> intercepts pointer events`. The column ignores
+/// the pointer, but its chips and the collapsed glyph take clicks, and
+/// they sit in the bottom-right corner the menu opened over. Under
+/// automation the corner shows nothing; a failed build still says so.
+#[test]
+fn regression_a_browser_under_automation_gets_no_corner_controls() {
+    let Some(out) = run(&[
+        "!webdriver",
+        r#"!storage {"idealyst-dev-overlay-collapsed":"1"}"#,
+        BUILD,
+        r#"!robot {"state":"connected","url":"ws://h/__idealyst/relay"}"#,
+        r#"!capture {"requested":true}"#,
+        "#",
+        DIAG,
+        FAILED,
+        "#",
+    ]) else {
+        return skip();
+    };
+    assert_eq!(out[0]["expanded"], false, "no badge, robot line or chip: {}", out[0]);
+    assert_eq!(out[0]["pill"], serde_json::Value::Null, "not even the collapsed glyph");
+    assert_eq!(out[1]["panel"], true, "a failed build's panel still opens");
+
+    let Some(out) = run(&[BUILD, "#"]) else { return skip() };
+    assert_eq!(out[0]["expanded"], true, "a person's browser keeps the overlay");
 }

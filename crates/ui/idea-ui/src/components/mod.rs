@@ -86,6 +86,22 @@ pub(crate) fn field_label_line(
     })
 }
 
+/// Re-anchor a commit handler to the calling component's own scope.
+///
+/// A picker (Select, Autocomplete, the date pickers) fires its commit from
+/// a row or calendar inside its popup, and the commit closes that popup. A
+/// `spawn_then` reached from the handler anchors, via
+/// `ScopeAlive::current`, to the node that mounted the handler — the popup
+/// the commit itself tears down — so its callback was silently dropped
+/// (the request lands, the answer is discarded, a `busy` flag stays set).
+/// Call this in the component body: handler-reached spawns then live as
+/// long as the picker and die when it unmounts. `Button` does the same
+/// for its `on_click`. Regression: `tests/picker_commit_spawn.rs`.
+pub(crate) fn anchor_to_component<A: 'static>(f: Rc<dyn Fn(A)>) -> Rc<dyn Fn(A)> {
+    let anchor = runtime_core::ScopeAlive::current();
+    Rc::new(move |a| anchor.run_within(|| f(a)))
+}
+
 pub(crate) fn optional_reactive_text(
     content: Reactive<Option<String>>,
     style: impl IntoStyleSource,

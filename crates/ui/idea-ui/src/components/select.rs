@@ -533,7 +533,9 @@ impl Default for SelectProps {
 #[component]
 pub fn Select(props: SelectProps) -> Element {
     let value = props.value;
-    let on_change = props.on_change.clone();
+    // Re-anchored: a pick closes the menu that fired it (see
+    // `anchor_to_component`).
+    let on_change = super::anchor_to_component(props.on_change.clone());
     let max_width = props.max_width;
     let size = props.size.clone();
     let placeholder = props.placeholder.clone();

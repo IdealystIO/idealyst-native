@@ -729,9 +729,13 @@ component_styles! {
             }
         }
 
+        // A stated line height: left at `normal` (about 16px at 14px), a
+        // value that wraps — a `flex` column's prose — stacks its lines
+        // with no leading and reads as a solid block.
         slot body_text {
             base(t) {
                 font_size: 14.0,
+                line_height: 20.0,
                 color: t.color.text(),
                 text_align: TextAlign::Left,
             }
@@ -1073,7 +1077,9 @@ component_styles! {
             }
         }
 
-        /// The labelled cells: two to a line under a hairline, label over value.
+        /// The labelled cells: two to a line under a hairline, label over
+        /// value. A field alone on its line (a card's only field, or the
+        /// last of an odd count) takes the whole line — see `card_field`.
         slot card_fields {
             base(t) {
                 flex_direction: FlexDirection::Row,
@@ -1086,9 +1092,14 @@ component_styles! {
             }
         }
 
+        // Half a line as the flex basis, growing into what the line leaves:
+        // two fields share a line exactly, and a field that wraps onto a
+        // line of its own takes the full width instead of leaving a dead
+        // half beside it (a long value wrapped, a picker clipped).
         slot card_field {
             base(t) {
                 width: Length::Percent(50.0),
+                flex_grow: 1.0,
                 padding_right: t.spacing.sm(),
                 gap: t.spacing.xs(),
                 min_width: 0.0,
@@ -1135,3 +1146,31 @@ component_styles! {
     }
 }
 
+impl TableRestyle<'_, '_> {
+    /// Give an app-defined row tone (`TableTone::define("…")`) its look:
+    /// `resting` on an idle row, `hovered` on a clickable row under the
+    /// pointer.
+    ///
+    /// Use this, not a plain `body_cell().arm(MY_TONE, …)`. A single-axis
+    /// arm loses to the `body_cell` compounds: a frozen cell keeps the
+    /// pinned compounds' opaque surface (its row's middle cells tint, its
+    /// frozen cells stay white), and `tone` sorting after `row_hovered`
+    /// means the arm also beats the hover. Like the built-in tones, this
+    /// states the tone as `(tone, row_hovered)` compounds; a restyle's
+    /// compounds layer after the sheet's own, so they win over the pinned
+    /// ones on both the resolve and the premint path. Pass OPAQUE colours —
+    /// a frozen toned cell covers the columns sliding beneath it.
+    pub fn row_tone(
+        &mut self,
+        tone: TableTone,
+        resting: impl FnOnce(&<TableStyles as runtime_core::ComponentStyles>::Tokens) -> runtime_core::StyleRules,
+        hovered: impl FnOnce(&<TableStyles as runtime_core::ComponentStyles>::Tokens) -> runtime_core::StyleRules,
+    ) -> &mut Self {
+        let t = <TableStyles as runtime_core::ComponentStyles>::Tokens::default();
+        let value = runtime_core::VariantEnum::as_variant_str(tone);
+        let mut cell = self.body_cell();
+        cell.raw_compound(&[("tone", value), ("row_hovered", "off")], resting(&t));
+        cell.raw_compound(&[("tone", value), ("row_hovered", "on")], hovered(&t));
+        self
+    }
+}

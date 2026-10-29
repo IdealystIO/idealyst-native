@@ -776,6 +776,40 @@ fn regression_row_tone_composes_with_hover_and_pin() {
     });
 }
 
+/// CrewForge (want_801c68f9): an app-defined row tone did not paint a
+/// frozen cell. A plain table's frozen cell takes its opaque `surface`
+/// from the `(variant: plain, pinned, row_hovered: off)` compound, and
+/// the documented `body_cell().arm(MY_TONE, …)` loses to every compound,
+/// so the row's middle cells tinted and its frozen cells stayed white.
+/// `TableRestyle::row_tone` states the tone as compounds, as the
+/// built-in tones do: frozen cells tint, and the hover still answers.
+#[test]
+fn regression_app_row_tone_paints_frozen_cells_and_keeps_the_hover() {
+    const LINE_BAND: TableTone = TableTone::define("line_band");
+    with_test_world(|| {
+        runtime_core::component_styles::__reset::<TableStyles>();
+        idea_theme::theme::install_idea_theme(crate::light_theme());
+        TableStyles::restyle(|s| {
+            s.row_tone(
+                LINE_BAND,
+                |t| StyleRules { background: Some(t.intent.info.soft_bg()), ..Default::default() },
+                |t| StyleRules { background: Some(t.color.surface_alt()), ..Default::default() },
+            );
+        });
+        let bg = |pin: Option<ColumnPin>, hovered: &str| {
+            let app = cell_app(tone_row(LINE_BAND, true, pin).remove(0))
+                .with("variant", "plain")
+                .with("row_hovered", hovered);
+            bg_token(&runtime_core::resolve_style(&app))
+        };
+        for pin in [None, Some(ColumnPin::Left), Some(ColumnPin::Right)] {
+            assert_eq!(bg(pin, "off").as_deref(), Some("intent-info-soft-bg"), "resting tone, pin {pin:?}");
+            assert_eq!(bg(pin, "on").as_deref(), Some("color-surface-alt"), "hovered tone, pin {pin:?}");
+        }
+        runtime_core::component_styles::__reset::<TableStyles>();
+    });
+}
+
 /// Gap #3, live half: a reactive tone re-tints the row in place.
 #[test]
 fn reactive_row_tone_retints_in_place() {
@@ -2683,8 +2717,9 @@ fn regression_reorder_adds_a_grip_to_draggable_rows() {
 
 /// The table-level axes are open: an app defines its own density, row
 /// tone and variant (`TableDensity::define`, …) and gives them a look with
-/// a restyle arm on the cell slots. `Table` / `TableRow` select the arm
-/// on cells that are already built, and the restyled cells still premint.
+/// a restyle on the cell slots (an arm, or `row_tone`'s compounds for a
+/// tone). `Table` / `TableRow` select it on cells that are already built,
+/// and the restyled cells still premint.
 /// A head and a body cell are separate slots of one `TableStyles`.
 #[test]
 fn app_defined_table_axes_reach_built_cells_and_premint() {
@@ -2704,10 +2739,11 @@ fn app_defined_table_axes_reach_built_cells_and_premint() {
                 padding_bottom: Some(t.spacing.xl()),
                 ..Default::default()
             });
-            s.body_cell().arm(INFO, |t| StyleRules {
-                background: Some(t.intent.info.soft_bg()),
-                ..Default::default()
-            });
+            s.row_tone(
+                INFO,
+                |t| StyleRules { background: Some(t.intent.info.soft_bg()), ..Default::default() },
+                |t| StyleRules { background: Some(t.intent.info.soft_bg()), ..Default::default() },
+            );
         });
         let head = TableRow(TableRowProps {
             children: vec![TableCell(TableCellProps {
@@ -3036,5 +3072,54 @@ fn band_content_pins_to_the_scrollers_edges() {
         assert_eq!(px_of(&rules[0].left), Some(SELECT_COLUMN_WIDTH_PX), "past the frozen selection column");
         assert_eq!(rules[2].position, Some(runtime_core::Position::Sticky));
         assert_eq!(px_of(&rules[2].right), Some(0.0), "the actions pin to the right edge");
+    });
+}
+
+/// CrewForge (want_682ae4c8, want_1749af8b): a card's fields were always
+/// half a line wide, so a card's ONLY field (an Autocomplete seat picker)
+/// got a ~154px cell inside a ~340px card and clipped, and the last field
+/// of an odd count sat in the left half with the right half empty. The
+/// real `card_fields` / `card_field` styles, laid out by the Taffy wrapper
+/// the native backends use: two fields share a line, and a field alone on
+/// its line takes all of it.
+#[test]
+fn regression_a_card_field_alone_on_its_line_takes_the_full_width() {
+    use runtime_layout::LayoutTree;
+    const CARD_WIDTH: f32 = 340.0;
+    with_test_world(|| {
+        let fields_rules = runtime_core::resolve_style(&TableStyles::card_fields().into_style_application());
+        let field_rules = runtime_core::resolve_style(&TableStyles::card_field().into_style_application());
+        let widths = |n: usize| -> Vec<f32> {
+            let mut layout = LayoutTree::new();
+            let row = layout.new_node();
+            layout.set_style(row, &fields_rules);
+            let fields: Vec<_> = (0..n)
+                .map(|_| {
+                    let f = layout.new_node();
+                    layout.set_style(f, &field_rules);
+                    layout.add_child(row, f);
+                    f
+                })
+                .collect();
+            layout.compute(row, CARD_WIDTH, 800.0);
+            fields.iter().map(|f| layout.frame_of(*f).width).collect()
+        };
+        let half = CARD_WIDTH / 2.0;
+        assert_eq!(widths(1), vec![CARD_WIDTH], "a card's only field takes the line");
+        assert_eq!(widths(2), vec![half, half], "two fields share a line");
+        assert_eq!(widths(3), vec![half, half, CARD_WIDTH], "the odd one out takes its line");
+    });
+}
+
+/// CrewForge (want_23538e50): a cell's `text` had no line height, so it
+/// computed to `line-height: normal` (about 16px at 14px) and a value
+/// that wraps — a `flex` column's prose — stacked its lines with no
+/// leading. The body text states its leading; a header's text is one
+/// short label and keeps its own.
+#[test]
+fn regression_cell_text_states_a_line_height_for_wrapped_values() {
+    with_test_world(|| {
+        let rules = cell_text_rules(body_cell("a sentence long enough to wrap inside a flex column"));
+        assert_eq!(rules.line_height.as_ref().map(|l| l.resolve()), Some(20.0));
     });
 }

@@ -163,7 +163,9 @@ impl Default for DateInputProps {
 #[component]
 pub fn DateInput(props: DateInputProps) -> Element {
     let value = props.value;
-    let on_change = props.on_change.clone();
+    // Re-anchored: a pick closes the popup that fired it (see
+    // `anchor_to_component`).
+    let on_change = super::anchor_to_component(props.on_change.clone());
     let format = props.format.get();
     // Month/weekday name tokens (`MMM`, `ddd`) read the same labels the
     // popup calendar shows.
@@ -346,7 +348,9 @@ impl Default for DateTimeInputProps {
 #[component]
 pub fn DateTimeInput(props: DateTimeInputProps) -> Element {
     let value = props.value;
-    let on_change = props.on_change.clone();
+    // Re-anchored: a pick closes the popup that fired it (see
+    // `anchor_to_component`).
+    let on_change = super::anchor_to_component(props.on_change.clone());
     let format = props.format.get();
     // See `DateInput`.
     let names = props.labels.clone().unwrap_or_else(DateLabels::english);

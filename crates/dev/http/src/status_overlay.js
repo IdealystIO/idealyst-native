@@ -40,6 +40,14 @@
 // and lights up when an agent asks for capture. A failed build's panel
 // still opens over the page while collapsed — an error is never hidden.
 //
+// In a browser under automation (`navigator.webdriver`: Playwright,
+// Selenium, any WebDriver/CDP-driven run) the corner shows nothing at
+// all, not even the glyph: its buttons take clicks, so whatever the app
+// draws under the bottom-right corner (the last row's menu) could not be
+// clicked by the test. Nobody is there to read it, and nobody can
+// answer the capture prompt the chip starts. A failed build's panel
+// still opens.
+//
 // DOM use is deliberately narrow (createElement, appendChild, textContent,
 // style.cssText, setAttribute, addEventListener, attachShadow) so the
 // behaviour is testable in node against a small fake DOM
@@ -60,6 +68,11 @@ function idealystStatusOverlay(doc, capture) {
       return null;
     }
   }
+  var automated = false;
+  try {
+    var nav = doc.defaultView && doc.defaultView.navigator;
+    automated = !!(nav && nav.webdriver);
+  } catch (_) {}
   var collapsed = false;
   try {
     var s = storage();
@@ -493,8 +506,8 @@ function idealystStatusOverlay(doc, capture) {
       shareButton.style.color = share.color;
       shareButton.style.background = share.lit ? "#e5b443" : "transparent";
     }
-    stack.style.display = collapsed ? "none" : "flex";
-    pill.style.display = collapsed ? "block" : "none";
+    stack.style.display = collapsed || automated ? "none" : "flex";
+    pill.style.display = collapsed && !automated ? "block" : "none";
     pill.textContent = ICON[serverBusy() ? "building" : st.phase];
     pill.style.color = share && share.lit ? "#111" : statusColor;
     // An agent's capture request is the one thing worth a collapsed

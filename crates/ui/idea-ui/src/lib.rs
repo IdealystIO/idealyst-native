@@ -276,8 +276,8 @@ pub use components::switch::{
 };
 #[cfg(feature = "table")]
 pub use components::table::{
-    dragged_width, move_in_place, page_window_text, select_all_state, slide_offset,
-    toggle_select_all, CardSlot, CellAlign, CellPadding, CellTone, ColSpan, ColumnId,
+    dragged_width, move_in_place, page_window_text, pager_count_text, rows_picker_matters, select_all_state,
+    slide_offset, toggle_select_all, CardSlot, CellAlign, CellPadding, CellTone, ColSpan, ColumnId,
     ColumnPin, ColumnResizeCallback, ColumnWidths, RowId, RowTone, SelectAllState, SortState,
     Table, TableCards, TableCardsProps, TableCell, TableCellProps, TableColumn, TableDensity,
     TableEmpty, TableFooter, TableFooterProps, TableGroup, TableGroupProps, TableInset, TablePager, TablePagerProps,

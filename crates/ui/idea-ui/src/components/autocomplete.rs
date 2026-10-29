@@ -625,7 +625,9 @@ fn clear_button(clear: Rc<dyn Fn()>, size: SelectSize, styles: &AutocompleteSlot
 #[component]
 pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let value = props.value;
-    let on_change = props.on_change.clone();
+    // Re-anchored: a pick closes the dropdown that fired it (see
+    // `anchor_to_component`).
+    let on_change = super::anchor_to_component(props.on_change.clone());
     let size = props.size.clone();
     // TODO(reactive-sweep): `empty_text` is snapshotted here and moved into the
     // `when`/`each_keyed` dropdown closures that build the empty-state row
@@ -648,7 +650,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // marks itself (a checkbox rather than a solid fill).
     let selection = props.selection;
     let multi = selection.is_some();
-    let on_selection_change = props.on_selection_change.clone();
+    let on_selection_change = props.on_selection_change.clone().map(super::anchor_to_component);
     let clearable = props.clearable;
 
     // --- internal state -----------------------------------------------------
@@ -711,6 +713,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // press) commits nothing.
     let commit: Rc<dyn Fn(&str)> = {
         let on_change = on_change.clone();
+        let on_selection_change = on_selection_change.clone();
         Rc::new(move |id: &str| {
             let Some(o) = options.peek().iter().find(|o| o.id == id).cloned() else { return };
             let Some(sel) = selection else {
@@ -917,7 +920,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // --- clear ✕ -------------------------------------------------------------
     // Shown only while there's something to clear: a committed selection, or
     // text typed over an empty one.
-    let clear = clear_action(query, on_change.clone(), selection, props.on_selection_change.clone());
+    let clear = clear_action(query, on_change.clone(), selection, on_selection_change.clone());
     let show_clear = memo(move || {
         let committed = match selection {
             Some(sel) => !sel.get().is_empty(),

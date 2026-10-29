@@ -172,7 +172,8 @@
 //! # Paged tables and the narrow form
 //!
 //! [`TablePager`] is the footer of a paged table — "26–50 of 312
-//! projects", a "Rows" picker and the page numbers. Put it in
+//! projects", a "Rows" picker and the page numbers; a set that fits on one
+//! page reads as just a count ("6 projects", "No projects"). Put it in
 //! `footer_slot`: inside the frame, outside the scroller (pinned under a
 //! `scroll_y` table's rows), at the table's edge inset. `inset_x` is
 //! reactive — [`TableInset::by_breakpoint`] re-pads the edge cells in
@@ -407,7 +408,7 @@ pub use columns::{
     TableColumn, ACTIONS_COLUMN_WIDTH_PX, COLUMN_RESET_DOUBLE_CLICK_NS, COLUMN_RESIZE_MIN_PX,
 };
 pub use group::{TableGroup, TableGroupProps};
-pub use pager::{page_window_text, TablePager, TablePagerProps};
+pub use pager::{page_window_text, pager_count_text, rows_picker_matters, TablePager, TablePagerProps};
 pub use reorder::{move_in_place, slide_offset, GRIP_COLUMN_WIDTH_PX};
 pub use rows::RowId;
 pub use select::{select_all_state, toggle_select_all, SelectAllState, SELECT_COLUMN_WIDTH_PX};
@@ -419,8 +420,9 @@ pub use styles::*;
 
 /// A whole-row tint for [`TableRow`] — the body cells' `tone` axis. Composes
 /// with the clickable-row hover and with frozen columns (see the module
-/// docs). An app adds its own tint with `TableTone::define("…")` and a
-/// restyle arm on `body_cell`.
+/// docs). An app adds its own tint with `TableTone::define("…")` and
+/// [`TableRestyle::row_tone`], which keeps that composition; a plain
+/// `body_cell` arm does not.
 pub type RowTone = TableTone;
 use rows::{decorate_added_cell, row_meta, RowInteraction, RowMeta};
 use select::{select_all_box, select_row_box};
@@ -1626,7 +1628,8 @@ pub struct TableRowProps {
     /// pattern). Taps on plain content or empty cell space fall through to
     /// the row callback.
     pub on_row_click: Option<Rc<dyn Fn()>>,
-    /// Whole-row tint — `Highlight`, `Warning` or `Danger`. Reactive: a
+    /// Whole-row tint — `Highlight`, `Warning` or `Danger`, or an app tone
+    /// styled with [`TableRestyle::row_tone`]. Reactive: a
     /// row can change tone in place. Composes with the clickable-row
     /// hover (a toned row hovers to a deeper shade of its own tint) and
     /// with frozen columns. Applies to body cells.

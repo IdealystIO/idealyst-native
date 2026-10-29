@@ -2264,6 +2264,41 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A picker's commit keeps a `spawn_then` alive** (`idea-ui`). `Select`,
+  `Autocomplete`, `DatePicker`, `DateTimePicker`, `DateRangePicker`,
+  `DateInput` and `DateTimeInput` fire `on_change` from inside their popup,
+  and the pick closes it; a `spawn_then` from the handler anchored to that
+  popup, so its callback was dropped and a `busy` flag stayed set. The
+  commit now runs in the picker's own scope, as `Button`'s `on_click` does:
+  it survives the popup closing and still dies with the picker.
+
+- **An app-defined row tone paints frozen cells and keeps the hover**
+  (`idea-ui`). `TableRestyle::row_tone(tone, resting, hovered)` styles a
+  `TableTone::define` tone the way the built-in tones are styled. A plain
+  `body_cell().arm(MY_TONE, …)` left a frozen cell on its opaque surface
+  and beat the clickable-row hover; use `row_tone` instead.
+
+- **A card field alone on its line takes the whole line** (`idea-ui`).
+  `TableCards` laid every field out half-width, so a card's only field (or
+  the last of an odd count) clipped its control or wrapped beside an empty
+  half.
+
+- **`TablePager` reads as a count when everything fits** (`idea-ui`). One
+  page shows "6 projects" with no page numbers; an empty set shows "No
+  projects", never "0 of 0"; the Rows picker shows only while a page size
+  would change what is shown. `pager_count_text` / `rows_picker_matters`
+  are the rules.
+
+- **Wrapped table cell text has leading** (`idea-ui`). A cell's `text`
+  states `line_height: 20` at 14px instead of `normal`; tables are a few
+  pixels taller per row.
+
+- **The dev overlay leaves an automated browser's corner clear**
+  (`dev-http`). Under `navigator.webdriver` the badge, robot line, chips
+  and collapsed glyph are not shown, so a Playwright click on app content
+  in the bottom-right corner is no longer intercepted. A failed build's
+  panel still opens.
+
 - **A web app with no theme font renders in the platform UI font**
   (`idealyst-cli`). The generated `index.html` set no font, so text fell
   back to the browser's serif default on the web only.
