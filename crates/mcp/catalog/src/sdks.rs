@@ -493,6 +493,12 @@ sdk!(
     "Device geolocation — one-shot `current()` and continuous `watch()` yielding a `Position`. Permission grant goes through `permissions`. Robot tests: `location::register_robot_controls()` adds `location.set {latitude, longitude, …}` / `location.clear` — `current()` and every `watch()` get the fake fix (see the `testing` guide)."
 );
 sdk!(
+    "device-admin",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "Android device-owner policy for kiosks and dedicated devices: lock an app onto the screen (`set_lock_task_packages` / `start_lock_task`), disable the keyguard and status bar, set the home activity, add user restrictions, and silently `install_apk` (certificate-pinned) / `uninstall` / `reboot`, with no MDM or app store. Every policy call returns `Error::NotDeviceOwner` unless the app is the device owner, and `Error::Unsupported` off Android. On iOS only lock-task (Autonomous Single App Mode on a supervised device), `lock_task_state` (Guided Access) and `managed_config` exist."
+);
+sdk!(
     "share",
     SdkCategory::Device,
     SdkKind::Api,
