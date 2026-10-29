@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ssr"
-version = "3.0.1"
+version = "3.0.2"
 dependencies = [
  "css",
  "parity-goldens",
@@ -1609,7 +1609,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "5.0.0"
+version = "5.0.2"
 dependencies = [
  "css",
  "dev-client",
@@ -1949,7 +1949,7 @@ dependencies = [
 
 [[package]]
 name = "build-ios"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "semver",
@@ -2068,7 +2068,7 @@ dependencies = [
 
 [[package]]
 name = "build-web"
-version = "6.0.0"
+version = "6.1.0"
 dependencies = [
  "anyhow",
  "brotli 7.0.0",
@@ -3550,7 +3550,7 @@ dependencies = [
 
 [[package]]
 name = "dev-events"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "dev-events",
  "schemars",
@@ -3600,7 +3600,7 @@ dependencies = [
 
 [[package]]
 name = "dev-reload"
-version = "7.0.0"
+version = "7.1.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3619,7 +3619,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "5.0.0"
+version = "5.1.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -3650,7 +3650,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "12.0.0"
+version = "13.0.0"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -6428,7 +6428,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme-editor"
-version = "10.0.0"
+version = "11.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6439,7 +6439,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "13.0.0"
+version = "14.0.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6459,7 +6459,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "13.0.0"
+version = "14.0.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6488,7 +6488,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-branded"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "idea-theme",
  "idea-ui",
@@ -6510,7 +6510,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.22"
+version = "1.5.23"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6520,7 +6520,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.21"
+version = "1.5.22"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6540,7 +6540,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-nav"
-version = "10.0.0"
+version = "11.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6567,7 +6567,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.20.0"
+version = "1.21.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7737,7 +7737,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.29.0"
+version = "1.30.1"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7780,7 +7780,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-design-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "mcp-server",
@@ -7794,7 +7794,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -10517,7 +10517,7 @@ dependencies = [
 
 [[package]]
 name = "render-wgpu"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "backend-image-source",
  "bytemuck",
@@ -10830,7 +10830,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-core"
-version = "3.2.0"
+version = "3.3.0"
 dependencies = [
  "runtime-macros",
  "runtime-shared",
@@ -10898,7 +10898,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "3.1.0"
+version = "3.3.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10933,7 +10933,7 @@ version = "0.1.0"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "4.1.0"
+version = "4.3.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -11573,7 +11573,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "3.0.0"
+version = "4.0.1"
 dependencies = [
  "axum",
  "futures-channel",
