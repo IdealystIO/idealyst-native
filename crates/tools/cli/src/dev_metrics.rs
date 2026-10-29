@@ -71,6 +71,10 @@ pub struct Config {
     pub out_dir: PathBuf,
     /// `--metrics-diffs`.
     pub diffs: bool,
+    /// The recording session's process id, written into every record:
+    /// sessions of one project share the files, and this is what tells
+    /// their records apart.
+    pub session: u32,
 }
 
 impl Config {
@@ -142,6 +146,8 @@ fn wanted(event: &DevEvent) -> bool {
 #[derive(Debug, Clone, Serialize)]
 pub struct Record {
     pub app: String,
+    /// The pid of the `idealyst dev` session that wrote it ([`Config::session`]).
+    pub session: u32,
     /// Local time the episode opened, RFC 3339.
     pub started: String,
     pub target: String,
@@ -485,7 +491,7 @@ impl Recorder {
     /// Close `target`'s episode, if one is open, and write its record.
     fn close(&mut self, target: &str, at: u64, outcome: String, failed: bool) {
         let Some(ep) = self.open.remove(target) else { return };
-        let record = finish(&self.app, target, ep, at, outcome, failed);
+        let record = finish(&self.app, self.config.session, target, ep, at, outcome, failed);
         self.write(&record);
     }
 
@@ -571,7 +577,7 @@ fn append(path: &Path, text: &str) {
     }
 }
 
-fn finish(app: &str, target: &str, ep: Episode, at: u64, outcome: String, failed: bool) -> Record {
+fn finish(app: &str, session: u32, target: &str, ep: Episode, at: u64, outcome: String, failed: bool) -> Record {
     let cargo = ep.cargo.map(|mut cargo| {
         let mut causes: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
         for ((name, version), acc) in &ep.units {
@@ -608,6 +614,7 @@ fn finish(app: &str, target: &str, ep: Episode, at: u64, outcome: String, failed
     });
     Record {
         app: app.to_string(),
+        session,
         started: ep.started,
         target: target.to_string(),
         trigger: ep.trigger,
@@ -969,7 +976,7 @@ mod tests {
     }
 
     fn recorder(dir: &Path, diffs: bool) -> Recorder {
-        Recorder::new(Config { project_dir: dir.to_path_buf(), out_dir: dir.join("out"), diffs })
+        Recorder::new(Config { project_dir: dir.to_path_buf(), out_dir: dir.join("out"), diffs, session: 7 })
     }
 
     fn records(dir: &Path) -> Vec<serde_json::Value> {
@@ -1062,6 +1069,9 @@ mod tests {
         assert_eq!(recs.len(), 1, "{recs:?}");
         let rec = &recs[0];
         assert_eq!(rec["trigger"], "save");
+        // Sessions of one project share the file; this is how their
+        // records are told apart (`read_build_metrics` filters on it).
+        assert_eq!(rec["session"], 7);
         assert_eq!(rec["total_ms"], 8_600);
         assert_eq!(rec["changes"][0]["path"], "src/app.rs");
         assert_eq!(rec["changes"][0]["kind"], "rust source");
@@ -1117,6 +1127,7 @@ mod tests {
     fn regression_a_no_prior_build_row_names_the_kind_once() {
         let rec = Record {
             app: "Lab".into(),
+            session: 7,
             started: "2026-10-26T10:59:59-07:00".into(),
             target: web(),
             trigger: "initial".into(),
@@ -1361,7 +1372,7 @@ mod tests {
     fn the_sink_writes_through_its_worker() {
         let dir = tempfile::tempdir().unwrap();
         let reporter = Reporter::new();
-        let config = Config { project_dir: dir.path().into(), out_dir: dir.path().join("out"), diffs: false };
+        let config = Config { project_dir: dir.path().into(), out_dir: dir.path().join("out"), diffs: false, session: 7 };
         start(config, &reporter).unwrap();
         dev_events::process::set_explain_rebuilds(false);
         reporter.emit(DevEvent::BuildStarted { target: web(), cause: BuildCause::Initial });

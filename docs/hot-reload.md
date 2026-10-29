@@ -1969,7 +1969,7 @@ The event types, by what they say:
 | `overlay_pushed` / `patch_built` / `patch_failed` | a patch was sent (with timings, functions redirected, bytes), or could not be built |
 | `patch_step` | one step of a hot patch ended, with its time, as it ends — so a patch that fails or is superseded still says where its time went. In order: `decide` (the decision and reading the edited sources), `base-index` (waiting for the base's index, on a save that beat it), `seed-wait` (waiting for replay-cache seeds of crates the patch carries), `cargo` (the replays), `diff`, `verify-additive`, `link`, `resolve`, `jump-table`, `strip+write`, `scan-wait` (waiting for the edited crates' archive scan), `install`. The waits appear only when the patch waited; a trimmed patch that could not be trusted repeats `link` / `resolve` / `jump-table` for the whole one. A built patch's `patch_built.steps` lists the same steps, and they sum to about its `ms` |
 | `superseded` | a newer save arrived while a save's `overlay`, `hot_patch` or `rebuild` was in flight. That work is abandoned and never reaches a page, and a new `change_detected` follows with every file changed since. It ends the episode, so a superseded rebuild has no `build_finished` |
-| `build_started` / `stage_started` / `stage_finished` / `build_timed` / `build_finished` | a build: cause, each stage (`cargo`, `hotpatch-base-prep`, `wasm-bindgen`, `wasm-split`, `stage+fingerprint`, …), the summary, the outcome. After a rebuild's `build_finished`, an `archive-scan` stage of `web` covers any wait for the rebuild's archive scan, which the next save's decision needs (see [Workspace crates](#workspace-crates)) |
+| `build_started` / `stage_started` / `stage_finished` / `build_timed` / `build_finished` | a build: cause, each stage (`cargo`, `hotpatch-base-prep`, `wasm-bindgen`, `wasm-split`, `stage+fingerprint`, …), the summary, the outcome. `stage+fingerprint` copies the build's `pkg/` into the served bundle and hashes it; when the build's `pkg/` and the staged one are both unchanged since the last staging (cargo left the module alone, so the passes were skipped), an uncompressed bundle keeps its staged `pkg/` instead of copying and hashing it again. After a rebuild's `build_finished`, an `archive-scan` stage of `web` covers any wait for the rebuild's archive scan, which the next save's decision needs (see [Workspace crates](#workspace-crates)) |
 | `cargo_progress` | packages compiled so far, of the build's total; the crate in flight |
 | `unit_built` | cargo recompiled a unit (not a fresh one): its package, version, kind, and the time since its `Compiling` line |
 | `unit_dirty` | why cargo recompiled a unit, from its fingerprint log: `file_changed`, `dependency_rebuilt`, `features_changed`, `no_prior_build`, … Only under `--metrics` (see "Build metrics") |
@@ -2022,6 +2022,8 @@ initial build, is one record, appended across sessions to
 save, to read) and `build-metrics.jsonl` (the same records as JSON, to
 analyse). A record holds:
 
+- the pid of the session that wrote it (`session` in the JSON): every
+  session of the project appends to the same files;
 - the files saved, each with its kind (`rust source`, `manifest`,
   `lockfile`, `build script`, `config`, `asset`, `deleted`), and the
   crates the watcher attributed them to;
@@ -2043,9 +2045,13 @@ analyse). A record holds:
   artifacts were removed. It typically means the whole tree is rebuilt.
 
 From `idealyst mcp`, `run_dev` takes `metrics` / `metrics_diffs`, and
-`read_build_metrics` returns the records (by session, or by project
-directory once the session has stopped): a summary per save by default,
-the full records with `detail`.
+`read_build_metrics` returns the records — one session's (by its
+`session_id` or `pid`), or every session's of a project (by its
+directory, also once the session has stopped) — ordered by when their
+work started: a summary per save by default, each saying what kind of
+work it was (`initial build`, `rebuild`, `hot patch`, `rebuild after a
+failed hot patch`, …), the full records with `detail`, the answer kept
+under 24 000 characters.
 
 `--metrics-diffs` adds each saved file's diff against what it held at the
 previous save, or when the session started watching it. That keeps a copy
@@ -2085,8 +2091,9 @@ no decision follows it until a request. The panel shows that as a
 target status of `queued: <files> · r applies` and one `queued` row in
 the save history, rewritten as the queue grows; the request's decision
 turns that row into the save's result. An agent reading `dev_status`
-sees the same `change_detected` with nothing after it — the session's
-registry entry (`no_watch: true`) says why.
+sees the target as `queued: true` — a `change_detected` with nothing
+after it in the raw snapshot (`detail`); the session's registry entry
+(`no_watch: true`) says why.
 
 ### Every session is reachable — the session registry
 
@@ -2096,7 +2103,8 @@ Each `idealyst dev`, whether a person started it in a terminal or
 and removes the file when it exits. The entry names the project, the
 app, the targets, the flags (`local`, `no_watch`, `experimental_build`),
 the session log, the event stream, who started it (`launched_by`: `user`,
-or `mcp`), and a control endpoint on a loopback port that answers
+or `mcp` with the launching server's pid as `launcher_pid`), and a
+control endpoint on a loopback port that answers
 
 - `GET /status` — the entry (without its token) and the session's state
   as events, the same snapshot `/__idealyst/events` opens with;
@@ -2120,8 +2128,20 @@ one goes by pid, not by endpoint, so it works on a session too hung to
 answer: `stop_dev` with `include_external: true` sends SIGINT (to the
 process group when the session leads one), then SIGKILL after 10 s. The
 interactive panel quits on that SIGINT as it does on its own Ctrl-C,
-restoring the terminal. A crashed session's entry is pruned by the next
-reader that finds its pid gone.
+restoring the terminal. A session whose launching `idealyst mcp` has
+exited (its `launcher_pid` is gone; an update replaced the server) needs
+no `include_external`: the next server stops it as its own. A crashed
+session's entry is pruned by the next reader that finds its pid gone.
+
+A project directory runs one session. Its sessions would share the
+target directory, `dev.log` and the metrics files, and two cargo builds
+racing in one target directory fail in ways that read as a broken
+release. So `idealyst dev` refuses to start, naming the running
+session's pid, when the registry has a live session for its directory,
+or when another session holds `target/idealyst/<package>/dev.lock` (taken
+before the session log is opened, so two sessions started together
+cannot both pass; the OS releases it when the process ends). `run_dev`
+refuses the same way before spawning.
 
 ## Escape hatches and diagnostics
 

@@ -352,6 +352,40 @@ impl Tracker {
     fn latest(&self) -> Vec<(&String, &Done)> {
         self.targets.iter().filter_map(|(n, t)| t.last.as_ref().map(|d| (n, d))).collect()
     }
+
+    /// Each target's present, as `dev_status` shows it: its latest
+    /// outcome (`latest`), the work in flight (`building`), a save waiting
+    /// in a `--no-watch` queue (`queued`), and a watcher still starting
+    /// (`preparing`, only when the session reports `watcher_ready`).
+    pub(crate) fn summary(&self, no_watch: bool, honour_ready: bool) -> BTreeMap<String, Value> {
+        self.targets
+            .iter()
+            .map(|(name, t)| {
+                let mut v = json!({});
+                let o = v.as_object_mut().expect("an object");
+                if let Some(d) = &t.last {
+                    let mut d = done_json(name, d);
+                    d.as_object_mut().expect("an object").remove("target");
+                    o.insert("latest".into(), d);
+                }
+                if let Some(open) = &t.open {
+                    if no_watch && is_queued(open) {
+                        o.insert("queued".into(), json!(true));
+                    } else {
+                        let mut b = open_json(name, open);
+                        let b_obj = b.as_object_mut().expect("an object");
+                        b_obj.remove("target");
+                        b_obj.retain(|_, v| !v.is_null());
+                        o.insert("building".into(), b);
+                    }
+                }
+                if honour_ready && t.preparing {
+                    o.insert("preparing".into(), json!(true));
+                }
+                (name.clone(), v)
+            })
+            .collect()
+    }
 }
 
 /// A `--no-watch` save that nothing has started building yet.

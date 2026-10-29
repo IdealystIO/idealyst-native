@@ -38,6 +38,9 @@ serde_json = { workspace = true }
 base64 = "0.22"
 # `read_build_metrics` finds a project's records by its package name.
 toml = "0.8"
+# `read_build_metrics` orders records by their RFC 3339 `started`, whose
+# offsets can differ between sessions.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 # Shared render-parity model + diff (also used by the robot-test harness), for
 # the `compare_native_parity` tool.
 native-parity = { workspace = true }

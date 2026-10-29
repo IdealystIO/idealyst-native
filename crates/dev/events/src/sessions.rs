@@ -22,6 +22,12 @@
 //!
 //! A session that crashed leaves its entry behind; a reader checks the
 //! pid before trusting one (`idealyst mcp` prunes dead ones).
+//!
+//! One project directory has at most one session: its sessions would
+//! share a target directory, a `dev.log` and a metrics file, and two
+//! cargo builds racing in one target directory fail in ways that read as
+//! a broken release. `idealyst dev` refuses to start beside a live entry
+//! for its directory ([`in_dir`]).
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -67,6 +73,14 @@ pub struct SessionEntry {
     /// Who started it: `"user"`, or `"mcp"` for `idealyst mcp`'s
     /// `run_dev` ([`LAUNCHED_BY_ENV`]).
     pub launched_by: String,
+    /// The pid of the process that launched it on someone's behalf
+    /// ([`LAUNCHER_PID_ENV`]): the `idealyst mcp` whose `run_dev` started
+    /// it. A launcher that is gone left the session without an owner, and
+    /// the next `idealyst mcp` may treat it as its own. `None` for a
+    /// person's session, and in the entry of a session from before the
+    /// field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launcher_pid: Option<u32>,
     /// Its watchers announce [`crate::DevEvent::WatcherReady`] once they
     /// take saves. False in the entry of a session from before the event,
     /// whose watchers never send it — a consumer must not wait for it then.
@@ -77,6 +91,10 @@ pub struct SessionEntry {
 /// Set by whatever starts `idealyst dev` on someone's behalf, to say so
 /// in the session's entry: `idealyst mcp` sets it to `mcp`.
 pub const LAUNCHED_BY_ENV: &str = "IDEALYST_DEV_LAUNCHED_BY";
+
+/// Set beside [`LAUNCHED_BY_ENV`] to the launcher's own pid, recorded as
+/// [`SessionEntry::launcher_pid`].
+pub const LAUNCHER_PID_ENV: &str = "IDEALYST_DEV_LAUNCHER_PID";
 
 impl SessionEntry {
     /// An entry for `pid`'s session of `dir`, reachable at `control_url`
@@ -98,6 +116,7 @@ impl SessionEntry {
             control_url: control_url.into(),
             token: token.into(),
             launched_by: "user".into(),
+            launcher_pid: None,
             reports_watcher_ready: false,
         }
     }
@@ -161,6 +180,16 @@ pub fn read_all(dir: &Path) -> Vec<(PathBuf, SessionEntry)> {
     out
 }
 
+/// The entry among `entries` whose session runs in `dir`, the paths
+/// compared canonicalized (a symlinked checkout or a trailing `/` is the
+/// same project). Whether its process is alive is the caller's to check,
+/// as for every entry.
+pub fn in_dir<'a>(entries: &'a [SessionEntry], dir: &Path) -> Option<&'a SessionEntry> {
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let want = canonical(dir);
+    entries.iter().find(|e| canonical(Path::new(&e.dir)) == want)
+}
+
 /// One request to a session's control endpoint: `method` `path` with the
 /// session's token. Returns the status code and the body. `timeout`
 /// bounds connecting and each read and write.
@@ -220,6 +249,46 @@ mod tests {
         std::fs::write(dir.join("1.json"), r#"{"version":99,"pid":1}"#).unwrap();
         assert_eq!(read_all(&dir).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An entry from before `launcher_pid` still reads, as a session with
+    /// no recorded launcher.
+    #[test]
+    fn an_entry_without_a_launcher_pid_reads_as_none() {
+        let mut e = SessionEntry::new(4242, "/w/app", "http://127.0.0.1:9", "secret");
+        e.launched_by = "mcp".into();
+        let mut v = serde_json::to_value(&e).unwrap();
+        assert!(v.get("launcher_pid").is_none(), "not written when unknown");
+        v.as_object_mut().unwrap().remove("launcher_pid");
+        assert_eq!(serde_json::from_value::<SessionEntry>(v).unwrap().launcher_pid, None);
+        e.launcher_pid = Some(77);
+        let back: SessionEntry = serde_json::from_value(serde_json::to_value(&e).unwrap()).unwrap();
+        assert_eq!(back.launcher_pid, Some(77));
+    }
+
+    /// A project's session is found by its directory however the path is
+    /// spelled.
+    #[test]
+    fn a_session_is_found_by_its_directory_however_it_is_spelled() {
+        let root = std::env::temp_dir().join(format!("idealyst-in-dir-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let app = root.join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::create_dir_all(root.join("other")).unwrap();
+        let entries = vec![
+            SessionEntry::new(1, root.join("other").display().to_string(), "http://127.0.0.1:9", "t"),
+            SessionEntry::new(2, format!("{}/", app.display()), "http://127.0.0.1:9", "t"),
+        ];
+        assert_eq!(in_dir(&entries, &app).map(|e| e.pid), Some(2));
+        assert_eq!(in_dir(&entries, &root.join("other/../app")).map(|e| e.pid), Some(2));
+        #[cfg(unix)]
+        {
+            let link = root.join("link");
+            std::os::unix::fs::symlink(&app, &link).unwrap();
+            assert_eq!(in_dir(&entries, &link).map(|e| e.pid), Some(2));
+        }
+        assert_eq!(in_dir(&entries, &root), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

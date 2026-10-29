@@ -711,6 +711,14 @@ pub fn run(args: Args) -> Result<()> {
     // shape ("missing targets") regardless of how they invoked.
     let manifest = parse_manifest(&dir)?;
     let active_targets = resolve_targets(&args, &manifest.app.targets)?;
+    let log_path = session_log_path(&dir, &manifest);
+    // Before the session log is opened (a running session is writing it)
+    // and before anything builds. Held for the rest of `run`.
+    let _claim = crate::dev_control::claim_dir(
+        &dir,
+        &log_path.with_file_name("dev.lock"),
+        dev_events::sessions::registry_dir().as_deref(),
+    )?;
     // Before any watcher starts: each reads it (`dev_log::no_watch`).
     crate::dev_log::set_no_watch(args.no_watch);
 
@@ -723,7 +731,6 @@ pub fn run(args: Args) -> Result<()> {
         crate::dev_log::stderr_is_tty(),
         active_targets.contains(&Target::Terminal),
     );
-    let log_path = session_log_path(&dir, &manifest);
     let session = crate::dev_log::start(
         ui,
         &log_path,
@@ -744,6 +751,7 @@ pub fn run(args: Args) -> Result<()> {
             project_dir: dir.clone(),
             out_dir: log_path.parent().map(Path::to_path_buf).unwrap_or_else(|| dir.clone()),
             diffs: args.metrics_diffs,
+            session: std::process::id(),
         };
         let shown = config.markdown();
         match crate::dev_metrics::start(config, &session.reporter) {
@@ -829,6 +837,8 @@ pub fn run(args: Args) -> Result<()> {
         // This session's watchers (dev-reload) send `watcher_ready`.
         entry.reports_watcher_ready = true;
         entry.launched_by = std::env::var(dev_events::sessions::LAUNCHED_BY_ENV).unwrap_or_else(|_| "user".into());
+        entry.launcher_pid =
+            std::env::var(dev_events::sessions::LAUNCHER_PID_ENV).ok().and_then(|p| p.parse().ok());
         let registration = crate::dev_control::start(
             entry,
             crate::dev_control::Actions {

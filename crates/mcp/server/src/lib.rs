@@ -16,6 +16,7 @@ mod catalog_service;
 mod catalog_status;
 mod dev_runner;
 mod dev_sessions;
+mod dev_status;
 pub mod lint;
 mod robot_bridge;
 pub mod schema_minify;

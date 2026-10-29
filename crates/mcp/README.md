@@ -136,12 +136,17 @@ started in a terminal (found through the session registry,
 `~/.idealyst/dev-sessions/`) — and `stop_dev` (by `session_id`, `pid`,
 or `all`) tears a session back down — on unix the whole `idealyst dev`
 process **group** (its cargo builds, web servers, simulators) gets a
-graceful SIGINT escalating to SIGKILL. A session this server did not
-start is stopped only with `include_external: true`. The server also
-best-effort stops any sessions it still owns when it shuts down.
+graceful SIGINT escalating to SIGKILL. A session a person or another
+running `idealyst mcp` started is stopped only with
+`include_external: true`; one whose `idealyst mcp` has exited (an
+update replaced it) is this server's to stop. The server also
+best-effort stops any sessions it still owns when it shuts down. A
+project directory runs one session: `run_dev` refuses beside a running
+one and names it, to be used by `pid` instead.
 
-`dev_status` reads a session's current state (the change, the decision,
-the build or patch and its errors) and `rebuild_dev` does what the
+`dev_status` summarizes a session's current state (per target the
+latest outcome or the build in flight, what it serves, how many roots it
+watches; `detail` for the raw event snapshot) and `rebuild_dev` does what the
 panel's `r` does — for a `--no-watch` session, applies the saves it
 queued. Both work on a person's session through its control endpoint,
 so an agent can drive the rebuilds of a session it did not start.

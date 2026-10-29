@@ -4,6 +4,8 @@ These tools launch, watch and stop `idealyst dev` from MCP. The loop is `run_dev
 
 They work on a session a PERSON started in a terminal too, not only on ones `run_dev` started: every `idealyst dev` (CLI 1.18 and later) registers itself in `~/.idealyst/dev-sessions/<pid>.json` and runs a loopback control endpoint, so `list_dev_sessions` shows it, `read_dev_log`, `dev_status` and `rebuild_dev` take its `pid`, and `stop_dev` stops it when told `include_external: true`. A person who watches a session themselves (often with `--no-watch`, so saves wait) and wants an agent to drive its rebuilds needs nothing else.
 
+A project directory runs ONE session. Two would share its target directory, its `dev.log` and its metrics file, and their cargo builds would race (it surfaces as `can't find crate for …` in a registry crate). So when `list_dev_sessions` shows a session in the directory, use it — by `pid` — rather than starting another: `run_dev` refuses, and so does `idealyst dev` itself.
+
 ## list_apps
 
 Every running idealyst app, as `{ name, selector, bundle_id, project_root, bridge_addr, pid, … }`. Pass `selector` as the `app` argument of Robot tools (see `get_docs("app")`).
@@ -31,6 +33,8 @@ Arguments:
 - `metrics`: record what every save cost — its tier and why, each stage's time, and for a cargo build every crate recompiled with its compile time and cargo's reason. Read the records with `read_build_metrics`.
 - `metrics_diffs`: `metrics`, plus each saved file's diff against the previous save. Keeps a copy of every watched text file in memory for the session.
 - `dir`: project directory; defaults to the server's working directory.
+
+Refuses, naming the running session's pid and who started it, when a session already runs in `dir` (see above): use that one, or `stop_dev` it first.
 
 Returns `{ id, pid, dir, platforms, local, no_robot, log_path, status }`. Output goes to `~/.idealyst/dev-logs/<name>-<id>.log` (`log_path`); follow it with `read_dev_log`. The process runs until `stop_dev`.
 
@@ -85,16 +89,18 @@ A `run_dev` session's log stays readable after it exits and is pruned from `list
 
 What each save cost, from the records a session started with `metrics` (or `idealyst dev --metrics`) appends: one per save and one per initial build, in `<project>/target/idealyst/<package>/build-metrics.jsonl`. Records accumulate across sessions, so this is how to tell a seconds-long rebuild from a minutes-long one and why.
 
-Name the records by `session_id` or `pid` (a running session, a person's included), or by `dir` (a project, whether or not a session runs; default the server's working directory).
+Name the records by `session_id` or `pid` (a running session, a person's included) for that session's records only, or by `dir` for every session's records of a project, whether or not a session runs (default the server's working directory). Every session of a project appends to the same file, and each record carries the pid of the session that wrote it (`session`); records from an `idealyst` that predates it carry none, and only `dir` reads them.
 
-- `last`: the newest N matching records, oldest first. Default 10, max 200.
-- `rebuilds_only`: only records whose work ran cargo — rebuilds and the initial and forced builds, not overlay or hot patches.
+- `last`: the newest N matching records, oldest first. Default 10, max 200. Records are ordered by when their work STARTED: one is written when its work ends, so a long build lands in the file after quicker ones begun later.
+- `rebuilds_only`: only records whose work ran cargo — rebuilds (a hot patch that fell back to one included) and the initial and requested builds, not overlay or hot patches.
 - `detail`: the records as written, with every recompiled crate and the diffs. Without it each record is a summary.
 
-Returns `{ path, total, matching, records }`. A summary is `{ started, target, trigger, tier, reason, outcome, failed, total_ms, changes, stages, cargo, hot_patch, diffed_files }`, each present when the record has it:
+Returns `{ path, total, matching, records, session? }`. An answer stays under 24 000 characters: when the records asked for do not fit, the oldest are left out, `omitted_for_size` counts them and `note` says so — ask for fewer with `last`, or read one record from `path` by its `line`. A summary is `{ line, session, started, target, kind, trigger, tier, reason, outcome, failed, total_ms, changes, changes_total, stages, cargo, hot_patch, diffed_files, diffed_files_total }`, each present when the record has it:
 
-- `changes`: the saved files, each with its `kind` (`rust source`, `manifest`, `lockfile`, `build script`, `config`, `asset`, `deleted`).
-- `tier` and `reason`: what the watcher decided (`overlay`, `hot patch`, `rebuild`, `unchanged`) and why; absent for the initial build (`trigger: "initial"`).
+- `line`: the record's line in `path`, where the full record is.
+- `kind`: what the work was — `initial build`, `requested rebuild` (`rebuild_dev`, the panel's `r`), `rebuild`, `hot patch`, `rebuild after a failed hot patch`, `overlay patch`, `no change`, `save, not built` (superseded before it built), `one-shot build`. Every record has one; a full-stack server's saves have no `tier`, so their `kind` is `rebuild`.
+- `changes`: the first ten saved files, each with its `kind` (`rust source`, `manifest`, `lockfile`, `build script`, `config`, `asset`, `deleted`); `changes_total` counts them when there are more (a branch switch saves thousands). `diffed_files` and `diffed_files_total` likewise.
+- `tier` and `reason`: what the watcher decided (`overlay`, `hot_patch`, `rebuild`, `unchanged`) and why; absent when nothing was decided (the initial and requested builds, a server's saves).
 - `hot_patch`: a hot patch the save attempted: `steps`, each `{ name, ms }` in order (`decide`, `seed-wait`, `cargo`, `link`, `scan-wait`, `install`, …), kept when the patch failed or was superseded; and for a built one `crates` (each re-emitted crate's replay `ms`, `null` when its objects were reused), `redirected` and `bytes`.
 - `cargo`: `{ recompiled, packages_seen, root_causes, slowest }`. `root_causes` are the reasons other than "a dependency was rebuilt", each `{ kind, detail, packages, package_count }`. `slowest` is the ten slowest recompiled crates with `ms` and reason kinds.
 
@@ -108,7 +114,7 @@ Every running `idealyst dev` session on this machine: the ones a person started 
 
 `[{ pid, session_id, started_by, dir, app, targets, local, no_watch, experimental_build, log_path, uptime_secs, control }]`:
 
-- `started_by` is `this server`, `a person`, or `another idealyst mcp`; `session_id` is set only for this server's own.
+- `started_by` is `this server`, `a person`, `another idealyst mcp` (one still running: another agent's), or `an idealyst mcp that has exited` (an update or a client restart replaced the server that started it; this server treats it as its own, see `stop_dev`); `session_id` is set only for sessions this server started.
 - `no_watch` says saves wait for `rebuild_dev`.
 - `control` is false for a session this server launched that has not registered yet (it registers as soon as it starts reporting), or one whose `idealyst` predates the registry. That one shows this server's `{ id, platforms, status, … }`, where `status` is `running` or `exited(<code>)`. An exited session is reported once, then dropped.
 
@@ -116,9 +122,17 @@ A session that crashed leaves its registry entry behind; it is pruned here once 
 
 ## dev_status
 
-One session's current state, from its control endpoint: `{ session, events }`. `session` is its registry entry (project, targets, `no_watch`, `experimental_build`, log path, …). `events` is the session as the events that describe it now — the same snapshot its `/__idealyst/events` stream opens with: the `session_started`, each server's address, and per target the latest episode — what changed (`change_detected`), what it needed (`decided`), and how it ended (`build_finished`, `patch_built`, `overlay_pushed`, …) with up to 64 diagnostics. A target whose latest episode has a `change_detected` and no outcome is mid-build — or, under `--no-watch`, has saves waiting for `rebuild_dev`.
+One session's current state, from its control endpoint, folded into a summary:
 
-Takes `session_id` or `pid`.
+- `session`: its registry entry (project, targets, `no_watch`, `experimental_build`, log path, who started it, …).
+- `targets`: per target (`web`, `server`, `ios`, …) `latest`, its latest outcome as `wait_for_build` reports one (`outcome`, `failed`, `tier`, `reason`, `ms`, `gen`, `errors`); `building`, the work in flight with its `stage` and cargo progress; `queued: true` for saves waiting for `rebuild_dev` under `--no-watch`; `preparing: true` for a watcher still starting; `watched_roots`, how many paths it watches; `warnings`, its last build's warning count; `urls`, what it serves; `server_down`; `page`, the page's last acknowledgement.
+- `started`: the session's mode and hot-reload tier; `urls`: the session's own event stream; `robot_relay` and `robot_apps`: its Robot relay and the apps connected to it.
+- `cursor`: the highest event `seq` seen, to pass to `wait_for_build` as `after`.
+- `other`: any event this server does not know, as sent.
+
+`detail: true` returns what the session sent instead, `{ session, events }`: `events` is the session as the events that describe it now — the same snapshot its `/__idealyst/events` stream opens with — every watched root and up to 64 diagnostics included.
+
+Takes `session_id` or `pid`, and `detail`.
 
 ## rebuild_dev
 
@@ -131,5 +145,6 @@ Takes `session_id` or `pid`, and works on a person's session as on this server's
 Stops a session and returns what happened. Name it by `session_id` or `pid`, or pass `all: true`.
 
 - This server's own sessions stop as they always have: on unix the whole dev process GROUP is signalled (the `idealyst dev` process and its cargo builds, web servers and simulators), SIGINT first so simulators and servers shut down cleanly, escalating to SIGKILL after a grace window.
-- A session a PERSON started is stopped only with `include_external: true` — it is someone's terminal. It is stopped by signal, not through its control endpoint, so this works on a session that has hung and no longer answers: SIGINT to its process group (or to it alone, if it does not lead one), 10 seconds for its own teardown (a terminal panel restores the terminal), then SIGKILL. Its registry entry is removed. The result says `Gracefully`, `Killed` or `AlreadyGone`.
-- `all: true` stops this server's sessions; with `include_external: true`, every session on the machine.
+- A session an `idealyst mcp` started and that server has since exited (an update or a client restart leaves its sessions running) has no owner: this server stops it as its own, by signal as below, without `include_external`.
+- A session a PERSON started, or one another RUNNING `idealyst mcp` started (another agent's), is stopped only with `include_external: true`. It is stopped by signal, not through its control endpoint, so this works on a session that has hung and no longer answers: SIGINT to its process group (or to it alone, if it does not lead one), 10 seconds for its own teardown (a terminal panel restores the terminal), then SIGKILL. Its registry entry is removed. The result says `Gracefully`, `Killed` or `AlreadyGone`.
+- `all: true` stops this server's sessions and those an exited server left; with `include_external: true`, every session on the machine.

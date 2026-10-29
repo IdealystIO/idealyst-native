@@ -196,6 +196,19 @@ impl DevRunner {
         if !dir.is_dir() {
             return Err(format!("project dir does not exist: {}", dir.display()));
         }
+        // `idealyst dev` refuses to start beside a session of its
+        // directory too, but detached, its refusal would only reach the
+        // log.
+        if let Some(l) = crate::dev_sessions::running_in(&dir) {
+            return Err(format!(
+                "a dev session already runs in {} (pid {}, started by {}): use it — dev_status, \
+                 rebuild_dev and wait_for_build take its `pid` — or stop it first with stop_dev. \
+                 Two sessions of one project share its target directory and log, and their builds race.",
+                dir.display(),
+                l.entry.pid,
+                crate::dev_sessions::Owner::of(&l.entry, self.id_of_pid(l.entry.pid)).label(),
+            ));
+        }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let app_name = dir
@@ -214,8 +227,10 @@ impl DevRunner {
         cmd.arg("dev").arg(&dir);
         validate_platforms(&launch.platforms)?;
         cmd.args(dev_flags(&launch));
-        // Its registry entry says an agent started it.
+        // Its registry entry says an agent started it, and which server:
+        // one that outlives this server is the next one's to stop.
         cmd.env(dev_events::sessions::LAUNCHED_BY_ENV, "mcp");
+        cmd.env(dev_events::sessions::LAUNCHER_PID_ENV, std::process::id().to_string());
 
         self.spawn_tracked(cmd, id, dir, launch, log_path, log, log_err)
     }
@@ -316,8 +331,6 @@ impl DevRunner {
             })
     }
 
-    /// Stop one session by id. Graceful SIGINT → escalate to SIGKILL.
-    /// Removes it from the table. Returns its final info.
     /// The id of the session this server launched as process `pid`.
     pub fn id_of_pid(&self, pid: u32) -> Option<u64> {
         self.sessions.lock().unwrap().iter().find(|s| s.child.id() == pid).map(|s| s.id)
@@ -328,6 +341,8 @@ impl DevRunner {
         self.sessions.lock().unwrap().iter().find(|s| s.id == id && s.exit_status.is_none()).map(|s| s.child.id())
     }
 
+    /// Stop one session by id. Graceful SIGINT → escalate to SIGKILL.
+    /// Removes it from the table. Returns its final info.
     pub fn stop(&self, id: u64) -> Result<DevSessionInfo, String> {
         let mut guard = self.sessions.lock().unwrap();
         let idx = guard

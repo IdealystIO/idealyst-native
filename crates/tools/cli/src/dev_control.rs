@@ -4,6 +4,10 @@
 //! reads its state, requests a rebuild (the panel's `r`), and finds its
 //! log. Stopping goes by the pid in the entry, so it works on a session
 //! too wedged to answer.
+//!
+//! It also keeps a project to one session ([`claim_dir`]): a second
+//! session of a directory would share the first's target directory, log
+//! and metrics file, and its cargo builds would race the first's.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -118,6 +122,82 @@ pub fn start_in(registry: &Path, mut entry: SessionEntry, actions: Actions) -> O
     Some(Registration { path })
 }
 
+/// A project directory claimed for this session; dropping it (or the
+/// process ending, however it ends) releases the claim.
+pub struct DirClaim {
+    _lock: std::fs::File,
+}
+
+/// Claim `dir` for this session, or say which session already has it.
+///
+/// Two checks, because neither covers every case alone. The registry
+/// (`registry`) names a running session of `dir`, but a session's entry
+/// is written seconds after it starts, so two sessions started together
+/// would both find it empty. The lock on `lock_path` (beside the session
+/// log, `dev.lock`) closes that window, and the OS drops it with the
+/// process, so a crash cannot leave the directory claimed. It is taken
+/// only by an `idealyst` that knows it, so an older session is found
+/// through the registry alone.
+pub fn claim_dir(dir: &Path, lock_path: &Path, registry: Option<&Path>) -> anyhow::Result<DirClaim> {
+    if let Some(registry) = registry {
+        let others: Vec<SessionEntry> = sessions::read_all(registry)
+            .into_iter()
+            .map(|(_, e)| e)
+            .filter(|e| e.pid != std::process::id() && pid_is_live(e.pid))
+            .collect();
+        if let Some(e) = sessions::in_dir(&others, dir) {
+            let who = if e.launched_by == "mcp" { "an agent, through `idealyst mcp`" } else { "a person" };
+            anyhow::bail!(
+                "an `idealyst dev` session already runs in {} (pid {}, started by {who}, idealyst {}). \
+                 Two sessions of one project share its target directory and log, and their builds \
+                 race. Use that session — the idealyst MCP drives it by pid (`dev_status`, \
+                 `rebuild_dev`, `wait_for_build`) — or stop it first (Ctrl-C in its terminal, \
+                 `kill -INT {}`, or `stop_dev` with its pid).",
+                dir.display(),
+                e.pid,
+                e.cli_version,
+                e.pid,
+            );
+        }
+    }
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock_path)
+        .map_err(|e| anyhow::anyhow!("cannot open {}: {e}", lock_path.display()))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(DirClaim { _lock: lock }),
+        Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!(
+            "another `idealyst dev` session is starting in {} (it holds {}). Two sessions of one \
+             project share its target directory and log, and their builds race: wait for it and \
+             use it (`list_dev_sessions` shows it once it is up), or stop it first.",
+            dir.display(),
+            lock_path.display(),
+        ),
+        Err(std::fs::TryLockError::Error(e)) => {
+            anyhow::bail!("cannot lock {}: {e}", lock_path.display())
+        }
+    }
+}
+
+/// Whether process `pid` exists. Off unix every entry counts as live,
+/// which only matters for an entry a crash left behind.
+#[cfg(unix)]
+fn pid_is_live(pid: u32) -> bool {
+    // SAFETY: signal 0 checks for existence and delivers nothing.
+    let rc = unsafe { libc::kill(pid as i32, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn pid_is_live(_pid: u32) -> bool {
+    true
+}
+
 /// 32 hex characters from the OS's randomness. A process that can read
 /// `/dev/urandom` but not this user's entry file cannot guess it.
 fn token() -> String {
@@ -181,6 +261,66 @@ mod tests {
         assert!(v["session"].get("token").is_none(), "the status leaks the token");
         assert_eq!(v["events"][0]["type"], "session_started");
         assert_eq!(handle("DELETE", "/status", Some("Bearer tok"), false, &e, &a).0, 404);
+    }
+
+    /// Regression: a session started while another still ran in the same
+    /// directory, sharing its target directory and log. The second is
+    /// refused, whether the first is found by its registry entry (an
+    /// older `idealyst`, which takes no lock) or by its lock (one still
+    /// starting, not yet registered).
+    #[cfg(unix)]
+    #[test]
+    fn regression_a_second_session_of_one_directory_is_refused() {
+        let root = std::env::temp_dir().join(format!("idealyst-claim-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (app, registry) = (root.join("app"), root.join("registry"));
+        std::fs::create_dir_all(&app).unwrap();
+        let lock = app.join("target/idealyst/app/dev.lock");
+
+        // A running session's entry: a live process standing in for it.
+        let mut running = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut e = SessionEntry::new(running.id(), app.display().to_string(), "http://127.0.0.1:9", "t");
+        e.launched_by = "mcp".into();
+        e.cli_version = "1.19.0".into();
+        sessions::write(&registry, &e).unwrap();
+        let err = claim_dir(&app, &lock, Some(&registry)).err().expect("refused beside a running session");
+        let text = err.to_string();
+        assert!(text.contains(&format!("pid {}", running.id())), "{text}");
+        assert!(text.contains("an agent"), "{text}");
+        running.kill().unwrap();
+        running.wait().unwrap();
+
+        // Its process gone, the entry does not hold the directory.
+        let first = claim_dir(&app, &lock, Some(&registry)).expect("claimed once the session exited");
+        // One still starting holds the lock before it registers.
+        let err = claim_dir(&app, &lock, Some(&registry)).err().expect("refused beside a starting session");
+        assert!(err.to_string().contains("is starting"), "{err}");
+        drop(first);
+        // A process this test binary forks concurrently (other tests spawn
+        // children) shares the lock's open file description until its exec
+        // closes it (`O_CLOEXEC`), so the release can lag by that instant.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let reclaimed = loop {
+            match claim_dir(&app, &lock, Some(&registry)) {
+                Ok(c) => break c,
+                Err(e) if std::time::Instant::now() > deadline => panic!("released with the claim: {e}"),
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            }
+        };
+        drop(reclaimed);
+        // Another directory is another project.
+        let other = root.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let _a = loop {
+            match claim_dir(&app, &lock, Some(&registry)) {
+                Ok(c) => break c,
+                Err(e) if std::time::Instant::now() > deadline => panic!("{e}"),
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            }
+        };
+        claim_dir(&other, &other.join("dev.lock"), Some(&registry)).expect("a different project");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The whole path a tool takes: find the entry, request through it.

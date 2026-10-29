@@ -48,6 +48,88 @@ pub fn find(pid: u32) -> Option<Live> {
     live().into_iter().find(|l| l.entry.pid == pid)
 }
 
+/// The live registered session running in project directory `dir`.
+pub fn running_in(dir: &std::path::Path) -> Option<Live> {
+    let live = live();
+    let entries: Vec<SessionEntry> = live.iter().map(|l| l.entry.clone()).collect();
+    let pid = sessions::in_dir(&entries, dir)?.pid;
+    live.into_iter().find(|l| l.entry.pid == pid)
+}
+
+/// Whose a live session is, as this server sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owner {
+    /// `run_dev` here started it; the id it gave it.
+    ThisServer(u64),
+    /// An `idealyst mcp` started it and has since exited (an update or a
+    /// client restart replaces the server without stopping its
+    /// sessions). Nothing else owns it, so this server treats it as its
+    /// own.
+    ExitedMcp,
+    /// An `idealyst mcp` that is still running started it: another
+    /// agent's.
+    OtherMcp,
+    /// A person started it in a terminal.
+    Person,
+}
+
+impl Owner {
+    /// `entry`'s owner. `this_server` is the id `run_dev` here gave it,
+    /// if it did.
+    pub fn of(entry: &SessionEntry, this_server: Option<u64>) -> Self {
+        Self::with_parent(entry, this_server, parent_pid)
+    }
+
+    fn with_parent(entry: &SessionEntry, this_server: Option<u64>, parent: impl Fn(u32) -> Option<u32>) -> Self {
+        if let Some(id) = this_server {
+            return Owner::ThisServer(id);
+        }
+        if entry.launched_by != "mcp" {
+            return Owner::Person;
+        }
+        let gone = match entry.launcher_pid {
+            Some(launcher) => !crate::app_discovery::pid_is_live(launcher),
+            // An entry from before `launcher_pid`: the session's parent is
+            // the server that spawned it until that server exits, when the
+            // session is re-parented to init. Unknown counts as running:
+            // stopping another agent's session is the worse mistake.
+            None => parent(entry.pid) == Some(1),
+        };
+        if gone {
+            Owner::ExitedMcp
+        } else {
+            Owner::OtherMcp
+        }
+    }
+
+    /// Whether a stop needs `include_external`.
+    pub fn is_external(self) -> bool {
+        matches!(self, Owner::OtherMcp | Owner::Person)
+    }
+
+    /// As `list_dev_sessions` shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Owner::ThisServer(_) => "this server",
+            Owner::ExitedMcp => "an idealyst mcp that has exited",
+            Owner::OtherMcp => "another idealyst mcp",
+            Owner::Person => "a person",
+        }
+    }
+}
+
+/// Process `pid`'s parent, from `ps`.
+#[cfg(unix)]
+fn parent_pid(pid: u32) -> Option<u32> {
+    let out = std::process::Command::new("ps").args(["-o", "ppid=", "-p", &pid.to_string()]).output().ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+#[cfg(not(unix))]
+fn parent_pid(_pid: u32) -> Option<u32> {
+    None
+}
+
 /// `GET /status`: the session and its current state.
 pub fn status(entry: &SessionEntry) -> Result<serde_json::Value, String> {
     call(entry, "GET", "/status")
@@ -157,6 +239,45 @@ mod tests {
         assert_eq!(live[0].entry.pid, std::process::id());
         assert!(!dead_path.exists(), "the dead session's entry was left behind");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: after an `idealyst mcp` update, the new server called
+    /// the session the old one had started "another idealyst mcp" and
+    /// refused to stop it without `include_external`. A session whose
+    /// launching server has exited is this server's to stop; one whose
+    /// launcher still runs is not.
+    #[test]
+    fn regression_a_session_whose_mcp_exited_is_this_servers() {
+        let mut e = SessionEntry::new(4242, "/w/app", "http://127.0.0.1:9", "t");
+        let no_parent = |_| None;
+        assert_eq!(Owner::with_parent(&e, None, no_parent), Owner::Person);
+        assert_eq!(Owner::with_parent(&e, Some(3), no_parent), Owner::ThisServer(3));
+
+        e.launched_by = "mcp".into();
+        // Its launcher recorded, and gone (past the default pid_max).
+        e.launcher_pid = Some(4_000_000);
+        assert_eq!(Owner::with_parent(&e, None, no_parent), Owner::ExitedMcp);
+        assert!(!Owner::ExitedMcp.is_external());
+        // Its launcher recorded, and running: another agent's.
+        e.launcher_pid = Some(std::process::id());
+        assert_eq!(Owner::with_parent(&e, None, no_parent), Owner::OtherMcp);
+        assert!(Owner::OtherMcp.is_external());
+
+        // An entry from before the field: re-parented to init means the
+        // launcher is gone; a live parent or an unknown one means not.
+        e.launcher_pid = None;
+        assert_eq!(Owner::with_parent(&e, None, |_| Some(1)), Owner::ExitedMcp);
+        assert_eq!(Owner::with_parent(&e, None, |_| Some(std::process::id())), Owner::OtherMcp);
+        assert_eq!(Owner::with_parent(&e, None, no_parent), Owner::OtherMcp);
+    }
+
+    /// The parent lookup the fallback above relies on.
+    #[test]
+    fn a_child_names_this_process_as_its_parent() {
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        assert_eq!(parent_pid(child.id()), Some(std::process::id()));
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 
     /// A process that exits on SIGINT stops gracefully; one that ignores

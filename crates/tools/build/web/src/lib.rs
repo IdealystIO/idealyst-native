@@ -1105,6 +1105,11 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
     let stage_start = timings.begin("stage+fingerprint");
     let (pkg_dir, bundle_dir, entry_js) = if let Some(out) = opts.bundle_out_dir.as_ref() {
         let default_index = default_index_html(&manifest.app.name, &manifest.lib_name);
+        // A compressed bundle rewrites its pkg files in place, so only an
+        // uncompressed one (every dev loop's) can be kept. See `KeptPkg`.
+        let compressed = opts.gzip || opts.brotli;
+        let staged_stamp = build_dir.join(STAGED_PKG_STAMP);
+        let kept = if compressed { None } else { KeptPkg::set_aside(&staged_stamp, out, &wrapper_pkg) };
         let staged = stage_bundle(
             &project_dir,
             out,
@@ -1116,31 +1121,46 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
             reporter.log("build-web", warning);
         }
         let staged_pkg = staged.join("pkg");
-        sync_pkg_dir(&wrapper_pkg, &staged_pkg).with_context(|| {
-            format!("sync {} → {}", wrapper_pkg.display(), staged_pkg.display())
-        })?;
-        strip_wasm_pack_metadata(&staged_pkg);
-        // Content-address the bundle: every pkg file is renamed to
-        // carry the build digest and index.html is pointed at the
-        // hashed entry, so a redeploy can never be half-served from a
-        // stale HTTP cache. Runs after metadata stripping (so junk
-        // files don't feed the digest) and before gzip (which rewrites
-        // bytes in place under the final names).
-        let fp = fingerprint_pkg(&staged_pkg, &manifest.lib_name)
-            .with_context(|| format!("fingerprint {}", staged_pkg.display()))?;
-        reporter.log(
-            "build-web",
-            format!(
-                "fingerprint {}: {} pkg file(s) content-addressed (entry {}{})",
-                fp.hash,
-                fp.renamed,
-                fp.entry_js,
-                fp.premint_css
-                    .as_deref()
-                    .map(|c| format!(", stylesheet {c} — hashed on its own bytes"))
-                    .unwrap_or_default(),
-            ),
-        );
+        let fp = match kept.and_then(|k| k.restore(&staged_pkg)) {
+            Some(fp) => {
+                reporter.log(
+                    "build-web",
+                    format!(
+                        "fingerprint {}: pkg/ unchanged since it was last staged — kept (entry {})",
+                        fp.hash, fp.entry_js,
+                    ),
+                );
+                fp
+            }
+            None => {
+                sync_pkg_dir(&wrapper_pkg, &staged_pkg).with_context(|| {
+                    format!("sync {} → {}", wrapper_pkg.display(), staged_pkg.display())
+                })?;
+                strip_wasm_pack_metadata(&staged_pkg);
+                // Content-address the bundle: every pkg file is renamed to
+                // carry the build digest and index.html is pointed at the
+                // hashed entry, so a redeploy can never be half-served from a
+                // stale HTTP cache. Runs after metadata stripping (so junk
+                // files don't feed the digest) and before gzip (which rewrites
+                // bytes in place under the final names).
+                let fp = fingerprint_pkg(&staged_pkg, &manifest.lib_name)
+                    .with_context(|| format!("fingerprint {}", staged_pkg.display()))?;
+                reporter.log(
+                    "build-web",
+                    format!(
+                        "fingerprint {}: {} pkg file(s) content-addressed (entry {}{})",
+                        fp.hash,
+                        fp.renamed,
+                        fp.entry_js,
+                        fp.premint_css
+                            .as_deref()
+                            .map(|c| format!(", stylesheet {c} — hashed on its own bytes"))
+                            .unwrap_or_default(),
+                    ),
+                );
+                fp
+            }
+        };
         let index = staged.join("index.html");
         if !rewrite_index_bundle_ref(&index, &manifest.lib_name, &fp.entry_js)? {
             reporter.warn(
@@ -1210,6 +1230,11 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
         }
         if opts.gzip {
             gzip_bundle(&staged).with_context(|| format!("gzip bundle at {}", staged.display()))?;
+        }
+        if compressed {
+            let _ = fs::remove_file(&staged_stamp);
+        } else {
+            StagedPkg::record(&staged_stamp, out, &wrapper_pkg, &staged_pkg, &fp, &reporter);
         }
         (staged_pkg, Some(staged), Some(fp.entry_js))
     } else {
@@ -3738,6 +3763,220 @@ fn run_wasm_split(
 }
 
 
+/// The build dir's record of the last staging of its `pkg/`
+/// ([`StagedPkg`]).
+const STAGED_PKG_STAMP: &str = ".staged-pkg";
+
+/// One file's identity in a listing: its path under the listed dir, its
+/// length and its modification time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStamp {
+    path: String,
+    len: u64,
+    mtime_nanos: u128,
+}
+
+/// Every file under `dir`, path-sorted. `None` when `dir` cannot be read.
+fn list_files(dir: &Path) -> Option<Vec<FileStamp>> {
+    fn walk(dir: &Path, root: &Path, out: &mut Vec<FileStamp>) -> std::io::Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let md = entry.metadata()?;
+            if md.is_dir() {
+                walk(&path, root, out)?;
+            } else {
+                let mtime = md.modified()?.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                out.push(FileStamp {
+                    path: path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/"),
+                    len: md.len(),
+                    mtime_nanos: mtime.as_nanos(),
+                });
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out).ok()?;
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Some(out)
+}
+
+/// What the last staging of a build's `pkg/` produced: the bundle it went
+/// to, the build `pkg/` it was staged from and the staged `pkg/` it left,
+/// each as a [`list_files`] listing, and the fingerprint it computed.
+///
+/// Staging copies the build's `pkg/` and reads every byte back to
+/// fingerprint it. On a 527 MB debug module in a devcontainer's bind
+/// mount that is 12.7 s of a 14.3 s rebuild in which cargo found nothing
+/// to do and the post-cargo passes were skipped: the staged result is the
+/// one already there. A build whose `pkg/` still matches its listing here
+/// (a skipped pass leaves every file untouched) and whose staged `pkg/`
+/// matches its own keeps it instead ([`KeptPkg`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StagedPkg {
+    out_dir: String,
+    source: Vec<FileStamp>,
+    staged: Vec<FileStamp>,
+    hash: String,
+    entry_js: String,
+    premint_css: Option<String>,
+    renamed: usize,
+}
+
+impl StagedPkg {
+    /// Pinned like [`WasmStamp`]: another tooling version may stage differently.
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+    fn encode(&self) -> String {
+        let mut s = format!(
+            "{}\n{}\n{}\t{}\t{}\t{}\n",
+            Self::VERSION,
+            self.out_dir,
+            self.hash,
+            self.entry_js,
+            self.premint_css.as_deref().unwrap_or("-"),
+            self.renamed,
+        );
+        for (section, files) in [("source", &self.source), ("staged", &self.staged)] {
+            s.push_str(&format!("{section} {}\n", files.len()));
+            for f in files {
+                s.push_str(&format!("{}\t{}\t{}\n", f.len, f.mtime_nanos, f.path));
+            }
+        }
+        s
+    }
+
+    /// `None` for anything but a record this exact tooling version wrote.
+    fn decode(text: &str) -> Option<Self> {
+        let mut lines = text.lines();
+        if lines.next()? != Self::VERSION {
+            return None;
+        }
+        let out_dir = lines.next()?.to_string();
+        let mut head = lines.next()?.split('\t');
+        let (hash, entry_js, premint) = (head.next()?.to_string(), head.next()?.to_string(), head.next()?);
+        let renamed = head.next()?.parse().ok()?;
+        let mut section = |name: &str| -> Option<Vec<FileStamp>> {
+            let n: usize = lines.next()?.strip_prefix(name)?.trim().parse().ok()?;
+            (0..n)
+                .map(|_| {
+                    let mut f = lines.next()?.splitn(3, '\t');
+                    Some(FileStamp {
+                        len: f.next()?.parse().ok()?,
+                        mtime_nanos: f.next()?.parse().ok()?,
+                        path: f.next()?.to_string(),
+                    })
+                })
+                .collect()
+        };
+        let source = section("source")?;
+        let staged = section("staged")?;
+        Some(Self {
+            out_dir,
+            source,
+            staged,
+            hash,
+            entry_js,
+            premint_css: (premint != "-").then(|| premint.to_string()),
+            renamed,
+        })
+    }
+
+    /// Record a staging just finished. Best effort: a record that fails to
+    /// write costs one full staging next time, which is what every build
+    /// did before.
+    fn record(
+        stamp: &Path,
+        out_dir: &Path,
+        source_pkg: &Path,
+        staged_pkg: &Path,
+        fp: &PkgFingerprint,
+        reporter: &dev_events::Reporter,
+    ) {
+        let (Some(source), Some(staged)) = (list_files(source_pkg), list_files(staged_pkg)) else {
+            let _ = fs::remove_file(stamp);
+            return;
+        };
+        let record = Self {
+            out_dir: out_dir.display().to_string(),
+            source,
+            staged,
+            hash: fp.hash.clone(),
+            entry_js: fp.entry_js.clone(),
+            premint_css: fp.premint_css.clone(),
+            renamed: fp.renamed,
+        };
+        if let Err(e) = fs::write(stamp, record.encode()) {
+            reporter.warn("build-web", format!("could not record the staged pkg at {}: {e}", stamp.display()));
+        }
+    }
+
+    fn fingerprint(&self) -> PkgFingerprint {
+        PkgFingerprint {
+            hash: self.hash.clone(),
+            entry_js: self.entry_js.clone(),
+            premint_css: self.premint_css.clone(),
+            renamed: self.renamed,
+        }
+    }
+}
+
+/// A staged `pkg/` kept across a restage: [`stage_bundle`] clears the
+/// bundle dir, so the `pkg/` is moved beside it first ([`set_aside`]) and
+/// moved back after ([`restore`]). A rename within one directory, so
+/// nothing is copied; dropped without being restored, it is deleted.
+///
+/// Only an uncompressed bundle's: `gzip_bundle` rewrites the staged files
+/// in place, so a kept gzipped `pkg/` would be gzipped twice.
+///
+/// [`set_aside`]: KeptPkg::set_aside
+/// [`restore`]: KeptPkg::restore
+struct KeptPkg {
+    aside: PathBuf,
+    fingerprint: PkgFingerprint,
+}
+
+impl KeptPkg {
+    /// The bundle at `out_dir`'s `pkg/`, set aside, when the record at
+    /// `stamp` says it is the staging of `source_pkg` as it is now and the
+    /// staged files are as that staging left them. `None` — stage afresh —
+    /// on any doubt.
+    fn set_aside(stamp: &Path, out_dir: &Path, source_pkg: &Path) -> Option<Self> {
+        let name = out_dir.file_name()?.to_string_lossy().into_owned();
+        let aside = out_dir.with_file_name(format!(".{name}.pkg-kept"));
+        // One a failed build left behind.
+        let _ = fs::remove_dir_all(&aside);
+        let record = StagedPkg::decode(&fs::read_to_string(stamp).ok()?)?;
+        let staged_pkg = out_dir.join("pkg");
+        let unchanged = record.out_dir == out_dir.display().to_string()
+            && list_files(source_pkg)? == record.source
+            && list_files(&staged_pkg)? == record.staged;
+        if !unchanged {
+            return None;
+        }
+        fs::rename(&staged_pkg, &aside).ok()?;
+        Some(Self { aside, fingerprint: record.fingerprint() })
+    }
+
+    /// Put the kept `pkg/` back at `staged_pkg`. `None` when something
+    /// already staged one there (an `assets` allowlist that names
+    /// `pkg`), in which case the caller stages as usual.
+    fn restore(self, staged_pkg: &Path) -> Option<PkgFingerprint> {
+        if staged_pkg.exists() {
+            return None;
+        }
+        fs::rename(&self.aside, staged_pkg).ok()?;
+        Some(self.fingerprint.clone())
+    }
+}
+
+impl Drop for KeptPkg {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.aside);
+    }
+}
+
 /// Mirror the build's `pkg/` (`wrapper_pkg`) → `project_pkg/`. We don't
 /// trust an OS-level symlink for this — the dev server's static-file logic uses
 /// `is_file` checks that would follow the link but cache filenames,
@@ -5278,6 +5517,99 @@ mod fingerprint_tests {
             })
             .expect("a fingerprinted base module in the staged bundle");
         assert_eq!(bytes, fs::read(staged_wasm).unwrap());
+    }
+
+    /// Regression: a rebuild in which cargo found nothing to do and the
+    /// post-cargo passes were skipped still copied the build's `pkg/` into
+    /// the bundle and read all of it back to fingerprint it — 12.7 s of a
+    /// 14.3 s no-op rebuild on CrewForge's 527 MB debug module. The staged
+    /// `pkg/` is kept when neither side changed since it was staged, and
+    /// staged afresh when either did.
+    #[test]
+    fn regression_a_no_op_restage_keeps_the_staged_pkg() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wrapper_pkg = fake_pkg(tmp.path());
+        let out = tmp.path().join("dist/web");
+        let stamp = tmp.path().join(STAGED_PKG_STAMP);
+        let reporter = dev_events::Reporter::new();
+        // A full staging, as `build` runs it: clear, copy, fingerprint, record.
+        let stage = || {
+            let _ = fs::remove_dir_all(&out);
+            let staged_pkg = out.join("pkg");
+            sync_pkg_dir(&wrapper_pkg, &staged_pkg).unwrap();
+            strip_wasm_pack_metadata(&staged_pkg);
+            let fp = fingerprint_pkg(&staged_pkg, "demo").unwrap();
+            StagedPkg::record(&stamp, &out, &wrapper_pkg, &staged_pkg, &fp, &reporter);
+            fp
+        };
+        // A restage that may keep: set aside, clear (as `stage_bundle`
+        // does), restore.
+        let restage = || {
+            let kept = KeptPkg::set_aside(&stamp, &out, &wrapper_pkg);
+            let _ = fs::remove_dir_all(&out);
+            fs::create_dir_all(&out).unwrap();
+            let fp = kept.and_then(|k| k.restore(&out.join("pkg")));
+            assert!(!tmp.path().join("dist/.web.pkg-kept").exists(), "the set-aside dir was left behind");
+            fp
+        };
+        let wasm_of = |dir: &Path| {
+            fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .find(|p| p.extension().is_some_and(|e| e == "wasm") && p.to_string_lossy().contains("demo_bg."))
+                .unwrap()
+        };
+
+        let first = stage();
+        let staged_wasm = wasm_of(&out.join("pkg"));
+        let staged_at = fs::metadata(&staged_wasm).unwrap().modified().unwrap();
+        let kept = restage().expect("nothing changed: the staged pkg is kept");
+        assert_eq!((kept.hash.as_str(), kept.entry_js.as_str()), (first.hash.as_str(), first.entry_js.as_str()));
+        assert_eq!(
+            fs::metadata(&staged_wasm).unwrap().modified().unwrap(),
+            staged_at,
+            "the kept module was rewritten"
+        );
+        // Recorded again after a kept restage, it keeps again.
+        StagedPkg::record(&stamp, &out, &wrapper_pkg, &out.join("pkg"), &kept, &reporter);
+        assert!(restage().is_some());
+
+        // The build's pkg changed (a real build): staged afresh.
+        StagedPkg::record(&stamp, &out, &wrapper_pkg, &out.join("pkg"), &kept, &reporter);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(wrapper_pkg.join("demo_bg.wasm"), b"\0asm\x01\0\0\0changed").unwrap();
+        assert!(restage().is_none(), "a changed build pkg must be restaged");
+
+        // Something touched the staged pkg (a hand edit, a patch file).
+        stage();
+        fs::write(out.join("pkg/extra.js"), "x").unwrap();
+        assert!(restage().is_none(), "a changed staged pkg must be restaged");
+
+        // Another bundle dir, or another tooling version's record.
+        stage();
+        let other = tmp.path().join("dist/other");
+        assert!(KeptPkg::set_aside(&stamp, &other, &wrapper_pkg).is_none());
+        let foreign = fs::read_to_string(&stamp).unwrap().replacen(StagedPkg::VERSION, "0.0.0-other", 1);
+        fs::write(&stamp, foreign).unwrap();
+        assert!(restage().is_none());
+    }
+
+    /// The record reads back as written.
+    #[test]
+    fn a_staged_pkg_record_round_trips() {
+        let r = StagedPkg {
+            out_dir: "/p/dist/web".into(),
+            source: vec![FileStamp { path: "snippets/a b/x.js".into(), len: 3, mtime_nanos: 1_793_275_944_123_456_789 }],
+            staged: vec![],
+            hash: "78f18fae1d67dccf".into(),
+            entry_js: "demo.78f18fae1d67dccf.js".into(),
+            premint_css: None,
+            renamed: 3,
+        };
+        assert_eq!(StagedPkg::decode(&r.encode()), Some(r.clone()));
+        let with_css = StagedPkg { premint_css: Some("premint.0011223344556677.css".into()), ..r };
+        assert_eq!(StagedPkg::decode(&with_css.encode()), Some(with_css));
+        assert_eq!(StagedPkg::decode(""), None);
     }
 
     fn hashed(name: &str, hash: &str) -> String {

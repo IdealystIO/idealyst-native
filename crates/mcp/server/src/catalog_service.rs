@@ -573,10 +573,10 @@ pub struct StopDevArgs {
     /// Session to stop, by process id (from `list_dev_sessions`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
-    /// Stop every session this server started (with `include_external`, every session).
+    /// Stop every session this server or an exited idealyst mcp started (`include_external`: all).
     #[serde(default)]
     pub all: bool,
-    /// Allow stopping a session a person started, not this server.
+    /// Allow stopping a session a person or another running idealyst mcp started.
     #[serde(default)]
     pub include_external: bool,
 }
@@ -593,17 +593,31 @@ pub struct DevSessionArgs {
     pub pid: Option<u32>,
 }
 
+/// Args for `dev_status`.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct DevStatusArgs {
+    /// From `run_dev`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<u64>,
+    /// From `list_dev_sessions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// The session's event snapshot as sent (watched roots, every diagnostic) instead of the summary.
+    #[serde(default)]
+    pub detail: bool,
+}
+
 /// Args for `read_build_metrics` — the records `idealyst dev --metrics`
 /// wrote for a session's project, or for a project directory.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadBuildMetricsArgs {
-    /// From `run_dev`.
+    /// From `run_dev`: only that session's records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<u64>,
-    /// From `list_dev_sessions` (any session, a person's included).
+    /// From `list_dev_sessions` (any session, a person's included): only that session's records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
-    /// Project dir, for a project with no running session (default: the server's cwd).
+    /// Project dir: every session's records, running or not (default: the server's cwd).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
     /// Newest records to return (default 10, max 200).
@@ -1910,7 +1924,7 @@ impl CatalogService {
             out.push(json!({
                 "pid": e.pid,
                 "session_id": session_id,
-                "started_by": if session_id.is_some() { "this server" } else if e.launched_by == "mcp" { "another idealyst mcp" } else { "a person" },
+                "started_by": crate::dev_sessions::Owner::of(e, session_id).label(),
                 "dir": e.dir,
                 "app": e.app,
                 "targets": e.targets,
@@ -1974,50 +1988,68 @@ impl CatalogService {
     #[tool(description = "A dev session's state: its settings, and per target the latest build or save with its outcome.")]
     async fn dev_status(
         &self,
-        Parameters(args): Parameters<DevSessionArgs>,
+        Parameters(args): Parameters<DevStatusArgs>,
     ) -> Result<CallToolResult, McpError> {
         let live = match self.resolve_session(args.session_id, args.pid) {
             Ok(l) => l,
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
         };
         match tokio::task::spawn_blocking(move || crate::dev_sessions::status(&live.entry)).await {
-            Ok(Ok(v)) => Ok(CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&v).unwrap())])),
+            Ok(Ok(v)) => {
+                let v = if args.detail { v } else { crate::dev_status::summarize(&v) };
+                Ok(CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&v).unwrap())]))
+            }
             Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(e)])),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("status request failed: {e}"))])),
         }
     }
 
-    #[tool(description = "Stop one or all dev sessions this server launched.")]
+    #[tool(description = "Stop one or all dev sessions this server launched, or that an exited idealyst mcp left behind.")]
     async fn stop_dev(
         &self,
         Parameters(args): Parameters<StopDevArgs>,
     ) -> Result<CallToolResult, McpError> {
+        use crate::dev_sessions::Owner;
         if args.all && args.session_id.is_none() && args.pid.is_none() {
             let stopped = self.dev_runner.stop_all();
             let mut out = json!({ "stopped": stopped });
-            if args.include_external {
-                let external: Vec<serde_json::Value> = crate::dev_sessions::live()
+            // Sessions an exited server left have no other owner; anyone
+            // else's only with `include_external`.
+            let others: Vec<(u32, String, Owner)> = crate::dev_sessions::live()
+                .into_iter()
+                .map(|l| (l.entry.pid, l.entry.dir.clone(), Owner::of(&l.entry, None)))
+                .filter(|(_, _, owner)| args.include_external || !owner.is_external())
+                .collect();
+            let others = tokio::task::spawn_blocking(move || {
+                others
                     .into_iter()
-                    .map(|l| {
-                        let pid = l.entry.pid;
+                    .map(|(pid, dir, owner)| {
                         let how = crate::dev_sessions::stop_by_signal(pid, EXTERNAL_STOP_GRACE);
-                        json!({ "pid": pid, "dir": l.entry.dir, "stopped": format!("{how:?}") })
+                        json!({ "pid": pid, "dir": dir, "started_by": owner.label(), "stopped": format!("{how:?}") })
                     })
-                    .collect();
-                out["external"] = json!(external);
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default();
+            if !others.is_empty() {
+                out["external"] = json!(others);
             }
             return Ok(CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&out).unwrap())]));
         }
-        // By pid: this server's own session goes the usual way; any other
-        // only with `include_external`.
+        // By pid: this server's own session goes the usual way; one an
+        // exited server left is stopped by signal; anyone else's only with
+        // `include_external`.
         let session_id = match (args.session_id, args.pid) {
             (Some(id), _) => Some(id),
             (None, Some(pid)) => match self.dev_runner.id_of_pid(pid) {
                 Some(id) => Some(id),
                 None => {
-                    if !args.include_external {
+                    // Not in the registry: nothing says whose it is.
+                    let owner = crate::dev_sessions::find(pid).map(|l| Owner::of(&l.entry, None));
+                    if owner.is_none_or(Owner::is_external) && !args.include_external {
+                        let whose = owner.map_or("no one this server knows of (it is not in the session registry)", Owner::label);
                         return Ok(CallToolResult::error(vec![Content::text(format!(
-                            "pid {pid} is a dev session this server did not start (a person's). \
+                            "pid {pid} is a dev session {whose} started, not this server. \
                              Stopping it needs `include_external: true`."
                         ))]));
                     }
@@ -2026,9 +2058,12 @@ impl CatalogService {
                     })
                     .await
                     .unwrap_or(crate::dev_sessions::Stopped::AlreadyGone);
+                    let mut out = json!({ "pid": pid, "stopped": format!("{how:?}") });
+                    if let Some(owner) = owner {
+                        out["started_by"] = json!(owner.label());
+                    }
                     return Ok(CallToolResult::success(vec![Content::text(
-                        serde_json::to_string_pretty(&json!({ "pid": pid, "stopped": format!("{how:?}") }))
-                            .unwrap(),
+                        serde_json::to_string_pretty(&out).unwrap(),
                     )]));
                 }
             },
@@ -2052,8 +2087,10 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<ReadBuildMetricsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        // A session's records sit beside its `dev.log`; a project's are
-        // found from its package name, running or not.
+        // A session's records sit beside its `dev.log`, among those of
+        // every other session of the project: only its own are read. A
+        // project's are found from its package name, running or not.
+        let mut session = None;
         let path = if args.session_id.is_some() || args.pid.is_some() {
             let live = match self.resolve_session(args.session_id, args.pid) {
                 Ok(l) => l,
@@ -2063,6 +2100,7 @@ impl CatalogService {
                     ))]))
                 }
             };
+            session = Some(live.entry.pid);
             match live.entry.log_file.as_deref().and_then(|l| crate::build_metrics::beside_log(std::path::Path::new(l))) {
                 Some(p) => Ok(p),
                 None => crate::build_metrics::for_project(std::path::Path::new(&live.entry.dir)),
@@ -2085,6 +2123,7 @@ impl CatalogService {
             last: args.last.unwrap_or(crate::build_metrics::DEFAULT_LAST),
             rebuilds_only: args.rebuilds_only,
             detail: args.detail,
+            session,
         };
         let out = crate::build_metrics::read(&path, query);
         Ok(CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&out).unwrap())]))
