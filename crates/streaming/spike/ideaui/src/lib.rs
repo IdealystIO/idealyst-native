@@ -193,8 +193,8 @@ pub fn forms_demo() -> Element {
                 value = rx!(view_pick.get()),
                 on_change = on(move |v| view_pick.set(v)),
                 options = vec![
-                    SegmentOption { id: s("list"), label: s("List").into() },
-                    SegmentOption { id: s("grid"), label: s("Grid").into() },
+                    SegmentOption::new(s("list"), s("List")),
+                    SegmentOption::new(s("grid"), s("Grid")),
                 ],
             )
             Autocomplete(

@@ -61,6 +61,9 @@ note: required because it appears within the type `AppThemeTokens<R>`
    |            ^^^^^^^^
 note: required by a bound in `Clone`
   --> $RUST/core/src/clone.rs
+   |
+   | pub const trait Clone: Sized {
+   |                        ^^^^^ required by this bound in `Clone`
    = note: this error originates in the derive macro `Tokens` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: `Font` is not a token value
@@ -98,6 +101,9 @@ note: required because it appears within the type `AppThemeTokens<R>`
    = note: required for `AppThemeTokens<R>` to implement `Clone`
 note: required by a bound in `Copy`
   --> $RUST/core/src/marker.rs
+   |
+   | pub trait Copy: Clone {
+   |                 ^^^^^ required by this bound in `Copy`
    = note: this error originates in the derive macro `Tokens` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: `Font` is not a token value
@@ -134,6 +140,9 @@ note: required because it appears within the type `AppThemeTokens<R>`
    |            ^^^^^^^^
 note: required by a bound in `std::default::Default`
   --> $RUST/core/src/default.rs
+   |
+   | pub const trait Default: Sized {
+   |                          ^^^^^ required by this bound in `Default`
    = note: this error originates in the derive macro `Tokens` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: `Font` is not a token value

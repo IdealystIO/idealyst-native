@@ -4302,6 +4302,26 @@ fn regression_dropped_file_source_is_the_glue_file_file_picker_reads() {
 
 // ---- the graphics surface's window handle -----------------------------------
 
+/// Await the next rendering update: resolves from a `requestAnimationFrame`
+/// callback. Everything the HTML event loop does in that update before the
+/// callbacks — `scroll` and `resize` events, media queries, style and layout
+/// — has happened by then, however long the frame took.
+pub(crate) async fn next_frame() {
+    let window = web_glue::dom::window().unwrap();
+    let mut pending = None;
+    let promise = web_glue::js::Promise::new(&mut |resolve, _reject| {
+        let frame = web_glue::Closure::once(move |_| {
+            let _ = resolve.call0(&web_glue::JsValue::UNDEFINED);
+        });
+        window.request_animation_frame(&frame);
+        // Held until the frame fires: a dropped `Closure` throws when JS
+        // calls it.
+        pending = Some(frame);
+    });
+    let _ = web_glue::JsFuture::new(&promise).await;
+    drop(pending);
+}
+
 /// Await a real macrotask boundary (`setTimeout(ms)`).
 pub(crate) async fn sleep_ms(ms: i32) {
     let promise = web_glue::js::Promise::new(&mut |resolve, _reject| {
@@ -5274,7 +5294,11 @@ async fn two_axis_scroll_view_pans_both_ways_and_pins_a_sticky_corner() {
     scroller.set_scroll_left(150);
     scroller.set_scroll_top(120);
     assert_eq!((scroller.scroll_left(), scroller.scroll_top()), (150, 120), "both axes scrolled");
-    sleep_ms(30).await;
+    // Not a fixed sleep: `scroll` fires at the next rendering update, which
+    // a loaded machine can push past any timeout (this assertion failed
+    // after `sleep_ms(30)` under parallel builds). The frame's scroll steps
+    // dispatch it before that frame's animation-frame callbacks run.
+    next_frame().await;
     assert_eq!(seen.get(), (150.0, 120.0), "on_scroll reports both offsets");
 
     let outer = scroller.get_bounding_client_rect();

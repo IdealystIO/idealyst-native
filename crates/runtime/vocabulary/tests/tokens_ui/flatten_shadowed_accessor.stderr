@@ -7,7 +7,8 @@ error[E0080]: evaluation panicked: a field of this token set has the same access
 note: inside `runtime_vocabulary::tokens::__assert_no_shadow`
   --> $RUST/core/src/panic.rs
    |
-   = note: the failure occurred here
+   |         $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
    |
   ::: src/tokens.rs
    |
