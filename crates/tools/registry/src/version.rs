@@ -335,6 +335,15 @@ fn log_args(rel_dir: &str, also: &[String], nested: &[String], since: &str) -> V
     args
 }
 
+/// Whether `commit` names a commit this checkout has.
+pub fn has_commit(root: &Path, commit: &str) -> bool {
+    Command::new("git")
+        .args(["cat-file", "-e", &format!("{commit}^{{commit}}")])
+        .current_dir(root)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
 pub fn head_commit(root: &Path) -> Result<String> {
     let out = Command::new("git")
         .args(["rev-parse", "HEAD"])

@@ -338,6 +338,16 @@ that the end of the run carries forward from. Since the index is the source
 of truth for versions, every entry's `version` should equal the last version
 in that crate's index file; check that after a release.
 
+A publish that stops partway leaves crates in the index that `releases.json`
+never recorded. `plan` (and `build`'s carry-forward) adopts each one: when a
+crate's highest live index version is newer than its `releases.json` entry,
+it reads the commit that tarball was packaged from (`.cargo_vcs_info.json`)
+and treats that version and commit as the crate's last release, printing
+`adopted <crate> <version> @ <sha>`. The next release then continues above
+the orphan, at the level the commits since it call for. Deleting an orphan
+instead is only safe if nothing could have resolved it. If the orphan's
+commit is not in the checkout, `plan` stops and names the crate to `--skip`.
+
 Releases are cut **by hand**:
 
 ```sh

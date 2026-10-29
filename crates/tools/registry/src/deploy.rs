@@ -101,6 +101,36 @@ pub fn fetch_index_file(target: &Target, index_path: &str) -> Result<Option<Stri
     Ok(Some(String::from_utf8_lossy(&out.stdout).to_string()))
 }
 
+/// Copy the whole index tree into `dest`, one `aws s3 sync` rather than a
+/// request per crate. The orphan check reads every publishable crate's file.
+pub fn fetch_index_tree(target: &Target, dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)?;
+    run(
+        Command::new("aws").args([
+            "s3",
+            "sync",
+            &format!("s3://{}/index", target.bucket),
+            &dest.to_string_lossy(),
+            "--quiet",
+        ]),
+        "aws s3 sync (index)",
+    )
+}
+
+/// Download one published `.crate` to `dest`.
+pub fn fetch_crate(target: &Target, name: &str, version: &str, dest: &Path) -> Result<()> {
+    run(
+        Command::new("aws").args([
+            "s3",
+            "cp",
+            &format!("s3://{}/crates/{name}/{version}/download", target.bucket),
+            &dest.to_string_lossy(),
+            "--quiet",
+        ]),
+        &format!("aws s3 cp ({name}-{version}.crate)"),
+    )
+}
+
 /// Upload one crate's tarball and index entry, in that order.
 ///
 /// This runs INSIDE the publish loop rather than after it. `cargo package`

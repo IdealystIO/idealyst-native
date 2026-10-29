@@ -24,6 +24,7 @@ mod api;
 mod deploy;
 mod index;
 mod manifest;
+mod orphans;
 mod version;
 mod workspace;
 
@@ -660,7 +661,19 @@ fn plan(ws: &Workspace, r: &RemoteArgs, only: &[String]) -> Result<BTreeMap<Stri
     } else {
         let target = target(r)?;
         match deploy::fetch_release_state(&target)? {
-            Some(s) => serde_json::from_str(&s).context("parsing releases.json")?,
+            Some(s) => {
+                let mut state = serde_json::from_str(&s).context("parsing releases.json")?;
+                for o in adopt_orphans(ws, r, &mut state, &|_| true)? {
+                    println!(
+                        "adopted {} {} @ {} — published but never recorded (was {})",
+                        o.name,
+                        o.version,
+                        &o.commit[..o.commit.len().min(9)],
+                        o.recorded.as_deref().unwrap_or("unpublished"),
+                    );
+                }
+                state
+            }
             None => {
                 println!("registry has no releases.json yet — treating this as a first publish");
                 ReleaseState::default()
@@ -668,6 +681,46 @@ fn plan(ws: &Workspace, r: &RemoteArgs, only: &[String]) -> Result<BTreeMap<Stri
         }
     };
     plan_from_state(ws, r, &state, only)
+}
+
+/// Adopt into `state` each version the index serves that `releases.json`
+/// never recorded (see [`orphans`]), for every publishable crate that is not
+/// `--skip`ped and passes `consider`.
+fn adopt_orphans(
+    ws: &Workspace,
+    r: &RemoteArgs,
+    state: &mut ReleaseState,
+    consider: &dyn Fn(&str) -> bool,
+) -> Result<Vec<orphans::Orphan>> {
+    let target = target(r)?;
+    let scratch = std::env::temp_dir().join(format!("idealyst-registry-orphans-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let index_dir = scratch.join("index");
+    deploy::fetch_index_tree(&target, &index_dir)?;
+    let mut latest = BTreeMap::new();
+    for p in ws.publishable() {
+        if r.skip.contains(&p.name) || !consider(&p.name) {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(index_dir.join(index::index_path(&p.name))) else {
+            continue;
+        };
+        if let Some(v) = orphans::latest_version(&body)? {
+            latest.insert(p.name.clone(), v);
+        }
+    }
+    let adopted = orphans::adopt(
+        state,
+        &latest,
+        |name, v| {
+            let file = scratch.join(format!("{name}-{v}.crate"));
+            deploy::fetch_crate(&target, name, &v.to_string(), &file)?;
+            orphans::vcs_commit(&file)
+        },
+        |c| version::has_commit(&ws.root, c),
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+    adopted
 }
 
 /// [`plan`] against an already-fetched registry state.
@@ -1205,7 +1258,11 @@ fn build(
     // stays a complete picture of the registry.
     if !r.from_scratch {
         if let Some(prev) = deploy::fetch_release_state(&target(r)?)? {
-            let prev: ReleaseState = serde_json::from_str(&prev)?;
+            let mut prev: ReleaseState = serde_json::from_str(&prev)?;
+            // The planner adopted orphans the raw state file lacks; record
+            // them, or this file would name their old versions again. The
+            // crates released this round are already in `state`.
+            adopt_orphans(ws, r, &mut prev, &|n| !state.crates.contains_key(n))?;
             for (k, v) in prev.crates {
                 state.crates.entry(k).or_insert(v);
             }

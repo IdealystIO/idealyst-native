@@ -438,3 +438,11 @@ the **same commit**; already-uploaded crates whose bytes match are no-ops. If
 the source genuinely has to change, the half-published versions were never
 consumed by anyone, so clear them from the bucket and re-cut. `--only <crate>`
 re-cuts a single crate without pulling its dependencies in.
+
+If that run is long gone (another session, an older commit), do not delete
+its uploads: once the index served them, a consumer may have resolved them.
+`plan` adopts them on its own — it prints `adopted <crate> <version> @ <sha>`
+for each version in the index that `releases.json` never recorded, and plans
+the next release above it (`docs/registry.md`). Check the adopted sha is the
+commit you expect, and drop any `--bump` for a crate whose new API already
+shipped in its orphan.
