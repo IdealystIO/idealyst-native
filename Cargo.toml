@@ -530,7 +530,7 @@ runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.13.0
 runtime-macros-expand = { path = "crates/runtime/macros-expand", version = "1.6.0", registry = "idealyst" }
 mcp-catalog = { path = "crates/mcp/catalog", version = "1.30.1", registry = "idealyst" }
 catalog-scan = { path = "crates/mcp/catalog-scan", version = "1.1.0", registry = "idealyst" }
-mcp-server = { path = "crates/mcp/server", version = "4.1.0", registry = "idealyst" }
+mcp-server = { path = "crates/mcp/server", version = "4.1.1", registry = "idealyst" }
 mcp-design-server = { path = "crates/mcp/design-server", version = "0.1.1", registry = "idealyst" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "3.0.1", registry = "idealyst" }
@@ -551,7 +551,7 @@ inspector-server = { path = "crates/dev/inspector-server", version = "1.5.3", re
 robot-test = { path = "crates/dev/robot-test", version = "1.11.0", registry = "idealyst" }
 robot-test-macros = { path = "crates/dev/robot-test-macros", version = "1.5.2", registry = "idealyst" }
 native-parity = { path = "crates/dev/native-parity", version = "1.6.0", registry = "idealyst" }
-dev-http = { path = "crates/dev/http", version = "7.0.0", registry = "idealyst" }
+dev-http = { path = "crates/dev/http", version = "7.0.1", registry = "idealyst" }
 dev-overlay = { path = "crates/dev/overlay", version = "2.0.0", registry = "idealyst" }
 dev-events = { path = "crates/dev/events", version = "2.1.0", registry = "idealyst" }
 dev-reload = { path = "crates/dev/reload", version = "7.1.0", registry = "idealyst" }
@@ -595,14 +595,14 @@ backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", 
 backend-roku-transpile = { path = "crates/backend/roku/transpile", version = "1.5.2", registry = "idealyst" }
 backend-terminal = { path = "crates/backend/terminal", version = "4.0.0", registry = "idealyst" }
 backend-cpu = { path = "crates/backend/cpu", version = "3.0.0", registry = "idealyst" }
-backend-web = { path = "crates/backend/web", version = "5.0.3", registry = "idealyst" }
+backend-web = { path = "crates/backend/web", version = "5.0.4", registry = "idealyst" }
 backend-ssr = { path = "crates/backend/ssr", version = "3.0.3", registry = "idealyst" }
 backend-email = { path = "crates/backend/email", version = "3.0.0", registry = "idealyst" }
 backend-windows = { path = "crates/backend/windows", version = "4.0.0", registry = "idealyst" }
 backend-linux = { path = "crates/backend/linux", version = "3.0.2", registry = "idealyst" }
 host-gtk = { path = "crates/host/gtk", version = "3.0.1", registry = "idealyst" }
 welcome = { path = "examples/welcome" }
-idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "14.0.1", registry = "idealyst" }
+idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "14.0.2", registry = "idealyst" }
 render-api = { path = "crates/gpu-backend/api", version = "4.0.0", registry = "idealyst" }
 render-wgpu = { path = "crates/gpu-backend/engine", version = "4.0.1", registry = "idealyst" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
@@ -628,7 +628,7 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme", version = "6.0.0", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "11.0.0", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "14.0.0", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "14.1.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "3.0.0", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "11.0.0", registry = "idealyst" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive", version = "1.5.2", registry = "idealyst" }
@@ -788,7 +788,7 @@ swap-demo = { path = "crates/sdk/client/navigators/swap/examples/swap-demo", ver
 todo-sync-demo = { path = "crates/sdk/client/sync/examples/todo-sync-demo", version = "1.5.2", registry = "idealyst" }
 toolbar-demo = { path = "crates/sdk/client/toolbar/examples/toolbar-demo", version = "1.5.2", registry = "idealyst" }
 video-compose-demo = { path = "crates/sdk/client/video-compose/examples/video-compose-demo", version = "1.5.2", registry = "idealyst" }
-idealyst-cli = { path = "crates/tools/cli", version = "1.21.1", registry = "idealyst" }
+idealyst-cli = { path = "crates/tools/cli", version = "1.21.2", registry = "idealyst" }
 ota-publish = { path = "crates/ota/publish", version = "0.1.0", registry = "idealyst" }
 
 # Dev profile: `opt-level = "z"` works around a wasm OOB seen at

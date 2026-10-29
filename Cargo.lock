@@ -1609,7 +1609,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "5.0.3"
+version = "5.0.4"
 dependencies = [
  "css",
  "dev-client",
@@ -3570,7 +3570,7 @@ dependencies = [
 
 [[package]]
 name = "dev-http"
-version = "7.0.0"
+version = "7.0.1"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -6439,7 +6439,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "14.0.0"
+version = "14.1.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6459,7 +6459,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "14.0.1"
+version = "14.0.2"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6567,7 +6567,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.21.1"
+version = "1.21.2"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7794,7 +7794,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "4.1.0"
+version = "4.1.1"
 dependencies = [
  "anyhow",
  "base64",
