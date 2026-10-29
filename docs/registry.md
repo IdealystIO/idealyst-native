@@ -344,7 +344,10 @@ crate's highest live index version is newer than its `releases.json` entry,
 it reads the commit that tarball was packaged from (`.cargo_vcs_info.json`)
 and treats that version and commit as the crate's last release, printing
 `adopted <crate> <version> @ <sha>`. The next release then continues above
-the orphan, at the level the commits since it call for. Deleting an orphan
+the orphan, at the level the commits since it call for. The run that
+published an orphan never committed its manifests, so `build` also brings
+up every manifest whose `version` is below the one the registry records,
+with its `[workspace.dependencies]` floor, before packaging. Deleting an orphan
 instead is only safe if nothing could have resolved it. If the orphan's
 commit is not in the checkout, `plan` stops and names the crate to `--skip`.
 

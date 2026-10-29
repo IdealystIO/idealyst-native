@@ -183,21 +183,23 @@ fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Migrate { dry_run, remote } => migrate(&ws, dry_run, &remote),
         Cmd::Plan(r) => {
-            let plan = plan(&ws, &r, &[])?;
+            let (plan, _) = plan(&ws, &r, &[])?;
             report(&ws, &plan);
             Ok(())
         }
         Cmd::Build { remote, build: b } => {
-            let plan = scoped(plan(&ws, &remote, &b.only)?, &b.only);
+            let (plan, ahead) = plan(&ws, &remote, &b.only)?;
+            let plan = scoped(plan, &b.only);
             report(&ws, &plan);
-            build(&ws, &plan, &remote, &b, false)?;
+            build(&ws, &plan, &ahead, &remote, &b, false)?;
             println!("\nstaged in {}", b.out.display());
             Ok(())
         }
         Cmd::Publish { remote, build: b, execute } => {
-            let plan = scoped(plan(&ws, &remote, &b.only)?, &b.only);
+            let (plan, ahead) = plan(&ws, &remote, &b.only)?;
+            let plan = scoped(plan, &b.only);
             report(&ws, &plan);
-            let state = build(&ws, &plan, &remote, &b, execute)?;
+            let state = build(&ws, &plan, &ahead, &remote, &b, execute)?;
             if !execute {
                 println!("\nstaged in {} — re-run with --execute to upload", b.out.display());
                 return Ok(());
@@ -513,7 +515,7 @@ fn run_prepackage(root: &Path, name: &str, argv: &[String]) -> Result<()> {
 /// produces a `.crate` under the OLD name and a confusing "expected …" error.
 /// CI commits the result back, which is what makes the next release's
 /// "changed since" comparison meaningful.
-fn apply_plan(ws: &Workspace, plan: &BTreeMap<String, Release>, r: &RemoteArgs) -> Result<()> {
+fn apply_plan(ws: &Workspace, plan: &BTreeMap<String, Release>, ahead: &Ahead, r: &RemoteArgs) -> Result<()> {
     // A dep resolves to the version it will HAVE after this release, not the
     // one on disk: `gesture` packaged in the same run as runtime-shared 1.7.1
     // has to record 1.7.1, not the 1.7.0 its manifest still said when the run
@@ -525,13 +527,25 @@ fn apply_plan(ws: &Workspace, plan: &BTreeMap<String, Release>, r: &RemoteArgs) 
             // it path-only is what makes `cargo package` drop it.
             return None;
         }
-        Some(plan.get(n).map(|r| r.to.clone()).unwrap_or_else(|| p.version.clone()))
+        Some(
+            plan.get(n)
+                .map(|r| r.to.clone())
+                .or_else(|| ahead.get(n).cloned())
+                .unwrap_or_else(|| p.version.clone()),
+        )
     };
+    // Each crate's version once this release is cut: the planned one, or,
+    // for a crate whose manifest is behind the registry ([`Ahead`]), the
+    // version the registry already serves. Without the second, a dependent
+    // packaged here requires the older version (`server 4.0.1` shipped
+    // requiring `server-macros ^1.5.2` beside the adopted 2.0.0 this way).
+    let mut moving: BTreeMap<&String, &semver::Version> = ahead.iter().collect();
+    moving.extend(plan.iter().map(|(n, r)| (n, &r.to)));
 
-    for (name, rel) in plan {
-        let Some(p) = ws.packages.get(name) else { continue };
+    for (name, to) in &moving {
+        let Some(p) = ws.packages.get(*name) else { continue };
         let mut doc = manifest::read(&p.manifest_path)?;
-        manifest::set_package_version(&mut doc, &rel.to)?;
+        manifest::set_package_version(&mut doc, to)?;
         // Most internal deps go through `[workspace.dependencies]`, but a
         // handful — `crates/idealyst` among them — spell the path directly,
         // and those requirements need the same floor.
@@ -559,10 +573,10 @@ fn apply_plan(ws: &Workspace, plan: &BTreeMap<String, Release>, r: &RemoteArgs) 
     let root_manifest = ws.root.join("Cargo.toml");
     let mut root = manifest::read(&root_manifest)?;
     let mut moved = 0;
-    for (name, rel) in plan {
-        let Some(p) = ws.packages.get(name) else { continue };
+    for (name, to) in &moving {
+        let Some(p) = ws.packages.get(*name) else { continue };
         let dir = pathdiff(&p.manifest_path, &ws.root);
-        if manifest::set_workspace_dep_version(&mut root, name, &rel.to, &dir, &r.registry_name)? {
+        if manifest::set_workspace_dep_version(&mut root, name, to, &dir, &r.registry_name)? {
             moved += 1;
         }
     }
@@ -655,7 +669,9 @@ enum Forced {
 /// reading a skipped crate's history can fail outright: its recorded release
 /// commit may be one this checkout never received (published from another
 /// clone, never pushed).
-fn plan(ws: &Workspace, r: &RemoteArgs, only: &[String]) -> Result<BTreeMap<String, Release>> {
+/// Also returns the crates whose manifest names a version below the one the
+/// registry records ([`Ahead`]), for [`apply_plan`] to bring up.
+fn plan(ws: &Workspace, r: &RemoteArgs, only: &[String]) -> Result<(BTreeMap<String, Release>, Ahead)> {
     let state = if r.from_scratch {
         ReleaseState::default()
     } else {
@@ -680,7 +696,27 @@ fn plan(ws: &Workspace, r: &RemoteArgs, only: &[String]) -> Result<BTreeMap<Stri
             }
         }
     };
-    plan_from_state(ws, r, &state, only)
+    let ahead = registry_ahead(ws, &state)?;
+    Ok((plan_from_state(ws, r, &state, only)?, ahead))
+}
+
+/// Crates whose manifest `version` is below the version the registry
+/// records, with that version. A publish that stopped partway never
+/// committed its manifests, so once its uploads are adopted (see
+/// [`orphans`]) the manifests still name the versions before them, and a
+/// dependent packaged against them would require the older version.
+type Ahead = BTreeMap<String, semver::Version>;
+
+fn registry_ahead(ws: &Workspace, state: &ReleaseState) -> Result<Ahead> {
+    let mut ahead = Ahead::new();
+    for p in ws.publishable() {
+        let Some(rec) = state.crates.get(&p.name) else { continue };
+        let rec = semver::Version::parse(&rec.version).context("parsing a recorded version")?;
+        if rec > p.version {
+            ahead.insert(p.name.clone(), rec);
+        }
+    }
+    Ok(ahead)
 }
 
 /// Adopt into `state` each version the index serves that `releases.json`
@@ -1095,6 +1131,7 @@ fn clear_stale_release_state(out: &Path) -> Result<()> {
 fn build(
     ws: &Workspace,
     plan: &BTreeMap<String, Release>,
+    ahead: &Ahead,
     r: &RemoteArgs,
     b: &BuildArgs,
     execute: bool,
@@ -1116,7 +1153,7 @@ fn build(
         bail!("working tree is dirty — a release must record the commit it was cut from (--allow-dirty to rehearse)");
     }
     let head = version::head_commit(&ws.root)?;
-    apply_plan(ws, plan, r)?;
+    apply_plan(ws, plan, ahead, r)?;
 
     std::fs::create_dir_all(out.join("index"))?;
     std::fs::create_dir_all(out.join("crates"))?;
@@ -1383,6 +1420,62 @@ mod tests {
     /// holding runtime-shared 1.7.0 kept it and the build broke inside
     /// `gesture`. The floor must follow a patch bump too, and it must land
     /// before the dependent is packaged.
+    /// REGRESSION: a publish that stopped partway left `server-macros
+    /// 2.0.0` in the index while its manifest (never committed) said 1.5.2.
+    /// The planner adopted 2.0.0, but `apply_plan` left the floor alone, so
+    /// `server 4.0.1` shipped requiring `server-macros ^1.5.2`. A manifest
+    /// behind the registry moves, with its floor, like a release does.
+    #[test]
+    fn regression_an_adopted_orphan_lifts_its_floor_and_manifest() {
+        let d = scratch("adopted-floor");
+        let macros = d.join("crates/api/server-macros");
+        let server = d.join("crates/api/server");
+        std::fs::create_dir_all(&macros).unwrap();
+        std::fs::create_dir_all(&server).unwrap();
+        std::fs::write(
+            d.join("Cargo.toml"),
+            "[workspace.dependencies]\nserver-macros = { path = \"crates/api/server-macros\", version = \"1.5.2\", registry = \"idealyst\" }\nserver = { path = \"crates/api/server\", version = \"4.0.0\", registry = \"idealyst\" }\n",
+        )
+        .unwrap();
+        std::fs::write(macros.join("Cargo.toml"), "[package]\nname = \"server-macros\"\nversion = \"1.5.2\"\n").unwrap();
+        std::fs::write(
+            server.join("Cargo.toml"),
+            "[package]\nname = \"server\"\nversion = \"4.0.0\"\n\n[dependencies]\nserver-macros = { workspace = true }\n",
+        )
+        .unwrap();
+        let mut ws = bare_ws(&[("server-macros", "1.5.2"), ("server", "4.0.0")]);
+        ws.root = d.clone();
+        for (n, dir) in [("server-macros", "crates/api/server-macros"), ("server", "crates/api/server")] {
+            let p = ws.packages.get_mut(n).unwrap();
+            p.manifest_path = d.join(dir).join("Cargo.toml");
+            p.rel_dir = dir.into();
+        }
+        let plan = BTreeMap::from([("server".to_string(), planned(Bump::Patch, (4, 0, 0)))]);
+        let state = released(&[("server-macros", "2.0.0"), ("server", "4.0.0")]);
+        let ahead = registry_ahead(&ws, &state).unwrap();
+        assert_eq!(ahead.len(), 1, "only the crate behind the registry: {ahead:?}");
+        let r = RemoteArgs {
+            bucket: None,
+            distribution_id: None,
+            url: "https://crates.idealyst.io".into(),
+            from_scratch: false,
+            force: vec![],
+            bump: vec![],
+            skip_api_check: vec![],
+            skip: vec![],
+            registry_name: "idealyst".into(),
+        };
+
+        apply_plan(&ws, &plan, &ahead, &r).unwrap();
+
+        let root = std::fs::read_to_string(d.join("Cargo.toml")).unwrap();
+        let floor = root.lines().find(|l| l.starts_with("server-macros")).unwrap();
+        assert!(floor.contains(r#"version = "2.0.0""#), "floor still below the adopted version: {floor}");
+        let m = std::fs::read_to_string(macros.join("Cargo.toml")).unwrap();
+        assert!(m.contains(r#"version = "2.0.0""#), "manifest still names the old version:\n{m}");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
     #[test]
     fn regression_patch_bump_lifts_the_floor_a_dependent_packages_with() {
         let d = scratch("floor");
@@ -1453,7 +1546,7 @@ mod tests {
             registry_name: "idealyst".into(),
         };
 
-        apply_plan(&ws, &plan, &r).unwrap();
+        apply_plan(&ws, &plan, &Ahead::new(), &r).unwrap();
 
         let root = std::fs::read_to_string(d.join("Cargo.toml")).unwrap();
         assert!(
