@@ -1112,9 +1112,9 @@ recipe!(
 recipe!(
     install_idea_theme,
     /// The one required setup call: install a theme once, before the first
-    /// render. `install_idea_theme` also installs every component's default
-    /// stylesheet, so this single call is the whole setup for an app that
-    /// doesn't need custom modifiers. `light_theme()`/`dark_theme()` are the
+    /// render. Component styles need no install of their own — each
+    /// component composes its slot sheets on first render — so this single
+    /// call is the whole setup for an app that doesn't need custom modifiers. `light_theme()`/`dark_theme()` are the
     /// built-in starting points.
     pub fn theme_install_light() -> ::runtime_core::Element {
         use crate::{install_idea_theme, light_theme, Button};

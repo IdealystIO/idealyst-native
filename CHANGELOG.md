@@ -11,6 +11,20 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **A `#[server]` fn keeps its wire signature on the server build too**
+  (`server-macros`, `server`). A fn with extractors (`Auth<_>`, `State<_>`,
+  `#[ctx]` …) used to be `me(user: Auth<Principal>)` under the `server`
+  feature and `me()` without it, so any client crate compiled in the same
+  cargo invocation as the server binary (`cargo check --workspace`,
+  rust-analyzer: Cargo unifies features) failed at every call site. It is
+  now `me()` on both builds; on the server it resolves the extractors from
+  the current request and runs the body in-process (an unresolvable
+  extractor fails the call with the same error a remote caller gets).
+  **Server code that called such a fn with explicit extractor arguments no
+  longer compiles** — call it with the wire args, or factor the body into a
+  plain fn. `#[channel]` / `#[subscription]` / `#[sse]` names are the client
+  hooks on every build; their bodies are reachable only through the route.
+
 Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
@@ -867,6 +881,29 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `--metrics-diffs` adds each save's diff. New events `unit_built` (every
   session) and `unit_dirty` (under `--metrics`). See "Build metrics" in
   `docs/hot-reload.md`.
+
+- **wgpu on a `graphics` view works on Linux (GTK4)** (`gpu-surface` 4.1.0).
+  `gpu_surface::connect(ev, req, alpha, label).await` brings up a GPU on any
+  `graphics` target — a swapchain natively, GTK4's lent GL context on Linux,
+  WebGPU then WebGL2 on web — and the app presents with `begin_present` /
+  `finish_present` the same way everywhere. A `GpuSurface` built on a GTK
+  context now registers its framebuffer blit in GTK's render signal itself;
+  before, only `gpu_surface::mount` did, so an app running its own wgpu loop
+  on a plain `graphics` view stayed on the placeholder clear. The web
+  `GpuSurface` gains `resize(size, scale)` to match native.
+
+- **`idealyst mcp design` — an idea-ui design MCP** (`mcp-design-server`,
+  `idealyst-cli`, `mcp-server`). A second stdio server with opinionated
+  guidance for apps built on idea-ui: fourteen design skills (house rules,
+  adaptive layouts, navigation, screens, layout, color and type, forms,
+  states, overlays, brand, stylesheets, platform conventions, review),
+  nine whole-screen recipes and four prompts (`design_screen`,
+  `brand_theme`, `plan_navigation`, `design_review`). Every recipe is
+  compiled against idea-ui and server-rendered at phone and desktop widths
+  by `mcp-design-recipes-check`, so a served recipe can't drift from the
+  API. Register it with `idealyst mcp install --design`. `mcp-server`'s
+  `schema_minify` module is now public so both servers advertise the same
+  trimmed schemas.
 
 - **Agents drive the dev sessions a person started; `idealyst dev
   --no-watch` builds only on request** (`idealyst-cli`, `mcp-server`,
@@ -2241,6 +2278,84 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   unchanged, Android's measure cache skipped re-measuring and the label
   kept the probe's wrapped layout. The probe is now undone at the label's
   laid-out frame.
+
+- **`codeblock::rust` tints raw and byte strings correctly** (`codeblock`).
+  `r#"a"b"#` closed at its inner `"`, and the closing `"#` opened a string
+  that tinted the rest of the file. Raw strings (any number of `#`), byte
+  strings and byte chars are now lexed as literals. `Token` and `Palette`
+  are `#[non_exhaustive]`: build a custom palette from `Palette::LIGHT` /
+  `DARK` and set its fields.
+
+- **`idealyst build --web` checks the wasm-bindgen CLI before compiling**
+  (`build-web`). A hybrid build (the app links wasm-bindgen on wasm32 —
+  wgpu, web-sys) needs the wasm-bindgen CLI at exactly the locked library's
+  version, and an ordinary `cargo update` moves only the library; the
+  mismatch used to surface after the whole compile ("rust Wasm file schema
+  version: 0.2.129 / this binary schema version: 0.2.125"). The build now
+  asks `cargo tree -p <app>` (per-package features, like the build) whether
+  wasm-bindgen is in the wasm32 graph and, when the CLI differs or is
+  missing, stops at once with the install command. Own-mode builds are
+  unaffected.
+
+- **Debug builds say when `spawn_then` / `after_ms_scoped` drop work**
+  (`runtime-vocabulary`). A `spawn_then` whose scope ended before its task
+  finished drops the result, and `after_ms_scoped` / `raf_loop_scoped`
+  outside an effect, build or scoped timer (e.g. in a `spawn_then`
+  callback) do nothing — both by design, both silent, both read as "the
+  request succeeded but the handler never ran". A debug build now logs one
+  warning per call site naming it and the alternative (`spawn_then_in`,
+  `after_ms_detached`); `spawn_then_in` dying with the scope it names stays
+  silent. Release builds are unchanged.
+
+- **The Robot `screenshot` verb answers on Linux** (`runtime-shared`). GTK
+  hands back a capture on a later main-loop turn, and the bridge verb read
+  its result straight after calling the capture, so on GTK it always failed
+  with "capture_screenshot did not complete synchronously" — no picture of a
+  running Linux app for the MCP robot tools or `idealyst test --parity`. The
+  bridge gains async verbs (`robot::bridge::register_async_command`, answered
+  through a `CommandReply`); the TCP and relay transports hold the request
+  open until the reply is sent, and `screenshot` is one.
+
+- **Generated platform wrappers follow the app's framework for crates only
+  they add** (`build-ios`, used by every `idealyst build` / `run` target).
+  The wrapper pinned every framework crate the app's graph resolved, but a
+  crate only the WRAPPER names — a host shell like `host-gtk` — kept the
+  CLI's own requirement, so an app on runtime-core 2.x got `host-gtk =
+  "3.0"`, a second `runtime-vocabulary` and 28 × E0277. Such a crate now
+  takes the newest release whose framework dependencies accept the app's
+  resolved versions (read from the registry index, only when the app's
+  majors differ from the CLI's), and when none does the build says which
+  release needs what. Note for apps that stay on runtime-core 2.x: that
+  selects host-gtk 2.0 / backend-linux 2.0.x, which do not carry the
+  `create_anchor` layout fix (backend-linux 3.0.1).
+
+- **Linux: a long-lived async task no longer freezes the window**
+  (`host-gtk`). host-gtk installed no async executor, so `spawn_async`
+  fell back to blocking the GTK main thread until the future finished; a
+  `use_socket` / `use_sse` receive loop never finishes, so the window
+  stopped drawing for good the moment a live connection opened. host-gtk
+  now installs a main-thread executor (from `install_scheduler`, like the
+  Apple and Android hosts): futures run to their next `.await`, wakers from
+  any thread re-poll on the main loop, and each poll flushes staged writes.
+
+- **Linux: `on_key_down` on a `text_input` / `text_area` sees Enter**
+  (`backend-linux` 3.0.2). The author's key controller ran in GTK's bubble
+  phase, after the entry's inner `GtkText` had consumed Enter as its
+  `activate` action (and after a text view had inserted the newline), so
+  submit-on-Enter fields did nothing and `PreventDefault` could not stop a
+  newline. The controller now runs in the capture phase.
+
+- **Linux: a panel under an `if` / `for` lays out as on web, and native
+  controls have a size** (`backend-linux` 3.0.1). Every reactive region's anchor
+  was a plain flex box sized to its content, so inside a full-window
+  `position: absolute; inset: 0` layer a `height: 100%` panel under
+  `if open { … }` came out at content height and a `top: 0; bottom: 0`
+  panel at 0. Anchors (and presence placeholders) are now `display:
+  contents` — a `runtime_layout` contents node on a click-transparent
+  view — as on iOS, macOS and Android. Separately, `button`, `slider`,
+  `toggle` and `activity_indicator` had no intrinsic measure, so a button
+  laid out 0×0 and sliders 0 tall; they now measure the native widget
+  (activity indicator: 16 / 32 px, the macOS control sizes).
 
 - **A `TableGroup` band's trailing action centres over the actions
   column** (`idea-ui`). The band's trailing box padded only its right side

@@ -14,7 +14,9 @@
 //! - **Gl** (Linux/GTK4): GTK4 has no per-widget native window, so the
 //!   primitive lends a live GL context (`GtkGLArea`). It is adopted through
 //!   wgpu's GL backend, and the frame target is flip-blitted into the area's
-//!   framebuffer from INSIDE GTK's render signal ([`GpuSurface::blit_to_fbo`]).
+//!   framebuffer from INSIDE GTK's render signal. [`GpuSurface::new`] registers
+//!   that blit itself, so a `GpuSurface` presents on GTK whether it came from
+//!   [`mount`] or from an app driving a plain `graphics` primitive.
 
 use crate::config::{
     check_adapter, choose_alpha_mode, choose_surface_format, composition_alpha_mode, AdapterFacts,
@@ -78,9 +80,12 @@ pub struct GpuSurface {
     /// swapchain to the visual but can't commit the backend's composition
     /// device, so the frame stays invisible until something else commits.
     composed: Option<Arc<dyn ComposedTarget>>,
-    /// GL present path (GTK4); `Some` exactly when `surface` is `None`.
+    /// GL present path (GTK4); `Some` exactly when `surface` is `None`. The
+    /// only strong reference: the in-signal blit registered on the `GlTarget`
+    /// holds a `Weak`, so dropping this surface (context current, see `Drop`)
+    /// releases every GL object and leaves GTK's callback a no-op.
     #[cfg(target_os = "linux")]
-    gl: Option<GlPresent>,
+    gl: Option<Rc<GlPresent>>,
     /// Swapchain config; on the GL path only the size/format book (never used
     /// to configure anything — GTK owns the buffers).
     config: wgpu::SurfaceConfiguration,
@@ -96,7 +101,8 @@ pub struct GpuSurface {
 pub enum PresentFrame {
     Surface(wgpu::SurfaceTexture),
     /// GL (GTK4): nothing was blitted — the FBO blit happens in GTK's render
-    /// signal; finishing only schedules that pass.
+    /// signal (registered by [`GpuSurface::new`]); finishing only schedules
+    /// that pass.
     #[cfg(target_os = "linux")]
     Gl,
 }
@@ -104,6 +110,12 @@ pub enum PresentFrame {
 impl GpuSurface {
     /// Bring up a device on `target`. `None` when there's no adapter, the
     /// adapter fails `req`, or (GL) the lent context can't be adopted.
+    ///
+    /// On a GL target this also registers the per-frame framebuffer blit via
+    /// `GlTarget::on_render` (replacing any callback already there): GTK only
+    /// composites what is drawn inside its own render signal, so presenting is
+    /// [`begin_present`](Self::begin_present) / [`finish_present`](Self::finish_present)
+    /// on every target, with no GL-specific step for the caller.
     ///
     /// Blocking (`pollster`): the backends deliver `on_ready` on a deferred
     /// runloop turn, where blocking is safe.
@@ -230,13 +242,26 @@ impl GpuSurface {
                         view_formats: vec![],
                     };
                     let (target, target_view) = make_target(&device, w, h, label);
+                    let gl = Rc::new(GlPresent {
+                        target: gl_target,
+                        device: device.clone(),
+                        queue: queue.clone(),
+                        present: present.clone(),
+                        frame: RefCell::new(GlFrame { view: target_view.clone(), w, h }),
+                    });
+                    let weak = Rc::downgrade(&gl);
+                    gl.target.on_render(Box::new(move || {
+                        if let Some(gl) = weak.upgrade() {
+                            gl.blit_to_fbo();
+                        }
+                    }));
                     Some(GpuSurface {
                         device,
                         queue,
                         adapter,
                         surface: None,
                         composed: None,
-                        gl: Some(GlPresent { target: gl_target }),
+                        gl: Some(gl),
                         config,
                         target,
                         target_view,
@@ -327,6 +352,11 @@ impl GpuSurface {
         }
         let (target, target_view) =
             make_target(&self.device, self.config.width, self.config.height, self.label);
+        #[cfg(target_os = "linux")]
+        if let Some(gl) = &self.gl {
+            *gl.frame.borrow_mut() =
+                GlFrame { view: target_view.clone(), w: self.config.width, h: self.config.height };
+        }
         self.target = target;
         self.target_view = target_view;
     }
@@ -367,7 +397,7 @@ impl GpuSurface {
         match frame {
             PresentFrame::Surface(t) => t.present(),
             // GL (GTK4): tell the backend the framebuffer is ready so GTK runs
-            // its render pass (queue_render), which calls `blit_to_fbo`.
+            // its render pass (queue_render), which runs `GlPresent::blit_to_fbo`.
             #[cfg(target_os = "linux")]
             PresentFrame::Gl => {
                 if let Some(gl) = &self.gl {
@@ -378,35 +408,15 @@ impl GpuSurface {
     }
 
     /// GL (GTK4) only: copy the last rendered frame target into the GLArea's
-    /// framebuffer. Registered via `GlTarget::on_render` by [`mount`]; GTK
-    /// calls it with the context current and the area's FBO bound.
-    ///
-    /// GtkGLArea composites ONLY what is drawn during its own render signal;
-    /// the reactive render runs out-of-band and only schedules that pass. A
-    /// blit done anywhere else is never shown (the "canvas stuck on the clear
-    /// colour" bug).
+    /// framebuffer — the blit [`new`](Self::new) already registers in GTK's
+    /// render signal, so callers never need it for presenting. Only valid
+    /// inside that signal (context current, the area's FBO bound); a blit
+    /// anywhere else is not composited. No-op on the swapchain path.
     #[cfg(target_os = "linux")]
     pub fn blit_to_fbo(&self) {
-        let Some(gl) = &self.gl else { return };
-        // Cheap, and re-binds the FBO that `wrap_framebuffer` reads below.
-        gl.target.make_current();
-        // Re-wrapped every frame: GTK reallocates the attachment across
-        // resizes and re-realizes; a cached wrap would target freed memory.
-        let Some(fbo_tex) = wrap_framebuffer(&self.device, &gl.target, self.width(), self.height())
-        else {
-            return; // not wrappable yet (mid-realize); a later present re-runs this
-        };
-        let fbo_view = fbo_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        debug_assert_eq!(
-            gl.target.origin(),
-            runtime_shared::primitives::graphics::FramebufferOrigin::BottomLeft,
-            "the GL present blit flips V for a bottom-left framebuffer origin",
-        );
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("gpu-surface-gl-present"),
-        });
-        self.present.draw(&self.device, &mut encoder, &self.target_view, &fbo_view);
-        self.queue.submit([encoder.finish()]);
+        if let Some(gl) = &self.gl {
+            gl.blit_to_fbo();
+        }
     }
 }
 
@@ -526,13 +536,6 @@ where
         move |ev: OnReadyEvent| {
             let (size, scale) = (ev.size, ev.scale);
             report_logical(size, scale);
-            // The lent GL target is cloned BEFORE `GpuSurface::new` consumes
-            // `ev.target`, so the in-signal blit can be registered on it.
-            #[cfg(target_os = "linux")]
-            let gl_target = match &ev.target {
-                GraphicsTarget::Gl(g) => Some(g.clone()),
-                GraphicsTarget::RawWindow(_) => None,
-            };
             let Some(gpu) = GpuSurface::new(ev.target, size, scale, req, frame_alpha, label) else {
                 log::warn!("{label}: GPU surface bring-up failed — view stays blank");
                 return;
@@ -546,21 +549,6 @@ where
                 None => true,
             };
             *state_cell.borrow_mut() = Some(state);
-            #[cfg(target_os = "linux")]
-            if let Some(gl_target) = gl_target {
-                gl_target.on_render(Box::new({
-                    let state_cell = state_cell.clone();
-                    move || {
-                        // `try_borrow_mut`: a present() emitted from within a
-                        // render pass must not re-enter.
-                        if let Ok(s) = state_cell.try_borrow() {
-                            if let Some(s) = s.as_ref() {
-                                s.gpu().blit_to_fbo();
-                            }
-                        }
-                    }
-                }));
-            }
             // The first drawable often isn't acquirable on the deferred
             // on_ready tick (macOS CAMetalLayer): retry until it lands so the
             // view doesn't sit dark until the first reactive repaint.
@@ -636,9 +624,59 @@ fn retry_first_frame<S: SurfaceState>(
 #[cfg(target_os = "linux")]
 use runtime_shared::primitives::graphics::GlTarget;
 
+/// Everything the in-signal blit needs, shared (strong) by the `GpuSurface`
+/// and (weak) by the callback registered on the `GlTarget`. `device` / `queue`
+/// / `present` are cheap handle clones of the surface's own.
 #[cfg(target_os = "linux")]
 struct GlPresent {
     target: GlTarget,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    present: PresentBlit,
+    /// The current frame target; replaced by `GpuSurface::resize`.
+    frame: RefCell<GlFrame>,
+}
+
+#[cfg(target_os = "linux")]
+struct GlFrame {
+    view: wgpu::TextureView,
+    w: u32,
+    h: u32,
+}
+
+#[cfg(target_os = "linux")]
+impl GlPresent {
+    /// Copy the last rendered frame target into the GLArea's framebuffer. GTK
+    /// calls this (via `on_render`) with the context current and the area's
+    /// FBO bound.
+    ///
+    /// GtkGLArea composites ONLY what is drawn during its own render signal;
+    /// rendering happens out-of-band and `finish_present` only schedules that
+    /// pass. A blit done anywhere else is never shown (the "canvas stuck on
+    /// the clear colour" bug).
+    fn blit_to_fbo(&self) {
+        // `try_borrow`: a resize can't legitimately overlap a render pass, but
+        // a re-entrant pass must skip a frame, not panic.
+        let Ok(frame) = self.frame.try_borrow() else { return };
+        // Cheap, and re-binds the FBO that `wrap_framebuffer` reads below.
+        self.target.make_current();
+        // Re-wrapped every frame: GTK reallocates the attachment across
+        // resizes and re-realizes; a cached wrap would target freed memory.
+        let Some(fbo_tex) = wrap_framebuffer(&self.device, &self.target, frame.w, frame.h) else {
+            return; // not wrappable yet (mid-realize); a later present re-runs this
+        };
+        let fbo_view = fbo_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        debug_assert_eq!(
+            self.target.origin(),
+            runtime_shared::primitives::graphics::FramebufferOrigin::BottomLeft,
+            "the GL present blit flips V for a bottom-left framebuffer origin",
+        );
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("gpu-surface-gl-present"),
+        });
+        self.present.draw(&self.device, &mut encoder, &frame.view, &fbo_view);
+        self.queue.submit([encoder.finish()]);
+    }
 }
 
 #[cfg(target_os = "linux")]

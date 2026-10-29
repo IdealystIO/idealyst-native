@@ -634,7 +634,7 @@ impl RenderState {
         // (straight → the surface's alpha convention; see gpu-surface). Held
         // until after `submit`. On GL (GTK4) nothing is recorded: this render
         // runs out-of-band, and the FBO blit happens in GTK's render signal
-        // (`GpuSurface::blit_to_fbo`, registered by `gpu_surface::mount`).
+        // (registered by `GpuSurface::new` on the GL target).
         let Some(swap_frame) = self.gpu.begin_present(&mut encoder) else {
             return false; // drawable not ready / occluded / lost — skip
         };

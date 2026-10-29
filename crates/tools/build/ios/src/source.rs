@@ -128,6 +128,11 @@ struct CrateReq {
     /// `None` for a crate known only from a project's resolved graph.
     subpath: Option<String>,
     req: String,
+    /// The exact version the app's graph resolved, when it uses this crate.
+    /// `None` for a crate only the wrapper adds (a host shell, a backend).
+    resolved: Option<String>,
+    /// The CLI's own requirement, before any [`FrameworkVersions::pin`].
+    cli_req: Option<String>,
 }
 
 impl FrameworkVersions {
@@ -138,7 +143,10 @@ impl FrameworkVersions {
             .into_iter()
             .filter_map(|(subpath, name, version)| {
                 let req = major_minor(version)?;
-                Some((name.to_string(), CrateReq { subpath: Some(subpath.to_string()), req }))
+                Some((
+                    name.to_string(),
+                    CrateReq { subpath: Some(subpath.to_string()), cli_req: Some(req.clone()), req, resolved: None },
+                ))
             })
             .collect();
         Self { crates }
@@ -182,11 +190,155 @@ impl FrameworkVersions {
     pub fn pin(&mut self, name: &str, version: &str) {
         let Some(req) = major_minor(version) else { return };
         match self.crates.get_mut(name) {
-            Some(c) => c.req = at_least_within_range(&req, &c.req),
+            Some(c) => {
+                c.req = at_least_within_range(&req, &c.req);
+                c.resolved = Some(version.to_string());
+            }
             None => {
-                self.crates.insert(name.to_string(), CrateReq { subpath: None, req });
+                self.crates.insert(
+                    name.to_string(),
+                    CrateReq { subpath: None, req, resolved: Some(version.to_string()), cli_req: None },
+                );
             }
         }
+    }
+
+    /// Package name of the crate at `subpath`, and whether the app's graph
+    /// resolved it.
+    fn crate_at(&self, subpath: &str) -> Option<(&str, bool)> {
+        self.crates
+            .iter()
+            .find(|(_, c)| c.subpath.as_deref() == Some(subpath))
+            .map(|(n, c)| (n.as_str(), c.resolved.is_some()))
+    }
+
+    /// Whether every crate the app resolved sits on the same major as the
+    /// CLI's own requirement for it — then the CLI's table already fits the
+    /// app and a wrapper-only crate needs no index lookup.
+    fn app_matches_cli_majors(&self) -> bool {
+        self.crates.values().all(|c| match (&c.resolved, &c.cli_req) {
+            (Some(v), Some(cli)) => major_of(v) == major_of(cli),
+            _ => true,
+        })
+    }
+
+    /// `(name, exact version)` for every crate the app's graph resolved.
+    fn app_resolved(&self) -> Vec<(&str, &str)> {
+        self.crates
+            .iter()
+            .filter_map(|(n, c)| c.resolved.as_deref().map(|v| (n.as_str(), v)))
+            .collect()
+    }
+
+    /// The requirement for a crate the WRAPPER adds but the app's graph does
+    /// not contain (a host shell like `host-gtk`, a backend), aligned with
+    /// the app.
+    ///
+    /// [`pin`](Self::pin) can only follow crates the app resolved. A crate
+    /// only the wrapper names falls back to the CLI's own requirement, which
+    /// is written for the CLI's framework: an app on runtime-vocabulary 3.x
+    /// got `host-gtk = "3.0"`, whose runtime-vocabulary ^4 pulled a second
+    /// copy into the graph (E0277 "multiple different versions of crate
+    /// `runtime_vocabulary`"). So the registry index decides: the newest
+    /// release whose framework dependencies all accept the app's resolved
+    /// versions. `Err` names what the app would need when no release fits.
+    /// `Ok(None)` when the app resolved nothing to align with.
+    fn aligned_req(&self, name: &str, index: &dyn Fn(&str) -> Option<String>) -> Result<Option<String>> {
+        let app = self.app_resolved();
+        if app.is_empty() {
+            return Ok(None);
+        }
+        let Some(body) = index(name) else { return Ok(None) };
+        let entries = app_compat::parse_index(&body);
+        match app_compat::newest_compatible(&entries, &app) {
+            Some(v) => Ok(major_minor(&v.to_string())),
+            None => Err(anyhow::anyhow!(
+                "no published `{name}` works with this app's framework crates: {}. \
+                 Upgrade the app to the framework the newest `{name}` builds on.",
+                app_compat::blockers(&entries, &app),
+            )),
+        }
+    }
+}
+
+/// Which release of a crate fits the framework versions an app resolved —
+/// [`FrameworkVersions::aligned_req`]'s pure half, over a sparse-index file.
+pub(crate) mod app_compat {
+    /// One sparse-index line: the fields that decide compatibility.
+    #[derive(serde::Deserialize, Debug)]
+    pub(crate) struct IndexEntry {
+        pub vers: semver::Version,
+        #[serde(default)]
+        pub yanked: bool,
+        #[serde(default)]
+        pub deps: Vec<IndexDep>,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub(crate) struct IndexDep {
+        pub name: String,
+        pub req: String,
+        /// Set only for a dependency from ANOTHER registry; framework
+        /// crates depend on each other within this one.
+        #[serde(default)]
+        pub registry: Option<String>,
+        #[serde(default)]
+        pub kind: Option<String>,
+        /// The real crate name when the dependency is renamed.
+        #[serde(default)]
+        pub package: Option<String>,
+    }
+
+    /// Lines that don't parse are skipped: a field this reader doesn't model
+    /// must not make every release look incompatible.
+    pub(crate) fn parse_index(body: &str) -> Vec<IndexEntry> {
+        body.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+    }
+
+    /// Whether `e`'s normal/build dependencies on crates the app resolved
+    /// all accept the app's version.
+    fn fits(e: &IndexEntry, app: &[(&str, &str)]) -> bool {
+        conflicts(e, app).is_empty()
+    }
+
+    fn conflicts<'a>(e: &'a IndexEntry, app: &[(&str, &str)]) -> Vec<(&'a str, String, String)> {
+        let mut out = Vec::new();
+        for d in &e.deps {
+            if d.registry.is_some() || d.kind.as_deref() == Some("dev") {
+                continue;
+            }
+            let crate_name = d.package.as_deref().unwrap_or(&d.name);
+            let Some((_, have)) = app.iter().find(|(n, _)| *n == crate_name) else { continue };
+            let (Ok(req), Ok(have_v)) = (semver::VersionReq::parse(&d.req), semver::Version::parse(have)) else {
+                continue;
+            };
+            if !req.matches(&have_v) {
+                out.push((crate_name, d.req.clone(), have.to_string()));
+            }
+        }
+        out
+    }
+
+    /// The newest non-yanked, non-prerelease release that fits.
+    pub(crate) fn newest_compatible(entries: &[IndexEntry], app: &[(&str, &str)]) -> Option<semver::Version> {
+        entries
+            .iter()
+            .filter(|e| !e.yanked && e.vers.pre.is_empty() && fits(e, app))
+            .map(|e| e.vers.clone())
+            .max()
+    }
+
+    /// What the newest release needs that the app lacks, for the error.
+    pub(crate) fn blockers(entries: &[IndexEntry], app: &[(&str, &str)]) -> String {
+        let Some(newest) = entries.iter().filter(|e| !e.yanked && e.vers.pre.is_empty()).max_by(|a, b| a.vers.cmp(&b.vers))
+        else {
+            return "it has no releases".to_string();
+        };
+        conflicts(newest, app)
+            .into_iter()
+            .map(|(n, req, have)| format!("release {} needs {n} {req}, the app has {have}", newest.vers))
+            .collect::<Vec<_>>()
+            .join("; ")
     }
 }
 
@@ -204,6 +356,10 @@ fn at_least_within_range(resolved: &str, floor: &str) -> String {
         }
         _ => resolved.to_string(),
     }
+}
+
+fn major_of(v: &str) -> Option<&str> {
+    v.trim_start_matches(['^', '~', '=']).split('.').next()
 }
 
 /// `"1.11.0"`, `"^1.11"`, `"=2.5.3"` → `"1.11"` / `"2.5"`. A bare major
@@ -528,17 +684,31 @@ impl FrameworkSource {
                 // is not (`publish = false`) has no requirement to write,
                 // and a guessed one would fail later as an unresolvable
                 // dependency in a generated manifest the user never wrote.
-                let version = versions.for_subpath(subpath).unwrap_or_else(|| {
+                let cli_version = versions.for_subpath(subpath).unwrap_or_else(|| {
                     panic!(
                         "{subpath} is not a published framework crate, so a registry-sourced \
                          project cannot depend on it"
                     )
                 });
+                let aligned = registry_req_for(versions, subpath, &fetch_index_file);
+                let version = aligned.as_deref().unwrap_or(cli_version);
                 format!(
                     "{{ version = \"{}\", registry = \"{}\"{} }}",
                     version, registry, features_clause,
                 )
             }
+        }
+    }
+
+    /// [`dep`](Self::dep) for a registry source, with the index reader
+    /// supplied — the seam the alignment tests drive without a network.
+    #[cfg(test)]
+    fn registry_dep_with_index(&self, subpath: &str, index: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+        match self {
+            Self::Registry { versions, .. } => {
+                registry_req_for(versions, subpath, index).or_else(|| versions.for_subpath(subpath).map(str::to_string))
+            }
+            _ => None,
         }
     }
 
@@ -549,6 +719,73 @@ impl FrameworkSource {
             _ => None,
         }
     }
+}
+
+/// The requirement to write for `subpath` when it is a crate the WRAPPER adds
+/// and the app's graph does not contain (see
+/// [`FrameworkVersions::aligned_req`]); `None` keeps the CLI's own.
+///
+/// No index read when the app's framework already shares the CLI's majors
+/// (the common case, and the one that keeps an offline build offline). When
+/// no release fits, the reason is printed as an error and the CLI's
+/// requirement is kept, so cargo's own failure follows a line that says why.
+fn registry_req_for(
+    versions: &FrameworkVersions,
+    subpath: &str,
+    index: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let (name, in_app) = versions.crate_at(subpath)?;
+    if in_app || versions.app_matches_cli_majors() {
+        return None;
+    }
+    match versions.aligned_req(name, index) {
+        Ok(req) => req,
+        Err(e) => {
+            eprintln!("idealyst: error: {e}");
+            None
+        }
+    }
+}
+
+/// One crate's sparse-index file from the framework registry, read with
+/// `curl` and cached for the process. `None` when it can't be read (offline,
+/// unpublished): the caller keeps the CLI's requirement.
+///
+/// `curl` rather than an HTTP client for the reason `idealyst update` gives:
+/// the CLI links no TLS stack, and curl ships on every host it supports.
+fn fetch_index_file(name: &str) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+    let mut cache = CACHE.lock().ok()?;
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some(hit) = cache.get(name) {
+        return hit.clone();
+    }
+    let index = std::env::var("IDEALYST_REGISTRY_INDEX").ok().filter(|v| !v.is_empty());
+    let url = sparse_index_url(index.as_deref().unwrap_or(REGISTRY_INDEX), name);
+    let body = std::process::Command::new("curl")
+        .args(["-sSLf", "--retry", "2", &url])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    cache.insert(name.to_string(), body.clone());
+    body
+}
+
+/// `<index>/<prefix>/<name>`, the file a sparse registry serves for one
+/// crate (cargo's prefix rules: `1/`, `2/`, `3/<c>/`, `ab/cd/`).
+fn sparse_index_url(index: &str, name: &str) -> String {
+    let base = index.strip_prefix("sparse+").unwrap_or(index).trim_end_matches('/');
+    let lower = name.to_ascii_lowercase();
+    let prefix = match lower.len() {
+        1 => "1".to_string(),
+        2 => "2".to_string(),
+        3 => format!("3/{}", &lower[..1]),
+        _ => format!("{}/{}", &lower[..2], &lower[2..4]),
+    };
+    format!("{base}/{prefix}/{lower}")
 }
 
 /// `--remap-path-prefix` flags that keep build-machine absolute paths out
@@ -1429,6 +1666,75 @@ runtime-core = { version = "1.5.2", registry = "idealyst" }
         assert_eq!(v.for_package("zero"), Some("0.2"), "0.x minors are separate ranges");
         v.pin("backend-ios-mobile", "1.15.2");
         assert_eq!(v.for_package("backend-ios-mobile"), Some("1.15"), "an app ahead of the CLI keeps its version");
+    }
+
+    /// The Linux framework the CLI's own table describes, and the
+    /// host-gtk index the registry serves: 2.0.0 builds on
+    /// runtime-vocabulary 3.x, 3.0.0 on 4.x.
+    fn gtk_table() -> FrameworkVersions {
+        FrameworkVersions::new([
+            ("crates/runtime/core", "runtime-core", "3.2.0"),
+            ("crates/runtime/vocabulary", "runtime-vocabulary", "4.1.0"),
+            ("crates/host/gtk", "host-gtk", "3.0.0"),
+        ])
+    }
+    const HOST_GTK_INDEX: &str = concat!(
+        r#"{"name":"host-gtk","vers":"2.0.0","deps":[{"name":"runtime-vocabulary","req":"^3.6.0","kind":"normal"},{"name":"runtime-core","req":"^2.2.0","kind":"normal"}],"yanked":false}"#,
+        "\n",
+        r#"{"name":"host-gtk","vers":"3.0.0","deps":[{"name":"runtime-vocabulary","req":"^4.1.0","kind":"normal"},{"name":"runtime-core","req":"^3.2.0","kind":"normal"},{"name":"gtk4","req":"^0.9","registry":"https://github.com/rust-lang/crates.io-index"}],"yanked":false}"#,
+        "\n",
+    );
+
+    /// Regression (Idea Chat): a wrapper-only crate kept the CLI's own
+    /// requirement whatever the app ran on. An app on runtime-core 2.2 /
+    /// runtime-vocabulary 3.6 got `host-gtk = "3.0"`, which needs
+    /// runtime-vocabulary 4 — two vocabulary copies, 28 × E0277. It now
+    /// takes the newest host-gtk whose framework deps accept the app's.
+    #[test]
+    fn regression_a_wrapper_only_crate_follows_the_apps_framework() {
+        let mut v = gtk_table();
+        v.pin("runtime-core", "2.2.0");
+        v.pin("runtime-vocabulary", "3.6.0");
+        let src = FrameworkSource::Registry { registry: "idealyst".into(), versions: v };
+        let index = |name: &str| (name == "host-gtk").then(|| HOST_GTK_INDEX.to_string());
+        assert_eq!(src.registry_dep_with_index("crates/host/gtk", &index).as_deref(), Some("2.0"));
+    }
+
+    /// An app on the CLI's own majors needs no lookup — the CLI's table
+    /// already fits, and an offline build must stay offline.
+    #[test]
+    fn an_app_on_the_clis_majors_reads_no_index() {
+        let mut v = gtk_table();
+        v.pin("runtime-core", "3.2.1");
+        v.pin("runtime-vocabulary", "4.1.0");
+        let src = FrameworkSource::Registry { registry: "idealyst".into(), versions: v };
+        let index = |_: &str| -> Option<String> { panic!("no index read expected") };
+        assert_eq!(src.registry_dep_with_index("crates/host/gtk", &index).as_deref(), Some("3.0"));
+    }
+
+    /// No release fits: keep the CLI's requirement, and say what the newest
+    /// release needs that the app lacks.
+    #[test]
+    fn no_compatible_release_names_what_the_app_lacks() {
+        let mut v = gtk_table();
+        v.pin("runtime-vocabulary", "2.9.0");
+        let entries = app_compat::parse_index(HOST_GTK_INDEX);
+        let app = v.app_resolved();
+        assert!(app_compat::newest_compatible(&entries, &app).is_none());
+        let why = app_compat::blockers(&entries, &app);
+        assert!(why.contains("release 3.0.0 needs runtime-vocabulary ^4.1.0, the app has 2.9.0"), "{why}");
+        let index = |_: &str| Some(HOST_GTK_INDEX.to_string());
+        assert!(v.aligned_req("host-gtk", &index).is_err());
+        let src = FrameworkSource::Registry { registry: "idealyst".into(), versions: v };
+        assert_eq!(src.registry_dep_with_index("crates/host/gtk", &index).as_deref(), Some("3.0"));
+    }
+
+    #[test]
+    fn sparse_index_urls_follow_cargos_prefix_rules() {
+        let i = "sparse+https://crates.idealyst.io/index/";
+        assert_eq!(sparse_index_url(i, "host-gtk"), "https://crates.idealyst.io/index/ho/st/host-gtk");
+        assert_eq!(sparse_index_url(i, "css"), "https://crates.idealyst.io/index/3/c/css");
+        assert_eq!(sparse_index_url(i, "qr"), "https://crates.idealyst.io/index/2/qr");
     }
 
     #[test]

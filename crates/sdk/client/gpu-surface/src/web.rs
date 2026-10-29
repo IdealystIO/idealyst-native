@@ -462,6 +462,14 @@ impl GpuSurface {
         true
     }
 
+    /// The web twin of the native `resize`, so `on_resize` handling is the
+    /// same code on every target. The canvas backing store is authoritative
+    /// here (the primitive keeps it at the CSS box × dpr), so this re-reads it
+    /// via [`sync_size`](Self::sync_size) rather than trusting the arguments.
+    pub fn resize(&mut self, _size: (u32, u32), _scale: f32) {
+        self.sync_size();
+    }
+
     /// Acquire the surface texture and record the frame-target blit into
     /// `encoder`. `None` on timeout/outdated/lost: skip the frame (the next
     /// repaint retries).

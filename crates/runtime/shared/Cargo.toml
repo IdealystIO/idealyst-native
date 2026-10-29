@@ -73,7 +73,8 @@ runtime-tls = { workspace = true }
 # types, and the style setters (`IntoVariantSource` / `IntoOverrideSource`
 # in `style.rs`) must accept them; those traits live here, and a coherent
 # impl for a foreign handle type can only be written beside the trait.
-# The kernel depends on nothing of ours (`runtime-tls`, `rustc-hash`), so
+# The kernel depends only on `runtime-tls` and `rustc-hash`, neither of which
+# depends back on this crate, so
 # this adds no cycle.
 runtime-world = { workspace = true }
 serde = { workspace = true }

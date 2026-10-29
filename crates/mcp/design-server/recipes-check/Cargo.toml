@@ -1,0 +1,34 @@
+[package]
+name = "mcp-design-recipes-check"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Compiles and server-renders every recipe the idea-ui design MCP serves, so a served recipe can't drift from idea-ui's real API."
+# Workspace-internal: the recipes ship as text inside `mcp-design-server`;
+# this crate exists only to compile and render them in CI.
+publish = false
+
+[dependencies]
+# Exactly the crates a recipe may name — what an idea-ui app depends on.
+# `async-driver`: `resource` / `mutation`, which every app gets through
+# the `idealyst` dep.
+runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+idea-ui = { workspace = true }
+idea-ui-nav = { workspace = true }
+icons-lucide = { workspace = true }
+swap-navigator = { workspace = true }
+stack-navigator = { workspace = true }
+
+[dev-dependencies]
+# Renders each recipe's `app()` at its declared paths (`//! render:`) and
+# asserts the declared text is on the page.
+backend-ssr = { workspace = true }
+# `set_viewport_size` — renders each check at its declared form factor.
+runtime-shared = { workspace = true }
+# `idealyst lint`'s engine: recipes are what agents copy, so they must be
+# idiom-clean (tests/render.rs `recipes_are_lint_clean`).
+lint = { workspace = true }
+# The recipe index (titles, tags, render expectations) the server parses.
+mcp-design-server = { workspace = true }

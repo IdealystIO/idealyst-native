@@ -32,23 +32,13 @@ pub type CaptureFn = dyn Fn(Box<dyn FnOnce(Result<Screenshot, String>)>);
 /// the handler runs there and the supplied `capture` typically reaches
 /// into the UI-thread-owned backend.
 pub fn register_native_screenshot(capture: impl Fn(Box<dyn FnOnce(Result<Screenshot, String>)>) + 'static) {
-    crate::robot::bridge::register_command("screenshot", move |_args| {
-        // Native backends invoke the callback synchronously, so stash the
-        // delivered value and read it back after `capture` returns. If a
-        // backend ever completes asynchronously it lands here as `None`
-        // and we surface a clear error rather than blocking the UI thread.
-        let slot: std::rc::Rc<std::cell::RefCell<Option<Result<Screenshot, String>>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(None));
-        let sink = slot.clone();
+    // Async: a backend may deliver the frame on a later main-loop turn (GTK
+    // forces a draw and reads it once painted), so the reply goes out from
+    // the capture callback whenever it fires — inline or later.
+    crate::robot::bridge::register_async_command("screenshot", move |_args, reply| {
         capture(Box::new(move |res| {
-            *sink.borrow_mut() = Some(res);
+            reply.send(res.and_then(encode_screenshot_response));
         }));
-        let captured = slot.borrow_mut().take().ok_or_else(|| {
-            "capture_screenshot did not complete synchronously (async capture \
-             is not yet supported over the bridge)"
-                .to_string()
-        })?;
-        encode_screenshot_response(captured?)
     });
 }
 
@@ -194,5 +184,69 @@ mod tests {
             .decode(v["ok"]["png_base64"].as_str().unwrap())
             .unwrap();
         assert_eq!(&decoded[..8], &TINY_PNG[..8], "PNG arrives intact over the wire");
+    }
+
+    /// Regression (GTK): a backend that delivers the frame on a LATER
+    /// main-loop turn could never answer — the verb read its result slot
+    /// straight after calling the capture and replied "capture_screenshot did
+    /// not complete synchronously". The reply now goes out from the capture
+    /// callback, over the same TCP path an MCP client uses, while the
+    /// connection waits.
+    #[test]
+    fn regression_a_capture_that_completes_later_still_answers() {
+        use base64::Engine as _;
+        use std::cell::RefCell;
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        type Done = Box<dyn FnOnce(Result<Screenshot, String>)>;
+        thread_local! {
+            static PENDING: RefCell<Option<Done>> = const { RefCell::new(None) };
+        }
+        // Like the GTK backend: stash the callback, answer on a later turn.
+        register_native_screenshot(|done| PENDING.with(|p| *p.borrow_mut() = Some(done)));
+
+        let (handle, port) = bridge::start_on_port(0).expect("bind ephemeral bridge port");
+        let (tx, rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+            stream.write_all(b"{\"id\":9,\"cmd\":\"screenshot\",\"args\":{}}\n").expect("send");
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).expect("read response");
+            let _ = tx.send(line);
+        });
+
+        // Pump until the request reaches the handler; no answer may go out
+        // before the capture completes.
+        let mut asked = false;
+        for _ in 0..500 {
+            handle.poll();
+            if PENDING.with(|p| p.borrow().is_some()) {
+                asked = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(asked, "the bridge never ran the screenshot handler");
+        assert!(
+            rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "the bridge answered before the capture delivered a frame",
+        );
+
+        // A later turn: the frame arrives.
+        let done = PENDING.with(|p| p.borrow_mut().take()).unwrap();
+        done(Ok(Screenshot { png: TINY_PNG.to_vec(), width: 1, height: 1 }));
+        let line = rx.recv_timeout(Duration::from_secs(2)).expect("a response line after the capture");
+        bridge::unregister_command("screenshot");
+
+        let v: serde_json::Value = serde_json::from_str(line.trim()).expect("json response");
+        assert_eq!(v["id"], 9);
+        assert!(v.get("err").is_none(), "got an error: {line}");
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(v["ok"]["png_base64"].as_str().expect("png_base64"))
+            .unwrap();
+        assert_eq!(&png[..8], &TINY_PNG[..8]);
     }
 }

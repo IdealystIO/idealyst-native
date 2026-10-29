@@ -33,6 +33,7 @@ use runtime_core::Element;
 use backend_linux::newcore::{self, NewCoreApp};
 use backend_linux::LinuxBackend;
 
+mod async_executor;
 mod scheduler;
 
 /// Install the framework scheduler on the GTK main loop (GLib sources

@@ -1507,9 +1507,10 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "3.0.0"
+version = "3.0.2"
 dependencies = [
  "backend-image-source",
+ "base64",
  "gtk4",
  "image",
  "inventory",
@@ -1522,6 +1523,7 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
+ "serde_json",
  "wgpu",
  "wgpu-hal",
  "wgpu-types",
@@ -1950,6 +1952,7 @@ name = "build-ios"
 version = "2.0.0"
 dependencies = [
  "anyhow",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",
@@ -5080,8 +5083,9 @@ dependencies = [
 
 [[package]]
 name = "gpu-surface"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
+ "backend-linux",
  "js-sys",
  "log",
  "naga",
@@ -5826,6 +5830,7 @@ version = "3.0.0"
 dependencies = [
  "backend-linux",
  "gtk4",
+ "pollster 0.4.0",
  "runtime-core",
  "runtime-scene",
  "runtime-shared",
@@ -6597,6 +6602,7 @@ dependencies = [
  "libc",
  "lint",
  "mcp-catalog",
+ "mcp-design-server",
  "mcp-server",
  "ota-index",
  "ota-publish",
@@ -7752,6 +7758,38 @@ dependencies = [
  "runtime-vocabulary",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "mcp-design-recipes-check"
+version = "0.1.0"
+dependencies = [
+ "backend-ssr",
+ "icons-lucide",
+ "idea-ui",
+ "idea-ui-nav",
+ "lint",
+ "mcp-design-server",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
+ "stack-navigator",
+ "swap-navigator",
+]
+
+[[package]]
+name = "mcp-design-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mcp-server",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

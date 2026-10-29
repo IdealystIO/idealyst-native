@@ -3,8 +3,8 @@
 //! [`code_block`](crate::code_block).
 //!
 //! It is a lexer, not a parser — enough to tint what helps a reader scan:
-//! comments (line and nested block), literals (strings, chars, numbers,
-//! lifetimes) and keywords. Everything else — identifiers, types,
+//! comments (line and nested block), literals (strings — raw and byte
+//! forms included — chars, numbers, lifetimes) and keywords. Everything else — identifiers, types,
 //! punctuation, whitespace — is [`Token::Plain`] and renders in the
 //! surface's own ink.
 //!
@@ -19,8 +19,10 @@ use runtime_shared::Color;
 
 use crate::decoration::Decoration;
 
-/// What a range of source is, for tinting.
+/// What a range of source is, for tinting. `#[non_exhaustive]` so a finer
+/// kind (types, macros) can be added without breaking a `match`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Token {
     /// `// …` and `/* … */` (nested).
     Comment,
@@ -35,7 +37,14 @@ pub enum Token {
 /// The colors each [`Token`] renders in. `ink` is [`Token::Plain`]'s, used
 /// by [`spans`] only — [`decorations`] leaves plain text undecorated so it
 /// takes the editor's own text color.
+///
+/// `#[non_exhaustive]` so a color for a new [`Token`] kind can be added
+/// without breaking callers. Start a custom palette from [`Palette::LIGHT`] or
+/// [`Palette::DARK`] and set the fields you want:
+/// `let p = Palette { keyword: "#b31d28", ..Palette::LIGHT };` does not compile
+/// outside this crate, `let mut p = Palette::LIGHT; p.keyword = "#b31d28";` does.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Palette {
     /// [`Token::Plain`] — identifiers, types, punctuation.
     pub ink: &'static str,
@@ -91,6 +100,9 @@ pub fn tokens(src: &str) -> Vec<(Range<usize>, Token)> {
             (block_comment_end(bytes, i), Token::Comment)
         } else if b == b'"' {
             (string_end(bytes, i), Token::Literal)
+        } else if let Some(end) = prefixed_literal_end(bytes, i) {
+            // Before identifiers: `r"…"` / `b"…"` start like one.
+            (end, Token::Literal)
         } else if b == b'\'' {
             // A char literal (`'x'`, `'\n'`, `'\u{1F600}'`) or a lifetime
             // (`'static`); a stray quote is plain.
@@ -172,9 +184,8 @@ fn string_end(bytes: &[u8], start: usize) -> usize {
         let c = bytes[i];
         if c == b'\\' && i + 1 < bytes.len() {
             // Skip the escaped character verbatim — `\"` shouldn't
-            // close the string. We don't validate the escape
-            // sequence further; the cargo compile catches malformed
-            // ones if the user runs.
+            // close the string. Escapes aren't validated: this tints,
+            // it doesn't check.
             i += 2;
             continue;
         }
@@ -184,6 +195,49 @@ fn string_end(bytes: &[u8], start: usize) -> usize {
         i += 1;
     }
     bytes.len()
+}
+
+/// A literal with a prefix: raw strings (`r"…"`, `r#"…"#` with any number
+/// of `#`), byte strings (`b"…"`, `br#"…"#`) and byte chars (`b'x'`).
+/// `None` for anything else — including a raw identifier (`r#type`), which
+/// lexes as plain.
+///
+/// A raw string ends only at `"` followed by as many `#` as opened it, and
+/// has no escapes. Lexing `r#"a"b"#` as a plain `"` string instead closes it
+/// at the inner `"`, and the closing `"#` then opens a string that tints the
+/// rest of the file as a literal.
+fn prefixed_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    let byte = bytes.get(i) == Some(&b'b');
+    if byte {
+        i += 1;
+        match bytes.get(i) {
+            Some(b'"') => return Some(string_end(bytes, i)),
+            Some(b'\'') => return char_literal_end(bytes, i),
+            _ => {}
+        }
+    }
+    if bytes.get(i) != Some(&b'r') {
+        return None;
+    }
+    i += 1;
+    let mut hashes = 0;
+    while bytes.get(i) == Some(&b'#') {
+        hashes += 1;
+        i += 1;
+    }
+    if bytes.get(i) != Some(&b'"') {
+        return None;
+    }
+    i += 1;
+    while i < bytes.len() {
+        let close = i + 1 + hashes;
+        if bytes[i] == b'"' && close <= bytes.len() && bytes[i + 1..close].iter().all(|&c| c == b'#') {
+            return Some(close);
+        }
+        i += 1;
+    }
+    Some(bytes.len())
 }
 
 /// `'x'` / `'\n'` / `'\u{1F600}'`. Returns the byte index past the
@@ -346,9 +400,8 @@ fn is_ident_continue(b: u8) -> bool {
 }
 
 /// Full Rust keyword set (`https://doc.rust-lang.org/reference/keywords.html`)
-/// plus the reserved-for-future-use words. Kept as a sorted match —
-/// `phf` would be cleaner but isn't worth a dep for ~50 entries
-/// against a ~10k-char user file.
+/// plus the reserved-for-future-use words: strict keywords first, then the
+/// reserved ones. A `match` on ~50 strings — no lookup table needed.
 fn is_keyword(word: &str) -> bool {
     matches!(
         word,
@@ -446,6 +499,29 @@ mod tests {
         for (range, _) in tokens(src) {
             let _ = &src[range];
         }
+    }
+
+    /// Regression: a raw string containing `"` closed at that quote, and its
+    /// closing `"#` opened a new string that tinted everything after it.
+    #[test]
+    fn regression_raw_and_byte_strings_end_where_rust_ends_them() {
+        let src = r####"let s = r#"a"b"#; let n = 1;"####;
+        let k = kinds(src);
+        assert!(k.contains(&(r##"r#"a"b"#"##, Token::Literal)), "{k:?}");
+        assert!(k.contains(&("let", Token::Keyword)) && k.iter().filter(|(t, _)| *t == "let").count() == 2, "{k:?}");
+        assert!(k.contains(&("1", Token::Literal)), "code after the raw string is not swallowed: {k:?}");
+
+        assert!(kinds(r###"r"no \ escape""###).contains(&(r###"r"no \ escape""###, Token::Literal)));
+        assert!(kinds(r####"br##"x"#y"##"####).contains(&(r####"br##"x"#y"##"####, Token::Literal)));
+        assert!(kinds(r#"b"bytes
+""#).contains(&(r#"b"bytes
+""#, Token::Literal)));
+        assert!(kinds("b'x'").contains(&("b'x'", Token::Literal)));
+        // A raw identifier is not a string.
+        let k = kinds("r#type");
+        assert!(k.iter().all(|(_, t)| *t != Token::Literal), "{k:?}");
+        // Unterminated: runs to the end, still tiles the input.
+        assert_eq!(kinds(r##"r#"open"##).last().map(|(_, t)| *t), Some(Token::Literal));
     }
 
     #[test]

@@ -36,8 +36,10 @@
 //!   firing callback re-pushes its registering anchor onto a
 //!   thread-local stack, so nested `*_scoped` calls attach to the SAME
 //!   lifetime.
-//! - **Outside all of the above**: no-op. Use `after_ms_detached` / raw
-//!   `raf_loop` for detached work.
+//! - **Outside all of the above**: no-op — including a `spawn_then`
+//!   callback, which is none of them. Use `after_ms_detached` / raw
+//!   `raf_loop` for detached work. A debug build warns once per call site
+//!   that hits this ([`crate::dropped_work`]).
 //!
 //! No `cycle()` wrap and no busy-skip: writes staged by a deferred body
 //! commit via the host scheduler's post-dispatch flush hook, and staging
@@ -178,9 +180,11 @@ fn with_deferred_anchor(anchor: &Anchor, f: impl FnOnce()) {
 
 /// A one-shot timer that dies with the registering scope (see the module
 /// docs for the exact anchor rules).
+#[track_caller]
 pub fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
     let Some(anchor) = current_anchor() else {
-        // Outside any scope: inert (module docs).
+        // Outside any scope: inert (module docs). A debug build says so.
+        crate::dropped_work::scoped_timer_inert("after_ms_scoped", std::panic::Location::caller());
         return;
     };
     let anchor_cb = anchor.clone();
@@ -194,8 +198,10 @@ pub fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
 }
 
 /// A recurring animation-frame loop that dies with the registering scope.
+#[track_caller]
 pub fn raf_loop_scoped<F: FnMut() + 'static>(mut f: F) {
     let Some(anchor) = current_anchor() else {
+        crate::dropped_work::scoped_timer_inert("raf_loop_scoped", std::panic::Location::caller());
         return;
     };
     let anchor_cb = anchor.clone();
@@ -212,6 +218,7 @@ pub fn raf_loop_scoped<F: FnMut() + 'static>(mut f: F) {
 /// on the next tick), anchored like [`after_ms_scoped`]. The epoch comes
 /// from `runtime_shared::session` (plain thread-local state); only the
 /// scope anchoring differs from `runtime_shared::session::after_ms`.
+#[track_caller]
 pub fn session_after_ms(at_session_ms: u64, body: impl FnOnce() + 'static) {
     let elapsed_us =
         runtime_shared::time::now_micros().saturating_sub(runtime_shared::session::epoch_micros());

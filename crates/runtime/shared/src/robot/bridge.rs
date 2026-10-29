@@ -70,11 +70,76 @@ pub fn register_command(
     });
 }
 
-/// Remove a previously-registered custom verb. No-op if absent.
+/// The one-shot answer to an [`register_async_command`] verb. Sending it
+/// writes the response to whichever client asked; dropping it unsent leaves
+/// the client to its own timeout.
+pub struct CommandReply(Box<dyn FnOnce(Result<String, String>)>);
+
+impl CommandReply {
+    pub fn new(f: impl FnOnce(Result<String, String>) + 'static) -> Self {
+        Self(Box::new(f))
+    }
+
+    /// Answer the request with the `ok` payload (a JSON string) or an error.
+    pub fn send(self, result: Result<String, String>) {
+        (self.0)(result)
+    }
+}
+
+/// An async custom verb: receives the request's `args` and a
+/// [`CommandReply`] to answer through — now, or later from a callback on
+/// the UI thread.
+pub type AsyncCommandHandler = Rc<dyn Fn(&serde_json::Value, CommandReply)>;
+
+runtime_tls::thread_local! {
+    /// Verbs whose answer arrives after the handler returns — a backend
+    /// whose native capture completes on a later frame (GTK draws the frame
+    /// a screenshot reads on a following main-loop turn). Same thread rules
+    /// as [`CUSTOM_COMMANDS`].
+    static ASYNC_COMMANDS: RefCell<FxHashMap<String, AsyncCommandHandler>> =
+        RefCell::new(FxHashMap::default());
+}
+
+/// Register a custom verb answered through a [`CommandReply`], which the
+/// handler may send after it returns. The TCP and relay transports hold the
+/// request open until it is sent (up to their 5 s reply window). Takes
+/// precedence over a [`register_command`] handler of the same name, and —
+/// unlike those — over built-in verbs, so pick a name no built-in uses.
+pub fn register_async_command(
+    name: impl Into<String>,
+    handler: impl Fn(&serde_json::Value, CommandReply) + 'static,
+) {
+    let name = name.into();
+    ASYNC_COMMANDS.with(|c| {
+        c.borrow_mut().insert(name, Rc::new(handler));
+    });
+}
+
+/// Remove a previously-registered custom verb (sync or async). No-op if
+/// absent.
 pub fn unregister_command(name: &str) {
     CUSTOM_COMMANDS.with(|c| {
         c.borrow_mut().remove(name);
     });
+    ASYNC_COMMANDS.with(|c| {
+        c.borrow_mut().remove(name);
+    });
+}
+
+/// Run `cmd`, answering through `done` — inline for every sync verb, and
+/// whenever an async verb's handler sends its reply. The one dispatch every
+/// transport goes through.
+pub(crate) fn dispatch_with_reply(
+    robot: &Robot,
+    cmd: &str,
+    args: &serde_json::Value,
+    done: impl FnOnce(Result<String, String>) + 'static,
+) {
+    let handler = ASYNC_COMMANDS.with(|c| c.borrow().get(cmd).cloned());
+    match handler {
+        Some(h) => h(args, CommandReply::new(done)),
+        None => done(dispatch(robot, cmd, args)),
+    }
 }
 
 /// Look up + invoke a registered custom verb, if any. Clones the
@@ -131,8 +196,30 @@ fn try_verb_router(cmd: &str, args: &serde_json::Value) -> Option<Result<String,
 /// Built-in verbs plus any [`register_command`] customs. Lets in-process
 /// drivers (and tests) exercise a verb directly. Must run on the UI
 /// thread (where the Robot registry + custom handlers live).
+///
+/// An async verb is answered here only when its handler replies before
+/// returning; a later reply has no caller left to reach, so that case is an
+/// error naming the verb.
 pub fn invoke_command(cmd: &str, args: &serde_json::Value) -> Result<String, String> {
-    dispatch(&Robot::new(), cmd, args)
+    let slot: Rc<RefCell<Option<Result<String, String>>>> = Rc::new(RefCell::new(None));
+    let sink = slot.clone();
+    dispatch_with_reply(&Robot::new(), cmd, args, move |r| *sink.borrow_mut() = Some(r));
+    let answered = slot.borrow_mut().take();
+    answered.unwrap_or_else(|| {
+        Err(format!("`{cmd}` answers asynchronously; drive it over the bridge, not in-process"))
+    })
+}
+
+/// `{"id":N,"ok":…}` / `{"id":N,"err":"…"}` — the bridge's response line.
+fn response_line(id: u64, result: Result<String, String>) -> String {
+    match result {
+        Ok(value) => format!("{{\"id\":{},\"ok\":{}}}", id, value),
+        Err(msg) => format!(
+            "{{\"id\":{},\"err\":{}}}",
+            id,
+            serde_json::to_string(&msg).unwrap_or_else(|_| "\"unknown error\"".into())
+        ),
+    }
 }
 
 /// A pending command, with a oneshot reply channel for the result.
@@ -154,16 +241,13 @@ impl BridgeHandle {
     pub fn poll(&self) {
         let robot = Robot::new();
         while let Ok(cmd) = self.rx.try_recv() {
-            let result = dispatch(&robot, &cmd.cmd, &cmd.args);
-            let response = match result {
-                Ok(value) => format!("{{\"id\":{},\"ok\":{}}}", cmd.id, value),
-                Err(msg) => format!(
-                    "{{\"id\":{},\"err\":{}}}",
-                    cmd.id,
-                    serde_json::to_string(&msg).unwrap_or_else(|_| "\"unknown error\"".into())
-                ),
-            };
-            let _ = cmd.reply.send(response);
+            // The reply sender is `Send` and outlives this turn, so an async
+            // verb answers whenever its handler sends — the connection thread
+            // is still waiting on the receiving end.
+            let (id, reply) = (cmd.id, cmd.reply);
+            dispatch_with_reply(&robot, &cmd.cmd, &cmd.args, move |r| {
+                let _ = reply.send(response_line(id, r));
+            });
         }
     }
 }

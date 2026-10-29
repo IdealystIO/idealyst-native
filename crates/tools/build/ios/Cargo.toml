@@ -10,6 +10,9 @@ anyhow = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = "0.8"
+# Matching a registry version's dependency requirements against the
+# versions an app resolved (`app_compat`).
+semver = { version = "1", features = ["serde"] }
 # `test_support` only (the `test-support` feature).
 tempfile = { version = "3", optional = true }
 

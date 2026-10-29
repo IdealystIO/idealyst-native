@@ -118,8 +118,10 @@
 //! });
 //! ```
 //!
-//! Nothing reports it: the request goes out, the reply is discarded, the
-//! spinner spins forever, and the user files the same thing twice. There
+//! The app sees nothing: the request goes out, the reply is discarded, the
+//! spinner spins forever, and the user files the same thing twice. A debug
+//! build logs one warning per call site that drops a result this way
+//! ([`crate::dropped_work`]); release builds stay silent. There
 //! is no spelling of that UI which avoids the collision — a `switch`
 //! keyed on the busy flag tears down the branch, and a live
 //! `disabled`/`loading` prop rebuilds the pressable in place.
@@ -180,6 +182,10 @@ use crate::callback_guard::ScopeAlive;
 ///     },
 /// );
 /// ```
+///
+/// A debug build warns, once per call site, when the result is dropped —
+/// see [`crate::dropped_work`].
+#[track_caller]
 pub fn spawn_then<T, F, A>(task: F, then: A)
 where
     T: 'static,
@@ -188,7 +194,7 @@ where
 {
     // Taken HERE, in the caller's scope — not inside the async block,
     // where there is no ambient scope to anchor to.
-    spawn_then_in(&ScopeAlive::current(), task, then);
+    spawn_guarded(&ScopeAlive::current(), task, then, Some(std::panic::Location::caller()));
 }
 
 /// [`spawn_then`] with an explicit lifetime: `then` runs only while
@@ -216,6 +222,22 @@ where
     F: Future<Output = T> + 'static,
     A: FnOnce(T) + 'static,
 {
+    // No warning on a drop: naming the scope makes dying with it the intent.
+    spawn_guarded(alive, task, then, None);
+}
+
+/// The shared body. `warn_at` is the `spawn_then` call site, warned about
+/// when the implicit scope ends first.
+fn spawn_guarded<T, F, A>(
+    alive: &ScopeAlive,
+    task: F,
+    then: A,
+    warn_at: Option<&'static std::panic::Location<'static>>,
+) where
+    T: 'static,
+    F: Future<Output = T> + 'static,
+    A: FnOnce(T) + 'static,
+{
     let alive = alive.clone();
     spawn_async(async move {
         let value = task.await;
@@ -226,7 +248,9 @@ where
             // here, and no guarded callback is on the stack).
             // idealyst-lint-disable-next-line signal-across-await -- this IS the guard: `alive.get()` above, no await between it and the call
             alive.clone().run_within(|| then(value));
+        } else if let Some(at) = warn_at {
+            // Dead scope: `then` drops unrun, releasing its captures.
+            crate::dropped_work::spawn_then_dropped(at);
         }
-        // Dead scope: `then` drops unrun, releasing its captures.
     });
 }

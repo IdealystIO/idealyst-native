@@ -110,6 +110,11 @@ ui/          The app. Depends on `api` (for the stubs) + the UI runtime.
 server-bin/  Depends on `api` with `features = ["server"]`; calls router().
 ```
 
+`cargo check --workspace` builds `ui` and `server-bin` together, so Cargo turns
+`server` on for `api` in both. That is fine: every `#[server]` fn keeps its
+wire signature (`me()`, not `me(user: Auth<_>)`) on the server build too, and
+the stream endpoints keep their client hooks.
+
 The reference implementation is `crates/api/server/examples/server-fn-demo`; the full v1 design is
 in `crates/api/server/DESIGN.md`.
 

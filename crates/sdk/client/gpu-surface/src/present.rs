@@ -95,6 +95,7 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {{
 
 /// Fullscreen-triangle blit of a frame-sized texture into a same-sized
 /// destination, with the alpha conversion baked into the pipeline.
+#[derive(Clone)]
 pub struct PresentBlit {
     pipeline: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,

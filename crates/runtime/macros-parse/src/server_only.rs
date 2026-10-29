@@ -2,8 +2,8 @@
 //!
 //! `#[server]` (and its siblings `#[channel]`, `#[subscription]`,
 //! `#[sse]`) splits a function in two: the author's body under
-//! `cfg(feature = "server")`, and a stub generated from the SIGNATURE
-//! under `cfg(not(feature = "server"))`. A client build — the web bundle,
+//! `cfg(feature = "server")`, and a client stub generated from the
+//! SIGNATURE, which is what a client build compiles. A client build — the web bundle,
 //! a native app — never sets `server`: the stub is what makes a call
 //! reach the server, so a client build with the feature on would carry
 //! the database layer instead. So the body of such a function, and any

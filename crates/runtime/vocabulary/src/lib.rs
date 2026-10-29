@@ -281,6 +281,9 @@ pub mod robot_props;
 #[cfg(feature = "robot")]
 #[doc(hidden)]
 pub mod robot_watch;
+// Debug-build warnings for the scoped APIs below that drop work by design.
+#[doc(hidden)]
+pub mod dropped_work;
 // `spawn_then` — detached IO, result applied inside a turn (feature
 // `async-driver`, same gate as the `spawn_async` it builds on).
 #[cfg(feature = "async-driver")]

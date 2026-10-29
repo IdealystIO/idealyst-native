@@ -8,7 +8,10 @@
 //!   that registers a handler with the runtime's dispatch table. The
 //!   handler decodes the wire args, resolves any injected extractor
 //!   params from the request context, awaits the function, and encodes
-//!   the `Result` for the wire.
+//!   the `Result` for the wire. A fn WITH extractors keeps its body in a
+//!   private `__server_impl_<name>`, and `<name>` takes the wire args only:
+//!   it resolves the extractors from the current request and calls the
+//!   body in-process, so `<name>(wire args…)` compiles on both builds.
 //!
 //! - **Client build** (default features): the body is replaced with a
 //!   call to `server::__private::call`, which serializes the wire args
@@ -335,10 +338,34 @@ fn expand(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
     // `#[cfg]` over both would leave the module compiled on the client,
     // where its handler can't satisfy `ServerFnEntry`'s `Send` bound).
     // -----------------------------------------------------------------
-    let server_fn = quote! {
-        #[cfg(feature = "server")]
-        #(#attrs)*
-        #vis async fn #ident(#(#server_inputs),*) #output #body
+    // With no extractors the server body's signature IS the wire signature,
+    // so it keeps the author's name and the client stub is gated off — one
+    // `#ident` per build, both callable as `#ident(wire args)`.
+    //
+    // With extractors the two signatures differ, and Cargo unifies features
+    // across a workspace: a client crate built in the same invocation as the
+    // server binary (`cargo check --workspace`, rust-analyzer) sees the API
+    // crate WITH `server` on. If `#ident` were the server body there, every
+    // client call site would be short its extractor arguments. So the body
+    // moves to a private impl, and on server builds `#ident` takes the wire
+    // args, resolves the extractors from the current request context and
+    // calls it in-process — the same `#ident(wire args)` the client calls,
+    // so SSR and server code call through the identical signature.
+    let has_ctx = !ctx_binds.is_empty();
+    let impl_ident = if has_ctx { format_ident!("__server_impl_{}", ident) } else { ident.clone() };
+    let server_fn = if has_ctx {
+        quote! {
+            #[cfg(feature = "server")]
+            #[doc(hidden)]
+            #(#attrs)*
+            async fn #impl_ident(#(#server_inputs),*) #output #body
+        }
+    } else {
+        quote! {
+            #[cfg(feature = "server")]
+            #(#attrs)*
+            #vis async fn #ident(#(#server_inputs),*) #output #body
+        }
     };
 
     // Resolve each injected extractor from the current request context.
@@ -370,12 +397,38 @@ fn expand(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
                         let ( #( #wire_binds, )* ): ( #( #wire_tys, )* ) =
                             ::server::__private::decode_args(&__body_bytes)?;
                         #ctx_resolution
-                        let __result: #ret_ty = super::#ident( #( #call_exprs ),* ).await;
+                        let __result: #ret_ty = super::#impl_ident( #( #call_exprs ),* ).await;
                         ::server::__private::encode_result(&__result)
                     }),
                 }
             }
         }
+    };
+
+    // Server side, extractor fns only: the in-process `#ident(wire args)`.
+    // An extractor that can't be resolved (no request in scope, no session)
+    // fails the call the way a remote call reports it — through
+    // `ServerFnReturn::from_server_error`, as `call_impl` does.
+    let direct_fn = if has_ctx {
+        let doc_attrs = attrs.iter().filter(|a| a.path().is_ident("doc"));
+        quote! {
+            #[cfg(feature = "server")]
+            #(#doc_attrs)*
+            #vis async fn #ident(#( #wire_binds: #wire_tys ),*) #output {
+                let __ctx = ::server::__private::current_context();
+                #(
+                    let #ctx_binds = match <#ctx_tys as ::server::FromContext>::from_context(&__ctx).await {
+                        ::std::result::Result::Ok(__v) => __v,
+                        ::std::result::Result::Err(__e) => {
+                            return <#ret_ty as ::server::ServerFnReturn>::from_server_error(__e.into_domain());
+                        }
+                    };
+                )*
+                #impl_ident( #( #call_exprs ),* ).await
+            }
+        }
+    } else {
+        quote! {}
     };
 
     // -----------------------------------------------------------------
@@ -398,6 +451,7 @@ fn expand(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
     Ok(quote! {
         #server_fn
         #server_register
+        #direct_fn
         #client_fn
     })
 }
@@ -475,6 +529,22 @@ fn parse_socket_param(arg: Option<&FnArg>) -> syn::Result<(Pat, Type, Type)> {
         .next()
         .ok_or_else(|| syn::Error::new_spanned(ab, "missing `Out` type argument"))?;
     Ok(((*pt.pat).clone(), in_ty, out_ty))
+}
+
+/// The private name a stream endpoint's (`#[channel]` / `#[subscription]` /
+/// `#[sse]`) server body is emitted under; its generated handler calls it.
+///
+/// Not the author's name: that one is the CLIENT hook on every build. The
+/// two signatures differ (a client calls `chat(args) -> UseSocket<…>`, the
+/// server body is `async fn chat(Socket<…>, extractors…)`), and Cargo
+/// unifies features across a workspace — a client crate built in the same
+/// invocation as the server binary (`cargo check --workspace`,
+/// rust-analyzer) sees the API crate WITH `server` on. Gating the client
+/// stub on `not(feature = "server")` would make that client see the server body
+/// and fail at every call site; `server` itself is additive for the same
+/// reason (see its `lib.rs`).
+fn stream_impl_ident(ident: &Ident) -> Ident {
+    format_ident!("__stream_impl_{}", ident)
 }
 
 /// The result of splitting a streaming endpoint's params (after the
@@ -573,10 +643,14 @@ fn expand_channel(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
 
     let handler_mod = format_ident!("__channel_{}", ident);
 
+    // The body moves to a private impl the handler calls, so `#ident` stays
+    // free for the client hook on EVERY build (see `stream_impl_ident`).
+    let impl_ident = stream_impl_ident(ident);
     let server_fn = quote! {
         #[cfg(feature = "server")]
+        #[doc(hidden)]
         #(#attrs)*
-        #vis async fn #ident(#(#server_inputs),*) #output #body
+        async fn #impl_ident(#(#server_inputs),*) #output #body
     };
 
     let server_register = quote! {
@@ -610,7 +684,7 @@ fn expand_channel(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
                     };
                 )*
                 ::server::accept(ws, move |__sock: ::server::Socket<#in_ty, #out_ty>| async move {
-                    let _ = super::#ident( __sock, #( #call_exprs ),* ).await;
+                    let _ = super::#impl_ident( __sock, #( #call_exprs ),* ).await;
                 })
             }
 
@@ -624,9 +698,10 @@ fn expand_channel(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
     };
 
     // Client stub: mirrored handle. The client receives `Out` and sends
-    // `In`; open args are encoded into the connect URL.
+    // `In`; open args are encoded into the connect URL. Emitted on every
+    // build, `server` included (see `stream_impl_ident`).
     let client_fn = quote! {
-        #[cfg(not(feature = "server"))]
+        #[allow(dead_code)]
         #(#attrs)*
         #vis fn #ident(#(#wire_inputs),*) -> ::server::UseSocket<#out_ty, #in_ty> {
             let __args: ( #( #wire_tys, )* ) = ( #( #wire_pats, )* );
@@ -742,10 +817,14 @@ fn expand_subscription(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStrea
 
     let handler_mod = format_ident!("__subscription_{}", ident);
 
+    // The body moves to a private impl the handler calls, so `#ident` stays
+    // free for the client hook on EVERY build (see `stream_impl_ident`).
+    let impl_ident = stream_impl_ident(ident);
     let server_fn = quote! {
         #[cfg(feature = "server")]
+        #[doc(hidden)]
         #(#attrs)*
-        #vis async fn #ident(#(#server_inputs),*) #output #body
+        async fn #impl_ident(#(#server_inputs),*) #output #body
     };
 
     let server_register = quote! {
@@ -779,7 +858,7 @@ fn expand_subscription(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStrea
                     };
                 )*
                 ::server::accept(ws, move |mut __sock: ::server::Socket<(), #item_ty>| async move {
-                    let __stream = super::#ident( #( #call_exprs ),* ).await;
+                    let __stream = super::#impl_ident( #( #call_exprs ),* ).await;
                     let mut __stream = ::std::pin::pin!(__stream);
                     use ::server::__private::futures_util::StreamExt as _;
                     while let Some(__item) = __stream.next().await {
@@ -800,8 +879,9 @@ fn expand_subscription(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStrea
     };
 
     // Client stub: receive-only handle; open args encoded into the URL.
+    // Emitted on every build (see `stream_impl_ident`).
     let client_fn = quote! {
-        #[cfg(not(feature = "server"))]
+        #[allow(dead_code)]
         #(#attrs)*
         #vis fn #ident(#(#wire_inputs),*) -> ::server::UseSocket<#item_ty, ()> {
             let __args: ( #( #wire_tys, )* ) = ( #( #wire_pats, )* );
@@ -881,10 +961,14 @@ fn expand_sse(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
 
     let handler_mod = format_ident!("__sse_{}", ident);
 
+    // The body moves to a private impl the handler calls, so `#ident` stays
+    // free for the client hook on EVERY build (see `stream_impl_ident`).
+    let impl_ident = stream_impl_ident(ident);
     let server_fn = quote! {
         #[cfg(feature = "server")]
+        #[doc(hidden)]
         #(#attrs)*
-        #vis async fn #ident(#(#server_inputs),*) #output #body
+        async fn #impl_ident(#(#server_inputs),*) #output #body
     };
 
     let server_register = quote! {
@@ -915,7 +999,7 @@ fn expand_sse(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
                         Err(__e) => return ::server::__private::ws_error_response(__e),
                     };
                 )*
-                let __stream = super::#ident( #( #call_exprs ),* ).await;
+                let __stream = super::#impl_ident( #( #call_exprs ),* ).await;
                 ::server::__private::sse_response(__stream)
             }
 
@@ -929,8 +1013,9 @@ fn expand_sse(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
     };
 
     // Client stub: the event-stream URL, consumed by `server::use_sse`.
+    // Emitted on every build (see `stream_impl_ident`).
     let client_fn = quote! {
-        #[cfg(not(feature = "server"))]
+        #[allow(dead_code)]
         #(#attrs)*
         #vis fn #ident(#(#wire_inputs),*) -> ::std::string::String {
             let __args: ( #( #wire_tys, )* ) = ( #( #wire_pats, )* );

@@ -824,3 +824,96 @@ fn effect_rerun_spawned_task_applies_while_its_owner_lives() {
          not cancel a request that already went out",
     );
 }
+
+// ---------------------------------------------------------------------
+// Debug-build warnings for dropped work (`runtime_vocabulary::dropped_work`).
+//
+// Regression (Idea Chat): both drops below were silent — a join call whose
+// button a live event rebuilt never started, and a reconnect retry
+// scheduled from a `spawn_then` callback never fired, with nothing logged.
+// ---------------------------------------------------------------------
+
+#[cfg(debug_assertions)]
+#[test]
+fn regression_a_dropped_spawn_then_result_warns_once_naming_its_call_site() {
+    use runtime_vocabulary::dropped_work::take_emitted_for_test;
+    ensure_executor();
+    let h = Harness::new();
+    let gate = Gate::new();
+    let g = gate.clone();
+    let line_slot = Rc::new(std::cell::Cell::new(0u32));
+    let line_b = line_slot.clone();
+    let screen = mount_screen(&h, move |scoped| {
+        let g = g.clone();
+        // Two spawns from ONE call site (a loop): one warning, not two.
+        for _ in 0..2 {
+            let g = g.clone();
+            line_b.set(line!() + 1);
+            spawn_then(async move { g.await; 1i32 }, move |v| scoped.set(v));
+        }
+    });
+    h.world.flush();
+    pump();
+    let _ = take_emitted_for_test();
+
+    screen.shown.set(false);
+    h.world.flush();
+    gate.complete();
+    pump();
+
+    let warnings = take_emitted_for_test();
+    assert_eq!(warnings.len(), 1, "one warning per call site: {warnings:?}");
+    let w = &warnings[0];
+    assert!(w.contains(&format!("scoped_spawn.rs:{}", line_slot.get())), "names the call site: {w}");
+    assert!(w.contains("spawn_then_in"), "points at the anchored alternative: {w}");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn spawn_then_in_dying_with_the_scope_it_names_is_silent() {
+    use runtime_vocabulary::dropped_work::take_emitted_for_test;
+    ensure_executor();
+    let h = Harness::new();
+    let gate = Gate::new();
+    let g = gate.clone();
+    let screen = mount_screen(&h, move |scoped| {
+        let alive = ScopeAlive::current();
+        let g = g.clone();
+        spawn_then_in(&alive, async move { g.await; 1i32 }, move |v| scoped.set(v));
+    });
+    h.world.flush();
+    pump();
+    screen.shown.set(false);
+    h.world.flush();
+    gate.complete();
+    pump();
+    assert!(take_emitted_for_test().is_empty(), "naming the scope makes the drop the intent");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn regression_after_ms_scoped_inside_a_spawn_then_callback_warns() {
+    use runtime_vocabulary::dropped_work::take_emitted_for_test;
+    ensure_executor();
+    let h = Harness::new();
+    let gate = Gate::new();
+    let g = gate.clone();
+    let _screen = mount_screen(&h, move |_scoped| {
+        let g = g.clone();
+        spawn_then(async move { g.await }, move |()| {
+            // The reconnect-retry shape: no effect, build or scoped timer
+            // is running here, so this timer is inert.
+            runtime_vocabulary::scoped_scheduling::after_ms_scoped(10, || {});
+        });
+    });
+    h.world.flush();
+    pump();
+    let _ = take_emitted_for_test();
+    gate.complete();
+    pump();
+    let warnings = take_emitted_for_test();
+    assert!(
+        warnings.iter().any(|w| w.contains("after_ms_scoped at") && w.contains("after_ms_detached")),
+        "an inert scoped timer must say so and name the alternative: {warnings:?}",
+    );
+}

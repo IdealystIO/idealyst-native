@@ -1,12 +1,15 @@
-//! `StackHeader` — a themed top bar for a stack navigator's screens (web/desktop).
+//! `StackHeader` — a themed top bar for a stack navigator's screens, on every
+//! backend.
 //!
 //! Reads the active screen's [`StackHeaderState`] (title + leading/trailing
-//! [`HeaderButton`] slots + hidden flag) — the same per-screen slot data the
-//! NATIVE bar renders on mobile — and draws a themed header from it. It
-//! **self-suppresses** when `state.native` is true (a native bar is already
-//! rendering it) or `state.hidden` is set, so an author places it
-//! unconditionally: native bar on iOS/Android, drawn header on web/desktop,
-//! nothing doubled.
+//! [`HeaderButton`] slots + hidden flag) and draws a themed header from it.
+//! The stack navigator's native presenters (iOS, Android) hide the platform
+//! bar and keep only its transitions and back gesture, and
+//! `stack_navigator::header_state` always reports `native: false` — so this
+//! header IS the bar everywhere. It renders nothing when `state.hidden` is
+//! set (`.hide_header(true)`), or when a state reports `native` (a host that
+//! draws its own bar). It applies no safe-area inset: on a phone, place it in
+//! a `view(safe_area = SafeAreaSides::TOP)` slot.
 //!
 //! ```ignore
 //! // in a stack navigator's `.layout(|nav| …)`:

@@ -72,8 +72,9 @@ use idea_ui::{install_idea_theme, light_theme};
 install_idea_theme(light_theme());
 ```
 
-`install_idea_theme` also installs the default component stylesheets, so this one
-call is the entire setup for an app that doesn't need custom modifiers.
+Component styles need no separate install: each component composes its slot
+sheets the first time it renders, against whatever theme is active. This one call
+is the entire setup for an app that doesn't need custom modifiers.
 
 ## Tweak individual tokens
 
@@ -81,7 +82,8 @@ Mutate the fields you care about on a built-in theme, then install it. Color
 fields are `Tokenized<Color>`; scales are plain `f32`.
 
 ```rust
-use idea_ui::{install_idea_theme, light_theme, Color, Tokenized};
+use idea_ui::{install_idea_theme, light_theme, Tokenized};
+use runtime_core::Color;
 
 let mut theme = light_theme();
 theme.intents.primary.solid_bg = Tokenized::Literal(Color("#0066ff".into()));
@@ -129,9 +131,9 @@ install_idea_theme(BrandTheme { idea: my_customized_defaults });
 
 **Implement `IdeaTheme` directly** on any `'static` struct when you want full
 control over how tokens are produced. The trait's required getters are `colors`,
-`intents`, `spacing`, `radius`, `typography`; `font_family`, `hover_overlay`, and
-`pressed_overlay` have defaults you can override to ship a brand face or tuned
-state layers.
+`intents`, `palette`, `effects`, `spacing`, `radius`, `typography`; `font_family`,
+`hover_overlay`, `pressed_overlay` and `extension_tones` have defaults you can
+override to ship a brand face, tuned state layers or app tones.
 
 ## Light / dark and runtime swaps
 
