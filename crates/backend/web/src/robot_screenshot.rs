@@ -4,7 +4,9 @@
 //!
 //! The browser has no synchronous DOM-rasterize API, so we use the standard SVG
 //! `<foreignObject>` technique:
-//!   1. serialize the `#app` subtree to XHTML (keeping its class names) — via a
+//!   1. serialize the `#app` subtree — and every portal root, which the web
+//!      backend mounts on `<body>` BESIDE `#app` (modals, menus, popovers,
+//!      toasts) — to XHTML (keeping its class names) — via a
 //!      deep CLONE whose input/textarea/option attributes are synced from the
 //!      live DOM properties first (`.checked`, `.value`, `.selected`), because
 //!      XMLSerializer reads attributes and would otherwise snapshot stale
@@ -52,27 +54,48 @@ use web_glue::dom::{
 /// Result handed to the caller: `(png_base64, width_px, height_px)`.
 pub type ShotResult = Result<(String, u32, u32), String>;
 
-/// Capture the current page (`#app`, else `<body>`) to a PNG and call `done`
-/// with the base64 PNG + pixel dimensions, or an error. Async — `done` fires
-/// after the snapshot image loads.
+/// Capture the current page (`#app`, else `<body>`) and its open portals to
+/// a PNG and call `done` with the base64 PNG + pixel dimensions, or an
+/// error. Async — `done` fires after the snapshot image loads.
 pub fn capture(done: Box<dyn FnOnce(ShotResult)>) {
-    let target = web_glue::dom::window()
-        .and_then(|w| w.document())
-        .and_then(|d| {
-            d.query_selector("#app")
-                .ok()
-                .flatten()
-                .or_else(|| d.body().map(Into::into))
-        });
+    let Some(document) = web_glue::dom::window().and_then(|w| w.document()) else {
+        return done(Err("no document to capture".into()));
+    };
+    let target = document
+        .query_selector("#app")
+        .ok()
+        .flatten()
+        .or_else(|| document.body().map(Into::into));
     match target {
-        Some(target) => capture_element(&target, done),
+        Some(target) => {
+            let layers = portal_layers(&document, &target);
+            capture_element(&target, &layers, done)
+        }
         None => done(Err("no #app or <body> to capture".into())),
     }
 }
 
-/// [`capture`] for an explicit element — the visible part of `target`.
-fn capture_element(target: &Element, done: Box<dyn FnOnce(ShotResult)>) {
-    match build_svg_data_url(target) {
+/// The portal roots the capture must add over `target`, in `<body>` order
+/// (their paint order at equal z-index). A portal mounts directly on
+/// `<body>` (`primitives::portal`), outside `#app`, so a capture of `#app`
+/// alone left every open dialog, menu, popover and toast out of the
+/// screenshot. One already inside `target` (the `<body>` fallback) is
+/// serialized with it.
+fn portal_layers(document: &web_glue::dom::Document, target: &Element) -> Vec<Element> {
+    let Ok(roots) = document.query_selector_all("body > [data-portal-id]") else {
+        return Vec::new();
+    };
+    (0..roots.length())
+        .filter_map(|i| roots.item(i))
+        .filter(|n| !target.contains(Some(n)))
+        .filter_map(|n| n.dyn_into::<Element>().ok())
+        .collect()
+}
+
+/// [`capture`] for an explicit element — the visible part of `target`,
+/// with `layers` (portal roots outside it) painted over it.
+fn capture_element(target: &Element, layers: &[Element], done: Box<dyn FnOnce(ShotResult)>) {
+    match build_svg_data_url(target, layers) {
         Ok(prep) => render_to_png(prep, done),
         Err(e) => done(Err(e)),
     }
@@ -102,6 +125,18 @@ struct Crop {
 /// what the user can actually see of the captured element. At least 1×1 so
 /// the canvas is never empty (an element scrolled fully out of view yields a
 /// 1-pixel capture rather than an error).
+/// The smallest crop holding both `a` and `b`.
+fn union_crop(a: Crop, b: Crop) -> Crop {
+    let left = a.left.min(b.left);
+    let top = a.top.min(b.top);
+    Crop {
+        left,
+        top,
+        width: (a.left + a.width).max(b.left + b.width) - left,
+        height: (a.top + a.height).max(b.top + b.height) - top,
+    }
+}
+
 fn visible_crop(left: f64, top: f64, right: f64, bottom: f64, vw: f64, vh: f64) -> Crop {
     let l = left.max(0.0);
     let t = top.max(0.0);
@@ -113,7 +148,7 @@ fn visible_crop(left: f64, top: f64, right: f64, bottom: f64, vw: f64, vh: f64) 
     }
 }
 
-fn build_svg_data_url(target: &Element) -> Result<Prep, String> {
+fn build_svg_data_url(target: &Element, layers: &[Element]) -> Result<Prep, String> {
     let window = web_glue::dom::window().ok_or("no window")?;
     let document = window.document().ok_or("no document")?;
 
@@ -126,7 +161,15 @@ fn build_svg_data_url(target: &Element) -> Result<Prep, String> {
     let viewport = document.document_element().ok_or("no documentElement")?;
     let vw = f64::from(viewport.client_width()).max(1.0);
     let vh = f64::from(viewport.client_height()).max(1.0);
-    let crop = visible_crop(rect.left(), rect.top(), rect.right(), rect.bottom(), vw, vh);
+    // The visible union of the element and its portal layers: a popover
+    // anchored near the edge of a smaller-than-viewport `#app` still shows.
+    let crop = layers.iter().fold(
+        visible_crop(rect.left(), rect.top(), rect.right(), rect.bottom(), vw, vh),
+        |crop, layer| {
+            let r = layer.get_bounding_client_rect();
+            union_crop(crop, visible_crop(r.left(), r.top(), r.right(), r.bottom(), vw, vh))
+        },
+    );
 
     // idealyst styles via hashed CSS classes in shared <style> sheets — embed
     // their CSSOM rules so the serialized class names resolve inside the SVG.
@@ -157,6 +200,14 @@ fn build_svg_data_url(target: &Element) -> Result<Prep, String> {
     let css = inline_resources(css);
 
     let xhtml = serialize_live_state(&window, target)?;
+    // Each portal root carries its own inline `position: fixed` placement,
+    // which resolves against the foreignObject — the viewport here — so it
+    // lands where it is on screen as a sibling AFTER the element's wrapper,
+    // painting over it as it does live.
+    let mut layer_xhtml = String::new();
+    for layer in layers {
+        layer_xhtml.push_str(&serialize_live_state(&window, layer)?);
+    }
 
     // The SVG is the VIEWPORT, in CSS pixels; the canvas scales by dpr for
     // crispness. The wrapper div sits at the element's live viewport offset
@@ -173,7 +224,7 @@ fn build_svg_data_url(target: &Element) -> Result<Prep, String> {
              <div xmlns=\"http://www.w3.org/1999/xhtml\" \
                   style=\"position:absolute;left:{left}px;top:{top}px;width:{css_w}px;height:{css_h}px\">\
                <style>{css}\n#app{{width:100%;height:100%}}</style>{xhtml}\
-             </div>\
+             </div>{layer_xhtml}\
            </foreignObject>\
          </svg>"
     );
@@ -787,15 +838,26 @@ mod tests {
     /// Run the real capture pipeline on `target` and read the PNG back:
     /// `(device-pixel width, device-pixel height, RGBA at each CSS point)`.
     async fn capture_pixels(target: &Element, points: &[(f64, f64)]) -> (u32, u32, Vec<[u8; 4]>) {
+        capture_pixels_with_layers(target, &[], points).await
+    }
+
+    /// [`capture_pixels`] with portal `layers` painted over `target`.
+    async fn capture_pixels_with_layers(
+        target: &Element,
+        layers: &[Element],
+        points: &[(f64, f64)],
+    ) -> (u32, u32, Vec<[u8; 4]>) {
         use web_glue::js::{Function, Promise};
         let shot = Rc::new(RefCell::new(None));
         let promise = {
             let target = target.clone();
+            let layers = layers.to_vec();
             let shot = shot.clone();
             Promise::new(&mut |resolve, _reject| {
                 let shot = shot.clone();
                 capture_element(
                     &target,
+                    &layers,
                     Box::new(move |res| {
                         *shot.borrow_mut() = Some(res);
                         let _ = resolve.call0(&web_glue::JsValue::NULL);
@@ -974,6 +1036,51 @@ mod tests {
             f64::from(h) <= (vh * dpr).ceil(),
             "capture is the visible part, not the whole 3000px element: {h}"
         );
+    }
+
+    /// Regression: an open dialog was missing from every web `dom`
+    /// screenshot. A portal mounts on `<body>` beside `#app`
+    /// (`primitives::portal`), and the capture serialized `#app` alone, so
+    /// the agent saw the page as if the dialog were closed. A
+    /// `position: fixed` portal root (the real one's base style) over the
+    /// page must appear where it is on screen, over the page, with the page
+    /// still showing around it.
+    #[wasm_bindgen_test]
+    async fn regression_screenshot_includes_open_portals() {
+        let app = el("position:fixed;left:0;top:0;width:100px;height:100px;background:rgb(255,255,255)");
+        doc().body().unwrap().append_child(&app).unwrap();
+        let portal = el("position: fixed; z-index: 1000; left: 20px; top: 30px;");
+        portal.set_attribute("data-portal-id", "9001").unwrap();
+        portal.append_child(&el("width:40px;height:20px;background:rgb(0,0,255)")).unwrap();
+        doc().body().unwrap().append_child(&portal).unwrap();
+
+        let layers = portal_layers(&doc(), &app);
+        assert_eq!(layers.len(), 1, "the open portal is found beside the app root");
+        let (_, _, px) = capture_pixels_with_layers(&app, &layers, &[(30.0, 40.0), (10.0, 10.0)]).await;
+        portal.remove();
+        app.remove();
+        assert_eq!(px[0], BLUE, "the dialog is in the capture, where it is on screen");
+        assert_eq!(px[1], WHITE, "the page shows around it");
+    }
+
+    /// A portal already inside the capture target (the `<body>` fallback)
+    /// is not added a second time.
+    #[wasm_bindgen_test]
+    fn portal_layers_skip_portals_inside_the_target() {
+        let portal = el("position:fixed");
+        portal.set_attribute("data-portal-id", "9002").unwrap();
+        doc().body().unwrap().append_child(&portal).unwrap();
+        let body: Element = doc().body().unwrap().into();
+        let inside = portal_layers(&doc(), &body);
+        portal.remove();
+        assert!(inside.is_empty(), "a body capture already holds its portals");
+    }
+
+    #[wasm_bindgen_test]
+    fn union_crop_holds_both() {
+        let a = Crop { left: 0.0, top: 0.0, width: 100.0, height: 50.0 };
+        let b = Crop { left: 80.0, top: 40.0, width: 60.0, height: 30.0 };
+        assert_eq!(union_crop(a, b), Crop { left: 0.0, top: 0.0, width: 140.0, height: 70.0 });
     }
 
     #[wasm_bindgen_test]

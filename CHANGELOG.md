@@ -2264,6 +2264,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A web `dom` screenshot shows open dialogs** (`backend-web`). Portals
+  (dialogs, menus, popovers, toasts) mount on `<body>` beside `#app`, and
+  the Robot's `dom` capture serialized `#app` alone, so every open dialog
+  was missing from the picture. The capture now paints each open portal
+  root over the page where it is on screen.
+
 - **A picker's commit keeps a `spawn_then` alive** (`idea-ui`). `Select`,
   `Autocomplete`, `DatePicker`, `DateTimePicker`, `DateRangePicker`,
   `DateInput` and `DateTimeInput` fire `on_change` from inside their popup,
