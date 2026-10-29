@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ssr"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "css",
  "parity-goldens",
@@ -1609,7 +1609,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "5.0.2"
+version = "5.0.3"
 dependencies = [
  "css",
  "dev-client",
@@ -2169,7 +2169,7 @@ dependencies = [
 
 [[package]]
 name = "cache"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "redis",
  "serde",
@@ -2686,7 +2686,7 @@ dependencies = [
 
 [[package]]
 name = "codeblock"
-version = "5.0.0"
+version = "5.1.0"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
@@ -3182,7 +3182,7 @@ dependencies = [
 
 [[package]]
 name = "css"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "runtime-shared",
 ]
@@ -4016,7 +4016,7 @@ dependencies = [
 
 [[package]]
 name = "email"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -5826,7 +5826,7 @@ dependencies = [
 
 [[package]]
 name = "host-gtk"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "backend-linux",
  "gtk4",
@@ -6459,7 +6459,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "14.0.0"
+version = "14.0.1"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6520,7 +6520,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.22"
+version = "1.5.23"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6567,7 +6567,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.21.0"
+version = "1.21.1"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -6638,7 +6638,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-config"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "aws-config",
  "cache",
@@ -7005,7 +7005,7 @@ dependencies = [
 
 [[package]]
 name = "jobs"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -9912,7 +9912,7 @@ dependencies = [
 
 [[package]]
 name = "pubsub"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -11573,7 +11573,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "axum",
  "futures-channel",
@@ -11598,7 +11598,7 @@ dependencies = [
 
 [[package]]
 name = "server-aws"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "axum",
  "lambda_http",
@@ -11629,7 +11629,7 @@ dependencies = [
 
 [[package]]
 name = "server-kit"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "axum",
  "cache",
@@ -11645,7 +11645,7 @@ dependencies = [
 
 [[package]]
 name = "server-macros"
-version = "1.5.2"
+version = "2.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -14853,7 +14853,7 @@ dependencies = [
 
 [[package]]
 name = "webview"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
