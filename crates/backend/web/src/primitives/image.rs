@@ -20,10 +20,12 @@ pub(crate) enum Unresolved {
 ///
 /// `http(s)` and `data:` pass through unchanged; `asset://<id>` becomes
 /// the registered asset's URL (`asset_url`, the backend's `asset_urls`
-/// table). Everything else is an error *before* the browser sees it: web
-/// could resolve a relative path or `blob:` against the page, but no
-/// native backend can, so letting the browser try is what made an app
-/// "work on web" and draw a blank tile on iOS.
+/// table). A root-relative `/x.png` arrives here only when no image base
+/// is set (the mount handler joins it otherwise), and goes to the browser
+/// unchanged: it resolves against the page origin, the same on every
+/// route. Everything else is an error *before* the browser sees it: a
+/// document-relative path would change meaning with the route, and
+/// `blob:`/`//host` mean nothing on native.
 pub(crate) fn resolve_img_src<'a>(
     src: &'a str,
     asset_url: impl FnOnce(AssetId) -> Option<&'a str>,
@@ -31,6 +33,7 @@ pub(crate) fn resolve_img_src<'a>(
     match image_src::classify(src) {
         ImageSrc::Remote(url) | ImageSrc::Data(url) => Ok(url),
         ImageSrc::Asset(id) => asset_url(AssetId(id)).ok_or(Unresolved::UnregisteredAsset(id)),
+        ImageSrc::Rejected(RejectReason::Relative) if image_src::is_root_relative(src) => Ok(src.trim()),
         ImageSrc::Rejected(reason) => Err(Unresolved::Rejected(reason)),
     }
 }
@@ -263,12 +266,25 @@ mod tests {
         None
     }
 
-    /// The CrewForge kiosk's `/attachments/<id>` loaded on web (resolved
-    /// against the page) and drew a blank tile on iOS. Web rejects it too,
-    /// before the browser can resolve it.
+    /// REGRESSION: `/assets/logo.svg` was rejected on web, so same-origin
+    /// apps showed broken images where the browser had loaded them fine.
+    /// With no image base set, a root-relative path goes to the browser.
     #[test]
-    fn regression_relative_src_is_rejected_on_web_too() {
-        for src in ["/attachments/abc", "logo.png", "./logo.png", "../x.png"] {
+    fn regression_root_relative_src_reaches_the_img_on_web() {
+        assert_eq!(resolve_img_src("/assets/logo.svg", no_assets), Ok("/assets/logo.svg"));
+        assert_eq!(resolve_img_src(" /uploads/x.png", no_assets), Ok("/uploads/x.png"));
+        assert_eq!(
+            resolve_img_src("/\\cdn.example.com/x.png", no_assets),
+            Err(Unresolved::Rejected(RejectReason::Relative)),
+            "browsers read /\\host as scheme-relative"
+        );
+    }
+
+    /// A document-relative path would resolve against the current route,
+    /// and the forms below mean nothing on native; none reaches the `<img>`.
+    #[test]
+    fn document_relative_and_browser_only_srcs_are_rejected() {
+        for src in ["logo.png", "./logo.png", "../x.png"] {
             assert_eq!(
                 resolve_img_src(src, no_assets),
                 Err(Unresolved::Rejected(RejectReason::Relative)),

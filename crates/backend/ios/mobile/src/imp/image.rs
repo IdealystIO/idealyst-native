@@ -16,7 +16,7 @@
 //!   Then `create_image` runs with `src = "asset://{id}"` and shows it.
 //! - **`data:` URI** (`image("data:image/svg+xml,…")`): decoded
 //!   synchronously, base64 or percent-encoded.
-//! - Anything else is rejected: `on_error` fires and debug builds log why.
+//! - Anything else is rejected: `on_error` fires and a warning says why.
 //!
 //! Every `src` applied to a view starts a new load generation; a fetch that
 //! completes for an older `src` is dropped, so a slow response never
@@ -434,8 +434,8 @@ fn begin_load(view: &UIView) -> Option<LoadTicket> {
 }
 
 /// Log why `src` produced no image, clear the view, and fire `on_error`.
-/// A rejected `src` logs through `image_source::warn_rejected` (debug
-/// builds), the same line every backend prints.
+/// A rejected `src` logs through `image_source::warn_rejected`, the same
+/// line every backend prints.
 fn fail_load(view: &UIView, src: &str, failure: SrcFailure) {
     match failure {
         SrcFailure::Rejected(reason) => image_source::warn_rejected(src, reason),

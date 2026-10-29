@@ -12,9 +12,10 @@
 //!   contract ([`crate::image_src`], `docs/image-src.md`): `http(s)://`
 //!   URLs, `data:` URIs (base64 or percent-encoded) and asset URLs load,
 //!   including SVG (the native backends rasterize it at the view's
-//!   displayed size); anything else — a relative path, `//host`, `file:`,
-//!   `blob:` — is rejected on every backend, web included, with `on_error`
-//!   and a debug-build warning. An undecodable source or an unregistered
+//!   displayed size); a root-relative `/path` is joined to the image base
+//!   (`docs/image-src.md`); anything else — a document-relative path,
+//!   `//host`, `file:`, `blob:` — is rejected on every backend, web
+//!   included, with `on_error` and a warning. An undecodable source or an unregistered
 //!   asset id also fires `on_error`.
 //!   On Android a remote URL needs the app's `internet` capability
 //!   (`[package.metadata.idealyst] capabilities = ["internet"]`, or depend
@@ -134,16 +135,17 @@ where
 /// `#[non_exhaustive]`: future modes (raw bytes, a pre-decoded handle, a
 /// blob) can be added as new variants without breaking call sites —
 /// construct via the `From` impls (`&str` / `String` / `Reactive<String>` /
-/// `Signal<String>` / `Asset<Image>`) rather than matching exhaustively.
+/// `Signal<String>` / `ReadSignal<String>` / `Memo<String>` / `rx!` /
+/// `Asset<Image>`) rather than matching exhaustively.
 #[non_exhaustive]
 #[derive(Clone)]
 pub enum ImageSource {
-    /// A URL string (`http(s)://`, `file://`, `data:`…). Reactive — a
-    /// static literal or a signal-driven getter; the image repaints when it
-    /// changes.
+    /// A URL string (`http(s)://`, `data:`, or a root-relative `/path`;
+    /// see `docs/image-src.md`). Reactive — a static literal or a
+    /// signal-driven getter; the image repaints when it changes.
     Url(crate::Reactive<String>),
     /// A declarative bundled asset, resolved to a backend-local path
-    /// (web `dist/assets/`, iOS bundle resource, Android `AssetManager`).
+    /// (web `/assets/<path>`, iOS bundle resource, Android `AssetManager`).
     Asset(Asset<kinds::Image>),
 }
 
@@ -165,6 +167,23 @@ impl From<crate::Reactive<String>> for ImageSource {
 impl From<crate::Signal<String>> for ImageSource {
     fn from(s: crate::Signal<String>) -> Self {
         ImageSource::Url(s.into())
+    }
+}
+// The kernel handles an author's `signal()` / `memo()` returns. Each reads
+// inside the URL closure, so the image repaints when the handle changes.
+impl From<runtime_world::Signal<String>> for ImageSource {
+    fn from(s: runtime_world::Signal<String>) -> Self {
+        ImageSource::Url(crate::Reactive::Dynamic(Rc::new(move || s.get())))
+    }
+}
+impl From<runtime_world::ReadSignal<String>> for ImageSource {
+    fn from(s: runtime_world::ReadSignal<String>) -> Self {
+        ImageSource::Url(crate::Reactive::Dynamic(Rc::new(move || s.get())))
+    }
+}
+impl From<runtime_world::Memo<String>> for ImageSource {
+    fn from(m: runtime_world::Memo<String>) -> Self {
+        ImageSource::Url(crate::Reactive::Dynamic(Rc::new(move || m.get())))
     }
 }
 impl From<Asset<kinds::Image>> for ImageSource {

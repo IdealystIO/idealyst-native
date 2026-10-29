@@ -49,12 +49,22 @@ fn regression_ssr_does_not_leak_asset_sentinel() {
 fn regression_ssr_rejected_src_has_no_src_attribute() {
     let html = img_html(|| {
         view()
-            .child(image().src("/attachments/abc").alt("a"))
+            .child(image().src("attachments/abc").alt("a"))
             .child(image().src("asset://424242").alt("b"))
             .build()
     });
     assert!(html.contains(r#"<img alt="a">"#), "{html}");
     assert!(html.contains(r#"<img alt="b">"#), "{html}");
+}
+
+/// REGRESSION: a root-relative `src` (`/assets/logo.svg`) rendered with no
+/// `src`, so a same-origin image the browser had always loaded was broken.
+/// With no image base set it is emitted unchanged, as the web backend
+/// hands it to `<img>`, so hydration agrees.
+#[test]
+fn regression_ssr_root_relative_src_is_emitted() {
+    let html = img_html(|| image().src("/assets/logo.svg").alt("a").build());
+    assert!(html.contains(r#"<img src="/assets/logo.svg""#), "{html}");
 }
 
 /// Every conformance vector: `http(s)`/`data:` reach the HTML unchanged

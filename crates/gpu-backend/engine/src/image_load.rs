@@ -17,7 +17,8 @@
 //! | `asset://id`, `asset!` (Bundled) | native: `image_src::read_bundled_asset`; web: fetched from `/assets/<path>` |
 //! | `asset://id`, Remote asset | fetched like `http(s)` |
 //! | `http(s)://` | fetched + decoded off the render thread ([`spawn_fetch`]) |
-//! | anything else | rejected: dev warning + `on_error` |
+//! | root-relative `/x.png` (no image base set) | web: fetched against the page origin; native: rejected |
+//! | anything else | rejected: warning + `on_error` |
 //!
 //! **Threading.** A fetch runs on a worker thread on native (the `net`
 //! client blocked on with [`block_on_fetch`]) and as a future on the
@@ -284,6 +285,13 @@ impl WgpuBackend {
         // bundled asset); remote sources return early as a pending fetch.
         let bytes: Result<std::borrow::Cow<'_, [u8]>, String> = match image_src::classify(src) {
             ImageSrc::Rejected(reason) => {
+                // In the browser a root-relative path (no image base set)
+                // resolves against the page origin, as on the DOM backend;
+                // the bundled-asset fetch below relies on the same.
+                #[cfg(target_arch = "wasm32")]
+                if reason == image_src::RejectReason::Relative && image_src::is_root_relative(src) {
+                    return self.fetch_for(src, LoadJob::Fetch(src.trim().to_string()), node, generation);
+                }
                 image_src::warn_rejected(src, reason);
                 return Resolution::Failed;
             }

@@ -57,10 +57,11 @@ pub(crate) enum Failure {
 }
 
 impl Failure {
-    /// Log the failure in debug builds. A rejected form goes through the
-    /// shared [`backend_image_source::warn_rejected`] so the message is the
-    /// same on every backend; the asset failures are this backend's own
-    /// diagnosis (the payload failures are visible as `on_error` alone).
+    /// Log the failure. A rejected form goes through the shared
+    /// [`backend_image_source::warn_rejected`] (every build) so the message
+    /// is the same on every backend; the asset failures are this backend's
+    /// own diagnosis, in debug builds (the payload failures are visible as
+    /// `on_error` alone).
     pub(crate) fn warn(self, src: &str) {
         match self {
             Failure::Rejected(reason) => backend_image_source::warn_rejected(src, reason),

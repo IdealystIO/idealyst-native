@@ -10,15 +10,38 @@ it.
 |---|---|
 | `https://…`, `http://…` | Fetched off the UI thread. `on_load` on success; `on_error` on a network error, a non-2xx status, or bytes that don't decode. Plain `http` still needs the platform's cleartext exception (iOS ATS, Android network-security config). |
 | `data:…` | Decoded in place. Base64 (`data:image/png;base64,…`) or percent-encoded (`data:image/svg+xml,%3Csvg…`), scheme in any case. |
-| `image_asset(asset)` | The asset's bytes. `embed_asset!` (bytes compiled in) and `asset!` (a file the build ships, see below) both work everywhere. |
+| `image_asset(asset)` | The asset's bytes. `embed_asset!` (bytes compiled in) and `asset!` (a file the build ships, see below) both work everywhere. idea-ui's `Image` and `Avatar` take an asset as their `src`. |
+| `/path` (root-relative) | Resolved against the image base, see below. |
 
-Anything else is **rejected**: `on_error` fires, and debug builds log why
-(`image(): rejected src "/x.png": …`). That covers:
+### Root-relative paths
 
-- relative paths — `/attachments/abc`, `logo.png`, `./a.png`. Native has no
-  page to resolve against, so web rejects them too. Build an absolute URL
-  (`format!("{}{path}", server::base_url().unwrap())`) or ship the file as an
-  asset.
+A `src` starting with a single `/` (`/uploads/x.png`) is joined to the image
+base before any backend sees it: `https://api.example.com` + `/uploads/x.png`
+→ `https://api.example.com/uploads/x.png`, on every platform.
+`server::configure(ClientConfig::new(url))` sets the base; an app without a
+server sets it with `runtime_core::set_image_base_url(url)`. Only an absolute
+`http(s)://` base counts.
+
+With no base set (`server::configure` with `""`, the usual same-origin web
+setup, or nothing configured):
+
+- web, SSR and the wgpu renderer in the browser hand the path to the browser,
+  which resolves it against the page origin;
+- every other backend rejects it, with a warning naming the src.
+
+A file that ships with the app belongs in `asset!`, not at a `/path`: an asset
+loads on every platform with no base.
+
+### Rejected
+
+Anything else is **rejected**: `on_error` fires and a warning is logged
+(`image(): rejected src "logo.png": …`), once per distinct src, in release
+builds too. That covers:
+
+- document-relative paths — `logo.png`, `./a.png`, `../a.png`. On web they
+  would resolve against the current route, so they mean something different
+  on every screen. Use a root-relative `/path`, an absolute URL, or an asset.
+- a root-relative path with no base, outside a browser (see above).
 - scheme-relative `//host/x.png` — spell out `https://`.
 - `file:`, `blob:`, `content:`, `ftp:` and every other scheme — each is
   readable on some platforms only.

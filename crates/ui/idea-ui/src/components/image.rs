@@ -3,6 +3,9 @@
 //!
 //! ```ignore
 //! ui! { Image(src = "https://…/avatar.png", alt = Some("Ada".into()), width = Some(64.0f32), height = Some(64.0f32), rounded = true) }
+//!
+//! static LOGO: Asset<kinds::Image> = asset!("logo.svg");
+//! ui! { Image(src = LOGO, alt = Some("Logo".into())) }
 //! ```
 //!
 //! `ui!` routes the PascalCase `Image` tag to this component; the
@@ -15,8 +18,8 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, component_styles, Element, IdealystSchema, ImageLoadEvent, IntoElement, Length, Overflow, Reactive,
-    StyleRules, Tokenized,
+    component, component_styles, image_from, Element, IdealystSchema, ImageLoadEvent, ImageSource, IntoElement,
+    Length, Overflow, Reactive, StyleRules, Tokenized,
 };
 
 use crate::theme::IdeaThemeRef;
@@ -39,9 +42,9 @@ component_styles! {
 }
 
 // Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
-// `Reactive<T>`. `src` routes to the framework `image` primitive's reactive
-// source (it accepts a `Fn() -> String`), so a `Signal`/`rx!` URL repaints the
-// image in place. `width`/`height`/`rounded` drive the style sink (`.get()`
+// `Reactive<T>`, except `src`: an `ImageSource` already carries its own
+// `Reactive<String>` URL (or a bundled asset), so it is `#[prop(static)]` and a
+// `Signal`/`rx!` URL still repaints the image in place. `width`/`height`/`rounded` drive the style sink (`.get()`
 // read INSIDE the closure). A live `alt` routes to the primitive's reactive
 // `.alt_reactive()` sink (swaps the alt / a11y label in place); a `Static` alt
 // is set once. A bare value stays a zero-cost `Static` snapshot.
@@ -49,9 +52,13 @@ component_styles! {
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ImageProps {
-    /// Image source URL handed to the underlying `image` primitive.
-    #[schema(constraint = "image URL the platform can load (http/https/file/data)")]
-    pub src: String,
+    /// What to show: a URL (`https://…`, `data:…`, or a root-relative
+    /// `/path` resolved against the server base) or a bundled
+    /// [`Asset`](runtime_core::assets::Asset) from `asset!` /
+    /// `embed_asset!`. Static or live (`Signal`/`rx!` URL).
+    #[schema(constraint = "ImageSource — URL string or bundled Asset")]
+    #[prop(static)]
+    pub src: ImageSource,
     /// Accessible description. Maps to `alt` on web.
     pub alt: Option<String>,
     /// Explicit width in px. `None` = natural / flex-sized.
@@ -72,7 +79,7 @@ pub struct ImageProps {
 impl Default for ImageProps {
     fn default() -> Self {
         Self {
-            src: Reactive::Static(String::new()),
+            src: ImageSource::from(""),
             alt: Reactive::Static(None),
             width: Reactive::Static(None),
             height: Reactive::Static(None),
@@ -105,11 +112,10 @@ pub fn Image(props: &ImageProps) -> Element {
     };
     let style = style.overridden(props.styles.root.as_ref());
 
-    // `src` routes to the framework `image` primitive's reactive source: a
-    // `Reactive::Static` URL is a constant, a `Signal`/`rx!` URL repaints the
-    // image in place (the primitive's handler re-runs `update_image_src`).
-    let src = props.src.clone();
-    let mut img = runtime_core::image(move || src.get()).with_style(style);
+    // `image_from` picks the primitive's URL or asset path. A live URL
+    // repaints the image in place (the primitive's handler re-runs
+    // `update_image_src`); an asset is registered with the backend first.
+    let mut img = image_from(props.src.clone()).with_style(style);
 
     // A live `alt` routes to the primitive's reactive `.alt_reactive()` sink
     // (the handler installs an Effect → `update_image_alt`); a `Static` alt is

@@ -983,6 +983,9 @@ pub use crate::style_attach::IntoStyleProp as IntoStyleSource;
 // Root spellings of the glue's `primitives::…` wrappers.
 
 pub use primitives::image::{image, image_asset};
+/// The base a root-relative `image()` src (`/uploads/x.png`) resolves
+/// against; `server::configure` sets it. See `docs/image-src.md`.
+pub use runtime_shared::image_src::set_base_url as set_image_base_url;
 pub use primitives::link::{external_link, link};
 // The navigation data surface at the root (`use runtime_core::{Route,
 // Screen}` in app crates): `Route` is the runtime-shared type; `Screen`
@@ -998,6 +1001,18 @@ pub use primitives::scroll_view::scroll_view;
 pub use primitives::text_area::text_area;
 pub use primitives::text_input::text_input;
 pub use primitives::toggle::toggle;
+
+// `ImageSource` lives in runtime-shared, which can't name the glue's
+// `Reactive` (what `rx!` builds), so that conversion lives here. Without it
+// an `rx!` URL can't reach an `ImageSource` prop (idea-ui `Image`, `Avatar`).
+impl From<Reactive<String>> for ImageSource {
+    fn from(r: Reactive<String>) -> Self {
+        ImageSource::Url(match r {
+            Reactive::Static(s) => runtime_shared::Reactive::Static(s),
+            Reactive::Dynamic(f) => runtime_shared::Reactive::Dynamic(f),
+        })
+    }
+}
 
 /// Dispatch an [`ImageSource`] to the url / asset constructor. A `Url`
 /// source becomes a closure over its `Reactive<String>`'s `get`, so it

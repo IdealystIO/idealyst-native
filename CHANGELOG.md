@@ -29,6 +29,27 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **Root-relative `image()` srcs load again** (`runtime-shared`,
+  `runtime-vocabulary`, `runtime-core`, `backend-web`, `backend-ssr`,
+  `render-wgpu`, `server`, `idea-ui`). Since the shared src contract
+  (`backend-web` 2.9.1), `/assets/logo.svg` or `/uploads/x.png` was
+  rejected on web, so same-origin images that had always loaded showed as
+  broken, with no log in release builds. Now a root-relative src is joined
+  to the image base before any backend sees it, so it means the same URL
+  everywhere. `server::configure` sets that base, and an app without a
+  server calls `set_image_base_url`. With no base, web, SSR and wgpu in the
+  browser resolve the path against the page, and native backends reject it.
+  Document-relative paths (`logo.png`, `./x.png`) are still rejected
+  everywhere. A rejected src is now logged once per src in release builds
+  too. **idea-ui `Image.src` is now an `ImageSource`**, so it takes an
+  `asset!`/`embed_asset!` image as well as a string, `Signal`, `memo` or
+  `rx!` URL. A literal `ImageProps { src: Reactive::Static(..), .. }` no
+  longer compiles; write `src: "…".into()`. `runtime_core` now re-exports
+  `asset!` and `embed_asset!`. *Migration:* none for same-origin web. For a
+  native app, call `server::configure` with an absolute URL (or
+  `set_image_base_url`), or ship bundled files with `asset!`. See
+  `docs/image-src.md`.
+
 - **`CameraConfig` and `AudioStreamConfig` gained a `device` field**
   (`camera` 4.0, `microphone` 4.0). A struct literal that names every field
   stops compiling; add `..Default::default()` or use the builders.

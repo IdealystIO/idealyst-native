@@ -14,8 +14,20 @@
 //! | anything else                           | `Rejected`       |
 //!
 //! Scheme matching is case-insensitive, like a browser's. A rejected `src`
-//! is a load error on every backend: `on_error` fires and, in debug builds,
-//! [`warn_rejected`] logs why.
+//! is a load error on every backend: `on_error` fires and [`warn_rejected`]
+//! logs why.
+//!
+//! A root-relative `src` (`/uploads/x.png`) is resolved before it is
+//! classified: the `image` mount handler passes every `src` through
+//! [`with_base`], which prefixes the base set by [`set_base_url`]
+//! (`server::configure` sets it). With no base, the path stays relative;
+//! backends that run in a page (web, SSR, wgpu in the browser) hand it to
+//! the browser, which resolves it against the page origin, and every other
+//! backend rejects it.
+
+use std::borrow::Cow;
+use std::collections::BTreeSet;
+use std::sync::{Mutex, RwLock};
 
 /// The sentinel `image_asset(..)` hands a backend: `asset://{id}`, after
 /// `register_asset(id, AssetTag::Image, ..)`.
@@ -36,14 +48,16 @@ pub enum ImageSrc<'a> {
     Rejected(RejectReason),
 }
 
-/// Why a `src` was rejected — the text of the dev warning and the
+/// Why a `src` was rejected — the text of the warning and the
 /// `on_error` diagnosis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectReason {
     /// `""`.
     Empty,
-    /// `/x.png`, `x.png`, `./x.png`, `../x.png`: no scheme. Native has no
-    /// page to resolve against, so web rejects these too.
+    /// `/x.png`, `x.png`, `./x.png`, `../x.png`: no scheme. A root-relative
+    /// path only reaches [`classify`] unresolved when no base is set (see
+    /// the module docs); a document-relative one is rejected everywhere,
+    /// because on web it would resolve against the current route.
     Relative,
     /// `//host/x.png`: scheme-relative, same reason.
     SchemeRelative,
@@ -55,13 +69,16 @@ pub enum RejectReason {
 }
 
 impl RejectReason {
-    /// What an author should do instead, for the dev warning.
+    /// What an author should do instead, for the warning.
     pub fn explain(self) -> &'static str {
         match self {
             RejectReason::Empty => "the src is empty",
             RejectReason::Relative => {
-                "a relative path has no origin on native platforms; use an absolute \
-                 https:// URL (e.g. built from server::base_url()) or image_asset(asset!(..))"
+                "a relative path needs a base URL. A root-relative /path resolves against \
+                 the base set by server::configure(..) or set_image_base_url(..) (and, in a \
+                 browser, against the page); none is set here. A document-relative path \
+                 (logo.png, ./x.png) never resolves. For a file shipped with the app use \
+                 asset!(..)"
             }
             RejectReason::SchemeRelative => {
                 "a scheme-relative //host URL has no scheme on native platforms; \
@@ -115,18 +132,95 @@ fn has_scheme(s: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
-/// Log, in debug builds only, why a `src` was rejected. Every backend calls
-/// this on the rejection path, next to firing `on_error`, so the message is
-/// the same everywhere. Release builds stay quiet: `on_error` is the
-/// contract, the log is a development aid.
-pub fn warn_rejected(src: &str, reason: RejectReason) {
-    #[cfg(debug_assertions)]
-    crate::log_warn!("image(): rejected src {:?}: {}", truncate(src), reason.explain());
-    #[cfg(not(debug_assertions))]
-    let _ = (src, reason);
+/// The base a root-relative `src` resolves against. Process-wide, like the
+/// `server` client config that sets it.
+static BASE_URL: RwLock<Option<String>> = RwLock::new(None);
+
+/// Set the base URL a root-relative `image()` src (`/uploads/x.png`)
+/// resolves against, e.g. `https://api.example.com`. `server::configure`
+/// calls this with its base URL, so an app that configures a server needs
+/// nothing more. Only an absolute `http(s)://` base is kept: `""` (the
+/// usual same-origin web config) or any other value clears it, and the
+/// browser then resolves the path against the page.
+pub fn set_base_url(base: &str) {
+    let base = base.trim().trim_end_matches('/');
+    let keep = matches!(classify(base), ImageSrc::Remote(_)).then(|| base.to_string());
+    *BASE_URL.write().unwrap_or_else(|e| e.into_inner()) = keep;
 }
 
-#[cfg(debug_assertions)]
+/// The base set by [`set_base_url`], if any.
+pub fn base_url() -> Option<String> {
+    BASE_URL.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// `true` for a root-relative path: `/x.png`, but not the scheme-relative
+/// `//host/x.png`, nor `/\host/x.png`, which browsers also read as
+/// scheme-relative.
+pub fn is_root_relative(src: &str) -> bool {
+    let t = src.trim();
+    t.starts_with('/') && !matches!(t.as_bytes().get(1), Some(b'/' | b'\\'))
+}
+
+/// `src` resolved against `base`: a root-relative path is appended to the
+/// base (an absolute `http(s)://` URL, without a trailing `/`); anything
+/// else, or no base, returns `src` unchanged. Appending rather than RFC 3986
+/// resolution keeps a base's path (`https://x.io/api` + `/files/1` →
+/// `https://x.io/api/files/1`), the same join `server::base_url()`'s docs
+/// show for links.
+pub fn join_base<'a>(src: &'a str, base: Option<&str>) -> Cow<'a, str> {
+    match base {
+        Some(base) if is_root_relative(src) => Cow::Owned(format!("{base}{}", src.trim())),
+        _ => Cow::Borrowed(src),
+    }
+}
+
+/// [`join_base`] against the base set by [`set_base_url`]. The `image`
+/// mount handler applies this to every `src` before a backend sees it.
+pub fn with_base(src: &str) -> Cow<'_, str> {
+    if !is_root_relative(src) {
+        return Cow::Borrowed(src);
+    }
+    let base = BASE_URL.read().unwrap_or_else(|e| e.into_inner());
+    match join_base(src, base.as_deref()) {
+        Cow::Owned(s) => Cow::Owned(s),
+        Cow::Borrowed(_) => Cow::Borrowed(src),
+    }
+}
+
+/// How many distinct rejected srcs [`warn_rejected`] remembers. A src that
+/// comes from data (a feed of thumbnails) can be different every time, so
+/// the set is capped; past it, rejections stop being logged.
+const MAX_WARNED_SRCS: usize = 256;
+
+/// The srcs [`warn_rejected`] has logged, and whether it hit the cap.
+static WARNED: Mutex<(BTreeSet<String>, bool)> = Mutex::new((BTreeSet::new(), false));
+
+/// Log why a `src` was rejected, once per distinct src, in release builds
+/// too: a rejected image is a broken image in production, and most apps
+/// don't wire `on_error`. Every backend calls this on the rejection path,
+/// next to firing `on_error`, so the message is the same everywhere.
+pub fn warn_rejected(src: &str, reason: RejectReason) {
+    if let Some(line) = rejection_line(src, reason) {
+        crate::log_warn!("{line}");
+    }
+}
+
+/// The line [`warn_rejected`] logs, or `None` when it stays quiet.
+fn rejection_line(src: &str, reason: RejectReason) -> Option<String> {
+    let shown = truncate(src);
+    let mut warned = WARNED.lock().unwrap_or_else(|e| e.into_inner());
+    let (seen, capped) = &mut *warned;
+    if *capped || seen.contains(shown) {
+        return None;
+    }
+    if seen.len() == MAX_WARNED_SRCS {
+        *capped = true;
+        return Some(format!("image(): {MAX_WARNED_SRCS} rejected srcs logged; not logging more"));
+    }
+    seen.insert(shown.to_string());
+    Some(format!("image(): rejected src {:?}: {}", shown, reason.explain()))
+}
+
 fn truncate(src: &str) -> &str {
     // A data: URI can be megabytes; the scheme and a little of the payload
     // identify it.
@@ -355,14 +449,15 @@ pub mod vectors {
 
     /// `(src, expected)` for the synchronous half of the contract. Remote
     /// URLs and assets are covered by each backend's own fixtures (they need
-    /// a server or a registered asset).
+    /// a server or a registered asset). A root-relative path is not here:
+    /// with no base it loads in a page and fails elsewhere, so each backend
+    /// tests its own outcome.
     pub const SYNC: &[(&str, Expect)] = &[
         (PNG_1X1_BASE64, Expect::Loads { width: 1, height: 1 }),
         (PNG_1X1_UPPER_SCHEME, Expect::Loads { width: 1, height: 1 }),
         (SVG_2X1_PERCENT, Expect::Loads { width: 2, height: 1 }),
         ("data:image/png;base64,@@not-base64@@", Expect::Errors),
         ("", Expect::Errors),
-        ("/attachments/abc", Expect::Errors),
         ("logo.png", Expect::Errors),
         ("./logo.png", Expect::Errors),
         ("//cdn.example.com/x.png", Expect::Errors),
@@ -419,11 +514,69 @@ mod tests {
         assert_eq!(classify("Asset://42"), ImageSrc::Asset(42));
     }
 
-    /// The CrewForge kiosk's `/attachments/<id>`: rejected on every backend
-    /// (web included), never fetched against nothing.
+    /// The CrewForge kiosk's `/attachments/<id>`: a backend never sees it
+    /// unresolved when a base is set, and `classify` rejects it when none is,
+    /// so native never fetches it against nothing.
     #[test]
     fn regression_relative_attachment_path_is_rejected() {
         assert_eq!(classify("/attachments/abc"), ImageSrc::Rejected(RejectReason::Relative));
+    }
+
+    /// Since the contract landed, `/assets/logo.svg` was rejected on web
+    /// with no way to make it load through `server::base_url()` (often
+    /// `""` on same-origin web). A root-relative path now joins an absolute
+    /// base, and passes through unchanged without one.
+    #[test]
+    fn regression_root_relative_src_joins_the_base() {
+        let base = Some("https://api.example.com");
+        assert_eq!(join_base("/assets/logo.svg", base), "https://api.example.com/assets/logo.svg");
+        assert_eq!(join_base(" /uploads/x.png", base), "https://api.example.com/uploads/x.png");
+        assert_eq!(join_base("/files/1", Some("https://x.io/api")), "https://x.io/api/files/1");
+        assert_eq!(join_base("/assets/logo.svg", None), "/assets/logo.svg");
+        // Only root-relative paths join.
+        for src in ["logo.png", "./x.png", "../x.png", "//cdn.io/x.png", "/\\cdn.io/x.png", "https://a.io/x.png", "data:,x"] {
+            assert_eq!(join_base(src, base), src, "{src:?}");
+        }
+    }
+
+    #[test]
+    fn root_relative_excludes_scheme_relative_forms() {
+        assert!(is_root_relative("/a.png"));
+        assert!(is_root_relative("  /a.png"));
+        assert!(is_root_relative("/"));
+        assert!(!is_root_relative("//cdn.io/a.png"));
+        assert!(!is_root_relative("/\\cdn.io/a.png"));
+        assert!(!is_root_relative("a.png"));
+        assert!(!is_root_relative(""));
+    }
+
+    /// The process-wide base: only an absolute http(s) base is kept, a
+    /// trailing `/` is dropped, and `""` (same-origin web) clears it. One
+    /// test owns the global, so parallel tests can't race it.
+    #[test]
+    fn set_base_url_keeps_only_absolute_bases() {
+        set_base_url("https://api.example.com/");
+        assert_eq!(base_url().as_deref(), Some("https://api.example.com"));
+        assert_eq!(with_base("/u/x.png"), "https://api.example.com/u/x.png");
+        assert_eq!(with_base("logo.png"), "logo.png");
+        for cleared in ["", "/api", "api.example.com", "ftp://x.io"] {
+            set_base_url("https://api.example.com");
+            set_base_url(cleared);
+            assert_eq!(base_url(), None, "{cleared:?}");
+            assert_eq!(with_base("/u/x.png"), "/u/x.png");
+        }
+    }
+
+    /// A rejected image used to log only in debug builds, so a release
+    /// build showed broken images with nothing in the console. It logs in
+    /// every build, once per distinct src.
+    #[test]
+    fn regression_rejection_is_logged_once_per_src_in_every_build() {
+        let src = "/regression-once-per-src.png";
+        let line = rejection_line(src, RejectReason::Relative).expect("first rejection logs");
+        assert!(line.contains(src) && line.contains("server::configure"), "{line}");
+        assert_eq!(rejection_line(src, RejectReason::Relative), None);
+        assert!(rejection_line("/regression-once-per-src-2.png", RejectReason::Relative).is_some());
     }
 
     #[test]

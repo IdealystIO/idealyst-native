@@ -67,10 +67,10 @@ pub use runtime_vocabulary::{animated, effect, register_style_token, rx, timelin
 
 // Shared-substrate `#[macro_export]` decl macros whose `$crate::…`
 // expansions resolve against runtime-shared (where they and the types
-// they construct — `assets::Typeface` for `typeface!`/`face!`, `Ref<H>`
-// for `node_ref!` — live). A module re-export can't carry them, so they
-// live here.
-pub use runtime_shared::{face, node_ref, typeface};
+// they construct — `assets::Typeface` for `typeface!`/`face!`,
+// `assets::Asset` for `asset!`/`embed_asset!`, `Ref<H>` for `node_ref!` —
+// live). A module re-export can't carry them, so they live here.
+pub use runtime_shared::{asset, embed_asset, face, node_ref, typeface};
 
 // The per-level logging macros, same story. `#[macro_export]` puts them at
 // their defining crate's ROOT, so `pub use runtime_shared::logging` (in

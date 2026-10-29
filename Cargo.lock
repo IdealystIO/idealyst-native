@@ -11585,6 +11585,7 @@ dependencies = [
  "net",
  "reqwest",
  "runtime-core",
+ "runtime-shared",
  "runtime-world",
  "serde",
  "serde_json",

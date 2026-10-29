@@ -97,8 +97,9 @@ report it, don't patch around it in the app.
 - **Fonts**: ship every weight and italic the brand uses. A missing bold
   is synthesized on web, falls back to Regular on iOS and is faked on
   Android — three different looks.
-- **Images**: use absolute URLs or `image_asset`; relative paths are
-  rejected everywhere. GIFs show their first frame. SVG `<text>` doesn't
+- **Images**: use absolute URLs, `asset!` files, or root-relative `/paths`
+  (joined to the `server::configure` base; without one they load only in a
+  browser). Document-relative paths (`logo.png`) are rejected everywhere. GIFs show their first frame. SVG `<text>` doesn't
   draw natively — outline it.
 - **Shadows**: a shadow on a box with `overflow: hidden` and a translucent
   background doesn't render on iOS/macOS — keep shadowed cards opaque

@@ -274,7 +274,8 @@ mod tests {
     }
 
     /// CrewForge's kiosk: a relative `/attachments/<id>` was a blank tile
-    /// on native. Every relative form is now a reported rejection.
+    /// on native. Unresolved (no image base set), every relative form is a
+    /// reported rejection.
     #[test]
     fn regression_relative_src_rejected() {
         for src in ["/attachments/abc", "logo.png", "./logo.png", "../x.png"] {

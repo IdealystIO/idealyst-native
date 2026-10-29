@@ -666,9 +666,12 @@ Sources follow one contract on every backend — see
 - `data:` URIs, base64 or percent-encoded, scheme in any case.
 - declared assets (`image_asset`), both `embed_asset!` and bundled
   `asset!` files.
-- anything else — a relative path such as `/attachments/abc` or
-  `logo.png`, `//host/x`, `file:`, `blob:` — is rejected on every
-  backend, web included: `on_error` fires and debug builds log why.
+- root-relative paths (`/uploads/x.png`), joined to the base
+  `server::configure` sets (or `set_image_base_url`). With no base, a
+  browser resolves them against the page and other backends reject them.
+- anything else — a document-relative path such as `logo.png`, `//host/x`,
+  `file:`, `blob:` — is rejected on every backend, web included: `on_error`
+  fires and a warning is logged once per src.
 
 PNG, JPEG, GIF (first frame), WebP and SVG decode everywhere. SVG is
 rasterized at the view's displayed size × screen density — with resvg on

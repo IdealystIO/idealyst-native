@@ -132,7 +132,13 @@ static CONFIG: OnceLock<RwLock<Arc<ClientConfig>>> = OnceLock::new();
 /// Install or replace the client config. Typically called once at
 /// app startup; can be called again to point the client at a
 /// different server (useful for tests / dev tools).
+///
+/// Also sets the image base (`runtime_core::set_image_base_url`), so a
+/// root-relative `image()` src such as `/uploads/x.png` loads from this
+/// server on every platform. An empty or relative `base_url` leaves no
+/// image base, and the browser resolves the path against the page.
 pub fn configure(config: ClientConfig) {
+    runtime_core::set_image_base_url(&config.base_url);
     let arc = Arc::new(config);
     match CONFIG.get() {
         Some(slot) => *slot.write().unwrap() = arc,

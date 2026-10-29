@@ -2,6 +2,7 @@
 
 use std::rc::Rc;
 
+use runtime_shared::image_src::with_base;
 use runtime_shared::primitives::link::LinkConfig;
 use runtime_scene::{Element, MountCx};
 use runtime_world::{effect, Value};
@@ -19,6 +20,10 @@ use super::{bind_dyn, bind_value, initial_of};
 /// binding, so a cached decode can't race the handler) → src binding
 /// (one `update_image_src` at mount for Const AND Dyn — an
 /// unconditional effect) → `Dyn` alt binding → ref-fill.
+///
+/// Every `src` passes through `image_src::with_base` first, so a
+/// root-relative `/uploads/x.png` reaches every backend as the same
+/// absolute URL once a base is set (`docs/image-src.md`).
 pub fn mount_image<H>(cx: &mut MountCx<'_, H>, prim: ImagePrim, _children: Vec<Element>) -> H::Node
 where
     H: ImageOps + StyleServices + AssetOps + IntrospectionOps,
@@ -36,7 +41,7 @@ where
     };
     let node = backend
         .borrow_mut()
-        .create_image(&initial_src, initial_alt.as_deref(), &prim.a11y);
+        .create_image(&with_base(&initial_src), initial_alt.as_deref(), &prim.a11y);
     #[cfg(feature = "robot")]
     let _robot = crate::robot::register_mount(
         &backend,
@@ -62,7 +67,7 @@ where
         let b = backend.clone();
         let n = node.clone();
         bind_value(prim.src, move |url| {
-            b.borrow_mut().update_image_src(&n, url);
+            b.borrow_mut().update_image_src(&n, &with_base(url));
         });
     }
     if let Some(f) = dyn_alt {

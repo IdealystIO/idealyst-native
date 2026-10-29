@@ -32,8 +32,9 @@
 //!   no way back onto the main looper from a worker, so there a remote `src`
 //!   fires `on_error` (the CLI's Android builds always enable it).
 //! - **anything else** (relative path, `//host`, `file:`, `content:`, empty,
-//!   …) is rejected: `image_src::warn_rejected` logs why in debug builds and
-//!   `on_error` fires.
+//!   …) is rejected: `image_src::warn_rejected` logs why and `on_error`
+//!   fires. A root-relative path only arrives here when no image base is
+//!   set; the mount handler joins it to the base otherwise.
 //!
 //! Bytes are sniffed for SVG first (`backend_image_source::decode_bytes`);
 //! everything else goes to `BitmapFactory`, which reads PNG, JPEG, WebP, GIF

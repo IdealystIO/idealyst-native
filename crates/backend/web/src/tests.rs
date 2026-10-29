@@ -4038,17 +4038,28 @@ async fn image_src_conformance_vectors_on_web() {
     }
 }
 
-/// REGRESSION: a relative `src` went straight into `<img src>`, so the
-/// browser resolved it against the page and it "worked on web" while
-/// iOS/Android drew a blank tile (CrewForge's `/attachments/<id>`). It
-/// must never reach the `<img>`, and `on_error` fires instead. (An error
-/// count alone can't tell: the browser's own 404 fires `error` too.)
+/// REGRESSION: a root-relative `src` (`/assets/logo.svg`) was rejected on
+/// web, so a same-origin image the browser had always loaded rendered
+/// broken. With no image base set it reaches `<img src>` unchanged.
 #[wasm_bindgen_test]
-async fn regression_relative_src_is_rejected_on_web_too() {
+fn regression_root_relative_src_reaches_img_on_web() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let node = backend.create_image_impl("/assets/logo.svg", None, &Default::default());
+    let img: web_glue::dom::Element = node.unchecked_into();
+    assert_eq!(img.get_attribute("src").as_deref(), Some("/assets/logo.svg"));
+}
+
+/// A document-relative `src` would resolve against the current route, and
+/// `//host` / `blob:` mean nothing on native: none may reach the `<img>`,
+/// and `on_error` fires instead. (An error count alone can't tell: the
+/// browser's own 404 fires `error` too.)
+#[wasm_bindgen_test]
+async fn document_relative_and_browser_only_srcs_never_reach_img() {
     install_mount();
     crate::install_scheduler();
     let mut backend = WebBackend::new("#app");
-    for src in ["/attachments/abc", "logo.png", "//cdn.example.com/x.png", "blob:https://e.com/1"] {
+    for src in ["logo.png", "./logo.png", "//cdn.example.com/x.png", "blob:https://e.com/1"] {
         let (img, out) = mount_img(&mut backend, src);
         assert_eq!(img.get_attribute("src"), None, "{src:?} reached <img src>");
         settle(&out).await;

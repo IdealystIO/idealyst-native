@@ -573,17 +573,21 @@ impl SsrBackend {
     /// to emit as `<img src>`, or `None` to emit no `src` at all.
     ///
     /// `asset://<id>` is resolved here — emitting the literal sentinel
-    /// would give the browser a URL it cannot load. A rejected or
-    /// unregistered src gets no `src` attribute rather than its raw text:
-    /// the browser must not fetch a relative path native platforms can't,
-    /// and the hydrating web backend reaches the same `<img>` with no
+    /// would give the browser a URL it cannot load. A root-relative
+    /// `/x.png` (no image base set) is emitted as-is, for the browser to
+    /// resolve against the page, exactly as the web backend does. A
+    /// rejected or unregistered src gets no `src` attribute rather than its
+    /// raw text: the hydrating web backend reaches the same `<img>` with no
     /// `src`, fails it the same way, and fires `on_error` on the client —
     /// so SSR and client-only renders agree.
     fn resolve_image_src(&self, src: &str) -> Option<String> {
-        use runtime_shared::image_src::{self, ImageSrc};
+        use runtime_shared::image_src::{self, ImageSrc, RejectReason};
         match image_src::classify(src) {
             ImageSrc::Remote(url) | ImageSrc::Data(url) => Some(url.to_string()),
             ImageSrc::Asset(id) => self.asset_urls.get(&runtime_shared::assets::AssetId(id)).cloned(),
+            ImageSrc::Rejected(RejectReason::Relative) if image_src::is_root_relative(src) => {
+                Some(src.trim().to_string())
+            }
             ImageSrc::Rejected(reason) => {
                 image_src::warn_rejected(src, reason);
                 None
