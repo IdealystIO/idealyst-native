@@ -1,7 +1,7 @@
 [package]
 name = "wasm-carve"
 edition = "2024"
-version = "1.5.2"
+version = "1.5.3"
 description = "Split a linked, wasm-bindgen'd module at #[wasm_split] boundaries without building an IR"
 license = "MIT OR Apache-2.0"
 

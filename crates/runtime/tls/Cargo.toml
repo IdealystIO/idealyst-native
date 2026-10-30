@@ -9,7 +9,7 @@
 
 [package]
 name = "runtime-tls"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 description = "A drop-in thread_local! that spends one pthread key per process on Android instead of one per static."

@@ -7,7 +7,7 @@
 # boot is plain library functions in `idealyst::boot`.
 [package]
 name = "idealyst-macros"
-version = "1.5.2"
+version = "1.5.3"
 edition.workspace = true
 license.workspace = true
 description = "Entry-point macro for idealyst apps"
