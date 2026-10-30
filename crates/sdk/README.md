@@ -195,7 +195,7 @@ JNI/Obj-C symbol resolution that the compiler can't check. So a green
 
 | Crate | Tests | Native verification |
 | --- | --- | --- |
-| `permissions` | 🧪 unit (status helpers, oneshot bridge) | 🟢 web (Notification / Permissions / geolocation) run-exercised; ⚠️ **Apple (`UNUserNotificationCenter` / `CLLocationManager` / `AVCaptureDevice`) + Android (`checkSelfPermission` + request seam) compile-checked only** |
+| `permissions` | 🧪 unit (status helpers, oneshot bridge) | 🟢 web (Notification / Permissions / geolocation) run-exercised; 🟢 Android camera request (dialog → Allow/Deny) device-verified; ⚠️ **Apple (`UNUserNotificationCenter` / `CLLocationManager` / `AVCaptureDevice`) compile-checked only** |
 | `notifications` | 🧪 unit (id resolution, builder) | 🟢 web immediate `Notification` run-exercised; ⚠️ **Apple `UNUserNotificationCenter` + Android `NotificationManager` compile-checked only**; push token + delay-scheduling are documented seams |
 | `location` | 🧪 unit (Position mapping, oneshot) | 🟢 web `geolocation` run-exercised; ⚠️ **Apple `CLLocationManager` + Android `LocationManager` compile-checked only**; Android `watch` needs a host `LocationListener` shim |
 | `clipboard` | 🧪 unit (error Display) | 🟢 web `navigator.clipboard` run-exercised; ⚠️ **Apple `UIPasteboard`/`NSPasteboard` + Android `ClipboardManager` compile-checked only** |

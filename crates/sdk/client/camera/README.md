@@ -183,15 +183,12 @@ crate keeps only the *capture* code; the AVCaptureDevice / `checkSelfPermission`
 declares the `camera` capability above (the manifest requirement); only the
 grant mechanism moved.
 
-### Android runtime-permission caveat
+### Android runtime permission
 
-`request_permission()` delegates to `permissions`, which checks the current
-grant and, if missing, fires the system dialog — but its result is delivered
-to the Activity's `onRequestPermissionsResult`, which the host must forward to
-`permissions` (see its README's request seam). So the call returns the
-*current* (not-yet-granted) state after showing the dialog; re-check (or retry
-`open`) once the user has responded. `open()` fails fast with
-`CameraError::PermissionDenied` if `CAMERA` isn't granted.
+`request_permission()` and `open()` delegate to `permissions`, which shows the
+system dialog when `CAMERA` isn't granted yet and waits for the user's answer
+(see its README's **Android request round trip**). A denial returns
+`CameraError::PermissionDenied`.
 
 ## Configuration
 
@@ -313,7 +310,7 @@ verification note above). Tick each item as you exercise it.
 **Behavior**
 - [ ] **Web** — `getUserMedia` prompt appears (secure context only); `subscribe` delivers live RGBA8 frames at the requested resolution; deny → `PermissionDenied`, no crash.
 - [ ] **iOS** — on a **device**, permission prompt with the app's reason; preview shows live frames at the requested resolution; preview AND `latest()` RGBA frames are upright in all four interface orientations on an iPhone and an iPad, and re-orient on rotation; the front camera is unmirrored (matches web); front/back switch works; deny → `PermissionDenied`. On the **Simulator** the synthetic gradient/bouncing-ball stream renders (no hardware). ⚠️ device path not yet re-confirmed since permission moved to the `permissions` SDK — verify the prompt still appears.
-- [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: permission prompt fires (delegated to `permissions`; host must forward `onRequestPermissionsResult`); `open()` yields RGBA8 frames after grant; frames are upright in all four display rotations (front and back, unmirrored) and re-orient on rotation, including 180° flips; deny → `PermissionDenied`.
+- [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: permission prompt fires (delegated to `permissions`) and `open()` resumes on Allow; `open()` yields RGBA8 frames after grant; frames are upright in all four display rotations (front and back, unmirrored) and re-orient on rotation, including 180° flips; deny → `PermissionDenied`.
 - [ ] **macOS** — hardware-verified against the built-in camera (`host_capture`); confirm the prompt still appears now that the grant routes through the `permissions` SDK.
 - [ ] **Device selection** — `devices()` lists every attached camera with a non-empty id and label, and each opens by id; an unknown id is `NoCamera`. macOS hardware-verified (`every_listed_camera_opens_by_id`: built-in + a monitor's camera); Linux verified in a camera-less container (empty list, unknown id); web covered by `web_lists_cameras_and_opens_each_by_id`; iOS, Android and Windows compile-checked only.
 - [ ] **desktop Linux** — synthetic-frame verified headless (`videotestsrc_delivers_mapped_rgba_frame`); on a host with a webcam run `cargo test -p camera imp::tests::live_v4l2 -- --ignored --nocapture` (needs read access to `/dev/videoN`) and confirm real RGBA8 frames arrive.

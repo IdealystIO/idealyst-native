@@ -46,15 +46,14 @@ mechanism, not in the two functions you call.
 | --- | --- | --- |
 | web (wasm32) | `Notification.permission` (notifications); `navigator.permissions.query({name})` (geolocation / camera / microphone) | `Notification.requestPermission()` (notifications). Geolocation / camera / microphone have **no** explicit web request API — the prompt fires on first use (`getCurrentPosition` / `getUserMedia`); `request` reports current status (`Undetermined` = "will prompt on first use"). |
 | iOS / macOS / tvOS | `UNUserNotificationCenter.getNotificationSettings` (notifications); `CLLocationManager.authorizationStatus` (location); `AVCaptureDevice.authorizationStatusForMediaType:` (camera = `"vide"`, microphone = `"soun"`) | `requestAuthorizationWithOptions:completionHandler:` (notifications); `CLLocationManager.requestWhenInUse/AlwaysAuthorization` + delegate (location); `AVCaptureDevice.requestAccessForMediaType:completionHandler:` (camera / microphone). Callback / delegate bridged to the `async fn` via a oneshot. |
-| Android | `Context.checkSelfPermission(name)` (JNI) | `Activity.requestPermissions(...)` (JNI) + a host result-forwarding seam (see **Scope**). |
+| Android | `Context.checkSelfPermission(name)` (JNI) | `Activity.requestPermissions(...)` through this crate's `RustPermissions` Kotlin shim; the answer comes back through the generated `MainActivity.onRequestPermissionsResult` (see **Android request round trip**). |
 | Windows | notifications: the app's notification setting (`ToastNotifier.Setting`: on → `Granted`, off by the user → `Denied`, off by policy → `Restricted`; an app not yet listed in Settings is on → `Granted`). Location: the privacy setting via `AppCapability::CheckAccess("location")` (allowed / denied by user / by system / prompt required → `Granted` / `Denied` / `Restricted` / `Undetermined`). Camera / microphone: the privacy settings via `AppCapability::CheckAccess("webcam" / "microphone")`, same mapping | notifications: same as status (no prompt). Location: `Geolocator::RequestAccessAsync` — Windows' "Let Windows and apps access your location?" prompt when undecided. Camera / microphone: `AppCapability::RequestAccessAsync` when undecided |
 | Linux / other native | every permission → `Unsupported` (no native runtime-permission model) | same |
 
-**Verification.** The **web** path is genuinely runnable and is the verified
-backend. The **Apple** and **Android** native paths are **compile-checked
-only** — exercising them needs a real device/simulator with the matching
-plist usage strings (Apple) or a host that forwards
-`onRequestPermissionsResult` (Android). Their structure mirrors the verified
+**Verification.** The **web** path and the **Android** request path are
+verified (see the checklist). The **Apple** native paths are
+**compile-checked only** — exercising them needs a real device/simulator with
+the matching plist usage strings. Their structure mirrors the verified
 `biometrics` / `camera` / `storage` SDKs; the block / delegate / JNI lifetime
 invariants are documented inline.
 
@@ -80,16 +79,27 @@ higher-level SDKs and to the host:
   wires `request` into its own reactive state (the recipe shows the pattern).
 - **"Open app settings"** — re-prompting after a hard `Denied` requires
   sending the user to OS settings; that's a separate navigation capability.
-- **Android request-result seam** — a runtime permission *request* is
-  callback-delivered on Android via the Activity's
-  `onRequestPermissionsResult`, which lives in the app's Kotlin/Java, not in
-  this crate. `request` parks a oneshot keyed by a request code and exposes
-  `permissions::complete_request(code, granted)` (plus a
-  `Java_..._nativeOnPermissionsResult` JNI export) for the host to forward the
-  result. Until that one line of host glue is wired, an Android `request`
-  resolves to the re-read status rather than observing the grant — it never
-  hangs, and it never reports a grant it didn't observe (only a robot build's
-  `permissions.set` fakes one). This is the honest integration seam.
+
+## Android request round trip
+
+Android delivers a permission answer only to the host Activity's
+`onRequestPermissionsResult` override. The round trip:
+
+1. `request` parks a oneshot under a fresh request code and calls the
+   `io.idealyst.permissions.RustPermissions` Kotlin shim this crate ships
+   (`[package.metadata.idealyst.android] runtime_kotlin`, compiled in by
+   `idealyst run android`).
+2. The shim registers a handler with the backend's
+   `io.idealyst.runtime.RustPermissionsResult` registry and calls
+   `Activity.requestPermissions`.
+3. The `MainActivity` that `idealyst run android` generates forwards
+   `onRequestPermissionsResult` to `RustPermissionsResult.dispatch`. The
+   handler calls the `nativeOnPermissionsResult` JNI export, which resolves
+   the oneshot: `Granted` / `Denied`, or `Undetermined` when the prompt was
+   interrupted (Android's empty result arrays).
+
+A custom host Activity must make the same one-line forward; without it,
+`request` waits until app teardown.
 
 ## Robot test controls
 
@@ -121,7 +131,7 @@ compiles for that target but isn't confirmed on real hardware yet (see the
 verification note above). Tick each item as you exercise it.
 
 **Automated**
-- [ ] `cargo test -p permissions` — portable logic (status helpers + host `Unsupported` fallback)
+- [x] `cargo test -p permissions` — portable logic (status helpers, host `Unsupported` fallback, the Android pending-request registry)
 - [ ] `cargo build -p permissions --features catalog` — recipes/docs compile
 - [ ] `cargo build -p permissions --target wasm32-unknown-unknown` — web target
 - [x] `cargo test -p permissions --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_permissions.rs`: no `Notification` API → `Unsupported`; notification status/request mapping incl. the callback-only `requestPermission`; `permissions.query` states and every failure shape → `Unsupported`
@@ -130,4 +140,4 @@ verification note above). Tick each item as you exercise it.
 - [ ] **Web** — `status(Notifications)` reads `Notification.permission` without prompting; `request(Notifications)` shows the browser prompt and resolves `Granted`/`Denied`. Geolocation/camera/microphone `status` reports `Undetermined` ("prompts on first use") and never blocks.
 - [ ] **iOS** — for each `Permission` variant, `request()` prompts once with the matching plist usage string and returns `Granted`/`Denied`; a second `request()` after grant doesn't re-prompt. `status()` reflects the grant without prompting.
 - [ ] **macOS** — same per-variant `request()`/`status()` flow against `UNUserNotificationCenter`/`CLLocationManager`/`AVCaptureDevice`; re-confirm the relocated camera path still grants after the move.
-- [ ] **Android** — `request()` raises the runtime dialog; the grant is observed only once the host forwards `onRequestPermissionsResult` via `complete_request(code, granted)`. Until that host glue is wired, `request` resolves to the re-read status — verify it never hangs and never fakes a grant.
+- [x] **Android** (Lenovo TB336FU, API 36, via `camera::Camera::open`; CAMERA revoked first) — `request()` raises the runtime dialog and resolves `Granted` on Allow and `Denied` on Deny, on the first ask; a second `request()` after a grant doesn't re-prompt.

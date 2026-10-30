@@ -104,16 +104,12 @@ crate keeps only the *capture* code (cpal / `AudioRecord` / the iOS
 declares the `microphone` capability above (the manifest requirement); only the
 grant mechanism moved.
 
-### Android runtime-permission caveat
+### Android runtime permission
 
-`request_permission()` delegates to `permissions`, which checks the current
-grant and, if missing, fires the system dialog — but its result is delivered
-to the Activity's `onRequestPermissionsResult`, which the host must forward to
-`permissions` (see its README's request seam). So the call returns the
-*current* (not-yet-granted) state after showing the dialog; re-check (or retry
-`open`) once the user has responded. Most apps simply ensure `RECORD_AUDIO` is
-granted at startup. `open()` fails fast with `MicError::PermissionDenied` if it
-isn't.
+`request_permission()` and `open()` delegate to `permissions`, which shows the
+system dialog when `RECORD_AUDIO` isn't granted yet and waits for the user's
+answer (see its README's **Android request round trip**). A denial returns
+`MicError::PermissionDenied`.
 
 ## Configuration
 
@@ -205,7 +201,7 @@ verification note above). Tick each item as you exercise it.
 **Behavior**
 - [ ] **Web** — `getUserMedia` prompt appears (secure context only); capturing yields non-silent PCM at the configured sample rate/channels; dropping the stream releases the device.
 - [ ] **iOS** — ⚠️ not yet device-confirmed: permission prompt fires; `AVAudioSession` activates; non-silent interleaved-`f32` PCM at the configured rate/channels; stop releases the device.
-- [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: permission prompt fires (delegated to `permissions`; host must forward `onRequestPermissionsResult`); `AudioRecord` worker yields non-silent PCM; stop releases the device.
+- [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: permission prompt fires (delegated to `permissions`) and `open()` resumes on Allow; `AudioRecord` worker yields non-silent PCM; stop releases the device.
 - [x] **Windows** — `host_capture` on a Windows 11 VM (WASAPI, the "Line In" device): 47 chunks / 21 056 frames in 500 ms. Windows asks for microphone access the first time (the VM rebooted to apply it).
 - [ ] **macOS** — host-verified via `host_capture`: capturing yields non-silent PCM at the configured rate/channels; confirm the prompt still appears now that the grant routes through the `permissions` SDK.
 

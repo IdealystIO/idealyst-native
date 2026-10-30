@@ -153,16 +153,25 @@ runtime_vocabulary::robot_only! {
 
 // Only the Apple + Android backends bridge a callback to the async fn; the
 // web backend awaits JS promises directly and the fallback is synchronous.
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    any(
-        target_os = "ios",
-        target_os = "macos",
-        target_os = "tvos",
-        target_os = "android"
+// Host tests build it too, for `pending`'s tests.
+#[cfg(any(
+    test,
+    all(
+        not(target_arch = "wasm32"),
+        any(
+            target_os = "ios",
+            target_os = "macos",
+            target_os = "tvos",
+            target_os = "android"
+        )
     )
 ))]
 mod oneshot;
+
+// Android requests waiting for `onRequestPermissionsResult`. Platform-free,
+// so host tests cover it.
+#[cfg(any(test, all(not(target_arch = "wasm32"), target_os = "android")))]
+mod pending;
 
 // ---------------------------------------------------------------------------
 // Platform implementation. Exactly one `imp` compiles per target; every

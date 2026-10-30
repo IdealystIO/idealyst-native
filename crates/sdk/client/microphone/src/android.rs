@@ -76,12 +76,10 @@ fn java_vm() -> Result<JavaVM, MicError> {
 
 /// Request the RECORD_AUDIO grant, delegated to the shared `permissions` SDK
 /// (which owns the `checkSelfPermission` / `Activity.requestPermissions` grant
-/// flow + the `onRequestPermissionsResult` forwarding seam). Until the host
-/// forwards the result, `permissions::request` reports the not-yet-granted
-/// state, which maps to `PermissionDenied` — the caller re-invokes `open` once
-/// granted. Same observable posture as before; the grant code now lives in one
-/// place. The reader thread still runs its own `checkSelfPermission` fast-fail
-/// gate (a capture-path check) below.
+/// flow). On first use this waits on the system dialog and resolves with the
+/// user's answer; a denial maps to `PermissionDenied`. The reader thread
+/// still runs its own `checkSelfPermission` fast-fail gate (a capture-path
+/// check) below.
 pub(crate) async fn request_permission() -> Result<(), MicError> {
     let status = permissions::request(permissions::Permission::Microphone).await;
     if status.is_usable() {

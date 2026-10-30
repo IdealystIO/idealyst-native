@@ -97,12 +97,8 @@ impl Drop for StreamHandle {
 
 /// Ensure the CAMERA runtime permission, delegated to the shared
 /// `permissions` SDK (which owns the `checkSelfPermission` /
-/// `Activity.requestPermissions` grant flow + the
-/// `onRequestPermissionsResult` forwarding seam). On first use the prompt
-/// fires; until the host forwards the result, `permissions::request` reports
-/// the not-yet-granted state, which maps to `PermissionDenied` — the caller
-/// re-invokes `open` once granted. Same observable posture as before; the
-/// grant code just lives in one place now.
+/// `Activity.requestPermissions` grant flow). On first use this waits on the
+/// system dialog and resolves with the user's answer.
 pub(crate) async fn request_permission() -> Result<(), CameraError> {
     let status = permissions::request(permissions::Permission::Camera).await;
     if status.is_usable() {
@@ -145,11 +141,10 @@ pub(crate) async fn open(
     let mut env = vm.attach_current_thread().map_err(jni_err)?;
     let activity = android_context();
 
-    // Ensure the CAMERA runtime permission. On first use this fires the system
-    // dialog and returns `PermissionDenied` (the dialog's result has no SDK
-    // callback, so the user re-invokes `open` once granted). WITHOUT this, a
-    // not-yet-granted permission just fails silently and the camera never opens
-    // — and no dialog is ever shown ("nothing happens" on Android).
+    // Ensure the CAMERA runtime permission. On first use this shows the system
+    // dialog and waits for the answer; a denial returns `PermissionDenied`.
+    // WITHOUT this, a not-yet-granted permission just fails silently and the
+    // camera never opens — and no dialog is ever shown.
     request_permission().await?;
 
     let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);

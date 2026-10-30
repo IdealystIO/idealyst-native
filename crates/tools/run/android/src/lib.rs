@@ -1437,6 +1437,26 @@ mod tests {
         assert!(include_str!("../templates/MainActivity.java").contains("NativeBridge.setEnv("));
     }
 
+    /// `permissions::request` hung for the whole session on the first ask:
+    /// the generated Activity didn't override `onRequestPermissionsResult`,
+    /// so the answer never reached the SDK. It must forward to the runtime
+    /// registry the SDK's Kotlin shim registers with.
+    #[test]
+    fn regression_main_activity_forwards_permission_results() {
+        let activity = include_str!("../templates/MainActivity.java");
+        assert!(activity.contains("public void onRequestPermissionsResult("));
+        assert!(activity.contains(
+            "io.idealyst.runtime.RustPermissionsResult.dispatch(requestCode, permissions, grantResults)"
+        ));
+        let registry = include_str!(
+            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustPermissionsResult.kt"
+        );
+        assert!(registry.contains("object RustPermissionsResult"));
+        assert!(registry.contains(
+            "fun dispatch(requestCode: Int, permissions: Array<out String>, grantResults: IntArray): Boolean"
+        ));
+    }
+
     use super::{local_robot_build_needs_internet, render, ANDROID_MANIFEST_LOCAL_XML};
     use super::{apksigner_key_args, render_manifest, resolve_signing, ManifestInputs, SigningKey};
     use super::{AndroidAppMetadata, SdkManifestContributions};

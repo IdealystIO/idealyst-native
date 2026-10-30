@@ -7,42 +7,38 @@
 //! Android permission string and call it on the host context (from
 //! `ndk_context`). No callback, no Activity result — a clean JNI read.
 //!
-//! ## `request` — needs a host result-forwarding seam
+//! ## `request` — the dialog and its answer
 //!
-//! A runtime permission *request* is inherently asynchronous and
-//! callback-delivered on Android: `Activity.requestPermissions(perms, code)`
-//! shows the system dialog and the answer arrives later in the Activity's
-//! `onRequestPermissionsResult(code, perms, grantResults)`. **Pure JNI
-//! cannot receive that callback** — it's an override on the host Activity
-//! (or a registered `ActivityResultLauncher`), which lives in the app's
-//! Kotlin/Java, not in this crate.
+//! A runtime permission *request* is asynchronous on Android:
+//! `Activity.requestPermissions(perms, code)` shows the system dialog and
+//! the answer arrives later in the Activity's `onRequestPermissionsResult`
+//! override, which pure JNI can't receive. The round trip:
 //!
-//! So `request` here:
-//! 1. Calls `Activity.requestPermissions(...)` with a request code, surfacing
-//!    the dialog, and parks a oneshot keyed by that code.
-//! 2. Relies on the host to forward `onRequestPermissionsResult` back into
-//!    this crate via [`complete_request`] — the documented integration seam.
-//!    The host adds one line to its `onRequestPermissionsResult` override
-//!    (or its `ActivityResultCallback`) that calls our
-//!    `Java_..._nativeOnPermissionsResult` JNI export, or — for a pure-Rust
-//!    host with no override — calls [`complete_request`] directly.
+//! 1. [`request`] parks a oneshot under a fresh request code
+//!    ([`crate::pending`]) and calls the `RustPermissions.request` Kotlin shim
+//!    shipped from this crate (`runtime/kotlin/io/idealyst/permissions/`).
+//! 2. The shim registers a handler with the backend's
+//!    `io.idealyst.runtime.RustPermissionsResult` registry and calls
+//!    `Activity.requestPermissions`.
+//! 3. The generated `MainActivity.onRequestPermissionsResult` forwards to
+//!    `RustPermissionsResult.dispatch`, which runs the handler, which calls
+//!    the [`Java_io_idealyst_permissions_RustPermissions_nativeOnPermissionsResult`]
+//!    export below, which resolves the parked oneshot.
 //!
-//! Without that hook wired, `request` resolves to the *re-read* status once
-//! the future is polled again, which for an unanswered prompt is still
-//! `Undetermined` — it never hangs, it just can't observe the grant until
-//! the host forwards the result. This is the honest seam, not a fake grant.
-//!
-//! VERIFICATION: compile-checked only — exercising it needs a device/emulator
-//! plus a host that forwards the result callback.
+//! Android answers every `requestPermissions` call (an interrupted prompt
+//! arrives as empty arrays, read as a cancellation), so the future resolves
+//! once the user answers. A host Activity that doesn't forward
+//! `onRequestPermissionsResult` leaves it parked until app teardown.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use jni::objects::{JClass, JObject, JValue};
+use jni::sys::jint;
+use jni::{JNIEnv, JavaVM};
 
-use jni::objects::{JObject, JValue};
-use jni::JavaVM;
-
-use crate::oneshot;
+use crate::pending::{self, Outcome};
 use crate::{Permission, PermissionStatus};
+
+/// The Kotlin shim that launches the dialog (`RustPermissions.kt`).
+const HELPER: &str = "io/idealyst/permissions/RustPermissions";
 
 const PERMISSION_GRANTED: i32 = 0; // PackageManager.PERMISSION_GRANTED
 
@@ -114,153 +110,72 @@ pub(super) async fn request(permission: Permission) -> PermissionStatus {
         return PermissionStatus::Granted;
     }
 
-    // Park a oneshot under a fresh request code; the host forwards the
-    // result to `complete_request(code, granted)`.
-    let code = next_request_code();
-    let (tx, rx) = oneshot::channel(PermissionStatus::Undetermined);
-    PENDING.lock().unwrap().insert(code, tx);
-
-    if !invoke_request_permissions(perm, code) {
-        // Couldn't even launch the dialog — drop the pending entry so it
-        // doesn't leak, and fall back to a status re-read.
-        PENDING.lock().unwrap().remove(&code);
+    let (code, rx) = pending::park();
+    if !launch_request(perm, code) {
+        // The dialog never showed, so no answer is coming.
+        pending::abandon(code);
         return check_self_permission(perm).unwrap_or(PermissionStatus::Undetermined);
     }
-
-    // Resolves when the host forwards `onRequestPermissionsResult` via
-    // `complete_request`. If the host never wires the seam the oneshot's
-    // sender is eventually dropped (app teardown) and this falls back to the
-    // re-read status — it never hangs the caller indefinitely.
     rx.await
 }
 
-/// `activity.requestPermissions(new String[]{perm}, code)`. Returns whether
-/// the call dispatched (true) or a JNI failure prevented it (false).
-fn invoke_request_permissions(perm: &str, code: i32) -> bool {
-    (|| -> Option<()> {
+/// `RustPermissions.request(activity, perm, code)`: registers the result
+/// handler and calls `requestPermissions`. Returns whether the dialog launched.
+fn launch_request(perm: &str, code: i32) -> bool {
+    (|| -> Option<bool> {
         let vm = java_vm()?;
         let mut env = vm.attach_current_thread().ok()?;
         let ctx = ndk_context::android_context();
         let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
-
-        // String[]{ perm }
-        let string_class = env.find_class("java/lang/String").ok()?;
         let perm_j = env.new_string(perm).ok()?;
-        let arr = env
-            .new_object_array(1, &string_class, &perm_j)
-            .ok()?;
-
-        env.call_method(
-            &activity,
-            "requestPermissions",
-            "([Ljava/lang/String;I)V",
-            &[JValue::Object(&JObject::from(arr)), JValue::Int(code)],
-        )
-        .ok()?;
-        Some(())
-    })()
-    .is_some()
-}
-
-// =========================================================================
-// Request-completion seam.
-//
-// The host's `onRequestPermissionsResult` (or its ActivityResultCallback)
-// forwards each settled request here, by request code. Two ways in:
-//   - `complete_request(code, granted)` from Rust host glue, OR
-//   - the `Java_..._nativeOnPermissionsResult` JNI export below, called from
-//     a Kotlin/Java `onRequestPermissionsResult` override.
-// =========================================================================
-
-static PENDING: Mutex<Option<HashMap<i32, oneshot::Sender<PermissionStatus>>>> = Mutex::new(None);
-
-// Monotonic request codes. `requestPermissions` codes are 16-bit (the high
-// bits are reserved by the framework), so we wrap within that range.
-static NEXT_CODE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
-
-trait PendingMapExt {
-    fn insert(&mut self, code: i32, tx: oneshot::Sender<PermissionStatus>);
-    fn remove(&mut self, code: &i32);
-    fn take(&mut self, code: i32) -> Option<oneshot::Sender<PermissionStatus>>;
-}
-
-impl PendingMapExt for std::sync::MutexGuard<'_, Option<HashMap<i32, oneshot::Sender<PermissionStatus>>>> {
-    fn insert(&mut self, code: i32, tx: oneshot::Sender<PermissionStatus>) {
-        self.get_or_insert_with(HashMap::new).insert(code, tx);
-    }
-    fn remove(&mut self, code: &i32) {
-        if let Some(map) = self.as_mut() {
-            map.remove(code);
+        let launched = env.call_static_method(
+            HELPER,
+            "request",
+            "(Landroid/content/Context;Ljava/lang/String;I)Z",
+            &[
+                JValue::Object(&activity),
+                JValue::Object(&JObject::from(perm_j)),
+                JValue::Int(code),
+            ],
+        );
+        match launched {
+            Ok(v) => v.z().ok(),
+            Err(_) => {
+                // A missing shim class leaves a pending Java exception.
+                let _ = env.exception_clear();
+                None
+            }
         }
-    }
-    fn take(&mut self, code: i32) -> Option<oneshot::Sender<PermissionStatus>> {
-        self.as_mut().and_then(|m| m.remove(&code))
-    }
+    })()
+    .unwrap_or(false)
 }
 
-fn next_request_code() -> i32 {
-    use std::sync::atomic::Ordering;
-    // Keep within the framework's 16-bit request-code space.
-    let v = NEXT_CODE.fetch_add(1, Ordering::Relaxed) & 0xFFFF;
-    if v == 0 {
-        1
-    } else {
-        v
-    }
-}
-
-/// Complete a pending [`request`] from the host's
-/// `onRequestPermissionsResult`. `granted` is whether every requested
-/// permission in the group was granted. A no-op for an unknown code (e.g. a
-/// request this crate didn't originate).
-///
-/// Pure-Rust hosts call this directly from their result callback; hosts with
-/// a Kotlin/Java Activity use the [`nativeOnPermissionsResult`] JNI export,
-/// which calls through to this.
-pub fn complete_request(request_code: i32, granted: bool) {
-    let status = if granted {
-        PermissionStatus::Granted
-    } else {
-        PermissionStatus::Denied
-    };
-    let tx = PENDING.lock().unwrap().take(request_code);
-    if let Some(tx) = tx {
-        tx.send(status);
-    }
-}
-
-/// JNI export the host's Kotlin/Java `onRequestPermissionsResult` override
-/// trampolines into:
-///
-/// ```kotlin
-/// override fun onRequestPermissionsResult(
-///     code: Int, perms: Array<String>, results: IntArray
-/// ) {
-///     val granted = results.isNotEmpty() &&
-///         results.all { it == PackageManager.PERMISSION_GRANTED }
-///     nativeOnPermissionsResult(code, granted)
-/// }
-/// external fun nativeOnPermissionsResult(code: Int, granted: Boolean)
-/// ```
-///
-/// The Kotlin `external fun` must live in a class whose package/name matches
-/// this symbol; adjust the host glue accordingly. Catches any panic so an
-/// unwind can't cross the JNI boundary (UB) — logs + aborts.
-///
-/// # Safety
-/// Called by the JVM with valid `env` / `class`; standard JNI export contract.
+/// `RustPermissions.nativeOnPermissionsResult(code, outcome)`: the dialog
+/// for `code` was answered. `outcome` is one of the shim's `RESULT_*` codes.
+/// Catches any panic so an unwind can't cross the JNI boundary (UB) — logs
+/// and aborts.
 #[no_mangle]
-pub extern "system" fn Java_com_idealyst_permissions_Permissions_nativeOnPermissionsResult(
-    _env: jni::JNIEnv,
-    _class: JObject,
-    code: i32,
-    granted: jni::sys::jboolean,
+pub extern "system" fn Java_io_idealyst_permissions_RustPermissions_nativeOnPermissionsResult(
+    _env: JNIEnv,
+    _class: JClass,
+    code: jint,
+    outcome: jint,
 ) {
-    let result = std::panic::catch_unwind(|| {
-        complete_request(code, granted != 0);
+    let result = std::panic::catch_unwind(|| match Outcome::from_code(outcome) {
+        Some(outcome) => pending::complete(code, outcome),
+        None => {
+            eprintln!("permissions: unknown outcome {outcome} for request {code}");
+            pending::complete(code, Outcome::Cancelled);
+        }
     });
     if result.is_err() {
         eprintln!("permissions: panic in nativeOnPermissionsResult; aborting");
         std::process::abort();
     }
 }
+
+// Pin the export so the linker keeps it in the app `cdylib`'s dynsym for the
+// JVM's `dlsym` resolution.
+#[used]
+static KEEP_ON_RESULT: extern "system" fn(JNIEnv, JClass, jint, jint) =
+    Java_io_idealyst_permissions_RustPermissions_nativeOnPermissionsResult;

@@ -162,6 +162,21 @@ public class MainActivity extends FragmentActivity {
         super.onActivityResult(requestCode, resultCode, data);
     }
 
+    /**
+     * Forward runtime-permission answers to the framework's runtime
+     * dispatcher. The `permissions` SDK registers a handler with
+     * `io.idealyst.runtime.RustPermissionsResult` under the request code it
+     * passed to `requestPermissions`; without this forward its
+     * `permissions::request` future never resolves.
+     */
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (io.idealyst.runtime.RustPermissionsResult.dispatch(requestCode, permissions, grantResults)) {
+            return;
+        }
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+    }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();

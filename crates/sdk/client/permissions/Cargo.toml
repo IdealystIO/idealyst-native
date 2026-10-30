@@ -78,3 +78,9 @@ tokio = { version = "1", features = ["macros", "rt"] }
 # here (`tests/sdk_framework_declarations.rs` in run-ios checks the two match).
 [package.metadata.idealyst.ios]
 frameworks = ["AVFoundation", "CoreLocation", "UserNotifications"]
+
+# The Kotlin shim that launches the Android permission dialog and routes the
+# answer back through the backend's `RustPermissionsResult` registry. `idealyst
+# run android` discovers and compiles it from here.
+[package.metadata.idealyst.android]
+runtime_kotlin = ["runtime/kotlin/io/idealyst/permissions/RustPermissions.kt"]
