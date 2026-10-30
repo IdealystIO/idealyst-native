@@ -861,6 +861,11 @@ target-dir = "{target_dir}"
 [target.{target_triple}]
 linker = "{linker}"
 ar = "{ar}"
+# 16 KB ELF segment alignment. Devices with 16 KB memory pages (Android 15+)
+# otherwise load the library in page-size compatibility mode behind a
+# warning dialog, and Google Play requires it for apps targeting API 35+.
+# Loads unchanged on 4 KB-page devices.
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 "#,
         target_dir = wrapper_target_dir(wrapper_dir).display(),
         target_triple = target_triple,
@@ -1340,6 +1345,16 @@ mod regression_tests {
             let m = std::fs::metadata(wrapper_dir.join(f)).unwrap().modified().unwrap();
             assert_eq!(m, past, "{f} was rewritten with identical content");
         }
+    }
+
+    /// Without 16 KB segment alignment an Android 15+ device with 16 KB
+    /// pages ran every idealyst app in page-size compatibility mode, behind
+    /// a warning dialog at each launch.
+    #[test]
+    fn regression_android_wrapper_links_with_16k_page_alignment() {
+        let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
+        let cfg = std::fs::read_to_string(wrapper_dir.join(".cargo/config.toml")).unwrap();
+        assert!(cfg.contains(r#"rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]"#), "{cfg}");
     }
 
     /// The wrapper builds into its OWN target dir: a seeded lock and the
