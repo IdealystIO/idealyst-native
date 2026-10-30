@@ -506,7 +506,7 @@ mod native {
         _backend: Rc<RefCell<AndroidBackend>>,
         _registry: Rc<Registry<AndroidBackend>>,
         world: World,
-        /// The Context (the Activity) this app was mounted for. [`detach`]
+        /// The Context (the Activity) this app was mounted for. [`detach_activity`]
         /// unmounts only when the destroyed Activity is this one.
         context: GlobalRef,
     }
@@ -728,7 +728,7 @@ mod native {
     /// until the process died. `tests/android-lifecycle` ("Restart")
     /// reproduces that ordering on a device; host tests cannot, because
     /// the check is a JNI `IsSameObject`.
-    pub fn detach(env: &jni::JNIEnv, activity: &JObject) {
+    pub fn detach_activity(env: &jni::JNIEnv, activity: &JObject) {
         let owner = APP.with(|slot| {
             slot.borrow()
                 .as_ref()
@@ -1686,7 +1686,7 @@ mod native {
 
 #[cfg(target_os = "android")]
 pub use native::{
-    detach, live_view_count, start, stop, with_realized, with_world, SceneElement, SceneRegistry,
+    detach_activity, live_view_count, start, stop, with_realized, with_world, SceneElement, SceneRegistry,
 };
 
 // ===========================================================================

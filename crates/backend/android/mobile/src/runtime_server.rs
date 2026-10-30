@@ -92,7 +92,7 @@ runtime_tls::thread_local! {
     /// (read-only borrow plus internal mutation of the RuntimeServerClient)
     /// need access at different times.
     static SHELL: RefCell<Option<RuntimeServerShell<AndroidBackend>>> = const { RefCell::new(None) };
-    /// The Context (the Activity) [`SHELL`] was attached for; [`detach`]
+    /// The Context (the Activity) [`SHELL`] was attached for; [`detach_activity`]
     /// tears the shell down only for this one.
     static SHELL_CONTEXT: RefCell<Option<jni::objects::GlobalRef>> = const { RefCell::new(None) };
 }
@@ -281,6 +281,13 @@ pub fn drain() {
     }
 }
 
+/// Tear down the runtime-server shell, whichever Activity it is attached
+/// to. An Activity's `onDestroy` should call [`detach_activity`] instead.
+pub fn detach() {
+    SHELL.with(|slot| slot.borrow_mut().take());
+    SHELL_CONTEXT.with(|slot| slot.borrow_mut().take());
+}
+
 /// `Activity.onDestroy`: tear down the runtime-server shell if
 /// `activity` is the one it was attached for, otherwise leave it alone.
 /// Called from the consuming staticlib's `Java_<pkg>_NativeBridge_detach`
@@ -288,18 +295,15 @@ pub fn drain() {
 ///
 /// Android may create a new Activity before it destroys the old one, so
 /// the old `onDestroy` can arrive after the new `attach`; see
-/// [`crate::newcore::detach`].
-pub fn detach(env: &JNIEnv, activity: &JObject) {
+/// [`crate::newcore::detach_activity`].
+pub fn detach_activity(env: &JNIEnv, activity: &JObject) {
     let owner = SHELL_CONTEXT.with(|slot| {
         slot.borrow()
             .as_ref()
             .map(|ctx| env.is_same_object(ctx.as_obj(), activity).unwrap_or(false))
     });
     match owner {
-        Some(true) => {
-            SHELL.with(|slot| slot.borrow_mut().take());
-            SHELL_CONTEXT.with(|slot| slot.borrow_mut().take());
-        }
+        Some(true) => detach(),
         Some(false) => log::info!(
             "[runtime-server-android] detach: ignored a destroyed Activity; the shell is attached to a newer one"
         ),
