@@ -56,6 +56,10 @@ const NATIVE_BRIDGE_AAS_JAVA: &str = include_str!("../templates/NativeBridgeRunt
 const ANDROID_MANIFEST_AAS_XML: &str = include_str!("../templates/AndroidManifestAas.xml");
 
 const MIN_SDK_VERSION: u32 = 21;
+/// Not 36+ without care: Android 16 ignores `resizeableActivity` and
+/// `screenOrientation` on large screens for apps targeting API 36, which
+/// would silently undo `[package.metadata.idealyst.app.android] resizeable`
+/// and `screen_orientation` on kiosk tablets.
 const TARGET_SDK_VERSION: u32 = 34;
 
 /// Default emulator to boot if no device is attached and the user
@@ -1102,10 +1106,19 @@ fn render_manifest(template: &str, i: &ManifestInputs<'_>) -> String {
 /// Extra attributes on the main `<activity>` opening tag, each with a
 /// leading space (empty when the app sets none).
 fn main_activity_attrs(android: &AndroidAppMetadata) -> String {
-    match android.lock_task_mode {
-        Some(mode) => format!(" android:lockTaskMode=\"{}\"", mode.manifest_value()),
-        None => String::new(),
+    let mut attrs = String::new();
+    if let Some(mode) = android.lock_task_mode {
+        attrs.push_str(&format!(" android:lockTaskMode=\"{}\"", mode.manifest_value()));
     }
+    // Honoured because apps target API 34 (TARGET_SDK_VERSION): Android 16
+    // ignores both attributes on large screens for apps targeting API 36+.
+    if let Some(resizeable) = android.resizeable {
+        attrs.push_str(&format!(" android:resizeableActivity=\"{resizeable}\""));
+    }
+    if let Some(orientation) = &android.screen_orientation {
+        attrs.push_str(&format!(" android:screenOrientation=\"{orientation}\""));
+    }
+    attrs
 }
 
 /// The HOME intent filter for an app declared as a home screen. A separate
@@ -1563,6 +1576,8 @@ mod tests {
         let kiosk = AndroidAppMetadata {
             lock_task_mode: Some(build_ios::android_app::LockTaskMode::IfWhitelisted),
             home_launcher: true,
+            resizeable: Some(false),
+            screen_orientation: Some("sensorLandscape".into()),
             ..Default::default()
         };
 
@@ -1583,6 +1598,8 @@ mod tests {
             assert_eq!(receivers[0].attribute((ANDROID_NS, "name")), Some("io.fake.Admin"));
             let activity = child(app, "activity")[0];
             assert_eq!(activity.attribute((ANDROID_NS, "lockTaskMode")), Some("if_whitelisted"));
+            assert_eq!(activity.attribute((ANDROID_NS, "resizeableActivity")), Some("false"));
+            assert_eq!(activity.attribute((ANDROID_NS, "screenOrientation")), Some("sensorLandscape"));
             let has_category = |f: &roxmltree::Node<'_, '_>, c: &str| {
                 child(*f, "category").iter().any(|n| n.attribute((ANDROID_NS, "name")) == Some(c))
             };
@@ -1598,6 +1615,8 @@ mod tests {
             &inputs(&AndroidAppMetadata::default(), &SdkManifestContributions::default(), true),
         );
         assert!(!plain.contains("lockTaskMode"));
+        assert!(!plain.contains("resizeableActivity"));
+        assert!(!plain.contains("screenOrientation"));
         assert!(!plain.contains("category.HOME"));
         roxmltree::Document::parse(&plain).unwrap();
     }

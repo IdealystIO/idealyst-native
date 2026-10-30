@@ -809,6 +809,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`resizeable` and `screen_orientation` in
+  `[package.metadata.idealyst.app.android]`** (`build-ios`'s app metadata,
+  `run-android`). They set the main activity's `android:resizeableActivity`
+  and `android:screenOrientation`; left out, Android's defaults apply.
+  `resizeable = false` keeps a kiosk out of split screen and free-form
+  windows, and so removes the desktop-window handle Android 16 tablets put
+  on resizable apps, which could close an app even in lock task.
+
 - **`device_admin::start_keep_alive` / `stop_keep_alive`** (`device-admin`).
   A `systemExempted` foreground service that keeps a device-owner app's
   process out of Android's cached-apps freezer, so its timers, server socket

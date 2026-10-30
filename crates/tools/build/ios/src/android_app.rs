@@ -12,6 +12,14 @@
 //! # Declare the main activity as a home screen (HOME + DEFAULT categories),
 //! # so a device owner can make it the persistent launcher.
 //! home_launcher = true
+//! # The main activity's `android:resizeableActivity`. `false` keeps it out
+//! # of split screen and free-form windows, and Android then gives it no
+//! # desktop-window handle — on a kiosk that handle can close the app even
+//! # in lock task. Omitted → Android's default (resizable).
+//! resizeable = false
+//! # The main activity's `android:screenOrientation`, spelled as the
+//! # manifest spells it ("landscape", "sensorLandscape", "portrait", …).
+//! screen_orientation = "landscape"
 //!
 //! [package.metadata.idealyst.app.android.signing]
 //! # Release keystore. Relative paths resolve against the app crate.
@@ -54,9 +62,35 @@ pub struct AndroidAppMetadata {
     pub lock_task_mode: Option<LockTaskMode>,
     /// Add a HOME + DEFAULT intent filter to the main activity.
     pub home_launcher: bool,
+    /// The main activity's `android:resizeableActivity`; `None` leaves
+    /// Android's default.
+    pub resizeable: Option<bool>,
+    /// The main activity's `android:screenOrientation`, a manifest value
+    /// from [`SCREEN_ORIENTATIONS`].
+    pub screen_orientation: Option<String>,
     /// Release signing; `None` signs with the debug keystore.
     pub signing: Option<AndroidSigning>,
 }
+
+/// Values of the manifest's `android:screenOrientation` attribute.
+pub const SCREEN_ORIENTATIONS: &[&str] = &[
+    "unspecified",
+    "behind",
+    "landscape",
+    "portrait",
+    "reverseLandscape",
+    "reversePortrait",
+    "sensorLandscape",
+    "sensorPortrait",
+    "userLandscape",
+    "userPortrait",
+    "sensor",
+    "fullSensor",
+    "nosensor",
+    "user",
+    "fullUser",
+    "locked",
+];
 
 /// Values of the manifest's `android:lockTaskMode` attribute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +146,10 @@ pub(crate) struct RawAndroidAppMetadata {
     #[serde(default)]
     home_launcher: Option<bool>,
     #[serde(default)]
+    resizeable: Option<bool>,
+    #[serde(default)]
+    screen_orientation: Option<String>,
+    #[serde(default)]
     signing: Option<RawAndroidSigning>,
 }
 
@@ -139,6 +177,15 @@ impl AndroidAppMetadata {
                  expected one of \"normal\", \"never\", \"always\", \"if_whitelisted\""
             ),
         };
+        if let Some(o) = raw.screen_orientation.as_deref() {
+            if !SCREEN_ORIENTATIONS.contains(&o) {
+                bail!(
+                    "`[package.metadata.idealyst.app.android].screen_orientation = {o:?}`: \
+                     expected one of {}",
+                    SCREEN_ORIENTATIONS.iter().map(|v| format!("{v:?}")).collect::<Vec<_>>().join(", ")
+                );
+            }
+        }
         if raw.version_code == Some(0) {
             bail!("`[package.metadata.idealyst.app.android].version_code` must be at least 1");
         }
@@ -173,6 +220,8 @@ impl AndroidAppMetadata {
             version_code: raw.version_code,
             lock_task_mode,
             home_launcher: raw.home_launcher.unwrap_or(false),
+            resizeable: raw.resizeable,
+            screen_orientation: raw.screen_orientation,
             signing,
         })
     }
@@ -275,6 +324,17 @@ mod tests {
         assert!(m.home_launcher);
         assert!(parse("lock_task_mode = \"if_allowlisted\"").is_err());
         assert!(parse("lock_task = \"always\"").is_err(), "unknown keys are rejected");
+    }
+
+    #[test]
+    fn resizeable_and_orientation_parse_and_validate() {
+        let m = parse("resizeable = false\nscreen_orientation = \"sensorLandscape\"").unwrap();
+        assert_eq!(m.resizeable, Some(false));
+        assert_eq!(m.screen_orientation.as_deref(), Some("sensorLandscape"));
+        let plain = parse("").unwrap();
+        assert_eq!((plain.resizeable, plain.screen_orientation), (None, None), "absent = Android's default");
+        let bad = parse("screen_orientation = \"sideways\"").unwrap_err().to_string();
+        assert!(bad.contains("sideways") && bad.contains("sensorLandscape"), "{bad}");
     }
 
     #[test]

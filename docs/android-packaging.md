@@ -22,6 +22,8 @@ version = "1.4.2"
 version_code   = 42                # optional; see "Versioning"
 lock_task_mode = "if_whitelisted"  # the main activity's android:lockTaskMode
 home_launcher  = true              # add a HOME + DEFAULT intent filter
+resizeable     = false             # the main activity's android:resizeableActivity
+screen_orientation = "landscape"   # the main activity's android:screenOrientation
 
 [package.metadata.idealyst.app.android.signing]
 keystore = "keys/release.jks"      # relative to the app crate
@@ -37,6 +39,17 @@ screen, which a device owner needs before it can make the app the
 persistent launcher (`device_admin::set_home_activity`). Both are the app's
 choice rather than an SDK's, because the same SDK is often in both the
 kiosk and the app that manages it.
+
+`resizeable = false` keeps the app out of split screen and free-form
+windows. On tablets with desktop windowing (Android 16 ships it on some),
+Android puts a window handle on every resizable app, a drag-down strip at
+the top that can close the app even in lock task, and no device-owner
+policy turns it off; a non-resizable activity gets no handle. A kiosk
+should set it. `screen_orientation` takes the manifest's own values
+(`landscape`, `sensorLandscape`, `portrait`, …); a kiosk usually pins
+`landscape` or `sensorLandscape`. Leave either out for Android's default.
+Both hold because idealyst apps target API 34: Android 16 ignores them on
+large screens for apps targeting API 36.
 
 ### Versioning
 
