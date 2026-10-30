@@ -809,6 +809,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Hide, suspend and restore bundled system apps** (`device-admin`,
+  `idealyst-cli`, `run-android`). `set_application_hidden` /
+  `is_application_hidden`, `set_packages_suspended` /
+  `is_package_suspended`, `enable_system_app` and
+  `installed_packages(include_system)` (hidden apps and system apps removed
+  at provisioning stay listed). Device or profile owner. Hiding or
+  suspending the app itself, a lock-task package or the home screen fails
+  with the new `Error::ProtectedPackage`; a missing package is the new
+  `Error::NotInstalled` (both new variants, so exhaustive matches on
+  `device_admin::Error` need arms). `idealyst android provisioning-qr
+  --leave-system-apps` keeps bundled apps at enrolment.
+
 - **Style setters take `signal()` / `memo()` handles** (`runtime-shared`).
   A variant or override source can be a kernel `Signal`, `ReadSignal` or
   `Memo`, and re-resolves the style when it changes.
@@ -2263,6 +2275,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **`wss://` WebSockets connect on Android** (`net`). The Android arm had
+  no TLS, so every `wss://` connect — `server::Socket`, `#[channel]` —
+  failed with `InvalidUrl`. It now runs over the platform's `SSLSocket`:
+  the system certificate store and the app's network security config, with
+  the host name verified.
+
+- **Android `permissions::request` resolves on the first ask**
+  (`permissions`, `run-android`, `backend-android-mobile`). The generated
+  `MainActivity` never forwarded `onRequestPermissionsResult`, so the first
+  `Camera::open` / `Microphone::open` after a fresh install waited forever
+  after the user tapped Allow. Needs the CLI, `backend-android-mobile` and
+  `permissions` from this release together; a custom host Activity must
+  forward to `io.idealyst.runtime.RustPermissionsResult.dispatch`.
 
 - **A web `dom` screenshot shows open dialogs** (`backend-web`). Portals
   (dialogs, menus, popovers, toasts) mount on `<body>` beside `#app`, and
