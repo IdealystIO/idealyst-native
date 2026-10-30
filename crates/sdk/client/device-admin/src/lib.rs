@@ -531,6 +531,28 @@ pub fn installed_packages(include_system: bool) -> Result<Vec<PackageInfo>> {
     )?)
 }
 
+// ── Background execution ────────────────────────────────────────────────
+
+/// Keep this app's process running while it is in the background, by
+/// running a foreground service that shows an ongoing notification with
+/// `title` and `text`. Without it, Android 12+ freezes a backgrounded
+/// process (the cached-apps freezer): it stays alive but nothing runs —
+/// timers, sockets and async work all stop until the app is in front again.
+/// An agent that must stay reachable (a server connection, a heartbeat)
+/// calls this once at start. Calling it again updates the notification.
+/// Uses the `systemExempted` service type Android 14+ reserves for device
+/// and profile owners, so it has no time limit. Device or profile owner;
+/// API 26 (below, a plain started service).
+pub fn start_keep_alive(title: &str, text: &str) -> Result<()> {
+    call("start_keep_alive", json!({ "title": title, "text": text })).map(drop)
+}
+
+/// Stop the service [`start_keep_alive`] started; the process may be frozen
+/// again once it is in the background. API 1.
+pub fn stop_keep_alive() -> Result<()> {
+    call("stop_keep_alive", json!({})).map(drop)
+}
+
 fn refuse_protected(packages: &[&str]) -> Result<()> {
     packages::Protected::parse(&call("protected_packages", json!({}))?)?.check(packages)
 }

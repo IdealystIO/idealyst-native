@@ -34,6 +34,8 @@ fn every_sync_call_is_unsupported_off_mobile() {
     unsupported(is_package_suspended("com.example.bloat"));
     unsupported(enable_system_app("com.example.bloat"));
     unsupported(installed_packages(true));
+    unsupported(start_keep_alive("Agent", "connected"));
+    unsupported(stop_keep_alive());
     unsupported(launch("com.example.kiosk"));
     unsupported(reboot());
     unsupported(set_system_update_policy(SystemUpdatePolicy::Automatic));

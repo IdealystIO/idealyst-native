@@ -79,6 +79,7 @@ the same key.
 | `set_packages_suspended(&[pkg], b)` / `is_package_suspended(pkg)` | `setPackagesSuspended` / `isPackageSuspended` | 24 | `Unsupported` |
 | `enable_system_app(pkg)` | `enableSystemApp` | 21 | `Unsupported` |
 | `installed_packages(include_system)` | `getInstalledPackages(MATCH_UNINSTALLED_PACKAGES)` | 21 | `Unsupported` |
+| `start_keep_alive(title, text)` / `stop_keep_alive()` | a `systemExempted` foreground service | 26 | `Unsupported` |
 | `install_apk(path, cert_sha256)` | `PackageInstaller` session, committed silently | 21 | `Unsupported` |
 | `uninstall(pkg)` | `PackageInstaller.uninstall` | 21 | `Unsupported` |
 | `installed_version(pkg)` | `getPackageInfo` | 1 | `Unsupported` |
@@ -98,6 +99,18 @@ interaction. On Android that means it is allow-listed; otherwise Android
 falls back to screen pinning, asks the user, and the call resolves
 `Ok(false)`. On iOS `true` means the supervised device's MDM profile allows
 Single App Mode for the app.
+
+## Staying reachable in the background
+
+Android 12+ freezes a backgrounded app's process (the cached-apps
+freezer): it stays alive, but no thread runs, so timers, a server socket's
+heartbeat and every reconnect stop until the app is in front again. On a
+kiosk the agent is behind the kiosk all day. Call
+`start_keep_alive("Device management", "Connected")` once at start: it runs
+a foreground service, which keeps the process out of the freezer and shows
+an ongoing notification. The service uses the `systemExempted` type Android
+14+ reserves for device and profile owners, so it has no time limit.
+`stop_keep_alive()` ends it.
 
 ## Bundled apps
 

@@ -30,6 +30,12 @@
         <category android:name="android.intent.category.DEFAULT" />
     </intent-filter>
 </activity>
+<!-- `start_keep_alive`: keeps the process out of Android's cached-apps
+     freezer while it is in the background. `systemExempted` is the
+     foreground-service type for device- and profile-owner apps. -->
+<service android:name="io.idealyst.deviceadmin.KeepAliveService"
+    android:exported="false"
+    android:foregroundServiceType="systemExempted" />
 <!-- Reports `boot_completed`; queued until the app's Rust side listens. -->
 <receiver android:name="io.idealyst.deviceadmin.BootReceiver" android:exported="false">
     <intent-filter>

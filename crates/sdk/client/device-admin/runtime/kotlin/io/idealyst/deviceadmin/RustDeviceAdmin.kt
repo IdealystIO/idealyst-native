@@ -303,6 +303,16 @@ object RustDeviceAdmin {
                 }
                 return out
             }
+            "start_keep_alive" -> {
+                requireDeviceOrProfileOwner(ctx)
+                val intent = Intent(ctx, KeepAliveService::class.java)
+                    .putExtra(KeepAliveService.EXTRA_TITLE, args.getString("title"))
+                    .putExtra(KeepAliveService.EXTRA_TEXT, args.getString("text"))
+                if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(intent) else ctx.startService(intent)
+            }
+            "stop_keep_alive" -> {
+                ctx.stopService(Intent(ctx, KeepAliveService::class.java))
+            }
             "set_global_setting" -> {
                 requireOwner(ctx)
                 dpm.setGlobalSetting(admin(ctx), args.getString("key"), args.getString("value"))

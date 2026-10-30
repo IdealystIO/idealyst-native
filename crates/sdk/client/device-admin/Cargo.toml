@@ -25,6 +25,7 @@ runtime_kotlin = [
     "runtime/kotlin/io/idealyst/deviceadmin/AdminReceiver.kt",
     "runtime/kotlin/io/idealyst/deviceadmin/ProvisioningActivities.kt",
     "runtime/kotlin/io/idealyst/deviceadmin/BootReceiver.kt",
+    "runtime/kotlin/io/idealyst/deviceadmin/KeepAliveService.kt",
 ]
 # The device-admin receiver, the two QR-provisioning activities and the boot
 # receiver (inside <application>), their permissions (inside <manifest>), and
