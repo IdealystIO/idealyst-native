@@ -38,9 +38,16 @@ adb push "$out/dex/classes.dex" /data/local/tmp/net_android_device_probe.dex >/d
 report="$(adb shell CLASSPATH=/data/local/tmp/net_android_device_probe.dex \
     app_process /system/bin NetProbe /data/local/tmp/libnet_android_device_probe.so)"
 echo "$report"
+# The three wss:// cases need the internet and print SKIP without DNS.
+total=10
 passed="$(grep -c '^PASS' <<<"$report" || true)"
-if [[ "$passed" != 7 ]] || grep -q '^FAIL' <<<"$report"; then
-    echo "net android device probe: FAILED ($passed/7 passed)" >&2
+skipped="$(grep -c '^SKIP' <<<"$report" || true)"
+if [[ "$((passed + skipped))" != "$total" ]] || grep -q '^FAIL' <<<"$report"; then
+    echo "net android device probe: FAILED ($passed/$total passed, $skipped skipped)" >&2
     exit 1
 fi
-echo "net android device probe: 7/7 passed"
+if [[ "$skipped" != 0 ]]; then
+    echo "net android device probe: $passed/$total passed, $skipped SKIPPED (no internet on the device)" >&2
+else
+    echo "net android device probe: $total/$total passed"
+fi

@@ -59,17 +59,16 @@ tokio = { version = "1", default-features = false, features = ["rt", "net", "tim
 # `tungstenite` driven on a blocking I/O worker thread (no async runtime —
 # see the execution-model invariant), inbound bridged to async via
 # `futures-channel`. iOS/Android are native Rust targets with TCP sockets,
-# so they reuse this proven arm; platform-native `URLSessionWebSocketTask`
-# / OkHttp (OS proxy/background integration) is a documented optimization.
+# so they reuse this proven arm.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
-# WS with TLS (`wss://`) — all native EXCEPT Android. Android's HTTP stack
-# is JNI (no reqwest/rustls) precisely to avoid bundling a second TLS stack
-# (+ `ring` needs the NDK C toolchain); we keep that posture for WS too, so
-# Android is `ws://`-only via plain tungstenite, with platform-native
-# (OkHttp) as the eventual `wss://` path.
+# WS with TLS (`wss://`) by rustls — all native EXCEPT Android. Android's
+# HTTP stack is JNI (no reqwest/rustls) precisely to avoid bundling a second
+# TLS stack (+ `ring` needs the NDK C toolchain, which the Android build
+# does not hand to build scripts); its `wss://` runs plain tungstenite over
+# the platform's own `SSLSocket` instead (`src/android_tls.rs`).
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
 tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 
@@ -116,7 +115,8 @@ futures-channel = "0.3"
 # Android target: HttpURLConnection via JNI on a worker thread.
 # `ndk-context` exposes the host's JavaVM; `futures-channel` bridges
 # the worker thread's blocking call back to async. Plain `tungstenite`
-# (no TLS / no `ring`) drives the WebSocket — `ws://` only on Android.
+# (no TLS / no `ring`) drives the WebSocket; `wss://` gets its TLS from the
+# platform `SSLSocket` over JNI.
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 ndk-context = "0.1"

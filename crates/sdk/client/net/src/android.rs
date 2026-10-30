@@ -586,7 +586,7 @@ fn map_jni_err(e: jni::errors::Error) -> Error {
 /// Only the few JNI ops legal with a pending exception are used before
 /// the clear lands: `ExceptionOccurred` (to grab the throwable) then
 /// `ExceptionClear`; `toString()` runs only after the clear.
-fn take_pending_exception(env: &mut jni::JNIEnv<'_>) -> Option<String> {
+pub(crate) fn take_pending_exception(env: &mut jni::JNIEnv<'_>) -> Option<String> {
     let throwable = env.exception_occurred().ok()?;
     // Must clear before any non-exception JNI call (the `toString`
     // below) — calling other JNI functions with an exception pending is

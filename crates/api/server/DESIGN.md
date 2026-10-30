@@ -638,11 +638,13 @@ client→server direction (chat/presence/collab) is genuinely needed.
   (a prefixed channel, a parameterized stream). ✅ **All platform arms** —
   `net::WebSocket` compiles and is wired on every target: desktop + iOS/macOS/
   tvOS run the proven native `tungstenite` arm **with `wss://`** (rustls);
-  **Android** runs plain `tungstenite` **`ws://`-only** (no `ring`/TLS — keeps
-  Android's no-second-TLS-stack posture, mirroring its JNI HTTP); **web** uses
+  **Android** runs plain `tungstenite` over the platform's `SSLSocket` for
+  `wss://` (no `ring`/rustls — keeps Android's no-second-TLS-stack posture,
+  mirroring its JNI HTTP); **web** uses
   `web_sys::WebSocket` (callback-driven, marshalled into async via
-  `futures-channel`, `onclose` ends the stream). Native is runtime-tested;
-  iOS / Android / wasm are compile-verified on their real targets. Concurrent
+  `futures-channel`, `onclose` ends the stream). Native is runtime-tested,
+  Android on a device (`net/tests/android-device`, `wss://` included); iOS /
+  wasm are compile-verified on their real targets. Concurrent
   duplex is covered by the cloneable `sender()` (held sender sends while the
   socket recvs — unit-tested), so no separate `split()`. ✅ **`#[sse]` (server
   side)** — a server→client stream over HTTP Server-Sent Events: same family as

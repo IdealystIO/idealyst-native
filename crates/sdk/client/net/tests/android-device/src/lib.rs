@@ -10,6 +10,12 @@
 //! future with no cancel token: that must disconnect the exchange too
 //! rather than leave the worker blocked on the connection until the server
 //! answers — forever, against a server that never does.
+//!
+//! The `wss://` cases cover the WebSocket arm's platform-TLS path (the bug:
+//! Android's tungstenite had no TLS, so every `wss://` connect failed with
+//! `InvalidUrl`): a round trip through a public echo server, and refusals
+//! of a self-signed certificate and of a valid certificate for another
+//! host. They need the internet; with no DNS they print `SKIP`.
 
 use std::future::Future;
 use std::io::{Read, Write};
@@ -313,8 +319,62 @@ pub extern "system" fn Java_NetProbe_run(env: JNIEnv, _class: JClass) -> jstring
             "future dropped right after the first poll, no cancel token",
             false,
         ),
+        wss_case("wss:// round trip through a public echo server", |r| {
+            matches!(r, Ok(echo) if echo == WSS_PROBE)
+        }, || wss_echo("wss://echo.websocket.org")),
+        wss_case("wss:// to a self-signed certificate is refused", |r| {
+            matches!(r, Err(Error::Network(m)) if m.contains("SSLHandshakeException") || m.contains("CertPath"))
+        }, || wss_echo("wss://self-signed.badssl.com/")),
+        wss_case("wss:// to a certificate for another host is refused", |r| {
+            matches!(r, Err(Error::Network(m)) if m.contains("not valid for wrong.host.badssl.com"))
+        }, || wss_echo("wss://wrong.host.badssl.com/")),
     ];
     env.new_string(report.join("\n"))
         .expect("report string")
         .into_raw()
+}
+
+const WSS_PROBE: &str = "idealyst wss probe";
+/// Public endpoints get longer than the local servers.
+const WSS_WITHIN: Duration = Duration::from_secs(30);
+
+/// Connect, send [`WSS_PROBE`], and return the first text frame that
+/// echoes it (echo.websocket.org greets with a frame of its own first).
+fn wss_echo(url: &'static str) -> Result<String, Error> {
+    block_on(async move {
+        let mut ws = net::WebSocket::connect(url).await?;
+        ws.send(net::WsMessage::Text(WSS_PROBE.into()))?;
+        for _ in 0..4 {
+            match ws.recv().await {
+                Some(Ok(net::WsMessage::Text(t))) if t == WSS_PROBE => return Ok(t),
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => return Err(e),
+                None => break,
+            }
+        }
+        Err(Error::Other("no echo".into()))
+    })
+}
+
+/// Like [`case`], but a DNS failure (no internet on the device) is `SKIP`.
+fn wss_case(
+    name: &str,
+    expect: fn(&Result<String, Error>) -> bool,
+    request: impl FnOnce() -> Result<String, Error> + Send + 'static,
+) -> String {
+    let (tx, rx) = mpsc::channel();
+    let start = Instant::now();
+    std::thread::spawn(move || {
+        let _ = tx.send(request());
+    });
+    match rx.recv_timeout(WSS_WITHIN) {
+        Ok(Err(Error::Network(m))) if m.contains("UnknownHostException") => {
+            format!("SKIP {name}: no DNS on the device ({m})")
+        }
+        Ok(result) => {
+            let verdict = if expect(&result) { "PASS" } else { "FAIL" };
+            format!("{verdict} {name}: {result:?} after {} ms", start.elapsed().as_millis())
+        }
+        Err(_) => format!("FAIL {name}: still pending after {WSS_WITHIN:?}"),
+    }
 }

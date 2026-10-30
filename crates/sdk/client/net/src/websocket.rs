@@ -8,14 +8,16 @@
 //! | target                         | backend                              |
 //! |--------------------------------|--------------------------------------|
 //! | web (wasm32)                   | the browser `WebSocket` (web-glue)   |
-//! | iOS / macOS / desktop / terminal | sync `tungstenite` on an I/O thread (`ws://` + `wss://`) |
-//! | Android                        | sync `tungstenite`, `ws://` only (no bundled TLS — see `Cargo.toml`) |
+//! | iOS / macOS / desktop / terminal | sync `tungstenite` on an I/O thread, TLS by rustls |
+//! | Android                        | sync `tungstenite` on an I/O thread, TLS by the platform's `SSLSocket` |
 //!
 //! Two arms ship: web (the browser `WebSocket`) and a shared native arm used by
 //! every non-wasm target. iOS/Android reuse the native arm because they're
-//! native Rust targets with TCP sockets; platform-native
-//! `URLSessionWebSocketTask` / OkHttp (for OS proxy / background
-//! integration) is a documented future optimization, not yet wired.
+//! native Rust targets with TCP sockets. On Android, `wss://` runs
+//! tungstenite over a TLS socket from the platform's `SSLSocketFactory`
+//! (`android_tls.rs`): the system TLS stack and certificate store, the
+//! app's network security config, and no bundled TLS library. The OS proxy
+//! is not consulted on any native target.
 //!
 //! # Execution model
 //!
@@ -91,14 +93,11 @@ impl WebSocket {
     /// Open a connection to `url` and resolve once the handshake
     /// completes.
     ///
-    /// `ws://` works on every target, and `wss://` on web, iOS, macOS,
-    /// desktop and terminal. **Android is `ws://` only:** its native arm is
-    /// tungstenite with no TLS stack (see `Cargo.toml` for why), so a
-    /// `wss://` URL — a presigned AWS Transcribe URL, say — fails here with
-    /// [`Error::InvalidUrl`] ("TLS support not compiled in") rather than
-    /// connecting. The planned fix is an OkHttp `WebSocket` arm through
-    /// JNI, which also brings the OS proxy and certificate store; tracked
-    /// in `docs/web-platform-coverage.md` under open gaps.
+    /// `ws://` and `wss://` work on every target. `wss://` verifies the
+    /// server's certificate and host name against the platform's trust
+    /// store on Android (including the app's network security config), and
+    /// against the bundled Mozilla roots elsewhere on native; a failure is
+    /// [`Error::Network`].
     pub async fn connect(url: &str) -> Result<WebSocket, Error> {
         Ok(WebSocket {
             inner: imp::connect(url).await?,
@@ -181,6 +180,7 @@ mod imp {
     use super::{WsClose, WsMessage};
     use crate::error::Error;
 
+    use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc as std_mpsc;
@@ -325,13 +325,18 @@ mod imp {
         closed: Arc<AtomicBool>,
         status: CloseSlot,
     ) {
-        // A locally-initiated close sends a close frame with no status
-        // code, which is what a browser reports for it too (1005).
-        let local_close = || WsClose::new(WsClose::NO_STATUS, "");
-        // Blocking handshake. On Android tungstenite is built without TLS,
-        // so a `wss://` URL fails right here with `Url(TlsFeatureNotEnabled)`
-        // → `Error::InvalidUrl` — the known Android gap documented on
-        // `WebSocket::connect`, not a transport fault.
+        #[cfg(target_os = "android")]
+        if url.starts_with("wss://") {
+            match connect_platform_tls(&url) {
+                Ok(socket) => run(socket, out_rx, in_tx, ready_tx, closed, status),
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e));
+                }
+            }
+            return;
+        }
+        // Blocking handshake (TLS by rustls for `wss://`, except on Android,
+        // handled above).
         let mut socket = match tungstenite::connect(&url) {
             Ok((socket, _resp)) => socket,
             Err(e) => {
@@ -339,7 +344,6 @@ mod imp {
                 return;
             }
         };
-
         // tungstenite supports a non-blocking underlying stream: `read()`
         // returns `WouldBlock` when no full message is buffered yet, and
         // partial frames are retained internally across calls — so we can
@@ -349,6 +353,90 @@ mod imp {
             let _ = ready_tx.send(Err(Error::Network(format!("set_nonblocking: {e}"))));
             return;
         }
+        run(socket, out_rx, in_tx, ready_tx, closed, status);
+    }
+
+    /// `wss://` on Android: TLS from the platform (`android_tls`), with a
+    /// reader thread making the socket's reads non-blocking (`ws_pump`).
+    #[cfg(target_os = "android")]
+    fn connect_platform_tls(
+        url: &str,
+    ) -> Result<tungstenite::WebSocket<crate::ws_pump::PumpedStream<crate::android_tls::TlsOutput>>, Error>
+    {
+        let (host, port) = host_port(url)?;
+        let (input, output) = crate::android_tls::connect(&host, port)?;
+        let stream = crate::ws_pump::pumped(input, output)
+            .map_err(|e| Error::Other(format!("ws reader thread spawn failed: {e}")))?;
+        client_handshake(url, stream)
+    }
+
+    /// Upper bound on the HTTP upgrade over an already-connected stream.
+    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+    const UPGRADE_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// The WebSocket upgrade over a connected, non-blocking `stream`:
+    /// tungstenite reports `Interrupted` each time the stream would block,
+    /// and resumes from where it stopped.
+    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+    fn client_handshake<S: Read + Write>(
+        url: &str,
+        stream: S,
+    ) -> Result<tungstenite::WebSocket<S>, Error> {
+        use tungstenite::handshake::HandshakeError;
+        let deadline = std::time::Instant::now() + UPGRADE_TIMEOUT;
+        let mut attempt = tungstenite::client(url, stream);
+        loop {
+            match attempt {
+                Ok((socket, _resp)) => return Ok(socket),
+                Err(HandshakeError::Failure(e)) => return Err(map_err(e)),
+                Err(HandshakeError::Interrupted(mid)) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(Error::Timeout);
+                    }
+                    std::thread::sleep(POLL_INTERVAL);
+                    attempt = mid.handshake();
+                }
+            }
+        }
+    }
+
+    /// `(host, port)` of a `ws://` / `wss://` URL, the port defaulting by
+    /// scheme. IPv6 literals lose their brackets.
+    #[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+    fn host_port(url: &str) -> Result<(String, u16), Error> {
+        let uri: tungstenite::http::Uri = url
+            .parse()
+            .map_err(|e| Error::InvalidUrl(format!("{url}: {e}")))?;
+        let host = uri
+            .host()
+            .ok_or_else(|| Error::InvalidUrl(format!("{url}: no host")))?
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
+        let port = match (uri.port_u16(), uri.scheme_str()) {
+            (Some(p), _) => p,
+            (None, Some("wss")) => 443,
+            (None, Some("ws")) => 80,
+            (None, other) => {
+                return Err(Error::InvalidUrl(format!("{url}: unsupported scheme {other:?}")))
+            }
+        };
+        Ok((host, port))
+    }
+
+    /// Drive a connected socket until it closes. `ready_tx` resolves the
+    /// caller's `connect`.
+    fn run<S: Read + Write>(
+        mut socket: tungstenite::WebSocket<S>,
+        out_rx: std_mpsc::Receiver<Outbound>,
+        in_tx: fut_mpsc::UnboundedSender<Result<WsMessage, Error>>,
+        ready_tx: oneshot::Sender<Result<(), Error>>,
+        closed: Arc<AtomicBool>,
+        status: CloseSlot,
+    ) {
+        // A locally-initiated close sends a close frame with no status
+        // code, which is what a browser reports for it too (1005).
+        let local_close = || WsClose::new(WsClose::NO_STATUS, "");
         if ready_tx.send(Ok(())).is_err() {
             // Caller went away before the handshake finished.
             let _ = socket.close(None);
@@ -453,7 +541,7 @@ mod imp {
             // `wss://` via rustls: set non-blocking on the underlying TCP
             // socket beneath the TLS layer. The `Rustls` variant only
             // exists where tungstenite's TLS feature is on (everywhere but
-            // Android — see Cargo.toml).
+            // Android, whose `wss://` never reaches here).
             #[cfg(not(target_os = "android"))]
             MaybeTlsStream::Rustls(s) => s.get_ref().set_nonblocking(true),
             // Non-exhaustive enum; any other variant defaults to blocking.
@@ -496,6 +584,86 @@ mod imp {
                 Error::Network("connection closed".into())
             }
             other => Error::Other(other.to_string()),
+        }
+    }
+    /// The Android `wss://` path minus JNI: a TCP stream whose reads go
+    /// through `ws_pump`'s reader thread (as the platform TLS socket's do),
+    /// the resumable upgrade, and the I/O loop.
+    #[cfg(test)]
+    mod pumped_tests {
+        use super::*;
+        use std::net::TcpListener;
+
+        fn echo_server() -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut ws = tungstenite::accept(stream).unwrap();
+                while let Ok(msg) = ws.read() {
+                    if msg.is_text() || msg.is_binary() {
+                        ws.send(msg).unwrap();
+                    }
+                }
+            });
+            format!("ws://{addr}")
+        }
+
+        fn pumped_tcp(url: &str) -> crate::ws_pump::PumpedStream<TcpStream> {
+            let (host, port) = host_port(url).unwrap();
+            let tcp = TcpStream::connect((host.as_str(), port)).unwrap();
+            crate::ws_pump::pumped(tcp.try_clone().unwrap(), tcp).unwrap()
+        }
+
+        #[test]
+        fn a_pumped_stream_upgrades_and_echoes_through_the_io_loop() {
+            let url = echo_server();
+            let socket = client_handshake(&url, pumped_tcp(&url)).unwrap();
+
+            let (out_tx, out_rx) = std_mpsc::channel();
+            let (in_tx, mut in_rx) = fut_mpsc::unbounded();
+            let (ready_tx, ready_rx) = oneshot::channel();
+            let closed = Arc::new(AtomicBool::new(false));
+            let status = CloseSlot::default();
+            let (c, st) = (closed.clone(), status.clone());
+            let worker = std::thread::spawn(move || run(socket, out_rx, in_tx, ready_tx, c, st));
+
+            tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
+                ready_rx.await.unwrap().unwrap();
+                out_tx.send(Outbound::Msg(WsMessage::Text("over tls".into()))).unwrap();
+                out_tx.send(Outbound::Msg(WsMessage::Binary(vec![0, 255, 7]))).unwrap();
+                assert_eq!(in_rx.next().await.unwrap().unwrap(), WsMessage::Text("over tls".into()));
+                assert_eq!(in_rx.next().await.unwrap().unwrap(), WsMessage::Binary(vec![0, 255, 7]));
+            });
+            out_tx.send(Outbound::Close).unwrap();
+            worker.join().unwrap();
+            assert_eq!(status.get().unwrap().code, WsClose::NO_STATUS);
+        }
+
+        #[test]
+        fn an_upgrade_the_server_refuses_fails_instead_of_spinning() {
+            // A server that answers HTTP, not a WebSocket upgrade.
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut req = [0u8; 1024];
+                let _ = stream.read(&mut req);
+                let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n");
+            });
+            let url = format!("ws://{addr}");
+            let r = client_handshake(&url, pumped_tcp(&url));
+            assert!(matches!(r, Err(Error::Status { code: 404, .. })), "{:?}", r.err());
+        }
+
+        #[test]
+        fn host_and_port_default_by_scheme() {
+            assert_eq!(host_port("wss://echo.example.com/x").unwrap(), ("echo.example.com".into(), 443));
+            assert_eq!(host_port("ws://h/").unwrap(), ("h".into(), 80));
+            assert_eq!(host_port("wss://h:8443/s?q=1").unwrap(), ("h".into(), 8443));
+            assert_eq!(host_port("wss://[::1]:9/").unwrap(), ("::1".into(), 9));
+            assert!(matches!(host_port("https://h/"), Err(Error::InvalidUrl(_))));
+            assert!(matches!(host_port("not a url"), Err(Error::InvalidUrl(_))));
         }
     }
 }

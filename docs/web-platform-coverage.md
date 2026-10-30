@@ -124,7 +124,7 @@ to its padding. Detached textareas are no longer measured.
 | Capability | Needed by | Framework API | Web | Native | Status |
 | --- | --- | --- | --- | --- | --- |
 | HTTP | many (through `server`) | `net::Client` | `fetch` | NSURLSession / HttpURLConnection / reqwest | covered |
-| WebSocket with binary frames (`binaryType = arraybuffer`, `ArrayBuffer` → `Uint8Array`) | `ui-shared/src/voice_stream.rs` (AWS Transcribe streaming) | `net::WebSocket::connect`, `WsMessage::Binary(Vec<u8>)`, `WsSender` | `WebSocket` | `tungstenite` on an I/O thread. `wss://` works on iOS, macOS and desktop; Android supports only `ws://` (see gaps) | covered |
+| WebSocket with binary frames (`binaryType = arraybuffer`, `ArrayBuffer` → `Uint8Array`) | `ui-shared/src/voice_stream.rs` (AWS Transcribe streaming) | `net::WebSocket::connect`, `WsMessage::Binary(Vec<u8>)`, `WsSender` | `WebSocket` | `tungstenite` on an I/O thread. `wss://` works everywhere; on Android its TLS is the platform `SSLSocket` | covered |
 | How a WebSocket closed (`CloseEvent.code` / `reason`): tell a normal end (1000) from a failure | `ui-shared/src/voice_stream.rs` | `WebSocket::close_status() -> Option<WsClose>` | `CloseEvent`. The browser supplies 1005 (close frame without a code) and 1006 (connection dropped with no close frame) | reads the peer's close frame. Native reports the same 1005 / 1006 a browser would | added |
 | Server-sent events | none | `net::EventSource` | `EventSource` | worker thread | covered |
 
@@ -151,6 +151,5 @@ app to call `web-sys`.
 
 | Gap | Effect | Proposed fix |
 | --- | --- | --- |
-| Android WebSocket supports only `ws://` | `net`'s Android arm uses `tungstenite` without a TLS stack, so a `wss://` URL such as a presigned AWS Transcribe URL cannot connect on Android. It doesn't affect CrewForge today because its dictation runs only on web: `microphone` is a wasm-only dependency there. | Add an OkHttp `WebSocket` arm through JNI. This is already `net`'s documented next step for Android, and it also brings the OS proxy and certificate store. |
 | Web `storage` keys always carry the namespace prefix | An app can't adopt a `localStorage` key that was written without the SDK, so a move onto the SDK resets saved preferences once (see Storage above). | None proposed. A one-time reset is acceptable, and an unprefixed escape hatch would bring back the collisions the namespace exists to prevent. |
 | `code_editor` on native is compile-checked only | Soft wrap and highlighting have not been tested on iOS, macOS or Android. | Run the device checklist in `crates/sdk/client/codeblock/README.md`. |

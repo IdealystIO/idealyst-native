@@ -105,6 +105,12 @@ mod response;
 ))]
 mod timeout_policy;
 mod websocket;
+// `wss://` on Android: the platform TLS socket, and the reader thread that
+// makes its reads non-blocking for the WebSocket I/O loop.
+#[cfg(target_os = "android")]
+mod android_tls;
+#[cfg(any(target_os = "android", test))]
+mod ws_pump;
 
 pub use body::{FromBody, IntoBody};
 #[cfg(feature = "form")]

@@ -99,11 +99,13 @@ every exchange on one lazily-started, process-wide tokio runtime on a
 `net-io` thread that `net` owns, and bridges the result back the same way; a
 cancel or a dropped future aborts the exchange there, closing its connection.
 `tests/foreign_executor.rs` pins this on every native arm.
-TLS on native uses **rustls** (no native-tls, no OpenSSL); Android's HTTP/WS
-stay JNI/`tungstenite` to avoid bundling a second TLS stack — so WebSocket
-on Android is `ws://`-only, with platform-native (OkHttp /
-`URLSessionWebSocketTask`) as the documented future path for `wss://` and OS
-proxy/background integration.
+TLS on native uses **rustls** (no native-tls, no OpenSSL), except on
+Android, which bundles no TLS stack: HTTP goes through `HttpURLConnection`,
+and a `wss://` WebSocket runs `tungstenite` over a TLS socket from the
+platform's `SSLSocketFactory`, so it trusts the system certificate store and
+honours the app's network security config. No native WebSocket arm consults
+the OS proxy. `tests/android-device/run.sh` exercises the Android arm on a
+connected device, `wss://` included.
 
 ## Features
 
