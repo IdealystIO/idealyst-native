@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "4.1.1"
+version = "4.1.2"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -3665,7 +3665,7 @@ dependencies = [
 
 [[package]]
 name = "device-admin"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
@@ -6567,7 +6567,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.21.2"
+version = "1.22.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -8259,7 +8259,7 @@ dependencies = [
 
 [[package]]
 name = "net"
-version = "1.7.3"
+version = "1.7.4"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
@@ -9383,7 +9383,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "permissions"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "backend-windows",
  "block2 0.5.1",
@@ -10756,7 +10756,7 @@ dependencies = [
 
 [[package]]
 name = "run-android"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "build-android",

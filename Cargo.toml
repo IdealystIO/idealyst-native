@@ -560,7 +560,7 @@ build-ios = { path = "crates/tools/build/ios", version = "2.0.1", registry = "id
 run-ios = { path = "crates/tools/run/ios", version = "2.0.0", registry = "idealyst" }
 build-runtime-server = { path = "crates/tools/build/runtime-server", version = "5.0.0", registry = "idealyst" }
 build-android = { path = "crates/tools/build/android", version = "2.0.0", registry = "idealyst" }
-run-android = { path = "crates/tools/run/android", version = "2.0.0", registry = "idealyst" }
+run-android = { path = "crates/tools/run/android", version = "2.1.0", registry = "idealyst" }
 build-roku = { path = "crates/tools/build/roku", version = "2.0.0", registry = "idealyst" }
 run-roku = { path = "crates/tools/run/roku", version = "2.0.0", registry = "idealyst" }
 build-sim = { path = "crates/tools/build/sim", version = "2.0.0", registry = "idealyst" }
@@ -588,7 +588,7 @@ backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "4.0.0", re
 backend-ios-rs-shell = { path = "crates/backend/ios/rs-shell", version = "4.0.0", registry = "idealyst" }
 backend-ios-tv = { path = "crates/backend/ios/tv", version = "4.0.0", registry = "idealyst" }
 backend-android-core = { path = "crates/backend/android/core", version = "3.0.0", registry = "idealyst" }
-backend-android-mobile = { path = "crates/backend/android/mobile", version = "4.1.1", registry = "idealyst" }
+backend-android-mobile = { path = "crates/backend/android/mobile", version = "4.1.2", registry = "idealyst" }
 backend-android-tv = { path = "crates/backend/android/tv", version = "4.0.0", registry = "idealyst" }
 backend-roku = { path = "crates/backend/roku", version = "3.0.0", registry = "idealyst" }
 backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", registry = "idealyst" }
@@ -663,7 +663,7 @@ table = { path = "crates/sdk/client/table", version = "7.0.0", registry = "ideal
 virtualized = { path = "crates/sdk/client/virtualized", version = "3.0.0", registry = "idealyst" }
 offload = { path = "crates/sdk/client/offload", version = "2.0.2", registry = "idealyst" }
 menu = { path = "crates/sdk/client/menu", version = "5.0.0", registry = "idealyst" }
-net = { path = "crates/sdk/client/net", version = "1.7.3", registry = "idealyst" }
+net = { path = "crates/sdk/client/net", version = "1.7.4", registry = "idealyst" }
 storage = { path = "crates/sdk/client/storage", version = "3.0.0", registry = "idealyst" }
 sync = { path = "crates/sdk/client/sync", version = "4.0.0", registry = "idealyst" }
 graphql = { path = "crates/sdk/client/graphql", version = "3.0.0", registry = "idealyst" }
@@ -689,14 +689,14 @@ i18n-macros = { path = "crates/sdk/client/i18n/macros", version = "1.5.2", regis
 # the shared runtime-grant substrate; capability SDKs that prompt the user
 # (notifications, location, camera, microphone, …) depend on it rather than
 # re-implementing an OS grant flow.
-permissions = { path = "crates/sdk/client/permissions", version = "3.0.0", registry = "idealyst" }
+permissions = { path = "crates/sdk/client/permissions", version = "3.0.1", registry = "idealyst" }
 notifications = { path = "crates/sdk/client/notifications", version = "3.0.0", registry = "idealyst" }
 clipboard = { path = "crates/sdk/client/clipboard", version = "3.0.0", registry = "idealyst" }
 location = { path = "crates/sdk/client/location", version = "3.0.0", registry = "idealyst" }
 share = { path = "crates/sdk/client/share", version = "3.0.0", registry = "idealyst" }
 deep-link = { path = "crates/sdk/client/deep-link", version = "4.0.0", registry = "idealyst" }
 connectivity = { path = "crates/sdk/client/connectivity", version = "3.0.0", registry = "idealyst" }
-device-admin = { path = "crates/sdk/client/device-admin", version = "0.1.0", registry = "idealyst" }
+device-admin = { path = "crates/sdk/client/device-admin", version = "1.0.0", registry = "idealyst" }
 haptics = { path = "crates/sdk/client/haptics", version = "3.0.0", registry = "idealyst" }
 datetime = { path = "crates/sdk/client/datetime", version = "1.6.1", registry = "idealyst" }
 audio = { path = "crates/sdk/client/audio", version = "3.0.0", registry = "idealyst" }
@@ -788,7 +788,7 @@ swap-demo = { path = "crates/sdk/client/navigators/swap/examples/swap-demo", ver
 todo-sync-demo = { path = "crates/sdk/client/sync/examples/todo-sync-demo", version = "1.5.2", registry = "idealyst" }
 toolbar-demo = { path = "crates/sdk/client/toolbar/examples/toolbar-demo", version = "1.5.2", registry = "idealyst" }
 video-compose-demo = { path = "crates/sdk/client/video-compose/examples/video-compose-demo", version = "1.5.2", registry = "idealyst" }
-idealyst-cli = { path = "crates/tools/cli", version = "1.21.2", registry = "idealyst" }
+idealyst-cli = { path = "crates/tools/cli", version = "1.22.0", registry = "idealyst" }
 ota-publish = { path = "crates/ota/publish", version = "0.1.0", registry = "idealyst" }
 
 # Dev profile: `opt-level = "z"` works around a wasm OOB seen at
