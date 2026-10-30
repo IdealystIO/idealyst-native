@@ -26,6 +26,14 @@ fn every_sync_call_is_unsupported_off_mobile() {
     unsupported(clear_user_restriction(restriction::DISALLOW_SAFE_BOOT));
     unsupported(set_global_setting("stay_on_while_plugged_in", "7"));
     unsupported(installed_version("com.example.kiosk"));
+    unsupported(set_application_hidden("com.example.bloat", true));
+    unsupported(set_application_hidden("com.example.bloat", false));
+    unsupported(is_application_hidden("com.example.bloat"));
+    unsupported(set_packages_suspended(&["com.example.bloat"], true));
+    unsupported(set_packages_suspended(&["com.example.bloat"], false));
+    unsupported(is_package_suspended("com.example.bloat"));
+    unsupported(enable_system_app("com.example.bloat"));
+    unsupported(installed_packages(true));
     unsupported(launch("com.example.kiosk"));
     unsupported(reboot());
     unsupported(set_system_update_policy(SystemUpdatePolicy::Automatic));

@@ -30,6 +30,7 @@ pub(crate) fn parse(json: &str) -> Result<Reply> {
             "not_device_owner" => Error::NotDeviceOwner,
             "unsupported" => Error::Unsupported(message),
             "certificate_mismatch" => certificate_mismatch(&message),
+            "not_installed" => Error::NotInstalled(message),
             _ => Error::Platform(message),
         });
     }
@@ -118,6 +119,10 @@ mod tests {
         assert_eq!(
             parse(r#"{"error":"platform","message":"SecurityException: no"}"#),
             Err(Error::Platform("SecurityException: no".into()))
+        );
+        assert_eq!(
+            parse(r#"{"error":"not_installed","message":"com.example.gone"}"#),
+            Err(Error::NotInstalled("com.example.gone".into()))
         );
         assert!(matches!(parse("{}"), Err(Error::Platform(_))));
         assert!(matches!(parse("not json"), Err(Error::Platform(_))));

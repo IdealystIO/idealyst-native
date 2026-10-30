@@ -74,7 +74,11 @@ the same key.
 | `set_status_bar_disabled(b)` | `setStatusBarDisabled` | 23 | `Unsupported` |
 | `set_home_activity(pkg, activity)` / `clear_home_activity(pkg)` | `addPersistentPreferredActivity` (HOME) | 21 | `Unsupported` |
 | `add_user_restriction(r)` / `clear_user_restriction(r)` | `addUserRestriction` / `clearUserRestriction` | 21 | `Unsupported` |
-| `set_global_setting(key, value)` | `setGlobalSetting` | 21 | `Unsupported` |
+| `set_global_setting(key, value)` | `setGlobalSetting` (an allow-listed set of keys; not the animation scales) | 21 | `Unsupported` |
+| `set_application_hidden(pkg, b)` / `is_application_hidden(pkg)` | `setApplicationHidden` / `isApplicationHidden` | 21 | `Unsupported` |
+| `set_packages_suspended(&[pkg], b)` / `is_package_suspended(pkg)` | `setPackagesSuspended` / `isPackageSuspended` | 24 | `Unsupported` |
+| `enable_system_app(pkg)` | `enableSystemApp` | 21 | `Unsupported` |
+| `installed_packages(include_system)` | `getInstalledPackages(MATCH_UNINSTALLED_PACKAGES)` | 21 | `Unsupported` |
 | `install_apk(path, cert_sha256)` | `PackageInstaller` session, committed silently | 21 | `Unsupported` |
 | `uninstall(pkg)` | `PackageInstaller.uninstall` | 21 | `Unsupported` |
 | `installed_version(pkg)` | `getPackageInfo` | 1 | `Unsupported` |
@@ -94,6 +98,36 @@ interaction. On Android that means it is allow-listed; otherwise Android
 falls back to screen pinning, asks the user, and the call resolves
 `Ok(false)`. On iOS `true` means the supervised device's MDM profile allows
 Single App Mode for the app.
+
+## Bundled apps
+
+`uninstall` cannot remove apps on the system partition, such as the
+manufacturer's media hub on a consumer tablet. A device owner switches them
+off instead:
+
+```rust,ignore
+// Gone from the launcher, cannot run, data kept. Returns whether it changed.
+device_admin::set_application_hidden("com.lenovo.entertainment", true)?;
+// Or: greyed out in the launcher, shows a dialog instead of running.
+// Returns the packages Android could not suspend.
+let refused = device_admin::set_packages_suspended(&["com.example.bloat"], true)?;
+```
+
+`installed_packages(true)` lists everything for a console, including
+hidden apps and the system apps provisioning removed (`is_installed ==
+false`), so each can be brought back: `set_application_hidden(pkg, false)`,
+`set_packages_suspended(&[pkg], false)` or `enable_system_app(pkg)`.
+
+Provisioning removes the bundled apps that have a launcher icon by default.
+To keep them, generate the setup QR code with
+`idealyst android provisioning-qr --leave-system-apps`
+(`PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED`).
+
+These calls work for a device owner or a profile owner. Hiding or
+suspending the app itself, a lock-task package or the current home screen
+would strand the device, so it fails with `Error::ProtectedPackage` before
+reaching Android. A package that is not on the device is
+`Error::NotInstalled`.
 
 `install_apk` checks the APK's signing certificate against
 `expected_cert_sha256` (hex, colons allowed) before anything reaches the
@@ -165,6 +199,15 @@ built by `idealyst build --android`:
   with no prompt, the kiosk relaunches on the new version, and the result is
   `InstallResult::Success`. An APK signed by another key is refused with
   `CertificateMismatch` before commit.
+- Bundled apps (a fresh API 34 emulator): `set_application_hidden` hides
+  and unhides `com.android.camera2` and reports `false` when nothing
+  changed; `installed_packages` still lists it while hidden; suspending
+  `[camera2, a missing package]` suspends camera2 and returns the missing
+  one; hiding or suspending the app itself, a lock-task package or the home
+  launcher is `ProtectedPackage`; a missing package is `NotInstalled`;
+  `enable_system_app` brings back a system app removed with
+  `pm uninstall --user 0`; and every call before `dpm set-device-owner` is
+  `NotDeviceOwner`.
 - `stop_lock_task()` returns the tablet to normal use, and
   `relinquish_device_owner()` leaves `dpm list-owners` empty. After that,
   policy calls return `NotDeviceOwner` and an un-allow-listed

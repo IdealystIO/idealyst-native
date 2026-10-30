@@ -122,3 +122,10 @@ file. The `--extras` object reaches the app as
 `device_admin::Event::ProvisioningComplete`. Its values must be strings,
 numbers, booleans or nested objects, because they travel as an Android
 `PersistableBundle`.
+
+Provisioning removes the manufacturer's bundled (system) apps for the
+user, which is what a kiosk wants. Pass `--leave-system-apps` to keep them
+(`PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED`). Either way the device owner
+can change its mind later: `device_admin::enable_system_app` restores a
+removed one, and `set_application_hidden` / `set_packages_suspended` switch
+off one that was kept.

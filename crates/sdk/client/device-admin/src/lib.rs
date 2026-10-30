@@ -27,7 +27,8 @@
 //! # Errors
 //!
 //! Every policy call returns [`Error::NotDeviceOwner`] unless the app is the
-//! device owner, and [`Error::Unsupported`] off Android or below the API
+//! device owner (or, for the bundled-app calls, a profile owner), and
+//! [`Error::Unsupported`] off Android or below the API
 //! level the call needs (named per function). Nothing panics on a device
 //! that lacks a feature.
 //!
@@ -71,6 +72,7 @@ mod android;
 #[cfg(all(not(target_arch = "wasm32"), target_os = "ios"))]
 mod ios;
 mod events;
+mod packages;
 mod reply;
 
 pub use events::{events, Event, EventSubscription};
@@ -97,6 +99,19 @@ pub enum Error {
         expected: String,
         /// The APK's certificate SHA-256, lowercase hex.
         actual: String,
+    },
+    /// The named package is not on the device (not even hidden, or removed
+    /// for this user).
+    #[error("{0} is not installed")]
+    NotInstalled(String),
+    /// Hiding or suspending this package would strand the device; refused
+    /// before reaching the platform.
+    #[error("refusing to hide or suspend {package}: it is {reason}")]
+    ProtectedPackage {
+        /// The package.
+        package: String,
+        /// Why it is protected.
+        reason: ProtectedReason,
     },
     /// The platform refused or failed the call; the message is its own.
     #[error("{0}")]
@@ -180,6 +195,52 @@ pub struct PackageVersion {
     pub name: Option<String>,
     /// `versionCode` (the long version code on API 28+).
     pub code: i64,
+}
+
+/// Why [`set_application_hidden`] / [`set_packages_suspended`] refused a
+/// package with [`Error::ProtectedPackage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProtectedReason {
+    /// The calling app itself.
+    OwnPackage,
+    /// On the lock-task allow-list ([`set_lock_task_packages`]).
+    LockTask,
+    /// The current home screen (what HOME resolves to).
+    Home,
+}
+
+impl std::fmt::Display for ProtectedReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ProtectedReason::OwnPackage => "the calling app",
+            ProtectedReason::LockTask => "a lock-task package",
+            ProtectedReason::Home => "the current home screen",
+        })
+    }
+}
+
+/// One package on the device, from [`installed_packages`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageInfo {
+    /// The package name.
+    pub package: String,
+    /// The app's label as the launcher shows it.
+    pub label: String,
+    /// Its version.
+    pub version: PackageVersion,
+    /// Shipped on the system partition (bundled by the manufacturer), or an
+    /// update to such an app. [`uninstall`] cannot remove these; hide,
+    /// suspend or disable them instead.
+    pub is_system: bool,
+    /// Installed for this user. `false` for a system app that device-owner
+    /// provisioning removed; [`enable_system_app`] brings it back.
+    pub is_installed: bool,
+    /// Hidden by [`set_application_hidden`].
+    pub is_hidden: bool,
+    /// Suspended by [`set_packages_suspended`].
+    pub is_suspended: bool,
+    /// Not disabled (Settings → Disable, or `pm disable`).
+    pub is_enabled: bool,
 }
 
 /// What an install or uninstall did.
@@ -369,7 +430,9 @@ pub fn clear_user_restriction(restriction: &str) -> Result<()> {
 
 /// Set a `Settings.Global` value, e.g. `("stay_on_while_plugged_in", "7")`
 /// to stay awake on any charger. Android only allows a fixed set of keys
-/// here. Device owner; API 21.
+/// here (see `DevicePolicyManager.setGlobalSetting`); the animation scales
+/// (`window_animation_scale`, `transition_animation_scale`,
+/// `animator_duration_scale`) are not among them. Device owner; API 21.
 pub fn set_global_setting(key: &str, value: &str) -> Result<()> {
     call("set_global_setting", json!({ "key": key, "value": value })).map(drop)
 }
@@ -396,6 +459,80 @@ pub fn uninstall(package: &str) -> BoxFuture<InstallResult> {
         call_async("uninstall", json!({ "package": package })),
         reply::install_result,
     ))
+}
+
+// ── Bundled apps: hide, suspend, re-enable ──────────────────────────────
+//
+// For the apps a manufacturer ships on the system partition, which
+// `uninstall` cannot remove. Each of these works for a device owner or a
+// profile owner, and refuses (`Error::ProtectedPackage`) to hide or suspend
+// the calling app, a lock-task package or the current home screen.
+
+/// Hide or unhide `package`. A hidden app is gone from the launcher and
+/// cannot run, but stays installed and keeps its data. Works on system and
+/// privileged apps. Returns whether the hidden state changed (`false` when it
+/// already was). [`Error::NotInstalled`] when the package is not on the
+/// device; [`Error::Platform`] when Android refuses (it will not hide some
+/// packages the system depends on). Device or profile owner; API 21.
+pub fn set_application_hidden(package: &str, hidden: bool) -> Result<bool> {
+    if hidden {
+        refuse_protected(&[package])?;
+    }
+    as_bool(call("set_application_hidden", json!({ "package": package, "hidden": hidden }))?)
+}
+
+/// Whether `package` is hidden. [`Error::NotInstalled`] when it is not on
+/// the device. Device or profile owner; API 21.
+pub fn is_application_hidden(package: &str) -> Result<bool> {
+    as_bool(call("is_application_hidden", json!({ "package": package }))?)
+}
+
+/// Suspend or unsuspend `packages`. A suspended app stays in the launcher,
+/// greyed out, and shows a dialog instead of running. Returns the packages
+/// Android could not change (not installed, or one it refuses such as an
+/// active admin), as the platform reports them. Device or profile owner;
+/// API 24.
+pub fn set_packages_suspended(packages: &[&str], suspended: bool) -> Result<Vec<String>> {
+    if suspended {
+        refuse_protected(packages)?;
+    }
+    let failed = call(
+        "set_packages_suspended",
+        json!({ "packages": packages, "suspended": suspended }),
+    )?;
+    packages::strings(&failed)
+}
+
+/// Whether `package` is suspended. [`Error::NotInstalled`] when it is not
+/// on the device. Device or profile owner; API 24.
+pub fn is_package_suspended(package: &str) -> Result<bool> {
+    as_bool(call("is_package_suspended", json!({ "package": package }))?)
+}
+
+/// Re-install for this user a system app that device-owner provisioning
+/// removed (provisioning removes bundled apps unless the QR code sets
+/// `PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED`; see
+/// `idealyst android provisioning-qr --leave-system-apps`). Does not unhide
+/// or unsuspend. [`Error::Platform`] for a package that is not a system app.
+/// Device or profile owner; API 21.
+pub fn enable_system_app(package: &str) -> Result<()> {
+    call("enable_system_app", json!({ "package": package })).map(drop)
+}
+
+/// Every package on the device, including hidden ones and system apps
+/// removed for this user, so a console can show and restore them. With
+/// `include_system == false`, only apps that are not on the system
+/// partition. Loads every app's label, so it takes a moment on a device with
+/// hundreds of packages. Device or profile owner; API 21.
+pub fn installed_packages(include_system: bool) -> Result<Vec<PackageInfo>> {
+    packages::package_infos(&call(
+        "installed_packages",
+        json!({ "include_system": include_system }),
+    )?)
+}
+
+fn refuse_protected(packages: &[&str]) -> Result<()> {
+    packages::Protected::parse(&call("protected_packages", json!({}))?)?.check(packages)
 }
 
 /// `package`'s installed version, or `None` when it is not installed.

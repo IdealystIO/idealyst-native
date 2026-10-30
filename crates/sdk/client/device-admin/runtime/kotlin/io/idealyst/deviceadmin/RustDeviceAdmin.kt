@@ -10,6 +10,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
@@ -28,7 +29,7 @@ import org.json.JSONObject
  * `{"ok": value}`, `{"pending": true}` for an operation that completes later
  * through [nativeResult], or `{"error": code, "message": text}` with `code`
  * one of `not_device_owner`, `unsupported`, `certificate_mismatch`,
- * `platform`.
+ * `not_installed`, `platform`.
  *
  * Events from the OS (provisioning, admin state, lock task, installs,
  * boot) go through [emit]. While Rust listens ([attachEvents]) they are
@@ -96,6 +97,28 @@ object RustDeviceAdmin {
             throw Failure("not_device_owner", "${ctx.packageName} is not the device owner")
         }
     }
+
+    /** The package policies a profile owner may also set (hide, suspend, enable a system app). */
+    private fun requireDeviceOrProfileOwner(ctx: Context) {
+        val dpm = dpm(ctx)
+        if (!dpm.isDeviceOwnerApp(ctx.packageName) && !dpm.isProfileOwnerApp(ctx.packageName)) {
+            throw Failure("not_device_owner", "${ctx.packageName} is neither the device owner nor a profile owner")
+        }
+    }
+
+    /**
+     * MATCH_UNINSTALLED_PACKAGES finds packages that are hidden or were
+     * removed for this user (a system app provisioning disabled). Without it
+     * a hidden package reads as absent and can never be unhidden.
+     */
+    private const val MATCH_ALL = PackageManager.MATCH_UNINSTALLED_PACKAGES or PackageManager.MATCH_DISABLED_COMPONENTS
+
+    private fun requireInstalled(ctx: Context, pkg: String): PackageInfo =
+        try {
+            ctx.packageManager.getPackageInfo(pkg, MATCH_ALL)
+        } catch (e: PackageManager.NameNotFoundException) {
+            throw Failure("not_installed", pkg)
+        }
 
     private fun requireApi(level: Int, what: String) {
         if (Build.VERSION.SDK_INT < level) {
@@ -199,6 +222,86 @@ object RustDeviceAdmin {
             "clear_user_restriction" -> {
                 requireOwner(ctx)
                 dpm.clearUserRestriction(admin(ctx), args.getString("restriction"))
+            }
+            "protected_packages" -> {
+                requireDeviceOrProfileOwner(ctx)
+                val lockTask = if (Build.VERSION.SDK_INT >= 26) dpm.getLockTaskPackages(admin(ctx)).toList() else emptyList()
+                // Resolves through the persistent preferred home a device owner set.
+                val home = ctx.packageManager.resolveActivity(
+                    Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),
+                    PackageManager.MATCH_DEFAULT_ONLY,
+                )?.activityInfo?.packageName
+                return JSONObject()
+                    .put("own", ctx.packageName)
+                    .put("lock_task", JSONArray(lockTask))
+                    .put("home", home ?: JSONObject.NULL)
+            }
+            "set_application_hidden" -> {
+                requireDeviceOrProfileOwner(ctx)
+                val pkg = args.getString("package")
+                requireInstalled(ctx, pkg)
+                val hidden = args.getBoolean("hidden")
+                // setApplicationHidden returns whether the call succeeded,
+                // not whether anything changed (API 34 answers true for an
+                // app that is already hidden), so compare first.
+                if (dpm.isApplicationHidden(admin(ctx), pkg) == hidden) return false
+                if (!dpm.setApplicationHidden(admin(ctx), pkg, hidden)) {
+                    throw Failure("platform", "Android refused to ${if (hidden) "hide" else "unhide"} $pkg")
+                }
+                return true
+            }
+            "is_application_hidden" -> {
+                requireDeviceOrProfileOwner(ctx)
+                val pkg = args.getString("package")
+                requireInstalled(ctx, pkg)
+                return dpm.isApplicationHidden(admin(ctx), pkg)
+            }
+            "set_packages_suspended" -> {
+                requireApi(24, "setPackagesSuspended")
+                requireDeviceOrProfileOwner(ctx)
+                val failed = dpm.setPackagesSuspended(admin(ctx), strings(args, "packages"), args.getBoolean("suspended"))
+                return JSONArray(failed.toList())
+            }
+            "is_package_suspended" -> {
+                requireApi(24, "isPackageSuspended")
+                requireDeviceOrProfileOwner(ctx)
+                val pkg = args.getString("package")
+                return try {
+                    dpm.isPackageSuspended(admin(ctx), pkg)
+                } catch (e: PackageManager.NameNotFoundException) {
+                    throw Failure("not_installed", pkg)
+                }
+            }
+            "enable_system_app" -> {
+                requireDeviceOrProfileOwner(ctx)
+                val pkg = args.getString("package")
+                val info = requireInstalled(ctx, pkg)
+                if (((info.applicationInfo?.flags ?: 0) and ApplicationInfo.FLAG_SYSTEM) == 0) {
+                    throw Failure("platform", "$pkg is not a system app; enable_system_app only restores system apps")
+                }
+                dpm.enableSystemApp(admin(ctx), pkg)
+            }
+            "installed_packages" -> {
+                requireDeviceOrProfileOwner(ctx)
+                val includeSystem = args.getBoolean("include_system")
+                val pm = ctx.packageManager
+                val out = JSONArray()
+                for (info in pm.getInstalledPackages(MATCH_ALL)) {
+                    val app = info.applicationInfo ?: continue
+                    val system = (app.flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0
+                    if (system && !includeSystem) continue
+                    out.put(JSONObject()
+                        .put("package", info.packageName)
+                        .put("label", app.loadLabel(pm).toString())
+                        .put("version_name", info.versionName ?: JSONObject.NULL)
+                        .put("version_code", versionCode(info))
+                        .put("is_system", system)
+                        .put("is_installed", (app.flags and ApplicationInfo.FLAG_INSTALLED) != 0)
+                        .put("is_hidden", dpm.isApplicationHidden(admin(ctx), info.packageName))
+                        .put("is_suspended", Build.VERSION.SDK_INT >= 24 && (app.flags and ApplicationInfo.FLAG_SUSPENDED) != 0)
+                        .put("is_enabled", app.enabled))
+                }
+                return out
             }
             "set_global_setting" -> {
                 requireOwner(ctx)

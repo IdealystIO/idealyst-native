@@ -38,6 +38,11 @@ pub enum Action {
         /// enrolment token.
         #[arg(long)]
         extras: Option<String>,
+        /// Keep the manufacturer's bundled (system) apps installed
+        /// (`PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED`). By default
+        /// provisioning removes them, which is what a kiosk wants.
+        #[arg(long)]
+        leave_system_apps: bool,
         /// Also write the QR code as an SVG file.
         #[arg(long)]
         svg: Option<PathBuf>,
@@ -51,8 +56,9 @@ pub fn run(args: Args) -> Result<()> {
             apk,
             download_url,
             extras,
+            leave_system_apps,
             svg,
-        } => provisioning_qr(dir, apk, &download_url, extras.as_deref(), svg),
+        } => provisioning_qr(dir, apk, &download_url, extras.as_deref(), leave_system_apps, svg),
     }
 }
 
@@ -61,6 +67,7 @@ fn provisioning_qr(
     apk: Option<PathBuf>,
     download_url: &str,
     extras: Option<&str>,
+    leave_system_apps: bool,
     svg: Option<PathBuf>,
 ) -> Result<()> {
     let apk = match apk {
@@ -81,7 +88,7 @@ fn provisioning_qr(
         .map(|e| serde_json::from_str(e).context("--extras is not valid JSON"))
         .transpose()?;
     let info = run_android::provisioning::inspect_apk(&apk)?;
-    let payload = run_android::provisioning::payload(&info, download_url, extras.as_ref())?;
+    let payload = run_android::provisioning::payload(&info, download_url, extras.as_ref(), leave_system_apps)?;
     let text = serde_json::to_string(&payload)?;
 
     let code = qrcode::QrCode::new(text.as_bytes()).context("encode the payload as a QR code")?;
