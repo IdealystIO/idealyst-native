@@ -526,8 +526,8 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
         // Mount the project's `scene_app()` scene tree through the
         // vocabulary registry. `newcore::start` owns everything from
         // "backend is wired to the host ViewGroup" onward and retains
-        // the mounted app in its own slot (torn down by `newcore::stop`
-        // in `detach`). The user crate's registry-generic
+        // the mounted app in its own slot (torn down by `newcore::detach`
+        // when this Activity is destroyed). The user crate's registry-generic
         // `register_scene_extensions` seam runs after
         // `register_builtins` — this is how SDK payload handlers
         // register their per-backend implementations, and an
@@ -576,15 +576,17 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
     }}
 }}
 
-/// Detach the active mount. `newcore::stop` drops the realized tree,
-/// the flush driver, and the world — releasing every signal/effect and
-/// the per-element click callbacks with them.
+/// `MainActivity.onDestroy`. `newcore::detach` unmounts the app (realized
+/// tree, flush driver, world) only if `activity` is the Activity it was
+/// mounted for: Android may create a new Activity before destroying the
+/// old one, and the old one's late `onDestroy` must not unmount the new app.
 #[no_mangle]
 pub extern "system" fn Java_{jni}_NativeBridge_detach<'local>(
-    _env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
+    activity: JObject<'local>,
 ) {{
-    backend_android::newcore::stop();
+    backend_android::newcore::detach(&env, &activity);
 }}
 
 /// MainActivity.onConfigurationChanged trampoline. Triggers a
@@ -797,13 +799,15 @@ pub extern "system" fn Java_{jni}_NativeBridge_drainRuntimeServer<'local>(
     }}
 }}
 
-/// Tear down the active runtime-server shell. Called from `onDestroy`.
+/// `MainActivity.onDestroy`: tear down the runtime-server shell if it was
+/// attached for `activity` (a newer Activity may already have replaced it).
 #[no_mangle]
 pub extern "system" fn Java_{jni}_NativeBridge_detach<'local>(
-    _env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
+    activity: JObject<'local>,
 ) {{
-    backend_android::runtime_server::detach();
+    backend_android::runtime_server::detach(&env, &activity);
 }}
 
 /// MainActivity.onConfigurationChanged trampoline. Triggers a
@@ -1227,7 +1231,8 @@ mod regression_tests {
     /// The Local wrapper boots the scene core: `attach` mounts
     /// `scene_app()` through `newcore::start` with the app's
     /// registry-generic `register_scene_extensions` seam, and `detach`
-    /// calls `newcore::stop()`. The user-crate dep pins no core feature.
+    /// hands the destroyed Activity to `newcore::detach`, which unmounts
+    /// only the app mounted in it. The user-crate dep pins no core feature.
     #[test]
     fn local_wrapper_boots_scene_core_with_registration_seam() {
         let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
@@ -1250,8 +1255,8 @@ mod regression_tests {
             "attach must mount the app's scene_app():\n{lib_rs}",
         );
         assert!(
-            lib_rs.contains("backend_android::newcore::stop()"),
-            "detach must tear the mounted app down:\n{lib_rs}",
+            lib_rs.contains("backend_android::newcore::detach(&env, &activity)"),
+            "detach must pass the destroyed Activity so a newer mount survives:\n{lib_rs}",
         );
         assert!(
             !lib_rs.contains("#[cfg(feature = \"new-core\")]")

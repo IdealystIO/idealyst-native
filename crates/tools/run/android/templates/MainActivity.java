@@ -180,6 +180,6 @@ public class MainActivity extends FragmentActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        NativeBridge.detach();
+        NativeBridge.detach(this);
     }
 }

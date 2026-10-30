@@ -506,6 +506,9 @@ mod native {
         _backend: Rc<RefCell<AndroidBackend>>,
         _registry: Rc<Registry<AndroidBackend>>,
         world: World,
+        /// The Context (the Activity) this app was mounted for. [`detach`]
+        /// unmounts only when the destroyed Activity is this one.
+        context: GlobalRef,
     }
 
     /// Mount a scene element tree into an already-Activity-wired
@@ -560,8 +563,12 @@ mod native {
         // FIRST — otherwise the prior `Realized`/`World` would only
         // drop on slot overwrite below, after the new tree already
         // realized, and its pending scope cleanups would fire under
-        // the new mount's feet. (Activity recreation normally routes
-        // detach → attach, but a bare re-attach must work too.)
+        // the new mount's feet. Android may create a new Activity
+        // BEFORE destroying the old one (a finish + start, a HOME
+        // relaunch), so this is a normal path, not just a fallback.
+        if APP.with(|slot| slot.borrow().is_some()) {
+            log::info!("idealyst: attach: a new Activity replaces the app mounted in an earlier one");
+        }
         stop();
 
         // Monotonic clock (step 1 in the module docs) — the Android
@@ -569,6 +576,7 @@ mod native {
         // Idempotent, first install wins. The other ambient installs
         // ride `install_env_services` below, same as web/macOS.
         let platform = backend.borrow().platform_impl();
+        let context = backend.borrow().context.clone();
         runtime_shared::time::install_default_time_source(platform);
 
         // Ambient environment services (platform identity, color scheme, URL
@@ -649,6 +657,7 @@ mod native {
                 _backend: backend,
                 _registry: registry,
                 world,
+                context,
             })
         });
     }
@@ -693,7 +702,7 @@ mod native {
             if let Some(app) = slot.borrow_mut().take() {
                 // Explicit for readability; struct field order
                 // guarantees the same sequence.
-                let App { realized, _backend, _registry, world } = app;
+                let App { realized, _backend, _registry, world, context: _ } = app;
                 // Release pointer capture, restore the cursor and unhook
                 // the window callback before the app goes away (the
                 // backend Rc may outlive this via the global self-handle).
@@ -704,6 +713,34 @@ mod native {
                 drop(world);
             }
         });
+    }
+
+    /// `Activity.onDestroy`: unmount the app if `activity` is the one it
+    /// was mounted for, otherwise leave it alone. Called by the JNI
+    /// wrapper's `detach`.
+    ///
+    /// Android does not order an old Activity's `onDestroy` before a new
+    /// one's `onCreate`: when a new instance starts while the old one is
+    /// still finishing, the old `onDestroy` arrives AFTER the new
+    /// `attach`. A plain [`stop`] there unmounted the NEW app: its views
+    /// stayed on screen (or, before its first layout pass, it stayed
+    /// blank), but no staged write committed and no tap was handled,
+    /// until the process died. `tests/android-lifecycle` ("Restart")
+    /// reproduces that ordering on a device; host tests cannot, because
+    /// the check is a JNI `IsSameObject`.
+    pub fn detach(env: &jni::JNIEnv, activity: &JObject) {
+        let owner = APP.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .map(|app| env.is_same_object(app.context.as_obj(), activity).unwrap_or(false))
+        });
+        match owner {
+            Some(true) => stop(),
+            Some(false) => log::info!(
+                "idealyst: detach: ignored a destroyed Activity; the app is mounted in a newer one"
+            ),
+            None => {}
+        }
     }
 
     /// Borrow the mounted app's live tree (tests, diagnostics).
@@ -1649,7 +1686,7 @@ mod native {
 
 #[cfg(target_os = "android")]
 pub use native::{
-    live_view_count, start, stop, with_realized, with_world, SceneElement, SceneRegistry,
+    detach, live_view_count, start, stop, with_realized, with_world, SceneElement, SceneRegistry,
 };
 
 // ===========================================================================

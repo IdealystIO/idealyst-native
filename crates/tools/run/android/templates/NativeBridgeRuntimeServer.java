@@ -31,7 +31,10 @@ public class NativeBridge {
 
     /// Tear down the runtime-server client. Stops the drain channel; the
     /// worker thread exits on its next send attempt.
-    public static native void detach();
+    /// From `onDestroy`, with the Activity being destroyed: Rust tears the
+    /// app down only if it is mounted in that Activity. A new Activity can
+    /// attach before the old one's `onDestroy`.
+    public static native void detach(Context activity);
 
     /// Called from `MainActivity.onConfigurationChanged` (rotation,
     /// multi-window resize, dark-mode toggle, density change, etc.).

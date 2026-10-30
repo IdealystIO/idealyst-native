@@ -148,7 +148,7 @@ public class MainActivity extends FragmentActivity {
         if (drainHandler != null && drainTick != null) {
             drainHandler.removeCallbacks(drainTick);
         }
-        NativeBridge.detach();
+        NativeBridge.detach(this);
     }
 
     /// Generic getter for a string `<meta-data>` entry in the

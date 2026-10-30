@@ -92,6 +92,9 @@ runtime_tls::thread_local! {
     /// (read-only borrow plus internal mutation of the RuntimeServerClient)
     /// need access at different times.
     static SHELL: RefCell<Option<RuntimeServerShell<AndroidBackend>>> = const { RefCell::new(None) };
+    /// The Context (the Activity) [`SHELL`] was attached for; [`detach`]
+    /// tears the shell down only for this one.
+    static SHELL_CONTEXT: RefCell<Option<jni::objects::GlobalRef>> = const { RefCell::new(None) };
 }
 
 /// Install a one-time panic hook that routes Rust panics to logcat
@@ -172,7 +175,10 @@ pub fn attach_with_url_with_register<'l>(
             .new_global_ref(&root)
             .expect("new_global_ref(root)");
 
-        SHELL.with(|slot| slot.borrow_mut().take());
+        if SHELL.with(|slot| slot.borrow_mut().take()).is_some() {
+            log::info!("[runtime-server-android] attach: a new Activity replaces the shell of an earlier one");
+        }
+        SHELL_CONTEXT.with(|slot| *slot.borrow_mut() = Some(context_global.clone()));
 
         let viewport = sample_viewport(env, &root);
 
@@ -275,11 +281,30 @@ pub fn drain() {
     }
 }
 
-/// Tear down the active runtime-server shell. Called from the consuming
-/// staticlib's `Java_<pkg>_NativeBridge_detach` JNI entry, typically
-/// from the Activity's `onDestroy`.
-pub fn detach() {
-    SHELL.with(|slot| slot.borrow_mut().take());
+/// `Activity.onDestroy`: tear down the runtime-server shell if
+/// `activity` is the one it was attached for, otherwise leave it alone.
+/// Called from the consuming staticlib's `Java_<pkg>_NativeBridge_detach`
+/// JNI entry.
+///
+/// Android may create a new Activity before it destroys the old one, so
+/// the old `onDestroy` can arrive after the new `attach`; see
+/// [`crate::newcore::detach`].
+pub fn detach(env: &JNIEnv, activity: &JObject) {
+    let owner = SHELL_CONTEXT.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|ctx| env.is_same_object(ctx.as_obj(), activity).unwrap_or(false))
+    });
+    match owner {
+        Some(true) => {
+            SHELL.with(|slot| slot.borrow_mut().take());
+            SHELL_CONTEXT.with(|slot| slot.borrow_mut().take());
+        }
+        Some(false) => log::info!(
+            "[runtime-server-android] detach: ignored a destroyed Activity; the shell is attached to a newer one"
+        ),
+        None => {}
+    }
 }
 
 /// Report the host FrameLayout's current size to the sidecar.

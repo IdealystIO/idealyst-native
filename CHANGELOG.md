@@ -2302,6 +2302,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   and every other SDK called into the destroyed one. Every attach now
   publishes the current Activity.
 
+- **A re-created Activity keeps working when Android destroys the old one
+  late** (`backend-android-mobile`, `build-android`, `run-android`). Android
+  can create a new Activity before it destroys the old one (a finish
+  followed at once by a start, or a HOME relaunch after a kiosk task ends).
+  The old Activity's `onDestroy` then unmounted the new app. Its screen
+  stayed drawn, or stayed blank if it had not been laid out yet, but no
+  async result or tap took effect until the process died. `detach` now
+  receives the destroyed Activity and unmounts only the app mounted in it.
+  Both cases are logged (`attach: a new Activity replaces …`,
+  `detach: ignored a destroyed Activity …`). Rebuild with the new CLI: it
+  regenerates both `NativeBridge.detach(Context)` and its JNI wrapper. A
+  hand-written Activity must call `NativeBridge.detach(this)`.
+
 - **Android apps are 16 KB page-aligned** (`build-android`). A device with
   16 KB memory pages ran every idealyst app in compatibility mode behind a
   warning dialog; Google Play requires the alignment for API 35+ targets.
