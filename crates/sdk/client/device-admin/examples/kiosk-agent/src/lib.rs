@@ -27,7 +27,7 @@
 //!
 //! Every SDK event is appended to the log on screen.
 
-use runtime_core::driver::spawn_async;
+use runtime_core::driver::spawn_detached;
 use runtime_core::{on_scope_drop, signal, text, ui, Element, Signal};
 
 const KIOSK: &str = "ai.truday.idealyst.kioskapp";
@@ -98,7 +98,7 @@ pub fn app() -> Element {
             Err(e) => return status.set(format!("Install: no kiosk-update.sha256 ({e})")),
         };
         status.set("Installing…".to_string());
-        spawn_async(async move {
+        spawn_detached(async move {
             let apk = format!("{UPDATE_DIR}/kiosk-update.apk");
             status.set(match device_admin::install_apk(&apk, &cert).await {
                 Ok(result) if result.is_success() => {

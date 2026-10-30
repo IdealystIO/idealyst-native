@@ -17,9 +17,9 @@
 //! On an app-load fan-out (`use_query(get_user)` + `use_query(list_todos)`
 //! + ...), ten calls become one HTTP request.
 //!
-//! # Why "inline flusher" rather than `spawn_async`
+//! # Why "inline flusher" rather than `spawn_detached`
 //!
-//! On native, `runtime_core::driver::spawn_async` falls back to
+//! On native, `runtime_core::driver::spawn_detached` falls back to
 //! `pollster::block_on` when no executor is installed — which is
 //! synchronous and deadlocks if the caller is already inside a
 //! tokio runtime (the common case for `net`'s reqwest transport).
@@ -502,7 +502,7 @@ async fn send_batch(
 ///
 /// Reimplemented here (rather than reaching for `tokio::task::yield_now`)
 /// so the server SDK stays executor-agnostic — any runtime that
-/// drives `runtime_core::driver::spawn_async` works.
+/// drives `runtime_core::driver::spawn_detached` works.
 fn yield_once() -> impl Future<Output = ()> {
     struct YieldOnce {
         yielded: bool,

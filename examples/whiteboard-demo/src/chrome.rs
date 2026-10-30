@@ -408,7 +408,7 @@ pub fn CameraToggle(props: &CameraToggleProps) -> Element {
             cam_stream.set(None);
         } else {
             cam_on.set(true);
-            runtime_core::driver::spawn_async(async move {
+            runtime_core::driver::spawn_detached(async move {
                 let config = CameraConfig {
                     facing: CameraFacing::Front,
                     ..Default::default()
@@ -1353,7 +1353,7 @@ pub fn RecordButton(props: &RecordButtonProps) -> Element {
                 let mic = mic_handle.borrow_mut().take();
                 drop(mic);
                 let rec_handle = rec_handle.clone();
-                runtime_core::driver::spawn_async(async move {
+                runtime_core::driver::spawn_detached(async move {
                     // Bind the take() out of the RefMut so we don't hold the
                     // borrow across `.await` (see refmut-lifetime memory).
                     let taken = rec_handle.borrow_mut().take();
@@ -1389,7 +1389,7 @@ pub fn RecordButton(props: &RecordButtonProps) -> Element {
                 let rec_handle = rec_handle.clone();
                 let mic_handle = mic_handle.clone();
                 let capture = capture.clone();
-                runtime_core::driver::spawn_async(async move {
+                runtime_core::driver::spawn_detached(async move {
                     let store = match files::app_files(REC_STORE) {
                         Ok(s) => s,
                         Err(e) => {

@@ -101,7 +101,7 @@ pub fn app() -> Element {
             }
             let from = name.get();
             text.set(String::new());
-            runtime_core::driver::spawn_async(async move {
+            runtime_core::driver::spawn_detached(async move {
                 let _ = say(from, body).await;
             });
         })

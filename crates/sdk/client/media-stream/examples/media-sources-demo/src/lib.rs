@@ -64,7 +64,7 @@ pub fn app() -> Element {
 
     let on_camera = move || {
         cam_status.set("requesting…".to_string());
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             match Camera::new().open(CameraConfig::default()).await {
                 Ok(stream) => {
                     cam_status.set("live".to_string());
@@ -77,7 +77,7 @@ pub fn app() -> Element {
 
     let on_screen = move || {
         screen_status.set("requesting…".to_string());
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             match open_screen_share().await {
                 Ok(stream) => {
                     screen_status.set("live".to_string());

@@ -1252,7 +1252,7 @@ pub fn __take_untracked_build_read_warnings() -> Vec<(&'static str, u64)> {
 /// thread "inside unscope" for the duration of `f` so [`warn_unowned_signal`]
 /// stays quiet — the blessed global-signal API must not trip the leak
 /// diagnostic meant to catch *accidental* leaks (per-item state made in an
-/// event handler / `spawn_async`). The guard restores both the scope stack and
+/// event handler / `spawn_detached`). The guard restores both the scope stack and
 /// the depth even if `f` unwinds.
 pub(crate) fn unscope<R, F: FnOnce() -> R>(f: F) -> R {
     struct UnscopeGuard {
@@ -1420,7 +1420,7 @@ impl<T> Signal<T> {
 impl<T: Clone + 'static> Signal<T> {
     /// Creates a signal in the global arena. The slot is freed when the
     /// surrounding render `Owner` drops. Created OUTSIDE any reactive scope
-    /// (an event handler, `spawn_async`, a test) the slot has no owner and
+    /// (an event handler, `spawn_detached`, a test) the slot has no owner and
     /// leaks until the thread exits — dev builds warn once per creation
     /// site when that happens. For dynamic-collection state that must
     /// outlive its row (the legitimate unowned case), free the slot

@@ -551,7 +551,7 @@ fn spawn_fetch(url: String, key: String, sink: Arc<Mutex<Vec<FetchDone>>>) {
 
 #[cfg(target_arch = "wasm32")]
 fn spawn_fetch(url: String, key: String, sink: Arc<Mutex<Vec<FetchDone>>>) {
-    runtime_shared::driver::spawn_async(async move {
+    runtime_shared::driver::spawn_detached(async move {
         let result = match fetch_bytes(url).await {
             Ok(bytes) => web::decode(bytes).await,
             Err(e) => Err(e),
@@ -565,7 +565,7 @@ fn spawn_fetch(url: String, key: String, sink: Arc<Mutex<Vec<FetchDone>>>) {
 /// completion queue like a finished fetch.
 #[cfg(target_arch = "wasm32")]
 fn spawn_decode(bytes: Vec<u8>, key: String, sink: Arc<Mutex<Vec<FetchDone>>>) {
-    runtime_shared::driver::spawn_async(async move {
+    runtime_shared::driver::spawn_detached(async move {
         let result = web::decode(bytes).await;
         sink.lock().unwrap().push(FetchDone { key, result });
         crate::scheduler::request_redraw();
@@ -975,7 +975,7 @@ mod web_tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    /// `spawn_async` on wasm32 needs an executor (`backend-web` installs
+    /// `spawn_detached` on wasm32 needs an executor (`backend-web` installs
     /// one in a real app); this is the same shape, without backend-web.
     struct GlueExecutor;
     impl runtime_shared::driver::AsyncExecutor for GlueExecutor {

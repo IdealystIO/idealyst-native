@@ -21,7 +21,7 @@
 //!    `ui!` condition or loop source (`snapshot-condition`,
 //!    `snapshot-loop`).
 //! 4a. Teardown races — a component-scoped signal touched after an
-//!    `.await` inside a detached `spawn_async` (`signal-across-await`).
+//!    `.await` inside a detached `spawn_detached` (`signal-across-await`).
 //!    Every await is a flush boundary, so the owning scope can die
 //!    between two adjacent lines of one async block; the resumed task
 //!    then aborts with `stale-signal-handle`.

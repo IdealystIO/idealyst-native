@@ -73,14 +73,14 @@
 //!
 //! Gated behind the crate's `async-driver` feature (forwards
 //! `runtime-shared/async-driver`) because both primitives depend on
-//! `runtime_shared::driver::spawn_async`.
+//! `runtime_shared::driver::spawn_detached`.
 
 use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 
-use runtime_shared::driver::spawn_async;
+use runtime_shared::driver::spawn_detached;
 use runtime_shared::NetworkState;
 // `AsyncStatus<E>` is pure DATA (a 3-variant enum) and is reused as-is
 // — only the reducer's machinery around it is world-kernel specific.
@@ -410,7 +410,7 @@ where
             let sequence_for_spawn = sequence.clone();
             let cancel_for_spawn = cancel.clone();
 
-            spawn_async(async move {
+            spawn_detached(async move {
                 let result = fut.await;
 
                 // Stale-result guard: only the most-recently-issued
@@ -532,7 +532,7 @@ impl<I: 'static, T: Clone + 'static, E: Clone + 'static> Mutation<I, T, E> {
         let live = self.live.clone();
         let state = self.state;
 
-        spawn_async(async move {
+        spawn_detached(async move {
             let result = fut.await;
             if sequence.get() != my_seq {
                 return; // superseded by a newer trigger
@@ -668,7 +668,7 @@ impl<I: 'static, E: Clone + PartialEq + 'static> AsyncReducer<I, E> {
     /// in status) lands when the future settles.
     pub fn trigger(&self, input: I) {
         let fut = (self.run_fn)(input);
-        spawn_async(async move {
+        spawn_detached(async move {
             // The side effects already happened inside `run_fn`.
             let _ = fut.await;
         });

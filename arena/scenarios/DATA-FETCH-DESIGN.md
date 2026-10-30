@@ -40,7 +40,7 @@ deterministic responses.
 
 Don't do real I/O. The prompt asks for a screen that renders **loading**, then
 **error** or **empty** or **loaded** from a data source the app models as an
-async `resource`. The "fetch" is a local stub (a `spawn_async` that resolves a
+async `resource`. The "fetch" is a local stub (a `spawn_detached` that resolves a
 fixture after a delay, or a seeded in-tree function) — no server at all.
 
 - **Pro:** hermetic, zero sidecar, no URL hint, cheapest to run. Rubric items

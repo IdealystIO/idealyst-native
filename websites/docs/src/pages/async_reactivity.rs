@@ -317,7 +317,7 @@ docs! {
     section(heading = "Performance properties") {
         list(
             ["Every primitive is built on Signal + Effect + ",
-             code("spawn_async"), ". No special scheduler, no extra arenas."],
+             code("spawn_detached"), ". No special scheduler, no extra arenas."],
             ["A ", code("Resource"), " is ", code("Copy"),
              " (two signal handles). ", code("Mutation"), " and ",
              code("AsyncReducer"), " are ", code("Rc"),

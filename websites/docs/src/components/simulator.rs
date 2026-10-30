@@ -41,7 +41,7 @@ use runtime_core::{component, ui, view, IntoElement, Length, Element, StyleRules
 use host_web::{DeviceProfile, Painter};
 
 #[cfg(target_arch = "wasm32")]
-use runtime_core::driver::spawn_async;
+use runtime_core::driver::spawn_detached;
 
 // Cross-target shared-state cell. `host_web::WebHostHandle` is
 // `!Send` on wasm; the lifecycle callbacks all fire on the JS event
@@ -177,7 +177,7 @@ pub fn Simulator(props: SimulatorProps) -> Element {
                 // backend (GTK) has no swapchain for host_web to drive.
                 return;
             };
-            spawn_async(async move {
+            spawn_detached(async move {
                 // `host_web::mount_newcore` does the entire init: wgpu
                 // surface, adapter, device, queue, host, renderer,
                 // realize the embedded tree into the PAGE's world

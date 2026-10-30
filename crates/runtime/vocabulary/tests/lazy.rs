@@ -430,7 +430,7 @@ fn ready_loader(
 /// (`#[cfg(not(target_arch = "wasm32"))] #default_item`), so there is no
 /// chunk to fetch and the loader's future is complete on first poll. The
 /// handler nevertheless ran the full streaming dance for it: paint the
-/// placeholder, `spawn_async`, mailbox the outcome, bump a tick, then on
+/// placeholder, `spawn_detached`, mailbox the outcome, bump a tick, then on
 /// the next flush tear the placeholder subtree down and realize the body.
 ///
 /// Three costs, all user-visible on desktop:

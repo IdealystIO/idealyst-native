@@ -2,7 +2,7 @@
 //! reactive world.
 //!
 //! Every other test in this crate runs without an installed executor, so
-//! `spawn_async` falls back to `pollster` and runs each task inline, still
+//! `spawn_detached` falls back to `pollster` and runs each task inline, still
 //! inside whatever `World::enter` the caller is in. That hides the one
 //! thing that differs on device: web runs a spawned task on a microtask,
 //! Apple on the run loop, Android on the looper, and none of them enter the
@@ -89,7 +89,7 @@ fn run_tasks() {
 
 /// Queue `fut` as a task (so it runs in `run_tasks`, outside the world).
 fn spawn(fut: impl Future<Output = ()> + 'static) {
-    runtime_core::driver::spawn_async(fut);
+    runtime_core::driver::spawn_detached(fut);
 }
 
 // --- entity + a minimal accepting server ------------------------------------

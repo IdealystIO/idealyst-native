@@ -1,7 +1,7 @@
 //! `resource(deps, fetcher)` — async data as a reactive primitive.
 //!
 //! Feature-gated behind `async-driver`. Without an installed async
-//! executor (via `install_async_executor`), `spawn_async` falls back
+//! executor (via `install_async_executor`), `spawn_detached` falls back
 //! to `pollster::block_on`, which is synchronous — that's the path
 //! these tests run under.
 //!

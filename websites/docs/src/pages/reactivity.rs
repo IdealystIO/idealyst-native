@@ -538,7 +538,7 @@ docs! {
         p("Feature-gated behind the framework's ",
           code("async-driver"),
           " feature (Resource depends on ",
-          code("spawn_async"), " for the per-fetch task)."),
+          code("spawn_detached"), " for the per-fetch task)."),
     },
 
     section(heading = "Context — provide and inject") {

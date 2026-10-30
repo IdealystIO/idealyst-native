@@ -707,7 +707,7 @@ pub fn PreviewScreen(props: &PreviewScreenProps) -> Element {
     // bytes and wrap them in a blob URL (`URL.createObjectURL`). Reset to empty
     // first so a prior recording's frame doesn't flash before this one resolves.
     playback_url.set(String::new());
-    runtime_core::driver::spawn_async(async move {
+    runtime_core::driver::spawn_detached(async move {
         if let Some(p) = rec_path.get() {
             if let Some(url) = resolve_playback_url(&p).await {
                 playback_url.set(url);
@@ -785,7 +785,7 @@ pub fn PreviewScreen(props: &PreviewScreenProps) -> Element {
     // native picker; stays on the screen).
     let on_discard: Rc<dyn Fn()> = Rc::new(move || {
         if let Some(p) = rec_path.get() {
-            runtime_core::driver::spawn_async(async move {
+            runtime_core::driver::spawn_detached(async move {
                 if let Ok(store) = files::app_files(REC_STORE) {
                     let _ = store.delete(&p).await;
                 }
@@ -798,7 +798,7 @@ pub fn PreviewScreen(props: &PreviewScreenProps) -> Element {
     });
     let on_export: Rc<dyn Fn()> = Rc::new(move || {
         if let Some(p) = rec_path.get() {
-            runtime_core::driver::spawn_async(async move {
+            runtime_core::driver::spawn_detached(async move {
                 if let Ok(store) = files::app_files(REC_STORE) {
                     if let Ok(Some(bytes)) = store.read(&p).await {
                         let req = file_export::SaveRequest::bytes(REC_FILE, "video/mp4", bytes);

@@ -19,17 +19,17 @@ recipe!(
     /// A "Share" button that hands a link to the system share sheet. Build a
     /// [`ShareContent`] (here some text plus a URL), then `share(...)` it from
     /// the press handler — `share` is async (the sheet is modal), so drive it
-    /// with `spawn_async`. The OS shows its own sheet and the future resolves
+    /// with `spawn_detached`. The OS shows its own sheet and the future resolves
     /// to [`ShareOutcome::Completed`] or [`ShareOutcome::Dismissed`]. On web,
     /// presenting from a button press satisfies the Web Share API's
     /// user-gesture requirement.
     pub fn share_button() -> ::runtime_core::Element {
         use crate::{share, ShareContent, ShareOutcome};
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::ui;
 
         let on_click = || {
-            spawn_async(async {
+            spawn_detached(async {
                 let content =
                     ShareContent::text("Check out Idealyst").with_url("https://idealyst.dev");
                 match share(content).await {
@@ -54,7 +54,7 @@ recipe!(
     /// share sheet picks the fields it understands.
     pub fn share_content_builder() -> ::runtime_core::Element {
         use crate::{share, ShareContent};
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::ui;
 
         let on_click = || {
@@ -62,7 +62,7 @@ recipe!(
                 .with_url("https://example.com/album/42")
                 .with_title("Weekend trip")
                 .with_file("/tmp/photo.jpg");
-            spawn_async(async move {
+            spawn_detached(async move {
                 let _ = share(content).await;
             });
         };

@@ -19,7 +19,7 @@
 use std::rc::Rc;
 
 use runtime_core::after_ms_detached;
-use runtime_core::driver::spawn_async;
+use runtime_core::driver::spawn_detached;
 
 use crate::SyncEngine;
 
@@ -45,7 +45,7 @@ impl SyncHandle {
     /// partition's flush self-guards, and a pull just fails fast.
     pub fn sync_now(&self) {
         let engine = self.engine.clone();
-        spawn_async(async move {
+        spawn_detached(async move {
             let _ = engine.sync_all().await;
         });
     }

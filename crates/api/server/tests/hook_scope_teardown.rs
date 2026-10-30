@@ -4,7 +4,7 @@
 //!
 //! Both hooks create their `incoming`/`status`/`sender` signals in the
 //! CALLING scope and then drive the connection from a fully detached
-//! task (`driver::spawn_async`, which takes no liveness token). Closing
+//! task (`driver::spawn_detached`, which takes no liveness token). Closing
 //! the connection is what makes that task resume — and closing it is
 //! exactly what scope teardown does. So the ordinary unmount path woke
 //! the task into `status.set(…)` against slots the dropped `Owned` had

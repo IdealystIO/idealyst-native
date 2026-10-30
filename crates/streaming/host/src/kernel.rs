@@ -1006,7 +1006,7 @@ fn check_codec(reported: Option<u32>) -> Result<(), LoadError> {
 /// - sync `(args_ptr, args_len) -> reply_len`: the reply goes into the
 ///   bundle's argument buffer (`idealyst_ui_alloc`), where its stub reads it;
 /// - async `(args_ptr, args_len, then)`: the app's future runs on the app's
-///   executor (`runtime_shared::driver::spawn_async`), and its encoded
+///   executor (`runtime_shared::driver::spawn_detached`), and its encoded
 ///   result is delivered by calling the bundle's one-shot callback `then`,
 ///   which is then released. A bundle that was stopped (it panicked) in the
 ///   meantime is not called — `route` answers `None`.
@@ -1098,11 +1098,11 @@ fn link_host_fns(module: &Module, host_fns: &[HostFnDef], linker: &mut Linker<KS
                 let then = params[2].i32().unwrap_or(0) as u32;
                 let bundle = caller.data().bundle;
                 let future = f(args).map_err(wasmi::Error::new)?;
-                // An executor may finish the future inside `spawn_async`
+                // An executor may finish the future inside `spawn_detached`
                 // (pollster, or an already-ready future); the completion
                 // then re-enters this bundle through this import's `Caller`.
                 with_active(&mut caller, || {
-                    runtime_shared::driver::spawn_async(async move {
+                    runtime_shared::driver::spawn_detached(async move {
                         let reply = future.await;
                         route(bundle, |c, h| c.ui_invoke(ui_hooks(bundle, h), then, &reply));
                         route(bundle, |c, h| c.ui_release(ui_hooks(bundle, h), then));

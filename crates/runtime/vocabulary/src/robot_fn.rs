@@ -25,7 +25,7 @@
 //! # Async functions
 //!
 //! An `async fn` is spawned on the backend's executor
-//! (`runtime_shared::driver::spawn_async`). `call_function` answers
+//! (`runtime_shared::driver::spawn_detached`). `call_function` answers
 //! `{"done": false, "call": N}` and the client asks `poll_function {call}`
 //! until it answers `{"done": true, "value": …}`. The reply never blocks
 //! the bridge: every transport (TCP, relay, web) answers each request
@@ -272,12 +272,12 @@ mod real {
             RobotReply::Pending(future) => {
                 let slot: Outcome = Rc::new(RefCell::new(None));
                 let fill = slot.clone();
-                runtime_shared::driver::spawn_async(async move {
+                runtime_shared::driver::spawn_detached(async move {
                     let out = future.await;
                     *fill.borrow_mut() = Some(out);
                     crate::robot::settle();
                 });
-                // Without an installed executor native `spawn_async` runs
+                // Without an installed executor native `spawn_detached` runs
                 // the future to completion before returning: answer at once.
                 if let Some(out) = slot.borrow_mut().take() {
                     return out.map(done);

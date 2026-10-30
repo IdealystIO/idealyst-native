@@ -17,7 +17,7 @@ recipe!(
     /// suspended until a gesture).
     pub fn gunfire() -> ::runtime_core::Element {
         use crate::{AudioEngine, SoundBuffer, VoiceParams};
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::ui;
         use ::std::cell::{Cell, RefCell};
         use ::std::rc::Rc;
@@ -25,7 +25,7 @@ recipe!(
         let shot = SoundBuffer::from_pcm(&::synth::presets::hit());
         let engine: Rc<RefCell<Option<AudioEngine>>> = Rc::new(RefCell::new(None));
         let slot = engine.clone();
-        spawn_async(async move {
+        spawn_detached(async move {
             if let Ok(e) = AudioEngine::start().await {
                 *slot.borrow_mut() = Some(e);
             }
@@ -64,7 +64,7 @@ recipe!(
     /// engine is up and is stopped (faded) by "Stop".
     pub fn wake_follows_speed() -> ::runtime_core::Element {
         use crate::{AudioEngine, SoundBuffer, Voice, VoiceParams};
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::ui;
         use ::std::cell::RefCell;
         use ::std::rc::Rc;
@@ -75,7 +75,7 @@ recipe!(
         );
         let voice: Rc<RefCell<Option<(AudioEngine, Voice)>>> = Rc::new(RefCell::new(None));
         let slot = voice.clone();
-        spawn_async(async move {
+        spawn_detached(async move {
             if let Ok(e) = AudioEngine::start().await {
                 let v = e.play(
                     &wake,
@@ -116,7 +116,7 @@ recipe!(
     pub fn spatial_explosion() -> ::runtime_core::Element {
         use crate::spatial::{Attenuation, Listener};
         use crate::{AudioEngine, SoundBuffer, VoiceParams};
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::ui;
         use ::std::cell::RefCell;
         use ::std::rc::Rc;
@@ -124,7 +124,7 @@ recipe!(
         let boom = SoundBuffer::from_pcm(&::synth::presets::explosion());
         let engine: Rc<RefCell<Option<AudioEngine>>> = Rc::new(RefCell::new(None));
         let slot = engine.clone();
-        spawn_async(async move {
+        spawn_detached(async move {
             if let Ok(e) = AudioEngine::start().await {
                 *slot.borrow_mut() = Some(e);
             }
@@ -174,7 +174,7 @@ recipe!(
     /// voice runs until stopped; silence plays while the stream is idle.
     pub fn play_synth_mixer() -> ::runtime_core::Element {
         use crate::{AudioEngine, VoiceParams};
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::ui;
         use ::std::cell::RefCell;
         use ::std::rc::Rc;
@@ -186,7 +186,7 @@ recipe!(
         let stream = bus.stream();
         let engine: Rc<RefCell<Option<AudioEngine>>> = Rc::new(RefCell::new(None));
         let slot = engine.clone();
-        spawn_async(async move {
+        spawn_detached(async move {
             if let Ok(e) = AudioEngine::start().await {
                 // A muffled, slightly-left bus.
                 e.play_stream(

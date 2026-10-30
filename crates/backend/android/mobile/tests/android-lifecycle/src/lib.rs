@@ -84,7 +84,7 @@ fn Home() -> Element {
     let timer = signal("timer: pending".to_string());
     let churn = signal(0u32);
     let start_churn = move || {
-        runtime_shared::driver::spawn_async(async move {
+        runtime_shared::driver::spawn_detached(async move {
             loop {
                 sleep_ms(50).await;
                 // This screen's scope dies with its Activity; stop then.
@@ -98,7 +98,7 @@ fn Home() -> Element {
     let finish = move || {
         start_churn();
         // Let a few re-layouts queue before the window goes.
-        runtime_shared::driver::spawn_async(async {
+        runtime_shared::driver::spawn_detached(async {
             sleep_ms(200).await;
             finish_published_activity();
         });
@@ -135,7 +135,7 @@ pub fn app() -> Element {
         let r = device_admin::start_keep_alive("Lifecycle probe", "keeping the heartbeat alive");
         log(format!("start_keep_alive: {r:?}"));
     }
-    runtime_shared::driver::spawn_async(async {
+    runtime_shared::driver::spawn_detached(async {
         let mut n = 0u32;
         loop {
             sleep_ms(5_000).await;

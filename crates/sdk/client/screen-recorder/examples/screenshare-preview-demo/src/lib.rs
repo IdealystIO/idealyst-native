@@ -89,7 +89,7 @@ pub fn app() -> Element {
         }
         started.set(true);
         status.set("Requesting screen capture…".to_string());
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             // `ThisApp` (the default) → ReplayKit in-app capture on iOS.
             match ScreenRecorder::new().start(RecordingConfig::new()).await {
                 Ok(stream) => {

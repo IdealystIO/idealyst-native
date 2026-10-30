@@ -23,7 +23,7 @@
 //!   `HttpURLConnection` over JNI (the main thread may not touch the network
 //!   — `NetworkOnMainThreadException`), decoded there with
 //!   `BitmapFactory.decodeByteArray`, and handed back to the main looper via
-//!   the cooperative async executor (`runtime_shared::driver::spawn_async` —
+//!   the cooperative async executor (`runtime_shared::driver::spawn_detached` —
 //!   the worker wakes the future; its `TaskWaker` posts a `RustAsyncPoll` to
 //!   the main `Handler`). No Glide/Coil dependency. Needs the app's
 //!   `android.permission.INTERNET` (declared via the app manifest's
@@ -511,7 +511,7 @@ fn load_remote(state: &Rc<ImageState>, url: &str) {
     fetch::submit(url.to_string(), slot.clone());
     let state = state.clone();
     let generation = state.generation.get();
-    runtime_shared::driver::spawn_async(async move {
+    runtime_shared::driver::spawn_detached(async move {
         let fetched = fetch::SlotFuture(slot).await;
         if state.generation.get() != generation {
             // The view moved on to another `src` while this was in flight.

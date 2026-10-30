@@ -1,6 +1,6 @@
 //! Cooperative main-thread async executor for the Android backend.
 //!
-//! `runtime_shared::driver::spawn_async` falls back to `pollster::block_on`
+//! `runtime_shared::driver::spawn_detached` falls back to `pollster::block_on`
 //! when no executor is installed — it drives a future *to completion on the
 //! calling thread*. On Android that calling thread is the JVM main
 //! (`Looper`) thread, so `block_on` FREEZES it until the future finishes.

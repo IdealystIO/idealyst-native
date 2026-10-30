@@ -80,7 +80,7 @@ impl GraphqlClient {
     /// surface as [`GraphqlError::Query`].
     ///
     /// The returned future is `'static` (it owns a clone of the transport),
-    /// so it drops straight into `resource` / `mutation` / `spawn_async`.
+    /// so it drops straight into `resource` / `mutation` / `spawn_detached`.
     pub fn query<Q: graphql_client::GraphQLQuery>(
         &self,
         variables: Q::Variables,

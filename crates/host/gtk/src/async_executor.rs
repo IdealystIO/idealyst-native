@@ -1,6 +1,6 @@
 //! Cooperative main-thread async executor for the GTK host.
 //!
-//! Without an installed executor `runtime_core::driver::spawn_async` falls
+//! Without an installed executor `runtime_core::driver::spawn_detached` falls
 //! back to `pollster::block_on`: it drives the future to completion ON THE
 //! CALLING THREAD — the GTK main thread. A short request merely stalls the
 //! window until it returns; a future that never completes (a `use_socket` /

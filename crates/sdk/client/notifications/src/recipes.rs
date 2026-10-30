@@ -18,7 +18,7 @@ recipe!(
     Notification,
     /// A "Notify" button that asks for permission, then posts a local
     /// notification. Press handlers can't be `async`, so the work runs on
-    /// [`spawn_async`](runtime_core::driver::spawn_async): call
+    /// [`spawn_detached`](runtime_core::driver::spawn_detached): call
     /// [`authorize`](crate::authorize) first (the OS prompt, via the shared
     /// `permissions` crate), and only [`notify`](crate::notify) a
     /// [`Notification`](crate::Notification) when it's granted. The outcome is
@@ -26,14 +26,14 @@ recipe!(
     /// updates in place.
     pub fn notify_button() -> ::runtime_core::Element {
         use crate::{authorize, notify, Notification};
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::{signal, text, ui};
 
         // Reactive status line; the press handler writes into it.
         let status = signal("Tap to notify".to_string());
 
         let on_click = move || {
-            spawn_async(async move {
+            spawn_detached(async move {
                 if authorize().await.is_granted() {
                     match notify(Notification::new("Hi", "From the recipe")).await {
                         Ok(id) => status.set(format!("Posted: {id}")),
@@ -64,7 +64,7 @@ recipe!(
     /// native delayed-delivery API.
     pub fn schedule_with_id() -> ::runtime_core::Element {
         use crate::{authorize, cancel, schedule, Notification, NotificationId};
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::{signal, text, ui};
         use ::std::time::Duration;
 
@@ -76,7 +76,7 @@ recipe!(
             let id = id.clone();
             move || {
                 let id = id.clone();
-                spawn_async(async move {
+                spawn_detached(async move {
                     if authorize().await.is_granted() {
                         let note = Notification::new("Reminder", "Stand up and stretch")
                             .id(id)
@@ -92,7 +92,7 @@ recipe!(
 
         let cancel_it = move || {
             let id = id.clone();
-            spawn_async(async move {
+            spawn_detached(async move {
                 cancel(&id).await;
                 status.set("cancelled".to_string());
             });

@@ -792,7 +792,7 @@ pub fn generate_wrapper(
     let shared_dep = source.dep("crates/runtime/shared", &[]);
     // `async-driver` so the iOS backend installs the cooperative main-thread
     // async executor in `install_scheduler` (forwards ios-mobile → ios-core →
-    // apple-core). Without it, `spawn_async` falls back to `pollster::block_on`
+    // apple-core). Without it, `spawn_detached` falls back to `pollster::block_on`
     // on the main thread and a long-running future (`use_sse` / `use_socket`
     // recv loop) freezes the UI.
     let bios_dep = source.dep("crates/backend/ios/mobile", &["async-driver"]);

@@ -31,7 +31,7 @@ use idea_ui::{
     install_idea_theme, light_theme, tone, typography_kind, variant, Badge, Button, Card,
     CardPadding, Field, Stack, StackAlign, StackAxis, StackGap, StackPadding, Typography,
 };
-use runtime_core::driver::spawn_async;
+use runtime_core::driver::spawn_detached;
 use runtime_core::{component, rx, signal, spawn_then, ui, Element};
 use serde::{Deserialize, Serialize};
 use server::{server, ServerError};
@@ -253,7 +253,7 @@ fn TodoRow(props: &TodoRowProps) -> Element {
                 done: !done,
                 updated_at: now_millis(),
             };
-            spawn_async(async move {
+            spawn_detached(async move {
                 let _ = p.upsert(id, todo).await;
             });
         })
@@ -265,7 +265,7 @@ fn TodoRow(props: &TodoRowProps) -> Element {
         Rc::new(move || {
             let Some(p) = partition.clone() else { return };
             let id = id.clone();
-            spawn_async(async move {
+            spawn_detached(async move {
                 let _ = p.delete(id).await;
             });
         })

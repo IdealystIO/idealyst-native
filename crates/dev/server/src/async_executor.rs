@@ -2,7 +2,7 @@
 //!
 //! ## Why this exists
 //!
-//! `runtime_shared::driver::spawn_async` has a native fallback: when no
+//! `runtime_shared::driver::spawn_detached` has a native fallback: when no
 //! backend has installed an [`AsyncExecutor`](runtime_shared::driver::AsyncExecutor),
 //! it drives the future to completion with `pollster::block_on` on the
 //! calling thread. That fallback is correct for real native backends
@@ -47,9 +47,9 @@
 //! ## Reentrancy
 //!
 //! Tokio forbids starting a runtime from inside a runtime
-//! (`block_on` within `block_on` panics). App code reaching `spawn_async`
-//! again *while an outer `spawn_async` is still on the stack* (e.g. an
-//! async server-fn whose body kicks off a second `spawn_async`) would
+//! (`block_on` within `block_on` panics). App code reaching `spawn_detached`
+//! again *while an outer `spawn_detached` is still on the stack* (e.g. an
+//! async server-fn whose body kicks off a second `spawn_detached`) would
 //! trip that. We guard with a thread-local depth flag: the reentrant
 //! call falls back to `pollster::block_on`, which is safe because the
 //! outer `Runtime::block_on` already entered this thread's runtime
@@ -76,7 +76,7 @@ thread_local! {
         .expect("build current-thread Tokio runtime for AAS session");
 
     /// Set while a `Runtime::block_on` is on this thread's stack, so a
-    /// reentrant `spawn_async` doesn't start a second runtime (which Tokio
+    /// reentrant `spawn_detached` doesn't start a second runtime (which Tokio
     /// rejects with a panic).
     static IN_BLOCK_ON: Cell<bool> = const { Cell::new(false) };
 }

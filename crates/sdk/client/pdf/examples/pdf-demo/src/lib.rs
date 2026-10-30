@@ -18,7 +18,7 @@ use std::rc::Rc;
 use file_picker::{FilePicker, PickOutcome, PickRequest};
 use idea_ui::{install_idea_theme, light_theme, Stack, StackGap, StackPadding, Typography};
 use pdf::PdfReactive;
-use runtime_core::{driver::spawn_async, signal, ui, Element, IntoElement, Signal};
+use runtime_core::{driver::spawn_detached, signal, ui, Element, IntoElement, Signal};
 
 /// Register the canvas renderers, called by `idealyst::entry!` at boot.
 ///
@@ -58,7 +58,7 @@ pub fn app() -> Element {
 
     let on_open = move || {
         status.set("Opening file picker…".to_string());
-        spawn_async(async move {
+        spawn_detached(async move {
             match FilePicker::new().pick(PickRequest::documents(["application/pdf"])).await {
                 Ok(PickOutcome::Picked(files)) => {
                     let Some(file) = files.into_iter().next() else {

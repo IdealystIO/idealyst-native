@@ -40,7 +40,7 @@ use runtime_core::{
 // into the PAGE's own world — so the page's flush driver commits the
 // embedded app's staged writes. See `Simulator`'s on_ready closure below.
 use host_wgpu::{DeviceProfile, Painter};
-use runtime_core::driver::spawn_async;
+use runtime_core::driver::spawn_detached;
 
 /// Target-agnostic identifier for which device chrome the embedded
 /// Simulator should run. Call sites use this instead of constructing
@@ -317,12 +317,12 @@ pub fn Simulator(props: SimulatorProps) -> Element {
         let Some(surface) = event.into_surface() else {
             return;
         };
-        // `spawn_async` is the runtime-installed executor. On wasm it
+        // `spawn_detached` is the runtime-installed executor. On wasm it
         // rides web-glue's `spawn_local`; on iOS the `async-driver`
         // feature on `backend-ios-mobile` plugs into libdispatch.
         // Either way the `request_adapter` / `request_device`
         // futures resolve on the main thread without blocking.
-        spawn_async(async move {
+        spawn_detached(async move {
             // Surface + size + profile + painter + build closure in,
             // HostHandle out. `mount_newcore` realizes the embedded
             // tree via `render_wgpu::newcore::start_in_world` against

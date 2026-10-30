@@ -145,13 +145,13 @@ pub fn install_scheduler() {
     // unified log rather than only stderr. First-install wins.
     crate::log::install_logger();
     // Install the cooperative main-thread async executor alongside the
-    // scheduler. Without it, `runtime_shared::driver::spawn_async` falls back
+    // scheduler. Without it, `runtime_shared::driver::spawn_detached` falls back
     // to `pollster::block_on` ON THE MAIN THREAD — fine for short one-shot
     // futures, but a long-running `recv` loop (`use_sse` / `use_socket`)
     // would block the main thread forever and freeze the UI. The executor
     // polls cooperatively on the main queue instead. First-install wins.
     // Gated on `async-driver` (the feature that brings `runtime_shared::driver`
-    // into scope); without it there is no `spawn_async` to host.
+    // into scope); without it there is no `spawn_detached` to host.
     #[cfg(feature = "async-driver")]
     crate::async_executor::install_async_executor();
 

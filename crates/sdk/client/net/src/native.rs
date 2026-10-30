@@ -8,7 +8,7 @@
 //! # Execution model: a process-wide I/O runtime thread
 //!
 //! reqwest's DNS and socket I/O need a tokio reactor, but `net` callers
-//! run on whatever executor they have — the framework's `spawn_async`
+//! run on whatever executor they have — the framework's `spawn_detached`
 //! driver, a park/unpark loop on a worker thread, a platform event loop
 //! — and none of those is tokio. Awaiting reqwest directly on the caller's
 //! executor panicked with "there is no reactor running" on every Linux /

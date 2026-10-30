@@ -71,7 +71,7 @@ pub fn app() -> Element {
             saved.set(String::new());
             status.set("Opening camera + microphone…".to_string());
             let active = active.clone();
-            runtime_core::driver::spawn_async(async move {
+            runtime_core::driver::spawn_detached(async move {
                 let cam_stream = match Camera::new().open(CameraConfig::default()).await {
                     Ok(s) => s,
                     Err(e) => {
@@ -134,7 +134,7 @@ pub fn app() -> Element {
                 return;
             };
             status.set("Finalizing file…".to_string());
-            runtime_core::driver::spawn_async(async move {
+            runtime_core::driver::spawn_detached(async move {
                 let Active {
                     _camera,
                     _mic,
@@ -175,7 +175,7 @@ pub fn app() -> Element {
             return;
         }
         status.set("Opening save dialog…".to_string());
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             let store = match files::app_files("recordings") {
                 Ok(s) => s,
                 Err(e) => {

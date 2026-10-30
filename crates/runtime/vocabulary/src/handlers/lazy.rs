@@ -310,7 +310,7 @@ where
                 let fut = primed.borrow_mut().take().unwrap_or_else(|| (loader)());
                 let pending = pending.clone();
                 let cancelled = cancelled.clone();
-                runtime_shared::driver::spawn_async(async move {
+                runtime_shared::driver::spawn_detached(async move {
                     let outcome = fut.await;
                     if cancelled.get() {
                         return; // subtree gone — abandon the load

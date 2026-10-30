@@ -109,7 +109,7 @@ fn watch_on_ui_thread(callback: WatchCallback) -> Subscription {
 /// The delivering task ends when every sender is dropped.
 fn ui_thread_sink(callback: WatchCallback, mut last: Connectivity) -> async_channel::Sender<Connectivity> {
     let (tx, rx) = async_channel::unbounded::<Connectivity>();
-    runtime_core::driver::spawn_async(async move {
+    runtime_core::driver::spawn_detached(async move {
         while let Ok(net) = rx.recv().await {
             if net != last {
                 last = net;

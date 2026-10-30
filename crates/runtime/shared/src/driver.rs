@@ -22,11 +22,11 @@
 //! # Use with the `Graphics` surface primitive
 //!
 //! ```ignore
-//! use runtime_core::driver::{render_loop, spawn_async};
+//! use runtime_core::driver::{render_loop, spawn_detached};
 //! use runtime_core::primitives::graphics::{graphics, OnReadyEvent};
 //!
 //! graphics(move |event: OnReadyEvent| {
-//!     spawn_async(async move {
+//!     spawn_detached(async move {
 //!         let Some(surface) = event.into_surface() else { return };
 //!         let renderer = build_my_renderer(surface, event.size).await;
 //!         let _loop = render_loop(move |elapsed| {
@@ -49,10 +49,20 @@ use std::pin::Pin;
 use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------
-// spawn_async
+// spawn_detached
 // ---------------------------------------------------------------------------
 
-/// Drive a future to completion on the current execution context.
+/// Run a future that is not tied to any scope: it keeps running after the
+/// component, screen or Activity that started it is gone.
+///
+/// That is what library work which must outlive its caller needs (a
+/// storage write-through, a sync loop, a background upload). It is the
+/// wrong tool for a handler or component that calls an async API and
+/// shows the result: a signal touched after an `.await` may belong to a
+/// torn-down scope by then, and the access aborts with
+/// `stale-signal-handle`. Use `spawn_then(future, |result| …)` there (its
+/// callback runs while the scope lives, or not at all), or
+/// `resource` / `mutation`.
 ///
 /// Routes to the backend's installed [`AsyncExecutor`] when there is one
 /// (web: `backend_web::install_async_executor()`, which spawns on the JS
@@ -61,7 +71,7 @@ use std::sync::OnceLock;
 /// With no executor installed, native targets (Android / iOS / desktop)
 /// block the calling thread on the future via `pollster::block_on` and
 /// return once it completes; wasm32 panics. If you need the work to happen off the calling thread,
-/// use `std::thread::spawn(move || spawn_async(async { ... }))`.
+/// use `std::thread::spawn(move || spawn_detached(async { ... }))`.
 ///
 /// # Send bound
 ///
@@ -75,8 +85,8 @@ use std::sync::OnceLock;
 ///
 /// If you need to spawn on a worker thread, the future *there* has
 /// to be `Send` — but that's a `std::thread::spawn` concern, not a
-/// `spawn_async` concern.
-pub fn spawn_async<F>(future: F)
+/// `spawn_detached` concern.
+pub fn spawn_detached<F>(future: F)
 where
     F: Future<Output = ()> + 'static,
 {
@@ -96,15 +106,33 @@ where
     {
         let _ = future;
         panic!(
-            "runtime_core::driver::spawn_async: no AsyncExecutor installed. \
-             On wasm32 a backend must register one before `spawn_async` is called \
+            "runtime_core::driver::spawn_detached: no AsyncExecutor installed. \
+             On wasm32 a backend must register one before `spawn_detached` is called \
              — typically `backend_web::install_async_executor()` during host init."
         );
     }
 }
 
+/// [`spawn_detached`] under its old name.
+///
+/// The name read as "the way to run async code", so handlers reached for
+/// it to call an async API and update the screen, the case that aborts
+/// with `stale-signal-handle` once the screen is gone.
+#[deprecated(
+    note = "spawn_async is detached: it outlives the scope that started it. To call an async API \
+            and use the result in UI state, use `spawn_then(future, |result| …)`; for work that \
+            must outlive its caller, call it `spawn_detached`."
+)]
+#[inline]
+pub fn spawn_async<F>(future: F)
+where
+    F: Future<Output = ()> + 'static,
+{
+    spawn_detached(future)
+}
+
 /// Backend-supplied async runtime. Backends register an instance via
-/// [`install_async_executor`] at init; without one, `spawn_async`
+/// [`install_async_executor`] at init; without one, [`spawn_detached`]
 /// falls back to `pollster` on native and panics on wasm32.
 pub trait AsyncExecutor: Send + Sync {
     /// Drive a future on the calling thread / event loop. Returns
@@ -120,7 +148,7 @@ pub fn install_async_executor(executor: Box<dyn AsyncExecutor>) {
     let _ = ASYNC_EXECUTOR.set(executor);
 }
 
-/// Whether a backend installed an executor, i.e. whether [`spawn_async`]
+/// Whether a backend installed an executor, i.e. whether [`spawn_detached`]
 /// returns at the future's first `.await` instead of blocking the calling
 /// thread to completion (the native `pollster` fallback).
 ///

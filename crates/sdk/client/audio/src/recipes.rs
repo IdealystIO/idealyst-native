@@ -19,13 +19,13 @@ recipe!(
     Sound,
     /// A button that plays a short sound effect on press. The sound is
     /// decoded once up front (the async [`load`](crate::load) is spawned via
-    /// `spawn_async` and stashed in a shared slot); each press starts a
+    /// `spawn_detached` and stashed in a shared slot); each press starts a
     /// fresh [`Playback`](crate::Playback). The handles live in `RefCell`
     /// slots — RAII, no `mem::forget` — so the sound isn't cut off the
     /// instant the press closure returns, and the previous voice is stopped
     /// (dropped) when the next press replaces it.
     pub fn play_sound_on_press() -> ::runtime_core::Element {
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::ui;
         use ::std::cell::RefCell;
         use ::std::rc::Rc;
@@ -35,7 +35,7 @@ recipe!(
         // async, so spawn it and stash the ready `Sound` in a shared slot.
         let sound: Rc<RefCell<Option<crate::Sound>>> = Rc::new(RefCell::new(None));
         let prepared = sound.clone();
-        spawn_async(async move {
+        spawn_detached(async move {
             if let Ok(s) = crate::load(crate::AudioSource::path("assets/ding.wav")).await {
                 *prepared.borrow_mut() = Some(s);
             }

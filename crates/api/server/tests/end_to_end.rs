@@ -1619,7 +1619,7 @@ mod client_side {
         // future is not `Send` on Apple hosts (`net`'s transport there
         // holds objc2 `NSURLRequest`/`RcBlock` values across awaits),
         // and it never needs to be — the framework runs it on the
-        // single-threaded UI executor (`spawn_async`, no `Send` bound).
+        // single-threaded UI executor (`spawn_detached`, no `Send` bound).
         // `tokio::spawn` demanded `Send`, so this test did not compile
         // on macOS at all.
         let call = server::with_cancel_token(token, add(1, 2));

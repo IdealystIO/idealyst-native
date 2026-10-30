@@ -48,7 +48,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Poll, Waker};
 
-use runtime_core::driver::spawn_async;
+use runtime_core::driver::spawn_detached;
 use runtime_core::{signal, unscope, ReadSignal, Signal};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -237,7 +237,7 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Part
     /// durable comes back, and pending ops replay on the next flush.
     ///
     /// Synchronous on purpose, see the module docs. The load runs on
-    /// `spawn_async`; on native with no executor installed that is
+    /// `spawn_detached`; on native with no executor installed that is
     /// `pollster` inline, so it may already be done when this returns.
     fn start(
         store: Arc<dyn SyncStore>,
@@ -266,7 +266,7 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Part
             partition,
         };
         let loader = me.clone();
-        spawn_async(async move {
+        spawn_detached(async move {
             let result = loader.load_persisted(client_id).await;
             if result.is_ok() {
                 loader.publish();
@@ -642,7 +642,7 @@ impl SyncEngine {
         let was = self.online.replace(online);
         if online && !was && self.auto_sync.get() {
             let me = self.clone();
-            spawn_async(async move {
+            spawn_detached(async move {
                 let _ = me.sync_all().await;
             });
         }
@@ -1212,7 +1212,7 @@ mod tests {
             assert_eq!(tr.server.borrow().records.len(), 0);
 
             // Reconnect: with auto-sync enabled this triggers sync_all. On
-            // native, spawn_async runs it to completion synchronously.
+            // native, spawn_detached runs it to completion synchronously.
             eng.set_online(true);
             assert_eq!(tr.server.borrow().records.len(), 1, "reconnect auto-synced");
             assert!(!p.has_pending());

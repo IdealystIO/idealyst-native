@@ -12,7 +12,7 @@
 //! because the session thread drove the future with `pollster::block_on`
 //! on a thread that had no Tokio runtime context. After the fix,
 //! `dev_server::async_executor::install()` (called per session thread in
-//! `run_session_thread_newcore`) routes `runtime_shared::driver::spawn_async`
+//! `run_session_thread_newcore`) routes `runtime_shared::driver::spawn_detached`
 //! through a current-thread Tokio runtime, so the socket finds its
 //! reactor.
 //!
@@ -47,7 +47,7 @@ fn one_shot_server() -> std::net::SocketAddr {
 /// THE regression test. Replicates the session-thread setup: a bare
 /// `std::thread` (no ambient runtime), the executor installed exactly as
 /// `run_session_thread_newcore` does, then app-style async work via
-/// `spawn_async`. Before the fix this future panics at
+/// `spawn_detached`. Before the fix this future panics at
 /// `tokio/net/tcp/stream.rs` ("no reactor running"); after it, the
 /// connect + read completes and we observe the byte.
 #[test]
@@ -62,12 +62,12 @@ fn regression_aas_session_async_has_reactor() {
             dev_server::async_executor::install();
 
             // `!Send` accumulator captured by the future — proves the
-            // executor accepts the same non-`Send` futures `spawn_async`
+            // executor accepts the same non-`Send` futures `spawn_detached`
             // promises (Rc/Cell, not Arc/Mutex).
             let got = Rc::new(Cell::new(0u8));
             let got_in = got.clone();
 
-            runtime_shared::driver::spawn_async(async move {
+            runtime_shared::driver::spawn_detached(async move {
                 // This is the call that panicked pre-fix: constructing a
                 // tokio `TcpStream` registers it with the current
                 // runtime's I/O reactor.
@@ -82,7 +82,7 @@ fn regression_aas_session_async_has_reactor() {
                 got_in.set(buf[0]);
             });
 
-            // `spawn_async`'s native contract drives the future to
+            // `spawn_detached`'s native contract drives the future to
             // completion before returning, so the byte is already set.
             got.get()
         })

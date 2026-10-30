@@ -121,7 +121,7 @@ pub extern "C" fn idealyst_ui_panic_message() -> i64 {
     reply(LAST_PANIC.with(|p| p.borrow_mut().take()).unwrap_or_default().into_bytes())
 }
 
-/// The bundle's async executor, behind runtime-shared's `spawn_async` (so
+/// The bundle's async executor, behind runtime-shared's `spawn_detached` (so
 /// `spawn_then` works in a bundle as natively). A bundle has no event loop
 /// of its own: a task makes progress only when something wakes it, and in
 /// a bundle the only wakers that fire are host-function results arriving

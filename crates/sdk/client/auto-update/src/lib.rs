@@ -80,7 +80,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use runtime_core::after_ms_detached;
-use runtime_core::driver::spawn_async;
+use runtime_core::driver::spawn_detached;
 use runtime_core::{signal, Signal};
 
 pub mod manifest;
@@ -403,7 +403,7 @@ impl Updater {
     /// Updates" menu item or a launch hook where you don't want to await.
     pub fn check_now(&self) {
         let this = self.clone();
-        spawn_async(async move {
+        spawn_detached(async move {
             let _ = this.check().await;
         });
     }

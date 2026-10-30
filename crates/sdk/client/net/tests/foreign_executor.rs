@@ -1,6 +1,6 @@
 //! `net` requests driven by an executor that is NOT tokio.
 //!
-//! The framework polls futures on its own executor (`spawn_async` /
+//! The framework polls futures on its own executor (`spawn_detached` /
 //! `runtime_shared`'s async driver, a park/unpark loop on a worker thread,
 //! the platform event loop) — never inside a tokio runtime. Every test here
 //! drives the request with [`block_on`], a bare park/unpark executor with no

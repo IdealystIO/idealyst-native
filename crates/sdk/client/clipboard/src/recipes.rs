@@ -16,10 +16,10 @@ recipe!(
     /// Copy a fixed string to the system clipboard, then read it back
     /// into a reactive `signal` and show it. The button's press handler
     /// spawns the async clipboard work (`set_text` / `text` are `async`)
-    /// via `runtime_core::driver::spawn_async`, writing the read-back text
+    /// via `runtime_core::driver::spawn_detached`, writing the read-back text
     /// into a `Signal<String>` that the `text` primitive displays.
     pub fn clipboard_copy_paste() -> ::runtime_core::Element {
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::{signal, text, ui};
 
         // The text shown after the copy + read-back round trip.
@@ -29,7 +29,7 @@ recipe!(
         // `IntoAction`, so it drops straight into `on_click`. `Signal` is
         // `Copy`, so the handler copies `pasted` into each spawned task.
         let on_click = move || {
-            spawn_async(async move {
+            spawn_detached(async move {
                 // Copy a fixed string, then read the clipboard back.
                 if crate::set_text("Hello from Idealyst").await.is_ok() {
                     if let Ok(Some(value)) = crate::text().await {

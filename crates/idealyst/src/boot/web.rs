@@ -51,7 +51,7 @@ pub fn run<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
     // goes through it.
     //
     // Each is load-bearing:
-    // * async executor — `runtime_core::driver::spawn_async`, i.e. every
+    // * async executor — `runtime_core::driver::spawn_detached`, i.e. every
     //   resource fetcher, server-fn call and mutation trigger. Without
     //   it the app renders and then panics at the first async work.
     // * logger — routes `log_info!`/`log_error!` to `console.*`; without

@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use idea_ui::{install_idea_theme, light_theme, tone, variant, Button};
-use runtime_core::driver::spawn_async;
+use runtime_core::driver::spawn_detached;
 use runtime_core::{component, effect, rx, signal, ui, Element, IntoElement, Signal};
 use video::VideoBind;
 use webview::WebViewBind;
@@ -87,7 +87,7 @@ pub fn SvgPanel() -> Element {
 pub fn ClipboardPanel() -> Element {
     let status = signal("Copy, then paste anything (here or from another app).".to_string());
     let copy = Rc::new(move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             let line = match clipboard::set_text("Copied from the SDK gallery ✓").await {
                 Ok(()) => "Copied. Paste it anywhere, or press Paste.".to_string(),
                 Err(e) => format!("Copy failed: {e}"),
@@ -96,7 +96,7 @@ pub fn ClipboardPanel() -> Element {
         });
     }) as Rc<dyn Fn()>;
     let paste = Rc::new(move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             let line = match clipboard::text().await {
                 Ok(Some(t)) => format!("Pasted: {t}"),
                 Ok(None) => "The clipboard holds no text.".to_string(),
@@ -151,7 +151,7 @@ pub fn NotificationsPanel() -> Element {
     let status = signal("Not posted yet.".to_string());
     let post = |status: Signal<String>, after: Option<u64>| {
         Rc::new(move || {
-            spawn_async(async move {
+            spawn_detached(async move {
                 let grant = notifications::authorize().await;
                 if !grant.is_usable() {
                     status.set(format!("Not allowed ({grant:?}) — turn notifications on in Settings."));
@@ -173,7 +173,7 @@ pub fn NotificationsPanel() -> Element {
         }) as Rc<dyn Fn()>
     };
     let cancel = Rc::new(move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             notifications::cancel(&notifications::NotificationId::from("gallery")).await;
             status.set("Cancelled.".to_string());
         });
@@ -272,7 +272,7 @@ pub fn CameraPanel() -> Element {
     let feed: Signal<Option<MediaContentSource>> = signal(None);
     let open = Rc::new(move || {
         status.set("Opening…".to_string());
-        spawn_async(async move {
+        spawn_detached(async move {
             match camera::Camera::new().open(camera::CameraConfig::new().with_resolution(640, 480)).await {
                 Ok(stream) => {
                     feed.set(Some(MediaContentSource::Stream(stream)));
@@ -323,7 +323,7 @@ pub fn RecordingPanel() -> Element {
         takes.set(takes.get() + 1);
         let name = format!("gallery-recording-{}-{}.mp4", std::process::id(), takes.get());
         status.set("Starting…".to_string());
-        spawn_async(async move {
+        spawn_detached(async move {
             let stream = match screen_recorder::ScreenRecorder::new().start(screen_recorder::RecordingConfig::new()).await {
                 Ok(s) => s,
                 Err(e) => return status.set(format!("Capture failed: {e}")),
@@ -350,7 +350,7 @@ pub fn RecordingPanel() -> Element {
         let Some((_stream, rec)) = a.borrow_mut().take() else { return };
         recording.set(false);
         status.set("Finishing…".to_string());
-        spawn_async(async move {
+        spawn_detached(async move {
             match rec.stop().await {
                 Ok(rel) => {
                     let path = files::app_files("sdk-gallery").ok().and_then(|s| s.local_path(&rel));
@@ -398,7 +398,7 @@ pub fn RecordingPanel() -> Element {
 pub fn SharePanel() -> Element {
     let status = signal("Not shared yet.".to_string());
     let go = Rc::new(move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             let content = share::ShareContent::text("Shared from the idealyst SDK gallery")
                 .with_url("https://example.com")
                 .with_title("SDK gallery");
@@ -428,7 +428,7 @@ pub fn LocationPanel() -> Element {
     let locate = Rc::new(move || {
         status.set("Locating…".to_string());
         let fixes = fixes.clone();
-        spawn_async(async move {
+        spawn_detached(async move {
             status.set(match location::current().await {
                 Ok(p) => {
                     fixes.set(fixes.get() + 1);
@@ -461,7 +461,7 @@ pub fn AudioPanel() -> Element {
     let play = Rc::new(move || {
         let pb = pb.clone();
         status.set("Loading…".to_string());
-        spawn_async(async move {
+        spawn_detached(async move {
             match audio::load(audio::AudioSource::url(SONG)).await {
                 Ok(sound) => {
                     *pb.borrow_mut() = Some(sound.play());

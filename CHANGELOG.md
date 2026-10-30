@@ -2037,6 +2037,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Changed
 
+- **`spawn_async` is now `spawn_detached`; the old name is deprecated**
+  (`runtime-shared`, `lint`, and the SDKs and examples that called it).
+  The task was always detached: it keeps running after the component,
+  screen or Activity that started it is gone, and a signal it touches after
+  an `.await` may belong to a torn-down scope (`stale-signal-handle`). The
+  old name read as "the way to run async code", so handlers reached for it
+  to call an async API and update the screen. Use
+  `spawn_then(future, |result| …)` for that (or `resource` / `mutation`),
+  and `spawn_detached` for work that must outlive its caller (a storage
+  write-through, a sync loop, a background upload). `spawn_async` still
+  compiles, with a deprecation warning that names both. The
+  `signal-across-await` lint checks both names.
+
 - **The dev overlay collapses, and its capture button is a chip**
   (`dev-http`, `backend-web`, `mcp-server`). A "–" on the status line
   collapses the overlay to one status glyph in the corner, remembered for

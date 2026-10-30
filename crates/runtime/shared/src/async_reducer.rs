@@ -15,7 +15,7 @@
 //! On trigger:
 //! 1. Bump a sequence counter, write `AsyncStatus::Loading` to the
 //!    handle's `status` signal.
-//! 2. Spawn `perform(input)` via [`crate::driver::spawn_async`].
+//! 2. Spawn `perform(input)` via [`crate::driver::spawn_detached`].
 //! 3. When the future settles, if this trigger's sequence is still
 //!    the latest, fold the response into the caller's state via
 //!    `state.update(|s| apply(s, response))` (on `Ok`) or flip the
@@ -43,7 +43,7 @@
 //!
 //! Gated behind the `async-driver` feature like its sync sibling.
 
-use crate::driver::spawn_async;
+use crate::driver::spawn_detached;
 use crate::reactive::Signal;
 use std::cell::Cell;
 use std::future::Future;
@@ -131,7 +131,7 @@ impl<I: 'static, E: Clone + 'static> AsyncReducer<I, E> {
     /// error stored in status) lands when the future settles.
     pub fn trigger(&self, input: I) {
         let fut = (self.run_fn)(input);
-        spawn_async(async move {
+        spawn_detached(async move {
             // Ignore the inline result — the side effects (state
             // update, status flip) already happened inside `run_fn`.
             let _ = fut.await;
@@ -298,7 +298,7 @@ mod tests {
     use std::cell::RefCell;
 
     /// Future that's ready immediately with an `Ok` — under
-    /// `spawn_async`'s native pollster fallback this resolves
+    /// `spawn_detached`'s native pollster fallback this resolves
     /// synchronously inside `trigger`, which keeps the tests
     /// non-async.
     struct ImmediateOk<T>(Option<T>);

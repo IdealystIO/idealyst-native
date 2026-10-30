@@ -64,7 +64,7 @@ thread_local! {
 
 /// Connect to `url` and keep reconnecting for the life of the app.
 pub fn start(url: String, sinks: Sinks) {
-    runtime_core::driver::spawn_async(run(url, sinks));
+    runtime_core::driver::spawn_detached(run(url, sinks));
 }
 
 async fn run(url: String, sinks: Sinks) {

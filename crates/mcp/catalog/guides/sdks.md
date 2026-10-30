@@ -361,14 +361,14 @@ reads are safe too. The in-flight IO still completes — only its result is
 discarded — so a save is never abandoned mid-write. The
 `signal-across-await` lint flags the raw form.
 
-`runtime_core::driver::spawn_async` remains for genuinely detached work
+`runtime_core::driver::spawn_detached` remains for genuinely detached work
 that must outlive the component (a background upload, a storage
 write-through). No `Send` bound is required, and the executor is
 pre-installed by the CLI-generated app wrappers on every platform — no
 setup in app code. Signal writes from the callback notify the UI exactly
 like writes from a handler.
 
-`spawn_then` and `spawn_async` exist only when the `runtime-core` dependency enables the
+`spawn_then` and `spawn_detached` exist only when the `runtime-core` dependency enables the
 `async-driver` feature — CLI-generated wrapper Cargo.tomls do, but a
 hand-written dep line must add it:
 

@@ -26,7 +26,7 @@ use runtime_core::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
 /// first-install-wins).
 ///
 /// The executor rides along for the same reason the Apple and Android
-/// schedulers install theirs: without it `spawn_async` blocks the main thread
+/// schedulers install theirs: without it `spawn_detached` blocks the main thread
 /// until the future completes, and a socket's receive loop never does. See
 /// [`crate::async_executor`].
 pub fn install() {

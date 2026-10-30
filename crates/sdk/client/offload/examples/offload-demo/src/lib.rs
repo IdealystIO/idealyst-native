@@ -62,7 +62,7 @@ pub fn app() -> Element {
 
     let on_count = move || {
         status.set("Counting in the background…".to_string());
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             let req = PrimeReq { below: 2_000_000 };
             status.set(match offload::run(offload::handle!(count_primes), &req).await {
                 Ok(out) => format!("{} primes below 2000000; largest {}", out.count, out.largest),
@@ -71,7 +71,7 @@ pub fn app() -> Element {
         });
     };
     let on_panic = move || {
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             status.set(match offload::run(offload::handle!(always_panics), &0).await {
                 Ok(v) => format!("unexpected result {v}"),
                 Err(e) => format!("Job failed: {e}"),

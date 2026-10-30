@@ -19,11 +19,11 @@ recipe!(
     /// `stop_lock_task()`.
     pub fn kiosk_lock_on_mount() -> ::runtime_core::Element {
         use crate::{start_lock_task, stop_lock_task};
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::{signal, text, ui, Signal};
 
         let status: Signal<String> = signal("Locking…".to_string());
-        spawn_async(async move {
+        spawn_detached(async move {
             status.set(match start_lock_task().await {
                 Ok(true) => "Locked".to_string(),
                 Ok(false) => "Not allow-listed: lock task needs the device owner".to_string(),
@@ -33,7 +33,7 @@ recipe!(
 
         let unlock = move || {
             // Gate this behind the app's own admin check.
-            spawn_async(async move {
+            spawn_detached(async move {
                 if let Ok(true) = stop_lock_task().await {
                     status.set("Unlocked".to_string());
                 }

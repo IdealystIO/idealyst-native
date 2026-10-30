@@ -3,14 +3,14 @@
 //! # The shape this replaces
 //!
 //! ```ignore
-//! spawn_async(async move {
+//! spawn_detached(async move {
 //!     let saved = save_report(id).await;   // ← scope can die here
 //!     nav.push(Route::Report(saved.id));
 //!     busy.set(false);                     // ← writes a freed slot: abort
 //! });
 //! ```
 //!
-//! `spawn_async` is fully detached, and every `.await` is a flush
+//! `spawn_detached` is fully detached, and every `.await` is a flush
 //! boundary — the host's post-dispatch hook flushes after each future
 //! poll, so the world commits, structural drivers run, and scopes are torn
 //! down *between two adjacent lines of one async block*. A `Signal<T>` is
@@ -162,7 +162,7 @@
 
 use std::future::Future;
 
-use runtime_shared::driver::spawn_async;
+use runtime_shared::driver::spawn_detached;
 
 use crate::callback_guard::ScopeAlive;
 
@@ -239,7 +239,7 @@ fn spawn_guarded<T, F, A>(
     A: FnOnce(T) + 'static,
 {
     let alive = alive.clone();
-    spawn_async(async move {
+    spawn_detached(async move {
         let value = task.await;
         if alive.get() {
             // Publish the token for the callback's duration, so a task

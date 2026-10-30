@@ -126,7 +126,7 @@ pub fn net_pack_loader(base_url: impl Into<String>) -> impl Fn(&str) + 'static {
     move |code: &str| {
         let url = resolve_pack_url(&base, code);
         let code = code.to_string();
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             let client = net::Client::new();
             match client.get(&url).send().await {
                 Ok(resp) => match resp.json::<HashMap<String, String>>().await {

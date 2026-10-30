@@ -210,7 +210,7 @@ pub extern "system" fn Java_io_idealyst_deviceadmin_RustDeviceAdmin_nativeEvent(
             // its flush after each executor poll and not after an SDK's own
             // JNI callback, so a listener's staged signal writes would
             // otherwise wait for an unrelated tick to commit.
-            runtime_shared::driver::spawn_async(async move { crate::events::dispatch(&text) });
+            runtime_shared::driver::spawn_detached(async move { crate::events::dispatch(&text) });
         }
     }));
     if outcome.is_err() {

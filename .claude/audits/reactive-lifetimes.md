@@ -34,7 +34,7 @@ occupant. So the lifetime bugs that matter are:
 
 ## Checklist
 
-- [ ] **Handles captured by long-lived callbacks.** Timers, `spawn_async`
+- [ ] **Handles captured by long-lived callbacks.** Timers, `spawn_detached`
       tasks, platform callbacks, and SDK listeners that capture a `Signal` /
       `Effect` / `Memo` handle must be torn down with the scope that owns the
       handle (`after_ms_scoped`, `raf_loop_scoped`, `spawn_then`, an

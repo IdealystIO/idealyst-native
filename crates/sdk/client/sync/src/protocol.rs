@@ -225,7 +225,7 @@ pub struct PushResponse<T> {
 /// A boxed, non-`Send` future returned by a [`Transport`] call.
 ///
 /// Non-`Send` to match the framework's single-threaded async model
-/// (`spawn_async` → `spawn_local` on web, where futures are inherently
+/// (`spawn_detached` → `spawn_local` on web, where futures are inherently
 /// `!Send`). Mirrors `storage::StorageFuture`'s boxing for the same
 /// object-safety reason, minus the `Send` bound.
 pub type TransportFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, SyncError>> + 'a>>;

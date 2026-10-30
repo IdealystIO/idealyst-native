@@ -1,6 +1,6 @@
 //! Cooperative main-thread async executor for Apple platforms.
 //!
-//! `runtime_shared::driver::spawn_async` falls back to `pollster::block_on`
+//! `runtime_shared::driver::spawn_detached` falls back to `pollster::block_on`
 //! when no executor is installed — it drives a future *to completion on the
 //! calling thread*. That's fine for a short one-shot future (an async
 //! renderer setup), but it FREEZES the main thread for a long-running

@@ -295,7 +295,7 @@ fn visit(path: &str) -> Vec<&'static str> {{
 fn main() {{
     // Queue executor FIRST (OnceLock, first-install-wins): `mount_lazy`
     // resolves `#[component(lazy)]` bodies through
-    // `runtime_shared::driver::spawn_async`, and without an installed
+    // `runtime_shared::driver::spawn_detached`, and without an installed
     // executor that falls back to `pollster::block_on` — which would
     // DEADLOCK the dump on any mount-time pending-forever future (a
     // component kicking off a network fetch). The queue executor polls
@@ -508,7 +508,7 @@ mod dump_wrapper_template_tests {
         // Each half fails independently for the other's regression, so
         // both must exist.
         let (_tmp, _cargo, main) = generate_into_temp();
-        // Installed BEFORE the crawl: `spawn_async` without an executor
+        // Installed BEFORE the crawl: `spawn_detached` without an executor
         // falls back to `pollster::block_on`, which deadlocks the dump on
         // any mount-time pending-forever future.
         assert!(

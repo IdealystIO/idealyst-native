@@ -345,7 +345,7 @@ for the details.
 
 ## Performance properties
 
-- Every primitive is built on `Signal` + `Effect` + `spawn_async`.
+- Every primitive is built on `Signal` + `Effect` + `spawn_detached`.
   No special scheduler, no extra arenas.
 - A `Resource` is `Copy` (two signal handles). `Mutation` and
   `AsyncReducer` are `Rc`-cheap to clone. State signals are `Copy`.

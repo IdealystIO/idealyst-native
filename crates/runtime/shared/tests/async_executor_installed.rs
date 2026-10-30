@@ -1,4 +1,4 @@
-//! `driver::async_executor_installed` reports whether `spawn_async` will
+//! `driver::async_executor_installed` reports whether `spawn_detached` will
 //! return at the first `.await` (an executor) or block (the native fallback).
 #![cfg(all(feature = "async-driver", not(target_arch = "wasm32")))]
 

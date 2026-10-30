@@ -1,15 +1,15 @@
-//! `spawn_async` on GTK must not block the main thread.
+//! `spawn_detached` on GTK must not block the main thread.
 //!
 //! ## The bug this pins
 //!
-//! host-gtk installed no async executor, so `spawn_async` fell back to
+//! host-gtk installed no async executor, so `spawn_detached` fell back to
 //! `pollster::block_on` on the GTK main thread. A future that waits on
 //! another thread — a `use_socket` receive loop — then owned the main thread
 //! until it completed, and a never-ending one froze the window for good at 0%
 //! CPU (Idea Chat: the window died the moment its live connection opened).
 //!
 //! The test spawns a future that waits on a value another thread delivers
-//! 200 ms later. With the blocking fallback `spawn_async` returns only after
+//! 200 ms later. With the blocking fallback `spawn_detached` returns only after
 //! the value arrived; with the executor it returns at the first `.await`, and
 //! the continuation runs later, on the main thread, once the main loop turns.
 //!
@@ -83,7 +83,7 @@ fn regression_spawn_async_does_not_block_the_gtk_main_thread() {
     let ran_before_await = Arc::new(Mutex::new(false));
     {
         let (slot, got, ran) = (slot.clone(), got.clone(), ran_before_await.clone());
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             *ran.lock().unwrap() = true;
             let v = Recv(slot).await;
             *got.lock().unwrap() = Some((v, std::thread::current().id()));
@@ -92,11 +92,11 @@ fn regression_spawn_async_does_not_block_the_gtk_main_thread() {
 
     assert!(
         *ran_before_await.lock().unwrap(),
-        "spawn_async runs the future up to its first `.await` before returning",
+        "spawn_detached runs the future up to its first `.await` before returning",
     );
     assert!(
         got.lock().unwrap().is_none(),
-        "spawn_async must return at the first `.await`; it returned only after the \
+        "spawn_detached must return at the first `.await`; it returned only after the \
          other thread delivered — the main thread was blocked on the future",
     );
 

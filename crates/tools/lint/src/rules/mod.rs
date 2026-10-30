@@ -107,7 +107,7 @@ pub fn all_rules() -> &'static [RuleInfo] {
         RuleInfo {
             id: signal_across_await::RULE,
             default_level: Level::Warn,
-            summary: "a scope-owned signal (local, prop, struct field, or through a closure / callback) touched inside a detached `spawn_async` — after an `.await`, or at all on web where the body starts after the event's flush — aborts with `stale-signal-handle` once the scope is torn down",
+            summary: "a scope-owned signal (local, prop, struct field, or through a closure / callback) touched inside a detached `spawn_detached` — after an `.await`, or at all on web where the body starts after the event's flush — aborts with `stale-signal-handle` once the scope is torn down",
         },
         RuleInfo {
             id: signal_across_await::ANCHOR_RULE,

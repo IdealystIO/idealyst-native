@@ -391,7 +391,7 @@ mod hook_teardown {
     /// Both now return the cleanup from a one-shot effect instead.
     ///
     /// Both hooks connect to loopback port 1, which refuses immediately,
-    /// so the native `spawn_async` fallback (pollster on the calling
+    /// so the native `spawn_detached` fallback (pollster on the calling
     /// thread) returns without blocking the test.
     #[test]
     fn regression_use_socket_teardown_is_not_a_bare_on_cleanup() {

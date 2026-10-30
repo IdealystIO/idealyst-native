@@ -23,9 +23,9 @@
 //!   doesn't flash an empty state on every refetch.
 //!
 //! Gated behind the `async-driver` Cargo feature because it depends on
-//! [`crate::driver::spawn_async`].
+//! [`crate::driver::spawn_detached`].
 
-use crate::driver::spawn_async;
+use crate::driver::spawn_detached;
 use crate::reactive::{on_cleanup, untrack, Effect, Signal, Trackable};
 use std::cell::{Cell, RefCell};
 use std::future::Future;
@@ -313,7 +313,7 @@ where
         let cancel_for_cleanup = cancel.clone();
         on_cleanup(move || cancel_for_cleanup.cancel());
 
-        // Spawn the fetch. `spawn_async` is the framework's
+        // Spawn the fetch. `spawn_detached` is the framework's
         // platform-agnostic executor entry point; on native without
         // an installed executor it falls back to a `pollster::block_on`
         // (synchronous), which is fine for tests + simple native
@@ -323,7 +323,7 @@ where
         let cancel_for_spawn = cancel.clone();
         let state_for_spawn = state;
 
-        spawn_async(async move {
+        spawn_detached(async move {
             let result = fut.await;
 
             // Stale-result guard: only the most-recently-issued fetch
@@ -385,7 +385,7 @@ mod tests {
     use std::task::Poll;
 
     /// A future that's ready immediately with a fixed value — useful
-    /// when we want `spawn_async`'s native pollster fallback to
+    /// when we want `spawn_detached`'s native pollster fallback to
     /// complete synchronously inside the effect body.
     struct ImmediateOk<T>(Option<T>);
     impl<T: Unpin> Future for ImmediateOk<T> {
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn resource_initial_state_resolves_synchronously_via_pollster_fallback() {
-        // On native without an installed async executor, `spawn_async`
+        // On native without an installed async executor, `spawn_detached`
         // falls back to `pollster::block_on`. That means a future
         // that's ready immediately resolves inside the effect body —
         // by the time `resource(...)` returns, `data` is populated.

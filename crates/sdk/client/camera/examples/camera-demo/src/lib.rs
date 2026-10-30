@@ -143,7 +143,7 @@ pub fn app() -> Element {
         }
         started.set(true);
         status.set("Requesting camera…".to_string());
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             let cam = Camera::new();
             match cam.open(CameraConfig::default()).await {
                 Ok(stream) => {

@@ -16,7 +16,7 @@ Flags idiom-drift patterns in idealyst projects, over the project's
 | `snapshot-condition` | warn | hoisted `let ok = x.get()…;` used as a `ui!` `if` condition or `match` scrutinee — a bare plain-value binding is the one condition shape `ui!` lowers statically | `memo(move \|\| …)`, inline the `.get()`, or `.peek()` if intentional (`.get_untracked()` on a `Reactive<T>` prop) |
 | `prefer-keyed-list` | warn | a child list built by hand — `VEC.push(ui! { … })` / `ITER.map(\|x\| ui! { … })` — outside the macro. The map counts only over a visible iterator (`.iter()` / `.into_iter()` / `.values()` / `.enumerate()` / a range / …) or when its result is `.collect()`ed; `Option::map(\|x\| ui! { … })` (an optional child) is never flagged | `ui! { view() { for item in items, key = item.id { … } } }` |
 | `snapshot-loop` | warn | `for item in items.get()` inside a `ui!` / `jsx!` body — a frozen build-time snapshot | `for item in items, key = item.id { … }` (iterate the Signal itself) |
-| `signal-across-await` | warn | a scope-owned signal touched inside a detached `spawn_async` (or the future half of `spawn_then` / `spawn_then_in`). "Scope-owned": a `signal(…)` / `memo(…)` created in a `#[component]` body (incl. one held in a struct field, `form.v`), or — in any fn — a `Signal` / `ReadSignal` / `WriteSignal` / `Memo` parameter or same-file props-struct field (the parent owns it). "Touched": read or written directly, through a local closure / `Rc<dyn Fn>` that touches one, or by calling a callback parameter / props field (`on_done(v)`, `(props.on_done)(v)`) whose caller's closure can't be seen. After an `.await` the scope can die at the flush boundary; **before** the first `.await` (or with none) it can too on web, where the task's first poll is queued behind the spawning event's flush | `spawn_then(future, \|result\| { … })` — the callback runs inside a turn or not at all; for the pre-await part, do it before calling `spawn_async`; also `resource(deps, fetcher)` / `mutation(handler)`, or hoist the signal so it is root-owned |
+| `signal-across-await` | warn | a scope-owned signal touched inside `spawn_detached` (or `spawn_async`, its deprecated name, or the future half of `spawn_then` / `spawn_then_in`). "Scope-owned": a `signal(…)` / `memo(…)` created in a `#[component]` body (incl. one held in a struct field, `form.v`), or — in any fn — a `Signal` / `ReadSignal` / `WriteSignal` / `Memo` parameter or same-file props-struct field (the parent owns it). "Touched": read or written directly, through a local closure / `Rc<dyn Fn>` that touches one, or by calling a callback parameter / props field (`on_done(v)`, `(props.on_done)(v)`) whose caller's closure can't be seen. After an `.await` the scope can die at the flush boundary; **before** the first `.await` (or with none) it can too on web, where the task's first poll is queued behind the spawning event's flush | `spawn_then(future, \|result\| { … })` — the callback runs inside a turn or not at all; for the pre-await part, do it before calling `spawn_detached`; also `resource(deps, fetcher)` / `mutation(handler)`, or hoist the signal so it is root-owned |
 | `spawn-then-handler-anchor` | warn | a closure that writes a component signal and calls a bare `spawn_then`, where that signal shapes the same fn's `ui!` tree (a `loading =` / `disabled =` prop on a non-`Button` tag, or an `if` / `match` condition) and the closure isn't wrapped by `ScopeAlive::wrap*` / `run_within`. The task anchors to the handler's control; the write rebuilds it and the callback is silently dropped (spinner forever) | `let alive = ScopeAlive::current();` in the component body, then `spawn_then_in(&alive, future, \|result\| { … })` (or `alive.wrap0(handler)`). idea-ui's `Button` already re-anchors its `on_click`, so its `loading` prop is not evidence |
 
 > **Why un-expanded source?** After macro expansion, `signal(0)` *is*
@@ -30,7 +30,7 @@ Flags idiom-drift patterns in idealyst projects, over the project's
 > see inside — `snapshot-condition`, `snapshot-loop` — deliberately tokenize
 > the visible `ui!` / `jsx!` invocation bodies and scan lexically, and
 > `signal-across-await` re-parses `effect! { … }` bodies as real blocks,
-> because the mount-time-load idiom puts the `spawn_async` in there. `vec![…]`
+> because the mount-time-load idiom puts the `spawn_detached` in there. `vec![…]`
 > is re-parsed too — it's plain expressions, and it's where a hand-built
 > child list lives.)
 
@@ -76,14 +76,14 @@ passes a root-owned closure, suppress that line with the reason; otherwise
 route the callback through `spawn_then(future, move |r| on_done(r))`, which
 runs it only while the calling scope is alive.
 
-Why the pre-await prelude is reported: on web, `spawn_async` hands the
+Why the pre-await prelude is reported: on web, `spawn_detached` hands the
 future to web-glue's executor, whose drain loop runs every queued
 microtask — and the dispatch's flush is one — before it polls any task. So
 `busy.set(true); fetch().await;` runs *after* the flush of the event that
 spawned it. Apple and Android poll the first segment synchronously inside
 `spawn`, so there it runs in the caller's turn; the rule reports the web
 behaviour, which is the one that aborts. Doing the synchronous part before
-calling `spawn_async` is correct everywhere.
+calling `spawn_detached` is correct everywhere.
 
 ## CLI
 

@@ -86,7 +86,7 @@ pub fn app() -> Element {
     let on_docs = move || {
         status.set("Opening file picker…".to_string());
         info.set(String::new());
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             // Empty filter = any file; multi-select on.
             run_pick(
                 PickRequest::documents(Vec::<String>::new()).multiple(),
@@ -100,7 +100,7 @@ pub fn app() -> Element {
     let on_photos = move || {
         status.set("Opening photo picker…".to_string());
         info.set(String::new());
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             run_pick(
                 PickRequest::media(MediaKind::ImagesAndVideos).multiple(),
                 status,

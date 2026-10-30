@@ -123,7 +123,7 @@ pub fn app() -> Element {
     let dz = FileDropZone::new().on_drop(move |files| {
         status.set("Reading dropped file(s)…".to_string());
         info.set(String::new());
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             report_drop(files, status, info).await;
         });
     });

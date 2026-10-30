@@ -19,12 +19,12 @@ recipe!(
     Pcm,
     /// A button that fires a synthesized laser. The sound is rendered once
     /// (pure Rust, deterministic), encoded to WAV and loaded as an
-    /// `audio::Sound` up front via `spawn_async`; each press starts a fresh
+    /// `audio::Sound` up front via `spawn_detached`; each press starts a fresh
     /// `Playback`. The active `Playback` lives in a `RefCell` slot — RAII, no
     /// `mem::forget` — so the sound isn't cut off when the press closure
     /// returns.
     pub fn laser_on_press() -> ::runtime_core::Element {
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::ui;
         use ::std::cell::RefCell;
         use ::std::rc::Rc;
@@ -39,7 +39,7 @@ recipe!(
         // Load once (async: WAV -> the platform player).
         let sound: Rc<RefCell<Option<::audio::Sound>>> = Rc::new(RefCell::new(None));
         let ready = sound.clone();
-        spawn_async(async move {
+        spawn_detached(async move {
             if let Ok(s) = laser.load().await {
                 *ready.borrow_mut() = Some(s);
             }
@@ -67,7 +67,7 @@ recipe!(
     /// returned `Voice` can be dropped — and "Stop" finalizes the file.
     pub fn record_game_audio() -> ::runtime_core::Element {
         use ::media_writer::{MediaInputs, MediaWriter, RecordConfig, Recording};
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::ui;
         use ::std::cell::RefCell;
         use ::std::rc::Rc;
@@ -79,7 +79,7 @@ recipe!(
         let recording: Rc<RefCell<Option<Recording>>> = Rc::new(RefCell::new(None));
         let slot = recording.clone();
         let stream = mixer.stream();
-        spawn_async(async move {
+        spawn_detached(async move {
             let Ok(store) = ::files::app_files("recordings") else { return };
             let config = RecordConfig::new(store, "game-audio.mp4");
             if let Ok(rec) = MediaWriter::new().record(MediaInputs::audio(&stream), config).await {
@@ -93,7 +93,7 @@ recipe!(
         };
         let stop = move || {
             if let Some(rec) = recording.borrow_mut().take() {
-                spawn_async(async move {
+                spawn_detached(async move {
                     let _path = rec.stop().await;
                 });
             }

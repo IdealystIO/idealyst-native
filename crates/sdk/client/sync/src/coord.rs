@@ -272,7 +272,7 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Shar
     pub fn open(engine: SyncEngine, name: &str, transport: Rc<dyn Transport<T>>) -> Self {
         let inner = Rc::new(SharedInner::new(engine, name, transport));
         let owner = inner.clone();
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             let _ = become_owner(owner).await;
         });
         SharedPartition { inner }
@@ -327,7 +327,7 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Shar
         let inner_for_lock = Rc::downgrade(&inner);
         let request = web::request_leadership(&format!("sync-leader:{name}"), move || {
             let Some(inner) = inner_for_lock.upgrade() else { return };
-            runtime_core::driver::spawn_async(async move {
+            runtime_core::driver::spawn_detached(async move {
                 let _ = become_owner(inner).await;
             });
         });
@@ -454,7 +454,7 @@ fn handle_msg<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'sta
         CoordMsg::Upsert { id, value } => {
             if let Some(p) = inner.owner.borrow().clone() {
                 if let Ok(value) = serde_json::from_str::<T>(&value) {
-                    runtime_core::driver::spawn_async(async move {
+                    runtime_core::driver::spawn_detached(async move {
                         if p.upsert(Id(id), value).await.is_ok() {
                             let _ = p.flush().await;
                         }
@@ -464,7 +464,7 @@ fn handle_msg<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'sta
         }
         CoordMsg::Delete { id } => {
             if let Some(p) = inner.owner.borrow().clone() {
-                runtime_core::driver::spawn_async(async move {
+                runtime_core::driver::spawn_detached(async move {
                     if p.delete(Id(id)).await.is_ok() {
                         let _ = p.flush().await;
                     }
@@ -473,7 +473,7 @@ fn handle_msg<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'sta
         }
         CoordMsg::SyncNow => {
             if let Some(p) = inner.owner.borrow().clone() {
-                runtime_core::driver::spawn_async(async move {
+                runtime_core::driver::spawn_detached(async move {
                     let _ = p.sync_now().await;
                 });
             }

@@ -91,7 +91,7 @@ per-phase backstops. Without a timeout, NSURLSession keeps its system 60 s
 idle default and HttpURLConnection waits indefinitely.
 
 Every arm can be awaited from any executor — the framework's own
-`spawn_async` driver, a park/unpark loop, a tokio runtime — and none needs an
+`spawn_detached` driver, a park/unpark loop, a tokio runtime — and none needs an
 ambient async runtime from the caller: WebSocket and desktop SSE drive a
 blocking I/O worker thread and bridge to `.await` through `futures-channel`;
 web/Apple/Android HTTP use the OS event loop. Desktop HTTP (reqwest) runs

@@ -51,7 +51,7 @@ runtime_tls::thread_local! {
 ///
 /// Also installs the cooperative async executor
 /// ([`crate::imp::async_executor::install_async_executor`]) so
-/// `runtime_shared::driver::spawn_async` polls futures on the main looper
+/// `runtime_shared::driver::spawn_detached` polls futures on the main looper
 /// instead of falling back to `pollster::block_on` (which would FREEZE the
 /// main thread — a hard ANR for any future that needs the looper to make
 /// progress, e.g. the `camera` SDK's main-thread Camera2 setup). Matches the

@@ -1,6 +1,6 @@
 //! Cooperative UI-thread async executor for the Win32 host.
 //!
-//! Without an installed executor `runtime_core::driver::spawn_async` falls
+//! Without an installed executor `runtime_core::driver::spawn_detached` falls
 //! back to `pollster::block_on`: it drives the future to completion ON THE
 //! CALLING THREAD — the UI thread. Every async SDK call (a storage write, a
 //! clipboard read, an HTTP request, an update check) would freeze the window
@@ -140,7 +140,7 @@ mod tests {
         }
     }
 
-    /// `spawn_async` used `pollster::block_on` on Windows (no executor was
+    /// `spawn_detached` used `pollster::block_on` on Windows (no executor was
     /// installed), so a future awaiting a value from another thread blocked
     /// the UI thread until that value arrived — the call returned only
     /// after the sender ran. Now it returns at the first `.await` and the
@@ -169,12 +169,12 @@ mod tests {
         let ui_thread = std::thread::current().id();
         let ran_on = std::rc::Rc::new(Cell::new(None));
         let r = ran_on.clone();
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             let v = Recv(slot).await;
             r.set(Some(std::thread::current().id()));
             g.set(Some(v));
         });
-        assert!(!sent.load(Ordering::SeqCst), "spawn_async returned before the value was sent");
+        assert!(!sent.load(Ordering::SeqCst), "spawn_detached returned before the value was sent");
         assert_eq!(got.get(), None);
 
         let deadline = Instant::now() + Duration::from_secs(5);

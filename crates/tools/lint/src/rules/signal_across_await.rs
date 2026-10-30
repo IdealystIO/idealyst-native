@@ -7,7 +7,7 @@
 //! fn EditReport(id: ReportId) -> Element {
 //!     let busy = signal(false);          // owned by THIS component's scope
 //!     let on_save = move || {
-//!         spawn_async(async move {
+//!         spawn_detached(async move {
 //!             save_report(id).await;     // ← scope can die here
 //!             busy.set(false);           // ← writes a freed slot: abort
 //!         });
@@ -18,7 +18,7 @@
 //!
 //! # Why the task body is the dangerous place
 //!
-//! `spawn_async` is fully detached — it has no relationship with the scope
+//! `spawn_detached` is fully detached — it has no relationship with the scope
 //! that spawned it — and two things put a teardown between the spawn and
 //! the line that touches the signal:
 //!
@@ -73,7 +73,8 @@
 //!
 //! # Detection
 //!
-//! Only inside an `async` block passed to `spawn_async(…)`, or to the
+//! Only inside an `async` block passed to `spawn_detached(…)` (or
+//! `spawn_async(…)`, its deprecated name), or to the
 //! FUTURE half of `spawn_then(…)` / `spawn_then_in(…)` (the callback is
 //! where signal work belongs and is never scanned); a block handed to any
 //! other spawner never matches.
@@ -105,7 +106,7 @@
 //! # What it deliberately misses
 //!
 //! Signals that reach the task through `inject`, or through a struct
-//! declared in another file; a `spawn_async` written inline inside a `ui!`
+//! declared in another file; a `spawn_detached` written inline inside a `ui!`
 //! prop (that body is a DSL and does not re-parse as Rust); and the
 //! cross-scope case where a *surviving* effect reads a signal owned by a
 //! dying scope. All need ownership information this rule does not have.
@@ -141,7 +142,8 @@ pub(crate) const ANCHOR_RULE: &str = "spawn-then-handler-anchor";
 /// Spawners whose async body this rule inspects, and which argument
 /// holds it.
 ///
-/// - `spawn_async(fut)` — fully detached; every async-block argument is
+/// - `spawn_detached(fut)`, and `spawn_async(fut)`, its deprecated name
+///   that apps still call — fully detached; every async-block argument is
 ///   in scope for the rule.
 /// - `spawn_then(fut, then)` / `spawn_then_in(&alive, fut, then)` — the
 ///   scope-safe forms. Their **callback** is exactly where signal work
@@ -151,7 +153,12 @@ pub(crate) const ANCHOR_RULE: &str = "spawn-then-handler-anchor";
 /// A block handed to any other spawner never matches, which is the
 /// forward-compatible escape hatch.
 const INSPECTED_SPAWNERS: &[(&str, Option<usize>)] =
-    &[("spawn_async", None), ("spawn_then", Some(0)), ("spawn_then_in", Some(1))];
+    &[
+        ("spawn_detached", None),
+        ("spawn_async", None),
+        ("spawn_then", Some(0)),
+        ("spawn_then_in", Some(1)),
+    ];
 
 /// Signal operations that route through the arena and therefore abort on a
 /// stale handle. Split by class so the message can say which half died.
@@ -475,12 +482,12 @@ impl<'ast> Visit<'ast> for DetachedSpawnFinder {
 
     /// `syn`'s visitor does not descend into macro token streams, and
     /// `effect!{ … }` is exactly where mount-time loads live — the
-    /// "fetch on open" idiom is an `effect!` wrapping a `spawn_async`.
+    /// "fetch on open" idiom is an `effect!` wrapping a `spawn_detached`.
     /// Re-parse the body as a block so the walk continues inside it.
     /// Spans survive `parse2`, so reported positions stay correct.
     ///
     /// Only `effect!` is re-entered: its body is ordinary Rust. `ui!` /
-    /// `jsx!` bodies are a DSL that would not parse, so a `spawn_async`
+    /// `jsx!` bodies are a DSL that would not parse, so a `spawn_detached`
     /// written inline in an `on_click` prop inside `ui!` is a known miss.
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
         if let Some(block) = effect_body(node) {
@@ -536,7 +543,7 @@ fn diag_for(hit: &Hit, after_await: bool) -> RawDiag {
         "after an `.await` in a detached task — if that scope is torn down while the task \
          is in flight"
     } else {
-        "inside `spawn_async`, which does not run its body in this turn (on web the first \
+        "inside `spawn_detached`, which does not run its body in this turn (on web the first \
          poll is queued behind this event's flush) — if that flush tears the scope down"
     };
     let (message, is_write) = match &hit.kind {
@@ -592,7 +599,7 @@ fn help_for(after_await: bool, is_write: bool, kind: &HitKind) -> String {
         )
     } else {
         String::from(
-            "do the synchronous part BEFORE calling `spawn_async` (and drop the spawn \
+            "do the synchronous part BEFORE calling `spawn_detached` (and drop the spawn \
              entirely if the body never awaits); put work that needs the result in \
              `spawn_then(future, |result| { … })`'s callback, which runs inside a turn or \
              not at all.",
@@ -1302,7 +1309,7 @@ mod tests {
 fn EditReport() -> Element {
     let busy = signal(false);
     let on_save = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             save_report().await;
             busy.set(false);
         });
@@ -1329,7 +1336,7 @@ fn EditReport() -> Element {
 fn A() -> Element {
     let busy = signal(false);
     let go = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             busy.set(true);
             fetch().await;
         });
@@ -1341,9 +1348,32 @@ fn A() -> Element {
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(is_deferred(&out[0]), "{out:?}");
         assert!(
-            out[0].help.as_deref().unwrap_or_default().contains("BEFORE calling `spawn_async`"),
+            out[0].help.as_deref().unwrap_or_default().contains("BEFORE calling `spawn_detached`"),
             "{out:?}"
         );
+    }
+
+    /// `spawn_async` is deprecated but still compiles, so app code written
+    /// against it must stay covered.
+    #[test]
+    fn flags_the_deprecated_spawn_async_name() {
+        let out = diags(
+            r#"
+#[component]
+fn EditReport() -> Element {
+    let busy = signal(false);
+    let on_save = move || {
+        spawn_async(async move {
+            save_report().await;
+            busy.set(false);
+        });
+    };
+    ui! { view() {} }
+}
+"#,
+        );
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].message.contains("busy"), "{out:?}");
     }
 
     #[test]
@@ -1356,7 +1386,7 @@ fn A() -> Element {
 fn A() -> Element {
     let load_error = signal(None);
     let go = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             let sheet = match timesheet().await {
                 Ok(s) => s,
                 Err(e) => {
@@ -1384,7 +1414,7 @@ fn A() -> Element {
 fn A() -> Element {
     let scoped = signal(0);
     let go = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             thing().await;
             global.set(scoped.get());
         });
@@ -1410,7 +1440,7 @@ fn A() -> Element {
     let busy = signal(false);
     let dirty = signal(false);
     let go = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             save().await;
             busy.set(false);
             dirty.set(false);
@@ -1432,7 +1462,7 @@ fn A() -> Element {
 fn A() -> Element {
     let rows = signal(0);
     let go = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             save().await;
             refresh().await;
             rows.set(1);
@@ -1453,7 +1483,7 @@ fn A() -> Element {
 fn A() -> Element {
     let (count, set_count) = signal(0).split();
     let go = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             load().await;
             set_count.set(1);
         });
@@ -1473,7 +1503,7 @@ fn A() -> Element {
 fn A() -> Element {
     let store = make_store();
     let go = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             load().await;
             store.set(1);
         });
@@ -1516,7 +1546,7 @@ fn A() -> Element {
 fn A() -> Element {
     let busy = signal(false);
     let go = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             busy.set(false);
         });
     };
@@ -1536,7 +1566,7 @@ fn A() -> Element {
 fn app() -> Element {
     let busy = signal(false);
     let go = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             save().await;
             busy.set(false);
         });
@@ -1559,7 +1589,7 @@ fn app() -> Element {
 fn A() -> Element {
     let busy = signal(false);
     let go = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             let inner = async { fetch().await };
             busy.set(true);
         });
@@ -1580,7 +1610,7 @@ fn A() -> Element {
 fn A() -> Element {
     let busy = signal(false);
     let go = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             save().await;
             if busy.is_alive() {
                 busy.set(false);
@@ -1603,7 +1633,7 @@ fn A() -> Element {
     let busy = signal(false);
     let write_error = signal(None);
     let go = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             let wrote = save().await;
             if !busy.is_alive() {
                 return;
@@ -1632,7 +1662,7 @@ fn A() -> Element {
 fn A() -> Element {
     let busy = signal(false);
     let go = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             save().await;
             if !busy.is_alive() {
                 log("gone");
@@ -1657,7 +1687,7 @@ fn A() -> Element {
     let busy = signal(false);
     let rows = signal(0);
     let go = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             save().await;
             if busy.is_alive() {
                 busy.set(false);
@@ -1676,7 +1706,7 @@ fn A() -> Element {
 
     #[test]
     fn descends_into_an_effect_macro_body() {
-        // The mount-time load idiom: `effect!` wrapping a `spawn_async`.
+        // The mount-time load idiom: `effect!` wrapping a `spawn_detached`.
         // `syn` does not walk macro bodies, so this needs the re-parse.
         let out = diags(
             r#"
@@ -1685,7 +1715,7 @@ fn A() -> Element {
     let loading = signal(false);
     effect!({
         loading.set(true);
-        spawn_async(async move {
+        spawn_detached(async move {
             fetch().await;
             loading.set(false);
         });
@@ -1722,7 +1752,7 @@ fn A() -> Element {
     #[test]
     fn spawn_then_future_half_is_still_scanned() {
         // Signals do not belong in the IO half; after an await there it
-        // is the same bug as a raw `spawn_async`.
+        // is the same bug as a raw `spawn_detached`.
         let out = diags(
             r#"
 #[component]
@@ -1758,7 +1788,7 @@ fn A() -> Element {
 fn A() -> Element {
     let n = signal(0u32);
     let bump = move || n.set(n.get() + 1);
-    spawn_async(async move { let _ = fetch().await; bump(); });
+    spawn_detached(async move { let _ = fetch().await; bump(); });
     ui! { view() {} }
 }
 "#,
@@ -1778,7 +1808,7 @@ fn A() -> Element {
     let n = signal(0u32);
     let on_done: Rc<dyn Fn(u32)> = Rc::new(move |v| n.set(v));
     let cb = on_done.clone();
-    spawn_async(async move { let v = fetch().await; cb(v); });
+    spawn_detached(async move { let v = fetch().await; cb(v); });
     ui! { view() {} }
 }
 "#,
@@ -1794,7 +1824,7 @@ fn A() -> Element {
             r#"
 #[component]
 pub fn Row(n: Signal<u32>) -> Element {
-    spawn_async(async move { let v = fetch().await; n.set(v); });
+    spawn_detached(async move { let v = fetch().await; n.set(v); });
     ui! { view() {} }
 }
 "#,
@@ -1816,7 +1846,7 @@ pub struct RowProps { pub n: Signal<u32>, pub label: String }
 pub fn Row(props: &RowProps) -> Element {
     let n = props.n;
     let label = props.label.clone();
-    spawn_async(async move { let v = fetch().await; props.n.set(v); });
+    spawn_detached(async move { let v = fetch().await; props.n.set(v); });
     ui! { view() {} }
 }
 "#,
@@ -1836,7 +1866,7 @@ struct Form { v: Signal<u32>, count: u32 }
 #[component]
 fn A() -> Element {
     let form = Form { v: signal(0), count: 0 };
-    spawn_async(async move { let v = fetch().await; form.v.set(v); let c = form.count; });
+    spawn_detached(async move { let v = fetch().await; form.v.set(v); let c = form.count; });
     ui! { view() {} }
 }
 "#,
@@ -1854,7 +1884,7 @@ fn A() -> Element {
 #[component]
 fn A() -> Element {
     let form = Form { v: signal(0) };
-    spawn_async(async move { let v = fetch().await; form.v.set(v); });
+    spawn_detached(async move { let v = fetch().await; form.v.set(v); });
     ui! { view() {} }
 }
 "#,
@@ -1869,7 +1899,7 @@ fn A() -> Element {
         let out = diags(
             r#"
 pub fn start(on_err: Rc<dyn Fn(String)>) {
-    spawn_async(async move { let _ = fetch().await; on_err("x".into()); });
+    spawn_detached(async move { let _ = fetch().await; on_err("x".into()); });
 }
 "#,
         );
@@ -1887,7 +1917,7 @@ pub fn start(on_err: Rc<dyn Fn(String)>) {
             "fn start(cb: Box<dyn FnMut()>)",
         ] {
             let src = format!(
-                "{sig} {{ spawn_async(async move {{ fetch().await; cb(); }}); }}"
+                "{sig} {{ spawn_detached(async move {{ fetch().await; cb(); }}); }}"
             );
             let out = diags(&src);
             assert_eq!(out.len(), 1, "{sig} → {out:?}");
@@ -1901,7 +1931,7 @@ pub fn start(on_err: Rc<dyn Fn(String)>) {
             r#"
 impl Uploader {
     pub fn start(&self, on_done: Rc<dyn Fn()>) {
-        spawn_async(async move { upload().await; on_done(); });
+        spawn_detached(async move { upload().await; on_done(); });
     }
 }
 "#,
@@ -1919,7 +1949,7 @@ pub struct SaveProps { pub on_done: Rc<dyn Fn()> }
 
 #[component]
 pub fn Save(props: &SaveProps) -> Element {
-    spawn_async(async move { save().await; (props.on_done)(); });
+    spawn_detached(async move { save().await; (props.on_done)(); });
     ui! { view() {} }
 }
 "#,
@@ -1950,7 +1980,7 @@ pub fn start(on_err: Rc<dyn Fn(String)>) {
 fn A() -> Element {
     let n = signal(0u32);
     let log = move |s: &str| println!("{s}");
-    spawn_async(async move { fetch().await; log("done"); });
+    spawn_detached(async move { fetch().await; log("done"); });
     ui! { view() {} }
 }
 "#,
@@ -1968,7 +1998,7 @@ fn A() -> Element {
     let n = signal(0u32);
     let a = move || n.set(1);
     let b = move || a();
-    spawn_async(async move { fetch().await; b(); });
+    spawn_detached(async move { fetch().await; b(); });
     ui! { view() {} }
 }
 "#,

@@ -8,7 +8,7 @@
 //! the persistent home screen. "Admin exit" stands in for the admin-password
 //! flow a real kiosk puts in front of `stop_lock_task()`.
 
-use runtime_core::driver::spawn_async;
+use runtime_core::driver::spawn_detached;
 use runtime_core::{signal, text, ui, Element, Signal};
 
 /// The installed versionCode, shown so an update is visible on screen.
@@ -22,7 +22,7 @@ fn version_label() -> String {
 
 pub fn app() -> Element {
     let status: Signal<String> = signal("Locking…".to_string());
-    spawn_async(async move {
+    spawn_detached(async move {
         status.set(match device_admin::start_lock_task().await {
             Ok(true) => "Locked in by the device owner".to_string(),
             Ok(false) => "Not allow-listed: Android asked to pin the app".to_string(),
@@ -31,7 +31,7 @@ pub fn app() -> Element {
     });
 
     let exit = move || {
-        spawn_async(async move {
+        spawn_detached(async move {
             status.set(match device_admin::stop_lock_task().await {
                 Ok(_) => "Unlocked by admin".to_string(),
                 Err(e) => format!("Unlock failed: {e}"),

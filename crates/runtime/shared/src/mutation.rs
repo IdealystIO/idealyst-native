@@ -12,9 +12,9 @@
 //! race — only the most recent trigger's result is applied.
 //!
 //! Gated behind the `async-driver` Cargo feature because it depends on
-//! [`crate::driver::spawn_async`].
+//! [`crate::driver::spawn_detached`].
 
-use crate::driver::spawn_async;
+use crate::driver::spawn_detached;
 use crate::reactive::Signal;
 use std::cell::Cell;
 use std::future::Future;
@@ -149,7 +149,7 @@ impl<I: 'static, T: Clone + 'static, E: Clone + 'static> Mutation<I, T, E> {
         let sequence = self.sequence.clone();
         let state = self.state;
 
-        spawn_async(async move {
+        spawn_detached(async move {
             let result = fut.await;
             if sequence.get() != my_seq {
                 // A newer trigger has superseded this one.
@@ -276,7 +276,7 @@ mod tests {
     use std::cell::RefCell;
 
     /// Future that's ready immediately with an `Ok` — under
-    /// `spawn_async`'s native pollster fallback this resolves
+    /// `spawn_detached`'s native pollster fallback this resolves
     /// synchronously inside `trigger`'s body, which keeps the tests
     /// non-async.
     struct ImmediateOk<T>(Option<T>);

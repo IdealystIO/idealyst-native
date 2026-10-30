@@ -927,14 +927,14 @@ pub use runtime_shared::user_activity::UserActivityListener;
 pub use runtime_shared::pointer_input::{
     AppPointerEvent, MouseButton, PointerListener, PointerOutcome, PointerPhase,
 };
-// `driver` (spawn_async + render_loop) is gated by `async-driver`; apps
+// `driver` (spawn_detached + render_loop) is gated by `async-driver`; apps
 // that reach `runtime_shared::driver` through `runtime_core` enable
 // `runtime-core/async-driver` (which forwards here).
 #[cfg(feature = "async-driver")]
 pub use runtime_shared::driver;
 // `spawn_then` — the scope-safe imperative spawn: IO in the future, every
 // signal read/write in a sync callback that runs inside a turn or not at
-// all. Prefer it over reaching into `driver::spawn_async` directly; see
+// all. Prefer it over reaching into `driver::spawn_detached` directly; see
 // `crate::scoped_spawn` for the guarantee.
 #[cfg(feature = "async-driver")]
 pub use crate::scoped_spawn::{spawn_then, spawn_then_in};

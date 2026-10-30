@@ -268,7 +268,7 @@ pub fn app() -> Element {
     let warm: Rc<RefCell<Option<WarmPipeline>>> = Rc::new(RefCell::new(None));
     {
         let warm = warm.clone();
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             let denoiser = match make_denoiser().await {
                 Ok(d) => d,
                 Err(e) => {
@@ -384,7 +384,7 @@ pub fn app() -> Element {
             let recs = recs.clone();
             let capturing = capturing.clone();
             let relay_writer = relay_writer.clone();
-            runtime_core::driver::spawn_async(async move {
+            runtime_core::driver::spawn_detached(async move {
                 let mic = Microphone::new();
                 let mic = match mic.open_stream(AudioStreamConfig::default().mono()).await {
                     Ok(s) => s,
@@ -479,7 +479,7 @@ pub fn app() -> Element {
             den_wave.set(den_env.borrow().clone());
 
             let live = live.clone();
-            runtime_core::driver::spawn_async(async move {
+            runtime_core::driver::spawn_detached(async move {
                 let raw_path = raw_rec.stop().await;
                 let clean_path = clean_rec.stop().await;
                 // Drop the per-recording handles → mic closes + forwarding stops.

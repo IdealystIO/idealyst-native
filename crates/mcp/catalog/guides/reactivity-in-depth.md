@@ -269,7 +269,7 @@ intended.
 
   ```rust
   // NO — the tail runs after navigation dropped the screen
-  spawn_async(async move {
+  spawn_detached(async move {
       let saved = save_report(id).await;
       nav.push(Route::Report(saved.id));
       busy.set(false);                     // stale-signal-handle
@@ -297,10 +297,16 @@ intended.
   including writes through a closure or callback the task calls, signal
   props, and struct-held signals.
 
+  `spawn_detached` is for work that must outlive the scope that started it:
+  a storage write-through, a sync loop, a background upload. It was called
+  `spawn_async`; that name still compiles, deprecated, because it read as
+  "the way to run async code" and handlers reached for it to update the
+  screen.
+
   Two more edges of the same bug. **The prelude is not safe either on web:**
   the task's first poll is queued behind the spawning event's flush, so a
   `busy.set(true)` *before* the first `.await` can still land on a freed
-  slot — do it before calling `spawn_async`. **A handler whose own write
+  slot — do it before calling `spawn_detached`. **A handler whose own write
   rebuilds its control drops a bare `spawn_then`:** a call spawned from a
   handler is anchored to the node that mounted it, so `busy.set(true)` with
   `busy` driving that control's `loading` / `disabled` / `if` tears the

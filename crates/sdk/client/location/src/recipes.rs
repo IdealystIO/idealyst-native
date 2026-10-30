@@ -25,7 +25,7 @@ recipe!(
     /// updates.
     pub fn position_on_press() -> ::runtime_core::Element {
         use crate::{current, LocationError};
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::{signal, text, ui, Signal};
 
         // The text the button updates: prompt → fix coordinates (or an error).
@@ -35,7 +35,7 @@ recipe!(
             label.set("Locating…".to_string());
             // `current()` is async (it awaits the permission grant, then a
             // fix); spawn it off the press handler and write the result back.
-            spawn_async(async move {
+            spawn_detached(async move {
                 match current().await {
                     Ok(pos) => label.set(format!(
                         "{:.5}, {:.5} (±{:.0} m)",

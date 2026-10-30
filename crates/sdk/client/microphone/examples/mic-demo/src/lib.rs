@@ -114,7 +114,7 @@ pub fn app() -> Element {
         }
         started.set(true);
         status.set("Requesting microphone…".to_string());
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             let mic = Microphone::new();
             // 16 kHz mono, the rate speech services take: no device runs at
             // it, so every target produces it by resampling — the path a

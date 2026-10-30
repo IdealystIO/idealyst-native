@@ -282,7 +282,7 @@ pub fn scene_app() -> Element {
 // `text_input` / `text_area` primitives do exist if you want to swap in
 // a real entry field), toggle (per-row button).
 //
-// Server-fn calls happen inside `spawn_async`-backed event
+// Server-fn calls happen inside `spawn_detached`-backed event
 // handlers. `list_todos` / `create_todo` etc. are the macro-
 // generated stubs from above — same names the server bin has
 // inventory entries for.

@@ -94,7 +94,7 @@ over a view that accepts. Dropped files carry real paths. Source:
 Timers, animation frames and async work all run on the UI thread, from the
 host's message pump. A worker thread tracks deadlines and wakes the pump
 with one posted message at a time, so a slow frame never queues wakes ahead
-of input. `spawn_async` polls a future only up to its next `.await`; when
+of input. `spawn_detached` polls a future only up to its next `.await`; when
 something wakes it, from any thread, the pump polls it again. A future that
 waits on another thread (a network reply, an OS event) therefore never
 blocks the window, and its continuation, which may write signals, runs on

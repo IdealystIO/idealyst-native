@@ -154,7 +154,7 @@ pub fn app() -> Element {
     // reload, this restores the logged-in state without re-entering creds.
     {
         effect!({
-            runtime_core::driver::spawn_async(async move {
+            runtime_core::driver::spawn_detached(async move {
                 if let Ok(name) = me().await {
                     user.set(Some(name.clone()));
                     status.set(format!("Welcome back, {name}"));
@@ -169,7 +169,7 @@ pub fn app() -> Element {
             password: password.get(),
         };
         status.set("Logging in…".to_string());
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             match login(creds).await {
                 Ok(ok) => {
                     // Native: persist the bearer token in the OS keystore.
@@ -189,7 +189,7 @@ pub fn app() -> Element {
     };
 
     let on_me = move || {
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             match me().await {
                 Ok(name) => protected.set(format!("Protected call says: you are {name}")),
                 Err(e) => protected.set(format!("Protected call rejected: {}", err_msg(e))),
@@ -198,7 +198,7 @@ pub fn app() -> Element {
     };
 
     let on_logout = move || {
-        runtime_core::driver::spawn_async(async move {
+        runtime_core::driver::spawn_detached(async move {
             let _ = logout().await;
             clear_session_token(); // native: drop the keystore token (no-op on web)
             user.set(None);

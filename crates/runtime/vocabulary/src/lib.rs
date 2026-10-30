@@ -285,7 +285,7 @@ pub mod robot_watch;
 #[doc(hidden)]
 pub mod dropped_work;
 // `spawn_then` — detached IO, result applied inside a turn (feature
-// `async-driver`, same gate as the `spawn_async` it builds on).
+// `async-driver`, same gate as the `spawn_detached` it builds on).
 #[cfg(feature = "async-driver")]
 pub mod scoped_spawn;
 pub mod scoped_scheduling;

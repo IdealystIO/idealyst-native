@@ -487,7 +487,7 @@ impl Inner {
         }
         this.status.set(Status::Checking);
         let this = this.clone();
-        runtime_shared::driver::spawn_async(async move {
+        runtime_shared::driver::spawn_detached(async move {
             let answered_by = match Inner::answer(&this).await {
                 Ok((answer, by)) => {
                     let _ = std::fs::write(this.cache.join(ANSWER_FILE), answer.to_json());
@@ -666,7 +666,7 @@ impl Inner {
             return;
         };
         let this = this.clone();
-        runtime_shared::driver::spawn_async(async move {
+        runtime_shared::driver::spawn_detached(async move {
             if let Err(e) = Inner::install(&this, &bundle, &release, true).await {
                 this.status.set(Status::Failed(e));
             }

@@ -27,7 +27,7 @@
 //! issued after the turn that wrote the signal, not inside it.
 
 use crate::{platform_storage, Storage};
-use runtime_core::driver::spawn_async;
+use runtime_core::driver::spawn_detached;
 use runtime_core::{signal, watch, Signal};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -113,7 +113,7 @@ where
             };
             let store = store.clone();
             let key = key.clone();
-            spawn_async(async move {
+            spawn_detached(async move {
                 let _ = store.set(&key, &raw).await;
             });
         })
@@ -124,7 +124,7 @@ where
     // touched guard); on native the executor may run it inline at creation.
     {
         let st = st.clone();
-        spawn_async(async move {
+        spawn_detached(async move {
             if let Ok(Some(raw)) = store.get(&key_owned).await {
                 if let Ok(v) = serde_json::from_str::<T>(&raw) {
                     apply_hydration(sig, &st, v);
@@ -167,7 +167,7 @@ mod tests {
         world(|| {
             let store = mem_with("n", "\"saved\"");
             let sig = persisted_signal_with::<String>(store, "n", "initial".into());
-            // Native spawn_async is inline → hydration already staged.
+            // Native spawn_detached is inline → hydration already staged.
             flush();
             assert_eq!(sig.peek(), "saved");
         });

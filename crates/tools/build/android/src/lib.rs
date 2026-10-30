@@ -315,9 +315,9 @@ fn generate_wrapper(
     // bridge spells directly (`robot::bridge`, `set_initial_path`).
     let runtime_core_dep = source.dep("crates/runtime/core", &[]);
     let shared_dep = source.dep("crates/runtime/shared", &[]);
-    // `async-driver` brings in `spawn_async` + the executor wiring
+    // `async-driver` brings in `spawn_detached` + the executor wiring
     // backend-android installs through `install_render_loop`. Without
-    // it the framework's `spawn_async` is a no-op and any async path
+    // it the framework's `spawn_detached` is a no-op and any async path
     // (the website's `Simulator` calling `host_wgpu::mount(...).await`,
     // SDK code awaiting GPU init) silently never resolves — the
     // simulator's wgpu surface stays blank. Mirrors the iOS wrapper,

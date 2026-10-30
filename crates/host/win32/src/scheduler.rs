@@ -187,7 +187,7 @@ pub(crate) fn install(hwnd: HWND) {
             .expect("spawn scheduler worker");
     }
     install_scheduler(Box::new(Win32Scheduler));
-    // `spawn_async` polls cooperatively on this pump instead of blocking
+    // `spawn_detached` polls cooperatively on this pump instead of blocking
     // the UI thread (see `crate::async_executor`).
     crate::async_executor::install();
     // Embedded wgpu hosts (host-windows-desktop behind the website's

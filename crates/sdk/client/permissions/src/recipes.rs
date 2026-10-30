@@ -18,12 +18,12 @@ recipe!(
     Permission,
     /// Request a permission on a button press and show the resulting grant
     /// state. `request` is `async` (the OS prompt resolves later), so the
-    /// press handler spawns it with the framework's `spawn_async` and writes
+    /// press handler spawns it with the framework's `spawn_detached` and writes
     /// the outcome into a `signal` the `text` reads reactively. The same
     /// shape works for any [`Permission`] — swap the variant.
     pub fn request_notifications() -> ::runtime_core::Element {
         use crate::{request, Permission, PermissionStatus};
-        use ::runtime_core::driver::spawn_async;
+        use ::runtime_core::driver::spawn_detached;
         use ::runtime_core::{signal, text, ui};
 
         // Reactive label, seeded before the user has decided.
@@ -36,7 +36,7 @@ recipe!(
                 // The prompt resolves on a later turn; drive the future with
                 // the framework's executor and push the result into the
                 // signal, which re-renders the text.
-                spawn_async(async move {
+                spawn_detached(async move {
                     let text = match request(Permission::Notifications).await {
                         PermissionStatus::Granted => "Notifications: granted",
                         PermissionStatus::Denied => "Notifications: denied",

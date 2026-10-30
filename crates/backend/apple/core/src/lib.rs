@@ -43,7 +43,7 @@ pub mod scheduler;
 #[cfg(all(any(target_os = "ios", target_os = "tvos", target_os = "macos"), debug_assertions))]
 pub mod perf_trace;
 
-/// Cooperative main-thread async executor — drives `spawn_async` futures
+/// Cooperative main-thread async executor — drives `spawn_detached` futures
 /// on the main run loop instead of `runtime-core`'s blocking `pollster`
 /// fallback, so long-running futures (SSE / WebSocket `recv` loops) don't
 /// freeze the UI. Installed by [`scheduler::install_scheduler`]. Gated on

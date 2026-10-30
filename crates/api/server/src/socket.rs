@@ -395,7 +395,7 @@ where
     // anchors to the subtree being built) — not inside the async block,
     // which resumes with no ambient scope to anchor to.
     //
-    // The task below is DETACHED (`spawn_async` takes no token), and
+    // The task below is DETACHED (`spawn_detached` takes no token), and
     // teardown is precisely what wakes it: the cleanup above closes the
     // socket, `recv()` then yields `None`, and the continuation runs
     // against a scope whose `Owned` has already freed `incoming`,
@@ -413,7 +413,7 @@ where
     // Regression: `tests/hook_scope_teardown.rs`.
     let alive = runtime_core::ScopeAlive::current();
     let url = url.into();
-    runtime_core::driver::spawn_async(async move {
+    runtime_core::driver::spawn_detached(async move {
         match Socket::<In, Out>::connect(&url).await {
             Ok(mut sock) => {
                 let tx = sock.sender();
@@ -579,7 +579,7 @@ where
     // Regression: `tests/hook_scope_teardown.rs`.
     let alive = runtime_core::ScopeAlive::current();
     let url = url.into();
-    runtime_core::driver::spawn_async(async move {
+    runtime_core::driver::spawn_detached(async move {
         match net::EventSource::connect(&url).await {
             Ok(mut es) => {
                 let closer = es.closer();

@@ -286,7 +286,7 @@ pub fn app() -> Element {
 /// `host_macos_desktop::mount_newcore` seam (self-test phase 5).
 ///
 /// The `graphics` primitive's `on_ready` hands over a CAMetalLayer
-/// surface; the async wgpu init rides `driver::spawn_async` (the
+/// surface; the async wgpu init rides `driver::spawn_detached` (the
 /// libdispatch executor `install_scheduler` provides under
 /// `async-driver`), and the embedded tree realizes into THIS app's
 /// world via `backend_macos::newcore::mounted_world()` — no second
@@ -353,7 +353,7 @@ mod embed {
                        this embed needs wgpu — skipping mount");
             return;
         };
-        runtime_shared::driver::spawn_async(async move {
+        runtime_shared::driver::spawn_detached(async move {
             let profile = host_macos_desktop::DeviceProfile {
                 logical_size: (EMBED_W, EMBED_H),
                 position: None,

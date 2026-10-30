@@ -298,7 +298,7 @@ impl QrScanner {
     ///
     /// The returned future is `'static` and holds no reference to the
     /// scanner or the stream, so it can be handed to `spawn_then` /
-    /// `spawn_async`. It resolves:
+    /// `spawn_detached`. It resolves:
     ///
     /// - `Ok(scan)` with every code in that frame;
     /// - `Err(ScanError::Stopped)` once the last scanner clone is dropped;

@@ -120,7 +120,7 @@ pub fn app() -> Element {
             status.set("Requesting screen capture — pick a source…".to_string());
             FRAME_COUNT.store(0, Ordering::Relaxed);
             let handle = handle.clone();
-            runtime_core::driver::spawn_async(async move {
+            runtime_core::driver::spawn_detached(async move {
                 let recorder = ScreenRecorder::new();
                 let result = recorder.start(RecordingConfig::new()).await;
                 match result {
