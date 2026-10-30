@@ -1,6 +1,6 @@
 [package]
 name = "build-android"
-version = "2.0.1"
+version = "2.0.2"
 edition.workspace = true
 license.workspace = true
 description = "Android build orchestration: generates an ephemeral cdylib wrapper around a user's app crate, points cargo at the NDK toolchain, and produces a libnatve.so suitable for packaging into an APK."
