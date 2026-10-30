@@ -78,3 +78,22 @@ fn regression_back_enabled_false_locks_the_presenter_while_on_top() {
     assert!(nav.get().is_none(), "the SDK's bind releases its handle at unmount");
     clear_stack_presenter();
 }
+
+/// A kiosk locks Back on its ROOT screen: the presenter is told at mount,
+/// with nothing pushed. Android's presenter then consumes Back at the root
+/// instead of letting it finish the Activity (RustStackPresenter.kt).
+#[test]
+fn back_enabled_false_on_the_root_reaches_the_presenter_at_mount() {
+    let probe: Rc<Probe> = Rc::default();
+    install_stack_presenter(Rc::new(ProbePresenter(probe.clone())));
+    let h = Harness::new();
+    let realized = h.mount(
+        StackNavigator::new(&HOME)
+            .screen(HOME, |_| Screen::new(view().child(text().content("HOME")).build()).back_enabled(false))
+            .into_element(),
+    );
+    h.world.flush();
+    assert_eq!(probe.back.borrow().last(), Some(&false), "the root locks back at mount");
+    drop(realized);
+    clear_stack_presenter();
+}

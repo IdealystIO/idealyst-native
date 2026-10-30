@@ -1,0 +1,36 @@
+[package]
+name = "android-lifecycle-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# On-device regression app for the Android host lifecycle, built and driven
+# by `run.sh` (an `idealyst build --android` APK on an emulator or device).
+# Covers what host tests cannot reach: system Back at a locked root screen,
+# an Activity finished and re-created in the same process, and a
+# backgrounded process kept out of the cached-apps freezer. Its own
+# workspace; `run.sh` builds a copy under target/ so no lockfile or dist/
+# lands in the source tree.
+[workspace]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+idealyst = { path = "../../../../../idealyst" }
+runtime-core = { path = "../../../../../runtime/core", features = ["async-driver"] }
+runtime-vocabulary = { path = "../../../../../runtime/vocabulary" }
+runtime-scene = { path = "../../../../../runtime/scene" }
+runtime-shared = { path = "../../../../../runtime/shared" }
+stack-navigator = { path = "../../../../../sdk/client/navigators/stack" }
+net = { path = "../../../../../sdk/client/net" }
+device-admin = { path = "../../../../../sdk/client/device-admin" }
+futures-channel = "0.3"
+jni = "0.21"
+ndk-context = "0.1"
+
+[package.metadata.idealyst.app]
+name      = "Lifecycle Probe"
+bundle_id = "ai.truday.idealyst.lifecycleprobe"
+version   = "0.0.1"
+targets   = ["android"]

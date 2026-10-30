@@ -139,26 +139,36 @@ pub(super) fn with_env<R>(f: impl FnOnce(&mut JNIEnv) -> R) -> R {
 }
 
 /// Publish the JVM + Android `Context` to the ecosystem-standard
-/// [`ndk_context`] global, once per process. SDKs such as `camera` obtain the
-/// `JavaVM` / `Context` via `ndk_context::android_context()`; since the
-/// idealyst host is a Kotlin `MainActivity` + JNI bridge (not a
+/// [`ndk_context`] global. SDKs such as `camera`, `permissions` and
+/// `device-admin` obtain the `JavaVM` / `Context` via
+/// `ndk_context::android_context()` and call `Activity` methods on it
+/// (`requestPermissions`, `startLockTask`, `startActivityForResult`);
+/// since the idealyst host is a Kotlin `MainActivity` + JNI bridge (not a
 /// `NativeActivity`), nothing populates that global unless we do here.
 ///
-/// The `Context` is published through a *separate, leaked* `GlobalRef` so its
-/// pointer stays valid for the whole process — `ndk_context` holds it
-/// indefinitely, and it must outlive any `AndroidBackend` (which releases its
-/// own ref on detach). Guarded by a `Once` so re-attach (hot reload) doesn't
-/// re-initialize.
+/// Runs on EVERY attach, not once per process: when an Activity finishes
+/// and a new one starts in the same process (Back at a kiosk's root, then
+/// the home app relaunching it), the published Context must be the live
+/// Activity. Publishing only the first one left every SDK calling into a
+/// destroyed Activity after a relaunch.
+///
+/// Each Activity is published through its own `GlobalRef`, kept in
+/// [`PUBLISHED_CONTEXT`] rather than leaked. The previous one is held for
+/// one more generation: a thread that read the old pointer just before the
+/// swap may still be using it, so it is freed only at the swap after next.
+/// The swap itself is `release` + `initialize` (`ndk_context` 0.1 has no
+/// replace) on the main thread; off-main readers only take the JavaVM,
+/// which never changes.
 fn init_ndk_context(context: &GlobalRef) {
     use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let Some(vm) = JAVA_VM.get() else { return };
+    static LOADER: Once = Once::new();
+    let Some(vm) = JAVA_VM.get() else { return };
+    LOADER.call_once(|| {
         // Capture the app's ClassLoader off the Context while we're on the
         // main thread. `find_app_class` uses it to resolve `io.idealyst.*`
         // classes from background threads (e.g. the async executor's waker),
         // where a bare `find_class` would hit the system loader and fail. See
-        // [`APP_CLASS_LOADER`].
+        // [`APP_CLASS_LOADER`]. One loader serves the whole process.
         let loader = with_env(|env| {
             let cl = env
                 .call_method(
@@ -175,20 +185,42 @@ fn init_ndk_context(context: &GlobalRef) {
         if let Some(loader) = loader {
             let _ = APP_CLASS_LOADER.set(loader);
         }
-        let vm_ptr = vm.get_java_vm_pointer() as *mut std::ffi::c_void;
-        // A dedicated, process-lifetime ref to the Context.
-        let ctx_ref = with_env(|env| {
-            env.new_global_ref(context.as_obj())
-                .expect("ndk_context: new_global_ref(context)")
-        });
-        let ctx_ptr = ctx_ref.as_obj().as_raw() as *mut std::ffi::c_void;
-        std::mem::forget(ctx_ref);
-        // SAFETY: `vm_ptr` is the process-lifetime JavaVM captured in
-        // `JNI_OnLoad`; `ctx_ptr` is a leaked global ref to the Android
-        // Context, valid for the process lifetime. Called once.
-        unsafe { ndk_context::initialize_android_context(vm_ptr, ctx_ptr) };
     });
+    let vm_ptr = vm.get_java_vm_pointer() as *mut std::ffi::c_void;
+    let ctx_ref = with_env(|env| {
+        env.new_global_ref(context.as_obj())
+            .expect("ndk_context: new_global_ref(context)")
+    });
+    let ctx_ptr = ctx_ref.as_obj().as_raw() as *mut std::ffi::c_void;
+    let mut published = PUBLISHED_CONTEXT
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    // SAFETY: `vm_ptr` is the process-lifetime JavaVM captured in
+    // `JNI_OnLoad`; `ctx_ptr` is a global ref stored in `PUBLISHED_CONTEXT`
+    // below, which outlives its publication by one generation. `release`
+    // runs only when a context was published before (its assert).
+    unsafe {
+        if published.current.is_some() {
+            ndk_context::release_android_context();
+        }
+        ndk_context::initialize_android_context(vm_ptr, ctx_ptr);
+    }
+    let retired = published.previous.take();
+    published.previous = published.current.replace(ctx_ref);
+    drop(published);
+    // Two generations old: no reader can still hold its pointer.
+    drop(retired);
 }
+
+/// The Context refs published to `ndk_context` (see [`init_ndk_context`]).
+#[derive(Default)]
+struct PublishedContext {
+    current: Option<GlobalRef>,
+    previous: Option<GlobalRef>,
+}
+
+static PUBLISHED_CONTEXT: std::sync::Mutex<PublishedContext> =
+    std::sync::Mutex::new(PublishedContext { current: None, previous: None });
 
 /// Per-node animation state. Keyed by the raw `*JObject` pointer
 /// extracted from each node's `GlobalRef` — the JVM keeps the

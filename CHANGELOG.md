@@ -809,6 +809,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`device_admin::start_keep_alive` / `stop_keep_alive`** (`device-admin`).
+  A `systemExempted` foreground service that keeps a device-owner app's
+  process out of Android's cached-apps freezer, so its timers, server socket
+  and reconnects keep running while it is in the background. Without it a
+  backgrounded process is frozen within about a minute.
+
 - **Hide, suspend and restore bundled system apps** (`device-admin`,
   `idealyst-cli`, `run-android`). `set_application_hidden` /
   `is_application_hidden`, `set_packages_suspended` /
@@ -2275,6 +2281,22 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **`back_enabled(false)` holds on a stack's root screen on Android**
+  (`backend-android-mobile`). The stack presenter turned its Back callback
+  off at the root, so Back finished the Activity: on a kiosk, the way out.
+  A locked root now consumes Back, as the native navigator path already did.
+
+- **SDKs reach the live Activity after it is re-created in the same
+  process** (`backend-android-mobile`). The host published only the first
+  Activity to `ndk_context`, so after Back finished it and the home app
+  relaunched it, `permissions`, `device-admin` (`start_lock_task`), `camera`
+  and every other SDK called into the destroyed one. Every attach now
+  publishes the current Activity.
+
+- **Android apps are 16 KB page-aligned** (`build-android`). A device with
+  16 KB memory pages ran every idealyst app in compatibility mode behind a
+  warning dialog; Google Play requires the alignment for API 35+ targets.
 
 - **`wss://` WebSockets connect on Android** (`net`). The Android arm had
   no TLS, so every `wss://` connect — `server::Socket`, `#[channel]` —
