@@ -88,12 +88,18 @@ pub fn inspect_apk(apk: &Path) -> Result<ApkProvisioningInfo> {
 
 /// The provisioning payload for `info`, downloaded from `download_url`
 /// (https only — the setup wizard refuses anything else), with `extras`
-/// (a JSON object) as the admin extras bundle. `leave_system_apps` keeps the
+/// (a JSON object) as the admin extras bundle. Provisioning removes the
+/// bundled system apps; [`payload_with`] can keep them.
+pub fn payload(info: &ApkProvisioningInfo, download_url: &str, extras: Option<&Value>) -> Result<Value> {
+    payload_with(info, download_url, extras, false)
+}
+
+/// [`payload`], where `leave_system_apps` keeps the
 /// manufacturer's bundled apps installed; by default provisioning removes
 /// the system apps that have a launcher icon, apart from those the device
 /// marks as required, which is what a kiosk wants
 /// (`device_admin::enable_system_app` restores one later).
-pub fn payload(
+pub fn payload_with(
     info: &ApkProvisioningInfo,
     download_url: &str,
     extras: Option<&Value>,
@@ -341,7 +347,7 @@ Signer #1 certificate SHA-1 digest: 0123456789abcdef0123456789abcdef01234567
             cert_sha256: [0u8; 32],
         };
         let extras = json!({ "server": "https://crewforgeos.com", "enrolment_token": "abc" });
-        let p = payload(&info, "https://example.com/agent.apk", Some(&extras), false).unwrap();
+        let p = payload(&info, "https://example.com/agent.apk", Some(&extras)).unwrap();
         assert_eq!(
             p["android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME"],
             "com.crewforgeos.agent/io.idealyst.deviceadmin.AdminReceiver"
@@ -357,11 +363,11 @@ Signer #1 certificate SHA-1 digest: 0123456789abcdef0123456789abcdef01234567
         assert_eq!(p["android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE"]["server"], "https://crewforgeos.com");
         // Bundled apps are removed unless asked: the key is absent, not false.
         assert!(p.get("android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED").is_none());
-        let kept = payload(&info, "https://example.com/agent.apk", None, true).unwrap();
+        let kept = payload_with(&info, "https://example.com/agent.apk", None, true).unwrap();
         assert_eq!(kept["android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED"], true);
 
-        assert!(payload(&info, "http://example.com/a.apk", None, false).is_err());
-        assert!(payload(&info, "https://e.com/a.apk", Some(&json!(["x"])), false).is_err());
-        assert!(payload(&info, "https://e.com/a.apk", Some(&json!({ "k": null })), false).is_err());
+        assert!(payload(&info, "http://example.com/a.apk", None).is_err());
+        assert!(payload(&info, "https://e.com/a.apk", Some(&json!(["x"]))).is_err());
+        assert!(payload(&info, "https://e.com/a.apk", Some(&json!({ "k": null }))).is_err());
     }
 }

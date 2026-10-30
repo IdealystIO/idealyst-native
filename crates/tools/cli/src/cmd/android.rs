@@ -88,7 +88,7 @@ fn provisioning_qr(
         .map(|e| serde_json::from_str(e).context("--extras is not valid JSON"))
         .transpose()?;
     let info = run_android::provisioning::inspect_apk(&apk)?;
-    let payload = run_android::provisioning::payload(&info, download_url, extras.as_ref(), leave_system_apps)?;
+    let payload = run_android::provisioning::payload_with(&info, download_url, extras.as_ref(), leave_system_apps)?;
     let text = serde_json::to_string(&payload)?;
 
     let code = qrcode::QrCode::new(text.as_bytes()).context("encode the payload as a QR code")?;
