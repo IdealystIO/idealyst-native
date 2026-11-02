@@ -135,6 +135,10 @@ pub struct Workspace {
     /// Local packages in the tip's closure that are NOT workspace
     /// members, with their directories. Watched, never patched.
     pub outside: BTreeMap<String, PathBuf>,
+    /// Local packages `cargo metadata` puts in the tip's closure that the
+    /// build did not compile ([`Self::confine`]), with their directories.
+    /// A save in one cannot change the program: [`Route::NotBuilt`].
+    pub excluded: BTreeMap<String, PathBuf>,
     /// Every crate a hot patch has re-emitted since the base build.
     ///
     /// A patch REPLACES the page's jump table rather than adding to it,
@@ -163,6 +167,10 @@ pub enum Route {
     Crate { package: String, relative: String },
     /// A file of a local package outside the workspace.
     Outside { package: String, relative: String },
+    /// A file of a local package the build did not compile (see
+    /// [`Workspace::confine`]): no part of the program. Any file, not
+    /// only `.rs` — its `Cargo.toml` included.
+    NotBuilt { package: String },
     /// Neither: not a `.rs` file, or not under any known crate.
     Unknown,
 }
@@ -336,6 +344,7 @@ impl Workspace {
             tip: pkgs[tip_id].name.clone(),
             crates,
             outside,
+            excluded: BTreeMap::new(),
             patched: BTreeSet::new(),
             additive: false,
             added: BTreeMap::new(),
@@ -362,10 +371,72 @@ impl Workspace {
             tip: package.to_string(),
             crates,
             outside: BTreeMap::new(),
+            excluded: BTreeMap::new(),
             patched: BTreeSet::new(),
             additive: false,
             added: BTreeMap::new(),
         }
+    }
+
+    /// Narrow the workspace to what the build actually compiled.
+    ///
+    /// `from_metadata` reads a graph that over-approximates the program:
+    /// `cargo metadata` unifies features across EVERY workspace member,
+    /// so a server binary that is a member drags its server-only crates
+    /// into the app's closure, and those crates were then hot-patch
+    /// candidates — a save in one replayed it and all its dependents
+    /// (38 crates on CrewForge), only for the patch to fail and rebuild.
+    ///
+    /// `compiled` holds the manifest directories of every local package
+    /// the build compiled anything of; `in_program` the subset compiled
+    /// for the target itself. A patchable crate outside `in_program` but
+    /// inside `compiled` (a workspace library used only as a
+    /// build-dependency) moves to [`Self::outside`]: watched, and a save in
+    /// it rebuilds. A crate in neither moves to [`Self::excluded`], so its
+    /// files route to [`Route::NotBuilt`] — kept rather than forgotten, or
+    /// a crate nested under the tip's directory would route its files to
+    /// the tip. The tip is kept whatever the sets say: it is the program.
+    ///
+    /// An excluded crate the sets now name (a later build compiled it)
+    /// moves to [`Self::outside`], never back to the patchable crates:
+    /// this workspace holds no archive of it, so a save in it rebuilds —
+    /// and that rebuild's workspace scans it.
+    pub fn confine(&mut self, compiled: &BTreeSet<PathBuf>, in_program: &BTreeSet<PathBuf>) {
+        let outside = &mut self.outside;
+        self.excluded.retain(|package, dir| {
+            let now_compiled = compiled.contains(dir);
+            if now_compiled {
+                outside.insert(package.clone(), dir.clone());
+            }
+            !now_compiled
+        });
+        let tip = self.tip.clone();
+        let mut dropped = BTreeSet::new();
+        self.crates.retain(|package, c| {
+            if *package == tip || in_program.contains(&c.dir) {
+                return true;
+            }
+            if compiled.contains(&c.dir) {
+                self.outside.insert(package.clone(), c.dir.clone());
+            } else {
+                self.excluded.insert(package.clone(), c.dir.clone());
+            }
+            dropped.insert(package.clone());
+            false
+        });
+        let excluded = &mut self.excluded;
+        self.outside.retain(|package, dir| {
+            let keep = compiled.contains(dir);
+            if !keep {
+                excluded.insert(package.clone(), dir.clone());
+            }
+            keep
+        });
+        for c in self.crates.values_mut() {
+            c.deps.retain(|d| !dropped.contains(d));
+        }
+        self.patched.retain(|p| !dropped.contains(p));
+        self.added.retain(|p, _| !dropped.contains(p));
     }
 
     /// Which crate a saved path belongs to.
@@ -375,33 +446,42 @@ impl Workspace {
     /// `lab-shared/src/` is lab-shared's, not the root crate's
     /// `lab-shared/src/…`.
     pub fn route(&self, path: &Path) -> Route {
-        if path.extension().is_none_or(|e| e != "rs") {
-            return Route::Unknown;
+        #[derive(Clone, Copy)]
+        enum Kind {
+            Patchable,
+            Outside,
+            NotBuilt,
         }
         let path = canonical(path);
-        let mut best: Option<(usize, &str, bool, &Path)> = None;
+        let mut best: Option<(usize, &str, Kind, &Path)> = None;
         let candidates = self
             .crates
             .values()
-            .map(|c| (c.package.as_str(), true, c.dir.as_path()))
-            .chain(self.outside.iter().map(|(p, d)| (p.as_str(), false, d.as_path())));
-        for (package, patchable, dir) in candidates {
+            .map(|c| (c.package.as_str(), Kind::Patchable, c.dir.as_path()))
+            .chain(self.outside.iter().map(|(p, d)| (p.as_str(), Kind::Outside, d.as_path())))
+            .chain(self.excluded.iter().map(|(p, d)| (p.as_str(), Kind::NotBuilt, d.as_path())));
+        for (package, kind, dir) in candidates {
             if path.starts_with(dir) {
                 let depth = dir.components().count();
                 if best.is_none_or(|(d, ..)| depth > d) {
-                    best = Some((depth, package, patchable, dir));
+                    best = Some((depth, package, kind, dir));
                 }
             }
         }
-        let Some((_, package, patchable, dir)) = best else { return Route::Unknown };
+        let Some((_, package, kind, dir)) = best else { return Route::Unknown };
+        if let Kind::NotBuilt = kind {
+            return Route::NotBuilt { package: package.to_string() };
+        }
+        if path.extension().is_none_or(|e| e != "rs") {
+            return Route::Unknown;
+        }
         let relative = path
             .strip_prefix(dir)
             .map(|r| r.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default();
-        if patchable {
-            Route::Crate { package: package.to_string(), relative }
-        } else {
-            Route::Outside { package: package.to_string(), relative }
+        match kind {
+            Kind::Patchable => Route::Crate { package: package.to_string(), relative },
+            _ => Route::Outside { package: package.to_string(), relative },
         }
     }
 
@@ -1205,7 +1285,7 @@ const APP_TAG: &str = "app v1";
             Route::Crate { package, relative } | Route::Outside { package, relative } => {
                 vec![SavedFile { package, file: ChangedFile { path: relative, text } }]
             }
-            Route::Unknown => panic!("{rel} routed nowhere"),
+            Route::Unknown | Route::NotBuilt { .. } => panic!("{rel} routed nowhere"),
         }
     }
 
@@ -1221,6 +1301,69 @@ const APP_TAG: &str = "app v1";
         // the workspace is watched but never patched.
         assert!(!f.ws.crates.contains_key("testkit"));
         assert_eq!(f.ws.outside.keys().collect::<Vec<_>>(), vec!["runtime-core"]);
+    }
+
+    /// Regression: `cargo metadata` unifies features across every member,
+    /// so a server binary in the workspace put its server-only crates in
+    /// the app's closure, and a save in one planned a hot patch of it and
+    /// every dependent. Confined to what the wasm build compiled, the
+    /// crate is gone: its files route nowhere and plan nothing.
+    #[test]
+    fn regression_a_crate_the_build_never_compiled_is_not_patchable() {
+        let mut f = fixture();
+        f.ws.patched.insert("lab-shared".into());
+        let compiled = BTreeSet::from([f.root.clone(), f.root.join("fw")]);
+        f.ws.confine(&compiled, &compiled);
+        assert_eq!(f.ws.crates.keys().collect::<Vec<_>>(), vec!["app"]);
+        assert!(f.ws.crates["app"].deps.is_empty(), "no edge to a dropped crate");
+        assert!(f.ws.patched.is_empty());
+        // Nested under the tip's directory, yet not the tip's file.
+        let not_built = Route::NotBuilt { package: "lab-shared".into() };
+        assert_eq!(f.ws.route(&f.root.join("lab-shared/src/lib.rs")), not_built);
+        assert_eq!(f.ws.route(&f.root.join("lab-shared/Cargo.toml")), not_built);
+        // A local package outside the workspace the build did compile stays.
+        assert_eq!(f.ws.outside.keys().collect::<Vec<_>>(), vec!["runtime-core"]);
+    }
+
+    /// A workspace library compiled only for the host (a build-dependency)
+    /// is not in the served module, so it cannot be hot-patched, but its
+    /// edit still changes the build: it is watched as an outside package.
+    #[test]
+    fn a_crate_compiled_only_for_the_host_is_watched_not_patched() {
+        let mut f = fixture();
+        let compiled = BTreeSet::from([f.root.clone(), f.root.join("lab-shared")]);
+        let in_program = BTreeSet::from([f.root.clone()]);
+        f.ws.confine(&compiled, &in_program);
+        assert_eq!(f.ws.crates.keys().collect::<Vec<_>>(), vec!["app"]);
+        assert_eq!(
+            f.ws.route(&f.root.join("lab-shared/src/lib.rs")),
+            Route::Outside { package: "lab-shared".into(), relative: "src/lib.rs".into() }
+        );
+        // Not compiled at all: out of the outside set too.
+        assert!(!f.ws.outside.contains_key("runtime-core"));
+        assert_eq!(
+            f.ws.route(&f.root.join("fw/src/lib.rs")),
+            Route::NotBuilt { package: "runtime-core".into() }
+        );
+    }
+
+    /// A crate a later build compiles for the first time (a manifest edit
+    /// added the dependency) must not stay excluded — its saves would be
+    /// ignored. With no archive of it, it is watched as outside, so a save
+    /// in it rebuilds.
+    #[test]
+    fn a_crate_a_later_build_compiles_is_readmitted_as_outside() {
+        let mut f = fixture();
+        let tip_only = BTreeSet::from([f.root.clone()]);
+        f.ws.confine(&tip_only, &tip_only);
+        assert_eq!(f.ws.route(&f.root.join("lab-shared/src/lib.rs")), Route::NotBuilt { package: "lab-shared".into() });
+        let all = BTreeSet::from([f.root.clone(), f.root.join("lab-shared"), f.root.join("fw")]);
+        f.ws.confine(&all, &all);
+        assert!(f.ws.excluded.is_empty());
+        assert_eq!(
+            f.ws.route(&f.root.join("lab-shared/src/lib.rs")),
+            Route::Outside { package: "lab-shared".into(), relative: "src/lib.rs".into() }
+        );
     }
 
     /// Regression: a workspace root that is itself the tip holds its

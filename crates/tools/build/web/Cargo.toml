@@ -57,6 +57,8 @@ wasm-carve = { workspace = true }
 icon-gen = { workspace = true }
 # Reads cargo config's `rustflags` for the wasm build (`rustflags`).
 toml = "0.8"
+# Reads the build's cargo `compiler-artifact` messages (`local_packages`).
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -65,9 +67,6 @@ tempfile = "3"
 # wasmparser / wasm-carve passes (a walrus parse of CrewForge's base was
 # 4–9 s and ~3.7 GB each).
 walrus = { workspace = true }
-# The two-crate roundtrip writes rustc captures in the replay's real
-# on-disk format (`replay::CapturedInvocation`, JSON).
-serde_json = { workspace = true }
 # The own-glue E2E (`tests/own_glue_e2e.rs`) drives headless Chrome over
 # the DevTools protocol, as `idealyst-cli`'s browser E2Es do.
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }

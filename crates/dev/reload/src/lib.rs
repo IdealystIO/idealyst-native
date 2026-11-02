@@ -1119,8 +1119,11 @@ fn try_resume(
         reporter.log("dev-reload", format!("building: the last session's base cannot be resumed ({why})"));
         None
     };
-    let ws = unscanned_workspace(dir);
-    let roots = watch_roots(&dir.join("Cargo.toml"));
+    // Confined exactly as the session that wrote the state confined its
+    // own, or the input sets differ and every resume is refused.
+    let reach: Option<build_web::LocalPackages> = state.reach.as_ref().map(Into::into);
+    let ws = unscanned_workspace(dir, reach.as_ref());
+    let roots = session_roots(dir, reach.as_ref());
     let inputs = resume::inputs(dir, &roots, &workspace_dirs(&ws));
     let now = resume::Current {
         program: dev_overlay::archive::scanner_identity(),
@@ -1130,10 +1133,13 @@ fn try_resume(
     if let Some(why) = resume::refusal(&state, &now) {
         return refuse(why);
     }
-    let artifact = match build_web::restage(dir, to_build_web_options(opts)) {
+    let mut artifact = match build_web::restage(dir, to_build_web_options(opts)) {
         Ok(a) => a,
         Err(e) => return refuse(format!("{e:#}")),
     };
+    // No cargo ran, so the restaged artifact cannot say what the base
+    // compiled; the state that describes the base can.
+    artifact.local_packages = reach;
     if artifact.served_wasm != state.served {
         return refuse("the bundle is packaged somewhere else now".into());
     }
@@ -1234,6 +1240,7 @@ fn resume_snapshot(
             Some(builder) => builder.reusable_objects(),
             None => base.resumed_objects.clone(),
         },
+        reach: base.artifact.local_packages.as_ref().map(Into::into),
     })
 }
 
@@ -1366,6 +1373,32 @@ pub fn watch_roots(manifest_path: &Path) -> Vec<PathBuf> {
         }
     };
 
+    roots_of(dirs)
+}
+
+/// The web watcher's roots: those of every local package the served
+/// base's build compiled when that is known, else [`watch_roots`].
+///
+/// Not `watch_roots` alone: its `cargo metadata` graph unifies features
+/// across every workspace member and keeps every platform's
+/// dependencies, so a workspace whose server binary is a member puts the
+/// server-only crates in the app's closure. Each save there then woke the
+/// web loop for a hot patch or a rebuild whose output could not change.
+/// The build's own record is exact, and a manifest edit that adds a
+/// dependency still rebuilds (the manifest is watched), which refreshes
+/// it.
+fn session_roots(dir: &Path, reach: Option<&build_web::LocalPackages>) -> Vec<PathBuf> {
+    match reach {
+        Some(reach) => {
+            let tip = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+            roots_of(reach.all.iter().cloned().chain(std::iter::once(tip)))
+        }
+        None => watch_roots(&dir.join("Cargo.toml")),
+    }
+}
+
+/// Each package directory's `src/` and `Cargo.toml`, sorted.
+fn roots_of(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     for d in dirs {
         // A crate with no `src/` (build-script-only, or mid-scaffold)
@@ -1413,8 +1446,12 @@ fn cargo_metadata(manifest_path: &Path) -> Result<serde_json::Value> {
 /// Falls back to the app crate alone when `cargo metadata` cannot be
 /// read — exactly the single-crate behavior, where a save in any other
 /// crate rebuilds.
-fn load_workspace(dir: &Path, memo: &dev_overlay::ScanMemo) -> dev_overlay::Workspace {
-    let mut ws = unscanned_workspace(dir);
+fn load_workspace(
+    dir: &Path,
+    memo: &dev_overlay::ScanMemo,
+    reach: Option<&build_web::LocalPackages>,
+) -> dev_overlay::Workspace {
+    let mut ws = unscanned_workspace(dir, reach);
     let all: Vec<String> = ws.crates.keys().cloned().collect();
     let read = ws.read_sources(all.iter().map(String::as_str));
     let scanned = dev_overlay::Workspace::scan_read_reusing(dir, &ws.tip, read, &|| false, memo)
@@ -1424,7 +1461,22 @@ fn load_workspace(dir: &Path, memo: &dev_overlay::ScanMemo) -> dev_overlay::Work
 }
 
 /// [`load_workspace`] without the scan: the crates and their graph only.
-fn unscanned_workspace(dir: &Path) -> dev_overlay::Workspace {
+///
+/// `reach` is what the served base's build compiled, when known; the
+/// workspace is confined to it ([`dev_overlay::Workspace::confine`]), so
+/// a crate `cargo metadata` lists but the wasm build never compiled — a
+/// server-only crate of a workspace whose server is a member — is neither
+/// scanned nor patched.
+fn unscanned_workspace(dir: &Path, reach: Option<&build_web::LocalPackages>) -> dev_overlay::Workspace {
+    let mut ws = workspace_from_metadata(dir);
+    if let Some(reach) = reach {
+        ws.confine(&reach.all, &reach.wasm);
+    }
+    ws
+}
+
+/// The workspace `cargo metadata` describes, unconfined.
+fn workspace_from_metadata(dir: &Path) -> dev_overlay::Workspace {
     let package = dir_package_name(dir);
     match cargo_metadata(&dir.join("Cargo.toml")) {
         Ok(meta) => dev_overlay::Workspace::from_metadata(&meta, dir),
@@ -1807,6 +1859,10 @@ fn watch_loop(
     // which every rebuild invalidates. Rebuilt lazily on the first body
     // edit after each rebuild, so a session that never makes one never
     // pays to parse the module.
+    // What the served base's build compiled (see `session_roots`):
+    // confines the watch set and the workspace. Advanced by each
+    // successful rebuild.
+    let mut reach = initial.local_packages.clone();
     let mut base = HotPatchBase::new(&dir, &opts, initial);
     // File events and rebuild requests share one inbox, so a request
     // wakes the loop exactly as a save does. Only a save is counted: a
@@ -1843,7 +1899,7 @@ fn watch_loop(
         }
     };
 
-    let mut watch_paths = watch_roots(&dir.join("Cargo.toml"));
+    let mut watch_paths = session_roots(&dir, reach.as_ref());
     // What `watch_paths` was resolved against; see `ManifestStamp`.
     let mut manifests = ManifestStamp::of(&dir, &watch_paths);
     for path in &watch_paths {
@@ -1891,7 +1947,7 @@ fn watch_loop(
     let mut stale_after_build: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
     let mut ws = match start {
         Start::Built(build_started) => {
-            let ws = load_workspace(&dir, &memo);
+            let ws = load_workspace(&dir, &memo, reach.as_ref());
             // Saved after the build began: the scan above read the new
             // bytes, so the archives describe sources the served bundle was
             // not built from, and a save of them would be decided against
@@ -1920,7 +1976,7 @@ fn watch_loop(
             ws
         }
         Start::Resumed(state) => {
-            let mut ws = unscanned_workspace(&dir);
+            let mut ws = unscanned_workspace(&dir, reach.as_ref());
             ws.install(state.archives.clone().into_iter().collect());
             ws.patched = state.patched.iter().filter(|p| ws.crates.contains_key(*p)).cloned().collect();
             // Names patches added to the resumed base: still missing from
@@ -2023,10 +2079,23 @@ fn watch_loop(
                 }
             }
             let folded = fs_batches.saturating_sub(1);
+            // Files of crates the served base's build never compiled
+            // cannot change it: dropped before anything is decided, so a
+            // save of server code alone neither hot-patches nor rebuilds
+            // the bundle (the server's own watcher handles it).
+            let not_built = drop_not_built(&ws, &mut changed_paths);
+            if !not_built.is_empty() {
+                reporter.log(
+                    "dev-reload",
+                    format!("not in the web build, ignored: {}", not_built.join(", ")),
+                );
+            }
+            let work = (not_built.is_empty() || !changed_paths.is_empty())
+                && names_work(&changed_paths, any_ok);
             // A request whose released saves are no work still asks for a
             // build, as one with nothing queued does.
-            forced |= !requests.is_empty() && !names_work(&changed_paths, any_ok);
-            if !forced && !reload_owed && !names_work(&changed_paths, any_ok) {
+            forced |= !requests.is_empty() && !work;
+            if !forced && !reload_owed && !work {
                 return Attempt::Finished;
             }
             report_taken(&reporter, TARGET, &requests);
@@ -2140,7 +2209,7 @@ fn watch_loop(
             // The archive scan runs beside the build and is joined only
             // AFTER `then` has published the reload: the page must not
             // wait on it. See `rebuild_with_snapshot`.
-            let scan = RebuildScan::start(&ws, &dir, &memo);
+            let scan = RebuildScan::start(&ws, &dir, &memo, reach.clone());
             // The base is about to be replaced: no resume of it from here
             // until this build's result is recorded.
             if let Some((persister, _)) = &persist {
@@ -2220,6 +2289,15 @@ fn watch_loop(
             // (A successful one replaced the builder, and its seeds with it.)
             if !rebuilt_ok {
                 base.resume_seeds();
+            } else if base.artifact.local_packages.is_some() {
+                // The workspace was scanned under the previous build's
+                // reach; confine it to this one's. A crate this build
+                // compiled for the first time is watched as outside until
+                // the next rebuild scans it (`Workspace::confine`).
+                reach = base.artifact.local_packages.clone();
+                if let Some(r) = &reach {
+                    ws.confine(&r.all, &r.wasm);
+                }
             }
             let Some(failed) = outcome else {
                 return superseded(dev_events::SupersededWork::Rebuild);
@@ -2243,9 +2321,15 @@ fn watch_loop(
             // watched (a save there arrives with the next source save), so
             // the question is "did any manifest move", by modification
             // time, not "did this save name one".
+            //
+            // With the build's own record of what it compiled, the roots
+            // come from that and cost no `cargo metadata`.
             let stamp = ManifestStamp::of(&dir, &watch_paths);
-            let fresh = if forced || stamp != manifests {
-                manifests = stamp;
+            let manifest_moved = stamp != manifests;
+            manifests = stamp;
+            let fresh = if reach.is_some() {
+                session_roots(&dir, reach.as_ref())
+            } else if forced || manifest_moved {
                 watch_roots(&dir.join("Cargo.toml"))
             } else {
                 watch_paths.clone()
@@ -2675,7 +2759,15 @@ struct RebuildScan {
 const ARCHIVE_SCAN_STAGE: &str = "archive-scan";
 
 impl RebuildScan {
-    fn start(ws: &dev_overlay::Workspace, dir: &Path, memo: &Arc<dev_overlay::ScanMemo>) -> Self {
+    /// `reach` is the PREVIOUS build's (the one now starting has not
+    /// reported yet): the scan skips crates it did not compile, and the
+    /// caller confines the result to the new build's once it is known.
+    fn start(
+        ws: &dev_overlay::Workspace,
+        dir: &Path,
+        memo: &Arc<dev_overlay::ScanMemo>,
+        reach: Option<build_web::LocalPackages>,
+    ) -> Self {
         let packages: Vec<String> = ws.crates.keys().cloned().collect();
         // Read NOW, on this thread: the archive must describe the sources
         // the build is about to compile, not whatever a save made since.
@@ -2684,7 +2776,7 @@ impl RebuildScan {
         let dir = dir.to_path_buf();
         let memo = memo.clone();
         Self::spawn(move || {
-            let mut fresh = unscanned_workspace(&dir);
+            let mut fresh = unscanned_workspace(&dir, reach.as_ref());
             // A crate the save just added has not been read yet; it is
             // read now.
             let missing: Vec<String> =
@@ -2772,7 +2864,7 @@ fn read_saved(ws: &dev_overlay::Workspace, paths: &[PathBuf]) -> Vec<dev_overlay
         let (package, relative) = match ws.route(path) {
             dev_overlay::Route::Crate { package, relative }
             | dev_overlay::Route::Outside { package, relative } => (package, relative),
-            dev_overlay::Route::Unknown => continue,
+            dev_overlay::Route::Unknown | dev_overlay::Route::NotBuilt { .. } => continue,
         };
         if !seen.insert((package.clone(), relative.clone())) {
             continue;
@@ -2784,6 +2876,24 @@ fn read_saved(ws: &dev_overlay::Workspace, paths: &[PathBuf]) -> Vec<dev_overlay
         });
     }
     out
+}
+
+/// Remove from `paths` every file of a crate the served base's build did
+/// not compile ([`dev_overlay::Route::NotBuilt`]); return those files, for
+/// the log.
+fn drop_not_built(ws: &dev_overlay::Workspace, paths: &mut Vec<PathBuf>) -> Vec<String> {
+    let mut dropped = Vec::new();
+    paths.retain(|p| match ws.route(p) {
+        dev_overlay::Route::NotBuilt { package } => {
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            dropped.push(format!("{package}/{name}"));
+            false
+        }
+        _ => true,
+    });
+    dropped.sort();
+    dropped.dedup();
+    dropped
 }
 
 /// The builder's view of a plan: each crate to re-emit by rustc crate
@@ -3489,6 +3599,7 @@ mod tests {
                 captures_dir: Some(dir.join("caps")),
                 symbol_aliases: None,
                 data_symbols: None,
+                local_packages: None,
             },
             builder: None,
             indexing: None,
@@ -3706,6 +3817,104 @@ mod tests {
         let mut ws = dev_overlay::Workspace::from_metadata(&meta, root).expect("tip found");
         ws.rescan_all(root);
         ws
+    }
+
+    /// Regression (CrewForge, 38 web saves in a week, ~25 min): the server
+    /// binary is a workspace member that turns on `shared/server`, which
+    /// pulls in a server-only crate. `cargo metadata` unifies features
+    /// across members, so the web watcher followed that crate, and every
+    /// save in it planned a hot patch of it and all its dependents or
+    /// rebuilt a bundle that could not change. Confined to what the build
+    /// compiled — read from a real `cargo build` of the app — the crate is
+    /// neither watched nor patchable, and a save of it alone is no work.
+    #[test]
+    fn regression_server_only_crate_saves_never_reach_the_web_loop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let krate = |name: &str, extra: &str, lib: &str| {
+            std::fs::create_dir_all(root.join(name).join("src")).unwrap();
+            std::fs::write(
+                root.join(name).join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2021\"\n{extra}"),
+            )
+            .unwrap();
+            std::fs::write(root.join(name).join("src/lib.rs"), lib).unwrap();
+        };
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nresolver = \"2\"\nmembers = [\"app\", \"shared\", \"srvonly\", \"server\"]\n",
+        )
+        .unwrap();
+        krate("app", "[dependencies]\nshared = { path = \"../shared\" }\n", "pub fn app() -> u32 { shared::v() }\n");
+        krate(
+            "shared",
+            "[dependencies]\nsrvonly = { path = \"../srvonly\", optional = true }\n\
+             [features]\nserver = [\"dep:srvonly\"]\n",
+            "pub fn v() -> u32 { 1 }\n",
+        );
+        krate("srvonly", "", "pub fn db() {}\n");
+        krate(
+            "server",
+            "[dependencies]\nshared = { path = \"../shared\", features = [\"server\"] }\n",
+            "pub fn serve() -> u32 { shared::v() }\n",
+        );
+        let app = root.join("app");
+        let srvonly_file = root.join("srvonly/src/lib.rs");
+
+        // The over-approximation this guards against.
+        assert!(
+            watch_roots(&app.join("Cargo.toml")).contains(&root.join("srvonly/src")),
+            "cargo metadata no longer unifies across members; this test's premise is gone"
+        );
+
+        let out = Command::new("cargo")
+            .args(["build", "-p", "app", "--message-format=json", "--offline", "--target-dir"])
+            .arg(root.join("target"))
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let lines: Vec<&str> = std::str::from_utf8(&out.stdout).unwrap().lines().collect();
+        let mut reach = build_web::LocalPackages::from_messages(&lines);
+        assert_eq!(reach.all, BTreeSet::from([app.clone(), root.join("shared")]));
+        // A host build stands in for the wasm one (the test machine need
+        // not have the wasm target): its crates are what the wasm build
+        // would compile for `wasm32-unknown-unknown`.
+        reach.wasm = reach.all.clone();
+
+        let roots = session_roots(&app, Some(&reach));
+        assert!(roots.contains(&root.join("shared/src")), "{roots:?}");
+        assert!(!roots.iter().any(|r| r.starts_with(root.join("srvonly"))), "{roots:?}");
+
+        let ws = unscanned_workspace(&app, Some(&reach));
+        assert_eq!(ws.crates.keys().collect::<Vec<_>>(), vec!["app", "shared"]);
+        assert!(ws.crates["app"].deps.contains("shared"));
+        assert_eq!(ws.route(&srvonly_file), dev_overlay::Route::NotBuilt { package: "srvonly".into() });
+
+        // A save of server code alone leaves nothing to decide; one that
+        // also touches a client crate keeps that file.
+        let mut only_server = vec![srvonly_file.clone()];
+        assert_eq!(drop_not_built(&ws, &mut only_server), vec!["srvonly/lib.rs".to_string()]);
+        assert!(only_server.is_empty());
+        let shared_file = root.join("shared/src/lib.rs");
+        let mut mixed = vec![srvonly_file.clone(), shared_file.clone()];
+        drop_not_built(&ws, &mut mixed);
+        assert_eq!(mixed, vec![shared_file]);
+    }
+
+    /// A resumed session runs no cargo, so the reach must come back from
+    /// the state, or `try_resume`'s inputs (confined roots) and the
+    /// recorded ones differ and no resume is ever taken.
+    #[test]
+    fn the_resume_state_keeps_the_builds_reach() {
+        let reach = build_web::LocalPackages {
+            all: BTreeSet::from([PathBuf::from("/w/app"), PathBuf::from("/w/macros")]),
+            wasm: BTreeSet::from([PathBuf::from("/w/app")]),
+        };
+        let stored = resume::Reach::from(&reach);
+        let json = serde_json::to_string(&stored).unwrap();
+        let back: resume::Reach = serde_json::from_str(&json).unwrap();
+        assert_eq!(build_web::LocalPackages::from(&back), reach);
     }
 
     /// Regression: the dev loop read a save through ONE crate's eyes, so
@@ -4511,7 +4720,7 @@ mod tests {
         std::fs::write(&file, "pub fn v(n: u32) -> u32 { n + 1 }\n").unwrap();
         let memo = Arc::new(dev_overlay::ScanMemo::default());
         let reporter = dev_events::Reporter::new();
-        let scan = RebuildScan::start(&ws, &root, &memo);
+        let scan = RebuildScan::start(&ws, &root, &memo, None);
         let built: Result<()> =
             rebuild_with_snapshot(&mut ws, scan, &reporter, || anyhow::bail!("E0308"), |b| b);
         assert!(built.is_err());
@@ -4524,7 +4733,7 @@ mod tests {
         );
 
         // A rebuild that succeeds installs what it compiled.
-        let scan = RebuildScan::start(&ws, &root, &memo);
+        let scan = RebuildScan::start(&ws, &root, &memo, None);
         rebuild_with_snapshot(&mut ws, scan, &reporter, || Ok(()), |b| b).unwrap();
         assert!(ws.crates.contains_key("lab-shared"), "the reload kept the workspace");
         std::fs::write(&file, "pub fn v(n: u32) -> u32 { n + 3 }\n").unwrap();
@@ -4610,12 +4819,12 @@ mod tests {
         let root = tmp.path().canonicalize().unwrap();
         two_crate_workspace(&root);
         let memo = Arc::new(dev_overlay::ScanMemo::default());
-        let mut ws = load_workspace(&root, &memo);
+        let mut ws = load_workspace(&root, &memo, None);
         let app_before = ws.crates["app"].archive.clone().expect("app scanned");
 
         let file = root.join("lab-shared/src/lib.rs");
         std::fs::write(&file, "pub fn v() -> u32 { 2 }\npub fn w() {}\n").unwrap();
-        let scan = RebuildScan::start(&ws, &root, &memo);
+        let scan = RebuildScan::start(&ws, &root, &memo, None);
         rebuild_with_snapshot(&mut ws, scan, &dev_events::Reporter::new(), || Ok(()), |b| b).unwrap();
 
         let fresh = |dir: &Path| dev_overlay::scan_crate(dir).unwrap();
@@ -4637,9 +4846,9 @@ mod tests {
             let root = tmp.path().canonicalize().unwrap();
             two_crate_workspace(&root);
             let memo = Arc::new(dev_overlay::ScanMemo::default());
-            let mut ws = load_workspace(&root, &memo);
+            let mut ws = load_workspace(&root, &memo, None);
             ws.additive = additive;
-            let scan = RebuildScan::start(&ws, &root, &memo);
+            let scan = RebuildScan::start(&ws, &root, &memo, None);
             rebuild_with_snapshot(&mut ws, scan, &dev_events::Reporter::new(), || Ok(()), |b| b).unwrap();
             assert_eq!(ws.additive, additive);
         }

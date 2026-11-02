@@ -1209,6 +1209,28 @@ staging tree. The session prints which crates it can patch:
 [dev-reload] workspace crates patchable with crewforge-main: crewforge-api, crewforge-core, crewforge-ui-shared
 ```
 
+**Only crates the web build compiled count.** `cargo metadata` resolves
+the whole workspace with features unified across every member, and
+keeps every platform's `[target.'cfg(..)'.dependencies]`. When the
+project's server binary is a workspace member (CrewForge's
+`crewforge-server` turns on its endpoint crates' `server` feature), the
+server-only crates it pulls in show up in the app's closure, although
+the wasm build, which selects only the app, never compiles them. So the
+web loop takes the crate set from the build itself: the local packages
+named in its cargo `compiler-artifact` messages (fresh ones included;
+`build_web::LocalPackages`). It watches the `src/` and `Cargo.toml` of
+each of those, and only the ones compiled FOR `wasm32-unknown-unknown`
+can be hot-patched. A proc-macro crate or a build-dependency is
+compiled for the host: it is watched, and a save in it rebuilds. A
+crate the build never compiled is not watched at all. If one of its
+files still reaches the loop, it is dropped before the decision
+(`not in the web build, ignored: …`), so a save of server code alone
+neither hot-patches nor rebuilds the bundle. The server's own watcher
+rebuilds the server. A manifest edit that adds a dependency is a save in
+a watched `Cargo.toml`, so it rebuilds, and that build's crate set
+replaces the old one. While no build has succeeded yet (the first one failed),
+the loop falls back to the `cargo metadata` closure.
+
 **A library patch re-emits the library's dependents too.** The jump
 table only redirects calls that go through a table slot — a
 `#[component]` body, reached through `__hot::call`. The app calls a
@@ -1398,6 +1420,11 @@ uninterrupted session would have had to rebuild for has moved:
   modification time;
 - the packaged base module unchanged, and cargo's output still the one
   it was packaged from (`restage` refuses otherwise).
+
+A resumed session runs no cargo, so the record also keeps the crate set
+the base's build compiled (see [Workspace crates](#workspace-crates)). The
+resumed session watches and patches exactly what the session that wrote
+the record did.
 
 Anything else builds, as before, with a `[dev-reload] building: the last
 session's base cannot be resumed (…)` line naming what moved. Workspace

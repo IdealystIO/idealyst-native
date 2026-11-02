@@ -2320,6 +2320,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Server-only saves no longer wake the web dev loop** (`build-web`,
+  `dev-overlay`, `dev-reload`). `idealyst dev` took the web watcher's
+  crates from `cargo metadata`, which unifies features across every
+  workspace member. When the server binary is a member, the server-only
+  crates it pulls in were watched and treated as hot-patchable, although
+  the wasm build never compiles them. A save there planned a hot patch of
+  the crate and all its dependents (38 crates on CrewForge) or rebuilt a
+  bundle that could not change. The web loop now watches and patches only
+  the local crates its own build compiled (read from cargo's
+  `compiler-artifact` messages; only crates compiled for wasm can be
+  patched), drops files of other crates before deciding, and keeps that
+  set in its resume record.
+
 - **`back_enabled(false)` holds on a stack's root screen on Android**
   (`backend-android-mobile`). The stack presenter turned its Back callback
   off at the root, so Back finished the Activity: on a kiosk, the way out.

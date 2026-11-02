@@ -129,6 +129,31 @@ pub(crate) struct State {
     /// builder's first patch then replays only what moved.
     #[serde(default)]
     pub objects: Vec<(String, String, Vec<PathBuf>)>,
+    /// The local packages the base's build compiled
+    /// ([`build_web::LocalPackages`]): a resumed session runs no cargo to
+    /// learn them, and without them it watches and patches what `cargo
+    /// metadata` over-approximates. Defaulted: an older state has none.
+    #[serde(default)]
+    pub reach: Option<Reach>,
+}
+
+/// [`build_web::LocalPackages`], as the state stores it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Reach {
+    pub all: BTreeSet<PathBuf>,
+    pub wasm: BTreeSet<PathBuf>,
+}
+
+impl From<&build_web::LocalPackages> for Reach {
+    fn from(p: &build_web::LocalPackages) -> Self {
+        Self { all: p.all.clone(), wasm: p.wasm.clone() }
+    }
+}
+
+impl From<&Reach> for build_web::LocalPackages {
+    fn from(r: &Reach) -> Self {
+        Self { all: r.all.clone(), wasm: r.wasm.clone() }
+    }
 }
 
 /// Where a web target dir keeps the state: beside the base's captures.
@@ -466,6 +491,7 @@ mod tests {
             patch_file: Some("patch-3.wasm".into()),
             serial: 3,
             objects: vec![("app".into(), "key".into(), vec![tmp.join("app.o")])],
+            reach: None,
         }
     }
 

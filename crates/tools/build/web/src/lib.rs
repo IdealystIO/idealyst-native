@@ -58,6 +58,8 @@ pub mod hotpatch_patch;
 pub mod hotpatch_prepare;
 pub mod hotpatch_statics;
 pub mod hotpatch_wasm;
+mod local_packages;
+pub use local_packages::LocalPackages;
 pub mod own_glue;
 pub mod rustflags;
 use flate2::write::GzEncoder;
@@ -449,6 +451,10 @@ pub struct BuildArtifact {
     /// beside [`Self::symbol_aliases`], when the hot-patch tier was armed.
     /// The served base has no `linking` section left to read them from.
     pub data_symbols: Option<PathBuf>,
+    /// The local packages this build compiled, read from its cargo
+    /// messages. `None` when cargo did not run ([`restage`]); the caller
+    /// then knows only what `cargo metadata` over-approximates.
+    pub local_packages: Option<LocalPackages>,
 }
 
 /// The primitive names a `builtin_set!` keep-list accepts — one per
@@ -807,6 +813,7 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
     // incremental mtimes before it, its unit messages after.
     let mut built_units: Option<(build_ios::target_gc::IncrementalSnapshot, build_ios::target_gc::CargoUnits)> =
         None;
+    let mut local_packages: Option<LocalPackages> = None;
     if run_cargo {
         let gc_before = build_ios::target_gc::IncrementalSnapshot::take(&target_dir);
         let messages = timings.time("cargo", || {
@@ -835,6 +842,7 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
             units.absorb(m);
         }
         built_units = Some((gc_before, units));
+        local_packages = Some(LocalPackages::from_messages(&messages));
     }
     let after = WasmStamp::of(&original_wasm, passes);
     let outputs_present = wrapper_pkg
@@ -1317,6 +1325,7 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
         wrapper_dir: build_dir,
         bundle_dir,
         entry_js,
+        local_packages,
     })
 }
 
