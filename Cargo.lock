@@ -1939,7 +1939,7 @@ dependencies = [
 
 [[package]]
 name = "build-android"
-version = "2.0.2"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -1949,7 +1949,7 @@ dependencies = [
 
 [[package]]
 name = "build-ios"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "semver",
@@ -1961,7 +1961,7 @@ dependencies = [
 
 [[package]]
 name = "build-linux"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -1971,7 +1971,7 @@ dependencies = [
 
 [[package]]
 name = "build-macos"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -1998,7 +1998,7 @@ dependencies = [
 
 [[package]]
 name = "build-roku"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -2013,7 +2013,7 @@ dependencies = [
 
 [[package]]
 name = "build-runtime-server"
-version = "5.0.0"
+version = "6.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -2030,7 +2030,7 @@ dependencies = [
 
 [[package]]
 name = "build-serverless-lambda"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -2039,7 +2039,7 @@ dependencies = [
 
 [[package]]
 name = "build-sim"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -2049,7 +2049,7 @@ dependencies = [
 
 [[package]]
 name = "build-ssr"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -2059,7 +2059,7 @@ dependencies = [
 
 [[package]]
 name = "build-terminal"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -2068,7 +2068,7 @@ dependencies = [
 
 [[package]]
 name = "build-web"
-version = "6.1.0"
+version = "7.0.0"
 dependencies = [
  "anyhow",
  "brotli 7.0.0",
@@ -2091,7 +2091,7 @@ dependencies = [
 
 [[package]]
 name = "build-windows"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3570,7 +3570,7 @@ dependencies = [
 
 [[package]]
 name = "dev-http"
-version = "7.0.1"
+version = "8.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3585,7 +3585,7 @@ dependencies = [
 
 [[package]]
 name = "dev-overlay"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "runtime-macros-parse",
@@ -3600,7 +3600,7 @@ dependencies = [
 
 [[package]]
 name = "dev-reload"
-version = "7.1.0"
+version = "8.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3619,7 +3619,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "5.1.0"
+version = "6.0.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -6459,7 +6459,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "14.0.2"
+version = "15.0.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6488,7 +6488,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-branded"
-version = "5.0.0"
+version = "6.0.0"
 dependencies = [
  "idea-theme",
  "idea-ui",
@@ -6510,7 +6510,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.23"
+version = "1.5.24"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6520,7 +6520,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.23"
+version = "1.5.24"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6567,7 +6567,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.22.2"
+version = "1.23.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7427,7 +7427,7 @@ dependencies = [
 
 [[package]]
 name = "lint"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "proc-macro2",
@@ -7737,7 +7737,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.30.1"
+version = "1.31.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -10806,7 +10806,7 @@ dependencies = [
 
 [[package]]
 name = "run-android"
-version = "2.2.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "build-android",
@@ -10820,7 +10820,7 @@ dependencies = [
 
 [[package]]
 name = "run-ios"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -10833,7 +10833,7 @@ dependencies = [
 
 [[package]]
 name = "run-linux"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -10842,7 +10842,7 @@ dependencies = [
 
 [[package]]
 name = "run-macos"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -10853,7 +10853,7 @@ dependencies = [
 
 [[package]]
 name = "run-roku"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "build-roku",
@@ -10861,7 +10861,7 @@ dependencies = [
 
 [[package]]
 name = "run-terminal"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -10870,7 +10870,7 @@ dependencies = [
 
 [[package]]
 name = "run-windows"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -10948,7 +10948,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "3.3.0"
+version = "3.4.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
