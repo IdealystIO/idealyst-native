@@ -102,6 +102,7 @@ pub mod pointer_input;
 pub mod app_state;
 pub mod user_activity;
 pub mod system_back;
+pub mod app_env;
 pub mod num;
 pub mod page_meta;
 #[doc(hidden)]

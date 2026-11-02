@@ -190,6 +190,9 @@ fn start_local<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
     // (`runtime_vocabulary::robot::is_test_driven`). A browser has no
     // environment, so the dev server injects the flag as a page global.
     // BEFORE the mount: the app's components decide at build time.
+    // `runtime_core::app_env` on web reads the `IDEALYST_APP_ENV` object the
+    // dev server injects for `--app-env` (a page has no environment).
+    runtime_vocabulary::glue::set_app_env_source(read_app_env);
     #[cfg(feature = "robot")]
     if read_global_string("IDEALYST_TEST_DRIVER").is_some() {
         runtime_vocabulary::robot::set_test_driven(true);
@@ -217,6 +220,12 @@ fn start_local<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
             web_glue::dom::console::error_2(&"[robot] relay connect failed:".into(), &e);
         }
     }
+}
+
+/// One `--app-env` variable off the `window.IDEALYST_APP_ENV` object the dev
+/// server injects (`runtime_core::app_env`).
+fn read_app_env(key: &str) -> Option<String> {
+    web_glue::JsValue::global().get("IDEALYST_APP_ENV").ok()?.get(key).ok()?.as_string()
 }
 
 /// Read a string off `window`, for the dev server's injected globals.

@@ -926,6 +926,10 @@ pub use runtime_shared::app_state::PointerKind;
 // `crate::system_back`.
 pub use crate::system_back::{add_back_handler, on_back};
 pub use runtime_shared::system_back::{BackHandler, BackOutcome};
+// Variables `idealyst dev --app-env` / `idealyst test --env` hand the app.
+pub use runtime_shared::app_env::app_env;
+#[doc(hidden)]
+pub use runtime_shared::app_env::set_app_env_source;
 // App-wide "the person is using the app" heartbeat (idle clocks, kiosk
 // timeouts, auto-lock). See `crate::user_activity`.
 pub use crate::user_activity::{add_user_activity_listener, user_activity};
