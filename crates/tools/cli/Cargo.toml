@@ -85,6 +85,10 @@ inspector-server = { workspace = true }
 inspector-protocol = { workspace = true }
 # Declarative cross-platform Robot test runner behind `idealyst test`.
 robot-test = { workspace = true }
+# `idealyst test --web`: the DevTools-protocol session that sizes and
+# emulates the headless browser's page (`cmd/test/browser.rs`). Same
+# version the dev crates and the CLI's own e2e tests already lock.
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
 # Platform-specific build orchestration. Each platform's pipeline
 # is its own crate so the CLI's `build` and `run` commands stay thin.
 build-ios = { workspace = true }

@@ -183,8 +183,14 @@ server_bin = "server"    # → cargo run --bin server --features server
   the flag moves the whole session, including the `IDEALYST_SERVER_URL`
   handed to native clients and the jobs worker, so client and API never
   disagree about the address. Without the flag the manifest value stands.
-- For native targets the CLI exports `IDEALYST_SERVER_URL` to the app
-  process; read it with `server::dev_base_url()`:
+- For native targets the CLI hands `IDEALYST_SERVER_URL` to the app;
+  read it with `server::dev_base_url()`. A desktop app inherits it; a
+  simulator app gets it as `SIMCTL_CHILD_IDEALYST_SERVER_URL` on `simctl
+  launch`; an Android app gets it through the APK's `IdealystEnv`
+  manifest meta-data (set before the app mounts), with an `adb reverse`
+  of the port so the device's `127.0.0.1` reaches the host. The same
+  route carries every variable the session advertises
+  (`IDEALYST_TEST_DRIVER`, the robot relay URL, …):
 
 ```rust
 let base = server::dev_base_url()

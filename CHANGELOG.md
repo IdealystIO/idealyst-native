@@ -11,6 +11,34 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **Robot element queries combine their criteria** (`runtime-vocabulary`,
+  `mcp-server`). `find_element` / `find_all_elements` / `count_elements`
+  used only the first field present (test_id › label › label_contains ›
+  kind), so `{kind: "TextInput", label: "Email"}` also returned the
+  "Email" caption text. Every field given must now match, and a new
+  `within` field (an element id, or a nested query with an optional `nth`)
+  scopes the search to a container's descendants. A query that relied on
+  the extra fields being ignored now matches less. `robot::Query` gains
+  `Id`, `And` and `Within` variants and is `#[non_exhaustive]`.
+
+- **idea-ui test ids work in dev builds, on every interactive component**
+  (`idea-ui`). Components forwarded `test_id` only under idea-ui's own
+  `robot` feature, which `idealyst dev` / `idealyst test` never enable, so
+  `app.test_id("submit").click()` found nothing for `Button`, `Switch`,
+  `Checkbox` or `Link`. The forwarding is now unconditional (inert outside
+  a robot build); `idea-ui/robot` stays as an alias for
+  `runtime-core/robot`. A `Button` with a live `loading` / `disabled` /
+  icon keeps its id on the pressable in every state instead of a wrapper
+  `View` (iOS `tap_native` refused the wrapper). New `test_id:
+  Option<&'static str>` props on `Field`, `Textarea`, `Autocomplete`,
+  `DateInput`, `DateTimeInput`, `TimeInput`, `Select`, `DatePicker`,
+  `DateTimePicker`, `DateRangePicker`, `IconButton`, `Radio`, `Slider`,
+  `Chip`, `Tag`, `Collapsible`, `MenuItem`, `SubMenu` and `ListItem`, and a
+  `test_id` field + `.test_id("…")` builder on `SelectOption`,
+  `SegmentOption`, `Tab`, `RadioOption` and `MenuEntry` (struct literals of
+  those five need the new field; their constructors don't). The testing
+  guide §1 lists where each id lands.
+
 - **A `#[server]` fn keeps its wire signature on the server build too**
   (`server-macros`, `server`). A fn with extractors (`Auth<_>`, `State<_>`,
   `#[ctx]` …) used to be `me(user: Auth<Principal>)` under the `server`
@@ -28,6 +56,19 @@ releases.
 Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
+
+- **`idealyst test` runs its own server on a free port, on every
+  platform** (`idealyst-cli`). `--port` reached `idealyst dev` only on
+  web, so on iOS/Android/macOS a full-stack project's server bound
+  `[app].server_port` — the port the developer's own `idealyst dev`
+  holds — and `IDEALYST_SERVER_URL` pointed the test app at the
+  developer's server and database (a suite that resets data wiped it).
+  `--port` is now passed on every platform, and with no `--port` a run
+  picks a free port instead of `8765`. Tests and hooks read it as
+  `IDEALYST_TEST_PORT`. The suite target is compiled before the app
+  launches and its binary run directly (no `cargo test` per run).
+  *Migration:* a script that opened `http://127.0.0.1:8765` during a run
+  passes `--port 8765`.
 
 - **A two-axis `scroll_view` locks a wheel or trackpad gesture to its
   axis on the web** (`backend-web`). A gesture that starts mostly along one
@@ -816,6 +857,87 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **`idealyst dev` says when the server's `cargo run` recompiles, and
+  why** (`dev-events`, `idealyst-cli`, `dev-tui`, `dev-http`, `dev-reload`,
+  `build-ios`, `mcp-server`). A new `server_recompiling` event fires when
+  a full-stack server's `cargo run` compiles after the session's own build
+  of it. The panel row and the page badge read `starting · cargo run is
+  recompiling` instead of a bare `starting` with a growing clock, and
+  `dev_status` shows `recompiling` on the target. At session start, every
+  target dir is checked for a filesystem that drops the fraction of a
+  second from a file time that is set (Docker Desktop's bind mount of a
+  macOS folder). On such a filesystem cargo treats build-script output as
+  newer than the build and recompiles most of the graph on every
+  invocation. The session warns, names the dir and the fix (a
+  container-local volume), and carries the same text as the event's
+  `cause`. New `build_ios::target_gc::set_mtime_loses_subsecond`,
+  `rounds_set_mtimes` and `rounded_mtime_cause`.
+
+- **Chainable locator filters, fixtures, viewport control and patient
+  waits in robot-test** (`robot-test`, `robot-test-macros`,
+  `runtime-vocabulary`, `robot-relay`, `runtime-shared`, `backend-macos`,
+  `backend-windows`, `backend-linux`, `mcp-server`).
+  `app.role("TextInput").with_label("Email").within(Selector::test_id("login"))`
+  — `with_label` / `with_text` / `with_role` / `with_test_id` / `within`,
+  and a detached `Selector` — resolve as one `find_all_elements` query.
+  `#[robot_test]` takes fixtures as parameters (`fn t(app: &mut App, user:
+  &SignedIn)`, `robot_test::Fixture`: setup before the body, teardown after
+  it, also on failure). New verbs `get_viewport` (`{width, height,
+  breakpoint}`) and `set_viewport {width, height}` (desktop backends resize
+  their window through the new `IntrospectionOps::resize_window`; elsewhere
+  an error naming the runner's `--viewport` / a device), with
+  `App::viewport` / `set_viewport` / `try_set_viewport` and the MCP
+  `viewport` tool. `App::set_io_timeout` sets the per-call wait; each
+  request carries it as `timeout_ms`, which the relay and the app's bridge
+  honour. See docs/robot.md and the testing guide.
+
+- **`idealyst dev --isolated <key>`: a second session beside the project's
+  own** (`idealyst-cli`, `build-ios`, `dev-events`). Its target dirs and
+  wrappers, server build, log, lock, metrics, staged bundle and
+  `.idealyst/` port files move under `isolated/<key>/`, so a test runner
+  or an agent runs beside the developer's session instead of being
+  refused, at the cost of its own (per-key, reused) build cache. One
+  session per key; the registry entry carries `isolated`. Refused for
+  `--web` on a project without a server, whose `pkg/` every session
+  shares. See docs/hot-reload.md, "A second session beside it".
+
+- **`idealyst dev --app-env KEY[=VALUE]` and `--emulator <AVD|serial>`**
+  (`idealyst-cli`, `run-android`, `build-web`). `--app-env` (repeatable)
+  hands the app a variable on every platform — environment on desktop and
+  the sidecar, `SIMCTL_CHILD_*` on the iOS simulator, `IdealystEnv` on
+  Android, `window.IDEALYST_APP_ENV` in the browser
+  (`build_web::app_env_script_tag`); app code reads one on any platform
+  with `runtime_core::app_env("KEY")` (`runtime-shared`,
+  `runtime-vocabulary`, `idealyst`). `--emulator` picks the Android
+  device: `run-android`'s device choice now matches a requested serial or
+  running AVD before taking the first online device, and waits for the
+  emulator it booted rather than any device that is up. A full-stack web
+  page under `idealyst test` now also gets `window.IDEALYST_TEST_DRIVER`.
+
+- **`idealyst test`: several sizes, phone emulation, simulators, env and
+  hooks in one run** (`idealyst-cli`, `backend-web`). `--viewport` takes a
+  list (`390x844,820x1180,1440x900`) and the suite runs once per size,
+  with a per-size summary and a non-zero exit if any fails; web builds and
+  launches once and resizes the page between sizes, desktop apps relaunch
+  at each size. The headless browser's page is sized over the DevTools
+  protocol (`Emulation.setDeviceMetricsOverride`), so `--viewport 390x844`
+  gives `innerWidth` 390 (headless Chrome's window stops at 500).
+  `--device iphone-14` (and other presets) or `--mobile` emulate a phone:
+  pixel ratio, touch input, mobile viewport and user agent, held for the
+  whole run. On a page with touch input, web `tap_native` sends
+  `touchstart`/`touchend` with the pointer events and the compatibility
+  mouse events and click after them, suppressed by a prevented touch, as
+  a mobile browser does. `--simulator A,B` (iOS) and `--emulator A,B`
+  (Android) run the suite once per device. The test session runs as
+  `idealyst dev --isolated test` by default (`--isolated <key>`,
+  `--no-isolated`), beside the developer's own session of the project,
+  and the runner drives the registration its own dev process wrote; a
+  `--web` run of a project without a server stays unisolated.
+  `--env KEY=VALUE` reaches the app on every platform (as `--app-env`),
+  the dev session (a full-stack server) and the tests; `--before` /
+  `--after` run shell hooks around the run. Tests read `IDEALYST_TEST_VIEWPORT`,
+  `IDEALYST_TEST_DEVICE` and `IDEALYST_TEST_PORT`.
 
 - **`on_back` / `add_back_handler`: the app sees Android's system Back**
   (`runtime-shared`, `runtime-vocabulary`, `runtime-core`,
@@ -2361,6 +2483,50 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **robot-test waits out a busy app instead of panicking** (`robot-test`,
+  `robot-relay`, `runtime-shared`). A locator with a 20 s timeout failed at
+  the first `find_all_elements failed: app response timed out`: the lookup
+  inside every wait loop (locating, assertions, `count()`, `label()`,
+  `assert_path`) panicked on any bridge error. A busy or briefly absent app
+  is now "not yet" until the timeout; an unanswered action is not resent
+  (it may still run) and fails at once. The relay's timeout error says the
+  app is the slow side and names the verb and wait; the native bridge's
+  "timeout: UI thread polling not running" now reads the same way; a
+  client-side timeout says the client gave up (`robot_test::CallError`).
+  A reply arriving after the client timed out was read as the answer to
+  the next call; replies are now matched by id.
+
+- **`idealyst dev` hands a simulator / emulator app every variable it
+  advertises** (`run-ios`, `run-android`, `idealyst-cli`). The iOS
+  simulator launch forwarded only the robot relay URL and
+  `IDEALYST_TEST_DRIVER` as `SIMCTL_CHILD_*`, so a full-stack app never
+  received `IDEALYST_SERVER_URL`: `server::dev_base_url()` was `None` and
+  with `--port` every server call went to the app's compiled-in port
+  ("The network connection was lost"). The Android app got only the
+  test-driver flag. Both launchers now take the session's list
+  (`RunOptions::env_vars`, new on both crates): iOS passes each as
+  `SIMCTL_CHILD_<name>` (`run_ios::simctl_launch_env`), Android bakes them
+  into the `IdealystEnv` manifest meta-data and `adb reverse`s every
+  loopback port among them (`run_android::loopback_reverse_ports`).
+
+- **A dev session nothing vouches for is no longer "started by a person"**
+  (`idealyst-cli`, `dev-events`, `mcp-server`). Every session without
+  `idealyst mcp`'s marker was recorded as `launched_by: "user"`, so one an
+  agent started through `nohup` was refused as a person's. `user` now
+  means stdin was a terminal; otherwise it is `unknown`
+  (`dev_events::sessions::LAUNCHED_BY_UNKNOWN`), and `list_dev_sessions`
+  and the refusal say so.
+
+- **iOS: `tap_native` on a wrapper presses what is under its center**
+  (`runtime-vocabulary`). The hit-test tier (iOS, any backend with a hit
+  test and no input injection) checked the point and then pressed the
+  element the test addressed, so a test id on a transparent wrapper around
+  a pressable (idea-ui `Button` with a reactive `loading`) answered "action
+  'click' not available" where web's real input pressed the pressable. It
+  now presses the deepest element whose hit test contains the point, as a
+  finger does. The covered / not-visible / outside-window refusals are
+  unchanged.
 
 - **Android: `back_enabled(false)` on a stack's root holds without a native
   presenter** (`runtime-vocabulary`). The lock only ever reached a stack

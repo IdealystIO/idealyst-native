@@ -65,8 +65,9 @@ pub mod web_html;
 pub mod wrapper_lock;
 
 pub use source::{
-    registry_config_block, remap_path_flags, FrameworkSource, GitDefaults, GitRef,
-    FrameworkVersions, RegistryDefaults, require_workspace_root, REGISTRY_NAME,
+    isolated_target, registry_config_block, remap_path_flags, require_workspace_root,
+    session_isolation, set_session_isolation, validate_isolation_key, FrameworkSource,
+    FrameworkVersions, GitDefaults, GitRef, RegistryDefaults, REGISTRY_NAME,
 };
 pub use web_html::{font_preload_tags, inject_into_head};
 pub use wrapper_lock::{record_resolved_lock, seed_wrapper_lockfile, write_if_changed, LockSeed};

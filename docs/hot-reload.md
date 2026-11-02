@@ -1677,6 +1677,28 @@ page, the session log and any tool are consumers of that one stream.
   row read "running" and then flipped to a bare "exited". Either way the
   session keeps running, and the next good build of the server's sources
   starts it again.
+- **The server's `cargo run` should compile nothing.** The session builds
+  the server itself first (`cargo build`, same arguments and target dir),
+  so `cargo run` only starts it. If `cargo run` compiles anyway, its first
+  `Compiling` line becomes a `server_recompiling` event, and the row and
+  the page badge read `starting · cargo run is recompiling` until the
+  server answers, rather than a bare `starting` with a growing clock.
+  Under `--no-build` there is no build of the session's, `cargo run` is
+  the build, and nothing is reported.
+- **A target dir that rounds file times** is named at the session's start
+  (a `warning`), and as the `cause` of `server_recompiling`. Cargo sets
+  each unit's dep-info time to the moment rustc started and treats any
+  input with a strictly later time as changed. Docker Desktop's bind
+  mount of a macOS folder drops the fraction of a second from a time that
+  is SET, but keeps it on one a write produces. A build script's output,
+  written earlier in that same second, then always looks newer than the
+  build: `serde_core` and everything above it compile again on every
+  cargo invocation, so the server builds once in the watcher and again in
+  `cargo run`. The session checks each target dir it builds into
+  (`build_ios::target_gc::set_mtime_loses_subsecond`: write a file, set
+  its time through a fresh handle, read it back). The fix is a target dir
+  on a container-local volume. A named volume over `target/` that is
+  shadowed by the bind mount does not count, and the check says so too.
 - **The page** shows the build state over the running app: a small badge
   in the corner (what the loop is doing, with cargo's progress and the
   current stage, or what it last did: the tier and the time), and, when a
@@ -2003,6 +2025,7 @@ The event types, by what they say:
 | `diagnostic` | a rustc diagnostic: level, message, code, primary `file:line:column`, rendered text |
 | `page_ack` | the page (or, in runtime-server mode, the sidecar) applied something: `connected`, `reloading`, `overlay` (updated / waiting), `hot_patch` (redirected / carried), `failed` |
 | `sidecar_applied` | runtime-server mode: the host hot-patched or respawned the sidecar |
+| `server_recompiling` | a full-stack server's `cargo run` is compiling after the session's own build of it, so its start waits on a second build; `cause` says why when the session knows (a target dir that rounds file times) |
 | `server_down` | a full-stack server stopped: `port_in_use` (with the process holding the port, when it can be found; the server was not started) or `exited` (with its status and the line of its output that says why), and where its full output is |
 | `robot_relay` | a `--local` session's Robot relay is `listening` (the URL apps dial, the bridge's TCP port, whether it was `pinned`) or `unavailable` (why) |
 | `robot_apps` | the apps connected to the relay, as a whole list on each change (each with an `id`, its `platform`, a `label` such as the browser, and whether it is the `active` one requests go to); empty when none is connected |
@@ -2129,8 +2152,11 @@ Each `idealyst dev`, whether a person started it in a terminal or
 `~/.idealyst/dev-sessions/<pid>.json` (owner-only; `dev_events::sessions`)
 and removes the file when it exits. The entry names the project, the
 app, the targets, the flags (`local`, `no_watch`, `experimental_build`),
-the session log, the event stream, who started it (`launched_by`: `user`,
-or `mcp` with the launching server's pid as `launcher_pid`), and a
+the session log, the event stream, who started it (`launched_by`: `mcp`,
+with the launching server's pid as `launcher_pid`, for `run_dev`; `user`
+when the command was typed at a terminal; `unknown` otherwise — a script,
+`nohup` or an agent's shell look alike, so such a session is not called a
+person's), its isolation key (`isolated`, for `--isolated <key>`), and a
 control endpoint on a loopback port that answers
 
 - `GET /status` — the entry (without its token) and the session's state
@@ -2164,11 +2190,77 @@ A project directory runs one session. Its sessions would share the
 target directory, `dev.log` and the metrics files, and two cargo builds
 racing in one target directory fail in ways that read as a broken
 release. So `idealyst dev` refuses to start, naming the running
-session's pid, when the registry has a live session for its directory,
-or when another session holds `target/idealyst/<package>/dev.lock` (taken
-before the session log is opened, so two sessions started together
-cannot both pass; the OS releases it when the process ends). `run_dev`
-refuses the same way before spawning.
+session's pid and who started it, when the registry has a live session
+for its directory, or when another session holds
+`target/idealyst/<package>/dev.lock` (taken before the session log is
+opened, so two sessions started together cannot both pass; the OS
+releases it when the process ends). `run_dev` refuses the same way
+before spawning.
+
+### A second session beside it — `--isolated <key>`
+
+A test runner or an agent that needs its own session while the
+developer's runs passes `--isolated <key>` (`[A-Za-z0-9_-]`, up to 64
+characters). Everything the session writes moves under `isolated/<key>/`:
+
+| what | shared session | `--isolated <key>` |
+|---|---|---|
+| cargo target dirs and wrappers (web bundle, iOS / Android / desktop wrappers, the runtime-server host) | `<target>/` | `<target>/isolated/<key>/` |
+| the server's build | `<workspace target>/idealyst-dev-server/` | `<workspace target>/isolated/<key>/idealyst-dev-server/` |
+| `dev.log`, `server.log`, `dev.lock`, metrics | `target/idealyst/<package>/` | `target/isolated/<key>/idealyst/<package>/` |
+| staged web bundle | `target/idealyst/dev/dist/web` | `target/isolated/<key>/idealyst/dev/dist/web` |
+| `bridge.port`, `robot.json`, `catalog.path`, `events.url`, screenshots, headless-browser profiles | `.idealyst/` | `.idealyst/isolated/<key>/` |
+
+Its builds therefore cannot race the other session's, and the developer's
+MCP keeps finding the developer's app. The cost is its own build cache:
+the first session of a key builds cold, later sessions of the same key
+reuse it, so give a test runner a stable key (`--isolated test`). It
+conflicts only with another session of the same key and directory; its
+registry entry carries the key, and the MCP's "session of this
+directory" stays the one without a key.
+
+What isolation cannot separate, the caller picks: ports (`--port`, and
+`--ssr-port` / `--static-port` for those shapes) and the simulator or
+emulator (an app keeps its bundle id, so two sessions installing it on one
+simulator replace each other — use another platform, `--simulator` on
+iOS or `--emulator` on Android).
+`--web` on a project without a server (`server_bin` / `server_manifest`)
+is refused: that shape serves the project's own `index.html` with the
+bundle staged into `<project>/pkg/`, which every session shares.
+
+### One server per session
+
+A full-stack session builds and runs its server once, whatever its
+platforms: with a web target the web launcher owns it (it serves the page
+and the API same-origin and is rebuilt on a server save); without one the
+session builds it once and starts it before the platform launchers. The
+iOS, Android and desktop launchers never build or start a server — they
+hand their app `IDEALYST_SERVER_URL`, naming the session's one port.
+
+### What the app is handed
+
+Everything the session advertises to its apps — `IDEALYST_SERVER_URL`
+for a full-stack project, `IDEALYST_TEST_DRIVER` under `idealyst test`,
+the robot relay URL with `--local`, the bridge port settings, and each
+`--app-env KEY=VALUE` (or bare `--app-env KEY`, passing this process's
+value; repeatable) — reaches the app on every platform:
+
+| app | how |
+|---|---|
+| desktop (macOS, Linux, Windows, terminal), the runtime-server sidecar | its process environment |
+| iOS simulator | `SIMCTL_CHILD_<name>` on `simctl launch` (simctl forwards only those, prefix stripped) |
+| Android | the APK's `IdealystEnv` manifest meta-data, replayed into the environment before the app mounts; each loopback URL's port gets an `adb reverse`; a value containing `;` cannot be carried |
+| browser | `window.IDEALYST_TEST_DRIVER`, and `window.IDEALYST_APP_ENV` (an object of the `--app-env` strings) |
+
+App code reads an `--app-env` variable the same way everywhere with
+`runtime_core::app_env("KEY") -> Option<String>`: the process environment
+on native, the injected `IDEALYST_APP_ENV` object on web (the web boot
+installs that reader before mounting).
+
+`--emulator <AVD|serial>` picks the Android device the way `--simulator`
+picks the iOS one: an online device with that serial or a running
+emulator of that AVD is used even when other devices are up, else the AVD
+is booted.
 
 ## Escape hatches and diagnostics
 

@@ -776,6 +776,7 @@ fn build_android_target(dir: &std::path::Path, args: &Args) -> Result<()> {
             runtime_server_port: None,
             user_features: Vec::new(),
             robot_relay_url: None,
+            env_vars: Vec::new(),
             // A distribution APK keeps Android's secure default; only the
             // `run`/`dev` APK talks to an `http://` dev server.
             cleartext: false,

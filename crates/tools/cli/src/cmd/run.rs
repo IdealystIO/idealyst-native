@@ -250,6 +250,9 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     user_features: Vec::new(),
                     clean: args.clean,
                     simulator: simulator_target(args.simulator.as_deref(), args.udid.as_deref())?,
+                    // No dev session advertises anything here; the relay
+                    // URL and test-driver flag are still inherited.
+                    env_vars: Vec::new(),
                 },
             )?;
             eprintln!();
@@ -348,6 +351,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     user_features: Vec::new(),
                     // `idealyst run android` doesn't host a dev relay.
                     robot_relay_url: None,
+                    env_vars: Vec::new(),
                 },
             )?;
             eprintln!();

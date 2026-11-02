@@ -182,6 +182,13 @@ pub struct RunOptions {
     /// UDID. `None` reuses the first booted iOS simulator, or boots the
     /// first iPhone on the newest runtime. See [`simulator::select_simulator`].
     pub simulator: Option<String>,
+    /// Environment the launched app gets, as `(name, value)`: `idealyst
+    /// dev` passes everything it advertises to its apps
+    /// (`IDEALYST_SERVER_URL`, `IDEALYST_TEST_DRIVER`, the robot relay URL,
+    /// …). A simulator app does not inherit the launcher's environment;
+    /// [`simctl_launch_env`] turns these into the `SIMCTL_CHILD_*`
+    /// variables `simctl launch` delivers.
+    pub env_vars: Vec<(String, String)>,
 }
 
 #[derive(Debug)]
@@ -347,7 +354,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             SimStep::Terminate => terminate_app(&udid, bundle_id),
             SimStep::Uninstall => uninstall_app(&udid, bundle_id),
             SimStep::Install => install_app(&udid, &app_bundle)?,
-            SimStep::Launch => launch_app(&udid, bundle_id)?,
+            SimStep::Launch => launch_app(&udid, bundle_id, &opts.env_vars)?,
         }
     }
 
@@ -820,29 +827,57 @@ fn install_app(udid: &str, app: &Path) -> Result<()> {
     Ok(())
 }
 
-fn launch_app(udid: &str, bundle_id: &str) -> Result<()> {
+fn launch_app(udid: &str, bundle_id: &str, env_vars: &[(String, String)]) -> Result<()> {
     eprintln!("[run-ios] simctl launch {bundle_id} on {udid}");
     let mut cmd = Command::new("xcrun");
     cmd.args(["simctl", "launch", udid, bundle_id]);
-    // Deliver the robot relay URL to the sim app: `simctl` forwards env vars
-    // prefixed `SIMCTL_CHILD_` to the launched process (stripping the prefix).
-    // The iOS simulator shares the host network stack, so the dev-process relay
-    // URL (loopback) is reachable as-is; the app's Robot bridge reads
-    // `IDEALYST_ROBOT_RELAY_URL` and dials out. Inherited from the dev process
-    // (`idealyst dev --local` exports it).
-    if let Ok(url) = std::env::var("IDEALYST_ROBOT_RELAY_URL") {
-        cmd.env("SIMCTL_CHILD_IDEALYST_ROBOT_RELAY_URL", url);
-    }
-    // `idealyst test` tells an in-app self-test to stand down; a desktop
-    // app inherits the variable, a simulator app needs it forwarded.
-    if let Ok(v) = std::env::var("IDEALYST_TEST_DRIVER") {
-        cmd.env("SIMCTL_CHILD_IDEALYST_TEST_DRIVER", v);
+    for (k, v) in simctl_launch_env(env_vars, |k| std::env::var(k).ok()) {
+        cmd.env(k, v);
     }
     let status = cmd.status().with_context(|| "spawn xcrun simctl launch")?;
     if !status.success() {
         anyhow::bail!("xcrun simctl launch exited with {status}");
     }
     Ok(())
+}
+
+/// Dev-tooling variables a simulator app gets from the launcher's own
+/// environment when the caller did not pass them: the robot relay URL
+/// (`idealyst dev --local` exports it) and `IDEALYST_TEST_DRIVER`
+/// (`idealyst test` sets it so an in-app self-test stands down).
+const INHERITED_ENV: &[&str] = &["IDEALYST_ROBOT_RELAY_URL", "IDEALYST_TEST_DRIVER"];
+
+/// The `SIMCTL_CHILD_*` environment for `simctl launch`: every explicit
+/// `env_vars` entry, then each [`INHERITED_ENV`] variable `get` finds that
+/// the explicit list did not name (explicit wins).
+///
+/// `simctl launch` does NOT pass its own environment to the app; it
+/// forwards only variables prefixed `SIMCTL_CHILD_`, with the prefix
+/// stripped. A variable set on the `xcrun` process unprefixed never
+/// reaches the app — which is how `IDEALYST_SERVER_URL` went missing and
+/// every `#[server]` call of a `--port`-moved dev server dialled the app's
+/// compiled-in fallback port. The simulator shares the host's network
+/// stack, so loopback URLs are reachable as-is.
+pub fn simctl_launch_env(
+    env_vars: &[(String, String)],
+    get: impl Fn(&str) -> Option<String>,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (k, v) in env_vars {
+        if let Some(slot) = out.iter_mut().find(|(name, _)| *name == k.as_str()) {
+            slot.1 = v.clone();
+        } else {
+            out.push((k.clone(), v.clone()));
+        }
+    }
+    for k in INHERITED_ENV {
+        if !out.iter().any(|(name, _)| name == k) {
+            if let Some(v) = get(k) {
+                out.push(((*k).to_string(), v));
+            }
+        }
+    }
+    out.into_iter().map(|(k, v)| (format!("SIMCTL_CHILD_{k}"), v)).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -915,6 +950,54 @@ pub(crate) mod tests_support {
 mod tests {
     use super::*;
     use build_ios::{AppMetadata, Manifest, SplashConfig};
+
+    fn kv(k: &str, v: &str) -> (String, String) {
+        (k.to_string(), v.to_string())
+    }
+
+    /// Regression: `idealyst dev --ios --local --port 3620` advertised
+    /// `IDEALYST_SERVER_URL=http://127.0.0.1:3620` to its apps, but the
+    /// simulator launch forwarded only the relay URL and the test-driver
+    /// flag, so `server::dev_base_url()` read `None` and every server call
+    /// went to the app's compiled-in port. Every variable the caller
+    /// passes must reach the app as `SIMCTL_CHILD_<name>`.
+    #[test]
+    fn regression_simctl_launch_forwards_every_session_variable() {
+        let session = vec![
+            kv("IDEALYST_SERVER_URL", "http://127.0.0.1:3620"),
+            kv("IDEALYST_TEST_DRIVER", "1"),
+            kv("IDEALYST_ROBOT_RELAY_URL", "ws://127.0.0.1:65345"),
+            kv("IDEALYST_BRIDGE_PORT_FILE", "/p/.idealyst/bridge.port"),
+        ];
+        let env = simctl_launch_env(&session, |_| None);
+        for (k, v) in &session {
+            let want = (format!("SIMCTL_CHILD_{k}"), v.clone());
+            assert!(env.contains(&want), "{want:?} missing from {env:?}");
+        }
+        assert_eq!(env.len(), session.len(), "{env:?}");
+        assert!(env.iter().all(|(k, _)| k.starts_with("SIMCTL_CHILD_")), "unprefixed never reaches the app: {env:?}");
+    }
+
+    /// `idealyst run ios` passes no list: the relay URL and the
+    /// test-driver flag still come from the launcher's environment, and an
+    /// explicit value beats an inherited one.
+    #[test]
+    fn simctl_launch_env_inherits_dev_tooling_variables_explicit_wins() {
+        let inherited = |k: &str| match k {
+            "IDEALYST_ROBOT_RELAY_URL" => Some("ws://127.0.0.1:1".to_string()),
+            "IDEALYST_TEST_DRIVER" => Some("1".to_string()),
+            "IDEALYST_SERVER_URL" => Some("http://127.0.0.1:9".to_string()),
+            _ => None,
+        };
+        let env = simctl_launch_env(&[], inherited);
+        assert!(env.contains(&kv("SIMCTL_CHILD_IDEALYST_ROBOT_RELAY_URL", "ws://127.0.0.1:1")));
+        assert!(env.contains(&kv("SIMCTL_CHILD_IDEALYST_TEST_DRIVER", "1")));
+        assert!(!env.iter().any(|(k, _)| k == "SIMCTL_CHILD_IDEALYST_SERVER_URL"), "only the listed variables are inherited");
+
+        let env = simctl_launch_env(&[kv("IDEALYST_ROBOT_RELAY_URL", "ws://127.0.0.1:2")], inherited);
+        let relay: Vec<_> = env.iter().filter(|(k, _)| k == "SIMCTL_CHILD_IDEALYST_ROBOT_RELAY_URL").collect();
+        assert_eq!(relay, vec![&kv("SIMCTL_CHILD_IDEALYST_ROBOT_RELAY_URL", "ws://127.0.0.1:2")]);
+    }
 
     fn fake_manifest() -> Manifest {
         Manifest {

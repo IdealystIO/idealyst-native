@@ -179,11 +179,13 @@ fn dev_env_vars(
     if let Ok(v) = std::env::var("IDEALYST_TEST_DRIVER") {
         out.push(("IDEALYST_TEST_DRIVER".to_string(), v));
     }
+    // `--app-env`: what the caller asked every app of the session to get.
+    out.extend(app_env(&args.app_env, |k| std::env::var(k).ok()));
     // Advertise the dev backend's URL to native clients that read it via
     // the `server` SDK's `dev_base_url()` helper. Loopback is correct for
     // macOS / terminal / iOS-sim (they share the host's network stack);
-    // the Android emulator reaches the host at `10.0.2.2`, so the app's
-    // own fallback handles that case.
+    // run-android `adb reverse`s the port, so the device's loopback
+    // reaches it too.
     if let Ok(m) = parse_manifest(project_dir) {
         if m.app.server_bin.is_some() || m.app.server_manifest.is_some() {
             out.push((
@@ -195,11 +197,64 @@ fn dev_env_vars(
     out
 }
 
+/// The `--app-env` list as `(name, value)`: `KEY=VALUE` as given (the
+/// value may itself hold `=`), a bare `KEY` from `get` (this process's
+/// environment) and dropped when unset. A later entry for a name replaces
+/// an earlier one.
+fn app_env(specs: &[String], get: impl Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for spec in specs {
+        let pair = match spec.split_once('=') {
+            Some((k, v)) => Some((k.to_string(), v.to_string())),
+            None => get(spec).map(|v| (spec.clone(), v)),
+        };
+        if let Some((k, v)) = pair.filter(|(k, _)| !k.is_empty()) {
+            out.retain(|(name, _)| *name != k);
+            out.push((k, v));
+        }
+    }
+    out
+}
+
+/// The page-global `<script>`s a browser app of this session gets, its
+/// stand-in for the environment a native app inherits: the test-driver
+/// flag when `idealyst test` drives the session, and the `--app-env`
+/// variables. Empty when there is neither.
+fn page_env_scripts(args: &Args) -> String {
+    let mut out = String::new();
+    if std::env::var_os("IDEALYST_TEST_DRIVER").is_some() {
+        out.push_str(build_web::test_driver_script_tag());
+    }
+    out.push_str(&build_web::app_env_script_tag(&app_env(&args.app_env, |k| std::env::var(k).ok())));
+    out
+}
+
+/// What a simulator / emulator app of this session is handed: everything
+/// [`dev_env_vars`] advertises, plus the robot relay URL when the session
+/// hosts one (`get` reads the process environment, where `run` exported
+/// it). A desktop app inherits these as a child process; a simulator or
+/// device app inherits nothing, so the iOS and Android launchers deliver
+/// this list explicitly (`SIMCTL_CHILD_*`, the `IdealystEnv` manifest
+/// meta-data).
+fn device_app_env(dir: &Path, args: &Args, get: impl Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+    let mut env = dev_env_vars(dir, args, "", None, None);
+    if let Some(relay) = get("IDEALYST_ROBOT_RELAY_URL") {
+        env.push(("IDEALYST_ROBOT_RELAY_URL".to_string(), relay));
+    }
+    env
+}
+
+/// Variables of [`dev_env_vars`] that name a path on the host — reachable
+/// from a simulator app, which runs on the host's file system, but not from
+/// an Android device.
+const HOST_PATH_ENV: &[&str] = &["IDEALYST_BRIDGE_PORT_FILE"];
+
 /// `<project>/.idealyst/bridge.port` — the per-project location the
 /// running app's Robot bridge writes its bound port JSON to. Read by
-/// project-scoped MCP servers (which run with cwd == project root).
+/// project-scoped MCP servers (which run with cwd == project root). An
+/// isolated session's is under [`project_state_dir`].
 fn bridge_port_file(project_dir: &Path) -> PathBuf {
-    project_dir.join(".idealyst").join("bridge.port")
+    project_state_dir(project_dir).join("bridge.port")
 }
 
 /// Resolve a stable LAN IP for this host. Used when baking
@@ -446,6 +501,28 @@ pub struct Args {
     #[arg(long)]
     pub shared_target: bool,
 
+    /// Run beside this project's own session instead of being refused by
+    /// it: everything the session writes moves under `isolated/<KEY>/` —
+    /// its cargo target dirs and wrappers (`target/isolated/<KEY>/`, the
+    /// server's build included), its log, lock and metrics, the staged web
+    /// bundle, and its `.idealyst/isolated/<KEY>/` port, relay and event
+    /// files, screenshots and headless-browser profiles —
+    /// so its builds cannot race the other session's. The cost is its own
+    /// build cache: the first isolated session of a key builds cold, later
+    /// ones of the same key are warm.
+    ///
+    /// For a test runner (or an agent) beside a developer's session: give
+    /// it a stable key (`--isolated test`) and its own ports (`--port`;
+    /// `--ssr-port`/`--static-port` for those shapes). One session per key
+    /// per project. Not with `--web` on a project without a server
+    /// (`server_bin` / `server_manifest`): that shape serves the project's
+    /// own `index.html` and `pkg/`, which a second session would restage.
+    /// A simulator or emulator app keeps its bundle id, so run the
+    /// isolated session on another platform or another simulator
+    /// (`--simulator`).
+    #[arg(long, value_name = "KEY")]
+    pub isolated: Option<String>,
+
     /// Launch a headless Chromium at the served web URL so the app runs (and
     /// dials the robot relay) without any display. AUTO-enabled when the
     /// relay is active and no display is present (container/CI/SSH) — this
@@ -479,6 +556,26 @@ pub struct Args {
     /// ones it passed over.
     #[arg(long, value_name = "NAME|UDID")]
     pub simulator: Option<String>,
+
+    /// `--android` only: the device to run on, by AVD name (as listed by
+    /// `emulator -list-avds`, e.g. `Pixel_8_API_35`) or adb serial
+    /// (`emulator-5556`, a USB device's serial). Used even when other
+    /// devices are online; an AVD that isn't running is booted. Defaults
+    /// to the first online device, else a Pixel-shaped AVD.
+    #[arg(long, value_name = "AVD|SERIAL")]
+    pub emulator: Option<String>,
+
+    /// Hand the app an environment variable, on every platform:
+    /// `KEY=VALUE`, or a bare `KEY` to pass this process's own value of
+    /// `KEY` (skipped when unset). Repeatable. A desktop app gets it in its
+    /// environment, a simulator app as `SIMCTL_CHILD_KEY`, an Android app
+    /// through the APK's `IdealystEnv` meta-data (a value containing `;`
+    /// cannot be carried there), the runtime-server sidecar in its
+    /// environment, and a browser page as `window.IDEALYST_APP_ENV.KEY`.
+    /// The app's server and jobs worker are not affected: they inherit
+    /// this process's environment as always.
+    #[arg(long = "app-env", value_name = "KEY[=VALUE]")]
+    pub app_env: Vec<String>,
 
     /// Build and run on the Android emulator.
     #[arg(long)]
@@ -690,6 +787,12 @@ pub fn run(args: Args) -> Result<()> {
     }
     let dir = crate::framework_source::abs_project_dir(&args.dir)?;
 
+    // Before anything resolves a path: every target dir, wrapper root,
+    // staging dir and log below moves under `isolated/<key>/`.
+    if let Some(key) = &args.isolated {
+        build_ios::set_session_isolation(key)?;
+    }
+
     // One core: `--new-core` is a no-op, `--old-core` is a hard error.
     crate::core_mode::validate_flags(args.new_core, args.old_core)?;
 
@@ -711,6 +814,9 @@ pub fn run(args: Args) -> Result<()> {
     // shape ("missing targets") regardless of how they invoked.
     let manifest = parse_manifest(&dir)?;
     let active_targets = resolve_targets(&args, &manifest.app.targets)?;
+    if let Some(why) = isolation_refused(&args, &manifest, &active_targets) {
+        anyhow::bail!(why);
+    }
     let log_path = session_log_path(&dir, &manifest);
     // Before the session log is opened (a running session is writing it)
     // and before anything builds. Held for the rest of `run`.
@@ -718,6 +824,7 @@ pub fn run(args: Args) -> Result<()> {
         &dir,
         &log_path.with_file_name("dev.lock"),
         dev_events::sessions::registry_dir().as_deref(),
+        args.isolated.as_deref(),
     )?;
     // Before any watcher starts: each reads it (`dev_log::no_watch`).
     crate::dev_log::set_no_watch(args.no_watch);
@@ -787,7 +894,8 @@ pub fn run(args: Args) -> Result<()> {
             Err(e) => crate::dlog!("dev", "cannot write {}: {e}", server_log.display()),
         }
     }
-    let session_server = (backend_declared && active_targets.contains(&Target::Web)).then(|| {
+    let server_owner = session_server_owner(backend_declared, &active_targets);
+    let session_server = (server_owner == ServerOwner::WebLauncher).then(|| {
         dev_events::SessionServer::named(server_display_name(&dir, &manifest))
             .with_log_file(server_log.display().to_string())
     });
@@ -836,7 +944,11 @@ pub fn run(args: Args) -> Result<()> {
         entry.events_url = events_url;
         // This session's watchers (dev-reload) send `watcher_ready`.
         entry.reports_watcher_ready = true;
-        entry.launched_by = std::env::var(dev_events::sessions::LAUNCHED_BY_ENV).unwrap_or_else(|_| "user".into());
+        entry.isolated = args.isolated.clone();
+        entry.launched_by = launched_by(
+            std::env::var(dev_events::sessions::LAUNCHED_BY_ENV).ok(),
+            std::io::IsTerminal::is_terminal(&std::io::stdin()),
+        );
         entry.launcher_pid =
             std::env::var(dev_events::sessions::LAUNCHER_PID_ENV).ok().and_then(|p| p.parse().ok());
         let registration = crate::dev_control::start(
@@ -1061,13 +1173,19 @@ pub fn run(args: Args) -> Result<()> {
     // server, and native clients reach it via `IDEALYST_SERVER_URL`.
     let mut backend_pid: Option<u32> = None;
     let backend_port = dev_server_port(&args, &manifest.app);
-    if backend_declared && !active_targets.contains(&Target::Web) {
+    if server_owner == ServerOwner::Session {
         let server_target = session_server_target_dir(&dir, args.shared_target);
-        if !args.no_build {
-            if let Err(e) = build_server_recorded(&dir, &manifest, &server_target, !args.shared_target) {
-                crate::dlog!("dev backend", "server build: {e:#}");
-            }
-        }
+        warn_if_target_rounds_mtimes(&server_target);
+        // Whether `cargo run` should find the server built: after our own
+        // build it only starts it, and compiling there is worth saying.
+        let prebuilt = !args.no_build
+            && match build_server_recorded(&dir, &manifest, &server_target, !args.shared_target) {
+                Ok(()) => true,
+                Err(e) => {
+                    crate::dlog!("dev backend", "server build: {e:#}");
+                    false
+                }
+            };
         match spawn_backend(
             &dir,
             &manifest,
@@ -1076,6 +1194,7 @@ pub fn run(args: Args) -> Result<()> {
             backend_port,
             None,
             &server_log,
+            prebuilt,
         ) {
             Ok(server) => {
                 let pid = server.child.id();
@@ -1315,6 +1434,72 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Which part of a session builds and runs the project's server — at most
+/// one, whatever the number of platforms: every client of the session (the
+/// page, a simulator app, an emulator app, a desktop app) calls the ONE
+/// server on the session's port through `IDEALYST_SERVER_URL`.
+///
+/// Two builds of the server in one session would run two cargos over the
+/// same `idealyst-dev-server` units and race the respawns on one port; no
+/// native launcher (`launch_ios`, `launch_android`, …) builds or starts a
+/// server for that reason — they only hand their app the URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerOwner {
+    /// No server declared (or none to run).
+    None,
+    /// The web launcher ([`launch_web_with_backend`]): the server serves
+    /// the page's bundle and API same-origin, and is rebuilt and restarted
+    /// on a server save. Native clients of the same session use it.
+    WebLauncher,
+    /// `run` itself, for a session with no web target: built once and
+    /// started before the platform launchers, for native clients.
+    Session,
+}
+
+fn session_server_owner(backend_declared: bool, targets: &[Target]) -> ServerOwner {
+    if !backend_declared {
+        ServerOwner::None
+    } else if targets.contains(&Target::Web) {
+        ServerOwner::WebLauncher
+    } else {
+        ServerOwner::Session
+    }
+}
+
+/// Why `--isolated` cannot run this session, if it cannot: the static web
+/// shape (a `--web` target of a project with no server) serves the project's own `index.html` with the bundle
+/// staged into `<project>/pkg/`, which is the same directory for every
+/// session of the project — an isolated session would restage the
+/// developer's page under it.
+fn isolation_refused(args: &Args, manifest: &build_ios::Manifest, targets: &[Target]) -> Option<String> {
+    let key = args.isolated.as_deref()?;
+    let full_stack = manifest.app.server_bin.is_some() || manifest.app.server_manifest.is_some();
+    let static_web = targets.contains(&Target::Web) && !full_stack;
+    static_web.then(|| {
+        format!(
+            "`--isolated {key}` can't run the static `--web` shape: it serves this project's own \
+             `index.html` and stages the bundle into its `pkg/`, which every session of the \
+             project shares. Run the isolated session on another platform (`--ios`, `--android`, \
+             `--macos`, …), or give the project a server (`server_bin` / `server_manifest`), whose \
+             dev bundle is staged per session."
+        )
+    })
+}
+
+/// Who started this session, for its registry entry: what the launcher
+/// said (`IDEALYST_DEV_LAUNCHED_BY`, `mcp` from `idealyst mcp`), else
+/// `user` when stdin is a terminal — a person typed the command — else
+/// `unknown`. A script, `nohup` (which points stdin away from the
+/// terminal) or an agent's shell all look alike from here, so a session
+/// with neither is not claimed for a person.
+pub(crate) fn launched_by(env: Option<String>, stdin_is_terminal: bool) -> String {
+    match env.filter(|v| !v.is_empty()) {
+        Some(v) => v,
+        None if stdin_is_terminal => dev_events::sessions::LAUNCHED_BY_USER.to_string(),
+        None => dev_events::sessions::LAUNCHED_BY_UNKNOWN.to_string(),
+    }
+}
+
 /// The session log: `<project>/target/idealyst/<package>/dev.log`, under
 /// the project's own `target/` like the dev bundle staging
 /// ([`dev_web_bundle_dir`]) — never inside a watched source root, so
@@ -1322,14 +1507,32 @@ pub fn run(args: Args) -> Result<()> {
 /// log opens before anything else runs, and resolving the framework
 /// source here would print its line a second time.
 fn session_log_path(dir: &Path, manifest: &build_ios::Manifest) -> PathBuf {
-    dir.join("target").join("idealyst").join(&manifest.name).join("dev.log")
+    project_target(dir).join("idealyst").join(&manifest.name).join("dev.log")
+}
+
+/// `<project>/target`, or `<project>/target/isolated/<key>` for an isolated
+/// session (`--isolated <key>`, [`build_ios::set_session_isolation`]): the
+/// root of everything this session writes under the project's `target/`.
+fn project_target(dir: &Path) -> PathBuf {
+    build_ios::isolated_target(dir.join("target"), build_ios::session_isolation())
+}
+
+/// `<project>/.idealyst`, or `<project>/.idealyst/isolated/<key>` for an
+/// isolated session: where the session advertises its ports and relay to
+/// tools that look inside the project. An isolated session writing the
+/// shared files would point the developer's MCP at the wrong app.
+pub(crate) fn project_state_dir(dir: &Path) -> PathBuf {
+    match build_ios::session_isolation() {
+        Some(key) => dir.join(".idealyst").join("isolated").join(key),
+        None => dir.join(".idealyst"),
+    }
 }
 
 /// Where a full-stack project's server process writes (every
 /// `output{source: server}` line), beside the session log. Truncated when
 /// the session starts.
 fn server_log_path(dir: &Path, manifest: &build_ios::Manifest) -> PathBuf {
-    dir.join("target").join("idealyst").join(&manifest.name).join("server.log")
+    project_target(dir).join("idealyst").join(&manifest.name).join("server.log")
 }
 
 /// What the session calls the project's server: the binary the app
@@ -2175,10 +2378,11 @@ fn launch_web(
             });
             crate::dlog!("dev web", "robot relay URL injected ({url})");
         }
-        // `idealyst test` drives this page: say so to the app, which has no
-        // environment to read it from (`robot::is_test_driven`).
-        if std::env::var_os("IDEALYST_TEST_DRIVER").is_some() {
-            let script = build_web::test_driver_script_tag().to_string();
+        // `idealyst test` drives this page, and `--app-env`: say so to the
+        // app, which has no environment to read them from
+        // (`robot::is_test_driven`, `window.IDEALYST_APP_ENV`).
+        let script = page_env_scripts(args);
+        if !script.is_empty() {
             head_ctx = Some(match head_ctx.take() {
                 Some(mut h) => {
                     h.html.push('\n');
@@ -2243,8 +2447,7 @@ fn sync_dev_web_overlay(
     Option<dev_http::OverlayContext>,
     Option<dev_http::HeadInjectionContext>,
 )> {
-    let overlay_dir = project_dir
-        .join("target")
+    let overlay_dir = project_target(project_dir)
         .join("idealyst")
         .join("dev")
         .join("web");
@@ -2531,14 +2734,15 @@ fn server_target_dir(project_dir: &Path, shared: bool) -> PathBuf {
         // does not parse) the project-local dir is the closest thing
         // left.
         return cargo_workspace_target_dir(project_dir)
-            .unwrap_or_else(|| project_dir.join("target"));
+            .map(|t| build_ios::isolated_target(t, build_ios::session_isolation()))
+            .unwrap_or_else(|| project_target(project_dir));
     }
     match crate::framework_source::resolve(project_dir) {
         Ok(source) => cli_target_root(&source, project_dir, None).join(DEV_SERVER_TARGET_DIR),
         // Resolution only fails when the framework source can't be
         // determined at all. Isolation matters more than the cross-app
         // sharing, so fall back to a project-local dir — never `target/`.
-        Err(_) => project_dir.join("target").join(DEV_SERVER_TARGET_DIR),
+        Err(_) => project_target(project_dir).join(DEV_SERVER_TARGET_DIR),
     }
 }
 
@@ -2620,8 +2824,7 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 /// `dist/web` will 404 under dev; that is the server's bug to fix, not
 /// a reason to stage into the artifact dir again.
 fn dev_web_bundle_dir(project_dir: &Path) -> PathBuf {
-    project_dir
-        .join("target")
+    project_target(project_dir)
         .join("idealyst")
         .join("dev")
         .join("dist")
@@ -2705,7 +2908,18 @@ fn full_stack_bundle_options(
         // and both live tiers (overlay patch, hot patch) reach the page
         // through it as ordinary wire commands. A second channel telling
         // the page to reload would only undo them.
-        head_script: if wire { None } else { full_stack_reload_script(sse_port) },
+        //
+        // The page's environment stand-ins (test driver, `--app-env`) ride
+        // the same splice in either mode: the page reads them at boot.
+        head_script: {
+            let reload = if wire { None } else { full_stack_reload_script(sse_port) };
+            let env = page_env_scripts(args);
+            match (reload, env.is_empty()) {
+                (reload, true) => reload,
+                (Some(r), false) => Some(format!("{r}{env}")),
+                (None, false) => Some(env),
+            }
+        },
         // Wire mode's sidecar URL, written into the staged `index.html`
         // because this project's server hands that file out verbatim —
         // there is no `dev-http` here to splice it in at serve time.
@@ -2869,6 +3083,7 @@ fn launch_web_with_backend(
         })
     };
     if watched {
+        warn_if_target_rounds_mtimes(&server_target);
         crate::dlog!(
             "dev web",
             "full-stack: building the server {} (web target {}, server target {})",
@@ -2889,6 +3104,7 @@ fn launch_web_with_backend(
         port,
         dev_stream: dev_stream_env.as_deref(),
         log: &server_log,
+        prebuilt: watched,
     };
     let mut child: Option<ServerProc> = None;
     let mut route_reported = false;
@@ -3177,7 +3393,7 @@ fn start_robot_relay(dir: &Path, args: &Args, app_name: &str) -> Option<robot_re
         // Save `screenshot` PNGs into the project by default (discoverable,
         // gitignorable), overridable with `--screenshot-dir`.
         screenshot_dir: Some(
-            args.screenshot_dir.clone().unwrap_or_else(|| dir.join(".idealyst").join("screenshots")),
+            args.screenshot_dir.clone().unwrap_or_else(|| project_state_dir(dir).join("screenshots")),
         ),
         // Only a pinned port is worth advertising outside this machine:
         // a random one is not forwarded.
@@ -3185,7 +3401,7 @@ fn start_robot_relay(dir: &Path, args: &Args, app_name: &str) -> Option<robot_re
         on_apps: Some(on_apps.clone()),
         // The headless web client's profiles live here
         // (`spawn_headless_client`); the relay screenshots its tab over CDP.
-        cdp_profiles_dir: Some(dir.join(".idealyst")),
+        cdp_profiles_dir: Some(project_state_dir(dir)),
     };
     let started = match declared {
         Some(port) => {
@@ -3251,9 +3467,10 @@ fn robot_bind_host(in_container: bool) -> std::net::IpAddr {
 }
 
 /// Where a pinned relay advertises itself inside the project — the
-/// directory a devcontainer shares with its host.
+/// directory a devcontainer shares with its host. An isolated session's is
+/// under [`project_state_dir`].
 fn robot_registration_path(dir: &Path) -> PathBuf {
-    dir.join(".idealyst").join("robot.json")
+    project_state_dir(dir).join("robot.json")
 }
 
 /// Whether this process runs inside a container (a devcontainer, a
@@ -3368,6 +3585,10 @@ struct ServerLaunch<'a> {
     port: u16,
     dev_stream: Option<&'a str>,
     log: &'a Path,
+    /// The server is built by the session's watcher before every start,
+    /// so `cargo run` should find it fresh (`false` under `--no-build`,
+    /// where `cargo run` is the build).
+    prebuilt: bool,
 }
 
 impl ServerLaunch<'_> {
@@ -3398,6 +3619,7 @@ impl ServerLaunch<'_> {
             self.port,
             self.dev_stream,
             self.log,
+            self.prebuilt,
         ) {
             Ok(c) => c,
             Err(e) => {
@@ -4142,6 +4364,7 @@ fn spawn_backend(
     port: u16,
     dev_stream: Option<&str>,
     log: &Path,
+    prebuilt: bool,
 ) -> Result<ServerProc> {
     let app = &manifest.app;
     let mut cmd = cargo_run_command();
@@ -4206,7 +4429,8 @@ fn spawn_backend(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().context("spawn server (`cargo run`)")?;
-    let output = forward_server_output(&mut child, log);
+    let recompile = prebuilt.then(|| build_ios::target_gc::rounded_mtime_cause(target_dir));
+    let output = forward_server_output(&mut child, log, recompile);
     Ok(ServerProc { child, output })
 }
 
@@ -4214,14 +4438,32 @@ fn spawn_backend(
 /// `output{source: server, target: server}` event. A panic line is also an
 /// `error` from the server, naming the log with the rest of its output.
 /// The last lines are kept, for [`ServerOutput::cause`].
-fn forward_server_output(child: &mut Child, log: &Path) -> ServerOutput {
+///
+/// `recompile` is `Some` when a build of ours just produced the server, so
+/// `cargo run` should compile nothing: its stderr is then watched for
+/// cargo's lines (a [`CargoRunWatch`]), with the cause to report if it
+/// compiles anyway.
+fn forward_server_output(child: &mut Child, log: &Path, recompile: Option<Option<String>>) -> ServerOutput {
     use std::io::{BufRead, BufReader, Read};
     type Tail = Arc<Mutex<std::collections::VecDeque<String>>>;
-    fn pump(pipe: Option<impl Read + Send + 'static>, log: String, tail: Tail) -> Option<std::thread::JoinHandle<()>> {
+    fn pump(
+        pipe: Option<impl Read + Send + 'static>,
+        log: String,
+        tail: Tail,
+        mut recompile: Option<(CargoRunWatch, Option<String>)>,
+    ) -> Option<std::thread::JoinHandle<()>> {
         let pipe = pipe?;
         Some(std::thread::spawn(move || {
             let reporter = dev_events::global();
             for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                if let Some((watch, cause)) = &mut recompile {
+                    if watch.compiles(&line) {
+                        reporter.emit(dev_events::DevEvent::ServerRecompiling {
+                            target: dev_events::SERVER_TARGET.into(),
+                            cause: cause.take(),
+                        });
+                    }
+                }
                 {
                     let mut tail = tail.lock().unwrap();
                     tail.push_back(line.clone());
@@ -4242,11 +4484,50 @@ fn forward_server_output(child: &mut Child, log: &Path) -> ServerOutput {
     }
     let log = log.display().to_string();
     let tail: Tail = Arc::default();
+    // Cargo writes its `Compiling` lines to stderr.
     let pumps = [
-        pump(child.stdout.take(), log.clone(), tail.clone()),
-        pump(child.stderr.take(), log, tail.clone()),
+        pump(child.stdout.take(), log.clone(), tail.clone(), None),
+        pump(child.stderr.take(), log, tail.clone(), recompile.map(|cause| (CargoRunWatch::default(), cause))),
     ];
     ServerOutput { pumps: pumps.into_iter().flatten().collect(), tail }
+}
+
+/// Reads `cargo run`'s stderr for the first sign it is compiling. Cargo's
+/// own lines come first and end at `Running \`…\``; after that the stream
+/// is the server's, whose output is never read as cargo's.
+#[derive(Debug, Default)]
+struct CargoRunWatch {
+    done: bool,
+}
+
+impl CargoRunWatch {
+    /// Whether `line` is the first `Compiling` line of this `cargo run`.
+    fn compiles(&mut self, line: &str) -> bool {
+        if self.done {
+            return false;
+        }
+        let plain = dev_events::plain::strip_ansi(line);
+        let plain = plain.trim_start();
+        if plain.starts_with("Running `") {
+            self.done = true;
+            return false;
+        }
+        if plain.starts_with("Compiling ") {
+            self.done = true;
+            return true;
+        }
+        false
+    }
+}
+
+/// Say at the session's start when `dir` is on a filesystem that rounds
+/// the file times cargo sets: every cargo run there recompiles most of
+/// the graph, and the server's `cargo run` compiles it a second time
+/// after its build (`server_recompiling`).
+fn warn_if_target_rounds_mtimes(dir: &Path) {
+    if let Some(cause) = build_ios::target_gc::rounded_mtime_cause(dir) {
+        dev_events::global().warn("dev server", cause);
+    }
 }
 
 /// The error a server output line reports, if it is a panic's first line
@@ -4356,7 +4637,7 @@ fn spawn_headless_client(host: &str, port: u16, dir: &Path, children: Arc<Mutex<
     // whatever instance holds the lock (possibly a stale one from a dead
     // session) and exits. Port-suffixing keeps sessions from hijacking each
     // other.
-    let profile = dir.join(format!(".idealyst/headless-client-profile-{port}"));
+    let profile = project_state_dir(dir).join(format!("headless-client-profile-{port}"));
     std::thread::spawn(move || {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while std::time::Instant::now() < deadline {
@@ -4489,6 +4770,7 @@ fn launch_ios(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
             // uninstall would wipe app state on every reload, so keep it off.
             clean: false,
             simulator: args.simulator.clone(),
+            env_vars: device_app_env(dir, args, |k| std::env::var(k).ok()),
         },
     )
     .context("iOS dev launch failed")?;
@@ -4538,7 +4820,7 @@ fn launch_android(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> 
         dir,
         run_android::RunOptions {
             release: false,
-            avd: None,
+            avd: args.emulator.clone(),
             mode,
             runtime_server_port,
             source,
@@ -4546,6 +4828,10 @@ fn launch_android(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> 
             // The dev process hosts the relay and exported its URL; pass it so
             // run-android bakes it into the manifest + sets up `adb reverse`.
             robot_relay_url: std::env::var("IDEALYST_ROBOT_RELAY_URL").ok(),
+            env_vars: device_app_env(dir, args, |k| std::env::var(k).ok())
+                .into_iter()
+                .filter(|(k, _)| !HOST_PATH_ENV.contains(&k.as_str()))
+                .collect(),
         },
     )
     .context("Android dev launch failed")?;
@@ -4653,7 +4939,7 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, macos
 /// remains — the app registry is canonical. Best-effort — write failures
 /// are logged but don't fail the dev launch.
 fn write_catalog_path(project_dir: &Path, binary: &Path) {
-    let target = project_dir.join(".idealyst").join("catalog.path");
+    let target = project_state_dir(project_dir).join("catalog.path");
     if let Some(parent) = target.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             crate::dlog!("dev", "could not create {}: {}", parent.display(), e);
@@ -4811,12 +5097,15 @@ impl Args {
             features: self.features.clone(),
             inspect: false,
             shared_target: self.shared_target,
+            isolated: self.isolated.clone(),
             stream_port: self.stream_port,
             headless_client: self.headless_client,
             no_headless_client: self.no_headless_client,
             screenshot_dir: self.screenshot_dir.clone(),
             ios: self.ios,
             simulator: self.simulator.clone(),
+            emulator: self.emulator.clone(),
+            app_env: self.app_env.clone(),
             android: self.android,
             macos: self.macos,
             terminal: self.terminal,
@@ -5367,6 +5656,133 @@ mod tests {
         assert_eq!(url, "http://127.0.0.1:9123");
     }
 
+    /// Regression (CrewForge, CLI 1.23.0): `dev --ios --local --port 3620`
+    /// advertised `IDEALYST_SERVER_URL` but the simulator launch passed only
+    /// the relay URL and the test-driver flag, so the app's
+    /// `server::dev_base_url()` was `None` and every server call went to
+    /// its compiled-in port. Every variable the session advertises must
+    /// reach the simulator app as `SIMCTL_CHILD_*` and the Android app's
+    /// `IdealystEnv`, with its loopback port reversed onto the device.
+    #[test]
+    fn regression_device_apps_get_every_advertised_variable() {
+        let (tmp, _manifest) = manifest_with(
+            "[package.metadata.idealyst.app]\nserver_bin = \"server\"\nserver_port = 3100\n",
+        );
+        let args = parse_dev(&["idealyst", "dev", "--ios", "--android", "--local", "--port", "3620"]);
+        let relay = |k: &str| (k == "IDEALYST_ROBOT_RELAY_URL").then(|| "ws://127.0.0.1:65345".to_string());
+        let env = device_app_env(tmp.path(), &args, relay);
+        let advertised = dev_env_vars(tmp.path(), &args, "", None, None);
+        assert!(advertised.iter().all(|kv| env.contains(kv)), "{advertised:?} ⊄ {env:?}");
+
+        let sim = run_ios::simctl_launch_env(&env, |_| None);
+        for (k, v) in &env {
+            assert!(sim.contains(&(format!("SIMCTL_CHILD_{k}"), v.clone())), "{k} missing from {sim:?}");
+        }
+        assert!(sim.contains(&(
+            "SIMCTL_CHILD_IDEALYST_SERVER_URL".to_string(),
+            "http://127.0.0.1:3620".to_string()
+        )));
+        assert!(sim.contains(&(
+            "SIMCTL_CHILD_IDEALYST_ROBOT_RELAY_URL".to_string(),
+            "ws://127.0.0.1:65345".to_string()
+        )));
+        assert_eq!(run_android::loopback_reverse_ports(&env), vec![3620, 65345]);
+    }
+
+    /// CrewForge: `dev --web --ios --local --port 3610` was reported to
+    /// compile the server into `idealyst-dev-server` twice at once (a web
+    /// half and an iOS half), failing both builds. One session has ONE
+    /// server, whatever its platforms: the web launcher's when the page is
+    /// a target, else the session's own — and the native launchers never
+    /// build or start one. Pinned two ways: the plan, and the source of
+    /// the launchers (the only places that could start a second build).
+    #[test]
+    fn regression_one_session_builds_one_server_for_every_platform() {
+        use Target::*;
+        assert_eq!(session_server_owner(true, &[Web, Ios]), ServerOwner::WebLauncher);
+        assert_eq!(session_server_owner(true, &[Ios, Web, Android]), ServerOwner::WebLauncher);
+        assert_eq!(session_server_owner(true, &[Ios, Android]), ServerOwner::Session);
+        assert_eq!(session_server_owner(true, &[Ios]), ServerOwner::Session);
+        assert_eq!(session_server_owner(false, &[Web, Ios]), ServerOwner::None);
+
+        let src = include_str!("dev.rs");
+        let body = |name: &str| -> &str {
+            let start = src
+                .find(&format!("\nfn {name}("))
+                .or_else(|| src.find(&format!("\npub fn {name}(")))
+                .unwrap_or_else(|| panic!("fn {name}"));
+            let rest = &src[start + 1..];
+            &rest[..rest.find("\n}\n").expect("fn end")]
+        };
+        let starters = ["spawn_backend(", "build_server_recorded(", "server_watch_setup(", "spawn_server_build("];
+        for launcher in ["launch_ios", "launch_android", "launch_macos", "launch_terminal", "launch_linux", "launch_windows"] {
+            let b = body(launcher);
+            for s in starters {
+                assert!(!b.contains(s), "{launcher} starts a server build ({s}): a second one beside the session's");
+            }
+        }
+        // `run` starts one only on the `Session` branch, the web launcher
+        // only for `WebLauncher` — never both.
+        let run = body("run");
+        assert_eq!(run.matches("build_server_recorded(").count(), 1, "one native-only server build");
+        assert!(run.contains("if server_owner == ServerOwner::Session {"), "the native-only build is gated on the plan");
+        assert!(!run.contains("server_watch_setup("), "the watched build is the web launcher's");
+    }
+
+    /// `idealyst test --env K=V` set K on the dev process, but only
+    /// `IDEALYST_TEST_DRIVER` reached a simulator, emulator or browser app.
+    /// `--app-env` names what the app gets, on every platform: it is part
+    /// of what the session advertises (`dev_env_vars`), so it rides the
+    /// same delivery as `IDEALYST_SERVER_URL`, and the page gets it as
+    /// `window.IDEALYST_APP_ENV`.
+    #[test]
+    fn app_env_reaches_the_app_on_every_platform() {
+        let get = |k: &str| (k == "FROM_ENV").then(|| "inherited".to_string());
+        let specs: Vec<String> = ["A=1", "B=x=y", "FROM_ENV", "UNSET", "A=2", "=bad"].map(String::from).to_vec();
+        assert_eq!(
+            app_env(&specs, get),
+            vec![
+                ("B".to_string(), "x=y".to_string()),
+                ("FROM_ENV".to_string(), "inherited".to_string()),
+                ("A".to_string(), "2".to_string()),
+            ]
+        );
+
+        let (tmp, _m) = manifest_with("[package.metadata.idealyst.app]\n");
+        let args = parse_dev(&[
+            "idealyst", "dev", "--ios", "--android", "--local", "--app-env", "API_KEY=k1", "--app-env", "MODE=e2e",
+            "--emulator", "Test_AVD",
+        ]);
+        assert_eq!(args.emulator.as_deref(), Some("Test_AVD"));
+        assert_eq!(args.shallow_clone().emulator.as_deref(), Some("Test_AVD"), "the Android worker sees it");
+        assert_eq!(args.shallow_clone().app_env, args.app_env);
+        let env = device_app_env(tmp.path(), &args, |_| None);
+        let sim = run_ios::simctl_launch_env(&env, |_| None);
+        assert!(sim.contains(&("SIMCTL_CHILD_API_KEY".to_string(), "k1".to_string())), "{sim:?}");
+        assert!(sim.contains(&("SIMCTL_CHILD_MODE".to_string(), "e2e".to_string())), "{sim:?}");
+        // Desktop apps and the sidecar take `dev_env_vars` as their env.
+        let desktop = dev_env_vars(tmp.path(), &args, "", None, None);
+        assert!(desktop.contains(&("API_KEY".to_string(), "k1".to_string())));
+        let page = page_env_scripts(&args);
+        assert!(page.contains(r#"window.IDEALYST_APP_ENV={"API_KEY":"k1","MODE":"e2e"}"#), "{page}");
+    }
+
+    /// `--isolated` refuses only the shape whose staging is shared by
+    /// construction: `--web` on a project with no server.
+    #[test]
+    fn isolation_is_refused_only_for_the_static_web_shape() {
+        let (_t, full_stack) = manifest_with("[package.metadata.idealyst.app]\nserver_bin = \"server\"\n");
+        let (_t2, static_app) = manifest_with("[package.metadata.idealyst.app]\n");
+        let isolated = parse_dev(&["idealyst", "dev", "--web", "--isolated", "test"]);
+        let plain = parse_dev(&["idealyst", "dev", "--web"]);
+        assert!(isolation_refused(&isolated, &static_app, &[Target::Web]).is_some());
+        assert!(isolation_refused(&isolated, &static_app, &[Target::Ios]).is_none());
+        assert!(isolation_refused(&isolated, &full_stack, &[Target::Web, Target::Ios]).is_none());
+        assert!(isolation_refused(&plain, &static_app, &[Target::Web]).is_none());
+        assert_eq!(isolated.isolated.as_deref(), Some("test"));
+        assert_eq!(isolated.shallow_clone().isolated.as_deref(), Some("test"), "workers see the key");
+    }
+
     /// A project with no server declared has no manifest port to fall
     /// back to, so the CLI's own static-file server owns the default.
     #[test]
@@ -5448,6 +5864,72 @@ mod tests {
         );
         assert_eq!(server_panic("GET /docs/why-it-panicked at-scale 200", "/l"), None);
         assert_eq!(server_panic("listening on http://127.0.0.1:3100", "/l"), None);
+    }
+
+    /// Only cargo's own lines count — the first `Compiling` before
+    /// `Running`, once; the server's output after `Running` never does.
+    #[test]
+    fn cargo_run_watch_reads_cargos_lines_only() {
+        let mut fresh = CargoRunWatch::default();
+        assert!(!fresh.compiles("    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.4s"));
+        assert!(!fresh.compiles("     Running `/t/debug/crewforge-server`"));
+        assert!(!fresh.compiles("   Compiling a log line the server printed"));
+
+        let mut stale = CargoRunWatch::default();
+        assert!(stale.compiles("\u{1b}[1m\u{1b}[32m   Compiling\u{1b}[0m quote v1.0.47"), "coloured too");
+        assert!(!stale.compiles("   Compiling libc v0.2.189"), "said once");
+    }
+
+    /// Regression: in a Docker Desktop devcontainer `cargo run` recompiled
+    /// the whole server (5m 52s) right after the watcher's build, and the
+    /// panel said only "starting · 216.7s". A `cargo run` stand-in prints
+    /// cargo's lines to stderr; its first `Compiling` line becomes one
+    /// `server_recompiling` carrying the cause — and none when no build of
+    /// ours preceded the run.
+    #[test]
+    fn regression_cargo_run_compiling_after_our_build_is_reported() {
+        struct Collect(Arc<Mutex<Vec<dev_events::DevEvent>>>);
+        impl dev_events::Sink for Collect {
+            fn emit(&self, envelope: &dev_events::Envelope) {
+                if matches!(envelope.event, dev_events::DevEvent::ServerRecompiling { .. }) {
+                    self.0.lock().unwrap().push(envelope.event.clone());
+                }
+            }
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        dev_events::global().subscribe(Box::new(Collect(seen.clone())));
+        let log = std::env::temp_dir().join("idealyst-recompile-test-server.log");
+        let run = |cause: &str, prebuilt: bool| {
+            let script = "printf '   Compiling quote v1.0.47\\n   Compiling libc v0.2.189\\n     Running `x`\\n' >&2";
+            let mut child = Command::new("sh")
+                .args(["-c", script])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("sh");
+            let output = forward_server_output(&mut child, &log, prebuilt.then(|| Some(cause.to_string())));
+            child.wait().expect("wait");
+            for pump in output.pumps {
+                pump.join().expect("pump");
+            }
+        };
+        run("after-our-build", true);
+        run("no-build", false);
+        let seen = seen.lock().unwrap();
+        let ours: Vec<_> = seen
+            .iter()
+            .filter(|e| {
+                matches!(e, dev_events::DevEvent::ServerRecompiling { cause: Some(c), .. }
+                    if c == "after-our-build" || c == "no-build")
+            })
+            .collect();
+        assert_eq!(
+            ours,
+            vec![&dev_events::DevEvent::ServerRecompiling {
+                target: dev_events::SERVER_TARGET.into(),
+                cause: Some("after-our-build".into()),
+            }]
+        );
     }
 
     /// `--robot-port` pins the relay's bridge; a pinned port binds every

@@ -73,9 +73,13 @@ const DEFAULT_AVD_PREFIX: &str = "Pixel";
 pub struct RunOptions {
     /// Build the Rust cdylib in release mode.
     pub release: bool,
-    /// Specific AVD name to boot if no device is attached. When
-    /// `None`, we pick the first available AVD whose name starts
-    /// with `DEFAULT_AVD_PREFIX`, falling back to the first AVD.
+    /// The device to run on: an adb serial (`emulator-5556`, a USB
+    /// device's serial) or an AVD name (`Pixel_8_API_35`). An online
+    /// device with that serial, or a running emulator of that AVD, is used
+    /// even when other devices are online; otherwise the AVD is booted.
+    /// When `None`, the first online device is used, else the first AVD
+    /// whose name starts with `DEFAULT_AVD_PREFIX` (falling back to the
+    /// first AVD) is booted. See [`choose_device`].
     pub avd: Option<String>,
     /// Whether the Android process runs the user's `app()` locally
     /// or acts as a thin client connected to an runtime-server dev-host.
@@ -102,8 +106,17 @@ pub struct RunOptions {
     /// localhost reaches the host relay, and (b) bake it into the manifest as
     /// `IdealystRobotRelayUrl` — MainActivity hands it to Rust before `attach`
     /// so the bridge dials out instead of self-hosting. Empty/None leaves the
-    /// app self-hosting an on-device TCP bridge (the prior behavior).
+    /// app self-hosting an on-device TCP bridge.
     pub robot_relay_url: Option<String>,
+    /// Environment the app gets, as `(name, value)`: `idealyst dev` passes
+    /// what it advertises to its apps (`IDEALYST_SERVER_URL`,
+    /// `IDEALYST_TEST_DRIVER`, …). An Android app inherits nothing from
+    /// the launcher, so these are baked into the manifest's `IdealystEnv`
+    /// meta-data, which MainActivity replays through `NativeBridge.setEnv`
+    /// before attach; a loopback URL among them gets an `adb reverse` so
+    /// the device's `127.0.0.1` reaches the host (see
+    /// [`loopback_reverse_ports`]).
+    pub env_vars: Vec<(String, String)>,
 }
 
 /// Mirrors `run-ios::RunMode` — same trade-offs (local self-contained
@@ -135,6 +148,8 @@ pub struct PackageOptions {
     pub runtime_server_port: Option<u16>,
     pub user_features: Vec<String>,
     pub robot_relay_url: Option<String>,
+    /// [`RunOptions::env_vars`]; empty for a distribution APK.
+    pub env_vars: Vec<(String, String)>,
     /// Allow cleartext HTTP (`android:usesCleartextTraffic`). On for
     /// `idealyst run`/`dev`, so a dev build reaches an `http://` server on the
     /// developer's machine; off for a distribution APK, which keeps Android's
@@ -170,6 +185,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             runtime_server_port: opts.runtime_server_port,
             user_features: opts.user_features.clone(),
             robot_relay_url: opts.robot_relay_url.clone(),
+            env_vars: opts.env_vars.clone(),
             cleartext: true,
         },
     )?;
@@ -194,6 +210,14 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // relay. Parse the port out of the relay URL.
     if let Some(url) = &opts.robot_relay_url {
         if let Some(port) = url.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()) {
+            adb_reverse(&adb, &serial, port)?;
+        }
+    }
+    // And for every loopback URL the app was handed (`IDEALYST_SERVER_URL`
+    // of a full-stack dev session): the emulator's own loopback is not the
+    // host's.
+    for port in loopback_reverse_ports(&opts.env_vars) {
+        if Some(port) != opts.runtime_server_port {
             adb_reverse(&adb, &serial, port)?;
         }
     }
@@ -384,7 +408,7 @@ pub fn package(project_dir: &Path, opts: &PackageOptions) -> Result<PackagedApk>
                 app_name: &manifest.app.name,
                 aas_url: &aas_url,
                 robot_relay_url: opts.robot_relay_url.as_deref().unwrap_or(""),
-                idealyst_env: &forwarded_env(|k| std::env::var(k).ok()),
+                idealyst_env: &forwarded_env(&opts.env_vars, |k| std::env::var(k).ok()),
                 icon_attrs: &icon_attrs,
                 uses_permissions: &uses_permissions,
                 services: &services,
@@ -1205,13 +1229,28 @@ fn home_intent_filter(android: &AndroidAppMetadata) -> &'static str {
 // Device / emulator orchestration
 // ---------------------------------------------------------------------------
 
-fn ensure_device(adb: &Path, sdk: &Path, prefer_avd: Option<&str>) -> Result<String> {
-    if let Some(serial) = first_ready_device(adb)? {
-        return Ok(serial);
-    }
+fn ensure_device(adb: &Path, sdk: &Path, requested: Option<&str>) -> Result<String> {
+    let ready = ready_devices(adb)?;
+    // A running emulator's AVD name, asked only when one was requested by
+    // name (one `adb emu` round trip per emulator).
+    let named: Vec<(String, Option<String>)> = ready
+        .iter()
+        .map(|s| {
+            let avd = (requested.is_some() && s.starts_with("emulator-"))
+                .then(|| emulator_avd_name(adb, s))
+                .flatten();
+            (s.clone(), avd)
+        })
+        .collect();
+    let boot = match choose_device(requested, &named) {
+        DeviceChoice::Use(serial) => return Ok(serial),
+        DeviceChoice::Boot(avd) => avd,
+    };
 
-    // Nothing online — boot an emulator.
-    let avd = pick_avd(sdk, prefer_avd)?;
+    let avd = pick_avd(sdk, boot.as_deref()).with_context(|| match requested {
+        Some(r) => format!("no online device has serial {r:?} and no running emulator is that AVD"),
+        None => "no device online to run on".to_string(),
+    })?;
     eprintln!("[run-android] booting emulator '{avd}'…");
     let emulator = sdk.join("emulator/emulator");
     if !emulator.is_file() {
@@ -1235,31 +1274,77 @@ fn ensure_device(adb: &Path, sdk: &Path, prefer_avd: Option<&str>) -> Result<Str
         .with_context(|| "spawn emulator")?;
 
     eprintln!("[run-android] waiting for emulator boot…");
-    wait_for_boot(adb, Duration::from_secs(180))
+    wait_for_boot(adb, &ready, Duration::from_secs(180))
 }
 
-fn first_ready_device(adb: &Path) -> Result<Option<String>> {
+/// What [`ensure_device`] does with the devices online.
+#[derive(Debug, PartialEq, Eq)]
+enum DeviceChoice {
+    /// Run on this online device.
+    Use(String),
+    /// Boot this AVD (`None`: the default one, [`pick_avd`]).
+    Boot(Option<String>),
+}
+
+/// Pick the device to run on from `ready` (`(serial, AVD name of a running
+/// emulator)`). A requested serial or AVD name is matched FIRST, before
+/// "any online device": with a phone plugged in, or the developer's
+/// emulator up, `--emulator Test_AVD` must still reach `Test_AVD`, not the
+/// first device `adb devices` lists. A request nothing online matches is
+/// booted as an AVD.
+fn choose_device(requested: Option<&str>, ready: &[(String, Option<String>)]) -> DeviceChoice {
+    match requested {
+        Some(r) => ready
+            .iter()
+            .find(|(serial, avd)| serial == r || avd.as_deref() == Some(r))
+            .map(|(serial, _)| DeviceChoice::Use(serial.clone()))
+            .unwrap_or_else(|| DeviceChoice::Boot(Some(r.to_string()))),
+        None => match ready.first() {
+            Some((serial, _)) => DeviceChoice::Use(serial.clone()),
+            None => DeviceChoice::Boot(None),
+        },
+    }
+}
+
+/// Serials `adb devices` lists as ready (state `device`; not `offline`,
+/// `unauthorized` or still booting).
+fn ready_devices(adb: &Path) -> Result<Vec<String>> {
     let out = Command::new(adb)
         .args(["devices"])
         .output()
         .with_context(|| format!("spawn {}", adb.display()))?;
     if !out.status.success() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    for line in text.lines().skip(1) {
-        // Format: "<serial>\t<state>"
-        let mut parts = line.split_whitespace();
-        let serial = match parts.next() {
-            Some(s) if !s.is_empty() => s,
-            _ => continue,
-        };
-        let state = parts.next().unwrap_or("");
-        if state == "device" {
-            return Ok(Some(serial.to_string()));
-        }
+    Ok(parse_ready_serials(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// [`ready_devices`] over `adb devices` output (`<serial>\t<state>` per
+/// line after the header).
+fn parse_ready_serials(text: &str) -> Vec<String> {
+    text.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let serial = parts.next().filter(|s| !s.is_empty())?;
+            (parts.next() == Some("device")).then(|| serial.to_string())
+        })
+        .collect()
+}
+
+/// The AVD a running emulator was started from (`adb -s <serial> emu avd
+/// name`, whose first line is the name). `None` for a physical device or
+/// an emulator that does not answer.
+fn emulator_avd_name(adb: &Path, serial: &str) -> Option<String> {
+    let out = Command::new(adb).args(["-s", serial, "emu", "avd", "name"]).output().ok()?;
+    if !out.status.success() {
+        return None;
     }
-    Ok(None)
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && l != "OK")
 }
 
 fn pick_avd(sdk: &Path, prefer: Option<&str>) -> Result<String> {
@@ -1295,17 +1380,13 @@ fn pick_avd(sdk: &Path, prefer: Option<&str>) -> Result<String> {
     Ok(avds[0].clone())
 }
 
-fn wait_for_boot(adb: &Path, timeout: Duration) -> Result<String> {
+fn wait_for_boot(adb: &Path, before: &[String], timeout: Duration) -> Result<String> {
     let deadline = Instant::now() + timeout;
-    // Phase 1: wait for any emulator to appear in `adb devices`.
+    // Phase 1: wait for the emulator just spawned to come online — the
+    // ready serial that was not ready before it, never one of the devices
+    // already up (which would install onto the wrong device).
     let serial = loop {
-        if let Some(s) = first_ready_device(adb)? {
-            // We specifically want an emulator-* serial since a
-            // physical device may have shown up earlier as well.
-            if s.starts_with("emulator-") {
-                break s;
-            }
-            // Otherwise pick the first device and proceed.
+        if let Some(s) = newly_ready(before, &ready_devices(adb)?) {
             break s;
         }
         if Instant::now() > deadline {
@@ -1329,6 +1410,11 @@ fn wait_for_boot(adb: &Path, timeout: Duration) -> Result<String> {
         thread::sleep(Duration::from_secs(1));
     }
     anyhow::bail!("emulator booted to ADB but never reported sys.boot_completed=1")
+}
+
+/// The first serial in `now` that is not in `before`.
+fn newly_ready(before: &[String], now: &[String]) -> Option<String> {
+    now.iter().find(|s| !before.contains(s)).cloned()
 }
 
 fn adb_install(adb: &Path, serial: &str, apk: &Path) -> Result<()> {
@@ -1378,19 +1464,64 @@ fn adb_reverse(adb: &Path, serial: &str, port: u16) -> Result<()> {
 /// `TcpListener::bind` fails with EACCES on Android and host tooling /
 /// MCP can't reach the app — see the live-verification of the `device_frame`
 /// / `adb input tap` path that surfaced this gap.
-/// The dev-tooling variables an Android app gets from the dev process's
-/// environment (desktop apps inherit them as child processes).
+/// Dev-tooling variables an Android app gets from the launcher's own
+/// environment when the caller did not pass them (a desktop app inherits
+/// them as a child process).
 const FORWARDED_ENV: &[&str] = &["IDEALYST_TEST_DRIVER"];
 
-/// `KEY=VALUE;…` for each [`FORWARDED_ENV`] variable that is set — the
-/// `IdealystEnv` manifest meta-data MainActivity replays through
-/// `NativeBridge.setEnv` before attach.
-fn forwarded_env(get: impl Fn(&str) -> Option<String>) -> String {
-    FORWARDED_ENV
-        .iter()
-        .filter_map(|k| get(k).map(|v| format!("{k}={v}")))
+/// `KEY=VALUE;…` for each explicit `env_vars` entry, then each
+/// [`FORWARDED_ENV`] variable `get` finds that the list did not name —
+/// the `IdealystEnv` manifest meta-data MainActivity replays through
+/// `NativeBridge.setEnv` before attach. MainActivity splits on `;` and the
+/// first `=`, so a value containing `;` cannot be carried: it is left out,
+/// with a warning, rather than delivered cut short.
+fn forwarded_env(env_vars: &[(String, String)], get: impl Fn(&str) -> Option<String>) -> String {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for (k, v) in env_vars {
+        pairs.retain(|(name, _)| name != k);
+        pairs.push((k.clone(), v.clone()));
+    }
+    for k in FORWARDED_ENV {
+        if !pairs.iter().any(|(name, _)| name == k) {
+            if let Some(v) = get(k) {
+                pairs.push(((*k).to_string(), v));
+            }
+        }
+    }
+    pairs
+        .into_iter()
+        .filter(|(k, v)| {
+            let ok = !v.contains(';') && !k.contains(';') && !k.contains('=') && !k.is_empty();
+            if !ok {
+                eprintln!("[run-android] warning: {k} cannot be passed to the app (`;` or `=` in it)");
+            }
+            ok
+        })
+        .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
         .join(";")
+}
+
+/// The ports of every loopback `http`/`https`/`ws`/`wss` URL among
+/// `env_vars` (`127.0.0.1`, `localhost`, `[::1]`): each needs an `adb
+/// reverse` for the device's loopback to reach the host, the same tunnel
+/// the runtime-server and robot-relay URLs get. Deduplicated, in order.
+pub fn loopback_reverse_ports(env_vars: &[(String, String)]) -> Vec<u16> {
+    let mut out = Vec::new();
+    for (_, v) in env_vars {
+        let Some((_, rest)) = v.split_once("://") else { continue };
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        let Some((host, port)) = authority.rsplit_once(':') else { continue };
+        if !matches!(host, "127.0.0.1" | "localhost" | "[::1]") {
+            continue;
+        }
+        if let Ok(port) = port.parse::<u16>() {
+            if !out.contains(&port) {
+                out.push(port);
+            }
+        }
+    }
+    out
 }
 
 fn local_robot_build_needs_internet(is_runtime_server: bool, user_features: &[String]) -> bool {
@@ -1506,13 +1637,84 @@ mod tests {
     fn regression_the_test_driver_flag_reaches_the_app_manifest() {
         use super::forwarded_env;
         let env = |k: &str| (k == "IDEALYST_TEST_DRIVER").then(|| "1".to_string());
-        assert_eq!(forwarded_env(env), "IDEALYST_TEST_DRIVER=1");
-        assert_eq!(forwarded_env(|_| None), "", "nothing set, nothing forwarded");
+        assert_eq!(forwarded_env(&[], env), "IDEALYST_TEST_DRIVER=1");
+        assert_eq!(forwarded_env(&[], |_| None), "", "nothing set, nothing forwarded");
         assert!(
             include_str!("../templates/AndroidManifest.xml").contains("{{IDEALYST_ENV}}"),
             "the local manifest carries the meta-data"
         );
         assert!(include_str!("../templates/MainActivity.java").contains("NativeBridge.setEnv("));
+    }
+
+    fn kv(k: &str, v: &str) -> (String, String) {
+        (k.to_string(), v.to_string())
+    }
+
+    /// Regression: `ensure_device` took the first online device before it
+    /// looked at the requested AVD, so `idealyst test --android --emulator
+    /// Test_AVD` ran on the developer's phone or emulator whenever one was
+    /// up. A requested serial or AVD name is matched first; a request
+    /// nothing online matches boots that AVD.
+    #[test]
+    fn regression_a_requested_emulator_wins_over_the_first_online_device() {
+        use super::{choose_device, newly_ready, parse_ready_serials, DeviceChoice};
+        let s = |x: &str| x.to_string();
+        let ready = vec![
+            (s("R5CT1234"), None),
+            (s("emulator-5554"), Some(s("Pixel_8_API_35"))),
+            (s("emulator-5556"), Some(s("Test_AVD"))),
+        ];
+        assert_eq!(choose_device(Some("Test_AVD"), &ready), DeviceChoice::Use(s("emulator-5556")));
+        assert_eq!(choose_device(Some("emulator-5554"), &ready), DeviceChoice::Use(s("emulator-5554")));
+        assert_eq!(choose_device(Some("Other_AVD"), &ready), DeviceChoice::Boot(Some(s("Other_AVD"))));
+        assert_eq!(choose_device(None, &ready), DeviceChoice::Use(s("R5CT1234")));
+        assert_eq!(choose_device(None, &[]), DeviceChoice::Boot(None));
+        assert_eq!(choose_device(Some("Test_AVD"), &[]), DeviceChoice::Boot(Some(s("Test_AVD"))));
+
+        assert_eq!(
+            parse_ready_serials("List of devices attached\nR5CT1234\tdevice\nemulator-5556\toffline\nX\tunauthorized\n\n"),
+            vec![s("R5CT1234")]
+        );
+        // The booted emulator is the serial that came up, not one already up.
+        assert_eq!(newly_ready(&[s("R5CT1234")], &[s("R5CT1234"), s("emulator-5558")]), Some(s("emulator-5558")));
+        assert_eq!(newly_ready(&[s("R5CT1234")], &[s("R5CT1234")]), None);
+    }
+
+    /// Regression: a full-stack `idealyst dev --android --local --port N`
+    /// advertised `IDEALYST_SERVER_URL` to its apps, but the Android app
+    /// got only the test-driver flag, so `server::dev_base_url()` was
+    /// `None` and the app called its compiled-in port. Every variable the
+    /// session passes rides the manifest, explicit beating inherited, and
+    /// its loopback port is reversed onto the device.
+    #[test]
+    fn regression_every_session_variable_reaches_the_android_app() {
+        use super::{forwarded_env, loopback_reverse_ports};
+        let session = vec![
+            kv("IDEALYST_SERVER_URL", "http://127.0.0.1:3620"),
+            kv("IDEALYST_TEST_DRIVER", "explicit"),
+            kv("IDEALYST_BRIDGE_PORT", "4000"),
+        ];
+        let inherited = |k: &str| (k == "IDEALYST_TEST_DRIVER").then(|| "inherited".to_string());
+        assert_eq!(
+            forwarded_env(&session, inherited),
+            "IDEALYST_SERVER_URL=http://127.0.0.1:3620;IDEALYST_TEST_DRIVER=explicit;IDEALYST_BRIDGE_PORT=4000"
+        );
+        assert_eq!(
+            forwarded_env(&[kv("A", "x;y"), kv("B", "a=b")], |_| None),
+            "B=a=b",
+            "a `;` would split the pair; `=` after the first is part of the value"
+        );
+        assert_eq!(loopback_reverse_ports(&session), vec![3620]);
+        assert_eq!(
+            loopback_reverse_ports(&[
+                kv("A", "ws://localhost:9/x"),
+                kv("B", "http://10.0.2.2:5"),
+                kv("C", "http://127.0.0.1:9"),
+                kv("D", "/no/scheme:7"),
+            ]),
+            vec![9],
+            "loopback only, deduplicated"
+        );
     }
 
     /// `permissions::request` hung for the whole session on the first ask:

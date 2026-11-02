@@ -153,13 +153,17 @@ pub fn resolve(project_dir: &Path) -> Result<FrameworkSource> {
 /// `app-checkin` declare the SAME server package, and its dev build sat
 /// in both `crates/<app>/target/idealyst-dev-server/` (27 + 22 GB, ~11 GB
 /// live) — identical units, built twice.
+///
+/// An isolated dev session (`--isolated <key>`) gets `<root>/isolated/<key>`
+/// in every case (`FrameworkSource::cargo_target_dir` already is one).
 pub fn cli_target_root(source: &FrameworkSource, project_dir: &Path, known: Option<PathBuf>) -> PathBuf {
     if source.is_workspace() {
         return source.cargo_target_dir(project_dir);
     }
-    known
-        .or_else(|| cargo_workspace_target_dir(project_dir))
-        .unwrap_or_else(|| source.cargo_target_dir(project_dir))
+    match known.or_else(|| cargo_workspace_target_dir(project_dir)) {
+        Some(root) => build_ios::isolated_target(root, build_ios::session_isolation()),
+        None => source.cargo_target_dir(project_dir),
+    }
 }
 
 /// `target_directory` from a `--no-deps` `cargo metadata` of the workspace

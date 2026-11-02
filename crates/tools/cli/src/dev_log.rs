@@ -186,9 +186,10 @@ pub fn session_events() -> Option<Arc<dev_events::broadcast::Broadcast>> {
 }
 
 /// Run the stand-alone events endpoint on an ephemeral loopback port and
-/// write its URL to `<project>/.idealyst/events.url`, so a tool finds a
-/// session — even one with no web target — with nothing but the project
-/// directory. Returns the URL.
+/// write its URL to `<project>/.idealyst/events.url` (an isolated
+/// session's `.idealyst/isolated/<key>/`), so a tool finds a session — even
+/// one with no web target — with nothing but the project directory.
+/// Returns the URL.
 pub fn serve_events(project_dir: &Path) -> Option<String> {
     let events = session_events()?;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
@@ -203,7 +204,7 @@ pub fn serve_events(project_dir: &Path) -> Option<String> {
             }
         })
         .ok()?;
-    let file = project_dir.join(".idealyst").join("events.url");
+    let file = crate::cmd::dev::project_state_dir(project_dir).join("events.url");
     if let Some(parent) = file.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

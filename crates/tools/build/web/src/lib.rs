@@ -1783,6 +1783,22 @@ pub fn test_driver_script_tag() -> &'static str {
     "\n    <script>window.IDEALYST_TEST_DRIVER=\"1\";</script>"
 }
 
+/// `window.IDEALYST_APP_ENV` — the variables `idealyst dev --app-env`
+/// hands the app, as an object of strings: a browser has no environment,
+/// so this page global is a web app's copy of what a native app reads with
+/// `std::env::var`. Keys and values are escaped like
+/// [`robot_relay_script_tag`]'s URL. Empty for no variables.
+pub fn app_env_script_tag(env: &[(String, String)]) -> String {
+    if env.is_empty() {
+        return String::new();
+    }
+    let fields: Vec<String> = env
+        .iter()
+        .map(|(k, v)| format!("\"{}\":\"{}\"", escape_js_string(k), escape_js_string(v)))
+        .collect();
+    format!("\n    <script>window.IDEALYST_APP_ENV={{{}}};</script>", fields.join(","))
+}
+
 /// Escape `s` for embedding in a double-quoted JS string literal that
 /// lives inside an inline `<script>`.
 ///
@@ -5906,6 +5922,19 @@ mod robot_relay_tests {
     /// trusted input. A `"` would close the string literal and a
     /// `</script>` would close the block, either one turning the rest
     /// of the head into markup the browser executes.
+    #[test]
+    fn app_env_tag_sets_an_escaped_page_global() {
+        assert_eq!(app_env_script_tag(&[]), "");
+        let tag = app_env_script_tag(&[
+            ("A".to_string(), "1".to_string()),
+            ("B".to_string(), "x\"</script><b>".to_string()),
+        ]);
+        assert_eq!(
+            tag.trim(),
+            r#"<script>window.IDEALYST_APP_ENV={"A":"1","B":"x\"\u003C/script>\u003Cb>"};</script>"#
+        );
+    }
+
     #[test]
     fn test_driver_tag_sets_the_page_global() {
         assert_eq!(test_driver_script_tag().trim(), r#"<script>window.IDEALYST_TEST_DRIVER="1";</script>"#);

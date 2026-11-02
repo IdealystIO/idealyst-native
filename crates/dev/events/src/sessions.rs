@@ -70,8 +70,11 @@ pub struct SessionEntry {
     pub control_url: String,
     /// The bearer token every control request carries.
     pub token: String,
-    /// Who started it: `"user"`, or `"mcp"` for `idealyst mcp`'s
-    /// `run_dev` ([`LAUNCHED_BY_ENV`]).
+    /// Who started it: [`LAUNCHED_BY_MCP`] for `idealyst mcp`'s `run_dev`
+    /// (or whatever else a launcher put in [`LAUNCHED_BY_ENV`]),
+    /// [`LAUNCHED_BY_USER`] for a command typed at a terminal, and
+    /// [`LAUNCHED_BY_UNKNOWN`] when neither can be told — a script,
+    /// `nohup`, an agent's shell.
     pub launched_by: String,
     /// The pid of the process that launched it on someone's behalf
     /// ([`LAUNCHER_PID_ENV`]): the `idealyst mcp` whose `run_dev` started
@@ -86,11 +89,24 @@ pub struct SessionEntry {
     /// whose watchers never send it — a consumer must not wait for it then.
     #[serde(default)]
     pub reports_watcher_ready: bool,
+    /// The key of an isolated session (`idealyst dev --isolated <key>`),
+    /// which runs beside the directory's own session with its own target
+    /// dir, staging, log and lock. `None` for the directory's own session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolated: Option<String>,
 }
 
 /// Set by whatever starts `idealyst dev` on someone's behalf, to say so
 /// in the session's entry: `idealyst mcp` sets it to `mcp`.
 pub const LAUNCHED_BY_ENV: &str = "IDEALYST_DEV_LAUNCHED_BY";
+
+/// [`SessionEntry::launched_by`] of a session `idealyst mcp` started.
+pub const LAUNCHED_BY_MCP: &str = "mcp";
+/// [`SessionEntry::launched_by`] of a session typed at a terminal.
+pub const LAUNCHED_BY_USER: &str = "user";
+/// [`SessionEntry::launched_by`] when the launcher said nothing and the
+/// session has no terminal: a script, `nohup`, or an agent's shell.
+pub const LAUNCHED_BY_UNKNOWN: &str = "unknown";
 
 /// Set beside [`LAUNCHED_BY_ENV`] to the launcher's own pid, recorded as
 /// [`SessionEntry::launcher_pid`].
@@ -115,9 +131,10 @@ impl SessionEntry {
             events_url: None,
             control_url: control_url.into(),
             token: token.into(),
-            launched_by: "user".into(),
+            launched_by: LAUNCHED_BY_USER.into(),
             launcher_pid: None,
             reports_watcher_ready: false,
+            isolated: None,
         }
     }
 
@@ -184,10 +201,22 @@ pub fn read_all(dir: &Path) -> Vec<(PathBuf, SessionEntry)> {
 /// compared canonicalized (a symlinked checkout or a trailing `/` is the
 /// same project). Whether its process is alive is the caller's to check,
 /// as for every entry.
+///
+/// The directory's own session: an isolated one (`--isolated`) runs
+/// beside it and is not "the session of `dir`" — see [`in_dir_keyed`].
 pub fn in_dir<'a>(entries: &'a [SessionEntry], dir: &Path) -> Option<&'a SessionEntry> {
+    in_dir_keyed(entries, dir, None)
+}
+
+/// [`in_dir`] for the session with isolation key `isolated` (`None`: the
+/// directory's own session). Two sessions of one directory conflict only
+/// when their keys are equal.
+pub fn in_dir_keyed<'a>(entries: &'a [SessionEntry], dir: &Path, isolated: Option<&str>) -> Option<&'a SessionEntry> {
     let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let want = canonical(dir);
-    entries.iter().find(|e| canonical(Path::new(&e.dir)) == want)
+    entries
+        .iter()
+        .find(|e| e.isolated.as_deref() == isolated && canonical(Path::new(&e.dir)) == want)
 }
 
 /// One request to a session's control endpoint: `method` `path` with the
@@ -288,6 +317,26 @@ mod tests {
             assert_eq!(in_dir(&entries, &link).map(|e| e.pid), Some(2));
         }
         assert_eq!(in_dir(&entries, &root), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An isolated session of a directory (`--isolated <key>`) is not the
+    /// directory's own session, and conflicts only with one of its key.
+    #[test]
+    fn an_isolated_session_is_keyed_apart_from_its_directorys_own() {
+        let root = std::env::temp_dir().join(format!("idealyst-in-dir-keyed-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut isolated = SessionEntry::new(1, root.display().to_string(), "http://127.0.0.1:9", "t");
+        isolated.isolated = Some("test".into());
+        let entries = vec![isolated];
+        assert_eq!(in_dir(&entries, &root), None, "an isolated session is not the directory's own");
+        assert_eq!(in_dir_keyed(&entries, &root, Some("test")).map(|e| e.pid), Some(1));
+        assert_eq!(in_dir_keyed(&entries, &root, Some("other")), None);
+        let back: SessionEntry = serde_json::from_value(serde_json::to_value(&entries[0]).unwrap()).unwrap();
+        assert_eq!(back.isolated.as_deref(), Some("test"));
+        let plain = serde_json::to_value(SessionEntry::new(2, "/w", "http://127.0.0.1:9", "t")).unwrap();
+        assert!(plain.get("isolated").is_none(), "not written for the directory's own session");
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -38,6 +38,7 @@ fn main() -> anyhow::Result<()> {
             // through `backend_android::newcore::start` unconditionally.
             user_features: vec![],
             robot_relay_url: None,
+            env_vars: Vec::new(),
         },
     )?;
     eprintln!(

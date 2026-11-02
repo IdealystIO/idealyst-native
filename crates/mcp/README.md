@@ -131,8 +131,8 @@ the CLI flags worth driving from MCP — `platforms` (`web`/`ios`/
 `android`/`macos`/`terminal`), `all`, `local`, `no_robot`,
 `bridge_port`, `screenshot_dir`, `no_build`, `no_watch`,
 `experimental_build`. `list_dev_sessions` shows every `idealyst dev`
-on the machine — the ones this server started and the ones a person
-started in a terminal (found through the session registry,
+on the machine — the ones this server started and the ones started
+outside it, at a terminal or by a script (found through the session registry,
 `~/.idealyst/dev-sessions/`) — and `stop_dev` (by `session_id`, `pid`,
 or `all`) tears a session back down — on unix the whole `idealyst dev`
 process **group** (its cargo builds, web servers, simulators) gets a

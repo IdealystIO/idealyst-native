@@ -71,6 +71,9 @@ pub enum Owner {
     OtherMcp,
     /// A person started it in a terminal.
     Person,
+    /// Neither `idealyst mcp` nor a terminal: a script, `nohup`, or an
+    /// agent's own shell — the session cannot tell which.
+    Unknown,
 }
 
 impl Owner {
@@ -84,8 +87,10 @@ impl Owner {
         if let Some(id) = this_server {
             return Owner::ThisServer(id);
         }
-        if entry.launched_by != "mcp" {
-            return Owner::Person;
+        match entry.launched_by.as_str() {
+            sessions::LAUNCHED_BY_MCP => {}
+            sessions::LAUNCHED_BY_USER => return Owner::Person,
+            _ => return Owner::Unknown,
         }
         let gone = match entry.launcher_pid {
             Some(launcher) => !crate::app_discovery::pid_is_live(launcher),
@@ -104,7 +109,7 @@ impl Owner {
 
     /// Whether a stop needs `include_external`.
     pub fn is_external(self) -> bool {
-        matches!(self, Owner::OtherMcp | Owner::Person)
+        matches!(self, Owner::OtherMcp | Owner::Person | Owner::Unknown)
     }
 
     /// As `list_dev_sessions` shows it.
@@ -114,6 +119,7 @@ impl Owner {
             Owner::ExitedMcp => "an idealyst mcp that has exited",
             Owner::OtherMcp => "another idealyst mcp",
             Owner::Person => "a person",
+            Owner::Unknown => "unknown (not idealyst mcp, and not typed at a terminal)",
         }
     }
 }
@@ -252,6 +258,12 @@ mod tests {
         let no_parent = |_| None;
         assert_eq!(Owner::with_parent(&e, None, no_parent), Owner::Person);
         assert_eq!(Owner::with_parent(&e, Some(3), no_parent), Owner::ThisServer(3));
+        // A session started with no terminal and no launcher saying who
+        // (`nohup`, a script, an agent's shell) is not claimed for a person,
+        // and is still not this server's to stop.
+        e.launched_by = sessions::LAUNCHED_BY_UNKNOWN.into();
+        assert_eq!(Owner::with_parent(&e, None, no_parent), Owner::Unknown);
+        assert!(Owner::Unknown.is_external());
 
         e.launched_by = "mcp".into();
         // Its launcher recorded, and gone (past the default pid_max).

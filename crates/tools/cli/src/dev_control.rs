@@ -7,7 +7,9 @@
 //!
 //! It also keeps a project to one session ([`claim_dir`]): a second
 //! session of a directory would share the first's target directory, log
-//! and metrics file, and its cargo builds would race the first's.
+//! and metrics file, and its cargo builds would race the first's. An
+//! isolated session (`idealyst dev --isolated <key>`) has its own of all
+//! of those, so it conflicts only with another session of its key.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -138,23 +140,38 @@ pub struct DirClaim {
 /// process, so a crash cannot leave the directory claimed. It is taken
 /// only by an `idealyst` that knows it, so an older session is found
 /// through the registry alone.
-pub fn claim_dir(dir: &Path, lock_path: &Path, registry: Option<&Path>) -> anyhow::Result<DirClaim> {
+pub fn claim_dir(
+    dir: &Path,
+    lock_path: &Path,
+    registry: Option<&Path>,
+    isolated: Option<&str>,
+) -> anyhow::Result<DirClaim> {
     if let Some(registry) = registry {
         let others: Vec<SessionEntry> = sessions::read_all(registry)
             .into_iter()
             .map(|(_, e)| e)
             .filter(|e| e.pid != std::process::id() && pid_is_live(e.pid))
             .collect();
-        if let Some(e) = sessions::in_dir(&others, dir) {
-            let who = if e.launched_by == "mcp" { "an agent, through `idealyst mcp`" } else { "a person" };
+        if let Some(e) = sessions::in_dir_keyed(&others, dir, isolated) {
+            let which = match isolated {
+                Some(key) => format!("an isolated `idealyst dev --isolated {key}` session"),
+                None => "an `idealyst dev` session".to_string(),
+            };
+            let beside = match isolated {
+                Some(_) => "pick another key".to_string(),
+                None => "run this one beside it with `--isolated <key>` (its own target dir, \
+                         staging, log and lock; it pays its own first build)"
+                    .to_string(),
+            };
             anyhow::bail!(
-                "an `idealyst dev` session already runs in {} (pid {}, started by {who}, idealyst {}). \
-                 Two sessions of one project share its target directory and log, and their builds \
+                "{which} already runs in {} (pid {}, started by {}, idealyst {}). \
+                 Two sessions with one key share a target directory and log, and their builds \
                  race. Use that session — the idealyst MCP drives it by pid (`dev_status`, \
-                 `rebuild_dev`, `wait_for_build`) — or stop it first (Ctrl-C in its terminal, \
-                 `kill -INT {}`, or `stop_dev` with its pid).",
+                 `rebuild_dev`, `wait_for_build`) — stop it first (Ctrl-C in its terminal, \
+                 `kill -INT {}`, or `stop_dev` with its pid), or {beside}.",
                 dir.display(),
                 e.pid,
+                started_by(&e.launched_by),
                 e.cli_version,
                 e.pid,
             );
@@ -172,15 +189,32 @@ pub fn claim_dir(dir: &Path, lock_path: &Path, registry: Option<&Path>) -> anyho
     match lock.try_lock() {
         Ok(()) => Ok(DirClaim { _lock: lock }),
         Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!(
-            "another `idealyst dev` session is starting in {} (it holds {}). Two sessions of one \
-             project share its target directory and log, and their builds race: wait for it and \
-             use it (`list_dev_sessions` shows it once it is up), or stop it first.",
+            "another `idealyst dev` session is starting in {} (it holds {}). Two sessions with one \
+             key share a target directory and log, and their builds race: wait for it and use it \
+             (`list_dev_sessions` shows it once it is up), stop it first, or run beside it with \
+             `--isolated <key>`.",
             dir.display(),
             lock_path.display(),
         ),
         Err(std::fs::TryLockError::Error(e)) => {
             anyhow::bail!("cannot lock {}: {e}", lock_path.display())
         }
+    }
+}
+
+/// How a refusal names who started a session, from its registry entry's
+/// `launched_by`. Only `user` — recorded when stdin was a terminal — is
+/// called a person; a session nothing vouches for says so.
+fn started_by(launched_by: &str) -> String {
+    match launched_by {
+        sessions::LAUNCHED_BY_MCP => "an agent, through `idealyst mcp`".to_string(),
+        sessions::LAUNCHED_BY_USER => "a person, at a terminal".to_string(),
+        sessions::LAUNCHED_BY_UNKNOWN => {
+            "an unknown launcher (not `idealyst mcp`, and not typed at a terminal: a script, \
+             `nohup`, or an agent's shell)"
+                .to_string()
+        }
+        other => format!("`{other}`"),
     }
 }
 
@@ -283,7 +317,7 @@ mod tests {
         e.launched_by = "mcp".into();
         e.cli_version = "1.19.0".into();
         sessions::write(&registry, &e).unwrap();
-        let err = claim_dir(&app, &lock, Some(&registry)).err().expect("refused beside a running session");
+        let err = claim_dir(&app, &lock, Some(&registry), None).err().expect("refused beside a running session");
         let text = err.to_string();
         assert!(text.contains(&format!("pid {}", running.id())), "{text}");
         assert!(text.contains("an agent"), "{text}");
@@ -291,9 +325,9 @@ mod tests {
         running.wait().unwrap();
 
         // Its process gone, the entry does not hold the directory.
-        let first = claim_dir(&app, &lock, Some(&registry)).expect("claimed once the session exited");
+        let first = claim_dir(&app, &lock, Some(&registry), None).expect("claimed once the session exited");
         // One still starting holds the lock before it registers.
-        let err = claim_dir(&app, &lock, Some(&registry)).err().expect("refused beside a starting session");
+        let err = claim_dir(&app, &lock, Some(&registry), None).err().expect("refused beside a starting session");
         assert!(err.to_string().contains("is starting"), "{err}");
         drop(first);
         // A process this test binary forks concurrently (other tests spawn
@@ -301,7 +335,7 @@ mod tests {
         // closes it (`O_CLOEXEC`), so the release can lag by that instant.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let reclaimed = loop {
-            match claim_dir(&app, &lock, Some(&registry)) {
+            match claim_dir(&app, &lock, Some(&registry), None) {
                 Ok(c) => break c,
                 Err(e) if std::time::Instant::now() > deadline => panic!("released with the claim: {e}"),
                 Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
@@ -313,14 +347,71 @@ mod tests {
         std::fs::create_dir_all(&other).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let _a = loop {
-            match claim_dir(&app, &lock, Some(&registry)) {
+            match claim_dir(&app, &lock, Some(&registry), None) {
                 Ok(c) => break c,
                 Err(e) if std::time::Instant::now() > deadline => panic!("{e}"),
                 Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
             }
         };
-        claim_dir(&other, &other.join("dev.lock"), Some(&registry)).expect("a different project");
+        claim_dir(&other, &other.join("dev.lock"), Some(&registry), None).expect("a different project");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CrewForge: a test runner's `dev --ios --port 3620` was refused while
+    /// the developer's `dev --web --port 3610` ran. With `--isolated <key>`
+    /// it runs beside it (its own lock, beside its own log); a second
+    /// session of the same key is still refused, and the refusal of a
+    /// plain second session points at `--isolated`.
+    #[cfg(unix)]
+    #[test]
+    fn an_isolated_session_runs_beside_the_directorys_own() {
+        let root = std::env::temp_dir().join(format!("idealyst-claim-isolated-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (app, registry) = (root.join("app"), root.join("registry"));
+        std::fs::create_dir_all(&app).unwrap();
+        let mut developer = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let e = SessionEntry::new(developer.id(), app.display().to_string(), "http://127.0.0.1:9", "t");
+        sessions::write(&registry, &e).unwrap();
+
+        let err = claim_dir(&app, &app.join("own/dev.lock"), Some(&registry), None).err().expect("refused");
+        assert!(err.to_string().contains("--isolated <key>"), "{err}");
+
+        let lock = app.join("isolated/test/dev.lock");
+        let claim = claim_dir(&app, &lock, Some(&registry), Some("test")).expect("an isolated session runs beside it");
+
+        let mut tester = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut t = SessionEntry::new(tester.id(), app.display().to_string(), "http://127.0.0.1:9", "t");
+        t.isolated = Some("test".into());
+        t.launched_by = sessions::LAUNCHED_BY_UNKNOWN.into();
+        sessions::write(&registry, &t).unwrap();
+        let err = claim_dir(&app, &app.join("isolated/test2/dev.lock"), Some(&registry), Some("test"))
+            .err()
+            .expect("one session per key");
+        let text = err.to_string();
+        assert!(text.contains("--isolated test"), "{text}");
+        assert!(text.contains("unknown launcher"), "nohup / an agent's shell is not 'a person': {text}");
+        claim_dir(&app, &app.join("isolated/other/dev.lock"), Some(&registry), Some("other")).expect("another key");
+        drop(claim);
+        for c in [&mut developer, &mut tester] {
+            c.kill().unwrap();
+            c.wait().unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Regression: a session an agent started through `nohup` was reported
+    /// as "started by a person" — every entry without `idealyst mcp`'s
+    /// marker was. Only a session typed at a terminal is a person's.
+    #[test]
+    fn regression_started_by_names_a_person_only_for_a_terminal_session() {
+        assert_eq!(started_by(sessions::LAUNCHED_BY_USER), "a person, at a terminal");
+        assert!(started_by(sessions::LAUNCHED_BY_MCP).contains("an agent"));
+        assert!(started_by(sessions::LAUNCHED_BY_UNKNOWN).contains("unknown"));
+        assert!(!started_by(sessions::LAUNCHED_BY_UNKNOWN).contains("person"));
+        assert_eq!(crate::cmd::dev::launched_by(None, false), sessions::LAUNCHED_BY_UNKNOWN);
+        assert_eq!(crate::cmd::dev::launched_by(None, true), sessions::LAUNCHED_BY_USER);
+        assert_eq!(crate::cmd::dev::launched_by(Some("mcp".into()), false), "mcp");
+        assert_eq!(crate::cmd::dev::launched_by(Some(String::new()), false), sessions::LAUNCHED_BY_UNKNOWN);
     }
 
     /// The whole path a tool takes: find the entry, request through it.

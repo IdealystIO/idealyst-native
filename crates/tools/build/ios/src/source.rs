@@ -27,6 +27,47 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
+/// The isolation key of this process's dev session, set once at its start
+/// by `idealyst dev --isolated <key>` ([`set_session_isolation`]).
+static SESSION_ISOLATION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Make every target dir and wrapper root this process resolves its own:
+/// `<target>/isolated/<key>/` instead of `<target>/`. For a dev session
+/// that runs beside the project's own (`idealyst dev --isolated <key>`):
+/// two sessions building into one target dir race on its staging and
+/// prune each other's units, and one staging dir serves whichever session
+/// wrote last. Set once, before anything resolves a path; a second call
+/// with another key is refused, since paths already handed out would
+/// disagree with later ones.
+pub fn set_session_isolation(key: &str) -> Result<()> {
+    validate_isolation_key(key)?;
+    let set = SESSION_ISOLATION.get_or_init(|| key.to_string());
+    anyhow::ensure!(set == key, "session isolation is already `{set}`; it cannot become `{key}`");
+    Ok(())
+}
+
+/// The key [`set_session_isolation`] set, if any.
+pub fn session_isolation() -> Option<&'static str> {
+    SESSION_ISOLATION.get().map(String::as_str)
+}
+
+/// A key is one path component of `[A-Za-z0-9_-]`: it names directories.
+pub fn validate_isolation_key(key: &str) -> Result<()> {
+    anyhow::ensure!(
+        !key.is_empty() && key.len() <= 64 && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "isolation key `{key}` must be 1-64 characters of A-Z, a-z, 0-9, `-` and `_`"
+    );
+    Ok(())
+}
+
+/// `target`, or `target/isolated/<key>` for an isolated session.
+pub fn isolated_target(target: PathBuf, key: Option<&str>) -> PathBuf {
+    match key {
+        Some(key) => target.join("isolated").join(key),
+        None => target,
+    }
+}
+
 /// The framework crate whose resolution decides everything. Every
 /// generated wrapper depends on it, and so does the user's app crate —
 /// if those two resolve differently, nothing type-checks across the
@@ -510,21 +551,24 @@ impl FrameworkSource {
     /// framework workspace's `target/idealyst/` so cargo's build
     /// cache stays warm across `examples/*` rebuilds. External
     /// projects use their own `<project>/target/idealyst/`.
+    ///
+    /// Under an isolated session ([`set_session_isolation`]) both this and
+    /// [`cargo_target_dir`](Self::cargo_target_dir) move under
+    /// `target/isolated/<key>/`, so every wrapper and build it holds is
+    /// the session's own.
     pub fn wrapper_root(&self, project_dir: &Path) -> PathBuf {
-        match self {
-            Self::Workspace { root } => root.join("target/idealyst"),
-            Self::Git { .. } | Self::Registry { .. } => project_dir.join("target/idealyst"),
-        }
+        self.cargo_target_dir(project_dir).join("idealyst")
     }
 
     /// Cargo target dir to redirect the wrapper crate's build output
     /// to via its `.cargo/config.toml`. Same in-tree-vs-external
     /// distinction as `wrapper_root`.
     pub fn cargo_target_dir(&self, project_dir: &Path) -> PathBuf {
-        match self {
+        let target = match self {
             Self::Workspace { root } => root.join("target"),
             Self::Git { .. } | Self::Registry { .. } => project_dir.join("target"),
-        }
+        };
+        isolated_target(target, session_isolation())
     }
 
     /// Render a `[patch."<git-url>"]` block redirecting every
@@ -1753,6 +1797,24 @@ runtime-core = { version = "1.5.2", registry = "idealyst" }
     fn an_unpublished_crate_has_no_registry_dep() {
         let src = FrameworkSource::Registry { registry: "idealyst".into(), versions: table() };
         src.dep("crates/tools/premint-dump", &[]);
+    }
+
+    /// `--isolated <key>` moves a session's target dir and wrapper root
+    /// under `target/isolated/<key>/`; the key must be one plain path
+    /// component. (The process-wide setter is exercised by the CLI's dev
+    /// session, not here: a test that set it would move every other test's
+    /// paths in this binary.)
+    #[test]
+    fn an_isolated_target_is_a_subdir_of_the_shared_one() {
+        let t = PathBuf::from("/w/target");
+        assert_eq!(isolated_target(t.clone(), None), t);
+        assert_eq!(isolated_target(t.clone(), Some("test")), PathBuf::from("/w/target/isolated/test"));
+        for ok in ["test", "e2e-2", "a_b", "X9"] {
+            validate_isolation_key(ok).unwrap();
+        }
+        for bad in ["", "../x", "a/b", "a b", ".", &"k".repeat(65)] {
+            assert!(validate_isolation_key(bad).is_err(), "{bad:?} accepted");
+        }
     }
 
     /// In Git mode the wrapper and target dirs must be project-local —
