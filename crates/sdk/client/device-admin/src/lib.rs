@@ -219,8 +219,11 @@ impl std::fmt::Display for ProtectedReason {
     }
 }
 
-/// One package on the device, from [`installed_packages`].
+/// One package on the device, from [`installed_packages`]. Only the SDK
+/// builds one, so it is `#[non_exhaustive]`: a new field is not a breaking
+/// change.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PackageInfo {
     /// The package name.
     pub package: String,
@@ -241,6 +244,15 @@ pub struct PackageInfo {
     pub is_suspended: bool,
     /// Not disabled (Settings → Disable, or `pm disable`).
     pub is_enabled: bool,
+    /// Has an activity that shows in the app launcher (`ACTION_MAIN` +
+    /// `CATEGORY_LAUNCHER`): an app a person opens, such as YouTube or
+    /// Chrome. `false` for the parts of Android itself (the navigation bar,
+    /// settings provider, theme overlays, services), which hiding can break
+    /// the device with. Judged with the app's hidden, suspended, disabled or
+    /// removed-for-this-user state ignored, so a hidden app still reads
+    /// `true`. A launcher activity the package switched off in itself (Play
+    /// services' settings entry, the keyboard's icon) does not count.
+    pub has_launcher: bool,
 }
 
 /// What an install or uninstall did.
@@ -522,8 +534,10 @@ pub fn enable_system_app(package: &str) -> Result<()> {
 /// Every package on the device, including hidden ones and system apps
 /// removed for this user, so a console can show and restore them. With
 /// `include_system == false`, only apps that are not on the system
-/// partition. Loads every app's label, so it takes a moment on a device with
-/// hundreds of packages. Device or profile owner; API 21.
+/// partition. [`PackageInfo::has_launcher`] tells the apps a person opens
+/// from the parts of Android to leave alone. Loads every app's label, so it
+/// takes a moment on a device with hundreds of packages. Device or profile
+/// owner; API 21.
 pub fn installed_packages(include_system: bool) -> Result<Vec<PackageInfo>> {
     packages::package_infos(&call(
         "installed_packages",

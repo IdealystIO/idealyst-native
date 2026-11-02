@@ -78,7 +78,7 @@ the same key.
 | `set_application_hidden(pkg, b)` / `is_application_hidden(pkg)` | `setApplicationHidden` / `isApplicationHidden` | 21 | `Unsupported` |
 | `set_packages_suspended(&[pkg], b)` / `is_package_suspended(pkg)` | `setPackagesSuspended` / `isPackageSuspended` | 24 | `Unsupported` |
 | `enable_system_app(pkg)` | `enableSystemApp` | 21 | `Unsupported` |
-| `installed_packages(include_system)` | `getInstalledPackages(MATCH_UNINSTALLED_PACKAGES)` | 21 | `Unsupported` |
+| `installed_packages(include_system)` | `getInstalledPackages(MATCH_UNINSTALLED_PACKAGES)`, plus one `queryIntentActivities` for launcher activities (`has_launcher`) | 21 | `Unsupported` |
 | `start_keep_alive(title, text)` / `stop_keep_alive()` | a `systemExempted` foreground service | 26 | `Unsupported` |
 | `install_apk(path, cert_sha256)` | `PackageInstaller` session, committed silently | 21 | `Unsupported` |
 | `uninstall(pkg)` | `PackageInstaller.uninstall` | 21 | `Unsupported` |
@@ -130,6 +130,21 @@ let refused = device_admin::set_packages_suspended(&["com.example.bloat"], true)
 hidden apps and the system apps provisioning removed (`is_installed ==
 false`), so each can be brought back: `set_application_hidden(pkg, false)`,
 `set_packages_suspended(&[pkg], false)` or `enable_system_app(pkg)`.
+
+A tablet ships hundreds of system packages, and most are parts of Android
+(the navigation bar, the settings provider, theme overlays) that the
+device needs. `PackageInfo::has_launcher` is `true` for the ones with an
+icon in the app launcher, the apps a person opens, so a console offers to
+hide those and leaves the rest alone. A hidden, suspended, disabled or
+removed app keeps `has_launcher == true`; a launcher activity a package
+switched off in itself (Play services' settings entry, the keyboard's
+icon) does not count:
+
+```rust,ignore
+let apps = device_admin::installed_packages(true)?
+    .into_iter()
+    .filter(|p| p.has_launcher);
+```
 
 Provisioning removes the bundled apps that have a launcher icon by default.
 To keep them, generate the setup QR code with

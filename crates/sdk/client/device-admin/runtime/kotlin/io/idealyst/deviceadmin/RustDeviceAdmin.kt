@@ -109,7 +109,9 @@ object RustDeviceAdmin {
     /**
      * MATCH_UNINSTALLED_PACKAGES finds packages that are hidden or were
      * removed for this user (a system app provisioning disabled). Without it
-     * a hidden package reads as absent and can never be unhidden.
+     * a hidden package reads as absent and can never be unhidden. Both flags
+     * are API 24 names for the API 1 GET_UNINSTALLED_PACKAGES /
+     * GET_DISABLED_COMPONENTS bits, so the constant works on API 21.
      */
     private const val MATCH_ALL = PackageManager.MATCH_UNINSTALLED_PACKAGES or PackageManager.MATCH_DISABLED_COMPONENTS
 
@@ -119,6 +121,43 @@ object RustDeviceAdmin {
         } catch (e: PackageManager.NameNotFoundException) {
             throw Failure("not_installed", pkg)
         }
+
+    /**
+     * The packages with an app-launcher activity, from one query. MATCH_ALL
+     * so a hidden, suspended, disabled or removed-for-this-user app still
+     * counts: without MATCH_UNINSTALLED_PACKAGES a hidden app resolves no
+     * activities, and without MATCH_DISABLED_COMPONENTS neither does a
+     * disabled package. But MATCH_DISABLED_COMPONENTS also returns launcher
+     * activities a package switched off in itself (Play services' settings
+     * entry, the keyboard's icon, cell broadcasts), which are not apps a
+     * person opens, so a component that is disabled on its own (in the
+     * manifest or by setComponentEnabledSetting) is dropped; the package's
+     * own enabled state is left out of it. getComponentEnabledSetting throws
+     * "Unknown component" for a system app removed for this user, which has
+     * no per-user component state; its manifest's `enabled` decides.
+     * QUERY_ALL_PACKAGES (in the SDK's manifest) makes Android 11+ answer
+     * for every package.
+     */
+    private fun launcherPackages(pm: PackageManager): Set<String> {
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val out = HashSet<String>()
+        for (ri in pm.queryIntentActivities(launcher, MATCH_ALL)) {
+            val ai = ri.activityInfo ?: continue
+            if (ai.packageName in out) continue
+            val setting = try {
+                pm.getComponentEnabledSetting(ComponentName(ai.packageName, ai.name))
+            } catch (e: IllegalArgumentException) {
+                PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
+            }
+            val enabled = when (setting) {
+                PackageManager.COMPONENT_ENABLED_STATE_ENABLED -> true
+                PackageManager.COMPONENT_ENABLED_STATE_DEFAULT -> ai.enabled
+                else -> false
+            }
+            if (enabled) out.add(ai.packageName)
+        }
+        return out
+    }
 
     private fun requireApi(level: Int, what: String) {
         if (Build.VERSION.SDK_INT < level) {
@@ -285,6 +324,7 @@ object RustDeviceAdmin {
                 requireDeviceOrProfileOwner(ctx)
                 val includeSystem = args.getBoolean("include_system")
                 val pm = ctx.packageManager
+                val launchable = launcherPackages(pm)
                 val out = JSONArray()
                 for (info in pm.getInstalledPackages(MATCH_ALL)) {
                     val app = info.applicationInfo ?: continue
@@ -299,7 +339,8 @@ object RustDeviceAdmin {
                         .put("is_installed", (app.flags and ApplicationInfo.FLAG_INSTALLED) != 0)
                         .put("is_hidden", dpm.isApplicationHidden(admin(ctx), info.packageName))
                         .put("is_suspended", Build.VERSION.SDK_INT >= 24 && (app.flags and ApplicationInfo.FLAG_SUSPENDED) != 0)
-                        .put("is_enabled", app.enabled))
+                        .put("is_enabled", app.enabled)
+                        .put("has_launcher", info.packageName in launchable))
                 }
                 return out
             }

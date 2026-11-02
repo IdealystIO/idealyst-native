@@ -91,6 +91,7 @@ fn package_info(v: &Value) -> Result<PackageInfo> {
         is_hidden: flag("is_hidden")?,
         is_suspended: flag("is_suspended")?,
         is_enabled: flag("is_enabled")?,
+        has_launcher: flag("has_launcher")?,
     })
 }
 
@@ -156,13 +157,13 @@ mod tests {
                 "package": "com.lenovo.entertainment", "label": "Entertainment Space",
                 "version_name": "1.2", "version_code": 12,
                 "is_system": true, "is_installed": true, "is_hidden": true,
-                "is_suspended": false, "is_enabled": true
+                "is_suspended": false, "is_enabled": true, "has_launcher": true
             },
             {
                 "package": "com.example.kiosk", "label": "Kiosk",
                 "version_name": null, "version_code": 3,
                 "is_system": false, "is_installed": true, "is_hidden": false,
-                "is_suspended": true, "is_enabled": true
+                "is_suspended": true, "is_enabled": true, "has_launcher": true
             }
         ]))
         .unwrap();
@@ -177,6 +178,47 @@ mod tests {
     fn a_package_missing_a_flag_is_malformed_not_defaulted() {
         let r = package_infos(&json!([{ "package": "p", "version_code": 1 }]));
         assert!(matches!(r, Err(Error::Platform(_))), "{r:?}");
+    }
+
+    fn system_package(name: &str, hidden: bool, has_launcher: bool) -> Value {
+        json!({
+            "package": name, "label": "", "version_name": null, "version_code": 1,
+            "is_system": true, "is_installed": true, "is_hidden": hidden,
+            "is_suspended": false, "is_enabled": true, "has_launcher": has_launcher
+        })
+    }
+
+    #[test]
+    fn has_launcher_tells_apps_from_parts_of_android() {
+        let list = package_infos(&json!([
+            system_package("com.google.android.youtube", false, true),
+            // A hidden app keeps its launcher entry: the console must still
+            // show it as an app to restore.
+            system_package("com.android.chrome", true, true),
+            system_package("com.android.systemui.navbar.gestural", false, false),
+            system_package("com.android.providers.settings", false, false),
+        ]))
+        .unwrap();
+        let launchers: Vec<(&str, bool)> =
+            list.iter().map(|p| (p.package.as_str(), p.has_launcher)).collect();
+        assert_eq!(
+            launchers,
+            [
+                ("com.google.android.youtube", true),
+                ("com.android.chrome", true),
+                ("com.android.systemui.navbar.gestural", false),
+                ("com.android.providers.settings", false),
+            ]
+        );
+        assert!(list[1].is_hidden);
+    }
+
+    #[test]
+    fn a_package_without_has_launcher_is_malformed_not_defaulted() {
+        let mut p = system_package("p", false, true);
+        p.as_object_mut().unwrap().remove("has_launcher");
+        let r = package_infos(&json!([p]));
+        assert!(matches!(&r, Err(Error::Platform(m)) if m.contains("has_launcher")), "{r:?}");
     }
 
     #[test]

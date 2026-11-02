@@ -66,6 +66,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   (`camera` 4.0, `microphone` 4.0). A struct literal that names every field
   stops compiling; add `..Default::default()` or use the builders.
 
+- **`device_admin::PackageInfo` gained `has_launcher` and is
+  `#[non_exhaustive]`** (`device-admin` 2.0). `has_launcher` is `true` for
+  a package with an app-launcher activity (an app a person opens), `false`
+  for the parts of Android a console should not hide; a hidden or removed
+  app still reads `true`. Only the SDK builds a `PackageInfo`, so reading
+  one is unaffected; a struct literal or a pattern without `..` stops
+  compiling, and a later field is a minor.
+
 - **Windows: `Back` on a webcam is `NoCamera`** (`camera`). Media
   Foundation opened the first camera for every facing, so `back()` on a
   laptop silently opened the front webcam. It now follows the
