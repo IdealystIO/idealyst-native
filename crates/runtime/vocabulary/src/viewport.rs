@@ -166,6 +166,23 @@ impl ViewportCtx {
     }
 }
 
+/// The viewport the app's breakpoint UI sees now, untracked: the world
+/// ctx's size when one exists (ambient, else the last ambient — the
+/// robot's driver runs outside `enter` on most hosts), else the shared
+/// thread-local value every platform seam writes (an app that never read
+/// a breakpoint has no ctx). The bucket is classified from that size with
+/// the installed table — the memo's own rule, without waiting for its
+/// next flush. What the robot's `get_viewport` reports.
+#[cfg(feature = "robot")]
+pub(crate) fn current_untracked() -> (ViewportSize, Breakpoint) {
+    let ambient = if runtime_world::is_entered() { inject::<ViewportCtx>() } else { None };
+    let size = match ambient.or_else(|| LAST_CTX.with(|c| c.borrow().clone())) {
+        Some(ctx) => ctx.size.peek(),
+        None => runtime_shared::viewport_size().get(),
+    };
+    (size, runtime_shared::breakpoints().classify(size.width))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

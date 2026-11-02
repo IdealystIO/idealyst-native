@@ -56,6 +56,11 @@ fn spawn_fake_app(ws_addr: SocketAddr) {
                         Some(json!({ "id": id, "ok": Value::Null }))
                     }
                 }
+                // A busy app: answers after 300 ms.
+                "slow" => {
+                    std::thread::sleep(Duration::from_millis(300));
+                    Some(json!({ "id": id, "ok": "done" }))
+                }
                 // Ack; the push is emitted just below (exercises fan-out).
                 "subscribe" => Some(json!({ "id": id, "ok": "subscribed" })),
                 // A 1×1 PNG, like a real backend's capture — the relay should
@@ -160,6 +165,36 @@ fn subscribe_acks_and_pushes_fan_out() {
     let push = bridge.read_frame();
     assert_eq!(push["event"], "changed");
     assert_eq!(push["rev"], 42);
+}
+
+/// A request's `timeout_ms` sets how long the relay waits for the app, and
+/// when the relay gives up its error says the APP did not answer (the relay
+/// itself is fine) — robot-test retries that as "busy", and tells it apart
+/// from its own read timing out. Before, the wait was a fixed 5 s and the
+/// error a bare "app response timed out".
+#[test]
+fn a_request_sets_how_long_the_relay_waits_and_the_timeout_names_the_app() {
+    let relay = start_relay();
+    spawn_fake_app(relay.ws_addr);
+    let mut bridge = TcpBridge::connect(relay.tcp_addr);
+    eventually("the app connects", || bridge.call("ping", json!({}))["ok"] == "pong");
+
+    let mut send = |timeout_ms: u64| {
+        let line = json!({ "id": 77, "cmd": "slow", "args": {}, "timeout_ms": timeout_ms }).to_string() + "\n";
+        bridge.writer.write_all(line.as_bytes()).unwrap();
+        bridge.read_frame()
+    };
+    let resp = send(50);
+    assert_eq!(resp["id"], 77);
+    let err = resp["err"].as_str().unwrap_or_else(|| panic!("a timeout, got {resp}"));
+    assert!(err.starts_with("app response timed out"), "{err}");
+    assert!(err.contains("50 ms") && err.contains("`slow`"), "names the wait and the verb: {err}");
+
+    // Long enough: the answer arrives (the timed-out one's late reply is
+    // dropped, not delivered in its place).
+    std::thread::sleep(Duration::from_millis(400));
+    let resp = send(2_000);
+    assert_eq!(resp, json!({ "id": 77, "ok": "done" }));
 }
 
 #[test]

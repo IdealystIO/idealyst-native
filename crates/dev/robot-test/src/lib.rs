@@ -25,6 +25,12 @@
 //! a toggle's checked state, disabled, focused — so most assertions need
 //! nothing from the app. See `docs/robot.md` for the verbs underneath.
 //!
+//! Narrow a locator with filters — `app.role("TextInput").with_label("Email")
+//! .within(Selector::test_id("login"))` — which reach the app as one query.
+//! Per-test setup is a [`Fixture`] the test names as a parameter
+//! (`fn t(app: &mut App, user: &SignedIn)`), set up before and torn down
+//! after the body.
+//!
 //! Because `#[robot_test]` expands to a real `#[test]`, `cargo test` discovers
 //! and runs these. But they need a live app + relay, which `cargo test` can't
 //! set up — so when none is reachable each test **skips** (prints a note and
@@ -36,15 +42,23 @@
 
 mod app;
 mod client;
+pub mod fixture;
 mod harness;
 pub mod parity;
 
-pub use app::{App, Component, ElementState, FunctionArg, FunctionInfo, Locator, NavigatorInfo, ScrollOffset, SignalAssert, DEFAULT_TIMEOUT};
+pub use app::{
+    App, Component, ElementState, FunctionArg, FunctionInfo, Locator, NavigatorInfo, ScrollOffset, Selector,
+    SignalAssert, Viewport, DEFAULT_TIMEOUT,
+};
 pub use client::{
-    default_apps_dir, default_apps_dirs, discover, discover_all, discover_project, RobotClient,
-    WINE_APPS_DIR_NAME,
+    default_apps_dir, default_apps_dirs, discover, discover_all, discover_project, is_transient, CallError,
+    RobotClient, DEFAULT_IO_TIMEOUT, WINE_APPS_DIR_NAME,
 };
 pub use parity::{capture_native, diff as diff_native, report as report_parity, Capture, Mismatch, Tolerance};
+
+pub use fixture::Fixture;
+#[doc(hidden)]
+pub use fixture::__with_fixture;
 
 // The attribute macro that turns a function into a `#[test]`.
 pub use robot_test_macros::robot_test;

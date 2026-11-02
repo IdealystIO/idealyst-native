@@ -135,8 +135,8 @@ fn modal_suite() -> robot_e2e::Suite {
 
 fn idea_ui_suite() -> robot_e2e::Suite {
     // idea-ui "as a key implementor": its Switch/Checkbox/Button forward a
-    // `test_id` to their root primitive (idea-ui `robot` feature), so the
-    // robot can locate + drive them. A flow because it navigates (push +
+    // `test_id` to their interactive primitive (always — the id is inert
+    // until the runtime's robot is on), so the robot can locate + drive them. A flow because it navigates (push +
     // async pop) and each component's reactive status settles across ticks.
     suite(
         "idea-ui components",

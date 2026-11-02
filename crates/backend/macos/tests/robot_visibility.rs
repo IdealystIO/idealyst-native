@@ -7,6 +7,9 @@
 //! `harness = false`: AppKit views and windows are main-thread only, and
 //! libtest runs cases on worker threads.
 //!
+//! It also covers `IntrospectionOps::resize_window` (the robot's
+//! `set_viewport`), which needs the same real window.
+//!
 //! ```sh
 //! cargo test -p backend-macos --test robot_visibility
 //! ```
@@ -83,8 +86,16 @@ mod imp {
         let _: () = unsafe { msg_send![layer, setOpacity: 1.0f32] };
         assert_eq!(backend.is_shown(&child), Some(true));
 
+        // The robot's `set_viewport`: the window's CONTENT becomes the size
+        // asked, in points (the viewport's logical px), title bar aside.
+        let resize = backend.resize_window(&child, 640.0, 480.0).expect("a window to resize");
+        resize().expect("resized");
+        let size = content.frame().size;
+        assert_eq!((size.width, size.height), (640.0, 480.0), "content area is the asked size");
+
         let _: () = unsafe { msg_send![&p, removeFromSuperview] };
         assert_eq!(backend.is_shown(&child), Some(false), "no longer in a window");
+        assert!(backend.resize_window(&child, 640.0, 480.0).is_none(), "no window, nothing to resize");
         println!("robot_visibility: ok");
     }
 }

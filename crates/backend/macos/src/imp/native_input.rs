@@ -1,5 +1,5 @@
 //! Real AppKit input for the robot (`IntrospectionOps::hit_contains` /
-//! `native_pointer`).
+//! `native_pointer`), and its window resize (`resize_window`).
 //!
 //! Points arrive in `absolute_frame`'s space: the window's flipped content
 //! view, top-left origin. `convertPoint:toView:nil` takes them to window
@@ -33,7 +33,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{class, msg_send, msg_send_id};
 use objc2_app_kit::NSView;
-use objc2_foundation::CGPoint;
+use objc2_foundation::{CGPoint, CGSize};
 use runtime_vocabulary::caps::{NativeInjection, PointerStep, PointerStepPhase};
 
 use crate::imp::MacosNode;
@@ -149,6 +149,28 @@ fn window_of(view: &NSView) -> Option<(Retained<AnyObject>, *mut NSView)> {
 fn to_window_base(content: *mut NSView, x: f32, y: f32) -> CGPoint {
     let nil: *mut NSView = std::ptr::null_mut();
     unsafe { msg_send![content, convertPoint: CGPoint { x: x as f64, y: y as f64 }, toView: nil] }
+}
+
+/// `NSWindowStyleMaskFullScreen`.
+const STYLE_FULL_SCREEN: usize = 1 << 14;
+
+/// `IntrospectionOps::resize_window`: `-[NSWindow setContentSize:]`, in
+/// points — the logical px the viewport reports, so no scale conversion.
+/// The content view's `setFrameSize:` runs inside the call and pushes the
+/// new viewport through the ordinary resize seam. A full-screen window
+/// keeps the screen's size whatever it is asked, so that is an error
+/// rather than a wait that can never end.
+pub(crate) fn resize_window(node: &MacosNode, width: f32, height: f32) -> Option<NativeInjection> {
+    let (window, _content) = window_of(node.as_view())?;
+    Some(Box::new(move || {
+        let mask: usize = unsafe { msg_send![&*window, styleMask] };
+        if mask & STYLE_FULL_SCREEN != 0 {
+            return Err("the window is full screen".into());
+        }
+        let size = CGSize { width: width as f64, height: height as f64 };
+        let _: () = unsafe { msg_send![&*window, setContentSize: size] };
+        Ok(())
+    }))
 }
 
 pub(crate) fn hit_contains(node: &MacosNode, x: f32, y: f32) -> Option<bool> {

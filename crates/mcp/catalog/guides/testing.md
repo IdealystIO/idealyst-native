@@ -39,6 +39,24 @@ Most assertions need nothing more. Every element reports its own state:
 a field's text, a toggle's checked state, `disabled`, `focused`, a
 scroller's offset, plus `visible` and `in_viewport`.
 
+idea-ui components take the same id as `test_id = Some("…")` and put it on
+the element a test acts on: the text input of `Field`, `Textarea`,
+`Autocomplete`, `DateInput`, `DateTimeInput` and `TimeInput`; the pressable
+of `Button` (in every state, including while `loading`), `IconButton`,
+`Switch`, `Checkbox`, `Radio`, `Link`, `Chip`, `ListItem`, `MenuItem`,
+`Collapsible`'s header, and the trigger of `Select`, `SubMenu`, `DatePicker`,
+`DateTimePicker` and `DateRangePicker`; `Tag`'s close button; `Slider`'s
+drag area. Rows inside a component take theirs on the row's data:
+`SelectOption`, `SegmentOption`, `Tab`, `RadioOption` and `MenuEntry` each
+have `.test_id("…")`. No idea-ui feature is needed.
+
+```rust
+ui! {
+    Field(label = Some("Email".into()), value = email, test_id = Some("email"))
+    Button(label = "Sign in", on_click = submit, loading = rx!(busy.get()), test_id = Some("submit"))
+}
+```
+
 For app state with no element, expose it by name or as a function:
 
 ```rust
@@ -125,8 +143,31 @@ accept it, and an assertion retries until it holds. Both give up after
 `App::set_timeout` (5 s by default) and panic with the last thing they
 saw. Never sleep for a reactive update, a load or a navigation.
 
+A busy app is "not yet" too. When the app is slow to answer a lookup (the
+error reads `app response timed out: …` — the relay is up, the app is busy)
+or no reply arrives within `App::set_io_timeout` (8 s by default; the error
+says the client gave up waiting on the relay), locating, assertions,
+`count()`, `label()` and `assert_path` ask again until the timeout. An
+action the app did not answer is not sent again, because the app may still
+perform it: it fails at once. Raise `set_io_timeout` if an action keeps the
+app busy for long on purpose.
+
 - **Locate:** `test_id`, `text` (label substring), `label` (exact), `role`
-  (element kind, e.g. `"Toggle"`), then `.nth(i)`.
+  (element kind, e.g. `"Toggle"`), then narrow with `.with_label(..)`,
+  `.with_text(..)`, `.with_role(..)`, `.with_test_id(..)`,
+  `.within(container)` and `.nth(i)`. Every filter must hold, and the
+  whole chain is one query to the app:
+
+  ```rust
+  use robot_test::Selector;
+
+  // The Email field, not its "Email" caption, and only the one in the dialog.
+  app.role("TextInput").with_label("Email").within(Selector::test_id("sign-in")).fill("me@example.com");
+
+  // A container kept in a variable: detach it with `.selector()`.
+  let row = app.role("View").with_text("Invoice 42").selector();
+  app.role("Button").with_label("Delete").within(row).click();
+  ```
 - **Act:**
   - `click`, `fill` / `type_text`, `set_toggle`, `set_slider`, `focus`,
     `blur`, `scroll_to`;
@@ -146,12 +187,101 @@ saw. Never sleep for a reactive update, a load or a navigation.
     `functions()`;
   - components: `component(name).invoke(method, args)` / `.prop(name)`;
   - signals: `signal(name).assert_eq` / `.value()` / `.set(v)`;
+  - viewport: `viewport()` (width, height, breakpoint), `set_viewport(w, h)`
+    on desktop apps (it panics elsewhere; `try_set_viewport` returns why, so
+    a test can skip — web sizes come from the runner's `--viewport`, phones'
+    from the device);
   - diagnostics: `logs()`, `screenshot()`;
   - anything else: `call(verb, args)`.
 
 Keep tests independent of run order. Each test should be the only one
 mutating the state it asserts, and a robot function that resets the state
-is the cheap way to get there.
+is the cheap way to get there — wrapped in a fixture, so no test forgets it.
+
+### Fixtures: per-test setup
+
+A fixture is setup a test asks for by type. Implement `robot_test::Fixture`
+and name it as a parameter after the app, by `&` (or `&mut`): its `setup`
+runs before the body, its `teardown` after it — also when the test fails.
+Several run in parameter order and tear down in reverse; one can build on
+another by calling its `setup`.
+
+```rust
+use robot_test::{json, robot_test, App, Fixture};
+
+/// Signed in as a known user.
+struct SignedIn { email: String }
+
+impl Fixture for SignedIn {
+    fn setup(app: &mut App) -> Self {
+        let email = "ada@example.com".to_string();
+        app.call_function("test.sign_in", json!({ "email": email }));
+        SignedIn { email }
+    }
+
+    fn teardown(&mut self, app: &mut App) {
+        app.call_function("test.sign_out", json!({}));
+    }
+}
+
+#[robot_test]
+fn shows_the_account(app: &mut App, user: &SignedIn) {
+    app.navigate("/account");
+    app.test_id("account-email").assert_text(&user.email);
+}
+```
+
+**Recipe: fresh server state per test in a full-stack app.** Give the
+server a reset it only answers in a test run, call it from a `#[robot_fn]`
+in the app, and wrap that in a fixture.
+
+```rust
+// Shared code (the app crate): a #[server] fn whose body runs on the server.
+#[server]
+pub async fn reset_test_data() -> Result<(), ServerError> {
+    // Refuse outside a test run: the server only has this variable when
+    // the test runner's environment option sets it.
+    if std::env::var_os("APP_TEST_RESET").is_none() {
+        return Err(ServerError::failed("reset is test-only"));
+    }
+    let state = server::use_state::<Arc<AppState>>()
+        .ok_or_else(|| ServerError::failed("AppState not installed"))?;
+    state.db.truncate_all().await.map_err(|e| ServerError::failed(e.to_string()))?;
+    state.db.seed_fixtures().await.map_err(|e| ServerError::failed(e.to_string()))
+}
+
+// The app, registered at boot (inert outside robot builds):
+/// Wipe and reseed the server's data.
+#[robot_fn(name = "test.reset")]
+async fn test_reset() -> Result<(), String> {
+    reset_test_data().await.map_err(|e| e.to_string())
+}
+// runtime_vocabulary::robot_fn::register(test_reset::robot());
+```
+
+```rust
+// tests/robot.rs
+struct FreshServer;
+
+impl Fixture for FreshServer {
+    fn setup(app: &mut App) -> Self {
+        app.call_function("test.reset", json!({}));
+        FreshServer
+    }
+}
+
+#[robot_test]
+fn starts_with_the_seeded_todos(app: &mut App, _: &FreshServer) {
+    app.test_id("todo-row").assert_count(3);
+}
+```
+
+Run it with the variable set for the server, and anything the server needs
+started first, through the runner's options (below):
+`idealyst test --web --env APP_TEST_RESET=1 --before "docker compose up -d db" <project>`.
+`call_function` waits for the async reset to finish before the test body
+runs. Point the server at a test database, never the one you develop
+against.
 
 ## Clicks: in-framework vs real input
 
@@ -166,7 +296,7 @@ to the robot's `click` only where the backend answers `unsupported`.
 
 | Backend | `tap_native` mechanism |
 |---|---|
-| Web | DOM pointer and mouse events at `elementFromPoint` |
+| Web | DOM pointer and mouse events at `elementFromPoint`; on a page with touch input (`--device`, `--mobile`), touch events too, with the mouse events and click after the finger lifts |
 | macOS | `NSEvent`s posted to the app |
 | Android | `MotionEvent`s to the decor view (no hit test, so the injected event is the whole check) |
 | Windows | Window messages posted to the child window a real click lands on |
@@ -195,15 +325,88 @@ idealyst test --windows  <project>     # a Windows host, or IDEALYST_WINDOWS_REM
 ```
 
 `idealyst test` does all of this:
-- builds the app fresh and launches it (`idealyst dev --local`);
+- builds the `tests/robot.rs` target;
+- runs the `--before` hooks;
+- builds the app fresh and launches it (`idealyst dev --local`) on a free
+  port, so a full-stack app's server is the run's own, never the one your
+  `idealyst dev` is using;
+- runs that session as `idealyst dev --isolated test`: its build dirs,
+  log, lock and relay files are its own, so it runs beside your
+  `idealyst dev` of the same project, and its build cache stays warm
+  between runs. `--isolated <key>` picks another key, `--no-isolated`
+  turns it off. A `--web` run of a project without a server can't be
+  isolated (that shape stages into the project's own `pkg/`), so it runs
+  unisolated;
 - marks it test-driven, which is what `is_test_driven()` reads;
 - waits for *this* project's app to register;
-- runs `cargo test --test robot` against it.
+- runs the suite against it, once per size, device or simulator;
+- runs the `--after` hooks, and prints a result per run.
 
 `--filter <name>` narrows the run, `--test <file>` picks another test
 target, and `--attach` drives an app you already started with
 `idealyst dev`. Under a bare `cargo test`, with no app reachable, each
 `#[robot_test]` skips instead of failing.
+
+### Sizes, devices and simulators
+
+```text
+idealyst test --web --viewport 390x844,820x1180,1440x900 <project>
+idealyst test --web --device iphone-14,ipad-air          <project>
+idealyst test --web --mobile --viewport 360x740          <project>
+idealyst test --macos --viewport 800x600,1440x900        <project>
+idealyst test --ios --simulator "iPhone 15,iPad Air 11-inch (M2)" <project>
+```
+
+Each size, device or simulator is one full run of the suite, and the run
+fails if any of them fails.
+- **Web** builds and launches once and resizes the page between sizes.
+  The size is exact: `--viewport 390x844` gives `innerWidth` 390.
+- **`--device <name>`** (web) emulates a phone or tablet: its size, pixel
+  ratio, touch input and user agent. Presets: `iphone-se`, `iphone-14`,
+  `iphone-14-pro-max`, `iphone-15`, `pixel-7`, `galaxy-s23`, `ipad-mini`,
+  `ipad-air`, `ipad-pro-12`. `--mobile` does the same at each `--viewport`
+  size, at 3x. With touch input, `tap_native` taps with touch events.
+- **Desktop apps** (`--macos`, `--linux`, `--windows`) relaunch at each
+  size.
+- **iOS and Android** use the device's own screen. `--simulator` (iOS)
+  and `--emulator` (Android, an AVD name or adb serial) run on each named
+  device in turn. Without them, iOS uses the first booted simulator and
+  Android the first online device.
+
+A test can branch on what it runs at:
+
+| Variable | Value |
+|---|---|
+| `IDEALYST_TEST_VIEWPORT` | `390x844` (web and desktop) |
+| `IDEALYST_TEST_DEVICE` | the `--device` preset, `--simulator` or `--emulator` name |
+| `IDEALYST_TEST_PORT` | the port the run's server listens on |
+
+### Services and environment
+
+```text
+idealyst test --web \
+  --before "docker compose up -d db" \
+  --env DATABASE_URL=postgres://localhost:5433/test \
+  --after "docker compose down" <project>
+```
+
+- `--env KEY=VALUE` (repeatable) reaches the app on every platform
+  (passed as `idealyst dev --app-env`: a desktop app's environment, an iOS
+  simulator app's, an Android app's `IdealystEnv`, a web page's
+  `window.IDEALYST_APP_ENV`); app code reads it on any platform with
+  `runtime_core::app_env("KEY")`. It is also set for the dev session, so a
+  full-stack app's server sees it, and for the tests and hooks.
+- `--before <cmd>` runs in the project directory before the app launches.
+  It must exit, so a service it starts has to detach. A non-zero exit
+  stops the run before anything launches.
+- `--after <cmd>` runs after the suite, pass or fail. A non-zero exit
+  fails the run.
+- Hooks see the `--env` values and `IDEALYST_TEST_PORT`. `--port <n>`
+  picks the port instead of a free one.
+
+Setup inside the suite, such as seeding data through a robot function,
+belongs in the tests. The hooks are for what must exist before the app
+starts.
 
 ## Driving a live app from the MCP
 

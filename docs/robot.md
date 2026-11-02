@@ -36,13 +36,35 @@ itself: `idealyst dev` and `idealyst test` turn on the framework's `robot`
 features, never the app crate's own, so an app-side
 `#[cfg(feature = "robot")]` is off in dev builds too.
 
+The same holds for component libraries: idea-ui forwards every component's
+`test_id` prop in every build and leaves registration to the runtime, so
+its ids work in dev builds without its own `robot` feature (that feature
+only turns on `runtime-core/robot`). A component puts the id on the primitive a
+test acts on — the text input, the pressable, a picker's trigger — never on
+a layout wrapper, and a component that rebuilds that primitive (a `Button`
+with a live `loading`) re-registers the id on each rebuild; the registry's
+remove only un-indexes an id it still owns, so one live element holds it.
+Coverage list: the testing guide (`crates/mcp/catalog/guides/testing.md`,
+§1).
+
 ## Elements
 
-`find_element` / `find_all_elements` / `count_elements` take one of
-`test_id`, `label`, `label_contains` or `kind` (the first present, in that
-order; with none, every element matches). An unknown `kind` is an error.
+`find_element` / `find_all_elements` / `count_elements` take a query
+object; every field given must match (AND), and with none every element
+matches:
+
+- `test_id` — exact; `kind` — the `ElementKind` name (an unknown kind is an
+  error); `label` — exact; `label_contains` — a substring, or an array of
+  substrings that must all appear.
+- `within` — only descendants of a container, never the container itself:
+  an element id, or a nested query object whose own optional `nth` picks
+  one of the containers it matches (document order). `{"kind": "TextInput",
+  "label": "Email", "within": {"test_id": "login"}}` is the field in the
+  login form — not its "Email" caption, not a field elsewhere.
+
 `count_elements` returns the number of matches; `find_all_elements` a list
-of elements, and `find_element` the first, shaped
+of elements in document order, and `find_element` the first (a lone
+`test_id` resolves through the last-wins index), shaped
 
 ```json
 {"id": 7, "kind": "Toggle", "test_id": "wifi", "label": null,
@@ -141,11 +163,11 @@ tap"). It answers `{mechanism}`:
 
 | Backend | Mechanism | How |
 |---|---|---|
-| Web | `native` | DOM `pointerdown`/`mousedown`/…/`click` at `elementFromPoint` (moves and the up go to the down target, a touch's implicit capture); a focusable target takes focus |
+| Web | `native` | DOM `pointerdown`/`mousedown`/…/`click` at `elementFromPoint` (moves and the up go to the down target, a touch's implicit capture); a focusable target takes focus. On a page with touch input (`navigator.maxTouchPoints > 0`, e.g. `idealyst test --device`) it is a touch: `pointerdown`+`touchstart`, `pointermove`+`touchmove`, `pointerup`+`touchend`, then the compatibility `mousedown`/`mouseup` and `click`, which a prevented `touchstart`/`touchend` suppresses |
 | macOS | `native` | `NSEvent` mouse events posted to the app (`postEvent:`), so tracking loops get their mouse-up |
 | Android | `native` | `MotionEvent`s to the decor view's `dispatchTouchEvent` |
 | Windows | `native` | `WM_LBUTTONDOWN`/`WM_MOUSEMOVE`/`WM_LBUTTONUP` posted to the child window a real click lands on |
-| iOS | `hit_test` | An app can't create touches: UIKit's hit test checks the point, then the element's press runs as `click` |
+| iOS | `hit_test` | An app can't create touches: UIKit's hit test checks the point, then the press runs as `click` on the deepest element that hit test finds there |
 | Linux | — | Not yet (XTest); `unsupported` |
 
 The hit test (`IntrospectionOps::hit_contains`) is the toolkit's own:
@@ -153,6 +175,13 @@ The hit test (`IntrospectionOps::hit_contains`) is the toolkit's own:
 Windows scene's hit walk. Android has none (Android delivers a touch to
 the deepest clickable view, which geometry can't tell), so there the
 injected event is the whole check.
+
+Every tier presses what is under the point, not the element the test
+addressed: `tap_native` on a wrapper view whose child is the pressable
+presses the pressable, as a finger at the wrapper's center would. The real
+input tiers get this from the toolkit; the `hit_test` tier presses the
+deepest element in the addressed subtree whose hit test contains the
+point, then bubbles up from there as `click` does.
 
 robot-test's `Locator::click()` is native-first: it waits for the element
 to be visible and enabled, then `tap_native`, falling back to the robot's
@@ -242,6 +271,7 @@ Deep links need no SDK: `open_link {url}` delivers a URL as the OS would
 | Components | `list_components` (mounted instances), `get_component {instance_id}` (live props), `invoke_method {instance_id, method, args}` |
 | Signals | `list_watched_signals`, `read_signal`, `write_signal` (`watch_signal_writable` only), `get_signal_history` |
 | Functions | `list_functions`, `call_function`, `poll_function` (above) |
+| Viewport | `get_viewport` → `{width, height, breakpoint}` (logical px; `breakpoint` is `xs`…`xl`, what the app's responsive layout sees); `set_viewport {width, height}` resizes the window so its content area is that size — desktop backends only (macOS `setContentSize:`, Windows `SetWindowPos` on the top-level window, Linux the GTK window's default size), through `IntrospectionOps::resize_window`; elsewhere an error naming the alternative (the runner's `--viewport` on web, a device or simulator on mobile). A maximized or full-screen window refuses; the new size reaches `get_viewport` through the window's ordinary resize path |
 | App | `get_logs`, `clear_logs`, `get_identity`, `ping` |
 
 ### Screenshots on web
@@ -292,7 +322,13 @@ fn sign_in(app: &mut App) {
 ```
 
 - Locate: `test_id`, `text` (label substring), `label` (exact), `role` (kind),
-  then `.nth(i)`.
+  then narrow with `.with_label(..)`, `.with_text(..)`, `.with_role(..)`,
+  `.with_test_id(..)`, `.within(container)` and `.nth(i)` —
+  `app.role("TextInput").with_label("Email").within(Selector::test_id("login"))`.
+  All of it goes to the app as ONE `find_all_elements` query per look. A
+  `Selector` is the same thing without the app borrowed (to keep in a
+  variable, or pass to `within`); `locator.selector()` detaches one, and
+  `app.locate(selector)` turns it back into a locator.
 - Act: `click` (native tap first, see above), `tap_native`,
   `dispatch_click`, `fill` / `type_text`, `set_toggle`, `set_slider`,
   `focus`, `blur`, `scroll_to`, `drag`, `drag_with_hold`, `drag_native`,
@@ -302,6 +338,9 @@ fn sign_in(app: &mut App) {
   `assert_text_contains`, `assert_value`, `assert_checked`,
   `assert_enabled`, `assert_disabled`, `assert_focused`, `assert_hovered`,
   `assert_pressed`, `assert_count`.
+- Viewport: `viewport()` (`width`, `height`, `breakpoint`),
+  `set_viewport(w, h)` (waits for the app to report the size; panics where
+  the app can't resize itself) / `try_set_viewport` (returns why instead).
 - App: `navigate` / `navigate_with` / `back` / `assert_path` /
   `navigators()`, `open_link(url)`, `call_function(name, args)` /
   `try_call_function` / `functions()` (waits for the function to register
@@ -313,15 +352,72 @@ fn sign_in(app: &mut App) {
 passes when nothing matches or the match is not visible (a closed overlay,
 a navigated-away screen).
 
+A busy app is "not yet". When a query goes unanswered — the relay replies
+`app response timed out: the relay waited N ms for the app to answer …`
+(the app is connected but its UI thread is busy), a direct bridge replies
+the same about its UI thread, or no reply reaches the client within
+`App::set_io_timeout` (default 8 s; the client then says it gave up waiting
+on the relay/bridge) — or the relay has no app for a moment (a reload),
+every waiting path asks again until `set_timeout`'s deadline, then fails
+with the last error. `count()`, `label()`, `is_visible()` and the other
+reads that don't wait for a condition still wait out a busy app. An
+action is never sent twice: one the app did not answer may yet run, so it
+fails at once, saying so. Each request carries `timeout_ms` (the I/O
+timeout less 0.5 s), which the relay and the app's bridge use as their
+wait, so the app side reports first; a late reply is skipped by id. The
+typed error is `robot_test::CallError` (`AppTimedOut`, `ClientTimedOut`,
+`NoApp`, `Verb`).
+
+Per-test setup is a `Fixture` the test asks for by type
+(`fn t(app: &mut App, user: &SignedIn)`, by `&` or `&mut`): `setup(app)`
+runs before the body in parameter order, `teardown(&mut self, app)`
+after it in reverse — also when the body panics. A fixture can build on
+another by calling its `setup`. See `crates/dev/robot-test/src/fixture.rs`
+and the testing guide.
+
 ### Running a suite on each platform
 
 `idealyst test --web | --macos | --ios | --android | --linux | --windows
 <project>` builds and launches the app (`idealyst dev --local`), waits for
 THIS project's app to register — a registration from another project or an
-earlier run is ignored — and runs `cargo test --test robot` against it. The
-dev session's output goes to a log file named on failure. `--windows` runs
-on a remote machine with `IDEALYST_WINDOWS_REMOTE` (docs/windows.md);
-`--linux` needs a Linux host. `--attach` drives an app already running.
+earlier run is ignored — and runs the `tests/robot.rs` suite against it
+(compiled before the app launches, then run directly). The dev session's
+output goes to a log file named on failure. `--windows` runs on a remote
+machine with `IDEALYST_WINDOWS_REMOTE` (docs/windows.md); `--linux` needs a
+Linux host. `--attach` drives an app already running.
+
+The session gets its own port (`--port`, else a free one) on every
+platform, so a full-stack app's server — and the `IDEALYST_SERVER_URL` a
+native app dials — is the run's, never the developer's `idealyst dev`.
+The session also runs as `idealyst dev --isolated test` (`--isolated
+<key>` / `--no-isolated` to change it): its build dirs, log, lock and
+`.idealyst/isolated/test/` relay files are its own, so it runs beside the
+developer's session of the project. The runner drives the registration the
+session it launched wrote (matched by the dev process's pid), never another
+session of the project. `--web` on a project without a server can't be
+isolated (it stages into the project's own `pkg/`) and runs unisolated.
+
+One run can cover several configurations, each a full pass of the suite
+with its own line in the summary (any failure fails the run):
+
+- `--viewport 390x844,1440x900`: web launches once and resizes the page
+  over the DevTools protocol (`Emulation.setDeviceMetricsOverride`, so
+  390 is 390 — headless Chrome's window can't go below 500 px); desktop
+  apps relaunch per size via `IDEALYST_WINDOW_SIZE`.
+- `--device iphone-14,pixel-7` / `--mobile` (web): device metrics, pixel
+  ratio, touch emulation and user agent, on one DevTools session held for
+  the whole run (an override ends when its session detaches). The page is
+  reloaded for each size, so the app boots on the screen it is tested on.
+- `--simulator "iPhone 15,iPad Air 11-inch (M2)"` (iOS) /
+  `--emulator Pixel_8_API_35,emulator-5556` (Android): launch, run, stop,
+  next.
+
+Tests read `IDEALYST_TEST_VIEWPORT`, `IDEALYST_TEST_DEVICE` and
+`IDEALYST_TEST_PORT`. `--env KEY=VALUE` reaches the app on every platform
+(as `idealyst dev --app-env`), the dev session (a full-stack server), the
+tests and the hooks; `--before` /
+`--after` shell hooks run around the whole run (a failing `--before` stops
+it; `--after` always runs). See the testing guide.
 
 The same suite passes unchanged on web, macOS, iOS (simulator), Android
 (emulator) and Windows — `crates/dev/robot-e2e/examples/robot-e2e-demo`.

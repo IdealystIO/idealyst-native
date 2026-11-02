@@ -3,7 +3,8 @@
 //! unmaps the subtree) and opacity up the parent chain, and `node_scroll`
 //! reads the `ScrolledWindow`'s adjustments. Before, Linux had neither
 //! read: "visible" meant "registered", and a scroll view reported nothing
-//! (the navigator's scroll snapshot read `(0, 0)` too).
+//! (the navigator's scroll snapshot read `(0, 0)` too). Also covers
+//! `resize_window` (the robot's `set_viewport`) on the same window.
 //!
 //! One GTK `#[test]` per binary — GTK initialises on one thread only.
 
@@ -93,4 +94,15 @@ fn is_shown_and_scroll_follow_gtk() {
     backend.borrow_mut().set_node_scroll(&scroller, 0.0, 240.0);
     assert_eq!(backend.borrow().node_scroll(&scroller), (0.0, 240.0));
     assert_eq!(backend.borrow().node_scroll(&child), (0.0, 0.0), "not a scroller");
+
+    // The robot's `set_viewport` (`resize_window`): the framework root —
+    // the viewport — takes the asked size, whatever chrome the window adds.
+    let resize = backend.borrow().resize_window(&root, 320.0, 200.0).expect("a window to resize");
+    resize().expect("resized");
+    assert!(
+        pump(&|| root.widget().width() == 320 && root.widget().height() == 200),
+        "the root is {}x{}, not the asked 320x200",
+        root.widget().width(),
+        root.widget().height()
+    );
 }

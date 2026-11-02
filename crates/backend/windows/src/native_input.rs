@@ -1,5 +1,5 @@
 //! Real Win32 input for the robot (`IntrospectionOps::hit_contains` /
-//! `native_pointer`).
+//! `native_pointer`), and its window resize (`resize_window`).
 //!
 //! Points arrive in `absolute_frame`'s space: logical px in the host's
 //! client area. The hit test is the scene's own (`scene::hit_chain`, the
@@ -61,6 +61,43 @@ fn target_under(host: HWND, pt: POINT) -> (HWND, POINT) {
 }
 
 impl WindowsBackend {
+    /// `IntrospectionOps::resize_window`: size the host's top-level window
+    /// so the host's CLIENT area — what the viewport reports — is
+    /// `width × height` logical px. The non-client part (frame, title bar,
+    /// menu) is measured off the live window rather than recomputed from
+    /// styles, so it holds whatever the shell's chrome and the DPI are. The
+    /// resulting `WM_SIZE` reaches the host's ordinary resize path, which
+    /// pushes the viewport. A maximized window ignores sizes, so that is an
+    /// error rather than a wait that can never end.
+    pub(crate) fn resize_window_impl(&self, width: f32, height: f32) -> Option<NativeInjection> {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetAncestor, GetClientRect, GetWindowRect, IsZoomed, SetWindowPos, GA_ROOT, SWP_NOACTIVATE,
+            SWP_NOMOVE, SWP_NOZORDER,
+        };
+        let host = self.host_hwnd;
+        if host.is_invalid() {
+            return None;
+        }
+        let (w, h) = (self.dpi.to_device(width).round() as i32, self.dpi.to_device(height).round() as i32);
+        let host = host.0 as isize;
+        Some(Box::new(move || unsafe {
+            let host = HWND(host as *mut std::ffi::c_void);
+            let top = GetAncestor(host, GA_ROOT);
+            let top = if top.is_invalid() { host } else { top };
+            if IsZoomed(top).as_bool() {
+                return Err("the window is maximized".into());
+            }
+            let (mut client, mut outer) = (RECT::default(), RECT::default());
+            GetClientRect(host, &mut client).map_err(|e| format!("GetClientRect: {e}"))?;
+            GetWindowRect(top, &mut outer).map_err(|e| format!("GetWindowRect: {e}"))?;
+            let extra_w = (outer.right - outer.left) - (client.right - client.left);
+            let extra_h = (outer.bottom - outer.top) - (client.bottom - client.top);
+            SetWindowPos(top, None, 0, 0, w + extra_w, h + extra_h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)
+                .map_err(|e| format!("SetWindowPos: {e}"))
+        }))
+    }
+
     /// `IntrospectionOps::hit_contains`.
     pub(crate) fn hit_contains_impl(&self, id: u64, x: f32, y: f32) -> Option<bool> {
         self.nodes.get(&id)?;

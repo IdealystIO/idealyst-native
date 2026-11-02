@@ -6,7 +6,7 @@
 //! harness need a live app + relay, so they're verified end-to-end via
 //! `idealyst test`; this covers the client logic in plain `cargo test`.)
 
-use robot_test::App;
+use robot_test::{App, Selector};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -34,6 +34,27 @@ struct Mock {
     cta_attempts: u32,
     /// Native taps "cta" received.
     cta_taps: u32,
+    /// Replies still to answer as a busy relay does (`app response timed
+    /// out`) instead of answering.
+    busy_replies: u32,
+    /// Replies still to answer as a relay with no app does.
+    no_app_replies: u32,
+    /// `(verb, n)`: answer `verb` busy `n` more times.
+    busy_verb: Option<(String, u32)>,
+    /// `(verb, n)`: answer `verb` as a relay with no app `n` more times.
+    no_app_verb: Option<(String, u32)>,
+    /// Delay the next reply this long (a client-side I/O timeout).
+    delay_next: Option<Duration>,
+    /// Answer `find_all_elements` as an app from before combined queries:
+    /// the first field present wins (test_id, label, label_contains, kind).
+    old_app: bool,
+    /// Every request: `(cmd, args)`.
+    requests: Vec<(String, Value)>,
+    /// The window's viewport; `set_viewport` lands after one look.
+    viewport: (f64, f64),
+    pending_viewport: Option<(f64, f64)>,
+    /// `set_viewport` answers unsupported (a browser tab, a phone).
+    viewport_fixed: bool,
 }
 
 /// A mock app:
@@ -45,16 +66,22 @@ struct Mock {
 /// - robot functions: `demo.count` (sync), `demo.slow` (async, done on the
 ///   third poll), `late.fn` (registers on the third call), `demo.fail`.
 fn spawn_mock_app() -> SocketAddr {
+    spawn_mock_app_with(Mock::default()).0
+}
+
+/// [`spawn_mock_app`] starting from `mock`, with a handle on its state.
+fn spawn_mock_app_with(mock: Mock) -> (SocketAddr, Arc<Mutex<Mock>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    let state = Arc::new(Mutex::new(Mock { path: "/".into(), ..Default::default() }));
+    let state = Arc::new(Mutex::new(Mock { path: "/".into(), viewport: (1280.0, 800.0), ..mock }));
+    let shared = state.clone();
     std::thread::spawn(move || {
         for conn in listener.incoming().flatten() {
             let state = state.clone();
             std::thread::spawn(move || handle(conn, state));
         }
     });
-    addr
+    (addr, shared)
 }
 
 fn field(m: &Mock, id: u64) -> Value {
@@ -63,7 +90,67 @@ fn field(m: &Mock, id: u64) -> Value {
             "state": { "value": if id == 11 { m.field_text.clone() } else { String::new() }, "disabled": disabled, "focused": false } })
 }
 
+/// The login form the selector tests query: a caption Text "Email" and two
+/// "Email" fields — one in the dialog (View 40), one after it.
+fn login_form() -> Vec<Value> {
+    vec![
+        json!({ "id": 40, "kind": "View", "label": null, "test_id": "dialog" }),
+        json!({ "id": 41, "kind": "Text", "label": "Email", "test_id": null }),
+        json!({ "id": 42, "kind": "TextInput", "label": "Email", "test_id": "dialog-email" }),
+        json!({ "id": 43, "kind": "TextInput", "label": "Email", "test_id": "footer-email" }),
+    ]
+}
+
+/// `find_all_elements` over [`login_form`]: every field ANDed, `within` the
+/// dialog meaning ids 41–42 — or, for an old app, the first field only.
+fn find_in_form(args: &Value, old_app: bool) -> Vec<Value> {
+    let fields = ["test_id", "label", "label_contains", "kind"];
+    let used: Vec<&str> = if old_app {
+        fields.iter().copied().filter(|f| !args[*f].is_null()).take(1).collect()
+    } else {
+        fields.to_vec()
+    };
+    login_form()
+        .into_iter()
+        .filter(|el| {
+            used.iter().all(|f| match (&args[*f], *f) {
+                (Value::Null, _) => true,
+                (want, "label_contains") => {
+                    let label = el["label"].as_str().unwrap_or("");
+                    match want {
+                        Value::Array(subs) => subs.iter().all(|s| label.contains(s.as_str().unwrap())),
+                        sub => label.contains(sub.as_str().unwrap()),
+                    }
+                }
+                (want, f) => &el[f] == want,
+            })
+        })
+        .filter(|el| old_app || args["within"].is_null() || (args["within"]["test_id"] == "dialog" && [41, 42].contains(&el["id"].as_u64().unwrap())))
+        .collect()
+}
+
 fn respond(cmd: &str, args: &Value, m: &mut Mock) -> Result<Value, String> {
+    m.requests.push((cmd.to_string(), args.clone()));
+    if m.busy_replies > 0 && cmd != "ping" {
+        m.busy_replies -= 1;
+        return Err(format!("app response timed out: the relay waited 5000 ms for the app to answer `{cmd}` (the app is connected but busy or hung)"));
+    }
+    if let Some((verb, n)) = &mut m.busy_verb {
+        if verb == cmd && *n > 0 {
+            *n -= 1;
+            return Err(format!("app response timed out: the relay waited 5000 ms for the app to answer `{cmd}` (the app is connected but busy or hung)"));
+        }
+    }
+    if let Some((verb, n)) = &mut m.no_app_verb {
+        if verb == cmd && *n > 0 {
+            *n -= 1;
+            return Err("no app connected to the relay".into());
+        }
+    }
+    if m.no_app_replies > 0 && cmd != "ping" {
+        m.no_app_replies -= 1;
+        return Err("no app connected to the relay".into());
+    }
     Ok(match cmd {
         "ping" => json!("pong"),
         "find_element" => match args.get("test_id").and_then(|v| v.as_str()) {
@@ -84,10 +171,29 @@ fn respond(cmd: &str, args: &Value, m: &mut Mock) -> Result<Value, String> {
             Some("below") => json!({ "id": 21, "kind": "View", "label": null, "test_id": "below", "visible": true, "in_viewport": false }),
             _ => Value::Null,
         },
+        "find_all_elements" if args.get("label").is_some() || args.get("within").is_some() || args.get("label_contains").is_some() => {
+            json!(find_in_form(args, m.old_app))
+        }
         "find_all_elements" => match args.get("kind").and_then(|v| v.as_str()) {
             Some("TextInput") => json!([field(m, 11), field(m, 12)]),
             _ => json!([]),
         },
+        "count_elements" => json!(if args["kind"] == "Button" { 3 } else { 0 }),
+        "get_viewport" => {
+            let (width, height) = m.viewport;
+            if let Some(next) = m.pending_viewport.take() {
+                m.viewport = next;
+            }
+            let bp = if width >= 1280.0 { "xl" } else if width >= 768.0 { "md" } else { "xs" };
+            json!({ "width": width, "height": height, "breakpoint": bp })
+        }
+        "set_viewport" if m.viewport_fixed => {
+            return Err("set_viewport is unsupported on this platform: the app cannot resize its own window here".into())
+        }
+        "set_viewport" => {
+            m.pending_viewport = Some((args["width"].as_f64().unwrap(), args["height"].as_f64().unwrap()));
+            json!("ok")
+        }
         // "inc" is on a backend without native input; "cta" is covered by
         // a scrim for two attempts, then takes a native tap.
         "tap_native" => match args["element_id"].as_u64() {
@@ -170,6 +276,10 @@ fn handle(stream: TcpStream, state: Arc<Mutex<Mock>>) {
         let id = req.get("id").cloned().unwrap_or(json!(0));
         let cmd = req.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
         let args = req.get("args").cloned().unwrap_or(json!({}));
+        let delay = state.lock().unwrap().delay_next.take();
+        if let Some(d) = delay {
+            std::thread::sleep(d);
+        }
         let resp = match respond(cmd, &args, &mut state.lock().unwrap()) {
             Ok(ok) => json!({ "id": id, "ok": ok }),
             Err(err) => json!({ "id": id, "err": err }),
@@ -348,4 +458,182 @@ fn click_taps_natively_waits_for_a_cover_and_falls_back() {
         app.test_id("inc").tap_native();
     });
     assert!(msg.contains("unsupported"), "got: {msg}");
+}
+
+/// Regression (CrewForge E2E report): a locator with a 20 s timeout panicked
+/// at the first `find_all_elements failed: app response timed out` — the
+/// lookup inside the wait loop called the panicking `App::call`, so a busy
+/// app ended the wait at once. A busy reply is "not yet": the locator asks
+/// again and succeeds within its timeout, as do `count()`, `label()` and
+/// `assert_path`.
+#[test]
+fn regression_locator_waits_through_app_response_timed_out() {
+    let (addr, mock) = spawn_mock_app_with(Mock { busy_replies: 3, ..Default::default() });
+    let mut app = App::connect(addr).unwrap();
+    app.test_id("inc").click();
+    app.signal("count").assert_eq(1);
+
+    mock.lock().unwrap().busy_replies = 2;
+    assert_eq!(app.role("TextInput").count(), 2);
+    mock.lock().unwrap().busy_replies = 2;
+    assert_eq!(app.test_id("inc").label().as_deref(), Some("+ increment"));
+    mock.lock().unwrap().busy_replies = 2;
+    app.assert_path("/");
+    mock.lock().unwrap().busy_replies = 2;
+    assert_eq!(app.count("Button"), 3);
+    // A relay that has no app for a moment (a reload) is waited out too.
+    mock.lock().unwrap().no_app_replies = 2;
+    app.test_id("counter").assert_text("Counter: 1");
+
+    // Still busy at the deadline: fails with the last error, naming the
+    // app as the side that timed out.
+    app.set_timeout(Duration::from_millis(200));
+    mock.lock().unwrap().busy_replies = 1_000;
+    let msg = panic_message(|| app.test_id("counter").assert_visible());
+    assert!(msg.contains("still failing after") && msg.contains("app response timed out"), "got: {msg}");
+}
+
+/// An ACTION the app did not answer may still run once the app is free, so
+/// it is not sent again: it fails at once and says why. (A query in the same
+/// spot is retried — see the test above.)
+#[test]
+fn an_action_the_app_did_not_answer_is_not_sent_twice() {
+    let (addr, mock) = spawn_mock_app_with(Mock { busy_verb: Some(("click".into(), 1)), ..Default::default() });
+    let mut app = App::connect(addr).unwrap();
+    let started = Instant::now();
+    let msg = panic_message(|| app.test_id("inc").dispatch_click());
+    assert!(msg.contains("app response timed out") && msg.contains("not sent again"), "got: {msg}");
+    assert!(started.elapsed() < Duration::from_secs(2), "failed at once, not after the timeout");
+    let clicks = mock.lock().unwrap().requests.iter().filter(|(c, _)| c == "click").count();
+    assert_eq!(clicks, 1, "sent once");
+
+    // A relay with no app never delivered it: that one IS retried.
+    mock.lock().unwrap().busy_verb = None;
+    mock.lock().unwrap().no_app_replies = 0;
+    let before = mock.lock().unwrap().count;
+    mock.lock().unwrap().no_app_verb = Some(("click".into(), 2));
+    app.test_id("inc").dispatch_click();
+    assert_eq!(mock.lock().unwrap().count, before + 1);
+}
+
+/// When no reply reaches the client within its I/O timeout, the error says
+/// the CLIENT gave up, and the late reply — when it does arrive — is skipped
+/// rather than read as the answer to the next call.
+#[test]
+fn regression_a_reply_after_a_client_timeout_is_not_read_as_the_next_answer() {
+    let (addr, mock) = spawn_mock_app_with(Mock::default());
+    let mut app = App::connect(addr).unwrap();
+    app.set_io_timeout(Duration::from_millis(150));
+    // The first lookup's reply comes 400 ms late: the client times out and
+    // asks again; the waiting locator still succeeds.
+    mock.lock().unwrap().delay_next = Some(Duration::from_millis(400));
+    app.test_id("counter").assert_text("Counter: 0");
+    // The late `find_element` reply is in the stream ahead of this one; a
+    // client that read it would hand `counter`'s JSON to `read_signal`.
+    app.signal("count").assert_eq(0);
+
+    let mut raw = robot_test::RobotClient::connect(addr).unwrap();
+    raw.set_io_timeout(Duration::from_millis(100)).unwrap();
+    mock.lock().unwrap().delay_next = Some(Duration::from_millis(300));
+    let err = raw.call("ping", json!({})).unwrap_err();
+    match robot_test::CallError::of(&err) {
+        Some(robot_test::CallError::ClientTimedOut { verb, .. }) => assert_eq!(verb, "ping"),
+        other => panic!("expected a client-side timeout, got {other:?}"),
+    }
+    assert!(err.to_string().contains("the client gave up waiting on the relay"), "{err}");
+    assert!(robot_test::is_transient(&err));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(raw.call("ping", json!({})).unwrap(), json!("pong"), "the late reply was skipped");
+
+    // The relay's busy reply is told apart from it.
+    mock.lock().unwrap().busy_replies = 1;
+    let err = raw.call("find_element", json!({ "test_id": "inc" })).unwrap_err();
+    assert!(matches!(robot_test::CallError::of(&err), Some(robot_test::CallError::AppTimedOut(_))), "{err}");
+}
+
+/// A request carries the relay's wait (`timeout_ms`) a little under the
+/// client's own, so a busy app comes back from the relay first.
+#[test]
+fn the_io_timeout_is_sent_to_the_relay() {
+    // Read the request envelope off a raw socket.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let probe = listener.local_addr().unwrap();
+    let seen = std::thread::spawn(move || {
+        let (conn, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(conn.try_clone().unwrap()).read_line(&mut line).unwrap();
+        let req: Value = serde_json::from_str(line.trim()).unwrap();
+        let mut w = conn;
+        w.write_all(format!("{}\n", json!({ "id": req["id"], "ok": "pong" })).as_bytes()).unwrap();
+        req
+    });
+    let mut client = robot_test::RobotClient::connect(probe).unwrap();
+    client.set_io_timeout(Duration::from_secs(20)).unwrap();
+    client.call("ping", json!({})).unwrap();
+    let req = seen.join().unwrap();
+    assert_eq!(req["timeout_ms"], 19_500);
+}
+
+/// The filters go to the app as ONE query per look — kind AND label AND
+/// within — and pick the field, not its caption, and only the dialog's.
+#[test]
+fn chained_filters_resolve_in_one_query() {
+    let (addr, mock) = spawn_mock_app_with(Mock::default());
+    let mut app = App::connect(addr).unwrap();
+    app.role("TextInput").with_label("Email").assert_count(2);
+    app.role("TextInput").with_label("Email").within(Selector::test_id("dialog")).assert_count(1);
+    app.label("Email").with_role("TextInput").within(Selector::test_id("dialog")).assert_visible();
+    assert_eq!(
+        app.role("TextInput").with_label("Email").within(Selector::test_id("dialog")).label().as_deref(),
+        Some("Email")
+    );
+    // A locator detached into a variable works as the container too.
+    let dialog = app.test_id("dialog").selector();
+    assert_eq!(app.role("TextInput").within(dialog.clone()).with_text("Em").with_text("ail").count(), 1);
+    assert_eq!(app.locate(Selector::role("Text").with_label("Email").within(dialog)).count(), 1);
+
+    mock.lock().unwrap().requests.clear();
+    app.role("TextInput").with_label("Email").within(Selector::test_id("dialog").nth(0)).assert_visible();
+    let reqs = mock.lock().unwrap().requests.clone();
+    assert_eq!(reqs.len(), 1, "one round trip: {reqs:?}");
+    assert_eq!(reqs[0].0, "find_all_elements");
+    assert_eq!(
+        reqs[0].1,
+        json!({ "kind": "TextInput", "label": "Email", "within": { "test_id": "dialog", "nth": 0 } })
+    );
+
+    // The description names every filter.
+    app.set_timeout(Duration::from_millis(150));
+    let msg = panic_message(|| app.role("Button").with_label("Email").within(Selector::test_id("dialog")).assert_visible());
+    assert!(msg.contains(r#"role("Button").with_label("Email").within(test_id("dialog"))"#), "got: {msg}");
+}
+
+/// Against an app from before combined queries (it honoured only the first
+/// field, so `{kind, label}` came back with the caption), the client's own
+/// check keeps the result to what was asked.
+#[test]
+fn chained_filters_hold_against_an_app_that_ignores_extra_fields() {
+    let (addr, _mock) = spawn_mock_app_with(Mock { old_app: true, ..Default::default() });
+    let mut app = App::connect(addr).unwrap();
+    app.role("TextInput").with_label("Email").assert_count(2);
+    app.role("Text").with_label("Email").assert_count(1);
+}
+
+/// `viewport()` reads size + breakpoint; `set_viewport` waits until the app
+/// reports the new size; a platform that can't resize says so.
+#[test]
+fn viewport_is_read_and_set() {
+    let (addr, mock) = spawn_mock_app_with(Mock::default());
+    let mut app = App::connect(addr).unwrap();
+    let v = app.viewport();
+    assert_eq!((v.width, v.height, v.breakpoint.as_str()), (1280.0, 800.0, "xl"));
+    app.set_viewport(390.0, 844.0);
+    let v = app.viewport();
+    assert_eq!((v.width, v.height, v.breakpoint.as_str()), (390.0, 844.0, "xs"));
+
+    mock.lock().unwrap().viewport_fixed = true;
+    let err = app.try_set_viewport(800.0, 600.0).unwrap_err();
+    assert!(err.contains("unsupported on this platform"), "{err}");
+    let msg = panic_message(|| app.set_viewport(800.0, 600.0));
+    assert!(msg.contains("set_viewport(800, 600)") && msg.contains("unsupported"), "got: {msg}");
 }

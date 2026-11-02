@@ -5,8 +5,12 @@
 //! `std::net` and `serde_json`.
 //!
 //! Wire protocol:
-//!   request:  {"id":N, "cmd":"...", "args":{...}}
+//!   request:  {"id":N, "cmd":"...", "args":{...}[, "timeout_ms":N]}
 //!   response: {"id":N, "ok":...} or {"id":N, "err":"..."}
+//!
+//! `timeout_ms` is how long the request waits for the UI thread to run it
+//! (default 5 s); past it the reply is an `err` starting
+//! `app response timed out` — the app is busy — as the relay's is.
 //!
 //! Discovery: the bridge does NOT advertise itself on the network.
 //! Instead, after binding it writes a JSON registration file the MCP
@@ -796,6 +800,29 @@ fn relay_session<S: std::io::Read + std::io::Write>(
     }
 }
 
+/// How long a request waits for the UI thread to run it: the envelope's
+/// `timeout_ms` (a client or the relay sets it to as long as IT will wait),
+/// else 5 s, at most 10 min.
+fn ui_wait(request: &serde_json::Value) -> Duration {
+    match request["timeout_ms"].as_u64() {
+        Some(ms) => Duration::from_millis(ms).clamp(Duration::from_millis(1), Duration::from_secs(600)),
+        None => Duration::from_secs(5),
+    }
+}
+
+/// The reply when the UI thread did not run `cmd` within `waited`. Starts
+/// `app response timed out` — the relay's wording for the same condition,
+/// which clients match on to retry: the bridge is up and the request was
+/// queued, but the app's UI thread is busy (or its bridge polling stopped).
+fn ui_timeout_reply(id: u64, cmd: &str, waited: Duration) -> String {
+    let msg = format!(
+        "app response timed out: the app's UI thread did not run `{cmd}` within {} ms \
+         (the app is busy, or its bridge polling stopped)",
+        waited.as_millis()
+    );
+    format!("{{\"id\":{},\"err\":{}}}", id, serde_json::Value::String(msg))
+}
+
 /// Handle one request frame from the relay. Returns `false` when the socket
 /// should be torn down (write failed / UI thread gone).
 #[cfg(not(target_arch = "wasm32"))]
@@ -826,6 +853,8 @@ fn serve_relay_frame<S: std::io::Read + std::io::Write>(
         return ws.send(Message::Text(reply.into())).is_ok() && ws.flush().is_ok();
     }
 
+    let ui_wait = ui_wait(&parsed);
+    let ui_cmd = cmd.clone();
     let (reply_tx, reply_rx) = mpsc::channel();
     let command = BridgeCommand {
         id,
@@ -836,11 +865,9 @@ fn serve_relay_frame<S: std::io::Read + std::io::Write>(
     if tx.send(command).is_err() {
         return false;
     }
-    let response = match reply_rx.recv_timeout(Duration::from_secs(5)) {
+    let response = match reply_rx.recv_timeout(ui_wait) {
         Ok(r) => r,
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            format!("{{\"id\":{},\"err\":\"timeout: UI thread polling not running\"}}", id)
-        }
+        Err(mpsc::RecvTimeoutError::Timeout) => ui_timeout_reply(id, &ui_cmd, ui_wait),
         Err(mpsc::RecvTimeoutError::Disconnected) => return false,
     };
     ws.send(Message::Text(response.into())).is_ok() && ws.flush().is_ok()
@@ -1017,6 +1044,8 @@ fn handle_connection(stream: TcpStream, tx: mpsc::Sender<BridgeCommand>) {
                     continue;
                 }
 
+                let ui_wait = ui_wait(&parsed);
+                let ui_cmd = cmd.clone();
                 let (reply_tx, reply_rx) = mpsc::channel();
                 let command = BridgeCommand { id, cmd, args, reply: reply_tx };
                 if tx.send(command).is_err() {
@@ -1024,8 +1053,7 @@ fn handle_connection(stream: TcpStream, tx: mpsc::Sender<BridgeCommand>) {
                 }
 
                 // Block waiting for the UI thread to execute and reply.
-                // Timeout indicates the polling timer isn't running.
-                match reply_rx.recv_timeout(Duration::from_secs(5)) {
+                match reply_rx.recv_timeout(ui_wait) {
                     Ok(response) => {
                         let line = format!("{}\n", response);
                         if writer.write_all(line.as_bytes()).is_err() {
@@ -1036,10 +1064,7 @@ fn handle_connection(stream: TcpStream, tx: mpsc::Sender<BridgeCommand>) {
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        let err = format!(
-                            "{{\"id\":{},\"err\":\"timeout: UI thread polling not running\"}}\n",
-                            id
-                        );
+                        let err = format!("{}\n", ui_timeout_reply(id, &ui_cmd, ui_wait));
                         let _ = writer.write_all(err.as_bytes());
                         let _ = writer.flush();
                     }
@@ -1614,6 +1639,36 @@ mod tests {
         assert_eq!(hello["hello"]["platform"], "macos");
         assert_eq!(hello["hello"]["name"], "todo");
         assert_eq!(hello["hello"]["project_root"], "/p");
+    }
+
+    /// A request the UI thread doesn't get to (busy: nothing polls here)
+    /// waits the envelope's `timeout_ms`, then answers an error saying the
+    /// APP is the slow side, worded as the relay words it so a client
+    /// retries it as "busy". It used to wait a fixed 5 s and say
+    /// "timeout: UI thread polling not running", which clients took for a
+    /// hard failure.
+    #[test]
+    fn regression_a_busy_ui_thread_times_out_as_app_response_timed_out() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        use std::time::{Duration, Instant};
+
+        let (_handle, port) = start_on_port(0).expect("bind ephemeral");
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let started = Instant::now();
+        stream
+            .write_all(b"{\"id\":9,\"cmd\":\"find_all_elements\",\"args\":{},\"timeout_ms\":100}\n")
+            .unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2), "waited the request's 100 ms, not 5 s");
+        let reply: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(reply["id"], 9);
+        let err = reply["err"].as_str().unwrap();
+        assert!(err.starts_with("app response timed out"), "{err}");
+        assert!(err.contains("`find_all_elements`") && err.contains("100 ms"), "{err}");
     }
 
     /// End-to-end live-update push: a `subscribe`d connection receives a

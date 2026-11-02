@@ -148,6 +148,23 @@ pub trait IntrospectionOps: Host {
     fn native_pointer(&self, node: &Self::Node, steps: &[PointerStep]) -> Option<NativeInjection> {
         None
     }
+
+    /// Resize the window holding `node` so its content area — what the
+    /// app's viewport reports — is `width × height` logical px: the
+    /// robot's `set_viewport`. `None` = the app cannot size its own
+    /// window on this platform (a browser tab, a phone screen), and the
+    /// robot reports the verb unsupported.
+    ///
+    /// Returned as an injection, like
+    /// [`native_pointer`](Self::native_pointer): the resize runs layout and
+    /// the viewport push, which borrow the backend, so the robot runs it
+    /// after releasing its own borrow. The new size reaches the viewport
+    /// signal through the backend's ordinary resize path, synchronously or
+    /// on the toolkit's next configure; callers wait for it.
+    #[allow(unused_variables)]
+    fn resize_window(&self, node: &Self::Node, width: f32, height: f32) -> Option<NativeInjection> {
+        None
+    }
 }
 
 /// One step of a [`IntrospectionOps::native_pointer`] gesture: the primary

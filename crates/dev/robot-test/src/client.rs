@@ -9,46 +9,165 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const IO_TIMEOUT: Duration = Duration::from_secs(8);
+/// How long [`RobotClient::call`] waits for a reply by default.
+pub const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// How much sooner than the client the relay is asked to give up (the
+/// envelope's `timeout_ms`), so a busy app is reported by the relay — which
+/// knows the app is the slow side — before the client's own read times out.
+const RELAY_MARGIN: Duration = Duration::from_millis(500);
+
+/// Why a [`RobotClient::call`] failed. Carried inside the `anyhow::Error`
+/// it returns; [`CallError::of`] finds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallError {
+    /// The relay is up and the app connected, but the app did not answer in
+    /// time — busy on its UI thread, or hung. The relay's own words.
+    AppTimedOut(String),
+    /// No reply reached this client within its I/O timeout: the relay (or a
+    /// direct bridge) is unreachable or stuck — or, on a direct bridge, the
+    /// app itself is busy, since nothing sits between them to say which.
+    ClientTimedOut { verb: String, waited: Duration },
+    /// The relay has no app to forward to (it has not dialed in yet, or is
+    /// reloading).
+    NoApp(String),
+    /// The app answered with an error.
+    Verb(String),
+}
+
+impl CallError {
+    /// The [`CallError`] inside a `call`'s error, if it is one (I/O and
+    /// protocol failures are not).
+    pub fn of(err: &anyhow::Error) -> Option<&CallError> {
+        err.downcast_ref::<CallError>()
+    }
+
+    /// Whether the same request could succeed if sent again shortly: the
+    /// app was busy or not yet connected — "not yet", for a caller that is
+    /// waiting anyway.
+    pub fn is_transient(&self) -> bool {
+        !matches!(self, CallError::Verb(_))
+    }
+
+    fn classify(verb: &str, message: String) -> Self {
+        if message.starts_with("app response timed out") {
+            CallError::AppTimedOut(message)
+        } else if message.starts_with("no app connected") || message == "app disconnected" {
+            CallError::NoApp(message)
+        } else {
+            let _ = verb;
+            CallError::Verb(message)
+        }
+    }
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CallError::AppTimedOut(m) => write!(f, "{m}"),
+            CallError::ClientTimedOut { verb, waited } => write!(
+                f,
+                "no reply to `{verb}` within {waited:?}: the client gave up waiting on the relay/bridge \
+                 (raise it with App::set_io_timeout)"
+            ),
+            CallError::NoApp(m) => write!(f, "{m}"),
+            CallError::Verb(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+impl std::error::Error for CallError {}
+
+/// Whether `err` (from [`RobotClient::call`]) means "busy or not connected
+/// yet, ask again" — see [`CallError::is_transient`].
+pub fn is_transient(err: &anyhow::Error) -> bool {
+    CallError::of(err).is_some_and(CallError::is_transient)
+}
 
 /// One connection to a running app's Robot bridge (direct or via the relay).
 pub struct RobotClient {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
     next_id: u64,
+    io_timeout: Duration,
 }
 
 impl RobotClient {
     pub fn connect(addr: SocketAddr) -> std::io::Result<Self> {
         let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
-        stream.set_read_timeout(Some(IO_TIMEOUT))?;
-        stream.set_write_timeout(Some(IO_TIMEOUT))?;
-        Ok(Self {
+        let mut client = Self {
             reader: BufReader::new(stream.try_clone()?),
             writer: stream,
             next_id: 1,
-        })
+            io_timeout: DEFAULT_IO_TIMEOUT,
+        };
+        client.set_io_timeout(DEFAULT_IO_TIMEOUT)?;
+        Ok(client)
+    }
+
+    /// How long one [`call`](Self::call) waits for its reply (default
+    /// [`DEFAULT_IO_TIMEOUT`]). The relay is asked to wait a little less
+    /// for the app, so a busy app comes back as [`CallError::AppTimedOut`]
+    /// rather than this client timing out.
+    pub fn set_io_timeout(&mut self, timeout: Duration) -> std::io::Result<()> {
+        let timeout = timeout.max(Duration::from_millis(1));
+        self.writer.set_read_timeout(Some(timeout))?;
+        self.writer.set_write_timeout(Some(timeout))?;
+        self.io_timeout = timeout;
+        Ok(())
+    }
+
+    /// The per-call I/O timeout ([`set_io_timeout`](Self::set_io_timeout)).
+    pub fn io_timeout(&self) -> Duration {
+        self.io_timeout
     }
 
     /// Issue a verb; return the `ok` payload, or `Err` on a bridge `err`.
+    /// A failure the bridge or relay reports, or a reply that never came,
+    /// is a [`CallError`] inside the error.
     pub fn call(&mut self, cmd: &str, args: Value) -> anyhow::Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
-        let mut line = json!({ "id": id, "cmd": cmd, "args": args }).to_string();
+        let relay_wait = self.io_timeout.saturating_sub(RELAY_MARGIN).max(Duration::from_millis(1));
+        let mut line = json!({
+            "id": id,
+            "cmd": cmd,
+            "args": args,
+            // Read by the relay; a direct bridge ignores envelope fields it
+            // doesn't know.
+            "timeout_ms": relay_wait.as_millis() as u64,
+        })
+        .to_string();
         line.push('\n');
         self.writer.write_all(line.as_bytes())?;
         self.writer.flush()?;
 
-        let mut resp = String::new();
-        let n = self.reader.read_line(&mut resp)?;
-        if n == 0 {
-            anyhow::bail!("bridge closed the connection");
+        loop {
+            let mut resp = String::new();
+            let n = match self.reader.read_line(&mut resp) {
+                Ok(n) => n,
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                    return Err(CallError::ClientTimedOut { verb: cmd.to_string(), waited: self.io_timeout }.into());
+                }
+                Err(e) => return Err(e.into()),
+            };
+            if n == 0 {
+                anyhow::bail!("bridge closed the connection");
+            }
+            let v: Value = serde_json::from_str(resp.trim())?;
+            // A reply to an earlier call this client stopped waiting for
+            // (it timed out), or a `changed` push: not ours, skip it.
+            // Without this, every call after one timeout read the previous
+            // call's answer.
+            if v.get("id").and_then(|i| i.as_u64()) != Some(id) {
+                continue;
+            }
+            if let Some(err) = v.get("err") {
+                let message = err.as_str().map(str::to_string).unwrap_or_else(|| err.to_string());
+                return Err(CallError::classify(cmd, message).into());
+            }
+            return Ok(v.get("ok").cloned().unwrap_or(Value::Null));
         }
-        let v: Value = serde_json::from_str(resp.trim())?;
-        if let Some(err) = v.get("err") {
-            anyhow::bail!("{}", err.as_str().unwrap_or(&err.to_string()));
-        }
-        Ok(v.get("ok").cloned().unwrap_or(Value::Null))
     }
 
     /// Wait until the app answers a `ping` (it has dialed the relay / the bridge

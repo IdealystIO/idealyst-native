@@ -214,3 +214,68 @@ fn hover_and_split_press_inject_their_own_steps() {
     assert_eq!(robot.hover_native(&go), Err(RobotError::Unsupported("hover_native")));
     assert_eq!(robot.press_native(&go), Err(RobotError::Unsupported("press_native")));
 }
+
+/// CrewForge E2E report #5: a test id on a transparent wrapper view whose
+/// child is the pressable (idea-ui `Button` with a reactive `loading`).
+/// Web's real input lands on the pressable under the wrapper's center; the
+/// hit-test tier (iOS) pressed the ADDRESSED wrapper instead and answered
+/// "action 'click' not available". It must press what the hit test finds
+/// at the point — and only that: a second pressable in the wrapper, away
+/// from the center, stays untouched.
+///
+/// The iOS tier itself (UIKit `hitTest:` in `hit_contains_impl`) needs a
+/// simulator; this exercises the shared decision against host-mock's hit
+/// test, which is the same `IntrospectionOps::hit_contains` contract.
+#[test]
+fn regression_tap_native_on_wrapper_presses_hit_tested_child() {
+    let robot = Robot::new();
+    robot.reset();
+    let h = Harness::new();
+    let (side, center) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let _r = {
+        let (side, center) = (side.clone(), center.clone());
+        h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .child(
+                        view()
+                            .test_id("login-submit")
+                            .child(pressable(move || side.set(side.get() + 1)).test_id("side").build())
+                            .child(pressable(move || center.set(center.get() + 1)).test_id("center").build())
+                            .build(),
+                    )
+                    .build(),
+            )
+        })
+    };
+    runtime_shared::viewport::set_viewport_size(runtime_shared::viewport::ViewportSize { width: 400.0, height: 300.0 });
+    {
+        // root 0, wrapper 1 (20,20 200×40; center 120,40), `side` 2 on its
+        // left end, `center` 3 under the wrapper's center.
+        let mut frames = h.shared.frames.borrow_mut();
+        frames.insert(1, rect(20.0, 20.0, 200.0, 40.0));
+        frames.insert(2, rect(20.0, 20.0, 40.0, 40.0));
+        frames.insert(3, rect(80.0, 20.0, 80.0, 40.0));
+    }
+    let wrapper = find(&robot, "login-submit");
+    assert_eq!(robot.click(&wrapper), Err(RobotError::ActionNotAvailable("click")), "the wrapper has no press of its own");
+
+    assert_eq!(robot.tap_native(&wrapper), Ok(TapMechanism::HitTest));
+    assert_eq!((center.get(), side.get()), (1, 0), "the pressable under the center takes the tap");
+
+    // Over the bridge, as the MCP tool / robot-test `Locator::click` drive it.
+    let out: Value = runtime_shared::__serde_json::from_str(
+        &invoke_command("tap_native", &json!({ "element_id": wrapper.id.0 })).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(out, json!({ "mechanism": "hit_test" }));
+    assert_eq!(center.get(), 2);
+
+    // The refusal stays about the point: covered there, nothing is pressed.
+    h.shared.covered.borrow_mut().insert(1);
+    assert!(matches!(robot.tap_native(&wrapper), Err(RobotError::Covered { .. })));
+    assert_eq!((center.get(), side.get()), (2, 0));
+    robot.reset();
+}

@@ -1285,6 +1285,11 @@ impl caps::IntrospectionOps for WindowsBackend {
     }
 
     #[cfg(feature = "robot")]
+    fn resize_window(&self, _node: &Self::Node, width: f32, height: f32) -> Option<caps::NativeInjection> {
+        self.resize_window_impl(width, height)
+    }
+
+    #[cfg(feature = "robot")]
     fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
         self.node_frame(node.id)
             .map(|(x, y, width, height)| ViewportRect { x, y, width, height })

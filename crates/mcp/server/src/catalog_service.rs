@@ -243,10 +243,10 @@ pub struct NameRequest {
 // every tool definition. `strip_app` removes it before the bridge call.
 
 /// Find-by criteria for `find_element` / `find_all_elements` /
-/// `count_elements`. The bridge applies ONE criterion, the first set in the
-/// order test_id › label › label_contains › kind; with none set every
-/// element matches. `skip_serializing_if` keeps the wire payload to the
-/// criteria the caller actually set.
+/// `count_elements`. Every criterion set must match (AND); with none set
+/// every element matches. `within` scopes the search to a container's
+/// descendants. `skip_serializing_if` keeps the wire payload to the criteria
+/// the caller actually set.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RobotFindArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,6 +263,21 @@ pub struct RobotFindArgs {
     /// Element kind (`Button`, `Text`, `TextInput`, …).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// Descendants of an element_id or find object (+`nth`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub within: Option<serde_json::Value>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotViewport {
+    /// New width, px.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f64>,
+    /// New height, px.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -1416,7 +1431,7 @@ impl CatalogService {
     // returns "robot tools disabled" and the catalog tools keep
     // working.
 
-    #[tool(description = "Find the first element in a running app matching test_id, label, or kind.")]
+    #[tool(description = "Find the first element in a running app matching all given criteria.")]
     async fn find_element(
         &self,
         Parameters(args): Parameters<RobotFindArgs>,
@@ -1426,7 +1441,7 @@ impl CatalogService {
         self.robot_call("find_element", app.as_deref(), body).await
     }
 
-    #[tool(description = "Find every element in a running app matching test_id, label, or kind.")]
+    #[tool(description = "Find every element in a running app matching all given criteria.")]
     async fn find_all_elements(
         &self,
         Parameters(args): Parameters<RobotFindArgs>,
@@ -1534,7 +1549,7 @@ impl CatalogService {
         self.robot_call("get_parent", app.as_deref(), body).await
     }
 
-    #[tool(description = "Count elements in a running app matching test_id, label, or kind.")]
+    #[tool(description = "Count elements in a running app matching all given criteria.")]
     async fn count_elements(
         &self,
         Parameters(args): Parameters<RobotFindArgs>,
@@ -1648,6 +1663,21 @@ impl CatalogService {
         let app = args.app.clone();
         let body = strip_app(serde_json::to_value(args).unwrap_or_default());
         self.robot_call("get_state", app.as_deref(), body).await
+    }
+
+    #[tool(description = "Viewport size + breakpoint; with width+height, resize a desktop window first.")]
+    async fn viewport(
+        &self,
+        Parameters(args): Parameters<RobotViewport>,
+    ) -> Result<CallToolResult, McpError> {
+        let app = args.app.clone();
+        match (args.width, args.height) {
+            (None, None) => self.robot_call("get_viewport", app.as_deref(), json!({})).await,
+            (Some(width), Some(height)) => {
+                self.robot_call("set_viewport", app.as_deref(), json!({ "width": width, "height": height })).await
+            }
+            _ => Err(McpError::invalid_params("give both width and height, or neither", None)),
+        }
     }
 
     #[tool(description = "Scroll a ScrollView to an offset.")]
@@ -6788,6 +6818,18 @@ mod tests {
             .unwrap();
         svc.list_functions(Parameters(RobotAppOnly { app: None })).await.unwrap();
         svc.open_link(Parameters(RobotOpenLink { url: "myapp://items/4".into(), app: None })).await.unwrap();
+        svc.find_all_elements(Parameters(RobotFindArgs {
+            app: None,
+            test_id: None,
+            label: Some("Email".into()),
+            label_contains: None,
+            kind: Some("TextInput".into()),
+            within: Some(json!({ "test_id": "dialog" })),
+        }))
+        .await
+        .unwrap();
+        svc.viewport(Parameters(RobotViewport { width: None, height: None, app: None })).await.unwrap();
+        svc.viewport(Parameters(RobotViewport { width: Some(800.0), height: Some(600.0), app: None })).await.unwrap();
         svc.tap_native(Parameters(RobotElementId { element_id: 5, app: None })).await.unwrap();
         svc.drag_native(Parameters(RobotDragNative { element_id: 5, points: vec![[1.0, 2.0], [3.0, 4.0]], app: None }))
             .await
@@ -6811,6 +6853,9 @@ mod tests {
             ("get_identity", json!({})),
             ("list_functions", json!({})),
             ("open_link", json!({ "url": "myapp://items/4" })),
+            ("find_all_elements", json!({ "label": "Email", "kind": "TextInput", "within": { "test_id": "dialog" } })),
+            ("get_viewport", json!({})),
+            ("set_viewport", json!({ "width": 800.0, "height": 600.0 })),
             ("tap_native", json!({ "element_id": 5 })),
             ("drag_native", json!({ "element_id": 5, "points": [[1.0, 2.0], [3.0, 4.0]] })),
             ("hover_native", json!({ "element_id": 6 })),

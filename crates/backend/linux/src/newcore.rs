@@ -1470,6 +1470,30 @@ impl caps::IntrospectionOps for LinuxBackend {
         Some(alpha > TRANSPARENT_ALPHA)
     }
 
+    /// The robot's `set_viewport`. GTK4 has no `gtk_window_resize`; a
+    /// mapped window follows a new default size (the GTK4 migration
+    /// guide's replacement). The default size covers the whole window —
+    /// a client-side title bar included — so the part that is not the
+    /// framework root (the viewport) is measured off the live window and
+    /// added back. The new allocation reaches `run_layout`, which publishes
+    /// the viewport as for any resize. A maximized or full-screen window
+    /// ignores its default size, so that is an error rather than a wait
+    /// that can never end.
+    #[cfg(feature = "robot")]
+    fn resize_window(&self, node: &Self::Node, width: f32, height: f32) -> Option<caps::NativeInjection> {
+        let window = node.widget().root()?.downcast::<gtk4::Window>().ok()?;
+        let content = window.child()?;
+        Some(Box::new(move || {
+            if window.is_maximized() || window.is_fullscreen() {
+                return Err("the window is maximized or full screen".into());
+            }
+            let extra_w = (window.width() - content.width()).max(0);
+            let extra_h = (window.height() - content.height()).max(0);
+            window.set_default_size(width.round() as i32 + extra_w, height.round() as i32 + extra_h);
+            Ok(())
+        }))
+    }
+
     #[cfg(feature = "robot")]
     fn supports_native_introspection(&self) -> bool {
         LinuxBackend::supports_native_introspection_impl(self)

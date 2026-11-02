@@ -59,6 +59,12 @@
 //! The relay multiplexes: it rewrites each forwarded request's `id` to a private
 //! monotonic id, routes the matching response back to the originating TCP
 //! connection, and fans `changed` pushes out to every subscribed TCP client.
+//! A request may carry `"timeout_ms"` beside `id`/`cmd`/`args`: how long the
+//! relay waits for the app's answer (default 5 s). When it gives up it
+//! answers `{"id":…,"err":"app response timed out: …"}` — the relay is up,
+//! the app is not answering — so a client can tell that from its own read
+//! timing out (the relay itself unreachable or stuck). With no app connected
+//! the error is `no app connected to the relay`.
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -75,8 +81,11 @@ pub mod cdp;
 
 /// How long a TCP-side request waits for an app to be connected before failing.
 const APP_WAIT: Duration = Duration::from_secs(3);
-/// How long to wait for the app's response to a forwarded request.
+/// How long to wait for the app's response to a forwarded request, unless
+/// the request's envelope carries its own `timeout_ms` (see [`forward`]).
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// The longest `timeout_ms` a request may ask for.
+const MAX_RESPONSE_TIMEOUT: Duration = Duration::from_secs(600);
 /// WS read poll slice — bounds outbound-frame latency to the app.
 const WS_POLL: Duration = Duration::from_millis(20);
 
@@ -537,7 +546,9 @@ fn tcp_session(stream: TcpStream, inner: &Arc<Inner>) {
             continue;
         }
 
-        let result = if cmd == "screenshot" { screenshot(inner, &args) } else { forward(inner, &cmd, &args) };
+        let wait = response_wait(&req);
+        let result =
+            if cmd == "screenshot" { screenshot(inner, &args, wait) } else { forward(inner, &cmd, &args, wait) };
         match result {
             Ok(mut resp) => {
                 if let Value::Object(map) = &mut resp {
@@ -563,10 +574,10 @@ fn tcp_session(stream: TcpStream, inner: &Arc<Inner>) {
 
 /// Serve `screenshot` (see the module docs): capture over CDP when asked
 /// to and possible, else forward to the app.
-fn screenshot(inner: &Arc<Inner>, args: &Value) -> Result<Value, String> {
+fn screenshot(inner: &Arc<Inner>, args: &Value, wait: Duration) -> Result<Value, String> {
     let source = args.get("source").and_then(|s| s.as_str()).unwrap_or("auto");
     if source != "cdp" && source != "auto" {
-        return forward(inner, "screenshot", args);
+        return forward(inner, "screenshot", args, wait);
     }
     let session = inner.app_session.load(Ordering::SeqCst);
     let nonce = inner.nonces.lock().unwrap().get(&session).cloned();
@@ -591,7 +602,7 @@ fn screenshot(inner: &Arc<Inner>, args: &Value) -> Result<Value, String> {
              the user's own browser use source \"tab\" (they share the tab once from the dev \
              overlay) or \"dom\""
         )),
-        Err(_) => forward(inner, "screenshot", args),
+        Err(_) => forward(inner, "screenshot", args, wait),
     }
 }
 
@@ -632,24 +643,47 @@ fn save_screenshot(dir: &Path, label: &str, resp: &mut Value) {
     }
 }
 
-/// Forward a request to the app and await its response. The relay rewrites the
-/// id to a private monotonic value so concurrent TCP clients never collide.
-fn forward(inner: &Arc<Inner>, cmd: &str, args: &Value) -> Result<Value, String> {
+/// How long to wait for the app's answer to `req`: its envelope's
+/// `timeout_ms` when it has one (clamped to 1 ms ..= [`MAX_RESPONSE_TIMEOUT`]),
+/// else [`RESPONSE_TIMEOUT`]. A client with a longer I/O timeout of its own
+/// sends one, so the relay waits as long as the client does and answers
+/// with *which side* gave up rather than leaving the client to time out.
+fn response_wait(req: &Value) -> Duration {
+    match req.get("timeout_ms").and_then(|t| t.as_u64()) {
+        Some(ms) => Duration::from_millis(ms).clamp(Duration::from_millis(1), MAX_RESPONSE_TIMEOUT),
+        None => RESPONSE_TIMEOUT,
+    }
+}
+
+/// Forward a request to the app and await its response for up to `wait`. The
+/// relay rewrites the id to a private monotonic value so concurrent TCP
+/// clients never collide.
+///
+/// A timeout's error starts `app response timed out` (clients match on it):
+/// the relay is up and the app is connected, but the app did not answer —
+/// busy on its UI thread, or hung. A late answer is dropped.
+fn forward(inner: &Arc<Inner>, cmd: &str, args: &Value, wait: Duration) -> Result<Value, String> {
     let out_tx = wait_for_app(inner).ok_or_else(|| "no app connected to the relay".to_string())?;
     let rid = inner.next_id.fetch_add(1, Ordering::SeqCst);
     let (tx, rx) = channel::<Value>();
     inner.pending.lock().unwrap().insert(rid, tx);
 
-    let frame = json!({ "id": rid, "cmd": cmd, "args": args }).to_string();
+    // The app's own bridge waits as long for its UI thread, so the two
+    // timeouts don't disagree about a slow verb.
+    let frame = json!({ "id": rid, "cmd": cmd, "args": args, "timeout_ms": wait.as_millis() as u64 }).to_string();
     if out_tx.send(frame).is_err() {
         inner.pending.lock().unwrap().remove(&rid);
         return Err("app disconnected".into());
     }
-    match rx.recv_timeout(RESPONSE_TIMEOUT) {
+    match rx.recv_timeout(wait) {
         Ok(resp) => Ok(resp),
         Err(_) => {
             inner.pending.lock().unwrap().remove(&rid);
-            Err("app response timed out".into())
+            Err(format!(
+                "app response timed out: the relay waited {} ms for the app to answer `{cmd}` \
+                 (the app is connected but busy or hung)",
+                wait.as_millis()
+            ))
         }
     }
 }

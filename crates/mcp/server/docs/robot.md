@@ -8,12 +8,15 @@ Robot tools drive a RUNNING app through its Robot bridge: find elements, read st
 
 Elements are found by criteria and then addressed by the numeric `element_id` the find returns. Ids are valid while the element stays mounted.
 
-Find criteria. The bridge uses ONE of them, the first present in this order; criteria are not combined. With none, every element matches.
+Find criteria. Every criterion given must match (they combine with AND); with none, every element matches.
 
-1. `test_id`: exact match on the author's `test_id`. Prefer this; it is stable across platforms. A `test_id` shared by repeated rows matches every row.
-2. `label`: exact accessible label / visible text.
-3. `label_contains`: label substring.
-4. `kind`: framework element kind (`View`, `Text`, `Button`, `Pressable`, `TextInput`, `Toggle`, `Slider`, …). An unknown kind is an error.
+- `test_id`: exact match on the author's `test_id`. Prefer this; it is stable across platforms. A `test_id` shared by repeated rows matches every row.
+- `label`: exact accessible label / visible text.
+- `label_contains`: label substring.
+- `kind`: framework element kind (`View`, `Text`, `Button`, `Pressable`, `TextInput`, `Toggle`, `Slider`, …). An unknown kind is an error.
+- `within`: only descendants of a container (never the container itself). Either an `element_id`, or a find object with the same criteria plus an optional `nth` (0-based, document order) that picks one of the containers it matches: `{ "kind": "TextInput", "label": "Email", "within": { "test_id": "login" } }` is the Email field inside the login form, not its caption and not a field elsewhere.
+
+Apps built before criteria combined honored only the first present (test_id, label, label_contains, kind) and ignored `within`.
 
 ## find_element
 
@@ -121,6 +124,12 @@ The app's navigators: `[{ nav_id, element_id, type_name, active_route, active_pa
 ## navigate
 
 Moves navigator `nav_id` without clicking through the UI. `action` is `push`, `replace`, `reset` or `pop`; `path` is resolved like a deep link (ignored for `pop`).
+
+## viewport
+
+With no arguments, reads the app's viewport: `{ width, height, breakpoint }`, logical px, with `breakpoint` one of `xs`, `sm`, `md`, `lg`, `xl` — what the app's responsive layout sees (bridge verb `get_viewport`).
+
+With `width` and `height`, first resizes the app's window so its viewport is that size (bridge verb `set_viewport`), then returns `"ok"`; read it again until it reports the new size. Desktop apps only (macOS, Windows, Linux). Elsewhere it is an error: on web the test runner sizes the browser, and on iOS and Android the size is the device's. A maximized or full-screen window refuses.
 
 ## open_link
 

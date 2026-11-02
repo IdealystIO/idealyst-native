@@ -275,6 +275,16 @@ web_glue::import! {
     /// no default action, so the focus a press gives a focusable target is
     /// given here, unless a listener prevented it.
     ///
+    /// On a page with touch input (`navigator.maxTouchPoints > 0` — a phone,
+    /// or `idealyst test --device`'s touch emulation) the gesture is also a
+    /// touch, in the order a mobile browser sends one: `pointerdown` +
+    /// `touchstart` at the down, `pointermove` + `touchmove` per move (no
+    /// mouse events), then `pointerup` + `touchend`, and only after those the
+    /// compatibility `mousedown`/focus/`mouseup` and the `click` — none of
+    /// which fire when a `touchstart` or `touchend` listener prevented the
+    /// default, as a browser suppresses them. Every touch event targets the
+    /// down element, as a real touch stays with the element it started on.
+    ///
     /// A hover is a mouse with no button held: `pointerout`/`mouseout` on
     /// the last hovered element, `pointerleave`/`mouseleave` on each of its
     /// ancestors the pointer left, `pointerover`/`mouseover` on the new
@@ -300,16 +310,29 @@ web_glue::import! {
                for (const e of now.slice().reverse()) if (!was.includes(e)) { e.dispatchEvent(new PointerEvent('pointerenter', { ...m, bubbles: false })); e.dispatchEvent(new MouseEvent('mouseenter', { ...m, bubbles: false })); } } \
              t.dispatchEvent(new PointerEvent('pointermove', m)); t.dispatchEvent(new MouseEvent('mousemove', m)); \
              return 1; } \
-           if (phase === 0) { \
-             const t = document.elementFromPoint(x, y); if (!t) return 0; s.down = t; \
-             t.dispatchEvent(new PointerEvent('pointerdown', o)); \
-             if (t.dispatchEvent(new MouseEvent('mousedown', o))) { \
+           const touch = navigator.maxTouchPoints > 0 && typeof Touch === 'function' && typeof TouchEvent === 'function'; \
+           const press = (t) => { \
+             if (t.dispatchEvent(new MouseEvent('mousedown', { ...o, buttons: 1 }))) { \
                const f = t.closest('input, textarea, select, button, a[href], [tabindex], [contenteditable]'); \
-               if (f && typeof f.focus === 'function') f.focus(); } \
+               if (f && typeof f.focus === 'function') f.focus(); } }; \
+           const fire = (t, type, lifted) => { \
+             const p = new Touch({ identifier: 1, target: t, clientX: x, clientY: y, pageX: x + scrollX, pageY: y + scrollY, \
+                                   screenX: x, screenY: y, radiusX: 1, radiusY: 1, force: lifted ? 0 : 1 }); \
+             const now = lifted ? [] : [p]; \
+             return t.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true, composed: true, view: window, \
+                                                            touches: now, targetTouches: now, changedTouches: [p] })); }; \
+           if (phase === 0) { \
+             const t = document.elementFromPoint(x, y); if (!t) return 0; s.down = t; s.cancelled = false; \
+             t.dispatchEvent(new PointerEvent('pointerdown', o)); \
+             if (touch) { s.cancelled = !fire(t, 'touchstart', false); return 1; } \
+             press(t); \
              return 1; } \
            const t = s.down || document.elementFromPoint(x, y); if (!t) return 0; \
-           if (phase === 1) { t.dispatchEvent(new PointerEvent('pointermove', o)); t.dispatchEvent(new MouseEvent('mousemove', o)); return 1; } \
-           t.dispatchEvent(new PointerEvent('pointerup', o)); t.dispatchEvent(new MouseEvent('mouseup', o)); \
+           if (phase === 1) { t.dispatchEvent(new PointerEvent('pointermove', o)); \
+             if (touch) fire(t, 'touchmove', false); else t.dispatchEvent(new MouseEvent('mousemove', o)); return 1; } \
+           t.dispatchEvent(new PointerEvent('pointerup', o)); \
+           if (touch) { if (!fire(t, 'touchend', true)) s.cancelled = true; if (s.cancelled) { s.down = null; return 1; } press(t); } \
+           t.dispatchEvent(new MouseEvent('mouseup', o)); \
            let c = t; const at = document.elementFromPoint(x, y); \
            while (c && at && !c.contains(at)) c = c.parentElement; \
            s.down = null; \
@@ -435,6 +458,92 @@ mod is_shown_tests {
         assert_eq!(super::hit_contains(node, 50.0, 25.0), Some(false), "the cover takes the point");
         cover.set_attribute("style", "position:absolute;left:0;top:0;width:200px;height:200px;pointer-events:none").unwrap();
         assert_eq!(super::hit_contains(node, 50.0, 25.0), Some(true), "pointer-events: none lets it through");
+        root.remove();
+    }
+
+    web_glue::import! {
+        /// Give the page `on` touch points (what `idealyst test --device`'s
+        /// touch emulation reports); 0 removes the override.
+        fn js_set_touch_points(on: u32) =
+            "(on) => { if (on) Object.defineProperty(navigator, 'maxTouchPoints', { get: () => on, configurable: true }); \
+               else delete navigator.maxTouchPoints; }";
+    }
+
+    fn record(target: &web_glue::dom::Element, kinds: &[&'static str]) -> (std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>, Vec<web_glue::Closure>) {
+        let seen: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>> = Default::default();
+        let mut keep = Vec::new();
+        for &kind in kinds {
+            let seen = seen.clone();
+            let cb = web_glue::Closure::new(move |_| seen.borrow_mut().push(kind));
+            let t: &web_glue::dom::EventTarget = target.as_ref();
+            t.add_event_listener(kind, &cb, web_glue::dom::ListenerOptions::default());
+            keep.push(cb);
+        }
+        (seen, keep)
+    }
+
+    /// On a touch page (phone emulation in `idealyst test --web --device`)
+    /// a native tap is a touch as a mobile browser delivers it: pointer and
+    /// touch events first, the compatibility mouse events and the click
+    /// after the finger lifts. It used to be mouse events only, so a suite
+    /// at a phone size never exercised the app's touch path.
+    #[wasm_bindgen_test]
+    fn regression_a_native_tap_on_a_touch_page_sends_touch_events_then_the_click() {
+        use runtime_vocabulary::caps::{PointerStep, PointerStepPhase};
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let root = doc.create_element("div").unwrap();
+        root.set_attribute("style", "position:fixed;left:0;top:0;width:200px;height:200px").unwrap();
+        doc.body().unwrap().append_child(&root).unwrap();
+        let target = doc.create_element("div").unwrap();
+        target.set_attribute("style", "position:absolute;left:10px;top:10px;width:80px;height:30px").unwrap();
+        root.append_child(&target).unwrap();
+        let kinds = ["pointerdown", "touchstart", "touchmove", "pointerup", "touchend", "mousedown", "mousemove", "mouseup", "click"];
+        let (seen, _keep) = record(&target, &kinds);
+
+        unsafe { js_set_touch_points(5) };
+        let tap = [
+            PointerStep { phase: PointerStepPhase::Down, x: 50.0, y: 25.0 },
+            PointerStep { phase: PointerStepPhase::Move, x: 51.0, y: 25.0 },
+            PointerStep { phase: PointerStepPhase::Up, x: 51.0, y: 25.0 },
+        ];
+        let r = super::native_pointer(&tap)();
+        unsafe { js_set_touch_points(0) };
+        r.unwrap();
+        assert_eq!(
+            seen.borrow().as_slice(),
+            ["pointerdown", "touchstart", "touchmove", "pointerup", "touchend", "mousedown", "mouseup", "click"]
+        );
+        root.remove();
+    }
+
+    /// A `touchstart` listener that prevents the default suppresses the
+    /// compatibility mouse events and the click, as in a mobile browser.
+    #[wasm_bindgen_test]
+    fn a_prevented_touchstart_suppresses_the_mouse_events_and_click() {
+        use runtime_vocabulary::caps::{PointerStep, PointerStepPhase};
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let root = doc.create_element("div").unwrap();
+        root.set_attribute("style", "position:fixed;left:0;top:0;width:200px;height:200px").unwrap();
+        doc.body().unwrap().append_child(&root).unwrap();
+        let target = doc.create_element("div").unwrap();
+        target.set_attribute("style", "position:absolute;left:10px;top:10px;width:80px;height:30px").unwrap();
+        root.append_child(&target).unwrap();
+        let prevent = web_glue::Closure::new(|ev| {
+            web_glue::JsCast::unchecked_into::<web_glue::dom::Event>(ev).prevent_default()
+        });
+        let t: &web_glue::dom::EventTarget = target.as_ref();
+        t.add_event_listener("touchstart", &prevent, web_glue::dom::ListenerOptions::default());
+        let (seen, _keep) = record(&target, &["touchend", "mousedown", "mouseup", "click"]);
+
+        unsafe { js_set_touch_points(5) };
+        let tap = [
+            PointerStep { phase: PointerStepPhase::Down, x: 50.0, y: 25.0 },
+            PointerStep { phase: PointerStepPhase::Up, x: 50.0, y: 25.0 },
+        ];
+        let r = super::native_pointer(&tap)();
+        unsafe { js_set_touch_points(0) };
+        r.unwrap();
+        assert_eq!(seen.borrow().as_slice(), ["touchend"]);
         root.remove();
     }
 }

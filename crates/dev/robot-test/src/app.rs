@@ -16,8 +16,17 @@
 //! default) and panic with the last thing they saw. So a test never sleeps
 //! to let a reactive update, an async load or a navigation land: it states
 //! what it expects and the robot waits for it.
+//!
+//! A busy app is "not yet" too. When the app is slow to answer a query (the
+//! relay reports `app response timed out`, or no reply reaches the client
+//! within [`App::set_io_timeout`]), or the relay has no app for a moment (a
+//! reload), every waiting path — locating, assertions, `count`, `label`,
+//! `assert_path` — asks again until its timeout, and only then fails, with
+//! the last error. Actions are the exception: an action the app did not
+//! answer may still run once the app is free, so it is never sent twice; it
+//! fails at once, naming which side timed out.
 
-use crate::client::RobotClient;
+use crate::client::{CallError, RobotClient};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -56,6 +65,19 @@ impl App {
         self.timeout = timeout;
     }
 
+    /// How long ONE bridge call waits for its reply (default
+    /// [`DEFAULT_IO_TIMEOUT`](crate::DEFAULT_IO_TIMEOUT), 8 s) — the relay
+    /// is asked to wait for the app a little less, so a busy app is
+    /// reported as the app timing out, not the connection. A waiting query
+    /// that times out is retried until [`set_timeout`](Self::set_timeout)'s
+    /// deadline; an action is not (see the module docs), so raise this
+    /// when an action legitimately keeps the app busy for long.
+    pub fn set_io_timeout(&mut self, timeout: Duration) {
+        self.client
+            .set_io_timeout(timeout)
+            .unwrap_or_else(|e| panic!("set_io_timeout: the connection refused it: {e}"));
+    }
+
     /// Call any bridge verb and return its result — the escape hatch for a
     /// verb this API has no method for. Panics on a bridge error; see
     /// [`try_call`](Self::try_call) to handle one.
@@ -73,28 +95,77 @@ impl App {
     /// Locate by `test_id` — the durable, refactor-proof hook (`.test_id("inc")`
     /// in your component).
     pub fn test_id(&mut self, id: &str) -> Locator<'_> {
-        Locator::new(self, Sel::TestId(id.into()), format!("test_id({id:?})"))
+        Locator::new(self, Sel::TestId(id.into()))
     }
 
     /// Locate by visible text (substring match against the live label).
     pub fn text(&mut self, substring: &str) -> Locator<'_> {
-        Locator::new(self, Sel::Text(substring.into()), format!("text({substring:?})"))
+        Locator::new(self, Sel::Text(substring.into()))
     }
 
     /// Locate by exact label (a button's text, a field's accessible name).
     pub fn label(&mut self, label: &str) -> Locator<'_> {
-        Locator::new(self, Sel::Label(label.into()), format!("label({label:?})"))
+        Locator::new(self, Sel::Label(label.into()))
     }
 
     /// Locate by primitive kind, e.g. `"Button"` / `"TextInput"` (the
     /// PascalCase `ElementKind` names).
     pub fn role(&mut self, kind: &str) -> Locator<'_> {
-        Locator::new(self, Sel::Role(kind.into()), format!("role({kind:?})"))
+        Locator::new(self, Sel::Role(kind.into()))
+    }
+
+    /// Locate by a detached [`Selector`] — one built without the app, e.g.
+    /// kept in a variable or returned from a helper.
+    pub fn locate(&mut self, selector: impl Into<Selector>) -> Locator<'_> {
+        Locator { app: self, sel: selector.into() }
     }
 
     /// How many elements currently match `kind` (e.g. count every `Button`).
+    /// Does not wait for a count, but asks again while the app is busy.
     pub fn count(&mut self, kind: &str) -> usize {
-        self.call("count_elements", json!({ "kind": kind })).as_u64().unwrap_or(0) as usize
+        let desc = format!("count({kind:?})");
+        self.read(&desc, "count_elements", json!({ "kind": kind })).as_u64().unwrap_or(0) as usize
+    }
+
+    // --- viewport ---
+
+    /// The app's viewport now: its size in logical px and the active
+    /// breakpoint (`"xs"` … `"xl"`) — what the app's responsive UI sees.
+    pub fn viewport(&mut self) -> Viewport {
+        let v = self.read("viewport()", "get_viewport", json!({}));
+        serde_json::from_value(v.clone()).unwrap_or_else(|e| panic!("get_viewport: unexpected shape {v} ({e})"))
+    }
+
+    /// Resize the app's window so its viewport is `width × height` logical
+    /// px, and wait until the app reports that size. Desktop apps (macOS,
+    /// Windows, Linux) resize their own window; elsewhere this panics with
+    /// the reason — see [`try_set_viewport`](Self::try_set_viewport) to
+    /// skip instead.
+    pub fn set_viewport(&mut self, width: f64, height: f64) {
+        self.try_set_viewport(width, height).unwrap_or_else(|e| panic!("set_viewport({width}, {height}): {e}"))
+    }
+
+    /// [`set_viewport`](Self::set_viewport), returning why it could not
+    /// (unsupported on this platform, a maximized window) instead of
+    /// panicking. Still panics if the app never reaches the size.
+    pub fn try_set_viewport(&mut self, width: f64, height: f64) -> Result<(), String> {
+        let desc = format!("set_viewport({width}, {height})");
+        // Idempotent, so a busy app is asked again.
+        self.wait(&desc, |app| match app.query("set_viewport", json!({ "width": width, "height": height })) {
+            Ok(_) => Ok(Ok(())),
+            Err(Failure::Fatal(e)) => Ok(Err(e)),
+            Err(other) => Err(other),
+        })?;
+        self.wait(&desc, |app| {
+            let v: Viewport = serde_json::from_value(app.query("get_viewport", json!({}))?)
+                .map_err(|e| Failure::Fatal(format!("get_viewport: unexpected shape ({e})")))?;
+            if (v.width - width).abs() < 0.5 && (v.height - height).abs() < 0.5 {
+                Ok(())
+            } else {
+                Err(Failure::NotYet(format!("the viewport is {} × {}", v.width, v.height)))
+            }
+        });
+        Ok(())
     }
 
     // --- signals ---
@@ -110,8 +181,13 @@ impl App {
 
     /// Every navigator in the app, outermost first.
     pub fn navigators(&mut self) -> Vec<NavigatorInfo> {
-        let v = self.call("list_navigators", json!({}));
+        let v = self.read("navigators()", "list_navigators", json!({}));
         serde_json::from_value(v).unwrap_or_else(|e| panic!("list_navigators: unexpected shape ({e})"))
+    }
+
+    fn try_navigators(&mut self) -> Result<Vec<NavigatorInfo>, Failure> {
+        let v = self.query("list_navigators", json!({}))?;
+        serde_json::from_value(v).map_err(|e| Failure::Fatal(format!("list_navigators: unexpected shape ({e})")))
     }
 
     /// Push `path` on the current navigator (the innermost one that takes
@@ -145,23 +221,26 @@ impl App {
     pub fn assert_path(&mut self, path: &str) {
         let desc = format!("assert_path({path:?})");
         self.wait(&desc, |app| {
-            let nav = app.current_navigator();
+            let nav = Self::pick_navigator(app.try_navigators()?)?;
             if nav.active_path.as_deref() == Some(path) {
                 Ok(())
             } else {
-                Err(format!("the active path is {:?}", nav.active_path))
+                Err(Failure::NotYet(format!("the active path is {:?}", nav.active_path)))
             }
         });
     }
 
     fn current_navigator(&mut self) -> NavigatorInfo {
-        let navs = self.navigators();
+        Self::pick_navigator(self.navigators()).unwrap_or_else(|e| panic!("{}", e.message()))
+    }
+
+    fn pick_navigator(navs: Vec<NavigatorInfo>) -> Result<NavigatorInfo, Failure> {
         navs.iter()
             .rev()
             .find(|n| n.controllable && n.is_current)
             .or_else(|| navs.iter().rev().find(|n| n.controllable))
             .cloned()
-            .unwrap_or_else(|| panic!("the app has no navigator that takes robot commands"))
+            .ok_or_else(|| Failure::NotYet("the app has no navigator that takes robot commands".into()))
     }
 
     // --- components ---
@@ -171,11 +250,11 @@ impl App {
     pub fn component(&mut self, name: &str) -> Component<'_> {
         let desc = format!("component({name:?})");
         let instance_id = self.wait(&desc, |app| {
-            let list = app.call("list_components", json!({}));
+            let list = app.query("list_components", json!({}))?;
             list.as_array()
                 .and_then(|l| l.iter().find(|c| c["name"] == name))
                 .and_then(|c| c["instance_id"].as_u64())
-                .ok_or_else(|| "no instance is mounted".to_string())
+                .ok_or_else(|| Failure::NotYet("no instance is mounted".into()))
         });
         Component { app: self, instance_id, desc }
     }
@@ -223,20 +302,21 @@ impl App {
             .as_u64()
             .unwrap_or_else(|| panic!("call_function: unexpected shape {first}"));
         loop {
-            match self.try_call("poll_function", json!({ "call": call })) {
+            // Polling is a read: a busy app is asked again.
+            match self.query("poll_function", json!({ "call": call })) {
                 Ok(v) if v["done"] == true => return Ok(v["value"].clone()),
-                Ok(_) if Instant::now() >= deadline => {
+                Err(Failure::Fatal(e)) => return Err(e),
+                Ok(_) | Err(_) if Instant::now() >= deadline => {
                     panic!("function({name:?}) — still running after {:?}", self.timeout)
                 }
-                Ok(_) => std::thread::sleep(POLL),
-                Err(e) => return Err(e.to_string()),
+                Ok(_) | Err(_) => std::thread::sleep(POLL),
             }
         }
     }
 
     /// The functions the app registered with the robot.
     pub fn functions(&mut self) -> Vec<FunctionInfo> {
-        serde_json::from_value(self.call("list_functions", json!({})))
+        serde_json::from_value(self.read("functions()", "list_functions", json!({})))
             .unwrap_or_else(|e| panic!("list_functions: unexpected shape: {e}"))
     }
 
@@ -251,7 +331,7 @@ impl App {
 
     /// The app's log lines (`log_info!` and friends), oldest first.
     pub fn logs(&mut self) -> Vec<Value> {
-        match self.call("get_logs", json!({})) {
+        match self.read("logs()", "get_logs", json!({})) {
             Value::Array(lines) => lines,
             other => panic!("get_logs: unexpected shape {other}"),
         }
@@ -269,32 +349,91 @@ impl App {
     // --- internals ---
 
     /// Run `attempt` until it returns `Ok` or the timeout passes; then panic
-    /// with `desc` and the last error.
-    fn wait<T>(&mut self, desc: &str, mut attempt: impl FnMut(&mut App) -> Result<T, String>) -> T {
+    /// with `desc` and the last error. A [`Failure::Fatal`] panics at once.
+    fn wait<T>(&mut self, desc: &str, mut attempt: impl FnMut(&mut App) -> Result<T, Failure>) -> T {
         let deadline = Instant::now() + self.timeout;
         loop {
             match attempt(self) {
                 Ok(v) => return v,
+                Err(Failure::Fatal(e)) => panic!("{desc}: {e}"),
                 Err(last) if Instant::now() >= deadline => {
-                    panic!("{desc} — still failing after {:?}: {last}", self.timeout)
+                    panic!("{desc} — still failing after {:?}: {}", self.timeout, last.message())
                 }
                 Err(_) => std::thread::sleep(POLL),
             }
         }
     }
 
-    /// The elements `sel` matches now, in document order.
-    fn find_all(&mut self, sel: &Sel) -> Vec<Value> {
-        match self.call("find_all_elements", sel.to_args()) {
-            Value::Array(els) => els,
-            other => panic!("find_all_elements: unexpected shape {other}"),
+    /// One call, its failure sorted for a waiting caller: a busy or absent
+    /// app is [`Failure::Busy`], anything the app answered is fatal.
+    fn query(&mut self, verb: &str, args: Value) -> Result<Value, Failure> {
+        self.client.call(verb, args).map_err(|e| match CallError::of(&e) {
+            Some(ce) if ce.is_transient() => Failure::Busy(format!("{verb}: {ce}")),
+            _ => Failure::Fatal(format!("{verb} failed: {e}")),
+        })
+    }
+
+    /// A read that does not wait for any condition, but asks again while
+    /// the app is busy — up to the timeout, then panics with the last error.
+    fn read(&mut self, desc: &str, verb: &str, args: Value) -> Value {
+        let args = &args;
+        self.wait(desc, |app| match app.query(verb, args.clone()) {
+            Err(Failure::NotYet(e)) => Err(Failure::Fatal(e)),
+            other => other,
+        })
+    }
+
+    /// The elements `sel` matches now, in document order. One call: every
+    /// filter, `within` included, goes to the app as one query. The leaf
+    /// filters are checked again here against what came back, so an app
+    /// older than combined queries (which honoured only the first field)
+    /// can't return a wider match than asked.
+    fn find_all(&mut self, sel: &Selector) -> Result<Vec<Value>, Failure> {
+        match self.query("find_all_elements", sel.to_query())? {
+            Value::Array(els) => Ok(els.into_iter().filter(|el| sel.leaf_matches(el)).collect()),
+            other => Err(Failure::Fatal(format!("find_all_elements: unexpected shape {other}"))),
         }
     }
 }
 
-/// One element selector. Lazy: a [`Locator`] re-resolves on each action, so it
-/// survives re-renders like a Playwright locator survives DOM churn.
-#[derive(Clone)]
+/// Why one attempt of a waiting operation did not succeed yet.
+enum Failure {
+    /// The app was busy, or the relay had no app: ask again.
+    Busy(String),
+    /// The app answered, and the condition does not hold yet: look again.
+    NotYet(String),
+    /// Asking again can't help (an unknown kind, an unsupported verb, a
+    /// malformed reply): fail now.
+    Fatal(String),
+}
+
+impl Failure {
+    fn message(&self) -> &str {
+        match self {
+            Failure::Busy(m) | Failure::NotYet(m) | Failure::Fatal(m) => m,
+        }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(m: String) -> Self {
+        Failure::NotYet(m)
+    }
+}
+
+/// The app's viewport, as [`App::viewport`] reports it.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub struct Viewport {
+    /// Logical px.
+    pub width: f64,
+    /// Logical px.
+    pub height: f64,
+    /// The active breakpoint: `"xs"`, `"sm"`, `"md"`, `"lg"` or `"xl"`.
+    pub breakpoint: String,
+}
+
+/// The base selector a locator starts from.
+#[derive(Clone, Debug)]
 enum Sel {
     TestId(String),
     Text(String),
@@ -302,14 +441,175 @@ enum Sel {
     Role(String),
 }
 
-impl Sel {
-    fn to_args(&self) -> Value {
-        match self {
-            Sel::TestId(s) => json!({ "test_id": s }),
-            Sel::Text(s) => json!({ "label_contains": s }),
-            Sel::Label(s) => json!({ "label": s }),
-            Sel::Role(k) => json!({ "kind": k }),
+/// What to find — a test id, kind, label, text, or several of them at once,
+/// optionally inside a container — without holding the app. Lazy: a
+/// [`Locator`] built from it re-resolves on each action, so it survives
+/// re-renders like a Playwright locator survives DOM churn.
+///
+/// Every criterion must hold (AND), and the whole selector is ONE query to
+/// the app (`find_all_elements` with its fields and `within`), not one call
+/// per filter. Build one detached to pass to [`Locator::within`] or
+/// [`App::locate`] — `Selector::test_id("dialog")` — or detach a locator
+/// with [`Locator::selector`].
+#[derive(Clone, Debug, Default)]
+pub struct Selector {
+    test_id: Option<String>,
+    kind: Option<String>,
+    label: Option<String>,
+    texts: Vec<String>,
+    within: Option<Box<Selector>>,
+    nth: Option<usize>,
+    desc: String,
+}
+
+impl From<Sel> for Selector {
+    fn from(sel: Sel) -> Self {
+        let mut s = Selector::default();
+        match sel {
+            Sel::TestId(id) => {
+                s.desc = format!("test_id({id:?})");
+                s.test_id = Some(id);
+            }
+            Sel::Text(t) => {
+                s.desc = format!("text({t:?})");
+                s.texts.push(t);
+            }
+            Sel::Label(l) => {
+                s.desc = format!("label({l:?})");
+                s.label = Some(l);
+            }
+            Sel::Role(k) => {
+                s.desc = format!("role({k:?})");
+                s.kind = Some(k);
+            }
         }
+        s
+    }
+}
+
+impl Selector {
+    /// Elements with this `test_id`.
+    pub fn test_id(id: &str) -> Self {
+        Sel::TestId(id.into()).into()
+    }
+
+    /// Elements whose label contains `substring` (their visible text).
+    pub fn text(substring: &str) -> Self {
+        Sel::Text(substring.into()).into()
+    }
+
+    /// Elements whose label is exactly `label`.
+    pub fn label(label: &str) -> Self {
+        Sel::Label(label.into()).into()
+    }
+
+    /// Elements of this primitive kind (`"TextInput"`, `"Button"`, …).
+    pub fn role(kind: &str) -> Self {
+        Sel::Role(kind.into()).into()
+    }
+
+    /// Also require this `test_id` (replaces one already given).
+    pub fn with_test_id(mut self, id: &str) -> Self {
+        self.desc = format!("{}.with_test_id({id:?})", self.desc);
+        self.test_id = Some(id.into());
+        self
+    }
+
+    /// Also require the label to be exactly `label` (replaces one already
+    /// given) — `role("TextInput").with_label("Email")` is the field, not
+    /// its caption.
+    pub fn with_label(mut self, label: &str) -> Self {
+        self.desc = format!("{}.with_label({label:?})", self.desc);
+        self.label = Some(label.into());
+        self
+    }
+
+    /// Also require the label to contain `substring` (adds to any others).
+    pub fn with_text(mut self, substring: &str) -> Self {
+        self.desc = format!("{}.with_text({substring:?})", self.desc);
+        self.texts.push(substring.into());
+        self
+    }
+
+    /// Also require this kind (replaces one already given).
+    pub fn with_role(mut self, kind: &str) -> Self {
+        self.desc = format!("{}.with_role({kind:?})", self.desc);
+        self.kind = Some(kind.into());
+        self
+    }
+
+    /// Only inside `container`: descendants of an element it matches (never
+    /// the container itself) — a dialog, a table row, a form. When the
+    /// container selector has an [`nth`](Self::nth), only that one counts;
+    /// otherwise any match does. Replaces an earlier `within`; to nest,
+    /// give the container its own `within`.
+    pub fn within(mut self, container: impl Into<Selector>) -> Self {
+        let container = container.into();
+        self.desc = format!("{}.within({})", self.desc, container.desc);
+        self.within = Some(Box::new(container));
+        self
+    }
+
+    /// The `index`th (0-based, document order) of the elements matched.
+    pub fn nth(mut self, index: usize) -> Self {
+        self.desc = format!("{}.nth({index})", self.desc);
+        self.nth = Some(index);
+        self
+    }
+
+    /// Only a `test_id`: the one case resolved by the app's last-wins index
+    /// (`find_element`) rather than a scan.
+    fn is_plain_test_id(&self) -> bool {
+        self.test_id.is_some() && self.kind.is_none() && self.label.is_none() && self.texts.is_empty() && self.within.is_none()
+    }
+
+    /// The query object `find_element` / `find_all_elements` take. `nth` is
+    /// the caller's to apply, except a container's, which goes along so the
+    /// app picks that one container.
+    fn to_query(&self) -> Value {
+        let mut q = serde_json::Map::new();
+        if let Some(id) = &self.test_id {
+            q.insert("test_id".into(), json!(id));
+        }
+        if let Some(kind) = &self.kind {
+            q.insert("kind".into(), json!(kind));
+        }
+        if let Some(label) = &self.label {
+            q.insert("label".into(), json!(label));
+        }
+        match self.texts.as_slice() {
+            [] => {}
+            [one] => {
+                q.insert("label_contains".into(), json!(one));
+            }
+            many => {
+                q.insert("label_contains".into(), json!(many));
+            }
+        }
+        if let Some(container) = &self.within {
+            let mut c = container.to_query();
+            if let (Some(n), Value::Object(map)) = (container.nth, &mut c) {
+                map.insert("nth".into(), json!(n));
+            }
+            q.insert("within".into(), c);
+        }
+        Value::Object(q)
+    }
+
+    /// Whether an element JSON satisfies the leaf criteria (`within` is the
+    /// app's to check — the element JSON doesn't carry ancestry).
+    fn leaf_matches(&self, el: &Value) -> bool {
+        let label = el["label"].as_str();
+        self.test_id.as_deref().is_none_or(|t| el["test_id"].as_str() == Some(t))
+            && self.kind.as_deref().is_none_or(|k| el["kind"].as_str() == Some(k))
+            && self.label.as_deref().is_none_or(|l| label == Some(l))
+            && self.texts.iter().all(|t| label.is_some_and(|l| l.contains(t.as_str())))
+    }
+}
+
+impl From<Locator<'_>> for Selector {
+    fn from(locator: Locator<'_>) -> Self {
+        locator.sel
     }
 }
 
@@ -341,53 +641,128 @@ pub struct ScrollOffset {
 }
 
 /// A located (or to-be-located) element. Actions and assertions consume `self`
-/// — chain straight off the locator: `app.test_id("inc").click()`.
+/// — chain straight off the locator: `app.test_id("inc").click()`. Narrow it
+/// first with the filters, which all go to the app as one query:
+/// `app.role("TextInput").with_label("Email").within(Selector::test_id("login")).fill("a@b.c")`.
 pub struct Locator<'a> {
     app: &'a mut App,
-    sel: Sel,
-    nth: Option<usize>,
-    desc: String,
+    sel: Selector,
 }
 
 impl<'a> Locator<'a> {
-    fn new(app: &'a mut App, sel: Sel, desc: String) -> Self {
-        Locator { app, sel, nth: None, desc }
+    fn new(app: &'a mut App, sel: Sel) -> Self {
+        Locator { app, sel: sel.into() }
     }
 
     /// The `index`th (0-based, document order) of the elements the selector
     /// matches — `app.role("TextInput").nth(1)` is the second field.
     pub fn nth(mut self, index: usize) -> Self {
-        self.desc = format!("{}.nth({index})", self.desc);
-        self.nth = Some(index);
+        self.sel = self.sel.nth(index);
         self
     }
 
+    /// Also require this `test_id`. See [`Selector::with_test_id`].
+    pub fn with_test_id(mut self, id: &str) -> Self {
+        self.sel = self.sel.with_test_id(id);
+        self
+    }
+
+    /// Also require the exact label: `app.role("TextInput").with_label("Email")`
+    /// is the field, not its caption. See [`Selector::with_label`].
+    pub fn with_label(mut self, label: &str) -> Self {
+        self.sel = self.sel.with_label(label);
+        self
+    }
+
+    /// Also require the label to contain `substring`. See
+    /// [`Selector::with_text`].
+    pub fn with_text(mut self, substring: &str) -> Self {
+        self.sel = self.sel.with_text(substring);
+        self
+    }
+
+    /// Also require this kind. See [`Selector::with_role`].
+    pub fn with_role(mut self, kind: &str) -> Self {
+        self.sel = self.sel.with_role(kind);
+        self
+    }
+
+    /// Only inside `container` — a dialog, a table row:
+    /// `.within(Selector::test_id("dialog"))`. A locator held in a
+    /// variable converts too (`.within(dialog)` after
+    /// `let dialog = app.test_id("dialog").selector();`). See
+    /// [`Selector::within`].
+    pub fn within(mut self, container: impl Into<Selector>) -> Self {
+        self.sel = self.sel.within(container);
+        self
+    }
+
+    /// Detach this locator's selector from the app, to keep it or pass it
+    /// to [`within`](Self::within).
+    pub fn selector(self) -> Selector {
+        self.sel
+    }
+
     /// The element as the bridge reports it now, or why there is none.
-    fn resolve(&mut self) -> Result<Value, String> {
-        let index = self.nth.unwrap_or(0);
-        let matches = match (&self.sel, self.nth) {
+    fn resolve(&mut self) -> Result<Value, Failure> {
+        let index = self.sel.nth.unwrap_or(0);
+        let matches = if self.sel.is_plain_test_id() && self.sel.nth.is_none() {
             // A single test_id lookup is one indexed hit (last mounted wins).
-            (Sel::TestId(_), None) => {
-                let v = self.app.call("find_element", self.sel.to_args());
-                if v.is_null() { Vec::new() } else { vec![v] }
-            }
-            _ => self.app.find_all(&self.sel),
+            let v = self.app.query("find_element", self.sel.to_query())?;
+            if v.is_null() { Vec::new() } else { vec![v] }
+        } else {
+            self.app.find_all(&self.sel)?
         };
         match matches.into_iter().nth(index) {
             Some(v) => Ok(v),
-            None if self.nth.is_some() => Err(format!("fewer than {} elements match", index + 1)),
-            None => Err("no element matches".into()),
+            None if self.sel.nth.is_some() => Err(Failure::NotYet(format!("fewer than {} elements match", index + 1))),
+            None => Err(Failure::NotYet("no element matches".into())),
         }
     }
 
-    fn id_of(el: &Value) -> Result<u64, String> {
-        el.get("id").and_then(|i| i.as_u64()).ok_or_else(|| format!("an element with no id: {el}"))
+    /// [`resolve`](Self::resolve) for a read that does not wait for the
+    /// element: asks again only while the app is busy. `Ok(None)` = no match.
+    fn resolve_now(&mut self, what: &str) -> Option<Value> {
+        let desc = format!("{}.{what}", self.sel.desc);
+        let deadline = Instant::now() + self.app.timeout;
+        loop {
+            match self.resolve() {
+                Ok(v) => return Some(v),
+                Err(Failure::NotYet(_)) => return None,
+                Err(Failure::Fatal(e)) => panic!("{desc}: {e}"),
+                Err(Failure::Busy(e)) if Instant::now() >= deadline => {
+                    panic!("{desc} — still failing after {:?}: {e}", self.app.timeout)
+                }
+                Err(Failure::Busy(_)) => std::thread::sleep(POLL),
+            }
+        }
+    }
+
+    fn id_of(el: &Value) -> Result<u64, Failure> {
+        el.get("id").and_then(|i| i.as_u64()).ok_or_else(|| Failure::Fatal(format!("an element with no id: {el}")))
+    }
+
+    /// Send an action verb. Its failure sorted for [`act`](Self::act): an
+    /// unavailable action is fatal; an action the app did not answer may
+    /// still run, so it is fatal too rather than sent twice; a relay with
+    /// no app never delivered it, so that is retried; anything else the app
+    /// answered (a disabled control refusing) is "not yet".
+    fn send_action(&mut self, verb: &str, args: Value) -> Result<Value, Failure> {
+        self.app.client.call(verb, args).map_err(|e| match CallError::of(&e) {
+            Some(CallError::NoApp(m)) => Failure::Busy(m.clone()),
+            Some(ce @ (CallError::AppTimedOut(_) | CallError::ClientTimedOut { .. })) => Failure::Fatal(format!(
+                "{ce} — the app may still perform it, so it is not sent again \
+                 (App::set_io_timeout raises the wait)"
+            )),
+            Some(CallError::Verb(m)) if m.contains("not available") => Failure::Fatal(m.clone()),
+            _ => Failure::NotYet(e.to_string()),
+        })
     }
 
     /// Run `verb` on the element, waiting until it exists and accepts it — a
     /// disabled control refuses, so this waits for it to be enabled.
     fn act(mut self, verb: &str, args: Value) {
-        let desc = format!("{}.{verb}", self.desc);
+        let desc = format!("{}.{verb}", self.sel.desc);
         let deadline = Instant::now() + self.app.timeout;
         loop {
             let attempt = self.resolve().and_then(|el| Self::id_of(&el)).and_then(|id| {
@@ -395,14 +770,13 @@ impl<'a> Locator<'a> {
                 if let Value::Object(map) = &mut args {
                     map.insert("element_id".into(), json!(id));
                 }
-                self.app.try_call(verb, args).map(|_| ()).map_err(|e| e.to_string())
+                self.send_action(verb, args).map(|_| ())
             });
             match attempt {
                 Ok(()) => return,
-                // Unavailable actions don't come and go: say so at once.
-                Err(e) if e.contains("not available") => panic!("{desc}: {e}"),
+                Err(Failure::Fatal(e)) => panic!("{desc}: {e}"),
                 Err(e) if Instant::now() >= deadline => {
-                    panic!("{desc} — still failing after {:?}: {e}", self.app.timeout)
+                    panic!("{desc} — still failing after {:?}: {}", self.app.timeout, e.message())
                 }
                 Err(_) => std::thread::sleep(POLL),
             }
@@ -412,7 +786,7 @@ impl<'a> Locator<'a> {
     /// Retry `check` against the resolved element until it holds or the
     /// timeout passes.
     fn expect(mut self, what: &str, mut check: impl FnMut(&Value) -> Result<(), String>) {
-        let desc = format!("{}.{what}", self.desc);
+        let desc = format!("{}.{what}", self.sel.desc);
         let deadline = Instant::now() + self.app.timeout;
         loop {
             let last = match self.resolve() {
@@ -420,7 +794,8 @@ impl<'a> Locator<'a> {
                     Ok(()) => return,
                     Err(e) => e,
                 },
-                Err(e) => e,
+                Err(Failure::Fatal(e)) => panic!("{desc}: {e}"),
+                Err(e) => e.message().to_string(),
             };
             if Instant::now() >= deadline {
                 panic!("{desc} — still failing after {:?}: {last}", self.app.timeout);
@@ -483,34 +858,33 @@ impl<'a> Locator<'a> {
     }
 
     fn tap(mut self, fallback: bool) -> String {
-        let desc = format!("{}.{}", self.desc, if fallback { "click" } else { "tap_native" });
+        let desc = format!("{}.{}", self.sel.desc, if fallback { "click" } else { "tap_native" });
         let deadline = Instant::now() + self.app.timeout;
         loop {
             let attempt = self.resolve().and_then(|el| {
                 if el["visible"] == false {
-                    return Err("the element is not visible".to_string());
+                    return Err(Failure::NotYet("the element is not visible".into()));
                 }
                 if el["state"]["disabled"] == true {
-                    return Err("the element is disabled".to_string());
+                    return Err(Failure::NotYet("the element is disabled".into()));
                 }
                 let id = Self::id_of(&el)?;
-                match self.app.try_call("tap_native", json!({ "element_id": id })) {
+                match self.send_action("tap_native", json!({ "element_id": id })) {
                     Ok(v) => Ok(v["mechanism"].as_str().unwrap_or("native").to_string()),
-                    Err(e) if fallback && e.to_string().contains("unsupported") => self
-                        .app
-                        .try_call("click", json!({ "element_id": id }))
-                        .map(|_| "robot".to_string())
-                        .map_err(|e| e.to_string()),
-                    Err(e) => Err(e.to_string()),
+                    Err(Failure::NotYet(e)) if e.contains("unsupported") => {
+                        if !fallback {
+                            return Err(Failure::Fatal(e));
+                        }
+                        self.send_action("click", json!({ "element_id": id })).map(|_| "robot".to_string())
+                    }
+                    Err(e) => Err(e),
                 }
             });
             match attempt {
                 Ok(how) => return how,
-                Err(e) if e.contains("not available") || (!fallback && e.contains("unsupported")) => {
-                    panic!("{desc}: {e}")
-                }
+                Err(Failure::Fatal(e)) => panic!("{desc}: {e}"),
                 Err(e) if Instant::now() >= deadline => {
-                    panic!("{desc} — still failing after {:?}: {e}", self.app.timeout)
+                    panic!("{desc} — still failing after {:?}: {}", self.app.timeout, e.message())
                 }
                 Err(_) => std::thread::sleep(POLL),
             }
@@ -572,13 +946,14 @@ impl<'a> Locator<'a> {
 
     /// The element's state now. Waits for the element to exist.
     pub fn state(mut self) -> ElementState {
-        let desc = format!("{}.state()", self.desc);
+        let desc = format!("{}.state()", self.sel.desc);
         let deadline = Instant::now() + self.app.timeout;
         loop {
             match self.resolve() {
                 Ok(el) => return state_of(&el),
+                Err(Failure::Fatal(e)) => panic!("{desc}: {e}"),
                 Err(e) if Instant::now() >= deadline => {
-                    panic!("{desc} — still failing after {:?}: {e}", self.app.timeout)
+                    panic!("{desc} — still failing after {:?}: {}", self.app.timeout, e.message())
                 }
                 Err(_) => std::thread::sleep(POLL),
             }
@@ -586,14 +961,17 @@ impl<'a> Locator<'a> {
     }
 
     /// The element's current label, or `None` if it has none / isn't present
-    /// (does not wait).
+    /// (does not wait for it; asks again while the app is busy).
     pub fn label(mut self) -> Option<String> {
-        self.resolve().ok()?.get("label").and_then(|l| l.as_str()).map(str::to_string)
+        self.resolve_now("label()")?.get("label").and_then(|l| l.as_str()).map(str::to_string)
     }
 
-    /// How many elements the selector matches now (does not wait).
+    /// How many elements the selector matches now (does not wait for a
+    /// count; asks again while the app is busy).
     pub fn count(self) -> usize {
-        self.app.find_all(&self.sel).len()
+        let desc = format!("{}.count()", self.sel.desc);
+        let sel = self.sel;
+        self.app.wait(&desc, |app| app.find_all(&sel)).len()
     }
 
     // --- assertions (retry until they hold) ---
@@ -612,14 +990,18 @@ impl<'a> Locator<'a> {
     /// Assert nothing matching can be seen: no element matches, or the one
     /// that does is not visible (a closed overlay, a navigated-away screen).
     pub fn assert_hidden(mut self) {
-        let desc = format!("{}.assert_hidden()", self.desc);
+        let desc = format!("{}.assert_hidden()", self.sel.desc);
         let deadline = Instant::now() + self.app.timeout;
-        while let Ok(el) = self.resolve() {
-            if el.get("visible") == Some(&Value::Bool(false)) {
-                return;
-            }
+        loop {
+            let last = match self.resolve() {
+                Ok(el) if el.get("visible") == Some(&Value::Bool(false)) => return,
+                Err(Failure::NotYet(_)) => return,
+                Err(Failure::Fatal(e)) => panic!("{desc}: {e}"),
+                Ok(_) => "the element is still visible".to_string(),
+                Err(Failure::Busy(e)) => e,
+            };
             if Instant::now() >= deadline {
-                panic!("{desc} — the element is still visible after {:?}", self.app.timeout);
+                panic!("{desc} — still failing after {:?}: {last}", self.app.timeout);
             }
             std::thread::sleep(POLL);
         }
@@ -638,7 +1020,7 @@ impl<'a> Locator<'a> {
 
     /// Whether the element is mounted and visible now (does not wait).
     pub fn is_visible(mut self) -> bool {
-        self.resolve().is_ok_and(|el| el.get("visible") != Some(&Value::Bool(false)))
+        self.resolve_now("is_visible()").is_some_and(|el| el.get("visible") != Some(&Value::Bool(false)))
     }
 
     /// Assert the element's label equals `expected`.
@@ -728,18 +1110,12 @@ impl<'a> Locator<'a> {
 
     /// Assert exactly `expected` elements match the selector.
     pub fn assert_count(self, expected: usize) {
-        let desc = format!("{}.assert_count({expected})", self.desc);
-        let deadline = Instant::now() + self.app.timeout;
-        loop {
-            let actual = self.app.find_all(&self.sel).len();
-            if actual == expected {
-                return;
-            }
-            if Instant::now() >= deadline {
-                panic!("{desc} — {actual} match after {:?}", self.app.timeout);
-            }
-            std::thread::sleep(POLL);
-        }
+        let desc = format!("{}.assert_count({expected})", self.sel.desc);
+        let sel = self.sel;
+        self.app.wait(&desc, |app| {
+            let actual = app.find_all(&sel)?.len();
+            if actual == expected { Ok(()) } else { Err(Failure::NotYet(format!("{actual} match"))) }
+        });
     }
 }
 
@@ -827,7 +1203,8 @@ impl Component<'_> {
 
     /// The live value of prop `name` (as the bridge reports it).
     pub fn prop(self, name: &str) -> Value {
-        let v = self.app.call("get_component", json!({ "instance_id": self.instance_id }));
+        let desc = format!("{}.prop({name:?})", self.desc);
+        let v = self.app.read(&desc, "get_component", json!({ "instance_id": self.instance_id }));
         v["props"]
             .as_array()
             .and_then(|props| props.iter().find(|p| p["name"] == name))
@@ -889,10 +1266,15 @@ impl SignalAssert<'_> {
     }
 
     /// The signal's current value as text (the `Debug` form, string layer
-    /// unwrapped). Does not wait.
-    pub fn value(mut self) -> String {
-        let name = self.name.clone();
-        self.read().unwrap_or_else(|e| panic!("signal({name:?}).value(): {e}"))
+    /// unwrapped). Does not wait for a value; asks again while the app is
+    /// busy.
+    pub fn value(self) -> String {
+        let desc = format!("signal({:?}).value()", self.name);
+        let v = self.app.read(&desc, "read_signal", json!({ "name": self.name }));
+        match v {
+            Value::String(s) => s,
+            other => other.to_string(),
+        }
     }
 
     /// Write the signal (it must be registered with `watch_signal_writable`).

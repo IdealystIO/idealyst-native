@@ -465,3 +465,103 @@ fn regression_element_state_reports_hover_and_press() {
     let json = invoke_command("get_state", &json!({ "element_id": el.id.0 })).unwrap();
     assert!(json.contains("\"pressed\":true") && json.contains("\"hovered\":false"), "{json}");
 }
+
+/// A login form: a `text` caption "Email", the field it labels (its
+/// placeholder is its label, so the robot reports "Email" for it too), and
+/// a second "Email" field outside the dialog.
+fn login_form(h: &Harness) -> runtime_scene::Realized<<host_mock::HostMock as runtime_scene::Host>::Node> {
+    use runtime_vocabulary::builders::text;
+    h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            view()
+                .child(
+                    view()
+                        .test_id("dialog")
+                        .child(text().content("Email").build())
+                        .child(text_input().test_id("dialog-email").placeholder("Email").build())
+                        .build(),
+                )
+                .child(text_input().test_id("footer-email").placeholder("Email").build())
+                .build(),
+        )
+    })
+}
+
+fn listed_ids(args: serde_json::Value) -> Vec<Option<String>> {
+    serde_json::from_str::<Vec<serde_json::Value>>(&invoke_command("find_all_elements", &args).unwrap())
+        .unwrap()
+        .into_iter()
+        .map(|el| el["test_id"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// Regression (CrewForge E2E report): `find_all_elements {kind: "TextInput",
+/// label: "Email"}` read only the first field present (`label`) and ignored
+/// `kind`, so it returned the "Email" caption text along with the field.
+/// Every field given now has to match.
+#[test]
+fn regression_find_all_elements_ignored_kind_when_label_given() {
+    let robot = Robot::new();
+    robot.reset();
+    let h = harness();
+    let _realized = login_form(&h);
+
+    let fields = json!({ "kind": "TextInput", "label": "Email" });
+    assert_eq!(
+        listed_ids(fields.clone()),
+        vec![Some("dialog-email".to_string()), Some("footer-email".to_string())],
+        "only the fields, not the caption"
+    );
+    assert_eq!(invoke_command("count_elements", &fields).unwrap(), "2");
+    let first: serde_json::Value =
+        serde_json::from_str(&invoke_command("find_element", &json!({ "kind": "Text", "label": "Email" })).unwrap())
+            .unwrap();
+    assert_eq!(first["kind"], "Text", "find_element ANDs too");
+
+    // test_id AND kind: a test id on the wrong kind matches nothing.
+    assert_eq!(invoke_command("count_elements", &json!({ "test_id": "dialog-email", "kind": "Button" })).unwrap(), "0");
+    // Several substrings must all appear.
+    assert_eq!(invoke_command("count_elements", &json!({ "label_contains": ["Em", "ail"], "kind": "Text" })).unwrap(), "1");
+    assert!(invoke_command("count_elements", &json!({ "label_contains": 3 })).is_err());
+}
+
+/// `within` scopes a query to a container's descendants — by element id or
+/// by a nested query (with its own `nth`) — in the same single call.
+#[test]
+fn find_within_a_container_by_id_or_query() {
+    let robot = Robot::new();
+    robot.reset();
+    let h = harness();
+    let _realized = login_form(&h);
+
+    let in_dialog = json!({ "kind": "TextInput", "label": "Email", "within": { "test_id": "dialog" } });
+    assert_eq!(listed_ids(in_dialog.clone()), vec![Some("dialog-email".to_string())]);
+    assert_eq!(invoke_command("count_elements", &in_dialog).unwrap(), "1");
+
+    let dialog = robot.find(Query::test_id("dialog")).unwrap();
+    assert_eq!(
+        listed_ids(json!({ "kind": "TextInput", "within": dialog.id.0 })),
+        vec![Some("dialog-email".to_string())]
+    );
+    // The container itself is not a match.
+    assert_eq!(invoke_command("count_elements", &json!({ "test_id": "dialog", "within": dialog.id.0 })).unwrap(), "0");
+    // A nested `nth` picks one container: the second View (document order)
+    // is the dialog, whose subtree holds one field.
+    assert_eq!(
+        invoke_command("count_elements", &json!({ "kind": "TextInput", "within": { "kind": "View", "nth": 1 } })).unwrap(),
+        "1"
+    );
+    // No container matched: nothing inside it either.
+    assert_eq!(invoke_command("count_elements", &json!({ "within": { "test_id": "nope" } })).unwrap(), "0");
+    assert!(invoke_command("count_elements", &json!({ "within": "dialog" })).is_err());
+
+    // The Rust surface composes the same way.
+    let q = Query::kind(runtime_vocabulary::robot::ElementKind::TextInput)
+        .and(Query::label("Email"))
+        .within(Query::test_id("dialog"));
+    let found = robot.find_all(q);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].test_id, Some("dialog-email"));
+}

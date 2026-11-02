@@ -4197,7 +4197,9 @@ impl IosBackend {
     /// `pointer_events`, hidden views and overlays, since every portal
     /// lives in the same window — is `node` or inside it. iOS gives an
     /// app no way to create touches, so the robot's native tap here is
-    /// this check plus the element's press (`TapMechanism::HitTest`).
+    /// this check plus the press of the deepest element whose view this
+    /// same hit test contains (`TapMechanism::HitTest`) — the pressable
+    /// inside an addressed wrapper, as a finger would reach it.
     pub(crate) fn hit_contains_impl(&self, node: &IosNode, x: f32, y: f32) -> Option<bool> {
         let view = node.as_view();
         let window: *mut UIView = unsafe { msg_send![view, window] };

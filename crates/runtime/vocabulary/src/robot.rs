@@ -291,6 +291,11 @@ pub(crate) struct ElementActions {
     /// ([`IntrospectionOps::native_pointer`]): the injection, built under
     /// the backend borrow and run after it is released.
     pub native_pointer: Option<Rc<dyn Fn(&[PointerStep]) -> Option<NativeInjection>>>,
+    /// Resize this element's window ([`IntrospectionOps::resize_window`]),
+    /// built under the backend borrow and run after it is released. Only
+    /// set on root elements — `set_viewport` resizes the first root's
+    /// window, and a closure per element would be dead weight.
+    pub resize_window: Option<Rc<dyn Fn(f32, f32) -> Option<NativeInjection>>>,
 }
 
 /// The handler-supplied half of [`ElementActions`] — what the mount
@@ -736,6 +741,12 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
         Some(Frame { id, region: None }) => (*id, (next_seq(), 0)),
         None => (None, (next_seq(), 0)),
     });
+    let resize_window = parent.is_none().then(|| {
+        let b = backend.clone();
+        let n = node.clone();
+        Rc::new(move |w: f32, h: f32| b.borrow().resize_window(&n, w, h))
+            as Rc<dyn Fn(f32, f32) -> Option<NativeInjection>>
+    });
     let id = REGISTRY.with(|r| {
         r.borrow_mut().insert(RegistryEntry {
             kind,
@@ -761,6 +772,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
                 shown: Some(shown),
                 hit: Some(hit),
                 native_pointer: Some(native_pointer),
+                resize_window,
             },
             parent,
             children: Vec::new(),
@@ -1088,7 +1100,12 @@ impl Element {
 }
 
 /// Criteria for finding elements.
+///
+/// The leaf criteria combine: [`And`](Query::And) requires all of its
+/// parts (the bridge's `{kind, label, …}` object is one), and
+/// [`Within`](Query::Within) scopes a query to a container's subtree.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum Query {
     /// Match by author-assigned test ID (exact).
     TestId(String),
@@ -1098,11 +1115,46 @@ pub enum Query {
     LabelContains(String),
     /// Match by primitive kind.
     Kind(ElementKind),
+    /// Match the element with this id (an [`Element::id`] from an earlier
+    /// query) while it stays mounted.
+    Id(ElementId),
+    /// Match an element every one of these matches. Empty matches all.
+    And(Vec<Query>),
+    /// Match an element `query` matches that is a DESCENDANT of an element
+    /// `container` matches (never the container itself) — of the `nth`
+    /// container in document order when `nth` is set, of any of them
+    /// otherwise.
+    Within {
+        container: Box<Query>,
+        nth: Option<usize>,
+        query: Box<Query>,
+    },
     /// Match all elements.
     All,
 }
 
 impl Query {
+    /// `self` AND `other`.
+    pub fn and(self, other: Query) -> Self {
+        match self {
+            Query::And(mut parts) => {
+                parts.push(other);
+                Query::And(parts)
+            }
+            Query::All => other,
+            first => Query::And(vec![first, other]),
+        }
+    }
+
+    /// `self`, among the descendants of what `container` matches.
+    pub fn within(self, container: Query) -> Self {
+        Query::Within { container: Box::new(container), nth: None, query: Box::new(self) }
+    }
+
+    pub fn id(id: ElementId) -> Self {
+        Self::Id(id)
+    }
+
     pub fn test_id(id: impl Into<String>) -> Self {
         Self::TestId(id.into())
     }
@@ -1119,6 +1171,22 @@ impl Query {
         Self::Kind(kind)
     }
 }
+
+/// The app's viewport as [`Robot::viewport`] reports it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Viewport {
+    /// Logical px.
+    pub width: f32,
+    /// Logical px.
+    pub height: f32,
+    /// The bucket `width` falls in under the installed breakpoint table.
+    pub breakpoint: runtime_shared::Breakpoint,
+}
+
+/// Why [`Robot::set_viewport`] can't resize on this platform.
+pub const SET_VIEWPORT_UNSUPPORTED: &str = "set_viewport is unsupported on this platform: the app cannot \
+     resize its own window here. On web, size the browser from the test runner (its viewport list); \
+     on iOS and Android, run on a device or simulator of the size you need";
 
 /// Errors returned by robot control operations.
 #[derive(Clone, Debug, PartialEq)]
@@ -1195,9 +1263,9 @@ fn refuse_if_disabled(actions: &ElementActions, action: &'static str) -> Result<
 pub enum TapMechanism {
     /// Real platform input, through the toolkit's event path.
     Native,
-    /// The backend's hit test confirmed the point, then the element's
-    /// press ran as `click` runs it (a backend that can't synthesize
-    /// input).
+    /// The backend's hit test confirmed the point, then the press ran as
+    /// `click` runs it, on the deepest element the hit test found there
+    /// (a backend that can't synthesize input).
     HitTest,
 }
 
@@ -1239,6 +1307,37 @@ fn topmost_at(x: f32, y: f32) -> Option<String> {
             (None, None) => format!("{:?} #{}", e.kind, id.0),
         })
     })
+}
+
+/// The element a real tap at `(x, y)` lands on, given that the backend's
+/// hit test puts the point inside `root`: the deepest element of `root`'s
+/// subtree (`root` itself included) whose hit test contains the point —
+/// later siblings win a tie, as they draw on top. What the hit-test tier
+/// of [`Robot::tap_native`] presses, so a test that addresses a wrapper
+/// reaches the pressable under its center, as a finger (and the web's
+/// `elementFromPoint`) does.
+fn deepest_hit_in(root: ElementId, x: f32, y: f32) -> ElementId {
+    // Closures cloned out first: a hit test borrows the backend, never
+    // with the registry borrowed.
+    let candidates: Vec<(ElementId, usize, Rc<dyn Fn(f32, f32) -> Option<bool>>)> = REGISTRY.with(|r| {
+        let reg = r.borrow();
+        let mut out = Vec::new();
+        let mut stack = vec![(root, 0usize)];
+        while let Some((id, depth)) = stack.pop() {
+            let Some(entry) = reg.get(id) else { continue };
+            if let Some(hit) = entry.actions.hit.clone() {
+                out.push((id, depth, hit));
+            }
+            stack.extend(entry.children.iter().rev().map(|&c| (c, depth + 1)));
+        }
+        out
+    });
+    candidates
+        .into_iter()
+        .filter(|(_, _, hit)| hit(x, y) == Some(true))
+        .map(|(id, depth, _)| (id, depth))
+        .max_by_key(|&(_, depth)| depth)
+        .map_or(root, |(id, _)| id)
 }
 
 /// Element `id`'s [`Visibility`]; `None` once it has unmounted.
@@ -1301,16 +1400,75 @@ pub struct TreeNode {
     pub children: Vec<TreeNode>,
 }
 
-fn query_matches(query: &Query, entry: &RegistryEntry) -> bool {
-    match query {
-        Query::TestId(id) => entry.test_id == Some(id.as_str()),
-        Query::Label(text) => entry.current_label().as_deref() == Some(text.as_str()),
-        Query::LabelContains(text) => entry
-            .current_label()
-            .is_some_and(|l| l.contains(text.as_str())),
-        Query::Kind(kind) => entry.kind == *kind,
-        Query::All => true,
+/// A [`Query`] with its [`Within`](Query::Within) containers resolved to
+/// element ids once, so a scan doesn't re-run the container query per
+/// candidate.
+enum Matcher<'q> {
+    Leaf(&'q Query),
+    And(Vec<Matcher<'q>>),
+    Within(std::collections::HashSet<ElementId>, Box<Matcher<'q>>),
+}
+
+impl<'q> Matcher<'q> {
+    fn compile(reg: &Registry, query: &'q Query) -> Self {
+        match query {
+            Query::And(parts) => Matcher::And(parts.iter().map(|q| Matcher::compile(reg, q)).collect()),
+            Query::Within { container, nth, query } => {
+                let found = matches_in_order(reg, &Matcher::compile(reg, container));
+                let containers = match nth {
+                    Some(n) => found.into_iter().nth(*n).into_iter().collect(),
+                    None => found.into_iter().collect(),
+                };
+                Matcher::Within(containers, Box::new(Matcher::compile(reg, query)))
+            }
+            leaf => Matcher::Leaf(leaf),
+        }
     }
+
+    fn matches(&self, reg: &Registry, id: ElementId, entry: &RegistryEntry) -> bool {
+        match self {
+            Matcher::Leaf(query) => match query {
+                Query::TestId(t) => entry.test_id == Some(t.as_str()),
+                Query::Label(text) => entry.current_label().as_deref() == Some(text.as_str()),
+                Query::LabelContains(text) => entry
+                    .current_label()
+                    .is_some_and(|l| l.contains(text.as_str())),
+                Query::Kind(kind) => entry.kind == *kind,
+                Query::Id(want) => id == *want,
+                Query::All => true,
+                // Compiled into the other arms.
+                Query::And(_) | Query::Within { .. } => unreachable!("compound query compiled as a leaf"),
+            },
+            // Cheap criteria first is the caller's ordering; a label read
+            // (a `label_fn` call) only happens for candidates still in.
+            Matcher::And(parts) => parts.iter().all(|m| m.matches(reg, id, entry)),
+            Matcher::Within(containers, inner) => {
+                !containers.is_empty()
+                    && has_ancestor_in(reg, entry, containers)
+                    && inner.matches(reg, id, entry)
+            }
+        }
+    }
+}
+
+/// Whether some proper ancestor of `entry` is in `set`.
+fn has_ancestor_in(reg: &Registry, entry: &RegistryEntry, set: &std::collections::HashSet<ElementId>) -> bool {
+    let mut cur = entry.parent;
+    while let Some(pid) = cur {
+        if set.contains(&pid) {
+            return true;
+        }
+        cur = reg.get(pid).and_then(|p| p.parent);
+    }
+    false
+}
+
+/// Every element `m` matches, in document order.
+fn matches_in_order(reg: &Registry, m: &Matcher<'_>) -> Vec<ElementId> {
+    reg.document_order()
+        .into_iter()
+        .filter(|id| reg.get(*id).is_some_and(|e| m.matches(reg, *id, e)))
+        .collect()
 }
 
 /// The programmatic controller for a running UI. Thread-local
@@ -1342,10 +1500,13 @@ impl Robot {
                     let eid = reg.by_test_id.get(id.as_str()).copied()?;
                     reg.get(eid).map(|e| Element::from_registry(eid, e))
                 }
-                query => reg.document_order().into_iter().find_map(|id| {
-                    let entry = reg.get(id)?;
-                    query_matches(&query, entry).then(|| Element::from_registry(id, entry))
-                }),
+                ref query => {
+                    let m = Matcher::compile(&reg, query);
+                    reg.document_order().into_iter().find_map(|id| {
+                        let entry = reg.get(id)?;
+                        m.matches(&reg, id, entry).then(|| Element::from_registry(id, entry))
+                    })
+                }
             }
         })
     }
@@ -1360,12 +1521,10 @@ impl Robot {
     fn find_all_inner(&self, query: Query) -> Vec<Element> {
         REGISTRY.with(|r| {
             let reg = r.borrow();
-            reg.document_order()
+            let m = Matcher::compile(&reg, &query);
+            matches_in_order(&reg, &m)
                 .into_iter()
-                .filter_map(|id| {
-                    let entry = reg.get(id)?;
-                    query_matches(&query, entry).then(|| Element::from_registry(id, entry))
-                })
+                .filter_map(|id| reg.get(id).map(|entry| Element::from_registry(id, entry)))
                 .collect()
         })
     }
@@ -1424,8 +1583,11 @@ impl Robot {
     /// its center is outside the window, or the backend's hit test
     /// ([`hit_contains`](IntrospectionOps::hit_contains)) finds something
     /// else on top. A backend with a hit test but no input injection taps
-    /// through the hit test: the point is checked, then the element's press
-    /// runs as [`click`](Self::click) runs it ([`TapMechanism::HitTest`]).
+    /// through the hit test: the point is checked, then the press runs as
+    /// [`click`](Self::click) runs it ([`TapMechanism::HitTest`]) — on the
+    /// deepest element the hit test puts under the point, not on `element`
+    /// itself, so tapping a wrapper presses the pressable a finger at its
+    /// center would land on, as real input does.
     /// With neither, [`RobotError::Unsupported`].
     pub fn tap_native(&self, element: &Element) -> Result<TapMechanism, RobotError> {
         const ACTION: &str = "tap_native";
@@ -1439,7 +1601,11 @@ impl Robot {
             return Ok(TapMechanism::Native);
         }
         if hit == Some(true) {
-            self.click(element)?;
+            let target = deepest_hit_in(element.id, x, y);
+            let target = REGISTRY
+                .with(|r| r.borrow().get(target).map(|e| Element::from_registry(target, e)))
+                .ok_or(RobotError::ElementGone)?;
+            self.click(&target)?;
             return Ok(TapMechanism::HitTest);
         }
         Err(RobotError::Unsupported(ACTION))
@@ -1869,6 +2035,37 @@ impl Robot {
     /// Clear every robot registry (elements, component methods, watched
     /// signals, navigators) — test isolation; registries are
     /// thread-local, so parallel `#[test]` threads never share entries.
+    /// The app's viewport now: its logical size and the breakpoint bucket
+    /// that size falls in — what the app's breakpoint UI sees.
+    pub fn viewport(&self) -> Viewport {
+        let (size, breakpoint) = entered(crate::viewport::current_untracked);
+        Viewport { width: size.width, height: size.height, breakpoint }
+    }
+
+    /// Resize the app's window so its viewport is `width × height` logical
+    /// px, where the app can size its own window (the desktop backends,
+    /// through [`IntrospectionOps::resize_window`]); otherwise
+    /// `Err(`[`SET_VIEWPORT_UNSUPPORTED`]`)`. The new size reaches
+    /// [`viewport`](Self::viewport) through the backend's own resize path
+    /// — synchronously on some toolkits, on the next configure on others —
+    /// so a caller that needs it waits for it.
+    pub fn set_viewport(&self, width: f32, height: f32) -> Result<(), String> {
+        if !(width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0) {
+            return Err(format!("set_viewport needs a positive width and height, got {width} × {height}"));
+        }
+        // The first root that came from a backend: the app's main content.
+        let resize = REGISTRY.with(|r| {
+            let reg = r.borrow();
+            reg.roots().into_iter().find_map(|id| reg.get(id)?.actions.resize_window.clone())
+        });
+        let injection = resize
+            .and_then(|prepare| prepare(width, height))
+            .ok_or_else(|| SET_VIEWPORT_UNSUPPORTED.to_string())?;
+        injection().map_err(|e| format!("the platform refused the resize: {e}"))?;
+        settle();
+        Ok(())
+    }
+
     pub fn reset(&self) {
         REGISTRY.with(|r| *r.borrow_mut() = Registry::new());
         PARENT_STACK.with(|s| s.borrow_mut().clear());
@@ -2125,7 +2322,9 @@ pub fn settle() {
 /// `#[method]` registry), `list_watched_signals` / `read_signal` (the
 /// watch registry), `list_navigators` / `get_navigator_state` (the
 /// nav registry), `list_functions` / `call_function` / `poll_function`
-/// (`robot_fn`) and `open_link` (the inbound-link ingress). Verbs the
+/// (`robot_fn`), `open_link` (the inbound-link ingress) and
+/// `get_viewport` / `set_viewport` ([`Robot::viewport`] /
+/// [`Robot::set_viewport`]). Verbs the
 /// registry doesn't own at all (`get_logs`,
 /// `screenshot`, custom commands) return `unknown command: …` — the
 /// transport falls back to its platform path for those (the web relay
@@ -2257,6 +2456,22 @@ pub mod bridge {
                     Some(p) => Ok(element_json(&p)),
                     None => Ok("null".into()),
                 }
+            }
+            "get_viewport" => {
+                let v = robot.viewport();
+                Ok(format!(
+                    "{{\"width\":{},\"height\":{},\"breakpoint\":\"{}\"}}",
+                    v.width,
+                    v.height,
+                    breakpoint_name(v.breakpoint),
+                ))
+            }
+            "set_viewport" => {
+                let dim = |key: &str| {
+                    args[key].as_f64().map(|v| v as f32).ok_or_else(|| format!("missing '{key}' argument"))
+                };
+                robot.set_viewport(dim("width")?, dim("height")?)?;
+                Ok("\"ok\"".into())
             }
             "count_elements" => {
                 // Same criteria as `find_all_elements`, so a count always
@@ -2594,20 +2809,75 @@ pub mod bridge {
         )
     }
 
+    /// The query object `find_element` / `find_all_elements` /
+    /// `count_elements` take. Every field given must match (AND):
+    ///
+    /// - `test_id`: exact test id;
+    /// - `kind`: the `ElementKind` name (`"TextInput"`);
+    /// - `label`: exact label;
+    /// - `label_contains`: a substring of the label, or an array of
+    ///   substrings that must all appear;
+    /// - `within`: scope to the descendants of a container — an element
+    ///   id (a number), or a nested query object whose own optional `nth`
+    ///   picks one of the containers it matches (document order).
+    ///
+    /// No field matches every element. Kind and test id are checked before
+    /// the label, so the label is only read for candidates still in.
     fn parse_query(args: &serde_json::Value) -> Result<Query, String> {
-        if let Some(id) = args["test_id"].as_str() {
-            Ok(Query::TestId(id.to_string()))
-        } else if let Some(label) = args["label"].as_str() {
-            Ok(Query::Label(label.to_string()))
-        } else if let Some(sub) = args["label_contains"].as_str() {
-            Ok(Query::LabelContains(sub.to_string()))
-        } else if let Some(kind_str) = args["kind"].as_str() {
+        let mut parts = Vec::new();
+        if let Some(kind_str) = args["kind"].as_str() {
             match parse_element_kind(kind_str) {
-                Some(k) => Ok(Query::Kind(k)),
-                None => Err(format!("unknown element kind: {kind_str}")),
+                Some(k) => parts.push(Query::Kind(k)),
+                None => return Err(format!("unknown element kind: {kind_str}")),
             }
-        } else {
-            Ok(Query::All)
+        }
+        if let Some(id) = args["test_id"].as_str() {
+            parts.push(Query::TestId(id.to_string()));
+        }
+        if let Some(label) = args["label"].as_str() {
+            parts.push(Query::Label(label.to_string()));
+        }
+        match &args["label_contains"] {
+            serde_json::Value::Null => {}
+            serde_json::Value::String(sub) => parts.push(Query::LabelContains(sub.clone())),
+            serde_json::Value::Array(subs) => {
+                for sub in subs {
+                    let sub = sub.as_str().ok_or("'label_contains' must be a string or an array of strings")?;
+                    parts.push(Query::LabelContains(sub.to_string()));
+                }
+            }
+            _ => return Err("'label_contains' must be a string or an array of strings".into()),
+        }
+        let query = match parts.len() {
+            0 => Query::All,
+            1 => parts.pop().expect("one part"),
+            _ => Query::And(parts),
+        };
+        match &args["within"] {
+            serde_json::Value::Null => Ok(query),
+            serde_json::Value::Number(n) => {
+                let id = n.as_u64().ok_or("'within' must be an element id or a query object")?;
+                Ok(query.within(Query::Id(ElementId(id as u32))))
+            }
+            container @ serde_json::Value::Object(_) => Ok(Query::Within {
+                container: Box::new(parse_query(container)?),
+                nth: container["nth"].as_u64().map(|n| n as usize),
+                query: Box::new(query),
+            }),
+            _ => Err("'within' must be an element id or a query object".into()),
+        }
+    }
+
+    /// The lower-case name `get_viewport` reports (`"xs"` … `"xl"`), the
+    /// same spelling as a stylesheet's `breakpoint md { … }`.
+    fn breakpoint_name(bp: runtime_shared::Breakpoint) -> &'static str {
+        use runtime_shared::Breakpoint;
+        match bp {
+            Breakpoint::Xs => "xs",
+            Breakpoint::Sm => "sm",
+            Breakpoint::Md => "md",
+            Breakpoint::Lg => "lg",
+            Breakpoint::Xl => "xl",
         }
     }
 
@@ -2735,6 +3005,7 @@ pub mod bridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use runtime_shared::__serde_json::{self as serde_json, json};
 
     fn entry(test_id: &'static str) -> RegistryEntry {
         RegistryEntry {
@@ -3063,6 +3334,80 @@ mod tests {
         robot.click(&el).expect("click");
         assert_eq!(settles.get(), 1, "action settled staged work");
         clear_driver_env();
+        robot.reset();
+    }
+
+    /// `get_viewport` reports the size every platform seam writes and the
+    /// bucket it falls in under the installed table.
+    #[test]
+    fn get_viewport_reports_size_and_breakpoint() {
+        Robot::new().reset();
+        runtime_shared::set_viewport_size(runtime_shared::ViewportSize::new(390.0, 844.0));
+        let v: serde_json::Value =
+            serde_json::from_str(&bridge::invoke_command("get_viewport", &json!({})).unwrap()).unwrap();
+        assert_eq!(v, json!({ "width": 390, "height": 844, "breakpoint": "xs" }));
+        runtime_shared::set_viewport_size(runtime_shared::ViewportSize::new(1280.0, 800.0));
+        let v: serde_json::Value =
+            serde_json::from_str(&bridge::invoke_command("get_viewport", &json!({})).unwrap()).unwrap();
+        assert_eq!(v["breakpoint"], "xl");
+    }
+
+    /// `set_viewport` resizes through the first root's window, outside any
+    /// backend borrow, and the size lands where `get_viewport` reads it.
+    #[test]
+    fn set_viewport_resizes_the_first_roots_window() {
+        let robot = Robot::new();
+        robot.reset();
+        let asked: Rc<RefCell<Vec<(f32, f32)>>> = Rc::default();
+        let asked_in = asked.clone();
+        REGISTRY.with(|r| {
+            r.borrow_mut().insert(RegistryEntry {
+                actions: ElementActions {
+                    resize_window: Some(Rc::new(move |w, h| {
+                        let asked = asked_in.clone();
+                        Some(Box::new(move || {
+                            asked.borrow_mut().push((w, h));
+                            // What a backend's resize seam does.
+                            runtime_shared::set_viewport_size(runtime_shared::ViewportSize::new(w, h));
+                            Ok(())
+                        }) as NativeInjection)
+                    })),
+                    ..ElementActions::default()
+                },
+                ..RegistryEntry::default()
+            })
+        });
+        assert_eq!(bridge::invoke_command("set_viewport", &json!({ "width": 800, "height": 600 })).unwrap(), "\"ok\"");
+        assert_eq!(*asked.borrow(), vec![(800.0, 600.0)]);
+        assert_eq!(robot.viewport().breakpoint, runtime_shared::Breakpoint::Md);
+        assert_eq!((robot.viewport().width, robot.viewport().height), (800.0, 600.0));
+
+        let err = bridge::invoke_command("set_viewport", &json!({ "width": 800 })).unwrap_err();
+        assert!(err.contains("'height'"), "{err}");
+        let err = bridge::invoke_command("set_viewport", &json!({ "width": -1, "height": 600 })).unwrap_err();
+        assert!(err.contains("positive"), "{err}");
+        robot.reset();
+    }
+
+    /// A backend that can't size its own window (web, phones) answers
+    /// `None`, and the verb says so and where to set the size instead.
+    #[test]
+    fn set_viewport_is_unsupported_without_a_resizable_window() {
+        let robot = Robot::new();
+        robot.reset();
+        REGISTRY.with(|r| r.borrow_mut().insert(RegistryEntry::default()));
+        let err = bridge::invoke_command("set_viewport", &json!({ "width": 800, "height": 600 })).unwrap_err();
+        assert_eq!(err, SET_VIEWPORT_UNSUPPORTED);
+        // A backend that has the hook but declines (`None`) reads the same.
+        robot.reset();
+        REGISTRY.with(|r| {
+            r.borrow_mut().insert(RegistryEntry {
+                actions: ElementActions { resize_window: Some(Rc::new(|_, _| None)), ..ElementActions::default() },
+                ..RegistryEntry::default()
+            })
+        });
+        let err = bridge::invoke_command("set_viewport", &json!({ "width": 800, "height": 600 })).unwrap_err();
+        assert!(err.contains("unsupported on this platform"), "{err}");
         robot.reset();
     }
 }

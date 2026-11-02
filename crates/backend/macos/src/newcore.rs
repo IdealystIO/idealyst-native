@@ -1520,6 +1520,10 @@ impl caps::IntrospectionOps for MacosBackend {
         crate::imp::native_input::native_pointer(node, steps)
     }
 
+    fn resize_window(&self, node: &Self::Node, width: f32, height: f32) -> Option<caps::NativeInjection> {
+        crate::imp::native_input::resize_window(node, width, height)
+    }
+
     fn supports_native_introspection(&self) -> bool {
         MacosBackend::supports_native_introspection_impl(self)
     }
