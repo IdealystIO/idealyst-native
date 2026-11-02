@@ -334,6 +334,13 @@ pub fn modal() -> Element {
     let on_palette_close: Rc<dyn Fn()> = Rc::new(move || palette_open.set(false));
     let query = signal(String::new());
 
+    // The fixed header/footer demo: a form longer than the modal's height
+    // cap, so the body scrolls while the title and actions stay put.
+    let form_open = signal(false);
+    let on_form_open: Rc<dyn Fn()> = Rc::new(move || form_open.set(true));
+    let on_form_close: Rc<dyn Fn()> = Rc::new(move || form_open.set(false));
+    let footer_close = on_form_close.clone();
+
     body(vec![ui! {
         Stack(gap = StackGap::Xl) {
             Section(title = "Live demo".to_string()) {
@@ -465,10 +472,76 @@ ui! {
 )"##.to_string())
             }
 
+            Section(title = "Fixed header and footer".to_string()) {
+                P(content = "`header` and `footer` render outside the modal's scroller, pinned to \
+                    the top and bottom of the surface. When the content is taller than the \
+                    modal's height cap, only `content` scrolls — the title and the Save button \
+                    stay in view. Both are closures like `content`, and either can be left \
+                    unset. Their looks are the `header` and `footer` slots of \
+                    `ModalSlotStyles`. An app that sizes something else to the modal can read \
+                    the cap from `modal_max_height(presentation, safe_height, top_offset)`.".to_string())
+                DemoSurface {
+                    Button(
+                        label = "Open form".to_string(),
+                        on_click = on_form_open,
+                        tone = tone::Neutral,
+                        variant = variant::Soft,
+                    )
+                    Modal(
+                        open = form_open,
+                        on_dismiss = Some(on_form_close.clone()),
+                        header = move || ui! {
+                            Typography(content = "Edit crew member".to_string(), kind = typography_kind::H3)
+                        },
+                        content = move || ui! {
+                            Stack(gap = StackGap::Md) {
+                                for i in 1..=24 {
+                                    Typography(content = format!("Field {i}"))
+                                }
+                            }
+                        },
+                        footer = move || {
+                            let close = footer_close.clone();
+                            let save = footer_close.clone();
+                            ui! {
+                                Stack(axis = StackAxis::Row, justify = StackJustify::End, gap = StackGap::Sm) {
+                                    Button(
+                                        label = "Cancel".to_string(),
+                                        on_click = close,
+                                        tone = tone::Neutral,
+                                        variant = variant::Soft,
+                                    )
+                                    Button(
+                                        label = "Save".to_string(),
+                                        on_click = save,
+                                        tone = tone::Primary,
+                                        variant = variant::Filled,
+                                    )
+                                }
+                            }
+                        },
+                    )
+                }
+                CodePanel(src = r##"Modal(
+    open = open,
+    on_dismiss = Some(on_close.clone()),
+    header = move || ui! {
+        Typography(content = "Edit crew member".into(), kind = typography_kind::H3)
+    },
+    content = move || ui! { /* a long form — only this scrolls */ },
+    footer = move || ui! {
+        Button(label = "Save".into(), on_click = on_save.clone(),
+               tone = tone::Primary, variant = variant::Filled)
+    },
+)"##.to_string())
+            }
+
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
                     Prop { name: "open",             ty: "Reactive<bool>",       desc: "Open state — pass your Signal<bool>. Always mounted; flipping false animates out then unmounts. Do NOT wrap in `if open { … }`." },
-                    Prop { name: "content",          ty: "Rc<dyn Fn()->Vec<Element>>", desc: "Builds the modal body (a closure, rebuilt fresh on each open). Author as content = Rc::new(|| ui! { … })." },
+                    Prop { name: "content",          ty: "ModalContent",         desc: "Builds the scrolling modal body (a closure, rebuilt fresh on each open). Author as content = move || ui! { … }." },
+                    Prop { name: "header",           ty: "ModalSection",         desc: "Optional fixed section above the body that never scrolls (title, close button). Author as header = move || ui! { … }. Unset by default." },
+                    Prop { name: "footer",           ty: "ModalSection",         desc: "Optional fixed section below the body that never scrolls (Save / Cancel). Author as footer = move || ui! { … }. Unset by default." },
                     Prop { name: "on_dismiss",       ty: "Option<Rc<dyn Fn()>>", desc: "Fires on backdrop tap (unless overridden), Escape, or back. Flip your open-state signal here." },
                     Prop { name: "on_backdrop_press", ty: "Option<Rc<dyn Fn()>>", desc: "Intercepts the backdrop tap. Unset → falls back to on_dismiss when dismissable." },
                     Prop { name: "dismissable",      ty: "bool",                 desc: "true (default) lets the backdrop tap and Escape dismiss; false makes the backdrop inert unless on_backdrop_press is set." },

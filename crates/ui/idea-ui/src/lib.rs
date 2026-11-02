@@ -241,7 +241,10 @@ pub use components::icon_button::{
     IconButton, IconButtonProps, IconButtonRestyle, IconButtonSelected, IconButtonSize, IconButtonSlotStyles,
     IconButtonStyles, IconButtonVariant,
 };
-pub use components::modal::{Modal, ModalContent, ModalPresentation, ModalProps, ModalSlotStyles, ModalStyles};
+pub use components::modal::{
+    modal_max_height, Modal, ModalContent, ModalPresentation, ModalProps, ModalSection, ModalSlotStyles,
+    ModalStyles, MODAL_EDGE_MARGIN, MODAL_MIN_HEIGHT_FIT, SHEET_MAX_HEIGHT_FRACTION,
+};
 pub use components::popover::{Popover, PopoverProps, PopoverSlotStyles, PopoverStyles};
 // The anchoring vocabulary of Popover / Menu / SubMenu / Tooltip props
 // (`target = AnchorTarget::from(trigger)`, `side`, `align`), so an app

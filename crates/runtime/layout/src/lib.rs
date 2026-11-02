@@ -3874,6 +3874,102 @@ mod tests {
         );
     }
 
+    /// Regression (CrewForge): a long form in the idea-ui `Modal` scrolled
+    /// its own title and Save button out of view, because the whole surface
+    /// was one scroller. `Modal`'s `header` / `footer` are now siblings of
+    /// the scroller inside the capped surface: the sections carry
+    /// `flex_shrink:0`, the scroller `flex_shrink:1 + min_height:0` (the
+    /// modal's `modal_scroll_sheet`). This pins that the CAP is then taken
+    /// out of the scroller alone — the footer sits flush at the surface's
+    /// bottom edge, fully visible — and that a short modal still hugs
+    /// header + content + footer.
+    fn sectioned_modal_frames(content: f32, cap: f32) -> (Frame, Frame, Frame, Frame) {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+
+        let surface = t.new_node();
+        let mut sr = StyleRules::default();
+        sr.flex_direction = Some(FwFlexDirection::Column);
+        sr.width = Some(px(300.0));
+        sr.max_height = Some(px(cap));
+        sr.overflow = Some(runtime_shared::Overflow::Hidden);
+        t.set_style(surface, &sr);
+
+        let section = |t: &mut LayoutTree, h: f32| {
+            let n = t.new_node();
+            let mut r = StyleRules::default();
+            r.flex_direction = Some(FwFlexDirection::Column);
+            r.flex_shrink = Some(f32t(0.0));
+            r.height = Some(px(h));
+            t.set_style(n, &r);
+            n
+        };
+        let header = section(&mut t, 60.0);
+
+        let scroller = t.new_node();
+        t.set_overflow_scroll(scroller, false);
+        let mut scr = StyleRules::default();
+        scr.flex_direction = Some(FwFlexDirection::Column);
+        scr.flex_grow = Some(f32t(0.0));
+        scr.flex_shrink = Some(f32t(1.0));
+        scr.flex_basis = Some(autol());
+        scr.min_height = Some(px(0.0));
+        scr.max_height = Some(px(cap));
+        t.set_style(scroller, &scr);
+
+        let body = t.new_node();
+        let mut br = StyleRules::default();
+        br.flex_direction = Some(FwFlexDirection::Column);
+        br.flex_shrink = Some(f32t(0.0));
+        br.height = Some(px(content));
+        t.set_style(body, &br);
+
+        let footer = section(&mut t, 70.0);
+
+        t.add_child(root, surface);
+        t.add_child(surface, header);
+        t.add_child(surface, scroller);
+        t.add_child(scroller, body);
+        t.add_child(surface, footer);
+        t.compute(root, 393.0, 852.0);
+        (t.frame_of(surface), t.frame_of(header), t.frame_of(scroller), t.frame_of(footer))
+    }
+
+    #[test]
+    fn regression_modal_footer_outside_scroller_stays_in_view() {
+        let cap = 700.0;
+
+        // Tall content: the surface caps, header and footer keep their
+        // height, and the scroller gives up exactly their share.
+        let (surface, header, scroller, footer) = sectioned_modal_frames(2000.0, cap);
+        assert!((surface.height - cap).abs() < 1.0, "surface caps at {cap}, got {}", surface.height);
+        assert!((header.height - 60.0).abs() < 1.0, "header keeps 60, got {}", header.height);
+        assert!((footer.height - 70.0).abs() < 1.0, "footer keeps 70, got {}", footer.height);
+        assert!(
+            (scroller.height - (cap - 130.0)).abs() < 1.0,
+            "the scroller alone shrinks to {} (cap - header - footer), got {}",
+            cap - 130.0,
+            scroller.height
+        );
+        assert!(header.y.abs() < 1.0, "header pinned at the top, got y={}", header.y);
+        assert!(
+            (footer.y + footer.height - cap).abs() < 1.0,
+            "footer ends at the surface's bottom edge ({cap}), not below it: y={} h={}",
+            footer.y,
+            footer.height
+        );
+
+        // Short content: everything hugs.
+        let (surface, _, scroller, footer) = sectioned_modal_frames(200.0, cap);
+        assert!(
+            (surface.height - 330.0).abs() < 1.0,
+            "short modal hugs header + content + footer (330), got {}",
+            surface.height
+        );
+        assert!((scroller.height - 200.0).abs() < 1.0, "scroller hugs content, got {}", scroller.height);
+        assert!((footer.y - 260.0).abs() < 1.0, "footer right under the content, got y={}", footer.y);
+    }
+
     /// Regression: a `scroll_view` with an explicit `height` inside a
     /// hug-content column parent must honor that height — NOT collapse to ~0.
     ///

@@ -327,6 +327,57 @@ recipe!(
 );
 
 recipe!(
+    Modal,
+    /// A long form whose title and actions never scroll away: `header` and
+    /// `footer` render OUTSIDE the modal's scroller, pinned to the top and
+    /// bottom of the surface. Once the content is taller than the modal's
+    /// height cap, only `content` scrolls. Both are closures like `content`
+    /// (rebuilt on each open).
+    pub fn modal_form_with_footer() -> ::runtime_core::Element {
+        use crate::{
+            tone, typography_kind, variant, Button, Field, Modal, Stack, StackAxis, StackGap,
+            StackJustify, Typography,
+        };
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let open = signal(true);
+        let name = signal(String::new());
+        let on_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+        let on_cancel = on_close.clone();
+        let on_save = on_close.clone();
+        ui! {
+            Modal(
+                open = open,
+                on_dismiss = Some(on_close.clone()),
+                header = move || ui! {
+                    Typography(content = "Edit crew member", kind = typography_kind::H3)
+                },
+                content = move || {
+                    let on_name: Rc<dyn Fn(String)> = Rc::new(move |v| name.set(v));
+                    ui! {
+                        Stack(gap = StackGap::Md) {
+                            Field(value = name, on_change = on_name, placeholder = Some("Name".to_string()))
+                            // …as many fields as the form needs; only this part scrolls.
+                        }
+                    }
+                },
+                footer = move || {
+                    let on_cancel = on_cancel.clone();
+                    let on_save = on_save.clone();
+                    ui! {
+                        Stack(axis = StackAxis::Row, justify = StackJustify::End, gap = StackGap::Sm) {
+                            Button(label = "Cancel", on_click = on_cancel, tone = tone::Neutral, variant = variant::Soft)
+                            Button(label = "Save", on_click = on_save, tone = tone::Primary, variant = variant::Filled)
+                        }
+                    }
+                },
+            )
+        }
+    }
+);
+
+recipe!(
     Tabs,
     /// A clickable tab strip. Tabs is pure UI: the host owns the active tab's
     /// `id` (a `Signal<String>`) and renders that tab's content itself (e.g. a

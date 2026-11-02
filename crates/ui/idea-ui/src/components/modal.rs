@@ -74,8 +74,28 @@
 //! (`overflow: hidden`, keeping the rounded corners) and an inner
 //! `scroll_view` scrolls the body. The `surface` slot is the frame's look
 //! (bg, radius, border, shadow); the padding lives on the `body` slot, the
-//! view *inside* the scroller. (v1 scrolls the whole
-//! body — a fixed, non-scrolling footer is not split out yet.)
+//! view *inside* the scroller. The cap is public as [`modal_max_height`]
+//! (with [`MODAL_EDGE_MARGIN`], [`MODAL_MIN_HEIGHT_FIT`] and
+//! [`SHEET_MAX_HEIGHT_FRACTION`]) for an app that sizes something to it.
+//!
+//! ## Fixed header and footer
+//! [`ModalProps::header`] and [`ModalProps::footer`] render OUTSIDE the
+//! scroller, as the surface's first and last children: a title row with a
+//! close button, a Save/Cancel row. They keep their natural height
+//! (`flex_shrink: 0`) and the scroller between them shrinks
+//! (`flex_shrink: 1`, `min_height: 0`), so once the surface hits its cap
+//! only `content` scrolls and the header and footer stay in view. Their
+//! looks are the `header` and `footer` slots. With neither set, the surface
+//! holds the scroller alone.
+//!
+//! ```ignore
+//! Modal(
+//!     open = open,
+//!     header = move || ui! { Typography(content = "Edit crew", kind = typography_kind::H3) },
+//!     content = move || ui! { /* a long form */ },
+//!     footer = move || ui! { Button(label = "Save", on_click = move || save()) },
+//! )
+//! ```
 
 use std::rc::Rc;
 use std::time::Duration;
@@ -123,9 +143,38 @@ component_styles! {
             }
         }
 
+        /// The fixed row above the scroller that holds
+        /// [`ModalProps::header`]; rendered only when `header` is set. It
+        /// never shrinks, so it stays in view however long the body is.
+        slot header {
+            base(t) {
+                flex_direction: FlexDirection::Column,
+                flex_shrink: 0.0,
+                gap: t.spacing.md(),
+                padding: t.spacing.lg(),
+                border_bottom_width: 1.0,
+                border_color: t.color.border(),
+            }
+        }
+
+        /// The fixed row below the scroller that holds
+        /// [`ModalProps::footer`]; rendered only when `footer` is set. It
+        /// never shrinks, so its actions stay in view however long the body
+        /// is.
+        slot footer {
+            base(t) {
+                flex_direction: FlexDirection::Column,
+                flex_shrink: 0.0,
+                gap: t.spacing.md(),
+                padding: t.spacing.lg(),
+                border_top_width: 1.0,
+                border_color: t.color.border(),
+            }
+        }
+
         /// The padded column inside the scroller that holds `content`. Set
         /// its padding to zero (per instance, through `styles`) to let an
-        /// edge-to-edge header sit flush.
+        /// edge-to-edge illustration sit flush.
         slot body {
             base(t) {
                 flex_direction: FlexDirection::Column,
@@ -167,14 +216,16 @@ component_styles! {
 /// Desired surface width when the viewport has room for it.
 const DEFAULT_MODAL_WIDTH: f32 = 520.0;
 /// Breathing room kept on each side between the surface and the viewport
-/// edge when the surface would otherwise be wider than the screen.
-const MODAL_EDGE_MARGIN: f32 = 16.0;
+/// edge when the surface would otherwise be wider (or, for a centered card,
+/// taller) than the safe rect. One input to [`modal_max_height`].
+pub const MODAL_EDGE_MARGIN: f32 = 16.0;
 /// Don't shrink the surface below this even on a very narrow viewport.
 const MODAL_MIN_FIT: f32 = 280.0;
 /// Don't cap the surface height below this even on a very short viewport
 /// (e.g. a landscape phone). Mirrors [`MODAL_MIN_FIT`] for the height axis
-/// so a tiny viewport still leaves a usable, scrollable surface.
-const MODAL_MIN_HEIGHT_FIT: f32 = 200.0;
+/// so a tiny viewport still leaves a usable, scrollable surface. One input
+/// to [`modal_max_height`].
+pub const MODAL_MIN_HEIGHT_FIT: f32 = 200.0;
 /// Enter animation duration.
 const ENTER_MS: u64 = 180;
 /// Exit animation duration. The modal stays mounted this long after `open`
@@ -209,14 +260,14 @@ const SHEET_SLIDE_PX: f32 = 32.0;
 /// surface whose whole identity is the edge it came from, so it has to
 /// go back there.
 fn sheet_exit_travel(avail_h: f32) -> f32 {
-    presentation_max_height(ModalPresentation::Sheet, avail_h, None)
+    modal_max_height(ModalPresentation::Sheet, avail_h, None)
 }
 
 /// A sheet's height cap, as a fraction of the SAFE viewport height. A sheet
 /// deliberately never covers the whole screen: the strip of page left
 /// visible above it is what says "layered over what you were reading"
-/// rather than "a new screen".
-const SHEET_MAX_HEIGHT_FRACTION: f32 = 0.78;
+/// rather than "a new screen". One input to [`modal_max_height`].
+pub const SHEET_MAX_HEIGHT_FRACTION: f32 = 0.78;
 /// A top-anchored card's default distance below the top of the SAFE rect,
 /// as a fraction of the safe height. A fraction rather than a fixed DIP
 /// value because the command palettes this presentation exists for float
@@ -291,6 +342,20 @@ pub struct ModalProps {
     #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub content: ModalContent,
+    /// Builds a fixed section ABOVE the scrolling body — a title and close
+    /// button. It never scrolls: when the content is taller than the
+    /// surface's cap, only `content` scrolls and this stays in view. Unset
+    /// (the default) renders nothing there. Same closure form as `content`:
+    /// `header = move || ui! { … }`. Its look is the `header` slot.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
+    pub header: ModalSection,
+    /// Builds a fixed section BELOW the scrolling body — the Save / Cancel
+    /// actions. Like `header`, it never scrolls out of view. Unset (the
+    /// default) renders nothing there. Its look is the `footer` slot.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
+    pub footer: ModalSection,
     /// Centered card (default), top-anchored card, or bottom sheet — see
     /// [`ModalPresentation`]. Everything else about the modal is unchanged
     /// by this choice.
@@ -377,11 +442,32 @@ impl Default for ModalContent {
     }
 }
 
+/// An optional fixed section of the modal ([`ModalProps::header`],
+/// [`ModalProps::footer`]): `None` renders nothing. `From<closure>` lets a
+/// call site pass a bare `move || ui! { … }`, as for [`ModalContent`] — a
+/// closure because `presence` rebuilds the section on each open.
+#[derive(Clone, Default, runtime_core::Remote)]
+pub struct ModalSection(pub Option<Rc<dyn Fn() -> Element>>);
+
+impl<F: Fn() -> Element + 'static> From<F> for ModalSection {
+    fn from(f: F) -> Self {
+        ModalSection(Some(Rc::new(f)))
+    }
+}
+
+impl ModalSection {
+    fn build(&self) -> Option<Element> {
+        self.0.as_ref().map(|f| f())
+    }
+}
+
 impl Default for ModalProps {
     fn default() -> Self {
         Self {
             open: Reactive::Static(false),
             content: ModalContent::default(),
+            header: ModalSection::default(),
+            footer: ModalSection::default(),
             presentation: Reactive::Static(ModalPresentation::Centered),
             top_offset: Reactive::Static(None),
             on_dismiss: None,
@@ -429,14 +515,22 @@ fn resolve_top_offset(requested: Option<f32>, safe_height: f32) -> f32 {
     wanted.min(room)
 }
 
-/// The surface's height cap for one presentation, given the SAFE viewport
-/// height (insets already subtracted). A centered card keeps a margin top
-/// and bottom; a top-anchored card keeps its offset above and a margin
-/// below; a sheet takes a fixed fraction, so a strip of the page it is
-/// layered over stays visible above it. `top_offset` is the author's
-/// request, read only by the `Top` arm. Pure, so every arm is testable
-/// without a backend.
-fn presentation_max_height(
+/// The modal surface's height cap for one presentation, in DIPs.
+///
+/// `safe_height` is the SAFE viewport height — `viewport_size().height`
+/// minus the top and bottom `safe_area_insets()`. A centered card keeps
+/// [`MODAL_EDGE_MARGIN`] top and bottom; a top-anchored card keeps its
+/// offset above and a margin below; a sheet takes
+/// [`SHEET_MAX_HEIGHT_FRACTION`], so a strip of the page it is layered over
+/// stays visible above it. Never below [`MODAL_MIN_HEIGHT_FIT`].
+/// `top_offset` is [`ModalProps::top_offset`], read only by the `Top` arm.
+///
+/// This is the surface's border-box `max_height`: it includes the
+/// surface's 1px border and, for a sheet, the bottom safe-area inset the
+/// sheet carries as padding. A fixed header or footer belongs in
+/// [`ModalProps::header`] / [`ModalProps::footer`]; this is for an app
+/// sizing something else to the modal.
+pub fn modal_max_height(
     presentation: ModalPresentation,
     safe_height: f32,
     top_offset: Option<f32>,
@@ -640,8 +734,12 @@ stylesheet! {
 ///   `scroll_view`), this lets the reactive `max_height` cap clamp the
 ///   scroller BELOW its content height, so a modal taller than the viewport
 ///   scrolls internally instead of overflowing the screen.
+/// - `flex_shrink:1` — with a fixed header/footer beside it, the surface's
+///   cap is shared; the scroller is the only child that shrinks, so it gives
+///   up exactly the sections' height and they stay in view.
 ///
-/// Verified in runtime-layout (`regression_modal_scroller_content_sized_then_capped`).
+/// Verified in runtime-layout (`regression_modal_scroller_content_sized_then_capped`,
+/// `regression_modal_footer_outside_scroller_stays_in_view`).
 /// MUST emit `flex_grow`/`flex_basis`/`min_height` to override the
 /// `scroll_view` seed (`set_style` only writes the fields the sheet sets).
 fn modal_scroll_sheet() -> Rc<StyleSheet> {
@@ -652,6 +750,7 @@ stylesheet! {
     ModalScrollSheet<()> {
         base(_t) {
             flex_grow: 0.0,
+            flex_shrink: 1.0,
             flex_basis: Length::Auto,
             min_height: Length::Px(0.0),
             // The scroller is itself a column so its body child lays out
@@ -686,6 +785,8 @@ stylesheet! {
 pub fn Modal(props: ModalProps) -> Element {
     let open = props.open;
     let content = props.content;
+    let header = props.header;
+    let footer = props.footer;
     let on_dismiss = props.on_dismiss;
     let on_backdrop_press = props.on_backdrop_press;
     // TODO(reactive-sweep): route `dismissable`/`width` reactively into the
@@ -723,7 +824,7 @@ pub fn Modal(props: ModalProps) -> Element {
     let build = {
         let open = open.clone();
         move || build_overlay(
-            (content.0)(),
+            ModalParts { header: header.build(), content: (content.0)(), footer: footer.build() },
             open.clone(),
             on_dismiss.clone(),
             on_backdrop_press.clone(),
@@ -760,7 +861,7 @@ pub fn Modal(props: ModalProps) -> Element {
 /// `presence` on each open, so all animators/effect/content are recreated.
 #[allow(clippy::too_many_arguments)]
 fn build_overlay(
-    content: Element,
+    parts: ModalParts,
     open: Reactive<bool>,
     on_dismiss: Option<Rc<dyn Fn()>>,
     on_backdrop_press: Option<Rc<dyn Fn()>>,
@@ -843,7 +944,7 @@ fn build_overlay(
     });
 
     assemble_overlay(
-        content,
+        parts,
         backdrop_ref,
         surface_ref,
         backdrop_handler,
@@ -887,6 +988,22 @@ impl DismissRouting {
     }
 }
 
+/// The author's sections for one open cycle: the scrolling `content` and
+/// the optional fixed `header` / `footer` around it.
+struct ModalParts {
+    header: Option<Element>,
+    content: Element,
+    footer: Option<Element>,
+}
+
+impl ModalParts {
+    /// Just a scrolling body, no fixed sections.
+    #[cfg(test)]
+    fn body(content: Element) -> Self {
+        Self { header: None, content, footer: None }
+    }
+}
+
 /// Pure structural assembly of the modal portal (backdrop + scrollable card +
 /// safe-area centering container) — no animators/effect, so it can be built
 /// WITHOUT a reactive scope (the `regression_modal_card_layer_consumes_touches`
@@ -894,7 +1011,7 @@ impl DismissRouting {
 /// by [`build_overlay`].
 #[allow(clippy::too_many_arguments)]
 fn assemble_overlay(
-    content: Element,
+    parts: ModalParts,
     backdrop_ref: Ref<ViewHandle>,
     surface_ref: Ref<ViewHandle>,
     backdrop_handler: Option<Rc<dyn Fn()>>,
@@ -925,8 +1042,9 @@ fn assemble_overlay(
     // frame carries the look (bg, radius, border, shadow); the padding is
     // the inner `body` slot's, so it lives *inside* the scroller. `overflow:
     // hidden` clips the scroll content to the rounded corners. Inside the
-    // frame, a `scroll_view` (flex_grow: 1) takes the capped height and
-    // scrolls its single body child when the content is taller than the cap.
+    // frame, a content-sized `scroll_view` (see `modal_scroll_sheet`) takes
+    // up to the capped height and scrolls its single body child when the
+    // content is taller than the cap.
     //
     // A content-shorter-than-the-cap modal stays content-sized: `max_height`
     // is a max, not a fixed height, and the scroll_view only scrolls when its
@@ -940,6 +1058,7 @@ fn assemble_overlay(
     // blocks are view-wrapped by the macro). Wrap it in the padded, column body
     // view. Inter-item spacing is the content's own concern (wrap it in a
     // `Stack` for a gap); the body supplies padding + scroll behavior.
+    let ModalParts { header, content, footer } = parts;
     let body = runtime_core::view(vec![content])
         .with_style(ModalStyles::body().overridden(styles.body.as_ref()))
         .into_element();
@@ -976,7 +1095,7 @@ fn assemble_overlay(
             // taller than the frame that clips it and the overflow would be
             // clipped instead of scrolled.
             let max_h =
-                presentation_max_height(presentation, avail_h, top_offset_for_scroll.get());
+                modal_max_height(presentation, avail_h, top_offset_for_scroll.get());
             // Measured from the live viewport — continuous, so inline.
             StyleApplication::new(modal_scroll_sheet()).with_inline(StyleRules {
                 max_height: Some(Tokenized::Literal(Length::Px(max_h))),
@@ -985,8 +1104,23 @@ fn assemble_overlay(
         })
         .into_element();
 
-    // Both presentations hold the scroller alone. A sheet grabber is the
-    // app's to build — see [`ModalProps::sheet_slide`].
+    // The surface is a column of `[header?, scroller, footer?]`. The fixed
+    // sections never shrink (their slots carry `flex_shrink: 0`); the
+    // scroller does (`modal_scroll_sheet`), so when the surface hits its
+    // `max_height` the scroller alone gives up height and scrolls. With
+    // neither section set the surface holds the scroller alone, in every
+    // presentation. A sheet grabber is the app's to build — see
+    // [`ModalProps::sheet_slide`].
+    let header = header.map(|h| {
+        runtime_core::view(vec![h])
+            .with_style(ModalStyles::header().overridden(styles.header.as_ref()))
+            .into_element()
+    });
+    let footer = footer.map(|f| {
+        runtime_core::view(vec![f])
+            .with_style(ModalStyles::footer().overridden(styles.footer.as_ref()))
+            .into_element()
+    });
     let top_offset_for_surface = top_offset.clone();
     let surface_style = ModalStyles::surface()
         .inline_with(move || {
@@ -995,7 +1129,7 @@ fn assemble_overlay(
             // vertical safe-area insets) so the card fits inside the notch /
             // home-indicator-free region. Mirrors the scroller's height cap.
             let insets = safe_area_insets().get();
-            let max_h = presentation_max_height(
+            let max_h = modal_max_height(
                 presentation,
                 vp.height - insets.top - insets.bottom,
                 top_offset_for_surface.get(),
@@ -1046,7 +1180,9 @@ fn assemble_overlay(
         // The author's per-instance surface override resolves last, on top
         // of the viewport-derived caps.
         .overridden(styles.surface.as_ref());
-    let surface = runtime_core::view(vec![scroller]).with_style(surface_style).into_element();
+    let surface_children: Vec<Element> =
+        header.into_iter().chain(Some(scroller)).chain(footer).collect();
+    let surface = runtime_core::view(surface_children).with_style(surface_style).into_element();
 
     // Animation wrapper: the fade + translateY slide live on this real
     // `view` (`ViewHandle`), driven by `card_opacity`/`card_slide` (bound +
@@ -1267,7 +1403,7 @@ mod tests {
             // `AnimatedValue::bind` no-ops without a backend and `viewport_size`
             // just returns a signal, so the structure builds fine here.
             let portal = assemble_overlay(
-                runtime_core::text("hi").into_element(),
+                ModalParts::body(runtime_core::text("hi").into_element()),
                 Ref::new(),
                 Ref::new(),
                 None,
@@ -1396,6 +1532,8 @@ mod tests {
             for (name, app) in [
                 ("surface", ModalStyles::surface().into_style_application()),
                 ("body", ModalStyles::body().into_style_application()),
+                ("header", ModalStyles::header().into_style_application()),
+                ("footer", ModalStyles::footer().into_style_application()),
                 ("backdrop", ModalStyles::backdrop().into_style_application()),
             ] {
                 assert!(
@@ -1426,7 +1564,7 @@ mod tests {
             install_idea_theme(light_theme());
 
             let default_portal = assemble_overlay(
-                runtime_core::text("hi").into_element(),
+                ModalParts::body(runtime_core::text("hi").into_element()),
                 Ref::new(),
                 Ref::new(),
                 None,
@@ -1458,7 +1596,7 @@ mod tests {
                 ..Default::default()
             };
             let flush_portal = assemble_overlay(
-                runtime_core::text("hi").into_element(),
+                ModalParts::body(runtime_core::text("hi").into_element()),
                 Ref::new(),
                 Ref::new(),
                 None,
@@ -1494,7 +1632,7 @@ mod tests {
             // A sheet is layered OVER what you were reading; if it could grow
             // to the full height it would read as a new screen instead.
             let safe = 852.0;
-            let h = presentation_max_height(ModalPresentation::Sheet, safe, None);
+            let h = modal_max_height(ModalPresentation::Sheet, safe, None);
             assert_eq!(h, safe * SHEET_MAX_HEIGHT_FRACTION);
             assert!(h < safe, "a sheet never covers the whole viewport");
     });
@@ -1507,8 +1645,8 @@ mod tests {
             // number reached twice: a card keeps a fixed margin top and
             // bottom, a sheet takes a fraction.
             let safe = 852.0;
-            let card = presentation_max_height(ModalPresentation::Centered, safe, None);
-            let sheet = presentation_max_height(ModalPresentation::Sheet, safe, None);
+            let card = modal_max_height(ModalPresentation::Centered, safe, None);
+            let sheet = modal_max_height(ModalPresentation::Sheet, safe, None);
             assert_eq!(card, safe - MODAL_EDGE_MARGIN * 2.0);
             assert!(
                 sheet < card,
@@ -1524,7 +1662,7 @@ mod tests {
             // for the sheet arm: a landscape phone still gets a usable,
             // scrollable surface rather than a sliver.
             assert_eq!(
-                presentation_max_height(ModalPresentation::Sheet, 150.0, None),
+                modal_max_height(ModalPresentation::Sheet, 150.0, None),
                 MODAL_MIN_HEIGHT_FIT
             );
     });
@@ -1584,7 +1722,7 @@ mod tests {
             });
             idea_theme::testing::commit();
             let portal = assemble_overlay(
-                runtime_core::text("hi").into_element(),
+                ModalParts::body(runtime_core::text("hi").into_element()),
                 Ref::new(),
                 Ref::new(),
                 None,
@@ -1611,7 +1749,7 @@ mod tests {
             });
             idea_theme::testing::commit();
             let portal = assemble_overlay(
-                runtime_core::text("hi").into_element(),
+                ModalParts::body(runtime_core::text("hi").into_element()),
                 Ref::new(),
                 Ref::new(),
                 None,
@@ -1649,7 +1787,7 @@ mod tests {
         with_test_world(|| {
             let surface_children = |presentation| {
                 let portal = assemble_overlay(
-                    runtime_core::text("hi").into_element(),
+                    ModalParts::body(runtime_core::text("hi").into_element()),
                     Ref::new(),
                     Ref::new(),
                     None,
@@ -1704,6 +1842,237 @@ mod tests {
                  `ModalProps::sheet_slide`."
             );
     });
+    }
+
+    /// Walk `[center] → [backdrop, card] → anim view → surface` and return
+    /// the surface's children, unclassified.
+    fn surface_children(portal: Element) -> Vec<Element> {
+        let mut portal_children = match classify(portal) {
+            P::Portal { children, .. } => children,
+            _ => panic!("assemble_overlay should build a Portal"),
+        };
+        let mut layers = match classify(portal_children.remove(0)) {
+            P::View { children, .. } => children,
+            _ => panic!("portal child should be the placement container"),
+        };
+        let mut card = match card_layer(layers.remove(1)) {
+            P::Pressable { children, .. } => children,
+            _ => panic!("card layer should be a Pressable"),
+        };
+        let mut anim = match classify(card.remove(0)) {
+            P::View { children, .. } => children,
+            _ => panic!("card layer wraps the animation view"),
+        };
+        match classify(anim.remove(0)) {
+            P::View { children, .. } => children,
+            _ => panic!("animation view wraps the surface"),
+        }
+    }
+
+    /// Every static text under `node`, depth-first.
+    fn texts_in(node: Element) -> Vec<String> {
+        match classify(node) {
+            P::Text { text, .. } => text.into_iter().collect(),
+            P::View { children, .. }
+            | P::Pressable { children, .. }
+            | P::ScrollView { children, .. }
+            | P::Portal { children, .. } => children.into_iter().flat_map(texts_in).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn sectioned_portal(presentation: ModalPresentation, styles: &ModalSlotStyles) -> Element {
+        assemble_overlay(
+            ModalParts {
+                header: Some(runtime_core::text("title").into_element()),
+                content: runtime_core::text("form").into_element(),
+                footer: Some(runtime_core::text("save").into_element()),
+            },
+            Ref::new(),
+            Ref::new(),
+            None,
+            DEFAULT_MODAL_WIDTH,
+            presentation,
+            Reactive::Static(None),
+            None,
+            styles,
+        )
+    }
+
+    /// Regression (CrewForge, idea-ui 14.1.0): the Modal had one scroll_view
+    /// around everything, so a long form scrolled its own title, close
+    /// button and Save button out of view. `header` and `footer` must be
+    /// siblings of the scroller in the surface — never inside it — with only
+    /// `content` in the scroller, in every presentation.
+    #[test]
+    fn regression_modal_footer_outside_scroller() {
+        with_test_world(|| {
+            for presentation in
+                [ModalPresentation::Centered, ModalPresentation::Top, ModalPresentation::Sheet]
+            {
+                let mut kids = surface_children(sectioned_portal(
+                    presentation,
+                    &ModalSlotStyles::default(),
+                ));
+                assert_eq!(kids.len(), 3, "{presentation:?}: surface is [header, scroller, footer]");
+                let footer = kids.pop().unwrap();
+                let scroller = kids.pop().unwrap();
+                let header = kids.pop().unwrap();
+
+                let header_texts = match classify(header) {
+                    P::View { children, .. } => children.into_iter().flat_map(texts_in).collect::<Vec<_>>(),
+                    _ => panic!("{presentation:?}: the header is a plain view, not a scroller"),
+                };
+                assert_eq!(header_texts, vec!["title".to_string()]);
+                match classify(scroller) {
+                    P::ScrollView { children, .. } => {
+                        let inside: Vec<String> =
+                            children.into_iter().flat_map(texts_in).collect();
+                        assert_eq!(
+                            inside,
+                            vec!["form".to_string()],
+                            "{presentation:?}: only the body scrolls — the header \
+                             and footer must not be inside the scroll_view"
+                        );
+                    }
+                    _ => panic!("{presentation:?}: the middle child is the scroller"),
+                }
+                let footer_texts = match classify(footer) {
+                    P::View { children, .. } => children.into_iter().flat_map(texts_in).collect::<Vec<_>>(),
+                    _ => panic!("{presentation:?}: the footer is a plain view, not a scroller"),
+                };
+                assert_eq!(footer_texts, vec!["save".to_string()]);
+            }
+        });
+    }
+
+    /// Only the set section renders: a footer alone puts the scroller
+    /// first, a header alone puts it last.
+    #[test]
+    fn modal_renders_only_the_sections_that_are_set() {
+        with_test_world(|| {
+            let build = |header: bool, footer: bool| {
+                let portal = assemble_overlay(
+                    ModalParts {
+                        header: header.then(|| runtime_core::text("title").into_element()),
+                        content: runtime_core::text("form").into_element(),
+                        footer: footer.then(|| runtime_core::text("save").into_element()),
+                    },
+                    Ref::new(),
+                    Ref::new(),
+                    None,
+                    DEFAULT_MODAL_WIDTH,
+                    ModalPresentation::Centered,
+                    Reactive::Static(None),
+                    None,
+                    &ModalSlotStyles::default(),
+                );
+                surface_children(portal)
+                    .into_iter()
+                    .map(|c| matches!(classify(c), P::ScrollView { .. }))
+                    .collect::<Vec<bool>>()
+            };
+            assert_eq!(build(false, true), vec![true, false]);
+            assert_eq!(build(true, false), vec![false, true]);
+            assert_eq!(build(false, false), vec![true]);
+        });
+    }
+
+    /// The fixed sections must not shrink (or the surface's cap would
+    /// squeeze them instead of scrolling the body), and the scroller must —
+    /// the layout half is pinned in runtime-layout
+    /// (`regression_modal_footer_outside_scroller_stays_in_view`).
+    #[test]
+    fn modal_sections_hold_their_height_and_the_scroller_shrinks() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            for (name, app) in [
+                ("header", ModalStyles::header().into_style_application()),
+                ("footer", ModalStyles::footer().into_style_application()),
+            ] {
+                #[cfg(not(idealyst_premint))]
+                assert_eq!(
+                    resolve_style(&app).flex_shrink.as_ref().map(|t| t.resolve()),
+                    Some(0.0),
+                    "the {name} slot must not shrink"
+                );
+                #[cfg(idealyst_premint)]
+                let _ = (name, app);
+            }
+            let scroll = resolve_style(&StyleApplication::new(modal_scroll_sheet()));
+            #[cfg(not(idealyst_premint))]
+            {
+                assert_eq!(scroll.flex_shrink.as_ref().map(|t| t.resolve()), Some(1.0));
+                assert_eq!(
+                    scroll.min_height.as_ref().map(|t| t.resolve()),
+                    Some(Length::Px(0.0))
+                );
+            }
+            #[cfg(idealyst_premint)]
+            drop(scroll);
+        });
+    }
+
+    /// A per-instance `styles.footer` override reaches the footer view.
+    #[test]
+    fn footer_slot_override_applies() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let flush = StyleRules {
+                padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
+                ..Default::default()
+            };
+            let mut kids = surface_children(sectioned_portal(
+                ModalPresentation::Centered,
+                &ModalSlotStyles::default().footer(flush),
+            ));
+            let style = match classify(kids.pop().unwrap()) {
+                P::View { style: Some(TStyle::App(app)), .. } => app,
+                _ => panic!("the footer carries its slot application"),
+            };
+            assert_eq!(
+                resolve_style(&style).padding_top.as_ref().map(|t| t.resolve()),
+                Some(Length::Px(0.0))
+            );
+        });
+    }
+
+    /// The exported cap is the one the surface uses, so an app sizing
+    /// something to it lines up with the modal exactly.
+    #[test]
+    fn exported_max_height_matches_the_surface_cap() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            runtime_core::viewport_size().set(runtime_core::ViewportSize {
+                width: 800.0,
+                height: 1000.0,
+            });
+            idea_theme::testing::commit();
+            for presentation in
+                [ModalPresentation::Centered, ModalPresentation::Top, ModalPresentation::Sheet]
+            {
+                let portal = assemble_overlay(
+                    ModalParts::body(runtime_core::text("hi").into_element()),
+                    Ref::new(),
+                    Ref::new(),
+                    None,
+                    DEFAULT_MODAL_WIDTH,
+                    presentation,
+                    Reactive::Static(None),
+                    None,
+                    &ModalSlotStyles::default(),
+                );
+                assert_eq!(
+                    surface_rules(portal).max_height.as_ref().map(|t| t.resolve()),
+                    Some(Length::Px(crate::modal_max_height(presentation, 1000.0, None))),
+                    "{presentation:?}"
+                );
+            }
+            assert_eq!(
+                crate::modal_max_height(ModalPresentation::Sheet, 1000.0, None),
+                1000.0 * crate::SHEET_MAX_HEIGHT_FRACTION
+            );
+        });
     }
 
     // ---- ModalPresentation::Top (CrewForge report: a command palette's
@@ -1801,7 +2170,7 @@ mod tests {
             let safe = 260.0;
             let offset = resolve_top_offset(Some(120.0), safe);
             assert_eq!(offset, safe - MODAL_EDGE_MARGIN - MODAL_MIN_HEIGHT_FIT);
-            let cap = presentation_max_height(ModalPresentation::Top, safe, Some(120.0));
+            let cap = modal_max_height(ModalPresentation::Top, safe, Some(120.0));
             assert_eq!(cap, MODAL_MIN_HEIGHT_FIT);
             assert!(offset + cap + MODAL_EDGE_MARGIN <= safe, "card fits the safe rect");
         });
@@ -1816,16 +2185,16 @@ mod tests {
             let safe = 900.0;
             let offset = resolve_top_offset(None, safe);
             assert_eq!(
-                presentation_max_height(ModalPresentation::Top, safe, None),
+                modal_max_height(ModalPresentation::Top, safe, None),
                 safe - offset - MODAL_EDGE_MARGIN
             );
             assert_eq!(
-                presentation_max_height(ModalPresentation::Top, safe, Some(100.0)),
+                modal_max_height(ModalPresentation::Top, safe, Some(100.0)),
                 safe - 100.0 - MODAL_EDGE_MARGIN
             );
             // The `Top` request never leaks into the other arms.
             assert_eq!(
-                presentation_max_height(ModalPresentation::Centered, safe, Some(100.0)),
+                modal_max_height(ModalPresentation::Centered, safe, Some(100.0)),
                 effective_modal_max_height(safe)
             );
         });
@@ -1853,7 +2222,7 @@ mod tests {
             });
             idea_theme::testing::commit();
             let portal = assemble_overlay(
-                runtime_core::text("hi").into_element(),
+                ModalParts::body(runtime_core::text("hi").into_element()),
                 Ref::new(),
                 Ref::new(),
                 None,

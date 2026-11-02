@@ -808,6 +808,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+- **`Modal` fixed `header` and `footer`** (`idea-ui`). Two optional
+  closure props, `header = move || ui! { … }` and `footer = move || ui! { … }`
+  (type `ModalSection`), render outside the modal's scroller, pinned to the
+  top and bottom of the surface in every presentation. Once the content is
+  taller than the height cap only `content` scrolls, so a long form no longer
+  scrolls its title, close button and Save button out of view. Their looks
+  are the new `header` / `footer` slots of `ModalSlotStyles`. The height cap
+  is public as `modal_max_height(presentation, safe_height, top_offset)`,
+  along with `MODAL_EDGE_MARGIN`, `MODAL_MIN_HEIGHT_FIT` and
+  `SHEET_MAX_HEIGHT_FRACTION`. A modal without the new props renders as
+  before.
 
 - **`nfc` SDK** (`nfc`, new). Read and write NFC tags: `NfcSession::begin`,
   `next_tag().await`, then `Tag::read_ndef` / `write_ndef` / `transceive`,

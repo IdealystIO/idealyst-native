@@ -30,6 +30,9 @@ tags = ["overlays", "modal", "sheet", "dialog", "menu", "popover", "tooltip", "c
   `dismissable`.
 - **Title first, then the consequence, then the actions** — Cancel (ghost)
   then the primary (filled) last, trailing.
+- **A form that can outgrow the screen keeps its title and actions fixed**:
+  put them in `header = move || ui! { … }` / `footer = move || ui! { … }`.
+  Those render outside the modal's scroller, so only `content` scrolls.
 - **One portal at a time**: don't open a Modal from inside a Menu that
   stays open; close the menu first.
 
