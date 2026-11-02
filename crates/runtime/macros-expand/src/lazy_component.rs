@@ -13,10 +13,11 @@
 //! so the `ui!` call site can pass an ordinary closure
 //! (`Profile(id = 5, loading = || ui! { … })`).
 //!
-//! Retry: `#[component(lazy)]` moves the props into the loader exactly once
-//! (no `Clone` bound) — the error UI is message-only. `#[component(lazy,
-//! retryable)]` derives `Clone` on the props so the loader can be re-invoked,
-//! enabling `LazyError::retry()`.
+//! Retry: a chunk that fails to load (`#[wasm_split(.., fallible)]` returns
+//! `Err`) never runs the body, so the props are still in the loader and
+//! `LazyError::retry()` works on every lazy component. `#[component(lazy,
+//! retryable)]` additionally derives `Clone` on the props so the body can be
+//! built again after it has already run once.
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
@@ -68,42 +69,48 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
         quote! {}
     };
 
-    // The loader closure. `lazy_split` wants `Fn() -> LazyFuture`, so:
-    //   - retryable: props are `Clone`; clone per call so retry can re-run.
-    //   - one-shot: move props into a take-once cell; a second call (which only
-    //     happens if something drives retry without `retryable`) panics loudly.
+    // The loader closure. `lazy_split` wants `Fn() -> LazyFuture`; each call
+    // is one load attempt. The props reach the chunk body inside a shared
+    // take-once cell that the body empties only once the chunk has LOADED —
+    // a failed fetch never runs the body, so the props stay put and the next
+    // attempt (the error UI's `retry()`) finds them. So:
+    //   - one-shot: one cell for the boundary's life; a second invocation
+    //     after the body ran (only reachable by driving retry after success)
+    //     panics in the body with a pointer to `retryable`.
+    //   - retryable: props are `Clone`; each attempt gets a fresh cell.
     // The loader is bound to a `let` before being handed to `lazy_split`, so
     // the closure's return type is pinned to the concrete future — the unsize
     // coercion to `LazyFuture` (`Pin<Box<dyn Future>>`) has to be forced with an
     // explicit annotation at the `Box::pin` site, or inference keeps the
     // concrete type and the `Fn() -> LazyFuture` bound fails.
+    let attempt = quote! {
+        ::std::boxed::Box::pin(async move {
+            __lazy_body(__c)
+                .await
+                .map_err(|__e| ::std::string::ToString::to_string(&__e))
+        })
+    };
     let loader_expr = if retryable {
         quote! {
             {
                 let __props = self;
                 move || -> ::runtime_core::primitives::lazy::LazyFuture {
-                    let __p = ::core::clone::Clone::clone(&__props);
-                    ::std::boxed::Box::pin(async move {
-                        ::core::result::Result::Ok(__lazy_body(__p).await)
-                    })
+                    let __c = ::std::rc::Rc::new(::std::cell::RefCell::new(
+                        ::core::option::Option::Some(::core::clone::Clone::clone(&__props)),
+                    ));
+                    #attempt
                 }
             }
         }
     } else {
         quote! {
             {
-                let __cell = ::std::cell::RefCell::new(::core::option::Option::Some(self));
+                let __cell = ::std::rc::Rc::new(::std::cell::RefCell::new(
+                    ::core::option::Option::Some(self),
+                ));
                 move || -> ::runtime_core::primitives::lazy::LazyFuture {
-                    let __p = __cell
-                        .borrow_mut()
-                        .take()
-                        .expect(
-                            "lazy component loader invoked twice without `retryable` — \
-                             add `#[component(lazy, retryable)]` to enable retry()",
-                        );
-                    ::std::boxed::Box::pin(async move {
-                        ::core::result::Result::Ok(__lazy_body(__p).await)
-                    })
+                    let __c = ::std::rc::Rc::clone(&__cell);
+                    #attempt
                 }
             }
         }
@@ -168,10 +175,14 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
     // `runtime_vocabulary::glue::…` (glue::primitives::lazy defines the
     // thunk types).
     let lazy_body_fn = quote! {
-        #[::runtime_core::__wasm_split::wasm_split(#split_name)]
+        #[::runtime_core::__wasm_split::wasm_split(#split_name, fallible)]
         async fn __lazy_body(
-            props: #props_ident,
+            __cell: ::std::rc::Rc<::std::cell::RefCell<::core::option::Option<#props_ident>>>,
         ) -> ::runtime_core::primitives::lazy::LazyBodyThunk {
+            let props = __cell.borrow_mut().take().expect(
+                "lazy component body ran twice without `retryable` — \
+                 add `#[component(lazy, retryable)]` to load it again after it rendered",
+            );
             // Explicitly typed binding: the wasm `#[wasm_split]`
             // expansion re-homes these statements inside a
             // `Box::pin(async move { … })`, where the async block's

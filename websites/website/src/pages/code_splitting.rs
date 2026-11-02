@@ -119,11 +119,7 @@ fn loading_and_error() -> Element {
                                }\n        \
                            },\n    \
                        )\n\
-                   }\n\
-                   \n\
-                   // retry() re-runs the loader with the same props \u{2014} opt in:\n\
-                   #[component(lazy, retryable)]\n\
-                   fn Editor(document_id: u32) -> Element { /* \u{2026} */ }";
+                   }";
     ui! {
         Section(
             title = "Loading and error UI".to_string(),
@@ -132,10 +128,14 @@ fn loading_and_error() -> Element {
                  while the chunk fetches; `error` renders if the fetch or link \
                  fails, receiving a `LazyError` with `.message()` and a `.retry()` \
                  handle.".to_string(),
-                "`retry()` re-invokes the loader, which re-passes the props \u{2014} \
-                 so it requires them to be `Clone`. `#[component(lazy, retryable)]` \
-                 opts in and derives the bound; the default moves the props into \
-                 the loader once.".to_string(),
+                "`retry()` fetches the chunk again. A failed load never ran the \
+                 body, so the props are still there to hand over \u{2014} no \
+                 `Clone` bound needed.".to_string(),
+                "On the web, the loader retries a brief network failure twice \
+                 before giving up. If the chunk is gone from the server \u{2014} a \
+                 deploy replaced the build the tab is running \u{2014} the page \
+                 reloads once to pick up the current build, guarded so it can't \
+                 loop.".to_string(),
                 "A third generated prop, `style`, styles the boundary's container \
                  \u{2014} the view that wraps whichever of the three states is \
                  showing. By default that container is a bounded, fillable flex \

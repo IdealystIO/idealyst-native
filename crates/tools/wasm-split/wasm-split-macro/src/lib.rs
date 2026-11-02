@@ -4,10 +4,35 @@ use digest::Digest;
 use quote::{format_ident, quote};
 use syn::{FnArg, Ident, ItemFn, ReturnType, Signature, parse_macro_input, parse_quote};
 
+/// Split an async fn's body into its own wasm module, loaded on first call.
+///
+/// `#[wasm_split(module)]` keeps the fn's signature and panics if the module
+/// can't be loaded. `#[wasm_split(module, fallible)]` turns the return type
+/// `T` into `Result<T, wasm_split::SplitLoaderError>` instead: a failed load
+/// returns `Err` (and a later call loads again), so the caller can show an
+/// error and retry. Off wasm32 the body is compiled in; the fallible form
+/// always returns `Ok`.
 #[proc_macro_attribute]
 pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
-    let module_ident = parse_macro_input!(args as Ident);
+    let args = parse_macro_input!(
+        args with syn::punctuated::Punctuated::<Ident, syn::Token![,]>::parse_terminated
+    );
+    let mut args = args.into_iter();
+    let Some(module_ident) = args.next() else {
+        panic!("wasm_split needs a module name: #[wasm_split(module)]");
+    };
+    let fallible = match args.next() {
+        None => false,
+        Some(flag) if flag == "fallible" => true,
+        Some(other) => panic!("unknown wasm_split option `{other}` (expected `fallible`)"),
+    };
+    if let Some(extra) = args.next() {
+        panic!("unexpected wasm_split argument `{extra}`");
+    }
     let item_fn = parse_macro_input!(input as ItemFn);
+    if fallible && item_fn.sig.receiver().is_some() {
+        panic!("#[wasm_split(.., fallible)] does not support methods");
+    }
 
     if item_fn.sig.asyncness.is_none() {
         panic!(
@@ -48,6 +73,15 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let mut wrapper_sig = item_fn.sig;
     wrapper_sig.asyncness = Some(Default::default());
+    if fallible {
+        let ok_ty: syn::Type = match &wrapper_sig.output {
+            ReturnType::Default => parse_quote! { () },
+            ReturnType::Type(_, ty) => (**ty).clone(),
+        };
+        wrapper_sig.output = parse_quote! {
+            -> ::core::result::Result<#ok_ty, wasm_split::SplitLoaderError>
+        };
+    }
 
     let mut args = Vec::new();
     for (i, param) in wrapper_sig.inputs.iter_mut().enumerate() {
@@ -69,6 +103,49 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let attrs = &item_fn.attrs;
     let stmts = &item_fn.block.stmts;
+
+    // Initiate the download by calling the load_module_ident function, which
+    // kicks off the loader; a failed attempt leaves the loader idle so the
+    // next call fetches again.
+    let on_loaded = if fallible {
+        quote! {
+            if !wasm_split::LazySplitLoader::ensure_loaded(&#split_loader_ident).await {
+                return ::core::result::Result::Err(wasm_split::SplitLoaderError::FailedToLoad);
+            }
+            ::core::result::Result::Ok(unsafe { #impl_import_ident( #(#args),* ) }.await)
+        }
+    } else {
+        quote! {
+            if !wasm_split::LazySplitLoader::ensure_loaded(&#split_loader_ident).await {
+                panic!("Failed to load wasm-split module");
+            }
+            unsafe { #impl_import_ident( #(#args),* ) }.await
+        }
+    };
+
+    // Off wasm32 there is no module to load: the body is compiled in. The
+    // fallible form wraps the original fn (nested, so its own parameter
+    // patterns stay intact) and always succeeds.
+    let native = if fallible {
+        let inner_ident = format_ident!("__wasm_split_inner");
+        let mut inner = default_item.clone();
+        inner.sig.ident = inner_ident.clone();
+        inner.vis = syn::Visibility::Inherited;
+        inner.attrs.clear();
+        quote! {
+            #[cfg(not(target_arch = "wasm32"))]
+            #(#attrs)*
+            #wrapper_sig {
+                #inner
+                ::core::result::Result::Ok(#inner_ident( #(#args),* ).await)
+            }
+        }
+    } else {
+        quote! {
+            #[cfg(not(target_arch = "wasm32"))]
+            #default_item
+        }
+    };
 
     quote! {
         #[cfg(target_arch = "wasm32")]
@@ -99,16 +176,10 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
                 };
             }
 
-            // Initiate the download by calling the load_module_ident function which will kick-off the loader
-            if !wasm_split::LazySplitLoader::ensure_loaded(&#split_loader_ident).await {
-                panic!("Failed to load wasm-split module");
-            }
-
-            unsafe { #impl_import_ident( #(#args),* ) }.await
+            #on_loaded
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
-        #default_item
+        #native
     }
     .into()
 }

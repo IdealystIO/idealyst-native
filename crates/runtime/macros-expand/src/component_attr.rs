@@ -49,9 +49,10 @@ pub(crate) struct ComponentAttr {
     /// props struct gains `loading` / `error` config fields.
     pub(crate) lazy: bool,
     /// `#[component(lazy, retryable)]` — derive `Clone` on the props so the
-    /// error UI's `retry()` can re-invoke the loader. Only meaningful with
-    /// `lazy`. Without it the loader is one-shot (props move once, no `Clone`
-    /// bound) and the error UI is message-only.
+    /// loader can build the body again after it has already run. Only
+    /// meaningful with `lazy`. The error UI's `retry()` works without it: a
+    /// failed load never runs the body, so the one-shot loader still holds
+    /// the props.
     pub(crate) retryable: bool,
     /// `#[component(remote)]` — the component ships in a remote bundle
     /// (crates/streaming): a native app build replaces its body with a

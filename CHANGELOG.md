@@ -2319,6 +2319,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+- **Web: a lazy chunk that fails to load no longer crashes the app**
+  (`wasm-splitter`, `wasm-split-macro`, `wasm-carve`, `build-web`,
+  `runtime-macros`). The `#[component(lazy)]` wrapper panicked
+  (`Failed to load wasm-split module` → `RuntimeError: unreachable`) when its
+  chunk fetch failed — for example in a tab still running a build whose
+  `pkg/` files a deploy had removed. Now: the loader retries a brief network
+  failure (no response, 408 / 429 / 5xx) twice; a 404 / 410 (the running
+  build's chunk is gone) reloads the page once, guarded per chunk URL in
+  `sessionStorage`; any remaining failure renders the component's `error`
+  UI, and `LazyError::retry()` fetches again — on every lazy component, not
+  only `retryable` ones. `#[wasm_split(module, fallible)]` is the new macro
+  form that returns `Result` instead of panicking. The loader JS ships with
+  the CLI (`build-web`), so apps pick it up on their next build with a new
+  CLI.
+
 - **`permissions`, `file-export` and `file-picker` require the
   `backend-android-mobile` their Kotlin needs.** `permissions 3.0.1`'s
   Kotlin named `io.idealyst.runtime.RustPermissionsResult` (added in

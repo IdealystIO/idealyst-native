@@ -611,7 +611,7 @@ mod tests {
         );
         // Chunk boundary: the readable split-module name + the attribute
         // path (retargeted by `finish`).
-        assert!(glue.contains("wasm_split(__idealyst_lazy_Panel)"), "{glue}");
+        assert!(glue.contains("wasm_split(__idealyst_lazy_Panel,fallible)"), "{glue}");
         assert!(
             glue.contains("use::runtime_core::__wasm_splitaswasm_split"),
             "{glue}"
@@ -631,8 +631,13 @@ mod tests {
             "{glue}"
         );
         assert!(glue.contains("__b=__b.with_style(__s)"), "{glue}");
-        // One-shot loader (no `retryable`): take-once cell, loud on reuse.
-        assert!(glue.contains("invokedtwicewithout`retryable`"), "{glue}");
+        // One-shot loader (no `retryable`): ONE take-once cell shared by
+        // every attempt, emptied by the body — so a failed load keeps the
+        // props for retry — and loud if the body runs twice.
+        assert!(glue.contains("::std::rc::Rc::clone(&__cell)"), "{glue}");
+        assert!(glue.contains("bodyrantwicewithout`retryable`"), "{glue}");
+        // A failed chunk load is an `Err`, not a panic.
+        assert!(glue.contains(".map_err("), "{glue}");
         assert!(!glue.contains("derive(::core::clone::Clone)"), "{glue}");
         // Builder wiring: lazy_split + placeholder/on_error config.
         assert!(
@@ -669,7 +674,7 @@ mod tests {
         );
         assert!(glue.contains("derive(::core::clone::Clone)"), "{glue}");
         assert!(glue.contains("::core::clone::Clone::clone(&__props)"), "{glue}");
-        assert!(!glue.contains("invokedtwicewithout"), "{glue}");
+        assert!(!glue.contains("::std::rc::Rc::clone(&__cell)"), "{glue}");
     }
 
     #[test]
@@ -678,7 +683,7 @@ mod tests {
         // NOT fall back to the legacy empty-marker path — the chunk glue
         // needs the generated struct for the loading/error fields.
         let glue = expand_lazy(quote! { lazy }, quote! { fn Screen() -> Element { body() } });
-        assert!(glue.contains("wasm_split(__idealyst_lazy_Screen)"), "{glue}");
+        assert!(glue.contains("wasm_split(__idealyst_lazy_Screen,fallible)"), "{glue}");
         assert!(glue.contains("publoading"), "{glue}");
     }
 
@@ -695,7 +700,7 @@ mod tests {
         );
         assert!(
             glue.contains(
-                "asyncfn__lazy_body(props:PanelProps,)\
+                "asyncfn__lazy_body(__cell:::std::rc::Rc<::std::cell::RefCell<::core::option::Option<PanelProps>>>,)\
                  ->::runtime_core::primitives::lazy::LazyBodyThunk"
             ),
             "{glue}"

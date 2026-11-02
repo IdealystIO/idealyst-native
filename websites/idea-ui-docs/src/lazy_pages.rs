@@ -18,9 +18,8 @@
 //!
 //! `routes::Entry.body` is a plain `fn() -> Element`, so each chunk
 //! component is paired with a snake_case shim that instantiates it with
-//! the shared loading / error fallbacks below. `retryable` derives
-//! `Clone` on the (zero-field) props so the error UI's Retry button can
-//! re-invoke the chunk loader.
+//! the shared loading / error fallbacks below; the error UI's Retry
+//! button fetches the chunk again.
 
 use idea_ui::{Button, ControlSize, Progress, ProgressMode, Stack, StackGap, Typography};
 use runtime_core::primitives::lazy::LazyError;

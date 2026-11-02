@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     ffi::c_void,
     future::Future,
     pin::Pin,
@@ -101,27 +101,37 @@ impl<Args, Ret> LazyLoader<Args, Ret> {
         }
     }
 
-    /// Load the lazy loader, returning an boolean indicating whether it loaded successfully
+    /// Load the lazy loader, returning an boolean indicating whether it loaded successfully.
+    /// After a failure, the next call fetches the module again.
     pub async fn load(&'static self) -> bool {
-        *self.key.with(|inner| inner.lazy.clone()).as_ref().await
+        LazySplitLoader::ensure_loaded(self.key).await
     }
 
     /// Call the lazy loader with the given arguments
     pub fn call(&'static self, args: Args) -> Result<Ret> {
-        let Some(true) = self.key.with(|inner| inner.lazy.try_get().copied()) else {
+        if !self.key.with(|inner| inner.loader.state.get() == SplitLoaderState::Loaded) {
             return Err(SplitLoaderError::FailedToLoad);
-        };
+        }
 
         Ok(unsafe { (self.imported)(args) })
     }
 }
 
-type Lazy = async_once_cell::Lazy<bool, SplitLoaderFuture>;
 type LoadCallbackFn = unsafe extern "C" fn(*const c_void, bool) -> ();
 type LoadFn = unsafe extern "C" fn(LoadCallbackFn, *const c_void) -> ();
 
+/// Loads one split module on demand and remembers only SUCCESS.
+///
+/// A failed load (the fetch 404'd because a deploy removed the running
+/// build's files, a network blip outlasted the JS loader's retries) puts the
+/// loader back to idle, so the next [`ensure_loaded`](Self::ensure_loaded)
+/// fetches again. Caching the failure would turn one bad fetch into a
+/// permanently broken split for the life of the page.
+///
+/// Every caller that awaits while an attempt is in flight shares it and
+/// gets its outcome; a caller arriving after a failure starts a new one.
 pub struct LazySplitLoader {
-    lazy: Pin<Rc<Lazy>>,
+    loader: Rc<SplitLoader>,
 }
 
 impl LazySplitLoader {
@@ -133,82 +143,194 @@ impl LazySplitLoader {
     /// It is likely not instantiated when passed here, so it should never be called directly.
     #[doc(hidden)]
     pub unsafe fn new(load: LoadFn) -> Self {
-        Self {
-            lazy: Rc::pin(Lazy::new({
-                SplitLoaderFuture {
-                    loader: Rc::new(SplitLoader {
-                        state: Cell::new(SplitLoaderState::Deferred(load)),
-                        waker: Cell::new(None),
-                    }),
-                }
-            })),
-        }
+        Self { loader: Rc::new(SplitLoader::new(Some(load), SplitLoaderState::Idle)) }
     }
 
     fn preloaded() -> Self {
-        Self {
-            lazy: Rc::pin(Lazy::new({
-                SplitLoaderFuture {
-                    loader: Rc::new(SplitLoader {
-                        state: Cell::new(SplitLoaderState::Completed(true)),
-                        waker: Cell::new(None),
-                    }),
-                }
-            })),
-        }
+        Self { loader: Rc::new(SplitLoader::new(None, SplitLoaderState::Loaded)) }
     }
 
-    /// Wait for the lazy loader to load
+    /// Wait for the module to load. `false` when this attempt failed; a later
+    /// call tries again.
     pub async fn ensure_loaded(loader: &'static std::thread::LocalKey<LazySplitLoader>) -> bool {
-        *loader.with(|inner| inner.lazy.clone()).as_ref().await
+        let loader = loader.with(|inner| inner.loader.clone());
+        SplitLoaderFuture { loader, attempt: None }.await
     }
 }
 
 struct SplitLoader {
+    /// `None` only for a preloaded loader, which is never idle.
+    load: Option<LoadFn>,
     state: Cell<SplitLoaderState>,
-    waker: Cell<Option<Waker>>,
+    /// Number of the attempt most recently started.
+    attempts: Cell<u64>,
+    /// Number of the attempt that most recently FAILED (0: none yet).
+    last_failed: Cell<u64>,
+    wakers: RefCell<Vec<Waker>>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SplitLoaderState {
-    Deferred(LoadFn),
+    Idle,
     Pending,
-    Completed(bool),
+    Loaded,
+}
+
+impl SplitLoader {
+    fn new(load: Option<LoadFn>, state: SplitLoaderState) -> Self {
+        Self {
+            load,
+            state: Cell::new(state),
+            attempts: Cell::new(0),
+            last_failed: Cell::new(0),
+            wakers: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Record the outcome of the in-flight attempt and wake everyone waiting
+    /// on it.
+    fn finish(&self, success: bool) {
+        if success {
+            self.state.set(SplitLoaderState::Loaded);
+        } else {
+            self.last_failed.set(self.attempts.get());
+            self.state.set(SplitLoaderState::Idle);
+        }
+        let wakers = std::mem::take(&mut *self.wakers.borrow_mut());
+        for waker in wakers {
+            waker.wake();
+        }
+    }
 }
 
 struct SplitLoaderFuture {
     loader: Rc<SplitLoader>,
+    /// The attempt this future is waiting on, once it has joined or started one.
+    attempt: Option<u64>,
 }
 
 impl Future for SplitLoaderFuture {
     type Output = bool;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<bool> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<bool> {
         unsafe extern "C" fn load_callback(loader: *const c_void, success: bool) {
+            // Reclaims the `Rc` leaked to the JS loader when the attempt started.
             let loader = unsafe { Rc::from_raw(loader as *const SplitLoader) };
-            loader.state.set(SplitLoaderState::Completed(success));
-            if let Some(waker) = loader.waker.take() {
-                waker.wake()
-            }
+            loader.finish(success);
         }
 
-        match self.loader.state.get() {
-            SplitLoaderState::Deferred(load) => {
-                self.loader.state.set(SplitLoaderState::Pending);
-                self.loader.waker.set(Some(cx.waker().clone()));
-                unsafe {
-                    load(
-                        load_callback,
-                        Rc::<SplitLoader>::into_raw(self.loader.clone()) as *const c_void,
-                    )
-                };
-                Poll::Pending
-            }
-            SplitLoaderState::Pending => {
-                self.loader.waker.set(Some(cx.waker().clone()));
-                Poll::Pending
-            }
-            SplitLoaderState::Completed(value) => Poll::Ready(value),
+        let loader = self.loader.clone();
+        if loader.state.get() == SplitLoaderState::Loaded {
+            return Poll::Ready(true);
         }
+        if let Some(attempt) = self.attempt {
+            if loader.last_failed.get() >= attempt {
+                return Poll::Ready(false);
+            }
+        }
+        match loader.state.get() {
+            SplitLoaderState::Loaded => unreachable!(),
+            SplitLoaderState::Pending => {
+                self.attempt = Some(loader.attempts.get());
+                loader.wakers.borrow_mut().push(cx.waker().clone());
+                Poll::Pending
+            }
+            SplitLoaderState::Idle => {
+                let load = loader.load.expect("an idle split loader has a load fn");
+                let attempt = loader.attempts.get() + 1;
+                loader.attempts.set(attempt);
+                loader.state.set(SplitLoaderState::Pending);
+                self.attempt = Some(attempt);
+                // Register before calling out: a loader that signals
+                // synchronously still finds this waker.
+                loader.wakers.borrow_mut().push(cx.waker().clone());
+                unsafe { load(load_callback, Rc::into_raw(loader.clone()) as *const c_void) };
+                Poll::Pending
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::task::Wake;
+
+    thread_local! {
+        /// Each `mock_load` call records its callback + data here; the test
+        /// completes it by hand, as the JS loader would.
+        static CALLS: RefCell<Vec<(LoadCallbackFn, usize)>> = const { RefCell::new(Vec::new()) };
+        static LOADER: LazySplitLoader = unsafe { LazySplitLoader::new(mock_load) };
+    }
+
+    unsafe extern "C" fn mock_load(cb: LoadCallbackFn, data: *const c_void) {
+        CALLS.with(|c| c.borrow_mut().push((cb, data as usize)));
+    }
+
+    fn complete_last(success: bool) {
+        let (cb, data) = CALLS.with(|c| *c.borrow().last().expect("a load in flight"));
+        unsafe { cb(data as *const c_void, success) };
+    }
+
+    fn calls() -> usize {
+        CALLS.with(|c| c.borrow().len())
+    }
+
+    struct Noop;
+    impl Wake for Noop {
+        fn wake(self: std::sync::Arc<Self>) {}
+    }
+
+    fn poll<F: Future>(f: &mut Pin<Box<F>>) -> Poll<F::Output> {
+        let waker = Waker::from(std::sync::Arc::new(Noop));
+        f.as_mut().poll(&mut Context::from_waker(&waker))
+    }
+
+    #[test]
+    fn regression_failed_load_is_retried_not_cached() {
+        let mut first = Box::pin(LazySplitLoader::ensure_loaded(&LOADER));
+        assert!(poll(&mut first).is_pending());
+        assert_eq!(calls(), 1);
+        complete_last(false);
+        assert_eq!(poll(&mut first), Poll::Ready(false));
+
+        // A later attempt fetches again instead of returning the cached failure.
+        let mut second = Box::pin(LazySplitLoader::ensure_loaded(&LOADER));
+        assert!(poll(&mut second).is_pending());
+        assert_eq!(calls(), 2);
+        complete_last(true);
+        assert_eq!(poll(&mut second), Poll::Ready(true));
+
+        // Success sticks: no further loads.
+        let mut third = Box::pin(LazySplitLoader::ensure_loaded(&LOADER));
+        assert_eq!(poll(&mut third), Poll::Ready(true));
+        assert_eq!(calls(), 2);
+    }
+
+    #[test]
+    fn concurrent_waiters_share_one_attempt_and_its_outcome() {
+        let mut a = Box::pin(LazySplitLoader::ensure_loaded(&LOADER));
+        let mut b = Box::pin(LazySplitLoader::ensure_loaded(&LOADER));
+        assert!(poll(&mut a).is_pending());
+        assert!(poll(&mut b).is_pending());
+        assert_eq!(calls(), 1, "the second waiter joins the in-flight attempt");
+        complete_last(false);
+        assert_eq!(poll(&mut a), Poll::Ready(false));
+        assert_eq!(poll(&mut b), Poll::Ready(false));
+    }
+
+    #[test]
+    fn a_waiter_that_never_saw_a_failure_starts_a_new_attempt() {
+        let mut a = Box::pin(LazySplitLoader::ensure_loaded(&LOADER));
+        assert!(poll(&mut a).is_pending());
+        complete_last(false);
+        // `b` is first polled after the failure: it is not owed that outcome.
+        let mut b = Box::pin(LazySplitLoader::ensure_loaded(&LOADER));
+        assert!(poll(&mut b).is_pending());
+        assert_eq!(calls(), 2);
+        assert_eq!(poll(&mut a), Poll::Ready(false));
+        complete_last(true);
+        assert_eq!(poll(&mut b), Poll::Ready(true));
     }
 }

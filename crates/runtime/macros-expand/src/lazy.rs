@@ -34,15 +34,19 @@
 //!         // `wasm_split::…` expansion resolves without the author
 //!         // crate depending on `wasm-split` directly.
 //!         use ::runtime_core::__wasm_split as wasm_split;
-//!         #[::runtime_core::__wasm_split::wasm_split(__idealyst_lazy_<hash>)]
+//!         #[::runtime_core::__wasm_split::wasm_split(__idealyst_lazy_<hash>, fallible)]
 //!         async fn __idealyst_lazy_body_<hash>(
 //!             _: (),
-//!         ) -> ::runtime_core::Element {
-//!             ::runtime_core::ui! { Text { "loaded on demand" } }
-//!                 .into_element()
+//!         ) -> ::runtime_core::primitives::lazy::LazyBodyThunk {
+//!             ::std::boxed::Box::new(move || {
+//!                 ::runtime_core::ui! { Text { "loaded on demand" } }
+//!             })
 //!         }
 //!         ::runtime_core::primitives::lazy::lazy_split(|| {
-//!             ::std::boxed::Box::pin(__idealyst_lazy_body_<hash>(()))
+//!             // A chunk that fails to load is `Err` → the `.on_error` UI.
+//!             ::std::boxed::Box::pin(async move {
+//!                 __idealyst_lazy_body_<hash>(()).await.map_err(|e| e.to_string())
+//!             })
 //!         })
 //!     } }
 //! }
@@ -103,7 +107,7 @@ pub fn emit(input: TokenStream2) -> TokenStream2 {
     // pipes the whole expansion through `finish`, so these
     // `::runtime_core::…` paths retarget to `runtime_vocabulary::glue`.
     let body_fn = quote! {
-        #[::runtime_core::__wasm_split::wasm_split(#split_name)]
+        #[::runtime_core::__wasm_split::wasm_split(#split_name, fallible)]
         async fn #body_ident(_: ()) -> ::runtime_core::primitives::lazy::LazyBodyThunk {
             // Typed binding — see lazy_component.rs: the wasm expansion
             // moves these statements into `Box::pin(async move { … })`,
@@ -130,12 +134,13 @@ pub fn emit(input: TokenStream2) -> TokenStream2 {
             #body_fn
             ::runtime_core::primitives::lazy::lazy_split(|| {
                 // The loader yields `Result<_, String>` (the chunk's body
-                // thunk). The wasm-split
-                // wrapper resolves once the chunk is linked, so wrap it `Ok`;
-                // the `Err` arm exists for hand-rolled loaders and drives the
-                // `.on_error(..)` UI.
+                // thunk). A chunk that fails to load is `Err`, which drives
+                // the `.on_error(..)` UI; the body takes no props, so every
+                // call is a fresh attempt.
                 ::std::boxed::Box::pin(async move {
-                    ::std::result::Result::Ok(#body_ident(()).await)
+                    #body_ident(())
+                        .await
+                        .map_err(|__e| ::std::string::ToString::to_string(&__e))
                 })
             })
         }

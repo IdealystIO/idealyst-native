@@ -179,9 +179,9 @@ where
         //
         // So: poll once. If the body is already there, realize it directly.
         //
-        // The future is POLLED, never re-created. `#[component(lazy)]` panics
-        // on a second invocation of a non-`retryable` loader, so a future that
-        // comes back `Pending` (or `Err`) is handed to the streaming path
+        // The future is POLLED, never re-created: a dropped future may have
+        // taken the one-shot `#[component(lazy)]` props with it, so a future
+        // that comes back `Pending` (or `Err`) is handed to the streaming path
         // below rather than dropped and rebuilt. That also means a host whose
         // loader genuinely is async keeps today's behaviour untouched — the
         // fast path is an optimisation that proves itself, not a cfg guess.
@@ -203,7 +203,8 @@ where
         #[cfg(target_arch = "wasm32")]
         let primed: Option<crate::prims::lazy::LazyFuture> = None;
         // First attempt reuses the already-polled future; retries call the
-        // loader (which `retryable` makes legal).
+        // loader again (a `#[component(lazy)]` loader keeps its props until a
+        // load succeeds, so every lazy component can retry a failed load).
         let primed = Rc::new(RefCell::new(primed));
 
         // The currently mounted state UI. Owned by the swap effect's

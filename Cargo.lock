@@ -613,12 +613,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-once-cell"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4288f83726785267c6f2ef073a3d83dc3f9b81464e9f99898240cced85fce35a"
-
-[[package]]
 name = "async-process"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4308,6 +4302,7 @@ name = "file-export"
 version = "1.6.3"
 dependencies = [
  "ashpd",
+ "backend-android-mobile",
  "block2 0.5.1",
  "futures-channel",
  "jni 0.21.1",
@@ -4326,6 +4321,7 @@ name = "file-picker"
 version = "3.0.1"
 dependencies = [
  "ashpd",
+ "backend-android-mobile",
  "block2 0.5.1",
  "futures-channel",
  "jni 0.21.1",
@@ -9435,6 +9431,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 name = "permissions"
 version = "3.0.1"
 dependencies = [
+ "backend-android-mobile",
  "backend-windows",
  "block2 0.5.1",
  "jni 0.21.1",
@@ -14568,7 +14565,6 @@ dependencies = [
 name = "wasm-splitter"
 version = "1.5.2"
 dependencies = [
- "async-once-cell",
  "wasm-split-macro",
 ]
 

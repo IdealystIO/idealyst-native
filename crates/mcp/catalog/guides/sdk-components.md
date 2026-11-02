@@ -272,11 +272,9 @@ rather than something consumers have to remember.
 **The consumer picks the loading and error UI.** They pass closures at the call
 site; you don't get a say, and shouldn't want one.
 
-**You decide whether retry exists.** Re-attempting a load means re-sending the
-props, which needs them cloneable, so retry only works if you declared
-`#[component(lazy, retryable)]`. If you didn't, `LazyError::retry()` still
-exists and does nothing — a consumer can wire a dead button. Document which one
-you shipped.
+**Retry is always available.** A failed chunk load never runs the body, so
+the props are still there and `LazyError::retry()` fetches the chunk again on
+every lazy component — consumers can wire a retry button without you opting in.
 
 Warn consumers about the defaults while you're at it: an unset `loading` renders
 **nothing**, and an unset `error` leaves the loading UI up permanently, so a

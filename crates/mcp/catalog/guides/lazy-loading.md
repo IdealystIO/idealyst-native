@@ -85,24 +85,34 @@ ui! {
 ```
 
 - `loading` renders while the chunk is fetching (default: an empty view).
-- `error` renders if the fetch or dynamic-link fails. The `LazyError` it
-  receives carries `.message()` and `.retry()`.
+- `error` renders if the chunk can't be loaded. The `LazyError` it receives
+  carries `.message()` and `.retry()`; `retry()` shows `loading` again and
+  fetches the chunk again. It works on every lazy component: a failed load
+  never ran the body, so the props are still there to hand over.
 - The loaded component renders itself on success — there's no third prop for it.
 
-### Retry needs `retryable`
+### What happens when a chunk fails to load
 
-`retry()` re-invokes the loader, which re-passes the props to the component — so
-it needs to reproduce them. By default a lazy component moves its props into the
-loader **once** (no `Clone` bound, the common case). Opt into retry explicitly:
+The web loader handles the two common causes before your `error` UI sees
+anything:
 
-```rust
-#[component(lazy, retryable)]     // derives Clone on the props so retry() works
-fn Editor(document_id: u32) -> Element { /* ... */ }
-```
+- **A brief network failure** (no response, or HTTP 408 / 429 / 5xx) is
+  retried twice, after 0.5 s and 2 s.
+- **A chunk of the running build is gone** (HTTP 404 / 410) — a deploy
+  replaced the build this tab is running and removed the old files. No retry
+  can succeed, so the page reloads once to pick up the current build. The
+  reload is guarded per chunk URL in `sessionStorage`, so it can't loop; with
+  storage blocked there is no reload.
 
-Without `retryable` the `error` UI can still show `e.message()`; calling
-`e.retry()` will panic (it tells you to add `retryable`). With it, the props
-must be `Clone` — a clear compile error names any field that isn't.
+Anything else, or a failure that outlasts those, resolves the load as failed:
+the `error` UI renders (or, with no `error` set, the failure is logged and
+`loading` stays up). Nothing panics, and a later `retry()` fetches again.
+
+Keeping a replaced build's files on the server for a while is still worth
+doing: it lets open tabs keep working without the reload.
+
+`#[component(lazy, retryable)]` is still accepted; it derives `Clone` on the
+props, which the retry above doesn't need.
 
 ## Build a split bundle
 
