@@ -154,6 +154,11 @@ pub fn every_event() -> Vec<DevEvent> {
             },
             log_file: Some("/cf/server.log".into()),
         },
+        DevEvent::ServerRecompiling { target: SERVER_TARGET.into(), cause: None },
+        DevEvent::ServerRecompiling {
+            target: SERVER_TARGET.into(),
+            cause: Some("/cf/target/idealyst-dev-server is on a filesystem that drops …".into()),
+        },
         DevEvent::Warning { source: "s".into(), message: "m".into() },
         DevEvent::Error { source: "s".into(), message: "m".into() },
         DevEvent::Log { source: "dev".into(), line: "l".into() },

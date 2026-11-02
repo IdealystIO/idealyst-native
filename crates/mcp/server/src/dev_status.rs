@@ -33,6 +33,9 @@ pub fn summarize(body: &Value) -> Value {
     let mut warnings: BTreeMap<String, usize> = BTreeMap::new();
     let mut urls: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
     let mut down: BTreeMap<String, Value> = BTreeMap::new();
+    // A server whose `cargo run` is compiling after its build, until it
+    // answers, stops, or builds again.
+    let mut recompiling: BTreeMap<String, Value> = BTreeMap::new();
     let mut acks: BTreeMap<String, Value> = BTreeMap::new();
     let mut started = Value::Null;
     let mut relay = Value::Null;
@@ -53,18 +56,28 @@ pub fn summarize(body: &Value) -> Value {
             }
             "build_started" => {
                 warnings.remove(&target);
+                recompiling.remove(&target);
             }
             "diagnostic" if e["diagnostic"]["level"] == "warning" => {
                 *warnings.entry(target).or_default() += 1;
             }
             "server_ready" => {
+                // Filed under the page's target (`web`), it ends the
+                // server's start whatever its own target is called.
+                if e["kind"] == "full_stack" {
+                    recompiling.clear();
+                }
                 let kind = e["kind"].as_str().unwrap_or("server").to_string();
                 urls.entry(target).or_default().insert(kind, e["url"].clone());
             }
             "stream_route" => {
                 urls.entry(target).or_default().insert("stream_route".into(), json!({ "route": e["route"], "url": e["url"] }));
             }
+            "server_recompiling" => {
+                recompiling.insert(target, json!({ "cause": e["cause"] }));
+            }
             "server_down" => {
+                recompiling.remove(&target);
                 let mut d = e.clone();
                 if let Some(o) = d.as_object_mut() {
                     for k in ["v", "seq", "at_ms", "type", "target"] {
@@ -100,6 +113,7 @@ pub fn summarize(body: &Value) -> Value {
         .keys()
         .chain(urls.keys())
         .chain(down.keys())
+        .chain(recompiling.keys())
         .chain(acks.keys())
         .chain(warnings.keys())
         .cloned()
@@ -120,6 +134,9 @@ pub fn summarize(body: &Value) -> Value {
         }
         if let Some(d) = down.get(name) {
             o.insert("server_down".into(), d.clone());
+        }
+        if let Some(r) = recompiling.get(name) {
+            o.insert("recompiling".into(), r.clone());
         }
         if let Some(a) = acks.get(name) {
             o.insert("page".into(), a.clone());
@@ -235,5 +252,24 @@ mod tests {
         let out = summarize(&body);
         assert_eq!(out["targets"]["web"]["queued"], true);
         assert_eq!(out["targets"]["server"]["building"]["stage"], "cargo");
+    }
+
+    /// Regression: a server whose `cargo run` recompiled after its build
+    /// looked, to an agent, like a server slow to start. The target says
+    /// so, with the cause, until the server answers.
+    #[test]
+    fn a_recompiling_cargo_run_shows_until_the_server_answers() {
+        let recompiling = json!({ "v": 1, "seq": 3, "at_ms": 0, "type": "server_recompiling", "target": "server", "cause": "rounded mtimes" });
+        let mut events = vec![
+            json!({ "v": 1, "seq": 1, "at_ms": 0, "type": "build_started", "target": "server", "cause": "initial" }),
+            json!({ "v": 1, "seq": 2, "at_ms": 0, "type": "build_finished", "target": "server", "outcome": "ready", "gen": 1, "ms": 9 }),
+            recompiling,
+        ];
+        let out = summarize(&json!({ "session": { "pid": 7 }, "events": events.clone() }));
+        assert_eq!(out["targets"]["server"]["recompiling"], json!({ "cause": "rounded mtimes" }));
+        assert!(out["other"].as_array().is_none_or(Vec::is_empty), "{}", out["other"]);
+        events.push(json!({ "v": 1, "seq": 4, "at_ms": 0, "type": "server_ready", "target": "web", "kind": "full_stack", "url": "http://127.0.0.1:3100" }));
+        let out = summarize(&json!({ "session": { "pid": 7 }, "events": events }));
+        assert!(out["targets"]["server"].get("recompiling").is_none(), "{}", out["targets"]["server"]);
     }
 }

@@ -898,6 +898,11 @@ pub fn start_with(
     });
     let started = std::time::Instant::now();
     let build_started = std::time::SystemTime::now();
+    // Said before the first build, so a session whose every build is
+    // nearly a full one hears why at the start.
+    if let Some(cause) = build_ios::target_gc::rounded_mtime_cause(&web_target_dir(dir, &opts)) {
+        reporter.warn("dev-reload", cause);
+    }
     let state_path = resume::state_path(&web_target_dir(dir, &opts));
     // The last session's base and patches, when nothing it was built
     // from has moved: no cargo, no reload onto a recompile of the

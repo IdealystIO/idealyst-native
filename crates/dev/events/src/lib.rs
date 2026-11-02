@@ -716,6 +716,19 @@ pub enum DevEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         log_file: Option<String>,
     },
+    /// A full-stack server's `cargo run` is compiling after the server's
+    /// own build finished. The loop builds the server first so that `cargo
+    /// run` finds it fresh and only starts it; compiling there means cargo
+    /// judged that build stale, and the server's start waits on a second
+    /// build. Sent once per start, at the first `Compiling` line, and only
+    /// when a build of the loop's preceded it (`--no-build` leaves the
+    /// build to `cargo run`). `cause` says why, when the loop knows (a
+    /// target dir on a filesystem that rounds file times cargo sets).
+    ServerRecompiling {
+        target: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cause: Option<String>,
+    },
     /// Something went wrong that the loop survives.
     Warning { source: String, message: String },
     /// Something failed.

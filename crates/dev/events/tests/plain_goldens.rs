@@ -523,6 +523,27 @@ fn the_server_down_lines() {
     );
 }
 
+/// `cargo run` compiling after the server's own build: the line says the
+/// start waits on it, and why when the loop knows.
+#[test]
+fn the_server_recompiling_lines() {
+    let recompiling = |cause: Option<&str>| DevEvent::ServerRecompiling {
+        target: dev_events::SERVER_TARGET.into(),
+        cause: cause.map(Into::into),
+    };
+    assert_eq!(
+        line(recompiling(None)).as_deref(),
+        Some("[server] `cargo run` is compiling the server its build just produced; it starts when that finishes")
+    );
+    assert_eq!(
+        line(recompiling(Some("the target dir rounds file times"))).as_deref(),
+        Some(
+            "[server] `cargo run` is compiling the server its build just produced; it starts when \
+             that finishes: the target dir rounds file times"
+        )
+    );
+}
+
 /// The full-stack server PROCESS's own output (request logs, tracing,
 /// panics, `cargo run`'s lines) is captured, and a plain terminal still
 /// sees every line — tagged, so a CI log or the MCP dev-runner can tell it

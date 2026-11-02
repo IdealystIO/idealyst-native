@@ -112,8 +112,10 @@ pub enum State {
     Queued,
     /// A server that built and is being (re)started: `starting` or
     /// `restarting`, until it accepts connections. `note` is what its
-    /// build did, carried into [`State::Running`].
-    Launching { label: &'static str, note: String },
+    /// build did, carried into [`State::Running`]. `recompiling` once its
+    /// `cargo run` started compiling what that build produced
+    /// (`server_recompiling`): the start waits on a second build.
+    Launching { label: &'static str, note: String, recompiling: bool },
     /// A server accepting connections at `url`. `note` says what its last
     /// build did; `fresh` when that was a save's rebuild (a restart, or a
     /// rebuild that changed nothing) rather than the session's start.
@@ -376,7 +378,7 @@ impl Model {
                         self.server_url = Some(url.clone());
                         if let Some(server) = self.server.clone() {
                             let (note, fresh) = match &self.target(&server).state {
-                                State::Launching { label, note } => {
+                                State::Launching { label, note, .. } => {
                                     (note.clone(), *label == "restarting")
                                 }
                                 // Started with no build of ours (`--no-build`).
@@ -506,6 +508,13 @@ impl Model {
                 );
                 self.target(target).pending.clear();
             }
+            // In place, not `set`: the elapsed time keeps counting from
+            // the start, which is how long the server has been coming.
+            DevEvent::ServerRecompiling { target, .. } => {
+                if let State::Launching { recompiling, .. } = &mut self.target(target).state {
+                    *recompiling = true;
+                }
+            }
             DevEvent::StageStarted { target, stage } => {
                 if let State::Building { stage: s, .. } = &mut self.target(target).state {
                     *s = Some(stage.clone());
@@ -533,7 +542,11 @@ impl Model {
                     BuildOutcome::Ready { .. } => {
                         self.set(
                             target,
-                            State::Launching { label: "starting", note: format!("built in {built}") },
+                            State::Launching {
+                                label: "starting",
+                                note: format!("built in {built}"),
+                                recompiling: false,
+                            },
                         );
                         self.clear_error(target);
                     }
@@ -543,6 +556,7 @@ impl Model {
                             State::Launching {
                                 label: "restarting",
                                 note: format!("restarted · rebuilt in {built}"),
+                                recompiling: false,
                             },
                         );
                         self.finish_save(target, "rebuild", "restarted".into(), false);
@@ -1204,7 +1218,7 @@ mod tests {
         })]);
         assert_eq!(
             row(&m, "server").state,
-            State::Launching { label: "starting", note: "built in 41.0s".into() }
+            State::Launching { label: "starting", note: "built in 41.0s".into(), recompiling: false }
         );
         assert!(row(&m, "server").state.busy(), "starting spins until the port answers");
         run(&mut m, vec![(41_900, DevEvent::ServerReady {
@@ -1221,6 +1235,43 @@ mod tests {
             }
         );
         assert!(m.history.is_empty(), "starting up is not a save");
+    }
+
+    /// Regression: a devcontainer whose `cargo run` recompiled the whole
+    /// server after its build showed `starting · 216.7s` and nothing else.
+    /// The row now says the run is compiling, still counting from the
+    /// start, and `running` clears it.
+    #[test]
+    fn regression_a_recompiling_cargo_run_shows_on_the_starting_row() {
+        let mut m = full_stack();
+        run(
+            &mut m,
+            vec![
+                (12, DevEvent::BuildStarted { target: server(), cause: BuildCause::Initial }),
+                (1_000, DevEvent::BuildFinished {
+                    target: server(),
+                    outcome: BuildOutcome::Ready { gen: 1 },
+                    ms: 988,
+                }),
+                (8_000, DevEvent::ServerRecompiling { target: server(), cause: None }),
+            ],
+        );
+        let t = row(&m, "server");
+        assert_eq!(
+            t.state,
+            State::Launching { label: "starting", note: "built in 1.0s".into(), recompiling: true }
+        );
+        assert_eq!(t.since_ms, 1_000, "the elapsed time counts from the start, not the recompile");
+        assert!(t.state.busy());
+        run(&mut m, vec![(360_000, DevEvent::ServerReady {
+            target: web(),
+            kind: ServerKind::FullStack,
+            url: "http://127.0.0.1:3100".into(),
+        })]);
+        assert_eq!(
+            row(&m, "server").state,
+            State::Running { url: "http://127.0.0.1:3100".into(), note: "built in 1.0s".into(), fresh: false }
+        );
     }
 
     fn running() -> Model {
@@ -1296,7 +1347,11 @@ mod tests {
         })]);
         assert_eq!(
             row(&m, "server").state,
-            State::Launching { label: "restarting", note: "restarted · rebuilt in 12.0s".into() }
+            State::Launching {
+                label: "restarting",
+                note: "restarted · rebuilt in 12.0s".into(),
+                recompiling: false,
+            }
         );
         run(&mut m, vec![(14_000, DevEvent::ServerReady {
             target: web(),

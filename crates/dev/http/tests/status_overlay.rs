@@ -255,6 +255,23 @@ fn the_badge_follows_the_full_stack_server_through_a_restart() {
     assert_eq!(frames[4]["badge"], "✓ server restarted", "{}", frames[4]);
 }
 
+/// Regression: a server whose `cargo run` recompiled what its build had
+/// just produced sat at "⚙ starting server" for minutes with no hint. The
+/// badge now says the run is compiling, until the server answers.
+#[test]
+fn regression_the_badge_says_when_cargo_run_is_recompiling() {
+    const SRV_INITIAL: &str = r#"{"v":1,"seq":22,"at_ms":2,"type":"build_started","target":"server","cause":"initial"}"#;
+    const SRV_BUILT: &str = r#"{"v":1,"seq":25,"at_ms":5,"type":"build_finished","target":"server","outcome":"ready","gen":1,"ms":9000}"#;
+    const SRV_RECOMPILING: &str = r#"{"v":1,"seq":26,"at_ms":6,"type":"server_recompiling","target":"server","cause":"the target dir rounds file times"}"#;
+    const SRV_UP: &str = r#"{"v":1,"seq":27,"at_ms":7,"type":"server_ready","target":"web","kind":"full_stack","url":"http://127.0.0.1:3100"}"#;
+    let Some(frames) = run(&[FS_SESSION, SRV_INITIAL, SRV_BUILT, "#", SRV_RECOMPILING, "#", SRV_UP, "#"]) else {
+        return skip();
+    };
+    assert_eq!(frames[0]["badge"], "⚙ starting server", "{}", frames[0]);
+    assert_eq!(frames[1]["badge"], "⚙ starting server · cargo run is recompiling", "{}", frames[1]);
+    assert_ne!(frames[2]["badge"], frames[1]["badge"], "cleared once the server answers: {}", frames[2]);
+}
+
 /// A server that fails to build shows its error like any build's, named
 /// as the server's.
 #[test]

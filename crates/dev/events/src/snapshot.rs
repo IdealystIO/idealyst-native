@@ -164,7 +164,10 @@ impl SessionState {
             | DevEvent::PatchStep { target, .. }
             | DevEvent::BuildTimed { target, .. }
             | DevEvent::PatchFailed { target, .. }
-            | DevEvent::PageAck { target, .. } => {
+            | DevEvent::PageAck { target, .. }
+            // After the episode's `build_finished`: a page that reloads
+            // while the server's `cargo run` compiles still says so.
+            | DevEvent::ServerRecompiling { target, .. } => {
                 self.targets.entry(target.clone()).or_default().events.push(e);
             }
             // State, like a server's address: the latest says it all.

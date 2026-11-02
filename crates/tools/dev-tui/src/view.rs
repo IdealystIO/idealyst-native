@@ -415,7 +415,10 @@ fn status(t: &Target, now_ms: u64, frame: u64) -> (String, Tone) {
         State::Down { summary } => (format!("✗ {summary}"), Tone::Error),
         State::Note { line } => (format!("● {line}"), Tone::Muted),
         State::Queued => ("○ queued".into(), Tone::Muted),
-        State::Launching { label, .. } => (format!("{spin} {label} · {elapsed}"), Tone::Busy),
+        State::Launching { label, recompiling: false, .. } => (format!("{spin} {label} · {elapsed}"), Tone::Busy),
+        State::Launching { label, recompiling: true, .. } => {
+            (format!("{spin} {label} · cargo run is recompiling · {elapsed}"), Tone::Busy)
+        }
         State::Running { url, note, fresh } => {
             let note = if note.is_empty() { String::new() } else { format!(" · {note}") };
             if *fresh {
@@ -575,6 +578,20 @@ mod tests {
         assert!(cut.starts_with("r rebuild · l log · q quit · …"), "{cut}");
         assert!(cut.ends_with("app/server.log"), "{cut}");
         assert_eq!(fit_tail("short", 60), "short");
+    }
+
+    #[test]
+    fn a_recompiling_start_says_so_beside_its_elapsed_time() {
+        let mut m = Model::new(&["server".to_string()]);
+        let t = &mut m.targets[0];
+        t.since_ms = 1_000;
+        t.state = State::Launching { label: "starting", note: String::new(), recompiling: false };
+        assert_eq!(status(t, 217_700, 0).0, format!("{} starting · 216.7s", SPINNER[0]));
+        t.state = State::Launching { label: "starting", note: String::new(), recompiling: true };
+        assert_eq!(
+            status(t, 217_700, 0).0,
+            format!("{} starting · cargo run is recompiling · 216.7s", SPINNER[0])
+        );
     }
 
     #[test]

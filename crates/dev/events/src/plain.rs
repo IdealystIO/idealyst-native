@@ -190,6 +190,16 @@ pub fn render(event: &DevEvent) -> Option<String> {
                 }
             }
         }
+        DevEvent::ServerRecompiling { target, cause } => {
+            let head = format!(
+                "[{target}] `cargo run` is compiling the server its build just produced; \
+                 it starts when that finishes"
+            );
+            match cause {
+                Some(cause) => format!("{head}: {cause}"),
+                None => head,
+            }
+        }
         DevEvent::Warning { source, message }
         | DevEvent::Error { source, message }
         | DevEvent::Log { source, line: message } => format!("[{source}] {message}"),

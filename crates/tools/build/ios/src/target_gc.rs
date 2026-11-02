@@ -1061,9 +1061,116 @@ pub fn prune_units_keep_newest(profile: &Path, dry_run: bool) -> GcReport {
     report
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Filesystems that round a SET file time
+// ─────────────────────────────────────────────────────────────────────
+
+/// The fractional second the probe asks for. Anything non-zero works;
+/// an odd value cannot be produced by a filesystem's own rounding.
+const PROBE_NANOS: u32 = 512_151_383;
+
+/// Whether files in `dir` keep the sub-second part of the mtime a WRITE
+/// gives them, but lose it from an mtime that is SET.
+///
+/// Cargo sets each unit's dep-info file to the moment rustc started and
+/// counts an input with a strictly later mtime as changed. Where a set
+/// time is rounded down to the second, an input written earlier in that
+/// same second — a build script's `out/` file, written just before
+/// rustc starts — is always later, so the unit (`serde_core` is the
+/// usual one) and everything above it compile again on every cargo
+/// invocation, however fresh. Docker Desktop's bind mount of a macOS
+/// folder behaves this way: in a devcontainer, a written mtime read back
+/// `.284294824` and a set one `.000000000`.
+///
+/// A filesystem that rounds BOTH (HFS+, FAT) is harmless — the two times
+/// then compare equal, and equal is fresh — so it answers `false`, as
+/// does a write that happened to land on a whole second, where the probe
+/// cannot tell.
+pub fn set_mtime_loses_subsecond(dir: &Path) -> std::io::Result<bool> {
+    use std::io::Write;
+    fs::create_dir_all(dir)?;
+    let probe = dir.join(format!(".idealyst-mtime-probe-{}", std::process::id()));
+    let result = (|| {
+        let mut file = fs::File::create(&probe)?;
+        file.write_all(b"probe")?;
+        drop(file);
+        let written = fs::metadata(&probe)?.modified()?;
+        let second = written.duration_since(UNIX_EPOCH).map_err(std::io::Error::other)?.as_secs();
+        // Set through a FRESH handle, as cargo sets a dep-info file rustc
+        // already closed. Not the handle that wrote it: the bind mount
+        // keeps the fraction for a file still open from its write (a
+        // set there read back `.512151383`, the same set after a reopen
+        // `.000000000`), so that probe answered `false` on the very
+        // mount that rebuilds.
+        fs::OpenOptions::new().write(true).open(&probe)?.set_modified(UNIX_EPOCH + Duration::new(second, PROBE_NANOS))?;
+        let set = fs::metadata(&probe)?.modified()?;
+        Ok(rounds_set_time(subsec_nanos(written), subsec_nanos(set)))
+    })();
+    let _ = fs::remove_file(&probe);
+    result
+}
+
+fn subsec_nanos(t: SystemTime) -> u32 {
+    t.duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_nanos())
+}
+
+/// The asymmetry [`set_mtime_loses_subsecond`] looks for: a written time
+/// with a fractional second beside a set one without.
+fn rounds_set_time(written_nanos: u32, set_nanos: u32) -> bool {
+    written_nanos != 0 && set_nanos == 0
+}
+
+/// [`set_mtime_loses_subsecond`] for `dir`, probed once per process (a
+/// failed probe counts as `false`: it never blocks a build).
+pub fn rounds_set_mtimes(dir: &Path) -> bool {
+    static PROBED: std::sync::Mutex<BTreeMap<PathBuf, bool>> = std::sync::Mutex::new(BTreeMap::new());
+    let mut probed = PROBED.lock().unwrap_or_else(|e| e.into_inner());
+    *probed
+        .entry(dir.to_path_buf())
+        .or_insert_with(|| set_mtime_loses_subsecond(dir).unwrap_or(false))
+}
+
+/// Why cargo keeps recompiling into `dir`, when it is on a filesystem
+/// that rounds set file times ([`rounds_set_mtimes`]); `None` otherwise.
+pub fn rounded_mtime_cause(dir: &Path) -> Option<String> {
+    rounds_set_mtimes(dir).then(|| {
+        format!(
+            "{} is on a filesystem that drops the fraction of a second from a file time cargo \
+             sets (a Docker Desktop bind mount of a macOS folder does), so cargo sees build-script \
+             output as newer than the build and recompiles most of the dependency graph on every \
+             build — put the target dir on a container-local volume",
+            dir.display()
+        )
+    })
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn rounding_only_the_set_time_is_the_asymmetry_that_rebuilds() {
+        // Docker Desktop's macOS bind mount: written keeps it, set drops it.
+        assert!(rounds_set_time(284_294_824, 0));
+        // A local filesystem keeps both.
+        assert!(!rounds_set_time(284_294_824, PROBE_NANOS));
+        // HFS+/FAT round both: equal times, and equal is fresh to cargo.
+        assert!(!rounds_set_time(0, 0));
+    }
+
+    /// The probe on the test machine's own temp dir — a local filesystem
+    /// that keeps nanoseconds both ways — answers `false` and leaves no
+    /// file behind. The `true` case needs a bind mount that rounds set
+    /// times, which no test machine can create; it was checked by hand in
+    /// a Docker Desktop devcontainer.
+    #[test]
+    fn a_local_target_dir_keeps_set_mtimes() {
+        let dir = std::env::temp_dir().join(format!("idealyst-mtime-probe-test-{}", std::process::id()));
+        assert!(!set_mtime_loses_subsecond(&dir).expect("probe"));
+        assert_eq!(fs::read_dir(&dir).expect("dir").count(), 0, "the probe file is removed");
+        assert_eq!(rounded_mtime_cause(&dir), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     /// Retry `f` until it returns `Some`, for up to ~1 s. A test that drops
     /// a flock and immediately re-acquires it can lose to a sibling test's

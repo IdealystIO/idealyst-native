@@ -101,7 +101,9 @@ function idealystStatusOverlay(doc, capture) {
   // The full-stack server, whose events carry its own target: kept apart
   // so its build and the bundle's can both be shown at once.
   var serverTarget = "server";
-  var srv = { phase: "idle", initial: false, stage: null, progress: null, pending: [] };
+  // `recompiling`: the server's `cargo run` is compiling what its build
+  // just produced, so its start waits on a second build.
+  var srv = { phase: "idle", initial: false, stage: null, progress: null, pending: [], recompiling: false };
 
   function applyServer(ev) {
     switch (ev.type) {
@@ -110,6 +112,7 @@ function idealystStatusOverlay(doc, capture) {
         break;
       case "build_started":
         srv.phase = "building";
+        srv.recompiling = false;
         srv.initial = ev.cause === "initial";
         srv.stage = null;
         srv.progress = null;
@@ -125,7 +128,11 @@ function idealystStatusOverlay(doc, capture) {
         if (ev.diagnostic && srv.pending.length < 64) srv.pending.push(ev.diagnostic);
         break;
       case "server_down":
+        srv.recompiling = false;
         failServer(ev);
+        break;
+      case "server_recompiling":
+        srv.recompiling = true;
         break;
       case "build_finished":
         if (ev.outcome === "failed") {
@@ -156,8 +163,10 @@ function idealystStatusOverlay(doc, capture) {
   function serverText() {
     var t;
     if (srv.phase === "change") t = "… server change";
-    else if (srv.phase === "starting") t = "⚙ starting server";
-    else if (srv.phase === "restarting") t = "⚙ restarting server";
+    else if (srv.phase === "starting" || srv.phase === "restarting") {
+      t = "⚙ " + srv.phase + " server";
+      if (srv.recompiling) t += " · cargo run is recompiling";
+    }
     else {
       t = "⚙ " + (srv.initial ? "building" : "rebuilding") + " server…";
       if (srv.progress) {
@@ -295,6 +304,7 @@ function idealystStatusOverlay(doc, capture) {
       // waiting on it) follows on the reload stream.
       var restarted = srv.phase === "restarting";
       srv.phase = "idle";
+      srv.recompiling = false;
       if (restarted && st.phase !== "building" && st.phase !== "patching" && st.phase !== "change") {
         succeeded("server restarted");
       }

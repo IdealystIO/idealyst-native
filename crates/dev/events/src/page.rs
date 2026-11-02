@@ -31,6 +31,7 @@ pub fn wants(event: &DevEvent) -> bool {
         | DevEvent::BuildFinished { .. }
         | DevEvent::SidecarApplied { .. }
         | DevEvent::ServerDown { .. }
+        | DevEvent::ServerRecompiling { .. }
         | DevEvent::Error { .. } => true,
         // Errors only: a page shows what stopped the build, and a crate's
         // warnings would bury it.
@@ -56,5 +57,18 @@ pub fn wants(event: &DevEvent) -> bool {
         // The page knows its own Robot connection better than the relay
         // does — it reports it itself (`status_overlay.js`'s `robot`).
         DevEvent::RobotRelay { .. } | DevEvent::RobotApps { .. } => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The page's status line says "starting server" until the server
+    /// answers; without this event it kept saying so through a whole
+    /// second compile inside `cargo run`.
+    #[test]
+    fn regression_the_page_hears_that_cargo_run_is_recompiling_the_server() {
+        assert!(wants(&DevEvent::ServerRecompiling { target: crate::SERVER_TARGET.into(), cause: None }));
     }
 }
