@@ -223,6 +223,7 @@ fn radio_indicator(
     on_select: Rc<dyn Fn()>,
     disabled: Reactive<bool>,
     a11y_label: Option<String>,
+    test_id: Option<&'static str>,
     values: AxisValues<RadioStyles>,
     styles: RadioSlotStyles,
 ) -> Element {
@@ -267,7 +268,8 @@ fn radio_indicator(
         Some(text) => ring.a11y_label(text),
         None => ring,
     };
-    ring.into_element()
+    // The test id lands on the ring (the pressable), not the label row.
+    with_test_id!(ring, test_id).into_element()
 }
 
 /// A clickable indicator + optional label row. The indicator owns the
@@ -279,6 +281,7 @@ fn radio_row(
     label: Option<(Element, Option<String>)>,
     on_select: Rc<dyn Fn()>,
     disabled: Reactive<bool>,
+    test_id: Option<&'static str>,
     values: AxisValues<RadioStyles>,
     styles: RadioSlotStyles,
 ) -> Element {
@@ -287,7 +290,15 @@ fn radio_row(
         None => (None, None),
     };
     let row_disabled = disabled.clone();
-    let indicator = radio_indicator(is_selected, on_select.clone(), disabled, label_text, values.clone(), styles.clone());
+    let indicator = radio_indicator(
+        is_selected,
+        on_select.clone(),
+        disabled,
+        label_text,
+        test_id,
+        values.clone(),
+        styles.clone(),
+    );
     // No label — the indicator IS the whole control; skip the wrapper row.
     let Some(label_el) = label_el else { return indicator };
 
@@ -342,6 +353,9 @@ pub struct RadioProps {
     /// `Signal<bool>`/`rx!` and the radio enables and disables in place.
     #[schema(constraint = "reactive: static bool or Signal/rx!")]
     pub disabled: bool,
+    /// Optional robot/E2E test id, forwarded to the ring (the pressable
+    /// that owns the press + focus). Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for RadioProps {
@@ -354,6 +368,7 @@ impl Default for RadioProps {
             variant: Reactive::Static(RadioVariant::default()),
             size: Reactive::Static(RadioSize::default()),
             disabled: Reactive::Static(false),
+            test_id: None,
             styles: Default::default(),
         }
     }
@@ -370,7 +385,15 @@ pub fn Radio(props: &RadioProps) -> Element {
     let label_style = RadioStyles::label().values(&values).overridden(styles.label.as_ref());
     let label = crate::components::optional_reactive_text(props.label.clone(), label_style)
         .map(|el| (el, props.label.get()));
-    radio_row(move || selected.get(), label, props.on_select.clone(), props.disabled.clone(), values, styles)
+    radio_row(
+        move || selected.get(),
+        label,
+        props.on_select.clone(),
+        props.disabled.clone(),
+        props.test_id,
+        values,
+        styles,
+    )
 }
 
 // =============================================================================
@@ -386,11 +409,21 @@ pub struct RadioOption {
     /// Row label. `Reactive<String>` — static or live (signal/`rx!`).
     #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub label: Reactive<String>,
+    /// Optional robot/E2E test id for this option's ring (the pressable
+    /// that selects it). Set it with [`RadioOption::test_id`]. Inert
+    /// outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl RadioOption {
     pub fn new(id: impl Into<String>, label: impl Into<Reactive<String>>) -> Self {
-        Self { id: id.into(), label: label.into() }
+        Self { id: id.into(), label: label.into(), test_id: None }
+    }
+
+    /// Give this option's ring a robot/E2E test id.
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.test_id = Some(id);
+        self
     }
 }
 
@@ -468,6 +501,7 @@ pub fn RadioGroup(props: RadioGroupProps) -> Element {
             let on_select: Rc<dyn Fn()> = Rc::new(move || (on_change_for_row)(id_for_select.clone()));
 
             let a11y_label = option.label.get();
+            let test_id = option.test_id;
             let label = runtime_core::text(option.label)
                 .with_style(RadioStyles::label().values(&values).overridden(styles.label.as_ref()))
                 .into_element();
@@ -477,6 +511,7 @@ pub fn RadioGroup(props: RadioGroupProps) -> Element {
                 Some((label, Some(a11y_label))),
                 on_select,
                 disabled.clone(),
+                test_id,
                 values.clone(),
                 styles.clone(),
             )

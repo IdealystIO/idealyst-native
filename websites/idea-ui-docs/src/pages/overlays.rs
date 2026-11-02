@@ -619,6 +619,7 @@ pub fn collapsible() -> Element {
                     Prop { name: "transition",  ty: "CollapsibleTransition", desc: "Measured (default) — animates MaxHeight 0↔measured-content-height. Snap — instant." },
                     Prop { name: "duration_ms", ty: "u32",                   desc: "Open/close duration. Default 240; only meaningful with Measured. Keep near 240 to match baked chrome transitions." },
                     Prop { name: "children",    ty: "Vec<Element>",          desc: "Body contents. Always mounted; visibility flows through the transition strategy." },
+                    Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the header toggle (the pressable; not trailing)." },
                 ])
             }
 

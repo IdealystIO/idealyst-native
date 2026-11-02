@@ -78,6 +78,9 @@ pub struct TimeInputProps {
     pub icon: bool,
     /// Pin an exact input width in pixels (see [`Field`]).
     pub width: Option<f32>,
+    /// Optional robot/E2E test id, forwarded to the text input (see
+    /// [`Field`]'s `test_id`). Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for TimeInputProps {
@@ -94,6 +97,7 @@ impl Default for TimeInputProps {
             size: Reactive::Static(FieldSize::default()),
             icon: Reactive::Static(true),
             width: Reactive::Static(None),
+            test_id: None,
         }
     }
 }
@@ -141,6 +145,7 @@ pub fn TimeInput(props: TimeInputProps) -> Element {
             size = props.size.clone(),
             leading = leading,
             width = props.width.clone(),
+            test_id = props.test_id,
         )
     }
 }

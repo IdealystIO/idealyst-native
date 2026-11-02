@@ -104,8 +104,7 @@ pub struct LinkProps {
     /// to assistive tech, named by `label`. Default `None` (a URL link).
     pub on_press: Option<Rc<dyn Fn()>>,
     /// Optional robot/E2E test id, forwarded to the interactive node (the
-    /// `<a>` or the action's pressable). Only honored when idea-ui's
-    /// `robot` feature is on; ignored otherwise.
+    /// `<a>` or the action's pressable). Inert outside a robot build.
     pub test_id: Option<&'static str>,
 }
 
@@ -147,11 +146,7 @@ pub fn Link(props: &LinkProps) -> Element {
             Reactive::Static(label) => node.a11y_label(label.clone()),
             Reactive::Dynamic(_) => node,
         };
-        #[cfg(feature = "robot")]
-        let node = match props.test_id {
-            Some(tid) => node.test_id(tid),
-            None => node,
-        };
+        let node = with_test_id!(node, props.test_id);
         return node.into_element();
     }
 
@@ -162,12 +157,7 @@ pub fn Link(props: &LinkProps) -> Element {
         let url = props.url.clone();
         node = node.url(move || url.get());
     }
-    #[cfg(feature = "robot")]
-    let node = match props.test_id {
-        Some(tid) => node.test_id(tid),
-        None => node,
-    };
-    node.into_element()
+    with_test_id!(node, props.test_id).into_element()
 }
 
 #[cfg(test)]

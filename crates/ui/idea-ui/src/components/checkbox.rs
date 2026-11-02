@@ -234,8 +234,7 @@ pub struct CheckboxProps {
     /// Inherits the checkmark's foreground color. `None` = the default ✓.
     pub icon: Option<IconData>,
     /// Optional robot/E2E test id, forwarded to the interactive box (the
-    /// pressable that owns the press + focus). Only honored when idea-ui's
-    /// `robot` feature is on; ignored otherwise.
+    /// pressable that owns the press + focus). Inert outside a robot build.
     pub test_id: Option<&'static str>,
 }
 
@@ -343,13 +342,8 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
         Some(text) => box_el.a11y_label(text),
         None => box_el,
     };
-    // Forward the test id to the interactive box for robot/E2E location.
-    // Gated: `.test_id()` only exists under `runtime-core/robot`.
-    #[cfg(feature = "robot")]
-    let box_el = match props.test_id {
-        Some(tid) => box_el.test_id(tid),
-        None => box_el,
-    };
+    // The test id lands on the interactive box (the pressable), not the row.
+    let box_el = with_test_id!(box_el, props.test_id);
     let box_el = box_el.into_element();
 
     let label_style = CheckboxStyles::label().values(&values).overridden(styles.label.as_ref());

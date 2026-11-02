@@ -305,8 +305,11 @@ pub struct ButtonProps {
     /// When `true`, the button stretches to fill its container's width
     /// (a full-bleed CTA). Default `false` — the button hugs its content.
     pub block: bool,
-    /// Optional robot/E2E test id, forwarded to the root pressable. Only
-    /// honored when idea-ui's `robot` feature is on; ignored otherwise.
+    /// Optional robot/E2E test id, forwarded to the pressable itself — in
+    /// every state, including while a live `loading`/`disabled`/icon prop
+    /// rebuilds it (each rebuild re-registers the id on the new pressable
+    /// and the old one's registration is dropped with it). Inert outside a
+    /// robot build.
     pub test_id: Option<&'static str>,
 }
 
@@ -411,6 +414,7 @@ pub fn Button(props: &ButtonProps) -> Element {
         let trailing_icon = trailing_icon.clone();
         let values = values.clone();
         let styles = styles.clone();
+        let test_id = props.test_id;
         move |loading: bool, has_lead: bool, has_trail: bool, disabled: bool, block: bool| {
             // A loading spinner occupies the leading slot, so it needs the same
             // centered-row layout an icon does.
@@ -507,7 +511,13 @@ pub fn Button(props: &ButtonProps) -> Element {
             if inert {
                 bound = bound.disabled(true);
             }
-            bound
+            // The test id rides the PRESSABLE in every arm, so a robot
+            // lookup always resolves the node that takes the press — never
+            // a wrapper (iOS `tap_native` on a wrapper view has no `click`
+            // action). A `switch` rebuild re-registers the id on the new
+            // pressable; the registry's guarded remove keeps the dropped
+            // arm from un-indexing it (`tests/test_id_forwarding.rs`).
+            with_test_id!(bound, test_id)
         }
     };
 
@@ -557,9 +567,9 @@ pub fn Button(props: &ButtonProps) -> Element {
             },
         );
         // `switch` returns a bare `Element`. No `bind_to` here — `use_switch`
-        // requires `bind_to.is_none()`; the test id (when requested) rides a
-        // transparent wrapper view since the pressable is rebuilt per arm.
-        return finalize_switch(switch_el, props);
+        // requires `bind_to.is_none()`. The test id is already on each arm's
+        // pressable (`build_pressable`).
+        return switch_el;
     }
 
     // STATIC fast path (or a binding caller): build once from the structural
@@ -573,12 +583,6 @@ pub fn Button(props: &ButtonProps) -> Element {
     );
     if let Some(r) = bind_to {
         bound = bound.bind(r);
-    }
-    // Forward the test id to the root pressable for robot/E2E location.
-    // Gated: `.test_id()` only exists under `runtime-core/robot`.
-    #[cfg(feature = "robot")]
-    if let Some(tid) = props.test_id {
-        bound = bound.test_id(tid);
     }
     bound.into_element()
 }
@@ -594,24 +598,6 @@ pub(crate) const EMPTY_ICON_DATA: IconData = IconData {
     fill_rule: runtime_core::FillRule::NonZero,
     filled: false,
 };
-
-/// Finishes the structure-`switch` path: forwards the test id (when the
-/// `robot` feature is on) and coerces to `Element`. Split out so the
-/// `switch` early-return and the static path share the same test-id wiring
-/// shape. The `switch` root is a synthetic node, so the test id rides on a
-/// thin wrapper view only when actually requested.
-fn finalize_switch(switch_el: Element, _props: &ButtonProps) -> Element {
-    #[cfg(feature = "robot")]
-    if let Some(tid) = _props.test_id {
-        // The pressable is rebuilt inside the switch arms, so a robot test id
-        // can't live on it across rebuilds. Attach it to a transparent wrapper
-        // `view` around the switch so location stays stable.
-        return runtime_core::view(vec![switch_el])
-            .test_id(tid)
-            .into_element();
-    }
-    switch_el
-}
 
 #[cfg(test)]
 mod tests {

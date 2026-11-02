@@ -93,6 +93,7 @@ pub(crate) fn picker_trigger(
     open: Signal<bool>,
     size: Reactive<SelectSize>,
     trigger_ref: Ref<PressableHandle>,
+    test_id: Option<&'static str>,
 ) -> Element {
     let label_child = text(label_source).into_element();
     let glyph = icon(CALENDAR_GLYPH)
@@ -105,10 +106,10 @@ pub(crate) fn picker_trigger(
         .set(Reactive::Dynamic(Rc::new(move || SelectOpen::from(open.get()))));
     // Open on press; the catcher owns closing (an open picker's next
     // click lands on the fullscreen backdrop, wherever it is).
-    pressable(vec![label_child, glyph], move || open.set(true))
+    let trigger = pressable(vec![label_child, glyph], move || open.set(true))
         .with_style(trigger_style)
-        .bind(trigger_ref)
-        .into_element()
+        .bind(trigger_ref);
+    with_test_id!(trigger, test_id).into_element()
 }
 
 /// The open panel: fullscreen dismiss catcher + a `menu`-slot
@@ -193,6 +194,9 @@ pub struct DatePickerProps {
     pub size: SelectSize,
     /// Offer a `Clear` footer action that commits `None`.
     pub clearable: bool,
+    /// Optional robot/E2E test id, forwarded to the trigger (the pressable
+    /// that opens the popup). Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for DatePickerProps {
@@ -209,6 +213,7 @@ impl Default for DatePickerProps {
             labels: None,
             size: Reactive::Static(SelectSize::default()),
             clearable: Reactive::Static(false),
+            test_id: None,
         }
     }
 }
@@ -235,7 +240,7 @@ pub fn DatePicker(props: DatePickerProps) -> Element {
             .or_else(|| placeholder.get())
             .unwrap_or_else(|| "Select date".to_string())
     };
-    let trigger = picker_trigger(label_source, open, props.size.clone(), trigger_ref);
+    let trigger = picker_trigger(label_source, open, props.size.clone(), trigger_ref, props.test_id);
 
     let min = props.min.clone();
     let max = props.max.clone();
@@ -324,6 +329,9 @@ pub struct DateTimePickerProps {
     pub size: SelectSize,
     /// Offer a `Clear` footer action.
     pub clearable: bool,
+    /// Optional robot/E2E test id, forwarded to the trigger (the pressable
+    /// that opens the popup). Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for DateTimePickerProps {
@@ -342,6 +350,7 @@ impl Default for DateTimePickerProps {
             labels: None,
             size: Reactive::Static(SelectSize::default()),
             clearable: Reactive::Static(false),
+            test_id: None,
         }
     }
 }
@@ -386,7 +395,7 @@ pub fn DateTimePicker(props: DateTimePickerProps) -> Element {
             .or_else(|| placeholder.get())
             .unwrap_or_else(|| "Select date & time".to_string())
     };
-    let trigger = picker_trigger(label_source, open, props.size.clone(), trigger_ref);
+    let trigger = picker_trigger(label_source, open, props.size.clone(), trigger_ref, props.test_id);
 
     let min = props.min.clone();
     let max = props.max.clone();
@@ -497,6 +506,9 @@ pub struct DateRangePickerProps {
     pub size: SelectSize,
     /// Offer a `Clear` footer action.
     pub clearable: bool,
+    /// Optional robot/E2E test id, forwarded to the trigger (the pressable
+    /// that opens the popup). Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for DateRangePickerProps {
@@ -513,6 +525,7 @@ impl Default for DateRangePickerProps {
             labels: None,
             size: Reactive::Static(SelectSize::default()),
             clearable: Reactive::Static(false),
+            test_id: None,
         }
     }
 }
@@ -542,7 +555,7 @@ pub fn DateRangePicker(props: DateRangePickerProps) -> Element {
             .or_else(|| placeholder.get())
             .unwrap_or_else(|| "Select range".to_string())
     };
-    let trigger = picker_trigger(label_source, open, props.size.clone(), trigger_ref);
+    let trigger = picker_trigger(label_source, open, props.size.clone(), trigger_ref, props.test_id);
 
     let min = props.min.clone();
     let max = props.max.clone();

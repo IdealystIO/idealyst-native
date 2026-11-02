@@ -133,6 +133,9 @@ pub struct DateInputProps {
     pub labels: Option<Rc<DateLabels>>,
     /// Pin an exact input width in pixels (see [`Field`]).
     pub width: Option<f32>,
+    /// Optional robot/E2E test id, forwarded to the text input (see
+    /// [`Field`]'s `test_id`). Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for DateInputProps {
@@ -155,6 +158,7 @@ impl Default for DateInputProps {
             first_weekday: Reactive::Static(Weekday::Monday),
             labels: None,
             width: Reactive::Static(None),
+            test_id: None,
         }
     }
 }
@@ -214,6 +218,7 @@ pub fn DateInput(props: DateInputProps) -> Element {
             size = props.size.clone(),
             trailing = trailing,
             width = props.width.clone(),
+            test_id = props.test_id,
         )
     };
 
@@ -315,6 +320,9 @@ pub struct DateTimeInputProps {
     pub labels: Option<Rc<DateLabels>>,
     /// Pin an exact input width in pixels.
     pub width: Option<f32>,
+    /// Optional robot/E2E test id, forwarded to the text input (see
+    /// [`Field`]'s `test_id`). Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for DateTimeInputProps {
@@ -339,6 +347,7 @@ impl Default for DateTimeInputProps {
             first_weekday: Reactive::Static(Weekday::Monday),
             labels: None,
             width: Reactive::Static(None),
+            test_id: None,
         }
     }
 }
@@ -398,6 +407,7 @@ pub fn DateTimeInput(props: DateTimeInputProps) -> Element {
             size = props.size.clone(),
             trailing = trailing,
             width = props.width.clone(),
+            test_id = props.test_id,
         )
     };
 

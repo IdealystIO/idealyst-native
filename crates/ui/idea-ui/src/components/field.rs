@@ -595,12 +595,17 @@ pub struct FieldProps {
     /// every a11y name here.
     #[prop(static)]
     pub accessibility_label: Option<String>,
+    /// Optional robot/E2E test id, forwarded to the `text_input` itself
+    /// (not the label column or an adorned field's row shell), so
+    /// `app.test_id(…).fill(…)` types into it. Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for FieldProps {
     fn default() -> Self {
         Self {
             accessibility_label: None,
+            test_id: None,
             label: Reactive::Static(None),
             label_hint: Reactive::Static(None),
             value: runtime_core::signal(String::new()),
@@ -741,6 +746,7 @@ pub fn Field(props: &FieldProps) -> Element {
     if let Some(field_ref) = props.field_ref.clone() {
         input = input.bind(field_ref);
     }
+    input = with_test_id!(input, props.test_id);
     // Attached only when present (a silent no-op handler would still
     // claim every key press on some backends).
     if let Some(on_key) = props.on_key_down.clone() {

@@ -272,6 +272,7 @@ fn tabs_props_section() -> Element {
                 Prop { name: "indicator", ty: "TabIndicator",       desc: "Underline (default) or Dot (compact dot + chip pill)." },
                 Prop { name: "padding_horizontal", ty: "StackPadding", desc: "Insets the tabs from the bar's ends; the divider still spans the full width. None (default), Xs, Sm, Md, Lg, Xl." },
                 Prop { name: "fill",      ty: "bool",               desc: "Take a row parent's leftover width. Default false: the bar sizes to its tabs, and a column stretches it across." },
+                Prop { name: "Tab::test_id", ty: "fn(&'static str)", desc: "Robot / E2E id on that tab's pressable: Tab::new(id, label).test_id(\"…\")." },
             ])
             Callout(label = "Tabs vs Segmented Control".to_string()) {
                 P(content = "Use Tabs when each option opens a distinct content surface. For \
@@ -427,6 +428,7 @@ ui! {
                     Prop { name: "footer",     ty: "Option<SubMenuSlot>",  desc: "SubMenu: slot pinned below the flyout's rows. Same builder shape as header." },
                     Prop { name: "max_width",  ty: "Option<f32>",          desc: "Menu / SubMenu: caps the panel's width in pixels. Labels are one line, so a longer one ends in \"…\". None sizes the panel to its longest row." },
                     Prop { name: "MenuEntry::leading / ::trailing", ty: "impl Fn() -> Element", desc: "SubMenu entry: element before the label / pushed to the row's end (a status mark). A builder, run on each open." },
+                    Prop { name: "test_id", ty: "Option<&'static str>", desc: "MenuItem: id on the row's pressable. SubMenu: id on the trigger row; each flyout row takes MenuEntry::test_id(\"…\")." },
                 ])
             }
         },
@@ -660,6 +662,7 @@ pub fn list() -> Element {
                     Prop { name: "leading",  ty: "Option<Element>",      desc: "ListItem: optional leading element (icon, avatar)." },
                     Prop { name: "trailing", ty: "Option<Element>",      desc: "ListItem: optional trailing element (badge, chevron), pushed right." },
                     Prop { name: "active",   ty: "bool",                 desc: "ListItem: render the row in its highlighted/selected state." },
+                    Prop { name: "test_id", ty: "Option<&'static str>", desc: "ListItem: id on the row — the pressable with on_press, the plain view without." },
                 ])
             }
         },

@@ -274,6 +274,9 @@ pub struct IconButtonProps {
     /// the Tooltip runs. Default `None` (no tooltip).
     #[prop(static)]
     pub tooltip: Option<String>,
+    /// Optional robot/E2E test id, forwarded to the pressable (not the
+    /// `tooltip` wrapper around it). Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for IconButtonProps {
@@ -293,6 +296,7 @@ impl Default for IconButtonProps {
             bind_to: None,
             label: None,
             tooltip: None,
+            test_id: None,
             styles: Default::default(),
         }
     }
@@ -471,7 +475,7 @@ pub fn IconButton(props: &IconButtonProps) -> Element {
     if let Some(name) = props.label.clone().or_else(|| props.tooltip.clone()) {
         bound = bound.a11y_label(name);
     }
-    let button = bound.into_element();
+    let button = with_test_id!(bound, props.test_id).into_element();
     match props.tooltip.clone() {
         Some(text) => ui! {
             Tooltip(text = text) {

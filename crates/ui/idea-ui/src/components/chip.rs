@@ -195,6 +195,10 @@ pub struct ChipProps {
     /// the label's font size (Sm: caption type, tight inset; Md: body-sm
     /// type, the Tag's geometry; Lg: body type, roomier inset).
     pub size: ChipSize,
+    /// Optional robot/E2E test id, forwarded to the pill — the pressable
+    /// when `on_select` is set, the plain view otherwise. Inert outside a
+    /// robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for ChipProps {
@@ -206,6 +210,7 @@ impl Default for ChipProps {
             tone: tone::Neutral.into(),
             variant: Reactive::Static(ChipVariant::default()),
             size: Reactive::Static(ChipSize::default()),
+            test_id: None,
             styles: Default::default(),
         }
     }
@@ -251,8 +256,10 @@ pub fn Chip(props: &ChipProps) -> Element {
     // is a plain view — a no-op pressable would swallow the tap and block
     // hit-test fall-through to whatever sits under it.
     match on_select {
-        Some(cb) => pressable(vec![label_el], move || (cb)()).with_style(style).into_element(),
-        None => view(vec![label_el]).with_style(style).into_element(),
+        Some(cb) => {
+            with_test_id!(pressable(vec![label_el], move || (cb)()), props.test_id).with_style(style).into_element()
+        }
+        None => with_test_id!(view(vec![label_el]), props.test_id).with_style(style).into_element(),
     }
 }
 

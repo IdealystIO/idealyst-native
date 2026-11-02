@@ -19,8 +19,8 @@
 //! ui! {
 //!     Tabs(
 //!         tabs = vec![
-//!             Tab { label: "One".into() },
-//!             Tab { label: "Two".into() },
+//!             Tab::new("one", "One"),
+//!             Tab::new("two", "Two").test_id("tab-two"),
 //!         ],
 //!         active = active,
 //!         on_change = move |idx| active.set(idx),
@@ -423,11 +423,21 @@ pub struct Tab {
     /// static or live (signal/`rx!`).
     #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub label: Reactive<String>,
+    /// Optional robot/E2E test id for this tab's pressable. Set it with
+    /// [`Tab::test_id`]. Inert outside a robot build.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub test_id: Option<&'static str>,
 }
 
 impl Tab {
     pub fn new(id: impl Into<String>, label: impl Into<Reactive<String>>) -> Self {
-        Self { id: id.into(), label: label.into() }
+        Self { id: id.into(), label: label.into(), test_id: None }
+    }
+
+    /// Give this tab's pressable a robot/E2E test id.
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.test_id = Some(id);
+        self
     }
 }
 
@@ -438,7 +448,7 @@ impl Tab {
 /// honest value here).
 impl PartialEq for Tab {
     fn eq(&self, other: &Self) -> bool {
-        if self.id != other.id {
+        if self.id != other.id || self.test_id != other.test_id {
             return false;
         }
         match (&self.label, &other.label) {
@@ -614,6 +624,7 @@ fn tab_button(
 ) -> Element {
     let id = tab.id;
     let label = tab.label;
+    let test_id = tab.test_id;
 
     // The button style for the chosen indicator and selection. Dot is one
     // slot with an `active` axis; Underline is a slot per state (`tab` /
@@ -703,7 +714,7 @@ fn tab_button(
         ));
     }
     tab_children.push(label_primitive);
-    pressable(tab_children, press).with_style(tab_style).into()
+    with_test_id!(pressable(tab_children, press), test_id).with_style(tab_style).into()
 }
 
 #[cfg(test)]

@@ -441,6 +441,11 @@ pub struct AutocompleteProps {
     #[prop(static)]
     #[schema(constraint = "pixels, > 0")]
     pub max_width: Option<f32>,
+    /// Optional robot/E2E test id, forwarded to the `text_input` (so
+    /// `app.test_id(…).fill(…)` types the query). Each option's menu row
+    /// takes its own [`SelectOption::test_id`]. Inert outside a robot
+    /// build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for AutocompleteProps {
@@ -459,6 +464,7 @@ impl Default for AutocompleteProps {
             autofocus: false,
             clearable: false,
             max_width: None,
+            test_id: None,
             styles: Default::default(),
         }
     }
@@ -821,6 +827,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // placeholder in place; a `Static` one sets it once.
     .placeholder_reactive(placeholder)
     .autofocus(props.autofocus);
+    let input = with_test_id!(input, props.test_id);
     let input = input
         // Focus opens the menu (a combobox invites browsing the moment the
         // field activates); losing focus dismisses + reverts, same as
@@ -1058,6 +1065,7 @@ fn row(
     let id = o.id.clone();
     let label = o.label.clone();
     let description = o.description.clone();
+    let row_test_id = o.test_id;
     let mut kids = Vec::with_capacity(2);
     if let Some(sel) = selection {
         let id = id.clone();
@@ -1073,7 +1081,8 @@ fn row(
         selection.is_none() && value.get() == text_id
     }));
     let press_id = id.clone();
-    pressable(kids, move || (commit)(&press_id))
+    let row = pressable(kids, move || (commit)(&press_id));
+    with_test_id!(row, row_test_id)
         .with_style(SelectStyles::option().set(Reactive::Dynamic(Rc::new(move || {
             let highlighted = cursor_id().as_deref() == Some(id.as_str());
             let selected = selection.is_none() && value.get() == id;

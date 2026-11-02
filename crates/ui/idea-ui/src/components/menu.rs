@@ -430,6 +430,9 @@ pub struct MenuItemProps {
     /// Renders the row in its highlighted/active state. `Reactive<bool>` —
     /// static or live (signal/`rx!`); the row re-styles in place.
     pub active: bool,
+    /// Optional robot/E2E test id, forwarded to the row's pressable.
+    /// Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for MenuItemProps {
@@ -440,6 +443,7 @@ impl Default for MenuItemProps {
             leading: None,
             trailing: None,
             active: Reactive::Static(false),
+            test_id: None,
             styles: Default::default(),
         }
     }
@@ -478,7 +482,9 @@ pub fn MenuItem(props: MenuItemProps) -> Element {
     let style = MenuStyles::item()
         .set(active.map(MenuActive::from))
         .overridden(props.styles.item.as_ref());
-    runtime_core::pressable(kids, move || (on_select)()).with_style(style).into_element()
+    with_test_id!(runtime_core::pressable(kids, move || (on_select)()), props.test_id)
+        .with_style(style)
+        .into_element()
 }
 
 // =============================================================================
@@ -555,11 +561,14 @@ pub struct MenuEntry {
     /// shortcut hint. A builder for the same reason as `leading`. Set with
     /// [`MenuEntry::trailing`]. Matches [`MenuItemProps::trailing`].
     pub trailing: Option<Rc<dyn Fn() -> Element>>,
+    /// Optional robot/E2E test id for this flyout row's pressable. Set it
+    /// with [`MenuEntry::test_id`]. Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl MenuEntry {
     pub fn new(label: impl Into<Reactive<String>>, on_select: Rc<dyn Fn()>) -> Self {
-        Self { label: label.into(), on_select, checked: None, leading: None, trailing: None }
+        Self { label: label.into(), on_select, checked: None, leading: None, trailing: None, test_id: None }
     }
 
     /// A multi-select row: leading checkbox bound to `checked`, and the
@@ -575,6 +584,7 @@ impl MenuEntry {
             checked: Some(checked.into()),
             leading: None,
             trailing: None,
+            test_id: None,
         }
     }
 
@@ -589,6 +599,12 @@ impl MenuEntry {
     /// Built fresh each time the flyout opens.
     pub fn trailing(mut self, build: impl Fn() -> Element + 'static) -> Self {
         self.trailing = Some(Rc::new(build));
+        self
+    }
+
+    /// Give this flyout row a robot/E2E test id.
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.test_id = Some(id);
         self
     }
 }
@@ -829,6 +845,10 @@ pub struct SubMenuProps {
     #[prop(static)]
     #[schema(constraint = "pixels, > 0")]
     pub max_width: Option<f32>,
+    /// Optional robot/E2E test id, forwarded to the trigger row's
+    /// pressable (a press opens the flyout). Each flyout row takes its own
+    /// [`MenuEntry::test_id`]. Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for SubMenuProps {
@@ -840,6 +860,7 @@ impl Default for SubMenuProps {
             header: None,
             footer: None,
             max_width: None,
+            test_id: None,
             styles: Default::default(),
         }
     }
@@ -853,6 +874,7 @@ impl Default for SubMenuProps {
 fn flyout_row(entry: MenuEntry, close: Rc<dyn Fn()>, styles: &MenuSlotStyles) -> Element {
     let on_select = entry.on_select;
     let keep_open = entry.checked.is_some();
+    let test_id = entry.test_id;
     let mut kids: Vec<Element> = Vec::with_capacity(5);
     if let Some(c) = entry.checked {
         kids.push(menu_checkbox(c));
@@ -865,14 +887,15 @@ fn flyout_row(entry: MenuEntry, close: Rc<dyn Fn()>, styles: &MenuSlotStyles) ->
         kids.push(grow());
         kids.push(build());
     }
-    runtime_core::pressable(kids, move || {
+    let row = runtime_core::pressable(kids, move || {
         (on_select)();
         if !keep_open {
             (close)();
         }
-    })
-    .with_style(MenuStyles::item().overridden(styles.item.as_ref()))
-    .into_element()
+    });
+    with_test_id!(row, test_id)
+        .with_style(MenuStyles::item().overridden(styles.item.as_ref()))
+        .into_element()
 }
 
 /// The flyout's rows.
@@ -1056,7 +1079,8 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
         let open_now = open_now.clone();
         let schedule_close = schedule_close.clone();
         let press_open = open_now.clone();
-        let row = runtime_core::pressable(vec![label_node, grow(), chevron], move || press_open())
+        let row = runtime_core::pressable(vec![label_node, grow(), chevron], move || press_open());
+        let row = with_test_id!(row, props.test_id)
             .with_style(
                 MenuStyles::item()
                     .set(Reactive::Dynamic(Rc::new(move || MenuActive::from(open.get()))))

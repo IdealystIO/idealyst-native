@@ -279,6 +279,10 @@ pub struct SliderProps {
     /// icon is present is read once at build; a live value swaps the glyph in
     /// place.
     pub thumb_icon: Option<IconData>,
+    /// Optional robot/E2E test id, forwarded to the drag container (the
+    /// view that owns the touch handler — what a robot `click`/`drag`
+    /// drives), not the icon row around it. Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for SliderProps {
@@ -297,6 +301,7 @@ impl Default for SliderProps {
             leading_icon: Reactive::Static(None),
             trailing_icon: Reactive::Static(None),
             thumb_icon: Reactive::Static(None),
+            test_id: None,
             styles: Default::default(),
         }
     }
@@ -403,7 +408,7 @@ pub fn Slider(props: &SliderProps) -> Element {
         })
         .overridden(styles.container.as_ref());
 
-    let slider = runtime_core::view(vec![track, thumb])
+    let slider = with_test_id!(runtime_core::view(vec![track, thumb]), props.test_id)
         .with_style(container_style)
         .on_touch(move |ev| {
             if disabled.get() {

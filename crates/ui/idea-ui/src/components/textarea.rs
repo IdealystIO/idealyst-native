@@ -131,12 +131,17 @@ pub struct TextareaProps {
     /// every a11y name here.
     #[prop(static)]
     pub accessibility_label: Option<String>,
+    /// Optional robot/E2E test id, forwarded to the multi-line input
+    /// itself (not the label column), so `app.test_id(…).fill(…)` types
+    /// into it. Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for TextareaProps {
     fn default() -> Self {
         Self {
             accessibility_label: None,
+            test_id: None,
             label: Reactive::Static(None),
             label_hint: Reactive::Static(None),
             value: runtime_core::signal(String::new()),
@@ -265,6 +270,7 @@ pub fn Textarea(props: &TextareaProps) -> Element {
     if let Some(name) = props.accessibility_label.clone().or_else(|| props.label.get()) {
         input = input.a11y_label(name);
     }
+    input = with_test_id!(input, props.test_id);
     // `disabled` rides the primitive (native inert + out of keyboard focus,
     // the `on_change` gate, the DISABLED state bit that resolves the sheet's
     // `state disabled` dim). Attached only when it can be disabled.

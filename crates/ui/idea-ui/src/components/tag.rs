@@ -135,6 +135,11 @@ pub struct TagProps {
     pub variant: TagVariant,
     /// When `Some`, a close button renders to the right of the label.
     pub on_remove: Option<Rc<dyn Fn()>>,
+    /// Optional robot/E2E test id, forwarded to the tag's interactive
+    /// part: the close button when `on_remove` is set (so a robot `click`
+    /// removes the tag), the pill itself otherwise. Inert outside a robot
+    /// build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for TagProps {
@@ -144,6 +149,7 @@ impl Default for TagProps {
             tone: tone::Neutral.into(),
             variant: Reactive::Static(TagVariant::default()),
             on_remove: None,
+            test_id: None,
             styles: Default::default(),
         }
     }
@@ -160,21 +166,34 @@ pub fn Tag(props: &TagProps) -> Element {
     let label_style = TagStyles::label().values(&values).overridden(styles.label.as_ref());
     let label_el: Element = ui! { text(style = label_style) { label } };
 
-    let mut children: Vec<Element> = Vec::with_capacity(2);
-    children.push(label_el);
-    if let Some(on_remove) = props.on_remove.clone() {
+    let close: Option<Element> = props.on_remove.clone().map(|on_remove| {
         let glyph = runtime_core::text("×".to_string())
             .with_style(TagStyles::glyph().values(&values).overridden(styles.glyph.as_ref()))
             .into_element();
         let close = runtime_core::pressable(vec![glyph], move || (on_remove)())
-            .with_style(TagStyles::close().values(&values).overridden(styles.close.as_ref()))
-            .into_element();
-        children.push(close);
-    }
+            .with_style(TagStyles::close().values(&values).overridden(styles.close.as_ref()));
+        with_test_id!(close, props.test_id).into_element()
+    });
+    // The pill carries the test id only when there is no close button to
+    // take it (one live holder per id).
+    let pill_test_id = if close.is_some() { None } else { props.test_id };
+    let root_style = TagStyles::root().values(&values).overridden(styles.root.as_ref());
 
-    runtime_core::view(children)
-        .with_style(TagStyles::root().values(&values).overridden(styles.root.as_ref()))
-        .into_element()
+    // `close` is an `Option<Element>` — absent, it splats to nothing.
+    match pill_test_id {
+        Some(id) => ui! {
+            view(style = root_style, test_id = id) {
+                label_el
+                close
+            }
+        },
+        None => ui! {
+            view(style = root_style) {
+                label_el
+                close
+            }
+        },
+    }
 }
 
 #[cfg(test)]

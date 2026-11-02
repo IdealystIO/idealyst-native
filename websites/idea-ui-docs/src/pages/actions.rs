@@ -97,6 +97,7 @@ pub fn button() -> Element {
                     Prop { name: "trailing_icon", ty: "Option<IconData>",      desc: "Vector icon rendered after the label." },
                     Prop { name: "block",         ty: "bool",                  desc: "Stretch to fill the container width (full-bleed CTA). Default: false." },
                     Prop { name: "bind_to",       ty: "Option<Ref<PressableHandle>>", desc: "When Some, fills the given Ref on mount — anchor an overlay/popover to this button." },
+                    Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the pressable, in every state (a live loading/disabled rebuild re-registers it on the new pressable)." },
                 ])
             }
         },
@@ -310,6 +311,7 @@ pub fn icon_button() -> Element {
                     Prop { name: "size",     ty: "IconButtonSize",  desc: "Sm / Md / Lg — closed enum (square footprint)." },
                     Prop { name: "selected", ty: "bool",            desc: "Paints the tone's accent fill (the active-toggle / selected-tool look). Default: false." },
                     Prop { name: "disabled", ty: "bool",            desc: "Blocks the press and dims the button. Default: false." },
+                    Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the pressable (not the tooltip wrapper)." },
                 ])
             }
         },
@@ -423,7 +425,7 @@ pub fn link() -> Element {
                     Prop { name: "label",    ty: "Reactive<String>",     desc: "Link text. Static or reactive." },
                     Prop { name: "url",      ty: "String",               desc: "Destination URL (https:, mailto:, tel:, …). Ignored when `on_press` is set." },
                     Prop { name: "on_press", ty: "Option<Rc<dyn Fn()>>", desc: "Run this on press instead of opening a URL. Renders as a button to assistive tech." },
-                    Prop { name: "test_id",  ty: "Option<&'static str>", desc: "Robot / E2E id on the interactive node (`robot` feature)." },
+                    Prop { name: "test_id",  ty: "Option<&'static str>", desc: "Robot / E2E id on the interactive node (the <a>, or the action's pressable)." },
                 ])
             }
         },

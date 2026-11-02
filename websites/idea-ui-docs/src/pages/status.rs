@@ -351,6 +351,7 @@ pub fn tag() -> Element {
                     Prop { name: "tone",      ty: "ToneRef",              desc: "Semantic palette. Default: Neutral." },
                     Prop { name: "variant",   ty: "TagVariant",           desc: "Filled / Soft / Outlined. Default: Soft." },
                     Prop { name: "on_remove", ty: "Option<Rc<dyn Fn()>>", desc: "When Some, a close (×) button renders to the right of the label." },
+                    Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the close button when on_remove is set (a click removes the tag), on the pill otherwise." },
                 ])
                 CodePanel(src = r##"let langs = signal(vec!["Rust".to_string(), "Go".to_string()]);
 
@@ -429,6 +430,7 @@ pub fn chip() -> Element {
                     Prop { name: "tone",      ty: "ToneRef",              desc: "Semantic palette. Default: Neutral." },
                     Prop { name: "variant",   ty: "ChipVariant",           desc: "Surface treatment for the selected state. Unselected always uses Ghost. Default: Soft." },
                     Prop { name: "size",      ty: "ControlSize",          desc: "Sm / Md / Lg. Default: Md." },
+                    Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the pill (the pressable with on_select, the plain view without)." },
                 ])
             }
         },

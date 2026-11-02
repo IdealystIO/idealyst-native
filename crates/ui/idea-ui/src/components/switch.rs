@@ -238,8 +238,7 @@ pub struct SwitchProps {
     /// `None` = a plain thumb.
     pub icon: Option<IconData>,
     /// Optional robot/E2E test id, forwarded to the interactive track
-    /// (the pressable that toggles). Only honored when idea-ui's `robot`
-    /// feature is on; ignored otherwise.
+    /// (the pressable that toggles). Inert outside a robot build.
     pub test_id: Option<&'static str>,
     /// The switch's accessible name — what screen readers announce and what
     /// the robot reports as the track's `label`. Defaults to `label`. Set it
@@ -347,15 +346,9 @@ pub fn Switch(props: &SwitchProps) -> Element {
         Some(name) => track.a11y_label(name),
         None => track,
     };
-    // Forward the test id to the interactive track so a robot suite can
-    // locate + click it — set on the BUILDER (`.test_id` on the pressable
-    // wrapper). Gated: the id slot only registers under `robot`, and the
-    // prop only exists there.
-    #[cfg(feature = "robot")]
-    let track = match props.test_id {
-        Some(tid) => track.test_id(tid),
-        None => track,
-    };
+    // The test id lands on the interactive track so a robot suite can
+    // locate + click it.
+    let track = with_test_id!(track, props.test_id);
     let track = track.into_element();
 
     let label_style = SwitchStyles::label().values(&values).overridden(styles.label.as_ref());

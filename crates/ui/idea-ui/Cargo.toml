@@ -19,10 +19,13 @@ default = ["table"]
 # generated impls aren't free.
 docs = ["dep:idea-ui-docs-derive"]
 
-# Off by default. When on, components forward an optional `test_id` prop to
-# their root interactive primitive, so a robot/E2E suite can locate them.
-# Mirrors `runtime-core/robot`; production apps leave it off (the
-# forwarding compiles out).
+# Off by default. Only turns on `runtime-core/robot` (the robot registry
+# itself). Components forward their `test_id` prop in EVERY build — the
+# primitives' `.test_id` slot is inert unless the runtime's `robot` feature
+# is on — so an app needs neither this feature nor a `cfg` for idea-ui
+# test ids to work under `idealyst dev` / `idealyst test` (which enable the
+# runtime's robot features, never this crate's). Kept so crates that
+# already forward `idea-ui/robot` keep building.
 robot = ["runtime-core/robot"]
 
 # Off by default. Exposes the premint delta-introspection accessors
@@ -119,6 +122,12 @@ runtime-layout = { path = "../../runtime/layout" }
 # with `async-driver` on (feature unification covers the lib build).
 runtime-shared = { path = "../../runtime/shared", features = ["async-driver"] }
 runtime-core = { path = "../../runtime/core", features = ["async-driver"] }
+# The robot registry ON in the runtime while this crate's own `robot`
+# feature stays OFF — the shape every `idealyst dev` / `idealyst test`
+# build has. `tests/test_id_forwarding.rs` looks components up by
+# `test_id` through it, so a `cfg(feature = "robot")` gate on the
+# forwarding here fails that test in a bare `cargo test -p idea-ui`.
+runtime-vocabulary = { path = "../../runtime/vocabulary", features = ["robot"] }
 
 # The design-sync converter needs both dev-only features: `catalog` for
 # `runtime_core::__mcp` and the `recipe!` fns in `idea_ui::recipes` (both

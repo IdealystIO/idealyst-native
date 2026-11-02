@@ -229,6 +229,26 @@ impl runtime_core::VariantEnum for ControlSize {
 /// disabled control reads equally "off".
 pub const DISABLED_CONTROL_OPACITY: f32 = 0.45;
 
+/// Forward a component's `test_id: Option<&'static str>` prop onto a
+/// primitive builder: `with_test_id!(builder, props.test_id)` is
+/// `builder.test_id(id)` when `Some`, the builder unchanged when `None`.
+///
+/// Unconditional on purpose — no `#[cfg(feature = "robot")]`. Every
+/// primitive builder carries the `.test_id` slot in every build and the
+/// vocabulary registers it only when ITS `robot` feature is on (inert
+/// otherwise). `idealyst dev` / `idealyst test` turn on the framework's
+/// robot features, never this crate's, so a gate here dropped every
+/// idea-ui test id in exactly the builds that look them up
+/// (`tests/test_id_forwarding.rs`).
+macro_rules! with_test_id {
+    ($builder:expr, $test_id:expr) => {
+        match $test_id {
+            Some(id) => $builder.test_id(id),
+            None => $builder,
+        }
+    };
+}
+
 #[cfg(test)]
 mod control_size_tests {
     use super::ControlSize;

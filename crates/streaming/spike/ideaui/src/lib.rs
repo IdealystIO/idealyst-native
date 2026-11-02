@@ -161,8 +161,8 @@ pub fn forms_demo() -> Element {
                 value = fruit,
                 on_change = on(move |v| fruit.set(v)),
                 options = vec![
-                    RadioOption { id: s("apple"), label: s("Apple").into() },
-                    RadioOption { id: s("pear"), label: s("Pear").into() },
+                    RadioOption::new("apple", "Apple"),
+                    RadioOption::new("pear", "Pear"),
                 ],
                 axis = RadioAxis::Row,
             )
@@ -249,7 +249,7 @@ pub fn DatesArea() -> Element {
 // ---------------------------------------------------------------------------
 
 pub fn navigation_demo() -> Element {
-    let tabs = signal(vec![Tab { id: s("one"), label: s("One").into() }, Tab { id: s("two"), label: s("Two").into() }]);
+    let tabs = signal(vec![Tab::new("one", "One"), Tab::new("two", "Two")]);
     let active = signal(s("one"));
     let page = signal(1usize);
     ui! {

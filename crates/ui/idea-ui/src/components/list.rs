@@ -154,6 +154,10 @@ pub struct ListItemProps {
     /// Render the row in its highlighted/selected state. `Reactive<bool>` —
     /// static or live (signal/`rx!`); the row re-styles in place.
     pub active: bool,
+    /// Optional robot/E2E test id, forwarded to the row — the pressable
+    /// when `on_press` is set, the plain view otherwise. Inert outside a
+    /// robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for ListItemProps {
@@ -164,6 +168,7 @@ impl Default for ListItemProps {
             leading: None,
             trailing: None,
             active: Reactive::Static(false),
+            test_id: None,
             styles: Default::default(),
         }
     }
@@ -202,8 +207,10 @@ pub fn ListItem(props: ListItemProps) -> Element {
         .overridden(props.styles.root.as_ref());
 
     match props.on_press {
-        Some(cb) => runtime_core::pressable(kids, move || (cb)()).with_style(style).into_element(),
-        None => runtime_core::view(kids).with_style(style).into_element(),
+        Some(cb) => with_test_id!(runtime_core::pressable(kids, move || (cb)()), props.test_id)
+            .with_style(style)
+            .into_element(),
+        None => with_test_id!(runtime_core::view(kids), props.test_id).with_style(style).into_element(),
     }
 }
 

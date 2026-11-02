@@ -94,6 +94,7 @@ ui! {
                 Prop { name: "variant",   ty: "CheckboxVariant",              desc: "Surface skeleton for the checked fill. Default: Filled." },
                 Prop { name: "size",      ty: "ControlSize",             desc: "Sm / Md / Lg box scale. Default: Md." },
                 Prop { name: "disabled",  ty: "bool",                     desc: "When true, ignores presses (box and label) and dims the box. Takes a Signal/rx! too. Default: false." },
+                Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the box (the pressable), not the label row." },
             ])
         }
     }])
@@ -187,6 +188,7 @@ ui! {
                 Prop { name: "disabled",  ty: "bool",              desc: "When true, ignores presses and dims the ring (every option, on RadioGroup). Takes a Signal/rx! too. Default: false." },
                 Prop { name: "selected",  ty: "Signal<bool>",      desc: "Standalone Radio only: whether this row is selected." },
                 Prop { name: "on_select", ty: "Rc<dyn Fn()>",      desc: "Standalone Radio only: fires when the row is clicked." },
+                Prop { name: "test_id", ty: "Option<&'static str>", desc: "Standalone Radio: robot / E2E id on the ring (the pressable). In a RadioGroup, give each option one with RadioOption::new(id, label).test_id(\"…\")." },
             ])
         }
     }])
@@ -286,6 +288,7 @@ pub fn switch() -> Element {
                 Prop { name: "variant",   ty: "SwitchVariant",              desc: "Surface skeleton. Default: Filled." },
                 Prop { name: "size",      ty: "ControlSize",             desc: "Sm / Md / Lg track + thumb scale. Default: Md." },
                 Prop { name: "disabled",  ty: "bool",                     desc: "When true, ignores presses and dims the track. Takes a Signal/rx! too. Default: false." },
+                Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the track (the pressable that toggles)." },
             ])
         }
     }])
@@ -381,6 +384,7 @@ ui! {
                 Prop { name: "leading_icon",  ty: "Option<IconData>", desc: "Muted icon left of the track." },
                 Prop { name: "trailing_icon", ty: "Option<IconData>", desc: "Muted icon right of the track." },
                 Prop { name: "thumb_icon",    ty: "Option<IconData>", desc: "Icon inside the thumb, tinted with the variant foreground. Grows the thumb (Sm 20 / Md 24 / Lg 28 px)." },
+                Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the drag container (the view with the touch handler)." },
             ])
         }
     }])
@@ -721,6 +725,7 @@ ui! {
                 Prop { name: "trailing",    ty: "Adornment",                 desc: "Icon/element after the input — e.g. a clear button or password-visibility toggle." },
                 Prop { name: "autofocus",   ty: "bool",                      desc: "Focus the input once when the Field mounts (works inside a Modal). The last autofocus field mounted wins. Default false." },
                 Prop { name: "disabled",    ty: "bool",                      desc: "Read-only and inert: not editable, not focusable, on_change never fires, dims, and disables Adornment::button. Takes a Signal/rx! too. Default: false." },
+                Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the text input itself (not the label column or an adorned row), so a test's fill types into it." },
             ])
         }
     }])
@@ -798,6 +803,7 @@ pub fn textarea() -> Element {
                 Prop { name: "max_rows",    ty: "u32",                       desc: "Ceiling in lines before it stops growing and scrolls. 0 (default) = uncapped." },
                 Prop { name: "autofocus",   ty: "bool",                      desc: "Focus the text area once when it mounts. The last autofocus field mounted wins. Default false." },
                 Prop { name: "disabled",    ty: "bool",                      desc: "Read-only and inert: not editable, not focusable, on_change never fires, and it dims. Takes a Signal/rx! too. Default: false." },
+                Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the multi-line input itself." },
             ])
         }
     }])
@@ -859,6 +865,7 @@ pub fn select() -> Element {
                 Prop { name: "size",        ty: "SelectSize",         desc: "Sm / Md / Lg — trigger height." },
                 Prop { name: "placeholder", ty: "Option<String>",     desc: "Text shown on the trigger when no option matches the value." },
                 Prop { name: "disabled",    ty: "bool",               desc: "Read-only: the trigger won't open, leaves keyboard focus, and dims; an open menu closes. Takes a Signal/rx! too. Default: false." },
+                Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the trigger. Each menu row takes its own: SelectOption::new(id, label).test_id(\"…\")." },
             ])
         }
     }, ui! {
@@ -945,6 +952,7 @@ pub fn autocomplete() -> Element {
                 Prop { name: "placeholder", ty: "Option<String>",     desc: "Hint text shown while the input is empty." },
                 Prop { name: "empty_text",  ty: "Option<String>",     desc: "Menu row shown when nothing matches. Default: \"No results\"." },
                 Prop { name: "clearable",   ty: "bool",               desc: "Offer an ✕ left of the chevron that clears the selection (on_change(\"\"), or an empty vec in multi-select). Default false." },
+                Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the text input. Each menu row takes its own: SelectOption::test_id." },
             ])
         }
     }, ui! {
@@ -1210,6 +1218,7 @@ SegmentedControlStyles::restyle(|s| {
                 Prop { name: "options",   ty: "Vec<SegmentOption>", desc: "Segments, left-to-right. SegmentOption::new(id, label), plus .leading(Adornment) / .trailing(Adornment) beside the label (Icon recolors with selection; Element is any component)." },
                 Prop { name: "size",      ty: "SegmentedControlSize", desc: "A ControlSize converts; an app value adds a size with a restyle arm." },
                 Prop { name: "styles",    ty: "SegmentedControlSlotStyles", desc: "Per-instance overrides of the track / segment / inner / label / adornment slots, layered over the app-wide restyle." },
+                Prop { name: "SegmentOption::test_id", ty: "fn(&'static str)", desc: "Robot / E2E id on that segment's pressable: SegmentOption::new(id, label).test_id(\"…\")." },
             ])
         }
     }])
@@ -1432,6 +1441,7 @@ pub fn date_picker() -> Element {
                 Prop { name: "min / max",      ty: "Option<CivilDate>",               desc: "Inclusive pickable window in the popup." },
                 Prop { name: "size",           ty: "SelectSize",                      desc: "Trigger height — shared scale with Select. Default Md." },
                 Prop { name: "clearable",      ty: "bool",                            desc: "Offer a Clear footer action that commits None." },
+                Prop { name: "test_id", ty: "Option<&'static str>", desc: "DatePicker / DateTimePicker / DateRangePicker: robot / E2E id on the trigger." },
             ])
         }
     }])
@@ -1515,6 +1525,7 @@ pub fn date_input() -> Element {
                 Prop { name: "picker",          ty: "bool",                          desc: "Show the trailing calendar button + popup. Default true." },
                 Prop { name: "clearable",       ty: "bool",                          desc: "Offer an ✕ left of the calendar button — empties the field, commits None. Default false." },
                 Prop { name: "min / max",       ty: "Option<CivilDate>",             desc: "Popup-only bounds — typed text is shape-validated, not range." },
+                Prop { name: "test_id", ty: "Option<&'static str>", desc: "DateInput / DateTimeInput: robot / E2E id on the text input." },
             ])
         }
     }])
@@ -1596,6 +1607,7 @@ ui! {
                 Prop { name: "label / help",    ty: "Option<String>",                desc: "Field label and helper text (see Field)." },
                 Prop { name: "invalid_message", ty: "String",                        desc: "Error shown while the text doesn't parse. Default \"Invalid time\"." },
                 Prop { name: "icon",            ty: "bool",                          desc: "Show the leading clock glyph. Default true." },
+                Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the text input." },
             ])
         }
     }])

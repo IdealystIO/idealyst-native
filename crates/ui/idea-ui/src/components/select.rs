@@ -387,6 +387,10 @@ pub struct SelectOption {
     /// [`SelectOption::new`]) draws the label alone. Static or live
     /// (signal/`rx!`). Set it with [`SelectOption::with_description`].
     pub description: Option<Reactive<String>>,
+    /// Optional robot/E2E test id for this option's menu row (the
+    /// pressable that picks it) — in `Select` and `Autocomplete` alike.
+    /// Set it with [`SelectOption::test_id`]. Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 /// Same text (both static) or the same live source (both reactive, one
@@ -406,6 +410,7 @@ fn reactive_text_eq(a: &Reactive<String>, b: &Reactive<String>) -> bool {
 impl PartialEq for SelectOption {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
+            && self.test_id == other.test_id
             && reactive_text_eq(&self.label, &other.label)
             && match (&self.description, &other.description) {
                 (None, None) => true,
@@ -418,7 +423,13 @@ impl PartialEq for SelectOption {
 impl SelectOption {
     /// A row with an id and a label, and no description.
     pub fn new(id: impl Into<String>, label: impl Into<Reactive<String>>) -> Self {
-        Self { id: id.into(), label: label.into(), description: None }
+        Self { id: id.into(), label: label.into(), description: None, test_id: None }
+    }
+
+    /// Give this option's menu row a robot/E2E test id.
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.test_id = Some(id);
+        self
     }
 
     /// Add a muted second line under the label in the menu row. Static
@@ -508,6 +519,10 @@ pub struct SelectProps {
     #[prop(static)]
     #[schema(constraint = "pixels, > 0")]
     pub max_width: Option<f32>,
+    /// Optional robot/E2E test id, forwarded to the trigger (the pressable
+    /// that opens the menu). Each option's row takes its own
+    /// [`SelectOption::test_id`]. Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for SelectProps {
@@ -521,6 +536,7 @@ impl Default for SelectProps {
             icon: Reactive::Static(None),
             disabled: Reactive::Static(false),
             max_width: None,
+            test_id: None,
             styles: Default::default(),
         }
     }
@@ -583,6 +599,7 @@ pub fn Select(props: SelectProps) -> Element {
     let trigger = runtime_core::pressable(vec![label_child, chevron], move || (on_open)())
         .with_style(trigger_style)
         .bind(trigger_ref);
+    let trigger = with_test_id!(trigger, props.test_id);
     // `disabled` rides the trigger pressable's own binding: the mount
     // handler's press block (so the menu never opens — mouse, keyboard or
     // programmatic), the host's `set_disabled` (out of keyboard focus), and
@@ -638,6 +655,7 @@ fn menu_row(
     opt_id: String,
     opt_label: Reactive<String>,
     opt_description: Option<Reactive<String>>,
+    opt_test_id: Option<&'static str>,
     value: Signal<String>,
     on_change: Rc<dyn Fn(String)>,
     menu_close: Rc<dyn Fn()>,
@@ -656,9 +674,8 @@ fn menu_row(
         .overridden(styles.option.as_ref());
     let text_child =
         option_text(opt_label, opt_description, move || value.get() == selected_id);
-    runtime_core::pressable(vec![text_child], move || (on_click)())
-        .with_style(row_style)
-        .into_element()
+    let row = runtime_core::pressable(vec![text_child], move || (on_click)()).with_style(row_style);
+    with_test_id!(row, opt_test_id).into_element()
 }
 
 fn menu_build(
@@ -683,11 +700,21 @@ fn menu_build(
                 let opt_id = option.id.clone();
                 let opt_label = option.label.clone();
                 let opt_description = option.description.clone();
+                let opt_test_id = option.test_id;
                 let on_change = on_change.clone();
                 let menu_close = row_close.clone();
                 let styles = row_styles.clone();
                 let build: EachRowBuild = Box::new(move || {
-                    vec![menu_row(opt_id, opt_label, opt_description, value, on_change, menu_close, &styles)]
+                    vec![menu_row(
+                        opt_id,
+                        opt_label,
+                        opt_description,
+                        opt_test_id,
+                        value,
+                        on_change,
+                        menu_close,
+                        &styles,
+                    )]
                 });
                 (EachKey::new(option.id.clone()), build)
             })
@@ -867,6 +894,7 @@ mod tests {
                 "form_entry.address".to_string(),
                 Reactive::Static("Address".to_string()),
                 Some(Reactive::Static("as its one-line label".to_string())),
+                None,
                 value,
                 Rc::new(|_| {}),
                 Rc::new(|| {}),
@@ -890,6 +918,7 @@ mod tests {
             let bare = menu_row(
                 "plain".to_string(),
                 Reactive::Static("Plain".to_string()),
+                None,
                 None,
                 value,
                 Rc::new(|_| {}),
@@ -934,6 +963,7 @@ mod tests {
                     id.to_string(),
                     Reactive::Static(id.to_uppercase()),
                     desc.map(|d| Reactive::Static(d.to_string())),
+                    None,
                     value,
                     Rc::new(|_| {}),
                     Rc::new(|| {}),
@@ -969,6 +999,7 @@ mod tests {
                 "a".to_string(),
                 Reactive::Static("A".to_string()),
                 Some(Reactive::Static("note".to_string())),
+                None,
                 value,
                 Rc::new(|_| {}),
                 Rc::new(|| {}),

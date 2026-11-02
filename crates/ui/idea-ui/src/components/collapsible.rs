@@ -352,6 +352,10 @@ pub struct CollapsibleProps {
     /// per-`transition` strategy (variant axis swap for `Snap`,
     /// `AnimProp::MaxHeight` tween for `Measured`).
     pub children: Vec<Element>,
+    /// Optional robot/E2E test id, forwarded to the header toggle (the
+    /// pressable that opens and closes the body; not `trailing`). Inert
+    /// outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl Default for CollapsibleProps {
@@ -366,6 +370,7 @@ impl Default for CollapsibleProps {
             transition: Reactive::Static(CollapsibleTransition::default()),
             duration_ms: Reactive::Static(COLLAPSIBLE_DURATION_DEFAULT_MS),
             children: Vec::new(),
+            test_id: None,
             styles: Default::default(),
         }
     }
@@ -383,6 +388,7 @@ pub fn Collapsible(props: CollapsibleProps) -> Element {
         props.trailing,
         props.value,
         props.on_change,
+        props.test_id,
         &styles,
     );
     // TODO(reactive-sweep): route `transition`/`duration_ms` into the body. Both
@@ -438,6 +444,7 @@ fn collapsible_header(
     trailing: Option<Element>,
     value: Signal<bool>,
     on_change: Rc<dyn Fn(bool)>,
+    test_id: Option<&'static str>,
     styles: &CollapsibleSlotStyles,
 ) -> Element {
     // The chevron flips from `›` (closed) to `⌄` (open). Only its TEXT
@@ -479,7 +486,7 @@ fn collapsible_header(
         (on_change)(next);
     };
 
-    let toggle = pressable(row, press_handler).with_style(header_style).into_element();
+    let toggle = with_test_id!(pressable(row, press_handler), test_id).with_style(header_style).into_element();
 
     match trailing {
         None => toggle,
@@ -866,6 +873,7 @@ pub fn Accordion(props: AccordionProps) -> Element {
             None,
             item_open,
             item_on_change,
+            None,
             &item_styles,
         );
         let body =

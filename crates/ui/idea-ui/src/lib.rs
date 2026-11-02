@@ -58,8 +58,10 @@
 //!   SDK dependency. The one feature here that still removes linked code.
 //! - `docs` — a `DocControls` impl on every `*Props` for reflective
 //!   control panels (what the idea-ui-docs app renders).
-//! - `robot` — forward an optional `test_id` prop to each component's
-//!   root interactive primitive for robot/E2E location.
+//! - `robot` — turns on `runtime-core/robot` and nothing else. Every
+//!   component forwards its `test_id` prop to its interactive primitive in
+//!   every build (inert unless the runtime's robot is on), so test ids
+//!   work under `idealyst dev` / `idealyst test` without this feature.
 //!
 //! ## Primitive families per component (non-gating)
 //!

@@ -331,6 +331,9 @@ pub struct SegmentOption {
     pub leading: Adornment,
     /// Adornment after the label — a count badge, a trailing icon.
     pub trailing: Adornment,
+    /// Optional robot/E2E test id for this segment's pressable. Set it
+    /// with [`SegmentOption::test_id`]. Inert outside a robot build.
+    pub test_id: Option<&'static str>,
 }
 
 impl SegmentOption {
@@ -340,6 +343,7 @@ impl SegmentOption {
             label: label.into(),
             leading: Adornment::None,
             trailing: Adornment::None,
+            test_id: None,
         }
     }
 
@@ -353,6 +357,12 @@ impl SegmentOption {
     /// Put `adornment` after the label.
     pub fn trailing(mut self, adornment: Adornment) -> Self {
         self.trailing = adornment;
+        self
+    }
+
+    /// Give this segment's pressable a robot/E2E test id.
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.test_id = Some(id);
         self
     }
 }
@@ -446,6 +456,7 @@ fn segment(
     styles: SegmentedControlSlotStyles,
 ) -> Element {
     let id = option.id;
+    let test_id = option.test_id;
 
     // The press commits this segment's own `id`.
     let id_for_press = id.clone();
@@ -483,7 +494,7 @@ fn segment(
             }
         }
     };
-    pressable(vec![content], press).with_style(seg_style).into()
+    with_test_id!(pressable(vec![content], press), test_id).with_style(seg_style).into()
 }
 
 /// Build an adornment for a segment (empty for `None` / an empty group).
