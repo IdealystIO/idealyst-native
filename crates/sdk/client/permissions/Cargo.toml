@@ -47,6 +47,11 @@ block2 = "0.5"
 
 # Android: ContextCompat.checkSelfPermission + Activity.requestPermissions via JNI.
 [target.'cfg(target_os = "android")'.dependencies]
+# The Kotlin shim names `io.idealyst.runtime.RustPermissionsResult`, which ships in
+# backend-android-mobile's Kotlin runtime. Depending on the backend makes this
+# crate's published requirement name a backend that has the class (run-android
+# `tests/sdk_runtime_class_deps.rs`).
+backend-android-mobile = { workspace = true }
 jni = "0.21"
 ndk-context = "0.1"
 

@@ -2319,6 +2319,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+- **`permissions`, `file-export` and `file-picker` require the
+  `backend-android-mobile` their Kotlin needs.** `permissions 3.0.1`'s
+  Kotlin named `io.idealyst.runtime.RustPermissionsResult` (added in
+  `backend-android-mobile 4.1.2`) without depending on the backend, so
+  `cargo update -p permissions` on a lock holding backend 4.1.1 failed in
+  kotlinc. The three SDKs now depend on the backend for Android, and a
+  run-android test fails for any crate whose Kotlin names a runtime class
+  without that dependency.
 
 - **Server-only saves no longer wake the web dev loop** (`build-web`,
   `dev-overlay`, `dev-reload`). `idealyst dev` took the web watcher's

@@ -39,6 +39,11 @@ futures-channel = "0.3"
 # ACTION_CREATE_DOCUMENT and routes the result back through the shared
 # `RustActivityResult` registry (same path screen-recorder's consent uses).
 [target.'cfg(target_os = "android")'.dependencies]
+# The Kotlin shim names `io.idealyst.runtime.RustActivityResult`, which ships in
+# backend-android-mobile's Kotlin runtime. Depending on the backend makes this
+# crate's published requirement name a backend that has the class (run-android
+# `tests/sdk_runtime_class_deps.rs`).
+backend-android-mobile = { workspace = true }
 jni = "0.21"
 ndk-context = "0.1"
 futures-channel = "0.3"
