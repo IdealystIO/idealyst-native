@@ -52,6 +52,10 @@ pub struct Capability {
     /// codesigned. Carried here so a future signing step is correct by
     /// construction; unsigned dev builds rely on the plist key alone.
     pub macos_entitlement: Option<&'static str>,
+    /// iOS entitlements with array values, `(key, values)`. Signed into the
+    /// app, so automatic signing adds the matching capability to the
+    /// provisioning profile.
+    pub ios_entitlements: &'static [(&'static str, &'static [&'static str])],
     /// Android `<uses-permission>` names.
     pub android_permissions: &'static [&'static str],
     /// Fully-qualified Android `<service>` class this capability needs
@@ -73,6 +77,7 @@ pub const REGISTRY: &[Capability] = &[
         ios_plist_key: Some("NSMicrophoneUsageDescription"),
         macos_plist_key: Some("NSMicrophoneUsageDescription"),
         macos_entitlement: Some("com.apple.security.device.audio-input"),
+        ios_entitlements: &[],
         android_permissions: &["android.permission.RECORD_AUDIO"],
         android_service: None,
         default_reason: "This app uses the microphone to capture audio.",
@@ -82,6 +87,7 @@ pub const REGISTRY: &[Capability] = &[
         ios_plist_key: Some("NSCameraUsageDescription"),
         macos_plist_key: Some("NSCameraUsageDescription"),
         macos_entitlement: Some("com.apple.security.device.camera"),
+        ios_entitlements: &[],
         android_permissions: &["android.permission.CAMERA"],
         android_service: None,
         default_reason: "This app uses the camera.",
@@ -98,6 +104,7 @@ pub const REGISTRY: &[Capability] = &[
         ios_plist_key: None,
         macos_plist_key: None,
         macos_entitlement: None,
+        ios_entitlements: &[],
         android_permissions: &[
             "android.permission.FOREGROUND_SERVICE",
             "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION",
@@ -114,6 +121,7 @@ pub const REGISTRY: &[Capability] = &[
         ios_plist_key: None,
         macos_plist_key: None,
         macos_entitlement: None,
+        ios_entitlements: &[],
         android_permissions: &[
             "android.permission.INTERNET",
             "android.permission.ACCESS_NETWORK_STATE",
@@ -132,6 +140,7 @@ pub const REGISTRY: &[Capability] = &[
         ios_plist_key: None,
         macos_plist_key: None,
         macos_entitlement: None,
+        ios_entitlements: &[],
         android_permissions: &["android.permission.POST_NOTIFICATIONS"],
         android_service: None,
         default_reason: "This app sends you notifications.",
@@ -145,6 +154,7 @@ pub const REGISTRY: &[Capability] = &[
         ios_plist_key: Some("NSLocationWhenInUseUsageDescription"),
         macos_plist_key: Some("NSLocationUsageDescription"),
         macos_entitlement: Some("com.apple.security.personal-information.location"),
+        ios_entitlements: &[],
         android_permissions: &[
             "android.permission.ACCESS_FINE_LOCATION",
             "android.permission.ACCESS_COARSE_LOCATION",
@@ -159,6 +169,7 @@ pub const REGISTRY: &[Capability] = &[
         ios_plist_key: None,
         macos_plist_key: None,
         macos_entitlement: None,
+        ios_entitlements: &[],
         android_permissions: &["android.permission.VIBRATE"],
         android_service: None,
         default_reason: "",
@@ -173,9 +184,26 @@ pub const REGISTRY: &[Capability] = &[
         ios_plist_key: None,
         macos_plist_key: None,
         macos_entitlement: None,
+        ios_entitlements: &[],
         android_permissions: &["android.permission.ACCESS_NETWORK_STATE"],
         android_service: None,
         default_reason: "",
+    },
+    // Reading NFC tags. Android gates the radio behind the (normal, no-prompt)
+    // `NFC` permission. iOS shows the plist reason on its scan sheet and
+    // needs the Core NFC entitlement; `TAG` covers both NFCTagReaderSession
+    // and NFCNDEFReaderSession (Xcode rejects a separate `NDEF` value). The
+    // macOS entitlement lets a sandboxed app reach PC/SC readers. Declared by
+    // the `nfc` SDK.
+    Capability {
+        name: "nfc",
+        ios_plist_key: Some("NFCReaderUsageDescription"),
+        macos_plist_key: None,
+        macos_entitlement: Some("com.apple.security.smartcard"),
+        ios_entitlements: &[("com.apple.developer.nfc.readersession.formats", &["TAG"])],
+        android_permissions: &["android.permission.NFC"],
+        android_service: None,
+        default_reason: "This app reads NFC tags.",
     },
 ];
 
@@ -262,6 +290,9 @@ pub struct Resolved {
     pub macos_plist: Vec<(String, String)>,
     /// macOS boolean-`true` entitlement keys (for a future signing step).
     pub macos_entitlements: Vec<String>,
+    /// iOS array-valued entitlements, `(key, values)`, merged across
+    /// capabilities with values deduplicated.
+    pub ios_entitlements: Vec<(String, Vec<String>)>,
     /// Android `<uses-permission>` names.
     pub android_permissions: Vec<String>,
     /// Fully-qualified Android `<service>` class names to inject into
@@ -333,6 +364,20 @@ pub fn resolve(
         if let Some(e) = cap.macos_entitlement {
             out.macos_entitlements.push(e.to_string());
         }
+        for (key, values) in cap.ios_entitlements {
+            let entry = match out.ios_entitlements.iter_mut().find(|(k, _)| k == key) {
+                Some(entry) => entry,
+                None => {
+                    out.ios_entitlements.push((key.to_string(), Vec::new()));
+                    out.ios_entitlements.last_mut().expect("just pushed")
+                }
+            };
+            for v in *values {
+                if !entry.1.iter().any(|e| e == v) {
+                    entry.1.push(v.to_string());
+                }
+            }
+        }
         for p in cap.android_permissions {
             out.android_permissions.push((*p).to_string());
         }
@@ -351,6 +396,32 @@ pub fn resolve(
     out.macos_entitlements.sort();
     out.macos_entitlements.dedup();
     out
+}
+
+/// A complete iOS entitlements plist from array-valued entitlements
+/// (`(key, values)`, e.g. associated domains plus capability entitlements),
+/// for code signing. `None` when there are none: a build that needs no
+/// entitlement gets no entitlements file, so its provisioning profile is not
+/// asked for a capability it doesn't use.
+pub fn entitlements_plist(entries: &[(String, Vec<String>)]) -> Option<String> {
+    if entries.is_empty() {
+        return None;
+    }
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let body: String = entries
+        .iter()
+        .map(|(key, values)| {
+            let items: String =
+                values.iter().map(|v| format!("        <string>{}</string>\n", esc(v))).collect();
+            format!("    <key>{}</key>\n    <array>\n{items}    </array>\n", esc(key))
+        })
+        .collect();
+    Some(format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+         \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\">\n<dict>\n{body}</dict>\n</plist>\n"
+    ))
 }
 
 #[cfg(test)]
@@ -470,6 +541,48 @@ mod tests {
         );
         // No plist key → no missing-reason warning.
         assert!(r.warnings.is_empty(), "screen_capture must not warn: {:?}", r.warnings);
+    }
+
+    #[test]
+    fn resolve_nfc_adds_android_permission_ios_entitlement_and_reason() {
+        let discovered = vec![DiscoveredCapability {
+            name: "nfc".into(),
+            requested_by: vec!["nfc".into()],
+        }];
+        let r = resolve(&discovered, &reasons(&[("nfc", "Scan equipment tags")]));
+        assert_eq!(r.android_permissions, vec!["android.permission.NFC".to_string()]);
+        assert_eq!(
+            r.ios_plist,
+            vec![("NFCReaderUsageDescription".to_string(), "Scan equipment tags".to_string())]
+        );
+        assert_eq!(
+            r.ios_entitlements,
+            vec![(
+                "com.apple.developer.nfc.readersession.formats".to_string(),
+                vec!["TAG".to_string()]
+            )]
+        );
+        assert_eq!(r.macos_entitlements, vec!["com.apple.security.smartcard".to_string()]);
+        assert!(r.macos_plist.is_empty(), "macOS has no NFC usage string");
+        assert!(r.warnings.is_empty());
+    }
+
+    #[test]
+    fn entitlements_plist_merges_entries_and_is_none_when_empty() {
+        assert!(entitlements_plist(&[]).is_none());
+        let plist = entitlements_plist(&[
+            ("com.apple.developer.associated-domains".into(), vec!["applinks:example.com".into()]),
+            ("com.apple.developer.nfc.readersession.formats".into(), vec!["TAG".into()]),
+        ])
+        .unwrap();
+        assert!(plist.starts_with("<?xml"));
+        assert!(plist.contains(
+            "    <key>com.apple.developer.associated-domains</key>\n    <array>\n        \
+             <string>applinks:example.com</string>\n    </array>\n"
+        ));
+        assert!(plist.contains("<key>com.apple.developer.nfc.readersession.formats</key>"));
+        assert!(plist.contains("<string>TAG</string>"));
+        assert!(plist.ends_with("</dict>\n</plist>\n"));
     }
 
     #[test]

@@ -1065,6 +1065,7 @@ mod regression_tests {
                 permissions: Default::default(),
                 links: Default::default(),
                 android: Default::default(),
+                nfc: Default::default(),
             },
         }
     }

@@ -809,6 +809,23 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`nfc` SDK** (`nfc`, new). Read and write NFC tags: `NfcSession::begin`,
+  `next_tag().await`, then `Tag::read_ndef` / `write_ndef` / `transceive`,
+  with a pure-Rust NDEF codec (`NdefMessage`, `NdefRecord::text` / `uri` /
+  `mime` / `external`). Core NFC on iOS, `NfcAdapter` reader mode on
+  Android, Web NFC on Chrome for Android, and USB PC/SC readers on macOS /
+  Windows (Linux behind `linux-pcsc`). Example: `nfc-demo`.
+
+- **The `nfc` capability and `[package.metadata.idealyst.app.nfc]`**
+  (`build-ios`, `run-ios`). An app depending on `nfc` gets the Android `NFC`
+  permission, the iOS `NFCReaderUsageDescription` and the Core NFC
+  `com.apple.developer.nfc.readersession.formats` entitlement, and the macOS
+  `com.apple.security.smartcard` entitlement. The new app block lists the ISO
+  7816 application ids and FeliCa system codes iOS reports. Capabilities can
+  now carry iOS entitlements, merged into `App.entitlements` with the
+  associated-domains one; `LinksMetadata::entitlements_plist` is replaced by
+  `LinksMetadata::entitlement` + `capabilities::entitlements_plist`.
+
 - **`resizeable` and `screen_orientation` in
   `[package.metadata.idealyst.app.android]`** (`build-ios`'s app metadata,
   `run-android`). They set the main activity's `android:resizeableActivity`

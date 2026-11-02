@@ -46,6 +46,7 @@ pub mod android_app;
 pub mod app_assets;
 pub mod capabilities;
 pub mod links;
+pub mod nfc_app;
 /// Building an SDK-declared package (a plug-in, an extension, a DLL) as a
 /// product of its own for the app's target.
 pub mod sdk_products;
@@ -253,6 +254,10 @@ pub struct AppMetadata {
     /// main activity, release signing — from
     /// `[package.metadata.idealyst.app.android]`. See [`android_app`].
     pub android: android_app::AndroidAppMetadata,
+    /// Core NFC tag lists — ISO 7816 application ids and FeliCa system
+    /// codes the iOS Info.plist declares — from
+    /// `[package.metadata.idealyst.app.nfc]`. See [`nfc_app`].
+    pub nfc: nfc_app::NfcAppMetadata,
 }
 
 /// macOS-target-specific config from `[package.metadata.idealyst.app.macos]`.
@@ -600,6 +605,8 @@ struct RawAppMetadata {
     links: Option<links::RawLinksMetadata>,
     #[serde(default)]
     android: Option<android_app::RawAndroidAppMetadata>,
+    #[serde(default)]
+    nfc: Option<nfc_app::RawNfcAppMetadata>,
 }
 
 #[derive(Default, Deserialize)]
@@ -741,6 +748,8 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         permissions: app_raw.permissions.unwrap_or_default(),
         links: links::LinksMetadata::from_raw(app_raw.links.unwrap_or_default())?,
         android: android_app::AndroidAppMetadata::from_raw(app_raw.android.unwrap_or_default())
+            .with_context(|| format!("{}", path.display()))?,
+        nfc: nfc_app::NfcAppMetadata::from_raw(app_raw.nfc.unwrap_or_default())
             .with_context(|| format!("{}", path.display()))?,
     };
 
@@ -1253,6 +1262,7 @@ mod regression_tests {
                 permissions: Default::default(),
                 links: Default::default(),
                 android: Default::default(),
+                nfc: Default::default(),
             },
         }
     }

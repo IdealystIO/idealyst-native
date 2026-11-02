@@ -234,7 +234,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             )?;
             let manifest_path = artifact.wrapper_dir.join("Cargo.toml");
             permission_plist =
-                ios_permission_entries(&manifest_path, &manifest.app.permissions);
+                ios_capability_artifacts(&manifest_path, &manifest.app.permissions).plist;
             wrapper_manifest = Some(manifest_path);
             let dir = artifact
                 .staticlib
@@ -542,26 +542,36 @@ pub(crate) fn sync_ios_asset_catalog_into_project(
     Ok(())
 }
 
+/// What the app's capabilities add to an iOS build: Info.plist
+/// usage-description entries and array-valued entitlements.
+#[derive(Debug, Default)]
+pub(crate) struct IosCapabilityArtifacts {
+    /// Rendered `<key>…</key><string>…</string>` Info.plist entries.
+    pub plist: String,
+    /// `(key, values)` entitlements to sign into the app.
+    pub entitlements: Vec<(String, Vec<String>)>,
+}
+
 /// Discover the capabilities the app's dependency graph declares, resolve
 /// them against the app's reason strings, and render the iOS Info.plist
-/// usage-description entries. Warnings (generic-reason fallback, unknown
-/// capability) and a one-line-per-permission report are printed so an
-/// auto-added permission is never invisible. A discovery error degrades to
-/// no entries with a warning rather than failing the run — a permission
-/// gap shouldn't block `idealyst dev`.
-pub(crate) fn ios_permission_entries(
+/// usage-description entries plus the entitlements they need. Warnings
+/// (generic-reason fallback, unknown capability) and a one-line-per-permission
+/// report are printed so an auto-added permission is never invisible. A
+/// discovery error degrades to no entries with a warning rather than failing
+/// the run — a permission gap shouldn't block `idealyst dev`.
+pub(crate) fn ios_capability_artifacts(
     wrapper_manifest: &Path,
     app_reasons: &std::collections::BTreeMap<String, String>,
-) -> String {
+) -> IosCapabilityArtifacts {
     let discovered = match capabilities::discover(wrapper_manifest) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("warning: could not discover app capabilities: {e}");
-            return String::new();
+            return IosCapabilityArtifacts::default();
         }
     };
     if discovered.is_empty() {
-        return String::new();
+        return IosCapabilityArtifacts::default();
     }
     let resolved = capabilities::resolve(&discovered, app_reasons);
     for w in &resolved.warnings {
@@ -570,7 +580,7 @@ pub(crate) fn ios_permission_entries(
     for r in &resolved.report {
         println!("  iOS permission: {r}");
     }
-    resolved
+    let plist = resolved
         .ios_plist
         .iter()
         .map(|(k, v)| {
@@ -581,7 +591,8 @@ pub(crate) fn ios_permission_entries(
             )
         })
         .collect::<Vec<_>>()
-        .join("\n    ")
+        .join("\n    ");
+    IosCapabilityArtifacts { plist, entitlements: resolved.ios_entitlements }
 }
 
 fn render_info_plist(
@@ -628,10 +639,13 @@ fn render_info_plist(
         RunMode::Local => manifest.app.links.plist_url_types(manifest.app.require_bundle_id()?),
         RunMode::RuntimeServer { .. } => String::new(),
     };
+    // Core NFC tag lists (`[package.metadata.idealyst.app.nfc]`).
+    let nfc_entries = manifest.app.nfc.plist_entries();
     let extra_entries = [
         icon_entries,
         endpoint_entry.as_str(),
         permission_entries,
+        nfc_entries.as_str(),
         url_types.as_str(),
         dev_ats_entry,
     ]
@@ -891,6 +905,7 @@ pub(crate) mod tests_support {
                 permissions: Default::default(),
                 links: Default::default(),
                 android: Default::default(),
+                nfc: Default::default(),
             },
         }
     }
@@ -927,6 +942,7 @@ mod tests {
                 permissions: Default::default(),
                 links: Default::default(),
                 android: Default::default(),
+                nfc: Default::default(),
             },
         }
     }

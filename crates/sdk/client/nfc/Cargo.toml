@@ -1,0 +1,92 @@
+[package]
+name = "nfc"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# Read and write NFC tags: open a reader session, wait for a tag, then read
+# or write its NDEF message or exchange raw commands with it.
+#   - iOS            : Core NFC NFCTagReaderSession (system scan sheet)
+#   - Android        : NfcAdapter reader mode, via a Kotlin shim
+#   - macOS / Windows: PC/SC — a USB contactless reader (system-provided
+#                      PCSC.framework / winscard.dll)
+#   - Linux          : PC/SC behind `linux-pcsc` (links libpcsclite)
+#   - web (wasm32)   : Web NFC NDEFReader (Chrome on Android), NDEF only
+#   - other          : Unsupported
+#
+# The NDEF codec (`src/ndef.rs`) is pure Rust and works everywhere.
+
+# The CLI walks the app's dependency graph, finds this, and adds the Android
+# NFC permission, the iOS NFCReaderUsageDescription and the iOS Core NFC
+# entitlement.
+[package.metadata.idealyst]
+capabilities = ["nfc"]
+
+[features]
+# PC/SC on Linux. Off by default: pcsc-sys links libpcsclite, which a Linux
+# machine without `libpcsclite-dev` / pcscd cannot link, and most Linux apps
+# never touch NFC. macOS and Windows ship PC/SC with the OS, so they always
+# get it.
+linux-pcsc = ["dep:pcsc"]
+# Compile-checked usage recipes for the docs/MCP catalog. Off in every
+# production build (the `recipe!` macro then expands to nothing).
+catalog = ["dep:runtime-core", "dep:runtime-vocabulary", "runtime-core/catalog", "runtime-core/async-driver"]
+
+[dependencies]
+# Recipes only (`catalog`). `runtime-vocabulary` is direct because the
+# recipes' `ui!` emission spells absolute `::runtime_vocabulary::glue::…`
+# paths.
+runtime-core = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+
+# Android: NfcAdapter reader mode via JNI. Reader-mode callbacks and the
+# blocking tag I/O live in a Kotlin shim (RustNfc, shipped below) that calls
+# back into the `nativeTagDiscovered` / `nativeOpResult` exports in
+# android.rs; oneshots carry each operation's reply back to its future.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+futures-channel = "0.3"
+# Failures reported to logcat through the backend's logger (stderr is not
+# captured on Android).
+log = "0.4"
+
+# `idealyst run android` discovers and compiles the shim from this.
+[package.metadata.idealyst.android]
+runtime_kotlin = ["runtime/kotlin/io/idealyst/nfc/RustNfc.kt"]
+
+# iOS: Core NFC NFCTagReaderSession + its delegate through the Obj-C runtime
+# (`src/apple.rs`). Completion handlers are blocks, bridged to the returned
+# futures with oneshots.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSData", "NSThread"] }
+block2 = "0.5"
+futures-channel = "0.3"
+
+# `NFCTagReaderSession` (src/apple.rs) lives in CoreNFC.
+# iOS links the Rust code as a staticlib inside Xcode/swiftc, which drops
+# `#[link(kind = "framework")]`; the iOS run tool links what is declared
+# here (`tests/sdk_framework_declarations.rs` in run-ios checks the two match).
+[package.metadata.idealyst.ios]
+frameworks = ["CoreNFC"]
+
+# web: Web NFC (`NDEFReader`) through web-glue bindings (`src/web.rs`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_nfc.rs`) — run with
+# `cargo test -p nfc --target wasm32-unknown-unknown` (the workspace runner
+# supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+# PC/SC card I/O blocks, so each tag operation runs on a worker thread and
+# resolves a oneshot.
+[target.'cfg(target_os = "linux")'.dependencies]
+pcsc = { version = "2", optional = true }
+futures-channel = "0.3"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+pcsc = "2"
+futures-channel = "0.3"

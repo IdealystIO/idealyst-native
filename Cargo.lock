@@ -8400,6 +8400,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "nfc"
+version = "0.1.0"
+dependencies = [
+ "block2 0.5.1",
+ "futures-channel",
+ "jni 0.21.1",
+ "log",
+ "ndk-context",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "pcsc",
+ "runtime-core",
+ "runtime-vocabulary",
+ "wasm-bindgen-test",
+ "web-glue",
+]
+
+[[package]]
+name = "nfc-demo"
+version = "0.1.0"
+dependencies = [
+ "dev-server",
+ "idea-ui",
+ "idealyst",
+ "nfc",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+]
+
+[[package]]
 name = "nix"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9321,6 +9352,25 @@ name = "pathdiff"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
+
+[[package]]
+name = "pcsc"
+version = "2.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dd833ecf8967e65934c49d3521a175929839bf6d0e497f3bd0d3a2ca08943da"
+dependencies = [
+ "bitflags 2.11.1",
+ "pcsc-sys",
+]
+
+[[package]]
+name = "pcsc-sys"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e14ef017e15d2e5592a9e39a346c1dbaea5120bab7ed7106b210ef58ebd97003"
+dependencies = [
+ "pkg-config",
+]
 
 [[package]]
 name = "pdf"

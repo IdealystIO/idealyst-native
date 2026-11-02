@@ -273,6 +273,7 @@ most apps need, with more specialized SDKs maintained separately.
 - `notifications`: local and scheduled notifications, push tokens
 - `location`: one-shot and continuous geolocation
 - `biometrics`: Face ID / Touch ID / fingerprint / Windows Hello
+- `nfc`: read and write NFC tags (phones, Web NFC, USB readers on desktop)
 - `camera`, `microphone`, `screen-recorder`: live capture
 - `clipboard`, `share`, `haptics`, `deep-link`, `connectivity`
 - `datetime`: current time and local time zone on every target

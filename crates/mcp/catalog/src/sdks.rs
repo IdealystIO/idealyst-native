@@ -450,6 +450,12 @@ sdk!(
     "Run a CPU-heavy function OFF the main thread from one platform-agnostic call site: declare `#[offload::job] fn rasterize(req: Req) -> Out { ... }` (a free fn) and call `offload::run(offload::handle!(rasterize), &req).await?`. On web it runs in a real Web Worker that instantiates the SAME app wasm through the framework's own glue (no second build artifact, no wasm-bindgen) with NO `SharedArrayBuffer` — so no COOP/COEP cross-origin-isolation headers are needed and embedding keeps working; the job crosses as a function-table index and its argument/result as postcard bytes. On native it runs on a `std::thread` with a oneshot delivering the result back to the `.await`. The crate that defines a job needs no extra dependencies — `#[offload::job]` is a marker; call sites only ever name `offload`. Job argument and return types must be `serde::Serialize + Deserialize` — the web backend ships them across the worker boundary, native clones them. A job that panics (or a worker that traps or fails to load) resolves to `Err(OffloadError::Canceled)` with the cause logged, never a hung future."
 );
 sdk!(
+    "nfc",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "Read and write NFC tags. `NfcSession::begin(SessionOptions::prompt(\"…\"))?` opens a reader session (the iOS scan sheet), `session.next_tag().await?` waits for a tap, then `tag.read_ndef()` (`Ok(None)` = not NDEF formatted), `tag.write_ndef(&NdefMessage)` or `tag.transceive(&apdu)`. `session.close()` ends it and resolves a pending `next_tag` with `Cancelled`; one session at a time (`Busy`). `NdefRecord::text` / `uri` / `mime` / `external` build records, `as_text` / `as_uri` read them; the codec is pure Rust. Backends: Core NFC (iOS), reader mode (Android, foreground only), Web NFC (Chrome Android, NDEF only, no `transceive`), PC/SC USB readers (macOS / Windows; Linux behind `linux-pcsc`). Depending on the crate adds the platform permission/entitlement; write the iOS reason under `[package.metadata.idealyst.app.permissions] nfc = \"…\"`, and list ISO 7816 AIDs iOS should report under `[package.metadata.idealyst.app.nfc] iso7816_aids = [...]`."
+);
+sdk!(
     "biometrics",
     SdkCategory::Device,
     SdkKind::Api,

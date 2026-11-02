@@ -184,29 +184,13 @@ impl LinksMetadata {
         self.domains.iter().map(|d| format!("applinks:{d}")).collect()
     }
 
-    /// A complete entitlements plist carrying the associated-domains
-    /// entitlement, for code signing — `None` when there are no domains
-    /// (a build without universal links needs no entitlements file, and
-    /// declaring an empty one would still demand the capability on the
-    /// provisioning profile).
-    pub fn entitlements_plist(&self) -> Option<String> {
-        if self.domains.is_empty() {
-            return None;
-        }
-        let values = self
-            .associated_domains()
-            .iter()
-            .map(|v| format!("        <string>{}</string>", xml_escape(v)))
-            .collect::<Vec<_>>()
-            .join("\n");
-        Some(format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-             <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
-             \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-             <plist version=\"1.0\">\n<dict>\n    \
-             <key>com.apple.developer.associated-domains</key>\n    <array>\n{values}\n    </array>\n\
-             </dict>\n</plist>\n"
-        ))
+    /// The associated-domains entitlement as a `(key, values)` pair for
+    /// [`entitlements_plist`](crate::capabilities::entitlements_plist) —
+    /// `None` when there are no domains (declaring the entitlement empty
+    /// would still demand the capability on the provisioning profile).
+    pub fn entitlement(&self) -> Option<(String, Vec<String>)> {
+        (!self.domains.is_empty())
+            .then(|| ("com.apple.developer.associated-domains".to_string(), self.associated_domains()))
     }
 
     /// AndroidManifest `<intent-filter>`s for the launch Activity: one
@@ -348,13 +332,13 @@ mod tests {
 
     #[test]
     fn entitlements_only_with_domains() {
-        assert!(LinksMetadata::from_raw(raw(&["myapp"], &[])).unwrap().entitlements_plist().is_none());
+        assert!(LinksMetadata::from_raw(raw(&["myapp"], &[])).unwrap().entitlement().is_none());
         let e = LinksMetadata::from_raw(raw(&[], &["example.com"]))
             .unwrap()
-            .entitlements_plist()
+            .entitlement()
             .unwrap();
-        assert!(e.contains("<key>com.apple.developer.associated-domains</key>"));
-        assert!(e.contains("<string>applinks:example.com</string>"));
+        assert_eq!(e.0, "com.apple.developer.associated-domains");
+        assert_eq!(e.1, vec!["applinks:example.com".to_string()]);
     }
 
     #[test]

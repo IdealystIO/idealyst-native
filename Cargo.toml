@@ -277,6 +277,8 @@ members = [
     # (notifications, location) build on.
     "crates/sdk/client/permissions",
     "crates/sdk/client/notifications",
+    "crates/sdk/client/nfc",
+    "crates/sdk/client/nfc/examples/nfc-demo",
     "crates/sdk/client/clipboard",
     "crates/sdk/client/location",
     "crates/sdk/client/share",
@@ -691,6 +693,7 @@ i18n-macros = { path = "crates/sdk/client/i18n/macros", version = "1.5.2", regis
 # re-implementing an OS grant flow.
 permissions = { path = "crates/sdk/client/permissions", version = "3.0.1", registry = "idealyst" }
 notifications = { path = "crates/sdk/client/notifications", version = "3.0.0", registry = "idealyst" }
+nfc = { path = "crates/sdk/client/nfc", version = "0.1.0", registry = "idealyst" }
 clipboard = { path = "crates/sdk/client/clipboard", version = "3.0.0", registry = "idealyst" }
 location = { path = "crates/sdk/client/location", version = "3.0.0", registry = "idealyst" }
 share = { path = "crates/sdk/client/share", version = "3.0.0", registry = "idealyst" }

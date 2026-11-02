@@ -250,8 +250,8 @@ pub(crate) fn prepare_xcode_project(
     let lib_name = format!("{}_ios_wrapper", manifest.lib_name);
 
     let wrapper_manifest = artifact.wrapper_dir.join("Cargo.toml");
-    let permission_plist =
-        crate::ios_permission_entries(&wrapper_manifest, &manifest.app.permissions);
+    let capability_artifacts =
+        crate::ios_capability_artifacts(&wrapper_manifest, &manifest.app.permissions);
 
     // Frameworks to link are DERIVED from the dep graph (each SDK declares its
     // own `[package.metadata.idealyst.ios].frameworks`), not hardcoded — a
@@ -300,18 +300,26 @@ pub(crate) fn prepare_xcode_project(
             manifest,
             &executable_name,
             CFBUNDLE_ICON_NAME_ENTRY,
-            &permission_plist,
+            &capability_artifacts.plist,
         )?,
     )?;
 
     // Entitlements: universal-link domains need the associated-domains
-    // entitlement signed into the app (automatic signing then adds the
-    // capability to the provisioning profile). Only written when the app
-    // declares domains; a stale file from an earlier build is removed so
-    // dropping `domains` really drops the entitlement.
+    // entitlement, and capabilities can need their own (Core NFC's reader
+    // formats). Signed into the app, so automatic signing adds each
+    // capability to the provisioning profile. Only written when there is
+    // one; a stale file from an earlier build is removed so dropping
+    // `domains` or an SDK really drops the entitlement.
     const ENTITLEMENTS_FILE: &str = "App.entitlements";
     let entitlements_path = project_root.join(ENTITLEMENTS_FILE);
-    let entitlements = match manifest.app.links.entitlements_plist() {
+    let entitlement_entries: Vec<(String, Vec<String>)> = manifest
+        .app
+        .links
+        .entitlement()
+        .into_iter()
+        .chain(capability_artifacts.entitlements)
+        .collect();
+    let entitlements = match build_ios::capabilities::entitlements_plist(&entitlement_entries) {
         Some(plist) => {
             std::fs::write(&entitlements_path, plist)
                 .with_context(|| format!("write {}", entitlements_path.display()))?;
@@ -383,7 +391,8 @@ fn render_device_info_plist(
 ) -> Result<String> {
     let bundle_id = manifest.app.require_bundle_id()?;
     let url_types = manifest.app.links.plist_url_types(bundle_id);
-    let extra_entries = [icon_entries, permission_entries, url_types.as_str()]
+    let nfc_entries = manifest.app.nfc.plist_entries();
+    let extra_entries = [icon_entries, permission_entries, nfc_entries.as_str(), url_types.as_str()]
         .iter()
         .filter(|s| !s.is_empty())
         .copied()
@@ -414,8 +423,9 @@ struct PbxParams<'a> {
     /// pbxproj sections.
     frameworks: &'a [Framework],
     /// The entitlements file (project-relative) to sign with, when the app
-    /// declares any — today, universal-link domains
-    /// (`com.apple.developer.associated-domains`). `None` ⇒ no
+    /// needs any — universal-link domains
+    /// (`com.apple.developer.associated-domains`) or a capability's
+    /// entitlements (Core NFC). `None` ⇒ no
     /// `CODE_SIGN_ENTITLEMENTS`, so a link-less app's provisioning profile
     /// is not asked for a capability it doesn't use.
     entitlements: Option<&'a str>,
@@ -1630,6 +1640,26 @@ iPhone 15 (17.0) (ABCDEF01-2345-6789-ABCD-EF0123456789)
         assert!(
             plist.contains("<key>CFBundleVersion</key>\n    <string>73</string>"),
             "CFBundleVersion must come from build_number:\n{plist}",
+        );
+    }
+
+    /// Core NFC drops any ISO 7816 tag whose AID the Info.plist doesn't
+    /// list, so the app's `[package.metadata.idealyst.app.nfc]` lists must
+    /// reach the device plist.
+    #[test]
+    fn device_plist_carries_app_nfc_tag_lists() {
+        let mut m = crate::tests_support::fake_manifest();
+        assert!(!render_device_info_plist(&m, "Demo", "", "")
+            .expect("render")
+            .contains(build_ios::nfc_app::ISO7816_AIDS_KEY));
+        m.app.nfc.iso7816_aids = vec!["D2760000850101".to_string()];
+        let plist = render_device_info_plist(&m, "Demo", "", "").expect("render");
+        assert!(
+            plist.contains(&format!(
+                "<key>{}</key>\n    <array>\n        <string>D2760000850101</string>\n    </array>",
+                build_ios::nfc_app::ISO7816_AIDS_KEY
+            )),
+            "{plist}"
         );
     }
 

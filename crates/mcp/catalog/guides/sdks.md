@@ -302,6 +302,7 @@ app supplies the reason string.
 |---|---|
 | **`permissions`** | Cross-platform **runtime permission** requests — the shared grant substrate. `permissions::request(Permission)` / `status(Permission)` → a uniform `PermissionStatus`. Other SDKs depend on this instead of re-implementing a grant flow. Robot tests fake the answer: `register_robot_controls()` → `permissions.set` / `.clear` / `.requests` ([[testing]]). |
 | **`biometrics`** | Cross-platform biometric authentication ("prove the device owner is present"). |
+| **`nfc`** | Read and write NFC tags: `NfcSession::begin` → `next_tag().await` → `Tag::read_ndef` / `write_ndef` / `transceive`, with a pure-Rust NDEF codec. Core NFC (iOS), reader mode (Android), Web NFC (Chrome Android), PC/SC USB readers on desktop. iOS reason under `app.permissions.nfc`; ISO 7816 AIDs under `[package.metadata.idealyst.app.nfc]`. |
 | **`notifications`** | Local + scheduled notifications and the raw device push token. Authorization goes through `permissions`; server-side push delivery is the app's job. Robot tests: `register_robot_controls()` → `notifications.log` / `.clear_log` ([[testing]]). |
 | **`location`** | Device geolocation — one-shot `current()` + continuous `watch()` yielding a `Position`. Permission grant goes through `permissions`. Robot tests fake the fix: `register_robot_controls()` → `location.set` / `.clear` ([[testing]]). |
 | **`clipboard`** | System copy/paste of plain text — `clipboard::set_text` / `text`. |
