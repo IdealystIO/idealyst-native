@@ -20,6 +20,13 @@
 //! # The main activity's `android:screenOrientation`, spelled as the
 //! # manifest spells it ("landscape", "sensorLandscape", "portrait", …).
 //! screen_orientation = "landscape"
+//! # Keep the process running while the app is in the background, for an
+//! # app that holds a connection open (a websocket, a heartbeat): a
+//! # foreground service with an ongoing notification, started when the
+//! # app's Activity is created and stopped when the user removes its task.
+//! # Without it Android's cached-apps freezer stops every thread of a
+//! # backgrounded process within about a minute.
+//! keep_alive = true
 //!
 //! [package.metadata.idealyst.app.android.signing]
 //! # Release keystore. Relative paths resolve against the app crate.
@@ -32,7 +39,12 @@
 //! ```
 //!
 //! Why the kiosk attributes live here rather than in an SDK: whether an app
-//! is a kiosk or a launcher is the app's decision. An SDK such as
+//! is a kiosk or a launcher is the app's decision. `keep_alive` is the
+//! same kind of decision — whether THIS app's process should outlive its
+//! window — and it needs only a manifest entry and a start at launch, no
+//! API. (A device owner that must also run after boot with no Activity uses
+//! `device-admin`'s `start_keep_alive`, which can use the `systemExempted`
+//! service type only device owners may.) An SDK such as
 //! `device-admin` is depended on by both the device-owner agent and the
 //! kiosk it locks, and only one of them is the home screen.
 //!
@@ -68,6 +80,9 @@ pub struct AndroidAppMetadata {
     /// The main activity's `android:screenOrientation`, a manifest value
     /// from [`SCREEN_ORIENTATIONS`].
     pub screen_orientation: Option<String>,
+    /// Run a foreground service for the life of the process so a
+    /// backgrounded app is not frozen (see the module docs).
+    pub keep_alive: bool,
     /// Release signing; `None` signs with the debug keystore.
     pub signing: Option<AndroidSigning>,
 }
@@ -150,6 +165,8 @@ pub(crate) struct RawAndroidAppMetadata {
     #[serde(default)]
     screen_orientation: Option<String>,
     #[serde(default)]
+    keep_alive: Option<bool>,
+    #[serde(default)]
     signing: Option<RawAndroidSigning>,
 }
 
@@ -222,6 +239,7 @@ impl AndroidAppMetadata {
             home_launcher: raw.home_launcher.unwrap_or(false),
             resizeable: raw.resizeable,
             screen_orientation: raw.screen_orientation,
+            keep_alive: raw.keep_alive.unwrap_or(false),
             signing,
         })
     }
@@ -324,6 +342,13 @@ mod tests {
         assert!(m.home_launcher);
         assert!(parse("lock_task_mode = \"if_allowlisted\"").is_err());
         assert!(parse("lock_task = \"always\"").is_err(), "unknown keys are rejected");
+    }
+
+    #[test]
+    fn keep_alive_is_opt_in() {
+        assert!(!parse("").unwrap().keep_alive);
+        assert!(parse("keep_alive = true").unwrap().keep_alive);
+        assert!(parse("keep_alive = \"yes\"").is_err());
     }
 
     #[test]

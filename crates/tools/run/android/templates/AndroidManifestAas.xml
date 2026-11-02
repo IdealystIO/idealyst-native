@@ -40,6 +40,9 @@
                  (`[package.metadata.idealyst.app.android].home_launcher`). -->
             {{HOME_INTENT_FILTER}}
         </activity>
+        <!-- The keep-alive foreground service, when the app sets
+             `[package.metadata.idealyst.app.android].keep_alive`. -->
+        {{KEEP_ALIVE_SERVICE}}
         <!-- Components SDKs splice inside <application>
              (`[package.metadata.idealyst.android].manifest_application`). -->
         {{SDK_MANIFEST_APPLICATION}}

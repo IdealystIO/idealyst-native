@@ -11,7 +11,9 @@
 //! depth). This seats `io.idealyst.runtime.RustStackPresenter` in the
 //! outlet, which plays Material's shared-axis transition for push, pop
 //! and replace and takes system Back while more than one screen is
-//! stacked.
+//! stacked or the top screen locks it (a locked root keeps Back from
+//! leaving the app). A Back it lets through reaches the app's `on_back`
+//! handlers (`RustSystemBack`, registered before any presenter).
 //!
 //! # A view-level container, not FragmentManager
 //!

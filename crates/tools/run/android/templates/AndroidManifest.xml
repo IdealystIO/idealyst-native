@@ -66,6 +66,9 @@
              mediaProjection foreground service), injected from SDKs in the
              dependency graph the same way `{{USES_PERMISSIONS}}` is. -->
         {{SERVICES}}
+        <!-- The keep-alive foreground service, when the app sets
+             `[package.metadata.idealyst.app.android].keep_alive`. -->
+        {{KEEP_ALIVE_SERVICE}}
         <!-- Components SDKs splice inside <application>
              (`[package.metadata.idealyst.android].manifest_application`). -->
         {{SDK_MANIFEST_APPLICATION}}

@@ -24,6 +24,7 @@ lock_task_mode = "if_whitelisted"  # the main activity's android:lockTaskMode
 home_launcher  = true              # add a HOME + DEFAULT intent filter
 resizeable     = false             # the main activity's android:resizeableActivity
 screen_orientation = "landscape"   # the main activity's android:screenOrientation
+keep_alive     = true              # keep running in the background (foreground service)
 
 [package.metadata.idealyst.app.android.signing]
 keystore = "keys/release.jks"      # relative to the app crate
@@ -50,6 +51,45 @@ should set it. `screen_orientation` takes the manifest's own values
 `landscape` or `sensorLandscape`. Leave either out for Android's default.
 Both hold because idealyst apps target API 34: Android 16 ignores them on
 large screens for apps targeting API 36.
+
+`keep_alive = true` is for an app that must keep working while it is in the
+background: a websocket (`server::Socket`), a heartbeat, a timer. Android
+12+ freezes a backgrounded app's process once it is cached (from about ten
+seconds after another app has been in front): the process stays alive but
+none of its threads run, so `after_ms` timers, the async executor and
+sockets all stop until the app is in front again. Nothing in the app can
+prevent that; a running foreground service can. With `keep_alive` the build
+declares a `specialUse` foreground service (plus the `FOREGROUND_SERVICE`
+and `FOREGROUND_SERVICE_SPECIAL_USE` permissions), and `MainActivity`
+starts it when it is created. It shows an ongoing, low-importance
+notification titled with the app's name, has no time limit, and ends when
+the user removes the app's task. A Play Store app must justify `specialUse`
+in its listing. It does not hold a wake lock: with the screen off the CPU
+can still sleep, and timers wait for it to wake. A device-owner app that
+must also run after boot with no Activity (an MDM agent) uses
+`device_admin::start_keep_alive` instead.
+
+### System Back
+
+Android's Back button and back gesture go to the app's navigators first: a
+stack pops its pushed screens and keeps Back on a screen marked
+`back_enabled(false)`, including its root. A Back no navigator takes goes
+to the app's `on_back` handlers (newest first), and only then finishes the
+Activity (or moves its task to the back):
+
+```rust
+use runtime_core::{on_back, BackOutcome};
+
+// In a component: while it is mounted, Back never leaves the app.
+on_back(|| BackOutcome::Consume);
+```
+
+`BackOutcome::Default` passes Back on. `add_back_handler(f)` returns a
+guard for code outside a component. The backend enables its
+`OnBackPressedCallback` only while a handler is registered, so an app
+without one keeps Android's predictive back-to-home animation. Other
+platforms have no system Back to route; `on_back` compiles everywhere and
+does nothing there.
 
 ### Versioning
 

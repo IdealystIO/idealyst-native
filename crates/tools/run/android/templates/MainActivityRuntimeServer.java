@@ -36,6 +36,11 @@ public class MainActivity extends FragmentActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // `keep_alive = true` in the app's Android metadata: start the
+        // foreground service that keeps a backgrounded process (and its
+        // dev-server socket) from being frozen. Empty otherwise.
+        {{KEEP_ALIVE_START}}
+
         // Match the status bar to the in-tree Toolbar's white
         // background so the two read as a single header. The
         // `SYSTEM_UI_FLAG_LIGHT_STATUS_BAR` flag switches the

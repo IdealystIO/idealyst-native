@@ -32,6 +32,12 @@ import android.view.ViewTreeObserver
  * It holds no Rust pointer. Every registration is undone when the observed
  * Activity is destroyed, so a re-created app never hears from a stale one.
  * UI thread only (observers are bound to the main looper).
+ *
+ * Only the newest observer reports ([current]). Android can create a new
+ * Activity before the old one stops: the old Activity's `onStop` and
+ * focus loss then arrive AFTER the new app attached and reported itself
+ * visible, and would leave `app_visible()` / `app_focused()` false for an
+ * app that is on screen.
  */
 class RustAppStateObserver :
     ViewTreeObserver.OnWindowFocusChangeListener,
@@ -45,6 +51,7 @@ class RustAppStateObserver :
     private var motionObserver: ContentObserver? = null
 
     fun attach(root: View) {
+        current = this
         this.root = root
         val ctx = root.context
         val vto = root.viewTreeObserver
@@ -78,6 +85,7 @@ class RustAppStateObserver :
     fun detach() {
         val r = root ?: return
         root = null
+        if (current === this) current = null
         for (vto in listOfNotNull(observer, r.viewTreeObserver)) {
             if (vto.isAlive) vto.removeOnWindowFocusChangeListener(this)
         }
@@ -91,6 +99,7 @@ class RustAppStateObserver :
     }
 
     private fun reportAnimatorScale() {
+        if (current !== this) return
         val r = root ?: return
         val scale = Settings.Global.getFloat(
             r.context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f,
@@ -99,6 +108,7 @@ class RustAppStateObserver :
     }
 
     private fun reportPointerDevices() {
+        if (current !== this) return
         val r = root ?: return
         var hasMouse = false
         for (id in InputDevice.getDeviceIds()) {
@@ -112,9 +122,11 @@ class RustAppStateObserver :
         nativeAppPointerDevices(hasMouse, hasTouch)
     }
 
+    private val reporting get() = root != null && current === this
+
     // --- window focus ---
     override fun onWindowFocusChanged(hasFocus: Boolean) {
-        if (root != null) nativeAppFocused(hasFocus)
+        if (reporting) nativeAppFocused(hasFocus)
     }
 
     // --- input devices ---
@@ -124,11 +136,11 @@ class RustAppStateObserver :
 
     // --- Activity lifecycle (only the root's Activity) ---
     override fun onActivityStarted(a: Activity) {
-        if (a === activity) nativeAppVisible(true)
+        if (a === activity && reporting) nativeAppVisible(true)
     }
 
     override fun onActivityStopped(a: Activity) {
-        if (a === activity) nativeAppVisible(false)
+        if (a === activity && reporting) nativeAppVisible(false)
     }
 
     override fun onActivityDestroyed(a: Activity) {
@@ -139,6 +151,11 @@ class RustAppStateObserver :
     override fun onActivityResumed(a: Activity) {}
     override fun onActivityPaused(a: Activity) {}
     override fun onActivitySaveInstanceState(a: Activity, outState: Bundle) {}
+
+    companion object {
+        /** The observer of the newest attach; the only one that reports. */
+        private var current: RustAppStateObserver? = null
+    }
 
     private external fun nativeAppFocused(focused: Boolean)
     private external fun nativeAppVisible(visible: Boolean)

@@ -1775,6 +1775,56 @@ struct StackEntry<N> {
     live: Option<LiveScreen<N>>,
 }
 
+/// A stack without a native presenter taking the system Back through the
+/// app-level handlers (`runtime_shared::system_back`). See the
+/// screen-behavior effect in `mount_stack_navigator`.
+struct StackBackFallback<H: NavCaps + 'static> {
+    /// The top screen locks Back (`ScreenBehavior::back_enabled == false`).
+    locked: Rc<std::cell::Cell<bool>>,
+    /// The registered handler, `Some` while the top is locked or pushed.
+    guard: Rc<RefCell<Option<runtime_shared::system_back::BackHandler>>>,
+    /// Weak: the handler must not keep the navigator alive.
+    shared: std::rc::Weak<StackShared<H>>,
+    dispatch: Rc<dyn Fn(NavCommand)>,
+}
+
+impl<H: NavCaps + 'static> StackBackFallback<H> {
+    /// Re-evaluate after a publish: hold a handler exactly while Back has
+    /// something to do here (keep a locked top, or pop a pushed screen).
+    /// An existing handler is kept rather than re-registered, so a nested
+    /// stack registered later stays ahead of it (handlers run newest
+    /// first).
+    fn sync(&self, back_enabled: bool) {
+        use runtime_shared::system_back::{add_handler, BackOutcome};
+        self.locked.set(!back_enabled);
+        let depth = self.shared.upgrade().map(|s| s.stack.borrow().len()).unwrap_or(0);
+        let needed = !back_enabled || depth > 1;
+        if !needed {
+            drop(self.guard.borrow_mut().take());
+            return;
+        }
+        if self.guard.borrow().is_some() {
+            return;
+        }
+        let locked = self.locked.clone();
+        let shared = self.shared.clone();
+        let dispatch = self.dispatch.clone();
+        let handler = add_handler(move || {
+            if locked.get() {
+                return BackOutcome::Consume;
+            }
+            match shared.upgrade() {
+                Some(s) if s.stack.borrow().len() > 1 => {
+                    dispatch(NavCommand::Pop);
+                    BackOutcome::Consume
+                }
+                _ => BackOutcome::Default,
+            }
+        });
+        *self.guard.borrow_mut() = Some(handler);
+    }
+}
+
 struct StackShared<H: NavCaps + 'static> {
     backend: Rc<RefCell<H>>,
     registry: Rc<Registry<H>>,
@@ -2466,11 +2516,28 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         );
         let fullscreen_on = Rc::new(std::cell::Cell::new(false));
         let fullscreen_driver = fullscreen_on.clone();
+        // No presenter: nothing native routes the system Back to this
+        // stack, so it takes Back through the app-level system-Back
+        // handlers instead (`runtime_shared::system_back`) — a locked top
+        // consumes it and a pushed screen pops, the same outcomes a
+        // presenter gives. Registered only while one of the two applies,
+        // so an unlocked root leaves Back to the platform (and an Android
+        // app keeps its predictive back-to-home).
+        let fallback = set_back.is_none().then(|| StackBackFallback {
+            locked: Rc::new(std::cell::Cell::new(false)),
+            guard: Rc::new(RefCell::new(None)),
+            shared: Rc::downgrade(&shared),
+            dispatch: dispatch.clone(),
+        });
+        let fallback_teardown = fallback.as_ref().map(|f| f.guard.clone());
         let _behavior = effect(move || {
             let published = chrome.get();
             let behavior = published.options.as_deref().map(|o| behavior_of(o)).unwrap_or_default();
             if let Some(set_back) = &set_back {
                 set_back(behavior.back_enabled);
+            }
+            if let Some(fallback) = &fallback {
+                fallback.sync(behavior.back_enabled);
             }
             if touch && behavior.fullscreen != fullscreen_driver.get() {
                 fullscreen_driver.set(behavior.fullscreen);
@@ -2480,6 +2547,11 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         crate::style_attach::on_teardown(move || {
             if fullscreen_on.get() {
                 runtime_shared::host::set_fullscreen(false);
+            }
+            // The handler must not outlive the navigator: a registered
+            // handler keeps the platform routing Back into the app.
+            if let Some(guard) = fallback_teardown {
+                drop(guard.borrow_mut().take());
             }
         });
     }

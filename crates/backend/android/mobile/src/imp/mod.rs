@@ -23,6 +23,7 @@ pub(crate) mod pointer;
 mod primitives;
 pub(crate) mod scheduler;
 pub(crate) mod soft_keyboard;
+pub(crate) mod system_back;
 pub(crate) mod user_activity;
 mod screenshot;
 pub(crate) mod sticky;
@@ -503,6 +504,11 @@ pub struct AndroidBackend {
     /// Load state of every live image view, by node key. The layout pass
     /// re-rasterizes SVGs from here. See `primitives::image`.
     pub(crate) image_states: primitives::image::ImageStates,
+    /// The Kotlin `RustSystemBack` routing system Back to the app's
+    /// `on_back` handlers; `None` when the staged runtime lacks it. Removed
+    /// from the Activity's dispatcher at `newcore::stop`. See
+    /// `imp::system_back`.
+    pub(crate) system_back: Option<GlobalRef>,
 }
 
 /// Read the device's `density` (screen-pixels-per-dp) from the
@@ -988,12 +994,16 @@ impl AndroidBackend {
             detached_window_roots: HashMap::new(),
             app_key: None,
             app_pointer: None,
+            system_back: None,
         };
         cookies::install(&backend);
         backend.install_viewport_resize_listener();
         soft_keyboard::install(&backend);
         app_state::install(&backend);
         user_activity::install(&backend);
+        // Before the tree mounts, so stack presenters register later and
+        // take Back first (see `imp::system_back`).
+        backend.system_back = system_back::install(&backend.context);
         backend
     }
 

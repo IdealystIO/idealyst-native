@@ -10,7 +10,10 @@
 //! state) into [`crate::newcore::report_app_state`], which reports and
 //! schedules the backend's flush. The JVM keeps the observer alive through
 //! the listeners it registers; it unregisters all of them itself when its
-//! Activity is destroyed, so nothing reports into a torn-down app.
+//! Activity is destroyed, so nothing reports into a torn-down app. Only the
+//! newest observer reports: an Activity re-created before the old one
+//! stopped would otherwise get the old one's late "stopped" / "focus lost"
+//! and read as hidden while on screen.
 //!
 //! | Fact | Source | At boot |
 //! |---|---|---|

@@ -325,6 +325,15 @@ component body, effect, or event handler:
 | `set_fullscreen(on)` | `AppEnvOps::fullscreen_setter` |
 | `announce(msg, priority)` | `A11yOps::announce_for_accessibility` |
 
+It also wires the app-level input hosts (keyboard, pointer, system Back),
+which tell the backend when the app starts or stops listening. For system
+Back (`on_back`): implement `AppEnvOps::set_system_back_wanted` to start or
+stop intercepting the platform's Back, and while it is on, call
+`runtime_shared::system_back::dispatch()` (inside the mounted world, then
+schedule the flush) for each Back no native navigator took; perform the
+platform default when it returns `false`. A platform without a system Back
+leaves the default no-op.
+
 Filling those slots is the boot entry's job — there is no central
 `mount()` to hang it on, because the backend's boot entry *is* the mount
 path. One call does all five:

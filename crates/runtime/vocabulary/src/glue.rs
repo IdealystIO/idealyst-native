@@ -920,6 +920,12 @@ pub use crate::app_input::{
     user_activated, PointerState,
 };
 pub use runtime_shared::app_state::PointerKind;
+// The platform's system Back (Android's back button / gesture) offered to
+// the app before it leaves: the scoped `on_back` and the guard-returning
+// `add_back_handler`. No-op on platforms without a system Back. See
+// `crate::system_back`.
+pub use crate::system_back::{add_back_handler, on_back};
+pub use runtime_shared::system_back::{BackHandler, BackOutcome};
 // App-wide "the person is using the app" heartbeat (idle clocks, kiosk
 // timeouts, auto-lock). See `crate::user_activity`.
 pub use crate::user_activity::{add_user_activity_listener, user_activity};

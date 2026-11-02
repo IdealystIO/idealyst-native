@@ -28,11 +28,11 @@ source, `open_url`, `announce`, …) are not trait methods: they live in
 [`src/backend.rs`](src/backend.rs) (the one-stop backend-author import)
 and `runtime_shared::backend`, which documents the required boot order.
 
-## `caps::AppEnvOps` (11) — `: Host`
+## `caps::AppEnvOps` (12) — `: Host`
 
 Mount-time app environment: platform identity, appearance, the self-contained closures `mount(...)` stashes in thread-locals (`open_url` / `set_fullscreen`), and app-level chrome (page metadata, host-surface background, scrollbar theme, app keyboard sink).
 
-`color_scheme`, `platform`, `url_opener`, `fullscreen_setter`, `set_page_metadata`, `set_app_background`, `set_scrollbar_theme`, `set_keyboard_sink`, `set_pointer_sink`, `set_pointer_lock`, `set_cursor_hidden`
+`color_scheme`, `platform`, `url_opener`, `fullscreen_setter`, `set_page_metadata`, `set_app_background`, `set_scrollbar_theme`, `set_keyboard_sink`, `set_pointer_sink`, `set_pointer_lock`, `set_cursor_hidden`, `set_system_back_wanted`
 
 ## `caps::LifecycleOps` (8) — `: Host`
 

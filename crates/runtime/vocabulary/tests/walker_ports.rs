@@ -1942,3 +1942,102 @@ fn regression_full_screen_follows_the_top_screen_on_touch_platforms() {
     runtime_shared::host::install_current_platform(previous);
     runtime_shared::host::install_fullscreen_setter(None);
 }
+
+/// A stack whose ROOT locks Back, with an unlocked DETAIL to push.
+fn locked_root_fixture(h: &Harness) -> (runtime_scene::Realized<host_mock::Node>, NavHandle) {
+    let handle_slot: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+    let realized = h.mount({
+        let handle_slot = handle_slot.clone();
+        stack_navigator(&HOME)
+            .screen(HOME, |_| {
+                runtime_vocabulary::prims::Screen::new(view().child(text().content("HOME")).build())
+                    .with(Locked)
+            })
+            .screen(DETAIL, |_| view().child(text().content("DETAIL")).build())
+            .screen_behavior(behavior_of)
+            .layout(|| view().child(navigator_outlet()).build())
+            .on_handle(move |handle| *handle_slot.borrow_mut() = Some(handle))
+            .build()
+    });
+    let handle = handle_slot.borrow().clone().expect("bound");
+    (realized, handle)
+}
+
+/// Regression (Android kiosk): `back_enabled(false)` on a stack's ROOT
+/// screen did nothing when the stack had no native presenter — the lock
+/// only ever reached a presenter, so the system Back left the app. Without
+/// a presenter the stack now takes Back through the app-level system-Back
+/// handlers: a locked root consumes it, a pushed screen pops.
+#[test]
+fn regression_stack_without_presenter_honours_a_locked_root() {
+    use runtime_shared::system_back;
+    clear_stack_presenter();
+    system_back::reset_for_tests();
+    let h = Harness::new();
+    let (realized, handle) = locked_root_fixture(&h);
+    h.flush();
+    let root = one_root(&realized);
+    assert!(system_back::wants_back(), "a locked root asks for Back");
+    assert!(system_back::dispatch(), "Back at a locked root is consumed");
+    h.flush();
+    assert!(shows(&h, root, "HOME"));
+
+    handle.push(&DETAIL, ());
+    h.flush();
+    assert!(shows(&h, root, "DETAIL"));
+    assert!(system_back::dispatch(), "Back on a pushed screen pops it");
+    h.flush();
+    assert!(shows(&h, root, "HOME") && !shows(&h, root, "DETAIL"), "popped back to the root");
+    assert!(system_back::dispatch(), "the root is still locked");
+    h.flush();
+    assert!(shows(&h, root, "HOME"));
+
+    drop(realized);
+    assert!(!system_back::wants_back(), "the navigator going releases its handler");
+}
+
+/// The other side of the same path: an UNLOCKED root registers nothing,
+/// so Back leaves the app as the platform would (and Android keeps its
+/// predictive back-to-home); a pushed screen registers until it is popped,
+/// and a locked pushed screen keeps Back.
+#[test]
+fn stack_without_presenter_wants_back_only_while_it_has_something_to_do() {
+    use runtime_shared::system_back;
+    clear_stack_presenter();
+    system_back::reset_for_tests();
+    let h = Harness::new();
+    let (realized, handle) = behavior_fixture(&h);
+    h.flush();
+    let root = one_root(&realized);
+    assert!(!system_back::wants_back(), "an unlocked root leaves Back to the platform");
+    assert!(!system_back::dispatch());
+
+    handle.push(&DETAIL, ());
+    h.flush();
+    assert!(system_back::wants_back());
+    assert!(system_back::dispatch(), "the locked DETAIL keeps Back");
+    h.flush();
+    assert!(shows(&h, root, "DETAIL"), "nothing popped");
+
+    handle.pop();
+    h.flush();
+    assert!(!system_back::wants_back(), "back at an unlocked root: the handler is gone");
+    drop(realized);
+}
+
+/// With a presenter the presenter owns Back (it sees the lock through
+/// `set_back_enabled`); the stack must not ALSO register an app-level
+/// handler, which would consume Backs the presenter let through.
+#[test]
+fn stack_with_a_presenter_registers_no_app_back_handler() {
+    use runtime_shared::system_back;
+    system_back::reset_for_tests();
+    let probe = probe_presenter();
+    let h = Harness::new();
+    let (realized, _handle) = locked_root_fixture(&h);
+    h.flush();
+    assert_eq!(probe.back.borrow().last(), Some(&false), "the presenter gets the root lock");
+    assert!(!system_back::wants_back());
+    drop(realized);
+    clear_stack_presenter();
+}

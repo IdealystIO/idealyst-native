@@ -241,8 +241,10 @@ pub struct StackScreenOptions {
     pub hide_header: bool,
     /// Whether the platform back affordance — iOS's swipe-back,
     /// Android's system Back — may pop THIS screen (default `true`). An
-    /// imperative `pop` still works when it's `false`. Web and desktop
-    /// have no back affordance to lock.
+    /// imperative `pop` still works when it's `false`. On the ROOT screen
+    /// `false` also keeps Android's Back from leaving the app (with or
+    /// without a native presenter). Web and desktop have no back
+    /// affordance to lock.
     pub back_enabled: bool,
     /// Full-screen (system bars hidden) while THIS screen is on top, on
     /// iOS and Android (default `false`).

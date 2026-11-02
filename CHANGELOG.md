@@ -816,6 +816,29 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **`on_back` / `add_back_handler`: the app sees Android's system Back**
+  (`runtime-shared`, `runtime-vocabulary`, `runtime-core`,
+  `backend-android-mobile`). `on_back(|| BackOutcome::Consume)` in a
+  component keeps Back from leaving the app while it is mounted (a kiosk);
+  `BackOutcome::Default` passes it on, and when every handler passes the
+  platform does its default. Navigators take Back first, so a handler sees
+  only the Back that would otherwise leave the app. Wired through the
+  Activity's `OnBackPressedDispatcher` by the backend itself (no generated
+  code changes); the callback is enabled only while a handler is
+  registered and removed when the app stops. No-op on platforms without a
+  system Back. New capability method `AppEnvOps::set_system_back_wanted`
+  (default no-op) for backends that have one.
+
+- **`keep_alive = true` keeps a backgrounded Android app running**
+  (`run-android`, `build-ios`). In `[package.metadata.idealyst.app.android]`
+  it adds a `specialUse` foreground service (with its permissions) that the
+  Activity starts on create and that ends when the user removes the app's
+  task. Without it Android's cached-apps freezer stops every thread of a
+  backgrounded app within about a minute — timers, `server::Socket`, the
+  async executor — until it is in front again. Device owners can still use
+  `device_admin::start_keep_alive`, which also runs after boot.
+
 - **`Modal` fixed `header` and `footer`** (`idea-ui`). Two optional
   closure props, `header = move || ui! { … }` and `footer = move || ui! { … }`
   (type `ModalSection`), render outside the modal's scroller, pinned to the
@@ -2338,6 +2361,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **Android: `back_enabled(false)` on a stack's root holds without a native
+  presenter** (`runtime-vocabulary`). The lock only ever reached a stack
+  presenter; a stack without one (the outlet-swap path) let Back finish the
+  Activity. It now takes Back through the app's system-Back handlers: a
+  locked top keeps it and a pushed screen pops.
+
+- **Android: an Activity re-created before the old one stopped reads as
+  visible** (`backend-android-mobile`). The old Activity's late `onStop` /
+  focus loss reported into the new app, leaving `app_visible()` and
+  `app_focused()` false while it was on screen. Only the newest Activity's
+  observer reports now.
+
 - **Web: a lazy chunk that fails to load no longer crashes the app**
   (`wasm-splitter`, `wasm-split-macro`, `wasm-carve`, `build-web`,
   `runtime-macros`). The `#[component(lazy)]` wrapper panicked

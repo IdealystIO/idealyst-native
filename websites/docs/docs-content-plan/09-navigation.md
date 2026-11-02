@@ -102,8 +102,9 @@ For stack screens, `StackScreenExt` adds header options:
 - `.hide_header(true)` — hide the header for this screen.
 - `.back_enabled(false)` — while this screen is on top, iOS's
   swipe-back and Android's system Back don't pop it (an imperative
-  `pop` still does; at the root, Back still leaves the app). Web and
-  desktop have no back gesture to lock.
+  `pop` still does). On a stack's ROOT screen it keeps Android's Back
+  from leaving the app — a kiosk's lock. Web and desktop have no back
+  gesture to lock.
 - `.fullscreen(true)` — full-screen (system bars hidden) while this
   screen is on top, on iOS and Android. The stack calls
   `set_fullscreen` only when the top screen's request changes, so your
@@ -314,8 +315,23 @@ navigator code and nothing for an app to register.
   the outlet lives a real `UINavigationController` (swipe-back, native
   transitions) or, on Android, a view-level container
   (`RustStackPresenter`) that plays Material's shared-axis transition and
-  takes system Back while more than one screen is stacked. Chrome is still
-  the author's `StackHeader`.
+  takes system Back while more than one screen is stacked (or while the
+  top screen locks it). Chrome is still the author's `StackHeader`. A
+  stack with no presenter takes Android's Back through the app's
+  `on_back` handlers instead, with the same outcomes.
+
+## System Back outside a navigator
+
+`on_back(|| BackOutcome::Consume)` in a component handles the Back that
+would otherwise leave the app — at the root of every navigator, or in an
+app with none — for as long as the component is mounted. Handlers run
+newest first; `BackOutcome::Default` passes Back on, and when every handler
+passes, the platform does its default (Android finishes the Activity or
+moves it to the back). Navigators take Back before any handler.
+`add_back_handler` is the guard-returning form for code outside a
+component. Only Android has a system Back to route: iOS, desktop and
+terminals never call a handler, and a browser's Back can't be held, so the
+same code is a no-op there.
 
 ## Deep links
 

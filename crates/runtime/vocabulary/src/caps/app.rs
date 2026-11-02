@@ -126,6 +126,24 @@ pub trait AppEnvOps: Host {
     fn set_cursor_hidden(&mut self, hidden: bool) {
         // default: no-op
     }
+
+    /// Start (`true`) or stop (`false`) routing the platform's system Back
+    /// to `runtime_shared::system_back::dispatch`. Driven by
+    /// `runtime_shared::system_back` through the host wired in
+    /// `install_env_services`: `true` exactly while an app back handler
+    /// (`on_back`) is registered.
+    ///
+    /// While on, a Back that no native navigator consumed calls
+    /// `system_back::dispatch()` (then schedules the backend's flush); when
+    /// it returns `false` the backend performs the platform's default (on
+    /// Android: re-dispatch with its own callback off, so the Activity
+    /// finishes or its task moves back). While off, the backend must not
+    /// intercept Back at all. Default: no system Back on this platform —
+    /// a no-op, and handlers simply never run.
+    #[allow(unused_variables)]
+    fn set_system_back_wanted(&mut self, wanted: bool) {
+        // default: no-op
+    }
 }
 
 /// Build/flush lifecycle: the end-of-build commit, layout scheduling,

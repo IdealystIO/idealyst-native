@@ -261,6 +261,23 @@ pub(crate) fn forward_keyboard_inset(inset: runtime_shared::KeyboardInset) {
     schedule_flush();
 }
 
+/// A system Back no native navigator consumed (the `RustSystemBack`
+/// callback): offer it to the app's `on_back` handlers and queue the flush
+/// that commits what they staged. Returns whether one consumed it; `false`
+/// tells the Kotlin side to let the platform do its default.
+///
+/// Runs inside the mounted world: a handler may navigate (a stack without
+/// a presenter pops on Back), and a pop that rebuilds the revealed screen
+/// creates reactive state, which panics outside `World::enter`. A raw
+/// Activity callback, outside every framework-wrapped handler, so nothing
+/// else would flush.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn dispatch_system_back() -> bool {
+    let consumed = enter_mounted_world(runtime_shared::system_back::dispatch);
+    schedule_flush();
+    consumed
+}
+
 /// Report an app-situation change (window focus, Activity visibility,
 /// reduce motion, primary pointer) and queue the flush that commits the
 /// world signals the report staged. Called from the
@@ -708,6 +725,10 @@ mod native {
                 // backend Rc may outlive this via the global self-handle).
                 if let Ok(mut b) = _backend.try_borrow_mut() {
                     b.set_pointer_sink_impl(None);
+                    // Take the Back callback off this Activity's dispatcher:
+                    // left registered, it would keep swallowing Back for an
+                    // app that is gone.
+                    b.dispose_system_back();
                 }
                 drop(realized);
                 drop(world);
@@ -879,6 +900,10 @@ mod native {
 
         fn set_cursor_hidden(&mut self, hidden: bool) {
             AndroidBackend::set_cursor_hidden_impl(self, hidden)
+        }
+
+        fn set_system_back_wanted(&mut self, wanted: bool) {
+            AndroidBackend::set_system_back_wanted_impl(self, wanted)
         }
     }
 
@@ -1797,6 +1822,44 @@ mod tests {
             "the link's navigation committed on the looper turn"
         );
         set_flush_world(None);
+    }
+
+    /// A system Back reaches the app's handlers inside the mounted world,
+    /// and what a handler staged commits on the next looper turn: the
+    /// Activity callback is raw, so `dispatch_system_back` owes the flush.
+    /// Without the world entry a handler that creates reactive state (a
+    /// stack pop rebuilding the revealed screen) panics.
+    #[test]
+    fn regression_system_back_runs_in_the_world_and_commits() {
+        use runtime_shared::system_back::{self, BackOutcome};
+        install_test_scheduler();
+        system_back::reset_for_tests();
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+
+        let log: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+        let backs = world.enter(|| {
+            let backs = signal(0u32);
+            let log = log.clone();
+            effect(move || log.borrow_mut().push(backs.get()));
+            backs
+        });
+        let _handler = system_back::add_handler(move || {
+            // Creation needs an ambient world.
+            let _fresh = signal(());
+            backs.set(backs.peek() + 1);
+            BackOutcome::Consume
+        });
+
+        assert!(dispatch_system_back(), "the handler consumed it");
+        assert_eq!(*log.borrow(), vec![0], "staged, not yet committed");
+        pump();
+        assert_eq!(*log.borrow(), vec![0, 1], "committed on the looper turn");
+
+        drop(_handler);
+        assert!(!dispatch_system_back(), "no handler: the platform's default");
+        set_flush_world(None);
+        pump();
     }
 
     /// `schedule_flush` queues exactly one deduped microtask; staged

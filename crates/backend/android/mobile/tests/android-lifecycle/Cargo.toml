@@ -34,3 +34,9 @@ name      = "Lifecycle Probe"
 bundle_id = "ai.truday.idealyst.lifecycleprobe"
 version   = "0.0.1"
 targets   = ["android"]
+
+# `run.sh` checks a backgrounded app that is NOT a device owner keeps
+# running: the generated foreground service keeps the cached-apps freezer
+# off it.
+[package.metadata.idealyst.app.android]
+keep_alive = true

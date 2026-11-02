@@ -243,6 +243,24 @@ inventory::submit! {
 
 inventory::submit! {
     UtilityEntry {
+        name: "on_back",
+        module_path: "runtime_core",
+        docs: "Handle the platform's system Back (Android's back button and gesture) for as long as the calling component is mounted: `on_back(|| BackOutcome::Consume)` keeps the app in front (a kiosk), `BackOutcome::Default` passes it on. Handlers run newest first and only see the Back that would otherwise leave the app: native navigators take Back first (a stack pops, a `back_enabled(false)` screen keeps it). When every handler passes, the platform does its default. A no-op on platforms without a system Back (iOS, desktop, terminal; a browser's Back can't be held). Outside a component use `add_back_handler(f)`, which returns a guard.",
+        params: &[ParamSpec {
+            name: "handler",
+            type_str: "impl Fn() -> BackOutcome + 'static",
+            type_short_name: "",
+        }],
+        return_type: "()",
+        return_type_short: "()",
+        category: UtilityCategory::Platform,
+        snippet: "",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
         name: "current_breakpoint",
         module_path: "runtime_core",
         docs: "Reactive `Signal<Breakpoint>` derived from the active theme's breakpoint thresholds and `viewport_size()`. Use in `.responsive()`-style flows; prefer this over hand-comparing widths so the threshold lives in the theme, not the call site.",

@@ -75,7 +75,8 @@ pub use runtime_shared;
 ///
 /// Five author-facing free functions — `platform()`, `color_scheme()`,
 /// `open_url()`, `set_fullscreen()`, `announce()` — plus the app-level
-/// keyboard listeners (`on_key`, `key_state`) are usable from any
+/// keyboard listeners (`on_key`, `key_state`), pointer listeners and
+/// system-Back handlers (`on_back`) are usable from any
 /// component body, effect, or event handler without a backend reference.
 /// They read thread-local slots, and this is what fills those slots from
 /// the backend's own [`caps::AppEnvOps`] / [`caps::A11yOps`] impls.
@@ -176,6 +177,21 @@ where
             true
         },
     )));
+
+    // System Back (`on_back`): same weak / `try_borrow_mut` shape. The
+    // backend is told only whether a handler is registered; the Back itself
+    // arrives from the backend's platform callback, never through here.
+    let weak_back = Rc::downgrade(backend);
+    runtime_shared::system_back::install_back_host(Some(Rc::new(move |wanted: bool| {
+        let Some(backend) = weak_back.upgrade() else {
+            return true;
+        };
+        let Ok(mut b) = backend.try_borrow_mut() else {
+            return false;
+        };
+        caps::AppEnvOps::set_system_back_wanted(&mut *b, wanted);
+        true
+    })));
 
     // Weak, and re-entrancy-safe: the borrow is confined to the forward
     // call. An announcer that re-entered framework code while we held a

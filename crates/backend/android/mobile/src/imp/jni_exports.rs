@@ -574,6 +574,16 @@ pub extern "system" fn Java_io_idealyst_runtime_RustAppStateObserver_nativeAppFo
     });
 }
 
+/// `RustSystemBack` → the app's `on_back` handlers. `true` = consumed;
+/// `false` = the Kotlin side performs the platform default.
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_runtime_RustSystemBack_nativeDispatch(
+    _env: JNIEnv,
+    _this: JObject,
+) -> jboolean {
+    run_returning_callback("system-back", || crate::newcore::dispatch_system_back() as jboolean)
+}
+
 /// `RustAppStateObserver` → `AppStateChange::Visible` (Activity
 /// started / stopped).
 #[no_mangle]

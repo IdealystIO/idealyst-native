@@ -52,6 +52,8 @@ const MAIN_ACTIVITY_LOCAL_JAVA: &str = include_str!("../templates/MainActivity.j
 const NATIVE_BRIDGE_LOCAL_JAVA: &str = include_str!("../templates/NativeBridge.java");
 const ANDROID_MANIFEST_LOCAL_XML: &str = include_str!("../templates/AndroidManifest.xml");
 const MAIN_ACTIVITY_AAS_JAVA: &str = include_str!("../templates/MainActivityRuntimeServer.java");
+/// Emitted only for an app with `keep_alive = true` (see [`keep_alive_service`]).
+const KEEP_ALIVE_SERVICE_JAVA: &str = include_str!("../templates/KeepAliveService.java");
 const NATIVE_BRIDGE_AAS_JAVA: &str = include_str!("../templates/NativeBridgeRuntimeServer.java");
 const ANDROID_MANIFEST_AAS_XML: &str = include_str!("../templates/AndroidManifestAas.xml");
 
@@ -309,8 +311,15 @@ pub fn package(project_dir: &Path, opts: &PackageOptions) -> Result<PackagedApk>
         render(main_activity_tmpl, &[
             ("PACKAGE", manifest.app.require_bundle_id()?),
             ("LIB_NAME", &lib_name),
+            ("KEEP_ALIVE_START", keep_alive_start(&manifest.app.android)),
         ]),
     )?;
+    if manifest.app.android.keep_alive {
+        fs::write(
+            java_pkg_dir.join("KeepAliveService.java"),
+            render(KEEP_ALIVE_SERVICE_JAVA, &[("PACKAGE", manifest.app.require_bundle_id()?)]),
+        )?;
+    }
     fs::write(
         java_pkg_dir.join("NativeBridge.java"),
         render(native_bridge_tmpl, &[("PACKAGE", manifest.app.require_bundle_id()?)]),
@@ -1084,6 +1093,8 @@ struct ManifestInputs<'a> {
 fn render_manifest(template: &str, i: &ManifestInputs<'_>) -> String {
     let sdk_root = i.sdk.render_root(i.package);
     let sdk_application = i.sdk.render_application(i.package);
+    let uses_permissions = with_keep_alive_permissions(i.uses_permissions, i.android);
+    let keep_alive = keep_alive_service(i.package, i.android);
     render(template, &[
         ("PACKAGE", i.package),
         ("APP_NAME", &xml_escape(i.app_name)),
@@ -1092,7 +1103,8 @@ fn render_manifest(template: &str, i: &ManifestInputs<'_>) -> String {
         ("ROBOT_RELAY_URL", &xml_escape(i.robot_relay_url)),
         ("IDEALYST_ENV", &xml_escape(i.idealyst_env)),
         ("ICON_ATTRS", i.icon_attrs),
-        ("USES_PERMISSIONS", i.uses_permissions),
+        ("USES_PERMISSIONS", &uses_permissions),
+        ("KEEP_ALIVE_SERVICE", &keep_alive),
         ("SERVICES", i.services),
         ("INTENT_FILTERS", i.intent_filters),
         ("CLEARTEXT", if i.cleartext { "true" } else { "false" }),
@@ -1119,6 +1131,59 @@ fn main_activity_attrs(android: &AndroidAppMetadata) -> String {
         attrs.push_str(&format!(" android:screenOrientation=\"{orientation}\""));
     }
     attrs
+}
+
+/// Permissions a keep-alive app needs on top of the capability-derived
+/// ones: starting a foreground service (API 28+) and its `specialUse` type
+/// (API 34+). A permission the dependency graph already declared (a
+/// screen recorder's `FOREGROUND_SERVICE`) is not repeated.
+fn with_keep_alive_permissions(uses_permissions: &str, android: &AndroidAppMetadata) -> String {
+    let mut out = uses_permissions.to_string();
+    if !android.keep_alive {
+        return out;
+    }
+    for perm in [
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
+    ] {
+        if out.contains(&format!("\"{perm}\"")) {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str("\n    ");
+        }
+        out.push_str(&format!("<uses-permission android:name=\"{perm}\" />"));
+    }
+    out
+}
+
+/// The `<service>` for `keep_alive = true` (empty otherwise). The
+/// `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` property is how Android 14+ (and
+/// Play review) learn what a `specialUse` service is for. `stopWithTask`
+/// ends it when the user removes the app's task.
+fn keep_alive_service(package: &str, android: &AndroidAppMetadata) -> String {
+    if !android.keep_alive {
+        return String::new();
+    }
+    format!(
+        "<service android:name=\"{package}.KeepAliveService\"
+                 android:exported=\"false\"
+                 android:stopWithTask=\"true\"
+                 android:foregroundServiceType=\"specialUse\">
+            <property android:name=\"android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE\"
+                      android:value=\"Keeps the app's network connection open while it is in the background\" />
+        </service>"
+    )
+}
+
+/// The `MainActivity.onCreate` statement that starts the keep-alive
+/// service (empty when the app does not ask for it).
+fn keep_alive_start(android: &AndroidAppMetadata) -> &'static str {
+    if android.keep_alive {
+        "KeepAliveService.start(this);"
+    } else {
+        ""
+    }
 }
 
 /// The HOME intent filter for an app declared as a home screen. A separate
@@ -1473,6 +1538,7 @@ mod tests {
     use super::{local_robot_build_needs_internet, render, ANDROID_MANIFEST_LOCAL_XML};
     use super::{apksigner_key_args, render_manifest, resolve_signing, ManifestInputs, SigningKey};
     use super::{AndroidAppMetadata, SdkManifestContributions};
+    use super::{keep_alive_start, KEEP_ALIVE_SERVICE_JAVA, MAIN_ACTIVITY_AAS_JAVA, MAIN_ACTIVITY_LOCAL_JAVA};
     use super::{splice_assets_into_apk, stage_apk_assets, APK_ASSETS_STAGING};
     use std::fs;
     use std::process::Command;
@@ -1619,6 +1685,70 @@ mod tests {
         assert!(!plain.contains("screenOrientation"));
         assert!(!plain.contains("category.HOME"));
         roxmltree::Document::parse(&plain).unwrap();
+    }
+
+    /// `keep_alive = true` (a backgrounded app that holds a connection
+    /// open, issue: Android's cached-apps freezer stopped its timers and
+    /// socket) declares a `specialUse` foreground service with the
+    /// permissions it needs, in both manifests; the Activity starts it.
+    /// An app that doesn't ask gets none of it.
+    #[test]
+    fn keep_alive_declares_and_starts_a_foreground_service() {
+        let meta = AndroidAppMetadata { keep_alive: true, ..Default::default() };
+        let sdk = SdkManifestContributions::default();
+        for template in [ANDROID_MANIFEST_LOCAL_XML, super::ANDROID_MANIFEST_AAS_XML] {
+            let mut i = inputs(&meta, &sdk, true);
+            // A screen recorder in the graph already asked for one of them.
+            i.uses_permissions = "<uses-permission android:name=\"android.permission.FOREGROUND_SERVICE\" />";
+            let xml = render_manifest(template, &i);
+            assert!(!xml.contains("{{"), "unfilled placeholder:\n{xml}");
+            let doc = roxmltree::Document::parse(&xml).unwrap_or_else(|e| panic!("{e}\n{xml}"));
+            let manifest = doc.root_element();
+            let perms: Vec<_> = manifest
+                .children()
+                .filter(|c| c.has_tag_name("uses-permission"))
+                .filter_map(|p| p.attribute((ANDROID_NS, "name")))
+                .collect();
+            assert_eq!(
+                perms.iter().filter(|p| **p == "android.permission.FOREGROUND_SERVICE").count(),
+                1,
+                "not repeated: {perms:?}"
+            );
+            assert!(perms.contains(&"android.permission.FOREGROUND_SERVICE_SPECIAL_USE"), "{perms:?}");
+            let app = manifest.children().find(|c| c.has_tag_name("application")).unwrap();
+            let service = app.children().find(|c| c.has_tag_name("service")).expect("a service");
+            assert_eq!(service.attribute((ANDROID_NS, "name")), Some("com.example.kiosk.KeepAliveService"));
+            assert_eq!(service.attribute((ANDROID_NS, "foregroundServiceType")), Some("specialUse"));
+            assert_eq!(service.attribute((ANDROID_NS, "exported")), Some("false"));
+            assert_eq!(service.attribute((ANDROID_NS, "stopWithTask")), Some("true"));
+            let property = service.children().find(|c| c.has_tag_name("property")).expect("subtype");
+            assert_eq!(
+                property.attribute((ANDROID_NS, "name")),
+                Some("android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE")
+            );
+        }
+        for activity in [MAIN_ACTIVITY_LOCAL_JAVA, MAIN_ACTIVITY_AAS_JAVA] {
+            let java = render(activity, &[
+                ("PACKAGE", "com.example.kiosk"),
+                ("LIB_NAME", "kiosk"),
+                ("KEEP_ALIVE_START", keep_alive_start(&meta)),
+            ]);
+            assert!(java.contains("KeepAliveService.start(this);"), "{java}");
+            assert!(!java.contains("{{"), "unfilled placeholder:\n{java}");
+        }
+        let service = render(KEEP_ALIVE_SERVICE_JAVA, &[("PACKAGE", "com.example.kiosk")]);
+        assert!(service.contains("package com.example.kiosk;"));
+        assert!(!service.contains("{{"));
+
+        let plain = AndroidAppMetadata::default();
+        let xml = render_manifest(ANDROID_MANIFEST_LOCAL_XML, &inputs(&plain, &sdk, true));
+        assert!(!xml.contains("KeepAliveService") && !xml.contains("FOREGROUND_SERVICE"), "{xml}");
+        let java = render(MAIN_ACTIVITY_LOCAL_JAVA, &[
+            ("PACKAGE", "com.example.kiosk"),
+            ("LIB_NAME", "kiosk"),
+            ("KEEP_ALIVE_START", keep_alive_start(&plain)),
+        ]);
+        assert!(!java.contains("KeepAliveService.start") && !java.contains("{{"));
     }
 
     fn release_meta(key_env: Option<&str>) -> AndroidAppMetadata {

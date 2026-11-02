@@ -26,12 +26,24 @@
 //!   no write committed and no tap was handled.
 //! - A 5 s heartbeat logs `tick N` for as long as the process runs, and a
 //!   device owner calls `device_admin::start_keep_alive`, so `run.sh
-//!   --keep-alive` can check a backgrounded process is not frozen.
+//!   --keep-alive` can check a backgrounded process is not frozen. The
+//!   probe also sets `keep_alive = true` in its Android metadata, so
+//!   `run.sh` checks a backgrounded NON-owner keeps ticking too.
+//! - "Unlock" replaces the locked root with an unlocked one, so Back at the
+//!   root passes the presenter and reaches the app's `on_back` handler,
+//!   which consumes it and counts (`backs: N`). Bug: an app had no way to
+//!   keep Back at an unlocked root (or with no stack) from finishing the
+//!   Activity.
+//! - `visible: …` shows `app_visible()`. Bug: after "Restart" the OLD
+//!   Activity's late `onStop` reported the app hidden while it was on
+//!   screen.
 
-use runtime_core::{component, signal, spawn_then, ui, Element, Route, Screen};
-use stack_navigator::{StackBuilder, StackNavigator, StackScreenExt};
+use runtime_core::{app_visible, component, on_back, signal, spawn_then, ui, BackOutcome, Element, Ref, Route, Screen, Signal};
+use stack_navigator::{StackBuilder, StackHandle, StackNavigator, StackScreenExt};
 
 const HOME: Route<()> = Route::<()>::new("home", "/");
+/// The same screen with Back unlocked, swapped in by "Unlock".
+const OPEN: Route<()> = Route::<()>::new("open", "/open");
 
 fn log(msg: String) {
     runtime_core::logging::log(runtime_core::logging::LogLevel::Info, &format!("[lifecycle] {msg}"));
@@ -79,8 +91,9 @@ fn restart_published_activity() {
 }
 
 #[component]
-fn Home() -> Element {
+fn Home(nav: Ref<StackHandle>, backs: Signal<u32>) -> Element {
     let taps = signal(0u32);
+    let visible = app_visible();
     let timer = signal("timer: pending".to_string());
     let churn = signal(0u32);
     let start_churn = move || {
@@ -124,6 +137,9 @@ fn Home() -> Element {
             text { move || format!("taps: {}", taps.get()) }
             button(label = "Tap".to_string(), on_click = move || taps.set(taps.peek() + 1))
             button(label = "Restart".to_string(), on_click = move || restart_published_activity())
+            text { move || format!("backs: {}", backs.get()) }
+            text { move || format!("visible: {}", visible.get()) }
+            button(label = "Unlock".to_string(), on_click = move || { nav.with(|n| n.replace(&OPEN, ())); })
         }
     }
 }
@@ -143,8 +159,20 @@ pub fn app() -> Element {
             log(format!("tick {n}"));
         }
     });
-    let nav = StackNavigator::new(&HOME).screen(HOME, |_| Screen::new(ui! { Home() }).back_enabled(false));
-    ui! { nav }
+    // Reached only by a Back nothing native consumed: here, at the
+    // unlocked OPEN root.
+    let backs = signal(0u32);
+    on_back(move || {
+        backs.set(backs.peek() + 1);
+        log(format!("on_back {}", backs.peek()));
+        BackOutcome::Consume
+    });
+    let nav: Ref<StackHandle> = Ref::new();
+    let stack = StackNavigator::new(&HOME)
+        .screen(HOME, move |_| Screen::new(ui! { Home(nav = nav, backs = backs) }).back_enabled(false))
+        .screen(OPEN, move |_| Screen::new(ui! { Home(nav = nav, backs = backs) }))
+        .bind(nav);
+    ui! { stack }
 }
 
 pub fn register_scene_extensions<H: runtime_scene::Host>(_registry: &mut runtime_scene::Registry<H>) {}

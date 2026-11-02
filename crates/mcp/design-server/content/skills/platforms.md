@@ -39,12 +39,16 @@ report it, don't patch around it in the app.
   `SafeAreaSides::BOTTOM`.
 - **Back differs.** iOS: a real navigation controller with interactive
   swipe-back. Android: system Back pops while more than one screen is
-  stacked; at a stack's root (and in a swap navigator) it leaves the app.
+  stacked; at a stack's root (and in a swap navigator) it leaves the app
+  unless the root screen is `back_enabled(false)` or an `on_back` handler
+  consumes it (a kiosk).
   Web: browser history. macOS/Linux/Windows/terminal: no gesture at all —
   the drawn back button is the only way back, so **never hide the back
   affordance on desktop**.
 - `Screen::back_enabled(false)` blocks the gesture/system Back on iOS and
   Android (for an unsaved form) — pair it with a visible confirm-to-leave.
+  `on_back(|| BackOutcome::Consume)` keeps Android's Back from leaving the
+  app at all; it runs only after navigators pass Back on.
 - **Covered screens**: on web a push disposes the covered screen and Back
   rebuilds it from its URL; elsewhere it stays mounted. Keep state that
   must survive a round trip (scroll position aside) in the URL

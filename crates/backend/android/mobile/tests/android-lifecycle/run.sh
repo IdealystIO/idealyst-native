@@ -10,13 +10,20 @@
 #   3. Activity.finish() through ndk_context reaches the NEW Activity;
 #   4. when a new Activity attaches BEFORE the old one's onDestroy (finish
 #      and start at once), the old detach leaves the new app mounted: its
-#      async work completes and taps still count.
+#      async work completes, taps still count, and app_visible() is true
+#      (the old Activity's late onStop does not report it hidden);
+#   5. Back at an UNLOCKED stack root reaches the app's on_back handler,
+#      which consumes it: the app stays in front and counts it;
+#   6. backgrounded for 75 s, the app (keep_alive = true, not a device
+#      owner) keeps ticking and is not frozen.
 #
 # With --keep-alive (a fresh emulator only: it makes the probe the device
 # owner, which needs no accounts on the device) it also checks
 #
-#   5. a device owner that called start_keep_alive keeps running while
-#      backgrounded: heartbeat ticks continue and the process is not frozen.
+#   7. a device owner that called start_keep_alive keeps running while
+#      backgrounded: heartbeat ticks continue and the process is not frozen
+#      (with the probe's own keep_alive service running beside it: the two
+#      foreground services must coexist).
 #
 # Needs: ANDROID_HOME with an NDK and build-tools, the aarch64-linux-android
 # rust target, network on the device (check 2 fetches https://example.com).
@@ -45,6 +52,20 @@ screen_texts() {
     adb shell uiautomator dump /sdcard/lifecycle.xml >/dev/null
     adb shell cat /sdcard/lifecycle.xml | tr '>' '\n' | grep -o 'text="[a-z]*: [^"]*"' | tr '\n' ' '
 }
+# Ticks logged and the freezer state after `secs` in the background.
+background_check() {
+    adb shell input keyevent KEYCODE_HOME
+    # Open another app and leave it too, so the probe is no longer the
+    # "previous app" (which Android keeps unfrozen) but a cached one.
+    adb shell am start -a android.settings.SETTINGS >/dev/null; sleep 2
+    adb shell input keyevent KEYCODE_HOME
+    adb logcat -c
+    # The cached-apps freezer froze an unkept process within ~10 s of it
+    # becoming cached (API 34 emulator: 2 ticks in 45 s, isFrozen=true).
+    sleep "$1"
+    ticks=$(adb logcat -d | grep -c "\[lifecycle\] tick" || true)
+    frozen=$(adb shell dumpsys activity processes | grep -A40 "ProcessRecord{.*$pkg" | grep -m1 -oE "isFrozen=[a-z]+" || true)
+}
 tap_button() {
     adb shell uiautomator dump /sdcard/lifecycle.xml >/dev/null
     local b; b=$(adb shell cat /sdcard/lifecycle.xml | tr '>' '\n' | grep "text=\"$1\"" \
@@ -71,6 +92,9 @@ check "cold start: async work completes" "$([[ "$cold" == *"timer: ok"*"http: Ok
 adb shell input keyevent KEYCODE_BACK; sleep 1; adb shell input keyevent KEYCODE_BACK; sleep 2
 check "Back on a root screen with back_enabled(false) keeps the app in front" \
     "$(top_is_probe && echo true || echo false)" "Back left the app"
+backs=$(screen_texts)
+check "the locked root's presenter took Back before the app's on_back" \
+    "$([[ "$backs" == *"backs: 0"* ]] && echo true || echo false)" "$backs"
 
 pid=$(adb shell pidof "$pkg")
 tap_finish; sleep 3
@@ -100,18 +124,30 @@ taps=$(adb shell uiautomator dump /sdcard/lifecycle.xml >/dev/null; \
 check "restart (new onCreate before old onDestroy, pid $pid): async work completes and taps count" \
     "$([[ "$(adb shell pidof "$pkg")" == "$pid" && "$restarted" == *"timer: ok"*"http: Ok(200)"* && "$taps" == 'text="taps: 1"' ]] && echo true || echo false)" \
     "pid $(adb shell pidof "$pkg"), screen: $restarted, $taps"
+after=$(screen_texts)
+check "restart: the old Activity's late onStop leaves the new app visible" \
+    "$([[ "$after" == *"visible: true"* ]] && echo true || echo false)" "$after"
 adb logcat -d -b main -b events | grep -E "wm_on_(create|destroy)_called.*$pkg|idealyst: (attach|detach)|\[lifecycle\] restart" || true
+
+# on_back: swap in the unlocked root, then Back passes the presenter.
+tap_button Unlock; sleep 1
+adb shell input keyevent KEYCODE_BACK; sleep 2
+backs=$(screen_texts)
+check "Back at an unlocked root reaches on_back, which keeps the app in front" \
+    "$(top_is_probe && [[ "$backs" == *"backs: 1"* ]] && echo true || echo false)" "$backs"
+
+# keep_alive = true: a backgrounded app that is not a device owner.
+adb shell am force-stop "$pkg"
+adb shell am start -n "$pkg/.MainActivity" >/dev/null; sleep 6
+background_check 75
+check "keep_alive: backgrounded 75 s, still ticking and not frozen" \
+    "$([[ "$ticks" -ge 12 && "$frozen" == "isFrozen=false" ]] && echo true || echo false)" "$ticks ticks, $frozen"
 
 if $keep_alive; then
     adb shell dpm set-device-owner "$pkg/io.idealyst.deviceadmin.AdminReceiver" >/dev/null
     adb shell am force-stop "$pkg"
     adb shell am start -n "$pkg/.MainActivity" >/dev/null; sleep 6
-    adb shell input keyevent KEYCODE_HOME
-    adb logcat -c
-    # The cached-apps freezer froze an unkept process within a minute.
-    sleep 75
-    ticks=$(adb logcat -d | grep -c "\[lifecycle\] tick" || true)
-    frozen=$(adb shell dumpsys activity processes | grep -A40 "ProcessRecord{.*$pkg" | grep -m1 -oE "isFrozen=[a-z]+" || true)
+    background_check 75
     check "start_keep_alive: backgrounded 75 s, still ticking and not frozen" \
         "$([[ "$ticks" -ge 12 && "$frozen" == "isFrozen=false" ]] && echo true || echo false)" "$ticks ticks, $frozen"
 fi
