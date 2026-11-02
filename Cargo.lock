@@ -1501,7 +1501,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "3.0.3"
+version = "3.1.0"
 dependencies = [
  "backend-image-source",
  "base64",
@@ -1525,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "4.0.1"
+version = "4.1.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1603,7 +1603,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "5.0.4"
+version = "5.1.0"
 dependencies = [
  "css",
  "dev-client",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "backend-image-source",
  "image-webp",
@@ -1943,7 +1943,7 @@ dependencies = [
 
 [[package]]
 name = "build-ios"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "anyhow",
  "semver",
@@ -2062,7 +2062,7 @@ dependencies = [
 
 [[package]]
 name = "build-web"
-version = "7.0.0"
+version = "7.1.0"
 dependencies = [
  "anyhow",
  "brotli 7.0.0",
@@ -3544,7 +3544,7 @@ dependencies = [
 
 [[package]]
 name = "dev-events"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "dev-events",
  "schemars",
@@ -3564,7 +3564,7 @@ dependencies = [
 
 [[package]]
 name = "dev-http"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3594,7 +3594,7 @@ dependencies = [
 
 [[package]]
 name = "dev-reload"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3644,7 +3644,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "14.0.0"
+version = "15.0.0"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -6424,7 +6424,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme-editor"
-version = "12.0.0"
+version = "13.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6435,7 +6435,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "15.0.0"
+version = "16.0.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6455,7 +6455,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "16.0.0"
+version = "17.0.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6484,7 +6484,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-branded"
-version = "7.0.0"
+version = "8.0.0"
 dependencies = [
  "idea-theme",
  "idea-ui",
@@ -6506,7 +6506,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.25"
+version = "1.5.26"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6516,7 +6516,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.25"
+version = "1.5.26"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6536,7 +6536,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-nav"
-version = "12.0.0"
+version = "13.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6547,7 +6547,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "backend-web",
  "dev-client",
@@ -6563,7 +6563,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.23.1"
+version = "1.24.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7733,7 +7733,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.32.0"
+version = "1.33.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7790,7 +7790,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "4.1.1"
+version = "4.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -10745,7 +10745,7 @@ dependencies = [
 
 [[package]]
 name = "robot-relay"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -10755,7 +10755,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "anyhow",
  "native-parity",
@@ -10766,7 +10766,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test-macros"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10803,7 +10803,7 @@ dependencies = [
 
 [[package]]
 name = "run-android"
-version = "3.1.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "build-android",
@@ -10817,7 +10817,7 @@ dependencies = [
 
 [[package]]
 name = "run-ios"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -10945,7 +10945,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "3.5.0"
+version = "3.6.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10980,7 +10980,7 @@ version = "0.1.1"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "dev-hot",
  "host-mock",
