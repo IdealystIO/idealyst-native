@@ -895,6 +895,14 @@ fn refuse_skipped(plan: &BTreeMap<String, Release>, skip: &[String]) -> Result<(
 /// A dependent with no library target (the CLI, dev tools, doc sites built
 /// as binaries) cannot leak anything into a consumer, so it is republished
 /// at a patch.
+///
+/// **The drag stops at a proc-macro crate** (`Workspace::dependents_through_types`):
+/// the proc-macro goes major, its dependents do not — nothing of a
+/// proc-macro crate is in their types. runtime-macros-expand 2.0 (emission
+/// that needs runtime-vocabulary 5) reached runtime-macros, and without
+/// this every crate under runtime-core would have gone major again just to
+/// move one compile-time dependency; runtime-core is `--force`d at a patch
+/// instead, which moves its floor to the new runtime-macros.
 fn drag_in_dependents_of_majors(
     ws: &Workspace,
     state: &ReleaseState,
@@ -908,11 +916,11 @@ fn drag_in_dependents_of_majors(
     if majors.is_empty() {
         return Ok(());
     }
-    // `dependents_of` is transitive. Every path from a major to a dependent
+    // The walk is transitive (stopping at proc-macro crates). Every path from a major to a dependent
     // runs through crates that depend on it, and those are libraries (only a
     // library can be depended on) — so each library reached here goes major,
     // and the closure needs no fixpoint.
-    for name in ws.dependents_of(majors.iter().map(String::as_str)) {
+    for name in ws.dependents_through_types(majors.iter().map(String::as_str)) {
         let Some(p) = ws.packages.get(&name) else { continue };
         let want = if p.has_lib { Bump::Major } else { Bump::Patch };
         if let Some(rel) = plan.get_mut(&name) {
@@ -1509,6 +1517,7 @@ mod tests {
             deps: Default::default(),
             dev_deps: Default::default(),
             has_lib: true,
+            proc_macro: false,
             lib_path: None,
             also_watch: Vec::new(),
             prepackage: None,
@@ -1575,6 +1584,7 @@ mod tests {
                             deps: Default::default(),
                             dev_deps: Default::default(),
                             has_lib: true,
+                            proc_macro: false,
                             lib_path: None,
                             also_watch: Vec::new(),
                             prepackage: None,
@@ -1665,6 +1675,47 @@ mod tests {
         let tui = &plan["dev-tui"];
         assert_eq!(tui.bump, Bump::Patch, "no library target: nothing leaks to a consumer");
         assert_eq!(tui.to, semver::Version::new(1, 5, 6));
+    }
+
+    /// runtime-macros-expand 2.0 (its emission needs runtime-vocabulary 5)
+    /// must take runtime-macros, the proc-macro shim over it, to a new
+    /// major — and stop there: runtime-core and everything under it expose
+    /// nothing of a proc-macro crate, so they are not dragged (it would have
+    /// re-majored ~125 crates to move one compile-time dependency).
+    #[test]
+    fn a_major_drags_through_libraries_but_stops_at_a_proc_macro() {
+        let mut ws = bare_ws(&[
+            ("runtime-macros-expand", "1.9.1"),
+            ("runtime-macros", "1.22.0"),
+            ("catalog-scan", "1.1.0"),
+            ("runtime-core", "4.0.0"),
+            ("idea-ui", "17.0.0"),
+        ]);
+        let deps = |names: &[&str]| names.iter().map(|n| n.to_string()).collect();
+        ws.packages.get_mut("runtime-macros").unwrap().deps = deps(&["runtime-macros-expand"]);
+        ws.packages.get_mut("runtime-macros").unwrap().proc_macro = true;
+        ws.packages.get_mut("catalog-scan").unwrap().deps = deps(&["runtime-macros-expand"]);
+        ws.packages.get_mut("runtime-core").unwrap().deps = deps(&["runtime-macros"]);
+        ws.packages.get_mut("idea-ui").unwrap().deps = deps(&["runtime-core"]);
+        let state = released(&[
+            ("runtime-macros-expand", "1.9.1"),
+            ("runtime-macros", "1.22.0"),
+            ("catalog-scan", "1.1.0"),
+            ("runtime-core", "4.0.0"),
+            ("idea-ui", "17.0.0"),
+        ]);
+        let mut plan =
+            BTreeMap::from([("runtime-macros-expand".to_string(), planned(Bump::Major, (1, 9, 1)))]);
+        drag_in_dependents_of_majors(&ws, &state, &mut plan).unwrap();
+        assert_eq!(plan["runtime-macros"].to, semver::Version::new(2, 0, 0), "the proc-macro itself goes major");
+        assert_eq!(plan["catalog-scan"].bump, Bump::Major, "a library calling the expander does");
+        assert!(!plan.contains_key("runtime-core"), "nothing past the proc-macro: {:?}", plan.keys());
+        assert!(!plan.contains_key("idea-ui"));
+
+        // A major OF the proc-macro crate drags nobody either.
+        let mut plan = BTreeMap::from([("runtime-macros".to_string(), planned(Bump::Major, (1, 22, 0)))]);
+        drag_in_dependents_of_majors(&ws, &state, &mut plan).unwrap();
+        assert_eq!(plan.len(), 1, "{:?}", plan.keys());
     }
 
     /// No major in the plan: nobody is dragged in, and earned levels stay.

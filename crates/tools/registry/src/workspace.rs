@@ -141,6 +141,11 @@ pub struct Package {
     /// (the CLI, a dev tool) is only ever installed, so nothing it depends
     /// on can leak into a consumer's types.
     pub has_lib: bool,
+    /// Whether the library target is a `proc-macro`. Such a crate exposes
+    /// no types to its dependents — it runs at compile time only, and two
+    /// versions of it in one graph never meet — so a major of it does not
+    /// force its dependents to a major (see `dependents_through_types`).
+    pub proc_macro: bool,
     /// The library target's root source file, relative to the workspace
     /// root (`crates/css/src/lib.rs`). `None` without a library target. The
     /// API check starts its module walk here.
@@ -242,6 +247,7 @@ impl Workspace {
                     deps,
                     dev_deps,
                     has_lib: p.targets.iter().any(|t| is_lib(&t)),
+                    proc_macro: p.targets.iter().any(|t| t.kind.iter().any(|k| k == "proc-macro")),
                 },
             );
         }
@@ -388,6 +394,39 @@ impl Workspace {
         }
         seen
     }
+
+    /// The crates whose PUBLIC API a major of `seeds` reaches: the
+    /// transitive dependents, except that the walk does not continue past
+    /// a `proc-macro` crate. A proc-macro crate is included when reached (a
+    /// dependency major still moves it to a new major: its requirement
+    /// changes and it re-exports nothing it could share across versions),
+    /// but its own dependents are not — no type of a proc-macro crate
+    /// appears in theirs, and two versions of it in one graph never meet.
+    /// A dependent that must still pick up the new proc-macro is released
+    /// explicitly (`--force`), at the level its own changes earn, with its
+    /// floor moved.
+    pub fn dependents_through_types<'a>(
+        &'a self,
+        seeds: impl IntoIterator<Item = &'a str>,
+    ) -> BTreeSet<String> {
+        let mut rev: HashMap<&str, Vec<&str>> = HashMap::new();
+        for p in self.publishable() {
+            for d in &p.deps {
+                rev.entry(d.as_str()).or_default().push(&p.name);
+            }
+        }
+        let is_proc_macro = |n: &str| self.packages.get(n).is_some_and(|p| p.proc_macro);
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut stack: Vec<&str> = seeds.into_iter().filter(|s| !is_proc_macro(s)).collect();
+        while let Some(c) = stack.pop() {
+            for &r in rev.get(c).into_iter().flatten() {
+                if seen.insert(r.to_string()) && !is_proc_macro(r) {
+                    stack.push(r);
+                }
+            }
+        }
+        seen
+    }
 }
 
 #[cfg(test)]
@@ -515,6 +554,8 @@ runtime-template = { workspace = true }
         assert!(ws.packages["lib-crate"].has_lib);
         assert!(!ws.packages["bin-crate"].has_lib);
         assert!(ws.packages["macro-crate"].has_lib);
+        assert!(ws.packages["macro-crate"].proc_macro);
+        assert!(!ws.packages["lib-crate"].proc_macro);
         // The API check walks from `lib_path`, workspace-relative.
         assert_eq!(ws.packages["lib-crate"].lib_path.as_deref(), Some("lib-crate/src/lib.rs"));
         assert_eq!(ws.packages["macro-crate"].lib_path.as_deref(), Some("macro-crate/src/lib.rs"));
@@ -541,6 +582,7 @@ runtime-template = { workspace = true }
                             deps: set(deps),
                             dev_deps: set(dev),
                             has_lib: true,
+                            proc_macro: false,
                             lib_path: None,
                             also_watch: Vec::new(),
                             prepackage: None,

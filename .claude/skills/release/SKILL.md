@@ -236,6 +236,19 @@ subject?
   `idea-ui-nav 1.5.9` slip: idea-ui 5.0.0 dragged it in at a patch, and an
   app on idea-ui 4 got idea-ui 5 alongside. Bin-only dependents (the CLI,
   dev-tui) still go at a patch. See `drag_in_dependents_of_majors`.
+  The drag **stops at a proc-macro crate**: the proc-macro goes major, its
+  dependents don't (nothing of a proc-macro is in their types). To move a
+  dependent onto the new proc-macro, `--force` it (runtime-core 4.0.1 onto
+  runtime-macros 2.0).
+- **A macro crate whose OUTPUT names something only a newer sibling
+  defines is a major**, whatever the commit subject says — the API check
+  can't see emitted code. `perf(macros):` shipped runtime-macros-expand
+  1.9.1 as a patch whose `ui!` emission needed runtime-vocabulary 5; the old
+  line (runtime-core 3.3 → runtime-macros ^1.22 → expand ^1.6) picked it up
+  on `cargo update` and stopped compiling, and it was yanked. Check
+  `git diff <last> -- crates/runtime/macros-expand` for new emitted
+  `glue::` / `__` names, and build a scratch consumer of the PREVIOUS
+  runtime-core line against the new macro crate before publishing.
 - Which crates get published is separate from the requirement they carry: `apply_plan` moves the released
   crate's floor in `[workspace.dependencies]` for **every** bump, patch
   included, before anything is packaged — so a dependent in the same release

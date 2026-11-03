@@ -320,7 +320,11 @@ target goes **major** too (transitively, and raising a smaller bump it earned
 itself): its new release requires the new major, whose types are in its API, so
 at a patch a `cargo update` on the old line would put two copies of the
 dependency in an app. idea-ui 5.0.0 did exactly that through idea-ui-nav 1.5.9.
-A bin-only dependent (the CLI, dev-tui) goes at a patch.
+A bin-only dependent (the CLI, dev-tui) goes at a patch. The drag stops at
+a proc-macro crate: it goes major itself, but its dependents expose none of
+its types and two versions of it never meet in one graph, so they are not
+dragged — a dependent that should move onto the new proc-macro is released
+with `--force`, which moves its floor.
 
 `yank <CRATE> <VERSION>` marks a published version yanked in its index file
 (`--undo` clears it; without `--execute` it only says what it would do). Cargo
