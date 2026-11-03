@@ -2275,8 +2275,8 @@ respawns the server.
 
 A full-stack session's server is the app's own binary — an axum router,
 `#[server]` fns registered through `inventory`, middleware, background
-tasks — and nothing in it consults a jump table. So on macOS on Apple
-silicon the session patches it the other way round: the running binary's
+tasks — and nothing in it consults a jump table. So on arm64 macOS and
+Linux the session patches it the other way round: the running binary's
 own functions are redirected. A save the decision below accepts:
 
 1. replays ONLY the edited crates with `--emit=obj` (the captures come
@@ -2286,30 +2286,42 @@ own functions are redirected. A save the decision below accepts:
 2. binds the patch's statics and thread-locals to the server's storage
    and neutralizes constructors it already ran, exactly as for the
    sidecar ([Statics are the running program's](#statics-are-the-running-programs));
-3. links the objects into a dylib with `-dead_strip`, rooted at the
-   functions to redirect. The binary was linked dead-stripped too, so a
+3. links the objects into a shared library (`ld -dead_strip` on macOS,
+   `cc -shared --gc-sections` on Linux), rooted at the functions to
+   redirect. The binary was linked dead-stripped too, so a
    re-emitted crate holds code the binary never kept; stripped from the
    patch, it needs nothing the binary lacks. Live code that needs a
    function the binary does not contain stays an import, and loading the
    patch fails on it — the save rebuilds;
-4. hands the dylib and the address pairs to the AGENT, a small library
-   `idealyst run-linked` loads into the server at exec
-   (`DYLD_INSERT_LIBRARIES`; it reports on a Unix socket, then removes
-   itself from the environment the server's children inherit). The agent
-   `dlopen`s the patch and rewrites the FIRST INSTRUCTION of each of the
-   binary's redirected functions into a `b` to the patch's copy (through
-   a 16-byte island mapped within branch reach).
+4. hands the library and the address pairs to the AGENT, a small
+   library `idealyst run-linked` loads into the server at exec
+   (`DYLD_INSERT_LIBRARIES` on macOS, `LD_PRELOAD` on Linux; it reports
+   on a Unix socket, then removes itself from the environment the
+   server's children inherit). The agent `dlopen`s the patch and
+   rewrites the START of each of the binary's redirected functions into
+   a jump to the patch's copy: one `b` when the patch is within branch
+   reach, otherwise a 16-byte `ldr x16, #8; br x16; .quad target`.
 
 Every caller then reaches the new body — a direct call from a crate that
 was not re-emitted, a function pointer stored at startup, a vtable — which
 is why the dependents of the edited crate need no replay, unlike the web.
-The rewrite never tears: one aligned 4-byte instruction changes, so a
-thread either takes the branch or has already passed it and finishes the
-old body; and the page is rebuilt elsewhere and mapped over the original
-in one call (`mach_vm_remap`), because macOS refuses a writable and
-executable text mapping and a writable-only one kills every thread running
-on that page. `build-runtime-server`'s `tests/server_detour.rs` runs eight
-threads through every kind of call while patches land.
+The rewrite never tears: every other thread is stopped while it is
+written (suspended on macOS; on Linux, held in a signal handler), and it
+is written only when none of them has its program counter, link register
+or a return address inside a rewritten window — otherwise they resume
+and the agent tries again a millisecond later. macOS refuses a writable
+and executable text mapping, so there each page is rebuilt elsewhere and
+mapped over the original in one call (`mach_vm_remap`); Linux allows one
+for the moment of the write, so the words are written in place and the
+instruction cache cleaned. `build-runtime-server`'s
+`tests/server_detour.rs` runs eight threads through every kind of call
+while patches land, on both.
+
+On Linux the patch reaches the server's statics through cells of its own
+holding their addresses, and its references to the server's
+thread-locals are rewritten to their fixed offsets from the thread
+pointer, as the linker did when it linked the server
+(`build-runtime-server`'s `hotpatch::elf`).
 
 **What is never redirected.** Closures and coroutines (every `async fn`
 and `async` block body): a future built by the old code is resumed by
@@ -2351,9 +2363,13 @@ function's next call. State computed when the server started — a router
 built in a plain function, a config read in `main`'s callees — is not
 recomputed. Request a rebuild when an edit only matters at startup.
 
-macOS on Apple silicon only. A project that configures its own cargo
-`runner` replaces `idealyst run-linked`, so its server never loads the
-agent and every server save rebuilds.
+arm64 macOS and Linux only (a dev container on an Apple silicon Mac is
+arm64 Linux). A project that configures its own cargo `runner` replaces
+`idealyst run-linked`, so its server never loads the agent and every
+server save rebuilds. So does a target directory on a Docker Desktop bind
+mount of a macOS folder: cargo recompiles there on `cargo run`, so the
+running server is not the build the session read. The session warns
+about that mount; put the target directory on a container-local volume.
 
 ### What the app is handed
 
@@ -2390,7 +2406,7 @@ is booted.
 - `--experimental-build` turns on the experimental tiers, off by
   default: on `dev --web --local` a save that only adds items is hot
   patched instead of rebuilt ([Adding items](#adding-items)), and a
-  full-stack session on macOS on Apple silicon patches its running
+  full-stack session on arm64 macOS or Linux patches its running
   server in place
   ([The server is patched in place](#the-server-is-patched-in-place)).
 - `IDEALYST_HOTPATCH_NO_SEED=1` skips the background replays that warm

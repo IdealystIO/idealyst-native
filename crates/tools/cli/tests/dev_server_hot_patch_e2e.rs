@@ -27,14 +27,24 @@
 //! And without `--experimental-build` the tier is off: no agent loads,
 //! and the same body edit rebuilds and respawns the server.
 //!
-//! `#[ignore]`d: it compiles the framework for wasm32 and the host. macOS
-//! on Apple silicon only, the one host the server tier arms on:
+//! `#[ignore]`d: it compiles the framework for wasm32 and the host. arm64
+//! macOS and Linux, the hosts the server tier arms on:
 //!
 //! ```text
 //! cargo test -p idealyst-cli --test dev_server_hot_patch_e2e -- --ignored --nocapture
 //! ```
+//!
+//! On a Mac, the Linux leg runs in an arm64 dev container with the wasm
+//! target added (`rustup target add wasm32-unknown-unknown`). With
+//! `CARGO_TARGET_DIR` outside the repo the fixture cannot see the repo's
+//! `.cargo/config.toml`, so name the registry in the environment too:
+//! `CARGO_REGISTRIES_IDEALYST_INDEX=sparse+https://crates.idealyst.io/index/`.
+//! Mount a container-local volume over the repo's `target/` as well: a
+//! Docker Desktop bind mount of a macOS folder makes cargo recompile the
+//! server on `cargo run`, and the session then refuses to patch a process
+//! that is not its last build.
 
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#![cfg(all(any(target_os = "macos", target_os = "linux"), target_arch = "aarch64"))]
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};

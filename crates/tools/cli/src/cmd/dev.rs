@@ -451,7 +451,7 @@ pub struct Args {
     ///   every crate above the edit. Each such patch is checked from
     ///   source and again after it compiles. See "Adding items" in
     ///   docs/hot-reload.md.
-    /// - Full-stack server, macOS on Apple silicon: a body edit in a crate
+    /// - Full-stack server, arm64 macOS or Linux: a body edit in a crate
     ///   the server is built from patches the running server in place
     ///   instead of rebuilding and respawning it. See "The server is
     ///   patched in place" in docs/hot-reload.md.

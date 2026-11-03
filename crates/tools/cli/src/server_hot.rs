@@ -25,7 +25,7 @@
 //!   else — and any failure on the way — returns `Rebuild`, and the
 //!   watcher runs today's `cargo build` + respawn.
 //!
-//! macOS on Apple silicon only (the patch builder links Mach-O arm64);
+//! arm64 macOS and Linux (the patch builder links Mach-O and ELF arm64);
 //! elsewhere the session never arms it and every server save rebuilds.
 //! Experimental: armed only under `idealyst dev --experimental-build`.
 
@@ -53,7 +53,13 @@ const APPLY_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Whether this host can patch a native server at all.
 pub(crate) fn supported() -> bool {
-    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+    cfg!(all(any(target_os = "macos", target_os = "linux"), target_arch = "aarch64"))
+}
+
+/// The file extension of a shared library on this host: the agent's, and
+/// each patch's.
+fn dylib_ext() -> &'static str {
+    if cfg!(target_os = "macos") { "dylib" } else { "so" }
 }
 
 /// The session's server hot-patch tier. Cheap to clone.
@@ -128,7 +134,7 @@ impl ServerHot {
     /// session cannot have it.
     pub(crate) fn arm(server_manifest: &Path, target_dir: &Path) -> Option<ServerHot> {
         if !supported() {
-            crate::dlog!("dev server", "server hot patches need macOS on Apple silicon; server saves rebuild");
+            crate::dlog!("dev server", "server hot patches need arm64 macOS or Linux; server saves rebuild");
             return None;
         }
         match Self::try_arm(server_manifest, target_dir) {
@@ -618,14 +624,14 @@ fn build_agent(dir: &Path) -> Result<PathBuf> {
     h.update(&version.stdout);
     let key: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
     let out_dir = dir.join(&key);
-    let lib = out_dir.join(format!("lib{AGENT_CRATE}.dylib"));
+    let lib = out_dir.join(format!("lib{AGENT_CRATE}.{}", dylib_ext()));
     if lib.is_file() {
         return Ok(lib);
     }
     std::fs::create_dir_all(&out_dir).with_context(|| format!("create {}", out_dir.display()))?;
     let src = out_dir.join("hot_agent.rs");
     std::fs::write(&src, AGENT_SOURCE).with_context(|| format!("write {}", src.display()))?;
-    let tmp = out_dir.join(format!("lib{AGENT_CRATE}.tmp.dylib"));
+    let tmp = out_dir.join(format!("lib{AGENT_CRATE}.tmp.{}", dylib_ext()));
     let out = Command::new("rustc")
         .args(["--edition=2021", "--crate-type", "cdylib", "--crate-name", AGENT_CRATE, "--cfg", AGENT_CFG])
         .args(["-C", "opt-level=1", "-C", "debuginfo=0"])

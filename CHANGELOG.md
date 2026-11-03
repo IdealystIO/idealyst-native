@@ -1184,6 +1184,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Server in-place patches on arm64 Linux** (`idealyst-cli` minor;
+  `build-runtime-server` minor: `hotpatch::elf`). `idealyst dev
+  --experimental-build` now patches a full-stack session's running server
+  on arm64 Linux too — a dev container on an Apple silicon Mac — as it
+  does on macOS: the patch links as an ELF shared object, reaches the
+  server's statics through cells holding their addresses and its
+  thread-locals at their fixed thread-pointer offsets, and the agent
+  (`LD_PRELOAD`) stops the other threads with a signal while it writes
+  the jumps. Still off without the flag. Docs: "The server is patched in
+  place" in `docs/hot-reload.md`.
+
 - **`idealyst dev --experimental-build` patches the running server in place** (`idealyst-cli`
   minor; `build-runtime-server` minor: `hotpatch::detour`, `link_patch`;
   `dev-overlay` minor: `native`; `runtime-macros-parse` minor:
