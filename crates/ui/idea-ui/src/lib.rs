@@ -82,7 +82,7 @@
 //! | `image` | Image, Avatar |
 //! | `text-input` | Textarea (+ Field, Autocomplete) |
 //! | `activity` | Spinner (+ Button's loading state, Alert, Field, Toast) |
-//! | `portal` | Menu, Popover, Tooltip (+ Select, Autocomplete, Modal, Toast) |
+//! | `portal` | Menu, Popover, Tooltip, HoverCard (+ Select, Autocomplete, Modal, Toast) |
 //! | `presence` | (+ Modal, Toast) |
 //!
 //! Multi-family components need every family listed for them: Button =
@@ -224,6 +224,10 @@ pub use components::menu::{
 };
 pub use components::pagination::{Pagination, PaginationProps, PaginationSlotStyles, PaginationStyles};
 pub use components::tooltip::{Tooltip, TooltipProps, TooltipSlotStyles, TooltipStyles};
+pub use components::hover_card::{
+    HoverCard, HoverCardContent, HoverCardProps, HoverCardSlotStyles, HoverCardStyles, HOVER_CARD_CLOSE_DELAY_MS,
+    HOVER_CARD_DEFAULT_OFFSET, HOVER_CARD_OPEN_DELAY_MS,
+};
 pub use components::radio::{
     Radio, RadioAxis, RadioChecked, RadioDimmed, RadioGroup, RadioGroupProps, RadioOption, RadioProps,
     RadioRestyle, RadioSize, RadioSlotStyles, RadioStyles, RadioVariant,
@@ -248,7 +252,7 @@ pub use components::modal::{
     ModalStyles, MODAL_EDGE_MARGIN, MODAL_MIN_HEIGHT_FIT, SHEET_MAX_HEIGHT_FRACTION,
 };
 pub use components::popover::{Popover, PopoverProps, PopoverSlotStyles, PopoverStyles};
-// The anchoring vocabulary of Popover / Menu / SubMenu / Tooltip props
+// The anchoring vocabulary of Popover / Menu / SubMenu / Tooltip / HoverCard props
 // (`target = AnchorTarget::from(trigger)`, `side`, `align`), so an app
 // anchoring an overlay needs no `runtime_core::primitives::portal` path.
 pub use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};

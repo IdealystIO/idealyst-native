@@ -112,6 +112,7 @@ pub const TIME_INPUT_ROUTE: Route<()> = Route::<()>::new("time-input", "/forms/t
 // Overlays
 pub const TOOLTIP_ROUTE: Route<()> = Route::<()>::new("tooltip", "/overlays/tooltip");
 pub const POPOVER_ROUTE: Route<()> = Route::<()>::new("popover", "/overlays/popover");
+pub const HOVER_CARD_ROUTE: Route<()> = Route::<()>::new("hover-card", "/overlays/hover-card");
 pub const MODAL_ROUTE: Route<()> = Route::<()>::new("modal", "/overlays/modal");
 pub const COLLAPSIBLE_ROUTE: Route<()> = Route::<()>::new("collapsible", "/overlays/collapsible");
 pub const ALERT_ROUTE: Route<()> = Route::<()>::new("alert", "/overlays/alert");
@@ -537,6 +538,16 @@ pub const CATALOG: &[Group] = &[
                 desc: "A floating surface anchored to a trigger, for rich transient content.",
                 body: lazy_pages::popover,
                 code: "",
+            },
+            Entry {
+                route: &HOVER_CARD_ROUTE,
+                name: "HoverCard",
+                status: Preview,
+                token: "color-surface · border",
+                desc: "A card of rich detail that opens while the pointer rests on its trigger, \
+                    or on long-press.",
+                body: lazy_pages::hover_card,
+                code: "HoverCard(content = move || ui! { … }) { trigger }",
             },
             Entry {
                 route: &MODAL_ROUTE,

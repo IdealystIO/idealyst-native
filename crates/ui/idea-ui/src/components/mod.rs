@@ -284,6 +284,7 @@ pub mod badge;
 pub mod breadcrumbs;
 pub mod checkbox;
 pub mod grid;
+pub mod hover_card;
 pub mod image;
 pub mod link;
 pub mod list;

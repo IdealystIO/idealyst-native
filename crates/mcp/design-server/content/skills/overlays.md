@@ -1,9 +1,9 @@
 +++
-title = "Overlays: modals, sheets, menus, popovers, tooltips"
+title = "Overlays: modals, sheets, menus, popovers, hover cards, tooltips"
 summary = "When a task belongs in a Modal vs a pushed screen, Sheet vs dialog vs Popover by form factor, menus for overflow actions, confirmation rules for destructive actions, and the always-mounted Modal contract."
-when = "Adding a dialog, confirmation, menu, popover, tooltip or bottom sheet."
+when = "Adding a dialog, confirmation, menu, popover, hover card, tooltip or bottom sheet."
 order = 55
-tags = ["overlays", "modal", "sheet", "dialog", "menu", "popover", "tooltip", "confirm", "destructive"]
+tags = ["overlays", "modal", "sheet", "dialog", "menu", "popover", "hover-card", "tooltip", "confirm", "destructive"]
 +++
 # Overlays
 
@@ -16,6 +16,7 @@ tags = ["overlays", "modal", "sheet", "dialog", "menu", "popover", "tooltip", "c
 | a long task or something linkable (an editor, a full form) | a pushed screen | a pushed screen or a wide dialog | a stack route |
 | actions on a thing (row, card, page) | `Menu` (or a sheet of actions) | `Menu` anchored to an overflow button | `Menu` + `IconButton` trigger |
 | supplementary info next to its trigger | sheet | `Popover` | `Popover` |
+| detail about a thing, on hover (a progress breakdown, a profile preview) | long-press | `HoverCard` | `HoverCard` — never essential info |
 | a hint about a control | — (long-press) | `Tooltip` | `Tooltip` — never essential info |
 | search / command palette | full-height sheet | top-anchored dialog | `Modal(presentation = Top)` |
 
@@ -35,6 +36,19 @@ tags = ["overlays", "modal", "sheet", "dialog", "menu", "popover", "tooltip", "c
   Those render outside the modal's scroller, so only `content` scrolls.
 - **One portal at a time**: don't open a Modal from inside a Menu that
   stays open; close the menu first.
+
+## Hover cards
+
+- `HoverCard(content = move || ui! { … }) { trigger }` wraps its trigger
+  like `Tooltip`, with any content in the card. It opens after the pointer
+  rests (`open_delay_ms`), stays open while the pointer moves into the
+  card, and closes after it leaves both (`close_delay_ms`).
+- Never drive a `Popover` from hover: its click-away layer covers the
+  trigger and the popover flickers shut. Clickable content that opens on
+  click is a `Popover`.
+- Touch opens it on long-press and keyboard focus does not open it, so
+  the card repeats or summarises what is already on screen; it is never
+  the only way to reach a fact or an action.
 
 ## Destructive actions
 

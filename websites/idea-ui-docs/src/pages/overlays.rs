@@ -1,4 +1,4 @@
-//! Overlays — Tooltip, Popover, Modal, Collapsible, Alert, Toast.
+//! Overlays — Tooltip, Popover, HoverCard, Modal, Collapsible, Alert, Toast.
 //!
 //! Each `pub fn name() -> Element` returns the page **body only** — a
 //! column of demo `Section`s wrapped by `crate::pages::body`. The central
@@ -12,8 +12,8 @@ use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{memo, rx, signal, ui, Element, PressableHandle, Ref};
 use idea_ui::{
     push_toast, push_toast_with, tone, typography_kind, variant, Alert, AlertClose, Button,
-    Collapsible, CollapsibleChevronSide, CollapsibleTransition, Field, Icon, IconButton, Modal, ModalPresentation, Popover, Stack, StackAxis, StackGap, StackJustify,
-    ToastHost, ToastPlacement, Tooltip, Typography,
+    Collapsible, CollapsibleChevronSide, CollapsibleTransition, Field, HoverCard, Icon, IconButton, Modal, ModalPresentation, Popover, Stack, StackAxis, StackGap, StackJustify,
+    Progress, ToastHost, ToastPlacement, Tooltip, Typography,
 };
 
 use crate::pages::body;
@@ -217,7 +217,8 @@ pub fn tooltip() -> Element {
                     focus trap. The bubble is a bordered surface box holding one line of \
                     text, clamped to 260px so a long hint wraps inside it. When you need \
                     clickable content (menu items, a form), reach for Popover \
-                    instead.".to_string())
+                    instead — or HoverCard when the rich content should open on \
+                    hover.".to_string())
             }
         }
     }])
@@ -311,6 +312,113 @@ ui! {
         }
     }
 }"##.to_string())
+            }
+        }
+    }])
+}
+
+// =============================================================================
+// HoverCard
+// =============================================================================
+
+/// Per-scope progress of one heading — the demo card's table rows.
+const SCOPES: [(&str, &str); 3] = [("Drilling", "64%"), ("Bolting", "40%"), ("Shotcrete", "12%")];
+
+pub fn hover_card() -> Element {
+    body(vec![ui! {
+        Stack(gap = StackGap::Xl) {
+            Section(title = "Live demo".to_string()) {
+                P(content = "Rest the pointer on the progress bar: after a short delay a card \
+                    with the per-scope breakdown opens below it. Move into the card and it \
+                    stays open; leave both and it closes. On touch, long-press the bar, and \
+                    tap anywhere else to close it.".to_string())
+                DemoSurface {
+                    Stack(gap = StackGap::Xs) {
+                        Typography(content = "Heading 4 — 52% complete".to_string())
+                        HoverCard(
+                            content = || ui! {
+                                Stack(gap = StackGap::Xs) {
+                                    Typography(content = "By scope".to_string(), muted = true)
+                                    for (scope, pct) in SCOPES {
+                                        Stack(axis = StackAxis::Row, gap = StackGap::Lg, justify = StackJustify::Between) {
+                                            Typography(content = scope.to_string())
+                                            Typography(content = pct.to_string())
+                                        }
+                                    }
+                                }
+                            },
+                        ) {
+                            Progress(value = 0.52f32, tone = tone::Primary)
+                        }
+                    }
+                }
+            }
+
+            Section(title = "How it behaves".to_string()) {
+                P(content = "Pointer: resting on the trigger for open_delay_ms opens the card; \
+                    leaving both the trigger and the card for close_delay_ms closes it. The \
+                    close delay is what lets the pointer cross the gap between the two. A \
+                    quick pass over the trigger opens nothing.".to_string())
+                P(content = "Touch: there is no hover with a finger, so a long-press opens the \
+                    card at once. While it is up, a transparent layer behind it takes the \
+                    next tap off the card and closes it.".to_string())
+                P(content = "Escape closes the card. The card takes no focus and has no \
+                    backdrop when opened by the pointer, so the page and the trigger stay \
+                    clickable and scrollable. Placement (side, align, offset) and staying on \
+                    screen work as for Tooltip and Popover.".to_string())
+                Callout(label = "Keyboard".to_string()) {
+                    P(content = "Focusing the trigger with Tab does not open the card yet: \
+                        views and buttons report no focus changes to observe. Don't put \
+                        anything only in a HoverCard that a keyboard or screen-reader user \
+                        needs.".to_string())
+                }
+            }
+
+            Section(title = "Props".to_string()) {
+                PropsTable(rows = vec![
+                    Prop { name: "content",        ty: "HoverCardContent",      desc: "Builds the card body: content = move || ui! { … }. Rebuilt on every open." },
+                    Prop { name: "children",       ty: "Vec<Element>",          desc: "The trigger the card wraps and anchors to." },
+                    Prop { name: "side",           ty: "ElementSide",           desc: "Which side of the trigger the card sits on. Default: Below." },
+                    Prop { name: "align",          ty: "ElementAlign",          desc: "Alignment along the anchor edge. Default: Start." },
+                    Prop { name: "offset",         ty: "f32",                   desc: "Gap in px between the trigger and the card. Default: 6 (HOVER_CARD_DEFAULT_OFFSET)." },
+                    Prop { name: "open_delay_ms",  ty: "u32",                   desc: "How long the pointer rests on the trigger before the card opens. Default: 400 (HOVER_CARD_OPEN_DELAY_MS). Long-press opens at once." },
+                    Prop { name: "close_delay_ms", ty: "u32",                   desc: "How long after the pointer leaves both trigger and card before it closes. Default: 200 (HOVER_CARD_CLOSE_DELAY_MS)." },
+                    Prop { name: "test_id",        ty: "Option<&'static str>",  desc: "Robot test id on the trigger wrapper (the view that takes the hover and the long-press)." },
+                    Prop { name: "card_test_id",   ty: "Option<&'static str>",  desc: "Robot test id on the card surface, present while the card is open." },
+                    Prop { name: "styles",         ty: "HoverCardSlotStyles",   desc: "Per-call-site override of the card slot (background, padding, radius, border)." },
+                ])
+            }
+
+            Section(title = "Recipe".to_string()) {
+                CodePanel(src = r##"ui! {
+    HoverCard(
+        // Rebuilt on every open, so it reads the breakdown fresh.
+        content = move || {
+            let rows: Vec<(String, String)> = breakdown.get();
+            ui! {
+                Stack(gap = StackGap::Xs) {
+                    for (scope, pct) in rows {
+                        Stack(axis = StackAxis::Row, justify = StackJustify::Between) {
+                            Typography(content = scope)
+                            Typography(content = pct)
+                        }
+                    }
+                }
+            }
+        },
+        test_id = Some("heading-progress"),
+        card_test_id = Some("heading-breakdown"),
+    ) {
+        Progress(value = done)
+    }
+}"##.to_string())
+            }
+
+            Callout(label = "HoverCard vs Tooltip vs Popover".to_string()) {
+                P(content = "Tooltip: one line of hint text on hover. HoverCard: any content on \
+                    hover, and the pointer can move into it. Popover: opens on click, owns an \
+                    open-state signal, and closes on a click anywhere outside — use it for \
+                    menus and forms.".to_string())
             }
         }
     }])

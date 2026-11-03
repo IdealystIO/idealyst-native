@@ -192,6 +192,7 @@ lazy_page!(
 // Overlays
 lazy_page!(TooltipPage, tooltip, pages::overlays::tooltip, crate::routes::TOOLTIP_ROUTE);
 lazy_page!(PopoverPage, popover, pages::overlays::popover, crate::routes::POPOVER_ROUTE);
+lazy_page!(HoverCardPage, hover_card, pages::overlays::hover_card, crate::routes::HOVER_CARD_ROUTE);
 lazy_page!(ModalPage, modal, pages::overlays::modal, crate::routes::MODAL_ROUTE);
 lazy_page!(
     CollapsiblePage,

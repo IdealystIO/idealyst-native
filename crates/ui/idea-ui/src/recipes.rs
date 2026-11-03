@@ -1132,6 +1132,38 @@ recipe!(
 );
 
 recipe!(
+    HoverCard,
+    /// Rich detail on hover: the card opens after the pointer rests on the
+    /// trigger (`open_delay_ms`), stays open while the pointer moves into
+    /// it, and closes after it leaves both (`close_delay_ms`). Long-press
+    /// opens it on touch. `content` is a closure rebuilt on each open; the
+    /// `{ }` block is the trigger.
+    pub fn hover_card_breakdown() -> ::runtime_core::Element {
+        use crate::{HoverCard, Progress, Stack, StackAxis, StackGap, StackJustify, Typography};
+        use ::runtime_core::ui;
+
+        ui! {
+            HoverCard(
+                content = || ui! {
+                    Stack(gap = StackGap::Xs) {
+                        Stack(axis = StackAxis::Row, gap = StackGap::Lg, justify = StackJustify::Between) {
+                            Typography(content = "Drilling")
+                            Typography(content = "64%")
+                        }
+                        Stack(axis = StackAxis::Row, gap = StackGap::Lg, justify = StackJustify::Between) {
+                            Typography(content = "Bolting")
+                            Typography(content = "40%")
+                        }
+                    }
+                },
+            ) {
+                Progress(value = 0.52f32)
+            }
+        }
+    }
+);
+
+recipe!(
     ToastHost,
     /// The mount point for transient notifications. Render exactly one
     /// `ToastHost` near the root; anywhere in the app, call

@@ -131,7 +131,8 @@ impl Default for TooltipProps {
 }
 
 /// The trigger wrapper's sheet: layout-transparent, so the trigger lands
-/// where it would without a Tooltip.
+/// where it would without a Tooltip. `HoverCard` wraps its trigger with the
+/// same sheet.
 ///
 /// - No `align_self`: the wrapper follows the parent's `align_items` like
 ///   the bare trigger would. Not `align_self: Center` (what the pills hug with): that
@@ -143,7 +144,7 @@ impl Default for TooltipProps {
 ///   centres itself on the row's cross axis when bare, so it is centred
 ///   in the stretched wrapper too, not dropped to its top. In a column the
 ///   wrapper is as tall as its content, so this is a no-op there.
-fn wrapper_sheet() -> Rc<StyleSheet> {
+pub(crate) fn trigger_wrapper_sheet() -> Rc<StyleSheet> {
     // `r#static` auto-premints by content, and the wrapper builds with the
     // TRIGGER (crawl-visible), not with the lazily-opened bubble — so the
     // dump does see this construction and its CSS ships.
@@ -215,7 +216,7 @@ pub fn Tooltip(props: TooltipProps) -> Element {
         // response so the press still bubbles for the trigger's own handler.
         .on_touch(move |ev| lp_handler(ev))
         // Layout-transparent: the trigger sits where it would bare.
-        .with_style(wrapper_sheet())
+        .with_style(trigger_wrapper_sheet())
         .into_element();
 
     // The bubble — anchored to the wrapper, present only while `open`. The
