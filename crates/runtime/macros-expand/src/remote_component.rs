@@ -262,12 +262,14 @@ pub(crate) fn import_split(
     // of its own. The body goes into the macro call as tokens: syn doesn't
     // re-parse it (a macro call stays opaque to syn), and the re-parse is
     // the cost that matters for expansion time (see
-    // `wrap_component_body_new_core`).
+    // `wrap_component_body_new_core`). `app_expr:` takes the body's brace
+    // group as ONE token tree, so the macro hands it back without walking
+    // it token by token (`app:` would, to splice its contents).
     let body = std::mem::replace(&mut *item_fn.block, syn::Block { brace_token: Default::default(), stmts: Vec::new() });
     *item_fn.block = syn::parse_quote!({
         let __remote_tree: ::runtime_core::Element = ::runtime_vocabulary::__remote_guest_split! {
             bundle: { #stub }
-            app: { #body }
+            app_expr: #body
         };
         __remote_tree
     });

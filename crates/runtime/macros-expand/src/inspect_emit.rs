@@ -4,13 +4,16 @@
 //! `#[component]` wraps an `Element`-returning body as
 //!
 //! ```text
-//! let __idealyst_inspect = ::runtime_core::__inspect::__inspect_component(
-//!     "Name", file!(), line!(), || vec![ /* one probe per prop */ ]);
+//! let __idealyst_inspect = ::runtime_vocabulary::__inspect_component!(
+//!     "Name", file!(), line!(), { vec![ /* one probe per prop */ ] });
 //! __idealyst_inspect.finish(::runtime_core::component_scope(move || { … }))
 //! ```
 //!
-//! and `#[props]` implements `InspectProps` for its struct, which the
-//! explicit-props form (`props: &FooProps`) reads through. The runtime side
+//! and `#[props]` implements `InspectProps` for its struct (inside
+//! `__inspect_enabled!`), which the explicit-props form (`props: &FooProps`)
+//! reads through. Both macros are the vocabulary's, defined per its `robot`
+//! feature: outside a robot build the probes are dropped unexpanded and the
+//! bracket is the identity. The runtime side
 //! (`runtime_vocabulary::robot_methods` / `robot_props`) documents why the
 //! probes cost nothing outside robot builds and how they classify a prop.
 
@@ -112,16 +115,19 @@ pub(crate) fn wrap_body(item_fn: &mut ItemFn, legacy_props: bool, bind_to_inject
     let Some(syn::Stmt::Expr(scoped, None)) = item_fn.block.stmts.pop() else {
         unreachable!("checked: one statement");
     };
+    // Through the vocabulary's `__inspect_component!`: only a robot build
+    // expands the probes (the props closure); every other build gets the
+    // identity bracket without type-checking them.
     let register: syn::Stmt = syn::parse_quote! {
-        let __idealyst_inspect = ::runtime_core::__inspect::__inspect_component(
+        let __idealyst_inspect = ::runtime_vocabulary::__inspect_component!(
             #name,
             ::core::file!(),
             ::core::line!(),
-            || {
+            {
                 #[allow(unused_imports)]
                 use ::runtime_core::__inspect::probe::*;
                 #props
-            },
+            }
         );
     };
     // Built as AST with the parsed body MOVED in. The obvious
@@ -154,14 +160,18 @@ pub(crate) fn inspect_props_impl(input: &syn::DeriveInput, fields: &[(syn::Ident
     let entries = fields
         .iter()
         .map(|(name, ty)| probe_entry(&name.to_string(), ty, quote! { &self.#name }));
+    // Kept by the vocabulary's `__inspect_enabled!` in robot builds only:
+    // nothing outside one reads it.
     quote! {
-        impl ::runtime_core::__inspect::InspectProps for #ident {
-            fn __inspect_props(&self) -> ::std::vec::Vec<::runtime_core::__inspect::PropEntry> {
-                #[allow(unused_imports)]
-                use ::runtime_core::__inspect::probe::*;
-                ::std::vec![ #(#entries),* ]
+        ::runtime_vocabulary::__inspect_enabled! {{
+            impl ::runtime_core::__inspect::InspectProps for #ident {
+                fn __inspect_props(&self) -> ::std::vec::Vec<::runtime_core::__inspect::PropEntry> {
+                    #[allow(unused_imports)]
+                    use ::runtime_core::__inspect::probe::*;
+                    ::std::vec![ #(#entries),* ]
+                }
             }
-        }
+        }}
     }
 }
 

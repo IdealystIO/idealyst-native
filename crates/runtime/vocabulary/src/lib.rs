@@ -111,41 +111,66 @@ pub mod remote;
 /// replaced by an import of the app's copy, or any other build. Chosen by
 /// the VOCABULARY's flag, so a crate using `#[component]` declares no cfg
 /// (an emitted `#[cfg(idealyst_stream_guest)]` warned in every such crate).
+///
+/// Two shapes. `bundle: { .. } app: { .. }` splices the chosen side's
+/// contents, so it works in item position. `bundle: { .. } app_expr: { .. }`
+/// is for expression position (a component's body): outside a bundle build
+/// it hands the app brace group back whole, as a block expression.
+/// Matching a group as ONE `tt` costs the same for a 10-token body as for a
+/// 10 000-token one; the `$($a:tt)*` form walks every token it keeps or
+/// skips, so each arm takes the side it drops as one `tt` too.
 #[cfg(idealyst_stream_guest)]
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __remote_guest_split {
-    (bundle: { $($b:tt)* } app: { $($a:tt)* }) => { $($b)* };
+    (bundle: { $($b:tt)* } app_expr: $a:tt) => { $($b)* };
+    (bundle: { $($b:tt)* } app: $a:tt) => { $($b)* };
 }
 #[cfg(not(idealyst_stream_guest))]
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __remote_guest_split {
-    (bundle: { $($b:tt)* } app: { $($a:tt)* }) => { $($a)* };
+    (bundle: $b:tt app_expr: $a:tt) => { $a };
+    (bundle: $b:tt app: { $($a:tt)* }) => { $($a)* };
 }
 
-/// A `ui!` call of a component: `BuildElement::build_set` with the props
-/// the call site set. In a remote bundle build, the set goes as a type
-/// (`__build_site`), so an imported app component can leave a constant
+/// The props set at a `ui!` call of a component, as the second argument
+/// of [`glue::__site`]: `glue::__site(Props { .. }, __remote_site!([..]))`.
+/// Outside a remote bundle build that is the names as a slice
+/// (`BuildElement::build_set`). In a remote bundle build the set goes as a
+/// type (`__build_site`), so an imported app component can leave a constant
 /// record of the call site (`remote::site`) — which props of which app
 /// component the bundle uses, kept only if the call site is reachable.
+///
+/// The props expression stays OUTSIDE the macro call: a call site's props
+/// carry its whole child tree, and passing them through a `macro_rules!`
+/// re-parses and re-copies every nested level once per depth.
+///
+/// The `($props:expr, [..])` arm is the whole call in one macro — what
+/// `runtime-macros` 1.22 and older emit.
 #[cfg(all(feature = "remote", idealyst_stream_guest))]
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __remote_site {
-    ($props:expr, [$($s:literal),* $(,)?]) => {{
+    ([$($s:literal),* $(,)?]) => {{
         struct __Set;
         impl $crate::glue::PropSet for __Set {
             const SET: &'static [&'static str] = &[$($s),*];
             const JOINED: &'static str = ::core::concat!($($s, "\n"),*);
         }
-        $crate::glue::BuildElement::__build_site::<__Set>($props)
+        __Set
     }};
+    ($props:expr, [$($s:literal),* $(,)?]) => {
+        $crate::glue::__site($props, $crate::__remote_site!([$($s),*]))
+    };
 }
 #[cfg(not(all(feature = "remote", idealyst_stream_guest)))]
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __remote_site {
+    ([$($s:literal),* $(,)?]) => {
+        &[$($s),*]
+    };
     ($props:expr, [$($s:literal),* $(,)?]) => {
         $crate::glue::BuildElement::build_set($props, &[$($s),*])
     };
@@ -181,6 +206,48 @@ macro_rules! __remote_native_body {
              the app mounts the component from a bundle"
         }
     };
+}
+
+/// `#[component]`'s registration bracket for the component registry (the
+/// inspector's component tree and Props table, `robot_methods`). In a robot
+/// build: `__inspect::__inspect_component(name, file, line, || props)`. In
+/// any other build the props probes are dropped unexpanded — they never run
+/// there, and each one is a closure body and an autoref method lookup per
+/// prop for the compiler to check — and the bracket is the identity.
+/// Chosen by the VOCABULARY's `robot` feature, so the component's crate
+/// declares none.
+#[cfg(feature = "robot")]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __inspect_component {
+    ($name:expr, $file:expr, $line:expr, $props:tt) => {
+        $crate::glue::__inspect::__inspect_component($name, $file, $line, || $props)
+    };
+}
+#[cfg(not(feature = "robot"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __inspect_component {
+    ($name:expr, $file:expr, $line:expr, $props:tt) => {
+        $crate::glue::__inspect::__inspect_off()
+    };
+}
+
+/// `#[props]`'s `InspectProps` impl (the explicit-props form's Props table):
+/// kept in a robot build, dropped unexpanded everywhere else. The items
+/// arrive as one brace group so the non-robot arm skips them as a single
+/// token tree.
+#[cfg(feature = "robot")]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __inspect_enabled {
+    ({ $($t:tt)* }) => { $($t)* };
+}
+#[cfg(not(feature = "robot"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __inspect_enabled {
+    ($t:tt) => {};
 }
 
 /// `#[derive(Remote)]`'s output: kept in a build that hosts or is a remote

@@ -110,12 +110,7 @@ fn emit_root_scope(elements: &[UiNode]) -> TokenStream2 {
         _ => {
             let kids = scope.nodes.iter().map(|n| emit_node(n, Ctx::Child));
             quote! {
-                ::runtime_core::view({
-                    let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                        = ::std::vec::Vec::new();
-                    #( ::runtime_core::ChildList::append_to(#kids, &mut __c); )*
-                    __c
-                })
+                ::runtime_core::view(::runtime_core::__children() #( .child(#kids) )* .done())
             }
         }
     };
@@ -148,12 +143,7 @@ pub(crate) fn emit_child_scope(nodes: &[UiNode]) -> TokenStream2 {
     let parts: Vec<TokenStream2> =
         scope.nodes.iter().map(|n| emit_node(n, Ctx::Child)).collect();
     let body = quote! {
-        {
-            let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                = ::std::vec::Vec::new();
-            #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
-            __c
-        }
+        ::runtime_core::__children() #( .child(#parts) )* .done()
     };
     with_prelude(&scope, body)
 }
@@ -875,12 +865,7 @@ fn emit_view(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     // `safe_area`, `bind`, … compile and reach nothing.
     let setters = builder_calls(props, VIEW_BUILDER_PROPS);
     quote! {
-        ::runtime_core::view({
-            let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                = ::std::vec::Vec::new();
-            #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
-            __c
-        }) #setters
+        ::runtime_core::view(::runtime_core::__children() #( .child(#parts) )* .done()) #setters
     }
 }
 
@@ -889,12 +874,7 @@ fn emit_keyboard_avoiding_view(props: &[Prop], children: Option<&[UiNode]>) -> T
     let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
     let setters = builder_calls(props, KEYBOARD_AVOIDING_VIEW_BUILDER_PROPS);
     quote! {
-        ::runtime_core::keyboard_avoiding_view({
-            let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                = ::std::vec::Vec::new();
-            #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
-            __c
-        }) #setters
+        ::runtime_core::keyboard_avoiding_view(::runtime_core::__children() #( .child(#parts) )* .done()) #setters
     }
 }
 
@@ -1461,12 +1441,7 @@ fn emit_scroll_view(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2
     let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
     let setters = builder_calls(props, SCROLL_VIEW_BUILDER_PROPS);
     quote! {
-        ::runtime_core::primitives::scroll_view::scroll_view({
-            let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                = ::std::vec::Vec::new();
-            #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
-            __c
-        }) #setters
+        ::runtime_core::primitives::scroll_view::scroll_view(::runtime_core::__children() #( .child(#parts) )* .done()) #setters
     }
 }
 
@@ -1559,12 +1534,7 @@ fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let kids = children.unwrap_or(&[]);
     let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
     let children_vec = quote! {
-        {
-            let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                = ::std::vec::Vec::new();
-            #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
-            __c
-        }
+        ::runtime_core::__children() #( .child(#parts) )* .done()
     };
 
     // `url` / `on_activate` — the `GlueLink` setters, on either shape.
@@ -1642,12 +1612,7 @@ fn emit_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let calls = builder_calls(props, OVERLAY_BUILDER_PROPS);
 
     quote! {
-        ::runtime_core::primitives::overlay::overlay({
-            let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                = ::std::vec::Vec::new();
-            #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
-            __c
-        })
+        ::runtime_core::primitives::overlay::overlay(::runtime_core::__children() #( .child(#parts) )* .done())
         #calls
     }
 }
@@ -1682,12 +1647,7 @@ fn emit_anchored_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenSt
     quote! {
         ::runtime_core::primitives::overlay::anchored_overlay(
             #target_value,
-            {
-                let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                    = ::std::vec::Vec::new();
-                #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
-                __c
-            },
+            ::runtime_core::__children() #( .child(#parts) )* .done(),
         )
         #calls
     }
@@ -1863,12 +1823,7 @@ fn emit_user(
     let children_field = children.map(|kids| {
         let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
         quote! {
-            children: {
-                let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                    = ::std::vec::Vec::new();
-                #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
-                __c
-            },
+            children: ::runtime_core::__children() #( .child(#parts) )* .done(),
         }
     });
 
@@ -2461,12 +2416,7 @@ fn emit_for(
         Ctx::Child => child_form,
         Ctx::Single if is_single => child_form,
         Ctx::Single => quote! {
-            ::runtime_core::view({
-                let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                    = ::std::vec::Vec::new();
-                ::runtime_core::ChildList::append_to(#child_form, &mut __c);
-                __c
-            })
+            ::runtime_core::view(::runtime_core::__children().child(#child_form).done())
         },
     }
 }
@@ -2710,12 +2660,7 @@ pub(crate) fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
         _ => {
             let parts = scope.nodes.iter().map(|n| emit_node(n, Ctx::Child));
             quote! {
-                ::runtime_core::view({
-                    let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                        = ::std::vec::Vec::new();
-                    #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
-                    __c
-                })
+                ::runtime_core::view(::runtime_core::__children() #( .child(#parts) )* .done())
             }
         }
     };
@@ -3813,9 +3758,13 @@ mod tests {
         // The tag is used as the type name (a `pub type Counter = …Props`
         // alias bridges to the real props), so the literal is `Counter { … }`.
         assert!(out.contains("Counter {"), "got: {out}");
-        // `__remote_site!` is `BuildElement::build_set` outside a remote
+        // `glue::__site` is `BuildElement::build_set` outside a remote
         // bundle build (where it also records the call site).
-        assert!(out.contains("__remote_site !"), "got: {out}");
+        assert!(out.contains("glue :: __site (Counter {"), "got: {out}");
+        // Only the set goes through `__remote_site!`: the props (and with
+        // them the call site's child tree) stay outside the macro call, so
+        // nesting doesn't re-copy each level through a `macro_rules!`.
+        assert!(out.contains("__remote_site ! ([\"label\" , \"value\"])"), "got: {out}");
         assert!(!out.contains("Counter !"), "no macro dispatch; got: {out}");
     }
 
@@ -3850,10 +3799,13 @@ mod tests {
                 Counter(value = s)
             }
         });
-        assert!(out.contains("Card {"), "got: {out}");
-        assert!(out.contains("__remote_site !"), "got: {out}");
+        assert!(out.contains("glue :: __site (Card {"), "got: {out}");
+        assert!(out.contains("__remote_site ! ([\"title\" , \"children\"])"), "got: {out}");
         assert!(out.contains("children :"), "children is a struct field now; got: {out}");
-        assert!(out.contains("ChildList :: append_to"), "got: {out}");
+        // The child list is the `__children()` chain: each child flattens
+        // through `ChildList` in `.child(..)`.
+        assert!(out.contains("children : :: runtime_core :: __children () . child ("), "got: {out}");
+        assert!(out.contains(". done ()"), "got: {out}");
     }
 
     #[test]
@@ -3937,7 +3889,7 @@ mod tests {
         // system, not the macro, rejects a keyless reactive loop).
         assert!(!out.contains("__idealyst_for_each_keyed"));
         assert!(out.contains("move | n |"));
-        assert!(out.contains("ChildList :: append_to"));
+        assert!(out.contains("__children () . child ("), "got: {out}");
     }
 
     #[test]
@@ -3952,7 +3904,7 @@ mod tests {
         assert!(out.contains("__idealyst_for_each_keyed"));
         // The key closure carries the author's key expression.
         assert!(out.contains("n . id"));
-        assert!(out.contains("ChildList :: append_to"));
+        assert!(out.contains("__children () . child ("), "got: {out}");
     }
 
     #[test]
@@ -3973,8 +3925,8 @@ mod tests {
                 Counter(value = t)
             }
         });
-        // Both Counter calls appear, and the wrapping ChildList::append_to
-        // ensures they flatten into Vec<Element>.
+        // Both Counter calls appear, and the wrapping `__children()` chain
+        // flattens them into a Vec<Element>.
         // Both children lower to their own Counter struct literal — twice
         // each: once in the real build chain, once in the `__ui_recover`
         // salvage shell every expansion now carries (see `emit_shell`).

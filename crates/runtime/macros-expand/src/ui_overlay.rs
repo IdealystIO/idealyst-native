@@ -130,7 +130,7 @@ mod inert {
         _node: u32,
         set: &[String],
     ) -> TokenStream2 {
-        quote::quote! { ::runtime_vocabulary::__remote_site!(#props, [#(#set),*]) }
+        quote::quote! { ::runtime_vocabulary::glue::__site(#props, ::runtime_vocabulary::__remote_site!([#(#set),*])) }
     }
 }
 
@@ -251,7 +251,7 @@ mod live {
             {
                 #enter
                 ::runtime_core::__overlay::exit(
-                    ::runtime_vocabulary::__remote_site!(#body, [#(#set),*]),
+                    ::runtime_vocabulary::glue::__site(#body, ::runtime_vocabulary::__remote_site!([#(#set),*])),
                 )
             }
         }

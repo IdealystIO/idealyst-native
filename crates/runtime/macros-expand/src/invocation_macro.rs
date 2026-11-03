@@ -111,7 +111,7 @@ pub(crate) fn generate_build_impl(
         Some(name) => quote! {
             ::runtime_vocabulary::__remote_guest_split! {
                 bundle: { ::runtime_vocabulary::__remote_import!(#name, #path, self) }
-                app: { ::runtime_core::IntoElement::into_element(#fn_name(#amp self)) }
+                app_expr: { ::runtime_core::IntoElement::into_element(#fn_name(#amp self)) }
             }
         },
         None => quote! {

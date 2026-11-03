@@ -7,16 +7,17 @@
 //! `#[component]` emits, for EVERY component body returning `Element`:
 //!
 //! ```text
-//! let __idealyst_inspect = __inspect_component(NAME, file!(), line!(), || props…);
+//! let __idealyst_inspect = __inspect_component!(NAME, file!(), line!(), { props… });
 //! __idealyst_inspect.finish(component_scope(move || { body }))
 //! ```
 //!
 //! and, for a component with `#[method]`s, a
-//! [`__attach_component_methods`] call inside the body. The names must
-//! exist in every build: with the vocabulary `robot` feature OFF,
-//! [`__inspect_component`] never calls its props closure (so the probes
-//! are never instantiated), `finish` is identity, and attaching methods
-//! drops them.
+//! [`__attach_component_methods`] call inside the body. The crate-root
+//! `__inspect_component!` is defined per the vocabulary `robot` feature:
+//! ON, it calls [`__inspect_component`] with the props block as its
+//! closure; OFF, it drops the probes unexpanded and yields
+//! [`__inspect_off`], whose `finish` is the identity. The names must exist
+//! in every build: attaching methods drops them when `robot` is off.
 //!
 //! # Model
 //!
@@ -363,6 +364,21 @@ pub fn __inspect_component(
     _props: impl FnOnce() -> Vec<PropEntry>,
 ) -> ComponentInspect {
     ComponentInspect {}
+}
+
+/// The registration bracket outside robot builds, where
+/// `__inspect_component!` drops the props probes: `finish` is the identity.
+#[doc(hidden)]
+#[inline(always)]
+pub fn __inspect_off() -> ComponentInspect {
+    #[cfg(feature = "robot")]
+    {
+        ComponentInspect { reg: None }
+    }
+    #[cfg(not(feature = "robot"))]
+    {
+        ComponentInspect {}
+    }
 }
 
 /// Attach `#[method]`s to the component whose body is executing. Macro

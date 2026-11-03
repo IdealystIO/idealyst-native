@@ -858,7 +858,9 @@ into the surrounding `Vec<Element>`:
 This is why `if let Some(x) = … { text { x } }` and `for item in items
 { text { item.name.clone() } }` work seamlessly inside `ui!` without
 the macro special-casing every shape. The shape work is in the trait
-impls; the macro just calls `append_to`.
+impls; the macro just appends each child through it
+(`__children().child(a).child(b).done()`, which calls `append_to` per
+child into one `Vec<Element>`).
 
 ---
 

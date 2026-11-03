@@ -68,6 +68,22 @@ fn Tally(initial: i32) -> Element {
     ui! { text(test_id = "tally") { "{value}" } }
 }
 
+/// The explicit-props form: its Props table is `#[props]`'s
+/// `InspectProps` impl, which the vocabulary's `__inspect_enabled!` keeps
+/// in robot builds only.
+#[runtime_macros::props]
+#[derive(Default)]
+pub struct BadgeProps {
+    pub label: String,
+    pub count: i32,
+}
+
+#[component]
+fn Badge(props: &BadgeProps) -> Element {
+    let label = props.label.clone();
+    ui! { text(test_id = "badge") { "{label}" } }
+}
+
 /// Mounts nothing.
 #[component]
 fn Nothing() -> Element {
@@ -260,6 +276,21 @@ fn get_component_reports_prop_modes_and_current_values() {
         .find(|c| c["props"][0]["mode"] == "static")
         .expect("the literal-label Leaf reports a Static prop");
     assert_eq!(fixed["props"][0]["value"], "\"fixed\"");
+}
+
+/// Both halves of the registration are expanded only in robot builds (the
+/// vocabulary's `__inspect_component!` / `__inspect_enabled!`); this pins
+/// that a robot build still gets the explicit-props form's table, read
+/// through the struct's `InspectProps` impl.
+#[test]
+fn get_component_reports_an_explicit_props_structs_fields() {
+    let _m = mount(Mode::Spliced, || ui! { view { Badge(label = "new", count = 3) } });
+    let c = bridge_json("get_component", json!({ "instance_id": instance_of("Badge") }));
+    assert!(c["file"].as_str().unwrap().ends_with("component_tree.rs"), "{c}");
+    let props = c["props"].as_array().unwrap();
+    let row = |name: &str| props.iter().find(|p| p["name"] == name).unwrap_or_else(|| panic!("no {name}: {c}")).clone();
+    assert_eq!((row("label")["mode"].as_str(), row("label")["value"].as_str()), (Some("static"), Some("\"new\"")));
+    assert_eq!((row("count")["mode"].as_str(), row("count")["value"].as_str()), (Some("static"), Some("3")));
 }
 
 #[test]

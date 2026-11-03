@@ -342,6 +342,12 @@ pub(crate) fn apply_literal_impl(
     // props struct still gets the patch hook.
     buildable: bool,
 ) -> TokenStream2 {
+    // Every caller of these methods is overlay emission from this crate
+    // (`overlay_hooks` below), compiled under the same `ui-overlay`
+    // feature. Without it nothing calls them, so nothing is emitted.
+    if !cfg!(feature = "ui-overlay") {
+        return TokenStream2::new();
+    }
     // A `children: Vec<Element>` field, if this struct has one. Matched
     // by NAME and by the field's outer type being a `Vec`: the type is
     // the contract `ui!` already enforces at every call site with a
@@ -834,12 +840,29 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // __apply_literal
+    // __apply_literal (overlay emission only)
     // -------------------------------------------------------------------
+
+    /// Without `ui-overlay` nothing calls `__apply_literal` /
+    /// `__apply_children` — every caller is overlay emission from this
+    /// crate under the same feature — so a plain build emits neither: one
+    /// match per props type and its literal conversions for the compiler
+    /// to check, and nothing ever reads them.
+    #[cfg(not(feature = "ui-overlay"))]
+    #[test]
+    fn regression_plain_build_emits_no_overlay_literal_appliers() {
+        let out = rendered(quote! {
+            struct P { name: String, count: i32, children: Vec<Element> }
+        });
+        assert!(!out.contains("__apply_literal"), "{out}");
+        assert!(!out.contains("__apply_children"), "{out}");
+        assert!(!out.contains("TemplateLiteral"), "{out}");
+    }
 
     /// One arm per literal-capable field, keyed on the prop NAME — which
     /// is how the template builder addresses it (the descriptor carries
     /// names, not positions).
+    #[cfg(feature = "ui-overlay")]
     #[test]
     fn apply_literal_generates_one_arm_per_literal_capable_field() {
         let out = rendered(quote! {
@@ -855,6 +878,7 @@ mod tests {
     /// WRAPPING, not the prop's value shape, so a descriptor's `"x"`
     /// still has to land in a `Reactive<String>`. The `.into()` at the
     /// assignment is what bridges them, exactly as at a `ui!` call site.
+    #[cfg(feature = "ui-overlay")]
     #[test]
     fn apply_literal_looks_through_the_reactive_wrap() {
         let out = rendered(quote! { struct P { name: String } });
@@ -865,6 +889,7 @@ mod tests {
     /// An integer literal is cast to the field's own width before the
     /// `.into()`: the descriptor carries one `i64`, the prop may be any
     /// integer type.
+    #[cfg(feature = "ui-overlay")]
     #[test]
     fn apply_literal_casts_to_the_field_width() {
         let out = rendered(quote! { struct P { #[prop(static)] count: u8 } });
@@ -877,6 +902,7 @@ mod tests {
     /// values) are the main case: constructing an arbitrary variant from
     /// its source text would need a `FromStr`-shaped bound on every prop
     /// type.
+    #[cfg(feature = "ui-overlay")]
     #[test]
     fn apply_literal_refuses_what_it_cannot_build() {
         let out = rendered(quote! {
@@ -898,6 +924,7 @@ mod tests {
     /// is what a wrapped-literal slot (`placeholder = Some("…".to_string())`)
     /// feeds, and the descriptor carries only the string inside the
     /// wrapper. Plain and reactive-wrapped fields alike.
+    #[cfg(feature = "ui-overlay")]
     #[test]
     fn apply_literal_puts_the_some_back_on_an_optional_string() {
         let out = rendered(quote! { struct P { placeholder: Option<String> } });
@@ -914,6 +941,7 @@ mod tests {
     /// inherent-before-trait resolution is what makes a props type
     /// WITHOUT the macro fall back silently instead of failing to
     /// compile.
+    #[cfg(feature = "ui-overlay")]
     #[test]
     fn apply_literal_is_an_inherent_method() {
         let out = rendered(quote! { struct P { name: String } });

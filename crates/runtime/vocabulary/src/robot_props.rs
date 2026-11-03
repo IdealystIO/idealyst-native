@@ -29,9 +29,9 @@
 //!
 //! # Cost
 //!
-//! Only robot builds ever call the probes: the macro passes them inside a
-//! closure that the non-robot [`__inspect_component`] never invokes, so
-//! the optimizer drops them. In a robot build each prop costs one clone of
+//! Only robot builds ever see the probes: `#[component]` and `#[props]`
+//! pass them through the vocabulary's `__inspect_component!` /
+//! `__inspect_enabled!`, which drop them unexpanded when `robot` is off. In a robot build each prop costs one clone of
 //! its value (a `Reactive`, `Signal` or `Rc` clone is a pointer copy; a
 //! plain `T` is cloned once) and its `Debug` rendering happens only when
 //! the bridge is asked for it.

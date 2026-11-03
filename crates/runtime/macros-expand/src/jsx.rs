@@ -723,15 +723,16 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[JsxNode]>) -> Toke
         set.push("children".to_string());
     }
 
-    // `__remote_site!` is `build_set` outside a remote bundle build.
+    // `glue::__site` is `build_set`; `__remote_site!` spells the set for
+    // this build (a slice, or a per-site type in a remote bundle build).
     quote! {
-        ::runtime_vocabulary::__remote_site!(
+        ::runtime_vocabulary::glue::__site(
             #props_ty {
                 #(#field_assignments)*
                 #children_field
                 ..<#props_ty as ::runtime_core::BuildElement>::defaults()
             },
-            [#(#set),*]
+            ::runtime_vocabulary::__remote_site!([#(#set),*]),
         )
     }
 }
@@ -938,9 +939,10 @@ mod tests {
     fn user_component_self_closing() {
         let out = parse_and_emit(quote! { <Counter label="x" value={score} /> });
         // Struct-literal + BuildElement dispatch (parity with ui!), through
-        // `__remote_site!` (`build_set` outside a remote bundle build).
-        assert!(out.contains("Counter {"), "got: {out}");
-        assert!(out.contains("__remote_site !"), "got: {out}");
+        // `glue::__site` (`build_set` outside a remote bundle build), with
+        // only the set passed through `__remote_site!`.
+        assert!(out.contains("glue :: __site (Counter {"), "got: {out}");
+        assert!(out.contains("__remote_site ! ([\"label\" , \"value\"])"), "got: {out}");
         // Each field is coerced via `.into()` (literal and braced expr).
         assert!(out.contains("(\"x\") . into ()"), "got: {out}");
         assert!(out.contains("(score) . into ()"), "got: {out}");

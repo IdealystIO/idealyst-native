@@ -1228,10 +1228,10 @@ pub mod robot {
 /// The component-registry emission surface every `#[component]` body
 /// expands to (see `robot_methods`' module docs): the registration
 /// bracket, and the prop probes `#[component]` / `#[props]` build its
-/// props list from. Always present; only robot builds do any work.
+/// props list from. Always present; only robot builds expand the probes.
 #[doc(hidden)]
 pub mod __inspect {
-    pub use crate::robot_methods::{__inspect_component, ComponentInspect};
+    pub use crate::robot_methods::{__inspect_component, __inspect_off, ComponentInspect};
     pub use crate::robot_props::{entry, probe, InspectProps, PropEntry, PropProbe, PropsProbe};
 }
 
@@ -1310,10 +1310,11 @@ where
 /// for the same reason `__mcp` has one: macro-support surface, not an
 /// author API.
 ///
-/// Re-exported UNCONDITIONALLY, because `#[component]` / `#[props]`
-/// generate an `__apply_literal` naming `TemplateLiteral` on every props
-/// struct. The overlay that consumes it is behind the `ui-overlay`
-/// feature; this type is not.
+/// Re-exported UNCONDITIONALLY: `runtime-macros` with its `ui-overlay`
+/// feature generates an `__apply_literal` naming `TemplateLiteral` on
+/// every props struct (`runtime-macros` 1.22 and older do so in every
+/// build), and that feature is set on the macros crate, which this one
+/// does not see.
 ///
 /// It is deliberately just the LITERAL type and its fallback trait. The
 /// descriptor types proper — `Descriptor`, `Node`, `SiteId` — are build
@@ -1386,6 +1387,35 @@ pub use crate::overlay as __overlay;
 
 pub trait ChildList {
     fn append_to(self, out: &mut Vec<Element>);
+}
+
+/// `ui!`'s child list: `__children().child(a).child(b).done()` appends
+/// each child through [`ChildList`] in order — the same as
+/// `let mut c = Vec::new(); a.append_to(&mut c); b.append_to(&mut c); c`,
+/// in a third of the tokens per child (a large screen has thousands).
+#[doc(hidden)]
+#[inline(always)]
+pub fn __children() -> __Children {
+    __Children(Vec::new())
+}
+
+/// The builder behind [`__children`].
+#[doc(hidden)]
+pub struct __Children(Vec<Element>);
+
+impl __Children {
+    /// Append `child`, flattened through [`ChildList`].
+    #[inline(always)]
+    pub fn child<C: ChildList>(mut self, child: C) -> Self {
+        child.append_to(&mut self.0);
+        self
+    }
+
+    /// The list.
+    #[inline(always)]
+    pub fn done(self) -> Vec<Element> {
+        self.0
+    }
 }
 
 impl ChildList for Element {
@@ -3682,6 +3712,25 @@ pub trait BuildElement: Default {
     fn __build_site<S: PropSet>(self) -> Element {
         self.build_set(S::SET)
     }
+}
+
+/// A `ui!` call of a component: `__site(Props { .. }, __remote_site!([..]))`.
+/// `set` names the props the call site set — `BuildElement::build_set`.
+#[cfg(not(all(feature = "remote", idealyst_stream_guest)))]
+#[doc(hidden)]
+#[inline(always)]
+pub fn __site<P: BuildElement>(props: P, set: &'static [&'static str]) -> Element {
+    props.build_set(set)
+}
+
+/// A `ui!` call of a component in a remote bundle build: the call site's
+/// set arrives as a type (`__remote_site!` declares one per site), so an
+/// imported app component's `__build_site` can leave a constant record.
+#[cfg(all(feature = "remote", idealyst_stream_guest))]
+#[doc(hidden)]
+#[inline(always)]
+pub fn __site<P: BuildElement, S: PropSet>(props: P, _set: S) -> Element {
+    props.__build_site::<S>()
 }
 
 /// The props a `ui!` call site sets, as a type: what a remote bundle's

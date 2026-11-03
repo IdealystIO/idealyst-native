@@ -1626,12 +1626,7 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
                 // subscribe the binding effect) takes the per-node
                 // effect path (`SheetDynamic`).
                 let __reactive = self.__reactive;
-                let __build = move || {
-                    let mut __app = ::runtime_core::StyleApplication::new(#stylesheet_fn());
-                    #(#axis_applies)*
-                    #(#override_applies)*
-                    __app
-                };
+                let __build = move || self.__style_application();
                 if __reactive {
                     ::runtime_core::StyleProp::SheetDynamic(::std::boxed::Box::new(__build))
                 } else {
@@ -1645,9 +1640,9 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
         #vis struct #name {
             #(#axis_fields,)*
             #(#override_fields,)*
-            /// `true` once any setter received a reactive source
-            /// (`Signal` / `derived`). Gates the `Static` vs `Reactive`
-            /// emission in `into_style_source`.
+            // `true` once any setter received a reactive source
+            // (`Signal` / `derived`): `into_style_prop` then takes the
+            // per-node effect path (`SheetDynamic`).
             __reactive: ::std::primitive::bool,
         }
 
@@ -1661,9 +1656,7 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
                 }
             }
 
-            /// Convenience accessor for the underlying `Rc<StyleSheet>`
-            /// in case authors want the raw sheet (e.g. to pass to APIs
-            /// that don't take a builder).
+            /// The underlying `Rc<StyleSheet>`, for APIs that don't take a builder.
             pub fn sheet() -> ::std::rc::Rc<::runtime_core::StyleSheet> {
                 #stylesheet_fn()
             }
@@ -1671,17 +1664,18 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
             #(#axis_setters)*
             #(#override_setters)*
 
-            /// The live-engine `StyleApplication` this builder describes —
-            /// for components that COMPOSE or INTROSPECT resolved styles
-            /// (merge an inherited color onto a label sheet, layer a
-            /// reactive hover onto a cell) rather than hand the style
-            /// straight to a node. Deliberately bypasses the premint fast
-            /// path: composition requires the resolution engine, so
-            /// anything derived from this stays live-minted even in
-            /// `--premint` builds. Reactive setter inputs are read ONCE
-            /// here (no subscription) — reactive callers stay on
-            /// `into_style_source`.
+            /// The live-engine `StyleApplication` this builder describes, for
+            /// composing or introspecting resolved styles. Never preminted;
+            /// reactive setter inputs are read once, without subscribing.
             pub fn into_style_application(self) -> ::runtime_core::StyleApplication {
+                self.__style_application()
+            }
+
+            // The one body behind `into_style_application` and the
+            // `into_style_prop` closure. By reference: `SheetDynamic`
+            // re-runs that closure, so it can't consume the builder.
+            #[doc(hidden)]
+            fn __style_application(&self) -> ::runtime_core::StyleApplication {
                 let mut __app = ::runtime_core::StyleApplication::new(#stylesheet_fn());
                 #(#axis_applies)*
                 #(#override_applies)*
@@ -1695,9 +1689,9 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
 
         #conversion_impl
 
-        /// Entry point: `Card()` returns a fresh builder. The free
-        /// function shadows the struct name for call sites like
-        /// `Card().size(...).kind(...)`.
+        // The free function shadows the struct name for call sites like
+        // `Card().size(...).kind(...)`.
+        /// A fresh builder (`Self::new()`).
         #[allow(non_snake_case)]
         #vis fn #entry_fn() -> #name { #name::new() }
     }

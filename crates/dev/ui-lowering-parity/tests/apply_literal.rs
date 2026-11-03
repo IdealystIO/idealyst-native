@@ -6,6 +6,11 @@
 //! `Reactive<T>` wrap is bridged, that a refusal is reported rather than
 //! silently swallowed, and that a props type without the macro falls
 //! back to the blanket impl instead of failing to compile.
+//!
+//! Overlay builds only (`--features ui-overlay`): the overlay is the one
+//! caller, so a plain build doesn't generate the method.
+
+#![cfg(feature = "ui-overlay")]
 
 use std::borrow::Cow;
 
