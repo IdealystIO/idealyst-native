@@ -111,11 +111,8 @@ pub(crate) fn targeted_device_family() -> String {
 /// The runtime-server shell crate built + linked for `--ios` (default
 /// runtime-server mode). This is `backend-ios-rs-shell`, NOT
 /// `backend-ios-mobile`: the shell sits ABOVE the backend so it can
-/// depend on (and register) the first-party SDK crates
-/// (drawer-navigator / codeblock / table), which themselves
-/// depend on `backend-ios-mobile`. Bundling those SDK handlers into
-/// the fixed RS client is what makes native SDK chrome (the Drawer
-/// navigator) render over the wire on device. The shell re-exports the
+/// depend on first-party SDK crates that themselves depend on
+/// `backend-ios-mobile`. The shell re-exports the
 /// same `ios_main` / `ios_teardown` C symbols and keeps `[lib] name =
 /// "backend_ios"`, so the Swift glue + `-l` flag are unchanged.
 const IOS_AAS_SHELL_PACKAGE: &str = "backend-ios-rs-shell";

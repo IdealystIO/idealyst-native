@@ -329,20 +329,17 @@ fn generate_wrapper(
         "crates/backend/android/mobile",
         &["runtime-server", "async-driver"],
     );
-    // First-party SDKs linked into the runtime-server client (Drawer
-    // navigator, code block, table). They depend on
+    // First-party SDKs linked into the runtime-server client (code
+    // block, table). They depend on
     // `backend-android-mobile`, so the backend can't depend on them
     // (Cargo cycle) — they're pulled in here at the generated wrapper,
     // which sits above both. Nothing registers them client-side: their
     // scene handlers run on the host (see `attachRuntimeServerUrl` below).
     //
     // Resolved only for the runtime-server wrapper, the one that names
-    // them: the drawer is not published, so asking a registry source for
-    // it panics, and a local build — every registry-sourced app's — never
-    // got as far as compiling.
-    let (drawer_navigator_dep, codeblock_dep, table_dep) = match mode {
+    // them; a local build links the app's own SDK graph instead.
+    let (codeblock_dep, table_dep) = match mode {
         BuildMode::RuntimeServer => (
-            source.dep("crates/sdk/client/navigators/drawer", &[]),
             source.dep("crates/sdk/client/codeblock", &[]),
             source.dep("crates/sdk/client/table", &[]),
         ),
@@ -436,7 +433,6 @@ backend-android-mobile = {bandroid_dep}
 # native chrome renders over the wire on device. The JNI bridge below
 # registers them on the RS client backend via
 # `attach_with_url_with_register`.
-drawer-navigator = {drawer_navigator_dep}
 codeblock = {codeblock_dep}
 table = {table_dep}
 jni = "0.21"
@@ -445,7 +441,6 @@ log = "0.4"
             runtime_core_dep = runtime_core_dep,
             shared_dep = shared_dep,
             bandroid_dep = bandroid_aas_dep,
-            drawer_navigator_dep = drawer_navigator_dep,
             codeblock_dep = codeblock_dep,
             table_dep = table_dep,
         ),
@@ -1109,9 +1104,8 @@ mod regression_tests {
     }
 
     /// A registry-sourced app's local wrapper resolves only published
-    /// crates. The drawer navigator is not published, and the
-    /// runtime-server SDKs it sits beside are never linked locally, so
-    /// a registry source without them must still generate — it panicked
+    /// crates. The runtime-server SDKs are never linked locally, so a
+    /// registry source without them must still generate — it panicked
     /// for every registry-sourced app before (CrewForge, CLI 1.18.3).
     #[test]
     fn local_wrapper_from_a_registry_source_skips_the_runtime_server_sdks() {
@@ -1125,8 +1119,31 @@ mod regression_tests {
         };
         let (wrapper, _tmp) = run_generator_with(BuildMode::Local, Some(source));
         let cargo = std::fs::read_to_string(wrapper.join("Cargo.toml")).unwrap();
-        for sdk in ["drawer-navigator", "codeblock", "table ="] {
+        for sdk in ["codeblock", "table ="] {
             assert!(!cargo.contains(sdk), "local wrapper names `{sdk}`:\n{cargo}");
+        }
+    }
+
+    /// Regression: the runtime-server wrapper depended on
+    /// `crates/sdk/client/navigators/drawer` after that crate was deleted,
+    /// so `idealyst dev --android` (runtime-server mode, the default) could
+    /// not build any app. Every workspace path the wrapper names must exist
+    /// in this checkout.
+    #[test]
+    fn regression_runtime_server_wrapper_names_only_crates_that_exist() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+        for mode in [BuildMode::RuntimeServer, BuildMode::Local] {
+            let (wrapper, tmp) = run_generator_with(mode, None);
+            let cargo = std::fs::read_to_string(wrapper.join("Cargo.toml")).unwrap();
+            let workspace = tmp.path().join("workspace");
+            let prefix = workspace.to_string_lossy().to_string();
+            let mut checked = 0;
+            for rest in cargo.split(prefix.as_str()).skip(1) {
+                let rel = rest.trim_start_matches('/').split('"').next().unwrap();
+                assert!(repo.join(rel).join("Cargo.toml").exists(), "wrapper names missing crate `{rel}`:\n{cargo}");
+                checked += 1;
+            }
+            assert!(checked > 0, "no workspace paths found in the wrapper:\n{cargo}");
         }
     }
 
