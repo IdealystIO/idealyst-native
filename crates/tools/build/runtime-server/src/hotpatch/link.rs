@@ -103,3 +103,52 @@ pub fn link_dylib(tip_objs: &[PathBuf], stub_obj: &Path, out: &Path) -> Result<(
     }
     Ok(())
 }
+
+/// Link a SERVER patch ([`super::detour`]): the objects of every replayed
+/// crate plus the stub, keeping only what the roots reach.
+///
+/// - `-dead_strip`: roots are the symbols the objects mark
+///   `N_NO_DEAD_STRIP` (the functions the agent redirects) and the
+///   exported `_main`. Code of the re-emitted crates that the binary had
+///   dead-stripped is dropped here too, with the references it alone made
+///   to functions the binary does not have.
+/// - `-exported_symbol _main`: nothing else is exported, so no `pub fn`
+///   of a crate becomes a root by being global. `_main` is the anchor the
+///   agent `dlsym`s to learn where the patch was loaded.
+/// - `-filelist`: a crate replays into up to 256 objects per crate, and
+///   several crates' worth of paths overflow `ARG_MAX`.
+pub fn link_patch(objs: &[PathBuf], stub_obj: &Path, out: &Path, filelist: &Path) -> Result<()> {
+    if objs.is_empty() {
+        anyhow::bail!("link_patch called with no objects");
+    }
+    let sdk = sdk_path().context(
+        "xcrun --show-sdk-path failed; the macOS SDK is not on path. \
+         Install Xcode or the Command Line Tools.",
+    )?;
+    let mut list = String::new();
+    for o in objs.iter().map(PathBuf::as_path).chain(std::iter::once(stub_obj)) {
+        list.push_str(&o.display().to_string());
+        list.push('\n');
+    }
+    std::fs::write(filelist, list).with_context(|| format!("write {}", filelist.display()))?;
+    let output = Command::new("ld")
+        .args([
+            "-dylib", "-arch", "arm64", "-platform_version", "macos", "11.0", "11.0", "-syslibroot", sdk,
+            "-lSystem", "-undefined", "dynamic_lookup", "-no_warn_inits", "-dead_strip", "-exported_symbol",
+            "_main",
+        ])
+        .arg("-filelist")
+        .arg(filelist)
+        .arg("-o")
+        .arg(out)
+        .output()
+        .context("spawn ld")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "ld exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).lines().take(12).collect::<Vec<_>>().join("\n")
+        );
+    }
+    Ok(())
+}

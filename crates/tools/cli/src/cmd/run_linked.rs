@@ -51,6 +51,14 @@ pub fn run(args: Args) -> Result<()> {
     let target = linker_output(&exe).unwrap_or_else(|| exe.clone());
     let mut cmd = Command::new(&target);
     cmd.args(rest);
+    // The session's server hot-patch tier: load its agent into the server
+    // (`crate::server_hot`), and only into it — the variable naming the
+    // agent does not reach the server's environment.
+    if let Some(agent) = std::env::var_os(crate::server_hot::AGENT_LIB_ENV) {
+        cmd.env_remove(crate::server_hot::AGENT_LIB_ENV);
+        let (var, value) = preload(&agent, std::env::var_os(PRELOAD_VAR));
+        cmd.env(var, value);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -66,6 +74,22 @@ pub fn run(args: Args) -> Result<()> {
             .with_context(|| format!("run {}", target.display()))?;
         std::process::exit(status.code().unwrap_or(1));
     }
+}
+
+/// The loader's variable for libraries to load before a program's own.
+#[cfg(target_os = "macos")]
+const PRELOAD_VAR: &str = "DYLD_INSERT_LIBRARIES";
+#[cfg(not(target_os = "macos"))]
+const PRELOAD_VAR: &str = "LD_PRELOAD";
+
+/// [`PRELOAD_VAR`] with `agent` added in front of what it already held.
+fn preload(agent: &std::ffi::OsStr, existing: Option<std::ffi::OsString>) -> (&'static str, std::ffi::OsString) {
+    let mut value = agent.to_os_string();
+    if let Some(e) = existing.filter(|e| !e.is_empty()) {
+        value.push(":");
+        value.push(e);
+    }
+    (PRELOAD_VAR, value)
 }
 
 /// The file the linker wrote that `exe` — cargo's uplifted copy — was
@@ -248,6 +272,16 @@ mod tests {
             linker_output(&debug.join("my-srv.exe")),
             Some(debug.join("deps/my_srv-0123456789abcdef.exe"))
         );
+    }
+
+    /// The server hot-patch agent goes in front of whatever the author
+    /// already preloads, which keeps loading.
+    #[test]
+    fn the_hot_patch_agent_is_preloaded_beside_the_authors_libraries() {
+        let agent = std::ffi::OsStr::new("/t/libidealyst_hot_agent.dylib");
+        assert_eq!(preload(agent, None).1, "/t/libidealyst_hot_agent.dylib");
+        assert_eq!(preload(agent, Some("".into())).1, "/t/libidealyst_hot_agent.dylib");
+        assert_eq!(preload(agent, Some("/x/libmine.dylib".into())).1, "/t/libidealyst_hot_agent.dylib:/x/libmine.dylib");
     }
 
     #[test]

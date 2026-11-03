@@ -50,6 +50,7 @@ pub mod additive;
 pub mod ast;
 pub mod consts;
 pub mod describe;
+pub mod detour;
 pub mod downstream;
 pub mod number;
 pub mod primitives;
@@ -64,6 +65,7 @@ pub use additive::{additions, idents, outline, AddedName, Addition, OutlineEntry
 pub use ast::{is_a11y_attr, MatchArm, Prop, Ui, UiNode};
 pub use consts::{compile_time_reach, const_facts, library_reach, ConstFacts, ConstValue};
 pub use describe::describe;
+pub use detour::detour_facts;
 pub use downstream::downstream_bodies;
 pub use number::{number_elements, NodeNumbering, StampMismatch};
 pub use reactive_shape::is_reactive_call_shape;

@@ -40,3 +40,9 @@ libc = "0.2"
 # and assert on the emitted Cargo.toml without firing a cargo build.
 tempfile = "3"
 toml = "0.8"
+
+# `agent/hot_agent.rs` is compiled twice: into this crate (its protocol
+# and planning code), and on its own by the dev session with
+# `--cfg idealyst_hot_agent`, which turns its library initializer on.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_hot_agent)'] }

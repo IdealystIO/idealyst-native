@@ -26,6 +26,8 @@
 /// get it. Re-exported here so the watcher's callers keep one import.
 pub use dev_overlay::archive as overlay;
 pub use dev_overlay::decide as overlay_decide;
+/// The server's in-place patch decision (the CLI's `server_hot`).
+pub use dev_overlay::native;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -3180,7 +3182,7 @@ fn notify_save<M>(tx: &mpsc::Sender<M>, saves: &SaveLog, save: bool, msg: M) {
 /// replays are killed the moment it says yes) and once more right before
 /// its result would reach a page.
 #[derive(Clone)]
-struct Supersede {
+pub struct Supersede {
     saves: Arc<SaveLog>,
     /// The save count when this attempt drained its batches.
     seen: u64,
@@ -3203,7 +3205,7 @@ impl Supersede {
     /// This still bounds the restarts: an attempt that starts after the
     /// limit can only be overtaken by saves that arrive after it, which
     /// supersede nothing, so it is applied.
-    fn is_superseded(&self) -> bool {
+    pub fn is_superseded(&self) -> bool {
         if self.saves.count() == self.seen {
             return false;
         }
@@ -3317,10 +3319,46 @@ pub fn start_watch_with<F>(
     label: &'static str,
     reporter: dev_events::Reporter,
     no_watch: bool,
+    on_change: F,
+) -> Result<(JoinHandle<()>, WatchControl)>
+where
+    F: FnMut() -> Result<Rebuilt> + Send + 'static,
+{
+    start_watch_patching(paths, signal, label, reporter, no_watch, |_: &[PathBuf], _: &Supersede| Patched::Rebuild, on_change)
+}
+
+/// What a [`start_watch_patching`] patch step did with a save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Patched {
+    /// Applied in place: the save is over, nothing is rebuilt or woken.
+    /// The step has reported it.
+    Applied,
+    /// Not patchable, or the patch failed (the step said why): build.
+    Rebuild,
+    /// A newer save overtook it before anything was applied: start over
+    /// on the union of the saves.
+    Superseded,
+}
+
+/// [`start_watch_with`], offering each save to `patch` before building.
+///
+/// `patch` gets the saved paths and the save's supersession token, and
+/// runs after `change_detected` and BEFORE `build_started`, so a save it
+/// applies never shows as a build. A rebuild request (`r`, a session
+/// request) and a save that owes consumers a wake-up skip it and build.
+/// The full-stack server's watcher uses it for its in-place patches.
+pub fn start_watch_patching<F, P>(
+    paths: Vec<PathBuf>,
+    signal: Arc<ReloadSignal>,
+    label: &'static str,
+    reporter: dev_events::Reporter,
+    no_watch: bool,
+    mut patch: P,
     mut on_change: F,
 ) -> Result<(JoinHandle<()>, WatchControl)>
 where
     F: FnMut() -> Result<Rebuilt> + Send + 'static,
+    P: FnMut(&[PathBuf], &Supersede) -> Patched + Send + 'static,
 {
     let (tx, rx) = mpsc::channel::<WatchMsg>();
     let control = WatchControl { tx: tx.clone() };
@@ -3430,6 +3468,13 @@ where
                             crates: Vec::new(),
                             folded,
                         });
+                    }
+                    if fs_batches > 0 && !forced && !owed {
+                        match patch(&saved_paths(&paths), token) {
+                            Patched::Applied => return Attempt::Finished,
+                            Patched::Superseded => return Attempt::Superseded,
+                            Patched::Rebuild => {}
+                        }
                     }
                     reporter.emit(dev_events::DevEvent::BuildStarted {
                         target: label.into(),
@@ -4524,6 +4569,60 @@ mod tests {
         // New bytes: built.
         std::fs::write(src.join("main.rs"), "fn main() { let _ = 1; }\n").unwrap();
         built_rx.recv_timeout(Duration::from_secs(20)).expect("an edit builds");
+    }
+
+    /// The full-stack server's watcher offers each save to its in-place
+    /// patch first: a save the patch applies never starts a build (no
+    /// `build_started`, the build closure never runs), one it refuses
+    /// builds as before, and a rebuild request skips the patch.
+    #[test]
+    fn a_save_the_patch_step_applies_never_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let (reporter, q) = capture();
+        let (built_tx, built_rx) = mpsc::channel();
+        let (offered_tx, offered_rx) = mpsc::channel::<Vec<PathBuf>>();
+        let (_watch, control) = start_watch_patching(
+            vec![src.clone()],
+            ReloadSignal::new(),
+            "server",
+            reporter,
+            false,
+            move |paths: &[PathBuf], _: &Supersede| {
+                let _ = offered_tx.send(paths.to_vec());
+                // `apply.rs` patches; anything else rebuilds.
+                if paths.iter().all(|p| p.ends_with("apply.rs")) { Patched::Applied } else { Patched::Rebuild }
+            },
+            move || {
+                let _ = built_tx.send(());
+                Ok(Rebuilt::Unchanged)
+            },
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !events(&q).iter().any(|e| matches!(e, dev_events::DevEvent::Watching { .. })) {
+            assert!(std::time::Instant::now() < deadline, "the watcher never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let quiet = Duration::from_millis(DEBOUNCE_MS * 4 + 500);
+
+        std::fs::write(src.join("apply.rs"), "pub fn f() {}\n").unwrap();
+        let offered = offered_rx.recv_timeout(Duration::from_secs(20)).expect("the save was not offered to the patch");
+        assert!(offered.iter().any(|p| p.ends_with("apply.rs")), "{offered:?}");
+        assert!(built_rx.recv_timeout(quiet).is_err(), "an applied patch also built");
+        assert!(
+            !events(&q).iter().any(|e| matches!(e, dev_events::DevEvent::BuildStarted { .. })),
+            "an applied patch reported a build"
+        );
+
+        std::fs::write(src.join("rebuild.rs"), "pub fn g() {}\n").unwrap();
+        offered_rx.recv_timeout(Duration::from_secs(20)).expect("the second save was not offered");
+        built_rx.recv_timeout(Duration::from_secs(20)).expect("a refused patch must build");
+
+        assert!(control.request_rebuild());
+        built_rx.recv_timeout(Duration::from_secs(20)).expect("a rebuild request builds");
+        assert!(offered_rx.try_recv().is_err(), "a rebuild request was offered to the patch");
     }
 
     /// Two agents' rebuild requests: the second arrives while the first's

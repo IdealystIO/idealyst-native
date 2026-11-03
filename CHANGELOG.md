@@ -1184,6 +1184,27 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`idealyst dev` patches the running server in place** (`idealyst-cli`
+  minor; `build-runtime-server` minor: `hotpatch::detour`, `link_patch`;
+  `dev-overlay` minor: `native`; `runtime-macros-parse` minor:
+  `detour_facts`; `dev-reload` minor: `start_watch_patching`, `Patched`,
+  a public `Supersede`). In a full-stack session on macOS on Apple
+  silicon, a body edit in a crate the server is built from no longer
+  rebuilds and respawns the server: the session replays only the edited
+  crates, links a patch, and an agent `idealyst run-linked` loads into
+  the server redirects the running binary's functions to it (each
+  function's first instruction becomes a branch, swapped in by remapping
+  the page). Dependents of the edited crate are not recompiled, so a save
+  in a shared crate no longer waits on everything between it and the
+  server binary (proposal: 13–23 s per CrewForge server save). Shape
+  edits, generic / inline / `async` / `impl Trait` bodies, closures and
+  `async` blocks, `main`, const values and anything that fails on the way
+  still rebuild and respawn, reported as `decided` / `patch_failed` for
+  target `server`; a patch is a `patch_built`, and `build-metrics.jsonl`
+  records `hot patch: N function(s) redirected`. `IDEALYST_SERVER_HOT_PATCH=0`
+  turns it off. Docs: "The server is patched in place" in
+  `docs/hot-reload.md`.
+
 - **Robot: `load_url` and cookies** (`robot-relay` minor, but a
   `RelayConfig` struct literal needs the new `relaunch` field;
   `run-android` minor: `RunArtifact::launched` and `relaunch_with_link`;

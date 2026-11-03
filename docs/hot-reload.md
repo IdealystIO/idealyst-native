@@ -55,7 +55,9 @@ Three things differ from `--local` on the same project:
 
 The SERVER watcher still runs. A `#[server]` fn's signature is a
 contract between two binaries, and no jump table spans them — a server
-edit rebuilds and restarts the server, as before.
+edit that moves a signature or a type rebuilds and restarts the server.
+A body edit the server's own tier can carry is patched into the running
+server instead ([The server is patched in place](#the-server-is-patched-in-place)).
 
 ### `#[server]` calls come from the sidecar
 
@@ -2263,6 +2265,91 @@ finishes after the web side, so the page's reload still waits on it.
 `IDEALYST_SERVER_BUILD_NICE=<n>` sets the increment (1–19; above 19 is
 19); `0` builds the server at the session's priority. On Windows any
 non-zero value means below-normal.
+
+### The server is patched in place
+
+A full-stack session's server is the app's own binary — an axum router,
+`#[server]` fns registered through `inventory`, middleware, background
+tasks — and nothing in it consults a jump table. So on macOS on Apple
+silicon the session patches it the other way round: the running binary's
+own functions are redirected. A save the decision below accepts:
+
+1. replays ONLY the edited crates with `--emit=obj` (the captures come
+   from the server's own builds, which run through the `idealyst` rustc
+   wrapper; the wrapper does not enter cargo's fingerprint, so arming the
+   tier costs no rebuild);
+2. binds the patch's statics and thread-locals to the server's storage
+   and neutralizes constructors it already ran, exactly as for the
+   sidecar ([Statics are the running program's](#statics-are-the-running-programs));
+3. links the objects into a dylib with `-dead_strip`, rooted at the
+   functions to redirect. The binary was linked dead-stripped too, so a
+   re-emitted crate holds code the binary never kept; stripped from the
+   patch, it needs nothing the binary lacks. Live code that needs a
+   function the binary does not contain stays an import, and loading the
+   patch fails on it — the save rebuilds;
+4. hands the dylib and the address pairs to the AGENT, a small library
+   `idealyst run-linked` loads into the server at exec
+   (`DYLD_INSERT_LIBRARIES`; it reports on a Unix socket, then removes
+   itself from the environment the server's children inherit). The agent
+   `dlopen`s the patch and rewrites the FIRST INSTRUCTION of each of the
+   binary's redirected functions into a `b` to the patch's copy (through
+   a 16-byte island mapped within branch reach).
+
+Every caller then reaches the new body — a direct call from a crate that
+was not re-emitted, a function pointer stored at startup, a vtable — which
+is why the dependents of the edited crate need no replay, unlike the web.
+The rewrite never tears: one aligned 4-byte instruction changes, so a
+thread either takes the branch or has already passed it and finishes the
+old body; and the page is rebuilt elsewhere and mapped over the original
+in one call (`mach_vm_remap`), because macOS refuses a writable and
+executable text mapping and a writable-only one kills every thread running
+on that page. `build-runtime-server`'s `tests/server_detour.rs` runs eight
+threads through every kind of call while patches land.
+
+**What is never redirected.** Closures and coroutines (every `async fn`
+and `async` block body): a future built by the old code is resumed by
+the old code, so an in-flight request finishes on the code it started on
+and the next request builds the patch's futures. Generic instantiations
+and shims: the decision refuses edits to generic bodies, so they still
+run the same code, and what they call is redirected.
+
+**What rebuilds instead** (`dev_overlay::native`, decided from the
+sources the running binary was built from, which the session reads when
+each server build starts):
+
+- anything the web's decision calls a shape change — a signature, a
+  type, an item, an attribute, a `static`;
+- a changed `const` value;
+- a changed generic, `#[inline]`, `const fn`, `async fn` (so a
+  `#[server]` fn's body) or `impl Trait` body, or a trait default
+  method: their copies or their futures' layouts live where a redirect
+  does not reach;
+- an edit inside a closure or an `async` block: one built before the
+  patch (a route handler registered at startup, a spawned task) would
+  keep its old body while the session reported the edit applied;
+- an item declared inside a body, `fn main`, an unmangled
+  (`#[no_mangle]`, `extern`) function;
+- a new, deleted or unparsable file, a manifest, `build.rs`;
+- a save to a crate no server build has compiled since the tier was
+  armed (no capture yet — that rebuild captures it);
+- anything that fails on the way: the patch link, the agent's `dlopen`,
+  a server that is not the last build yet.
+
+The decision is `decided` for target `server`; a patch is `patch_step`s
+and a `patch_built` naming the functions redirected (`build-metrics.jsonl`
+records `hot patch: N function(s) redirected`), and a failed one a
+`patch_failed`, after which the watcher runs the usual `cargo build` and
+respawn. A rebuild request (`r`) always rebuilds.
+
+**Staleness you can still meet.** A patch changes what runs from each
+function's next call. State computed when the server started — a router
+built in a plain function, a config read in `main`'s callees — is not
+recomputed. Request a rebuild when an edit only matters at startup.
+
+macOS on Apple silicon only. A project that configures its own cargo
+`runner` replaces `idealyst run-linked`, so its server never loads the
+agent and every server save rebuilds. `IDEALYST_SERVER_HOT_PATCH=0` turns
+the tier off.
 
 ### What the app is handed
 

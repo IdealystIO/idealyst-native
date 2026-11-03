@@ -1197,6 +1197,7 @@ pub fn run(args: Args) -> Result<()> {
             None,
             &server_log,
             prebuilt,
+            &[],
         ) {
             Ok(server) => {
                 let pid = server.child.id();
@@ -3050,10 +3051,19 @@ fn launch_web_with_backend(
     // that cannot be resolved well enough to watch): `cargo run` then
     // builds it on start, as it always did, and a crash ends the session
     // because nothing could restart it.
+    // In-place patches of the running server (`crate::server_hot`): only
+    // when this session builds and watches it.
+    let server_hot = if args.no_build {
+        None
+    } else {
+        server_build_args(dir, manifest)
+            .ok()
+            .and_then(|(server_manifest, _)| crate::server_hot::ServerHot::arm(&server_manifest, &server_target))
+    };
     let setup = if args.no_build {
         None
     } else {
-        match server_watch_setup(dir, manifest, &server_target, !args.shared_target, shared.clone()) {
+        match server_watch_setup(dir, manifest, &server_target, !args.shared_target, shared.clone(), server_hot.clone()) {
             Ok(setup) => Some(setup),
             // A server we can't resolve well enough to watch is not a
             // reason to refuse the dev session — it still runs, it just
@@ -3081,7 +3091,7 @@ fn launch_web_with_backend(
     let mut pending_setup = setup;
     let start_server_build = |setup: Option<(Vec<PathBuf>, ServerBuild)>| {
         setup.map(|(roots, build)| {
-            spawn_server_build(roots, build, server_signal.clone(), reporter.clone())
+            spawn_server_build(roots, build, server_signal.clone(), reporter.clone(), server_hot.clone())
         })
     };
     if watched {
@@ -3107,6 +3117,10 @@ fn launch_web_with_backend(
         dev_stream: dev_stream_env.as_deref(),
         log: &server_log,
         prebuilt: watched,
+        // The agent only, never the capture wrapper's variables: those
+        // make every `idealyst` process that inherits them act as a rustc
+        // wrapper, `idealyst run-linked` included.
+        hot_env: server_hot.as_ref().filter(|_| watched).map(|h| h.run_env()).unwrap_or_default(),
     };
     let mut child: Option<ServerProc> = None;
     let mut route_reported = false;
@@ -3594,6 +3608,9 @@ struct ServerLaunch<'a> {
     /// so `cargo run` should find it fresh (`false` under `--no-build`,
     /// where `cargo run` is the build).
     prebuilt: bool,
+    /// The server hot-patch tier's agent (`crate::server_hot`), which
+    /// `idealyst run-linked` loads. Empty when the tier is off.
+    hot_env: Vec<(String, String)>,
 }
 
 impl ServerLaunch<'_> {
@@ -3625,6 +3642,7 @@ impl ServerLaunch<'_> {
             self.dev_stream,
             self.log,
             self.prebuilt,
+            &self.hot_env,
         ) {
             Ok(c) => c,
             Err(e) => {
@@ -3874,6 +3892,7 @@ fn spawn_server_build(
     mut build: ServerBuild,
     server_signal: Arc<dev_reload::ReloadSignal>,
     reporter: dev_events::Reporter,
+    hot: Option<crate::server_hot::ServerHot>,
 ) -> std::thread::JoinHandle<bool> {
     std::thread::Builder::new()
         .name("idealyst-server-build".into())
@@ -3897,12 +3916,19 @@ fn spawn_server_build(
             // Watched from here on, failed first build or not: the next
             // save is how a broken server gets fixed.
             let watched = roots.clone();
-            match dev_reload::start_watch_with(
+            // A save goes to the in-place patch first when the tier is
+            // armed; anything it does not apply rebuilds as before.
+            let patch = move |paths: &[PathBuf], token: &dev_reload::Supersede| match &hot {
+                Some(h) => h.try_patch(paths, token),
+                None => dev_reload::Patched::Rebuild,
+            };
+            match dev_reload::start_watch_patching(
                 roots,
                 server_signal,
                 "server",
                 reporter.clone(),
                 crate::dev_log::no_watch(),
+                patch,
                 build,
             ) {
                 // Detached for the session's lifetime; a rebuild request
@@ -4123,6 +4149,7 @@ fn server_watch_setup(
     target_dir: &Path,
     prune: bool,
     shared: ServerBuildShared,
+    hot: Option<crate::server_hot::ServerHot>,
 ) -> Result<(Vec<PathBuf>, ServerBuild)> {
     // Base command + the manifest whose local closure we watch.
     let (watched_manifest, base_args) = server_build_args(dir, manifest)?;
@@ -4151,6 +4178,12 @@ fn server_watch_setup(
         let hold = shared.reload.hold_reloads();
         let mut cmd = Command::new("cargo");
         prepare_server_build(&mut cmd, &base_args, &target_dir, priority);
+        // The sources this build compiles, read before it starts: what a
+        // later in-place patch is decided against.
+        let sources = hot.as_ref().map(|h| {
+            cmd.envs(h.build_env());
+            h.read_sources()
+        });
         reporter.emit(dev_events::DevEvent::StageStarted {
             target: dev_events::SERVER_TARGET.into(),
             stage: "cargo".into(),
@@ -4183,6 +4216,11 @@ fn server_watch_setup(
         let stamp = BinStamp::of(&exe);
         let changed = last != stamp;
         last = stamp;
+        if let (Some(h), Some(sources)) = (&hot, sources) {
+            if changed {
+                h.rebased(exe.clone(), sources);
+            }
+        }
         // A server that is not running needs starting whether or not
         // this build moved the binary (a fix after a crash, or after a
         // failed first build that left an old binary in place).
@@ -4389,9 +4427,11 @@ fn spawn_backend(
     dev_stream: Option<&str>,
     log: &Path,
     prebuilt: bool,
+    hot_env: &[(String, String)],
 ) -> Result<ServerProc> {
     let app = &manifest.app;
     let mut cmd = cargo_run_command();
+    cmd.envs(hot_env.iter().map(|(k, v)| (k, v)));
     cmd.arg("--target-dir").arg(target_dir);
     if let Some(rel) = &app.server_manifest {
         let joined = dir.join(rel);
@@ -5080,7 +5120,7 @@ fn read_host_port_file(path: &Path, timeout: std::time::Duration) -> Option<u16>
 /// stale `~/.idealyst/apps` entry waits for the MCP server's pid check.
 static REMOVE_ON_EXIT: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
-fn remove_on_exit(paths: Vec<PathBuf>) {
+pub(crate) fn remove_on_exit(paths: Vec<PathBuf>) {
     if let Ok(mut list) = REMOVE_ON_EXIT.lock() {
         list.extend(paths);
     }

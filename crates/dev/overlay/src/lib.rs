@@ -12,6 +12,10 @@
 //! crate's hot patch needs (its dependents re-emitted with it, and no
 //! edit to a body a dependent compiles from its metadata).
 //!
+//! [`native`] is the same question for a full-stack project's SERVER,
+//! which is patched in place rather than through a jump table, and so
+//! refuses a different set of edits.
+//!
 //! Neither needs a compiler, a watcher or a transport, which is why
 //! this is its own crate: both dev shapes need the decision and they
 //! have nothing else in common. The web watcher (`dev-reload`) pulls the
@@ -21,6 +25,7 @@
 
 pub mod archive;
 pub mod decide;
+pub mod native;
 pub mod workspace;
 
 pub use archive::{
@@ -33,6 +38,7 @@ pub use decide::{
 };
 /// The names an additive save adds, as [`Workspace::added`] holds them.
 pub use runtime_macros_parse::{AddedName, Reach};
+pub use native::{decide_native, NativeDecision, NativeReason, NativeSave};
 pub use workspace::{
     HotPatchPlan, Route, SavedFile, ScanMemo, Workspace, WorkspaceCrate, WorkspaceDecision,
 };

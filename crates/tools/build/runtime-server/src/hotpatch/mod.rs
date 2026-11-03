@@ -56,6 +56,9 @@ use anyhow::{Context, Result};
 
 mod bind;
 mod cache;
+/// Server hot patches: functions redirected in place in a running
+/// native binary (see the module docs).
+pub mod detour;
 mod jumptable;
 mod link;
 /// Public because the wasm hot-patch pipeline in `build-web` replays the
