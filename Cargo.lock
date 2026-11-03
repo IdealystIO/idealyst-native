@@ -2007,7 +2007,7 @@ dependencies = [
 
 [[package]]
 name = "build-runtime-server"
-version = "6.0.0"
+version = "6.1.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3579,7 +3579,7 @@ dependencies = [
 
 [[package]]
 name = "dev-overlay"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "anyhow",
  "runtime-macros-parse",
@@ -3594,7 +3594,7 @@ dependencies = [
 
 [[package]]
 name = "dev-reload"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -6563,7 +6563,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.27.1"
+version = "1.28.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -10915,7 +10915,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros-parse"
-version = "1.13.1"
+version = "1.14.0"
 dependencies = [
  "proc-macro2",
  "quote",

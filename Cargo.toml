@@ -528,7 +528,7 @@ premint-dump = { path = "crates/tools/premint-dump" }
 linkme = "0.3"
 dev-hot = { path = "crates/dev/hot", version = "1.7.1", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "2.0.0", registry = "idealyst" }
-runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.13.1", registry = "idealyst" }
+runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.14.0", registry = "idealyst" }
 runtime-macros-expand = { path = "crates/runtime/macros-expand", version = "2.0.0", registry = "idealyst" }
 mcp-catalog = { path = "crates/mcp/catalog", version = "1.36.0", registry = "idealyst" }
 catalog-scan = { path = "crates/mcp/catalog-scan", version = "2.0.0", registry = "idealyst" }
@@ -554,13 +554,13 @@ robot-test = { path = "crates/dev/robot-test", version = "2.0.0", registry = "id
 robot-test-macros = { path = "crates/dev/robot-test-macros", version = "1.7.0", registry = "idealyst" }
 native-parity = { path = "crates/dev/native-parity", version = "1.6.1", registry = "idealyst" }
 dev-http = { path = "crates/dev/http", version = "8.1.0", registry = "idealyst" }
-dev-overlay = { path = "crates/dev/overlay", version = "3.0.0", registry = "idealyst" }
+dev-overlay = { path = "crates/dev/overlay", version = "3.1.0", registry = "idealyst" }
 dev-events = { path = "crates/dev/events", version = "2.3.0", registry = "idealyst" }
-dev-reload = { path = "crates/dev/reload", version = "8.1.0", registry = "idealyst" }
+dev-reload = { path = "crates/dev/reload", version = "8.2.0", registry = "idealyst" }
 web-dev-host = { path = "crates/dev/web-host" }
 build-ios = { path = "crates/tools/build/ios", version = "3.2.0", registry = "idealyst" }
 run-ios = { path = "crates/tools/run/ios", version = "4.0.1", registry = "idealyst" }
-build-runtime-server = { path = "crates/tools/build/runtime-server", version = "6.0.0", registry = "idealyst" }
+build-runtime-server = { path = "crates/tools/build/runtime-server", version = "6.1.0", registry = "idealyst" }
 build-android = { path = "crates/tools/build/android", version = "3.0.1", registry = "idealyst" }
 run-android = { path = "crates/tools/run/android", version = "5.0.0", registry = "idealyst" }
 build-roku = { path = "crates/tools/build/roku", version = "3.0.0", registry = "idealyst" }
@@ -790,7 +790,7 @@ swap-demo = { path = "crates/sdk/client/navigators/swap/examples/swap-demo", ver
 todo-sync-demo = { path = "crates/sdk/client/sync/examples/todo-sync-demo", version = "1.5.2", registry = "idealyst" }
 toolbar-demo = { path = "crates/sdk/client/toolbar/examples/toolbar-demo", version = "1.5.2", registry = "idealyst" }
 video-compose-demo = { path = "crates/sdk/client/video-compose/examples/video-compose-demo", version = "1.5.2", registry = "idealyst" }
-idealyst-cli = { path = "crates/tools/cli", version = "1.27.1", registry = "idealyst" }
+idealyst-cli = { path = "crates/tools/cli", version = "1.28.0", registry = "idealyst" }
 ota-publish = { path = "crates/ota/publish", version = "0.1.0", registry = "idealyst" }
 
 # Dev profile: `opt-level = "z"` works around a wasm OOB seen at
