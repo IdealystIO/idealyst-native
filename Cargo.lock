@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "4.3.0"
+version = "4.4.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1458,7 +1458,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "4.0.1"
+version = "4.1.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1501,7 +1501,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "backend-image-source",
  "base64",
@@ -1525,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1577,7 +1577,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ssr"
-version = "3.0.3"
+version = "3.1.0"
 dependencies = [
  "css",
  "parity-goldens",
@@ -1603,7 +1603,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "5.1.0"
+version = "5.2.0"
 dependencies = [
  "css",
  "dev-client",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "backend-image-source",
  "image-webp",
@@ -1933,7 +1933,7 @@ dependencies = [
 
 [[package]]
 name = "build-android"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3176,7 +3176,7 @@ dependencies = [
 
 [[package]]
 name = "css"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "runtime-shared",
 ]
@@ -5882,7 +5882,7 @@ dependencies = [
 
 [[package]]
 name = "host-mock"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
@@ -6435,7 +6435,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "16.0.0"
+version = "16.1.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6455,7 +6455,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "17.0.0"
+version = "17.1.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6563,7 +6563,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.24.0"
+version = "1.25.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7733,7 +7733,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.33.0"
+version = "1.34.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7776,7 +7776,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-design-server"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "mcp-server",
@@ -7790,7 +7790,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "4.2.0"
+version = "4.3.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -10755,7 +10755,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test"
-version = "1.12.0"
+version = "1.13.0"
 dependencies = [
  "anyhow",
  "native-parity",
@@ -10766,7 +10766,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test-macros"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10886,7 +10886,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "3.0.1"
+version = "3.1.0"
 dependencies = [
  "runtime-shared",
  "taffy",
@@ -10901,7 +10901,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros-expand"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10945,7 +10945,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10980,7 +10980,7 @@ version = "0.1.1"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "4.5.0"
+version = "4.6.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -12939,7 +12939,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "7.0.0"
+version = "7.1.0"
 dependencies = [
  "backend-ssr",
  "runtime-scene",

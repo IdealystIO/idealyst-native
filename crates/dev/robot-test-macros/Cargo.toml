@@ -1,6 +1,6 @@
 [package]
 name = "robot-test-macros"
-version = "1.6.0"
+version = "1.7.0"
 edition.workspace = true
 license.workspace = true
 description = "The `#[robot_test]` attribute macro — turns a Rust function that drives an `App` over the Robot relay into a standard `#[test]`, so the same suite runs under plain `cargo test` and under `idealyst test` (which prepares the relay + app first)."
