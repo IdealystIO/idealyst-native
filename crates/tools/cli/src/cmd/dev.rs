@@ -442,13 +442,19 @@ pub struct Args {
     #[arg(long, hide = true)]
     pub no_split: bool,
 
-    /// Web + `--local` only, EXPERIMENTAL: hot patch a save that only ADDS
-    /// items — a new helper and its first call, a new `#[component]`, a
-    /// type with its impls, a name added to an import list — instead of
-    /// rebuilding every crate above the edit. Each such patch is checked
-    /// from source and again after it compiles, and anything either check
-    /// cannot prove safe rebuilds as it does without the flag. Off by
-    /// default. See "Adding items" in docs/hot-reload.md.
+    /// EXPERIMENTAL hot-patch tiers, off by default. Anything a tier
+    /// cannot prove safe rebuilds as it does without the flag.
+    ///
+    /// - Web + `--local`: hot patch a save that only ADDS items — a new
+    ///   helper and its first call, a new `#[component]`, a type with its
+    ///   impls, a name added to an import list — instead of rebuilding
+    ///   every crate above the edit. Each such patch is checked from
+    ///   source and again after it compiles. See "Adding items" in
+    ///   docs/hot-reload.md.
+    /// - Full-stack server, macOS on Apple silicon: a body edit in a crate
+    ///   the server is built from patches the running server in place
+    ///   instead of rebuilding and respawning it. See "The server is
+    ///   patched in place" in docs/hot-reload.md.
     #[arg(long)]
     pub experimental_build: bool,
 
@@ -1754,6 +1760,13 @@ fn hot_patch_armed(args: &Args) -> bool {
     args.local && !args.split
 }
 
+/// Whether the session patches its full-stack server in place
+/// (`crate::server_hot`): an experimental tier, so `--experimental-build`
+/// opts in, and only a server this session builds can be patched.
+fn server_hot_wanted(args: &Args) -> bool {
+    args.experimental_build && !args.no_build
+}
+
 /// Features of a `--local` web bundle: the dev set plus the app's own
 /// `--features`. The web build compiles the app crate itself, so app
 /// features are passed by their plain names.
@@ -3052,8 +3065,9 @@ fn launch_web_with_backend(
     // builds it on start, as it always did, and a crash ends the session
     // because nothing could restart it.
     // In-place patches of the running server (`crate::server_hot`): only
-    // when this session builds and watches it.
-    let server_hot = if args.no_build {
+    // when this session builds and watches it, and `--experimental-build`
+    // opts in.
+    let server_hot = if !server_hot_wanted(args) {
         None
     } else {
         server_build_args(dir, manifest)
@@ -5585,6 +5599,20 @@ mod tests {
             hot_patch_armed(&parse_dev(&["idealyst", "dev", "--web", "--local"])),
             "the ordinary dev session arms it"
         );
+    }
+
+    /// Patching the running server is experimental: a plain session
+    /// rebuilds and respawns it on every server save, and only
+    /// `--experimental-build` (with a server this session builds) arms it.
+    #[test]
+    fn the_server_is_patched_in_place_only_under_experimental_build() {
+        assert!(!server_hot_wanted(&parse_dev(&["idealyst", "dev", "--web", "--local"])));
+        assert!(server_hot_wanted(&parse_dev(&["idealyst", "dev", "--web", "--local", "--experimental-build"])));
+        assert!(
+            server_hot_wanted(&parse_dev(&["idealyst", "dev", "--web", "--experimental-build"])),
+            "the server tier does not need --local"
+        );
+        assert!(!server_hot_wanted(&parse_dev(&["idealyst", "dev", "--web", "--experimental-build", "--no-build"])));
     }
 
     /// There is no page running the app's code in runtime-server mode,

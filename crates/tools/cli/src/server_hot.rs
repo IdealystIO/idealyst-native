@@ -27,7 +27,7 @@
 //!
 //! macOS on Apple silicon only (the patch builder links Mach-O arm64);
 //! elsewhere the session never arms it and every server save rebuilds.
-//! `IDEALYST_SERVER_HOT_PATCH=0` turns it off.
+//! Experimental: armed only under `idealyst dev --experimental-build`.
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Write};
@@ -41,9 +41,6 @@ use build_runtime_server::hotpatch::detour::{agent, PatchCrate, ServerPatchBuild
 use build_runtime_server::hotpatch::{replay, CapturedInvocation};
 use dev_events::{DevEvent, SERVER_TARGET};
 use dev_reload::{native::NativeDecision, Patched, Supersede};
-
-/// The environment variable that turns the tier off (`0`).
-pub(crate) const OFF_ENV: &str = "IDEALYST_SERVER_HOT_PATCH";
 
 /// Read by `idealyst run-linked`: the agent library to load into the
 /// server it execs.
@@ -132,10 +129,6 @@ impl ServerHot {
     pub(crate) fn arm(server_manifest: &Path, target_dir: &Path) -> Option<ServerHot> {
         if !supported() {
             crate::dlog!("dev server", "server hot patches need macOS on Apple silicon; server saves rebuild");
-            return None;
-        }
-        if std::env::var(OFF_ENV).is_ok_and(|v| v == "0") {
-            crate::dlog!("dev server", "{OFF_ENV}=0: server saves rebuild");
             return None;
         }
         match Self::try_arm(server_manifest, target_dir) {

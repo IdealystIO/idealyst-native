@@ -1184,12 +1184,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
-- **`idealyst dev` patches the running server in place** (`idealyst-cli`
+- **`idealyst dev --experimental-build` patches the running server in place** (`idealyst-cli`
   minor; `build-runtime-server` minor: `hotpatch::detour`, `link_patch`;
   `dev-overlay` minor: `native`; `runtime-macros-parse` minor:
   `detour_facts`; `dev-reload` minor: `start_watch_patching`, `Patched`,
   a public `Supersede`). In a full-stack session on macOS on Apple
-  silicon, a body edit in a crate the server is built from no longer
+  silicon under the flag, a body edit in a crate the server is built from no longer
   rebuilds and respawns the server: the session replays only the edited
   crates, links a patch, and an agent `idealyst run-linked` loads into
   the server redirects the running binary's functions to it (each
@@ -1201,8 +1201,9 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `async` blocks, `main`, const values and anything that fails on the way
   still rebuild and respawn, reported as `decided` / `patch_failed` for
   target `server`; a patch is a `patch_built`, and `build-metrics.jsonl`
-  records `hot patch: N function(s) redirected`. `IDEALYST_SERVER_HOT_PATCH=0`
-  turns it off. Docs: "The server is patched in place" in
+  records `hot patch: N function(s) redirected`. Experimental and off by
+  default: `--experimental-build` turns it on together with the web's
+  additive patches, and without it every server save rebuilds. Docs: "The server is patched in place" in
   `docs/hot-reload.md`.
 
 - **Robot: `load_url` and cookies** (`robot-relay` minor, but a

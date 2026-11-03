@@ -56,8 +56,9 @@ Three things differ from `--local` on the same project:
 The SERVER watcher still runs. A `#[server]` fn's signature is a
 contract between two binaries, and no jump table spans them — a server
 edit that moves a signature or a type rebuilds and restarts the server.
-A body edit the server's own tier can carry is patched into the running
-server instead ([The server is patched in place](#the-server-is-patched-in-place)).
+With `--experimental-build`, a body edit the server's own tier can carry
+is patched into the running server instead
+([The server is patched in place](#the-server-is-patched-in-place)).
 
 ### `#[server]` calls come from the sidecar
 
@@ -2268,6 +2269,10 @@ non-zero value means below-normal.
 
 ### The server is patched in place
 
+Experimental: `idealyst dev --experimental-build` turns it on (it does
+not need `--local`). Without the flag every server save rebuilds and
+respawns the server.
+
 A full-stack session's server is the app's own binary — an axum router,
 `#[server]` fns registered through `inventory`, middleware, background
 tasks — and nothing in it consults a jump table. So on macOS on Apple
@@ -2348,8 +2353,7 @@ recomputed. Request a rebuild when an edit only matters at startup.
 
 macOS on Apple silicon only. A project that configures its own cargo
 `runner` replaces `idealyst run-linked`, so its server never loads the
-agent and every server save rebuilds. `IDEALYST_SERVER_HOT_PATCH=0` turns
-the tier off.
+agent and every server save rebuilds.
 
 ### What the app is handed
 
@@ -2383,9 +2387,12 @@ is booted.
   patch bug.
 - `--split` on `dev --web --local` stands the web hot-patch tier down;
   body edits rebuild and reload.
-- `--experimental-build` on `dev --web --local` hot patches a save that
-  only adds items instead of rebuilding ([Adding items](#adding-items)).
-  Off by default.
+- `--experimental-build` turns on the experimental tiers, off by
+  default: on `dev --web --local` a save that only adds items is hot
+  patched instead of rebuilt ([Adding items](#adding-items)), and a
+  full-stack session on macOS on Apple silicon patches its running
+  server in place
+  ([The server is patched in place](#the-server-is-patched-in-place)).
 - `IDEALYST_HOTPATCH_NO_SEED=1` skips the background replays that warm
   the replay cache after each base build; `IDEALYST_HOTPATCH_SEED_JOBS=<n>`
   sets how many run at once (see

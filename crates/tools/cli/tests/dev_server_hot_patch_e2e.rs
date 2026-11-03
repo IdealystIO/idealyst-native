@@ -365,7 +365,7 @@ fn a_body_edit_patches_the_running_server_and_a_shape_edit_respawns_it() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_idealyst"))
         .current_dir(root.join("app"))
         .env("IDEALYST_TEST_DRIVER", "1")
-        .args(["dev", "--web", "--local", "--no-robot", "--no-headless-client"])
+        .args(["dev", "--web", "--local", "--experimental-build", "--no-robot", "--no-headless-client"])
         .args(["--port", &port.to_string()])
         .arg("--events-file")
         .arg(&events_path)
