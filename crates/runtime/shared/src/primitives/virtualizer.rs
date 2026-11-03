@@ -70,10 +70,12 @@
 //! - `Measured`: author provides an *estimate* per item; backend
 //!   measures the actual rendered size on mount and stores it.
 //!   Subsequent layout uses the measured value. If the item's
-//!   rendered size changes later (its content updated), the
-//!   backend's layout-observation primitive (ResizeObserver on web,
-//!   `layoutSubviews` on iOS, `OnLayoutChangeListener` on Android)
-//!   re-fires and refreshes the stored size.
+//!   rendered size changes later (its content updated), the backend
+//!   refreshes the stored size: web through a `ResizeObserver`, Android
+//!   through `OnLayoutChangeListener`, and the Taffy backends (iOS,
+//!   macOS, Linux, Windows) in their layout pass, which re-lays out and
+//!   re-measures (`LayoutTree::measure_main`) a mounted row whose subtree
+//!   changed and reports it through `set_measured_size`.
 
 use std::any::Any;
 use std::rc::Rc;

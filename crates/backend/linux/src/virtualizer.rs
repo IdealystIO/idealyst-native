@@ -31,14 +31,48 @@
 //! `release` disconnects those signals and drops the map entry, breaking
 //! the widget→signal→closure→state cycle.
 //!
-//! ## Item-size strategy (matches macOS / iOS Phase-1)
+//! ## Item-size strategy
 //!
-//! `ItemSize::Known` is authoritative. `ItemSize::Measured` is treated as
-//! `Known` using the author's estimate — the framework's measure pass
-//! doesn't reach into a detached cell subtree, the same core gap the
-//! Apple backends documented. `set_measured_size` is therefore not
-//! called; a measured list lays out from the estimate. Refining this
-//! needs a framework-core change to measure orphaned subtrees.
+//! Every pass reads each row's main-axis size from
+//! `VirtualizerCallbacks::item_size`. For `ItemSize::Known` that is the
+//! author's exact size and nothing is ever measured.
+//!
+//! For `ItemSize::Measured` (`callbacks.measure_sizes`) `item_size` starts
+//! as the author's estimate and is replaced by the row's real size once
+//! measured. When a row mounts — and again whenever the cross extent it was
+//! measured at changes — [`measure_cell`] asks Taffy for the row's
+//! max-content main size at the cell's cross size
+//! (`LayoutTree::measure_main`; a row root is a detached Taffy root, so the
+//! main layout pass never sizes it). A result more than
+//! [`MEASURE_EPSILON`] away from the size this pass used is reported via
+//! `set_measured_size`, which the vocabulary stores by item key, and
+//! [`resync`] runs the window again: offsets, the document's extent (the
+//! `Fixed`'s size request, i.e. the scroll range) and the visible range are
+//! all recomputed from the new `item_size`. Re-measuring a row at the size
+//! it now has returns the same value, so it reports nothing and the passes
+//! stop; each key reports at most once per cross extent.
+//!
+//! Measuring needs the backend borrowed; a pass that runs while it is held
+//! elsewhere leaves the row unmeasured and queues one idle re-pass
+//! ([`State::measure_retry_pending`]).
+//!
+//! ## Rows whose content changes after mount
+//!
+//! A reactive change inside a mounted row (a restyle, new text, a child
+//! added) dirties the row's Taffy subtree, but the main layout pass computes
+//! from the framework root and never reaches a detached row root, so the
+//! row's inner frames would stay stale until the next scroll. The main pass
+//! (`LinuxBackend::run_layout`, which the GTK host drives every frame) calls
+//! [`relayout_dirty_rows`] after its own compute: every mounted row whose
+//! root is dirty is laid out again at its cell's box, in Known and Measured
+//! lists alike, and the main pass then writes the fresh frames.
+//!
+//! In a Measured list that step first re-measures the row; a size more than
+//! [`MEASURE_EPSILON`] off its slot is queued and, from a glib idle (the
+//! main pass holds the backend borrowed, and `set_measured_size` plus the
+//! re-window must run outside it), reported and followed by a [`resync`],
+//! which respaces the row, every row after it, the document extent and the
+//! visible window. The row is laid out at its old box until then.
 //!
 //! ## Row stacking
 //!
@@ -75,7 +109,20 @@ struct MountedCell {
     /// `ZIndex`), mirrored from the backend so a restack needs no backend
     /// borrow. Read at mount, then updated by [`cell_z_changed`].
     z: f32,
+    /// The cross extent this row was last measured at (Measured lists
+    /// only). `None` until a measurement succeeds; a pass at a different
+    /// cross extent measures it again.
+    measured_cross: Option<f32>,
+    /// The `(w, h)` box the row was last laid out at, so the main layout
+    /// pass can re-lay a dirtied row without the slot math
+    /// ([`relayout_dirty_rows`]). `(0, 0)` until first laid out.
+    size: (f32, f32),
 }
+
+/// How far (px) a measured main size may sit from the size in use before
+/// it is reported. Absorbs float noise between Taffy's max-content pass and
+/// the stored value so a row at its measured size never re-reports.
+const MEASURE_EPSILON: f32 = 0.5;
 
 struct State {
     callbacks: VirtualizerCallbacks<LinuxNode>,
@@ -96,6 +143,13 @@ struct State {
     /// A deferred reload (see [`data_changed`]) is queued and has not run
     /// yet; further data changes in the same turn ride on it.
     reload_pending: bool,
+    /// A row could not be measured because the backend was borrowed; an
+    /// idle re-pass is queued to measure it (see [`measure_cell`]).
+    measure_retry_pending: bool,
+    /// Re-measured sizes of rows whose content changed after mount,
+    /// `(scope_id, size)`, waiting for the idle that reports them (see
+    /// [`relayout_dirty_rows`]). Non-empty ⇔ that idle is queued.
+    pending_reports: Vec<(u64, f32)>,
 }
 
 thread_local! {
@@ -196,6 +250,8 @@ pub(crate) fn create(
         handlers: Vec::new(),
         alive: true,
         reload_pending: false,
+        measure_retry_pending: false,
+        pending_reports: Vec::new(),
     }));
 
     // Re-window on scroll (value-changed) and on viewport/content resize
@@ -422,13 +478,43 @@ fn recycle_all(state: &Rc<RefCell<State>>) -> Vec<u64> {
     recycled
 }
 
-/// Recompute the visible window and reconcile mounted cells against it.
+/// Recompute the visible window and reconcile mounted cells against it,
+/// repeating while a pass reports a measured row size (Measured lists).
+///
+/// A reporting pass laid out offsets, the document extent and the window
+/// from sizes that no longer hold; the next pass redoes them with the
+/// updated `item_size`. Each pass that reports measured some row for the
+/// first time at this cross extent, and a row measured at its stored size
+/// reports nothing, so this ends within `item_count + 1` passes — the bound
+/// only turns a broken invariant into a loud failure instead of a hung UI.
 fn resync(state: &Rc<RefCell<State>>) {
-    // ---- Read geometry + item metrics under a short borrow ----
-    let (horizontal, overscan, main_gap, count, fixed, scrolled) = {
+    let max_passes = {
         let s = state.borrow();
         if !s.alive {
             return;
+        }
+        (s.callbacks.item_count)() + 1
+    };
+    let mut passes = 0usize;
+    while resync_pass(state) {
+        passes += 1;
+        if passes > max_passes {
+            if cfg!(debug_assertions) {
+                panic!("virtualizer: measured row sizes did not converge after {passes} passes");
+            }
+            break;
+        }
+    }
+}
+
+/// One windowing pass. Returns whether it reported a measured row size via
+/// `set_measured_size` (so `item_size` changed and the caller re-runs it).
+fn resync_pass(state: &Rc<RefCell<State>>) -> bool {
+    // ---- Read geometry + item metrics under a short borrow ----
+    let (horizontal, overscan, main_gap, count, fixed, scrolled, measure_sizes) = {
+        let s = state.borrow();
+        if !s.alive {
+            return false;
         }
         (
             s.horizontal,
@@ -437,6 +523,7 @@ fn resync(state: &Rc<RefCell<State>>) {
             (s.callbacks.item_count)(),
             s.fixed.clone(),
             s.scrolled.clone(),
+            s.callbacks.measure_sizes,
         )
     };
 
@@ -465,7 +552,7 @@ fn resync(state: &Rc<RefCell<State>>) {
 
     // Nothing measurable yet (pre-allocation) — wait for the next pass.
     if viewport <= 0.0 || cross <= 0.0 {
-        return;
+        return false;
     }
 
     let (first, last) = visible_range(&offsets, &sizes, scroll, viewport, overscan);
@@ -496,9 +583,23 @@ fn resync(state: &Rc<RefCell<State>>) {
 
     // ---- Mount cells that entered the window ----
     let mut mounted_any = false;
+    let mut reported = false;
     for idx in first..last {
-        let already = state.borrow().mounted.contains_key(&idx);
-        if already {
+        let already = state.borrow().mounted.get(&idx).map(|c| {
+            let stale = c.measured_cross.map_or(true, |m| (m - cross).abs() > MEASURE_EPSILON);
+            (c.node.id, c.scope_id, stale)
+        });
+        if let Some((node_id, scope_id, stale)) = already {
+            // A row measured at another cross extent (the list was resized)
+            // may wrap differently: measure it again.
+            if measure_sizes && stale {
+                let (measured_cross, did_report) =
+                    measure_cell(state, node_id, scope_id, horizontal, cross, sizes[idx]);
+                if let Some(c) = state.borrow_mut().mounted.get_mut(&idx) {
+                    c.measured_cross = measured_cross;
+                }
+                reported |= did_report;
+            }
             // Re-position (offsets can shift when earlier item sizes vary).
             reposition(state, idx, &offsets, &sizes, cross);
             continue;
@@ -517,6 +618,18 @@ fn resync(state: &Rc<RefCell<State>>) {
             .upgrade()
             .map_or(0.0, |b| b.borrow().node_z(node.id));
 
+        // Measure before the box layout below: `measure_main` leaves the
+        // subtree framed at its max-content size, and the box layout is what
+        // must stand at the end of the pass.
+        let measured_cross = if measure_sizes {
+            let (measured_cross, did_report) =
+                measure_cell(state, node.id, scope_id, horizontal, cross, sizes[idx]);
+            reported |= did_report;
+            measured_cross
+        } else {
+            None
+        };
+
         // Parent into the document + lay the cell subtree out.
         let (x, y, w, h) = cell_box(state, idx, &offsets, &sizes, cross);
         fixed.put(&node.widget, x as f64, y as f64);
@@ -525,12 +638,155 @@ fn resync(state: &Rc<RefCell<State>>) {
         state
             .borrow_mut()
             .mounted
-            .insert(idx, MountedCell { node, scope_id, z });
+            .insert(idx, MountedCell { node, scope_id, z, measured_cross, size: (w, h) });
         mounted_any = true;
     }
     if mounted_any {
         restack(state);
     }
+    reported
+}
+
+/// Measure a mounted row's main-axis size at the cross extent `cross` and,
+/// if it differs from `in_use` (the size this pass placed it with) by more
+/// than [`MEASURE_EPSILON`], report it through `set_measured_size`.
+///
+/// Returns `(measured_at, reported)`: the cross extent the row was measured
+/// at, or `None` when it could not be measured now — the backend was
+/// borrowed (a scroll/resize signal fired inside a layout pass), in which
+/// case one idle re-pass is queued to measure it.
+///
+/// `set_measured_size` only stores the size, so calling it here, inside
+/// the pass and with no `State` borrow held, is safe; the caller re-runs
+/// the window to apply it.
+fn measure_cell(
+    state: &Rc<RefCell<State>>,
+    node_id: u64,
+    scope_id: u64,
+    horizontal: bool,
+    cross: f32,
+    in_use: f32,
+) -> (Option<f32>, bool) {
+    let backend = state.borrow().backend.clone();
+    let Some(rc) = backend.upgrade() else { return (None, false) };
+    let measured = match rc.try_borrow_mut() {
+        Ok(mut b) => {
+            let Some(layout) = b.nodes.get(&node_id).map(|n| n.layout) else {
+                // Not a backend node: nothing to measure, now or later.
+                return (Some(cross), false);
+            };
+            // Same pre-pass step as every layout pass: a text area whose
+            // content changed must re-measure instead of serving its cache.
+            b.flush_text_area_dirty();
+            b.layout.measure_main(layout, horizontal, cross)
+        }
+        Err(_) => {
+            schedule_measure_retry(state);
+            return (None, false);
+        }
+    };
+    if (measured - in_use).abs() <= MEASURE_EPSILON {
+        return (Some(cross), false);
+    }
+    let report = state.borrow().callbacks.set_measured_size.clone();
+    (report)(scope_id, measured);
+    (Some(cross), true)
+}
+
+/// The main layout pass's step for virtualizer rows (see the module docs,
+/// "Rows whose content changes after mount"): lay out again, at its cell's
+/// box, every mounted row whose Taffy root is dirty, and in a Measured list
+/// queue a report for each whose re-measured size left its slot.
+///
+/// Runs inside `run_layout` with `b` mutably borrowed, so it touches only
+/// Taffy and this module's state — no framework callback, no `resync`.
+/// A virtualizer whose state is borrowed right now (a pass of its own is
+/// on the stack) is skipped; that pass lays its rows out itself.
+pub(crate) fn relayout_dirty_rows(b: &mut LinuxBackend) {
+    let states: Vec<Rc<RefCell<State>>> =
+        STATES.with(|m| m.borrow().values().cloned().collect());
+    for state in states {
+        let Ok(mut s) = state.try_borrow_mut() else { continue };
+        if !s.alive {
+            continue;
+        }
+        let (horizontal, measure_sizes) = (s.horizontal, s.callbacks.measure_sizes);
+        let mut reports = Vec::new();
+        for cell in s.mounted.values() {
+            let (w, h) = cell.size;
+            if w <= 0.0 || h <= 0.0 {
+                continue;
+            }
+            let Some(layout) = b.nodes.get(&cell.node.id).map(|n| n.layout) else {
+                continue;
+            };
+            if !b.layout.is_dirty(layout) {
+                continue;
+            }
+            if measure_sizes {
+                let (main, cross) = if horizontal { (w, h) } else { (h, w) };
+                let measured = b.layout.measure_main(layout, horizontal, cross);
+                if (measured - main).abs() > MEASURE_EPSILON {
+                    reports.push((cell.scope_id, measured));
+                }
+            }
+            // After `measure_main` too: it leaves the subtree framed at its
+            // max-content size, and the frame write that follows this step
+            // must see the box layout.
+            b.layout.compute(layout, w, h);
+        }
+        if reports.is_empty() {
+            continue;
+        }
+        let queue = s.pending_reports.is_empty();
+        s.pending_reports.extend(reports);
+        drop(s);
+        if queue {
+            let st = state.clone();
+            // `HIGH_IDLE`, like `data_changed`: ahead of GTK's next
+            // resize/redraw, so the respaced rows are what gets painted.
+            glib::idle_add_local_full(glib::Priority::HIGH_IDLE, move || {
+                report_remeasured(&st);
+                glib::ControlFlow::Break
+            });
+        }
+    }
+}
+
+/// The deferred half of [`relayout_dirty_rows`]: report the queued sizes,
+/// then re-window so offsets, extent and the visible range use them.
+fn report_remeasured(state: &Rc<RefCell<State>>) {
+    let (reports, report) = {
+        let mut s = state.borrow_mut();
+        let reports = std::mem::take(&mut s.pending_reports);
+        if !s.alive {
+            return;
+        }
+        (reports, s.callbacks.set_measured_size.clone())
+    };
+    // A row released since the step queued it is unknown to the vocabulary
+    // by now; it ignores that scope id.
+    for (scope_id, size) in reports {
+        (report)(scope_id, size);
+    }
+    resync(state);
+}
+
+/// Queue one idle [`resync`] to measure rows a pass could not (see
+/// [`measure_cell`]). Coalesced: rows left unmeasured meanwhile ride on it.
+fn schedule_measure_retry(state: &Rc<RefCell<State>>) {
+    {
+        let mut s = state.borrow_mut();
+        if s.measure_retry_pending {
+            return;
+        }
+        s.measure_retry_pending = true;
+    }
+    let st = state.clone();
+    glib::idle_add_local_once(move || {
+        st.borrow_mut().measure_retry_pending = false;
+        resync(&st);
+    });
 }
 
 /// Compute a cell's `(x, y, w, h)` box in the document from the axis.
@@ -568,7 +824,10 @@ fn reposition(
         .map(|c| c.node.widget.clone());
     let Some(widget) = widget else { return };
     state.borrow().fixed.move_(&widget, x as f64, y as f64);
-    let node = state.borrow().mounted.get(&idx).map(|c| c.node.clone());
+    let node = state.borrow_mut().mounted.get_mut(&idx).map(|c| {
+        c.size = (w, h);
+        c.node.clone()
+    });
     if let Some(node) = node {
         size_and_layout(state, &node, (x, y, w, h));
     }

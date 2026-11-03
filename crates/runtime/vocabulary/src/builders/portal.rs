@@ -138,10 +138,15 @@ impl OverlayBuilder {
     }
 
     /// Where the content sits in the viewport — the same on every backend:
-    /// `Top` / `Bottom` / `FullScreen` give it the full width at its natural
-    /// height (top / bottom / top edge); `Left` / `Right` keep its natural
+    /// `FullScreen` makes the content the whole viewport (so an
+    /// `absolute; inset: 0` child fills the screen, and the content takes
+    /// every tap — over a `Dismiss` backdrop, use `click_through` or a
+    /// scrim of your own); `Top` / `Bottom` give it the full width at its
+    /// natural height (top / bottom edge); `Left` / `Right` keep its natural
     /// size in the top corner; `Center` keeps its natural size (up to the
-    /// viewport width) in the middle. The table is on
+    /// viewport width) in the middle. An overlay with no children takes no
+    /// taps, so an empty `FullScreen` overlay over a `Dismiss` backdrop is a
+    /// click-away catcher. The table is on
     /// [`viewport_container_rules`](runtime_shared::primitives::portal::viewport_container_rules).
     pub fn placement(mut self, p: ViewportPlacement) -> Self {
         self.placement = p;
@@ -423,7 +428,13 @@ fn lower_overlay_portal(
     ref_fill: Option<Box<dyn FnOnce(PortalHandle)>>,
     click_through: bool,
 ) -> Element {
-    let content_pe = (!click_through).then_some(PointerEvents::Auto);
+    // An overlay with no children — every dismiss catcher
+    // (`overlay(vec![])` + a `Dismiss` backdrop) — has nothing to hit, and
+    // its content portal mounts over its backdrop's: an interactive
+    // wrapper would take the outside tap the backdrop exists for. That
+    // wrapper is the whole viewport under `FullScreen`, so it inherits the
+    // root's `none` instead.
+    let content_pe = (!click_through && !children.is_empty()).then_some(PointerEvents::Auto);
     let content = item(
         PrimCell::new(PortalPrim {
             target,
@@ -606,7 +617,8 @@ mod tests {
     /// overlay with no backdrop), while web's root is the content box.
     #[test]
     fn regression_the_portal_root_never_takes_hits_and_the_content_does() {
-        for el in [overlay().backdrop(BackdropMode::None).build(), overlay().build()] {
+        let body = || super::super::view().build();
+        for el in [overlay().backdrop(BackdropMode::None).child(body()).build(), overlay().child(body()).build()] {
             let (backdrop, content) = portals(&el);
             for portal in backdrop.into_iter().chain([content]) {
                 let prim = portal_prim_of(portal).take();
@@ -615,6 +627,20 @@ mod tests {
             let wrapper = &children_of(content)[0];
             assert_eq!(view_rules(wrapper).unwrap().pointer_events, Some(PointerEvents::Auto));
         }
+    }
+
+    /// Regression (every Select / Popover / Menu / DatePicker stopped
+    /// closing on an outside tap): a dismiss catcher is an EMPTY
+    /// `FullScreen` overlay over a `Dismiss` backdrop. `FullScreen` content
+    /// fills the viewport, and the content portal mounts over the
+    /// backdrop's, so an interactive wrapper took every tap. An empty
+    /// overlay's wrapper inherits the root's `none`.
+    #[test]
+    fn regression_an_empty_fullscreen_catcher_leaves_the_tap_to_its_backdrop() {
+        let el = overlay().placement(ViewportPlacement::FullScreen).backdrop(BackdropMode::Dismiss).on_dismiss(|| {}).build();
+        let (backdrop, content) = portals(&el);
+        assert!(backdrop.is_some(), "the backdrop takes the tap");
+        assert!(view_rules(&children_of(content)[0]).is_none(), "the empty wrapper takes none");
     }
 
     // Regression (empty ToastHost swallowed clicks): a `click_through`
@@ -689,6 +715,7 @@ mod tests {
     fn a_content_style_keeps_its_rules_and_gains_pointer_events() {
         let el = overlay()
             .backdrop(BackdropMode::None)
+            .child(super::super::view().build())
             .style(StyleProp::Static(Rc::new(StyleRules { opacity: Some(0.2.into()), ..Default::default() })))
             .build();
         let rules = view_rules(&children_of(portals(&el).1)[0]).unwrap();

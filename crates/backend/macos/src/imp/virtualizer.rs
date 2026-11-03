@@ -17,14 +17,33 @@
 //!   hosts a single framework view as its `view`'s subview. On
 //!   reuse / display-end we release the per-item Scope.
 //!
-//! ## Item-size strategy (matches iOS Phase-1)
+//! ## Item-size strategy
 //!
-//! Supports `ItemSize::Known` — `callbacks.item_size(idx)` gives the
-//! main-axis size; the cross-axis is the collection view's bounds
-//! minus content insets. `ItemSize::Measured` is parked on the same
-//! framework-core gap iOS hit: items live outside Taffy's tree, so
-//! the framework's measure pass doesn't reach into the hosted
-//! subtree. See iOS virtualizer.rs's docstring for the full reasoning.
+//! `callbacks.item_size(idx)` gives every cell's main-axis size; the
+//! cross axis is the collection view's bounds divided into lanes.
+//!
+//! Each row is a detached Taffy root laid out at its cell's size
+//! ([`layout_row_in`]) on two paths: when the cell is sized or reused
+//! (`setFrameSize:` / mount), and from the backend's layout pass for any
+//! mounted row whose Taffy root is dirty
+//! ([`super::MacosBackend::relayout_dirty_virtualizer_rows`]) — so a reactive
+//! change inside a mounted row reaches its views.
+//!
+//! - `ItemSize::Known` (`measure_sizes == false`): that size is final.
+//!   Rows are never measured.
+//! - `ItemSize::Measured` (`measure_sizes == true`): `item_size` starts
+//!   as the estimate. Every time a row is laid out (both paths) its
+//!   natural main-axis size is measured at the cell's cross size
+//!   (`LayoutTree::measure_main` — `compute` alone would just force the
+//!   row into the estimated box). A deferred drain reports each size that
+//!   differs from `item_size(idx)` by more than [`MEASURE_EPSILON`]
+//!   through `set_measured_size` (the vocabulary keys it by item key, so
+//!   it survives recycling and reorders), then one flow-layout
+//!   invalidation re-queries every
+//!   `sizeForItemAtIndexPath`: the row's slot, the offsets after it,
+//!   the content size and the visible range all follow. The re-layout
+//!   measures the same size again, `item_size` already returns it, and
+//!   nothing more is reported — that is what makes it converge.
 //!
 //! ## Why not just `NSTableView`?
 //!
@@ -65,15 +84,195 @@ struct ItemMount {
     child: Retained<NSView>,
 }
 
-/// Unmount hygiene: clear the host container's `hosted_child_key` so a
-/// later `setFrameSize:` doesn't relayout a subtree that's being torn
-/// down. Best-effort — a stale key is already benign (the layout pass
-/// no-ops on unknown keys), this just avoids the wasted call.
+/// Unmount hygiene: clear the host container's `hosted_child_key` (and
+/// its measuring slot) so a later `setFrameSize:` doesn't relayout or
+/// measure a subtree that's being torn down — a released row must not
+/// report a size for a scope that no longer exists.
 fn clear_host_key(child: &NSView) {
     let superview: Option<Retained<NSView>> = unsafe { child.superview() };
     if let Some(sv) = superview {
         if let Some(host) = VirtualizerItemView::from_container(&sv) {
             host.ivars().hosted_child_key.set(0);
+            *host.ivars().measure.borrow_mut() = None;
+        }
+    }
+}
+
+// =========================================================================
+// Measured item sizes (`ItemSize::Measured`). See the module docs.
+// =========================================================================
+
+/// A measured size within this many points of the size the list already
+/// uses is not reported — sub-point float noise must not re-run the flow
+/// layout (and re-measure, and re-report) forever.
+const MEASURE_EPSILON: f32 = 0.5;
+
+/// Per-list measuring state, shared by the data source and every item
+/// view currently hosting one of its rows. Only built when
+/// `callbacks.measure_sizes` — a Known list has none, so it never
+/// measures.
+struct RowMeasure {
+    horizontal: bool,
+    item_size: Rc<dyn Fn(usize) -> f32>,
+    set_measured_size: Rc<dyn Fn(u64, f32)>,
+    /// Weak: item views (owned by the collection view) hold this struct,
+    /// so a strong reference would be a retain cycle.
+    collection_view: objc2::rc::Weak<NSView>,
+    /// Measurements waiting for the next drain: `(scope_id, idx, size)`.
+    pending: RefCell<Vec<(u64, usize, f32)>>,
+    /// A drain is scheduled and has not run yet.
+    relayout_queued: Cell<bool>,
+    /// The data source's `alive` flag: false after `release`.
+    alive: Rc<RefCell<bool>>,
+}
+
+impl RowMeasure {
+    /// Queue row `idx`'s measured main-axis size. One deferred drain per
+    /// turn, however many rows measured: rows are measured with the
+    /// backend borrowed (inside its layout pass, or a cell's
+    /// `setFrameSize:` while the collection view applies layout
+    /// attributes), where neither calling framework closures nor
+    /// invalidating the flow layout mid-pass is safe.
+    fn queue_report(self: &Rc<Self>, scope_id: u64, idx: usize, measured: f32) {
+        self.pending.borrow_mut().push((scope_id, idx, measured));
+        if self.relayout_queued.replace(true) {
+            return;
+        }
+        let this = self.clone();
+        runtime_shared::schedule_microtask(move || this.drain());
+    }
+
+    /// Report every queued size that differs from the size the list uses
+    /// for its row, then invalidate the flow layout once if any did.
+    fn drain(&self) {
+        self.relayout_queued.set(false);
+        let pending = std::mem::take(&mut *self.pending.borrow_mut());
+        if !*self.alive.borrow() {
+            return;
+        }
+        let mut changed = false;
+        for (scope_id, idx, measured) in pending {
+            if (measured - (self.item_size)(idx)).abs() <= MEASURE_EPSILON {
+                continue;
+            }
+            // Stored by item key on the vocabulary side; a scope released
+            // since the measurement is ignored there.
+            (self.set_measured_size)(scope_id, measured);
+            changed = true;
+        }
+        if changed {
+            if let Some(cv) = self.collection_view.load() {
+                invalidate_item_sizes(&cv);
+            }
+        }
+    }
+}
+
+/// What an item view needs to measure the row it hosts.
+#[derive(Clone)]
+struct RowSlot {
+    list: Rc<RowMeasure>,
+    scope_id: u64,
+    idx: usize,
+}
+
+/// Invalidate `cv`'s flow layout so it re-queries
+/// `sizeForItemAtIndexPath` for every item. The context's
+/// `invalidateFlowLayoutDelegateMetrics` is required: a bare
+/// `invalidateLayout` re-positions the flow layout's CACHED item sizes
+/// instead of asking for new ones.
+fn invalidate_item_sizes(cv: &NSView) {
+    let layout: *mut AnyObject = unsafe { msg_send![cv, collectionViewLayout] };
+    if layout.is_null() {
+        return;
+    }
+    if let Some(ctx_cls) = AnyClass::get("NSCollectionViewFlowLayoutInvalidationContext") {
+        unsafe {
+            let ctx: *mut AnyObject = msg_send![ctx_cls, alloc];
+            let ctx: *mut AnyObject = msg_send![ctx, init];
+            let _: () = msg_send![ctx, setInvalidateFlowLayoutDelegateMetrics: true];
+            let _: () = msg_send![layout, invalidateLayoutWithContext: ctx];
+            let _: () = msg_send![ctx, release];
+        }
+    }
+}
+
+impl super::MacosBackend {
+    /// The natural main-axis size of the detached root registered under
+    /// `root_key` at cross size `cross` (see `LayoutTree::measure_main`).
+    /// `None` when the key isn't registered. Leaves measuring frames
+    /// behind — `layout_detached_root` must run after it.
+    fn measure_detached_main(&mut self, root_key: usize, horizontal: bool, cross: f32) -> Option<f32> {
+        let (_, node) = self.view_to_layout.get(&root_key)?;
+        let node = *node;
+        Some(self.layout.measure_main(node, horizontal, cross))
+    }
+}
+
+/// Lay the row hosted by `host` out at the cell size `size` and, in a
+/// Measured list, measure it first and queue its natural size.
+fn layout_row_in(b: &mut super::MacosBackend, host: &VirtualizerItemView, size: CGSize) {
+    let key = host.ivars().hosted_child_key.get();
+    if key == 0 || size.width <= 0.0 || size.height <= 0.0 {
+        return;
+    }
+    let slot = host.ivars().measure.borrow().clone();
+    let mut measured = None;
+    if let Some(slot) = &slot {
+        let cross = if slot.list.horizontal { size.height } else { size.width };
+        measured = b.measure_detached_main(key, slot.list.horizontal, cross as f32);
+    }
+    // After the measurement: it leaves frames for a content-sized box
+    // behind, and the cell's box is the one that renders.
+    b.layout_detached_root(key, size);
+    if let (Some(slot), Some(measured)) = (slot, measured) {
+        slot.list.queue_report(slot.scope_id, slot.idx, measured);
+    }
+}
+
+/// [`layout_row_in`] through the global backend handle — for AppKit
+/// callbacks (`setFrameSize:`, the data source's mount). `try_borrow_mut`
+/// inside: silently skipped if the backend is mid-pass; that pass's
+/// [`super::MacosBackend::relayout_dirty_virtualizer_rows`] picks the row up.
+fn layout_hosted_row(host: &VirtualizerItemView, size: CGSize) {
+    super::with_global_backend(|b| layout_row_in(b, host, size));
+}
+
+impl super::MacosBackend {
+    /// Lay out again every mounted row whose Taffy root is dirty, at its
+    /// cell's size, re-measuring it in a Measured list. Called from the
+    /// backend's layout pass: rows are detached Taffy roots the host-root
+    /// compute never reaches, so without this a reactive change inside a
+    /// mounted row (a restyle, a text change, a child appearing) left the
+    /// row's views at their mount-time frames and its slot at its
+    /// mount-time size. Clean rows are skipped, so a pass that touched no
+    /// row costs one dirty check per mounted row.
+    pub(crate) fn relayout_dirty_virtualizer_rows(&mut self) {
+        let mut cells: Vec<Retained<NSView>> = Vec::new();
+        for instance in self.virtualizer_instances.values() {
+            let ivars = instance.data_source.ivars();
+            if !*ivars.alive.borrow() {
+                continue;
+            }
+            for mount in ivars.mounts.borrow().values() {
+                if let Some(cell) = unsafe { mount.child.superview() } {
+                    cells.push(cell);
+                }
+            }
+        }
+        for cell in cells {
+            let Some(host) = VirtualizerItemView::from_container(&cell) else {
+                continue;
+            };
+            let key = host.ivars().hosted_child_key.get();
+            let Some((_, node)) = self.view_to_layout.get(&key) else {
+                continue;
+            };
+            if !self.layout.is_dirty(*node) {
+                continue;
+            }
+            let bounds: CGRect = unsafe { msg_send![&cell, bounds] };
+            layout_row_in(self, host, bounds.size);
         }
     }
 }
@@ -105,6 +304,9 @@ pub(crate) struct VirtualizerDataSourceIvars {
     /// against the live collection-view bounds, so a window resize
     /// re-lanes the grid.
     layout: VirtualLayout,
+    /// Measuring state for an `ItemSize::Measured` list; `None` for a
+    /// Known list, which never measures. See the module docs.
+    measure: Option<Rc<RowMeasure>>,
 }
 
 declare_class!(
@@ -300,11 +502,12 @@ impl VirtualizerDataSource {
         let child_key = child_view as *const NSView as usize;
         if let Some(host) = VirtualizerItemView::from_container(&container) {
             host.ivars().hosted_child_key.set(child_key);
-        }
-        if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
-            super::with_global_backend(|b| {
-                b.layout_detached_root(child_key, bounds.size)
-            });
+            *host.ivars().measure.borrow_mut() = self
+                .ivars()
+                .measure
+                .as_ref()
+                .map(|list| RowSlot { list: list.clone(), scope_id, idx });
+            layout_hosted_row(host, bounds.size);
         }
 
         let child_retained: Retained<NSView> = unsafe {
@@ -323,13 +526,27 @@ impl VirtualizerDataSource {
         mtm: MainThreadMarker,
         callbacks: VirtualizerCallbacks<MacosNode>,
         layout: VirtualLayout,
+        collection_view: &NSView,
     ) -> Retained<Self> {
+        let alive = Rc::new(RefCell::new(true));
+        let measure = callbacks.measure_sizes.then(|| {
+            Rc::new(RowMeasure {
+                horizontal: layout.axis.is_horizontal(),
+                item_size: callbacks.item_size.clone(),
+                set_measured_size: callbacks.set_measured_size.clone(),
+                collection_view: objc2::rc::Weak::new(collection_view),
+                pending: RefCell::new(Vec::new()),
+                relayout_queued: Cell::new(false),
+                alive: alive.clone(),
+            })
+        });
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(VirtualizerDataSourceIvars {
             callbacks: Rc::new(RefCell::new(Some(callbacks))),
             mounts: Rc::new(RefCell::new(HashMap::new())),
-            alive: Rc::new(RefCell::new(true)),
+            alive,
             layout,
+            measure,
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -418,6 +635,9 @@ pub(crate) struct VirtualizerItemViewIvars {
     /// `item_for_index_path_impl`, cleared on unmount. A stale key is
     /// benign — `layout_detached_root` no-ops when the key is gone.
     hosted_child_key: Cell<usize>,
+    /// The hosted row's measuring slot in a Measured list; `None` in a
+    /// Known list and while nothing is mounted.
+    measure: RefCell<Option<RowSlot>>,
 }
 
 declare_class!(
@@ -444,13 +664,7 @@ declare_class!(
         #[method(setFrameSize:)]
         fn set_frame_size(&self, size: CGSize) {
             let _: () = unsafe { msg_send![super(self), setFrameSize: size] };
-            let key = self.ivars().hosted_child_key.get();
-            if key != 0 && size.width > 0.0 && size.height > 0.0 {
-                // `try_borrow_mut` inside — silently skipped if the
-                // backend is mid-pass; the pass that resized us will
-                // schedule/settle a consistent state on its next turn.
-                super::with_global_backend(|b| b.layout_detached_root(key, size));
-            }
+            layout_hosted_row(self, size);
         }
     }
 );
@@ -602,28 +816,8 @@ declare_class!(
                 // Change:` only fires for clip-driven visible-rect
                 // changes), so invalidate explicitly — and with a
                 // context that sets `invalidateFlowLayoutDelegateMetrics`,
-                // because a bare `invalidateLayout` re-positions the
-                // CACHED item sizes instead of re-querying
-                // `sizeForItemAtIndexPath` at the new width.
-                let layout: *mut AnyObject =
-                    unsafe { msg_send![doc, collectionViewLayout] };
-                if !layout.is_null() {
-                    if let Some(ctx_cls) =
-                        AnyClass::get("NSCollectionViewFlowLayoutInvalidationContext")
-                    {
-                        unsafe {
-                            let ctx: *mut AnyObject = msg_send![ctx_cls, alloc];
-                            let ctx: *mut AnyObject = msg_send![ctx, init];
-                            let _: () = msg_send![
-                                ctx,
-                                setInvalidateFlowLayoutDelegateMetrics: true
-                            ];
-                            let _: () =
-                                msg_send![layout, invalidateLayoutWithContext: ctx];
-                            let _: () = msg_send![ctx, release];
-                        }
-                    }
-                }
+                // so the item sizes are re-queried at the new width.
+                invalidate_item_sizes(unsafe { &*doc });
             }
         }
     }
@@ -644,6 +838,7 @@ impl VirtualizerItemView {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(VirtualizerItemViewIvars {
             hosted_child_key: Cell::new(0),
+            measure: RefCell::new(None),
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -833,7 +1028,7 @@ pub(crate) fn create(
     // Data source + delegate. NSCollectionView holds these weakly,
     // matching UIKit — we retain via the side-state `instances`
     // map until `release` fires.
-    let data_source = VirtualizerDataSource::new(mtm, callbacks, virt_layout);
+    let data_source = VirtualizerDataSource::new(mtm, callbacks, virt_layout, &cv);
     let _: () = unsafe { msg_send![&cv, setDataSource: &*data_source] };
     let _: () = unsafe { msg_send![&cv, setDelegate: &*data_source] };
 
@@ -948,7 +1143,8 @@ mod tests {
     //! recycling and pixel output are covered by running
     //! `websites/website`'s Primitives page (robot-verified); these
     //! tests pin the class-shape and invalidation properties that
-    //! caused the actual bugs.
+    //! caused the actual bugs. Measured item sizes run against a real
+    //! window in `tests/virtualizer_measured.rs`.
     use super::*;
     use runtime_shared::{Axis, Lanes, VirtualLayout, VirtualizerCallbacks};
 

@@ -11,7 +11,7 @@
 
 use runtime_layout::LayoutTree;
 use runtime_shared::primitives::portal::{viewport_container_rules, ViewportPlacement};
-use runtime_shared::{Length, PointerEvents, StyleRules};
+use runtime_shared::{Length, Position, PointerEvents, StyleRules};
 
 const VIEW_W: f32 = 400.0;
 const VIEW_H: f32 = 300.0;
@@ -62,8 +62,9 @@ fn web_box(placement: ViewportPlacement) -> (f32, f32, f32, f32) {
         ViewportPlacement::Left => (0.0, 0.0, CONTENT_W, CONTENT_H),
         // `top: 0; bottom: 0; right: 0` — same, against the right edge.
         ViewportPlacement::Right => (VIEW_W - CONTENT_W, 0.0, CONTENT_W, CONTENT_H),
-        // `inset: 0` — full width, natural height, top.
-        ViewportPlacement::FullScreen => (0.0, 0.0, VIEW_W, CONTENT_H),
+        // `inset: 0; display: grid; grid-template-columns: 1fr` — the
+        // grid stretches its one item over the whole viewport.
+        ViewportPlacement::FullScreen => (0.0, 0.0, VIEW_W, VIEW_H),
         // centered by translate, natural size.
         ViewportPlacement::Center => (
             (VIEW_W - CONTENT_W) / 2.0,
@@ -113,4 +114,37 @@ fn a_portal_style_layered_over_the_placement_keeps_it() {
             "{placement:?}: the click-through style must not move the content",
         );
     }
+}
+
+/// REGRESSION (CrewForge side drawer on iOS): a `FullScreen` overlay whose
+/// content holds only `position: absolute; inset: 0` layers (scrim, panel)
+/// drew nothing on native. Its content box had natural height — 0, since
+/// absolute children take no space — and Taffy pins an absolute child to
+/// its parent, so the panel was 402×0; on web the same panel pinned to the
+/// fixed portal root and filled the window. The content box now fills the
+/// viewport, so the layer does on every backend.
+#[test]
+fn regression_an_absolute_layer_in_a_fullscreen_overlay_fills_the_viewport() {
+    let mut tree = LayoutTree::new();
+    let container = tree.new_node();
+    tree.set_style(container, &viewport_container_rules(ViewportPlacement::FullScreen));
+    let content = tree.new_node();
+    tree.set_style(content, &StyleRules::default());
+    let panel = tree.new_node();
+    tree.set_style(
+        panel,
+        &StyleRules {
+            position: Some(Position::Absolute),
+            top: Some(Length::Px(0.0).into()),
+            right: Some(Length::Px(0.0).into()),
+            bottom: Some(Length::Px(0.0).into()),
+            left: Some(Length::Px(0.0).into()),
+            ..Default::default()
+        },
+    );
+    tree.add_child(content, panel);
+    tree.add_child(container, content);
+    tree.compute(container, VIEW_W, VIEW_H);
+    let f = tree.frame_of(panel);
+    assert_eq!((f.x, f.y, f.width, f.height), (0.0, 0.0, VIEW_W, VIEW_H));
 }

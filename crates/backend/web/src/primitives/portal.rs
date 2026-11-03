@@ -333,7 +333,10 @@ fn viewport_placement_styles(placement: ViewportPlacement) -> &'static str {
         ViewportPlacement::Bottom => "bottom: 0; left: 0; right: 0;",
         ViewportPlacement::Left => "top: 0; bottom: 0; left: 0;",
         ViewportPlacement::Right => "top: 0; bottom: 0; right: 0;",
-        ViewportPlacement::FullScreen => "inset: 0;",
+        // A one-column grid stretches its content over the whole root —
+        // the same box the native containers give it (see the table on
+        // `viewport_container_rules`).
+        ViewportPlacement::FullScreen => "inset: 0; display: grid; grid-template-columns: 1fr;",
     }
 }
 
@@ -858,5 +861,46 @@ mod tests {
         assert_eq!(style.get_property_value("top").unwrap_or_default(), "");
 
         el.remove();
+    }
+
+    /// A `FullScreen` portal's content box is the whole viewport, as on the
+    /// native backends (`viewport_container_rules`): an unsized content
+    /// wrapper with a flow child and an `absolute; inset: 0` layer fills
+    /// it. Before, the wrapper had natural height — the absolute layer
+    /// still filled the window here (it pinned to the fixed root) while it
+    /// drew 0pt tall on native, and the flow child's box was not the
+    /// screen.
+    #[wasm_bindgen_test]
+    fn a_fullscreen_portals_content_fills_the_viewport() {
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let div = || -> web_glue::dom::HtmlElement { doc.create_element("div").unwrap().dyn_into().unwrap() };
+        let root = div();
+        root.set_attribute(
+            "style",
+            &format!("{} {}", PORTAL_ROOT_BASE_STYLE, viewport_placement_styles(ViewportPlacement::FullScreen)),
+        )
+        .unwrap();
+        let content = div();
+        let line = div();
+        line.set_attribute("style", "height: 20px;").unwrap();
+        let layer = div();
+        layer.set_attribute("style", "position: absolute; inset: 0;").unwrap();
+        content.append_child(&line).unwrap();
+        content.append_child(&layer).unwrap();
+        root.append_child(&content).unwrap();
+        doc.body().unwrap().append_child(&root).unwrap();
+
+        let box_of = |el: &web_glue::dom::HtmlElement| {
+            let r = el.get_bounding_client_rect();
+            (r.x() as f32, r.y() as f32, r.width() as f32, r.height() as f32)
+        };
+        // The root's box, not `innerWidth`/`innerHeight`: `inset: 0` spans
+        // the viewport less any page scrollbar, which `inner*` includes.
+        let viewport = box_of(&root);
+        assert!(viewport.3 > 100.0, "the root spans the viewport: {viewport:?}");
+        assert_eq!(box_of(&content), viewport, "the content box is the viewport");
+        assert_eq!(box_of(&layer), viewport, "an inset-0 layer fills it");
+        assert_eq!(box_of(&line).3, 20.0, "flow content keeps its own height, at the top");
+        root.remove();
     }
 }

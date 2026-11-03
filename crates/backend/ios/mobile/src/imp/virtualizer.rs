@@ -32,21 +32,18 @@
 //!
 //! ## Item-size strategy
 //!
-//! Supports `ItemSize::Known` — the data source returns
-//! `callbacks.item_size(idx)` as the cell's main-axis size (height in
-//! vertical mode, width in horizontal mode). The cross-axis dimension
-//! is filled from the collection view's bounds minus content inset.
+//! `ItemSize::Known`: the data source returns `callbacks.item_size(idx)`
+//! as the cell's main-axis size (height in vertical mode, width in
+//! horizontal mode); the cross axis is the collection view's bounds minus
+//! content inset (divided by the lane count for a grid).
 //!
-//! `ItemSize::Measured` is still parked, but the blocker now is a
-//! framework-core gap rather than an iOS gap: cells live outside the
-//! framework's Taffy layout tree (UICollectionViewLayout owns cell
-//! sizing), so the hosted subtree never gets a Taffy measure pass
-//! and has no intrinsic-size we can read back via
-//! `systemLayoutSizeFittingSize:`. Implementing this needs the
-//! framework to expose a measure-only pass over a detached subtree;
-//! once that lands, the cell can override
-//! `preferredLayoutAttributesFittingAttributes:` to surface the
-//! measured size and fire `callbacks.set_measured_size`.
+//! `ItemSize::Measured`: the same, with `item_size(idx)` starting at the
+//! author's estimate and replaced by each row's rendered size. The hosted
+//! row is a detached Taffy root that the layout pass lays out against its
+//! cell's `contentView` bounds and, for a Measured list, measures there
+//! first (`LayoutTree::measure_main`); a size its cell does not have is
+//! reported through `callbacks.set_measured_size` and the collection
+//! view's layout is invalidated. See "Row boxes and measurement" below.
 //!
 //! ## Sections
 //!
@@ -119,11 +116,101 @@ struct CellMount {
 /// view is being released under a live borrow and its subtree is
 /// unregistered by the parent's own `clear_children`.
 fn retire_mount(mount: &CellMount, release: Option<&Rc<dyn Fn(u64)>>) {
+    ROWS.with(|r| r.borrow_mut().remove(&view_key(&mount.child)));
     crate::imp::with_backend(|b| b.unregister_subtree(&mount.child));
     unsafe { mount.child.removeFromSuperview() };
     if let Some(release) = release {
         (release)(mount.scope_id);
     }
+}
+
+// =========================================================================
+// Row boxes and measurement.
+//
+// A mounted row is a Taffy ROOT (it is built detached and hosted in a
+// cell's `contentView`, outside the framework tree). The layout pass
+// computes every root against a box; a row's box is its cell's
+// `contentView` bounds — the cross extent UIKit gave the cell (the list's
+// width less its insets) by the main extent `sizeForItemAt` returned.
+// Computed against the viewport instead, every row was laid out
+// window-wide: in a list padded 16pt each side a card was 402pt in a
+// 370pt cell, and its right 32pt — where its actions menu sits — was off
+// screen.
+//
+// A row of an `ItemSize::Measured` list is also MEASURED in that pass
+// (`LayoutTree::measure_main` at the cell's cross extent). A row whose
+// content needs a different main extent than its cell reports it through
+// `set_measured_size` — the vocabulary keeps it by item key, so
+// `item_size(idx)` (what `sizeForItemAt` reads) returns it from then on —
+// and the collection view's layout is invalidated so its cells take the
+// new sizes. Without this the list spaced rows by the author's estimate
+// forever: 132pt-estimated cards that were 200pt tall overlapped the next
+// card by 58pt.
+// =========================================================================
+
+/// What the layout pass needs about a mounted row.
+struct Row {
+    scope_id: u64,
+    /// `Some` for a row of an `ItemSize::Measured` list.
+    measure: Option<RowMeasure>,
+}
+
+#[derive(Clone)]
+struct RowMeasure {
+    report: Rc<dyn Fn(u64, f32)>,
+    horizontal: bool,
+    /// The collection view, to invalidate after a report.
+    list: Retained<UIView>,
+}
+
+thread_local! {
+    /// Mounted rows by their root view's key. An entry lives exactly as
+    /// long as the row is hosted (inserted in `cell_for_item_impl`,
+    /// removed in `retire_mount`).
+    static ROWS: RefCell<HashMap<usize, Row>> = RefCell::new(HashMap::new());
+}
+
+fn view_key(view: &UIView) -> usize {
+    view as *const UIView as usize
+}
+
+/// The box a mounted row is laid out against: its cell's `contentView`
+/// bounds. `None` for a view that is not a hosted row, or a cell UIKit
+/// has not sized yet.
+pub(crate) fn row_box(key: usize, view: &UIView) -> Option<(f32, f32)> {
+    if !ROWS.with(|r| r.borrow().contains_key(&key)) {
+        return None;
+    }
+    let content: Option<Retained<UIView>> = unsafe { msg_send_id![view, superview] };
+    let bounds: CGRect = unsafe { msg_send![&content?, bounds] };
+    let (w, h) = (bounds.size.width as f32, bounds.size.height as f32);
+    (w > 0.0 && h > 0.0).then_some((w, h))
+}
+
+/// A row the layout pass must measure: `(scope id, how to report,
+/// horizontal, the list)`. `None` unless the row's list is `Measured`.
+pub(crate) fn measured_row(key: usize) -> Option<(u64, Rc<dyn Fn(u64, f32)>, bool, Retained<UIView>)> {
+    ROWS.with(|r| {
+        let rows = r.borrow();
+        let row = rows.get(&key)?;
+        let m = row.measure.as_ref()?;
+        Some((row.scope_id, m.report.clone(), m.horizontal, m.list.clone()))
+    })
+}
+
+/// Re-query every item size after a measured size changed: UIKit then
+/// resizes the affected cells (and moves the ones after them), and the
+/// next layout pass lays their rows out at the new boxes.
+///
+/// Called from a microtask, never inside the layout pass: applying the
+/// new layout can dequeue cells for rows that just scrolled into range,
+/// and mounting a row borrows the backend the pass is holding.
+pub(crate) fn relayout_measured(list: &UIView) {
+    let layout: *mut objc2::runtime::AnyObject = unsafe { msg_send![list, collectionViewLayout] };
+    if !layout.is_null() {
+        let _: () = unsafe { msg_send![layout, invalidateLayout] };
+    }
+    let _: () = unsafe { msg_send![list, layoutIfNeeded] };
 }
 
 // =========================================================================
@@ -606,6 +693,17 @@ impl VirtualizerDataSource {
         };
         let (node, scope_id) = (mount)(idx);
         let child_view = node.as_view();
+        let measure = {
+            let cb = self.ivars().callbacks.borrow();
+            cb.as_ref().filter(|c| c.measure_sizes).map(|c| RowMeasure {
+                report: c.set_measured_size.clone(),
+                horizontal: self.ivars().layout.axis.is_horizontal(),
+                // SAFETY: `cv` is the live collection view UIKit asked for
+                // this cell; retained for as long as the row is hosted.
+                list: unsafe { Retained::retain(cv as *const NSObject as *mut UIView) }.expect("collection view"),
+            })
+        };
+        ROWS.with(|r| r.borrow_mut().insert(view_key(child_view), Row { scope_id, measure }));
 
         // Pin the new child inside the cell's contentView so it fills
         // the available cell bounds. Autoresizing-mask path (not Auto

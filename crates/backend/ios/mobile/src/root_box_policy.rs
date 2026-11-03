@@ -11,7 +11,7 @@
 //!
 //! # Why a root is not always computed against the viewport
 //!
-//! A root is a view with no Taffy PARENT. Three kinds exist:
+//! A root is a view with no Taffy PARENT. Four kinds exist:
 //!
 //! - **The framework root**, pinned to the host view. Its box is the
 //!   viewport.
@@ -21,6 +21,11 @@
 //!   frame the engine had set — every cell stacked in one column at the
 //!   origin. The cell's children are ordinary entries in the apply loop
 //!   and keep their frames, which are relative to the cell.
+//! - **A mounted `flat_list` row**, hosted in a `UICollectionViewCell`'s
+//!   `contentView`. Its box is the content view's bounds and UIKit owns
+//!   its frame (the autoresizing mask), so it takes the same arm as a grid
+//!   cell. Computed against the viewport, every row was window-wide: a
+//!   card in a list padded 16pt each side was 402pt in a 370pt cell.
 //! - **A screen mounted in a `UIViewController`** (`mount_screen_in_vc`:
 //!   stack pushes, tab and drawer screens, modals). Auto Layout pins it
 //!   to the controller's view, which UIKit sizes to the navigator's
@@ -42,8 +47,9 @@ pub(crate) struct RootPass {
     pub engine_owns_frame: bool,
 }
 
-/// `cell_box` is `virtual_grid::cell_box(view_key)` — `Some` only for a
-/// mounted grid cell's root view. `container_box` is the bounds of the
+/// `cell_box` is the box of a root a cell engine places — a mounted
+/// `virtual_grid` cell (`virtual_grid::cell_box`) or a `flat_list` row
+/// (`virtualizer::row_box`); `None` for every other root. `container_box` is the bounds of the
 /// view controller view the root is pinned into — `Some` only for a
 /// VC-mounted screen. `viewport` is the host bounds every other root is
 /// computed against.

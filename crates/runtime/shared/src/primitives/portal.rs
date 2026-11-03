@@ -175,25 +175,35 @@ impl Default for ViewportPlacement {
 }
 
 /// Layout rules for a native backend's viewport-portal CONTAINER: a
-/// full-viewport flex column whose justify/align put the content child
-/// where the web backend puts it. Every Taffy backend (iOS, macOS,
-/// Linux, Android) uses this one mapping, so a placement looks the same
+/// full-viewport box whose layout puts the content child where the web
+/// backend puts it. Every Taffy backend (iOS, macOS, Linux, Windows,
+/// Android) uses this one mapping, so a placement looks the same
 /// everywhere (Rule #7).
 ///
-/// Web is the reference. It pins the portal ROOT itself
-/// (`backend-web` `viewport_placement_styles`) and the content child
-/// lays out as a block inside it: full root width, natural height. The
-/// native container instead spans the viewport, so the same box comes
-/// from flex:
+/// Web pins the portal ROOT itself (`backend-web`
+/// `viewport_placement_styles`) and lays the content out inside it. The
+/// native container spans the viewport, so the same box comes from its
+/// layout:
 ///
-/// | placement    | web root CSS                         | content box               | justify / align       |
-/// |--------------|--------------------------------------|---------------------------|-----------------------|
-/// | `Top`        | `top: 0; left: 0; right: 0`          | full width, top           | `FlexStart` / `Stretch` |
-/// | `Bottom`     | `bottom: 0; left: 0; right: 0`       | full width, bottom        | `FlexEnd` / `Stretch`   |
-/// | `Left`       | `top: 0; bottom: 0; left: 0`         | natural size, top-left    | `FlexStart` / `FlexStart` |
-/// | `Right`      | `top: 0; bottom: 0; right: 0`        | natural size, top-right   | `FlexStart` / `FlexEnd` |
-/// | `FullScreen` | `inset: 0`                           | full width, top           | `FlexStart` / `Stretch` |
-/// | `Center`     | centered, `max-width: 100vw`         | natural size, centered    | `Center` / `Center`     |
+/// | placement    | web root CSS                                   | content box               | native container        |
+/// |--------------|------------------------------------------------|---------------------------|-------------------------|
+/// | `Top`        | `top: 0; left: 0; right: 0`                    | full width, top           | flex `FlexStart` / `Stretch` |
+/// | `Bottom`     | `bottom: 0; left: 0; right: 0`                 | full width, bottom        | flex `FlexEnd` / `Stretch`   |
+/// | `Left`       | `top: 0; bottom: 0; left: 0`                   | natural size, top-left    | flex `FlexStart` / `FlexStart` |
+/// | `Right`      | `top: 0; bottom: 0; right: 0`                  | natural size, top-right   | flex `FlexStart` / `FlexEnd` |
+/// | `FullScreen` | `inset: 0; display: grid; grid-template-columns: 1fr` | the whole viewport | grid, one `1fr` column  |
+/// | `Center`     | centered, `max-width: 100vw`                   | natural size, centered    | flex `Center` / `Center`     |
+///
+/// `FullScreen` is the one placement that sizes its content: a one-column
+/// grid stretches its item across the column and, with the default
+/// `align-content`, its auto row down the container — on the web and in
+/// Taffy alike. A flex column could only fill the height through the
+/// CHILD's `flex-grow`, which the container cannot set. Filling matters
+/// beyond the content's own box: an `absolute; inset: 0` descendant pins
+/// to its nearest positioned ancestor, which on web is the fixed root and
+/// in Taffy the content box — so with a natural-height content box a
+/// full-screen drawer's panel drew 0pt tall on native and full height on
+/// web.
 ///
 /// `Left`/`Right` content sits at the TOP, not vertically centered: the
 /// web root spans the viewport height but its block child keeps its
@@ -201,10 +211,16 @@ impl Default for ViewportPlacement {
 /// none, so an oversized child meets the viewport edge on every backend.
 pub fn viewport_container_rules(placement: ViewportPlacement) -> crate::StyleRules {
     use crate::{AlignItems, FlexDirection, JustifyContent};
+    if placement == ViewportPlacement::FullScreen {
+        return crate::StyleRules {
+            display: Some(crate::DisplayKind::Grid),
+            grid_template_columns: Some(vec![crate::TrackSize::Fr(1.0)]),
+            ..Default::default()
+        };
+    }
     let (justify, align) = match placement {
-        ViewportPlacement::Top | ViewportPlacement::FullScreen => {
-            (JustifyContent::FlexStart, AlignItems::Stretch)
-        }
+        ViewportPlacement::Top => (JustifyContent::FlexStart, AlignItems::Stretch),
+        ViewportPlacement::FullScreen => unreachable!("returned above"),
         ViewportPlacement::Bottom => (JustifyContent::FlexEnd, AlignItems::Stretch),
         ViewportPlacement::Left => (JustifyContent::FlexStart, AlignItems::FlexStart),
         ViewportPlacement::Right => (JustifyContent::FlexStart, AlignItems::FlexEnd),

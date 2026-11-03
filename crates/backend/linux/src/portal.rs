@@ -17,8 +17,9 @@
 //! The portal container is an [`IdealystView`] sized to the whole overlay
 //! (`hexpand`/`vexpand` + `halign`/`valign` Fill). Its own flex style
 //! places the single content child, mapped from [`PortalTarget`]:
-//! `Center`/`Top`/`Bottom`/`Left`/`Right`/`FullScreen` become
-//! justify/align pairs (see [`placement_style`]). This is the same
+//! `Center`/`Top`/`Bottom`/`Left`/`Right` become justify/align pairs and
+//! `FullScreen` a one-column grid that fills the viewport (see
+//! [`placement_style`]). This is the same
 //! "container flex positions the content" model the macOS viewport-portal
 //! path uses. An author/composition style on the portal element overrides
 //! this default via `apply_style`.
@@ -265,10 +266,13 @@ mod tests {
         assert_eq!(bottom.justify_content, Some(JustifyContent::FlexEnd));
     }
 
+    /// `FullScreen` is a one-column grid, which stretches its content over
+    /// the whole viewport (the shared `viewport_container_rules` contract).
     #[test]
-    fn fullscreen_stretches_cross_axis() {
+    fn fullscreen_fills_both_axes() {
         let s = placement_style(&PortalTarget::Viewport(ViewportPlacement::FullScreen));
-        assert_eq!(s.align_items, Some(AlignItems::Stretch));
+        assert_eq!(s.display, Some(runtime_shared::DisplayKind::Grid));
+        assert_eq!(s.grid_template_columns, Some(vec![runtime_shared::TrackSize::Fr(1.0)]));
     }
 
     #[test]

@@ -12,7 +12,9 @@
 //! kind in either call order (UIKit keeps the chosen layout under the mask
 //! and disables auto-correction itself while secure).
 
-use objc2::msg_send;
+use objc2::rc::Retained;
+use objc2::runtime::{AnyObject, Bool, Sel};
+use objc2::{msg_send, sel};
 use objc2_foundation::NSString;
 use runtime_shared::primitives::text_input::KeyboardKind;
 
@@ -81,25 +83,70 @@ pub(crate) fn traits(kind: KeyboardKind) -> Traits {
     }
 }
 
-/// Apply `kind` to a `UITextField` (any `UITextInputTraits` adopter).
+/// The object that implements text-input-trait selector `sel` for
+/// `field`: the field, when its class implements it, else the object the
+/// field forwards it to — the receiver the Objective-C runtime itself
+/// picks.
+///
+/// INVARIANT (iOS 26): `UITextField` / `UITextView` implement almost none
+/// of the `UITextInputTraits` accessors themselves (`setKeyboardType:`,
+/// `setTextContentType:`, `setAutocapitalizationType:`, … have no method
+/// on the class) and hand them to an internal `UITextInputTraits` through
+/// `forwardingTargetForSelector:`. The message works, but objc2's
+/// debug-build check (`class_getInstanceMethod` on the receiver's class)
+/// finds no method and panics — "invalid message send to
+/// -[IdealystTextField setKeyboardType:]: method not found", an abort on
+/// mount for every field with a typed keyboard. Not "always send to the
+/// forwarding target": a few setters (`setSecureTextEntry:`) ARE the
+/// field's own, overriding the traits object's, and the field must get
+/// those. Checked on the iOS 26.5 simulator.
+fn trait_receiver(field: &AnyObject, sel: Sel) -> Retained<AnyObject> {
+    let own = || {
+        // SAFETY: `field` is a live object; retaining it is always sound.
+        unsafe { Retained::retain(field as *const AnyObject as *mut AnyObject) }.expect("non-null")
+    };
+    if field.class().instance_method(sel).is_some() {
+        return own();
+    }
+    // SAFETY: `forwardingTargetForSelector:` is NSObject API on every
+    // object, returning the object the runtime would forward `sel` to,
+    // or nil.
+    let target: *mut AnyObject = unsafe { msg_send![field, forwardingTargetForSelector: sel] };
+    // SAFETY: nil or a live object the field owns; retained for the send.
+    unsafe { Retained::retain(target) }.unwrap_or_else(own)
+}
+
+/// Mask `field`'s text (`secureTextEntry`), sent to the receiver
+/// [`trait_receiver`] picks.
+pub(crate) fn set_secure(field: &AnyObject, secure: bool) {
+    let to = trait_receiver(field, sel!(setSecureTextEntry:));
+    unsafe {
+        let _: () = msg_send![&*to, setSecureTextEntry: Bool::new(secure)];
+    }
+}
+
+/// Apply `kind` to a `UITextField` (any `UITextInputTraits` adopter),
+/// each trait sent to the receiver [`trait_receiver`] picks.
 ///
 /// INVARIANT: UIKit reads the traits when the keyboard is brought up, so a
 /// change on a field that is already first responder only shows after
 /// `reloadInputViews`. The mount handler sets the kind before anything can
 /// focus the field; the reload covers a live kind changing mid-edit.
-pub(crate) fn apply<F: objc2::Message>(field: &F, kind: KeyboardKind) {
+pub(crate) fn apply(field: &AnyObject, kind: KeyboardKind) {
     let t = traits(kind);
+    let to = |sel: Sel| trait_receiver(field, sel);
     unsafe {
-        let _: () = msg_send![field, setKeyboardType: t.keyboard_type];
+        let _: () = msg_send![&*to(sel!(setKeyboardType:)), setKeyboardType: t.keyboard_type];
         let content: Option<&NSString> = t.content_type.map(|c| match c {
             ContentType::EmailAddress => UITextContentTypeEmailAddress,
             ContentType::TelephoneNumber => UITextContentTypeTelephoneNumber,
             ContentType::Url => UITextContentTypeURL,
         });
-        let _: () = msg_send![field, setTextContentType: content];
-        let _: () = msg_send![field, setAutocapitalizationType: t.autocapitalization];
-        let _: () = msg_send![field, setAutocorrectionType: t.autocorrection];
-        let _: () = msg_send![field, setSpellCheckingType: t.spell_checking];
+        let _: () = msg_send![&*to(sel!(setTextContentType:)), setTextContentType: content];
+        let _: () =
+            msg_send![&*to(sel!(setAutocapitalizationType:)), setAutocapitalizationType: t.autocapitalization];
+        let _: () = msg_send![&*to(sel!(setAutocorrectionType:)), setAutocorrectionType: t.autocorrection];
+        let _: () = msg_send![&*to(sel!(setSpellCheckingType:)), setSpellCheckingType: t.spell_checking];
         let first: bool = msg_send![field, isFirstResponder];
         if first {
             let _: () = msg_send![field, reloadInputViews];

@@ -46,8 +46,8 @@
 //! anchored placement is a documented gap (no per-frame scheduler on the
 //! GTK host). `virtualizer` ([`virtualizer`]) is a windowed
 //! `gtk::ScrolledWindow` list — only viewport+overscan cells are realized
-//! and recycled; `ItemSize::Measured` degrades to the author estimate
-//! (the framework can't measure a detached cell subtree). `navigator` /
+//! and recycled; an `ItemSize::Measured` row is measured on mount and
+//! respaced to its rendered size (see the virtualizer module docs). `navigator` /
 //! `external` remain placeholders (they render a labeled placeholder
 //! rather than panicking); fleshing those out is follow-on work for a
 //! general-purpose GTK backend, not needed by the welcome scene.
@@ -1255,6 +1255,10 @@ impl LinuxBackend {
 
         self.flush_text_area_dirty();
         self.layout.compute(root_layout, width, height);
+        // Virtualizer rows are detached Taffy roots this compute never
+        // reaches: re-lay out the ones a change inside them dirtied, before
+        // the frame write below reads their layouts.
+        virtualizer::relayout_dirty_rows(self);
 
         if std::env::var_os("IDEALYST_GTK_DUMP_LAYOUT").is_some() {
             eprintln!(

@@ -30,10 +30,14 @@
 //!
 //! ## Item sizes
 //!
-//! `item_size` is used as given. In `measure_sizes` mode it is the
-//! author's estimate and is not refined: the framework's measure pass does
-//! not reach a detached row subtree (the same limit the GTK and Apple
-//! backends document). Lanes (grids) are laid out as one lane.
+//! A `Known` list's `item_size` is authoritative. In a `Measured` list
+//! (`measure_sizes`) it is the author's estimate until a row is mounted:
+//! the layout pass then measures the row's natural main-axis size at the
+//! list's cross size and reports it (`set_measured_size`), so the row's
+//! slot, every following offset, the scroll extent and the window all
+//! follow the rendered size ([`crate::virtual_rows`]). The vocabulary keeps
+//! measured sizes by item key, so a row scrolled out and back keeps its
+//! measured size. Lanes (grids) are laid out as one lane.
 
 use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
@@ -41,6 +45,7 @@ use std::cell::RefCell;
 
 use runtime_shared::{VirtualLayout, VirtualizerCallbacks};
 
+use crate::virtual_rows::{cumulative, lay_out_rows, visible_range, RowLayout};
 use crate::{NodeKind, WindowsBackend, WindowsNode};
 
 /// One mounted row: its root node and the scope `release_item` drops.
@@ -86,43 +91,6 @@ impl VirtState {
             reload: false,
         }
     }
-}
-
-/// Cumulative start offsets along the main axis plus the total extent;
-/// consecutive items are `gap` apart, with no trailing gap.
-pub(crate) fn cumulative(sizes: &[f32], gap: f32) -> (Vec<f32>, f32) {
-    let mut offsets = Vec::with_capacity(sizes.len());
-    let mut acc = 0.0f32;
-    for (i, &s) in sizes.iter().enumerate() {
-        if i > 0 {
-            acc += gap;
-        }
-        offsets.push(acc);
-        acc += s.max(0.0);
-    }
-    (offsets, acc)
-}
-
-/// The half-open index range of items intersecting `[scroll, scroll +
-/// viewport)` widened by `overscan` viewports on each side; `(0, 0)` for
-/// an empty list or no viewport yet.
-pub(crate) fn visible_range(offsets: &[f32], sizes: &[f32], scroll: f32, viewport: f32, overscan: f32) -> (usize, usize) {
-    if sizes.is_empty() || viewport <= 0.0 {
-        return (0, 0);
-    }
-    let pad = viewport * overscan.max(0.0);
-    let (top, bottom) = ((scroll - pad).max(0.0), scroll + viewport + pad);
-    let mut range: Option<(usize, usize)> = None;
-    for i in 0..sizes.len() {
-        let (start, end) = (offsets[i], offsets[i] + sizes[i].max(0.0));
-        if start >= bottom {
-            break;
-        }
-        if end > top {
-            range = Some((range.map_or(i, |r| r.0), i + 1));
-        }
-    }
-    range.unwrap_or((0, 0))
 }
 
 /// The callbacks a resync calls, cloned out so no borrow is held across
@@ -275,29 +243,48 @@ impl WindowsBackend {
     /// size. Runs inside `layout_pass` after the main roots, so the list's
     /// own frame is current. A list whose viewport changed since its last
     /// resync gets one scheduled.
+    ///
+    /// In a `measure_sizes` list each row is measured first
+    /// ([`lay_out_rows`]); when a row's rendered size
+    /// differs from the size in use, the new size is reported, the list's
+    /// offsets and scroll extent are recomputed here (so
+    /// `place_virtual_rows` already slots every following row by it), and
+    /// a resync is scheduled to re-window against the new geometry — it
+    /// mounts rows, which re-borrows the backend, so it cannot run inside
+    /// this pass.
     pub(crate) fn layout_virtual_rows(&mut self) {
         let ids: Vec<u64> = self.virtualizers.keys().copied().collect();
         for id in ids {
             let Some(list_layout) = self.layout_for_id.get(&id).copied() else { continue };
             let f = self.layout.frame_of(list_layout);
             let viewport = (f.width, f.height);
-            let rows: Vec<(usize, Row, f32)> = match self.virtualizers.get(&id) {
-                Some(st) => {
-                    if (st.viewport.0 - viewport.0).abs() > 0.5 || (st.viewport.1 - viewport.1).abs() > 0.5 {
-                        schedule(self, id);
-                    }
-                    let Some(st) = self.virtualizers.get(&id) else { continue };
-                    st.mounted.iter().filter_map(|(&i, &r)| st.sizes.get(i).map(|&s| (i, r, s))).collect()
-                }
-                None => continue,
-            };
-            let horizontal = self.virtualizers.get(&id).is_some_and(|st| st.horizontal);
-            for (_, row, size) in rows {
-                if let Some(l) = self.layout_for_id.get(&row.id).copied() {
-                    let (w, h) = if horizontal { (size, viewport.1) } else { (viewport.0, size) };
-                    self.layout.compute(l, w, h);
+            let Some(st) = self.virtualizers.get(&id) else { continue };
+            if (st.viewport.0 - viewport.0).abs() > 0.5 || (st.viewport.1 - viewport.1).abs() > 0.5 {
+                schedule(self, id);
+            }
+            let Some(st) = self.virtualizers.get_mut(&id) else { continue };
+            let rows: Vec<RowLayout> = st
+                .mounted
+                .iter()
+                .filter_map(|(&idx, r)| self.layout_for_id.get(&r.id).map(|&root| RowLayout { idx, root, scope: r.scope }))
+                .collect();
+            let horizontal = st.horizontal;
+            // Lanes are laid out as one lane, so a row spans the list.
+            let cross = if horizontal { viewport.1 } else { viewport.0 };
+            let measure = st.callbacks.measure_sizes;
+            let report = st.callbacks.set_measured_size.clone();
+            let changed = lay_out_rows(&mut self.layout, &rows, &mut st.sizes, horizontal, cross, measure, &*report);
+            if !changed {
+                continue;
+            }
+            let (offsets, total) = cumulative(&st.sizes, st.layout.main_spacing);
+            st.offsets = offsets;
+            if let Some(NodeKind::View(v)) = self.nodes.get_mut(&id).map(|m| &mut m.kind) {
+                if let Some(s) = &mut v.scroll {
+                    s.extent = Some(if horizontal { (total, 0.0) } else { (0.0, total) });
                 }
             }
+            schedule(self, id);
         }
     }
 
@@ -331,23 +318,132 @@ impl WindowsBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use runtime_vocabulary::caps::VirtualizerOps;
 
-    #[test]
-    fn cumulative_offsets_include_gaps() {
-        let (offs, total) = cumulative(&[10.0, 20.0, 30.0], 5.0);
-        assert_eq!(offs, vec![0.0, 15.0, 40.0]);
-        assert_eq!(total, 70.0);
+    /// A live list whose rows render 200 / 200 / 100 / 200 tall against a
+    /// 132 estimate (the vocabulary's override store is modelled: a
+    /// reported size wins over the estimate in `item_size`). Returns the
+    /// backend, the list and the reports `set_measured_size` received.
+    fn measured_list(measure_sizes: bool) -> (Rc<RefCell<WindowsBackend>>, WindowsNode, Rc<RefCell<Vec<(u64, f32)>>>) {
+        use runtime_shared::{Length, StyleRules};
+        use runtime_vocabulary::caps::StyleOps;
+        use runtime_shared::accessibility::AccessibilityProps;
+        use windows::Win32::Foundation::HWND;
+
+        const ESTIMATE: f32 = 132.0;
+        let rendered = |i: usize| [200.0, 200.0, 100.0, 200.0][i % 4];
+        let cell = Rc::new(RefCell::new(WindowsBackend::new(HWND(std::ptr::null_mut()))));
+        cell.borrow_mut().set_self_ref(Rc::downgrade(&cell));
+        let overrides: Rc<RefCell<std::collections::HashMap<usize, f32>>> = Rc::default();
+        let reports: Rc<RefCell<Vec<(u64, f32)>>> = Rc::default();
+        let weak = Rc::downgrade(&cell);
+        let (o, r) = (overrides.clone(), reports.clone());
+        let o2 = overrides.clone();
+        let callbacks = VirtualizerCallbacks {
+            item_count: Rc::new(|| 20),
+            item_key: Rc::new(|i| i as u64),
+            item_size: Rc::new(move |i| o2.borrow().get(&i).copied().unwrap_or(ESTIMATE)),
+            measure_sizes,
+            // A card: padding 10 around a block 20 shorter than the row.
+            mount_item: Rc::new(move |i| {
+                let rc = weak.upgrade().unwrap();
+                let mut b = rc.borrow_mut();
+                let a11y = AccessibilityProps::default();
+                let mut root = b.create_view(&a11y);
+                let pad = Some(Length::Px(10.0).into());
+                StyleOps::apply_style(&mut *b, &root, &Rc::new(StyleRules { padding_top: pad, padding_bottom: pad, ..StyleRules::default() }));
+                let body = b.create_view(&a11y);
+                let height = Some(Length::Px(rendered(i) - 20.0).into());
+                StyleOps::apply_style(&mut *b, &body, &Rc::new(StyleRules { height, ..StyleRules::default() }));
+                b.insert(&mut root, body);
+                (root, 1000 + i as u64)
+            }),
+            release_item: Rc::new(|_| {}),
+            set_measured_size: Rc::new(move |scope, size| {
+                o.borrow_mut().insert((scope - 1000) as usize, size);
+                r.borrow_mut().push((scope, size));
+            }),
+            on_scroll: None,
+            item_changed: None,
+        };
+        let layout = VirtualLayout {
+            axis: runtime_shared::primitives::virtualizer::Axis::Vertical,
+            lanes: runtime_shared::primitives::virtualizer::Lanes::Fixed(1),
+            main_spacing: 0.0,
+            cross_spacing: 0.0,
+        };
+        let list = VirtualizerOps::create_virtualizer(&mut *cell.borrow_mut(), callbacks, 0.0, layout, &AccessibilityProps::default());
+        {
+            // A 300×450 list. `layout_pass` needs a real client rect, so
+            // the list's own Taffy frame is computed directly.
+            let mut b = cell.borrow_mut();
+            b.root_id = Some(list.id);
+            b.nodes.get_mut(&list.id).unwrap().frame = (0.0, 0.0, 300.0, 450.0);
+            let l = b.layout_for_id[&list.id];
+            b.layout.compute(l, 300.0, 450.0);
+        }
+        (cell, list, reports)
     }
 
+    /// Rendered row `i`: its slot along the list (after placement) and its
+    /// laid-out height.
+    fn row_geometry(b: &WindowsBackend, list: u64, i: usize) -> (f32, f32) {
+        let id = b.virtualizers[&list].mounted[&i].id;
+        (b.nodes[&id].frame.1, b.layout.frame_of(b.layout_for_id[&id]).height)
+    }
+
+    /// REGRESSION (idea-ui `TableCards`): a `Measured` list spaced its rows
+    /// by the estimate — 132pt cards that render 200pt overlapped the next
+    /// by 58pt. Rows are measured on layout, reported, laid out at their
+    /// rendered size, and the following rows, the scroll range and the
+    /// window move with them.
     #[test]
-    fn visible_range_selects_intersecting_items_with_overscan() {
-        let sizes = vec![40.0; 100];
-        let (offs, _) = cumulative(&sizes, 0.0);
-        assert_eq!(visible_range(&offs, &sizes, 0.0, 200.0, 0.0), (0, 5));
-        assert_eq!(visible_range(&offs, &sizes, 400.0, 200.0, 0.0), (10, 15));
-        assert_eq!(visible_range(&offs, &sizes, 400.0, 200.0, 1.0), (5, 20));
-        assert_eq!(visible_range(&[], &[], 0.0, 200.0, 0.0), (0, 0));
-        assert_eq!(visible_range(&offs, &sizes, 0.0, 0.0, 0.0), (0, 0), "no viewport yet");
+    fn regression_measured_rows_are_spaced_by_their_rendered_size() {
+        use crate::scene::max_scroll_offsets;
+        let (cell, list, reports) = measured_list(true);
+        let weak = Rc::downgrade(&cell);
+        // By the estimate, a 450 viewport holds rows 0..4 (0, 132, 264, 396).
+        resync(&weak, list.id);
+        assert_eq!(cell.borrow().virtualizers[&list.id].mounted.len(), 4);
+
+        cell.borrow_mut().layout_virtual_rows();
+        assert_eq!(*reports.borrow(), vec![(1000, 200.0), (1001, 200.0), (1002, 100.0), (1003, 200.0)]);
+        cell.borrow_mut().place_virtual_rows();
+        {
+            let b = cell.borrow();
+            assert_eq!(row_geometry(&b, list.id, 0), (0.0, 200.0));
+            assert_eq!(row_geometry(&b, list.id, 1), (200.0, 200.0), "not 132: no overlap with row 0");
+            assert_eq!(row_geometry(&b, list.id, 2), (400.0, 100.0), "a shorter row shrinks");
+            assert_eq!(row_geometry(&b, list.id, 3), (500.0, 200.0));
+            // 700 measured + 16 unmeasured rows at the estimate.
+            assert_eq!(max_scroll_offsets(&b, list.id), (0.0, 700.0 + 16.0 * 132.0 - 450.0));
+        }
+
+        // The re-window reads the measured sizes back through `item_size`:
+        // row 3 now starts at 500, past the 450 viewport, and leaves.
+        resync(&weak, list.id);
+        assert_eq!(cell.borrow().virtualizers[&list.id].mounted.keys().copied().collect::<Vec<_>>(), vec![0, 1, 2]);
+
+        // Converges: measuring again at the same width reports nothing.
+        reports.borrow_mut().clear();
+        cell.borrow_mut().layout_virtual_rows();
+        cell.borrow_mut().place_virtual_rows();
+        assert!(reports.borrow().is_empty(), "a measured row is not re-reported");
+        assert_eq!(row_geometry(&cell.borrow(), list.id, 2), (400.0, 100.0));
+        VirtualizerOps::release_virtualizer(&mut *cell.borrow_mut(), &list);
+    }
+
+    /// A `Known` list's sizes are authoritative: rows that render taller
+    /// are still laid out at the given size and nothing is reported.
+    #[test]
+    fn known_lists_never_call_set_measured_size() {
+        let (cell, list, reports) = measured_list(false);
+        resync(&Rc::downgrade(&cell), list.id);
+        cell.borrow_mut().layout_virtual_rows();
+        cell.borrow_mut().place_virtual_rows();
+        assert!(reports.borrow().is_empty());
+        assert_eq!(row_geometry(&cell.borrow(), list.id, 1), (132.0, 132.0));
+        VirtualizerOps::release_virtualizer(&mut *cell.borrow_mut(), &list);
     }
 
     /// Rows are plain siblings of the list node, so a `z_index` on an item

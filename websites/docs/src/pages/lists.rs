@@ -170,12 +170,13 @@ docs! {
            determine."),
 
         p("If the item's rendered size changes later (the item's content updates), \
-           the backend's native layout observer (", code("ResizeObserver"),
-          " on web, ", code("layoutSubviews"), " on iOS, ",
-          code("OnLayoutChangeListener"),
-          " on Android) re-fires and refreshes the stored size."),
+           the stored size refreshes: through a ", code("ResizeObserver"),
+          " on web and ", code("OnLayoutChangeListener"),
+          " on Android, and in the layout pass on iOS, macOS, Linux and Windows, \
+           which measures a mounted item again when its content changed."),
 
-        p("Cost: each measured item carries a layout observer. Use ",
+        p("Cost: each measured item is laid out twice when it mounts or changes \
+           (once to measure, once at its final size). Use ",
           code("Known"), " when you can."),
     },
 

@@ -2179,12 +2179,13 @@ mod portal_tests {
     // must stretch its child to fill the window so the Modal's own centering
     // container can center the card. (The escape itself — the `portal_roots`
     // `insert` skip + per-root layout — needs a live AppKit window to verify; this
-    // pins the placement style, mirroring iOS.)
+    // pins the placement style: the shared one-column grid that fills the
+    // window, `viewport_container_rules`.)
     #[test]
     fn fullscreen_portal_stretches_its_child() {
         let s = portal_container_style(&PortalTarget::Viewport(ViewportPlacement::FullScreen));
-        assert_eq!(s.align_items, Some(AlignItems::Stretch));
-        assert_eq!(s.justify_content, Some(JustifyContent::FlexStart));
+        assert_eq!(s.display, Some(runtime_shared::DisplayKind::Grid));
+        assert_eq!(s.grid_template_columns, Some(vec![runtime_shared::TrackSize::Fr(1.0)]));
     }
 
     #[test]
@@ -2755,6 +2756,12 @@ impl MacosBackend {
                 self.layout_detached_root(key, portal_size);
             }
         }
+
+        // Virtualized rows are detached roots too (built by `mount_item`,
+        // parented on the AppKit side only); a reactive change inside a
+        // mounted row reaches them only here. Before the documentView
+        // sizing below, which reads their frames.
+        self.relayout_dirty_virtualizer_rows();
 
         // Size every NSScrollView's documentView to its content's bounding box —
         // LAST, so it sees the final frames of EVERY subtree (main, detached, and
@@ -5832,8 +5839,8 @@ impl MacosBackend {
         // styling, named-slot routing, on_dismiss event firing, and focus
         // trapping are deferred. For a VIEWPORT target the container's flex
         // style (from the placement) positions its single content child within
-        // the viewport; FullScreen stretches it so a self-centering child
-        // (idea-ui `Modal`) fills the window. For an ANCHOR target the container
+        // the viewport; FullScreen fills it with its content (a one-column
+        // grid, `viewport_container_rules`). For an ANCHOR target the container
         // uses a NEUTRAL flex style and the content child is positioned
         // absolutely against the trigger rect + tracked each frame (see
         // `insert` / `imp::portal`); without that the content laid out at the
