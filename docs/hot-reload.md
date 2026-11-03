@@ -2238,6 +2238,32 @@ session builds it once and starts it before the platform launchers. The
 iOS, Android and desktop launchers never build or start a server — they
 hand their app `IDEALYST_SERVER_URL`, naming the session's one port.
 
+### The server builds at lower CPU priority
+
+A save in a crate the bundle and the server share starts the web build or
+hot patch and the server's `cargo build` in the same second. The page
+waits on the web side first, so the server's build (its first build and
+every rebuild) runs at lower CPU priority: on macOS and Linux under
+`nice` +10, inherited by cargo, rustc and the linker; on Windows at
+`BELOW_NORMAL_PRIORITY_CLASS`. It keeps cargo's default `-j`, so it uses
+every core the web build leaves idle and, with nothing competing, builds
+as fast as before. The server process itself (`cargo run`) and the web
+build keep the session's priority. A busy machine runs the server's build
+after the other work too — an IDE's `cargo check`, another session's
+build.
+
+On `examples/login-demo` with a one-line body edit in `idea-ui` (which
+both sides compile), on a 14-core M3 Max, 12 warm saves each way: the web
+hot patch took 1.88 s median at `nice` +10 against 2.08 s at normal
+priority, and the server's build 3.95 s against 4.18 s. More cores than
+the two builds want leave little to contend over. The gain grows when
+the builds are larger or the machine has fewer cores. The server still
+finishes after the web side, so the page's reload still waits on it.
+
+`IDEALYST_SERVER_BUILD_NICE=<n>` sets the increment (1–19; above 19 is
+19); `0` builds the server at the session's priority. On Windows any
+non-zero value means below-normal.
+
 ### What the app is handed
 
 Everything the session advertises to its apps — `IDEALYST_SERVER_URL`
@@ -2277,6 +2303,9 @@ is booted.
   the replay cache after each base build; `IDEALYST_HOTPATCH_SEED_JOBS=<n>`
   sets how many run at once (see
   [What a save costs on the web](#what-a-save-costs-on-the-web)).
+- `IDEALYST_SERVER_BUILD_NICE=0` builds a full-stack project's server
+  at the session's own CPU priority instead of `nice` +10 (see
+  [The server builds at lower CPU priority](#the-server-builds-at-lower-cpu-priority)).
 - `IDEALYST_DEV_NO_RESUME=1` makes a web session build its base even
   when the last session's could be resumed (see
   [A restart resumes the patched base](#a-restart-resumes-the-patched-base)).

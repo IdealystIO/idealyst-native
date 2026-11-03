@@ -107,6 +107,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use build_ios::{parse_manifest, Target};
 
+use crate::build_priority::BuildPriority;
+
 /// Cargo features for dev-mode builds of a NATIVE wrapper (macOS, iOS,
 /// Android, terminal).
 ///
@@ -4140,6 +4142,7 @@ fn server_watch_setup(
         },
     };
     let reporter = dev_events::global();
+    let priority = BuildPriority::server_build();
     let mut last: Option<BinStamp> = None;
     let build = move || -> Result<dev_reload::Rebuilt> {
         // Held from the start of the build: a bundle rebuild that
@@ -4147,7 +4150,7 @@ fn server_watch_setup(
         // build is about to replace.
         let hold = shared.reload.hold_reloads();
         let mut cmd = Command::new("cargo");
-        cmd.arg("build").args(&base_args).arg("--target-dir").arg(&target_dir);
+        prepare_server_build(&mut cmd, &base_args, &target_dir, priority);
         reporter.emit(dev_events::DevEvent::StageStarted {
             target: dev_events::SERVER_TARGET.into(),
             stage: "cargo".into(),
@@ -4192,6 +4195,23 @@ fn server_watch_setup(
         }
     };
     Ok((roots, Box::new(build)))
+}
+
+/// Turn `cmd` (`cargo`) into the server's `cargo build`: the verb, the
+/// selecting args, the target dir, and the build's CPU priority.
+///
+/// The server builds at lower priority ([`BuildPriority::server_build`],
+/// `IDEALYST_SERVER_BUILD_NICE`): a save in a crate the bundle and the
+/// server share starts the web build or hot patch and this build in the
+/// same second, and the web side is the one the user is waiting on. At
+/// equal priority they split the cores and both slow down; lowered, the
+/// server takes only the cores the web build leaves idle — and every core
+/// when nothing competes, since `-j` stays cargo's default. Only this
+/// build is lowered: `cargo run` (the server process itself) and the web
+/// build keep the session's priority.
+fn prepare_server_build(cmd: &mut Command, base_args: &[String], target_dir: &Path, priority: BuildPriority) {
+    cmd.arg("build").args(base_args).arg("--target-dir").arg(target_dir);
+    priority.apply(cmd);
 }
 
 /// The record name of one server build in `idealyst-dev-server`: the
@@ -4250,7 +4270,8 @@ fn prune_server_target(
 fn build_server_recorded(dir: &Path, manifest: &build_ios::Manifest, target_dir: &Path, prune: bool) -> Result<()> {
     let (watched_manifest, base_args) = server_build_args(dir, manifest)?;
     let mut cmd = Command::new("cargo");
-    cmd.current_dir(dir).arg("build").args(&base_args).arg("--target-dir").arg(target_dir);
+    cmd.current_dir(dir);
+    prepare_server_build(&mut cmd, &base_args, target_dir, BuildPriority::server_build());
     let before = build_ios::target_gc::IncrementalSnapshot::take(target_dir);
     let (status, summary) =
         dev_events::process::run_cargo(&mut cmd, &dev_events::global(), dev_events::SERVER_TARGET, None)
@@ -6153,6 +6174,37 @@ mod tests {
              files the running server already serves",
         );
         assert!(action.refresh_browser());
+    }
+
+    /// The server's `cargo build` spawns at the lowered priority, so a
+    /// web build or hot patch started by the same save keeps its cores.
+    /// The probe swaps cargo for `sh -c 'exec sleep 30'`: the arguments
+    /// [`prepare_server_build`] appends become the script's positional
+    /// parameters, and the child's niceness is the build's.
+    #[cfg(unix)]
+    #[test]
+    fn server_build_spawns_at_lowered_priority() {
+        use crate::build_priority::test_support::{niceness_of, spawned_niceness};
+        let own = niceness_of(std::process::id());
+        let args = vec!["--bin".to_string(), "srv".to_string()];
+        let probe = |priority| {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "exec sleep 30"]);
+            prepare_server_build(&mut cmd, &args, Path::new("/tmp/t"), priority);
+            spawned_niceness(cmd)
+        };
+        assert_eq!(probe(BuildPriority::server_build_from(None)), (own + 10).min(19));
+        // `IDEALYST_SERVER_BUILD_NICE=0`: the session's own priority.
+        assert_eq!(probe(BuildPriority::server_build_from(Some("0"))), own);
+    }
+
+    #[test]
+    fn server_build_args_follow_the_verb() {
+        let mut cmd = Command::new("cargo");
+        let args = vec!["--bin".to_string(), "srv".to_string()];
+        prepare_server_build(&mut cmd, &args, Path::new("/t"), BuildPriority::Normal);
+        let got: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(got, ["build", "--bin", "srv", "--target-dir", "/t"]);
     }
 
     /// The other half of the contract: a server rebuild DOES restart.

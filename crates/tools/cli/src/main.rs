@@ -12,6 +12,7 @@
 
 use clap::Parser;
 
+mod build_priority;
 mod cmd;
 mod config;
 mod core_mode;

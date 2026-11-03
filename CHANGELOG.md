@@ -2697,6 +2697,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Changed
 
+- **`idealyst dev` builds a full-stack project's server at lower CPU
+  priority** (`idealyst-cli` minor). A save in a crate the web bundle and
+  the server share started the web hot patch and the server's `cargo
+  build` in the same second, and the two split the cores (CrewForge: the
+  server's build 12–49% slower than alone, the hot patch slowed too). The
+  server's build now runs under `nice` +10 on macOS/Linux (cargo, rustc
+  and the linker inherit it) and at `BELOW_NORMAL_PRIORITY_CLASS` on
+  Windows, with cargo's default `-j`: it takes the cores the web build
+  leaves idle, and all of them when nothing competes. On `login-demo`
+  with an `idea-ui` edit (14 cores) the web hot patch went from 2.08 s to
+  1.88 s median and the server's build from 4.18 s to 3.95 s.
+  `IDEALYST_SERVER_BUILD_NICE=<n>` sets the increment, `0` turns it off.
+  See "The server builds at lower CPU priority" in `docs/hot-reload.md`.
+
 - **`ui!`, `#[component]`, `#[props]` and `stylesheet!` generate a third
   less code** (`runtime-macros-expand` / `runtime-macros`, `runtime-vocabulary`
   minor; performance only, no behaviour change). On `websites/website`
