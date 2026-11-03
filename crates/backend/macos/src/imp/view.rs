@@ -2698,39 +2698,50 @@ mod secure_cell_tests {
     }
 }
 
-/// If `view` is focused — it is its window's first responder, or (for an
-/// `NSTextField`) the window's field editor is editing on its behalf —
-/// hand first responder back to the window. Used by `set_disabled`: AppKit
-/// does not drop focus from a control that goes inert under the user, so a
-/// field disabled mid-edit would keep its caret and keep taking keys.
-pub(crate) fn resign_if_first_responder(view: &NSView) {
+/// Whether `view` holds keyboard focus: it is its window's first responder,
+/// or (for an `NSTextField`) the window's field editor is editing on its
+/// behalf.
+pub(crate) fn holds_keyboard_focus(view: &NSView) -> bool {
     unsafe {
         let window: *mut AnyObject = msg_send![view, window];
         if window.is_null() {
-            return;
+            return false;
         }
         let first: *mut AnyObject = msg_send![window, firstResponder];
         if first.is_null() {
-            return;
+            return false;
         }
         let me = view as *const NSView as *mut AnyObject;
-        let mut owns = first == me;
-        if !owns {
-            // NSTextField edits through the window's shared field editor (an
-            // NSTextView whose delegate is the field), so the field itself is
-            // never the first responder while it is being typed into.
-            let is_text_view: bool = msg_send![first, isKindOfClass: objc2::class!(NSTextView)];
-            if is_text_view {
-                let is_field_editor: bool = msg_send![first, isFieldEditor];
-                if is_field_editor {
-                    let delegate: *mut AnyObject = msg_send![first, delegate];
-                    owns = delegate == me;
-                }
-            }
+        if first == me {
+            return true;
         }
-        if owns {
-            let _: bool = msg_send![window, makeFirstResponder: std::ptr::null_mut::<AnyObject>()];
+        // NSTextField edits through the window's shared field editor (an
+        // NSTextView whose delegate is the field), so the field itself is
+        // never the first responder while it is being typed into.
+        let is_text_view: bool = msg_send![first, isKindOfClass: objc2::class!(NSTextView)];
+        if !is_text_view {
+            return false;
         }
+        let is_field_editor: bool = msg_send![first, isFieldEditor];
+        if !is_field_editor {
+            return false;
+        }
+        let delegate: *mut AnyObject = msg_send![first, delegate];
+        delegate == me
+    }
+}
+
+/// If `view` is focused ([`holds_keyboard_focus`]), hand first responder
+/// back to the window. Used by `set_disabled`: AppKit does not drop focus
+/// from a control that goes inert under the user, so a field disabled
+/// mid-edit would keep its caret and keep taking keys.
+pub(crate) fn resign_if_first_responder(view: &NSView) {
+    if !holds_keyboard_focus(view) {
+        return;
+    }
+    unsafe {
+        let window: *mut AnyObject = msg_send![view, window];
+        let _: bool = msg_send![window, makeFirstResponder: std::ptr::null_mut::<AnyObject>()];
     }
 }
 

@@ -13,14 +13,14 @@ use runtime_shared::VirtualizerCallbacks;
 use runtime_scene::{realize, Element, MountCx, Realized, Registry};
 use runtime_world::{collect_owned, effect, untrack, Owned};
 
-use crate::caps::{ScrollOps, VirtualizerOps};
+use crate::caps::{IntrospectionOps, ScrollOps, VirtualizerOps};
 use crate::prims::{PrimCell, VirtualizerPrim};
 use crate::style_attach::{attach_style, on_teardown, StyleServices};
 
 /// Register the `virtualizer` handler (called from `register_builtins`).
 pub fn register_virtualizer<H>(registry: &mut Registry<H>)
 where
-    H: VirtualizerOps + ScrollOps + StyleServices + 'static,
+    H: VirtualizerOps + ScrollOps + StyleServices + IntrospectionOps + 'static,
 {
     registry.register::<PrimCell<VirtualizerPrim>, _>(|cx, p, children| {
         mount_virtualizer(cx, p.take(), children)
@@ -106,13 +106,21 @@ struct RowScope<N> {
 ///   `set_measured_size` arrives keyed by scope id (that's what the
 ///   backend stored), so a scope-id → key reverse map bridges; the
 ///   reverse-map entry IS removed on release.
+/// - **Rows register under the list.** Under the `robot` feature the list
+///   is an element (`ElementKind::Virtualizer`) and every row realizes at
+///   the registry position captured at mount, below it ([`RowParent`]).
+///   Rows realize detached — on every backend each one sits in its own
+///   native cell — so without this each row was a registry ROOT:
+///   `get_parent` stopped at the row, `within(list)` never matched one,
+///   the robot's visibility never saw the list clip it, and a refused
+///   native tap named the list as the element on top of its own row.
 pub fn mount_virtualizer<H>(
     cx: &mut MountCx<'_, H>,
     prim: VirtualizerPrim,
     _children: Vec<Element>,
 ) -> H::Node
 where
-    H: VirtualizerOps + ScrollOps + StyleServices,
+    H: VirtualizerOps + ScrollOps + StyleServices + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     let registry: Rc<Registry<H>> = cx.registry().clone();
@@ -129,6 +137,9 @@ where
     let scope_id_to_key: Rc<RefCell<HashMap<u64, ItemKey>>> =
         Rc::new(RefCell::new(HashMap::new()));
     let next_scope_id: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
+    // Where rows register in the robot registry: under the list, filled
+    // once the list's own node exists and is registered (below).
+    let row_parent: Rc<RowParent> = Rc::new(RowParent::default());
     // key → scope id of the LIVE row showing it, for `item_changed`
     // (the backend asks by the key's NEW index). Entries die on release.
     let live_by_key: Rc<RefCell<HashMap<ItemKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
@@ -170,6 +181,7 @@ where
         let next_id = next_scope_id.clone();
         let live = live_by_key.clone();
         let capture = item_diff.as_ref().map(|d| d.capture.clone());
+        let row_parent = row_parent.clone();
         Rc::new(move |idx| {
             // Element construction runs INSIDE the row's collector (and
             // untracked, like keyed row renders — only the backend's
@@ -179,18 +191,20 @@ where
             // Snapshot BEFORE rendering, from the same data the render
             // reads (untracked, like the render itself).
             let snapshot = capture.as_ref().and_then(|c| untrack(|| c(idx)));
-            let ((node, realized), extra) = collect_owned(|| {
-                let element = untrack(|| render(idx));
-                let realized = realize(&backend, &registry, element);
-                let mut nodes = realized.collect_nodes();
-                let node = match nodes.len() {
-                    1 => nodes.pop().expect("len checked"),
-                    n => panic!(
-                        "virtualizer render_item({idx}) must produce a single-root element \
-                         (got {n} top-level nodes) — wrap fragment rows in an item"
-                    ),
-                };
-                (node, realized)
+            let ((node, realized), extra) = row_parent.enter(|| {
+                collect_owned(|| {
+                    let element = untrack(|| render(idx));
+                    let realized = realize(&backend, &registry, element);
+                    let mut nodes = realized.collect_nodes();
+                    let node = match nodes.len() {
+                        1 => nodes.pop().expect("len checked"),
+                        n => panic!(
+                            "virtualizer render_item({idx}) must produce a single-root element \
+                             (got {n} top-level nodes) — wrap fragment rows in an item"
+                        ),
+                    };
+                    (node, realized)
+                })
             });
             let id = {
                 let mut n = next_id.borrow_mut();
@@ -295,6 +309,22 @@ where
     let node = backend
         .borrow_mut()
         .create_virtualizer(callbacks, prim.overscan, prim.layout, &prim.a11y);
+    // Register the list, then capture the position under it for its rows.
+    // The guard pops right away: nothing realizes inside this handler —
+    // rows mount later, when the backend asks.
+    #[cfg(feature = "robot")]
+    {
+        let _robot = crate::robot::register_mount(
+            &backend,
+            &node,
+            crate::robot::ElementKind::Virtualizer,
+            prim.test_id,
+            prim.a11y.label.clone(),
+            None,
+            crate::robot::MountActions::default(),
+        );
+        row_parent.capture();
+    }
 
     // Same three-state contract `scroll_view`'s safe_area has: only a
     // stated preference reaches the backend, so a backend's own default
@@ -384,4 +414,32 @@ where
     }
 
     node
+}
+
+/// The robot-registry position a list's rows register at — under the
+/// list's own element (see [`mount_virtualizer`]'s "Rows register under
+/// the list"). Inert without the `robot` feature. Shared with
+/// `virtual_grid`, whose cells realize detached the same way.
+#[derive(Default)]
+pub(crate) struct RowParent {
+    #[cfg(feature = "robot")]
+    at: std::cell::OnceCell<crate::robot::CapturedParent>,
+}
+
+impl RowParent {
+    /// Capture the current registry position (call with the list's
+    /// registration guard on top of the parent stack).
+    #[cfg(feature = "robot")]
+    pub(crate) fn capture(&self) {
+        let _ = self.at.set(crate::robot::capture_parent());
+    }
+
+    /// Run `f` — a row's realize — registering at the captured position.
+    pub(crate) fn enter<R>(&self, f: impl FnOnce() -> R) -> R {
+        #[cfg(feature = "robot")]
+        if let Some(at) = self.at.get() {
+            return crate::robot::with_captured_parent(at, f);
+        }
+        f()
+    }
 }

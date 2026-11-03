@@ -124,6 +124,27 @@ pub(crate) fn view_is_shown(node: &jni::objects::GlobalRef) -> Option<bool> {
     })
 }
 
+/// `IntrospectionOps::content_clip`: whether the view can scroll now and,
+/// for a `ViewGroup`, `getClipChildren()`, decided by
+/// `crate::content_clip_policy`.
+pub(crate) fn content_clip(node: &jni::objects::GlobalRef) -> Option<runtime_vocabulary::caps::ContentClip> {
+    super::with_env(|env| {
+        let mut can_scroll = false;
+        for (method, dir) in [("canScrollVertically", 1), ("canScrollVertically", -1), ("canScrollHorizontally", 1), ("canScrollHorizontally", -1)] {
+            can_scroll |= env.call_method(node.as_obj(), method, "(I)Z", &[JValue::Int(dir)]).and_then(|v| v.z()).ok()?;
+            if can_scroll {
+                break;
+            }
+        }
+        let group = env.find_class("android/view/ViewGroup").ok()?;
+        let clip_children = if env.is_instance_of(node.as_obj(), &group).ok()? {
+            Some(env.call_method(node.as_obj(), "getClipChildren", "()Z", &[]).and_then(|v| v.z()).ok()?)
+        } else {
+            None
+        };
+        Some(crate::content_clip_policy::content_clip(can_scroll, clip_children))
+    })
+}
 
 /// `IntrospectionOps::native_pointer`: each step as a `MotionEvent`
 /// (`ACTION_DOWN` / `ACTION_MOVE` / `ACTION_UP`, touchscreen source) handed

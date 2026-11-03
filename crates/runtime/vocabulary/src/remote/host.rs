@@ -643,7 +643,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
             safe_area,
         } => {
             use runtime_shared::primitives::virtualizer::{ItemDiff, ItemSize};
-            let (_, style, a11y, fill) = self::common(conn, common);
+            let (test_id, style, a11y, fill) = self::common(conn, common);
             let count = handler::<(), usize>(conn, item_count, || 0);
             let key = handler::<usize, u64>(conn, item_key, || 0);
             let size: Rc<dyn Fn(usize) -> f32> = {
@@ -675,6 +675,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     layout,
                     style,
                     a11y,
+                    test_id,
                     ref_fill: fill_handle(conn, fill, Held::Virtualizer),
                     on_scroll: on_scroll.map(|id| {
                         let h = handler::<(f32, f32), ()>(conn, id, || ());

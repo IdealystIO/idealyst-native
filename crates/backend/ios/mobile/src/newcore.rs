@@ -1094,6 +1094,14 @@ mod ios_impl {
             IosBackend::update_text_input_secure_impl(self, node, secure)
         }
 
+        /// The field's become/resignFirstResponder fire it (`text_inset`).
+        /// Without it a field's `on_focus` never ran on iOS and the robot
+        /// saw no field focused, so a window-level key (Backspace after
+        /// typing) found no field to edit.
+        fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
+            crate::imp::text_inset::set_text_field_focus_handler(node.as_view(), flushing1(handler))
+        }
+
         fn update_text_input_keyboard(
             &mut self,
             node: &Self::Node,
@@ -1646,6 +1654,15 @@ mod ios_impl {
 
         fn is_shown(&self, node: &Self::Node) -> Option<bool> {
             Some(IosBackend::is_shown_impl(self, node))
+        }
+
+        fn content_clip(&self, node: &Self::Node) -> Option<caps::ContentClip> {
+            Some(crate::hit_reach_policy::uikit::content_clip(node.as_view()))
+        }
+
+        /// `isFirstResponder`, read at query time.
+        fn is_focused(&self, node: &Self::Node) -> Option<bool> {
+            Some(unsafe { objc2::msg_send![node.as_view(), isFirstResponder] })
         }
 
         fn hit_contains(&self, node: &Self::Node, x: f32, y: f32) -> Option<bool> {

@@ -1,5 +1,6 @@
 //! Attach-safe `focus()` against real AppKit (`src/imp/pending_focus.rs`),
-//! and `set_disabled` taking controls out of keyboard focus.
+//! `set_disabled` taking controls out of keyboard focus, and
+//! `IntrospectionOps::is_focused` reading the window's first responder.
 //!
 //! `harness = false`: AppKit builds windows only on the main thread, and
 //! libtest runs every case on a worker thread. This binary's `main` IS the
@@ -27,9 +28,9 @@ mod imp {
     use objc2::runtime::AnyObject;
     use objc2::{msg_send, msg_send_id, ClassType};
     use objc2_app_kit::{NSBackingStoreType, NSTextField, NSView, NSWindow, NSWindowStyleMask};
-    use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker};
+    use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSRange, NSString};
     use runtime_shared::accessibility::AccessibilityProps;
-    use runtime_vocabulary::caps::{PressableOps, SliderOps, StyleOps, TextInputOps, ToggleOps};
+    use runtime_vocabulary::caps::{IntrospectionOps, PressableOps, SliderOps, StyleOps, TextInputOps, ToggleOps};
 
     #[allow(non_upper_case_globals)]
     extern "C" {
@@ -164,6 +165,60 @@ mod imp {
         window.close();
     }
 
+    /// The editor whose selection is the field's caret: an `NSTextField`'s
+    /// field editor while it edits, a text area's own `NSTextView`.
+    fn editor_of(window: &NSWindow, view: &NSView) -> *mut AnyObject {
+        let is_field: bool = unsafe { msg_send![view, isKindOfClass: NSTextField::class()] };
+        if is_field {
+            unsafe { msg_send![view, currentEditor] }
+        } else {
+            unsafe { msg_send![window, firstResponder] }
+        }
+    }
+
+    /// REGRESSION (robot `locator.press_key` typing "Hix" gave "x"):
+    /// `focus()` on a field that already has keyboard focus re-ran
+    /// `makeFirstResponder:`, which ends the field editor's session and
+    /// starts a new one with the whole text selected — so the next key
+    /// replaced everything typed so far. Focusing a focused field must leave
+    /// its caret where it is, as on every other backend.
+    fn regression_focus_on_a_focused_field_keeps_the_caret(mtm: MainThreadMarker, backend: &mut MacosBackend) {
+        for (what, node) in [
+            ("text_input", text_input(backend, false)),
+            ("secure text_input", text_input(backend, true)),
+            ("text_area", text_area(backend)),
+        ] {
+            let view = view_of(&node);
+            let (window, content) = window(mtm);
+            unsafe { content.addSubview(&view) };
+            let focus = |backend: &mut MacosBackend| match what {
+                "text_area" => backend.make_text_area_handle(&node).focus(),
+                _ => backend.make_text_input_handle(&node).focus(),
+            };
+            focus(backend);
+            assert!(focused_in(&window, &view), "{what}: precondition — focused");
+            let editor = editor_of(&window, &view);
+            assert!(!editor.is_null(), "{what}: precondition — an editor");
+            let text = NSString::from_str("abc");
+            let caret = NSRange { location: 3, length: 0 };
+            unsafe {
+                let _: () = msg_send![editor, setString: &*text];
+                let _: () = msg_send![editor, setSelectedRange: caret];
+            }
+            focus(backend);
+            assert!(focused_in(&window, &view), "{what}: still focused");
+            let editor = editor_of(&window, &view);
+            let range: NSRange = unsafe { msg_send![editor, selectedRange] };
+            assert_eq!(
+                (range.location, range.length),
+                (3, 0),
+                "{what}: focusing an already-focused field must not move the caret or select all"
+            );
+            unsafe { view.removeFromSuperview() };
+            window.close();
+        }
+    }
+
     fn accepts_first_responder(view: &NSView) -> bool {
         unsafe { msg_send![view, acceptsFirstResponder] }
     }
@@ -269,6 +324,71 @@ mod imp {
         }
     }
 
+    /// The robot's `focused` is `IntrospectionOps::is_focused`, read from
+    /// the window at query time: true for a field edited through the
+    /// shared field editor, for a text area's inner text view, and false
+    /// once focus moves on.
+    fn is_focused_reads_the_first_responder(mtm: MainThreadMarker, backend: &mut MacosBackend) {
+        let input = text_input(backend, false);
+        let area = text_area(backend);
+        let (window, content) = window(mtm);
+        for node in [&input, &area] {
+            unsafe { content.addSubview(&view_of(node)) };
+        }
+        assert_eq!(backend.is_focused(&input), Some(false), "nothing focused yet");
+        backend.make_text_input_handle(&input).focus();
+        assert_eq!(backend.is_focused(&input), Some(true), "field editor edits for the input");
+        assert_eq!(backend.is_focused(&area), Some(false));
+        backend.make_text_area_handle(&area).focus();
+        assert_eq!(backend.is_focused(&area), Some(true), "the area's inner text view");
+        assert_eq!(backend.is_focused(&input), Some(false), "focus moved on");
+        backend.make_text_area_handle(&area).blur();
+        assert_eq!(backend.is_focused(&area), Some(false), "blurred");
+        window.close();
+    }
+
+    /// REGRESSION: a programmatic (or robot) `blur()` resigned the field
+    /// without asking its cancelable `on_blur` — only an outside click did —
+    /// so on macOS `on_blur` never ran for it and `BlurOutcome::Keep` could
+    /// not keep focus, unlike iOS / web / Android / Windows. `blur()` on the
+    /// focused field now asks: `Keep` leaves it editing, `Allow` blurs. A
+    /// field that isn't focused is not asked.
+    fn regression_blur_asks_on_blur_and_keep_keeps_focus(mtm: MainThreadMarker, backend: &mut MacosBackend) {
+        use runtime_shared::primitives::text_input::{BlurHandler, BlurOutcome};
+        use std::cell::Cell;
+        let calls = Rc::new(Cell::new(0));
+        let outcome = Rc::new(Cell::new(BlurOutcome::Keep));
+        let on_blur: BlurHandler = {
+            let (calls, outcome) = (calls.clone(), outcome.clone());
+            Rc::new(move || {
+                calls.set(calls.get() + 1);
+                outcome.get()
+            })
+        };
+        let node =
+            backend.create_text_input("", None, Rc::new(|_| {}), None, Some(on_blur), false, &AccessibilityProps::default());
+        let view = view_of(&node);
+        let (window, content) = window(mtm);
+        unsafe { content.addSubview(&view) };
+        let handle = backend.make_text_input_handle(&node);
+        handle.focus();
+        assert!(focused_in(&window, &view), "precondition: focused");
+
+        handle.blur();
+        assert_eq!(calls.get(), 1, "blur() asked on_blur");
+        assert!(focused_in(&window, &view), "Keep: still editing");
+
+        outcome.set(BlurOutcome::Allow);
+        handle.blur();
+        assert_eq!(calls.get(), 2);
+        assert!(!focused_in(&window, &view), "Allow: blurred");
+
+        handle.blur();
+        assert_eq!(calls.get(), 2, "a field that isn't focused is not asked");
+        unsafe { view.removeFromSuperview() };
+        window.close();
+    }
+
     pub fn run() {
         extern "C" {
             fn pthread_main_np() -> std::os::raw::c_int;
@@ -279,13 +399,16 @@ mod imp {
         // The main-queue microtask the pending focus is applied on.
         backend_macos::install_scheduler();
         let mut backend = MacosBackend::new(mtm);
-        let tests: [(&str, fn(MainThreadMarker, &mut MacosBackend)); 6] = [
+        let tests: [(&str, fn(MainThreadMarker, &mut MacosBackend)); 9] = [
             ("regression_focus_before_window_lands_once_attached", focus_before_window_lands_once_attached),
             ("blur_before_window_cancels", blur_before_window_cancels),
             ("focus_when_attached_is_immediate", focus_when_attached_is_immediate),
+            ("regression_focus_on_a_focused_field_keeps_the_caret", regression_focus_on_a_focused_field_keeps_the_caret),
             ("regression_disabled_text_controls_refuse_focus", regression_disabled_text_controls_refuse_focus),
             ("regression_disabled_pressable_leaves_key_view_loop", regression_disabled_pressable_leaves_key_view_loop),
             ("disabled_toggle_and_slider_are_not_enabled", disabled_toggle_and_slider_are_not_enabled),
+            ("is_focused_reads_the_first_responder", is_focused_reads_the_first_responder),
+            ("regression_blur_asks_on_blur_and_keep_keeps_focus", regression_blur_asks_on_blur_and_keep_keeps_focus),
         ];
         for (name, t) in tests {
             t(mtm, &mut backend);

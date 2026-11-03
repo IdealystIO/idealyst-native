@@ -70,6 +70,12 @@ mod root_box_policy;
 // (`imp/activity.rs`).
 #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
 mod user_activity_policy;
+// The robot's UIKit geometry reads: whether a tap at a point reaches a node
+// (a label reached through its interactive ancestor) and how a node clips
+// its descendants. Un-gated so the tests run from any host; the UIKit walk
+// is ios-only. See the module docs.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+mod hit_reach_policy;
 
 // `runtime_scene::Host` + the `runtime_vocabulary::caps` traits on
 // `IosBackend`, the mount path (`newcore::run_in_view`), and its

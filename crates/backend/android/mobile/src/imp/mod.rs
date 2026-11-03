@@ -34,6 +34,8 @@ mod style;
 // render loop driver — live in `backend-android-core` and are
 // imported directly by their callers.
 pub(crate) mod view_rect;
+pub(crate) mod native_key;
+pub(crate) mod text_focus;
 
 use crate::phase_timer;
 use runtime_shared::primitives::navigator::NavigatorOps;
@@ -1775,6 +1777,23 @@ impl AndroidBackend {
                         "(I)V",
                         &[JValue::Int(VISIBLE)],
                     );
+                    // A modal overlay (focusable, see `make_overlay_view`)
+                    // takes focus now that it is attached and visible, so
+                    // Back / Escape reach it; an INVISIBLE or
+                    // detached view refuses focus. Not when focus is already
+                    // inside it (an autofocus field in the modal).
+                    let focusable = env
+                        .call_method(overlay, "isFocusable", "()Z", &[])
+                        .and_then(|v| v.z())
+                        .unwrap_or(false);
+                    let holds = env
+                        .call_method(overlay, "hasFocus", "()Z", &[])
+                        .and_then(|v| v.z())
+                        .unwrap_or(false);
+                    if focusable && !holds {
+                        let _ = env.call_method(overlay, "requestFocus", "()Z", &[]);
+                    }
+                    let _ = env.exception_clear();
                 }
             });
         }
@@ -2821,11 +2840,14 @@ impl AndroidBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
+        on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
         secure: bool,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> GlobalRef {
         let node = primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down);
+        // The field's focus listener: `on_blur` now, `on_focus` when the
+        // framework installs it (`text_focus`).
+        with_env(|env| text_focus::install(env, node.as_obj(), on_blur));
         // `secure` and the keyboard hint share `setInputType`; record the
         // pair (the hint arrives right after via
         // `update_text_input_keyboard`) and mask now. `create` already set
@@ -2892,6 +2914,7 @@ impl AndroidBackend {
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> GlobalRef {
         let node = primitives::text_input::create_multiline(self, initial_value, placeholder, wrap, on_change, on_key_down);
+        with_env(|env| text_focus::install(env, node.as_obj(), None));
         // Intrinsic content sizing in wrap mode (only): give the EditText
         // a `View.measure`-based measure_fn so Taffy sizes it to the
         // height the wrapped text needs. With no pinned height it grows to
@@ -4092,13 +4115,10 @@ impl AndroidBackend {
                 "(Landroid/view/View$OnTouchListener;)V",
                 &[JValue::Object(&listener)],
             );
-            // Focus listener — drives FOCUSED.
-            let _ = env.call_method(
-                node.as_obj(),
-                "setOnFocusChangeListener",
-                "(Landroid/view/View$OnFocusChangeListener;)V",
-                &[JValue::Object(&listener)],
-            );
+            // Focus listener — drives FOCUSED. Chained behind a text
+            // field's own focus listener (`text_focus`), never replacing
+            // it: a view has one focus-listener slot.
+            text_focus::set_other_focus_listener(env, node.as_obj(), &listener);
         });
 
         // Stash the pointer in the per-node state so we can blank it

@@ -300,6 +300,14 @@ fn gate_is_up(gate: &Option<Rc<Cell<bool>>>) -> bool {
     gate.as_ref().is_some_and(|g| g.get())
 }
 
+/// Whether the toolkit says `node` holds keyboard focus now
+/// ([`IntrospectionOps::is_focused`]); `None` when the backend can't tell
+/// or is mid-mutation (a state read from inside a backend call).
+#[cfg(feature = "robot")]
+fn queried_focus<H: IntrospectionOps>(backend: &Rc<std::cell::RefCell<H>>, node: &H::Node) -> Option<bool> {
+    backend.try_borrow().ok().and_then(|b| b.is_focused(node))
+}
+
 /// `on_change`, first recording each reported value in `cell` — the
 /// robot's view of what the control shows.
 #[cfg(feature = "robot")]
@@ -437,11 +445,14 @@ where
     let native_on_change = alive.wrap1(on_change);
     #[cfg(feature = "robot")]
     let robot_native_on_change = native_on_change.clone();
+    let key_down = prim.on_key_down.map(|f| alive.wrap_key(f));
+    #[cfg(feature = "robot")]
+    let robot_key_down = key_down.clone();
     let node = backend.borrow_mut().create_text_input(
         &initial_value,
         initial_placeholder.as_deref(),
         native_on_change,
-        prim.on_key_down.map(|f| alive.wrap_key(f)),
+        key_down,
         prim.on_blur.map(|f| alive.wrap_blur(f)),
         initial_secure,
         &prim.a11y,
@@ -490,14 +501,19 @@ where
                 robot_native_on_change(text);
             })
         };
+        // `focused` is the toolkit's answer at query time when the backend
+        // can give one (`IntrospectionOps::is_focused`), else the last focus
+        // notification.
         let state = {
             let text = robot_text.clone();
             let focused = robot_focused.clone();
             let gate = disabled_gate.clone();
+            let b = backend.clone();
+            let n = node.clone();
             Rc::new(move || crate::robot::ElementState {
                 value: Some(crate::robot::StateValue::Text(text.borrow().clone())),
                 disabled: Some(gate_is_up(&gate)),
-                focused: Some(focused.get()),
+                focused: Some(queried_focus(&b, &n).unwrap_or_else(|| focused.get())),
                 ..Default::default()
             }) as Rc<dyn Fn() -> crate::robot::ElementState>
         };
@@ -513,6 +529,7 @@ where
                 focus: Some(focus),
                 blur: Some(blur),
                 state: Some(state),
+                keys: Some(crate::robot::KeyTarget { on_key_down: robot_key_down, multiline: false }),
                 ..Default::default()
             },
         )
@@ -623,6 +640,9 @@ where
     let native_on_change = alive.wrap1(on_change);
     #[cfg(feature = "robot")]
     let robot_native_on_change = native_on_change.clone();
+    let key_down = prim.on_key_down.map(|f| alive.wrap_key(f));
+    #[cfg(feature = "robot")]
+    let robot_key_down = key_down.clone();
     let node = backend.borrow_mut().create_text_area(
         &initial_value,
         prim.placeholder.as_deref(),
@@ -630,14 +650,14 @@ where
         prim.min_rows,
         prim.max_rows,
         native_on_change,
-        prim.on_key_down.map(|f| alive.wrap_key(f)),
+        key_down,
         &prim.a11y,
     );
     // `ElementKind::TextInput`: the robot surface doesn't distinguish
     // single- vs multi-line. `type_text` replaces the text as for
     // `text_input`; `focus` / `blur` go through the area's handle. A text
-    // area has no focus
-    // notifier, so its state carries no `focused`.
+    // area has no focus notifier, so its state carries `focused` only where
+    // the backend answers `IntrospectionOps::is_focused`.
     #[cfg(feature = "robot")]
     let _robot = {
         let focus = {
@@ -661,9 +681,12 @@ where
         let state = {
             let text = robot_text.clone();
             let gate = disabled_gate.clone();
+            let b = backend.clone();
+            let n = node.clone();
             Rc::new(move || crate::robot::ElementState {
                 value: Some(crate::robot::StateValue::Text(text.borrow().clone())),
                 disabled: Some(gate_is_up(&gate)),
+                focused: queried_focus(&b, &n),
                 ..Default::default()
             }) as Rc<dyn Fn() -> crate::robot::ElementState>
         };
@@ -680,6 +703,7 @@ where
                 focus: Some(focus),
                 blur: Some(blur),
                 state: Some(state),
+                keys: Some(crate::robot::KeyTarget { on_key_down: robot_key_down, multiline: true }),
                 ..Default::default()
             },
         )

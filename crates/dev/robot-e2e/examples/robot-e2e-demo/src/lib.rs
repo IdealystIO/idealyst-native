@@ -38,10 +38,12 @@
 //! [e2e] ■ suite: counter, panel & form — ✅ all green: 4 passed, 0 failed
 //! ```
 
-use idea_ui::{
-    install_idea_theme, light_theme, typography_kind, Stack, StackGap, StackPadding, Typography,
+use idea_ui::theme::IdeaThemeRef;
+use idea_ui::{install_idea_theme, light_theme, typography_kind, Stack, StackGap, StackPadding, Typography};
+use runtime_core::{
+    signal, stylesheet, text, ui, BlurOutcome, Element, FlexDirection, IntoElement, KeyEvent,
+    KeyOutcome, Length, Signal,
 };
-use runtime_core::{button, signal, text, text_input, ui, Element, IntoElement, Signal};
 
 #[cfg(feature = "robot")]
 mod e2e;
@@ -81,6 +83,13 @@ pub fn app() -> Element {
     // signal-assertion half of a cross-platform test. No cfg: outside a
     // robot build the call does nothing.
     runtime_vocabulary::robot::watch_signal("count", count);
+    // The name field's own `on_focus` and `on_blur`, as an app observes
+    // them: a test checks the author callbacks fire, not only the robot's
+    // `focused` read.
+    let name_focus = NameFocus { focused: signal(false), changes: signal(0), blurs: signal(0) };
+    runtime_vocabulary::robot::watch_signal("name_focused", name_focus.focused);
+    runtime_vocabulary::robot::watch_signal("name_focus_changes", name_focus.changes);
+    runtime_vocabulary::robot::watch_signal("name_blurs", name_focus.blurs);
 
     // Robot functions a host-side test calls by name (`call_function`).
     // Registration needs no cfg: it is inert outside robot builds.
@@ -91,6 +100,9 @@ pub fn app() -> Element {
     let covered: Signal<Option<bool>> = signal(None);
     COVERED.with(|c| c.set(Some(covered)));
     runtime_vocabulary::robot_fn::register(set_cover::robot());
+    let dialog_open: Signal<bool> = signal(false);
+    DIALOG.with(|c| c.set(Some(dialog_open)));
+    runtime_vocabulary::robot_fn::register(set_dialog::robot());
 
     // Kick off the E2E suite shortly after mount, once the first render
     // has populated the Robot registry. `after_ms_detached` self-manages
@@ -124,8 +136,9 @@ pub fn app() -> Element {
     };
     ui! {
         view() {
-            screen(count, show_secret, name)
+            screen(count, show_secret, name, name_focus)
             cover
+            dialog(dialog_open)
         }
     }
 }
@@ -138,6 +151,32 @@ thread_local! {
 
 thread_local! {
     static COVERED: std::cell::Cell<Option<Signal<Option<bool>>>> = const { std::cell::Cell::new(None) };
+}
+
+thread_local! {
+    static DIALOG: std::cell::Cell<Option<Signal<bool>>> = const { std::cell::Cell::new(None) };
+}
+
+/// Open (or close) the [`dialog`].
+#[runtime_core::robot_fn(name = "demo.set_dialog")]
+fn set_dialog(open: bool) -> Result<(), String> {
+    let dialog = DIALOG.with(|c| c.get()).ok_or("the app has not mounted")?;
+    dialog.set(open);
+    Ok(())
+}
+
+/// A modal with a field in it, opened by `demo.set_dialog`: Escape (and
+/// Back on Android) close it while the field holds focus, as they do with
+/// nothing focused.
+fn dialog(open: Signal<bool>) -> Element {
+    let draft: Signal<String> = signal(String::new());
+    ui! {
+        if open.get() {
+            overlay(on_dismiss = move || open.set(false)) {
+                text_input(value = draft, on_change = move |s: String| draft.set(s), test_id = "dialog-field")
+            }
+        }
+    }
 }
 
 /// Show (or hide) an overlay over the screen; `backdrop: false` shows it
@@ -199,79 +238,142 @@ impl std::future::Future for Delay {
     }
 }
 
+/// How many tabs [`tab_strip`] holds before its last one.
+const TAB_COUNT: i32 = 40;
+/// What the last tab sets the counter to.
+const LAST_TAB: i32 = 100;
+
+/// A tab bar wider than any window, as a phone's scrolling tab strip is:
+/// its last tab starts off screen, so a test reaches it only by scrolling
+/// the strip — what `click()` does first.
+fn tab_strip(count: Signal<i32>) -> Element {
+    ui! {
+        scroll_view(horizontal = true, test_id = "tabs") {
+            view(style = tab_row_style()) {
+                for i in 1..=TAB_COUNT {
+                    button(label = format!("Tab {i}"), on_click = move || count.set(i))
+                }
+                button(label = "Last tab".to_string(), on_click = move || count.set(LAST_TAB), test_id = "tab-last")
+            }
+        }
+    }
+}
+
+stylesheet! {
+    pub TabRow<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            gap: Length::Px(12.0),
+        }
+    }
+}
+
+/// A field that submits on Enter, as a search box or chat input does: its
+/// `on_key_down` takes the Enter and records the text in `submitted` (a
+/// watched signal), so a test can tell a key press reached the field's own
+/// handler — and that typed keys and Backspace edited the text first.
+fn submit_field() -> Element {
+    let note: Signal<String> = signal(String::new());
+    let submitted: Signal<String> = signal(String::new());
+    runtime_vocabulary::robot::watch_signal("note", note);
+    runtime_vocabulary::robot::watch_signal("submitted", submitted);
+    let on_key_down = move |e: &KeyEvent| {
+        if e.key == "Enter" {
+            submitted.set(note.get());
+            KeyOutcome::PreventDefault
+        } else {
+            KeyOutcome::Default
+        }
+    };
+    ui! {
+        text_input(
+            value = note,
+            on_change = move |s: String| note.set(s),
+            on_key_down = on_key_down,
+            placeholder = "Press Enter to submit".to_string(),
+            test_id = "note",
+        )
+    }
+}
+
 /// ~1s gives the first layout/paint time to settle before the suite runs.
 const INITIAL_RUN_DELAY_MS: i32 = 1000;
 
-fn screen(count: Signal<i32>, show_secret: Signal<bool>, name: Signal<String>) -> Element {
+/// What the name field's `on_focus` and `on_blur` reported.
+#[derive(Clone, Copy)]
+struct NameFocus {
+    /// `on_focus`'s latest argument.
+    focused: Signal<bool>,
+    /// How many times `on_focus` ran.
+    changes: Signal<i32>,
+    /// How many times `on_blur` ran (it lets every blur through).
+    blurs: Signal<i32>,
+}
+
+fn screen(count: Signal<i32>, show_secret: Signal<bool>, name: Signal<String>, name_focus: NameFocus) -> Element {
     // Button handlers. `Signal` is `Copy`, so each closure captures its
     // own copy.
     let inc = move || count.set(count.get() + 1);
     let dec = move || count.set(count.get() - 1);
     let toggle = move || show_secret.set(!show_secret.get());
-
-    // The secret panel: an `if` branch that mounts (and registers) the
-    // `secret` text only while `show_secret` is true — so the E2E suite
-    // can assert it's *not* visible first, then visible after a click.
-    let secret = || text("🔓 Secret unlocked").test_id("secret").into_element();
-    let secret_branch = ui! {
-        if show_secret.get() {
-            secret()
-        }
+    let on_focus = move |f: bool| {
+        name_focus.focused.set(f);
+        name_focus.changes.set(name_focus.changes.get() + 1);
+    };
+    let on_blur = move || {
+        name_focus.blurs.set(name_focus.blurs.get() + 1);
+        BlurOutcome::Allow
     };
 
-    // Reactive labels via the builder form (`text(closure).test_id(...)`):
-    // unambiguous, and the registry recomputes them on read so the E2E
-    // assertions see live values. Assembled into a `Vec<Element>` (then
-    // splatted into one `Stack`) to keep the `ui!` body unambiguous.
-    let counter_label = text(move || format!("Counter: {}", count.get()))
-        .test_id("counter")
-        .into_element();
-
-    let greeting = text(move || {
-        let n = name.get();
-        if n.is_empty() {
-            "Hello, stranger".to_string()
-        } else {
-            format!("Hello, {n}")
-        }
-    })
-    .test_id("greeting")
-    .into_element();
-
-    // `ui! { button(test_id = …) }` lowers to the same `.test_id(…)` call
-    // the builder form below makes, in every build.
-    let children: Vec<Element> = vec![
-        ui! { Typography(content = "Robot E2E Demo".to_string(), kind = typography_kind::H1) },
-        ui! {
+    // The `secret` text mounts (and registers) only while `show_secret` is
+    // true — so the E2E suite can assert it's *not* visible first, then
+    // visible after a click. The labels are reactive: the registry
+    // recomputes them on read, so the assertions see live values.
+    ui! {
+        Stack(gap = StackGap::Md, padding = StackPadding::Lg) {
+            Typography(content = "Robot E2E Demo".to_string(), kind = typography_kind::H1)
             Typography(
                 content = "An in-app, Playwright-style E2E suite drives this UI and logs every step to the console. It auto-runs ~1s after launch.".to_string(),
                 muted = true,
             )
-        },
-        // — Counter —
-        ui! { Typography(content = "Counter".to_string(), kind = typography_kind::H2) },
-        counter_label,
-        button("+ increment", inc).test_id("inc").into(),
-        button("- decrement", dec).test_id("dec").into(),
-        // — Reveal panel —
-        ui! { Typography(content = "Reveal".to_string(), kind = typography_kind::H2) },
-        button("Toggle secret", toggle).test_id("toggle-secret").into(),
-        secret_branch,
-        // — Name + greeting —
-        ui! { Typography(content = "Greeting".to_string(), kind = typography_kind::H2) },
-        text_input(name, move |s: String| name.set(s))
-            .placeholder("Type a name".to_string())
-            .test_id("name")
-            .into(),
-        greeting,
-        // — Re-run —
-        button("Run E2E suite again", run_suite)
-            .test_id("run-suite")
-            .into(),
-    ];
-
-    ui! {
-        Stack(gap = StackGap::Md, padding = StackPadding::Lg) { children }
+            // — Counter —
+            Typography(content = "Counter".to_string(), kind = typography_kind::H2)
+            text(test_id = "counter") { move || format!("Counter: {}", count.get()) }
+            button(label = "+ increment", on_click = inc, test_id = "inc")
+            button(label = "- decrement", on_click = dec, test_id = "dec")
+            // — Reveal panel —
+            Typography(content = "Reveal".to_string(), kind = typography_kind::H2)
+            button(label = "Toggle secret", on_click = toggle, test_id = "toggle-secret")
+            if show_secret.get() {
+                text(test_id = "secret") { "🔓 Secret unlocked" }
+            }
+            // — Tabs —
+            tab_strip(count)
+            // — Submit on Enter —
+            submit_field()
+            // — Name + greeting —
+            Typography(content = "Greeting".to_string(), kind = typography_kind::H2)
+            text_input(
+                value = name,
+                on_change = move |s: String| name.set(s),
+                placeholder = "Type a name".to_string(),
+                test_id = "name",
+                on_focus = on_focus,
+                on_blur = on_blur,
+            )
+            text(test_id = "greeting") {
+                move || {
+                    let n = name.get();
+                    if n.is_empty() {
+                        "Hello, stranger".to_string()
+                    } else {
+                        format!("Hello, {n}")
+                    }
+                }
+            }
+            // — Re-run —
+            button(label = "Run E2E suite again", on_click = run_suite, test_id = "run-suite")
+        }
     }
 }
 

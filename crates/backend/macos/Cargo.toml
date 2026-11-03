@@ -189,6 +189,13 @@ harness = false
 name = "robot_visibility"
 harness = false
 
+# Real-AppKit test of the robot's `key` verb (`IntrospectionOps::native_key`):
+# posted key events type into a focused field, Backspace deletes, and the
+# app-level key source hears shortcuts with their modifiers. Main-thread only.
+[[test]]
+name = "robot_native_key"
+harness = false
+
 # Real-AppKit test of sibling `z_index`: `apply_style` writes
 # `StyleRules::stacking_z()` to `layer.zPosition` (sticky's raise included;
 # an animated `ZIndex` overrides it)
@@ -203,4 +210,20 @@ harness = false
 # corner pinned on both. Main-thread only, as `focus_attach`.
 [[test]]
 name = "two_axis_scroll"
+harness = false
+
+# Real-AppKit test of `flat_list` with `ItemSize::Measured`: rows report the
+# size they render at (on mount and when their content changes later) and the
+# collection view re-spaces them by it; a Known list never measures, but its
+# rows are still laid out again after a content change. Main-thread only, as
+# `focus_attach`.
+[[test]]
+name = "virtualizer_measured"
+harness = false
+
+# Real-AppKit test of a horizontal `scroll_view`: the content row is as wide
+# as its tabs, and a click on a tab past the first screenful lands on it once
+# scrolled to. Main-thread only, as `focus_attach`.
+[[test]]
+name = "hscroll_hit_test"
 harness = false

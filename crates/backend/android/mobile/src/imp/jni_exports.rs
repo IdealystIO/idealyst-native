@@ -859,13 +859,10 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustOverlayDismissListene
     }
 }
 
-/// `RustOverlayKeyListener.onKey` dispatch — view-overlay portals'
-/// (modals') hardware/gesture back-button trampoline. Replaces the old
-/// `Dialog.OnCancelListener` back routing; the contract is identical
-/// (invoke the user's `on_dismiss` if `inner` is still set, no-op once
-/// `release_portal` blanks it), only the JVM-side trigger differs (a
-/// `View.OnKeyListener` on the focusable overlay instead of a
-/// `DialogInterface.OnCancelListener`).
+/// `RustModalOverlay.dispatchKeyEvent` dismiss — a modal overlay's
+/// Back / Escape (a key nothing inside it consumed) closes it: invoke the
+/// user's `on_dismiss` if `inner` is still set, no-op once
+/// `release_portal` blanks it.
 ///
 /// # Safety
 ///
@@ -873,7 +870,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustOverlayDismissListene
 /// `create_portal`. Stays valid until `release_portal` (which blanks
 /// the inner closure but does NOT free the box).
 #[no_mangle]
-pub unsafe extern "system" fn Java_io_idealyst_runtime_RustOverlayKeyListener_nativeDismiss(
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustModalOverlay_nativeDismiss(
     _env: JNIEnv,
     _this: JObject,
     ptr: jlong,
@@ -1207,4 +1204,30 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustAttachFocus_nativeAtt
             )
         }),
     );
+}
+
+/// `RustFocusListener.onFocusChange` → a text field's `on_focus` /
+/// `on_blur` (`text_focus_policy::TextFocusSlots::focus_changed`). Returns
+/// `true` when `on_blur` answered `Keep`; the listener then takes focus back.
+///
+/// # Safety
+///
+/// `ptr` is the `Box<TextFocusSlots>` `imp::text_focus::install` leaked;
+/// never freed.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustFocusListener_nativeFocusChanged(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+    has_focus: jboolean,
+) -> jboolean {
+    if ptr == 0 {
+        return 0;
+    }
+    let slots = &*(ptr as *const crate::text_focus_policy::TextFocusSlots);
+    let keep = run_returning_callback(
+        "text-focus",
+        std::panic::AssertUnwindSafe(|| slots.focus_changed(has_focus != 0)),
+    );
+    keep as jboolean
 }

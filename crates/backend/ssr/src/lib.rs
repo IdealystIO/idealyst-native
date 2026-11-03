@@ -1597,6 +1597,25 @@ mod tests {
         );
     }
 
+    /// A scroll view that scrolls along X carries the marker
+    /// `css::HSCROLL_CONTENT_RESET` selects (its content is as wide as what
+    /// it holds, as on native); a vertical one does not.
+    #[test]
+    fn regression_horizontal_scroll_view_marks_its_content_axis() {
+        use runtime_shared::ScrollAxis;
+        let mut b = SsrBackend::new();
+        let a11y = AccessibilityProps::default();
+        let marker = format!(r#"{}="""#, css::HSCROLL_MARKER_ATTR);
+        for (axis, marked) in
+            [(ScrollAxis::Horizontal, true), (ScrollAxis::Both, true), (ScrollAxis::Vertical, false)]
+        {
+            let node = b.create_scroll_view(axis, None, &a11y);
+            let html = { let mut s = String::new(); serialize(&node, &mut s); s };
+            assert_eq!(html.contains(&marker), marked, "{axis:?}: {html}");
+        }
+        assert!(b.head_css().contains(css::HSCROLL_CONTENT_RESET));
+    }
+
     /// `render_document` wraps the body + metadata into a full HTML doc:
     /// `<head>` carries the title / description / OG tags unfurlers read,
     /// the body holds the SSR markup in `#app`, and a module script loads

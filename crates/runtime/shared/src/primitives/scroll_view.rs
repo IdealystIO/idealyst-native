@@ -19,6 +19,14 @@ use std::rc::Rc;
 /// (`overflow: scroll` on that axis in Taffy, and the content exempt
 /// from the default `max-width: 100%` clamp when X scrolls); an axis
 /// that does not scroll clips its content to the viewport.
+///
+/// When X scrolls, each child without a `width` of its own is
+/// `width: max-content` — as wide as what it holds, never stretched to the
+/// viewport — on every backend, so everything the content holds lies
+/// inside its box (where AppKit and UIKit deliver clicks). Add
+/// `min_width: 100%` to make short content fill the viewport. An
+/// absolutely placed child that should span the viewport says
+/// `width: 100%` (with `left: 0`), not `left: 0` + `right: 0`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ScrollAxis {

@@ -227,6 +227,47 @@ fn text_input_state_reports_text_and_focus() {
     robot.reset();
 }
 
+/// REGRESSION (`idealyst test --web`): a browser window without OS focus
+/// moves `document.activeElement` on `element.focus()` but fires no `focus`
+/// event, so `focused` — replayed from the field's notifier — stayed false
+/// for a focused field. The toolkit's own answer
+/// (`IntrospectionOps::is_focused`) wins over the notifier; the notifier is
+/// the fallback where the backend can't tell. A text area (no notifier)
+/// reports `focused` only from the toolkit.
+#[test]
+fn regression_focused_reads_the_toolkit_over_missed_focus_events() {
+    let robot = Robot::new();
+    robot.reset();
+    let h = harness();
+    let _realized = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            view()
+                .child(text_input().test_id("field").value("").on_change(|_| {}).build())
+                .child(text_area().test_id("area").value("").on_change(|_| {}).build())
+                .build(),
+        )
+    });
+    let field = h.shared.focus_handlers.borrow()[0].0;
+    // The view's other child.
+    let area = *h.shared.parent.borrow().keys().find(|&&n| n != field).expect("the area is mounted under the view");
+    // The toolkit can't tell: the notifier's last word.
+    assert_eq!(state(&robot, "field").focused, Some(false));
+    assert_eq!(state(&robot, "area").focused, None);
+    // Focused with no event delivered: the toolkit's answer.
+    h.shared.toolkit_focus.borrow_mut().insert(field, true);
+    assert_eq!(state(&robot, "field").focused, Some(true));
+    // It wins over a stale notifier the other way too.
+    let notifier = h.shared.focus_handlers.borrow()[0].1.clone();
+    notifier(true);
+    h.shared.toolkit_focus.borrow_mut().insert(field, false);
+    assert_eq!(state(&robot, "field").focused, Some(false));
+    h.shared.toolkit_focus.borrow_mut().insert(area, true);
+    assert_eq!(state(&robot, "area").focused, Some(true));
+    robot.reset();
+}
+
 /// Over the bridge: `get_state`, and the same state on `find_element` and
 /// in the snapshot. A stateless element's JSON is unchanged.
 #[test]

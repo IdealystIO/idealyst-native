@@ -12,6 +12,9 @@
 //! `IDEALYST_ROBOT_BRIDGE` pointed at it — once per requested size, device or
 //! simulator — and finally the `--after` hooks. Without that prep the tests
 //! skip; with it they run for real. The run fails if any size fails.
+//! A `#[robot_test(platforms = …)]` test runs only where the app reports a
+//! platform it names ([`select_tests`]); elsewhere it is filtered out or
+//! stays ignored, never passed.
 
 mod browser;
 
@@ -483,6 +486,12 @@ pub fn run(args: Args) -> Result<()> {
     // and the suite binary is then run directly per size (see
     // `build_test_binary` for why it must not be built after the app).
     let test_bin = build_test_binary(&dir, &args.test)?;
+    // The suite's test names, which carry the platforms a
+    // `#[robot_test(platforms = …)]` test declared.
+    let tests = list_tests(&test_bin, &dir).unwrap_or_else(|e| {
+        eprintln!("[test] could not list the suite's tests ({e:#}); platform-bound tests stay ignored");
+        TestList::default()
+    });
 
     let outcome = run_hooks("--before", &args.before, &dir, &hook_env).map(|()| {
         let mut results = Vec::new();
@@ -495,6 +504,7 @@ pub fn run(args: Args) -> Result<()> {
                 isolated: isolated.as_deref(),
                 user_env: &user_env,
                 test_bin: &test_bin,
+                tests: &tests,
                 index: i,
             };
             let before = results.len();
@@ -536,13 +546,14 @@ struct LaunchCtx<'a> {
     isolated: Option<&'a str>,
     user_env: &'a [(String, String)],
     test_bin: &'a Path,
+    tests: &'a TestList,
     index: usize,
 }
 
 /// Launch the app (unless attaching), then run the suite at each of the
 /// launch's sizes, appending one result per size to `results`.
 fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<(String, Outcome)>) -> Result<()> {
-    let LaunchCtx { args, dir, platform, port, isolated, user_env, test_bin, index } = *ctx;
+    let LaunchCtx { args, dir, platform, port, isolated, user_env, test_bin, tests, index } = *ctx;
     let apps_dirs = registry_dirs()?;
     // Registrations already live before the launch belong to another run
     // (an earlier launch of this one included) or to the app being attached
@@ -620,9 +631,14 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<(String, Outco
                 .env("CARGO_MANIFEST_DIR", dir)
                 .envs(suite_env(size, port, user_env))
                 .env("IDEALYST_ROBOT_BRIDGE", addr.to_string());
-            if let Some(filter) = &args.filter {
-                suite.arg(filter);
+            // The platform the app itself reports (an attached app may not be
+            // the default `--web`); an app too old to say is taken at the flag.
+            let here = app_platform(addr).unwrap_or_else(|| platform.to_string());
+            let selection = select_tests(tests, &here, args.filter.as_deref());
+            for (name, on) in &selection.elsewhere {
+                eprintln!("[test] not on {here}: {name} (runs on {})", on.join(", "));
             }
+            suite.args(&selection.args);
             // One shared app: tests run serialized against it.
             suite.args(["--test-threads=1", "--nocapture"]);
             let status = suite.status().with_context(|| format!("running {}", test_bin.display()))?;
@@ -951,6 +967,86 @@ fn build_test_binary(dir: &Path, test_name: &str) -> Result<PathBuf> {
              is `tests/{test_name}.rs` a test target of this package?"
         )
     })
+}
+
+/// A suite binary's tests, from its own `--list`.
+#[derive(Debug, Default)]
+struct TestList {
+    /// Every test, ignored ones included.
+    all: Vec<String>,
+    /// The `#[ignore]`d ones — platform-bound tests among them.
+    ignored: HashSet<String>,
+}
+
+/// Run the suite binary's `--list` (all tests, then only the ignored).
+fn list_tests(test_bin: &Path, dir: &Path) -> Result<TestList> {
+    let list = |ignored: bool| -> Result<Vec<String>> {
+        let mut cmd = Command::new(test_bin);
+        cmd.current_dir(dir).env("CARGO_MANIFEST_DIR", dir).args(["--list", "--format", "terse"]);
+        if ignored {
+            cmd.arg("--ignored");
+        }
+        let out = cmd.output().with_context(|| format!("running {} --list", test_bin.display()))?;
+        anyhow::ensure!(out.status.success(), "`--list` exited with {}", out.status);
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.strip_suffix(": test"))
+            .map(str::to_string)
+            .collect())
+    };
+    Ok(TestList { all: list(false)?, ignored: list(true)?.into_iter().collect() })
+}
+
+/// The app's own `get_platform` answer; `None` from an app too old to say.
+fn app_platform(addr: SocketAddr) -> Option<String> {
+    let mut client = RobotClient::connect(addr).ok()?;
+    let v = client.call("get_platform", serde_json::json!({})).ok()?;
+    v["platform"].as_str().map(str::to_string)
+}
+
+/// The test binary's arguments for one run on `platform`.
+#[derive(Debug, PartialEq)]
+struct Selection {
+    /// libtest arguments (filters), before `--test-threads`.
+    args: Vec<String>,
+    /// Platform-bound tests (within the filter) that don't run here, with
+    /// where they do.
+    elsewhere: Vec<(String, Vec<&'static str>)>,
+}
+
+/// Which tests run on `platform`. A `#[robot_test(platforms = …)]` test is
+/// `#[ignore]`d under a name that says where it runs (see
+/// `robot_test::platforms_of_test`); libtest can't un-ignore one test, so
+/// when some belong here the run includes ignored tests and names exactly
+/// the ones to run, `--exact` — everything else, other platforms' tests and
+/// the author's own `#[ignore]`s, is counted "filtered out", never passed.
+/// When none belong here the binary runs as it always did: `filter` alone,
+/// and the platform-bound tests show as `ignored`, with their reason.
+fn select_tests(tests: &TestList, platform: &str, filter: Option<&str>) -> Selection {
+    let wanted = |name: &str| filter.is_none_or(|f| name.contains(f));
+    let mut here = HashSet::new();
+    let mut elsewhere = Vec::new();
+    for name in tests.all.iter().filter(|n| tests.ignored.contains(*n) && wanted(n)) {
+        if let Some(on) = robot_test::platforms_of_test(name) {
+            if on.contains(&platform) {
+                here.insert(name.as_str());
+            } else {
+                elsewhere.push((name.clone(), on));
+            }
+        }
+    }
+    if here.is_empty() {
+        return Selection { args: filter.map(str::to_string).into_iter().collect(), elsewhere };
+    }
+    let mut args = vec!["--include-ignored".to_string(), "--exact".to_string()];
+    args.extend(
+        tests
+            .all
+            .iter()
+            .filter(|n| wanted(n) && (!tests.ignored.contains(*n) || here.contains(n.as_str())))
+            .cloned(),
+    );
+    Selection { args, elsewhere }
 }
 
 /// Where a test run's `idealyst dev` output goes: the system temp dir, one
@@ -1291,6 +1387,48 @@ mod tests {
     /// The test session runs isolated by default, so it builds and registers
     /// beside the developer's own `idealyst dev` of the project — except the
     /// static web shape, which `idealyst dev` refuses to isolate.
+    fn suite(all: &[&str], ignored: &[&str]) -> TestList {
+        TestList {
+            all: all.iter().map(|s| s.to_string()).collect(),
+            ignored: ignored.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// CrewForge: native-only tests gated by an early return showed as
+    /// passed on web. Declared with `platforms = …`, a test runs where it
+    /// belongs, and elsewhere is filtered out (or stays ignored) — never
+    /// passed. The author's own `#[ignore]` is never run.
+    #[test]
+    fn regression_platform_bound_tests_run_only_where_they_belong() {
+        let tests = suite(
+            &["counts", "kb::robot_only_ios_android", "web_menu::robot_only_web", "flaky", "inset::robot_only_ios_ignored"],
+            &["kb::robot_only_ios_android", "web_menu::robot_only_web", "flaky", "inset::robot_only_ios_ignored"],
+        );
+
+        let ios = select_tests(&tests, "ios", None);
+        assert_eq!(ios.args, ["--include-ignored", "--exact", "counts", "kb::robot_only_ios_android"]);
+        assert_eq!(ios.elsewhere, [("web_menu::robot_only_web".to_string(), vec!["web"])]);
+
+        let web = select_tests(&tests, "web", None);
+        assert_eq!(web.args, ["--include-ignored", "--exact", "counts", "web_menu::robot_only_web"]);
+
+        // Nothing bound to macOS: the plain run, the others stay ignored.
+        let macos = select_tests(&tests, "macos", None);
+        assert!(macos.args.is_empty(), "{:?}", macos.args);
+        assert_eq!(macos.elsewhere.len(), 2);
+    }
+
+    /// `--filter` keeps libtest's substring meaning: applied here before
+    /// the names go out `--exact`.
+    #[test]
+    fn the_filter_narrows_a_platform_selection() {
+        let tests = suite(&["counts", "kb::robot_only_ios", "kb_extra"], &["kb::robot_only_ios"]);
+        let ios = select_tests(&tests, "ios", Some("kb"));
+        assert_eq!(ios.args, ["--include-ignored", "--exact", "kb::robot_only_ios", "kb_extra"]);
+        let none = select_tests(&tests, "ios", Some("counts"));
+        assert_eq!(none.args, ["counts"]);
+    }
+
     #[test]
     fn the_test_session_is_isolated_by_default_except_static_web() {
         assert_eq!(isolation_key(&args(&["--ios"]), "ios", false).unwrap().as_deref(), Some("test"));

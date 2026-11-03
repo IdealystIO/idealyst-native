@@ -239,9 +239,17 @@ pub struct Shared {
     pub scroll_offsets: RefCell<BTreeMap<Node, (f32, f32)>>,
     /// Frames served by `IntrospectionOps::{frame,absolute_frame,device_frame}`.
     pub frames: RefCell<BTreeMap<Node, ViewportRect>>,
-    /// Nodes `IntrospectionOps::is_shown` reports hidden (every other node
-    /// is shown) — set by a test as a toolkit would hide a view.
+    /// Nodes hidden (or faded to nothing) — set by a test as a toolkit
+    /// would hide a view. `IntrospectionOps::is_shown` reports a node and
+    /// everything inserted below it not shown, as a toolkit's own answer
+    /// walks the ancestors.
     pub hidden: RefCell<std::collections::BTreeSet<Node>>,
+    /// `IntrospectionOps::content_clip` per node (absent = `None`, can't
+    /// tell) — set by a test as a style's `overflow` would.
+    pub clips: RefCell<BTreeMap<Node, caps::ContentClip>>,
+    /// `IntrospectionOps::is_focused` per node (absent = `None`, can't
+    /// tell) — set by a test as the toolkit's focus would move.
+    pub toolkit_focus: RefCell<BTreeMap<Node, bool>>,
     /// Nodes something else covers: `IntrospectionOps::hit_contains`
     /// answers `false` for them (inside their frame, `true` for the rest;
     /// `None` for a node with no frame).
@@ -250,6 +258,13 @@ pub struct Shared {
     /// input; `Some(deliver)` = the injection calls `deliver` with the
     /// steps, after the robot has released the backend borrow.
     pub native_input: RefCell<Option<Rc<dyn Fn(&[caps::PointerStep]) -> Result<(), String>>>>,
+    /// `IntrospectionOps::native_key`: `None` (the default) = no native key
+    /// input (the robot dispatches through the framework); `Some(deliver)` =
+    /// the injection calls `deliver` with the press, after the robot has
+    /// released the backend borrow.
+    pub native_keys: RefCell<Option<Rc<dyn Fn(&caps::KeyPress) -> Result<(), String>>>>,
+    /// `IntrospectionOps::shortcut_modifier_is_meta` (default `false`).
+    pub shortcut_is_meta: Cell<bool>,
     /// The app-level keyboard sink currently installed
     /// (`AppEnvOps::set_keyboard_sink`) — drive it like a native key source.
     pub keyboard_sink: RefCell<Option<primitives::key::KeyboardSink>>,
@@ -306,8 +321,12 @@ impl Default for Shared {
             scroll_offsets: RefCell::new(BTreeMap::new()),
             frames: RefCell::new(BTreeMap::new()),
             hidden: RefCell::new(std::collections::BTreeSet::new()),
+            clips: RefCell::new(BTreeMap::new()),
+            toolkit_focus: RefCell::new(BTreeMap::new()),
             covered: RefCell::new(std::collections::BTreeSet::new()),
             native_input: RefCell::new(None),
+            native_keys: RefCell::new(None),
+            shortcut_is_meta: Cell::new(false),
             keyboard_sink: RefCell::new(None),
             pointer_sink: RefCell::new(None),
         }
@@ -1581,7 +1600,23 @@ impl caps::AnimationOps for HostMock {
 
 impl caps::IntrospectionOps for HostMock {
     fn is_shown(&self, node: &Node) -> Option<bool> {
-        Some(!self.s.hidden.borrow().contains(node))
+        let (hidden, parent) = (self.s.hidden.borrow(), self.s.parent.borrow());
+        let mut cur = Some(*node);
+        while let Some(n) = cur {
+            if hidden.contains(&n) {
+                return Some(false);
+            }
+            cur = parent.get(&n).copied();
+        }
+        Some(true)
+    }
+
+    fn content_clip(&self, node: &Node) -> Option<caps::ContentClip> {
+        self.s.clips.borrow().get(node).copied()
+    }
+
+    fn is_focused(&self, node: &Node) -> Option<bool> {
+        self.s.toolkit_focus.borrow().get(node).copied()
     }
 
     fn frame(&self, node: &Node) -> Option<ViewportRect> {
@@ -1610,6 +1645,16 @@ impl caps::IntrospectionOps for HostMock {
         let deliver = self.s.native_input.borrow().clone()?;
         let steps = steps.to_vec();
         Some(Box::new(move || deliver(&steps)))
+    }
+
+    fn native_key(&self, _node: &Node, press: &caps::KeyPress) -> Option<caps::NativeInjection> {
+        let deliver = self.s.native_keys.borrow().clone()?;
+        let press = press.clone();
+        Some(Box::new(move || deliver(&press)))
+    }
+
+    fn shortcut_modifier_is_meta(&self) -> bool {
+        self.s.shortcut_is_meta.get()
     }
 }
 

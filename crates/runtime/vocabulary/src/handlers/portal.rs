@@ -24,6 +24,14 @@ where
     // backdrop tap target) that can outlive the portal's scope.
     let alive = crate::callback_guard::ScopeAlive::current();
     let dismiss_for_backend = alive.wrap0_opt(prim.on_dismiss.clone());
+    // The shared Escape stack (`crate::escape_dismiss`): the key paths with
+    // no Escape-to-dismiss of their own (the robot's dispatch, iOS's
+    // hardware keyboard) close the topmost portal through it. Same guarded
+    // callback the backend holds.
+    let hidden = std::rc::Rc::new(std::cell::Cell::new(false));
+    let escape = dismiss_for_backend
+        .clone()
+        .map(|dismiss| crate::escape_dismiss::register(dismiss, hidden.clone()));
     let mut node = backend.borrow_mut().create_portal(
         prim.target,
         dismiss_for_backend,
@@ -65,8 +73,10 @@ where
     if let Some(nav) = inject::<ScreenNav>().filter(|n| n.active_route.is_alive()) {
         let backend_c = backend.clone();
         let node_c = node.clone();
+        let hidden_c = hidden.clone();
         let _visibility = effect(move || {
             let hidden = nav.active_route.get() != nav.route;
+            hidden_c.set(hidden);
             backend_c.borrow_mut().set_portal_hidden(&node_c, hidden);
         });
     }
@@ -81,7 +91,18 @@ where
     // page" crash).
     let backend_c = backend.clone();
     let node_c = node.clone();
-    on_teardown(move || match backend_c.try_borrow_mut() {
+    on_teardown(move || {
+        drop(escape);
+        release(backend_c, node_c)
+    });
+
+    node
+}
+
+/// `release_portal`, deferred to a microtask when the backend is already
+/// borrowed.
+fn release<H: PortalOps + 'static>(backend_c: std::rc::Rc<std::cell::RefCell<H>>, node_c: H::Node) {
+    match backend_c.try_borrow_mut() {
         Ok(mut b) => b.release_portal(&node_c),
         Err(_) => {
             let backend2 = backend_c.clone();
@@ -92,9 +113,7 @@ where
                 }
             });
         }
-    });
-
-    node
+    }
 }
 
 /// Register the portal handler (also serving the overlay compositions,

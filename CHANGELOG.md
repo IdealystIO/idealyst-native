@@ -11,6 +11,94 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **A horizontal scroller's content is as wide as what it holds, so every
+  tab in a scrolling strip takes a click** (`runtime-layout`, `css`,
+  `backend-web`, `backend-ssr`, `table`, `idea-ui`; every native backend
+  through `runtime-layout`). A `scroll_view`'s children stack in a flex
+  column, so a horizontal scroller's row was a cross-axis child that
+  `align-items: stretch` made exactly the viewport's width; its children
+  past the viewport were laid out outside the row's box. The browser
+  still delivers clicks there, but AppKit and UIKit only hit-test a view
+  inside its superview's bounds (and Android's inner `FrameLayout` was
+  likewise viewport-wide), so on macOS the robot-e2e demo's off-screen
+  tab took no real click, and idea-ui's `Tabs` needed
+  `align_self: FlexStart` to work on iOS. Every child of an X-scrolling
+  scroller (horizontal or two-axis) without a `width` of its own is now
+  `width: max-content` on every backend: Taffy `size.width = max-content`
+  in `runtime-layout`, and on web/SSR a zero-specificity base-reset rule
+  (`css::HSCROLL_CONTENT_RESET`) on the new `data-ihx` scroller marker,
+  through up to two `display: contents` anchors. **Layout change:** short
+  content no longer stretches to the viewport — add `min_width: 100%` to
+  make it fill; an author `width` still wins. An absolutely placed child
+  that should span the scroller needs `width: 100%` rather than
+  `left: 0` + `right: 0` (the `table` split head's viewport probe moved to
+  that). SSR goldens re-baselined: one rule appended to every
+  `.head.css`. Tests: `runtime-layout`
+  `regression_hscroll_row_is_as_wide_as_its_tabs_not_the_viewport` (+4),
+  backend-macos `hscroll_hit_test` (real AppKit: the last tab takes the
+  click), backend-web `regression_hscroll_content_is_as_wide_as_its_children`,
+  backend-ssr `regression_horizontal_scroll_view_marks_its_content_axis`,
+  backend-android `regression_horizontal_scroll_content_spans_its_children_not_the_viewport`,
+  idea-ui `a_tab_is_tappable_however_far_along_the_strip_it_sits` (now a
+  layout test).
+
+- **The robot's `visible` accounts for clipping, and reports what is left
+  on screen** (`runtime-vocabulary`, minor; every native backend +
+  `backend-web`). An element an `overflow: hidden` ancestor cuts away
+  entirely (text in a drawer collapsed to 0 pt) is not visible — it passed
+  `assert_visible` on a blank screen. Every element now carries
+  `visible_frame` (its window frame cut by the window and every clipping
+  ancestor; `Robot::visible_frame`), and `in_viewport` is whether that is
+  non-empty, so a row scrolled out of its scroll view or list is visible
+  but not in the viewport. New `IntrospectionOps::content_clip` →
+  `ContentClip {Visible, Hidden, Scroll}` (default `None`), implemented on
+  web, macOS, iOS, Android, Linux and Windows; `Visibility::clipped`.
+
+- **Virtualized rows register under their list** (`runtime-vocabulary`,
+  minor). `flat_list` / `virtualizer` / `virtual_grid` are robot elements
+  (`ElementKind::Virtualizer`; `flat_list(test_id = …)` is no longer
+  dropped) and their rows nest under them: each row realized detached in
+  its own native cell and was a registry root, so `get_parent` stopped at
+  the row, `within(list)` never matched one, and a refused `tap_native`
+  named the list's container as "on top" of its own row.
+  `mount_virtualizer` / `mount_virtual_grid` now also require
+  `IntrospectionOps` (part of `AllCaps`, as `mount_view` already did).
+
+- **iOS `tap_native` reaches a text** (`backend-ios-mobile`, patch). UIKit's
+  hit test never returns a label (`userInteractionEnabled = NO`), so every
+  native tap on a `text` was refused as covered; a tap that lands on the
+  label's interactive ancestor through inert views now reaches it, as the
+  event bubbles there on web. A hit-test tap (iOS) over content
+  with nothing pressable at or above it now lands and runs nothing, as a
+  native tap does on web, instead of failing with "action 'click' not
+  available" (`runtime-vocabulary`).
+
+- **robot-test's `click()` / `tap_native()` scroll the element into view
+  first** (`robot-test`, minor; `runtime-vocabulary`). An element outside
+  the window, or clipped by its scroll view so the tap landed on a
+  neighbour, is scrolled into view through every scroll view it sits in
+  before the tap, as Playwright does; it used to wait, then fail with
+  "outside the window" / "covers the point". A test that asserted such a
+  refusal opts out with `.no_scroll()` or `App::set_auto_scroll(false)`.
+
+- **A `FullScreen` overlay's content is the whole viewport** (`runtime-shared`,
+  `runtime-vocabulary`, `backend-web`, and every Taffy backend through the
+  shared `viewport_container_rules`). It had the full width and its
+  natural height, so an `absolute; inset: 0` child pinned to the fixed
+  portal root on web (and filled the window) but to the 0-tall content box
+  on iOS, macOS, Linux, Windows and Android, and drew nothing: CrewForge's
+  side drawer was blank on iOS while the robot reported its text visible.
+  The container is now a one-column grid on every backend (web: `display:
+  grid; grid-template-columns: 1fr` on the root), which stretches the
+  content over both axes. Because the content now covers the screen, it
+  takes every tap: a `FullScreen` overlay with content over a `Dismiss`
+  backdrop no longer dismisses on a tap beside the content — put a scrim
+  in the content (as `Modal` does) or use `click_through`. An overlay with
+  NO children takes no taps, so the `overlay(vec![])` + `Dismiss` click-away
+  catchers (`Select`, `Popover`, `Menu`, `DatePicker`) work as before. A
+  `width/height: 100%` style that worked around this is now redundant but
+  harmless.
+
 - **Robot element queries combine their criteria** (`runtime-vocabulary`,
   `mcp-server`). `find_element` / `find_all_elements` / `count_elements`
   used only the first field present (test_id › label › label_contains ›
@@ -857,6 +945,74 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **Robot `key` verb: press keys through each platform's real key path**
+  (`runtime-vocabulary`, `runtime-shared`, `robot-test`, minor;
+  `backend-web`, `backend-macos`, `backend-windows`,
+  `backend-android-mobile`, `backend-ios-mobile`, minor; `host-mock`). `key {key, modifiers?,
+  element_id?}` presses a key (Playwright names: `"Enter"`, `"Escape"`,
+  `"Tab"`, `"ArrowDown"`, `"a"`, `"Meta+K"`, `"ControlOrMeta+K"`) to the
+  focus, focusing `element_id` first, and answers `{mechanism}`: `native`
+  on web (DOM `KeyboardEvent`s plus the default actions untrusted events
+  lack: typing, Backspace, caret keys, Tab traversal, Enter/Space on
+  buttons), macOS (posted `NSEvent`s), Windows (posted `WM_KEY*`) and
+  Android (`KeyEvent`s to the decor view); `dispatch` on iOS and Linux,
+  where the focused field's `on_key_down`, the app's `on_key` listeners
+  and the field's text edit run instead, and an unconsumed Escape closes
+  the topmost overlay with an `on_dismiss` as it does on every native
+  backend — through `runtime_vocabulary::escape_dismiss`, the stack of open
+  dismissable portals the portal handler keeps. robot-test gains `App::press_key` and
+  `Locator::press_key` (and `parse_key`); MCP agents reach it through
+  `call_verb`. New `IntrospectionOps::native_key` /
+  `shortcut_modifier_is_meta` (defaults: none / Apple),
+  `caps::{KeyChord, KeyPress}`, `Robot::press_key` → `KeyMechanism`, and
+  `runtime_shared::key_input::deliver`. Fixed on macOS along the way: a
+  `text_input` / `text_area`'s `on_key_down` never fired (Enter could not
+  submit), and Escape never closed an overlay with an `on_dismiss`. Fixed
+  on iOS: a `text_input`'s `on_focus` never ran (iOS installed no focus
+  notifier — and so the robot saw no field focused and a window-level
+  Backspace edited nothing), and a hardware-keyboard Escape (iPad, the
+  simulator's keyboard) never closed an overlay — a focused field now
+  offers an Escape key command while one is open, and the app key
+  responder closes one for an Escape its listeners leave. See
+  `docs/robot.md` → Keys.
+
+- **Declare which platforms a robot test runs on** (`robot-test`,
+  `robot-test-macros`, `idealyst-cli`, minor; `runtime-vocabulary`).
+  `#[robot_test(platforms = [ios, android])]` (or `mobile` / `desktop` /
+  `native`) marks a test that only means something there. Elsewhere it is
+  never reported passed: the test is `<fn>::robot_only_ios_android`,
+  `#[ignore]`d with the reason, and `idealyst test` asks the app its
+  platform and runs exactly the ignored tests that belong there, so the
+  rest count as `filtered out` (or stay `ignored`). The body moves into a
+  module named for the fn, with `use super::*`. `App::platform()` /
+  `try_platform()` return the app's `Platform`, over a new `get_platform`
+  robot verb.
+- **`scroll_into_view`: scroll nested scroll views to show an element**
+  (`runtime-vocabulary`, `robot-test`, minor). A robot verb and
+  `Robot::scroll_into_view` move every scroll view an element sits in, along
+  the axes each scrolls, by the least that shows it in each and in the
+  window; implemented once over the frames and scroll offsets every backend
+  already reports. `Locator::scroll_into_view()` and `Locator::no_scroll()`
+  in robot-test.
+
+- **`HoverCard`: rich content on hover** (`idea-ui`, minor). `HoverCard(content
+  = move || ui! { … }) { trigger }` wraps its trigger like `Tooltip` and
+  opens a card of any content anchored to it (`side` / `align` / `offset`;
+  kept on screen wherever `Tooltip` and `Popover` are). It opens after the
+  pointer rests on the trigger for `open_delay_ms` (default
+  `HOVER_CARD_OPEN_DELAY_MS`, 400) and closes after the pointer has left
+  both trigger and card for `close_delay_ms` (default
+  `HOVER_CARD_CLOSE_DELAY_MS`, 200), which lets the pointer cross the gap
+  into the card. A hover-opened card has no backdrop, so the trigger and
+  the page stay live; driving a `Popover` from hover flickered shut because
+  its click-away layer covered the trigger. On touch a long-press opens it
+  and a tap outside closes it; Escape closes it. The card has
+  `Role::Tooltip`; `test_id` lands on the trigger wrapper and
+  `card_test_id` on the card. Restyle the card through the `card` slot
+  (`HoverCardStyles` / `HoverCardSlotStyles`). Focusing the trigger from
+  the keyboard does not open it: views and pressables report no focus
+  changes. New docs page `/overlays/hover-card`.
 
 - **`idealyst dev` says when the server's `cargo run` recompiles, and
   why** (`dev-events`, `idealyst-cli`, `dev-tui`, `dev-http`, `dev-reload`,
@@ -2483,6 +2639,136 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **`idealyst dev --android` builds again in its default (runtime-server)
+  mode** (`build-android`). The generated runtime-server wrapper still
+  depended on `crates/sdk/client/navigators/drawer` after that crate was
+  deleted, so cargo failed before compiling anything; only `--local`
+  worked. The dependency was dead — the wrapper registers nothing
+  client-side — and is gone. `build-android`
+  `regression_runtime_server_wrapper_names_only_crates_that_exist` checks
+  every workspace path either wrapper names.
+
+- **Content scrolled out of a scroller is visible to the robot even when a
+  clipping container holds the scroller** (`runtime-vocabulary`, patch).
+  `Visibility::clipped` cut the element by every `overflow: hidden`
+  ancestor, including ones outside a scroller, so on Android — where every
+  `ViewGroup` clips its children — a horizontal tab strip's last tab, far
+  right of the screen-wide column holding the strip, was "not visible" and
+  `click()` waited on it instead of scrolling to it (robot-e2e demo
+  `click_scrolls_an_off_screen_tab_into_view`). A clipping ancestor outside
+  a scroller now judges the scroller's box, which scrolling brings the
+  content into; `clips` is innermost first. `visible_frame` is unchanged.
+  Test: `robot_visibility_clip`
+  `regression_tab_scrolled_out_of_a_strip_in_a_clipping_column_is_visible`.
+
+- **A `text_input`'s cancelable `on_blur` is reachable from `ui!` and runs on
+  macOS `blur()` and on Windows** (`runtime-vocabulary`, `runtime-macros`,
+  `runtime-shared` docs, `backend-macos`, `backend-windows`, `mcp-catalog`).
+  The `text_input` an app writes in `ui!` is the glue wrapper, which had no
+  `on_blur` (only the builder did), and `ui!` rejected the prop — so
+  `on_blur` could not be used at all. `text_input(on_blur = || …)` and the
+  chained `.on_blur(…)` now work, and `BlurOutcome` is exported at the root
+  (`runtime_core::BlurOutcome`). The glue `text_area` gained the
+  `.on_key_down(…)` its builder already had. macOS: a programmatic or robot
+  `blur()` resigned the field without asking `on_blur` (only an outside
+  click did); it now asks while the field holds focus, and `Keep` leaves it
+  editing, as on iOS. Windows dropped `on_blur` at create: the `EDIT`'s
+  `EN_KILLFOCUS` now runs it, and `Keep` takes focus back on the next turn
+  unless focus moved to another field or another app (`blur_policy.rs`).
+  Tests: runtime-vocabulary
+  `regression_ui_text_input_on_blur_reaches_the_backend_and_can_keep`,
+  `glue_text_input_on_blur_threads_to_backend`,
+  `regression_glue_text_area_on_key_down_threads_to_backend`; backend-macos
+  `focus_attach` `regression_blur_asks_on_blur_and_keep_keeps_focus`;
+  backend-windows `blur_policy` (3, any host) and
+  `regression_text_input_on_blur_keep_takes_focus_back` (Windows / Wine);
+  the robot-e2e demo's name field counts its blurs
+  (`focusing_a_field_reports_it_focused`, web / macOS / iOS).
+
+- **Robot `focused` is true for a focused web field from the first focus**
+  (`runtime-vocabulary`, `backend-web`, `host-mock`). Under
+  `idealyst test --web` (and by hand in a browser window that wasn't the
+  OS's focused window) `assert_focused(true)` failed on a field that held
+  `document.activeElement`: Chrome fires no `focus` event for
+  `element.focus()` in a window without OS focus — which a headless test
+  browser never has — and `focused` was replayed from those events. The
+  robot now asks the toolkit at query time through the new
+  `IntrospectionOps::is_focused` (web: `document.activeElement`), falling
+  back on the field's focus notifications on backends that don't answer
+  it. A `text_area` reports `focused` where the backend answers it.
+
+- **A `text_input`'s `on_focus` runs on Android, and every backend reads
+  the robot's `focused` from the toolkit** (`backend-android-mobile`,
+  `backend-ios-mobile`, `backend-macos`, `backend-linux`,
+  `backend-windows`, `idealyst-cli`). Android installed no focus notifier,
+  so a field's `on_focus` never ran there and `focused` was always false;
+  its cancelable `on_blur` (the builder's) was dropped at create too. Every
+  Android `EditText` now carries a `RustFocusListener` (new Kotlin runtime
+  class — an older staged runtime soft-fails to the old behaviour) that
+  runs both and takes focus back on `Keep` when no other view took it; the
+  style states' focus listener chains behind it instead of replacing it.
+  iOS: blurring a field that wasn't focused (or whose `on_blur` kept
+  focus) no longer reports `on_focus(false)`. `IntrospectionOps::is_focused`
+  is answered on iOS (`isFirstResponder`), Android (`View.isFocused()`),
+  macOS (the window's first responder / field editor), Linux (the window's
+  focus widget, kept while the window is inactive) and Windows
+  (`GetFocus()`), for `text_area` too. `idealyst test --web` turns on
+  DevTools focus emulation, so the headless page gets `focus` / `blur`
+  events and an app's `on_focus` runs under test as it does for a user.
+  Tests: backend-android `text_focus_policy` (4), backend-ios
+  `text_input_focus` (simulator), backend-macos `focus_attach`
+  `is_focused_reads_the_first_responder`, backend-linux `robot_focus`,
+  backend-windows `regression_windows_disabled_text_input_still_editable`
+  (now also checks `is_focused`), idealyst-cli
+  `regression_headless_page_emulates_window_focus`, and the robot-e2e
+  demo's `focusing_a_field_reports_it_focused` asserting the field's own
+  `on_focus` (web, macOS, iOS, Android).
+
+- **iOS: a text field with a typed keyboard no longer aborts the app**
+  (`backend-ios-mobile`). Every `Email`, `Phone`, `Number`, `Decimal` or
+  `Url` field panicked in debug builds as it mounted — "invalid message
+  send to -[IdealystTextField setKeyboardType:]: method not found". On
+  iOS 26 `UITextField` forwards its text-input-trait setters to an
+  internal object, and objc2's debug-build check looks for the method on
+  the field's own class. Each trait now goes to the receiver the
+  Objective-C runtime itself picks (the field when it implements the
+  selector, else its forwarding target), including `secureTextEntry`.
+  Covered on the simulator for every kind, plain and secure
+  (`tests/keyboard_kinds.rs`).
+
+- **iOS: `flat_list` rows are laid out at their cell's width**
+  (`backend-ios-mobile`). Each row was laid out against the window, so in
+  a list padded 16pt each side a card was 402pt wide in a 370pt cell and
+  its right 32pt — where `TableCards` puts the actions menu — was off
+  screen. A row is now laid out against its `UICollectionViewCell`'s
+  content view.
+
+- **`ItemSize::Measured` lists are spaced by their rows' rendered size on
+  iOS, macOS, Linux and Windows** (`runtime-layout`, `runtime-shared`,
+  `backend-ios-mobile`, `backend-macos`, `backend-linux`,
+  `backend-windows`). These backends treated `Measured` as `Known`, so
+  every row kept the author's estimate: `TableCards`' 132pt-estimated
+  cards were 200pt tall and each overlapped the next by 58pt. Each backend
+  now measures a mounted row at its cell's cross size
+  (`LayoutTree::measure_main`, new), reports it through
+  `set_measured_size`, and respaces the list — and measures again when the
+  row's content changes, as web and Android already did.
+
+- **macOS and Linux: a change inside a mounted `flat_list` row lays the
+  row out again** (`backend-macos`, `backend-linux`). Rows are detached
+  layout roots the main pass never reached, so a restyle, text change or
+  new child inside a visible row kept its mount-time frames (a child grown
+  from 80 to 150pt still drew 80pt) until the row scrolled out and back.
+  The layout pass now re-lays out any mounted row whose subtree changed,
+  in `Known` and `Measured` lists alike.
+
+- **The robot finds an icon-only button by its accessibility label**
+  (`runtime-vocabulary`). A `pressable` (or `view`) registered no label of
+  its own, so `IconButton(label = "Open menu")` — announced as "Open menu"
+  by VoiceOver — came back `label: null` and `find_element(label = "Open
+  menu")` found nothing, on every backend. An author's a11y label is now
+  the element's robot label.
 
 - **robot-test waits out a busy app instead of panicking** (`robot-test`,
   `robot-relay`, `runtime-shared`). A locator with a 20 s timeout failed at

@@ -279,3 +279,27 @@ fn regression_tap_native_on_wrapper_presses_hit_tested_child() {
     assert_eq!((center.get(), side.get()), (2, 0));
     robot.reset();
 }
+
+/// Regression (CrewForge, iOS): a `tap_native` through the hit-test tier on
+/// an element with nothing pressable at or above it — a list row that is
+/// plain text — failed with "action 'click' not available", where the same
+/// tap on web (real events) lands and simply does nothing. A finger on
+/// non-interactive content is not an error: the tap succeeds, nothing runs.
+#[test]
+fn regression_hit_test_tap_on_non_interactive_content_lands_without_error() {
+    let robot = Robot::new();
+    robot.reset();
+    let h = Harness::new();
+    let _r = h.world.enter(|| {
+        realize(&h.backend, &h.registry, view().child(view().test_id("plain-row").build()).build())
+    });
+    runtime_shared::viewport::set_viewport_size(runtime_shared::viewport::ViewportSize { width: 400.0, height: 300.0 });
+    h.shared.frames.borrow_mut().insert(1, rect(20.0, 20.0, 200.0, 40.0));
+    let row = find(&robot, "plain-row");
+    assert_eq!(robot.click(&row), Err(RobotError::ActionNotAvailable("click")), "click still says there is no press");
+    assert_eq!(robot.tap_native(&row), Ok(TapMechanism::HitTest));
+    // The refusal stays about the point.
+    h.shared.covered.borrow_mut().insert(1);
+    assert!(matches!(robot.tap_native(&row), Err(RobotError::Covered { .. })));
+    robot.reset();
+}

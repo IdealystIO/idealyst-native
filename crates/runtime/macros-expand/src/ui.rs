@@ -1012,7 +1012,7 @@ fn emit_text_input(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2
     } else {
         quote! {}
     };
-    // `secure`, `keyboard`, `on_focus`, `on_key_down`, `placeholder_reactive`,
+    // `secure`, `keyboard`, `on_focus`, `on_blur`, `on_key_down`, `placeholder_reactive`,
     // `bind`, `autofocus`, `disabled`.
     let setters = builder_calls(props, TEXT_INPUT_BUILDER_PROPS);
     quote! {
@@ -1156,6 +1156,7 @@ const TEXT_INPUT_BUILDER_PROPS: &[&str] = &[
     "secure",
     "keyboard",
     "on_focus",
+    "on_blur",
     "on_key_down",
     "placeholder_reactive",
     "bind",

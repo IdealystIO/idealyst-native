@@ -30,6 +30,25 @@
 //! gets its own keys; this view is not in that field's responder chain, so it
 //! sees nothing until it is first responder again (reclaiming focus when the
 //! field resigns is NOT automatic).
+//!
+//! ## Escape closes the topmost overlay
+//!
+//! UIKit has no Escape-to-dismiss for the window-level views a portal mounts
+//! as, so the backend gives it the behavior every other platform has: an
+//! Escape nothing consumed calls the topmost shown portal's `on_dismiss`
+//! (`runtime_vocabulary::escape_dismiss`). Two responders carry it — whichever
+//! holds first responder:
+//!
+//! - **This view**: an Escape the app's listeners left at `Default` closes the
+//!   overlay and is swallowed (the listeners see it first, as on web).
+//! - **A focused `text_input` / `text_area`** (`text_inset`): its
+//!   `keyCommands` return an Escape `UIKeyCommand` while a dismissable portal
+//!   is open. A key command, not a `presses*` override, because UIKit's text
+//!   input owns a field's presses; a field never sees Escape as a text change,
+//!   so its `on_key_down` has nothing to consume first.
+//!
+//! With neither (no field focused and no app key listener) no framework view
+//! is first responder and UIKit delivers the press to no view of ours.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -165,10 +184,16 @@ declare_class!(
                 let mut keep = Vec::with_capacity(all.len());
                 for &press in &all {
                     let swallow = match app_key_event_from_press(press, KeyPhase::Down) {
-                        Some(ev) => match current_sink(&self.ivars().sink) {
-                            Some(sink) => matches!(sink.key(&ev), KeyOutcome::PreventDefault),
-                            None => false,
-                        },
+                        Some(ev) => {
+                            let prevented = match current_sink(&self.ivars().sink) {
+                                Some(sink) => matches!(sink.key(&ev), KeyOutcome::PreventDefault),
+                                None => false,
+                            };
+                            // Unconsumed Escape → the topmost overlay
+                            // (module docs, "Escape closes the topmost
+                            // overlay").
+                            prevented || (ev.key == "Escape" && escape_dismiss())
+                        }
                         None => false,
                     };
                     if self.ivars().ledger.borrow_mut().began(press as usize, swallow) {
@@ -293,4 +318,41 @@ pub(crate) fn set_keyboard_sink(backend: &mut IosBackend, sink: Option<KeyboardS
         ];
     }
     backend.app_keyboard = Some(AppKeyboard { sink: slot, responder });
+}
+
+/// An Escape nothing consumed: call the topmost shown portal's `on_dismiss`
+/// and commit what it wrote. Returns whether there was one (the key was used).
+pub(crate) fn escape_dismiss() -> bool {
+    let dismissed = runtime_vocabulary::escape_dismiss::dismiss_topmost();
+    if dismissed {
+        crate::newcore::schedule_flush();
+    }
+    dismissed
+}
+
+/// A text field's `keyCommands`: `inherited` (UIKit's own, usually nil), plus
+/// an Escape command firing `idealystEscapeDismiss:` while a dismissable
+/// portal is open. Without one open the field's commands are left as UIKit
+/// has them, so Escape is not taken from anything else.
+pub(crate) fn escape_key_commands(inherited: Option<Retained<NSObject>>) -> Option<Retained<NSObject>> {
+    if !runtime_vocabulary::escape_dismiss::has_dismissable() {
+        return inherited;
+    }
+    #[link(name = "UIKit", kind = "framework")]
+    extern "C" {
+        static UIKeyInputEscape: &'static NSString;
+    }
+    unsafe {
+        let command: Retained<NSObject> = msg_send_id![
+            objc2::class!(UIKeyCommand),
+            keyCommandWithInput: UIKeyInputEscape,
+            modifierFlags: 0isize,
+            action: objc2::sel!(idealystEscapeDismiss:),
+        ];
+        let commands: Retained<NSObject> = match inherited {
+            Some(list) => msg_send_id![&*list, arrayByAddingObject: &*command],
+            None => msg_send_id![objc2::class!(NSArray), arrayWithObject: &*command],
+        };
+        Some(commands)
+    }
 }

@@ -260,10 +260,10 @@ fn CheckSection(
     }
 }
 
-// `pressable`, `text_area` and the full `text_input` surface (`on_focus`,
-// `on_blur`, a dynamic placeholder) are built with the builders: `ui!`
-// lowers only the leaf primitives listed in CLAUDE.md §9.2, and these are
-// not among them.
+// `pressable` and `text_area` are built with the builders: `ui!` lowers
+// only the leaf primitives listed in CLAUDE.md §9.2, and these two are not
+// among them. The `text_input` here is a builder too, for its
+// `placeholder_dyn`; its `on_focus` / `on_blur` are also `ui!` props.
 
 #[component]
 fn HoverFixture() -> Element {

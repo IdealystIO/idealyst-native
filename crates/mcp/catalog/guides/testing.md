@@ -170,9 +170,11 @@ app busy for long on purpose.
   ```
 - **Act:**
   - `click`, `fill` / `type_text`, `set_toggle`, `set_slider`, `focus`,
-    `blur`, `scroll_to`;
+    `blur`, `scroll_to`, `scroll_into_view`;
   - `drag`, `drag_with_hold`, `drag_native`;
-  - `tap_native`, `dispatch_click`.
+  - `tap_native`, `dispatch_click`;
+  - `press_key("Enter")` (focus the element, then press), and
+    `app.press_key("ControlOrMeta+K")` to whatever has focus. See below.
 - **Read:** `state()`, `is_visible()`, `label()`, `count()`.
 - **Assert:**
   - presence: `assert_visible`, `assert_hidden` (passes when nothing
@@ -187,12 +189,34 @@ app busy for long on purpose.
     `functions()`;
   - components: `component(name).invoke(method, args)` / `.prop(name)`;
   - signals: `signal(name).assert_eq` / `.value()` / `.set(v)`;
+  - platform: `platform()` (`Platform::Ios`, …; `is_mobile()`,
+    `is_desktop()`, `is_native()`) — for a check one platform does
+    differently. A test that only applies on some platforms declares them
+    instead (below);
   - viewport: `viewport()` (width, height, breakpoint), `set_viewport(w, h)`
     on desktop apps (it panics elsewhere; `try_set_viewport` returns why, so
     a test can skip — web sizes come from the runner's `--viewport`, phones'
     from the device);
   - diagnostics: `logs()`, `screenshot()`;
   - anything else: `call(verb, args)`.
+
+A test that only means something on some platforms (a numeric keypad, a
+safe-area inset, a native list cell) says which, and is never reported
+passed anywhere else:
+
+```rust
+#[robot_test(platforms = [ios, android])]   // or `platforms = native`
+fn amount_field_opens_the_number_pad(app: &mut App) { /* … */ }
+```
+
+Names: `web`, `ios`, `android`, `macos`, `linux`, `windows`; groups
+`mobile`, `desktop`, `native`. Don't gate with an early `return` on
+`app.platform()`: that test shows as passed where it never ran. A declared
+test is named `<fn>::robot_only_ios_android` and `#[ignore]`d with the
+reason; `idealyst test` runs it where it belongs and counts it `filtered
+out` (or leaves it `ignored`) elsewhere, and a bare `cargo test` shows it
+`ignored`. Its body sits in a module that imports the file's items with
+`use super::*`, so write `crate::…` paths, not `super::…`.
 
 Keep tests independent of run order. Each test should be the only one
 mutating the state it asserts, and a robot function that resets the state
@@ -291,8 +315,21 @@ against.
 | `tap_native` / `drag_native` | Real platform input at the element's center, through the toolkit's event path (hit testing, overlays, gesture recognizers, the native disabled state) | That a user's tap actually lands |
 
 `Locator::click()` in robot-test is **native-first**. It waits for the
-element to be visible and enabled, then calls `tap_native`, falling back
-to the robot's `click` only where the backend answers `unsupported`.
+element to be visible and enabled, scrolls it into view if it is out of it,
+then calls `tap_native`, falling back to the robot's `click` only where the
+backend answers `unsupported`.
+
+Scrolling works like Playwright's: every scroll view the element sits in,
+nested ones and either axis, moves the least that shows the whole element,
+and nothing moves when it is already in view. `click()` and `tap_native()`
+do it before tapping an element outside the window, and again when the tap
+lands on a neighbour because the element's scroll view clips it — a phone's
+tab strip with its last tabs off to the right needs no manual scrolling.
+`.no_scroll()` on the locator, or `app.set_auto_scroll(false)`, taps where
+the element is; `scroll_into_view()` scrolls without tapping. Only mounted
+elements can be reached: a virtualized list's off-screen rows don't exist
+yet, so scroll the list itself (an app `#[method]` or robot function over
+its `scroll_to_index`).
 
 | Backend | `tap_native` mechanism |
 |---|---|
@@ -305,13 +342,28 @@ to the robot's `click` only where the backend answers `unsupported`.
 
 A native tap refuses the way a finger would fail, with a retryable error:
 - the element is not visible;
-- its center is outside the window (scroll it into view first);
+- its center is outside the window (`click()` scrolls it into view first);
 - something covers it. The error names the element on top.
 
 That last case is how a test catches an overlay or modal backdrop
 swallowing taps. An `overlay` with a `Dismiss` or `Opaque` backdrop covers
 the whole window on every backend. With `backdrop = None`, only the
 overlay's own content takes taps and the page stays usable.
+
+## Keys
+
+`app.test_id("password").press_key("Enter")` focuses the field and presses
+Enter, so a sign-in form submits the way a user's Enter submits it (the
+field's `on_key_down` sees `"Enter"`). `app.press_key("Escape")` and
+`app.press_key("ControlOrMeta+K")` go to whatever has focus, or the window.
+Key names are Playwright's (`Enter`, `Escape`, `Tab`, `Backspace`,
+`ArrowDown`, `a`, `Shift+Tab`, `Meta+K`); `ControlOrMeta` is Command on
+Apple platforms and Control elsewhere. Both return the mechanism:
+`"native"` on web, macOS, Windows and Android (real key events),
+`"dispatch"` on iOS and Linux, where the framework's key paths run instead
+(the focused field's `on_key_down`, `on_key` listeners, then the field's
+text edit). Either way Backspace deletes and an unconsumed Escape closes the
+topmost overlay with an `on_dismiss`; Tab moves focus only on `"native"`.
 
 ## 4. Run it on every platform
 
@@ -345,7 +397,9 @@ idealyst test --windows  <project>     # a Windows host, or IDEALYST_WINDOWS_REM
 `--filter <name>` narrows the run, `--test <file>` picks another test
 target, and `--attach` drives an app you already started with
 `idealyst dev`. Under a bare `cargo test`, with no app reachable, each
-`#[robot_test]` skips instead of failing.
+`#[robot_test]` skips instead of failing. The runner asks the app its
+platform and runs only the `platforms = …` tests that belong to it, naming
+the rest on a `[test] not on <platform>: …` line.
 
 ### Sizes, devices and simulators
 

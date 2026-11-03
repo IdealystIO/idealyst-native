@@ -105,6 +105,8 @@ Give an element (typically a TextInput) keyboard focus, or take it away. `get_st
 
 Scrolls a ScrollView's content to offset (`x`, `y`) in logical px through the native scroll view, so its `on_scroll` / `on_end_reached` fire as for a user's scroll.
 
+To show an element rather than reach an offset, `call_verb` with `scroll_into_view` and `{ "element_id": … }`: every scroll view the element sits in (nested, either axis) moves the least that shows it in each and in the window, and the reply lists the scroll views it moved, `{ "scrolled": [{ "element_id", "x", "y" }] }`. Already in view, nothing moves. Do this before `tap_native` on an element outside the window. `get_platform` (also through `call_verb`) names the app's platform: `web`, `ios`, `android`, `macos`, `linux`, `windows`.
+
 ## get_frame, get_absolute_frame
 
 An element's layout frame relative to its parent. `get_absolute_frame` returns it in window coordinates.
@@ -166,6 +168,15 @@ Calls a `#[method]`-tagged method on a component instance, with `args` keyed by 
 ## call_verb
 
 Calls any bridge verb by name with JSON `args` and returns its raw result. It covers verbs no dedicated tool covers, such as custom verbs an SDK or host registered. The verb set is documented in `docs/robot.md` in the framework repo.
+
+### Pressing keys: `key`
+
+`call_verb` with `key` and `{ "key": "Enter", "element_id"?: … }` presses a key as a user at the keyboard would: a key down and up, to whatever holds keyboard focus. With `element_id`, the element is focused first (Playwright's `locator.press`); without, the key goes to the current focus or the window. `key` uses Playwright's names: `Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, `ArrowUp`/`Down`/`Left`/`Right`, `Home`, `End`, `PageUp`, `PageDown`, `Space`, `F1`–`F24`, any single character, joined to modifiers with `+` (`Shift+Tab`, `Meta+K`). `ControlOrMeta` is Command on Apple platforms and Control elsewhere. An unknown name is an error. A disabled field refuses.
+
+Returns `{ mechanism }`:
+
+- `"native"`: real key events through the platform's key path (web DOM KeyboardEvents, macOS posted NSEvents, Windows window messages, Android KeyEvents): the field's own editing (Backspace deletes, a character types), its `on_key_down` (Enter submits), app `on_key` listeners, Escape closing an overlay where the platform does that.
+- `"dispatch"`: iOS and Linux, where an app can't create key events. The framework's own key paths run instead: the focused field's `on_key_down`, its text edit (caret taken to be at the end), then the app's `on_key` listeners. Toolkit defaults such as Tab moving focus don't happen.
 
 ## screenshot
 

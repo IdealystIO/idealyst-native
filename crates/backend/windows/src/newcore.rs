@@ -1274,6 +1274,29 @@ impl caps::IntrospectionOps for WindowsBackend {
         Some(self.node_is_shown(node.id))
     }
 
+    /// The painters' own clip rule (`NodeMeta::clips_children`): a
+    /// scroller cuts at its viewport, `overflow: hidden` at its box.
+    #[cfg(feature = "robot")]
+    fn content_clip(&self, node: &Self::Node) -> Option<caps::ContentClip> {
+        let meta = self.nodes.get(&node.id)?;
+        Some(if matches!(&meta.kind, crate::NodeKind::View(v) if v.scroll.is_some()) {
+            caps::ContentClip::Scroll
+        } else if meta.clips_children() {
+            caps::ContentClip::Hidden
+        } else {
+            caps::ContentClip::Visible
+        })
+    }
+
+    /// `GetFocus()` is the field's `EDIT` (a `text_area` is one too), read
+    /// at query time rather than replayed from `EN_SETFOCUS` /
+    /// `EN_KILLFOCUS`.
+    #[cfg(feature = "robot")]
+    fn is_focused(&self, node: &Self::Node) -> Option<bool> {
+        let hwnd = self.nodes.get(&node.id)?.hwnd()?;
+        Some(unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() } == hwnd)
+    }
+
     #[cfg(feature = "robot")]
     fn hit_contains(&self, node: &Self::Node, x: f32, y: f32) -> Option<bool> {
         self.hit_contains_impl(node.id, x, y)
@@ -1282,6 +1305,11 @@ impl caps::IntrospectionOps for WindowsBackend {
     #[cfg(feature = "robot")]
     fn native_pointer(&self, _node: &Self::Node, steps: &[caps::PointerStep]) -> Option<caps::NativeInjection> {
         self.native_pointer_impl(steps)
+    }
+
+    #[cfg(feature = "robot")]
+    fn native_key(&self, _node: &Self::Node, press: &caps::KeyPress) -> Option<caps::NativeInjection> {
+        self.native_key_impl(press)
     }
 
     #[cfg(feature = "robot")]

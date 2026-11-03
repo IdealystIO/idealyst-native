@@ -1470,6 +1470,35 @@ impl caps::IntrospectionOps for LinuxBackend {
         Some(alpha > TRANSPARENT_ALPHA)
     }
 
+    /// The window's focus widget is the node or inside it (a `GtkEntry`
+    /// edits through its internal `GtkText`, a `text_area`'s `TextView`
+    /// sits in a `ScrolledWindow`). Read from the window's own focus
+    /// widget, which GTK keeps while the window is inactive — the
+    /// `EventControllerFocus` notifier only fires while it is active.
+    #[cfg(feature = "robot")]
+    fn is_focused(&self, node: &Self::Node) -> Option<bool> {
+        let widget = node.widget();
+        let Some(root) = widget.root() else {
+            return Some(false);
+        };
+        Some(gtk4::prelude::RootExt::focus(&root).is_some_and(|f| &f == widget || f.is_ancestor(widget)))
+    }
+
+    /// A `ScrolledWindow` (`scroll_view`, a virtualizer) scrolls its
+    /// children into view; an `IdealystView` whose snapshot pushes a clip
+    /// (`PaintModel::clips`) cuts them.
+    #[cfg(feature = "robot")]
+    fn content_clip(&self, node: &Self::Node) -> Option<caps::ContentClip> {
+        let widget = node.widget();
+        Some(if widget.is::<gtk4::ScrolledWindow>() {
+            caps::ContentClip::Scroll
+        } else if widget.downcast_ref::<crate::view::IdealystView>().is_some_and(|v| v.paint_model().clips()) {
+            caps::ContentClip::Hidden
+        } else {
+            caps::ContentClip::Visible
+        })
+    }
+
     /// The robot's `set_viewport`. GTK4 has no `gtk_window_resize`; a
     /// mapped window follows a new default size (the GTK4 migration
     /// guide's replacement). The default size covers the whole window —

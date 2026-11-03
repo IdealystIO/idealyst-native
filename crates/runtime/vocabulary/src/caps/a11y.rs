@@ -85,10 +85,37 @@ pub trait IntrospectionOps: Host {
     /// Whether the toolkit shows `node`: attached to a window, not hidden
     /// (itself or an ancestor), not fully transparent. The robot's
     /// `visible` is this AND a non-empty laid-out box (the rule Playwright
-    /// uses). `None` = this backend can't tell, and the robot falls back on
-    /// the box alone.
+    /// uses), clipped by every ancestor whose [`content_clip`](Self::content_clip)
+    /// is [`ContentClip::Hidden`]. `None` = this backend can't tell, and
+    /// the robot falls back on the box alone.
     #[allow(unused_variables)]
     fn is_shown(&self, node: &Self::Node) -> Option<bool> {
+        None
+    }
+
+    /// Whether `node` holds keyboard focus now, read from the toolkit at
+    /// call time (the DOM's `document.activeElement`, …) — the robot's
+    /// `focused` for a text field. A query, not a replay of the field's
+    /// focus notifications: a browser whose window is not the OS's focused
+    /// window (a headless test run, a background tab) moves
+    /// `document.activeElement` on `element.focus()` but fires no `focus`
+    /// event until the window is focused, so the notifications alone would
+    /// report a focused field unfocused. `None` = this backend can't tell,
+    /// and the robot falls back on the field's focus notifications.
+    #[allow(unused_variables)]
+    fn is_focused(&self, node: &Self::Node) -> Option<bool> {
+        None
+    }
+
+    /// Whether `node` cuts its descendants' drawing at its own bounds, read
+    /// from the live native object (CSS `overflow`, `clipsToBounds` /
+    /// `masksToBounds`, a scroller's viewport). The robot intersects an
+    /// element's box with each registered ancestor that clips to report
+    /// `visible_frame`, and an element a [`ContentClip::Hidden`] ancestor
+    /// cuts away entirely is not visible. `None` = this backend can't
+    /// tell, and the node is treated as not clipping.
+    #[allow(unused_variables)]
+    fn content_clip(&self, node: &Self::Node) -> Option<ContentClip> {
         None
     }
 
@@ -149,6 +176,30 @@ pub trait IntrospectionOps: Host {
         None
     }
 
+    /// Real platform key input for `node`'s window: `press` as a key down
+    /// and up the toolkit receives the way it receives a user's, delivered
+    /// to whatever holds keyboard focus there (the robot focuses the target
+    /// element first) — a focused field's own editing and `on_key_down`,
+    /// the app-level key source, Escape-to-dismiss, the platform's text
+    /// path for a typed character. `None` = this backend can't synthesize
+    /// key input, and the robot dispatches the press through the
+    /// framework's own key paths instead.
+    ///
+    /// Returned as an injection, like
+    /// [`native_pointer`](Self::native_pointer), for the same reason: the
+    /// delivery runs author code that may borrow the backend.
+    #[allow(unused_variables)]
+    fn native_key(&self, node: &Self::Node, press: &super::KeyPress) -> Option<NativeInjection> {
+        None
+    }
+
+    /// Whether the platform's shortcut modifier is Command (Meta) — what a
+    /// robot `ControlOrMeta` resolves to. Apple platforms by default; the
+    /// web backend asks the browser which OS it runs on.
+    fn shortcut_modifier_is_meta(&self) -> bool {
+        runtime_shared::host::platform().is_apple()
+    }
+
     /// Resize the window holding `node` so its content area — what the
     /// app's viewport reports — is `width × height` logical px: the
     /// robot's `set_viewport`. `None` = the app cannot size its own
@@ -165,6 +216,21 @@ pub trait IntrospectionOps: Host {
     fn resize_window(&self, node: &Self::Node, width: f32, height: f32) -> Option<NativeInjection> {
         None
     }
+}
+
+/// How a node clips its descendants ([`IntrospectionOps::content_clip`]),
+/// named after the CSS `overflow` values it corresponds to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentClip {
+    /// Descendants draw outside the node's bounds.
+    Visible,
+    /// Descendants are cut at the node's bounds, and nothing brings the
+    /// cut part into view: what is outside is not visible.
+    Hidden,
+    /// A scroller: descendants are cut at its viewport, but scrolling
+    /// brings them in, so what is outside is visible, only not in the
+    /// viewport.
+    Scroll,
 }
 
 /// One step of a [`IntrospectionOps::native_pointer`] gesture: the primary

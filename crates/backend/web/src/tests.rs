@@ -1940,6 +1940,72 @@ fn regression_unstyled_view_is_a_flex_column_like_native() {
     parent_el.remove();
 }
 
+/// REGRESSION TEST.
+///
+/// A horizontal scroller's content row was stretched to the viewport (it is
+/// a cross-axis child of the scroller's flex column), and the tabs past the
+/// viewport overflowed it. The browser still delivers clicks there, but
+/// AppKit/UIKit do not, so native gives the row `width: max-content`
+/// (`runtime_layout`); web must lay it out the same way
+/// (`css::HSCROLL_CONTENT_RESET`), including through a reactive anchor.
+#[wasm_bindgen_test]
+fn regression_hscroll_content_is_as_wide_as_its_children() {
+    use runtime_shared::ScrollAxis;
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let _ = backend.sheet();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+
+    let build = |backend: &mut WebBackend, through_anchor: bool| {
+        let scroller = crate::primitives::scroll_view::create(backend, ScrollAxis::Horizontal, None);
+        let scroller_el: web_glue::dom::HtmlElement = scroller.clone().dyn_into().unwrap();
+        scroller_el.style().set_property("width", "300px").unwrap();
+        let row = crate::primitives::view::create(backend);
+        let row_el: web_glue::dom::Element = row.clone().dyn_into().unwrap();
+        row_el.set_attribute("style", "flex-direction:row").unwrap();
+        for _ in 0..10 {
+            let tab = crate::primitives::view::create(backend);
+            let tab_el: web_glue::dom::Element = tab.dyn_into().unwrap();
+            tab_el.set_attribute("style", "width:80px;height:30px;flex-shrink:0").unwrap();
+            row_el.append_child(&tab_el).unwrap();
+        }
+        if through_anchor {
+            let anchor = crate::primitives::view::create_reactive_anchor(backend);
+            let anchor_el: web_glue::dom::Element = anchor.dyn_into().unwrap();
+            anchor_el.append_child(&row_el).unwrap();
+            scroller_el.append_child(&anchor_el).unwrap();
+        } else {
+            scroller_el.append_child(&row_el).unwrap();
+        }
+        doc.get_element_by_id("app").unwrap().append_child(&scroller_el).unwrap();
+        (scroller_el, row_el)
+    };
+
+    for through_anchor in [false, true] {
+        let (scroller_el, row_el) = build(&mut backend, through_anchor);
+        assert_eq!(
+            row_el.get_bounding_client_rect().width(),
+            800.0,
+            "the row is as wide as its tabs, not the 300px viewport (anchor: {through_anchor})"
+        );
+        // An author width wins outright.
+        row_el.set_attribute("style", "flex-direction:row;width:500px").unwrap();
+        assert_eq!(row_el.get_bounding_client_rect().width(), 500.0);
+        scroller_el.remove();
+    }
+
+    // A vertical scroller's content still spans its width.
+    let scroller = crate::primitives::scroll_view::create(&mut backend, ScrollAxis::Vertical, None);
+    let scroller_el: web_glue::dom::HtmlElement = scroller.dyn_into().unwrap();
+    scroller_el.style().set_property("width", "300px").unwrap();
+    let body = crate::primitives::view::create(&mut backend);
+    let body_el: web_glue::dom::Element = body.dyn_into().unwrap();
+    scroller_el.append_child(&body_el).unwrap();
+    doc.get_element_by_id("app").unwrap().append_child(&scroller_el).unwrap();
+    assert_eq!(body_el.get_bounding_client_rect().width(), 300.0);
+    scroller_el.remove();
+}
+
 // ---------------------------------------------------------------------------
 // Portal focus-trap re-entrancy
 // ---------------------------------------------------------------------------

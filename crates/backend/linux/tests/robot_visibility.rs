@@ -60,12 +60,19 @@ fn is_shown_and_scroll_follow_gtk() {
     window.present();
 
     let ctx = gtk4::glib::MainContext::default();
+    // Bounded by time, not by iterations: a resize is an X round trip
+    // (configure request → ConfigureNotify → allocation, ~30 ms under
+    // xvfb), and 10 000 non-blocking iterations of an idle main context
+    // run out in a few milliseconds — before the server answers.
     let pump = |until: &dyn Fn() -> bool| {
-        for _ in 0..10_000 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
             if until() {
                 return true;
             }
-            ctx.iteration(false);
+            if !ctx.iteration(false) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
         }
         until()
     };

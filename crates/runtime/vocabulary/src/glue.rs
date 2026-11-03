@@ -68,8 +68,9 @@ pub use runtime_shared::accessibility::{
 };
 pub use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
 // The `text_input` soft-keyboard hint (`keyboard = KeyboardKind::Email`):
-// at the root so authors spell it `runtime_core::KeyboardKind`.
-pub use runtime_shared::primitives::text_input::KeyboardKind;
+// at the root so authors spell it `runtime_core::KeyboardKind`. Same for
+// the `on_blur` veto (`on_blur = || BlurOutcome::Keep`).
+pub use runtime_shared::primitives::text_input::{BlurOutcome, KeyboardKind};
 pub use runtime_shared::primitives::icon::{FillRule, IconData, IconHandle, StrokeAnimation};
 // `Easing` is re-exported (not just imported): the `stylesheet!`
 // emitter spells `::runtime_core::Easing::…` for `transitions { … }`
@@ -1496,10 +1497,10 @@ pub fn empty_absolute_view() -> Element {
 ///
 /// `test_id`: the default arm forwards to the builder's identity slot
 /// (registered by the mount handler under the `robot` feature). The
-/// `test_id_ignored` arm is for wrappers with no identity slot to forward
-/// to — just the virtualizer behind `flat_list`. Don't move a wrapper into
-/// it to save a slot: a silently dropped anchor leaves the node
-/// unaddressable by `find_element` (why `LinkPrim` has one).
+/// `test_id_ignored` arm is for a wrapper with no identity slot to forward
+/// to (none today). Don't move a wrapper into it to save a slot: a
+/// silently dropped anchor leaves the node unaddressable by `find_element`
+/// (why `LinkPrim` and `VirtualizerPrim` have one).
 macro_rules! glue_wrapper_common {
     ($wrapper:ident) => {
         impl $wrapper {
@@ -1966,7 +1967,9 @@ pub mod primitives {
     pub mod text_input {
         use super::super::*;
 
-        pub use runtime_shared::primitives::text_input::{KeyboardKind, TextInputHandle};
+        pub use runtime_shared::primitives::text_input::{
+            BlurOutcome, KeyboardKind, TextInputHandle,
+        };
 
         /// `text_input(value, on_change)` (controlled single-line).
         pub fn text_input(
@@ -1985,12 +1988,21 @@ pub mod primitives {
         }
 
         impl GlueTextInput {
-            /// Concrete `String` (not `impl Into<String>`): `ui!` wraps
-            /// literal prop values in `.into()`, and an `impl` param
-            /// would leave that coercion's target ambiguous.
             /// Focus-state notifications (`Fn(bool)`, true on focus).
             pub fn on_focus(mut self, f: impl Fn(bool) + 'static) -> Self {
                 self.b = self.b.on_focus(f);
+                self
+            }
+
+            /// Cancelable blur: runs when the field loses focus — an
+            /// outside tap / click, a programmatic or robot `blur()`.
+            /// Returning [`BlurOutcome::Keep`] vetoes a blur that would
+            /// leave nothing focused: the field keeps focus (and, on a
+            /// phone, the keyboard). Moving focus to another field still
+            /// moves it. `on_focus(false)` is the plain notification;
+            /// this is the veto.
+            pub fn on_blur(mut self, f: impl Fn() -> BlurOutcome + 'static) -> Self {
+                self.b = self.b.on_blur(f);
                 self
             }
 
@@ -2017,6 +2029,9 @@ pub mod primitives {
                 self
             }
 
+            /// Concrete `String` (not `impl Into<String>`): `ui!` wraps
+            /// literal prop values in `.into()`, and an `impl` param
+            /// would leave that coercion's target ambiguous.
             pub fn placeholder(mut self, text: String) -> Self {
                 self.b = self.b.placeholder(text);
                 self
@@ -2724,7 +2739,7 @@ pub mod primitives {
             }
         }
 
-        glue_wrapper_common!(GlueFlatList, test_id_ignored);
+        glue_wrapper_common!(GlueFlatList);
     }
 
     /// `virtual_grid` — the two-axis virtualized grid.
@@ -2795,6 +2810,15 @@ pub mod primitives {
         }
 
         impl GlueTextArea {
+            /// Key interception — see
+            /// [`GlueTextInput::on_key_down`](super::text_input::GlueTextInput::on_key_down).
+            /// Return `KeyOutcome::PreventDefault` to keep a key (Tab,
+            /// Enter) out of the text.
+            pub fn on_key_down(mut self, f: impl Fn(&KeyEvent) -> KeyOutcome + 'static) -> Self {
+                self.b = self.b.on_key_down(f);
+                self
+            }
+
             pub fn placeholder(mut self, text: String) -> Self {
                 self.b = self.b.placeholder(text);
                 self

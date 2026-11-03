@@ -443,13 +443,18 @@ pub(super) fn frame_sheet() -> Rc<runtime_shared::StyleSheet> {
 /// The probe in the body scroller: absolutely placed across the
 /// scroller's padding box at zero height, so its width is the viewport's
 /// (a classic scrollbar excluded) whatever the content's width.
+///
+/// `width: 100%`, not `right: 0`: the body scroller scrolls along X when
+/// the table does, and an X-scroller's child without a width of its own is
+/// sized `max-content` (`css::HSCROLL_CONTENT_RESET`, and the same default
+/// in `runtime_layout`) — which would make an empty probe 0 wide.
 pub(super) fn probe_sheet() -> Rc<runtime_shared::StyleSheet> {
     static KEY: u8 = 0;
     runtime_shared::cached_stylesheet(&KEY as *const u8 as usize, || {
         runtime_shared::StyleSheet::r#static(StyleRules {
             position: Some(glue::Position::Absolute),
             left: Some(px(0.0)),
-            right: Some(px(0.0)),
+            width: Some(glue::Tokenized::Literal(glue::Length::Percent(100.0))),
             top: Some(px(0.0)),
             height: Some(px(0.0)),
             ..Default::default()

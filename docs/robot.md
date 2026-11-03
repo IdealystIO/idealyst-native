@@ -69,20 +69,44 @@ of elements in document order, and `find_element` the first (a lone
 ```json
 {"id": 7, "kind": "Toggle", "test_id": "wifi", "label": null,
  "visible": true, "in_viewport": true,
+ "visible_frame": {"x": 16, "y": 120, "width": 51, "height": 31},
  "state": {"checked": true, "disabled": false}}
 ```
 
-`visible` and `in_viewport` are on every element; `state` on elements that
-have any (below). `get_snapshot` nodes carry the same fields.
+`visible` and `in_viewport` are on every element, `visible_frame` on every
+element whose frame is known; `state` on elements that have any (below).
+`get_snapshot` nodes carry the same fields.
 
 ### Visibility
 
-`visible` follows Playwright's rule: the toolkit shows the element and its
-laid-out box is not empty. "Shown" is the backend's own answer
+`visible` means a user could see the element: the toolkit shows it, its
+laid-out box is not empty, and no ancestor that clips without scrolling
+(`overflow: hidden`) cuts that box away entirely — text inside a drawer
+collapsed to 0 pt is not visible. "Shown" is the backend's own answer
 (`IntrospectionOps::is_shown`): in a window, not hidden by itself or an
-ancestor, not fully transparent. Scrolled-away content is still visible;
-`in_viewport` says whether its box overlaps the window (absent when the
+ancestor, not fully transparent (opacity 0 on it or any ancestor).
+Content a scroller or the window cuts off (scrolled away, beyond the
+window) is still visible, as in Playwright — scrolling reveals it.
+
+`visible_frame` is the part of the element's box left on screen: its
+window frame cut by the window and by every registered ancestor that clips
+its content — `overflow: hidden`, a `scroll_view`, a list (a virtualized
+row is cut by its list). Zero-sized when nothing is left or the element is
+not visible. `in_viewport` is whether it is non-empty (absent when the
 frame or the window size is unknown).
+
+How an ancestor clips is the backend's read of the live object
+(`IntrospectionOps::content_clip`), computed once in the vocabulary:
+
+| Backend | Scrolls | Cuts (`overflow: hidden`) |
+|---|---|---|
+| Web | computed `overflow-x`/`-y` `auto` or `scroll` | `hidden` or `clip` |
+| macOS | an `NSScrollView` | the layer's `masksToBounds` |
+| iOS | a `UIScrollView` (`scroll_view`, list, `text_area`) | `clipsToBounds` |
+| Android | `canScrollVertically`/`Horizontally` either way | a `ViewGroup` with `getClipChildren()` (Android's default) |
+| Linux | a `GtkScrolledWindow` | an `IdealystView` whose snapshot clips (`overflow: hidden` or a radius) |
+| Windows | a view with a scroll | `overflow: hidden` — the painters' clip |
+| Terminal | not yet: nothing counts as clipping |  |
 
 | Backend | "Shown" means |
 |---|---|
@@ -107,7 +131,7 @@ would see on screen — with no help from the app:
 | `value` | `text_input`, `text_area` (string), `slider` (number) | The text the field shows; the slider's value, snapped to `step` |
 | `checked` | `toggle` | What the switch shows |
 | `disabled` | toggle, slider, text input/area, pressable, button | Whether it refuses input |
-| `focused` | `text_input` | Whether it holds keyboard focus |
+| `focused` | `text_input`, `text_area` | Whether it holds keyboard focus, read from the toolkit at query time: web `document.activeElement`, iOS `isFirstResponder`, Android `View.isFocused()`, macOS the window's first responder (the field editor for a `text_input`), Linux the window's focus widget, Windows `GetFocus()`. A background or headless window, which gets no focus events, still reports it. A backend that can't read it falls back on the field's last focus/blur notification |
 | `scroll` | `scroll_view` | `{x, y}` content offset, read from the native scroller |
 | `hovered`, `pressed` | any element whose style has `state hovered` / `state pressed` variants | Whether that style state is on, as the backend set it |
 
@@ -147,7 +171,7 @@ These actions run inside the app, through the framework: they test the
 framework's logic and the backend's widget updates, not the OS's event
 delivery or hit testing. For that, use the native tier below.
 
-## Native input: `tap_native`, `drag_native`, `hover_native`, `press_native`
+## Native input: `tap_native`, `drag_native`, `hover_native`, `press_native`, `key`
 
 `tap_native {element_id}` taps the element's center with real platform
 input, through the toolkit's own event path — hit testing, overlays,
@@ -172,7 +196,13 @@ tap"). It answers `{mechanism}`:
 
 The hit test (`IntrospectionOps::hit_contains`) is the toolkit's own:
 `elementFromPoint`, `-[NSView hitTest:]`, `-[UIWindow hitTest:]`, the
-Windows scene's hit walk. Android has none (Android delivers a touch to
+Windows scene's hit walk. UIKit's never returns a view with
+`userInteractionEnabled = NO` — every label and image — so on iOS a tap
+on a text that lands on its interactive ancestor (the pressable or row
+around it) reaches the text, as the event bubbles there on web; one that
+lands there through an interactive view the hit test skipped
+(`pointer_events: none`), or outside a view on the way (a row overhanging
+its cell), does not. Android has none (Android delivers a touch to
 the deepest clickable view, which geometry can't tell), so there the
 injected event is the whole check.
 
@@ -184,9 +214,48 @@ deepest element in the addressed subtree whose hit test contains the
 point, then bubbles up from there as `click` does.
 
 robot-test's `Locator::click()` is native-first: it waits for the element
-to be visible and enabled, then `tap_native`, falling back to the robot's
-`click` only where the backend answers `unsupported`. `tap_native()` has
-no fallback; `dispatch_click()` is the robot's `click` on purpose.
+to be visible and enabled, scrolls it into view when it is out of it (below),
+then `tap_native`, falling back to the robot's `click` only where the backend
+answers `unsupported`. `tap_native()` has no fallback; `dispatch_click()` is
+the robot's `click` on purpose.
+
+### Scrolling into view
+
+`scroll_into_view {element_id}` does what Playwright's
+`scrollIntoViewIfNeeded` does: every scroll view the element sits in,
+innermost first, moves by the least that shows the whole element inside it —
+and, for the outermost, inside the window. Each moves only along the axes it
+scrolls (a horizontal tab strip never gets a vertical offset); an element
+bigger than its scroll view is aligned to the start; an element already in
+view moves nothing. It answers `{scrolled: [{element_id, x, y}]}`, the
+scroll views it moved and their new offsets.
+
+It is implemented once, in the vocabulary (`Robot::scroll_into_view`), over
+what every backend already reports — the window frames of the element and
+its scroll views (`IntrospectionOps::absolute_frame`) and each scroller's
+offset — and moves them through the same route as `set_scroll`. The shifts
+come from one read of the frames (scrolling a view by `d` moves its content
+by `-d`), so a backend that settles a scroll's frames a pass later is not
+scrolled twice.
+
+robot-test's `click()` and `tap_native()` use it before tapping an element
+that is outside the window, and again — then tap at once — when the tap is
+refused as outside the window or covered (an element in the window but
+clipped by its scroll view: the point lands on what is beside it). Opt out
+per locator with `.no_scroll()`, or for the app with
+`App::set_auto_scroll(false)`; `Locator::scroll_into_view()` scrolls without
+tapping. An app from before the verb answers `unknown command`, and the tap
+goes ahead as before.
+
+A virtualized list (`flat_list`, `virtual_grid`) is an element of kind
+`Virtualizer` (`flat_list(test_id = …)` anchors it), and its rows register
+under it — each row sits in its own native cell on every backend, but
+`get_parent`, `get_children`, `within` and the snapshot see it inside the
+list. Only a mounted element can be scrolled to. A virtualized list's rows
+beyond its window aren't elements yet, and the list has no `set_scroll`,
+so `scroll_into_view` does not move it; bring the
+row in with the list's own scroll (its handle's `scroll_to_index`, exposed
+to a test through a component `#[method]` or a robot function).
 
 `hover_native {element_id}` moves a real mouse over the element's center
 with no button held (`on_hover`, the `state hovered` style).
@@ -203,6 +272,48 @@ can check the `state pressed` style in between. Same point checks as
 
 macOS posts its mouse events, so a pressed state lands on the next run-loop
 turn: poll for it.
+
+### Keys: `key`
+
+`key {key, modifiers?, element_id?}` presses a key as a user at the keyboard
+would: a key down and up, to whatever holds keyboard focus. With
+`element_id` the element is focused first (Playwright's `locator.press`; a
+disabled field refuses); without, the key goes to the current focus or the
+window (`page.keyboard.press`). `key` takes Playwright's names: `Enter`,
+`Escape`, `Tab`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`,
+`PageDown`, `ArrowUp`/`Down`/`Left`/`Right`, `Space`, `F1`–`F24`, `Shift`,
+`Control`, `Alt`, `Meta`, `KeyA`–`KeyZ`, `Digit0`–`Digit9`, or any single
+character. Modifiers are `Shift`, `Control`, `Alt`, `Meta` and
+`ControlOrMeta` (Command on Apple platforms and on a web page in a Mac
+browser, Control elsewhere), given in `modifiers` or joined to the key with
+`+` (`"Meta+K"`, `"Shift+Tab"`). Every press carries the `key` and `code` a
+US keyboard reports, a capital or shifted symbol carries Shift, and a
+capital with a shortcut modifier means the letter (`"Meta+K"` reports
+`key: "k"`, as Cmd+K does). An unknown name is an error. The answer is
+`{mechanism}`:
+
+| Backend | Mechanism | How |
+|---|---|---|
+| Web | `native` | `keydown` / `keypress` / `keyup` `KeyboardEvent`s on `document.activeElement` (or `<body>`), bubbling, so the field's `on_key_down`, `on_key` listeners and an overlay's Escape listener hear them. Script-dispatched events are untrusted and the browser performs no default action, so the backend performs the ones a test relies on when `keydown` isn't prevented: typing, Backspace/Delete, arrows/Home/End and Ctrl/⌘+A in a field (then its `input` event, so `on_change` runs), a newline for Enter in a `text_area`, Tab/Shift+Tab focus traversal, Enter/Space clicking a focused button or link |
+| macOS | `native` | `NSEvent` key events posted to the app (`postEvent:`), with `flagsChanged` for each modifier around them, after making the window key: the key window's first responder types or deletes, the app key monitor hears them |
+| Windows | `native` | `WM_KEYDOWN` / `WM_KEYUP` (`WM_SYS*` with Alt) posted to the focused child, the modifier bits set in the thread's keyboard state while they're delivered; `TranslateMessage` makes the `WM_CHAR` |
+| Android | `native` | `KeyEvent` down and up to the decor view's `dispatchKeyEvent`, the hardware-keyboard path; a character no key types goes as `ACTION_MULTIPLE` text |
+| iOS, Linux | `dispatch` | An app can't create key events (no public API on iOS; Linux needs XTest). The framework's key paths run instead: the focused field's `on_key_down`, the app's `on_key` listeners, then, unless either prevented it, the field's text edit (a typed character appended, Backspace removing the last one, Enter a newline in a `text_area`: the caret is taken to be at the end) and, for Escape, the topmost overlay's `on_dismiss` — then the release. A window-level press (no `element_id`) edits the `text_input` that reports focus. Tab doesn't move focus |
+
+A single-line field's Enter has no default anywhere: submitting is the
+field's `on_key_down` seeing `"Enter"`. An Escape nothing consumed closes
+the topmost shown overlay with an `on_dismiss`, and only that one, on every
+backend: through the toolkit's key routing on web, macOS, Windows, Android
+and Linux, and on `dispatch` through the framework's stack of open
+dismissable portals (`runtime_vocabulary::escape_dismiss`) — the same
+stack an iPad's hardware-keyboard Escape uses, since UIKit has no Escape
+handling for the window-level views a portal mounts as.
+
+Tab traversal is the one toolkit default `dispatch` lacks: focus order is
+the toolkit's (which controls take focus, in what visual order), and the
+framework has no cross-platform model of it to run instead. A `text_area`
+reports no focus, so a window-level press reaches one only when the press
+names it (`element_id`).
 
 ## Functions
 
@@ -272,7 +383,7 @@ Deep links need no SDK: `open_link {url}` delivers a URL as the OS would
 | Signals | `list_watched_signals`, `read_signal`, `write_signal` (`watch_signal_writable` only), `get_signal_history` |
 | Functions | `list_functions`, `call_function`, `poll_function` (above) |
 | Viewport | `get_viewport` → `{width, height, breakpoint}` (logical px; `breakpoint` is `xs`…`xl`, what the app's responsive layout sees); `set_viewport {width, height}` resizes the window so its content area is that size — desktop backends only (macOS `setContentSize:`, Windows `SetWindowPos` on the top-level window, Linux the GTK window's default size), through `IntrospectionOps::resize_window`; elsewhere an error naming the alternative (the runner's `--viewport` on web, a device or simulator on mobile). A maximized or full-screen window refuses; the new size reaches `get_viewport` through the window's ordinary resize path |
-| App | `get_logs`, `clear_logs`, `get_identity`, `ping` |
+| App | `get_logs`, `clear_logs`, `get_identity`, `ping`, `get_platform` → `{platform}` (`web`, `ios`, `android`, `macos`, `linux`, `windows` — the `idealyst test --<platform>` names — or `tvos`, `androidtv`, `roku`, a custom backend's own name, `unknown`) |
 
 ### Screenshots on web
 
@@ -331,13 +442,18 @@ fn sign_in(app: &mut App) {
   `app.locate(selector)` turns it back into a locator.
 - Act: `click` (native tap first, see above), `tap_native`,
   `dispatch_click`, `fill` / `type_text`, `set_toggle`, `set_slider`,
-  `focus`, `blur`, `scroll_to`, `drag`, `drag_with_hold`, `drag_native`,
-  `hover_native`, `press_native`, `release_native`.
+  `focus`, `blur`, `scroll_to`, `scroll_into_view`, `drag`,
+  `drag_with_hold`, `drag_native`, `hover_native`, `press_native`,
+  `release_native`; `.no_scroll()` before `click` / `tap_native` taps
+  without scrolling first.
 - Read: `state()` ([`ElementState`]), `is_visible()`, `label()`, `count()`.
 - Assert: `assert_visible`, `assert_hidden`, `assert_in_viewport`, `assert_text`,
   `assert_text_contains`, `assert_value`, `assert_checked`,
   `assert_enabled`, `assert_disabled`, `assert_focused`, `assert_hovered`,
   `assert_pressed`, `assert_count`.
+- Platform: `platform()` (`Platform::Ios`, … with `is_mobile()` /
+  `is_desktop()` / `is_native()`; `try_platform()` for an app too old to
+  say) — pair with `viewport().breakpoint` for the form factor.
 - Viewport: `viewport()` (`width`, `height`, `breakpoint`),
   `set_viewport(w, h)` (waits for the app to report the size; panics where
   the app can't resize itself) / `try_set_viewport` (returns why instead).
@@ -367,6 +483,24 @@ timeout less 0.5 s), which the relay and the app's bridge use as their
 wait, so the app side reports first; a late reply is skipped by id. The
 typed error is `robot_test::CallError` (`AppTimedOut`, `ClientTimedOut`,
 `NoApp`, `Verb`).
+
+A test that only means something on some platforms declares them:
+`#[robot_test(platforms = [ios, android])]` (names `web`, `ios`,
+`android`, `macos`, `linux`, `windows`; groups `mobile`, `desktop`,
+`native`). Elsewhere it is never reported passed. libtest can't skip at
+run time, so the macro puts the platforms in the test's name and its
+`#[ignore]`: the test is `<fn>::robot_only_ios_android`, ignored with the
+reason. `idealyst test` lists the binary's tests, asks the app
+`get_platform`, and runs the ignored tests that belong there by name
+(`--include-ignored --exact …`), so the others count as `filtered out`
+and are named in a `[test] not on web: …` line; when none belong, the
+run is the plain one and they show `ignored`. Under a bare `cargo test`
+they show `ignored, runs on ios, android only: …`; `cargo test --
+--include-ignored` runs them, and one whose app is on another platform
+prints `SKIP` and returns. The body sits in a module (`use super::*`),
+so it names the file's items through `crate::`, not `super::`. A test
+with no app to reach still prints `SKIP` and returns — bare `cargo test`
+without `idealyst dev` up stays green; `idealyst test` always has an app.
 
 Per-test setup is a `Fixture` the test asks for by type
 (`fn t(app: &mut App, user: &SignedIn)`, by `&` or `&mut`): `setup(app)`

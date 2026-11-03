@@ -55,6 +55,14 @@ struct Mock {
     pending_viewport: Option<(f64, f64)>,
     /// `set_viewport` answers unsupported (a browser tab, a phone).
     viewport_fixed: bool,
+    /// "tab" (50, off the window to the right) and "clipped" (51, in the
+    /// window but clipped by its scroll view) after `scroll_into_view`.
+    tab_revealed: bool,
+    clipped_revealed: bool,
+    /// Native taps "tab" / "clipped" received.
+    revealed_taps: u32,
+    /// `get_platform`'s answer; `None` answers as an app from before it.
+    platform: Option<&'static str>,
 }
 
 /// A mock app:
@@ -169,6 +177,8 @@ fn respond(cmd: &str, args: &Value, m: &mut Mock) -> Result<Value, String> {
             Some("closed") => json!({ "id": 20, "kind": "View", "label": null, "test_id": "closed", "visible": false }),
             Some("cta") => json!({ "id": 30, "kind": "Button", "label": format!("Taps: {}", m.cta_taps), "test_id": "cta", "visible": true, "state": { "disabled": false } }),
             Some("below") => json!({ "id": 21, "kind": "View", "label": null, "test_id": "below", "visible": true, "in_viewport": false }),
+            Some("tab") => json!({ "id": 50, "kind": "Pressable", "label": null, "test_id": "tab", "visible": true, "in_viewport": m.tab_revealed }),
+            Some("clipped") => json!({ "id": 51, "kind": "Pressable", "label": null, "test_id": "clipped", "visible": true, "in_viewport": true }),
             _ => Value::Null,
         },
         "find_all_elements" if args.get("label").is_some() || args.get("within").is_some() || args.get("label_contains").is_some() => {
@@ -196,7 +206,32 @@ fn respond(cmd: &str, args: &Value, m: &mut Mock) -> Result<Value, String> {
         }
         // "inc" is on a backend without native input; "cta" is covered by
         // a scrim for two attempts, then takes a native tap.
+        "get_platform" => match m.platform {
+            Some(p) => json!({ "platform": p }),
+            None => return Err("unknown command: get_platform".into()),
+        },
+        "scroll_into_view" => match args["element_id"].as_u64() {
+            Some(50) => {
+                m.tab_revealed = true;
+                json!({ "scrolled": [{ "element_id": 49, "x": 600.0, "y": 0.0 }] })
+            }
+            Some(51) if !m.clipped_revealed => {
+                m.clipped_revealed = true;
+                json!({ "scrolled": [{ "element_id": 49, "x": 120.0, "y": 0.0 }] })
+            }
+            _ => json!({ "scrolled": [] }),
+        },
         "tap_native" => match args["element_id"].as_u64() {
+            Some(50) if !m.tab_revealed => {
+                return Err("action 'tap_native' refused: the point (700, 20) is outside the window (scroll the element into view)".into())
+            }
+            Some(51) if !m.clipped_revealed => {
+                return Err("action 'tap_native' refused: another element covers the point (390, 20) — View test_id=\"next\" would receive the tap".into())
+            }
+            Some(50 | 51) => {
+                m.revealed_taps += 1;
+                json!({ "mechanism": "native" })
+            }
             Some(30) => {
                 m.cta_attempts += 1;
                 if m.cta_attempts <= 2 {
@@ -636,4 +671,83 @@ fn viewport_is_read_and_set() {
     assert!(err.contains("unsupported on this platform"), "{err}");
     let msg = panic_message(|| app.set_viewport(800.0, 600.0));
     assert!(msg.contains("set_viewport(800, 600)") && msg.contains("unsupported"), "got: {msg}");
+}
+
+fn verbs(state: &Arc<Mutex<Mock>>) -> Vec<String> {
+    state.lock().unwrap().requests.iter().map(|(cmd, _)| cmd.clone()).filter(|c| c != "find_element").collect()
+}
+
+/// CrewForge's phone tab strip: a tab off the window. `click` scrolls it
+/// into view first, as Playwright does, then taps it — one scroll, one tap.
+#[test]
+fn click_scrolls_an_out_of_view_element_into_view_first() {
+    let (addr, state) = spawn_mock_app_with(Mock::default());
+    let mut app = App::connect(addr).unwrap();
+    app.test_id("tab").click();
+    assert_eq!(state.lock().unwrap().revealed_taps, 1);
+    assert_eq!(verbs(&state), ["scroll_into_view", "tap_native"]);
+}
+
+/// In the window but clipped by its scroll view, the tap lands on a
+/// neighbour (the robot reports it covered): `click` scrolls and taps
+/// again at once, rather than waiting out a cover that is only a scroll.
+#[test]
+fn click_scrolls_an_element_its_scroll_view_clips_and_taps_again() {
+    let (addr, state) = spawn_mock_app_with(Mock::default());
+    let mut app = App::connect(addr).unwrap();
+    app.set_timeout(Duration::from_millis(200));
+    app.test_id("clipped").click();
+    assert_eq!(state.lock().unwrap().revealed_taps, 1);
+    assert_eq!(verbs(&state), ["tap_native", "scroll_into_view", "tap_native"]);
+}
+
+/// Opting out taps where the element is: off the window, it waits, then
+/// fails, as it would for a user who doesn't scroll — per locator, or for
+/// the whole app.
+#[test]
+fn no_scroll_and_auto_scroll_off_tap_without_scrolling() {
+    let (addr, state) = spawn_mock_app_with(Mock::default());
+    let mut app = App::connect(addr).unwrap();
+    app.set_timeout(Duration::from_millis(200));
+    let msg = panic_message(|| app.test_id("tab").no_scroll().click());
+    assert!(msg.contains("outside the window"), "got: {msg}");
+    app.set_auto_scroll(false);
+    let msg = panic_message(|| {
+        app.test_id("tab").tap_native();
+    });
+    assert!(msg.contains("outside the window"), "got: {msg}");
+    assert!(!verbs(&state).iter().any(|v| v == "scroll_into_view"), "{:?}", verbs(&state));
+    assert_eq!(state.lock().unwrap().revealed_taps, 0);
+
+    // `scroll_into_view` itself still scrolls.
+    app.test_id("tab").scroll_into_view();
+    assert!(state.lock().unwrap().tab_revealed);
+}
+
+/// An app from before `scroll_into_view` answers "unknown command": the
+/// tap goes ahead as it did before (waits for a cover, then taps).
+#[test]
+fn click_on_an_app_without_scroll_into_view_still_taps() {
+    let (addr, state) = spawn_mock_app_with(Mock::default());
+    let mut app = App::connect(addr).unwrap();
+    app.test_id("cta").click();
+    assert_eq!(state.lock().unwrap().cta_taps, 1);
+}
+
+/// `platform()` asks the app once; an app from before `get_platform`
+/// answers `None` from `try_platform`.
+#[test]
+fn platform_is_asked_once_and_absent_on_an_old_app() {
+    use robot_test::Platform;
+    let (addr, state) = spawn_mock_app_with(Mock { platform: Some("ios"), ..Mock::default() });
+    let mut app = App::connect(addr).unwrap();
+    assert_eq!(app.platform(), Platform::Ios);
+    assert!(app.platform().is_mobile());
+    assert_eq!(verbs(&state).iter().filter(|v| *v == "get_platform").count(), 1);
+
+    let mut old = App::connect(spawn_mock_app()).unwrap();
+    assert_eq!(old.try_platform(), Ok(None));
+    assert_eq!(Platform::from_id("windows"), Platform::Windows);
+    assert_eq!(Platform::from_id("tvos"), Platform::Other("tvos".into()));
+    assert!(Platform::Linux.is_native() && !Platform::Web.is_native());
 }

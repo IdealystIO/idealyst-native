@@ -297,6 +297,7 @@ pub mod slots;
 #[cfg(feature = "ui-overlay")]
 pub mod overlay;
 pub mod style_attach;
+pub mod escape_dismiss;
 pub mod keyboard;
 pub mod safe_area;
 pub mod key_input;

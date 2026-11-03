@@ -255,6 +255,41 @@ pub(crate) fn is_shown(node: &web_glue::dom::Node) -> Option<bool> {
     }
 }
 
+/// Whether `node` is the document's focused element (see
+/// `IntrospectionOps::is_focused`). Read from `document.activeElement`, not
+/// from `focus`/`blur` events: Chrome moves `activeElement` on
+/// `element.focus()` in a window that lacks OS focus (headless
+/// `idealyst test --web`, a background window) but defers the `focus` event
+/// until the window is focused — which a headless run never is.
+pub(crate) fn is_focused(doc: &web_glue::dom::Document, node: &web_glue::dom::Node) -> bool {
+    doc.active_element().is_some_and(|a| node.is_same_node(Some(a.as_ref())))
+}
+
+web_glue::import! {
+    /// The computed `overflow` of `n`: 0 visible, 1 cut (`hidden` /
+    /// `clip`), 2 scrolls (`auto` / `scroll` on either axis — CSS turns the
+    /// other axis's `visible` into `auto` then), 3 can't tell (not an
+    /// element).
+    fn js_content_clip(n: u32) -> u32 =
+        "(n) => { const e = G.get(n); if (!e || e.nodeType !== 1) return 3; \
+           const s = getComputedStyle(e); const v = [s.overflowX, s.overflowY]; \
+           if (v.some(o => o === 'auto' || o === 'scroll')) return 2; \
+           return v.some(o => o === 'hidden' || o === 'clip') ? 1 : 0; }";
+}
+
+/// How the browser clips `node`'s descendants (see
+/// `IntrospectionOps::content_clip`) — its computed `overflow`.
+pub(crate) fn content_clip(node: &web_glue::dom::Node) -> Option<runtime_vocabulary::caps::ContentClip> {
+    use runtime_vocabulary::caps::ContentClip;
+    let raw = AsRef::<web_glue::JsValue>::as_ref(node).raw();
+    match unsafe { js_content_clip(raw) } {
+        0 => Some(ContentClip::Visible),
+        1 => Some(ContentClip::Hidden),
+        2 => Some(ContentClip::Scroll),
+        _ => None,
+    }
+}
+
 web_glue::import! {
     /// 1 when the topmost element at the viewport point `(x, y)` is `n`
     /// or inside it (`elementFromPoint` honors `pointer-events`), else 0;
@@ -407,6 +442,24 @@ mod is_shown_tests {
         assert_eq!(shown(&el(&hidden_parent, "")), Some(false), "an ancestor hides it");
         let detached = doc.create_element("div").unwrap();
         assert_eq!(shown(&detached), Some(false), "not in the document");
+        root.remove();
+    }
+
+    /// The robot's clipping read on web is the computed `overflow`: what
+    /// cuts a descendant's visible box, and whether scrolling reveals it.
+    #[wasm_bindgen_test]
+    fn content_clip_is_the_computed_overflow() {
+        use runtime_vocabulary::caps::ContentClip;
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let root = doc.create_element("div").unwrap();
+        doc.body().unwrap().append_child(&root).unwrap();
+        let clip = |e: &web_glue::dom::Element| super::content_clip(e.as_ref());
+
+        assert_eq!(clip(&el(&root, "")), Some(ContentClip::Visible));
+        assert_eq!(clip(&el(&root, "overflow:hidden")), Some(ContentClip::Hidden));
+        assert_eq!(clip(&el(&root, "overflow:clip")), Some(ContentClip::Hidden));
+        assert_eq!(clip(&el(&root, "overflow:auto")), Some(ContentClip::Scroll));
+        assert_eq!(clip(&el(&root, "overflow-x:hidden;overflow-y:scroll")), Some(ContentClip::Scroll));
         root.remove();
     }
 

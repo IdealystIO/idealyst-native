@@ -131,9 +131,34 @@ pub const VIEW_FLEX_RESET: &str = ":where([data-iv]) { display: flex; flex-direc
 /// The marker attribute [`VIEW_FLEX_RESET`] matches.
 pub const VIEW_MARKER_ATTR: &str = "data-iv";
 
+/// The content of a horizontally scrolling `scroll_view` (horizontal or
+/// two-axis) is as wide as what it holds: `width: max-content` on each
+/// child, reached through up to two nested reactive anchors
+/// ([`REACTIVE_ANCHOR_STYLE`], `display: contents`, so their children are
+/// the scroller's flex items).
+///
+/// A scroll view's children stack in a flex column, so a horizontal
+/// scroller's content is a cross-axis child that `align-items: stretch`
+/// would make exactly the viewport's width, with everything past the
+/// viewport overflowing it. The native backends get the same default from
+/// `runtime_layout` (Taffy `width: max-content` on horizontal-scroll
+/// content), where an overflowing child cannot be clicked: AppKit and
+/// UIKit hit-test a view only inside its superview's bounds. Zero
+/// specificity, so an author `width` wins; an author `min_width: 100%`
+/// floors short content at the viewport.
+pub const HSCROLL_CONTENT_RESET: &str = ":where([data-ihx] > *, \
+[data-ihx] > [style=\"display: contents\"] > *, \
+[data-ihx] > [style=\"display: contents\"] > [style=\"display: contents\"] > *) \
+{ width: max-content; }";
+
+/// The marker attribute [`HSCROLL_CONTENT_RESET`] matches: set on every
+/// `scroll_view` that scrolls along X.
+pub const HSCROLL_MARKER_ATTR: &str = "data-ihx";
+
 /// The full base reset stylesheet ([`BOX_SIZING_RESET`] + [`BUTTON_RESET`]
 /// + [`FORM_FONT_RESET`] + [`IMG_FIT_RESET`] +
-/// [`DEFAULT_TEXT_COLOR_RESET`] + [`VIEW_FLEX_RESET`] + [`PRE_MARGIN_RESET`]).
+/// [`DEFAULT_TEXT_COLOR_RESET`] + [`VIEW_FLEX_RESET`] + [`PRE_MARGIN_RESET`] +
+/// [`HSCROLL_CONTENT_RESET`]).
 /// The SSR backend emits this
 /// once in `<head>`; the web backend inserts the rules at low sheet indices.
 ///
@@ -148,7 +173,7 @@ pub const VIEW_MARKER_ATTR: &str = "data-iv";
 /// default text color, names the token every backend already defaults to
 /// and falls back to a concrete color when that token isn't installed.
 pub fn base_reset_css() -> String {
-    format!("{BOX_SIZING_RESET}{BUTTON_RESET}{FORM_FONT_RESET}{IMG_FIT_RESET}{DEFAULT_TEXT_COLOR_RESET}{VIEW_FLEX_RESET}{PRE_MARGIN_RESET}")
+    format!("{BOX_SIZING_RESET}{BUTTON_RESET}{FORM_FONT_RESET}{IMG_FIT_RESET}{DEFAULT_TEXT_COLOR_RESET}{VIEW_FLEX_RESET}{PRE_MARGIN_RESET}{HSCROLL_CONTENT_RESET}")
 }
 
 /// Default inline style for a `Link` primitive's `<a>`: strip the
@@ -1951,6 +1976,17 @@ mod tests {
 
     use super::*;
     use runtime_shared::{Color, Length, TokenEntry, TokenValue};
+
+    /// The horizontal-scroll content rule names the marker attribute and
+    /// the anchor style the backends actually stamp, and ships in the base
+    /// reset SSR emits.
+    #[test]
+    fn hscroll_content_reset_matches_the_markers_the_backends_stamp() {
+        assert!(HSCROLL_CONTENT_RESET.contains(&format!("[{HSCROLL_MARKER_ATTR}] > *")));
+        assert!(HSCROLL_CONTENT_RESET.contains(&format!("[style=\"{REACTIVE_ANCHOR_STYLE}\"] > *")));
+        assert!(HSCROLL_CONTENT_RESET.contains("width: max-content"));
+        assert!(base_reset_css().contains(HSCROLL_CONTENT_RESET));
+    }
 
     /// Inline-run underlines: the three longhands, never the shorthand.
     /// `text-decoration: underline dotted` would reset

@@ -52,6 +52,9 @@ pub struct VirtualizerPrim {
     pub layout: VirtualLayout,
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
+    /// Robot/automation anchor (`test_id = …`): the list's element in the
+    /// robot registry, which its rows register under.
+    pub test_id: Option<&'static str>,
     pub ref_fill: Option<Box<dyn FnOnce(VirtualizerHandle)>>,
     /// Scroll observer for the virtualizer's own scroller. Forwarded
     /// verbatim into `VirtualizerCallbacks::on_scroll`; see there for

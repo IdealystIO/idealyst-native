@@ -29,7 +29,14 @@
 //! .within(Selector::test_id("login"))` — which reach the app as one query.
 //! Per-test setup is a [`Fixture`] the test names as a parameter
 //! (`fn t(app: &mut App, user: &SignedIn)`), set up before and torn down
-//! after the body.
+//! after the body. A test that only applies on some platforms declares them
+//! (`#[robot_test(platforms = [ios, android])]`) and is reported ignored or
+//! filtered out elsewhere, never passed; [`App::platform`] tells a test which
+//! platform it is on.
+//!
+//! `click` and `tap_native` scroll an element that is out of view into it
+//! first, through every scroll view it sits in ([`Locator::scroll_into_view`]),
+//! unless the locator says [`Locator::no_scroll`].
 //!
 //! Because `#[robot_test]` expands to a real `#[test]`, `cargo test` discovers
 //! and runs these. But they need a live app + relay, which `cargo test` can't
@@ -47,8 +54,8 @@ mod harness;
 pub mod parity;
 
 pub use app::{
-    App, Component, ElementState, FunctionArg, FunctionInfo, Locator, NavigatorInfo, ScrollOffset, Selector,
-    SignalAssert, Viewport, DEFAULT_TIMEOUT,
+    parse_key, App, Component, ElementState, FunctionArg, FunctionInfo, Locator, NavigatorInfo, Platform, ScrollOffset,
+    Selector, SignalAssert, Viewport, DEFAULT_TIMEOUT,
 };
 pub use client::{
     default_apps_dir, default_apps_dirs, discover, discover_all, discover_project, is_transient, CallError,
@@ -68,4 +75,6 @@ pub use serde_json::{json, Value};
 // Called by the `#[robot_test]` expansion — public for the macro, hidden from
 // the authoring surface.
 #[doc(hidden)]
-pub use harness::{__acquire, Acquire, AppGuard};
+pub use harness::{__acquire, __acquire_on, Acquire, AppGuard};
+/// How `idealyst test` reads which platforms a test declared.
+pub use harness::{platform_marker, platforms_of_test};

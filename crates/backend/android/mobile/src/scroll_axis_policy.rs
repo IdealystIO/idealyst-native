@@ -54,7 +54,10 @@ pub(crate) const SCROLL_CONTAINER_CLASSES: [&str; 3] = [
 ///   height is the sum of its children, so it overflows the viewport and
 ///   the scroller has somewhere to go. With Taffy's default `Row` the
 ///   inner's height collapses to one row.
-/// - Horizontal lays children out left to right (`Row`).
+/// - Horizontal lays children out left to right (`Row`). The inner is a
+///   direct child of the X-scrolling outer, so `runtime_layout` sizes it
+///   `width: max-content` — as wide as its children, floored at the
+///   viewport by `min_width: 100%`.
 /// - Both additionally sizes the inner to its content WIDTH rather than
 ///   stretching it to the viewport (`align_self: FlexStart`), with the
 ///   viewport as the floor (`min_width: 100%`). The inner's children
@@ -227,6 +230,19 @@ mod tests {
         assert!((outer.height - 300.0).abs() < 0.5, "got {}", outer.height);
         assert!((inner.width - 393.0).abs() < 0.5, "got {}", inner.width);
         assert!((inner.height - 1000.0).abs() < 0.5, "got {}", inner.height);
+    }
+
+    /// REGRESSION: a horizontal scroller's inner is as wide as the content
+    /// it holds, not the viewport. Stretched to the viewport (as it was),
+    /// every child past the first screenful sat outside the inner's
+    /// frame, where the inner `FrameLayout` clips it and touch dispatch
+    /// never reaches it — a tab strip's later tabs.
+    #[test]
+    fn regression_horizontal_scroll_content_spans_its_children_not_the_viewport() {
+        let (outer, inner, row) = layout_table(ScrollAxis::Horizontal, 1);
+        assert!((outer.width - 393.0).abs() < 0.5, "viewport width bounded, got {}", outer.width);
+        assert!((inner.width - 800.0).abs() < 0.5, "inner spans the row, got {}", inner.width);
+        assert!((row.width - 800.0).abs() < 0.5, "row spans its cells, got {}", row.width);
     }
 
     /// Content shorter than a vertical viewport still fills it, so a

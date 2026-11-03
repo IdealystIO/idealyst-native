@@ -1485,6 +1485,18 @@ pub fn mount_screen_in_vc(mtm: MainThreadMarker, screen: &UIView) -> Retained<UI
 /// superview answers it at the moment of the pass, so nothing goes
 /// stale when a screen is released and its pointer recycled.
 /// `mount_screen_in_vc` is the producer of such roots.
+/// The box of a root that lives in a cell someone else places: a mounted
+/// `virtual_grid` cell (the grid engine's box) or a `flat_list` row (its
+/// `UICollectionViewCell`'s `contentView`). See `root_box_policy`.
+fn hosted_cell_box(key: usize, view: &UIView) -> Option<(f32, f32)> {
+    virtual_grid::cell_box(key).or_else(|| virtualizer::row_box(key, view))
+}
+
+/// How far a `Measured` row's natural size may differ from its cell before
+/// it is reported: below a point the difference is float noise, and
+/// reporting it would relayout the list for nothing.
+const MEASURED_SIZE_TOLERANCE_PT: f32 = 0.5;
+
 fn vc_container_box(view: &UIView) -> Option<(f32, f32)> {
     let superview: Option<Retained<UIView>> = unsafe { msg_send_id![view, superview] };
     let superview = superview?;
@@ -1963,8 +1975,7 @@ impl IosBackend {
 
         // Password masking: UITextField renders dots for typed chars
         // when secure text entry is on.
-        let _: () =
-            unsafe { msg_send![&field, setSecureTextEntry: objc2::runtime::Bool::new(secure)] };
+        keyboard_kind::set_secure(&field, secure);
 
         if let Some(ph) = placeholder {
             let ns_ph = NSString::from_str(ph);
@@ -2053,10 +2064,7 @@ impl IosBackend {
         // Live mask toggle — `isSecureTextEntry` flips in place on the same
         // UITextField, so the controlled value survives (password show/hide).
         if let IosNode::TextField(field) = node {
-            unsafe {
-                let _: () =
-                    msg_send![field, setSecureTextEntry: objc2::runtime::Bool::new(secure)];
-            }
+            keyboard_kind::set_secure(field, secure);
         }
     }
 
@@ -2068,7 +2076,7 @@ impl IosBackend {
         // Keyboard layout + AutoFill + autocap/autocorrect, as a unit; the
         // secure mask is its own trait, so the two compose in any order.
         if let IosNode::TextField(field) = node {
-            keyboard_kind::apply(&**field, keyboard);
+            keyboard_kind::apply(field, keyboard);
         }
     }
 
@@ -2622,12 +2630,11 @@ impl IosBackend {
         let horizontal = virt_layout.axis.is_horizontal();
         // Build the UICollectionView + flow layout + data source.
         // Supports vertical and horizontal single-section lists and
-        // uniform grids (`lanes > 1`) with `ItemSize::Known` sizing.
+        // uniform grids (`lanes > 1`) with `ItemSize::Known` and
+        // `ItemSize::Measured` sizing (rows measured in the layout pass —
+        // see `imp/virtualizer.rs`).
         //
         // Remaining gaps (documented in `imp/virtualizer.rs`):
-        //   - `ItemSize::Measured`: blocked on framework-core exposing
-        //     a measure-only pass over a detached subtree (cells live
-        //     outside the Taffy tree).
         //   - Sections + sticky headers: blocked on a section-aware
         //     `VirtualizerCallbacks` shape in framework-core.
         //   - `performBatchUpdates` instead of `reloadData` on data
@@ -4195,24 +4202,15 @@ impl IosBackend {
     /// `IntrospectionOps::hit_contains`: UIKit's own hit test at the
     /// window point — the view a finger there would land on, honoring
     /// `pointer_events`, hidden views and overlays, since every portal
-    /// lives in the same window — is `node` or inside it. iOS gives an
-    /// app no way to create touches, so the robot's native tap here is
-    /// this check plus the press of the deepest element whose view this
-    /// same hit test contains (`TapMechanism::HitTest`) — the pressable
-    /// inside an addressed wrapper, as a finger would reach it.
+    /// lives in the same window — is `node` or inside it, or the
+    /// interactive ancestor a touch on an inert `node` (a label) goes to
+    /// (`crate::hit_reach_policy`). iOS gives an app no way to create
+    /// touches, so the robot's native tap here is this check plus the
+    /// press of the deepest element whose view this same hit test contains
+    /// (`TapMechanism::HitTest`) — the pressable inside an addressed
+    /// wrapper, as a finger would reach it.
     pub(crate) fn hit_contains_impl(&self, node: &IosNode, x: f32, y: f32) -> Option<bool> {
-        let view = node.as_view();
-        let window: *mut UIView = unsafe { msg_send![view, window] };
-        if window.is_null() {
-            return None;
-        }
-        let point = objc2_foundation::CGPoint { x: x as f64, y: y as f64 };
-        let nil: *mut objc2::runtime::AnyObject = std::ptr::null_mut();
-        let hit: *mut UIView = unsafe { msg_send![window, hitTest: point, withEvent: nil] };
-        if hit.is_null() {
-            return Some(false);
-        }
-        Some(unsafe { msg_send![hit, isDescendantOfView: view] })
+        crate::hit_reach_policy::uikit::hit_contains(node.as_view(), x, y)
     }
 
     pub(crate) fn set_disabled_impl(&mut self, node: &IosNode, disabled: bool) {
@@ -4277,7 +4275,10 @@ impl IosBackend {
         // host-signal-driven: the framework flips its open state in
         // response to whatever interaction the composition wires up
         // (backdrop tap, swipe handler on a sheet child, etc.). We
-        // accept the callback but never fire it from this backend.
+        // accept the callback but never fire it from here: a hardware
+        // Escape reaches it through the vocabulary's shared stack of
+        // dismissable portals (`imp::keyboard`, "Escape closes the
+        // topmost overlay").
         use runtime_shared::primitives::portal::PortalTarget;
 
         let (anchor_spec, container_rules) = match &target {
@@ -4915,7 +4916,7 @@ impl IosBackend {
                 .filter(|(_, (_, n))| self.layout.is_root(*n))
                 .map(|(k, (view, n))| {
                     let pass = crate::root_box_policy::root_pass(
-                        virtual_grid::cell_box(*k),
+                        hosted_cell_box(*k, view),
                         vc_container_box(view),
                         (vw, vh),
                     );
@@ -4934,6 +4935,33 @@ impl IosBackend {
             if self.root_boxes.insert(*key, *root_box) != Some(*root_box) {
                 self.layout.mark_dirty(*root_node);
             }
+        }
+
+        // Rows of `ItemSize::Measured` lists: measure each changed one at
+        // its cell's cross extent and report a size its cell does not
+        // have (see `virtualizer`'s "Row boxes and measurement"). The
+        // list's own node is re-measured in this pass (its content size
+        // sums `item_size`); its cells are resized after it.
+        let mut remeasured_lists: Vec<Retained<UIView>> = Vec::new();
+        for (key, root_node, (rw, rh)) in &roots {
+            if !self.layout.is_dirty(*root_node) {
+                continue;
+            }
+            let Some((scope_id, report, horizontal, list)) = virtualizer::measured_row(*key) else {
+                continue;
+            };
+            let (cross, main) = if horizontal { (*rh, *rw) } else { (*rw, *rh) };
+            let natural = self.layout.measure_main(*root_node, horizontal, cross);
+            if (natural - main).abs() > MEASURED_SIZE_TOLERANCE_PT {
+                report(scope_id, natural);
+                if !remeasured_lists.iter().any(|l| std::ptr::eq(&**l, &*list)) {
+                    remeasured_lists.push(list);
+                }
+            }
+        }
+        for list in &remeasured_lists {
+            let node = self.layout_for_view(list);
+            self.layout.mark_dirty(node);
         }
 
         let mut computed_count = 0usize;
@@ -4991,7 +5019,7 @@ impl IosBackend {
             // root at the origin and undo the whole windowing. The
             // cell's CHILDREN are ordinary entries in this loop and
             // still get their frames, which are relative to the cell.
-            if crate::root_box_policy::root_pass(virtual_grid::cell_box(*key), None, (vw, vh))
+            if crate::root_box_policy::root_pass(hosted_cell_box(*key, view), None, (vw, vh))
                 .engine_owns_frame
             {
                 continue;
@@ -5143,6 +5171,17 @@ impl IosBackend {
         self.root_boxes.retain(|k, _| still_present.contains(k));
         }
         backend_ios_core::ios_log(&format!("[layout] apply_frames done: applied={}", applied));
+
+        // Resize the cells of every list a measured row changed, after this
+        // pass: applying the list's new layout can mount rows, and mounting
+        // borrows the backend this pass holds. The pass that follows lays
+        // the rows out at their new cells.
+        for list in remeasured_lists {
+            runtime_shared::scheduling::schedule_microtask(move || {
+                virtualizer::relayout_measured(&list);
+                schedule_layout_pass();
+            });
+        }
 
         // A virtualizer that resolved to nothing renders nothing, and
         // says nothing about it.

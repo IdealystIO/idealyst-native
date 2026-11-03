@@ -27,6 +27,9 @@
 //! fails at once, naming which side timed out.
 
 use crate::client::{CallError, RobotClient};
+
+mod keys;
+pub use keys::parse_key;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -45,6 +48,11 @@ const POLL: Duration = Duration::from_millis(50);
 pub struct App {
     client: RobotClient,
     timeout: Duration,
+    /// Whether `click` / `tap_native` scroll the element into view first
+    /// ([`App::set_auto_scroll`]).
+    auto_scroll: bool,
+    /// The app's platform, asked once ([`App::platform`]).
+    platform: Option<Platform>,
 }
 
 impl App {
@@ -57,7 +65,7 @@ impl App {
     /// Wrap an already-connected client (used by the harness, which connects +
     /// waits for readiness before handing the app to tests).
     pub(crate) fn from_client(client: RobotClient) -> Self {
-        Self { client, timeout: DEFAULT_TIMEOUT }
+        Self { client, timeout: DEFAULT_TIMEOUT, auto_scroll: true, platform: None }
     }
 
     /// How long actions and assertions wait before failing.
@@ -117,7 +125,7 @@ impl App {
     /// Locate by a detached [`Selector`] — one built without the app, e.g.
     /// kept in a variable or returned from a helper.
     pub fn locate(&mut self, selector: impl Into<Selector>) -> Locator<'_> {
-        Locator { app: self, sel: selector.into() }
+        Locator { app: self, sel: selector.into(), no_scroll: false }
     }
 
     /// How many elements currently match `kind` (e.g. count every `Button`).
@@ -166,6 +174,54 @@ impl App {
             }
         });
         Ok(())
+    }
+
+    // --- platform ---
+
+    /// The platform the app under test runs on — what `idealyst test
+    /// --<platform>` launched, or whatever app the bridge reached. For a
+    /// test that runs on every platform but checks something one of them
+    /// does differently; a test that only means something on some
+    /// platforms declares them instead (`#[robot_test(platforms = [ios,
+    /// android])]`), so it is skipped, not passed, elsewhere. Pair with
+    /// [`viewport`](Self::viewport)`().breakpoint` for the form factor.
+    /// Panics if the app can't say (an app built before `get_platform`).
+    pub fn platform(&mut self) -> Platform {
+        self.try_platform()
+            .unwrap_or_else(|e| panic!("platform(): {e}"))
+            .unwrap_or_else(|| panic!("platform(): the app is too old to report its platform (no `get_platform` verb)"))
+    }
+
+    /// [`platform`](Self::platform), `Ok(None)` when the app is too old to
+    /// report one. Asked once per connection.
+    pub fn try_platform(&mut self) -> Result<Option<Platform>, String> {
+        if let Some(p) = &self.platform {
+            return Ok(Some(p.clone()));
+        }
+        // A read: asked again while the app is busy.
+        let answer = self.wait("platform()", |app| match app.query("get_platform", json!({})) {
+            Ok(v) => Ok(Ok(v)),
+            Err(Failure::Fatal(e)) => Ok(Err(e)),
+            Err(other) => Err(other),
+        });
+        let v = match answer {
+            Ok(v) => v,
+            Err(e) if e.contains("unknown command") => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let name = v["platform"].as_str().ok_or_else(|| format!("get_platform: unexpected shape {v}"))?;
+        let p = Platform::from_id(name);
+        self.platform = Some(p.clone());
+        Ok(Some(p))
+    }
+
+    /// Whether [`Locator::click`] and [`Locator::tap_native`] first scroll
+    /// an element that is out of view into it, as Playwright does — on by
+    /// default. Off, a tap on an element outside the window or clipped by
+    /// its scroll view waits, then fails, as it would for a user who
+    /// doesn't scroll. One locator opts out with [`Locator::no_scroll`].
+    pub fn set_auto_scroll(&mut self, on: bool) {
+        self.auto_scroll = on;
     }
 
     // --- signals ---
@@ -432,6 +488,72 @@ pub struct Viewport {
     pub breakpoint: String,
 }
 
+/// The platform an app runs on, as [`App::platform`] reports it. The
+/// names are those of `idealyst test --<platform>` and
+/// `#[robot_test(platforms = …)]`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Platform {
+    Web,
+    Ios,
+    Android,
+    Macos,
+    Linux,
+    Windows,
+    /// Any other host (`tvos`, `androidtv`, a custom backend's own name,
+    /// `unknown`).
+    Other(String),
+}
+
+impl Platform {
+    /// From the app's `get_platform` name.
+    pub fn from_id(id: &str) -> Self {
+        match id {
+            "web" => Platform::Web,
+            "ios" => Platform::Ios,
+            "android" => Platform::Android,
+            "macos" => Platform::Macos,
+            "linux" => Platform::Linux,
+            "windows" => Platform::Windows,
+            other => Platform::Other(other.to_string()),
+        }
+    }
+
+    /// `web`, `ios`, `android`, `macos`, `linux`, `windows`, or the other
+    /// host's own name.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Platform::Web => "web",
+            Platform::Ios => "ios",
+            Platform::Android => "android",
+            Platform::Macos => "macos",
+            Platform::Linux => "linux",
+            Platform::Windows => "windows",
+            Platform::Other(name) => name,
+        }
+    }
+
+    /// iOS or Android: a phone or tablet app.
+    pub fn is_mobile(&self) -> bool {
+        matches!(self, Platform::Ios | Platform::Android)
+    }
+
+    /// macOS, Linux or Windows: a desktop app.
+    pub fn is_desktop(&self) -> bool {
+        matches!(self, Platform::Macos | Platform::Linux | Platform::Windows)
+    }
+
+    /// Any of the native apps (mobile or desktop) — not the web.
+    pub fn is_native(&self) -> bool {
+        self.is_mobile() || self.is_desktop()
+    }
+}
+
+impl std::fmt::Display for Platform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// The base selector a locator starts from.
 #[derive(Clone, Debug)]
 enum Sel {
@@ -647,11 +769,13 @@ pub struct ScrollOffset {
 pub struct Locator<'a> {
     app: &'a mut App,
     sel: Selector,
+    /// [`Locator::no_scroll`]: tap where the element is, scrolling nothing.
+    no_scroll: bool,
 }
 
 impl<'a> Locator<'a> {
     fn new(app: &'a mut App, sel: Sel) -> Self {
-        Locator { app, sel: sel.into() }
+        Locator { app, sel: sel.into(), no_scroll: false }
     }
 
     /// The `index`th (0-based, document order) of the elements the selector
@@ -807,17 +931,21 @@ impl<'a> Locator<'a> {
     // --- actions ---
 
     /// Click / tap the element as a user would: once it is visible and
-    /// enabled, a real platform tap at its center (`tap_native`) — through
-    /// the toolkit's hit testing, so an overlay on top or an element
-    /// scrolled out of the window makes it wait, then fail, as it would a
-    /// user. On a backend that can't synthesize input it falls back to the
-    /// element's own press handler ([`dispatch_click`](Self::dispatch_click)).
+    /// enabled, scrolled into view if it is out of it
+    /// ([`scroll_into_view`](Self::scroll_into_view); opt out with
+    /// [`no_scroll`](Self::no_scroll) or [`App::set_auto_scroll`]), a real
+    /// platform tap at its center (`tap_native`) — through the toolkit's
+    /// hit testing, so an overlay on top makes it wait, then fail, as it
+    /// would a user. On a backend that can't synthesize input it falls back
+    /// to the element's own press handler
+    /// ([`dispatch_click`](Self::dispatch_click)).
     pub fn click(self) {
         self.tap(true);
     }
 
     /// A real platform tap at the element's center, with no fallback:
-    /// panics on a backend that can't synthesize input. Returns how it
+    /// panics on a backend that can't synthesize input. Scrolls the element
+    /// into view first, as [`click`](Self::click) does. Returns how it
     /// reached the element: `"native"` (platform events) or `"hit_test"`
     /// (the backend's hit test confirmed the point, then the press ran —
     /// iOS, where an app can't create touches).
@@ -869,7 +997,21 @@ impl<'a> Locator<'a> {
                     return Err(Failure::NotYet("the element is disabled".into()));
                 }
                 let id = Self::id_of(&el)?;
-                match self.send_action("tap_native", json!({ "element_id": id })) {
+                let scroll = self.app.auto_scroll && !self.no_scroll;
+                // Out of the window: scroll first, as Playwright does.
+                if scroll && el["in_viewport"] == false {
+                    self.reveal(id)?;
+                }
+                let mut tapped = self.send_action("tap_native", json!({ "element_id": id }));
+                // In the window but clipped by its scroll view (the point
+                // lands on whatever is beside it) or past the window edge:
+                // scroll, and tap again if that moved anything.
+                if let Err(Failure::NotYet(e)) = &tapped {
+                    if scroll && (e.contains("outside the window") || e.contains("covers the point")) && self.reveal(id)? {
+                        tapped = self.send_action("tap_native", json!({ "element_id": id }));
+                    }
+                }
+                match tapped {
                     Ok(v) => Ok(v["mechanism"].as_str().unwrap_or("native").to_string()),
                     Err(Failure::NotYet(e)) if e.contains("unsupported") => {
                         if !fallback {
@@ -888,6 +1030,36 @@ impl<'a> Locator<'a> {
                 }
                 Err(_) => std::thread::sleep(POLL),
             }
+        }
+    }
+
+    /// Tap where the element is now: [`click`](Self::click) and
+    /// [`tap_native`](Self::tap_native) won't scroll it into view first,
+    /// so one out of view waits, then fails. For a test of what a user who
+    /// doesn't scroll can reach. See [`App::set_auto_scroll`].
+    pub fn no_scroll(mut self) -> Self {
+        self.no_scroll = true;
+        self
+    }
+
+    /// Scroll every scroll view the element sits in — nested ones, either
+    /// axis — by the least that shows the whole element, in its scroll
+    /// views and in the window (the `scroll_into_view` verb). Already in
+    /// view, nothing moves. Waits for the element to exist; an element a
+    /// virtualized list hasn't mounted yet doesn't exist, so scroll the
+    /// list itself to reach it.
+    pub fn scroll_into_view(self) {
+        self.act("scroll_into_view", json!({}));
+    }
+
+    /// Scroll element `id` into view before a tap: `Ok(true)` when
+    /// something moved. An app older than the verb answers "unknown
+    /// command" — nothing scrolled, and the tap goes ahead as before.
+    fn reveal(&mut self, id: u64) -> Result<bool, Failure> {
+        match self.send_action("scroll_into_view", json!({ "element_id": id })) {
+            Ok(v) => Ok(v["scrolled"].as_array().is_some_and(|s| !s.is_empty())),
+            Err(Failure::NotYet(e)) if e.contains("unknown command") => Ok(false),
+            Err(e) => Err(e),
         }
     }
 
@@ -1013,7 +1185,9 @@ impl<'a> Locator<'a> {
         self.expect("assert_in_viewport()", |el| match (el.get("visible"), el.get("in_viewport")) {
             (Some(Value::Bool(false)), _) => Err("it is not visible".into()),
             (_, Some(Value::Bool(true))) => Ok(()),
-            (_, Some(Value::Bool(false))) => Err("it is outside the window".into()),
+            (_, Some(Value::Bool(false))) => {
+                Err("it is outside the window, or scrolled out of a scroll view or list that clips it".into())
+            }
             _ => Err("its frame or the window size is unknown on this backend".into()),
         });
     }

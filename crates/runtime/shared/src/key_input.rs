@@ -213,6 +213,17 @@ pub fn reset_for_tests() {
     STATE.with(|s| *s.borrow_mut() = State::default());
 }
 
+/// Deliver `event` to the app-level listeners as the backend's key source
+/// would: held-key tracking, repeat normalization, user activity, one
+/// reactive cycle. The robot's `key` verb uses it on a backend that can't
+/// synthesize native key input, so a pressed key reaches `on_key` the same
+/// way there. Runs whether or not a source is installed: with no listener
+/// the press goes nowhere, as a real one would.
+#[doc(hidden)]
+pub fn deliver(event: &AppKeyEvent) -> KeyOutcome {
+    dispatch(event)
+}
+
 /// The sink handed to backends. Stateless — it routes into the
 /// thread-local dispatcher, so one sink serves every install.
 fn sink() -> KeyboardSink {
@@ -400,6 +411,26 @@ mod tests {
             l.borrow_mut().push(e.clone());
             KeyOutcome::Default
         })
+    }
+
+    /// `deliver` (the robot's key dispatch on a backend without native key
+    /// input) is the sink's path: listeners run, the held set tracks the
+    /// key, a second down is a repeat, and PreventDefault comes back.
+    #[test]
+    fn deliver_runs_listeners_like_the_backend_sink() {
+        let _host = wire();
+        let (log, rec) = recorder();
+        let _a = add_listener(rec);
+        let _b = add_listener(|e| if e.key == "Escape" { KeyOutcome::PreventDefault } else { KeyOutcome::Default });
+        assert_eq!(deliver(&AppKeyEvent::down("Escape", "Escape")), KeyOutcome::PreventDefault);
+        assert!(is_key_down("Escape"));
+        deliver(&AppKeyEvent::down("Escape", "Escape"));
+        assert_eq!(deliver(&AppKeyEvent::up("Escape", "Escape")), KeyOutcome::PreventDefault);
+        assert!(!is_key_down("Escape"));
+        let log = log.borrow();
+        assert_eq!(log.len(), 3);
+        assert!(!log[0].repeat && log[1].repeat);
+        assert_eq!(log[2].phase, KeyPhase::Up);
     }
 
     #[test]

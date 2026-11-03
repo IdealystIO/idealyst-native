@@ -149,3 +149,15 @@ exactly one rule, `:where(pre) { margin: 0; }`, appended to the base reset
 `1em` `<pre>` margin put every `code_block` a font-height lower on the web
 than on native. No `.html` byte moved, so hydration adoption is untouched.
 Pinned by `regression_base_reset_zeroes_the_pre_margin` in the `css` crate.
+
+**Amended 2026-11-02** (horizontal scroll content width): every `.head.css`
+gained exactly one rule, `css::HSCROLL_CONTENT_RESET`, appended right after
+`PRE_MARGIN_RESET`: `width: max-content` on the children of a
+`[data-ihx]` (X-scrolling) `scroll_view`, through up to two
+`display: contents` anchors. Stretched to the viewport, a horizontal
+scroller's content overflowed its own box, and on AppKit/UIKit the children
+past the viewport could not be clicked; `runtime_layout` gives native the
+same default. No corpus page has a horizontal scroller, so no `.html` byte
+moved. Pinned by `regression_hscroll_row_is_as_wide_as_its_tabs_not_the_viewport`
+(runtime-layout) and `regression_horizontal_scroll_view_marks_its_content_axis`
+(backend-ssr).

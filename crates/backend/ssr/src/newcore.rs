@@ -818,13 +818,18 @@ impl caps::ActivityIndicatorOps for SsrBackend {
 impl caps::ScrollOps for SsrBackend {
     fn create_scroll_view(
         &mut self,
-        _axis: runtime_shared::ScrollAxis,
+        axis: runtime_shared::ScrollAxis,
         _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let mut node = HtmlNode::new("div");
         node.scroll = true;
         node.attrs.push((css::VIEW_MARKER_ATTR, String::new()));
+        // Content sized to what it holds along X, as the live web backend
+        // marks it (`css::HSCROLL_CONTENT_RESET`, in the base reset).
+        if axis.scrolls_x() {
+            node.attrs.push((css::HSCROLL_MARKER_ATTR, String::new()));
+        }
         nref(node)
     }
 }

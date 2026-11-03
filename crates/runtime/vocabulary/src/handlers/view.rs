@@ -36,7 +36,9 @@ where
         &node,
         crate::robot::ElementKind::View,
         prim.test_id,
-        None,
+        // The name a screen reader announces is the name a test finds it
+        // by: an author's a11y label, when there is one.
+        prim.a11y.label.clone(),
         None,
         crate::robot::MountActions::default(),
     );
@@ -166,7 +168,10 @@ where
             &node,
             crate::robot::ElementKind::Pressable,
             prim.test_id,
-            None,
+            // An icon-only button has no text of its own: its a11y label
+            // is the name VoiceOver/TalkBack read, and so the one a robot
+            // query (`label = …`) finds it by.
+            prim.a11y.label.clone(),
             None,
             crate::robot::MountActions {
                 click: Some(robot_click),
@@ -272,6 +277,7 @@ where
             None,
             crate::robot::MountActions {
                 set_scroll: Some(Rc::new(move |x, y| handle.scroll_to(x, y))),
+                scroll_axis: Some(prim.axis),
                 // The offset the native scroller is at, read at query time.
                 state: Some({
                     let b = backend.clone();

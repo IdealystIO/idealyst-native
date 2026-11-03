@@ -9,7 +9,7 @@ license.workspace = true
 # (TextInput), Static HWND (Text/Image), Trackbar (Slider), etc. —
 # mounted under a parent HWND owned by the host shell.
 #
-# Primitives without a Win32 implementation (virtualizer, portal, an
+# Primitives without a Win32 implementation (portal, an
 # unregistered third-party payload) render as painted placeholder text
 # rather than panicking. The lib body is gated on
 # `cfg(target_os = "windows")` so workspace builds on macOS / Linux

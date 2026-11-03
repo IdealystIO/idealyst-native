@@ -86,7 +86,11 @@ use std::rc::Rc;
 
 use runtime_shared::primitives::portal::ViewportRect;
 
-use crate::caps::{IntrospectionOps, NativeInjection, PointerStep, PointerStepPhase};
+use crate::caps::{ContentClip, IntrospectionOps, NativeInjection, PointerStep, PointerStepPhase};
+
+mod key;
+pub use key::KeyMechanism;
+pub(crate) use key::KeyTarget;
 
 // The component `#[method]` registry + element link, and the signal
 // watch registry, re-exported under `robot::…` (the same paths
@@ -175,16 +179,22 @@ pub struct ElementState {
     pub pressed: Option<bool>,
 }
 
-/// Whether an element can be seen — the rule Playwright uses: the toolkit
-/// shows it ([`IntrospectionOps::is_shown`]: in a window, not hidden by
-/// itself or an ancestor, not fully transparent) and its laid-out box is
-/// not empty. Off-screen content (scrolled away, beyond the window) is still
-/// visible; [`in_viewport`](Self::in_viewport) says whether it is on screen.
+/// Whether an element can be seen: the toolkit shows it
+/// ([`IntrospectionOps::is_shown`]: in a window, not hidden by itself or an
+/// ancestor, not fully transparent), its laid-out box is not empty, and no
+/// ancestor that clips without scrolling ([`ContentClip::Hidden`] — CSS
+/// `overflow: hidden`) cuts that box away entirely — one outside a scroller
+/// judges the scroller's box, which scrolling brings the content into.
+/// Content a scroller or
+/// the window cuts off (scrolled away, beyond the window) is still visible,
+/// as in Playwright; [`in_viewport`](Self::in_viewport) says whether any
+/// of it is on screen, and [`Robot::visible_frame`] what part.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Visibility {
     pub visible: bool,
-    /// Whether the element's box overlaps the window; `None` when the
-    /// frame or the window size is unknown.
+    /// Whether part of the element's box is on screen — inside the window
+    /// and every clipping ancestor; `None` when the frame or the window
+    /// size is unknown.
     pub in_viewport: Option<bool>,
 }
 
@@ -193,16 +203,78 @@ impl Visibility {
     /// size. Unknown parts don't hide an element: with neither answer it is
     /// visible (mounted is all that's known).
     pub fn from_parts(shown: Option<bool>, frame: Option<ViewportRect>, window: Option<(f32, f32)>) -> Self {
-        let empty = frame.is_some_and(|r| r.width <= 0.0 || r.height <= 0.0);
-        let visible = shown != Some(false) && !empty;
-        let in_viewport = match (frame, window) {
-            (Some(r), Some((w, h))) if w > 0.0 && h > 0.0 => {
-                Some(visible && r.x < w && r.y < h && r.x + r.width > 0.0 && r.y + r.height > 0.0)
-            }
-            _ => None,
-        };
-        Self { visible, in_viewport }
+        Self::clipped(shown, frame, &[], window).0
     }
+
+    /// [`from_parts`](Self::from_parts), with the boxes of the element's
+    /// clipping ancestors (`clips`, innermost first), and the part of the
+    /// box left after cutting it by every one of them and the window — what
+    /// [`Robot::visible_frame`] reports; empty (zero width or height) when
+    /// nothing is left, `None` when the frame is unknown.
+    ///
+    /// A `Hidden` ancestor OUTSIDE a scroller cuts the scroller's box, not
+    /// the scrolled content: scrolling brings the content into that box, so
+    /// the element is hidden only if the box itself is cut away. Not "cut
+    /// the element by every `Hidden` box": a horizontal tab strip's last tab
+    /// sits thousands of points right of the screen-wide column holding the
+    /// strip, and on Android, where every `ViewGroup` clips its children,
+    /// that column cut the tab away entirely — the robot called it not
+    /// visible and `click()` waited for it instead of scrolling to it.
+    pub fn clipped(
+        shown: Option<bool>,
+        frame: Option<ViewportRect>,
+        clips: &[(ContentClip, ViewportRect)],
+        window: Option<(f32, f32)>,
+    ) -> (Self, Option<ViewportRect>) {
+        let Some(frame) = frame else {
+            return (Self { visible: shown != Some(false), in_viewport: None }, None);
+        };
+        // Where the element can be brought by scrolling, as seen from the
+        // ancestor being walked: its own box, until a scroller replaces it
+        // with that scroller's box.
+        let mut reach = frame;
+        for (kind, rect) in clips {
+            if is_empty(reach) {
+                break;
+            }
+            match kind {
+                ContentClip::Hidden => reach = clipped_to(reach, *rect),
+                ContentClip::Scroll => reach = *rect,
+                ContentClip::Visible => {}
+            }
+        }
+        let visible = shown != Some(false) && !is_empty(frame) && !is_empty(reach);
+        let mut seen = frame;
+        for (kind, rect) in clips {
+            if *kind != ContentClip::Visible {
+                seen = clipped_to(seen, *rect);
+            }
+        }
+        let window = window.filter(|(w, h)| *w > 0.0 && *h > 0.0);
+        if let Some((w, h)) = window {
+            seen = clipped_to(seen, ViewportRect { x: 0.0, y: 0.0, width: w, height: h });
+        }
+        if !visible {
+            seen.width = 0.0;
+            seen.height = 0.0;
+        }
+        let in_viewport = window.map(|_| visible && !is_empty(seen));
+        (Self { visible, in_viewport }, Some(seen))
+    }
+}
+
+fn is_empty(r: ViewportRect) -> bool {
+    !(r.width > 0.0 && r.height > 0.0)
+}
+
+/// The overlap of `a` and `b`; zero-sized (at the nearer edge) when they
+/// don't overlap.
+fn clipped_to(a: ViewportRect, b: ViewportRect) -> ViewportRect {
+    let x = a.x.max(b.x);
+    let y = a.y.max(b.y);
+    let right = (a.x + a.width).min(b.x + b.width);
+    let bottom = (a.y + a.height).min(b.y + b.height);
+    ViewportRect { x, y, width: (right - x).max(0.0), height: (bottom - y).max(0.0) }
 }
 
 /// A primitive's value: a text field's text or a slider's number.
@@ -263,6 +335,10 @@ pub(crate) struct ElementActions {
     pub focus: Option<Rc<dyn Fn()>>,
     pub blur: Option<Rc<dyn Fn()>>,
     pub set_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+    /// The axes a scroll view scrolls — [`Robot::scroll_into_view`] moves
+    /// only those (UIKit takes any content offset it is given, so asking
+    /// a horizontal strip for a vertical one would shift it off its rail).
+    pub scroll_axis: Option<runtime_shared::primitives::scroll_view::ScrollAxis>,
     pub frame: Option<Rc<dyn Fn() -> Option<ViewportRect>>>,
     pub absolute_frame: Option<Rc<dyn Fn() -> Option<ViewportRect>>>,
     pub device_frame: Option<Rc<dyn Fn() -> Option<ViewportRect>>>,
@@ -284,6 +360,8 @@ pub(crate) struct ElementActions {
     pub interaction: Option<Rc<std::cell::Cell<runtime_shared::StateBits>>>,
     /// The toolkit's answer to "is it shown" ([`IntrospectionOps::is_shown`]).
     pub shown: Option<Rc<dyn Fn() -> Option<bool>>>,
+    /// How it clips its descendants ([`IntrospectionOps::content_clip`]).
+    pub clip: Option<Rc<dyn Fn() -> Option<ContentClip>>>,
     /// Whether a real tap at a window point reaches this element
     /// ([`IntrospectionOps::hit_contains`]).
     pub hit: Option<Rc<dyn Fn(f32, f32) -> Option<bool>>>,
@@ -296,6 +374,12 @@ pub(crate) struct ElementActions {
     /// set on root elements — `set_viewport` resizes the first root's
     /// window, and a closure per element would be dead weight.
     pub resize_window: Option<Rc<dyn Fn(f32, f32) -> Option<NativeInjection>>>,
+    /// Real key input in this element's window
+    /// ([`IntrospectionOps::native_key`]); see [`Robot::press_key`].
+    pub native_key: Option<key::NativeKey>,
+    /// A text field's key handling, for [`Robot::press_key`]'s dispatch
+    /// fallback ([`KeyTarget`]).
+    pub keys: Option<KeyTarget>,
 }
 
 /// The handler-supplied half of [`ElementActions`] — what the mount
@@ -311,8 +395,11 @@ pub(crate) struct MountActions {
     pub focus: Option<Rc<dyn Fn()>>,
     pub blur: Option<Rc<dyn Fn()>>,
     pub set_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+    /// See [`ElementActions::scroll_axis`].
+    pub scroll_axis: Option<runtime_shared::primitives::scroll_view::ScrollAxis>,
     pub slider_drag: Option<Rc<dyn Fn(f32) -> bool>>,
     pub state: Option<Rc<dyn Fn() -> ElementState>>,
+    pub keys: Option<KeyTarget>,
 }
 
 // =============================================================================
@@ -686,8 +773,10 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
         focus,
         blur,
         set_scroll,
+        scroll_axis,
         slider_drag,
         state,
+        keys,
     } = actions;
     // Geometry / introspection closures: borrow the backend at QUERY
     // time (never held across the query's own callback).
@@ -717,6 +806,11 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
         let n = node.clone();
         Rc::new(move || b.borrow().is_shown(&n)) as Rc<dyn Fn() -> Option<bool>>
     };
+    let clip = {
+        let b = backend.clone();
+        let n = node.clone();
+        Rc::new(move || b.borrow().content_clip(&n)) as Rc<dyn Fn() -> Option<ContentClip>>
+    };
     let hit = {
         let b = backend.clone();
         let n = node.clone();
@@ -729,6 +823,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
         Rc::new(move |steps: &[PointerStep]| b.borrow().native_pointer(&n, steps))
             as Rc<dyn Fn(&[PointerStep]) -> Option<NativeInjection>>
     };
+    let native_key = key::native_key_closure(backend, node);
     backend.borrow().note_introspection_root(node);
     ensure_region_hook();
 
@@ -761,6 +856,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
                 focus,
                 blur,
                 set_scroll,
+                scroll_axis,
                 frame: Some(frame),
                 absolute_frame: Some(absolute_frame),
                 device_frame: Some(device_frame),
@@ -770,9 +866,12 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
                 state,
                 interaction: None,
                 shown: Some(shown),
+                clip: Some(clip),
                 hit: Some(hit),
                 native_pointer: Some(native_pointer),
                 resize_window,
+                native_key: Some(native_key),
+                keys,
             },
             parent,
             children: Vec::new(),
@@ -1258,6 +1357,36 @@ fn refuse_if_disabled(actions: &ElementActions, action: &'static str) -> Result<
     }
 }
 
+/// A scroll view [`Robot::scroll_into_view`] moved, and the offset it
+/// moved it to (logical px).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollMove {
+    pub scroll_view: ElementId,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// The least scroll along one axis that brings `[start, start + len)`
+/// inside `[port, port + port_len)`: `0` when it is already inside;
+/// aligned to the start when it is longer than the port.
+fn reveal_shift(start: f32, len: f32, port: f32, port_len: f32) -> f32 {
+    let (end, port_end) = (start + len, port + port_len);
+    if start >= port && end <= port_end {
+        0.0
+    } else if len > port_len || start < port {
+        start - port
+    } else {
+        end - port_end
+    }
+}
+
+/// The overlap of two rects, `None` when they don't overlap.
+fn overlap(a: ViewportRect, b: ViewportRect) -> Option<ViewportRect> {
+    let (x0, y0) = (a.x.max(b.x), a.y.max(b.y));
+    let (x1, y1) = ((a.x + a.width).min(b.x + b.width), (a.y + a.height).min(b.y + b.height));
+    (x1 > x0 && y1 > y0).then(|| ViewportRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 })
+}
+
 /// How [`Robot::tap_native`] reached the element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TapMechanism {
@@ -1342,12 +1471,49 @@ fn deepest_hit_in(root: ElementId, x: f32, y: f32) -> ElementId {
 
 /// Element `id`'s [`Visibility`]; `None` once it has unmounted.
 fn visibility_of(id: ElementId) -> Option<Visibility> {
-    let (shown, frame) = REGISTRY.with(|r| {
-        r.borrow().get(id).map(|e| (e.actions.shown.clone(), e.actions.absolute_frame.clone()))
+    visibility_and_frame(id).map(|(v, _)| v)
+}
+
+/// Element `id`'s [`Visibility`] and the part of its box left on screen
+/// ([`Robot::visible_frame`]); `None` once it has unmounted.
+///
+/// The clipping ancestors are the element's REGISTRY ancestors, so a
+/// virtualized row — realized detached, in its own native cell — is cut by
+/// its list (`handlers::virtualizer` links rows under the list's element).
+fn visibility_and_frame(id: ElementId) -> Option<(Visibility, Option<ViewportRect>)> {
+    type Ancestor = (Rc<dyn Fn() -> Option<ContentClip>>, Rc<dyn Fn() -> Option<ViewportRect>>);
+    // Closures cloned out first: they borrow the backend, never with the
+    // registry borrowed.
+    let (shown, frame, ancestors) = REGISTRY.with(|r| {
+        let reg = r.borrow();
+        let e = reg.get(id)?;
+        // Innermost first: `Visibility::clipped` reads the order.
+        let mut ancestors: Vec<Ancestor> = Vec::new();
+        let mut cur = e.parent;
+        while let Some(pid) = cur {
+            let Some(p) = reg.get(pid) else { break };
+            if let (Some(clip), Some(frame)) = (p.actions.clip.clone(), p.actions.absolute_frame.clone()) {
+                ancestors.push((clip, frame));
+            }
+            cur = p.parent;
+        }
+        Some((e.actions.shown.clone(), e.actions.absolute_frame.clone(), ancestors))
     })?;
+    let frame = frame.and_then(|f| f());
+    let clips: Vec<(ContentClip, ViewportRect)> = if frame.is_some() {
+        ancestors
+            .iter()
+            .filter_map(|(clip, rect)| match clip()? {
+                ContentClip::Visible => None,
+                kind => Some((kind, rect()?)),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let window = runtime_shared::viewport::viewport_size().get();
     let window = (window.width > 0.0 && window.height > 0.0).then_some((window.width, window.height));
-    Some(Visibility::from_parts(shown.and_then(|f| f()), frame.and_then(|f| f()), window))
+    Some(Visibility::clipped(shown.and_then(|f| f()), frame, &clips, window))
 }
 
 /// The registered state of element `id`, if it has any.
@@ -1383,6 +1549,28 @@ runtime_tls::thread_local! {
 pub fn is_test_driven() -> bool {
     TEST_DRIVEN.with(|t| t.get())
         || (!cfg!(target_arch = "wasm32") && std::env::var_os("IDEALYST_TEST_DRIVER").is_some())
+}
+
+/// The running app's platform as the robot names it to a test driver
+/// (the `get_platform` verb): `web`, `ios`, `android`, `macos`, `linux`,
+/// `windows` — the spellings of `idealyst test --<platform>` and of
+/// `#[robot_test(platforms = …)]` — or `tvos`, `androidtv`, `roku`, a
+/// backend's own `Custom` name, `unknown` when none was declared. Read
+/// from [`runtime_shared::host::platform`], which every boot seeds from
+/// its backend's `AppEnvOps::platform`.
+pub fn platform_id() -> &'static str {
+    use runtime_shared::Platform;
+    match runtime_shared::host::platform() {
+        Platform::Web => "web",
+        Platform::Ios => "ios",
+        Platform::Android => "android",
+        Platform::MacOs => "macos",
+        Platform::TvOs => "tvos",
+        Platform::AndroidTv => "androidtv",
+        Platform::Roku => "roku",
+        Platform::Custom("") => "unknown",
+        Platform::Custom(name) => name,
+    }
 }
 
 /// Mark the app as owned by an external test driver (see [`is_test_driven`]).
@@ -1587,7 +1775,9 @@ impl Robot {
     /// [`click`](Self::click) runs it ([`TapMechanism::HitTest`]) — on the
     /// deepest element the hit test puts under the point, not on `element`
     /// itself, so tapping a wrapper presses the pressable a finger at its
-    /// center would land on, as real input does.
+    /// center would land on, as real input does. A point over nothing
+    /// pressable is a tap that lands and runs nothing, not an error, on
+    /// either tier.
     /// With neither, [`RobotError::Unsupported`].
     pub fn tap_native(&self, element: &Element) -> Result<TapMechanism, RobotError> {
         const ACTION: &str = "tap_native";
@@ -1605,7 +1795,13 @@ impl Robot {
             let target = REGISTRY
                 .with(|r| r.borrow().get(target).map(|e| Element::from_registry(target, e)))
                 .ok_or(RobotError::ElementGone)?;
-            self.click(&target)?;
+            // Nothing pressable under the point is not a failure: a finger
+            // there lands and nothing runs, exactly what the native-input
+            // tier reports for the same tap. A disabled control still refuses.
+            match self.click(&target) {
+                Ok(()) | Err(RobotError::ActionNotAvailable(_)) => {}
+                Err(e) => return Err(e),
+            }
             return Ok(TapMechanism::HitTest);
         }
         Err(RobotError::Unsupported(ACTION))
@@ -1937,6 +2133,91 @@ impl Robot {
         })
     }
 
+    /// Scroll `element` into view, as Playwright's `scrollIntoViewIfNeeded`
+    /// does: each scroll view it sits in, innermost first, moves the least
+    /// that shows the whole element inside that scroll view — and inside
+    /// the window, for the outermost one. An element larger than a scroll
+    /// view is aligned to its top/left. A scroll view moves only along the
+    /// axes it scrolls. Already visible: nothing moves. Returns the scroll
+    /// views it moved, with their new offsets.
+    ///
+    /// Works the same on every backend because it reads only what each
+    /// already reports — the element's and its scroll views' window frames
+    /// ([`IntrospectionOps::absolute_frame`]) and the scrollers' offsets —
+    /// and moves them through the robot's own `set_scroll` route. The
+    /// shifts are computed from ONE read of the frames, predicting that
+    /// scrolling a view by `d` moves everything inside it by `-d`, rather
+    /// than re-reading frames between scrolls: a backend may settle a
+    /// scroll's frames after the call returns (a deferred layout pass), and
+    /// a re-read there would see the old frames and scroll again.
+    ///
+    /// Only what is mounted can be scrolled to: a virtualized list's rows
+    /// beyond its window aren't elements yet, and the virtualizer's own
+    /// scroller is not a registered scroll view.
+    pub fn scroll_into_view(&self, element: &Element) -> Result<Vec<ScrollMove>, RobotError> {
+        const ACTION: &str = "scroll_into_view";
+        type Scroller = (
+            ElementId,
+            Rc<dyn Fn(f32, f32)>,
+            Option<runtime_shared::primitives::scroll_view::ScrollAxis>,
+            Option<Rc<dyn Fn() -> Option<ViewportRect>>>,
+        );
+        // Closures cloned out under one borrow; none runs with it held.
+        let (frame, scrollers) = REGISTRY.with(|r| {
+            let reg = r.borrow();
+            let entry = reg.get(element.id).ok_or(RobotError::ElementGone)?;
+            let mut scrollers: Vec<Scroller> = Vec::new();
+            let mut cur = entry.parent;
+            while let Some(pid) = cur {
+                let Some(p) = reg.get(pid) else { break };
+                if let Some(set) = p.actions.set_scroll.clone() {
+                    scrollers.push((pid, set, p.actions.scroll_axis, p.actions.absolute_frame.clone()));
+                }
+                cur = p.parent;
+            }
+            Ok::<_, RobotError>((entry.actions.absolute_frame.clone(), scrollers))
+        })?;
+        // No laid-out box (not laid out yet, or a backend that doesn't
+        // report one): nothing to scroll to.
+        let mut target = frame.and_then(|f| f()).ok_or(RobotError::ActionNotAvailable(ACTION))?;
+        let window = runtime_shared::viewport::viewport_size().get();
+        let window = (window.width > 0.0 && window.height > 0.0)
+            .then_some(ViewportRect { x: 0.0, y: 0.0, width: window.width, height: window.height });
+        let outermost = scrollers.len().saturating_sub(1);
+        let mut moved = Vec::new();
+        for (i, (id, set_scroll, axis, port)) in scrollers.into_iter().enumerate() {
+            let Some(port) = port.and_then(|f| f()) else { continue };
+            // Inner scroll views are judged by their own box (an outer
+            // scroll brings them on screen); the outermost also by the
+            // window it is clipped to.
+            let port = match window {
+                Some(w) if i == outermost => overlap(port, w).unwrap_or(port),
+                _ => port,
+            };
+            let axis = axis.unwrap_or_default();
+            let dx = if axis.scrolls_x() { reveal_shift(target.x, target.width, port.x, port.width) } else { 0.0 };
+            let dy = if axis.scrolls_y() { reveal_shift(target.y, target.height, port.y, port.height) } else { 0.0 };
+            if dx == 0.0 && dy == 0.0 {
+                continue;
+            }
+            let (x0, y0) = state_of(id).and_then(|s| s.scroll).map_or((0.0, 0.0), |(x, y)| (x as f32, y as f32));
+            // An offset is never negative; the far end is the toolkit's to
+            // clamp (the robot doesn't know the content size).
+            let (x1, y1) = ((x0 + dx).max(0.0), (y0 + dy).max(0.0));
+            if x1 == x0 && y1 == y0 {
+                continue;
+            }
+            set_scroll(x1, y1);
+            target.x -= x1 - x0;
+            target.y -= y1 - y0;
+            moved.push(ScrollMove { scroll_view: id, x: x1, y: y1 });
+        }
+        if !moved.is_empty() {
+            settle();
+        }
+        Ok(moved)
+    }
+
     /// The element's rect in its parent's coordinate system.
     pub fn frame(&self, element: &Element) -> Result<Option<ViewportRect>, RobotError> {
         self.geometry(element, |a| a.frame.clone(), "frame")
@@ -2133,6 +2414,16 @@ impl Robot {
         visibility_of(element.id).ok_or(RobotError::ElementGone)
     }
 
+    /// The part of the element's box a user could see, in window
+    /// coordinates: its [`absolute_frame`](Self::absolute_frame) cut by the
+    /// window and by every registered ancestor that clips its content
+    /// ([`IntrospectionOps::content_clip`] — `overflow: hidden`, a scroller,
+    /// a list). Zero-sized when nothing is left or the element is not
+    /// [visible](Visibility::visible); `None` when its frame is unknown.
+    pub fn visible_frame(&self, element: &Element) -> Result<Option<ViewportRect>, RobotError> {
+        visibility_and_frame(element.id).map(|(_, f)| f).ok_or(RobotError::ElementGone)
+    }
+
     fn with_actions(
         &self,
         id: ElementId,
@@ -2324,7 +2615,9 @@ pub fn settle() {
 /// nav registry), `list_functions` / `call_function` / `poll_function`
 /// (`robot_fn`), `open_link` (the inbound-link ingress) and
 /// `get_viewport` / `set_viewport` ([`Robot::viewport`] /
-/// [`Robot::set_viewport`]). Verbs the
+/// [`Robot::set_viewport`]), `scroll_into_view`
+/// ([`Robot::scroll_into_view`]) and `get_platform` ([`platform_id`]).
+/// Verbs the
 /// registry doesn't own at all (`get_logs`,
 /// `screenshot`, custom commands) return `unknown command: …` — the
 /// transport falls back to its platform path for those (the web relay
@@ -2384,6 +2677,16 @@ pub mod bridge {
                 robot.drag_native(&el, &points).map_err(|e| e.to_string())?;
                 Ok("{\"mechanism\":\"native\"}".into())
             }
+            "key" => {
+                let chord = key::chord_from_args(args)?;
+                // An element is optional: with one, focus it first.
+                let el = match args["element_id"] {
+                    serde_json::Value::Null => None,
+                    _ => Some(resolve_element(args)?),
+                };
+                let how = robot.press_key(el.as_ref(), &chord).map_err(|e| e.to_string())?;
+                Ok(format!("{{\"mechanism\":\"{}\"}}", how.as_str()))
+            }
             "drag" => {
                 let el = resolve_element(args)?;
                 let points = parse_points(args)?;
@@ -2421,6 +2724,16 @@ pub mod bridge {
                 robot.set_scroll(&el, x, y).map_err(|e| e.to_string())?;
                 Ok("\"ok\"".into())
             }
+            "scroll_into_view" => {
+                let el = resolve_element(args)?;
+                let moved = robot.scroll_into_view(&el).map_err(|e| e.to_string())?;
+                let scrolled: Vec<serde_json::Value> = moved
+                    .iter()
+                    .map(|m| serde_json::json!({ "element_id": m.scroll_view.0, "x": m.x, "y": m.y }))
+                    .collect();
+                Ok(serde_json::json!({ "scrolled": scrolled }).to_string())
+            }
+            "get_platform" => Ok(format!("{{\"platform\":{}}}", serde_json::to_string(platform_id()).unwrap())),
             "focus" => {
                 let el = resolve_element(args)?;
                 robot.focus(&el).map_err(|e| e.to_string())?;
@@ -2926,14 +3239,18 @@ pub mod bridge {
         })
     }
 
-    /// `,"visible":…[,"in_viewport":…][,"state":{…}]` — visibility for
-    /// every element, `state` for one that has any.
+    /// `,"visible":…[,"in_viewport":…][,"visible_frame":{…}][,"state":{…}]`
+    /// — visibility for every element (`visible_frame` when its frame is
+    /// known), `state` for one that has any.
     fn state_field(id: ElementId) -> String {
         let mut out = String::new();
-        if let Some(v) = visibility_of(id) {
+        if let Some((v, frame)) = visibility_and_frame(id) {
             out.push_str(&format!(",\"visible\":{}", v.visible));
             if let Some(on) = v.in_viewport {
                 out.push_str(&format!(",\"in_viewport\":{on}"));
+            }
+            if frame.is_some() {
+                out.push_str(&format!(",\"visible_frame\":{}", rect_json(frame).unwrap_or_default()));
             }
         }
         if let Some(state) = state_of(id) {

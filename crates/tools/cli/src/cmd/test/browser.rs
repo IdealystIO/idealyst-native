@@ -5,7 +5,9 @@
 //! from `--window-size`: headless Chrome will not make a window narrower than
 //! 500 px, so a 390 px window still reports `innerWidth` 500. The override
 //! sets the layout viewport exactly, and for a device preset also sets the
-//! device pixel ratio, touch input and the user agent.
+//! device pixel ratio, touch input and the user agent. Every emulation also
+//! turns on focus emulation, so the page gets `focus` / `blur` events as the
+//! focused window would.
 //!
 //! Every override ends when its DevTools session detaches, so the session is
 //! held open for the whole run ([`HeadlessBrowser`] owns it) and closed with
@@ -196,6 +198,12 @@ pub fn emulation_commands(e: &Emulation, default_user_agent: &str) -> Vec<(&'sta
         ),
         ("Emulation.setTouchEmulationEnabled", touch),
         ("Emulation.setUserAgentOverride", ua_params),
+        // The page behaves as the focused one. A headless window is never
+        // the OS's focused window, so without this `element.focus()` moves
+        // `document.activeElement` but fires no `focus` / `blur` event, and
+        // an app's `on_focus` never runs under test though it does for a
+        // user.
+        ("Emulation.setFocusEmulationEnabled", json!({ "enabled": true })),
     ]
 }
 
@@ -486,6 +494,18 @@ mod tests {
         assert_eq!(by_method(&cmds, "Emulation.setTouchEmulationEnabled")["enabled"], false);
         // The browser's own UA is put back, undoing an earlier preset.
         assert_eq!(by_method(&cmds, "Emulation.setUserAgentOverride")["userAgent"], "HeadlessChrome UA");
+    }
+
+    /// REGRESSION (robot E2E `focusing_a_field_reports_it_focused` on web):
+    /// the headless window is never the OS's focused window, so a field's
+    /// `focus()` fired no `focus` event and the app's `on_focus` never ran.
+    /// Every emulation makes the page behave as the focused one.
+    #[test]
+    fn regression_headless_page_emulates_window_focus() {
+        for e in [Emulation::desktop(1280, 800), device_preset("pixel-7").unwrap().emulation()] {
+            let cmds = emulation_commands(&e, "ua");
+            assert_eq!(by_method(&cmds, "Emulation.setFocusEmulationEnabled")["enabled"], true);
+        }
     }
 
     #[test]

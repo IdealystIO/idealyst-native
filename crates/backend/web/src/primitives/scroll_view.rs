@@ -39,6 +39,12 @@ pub(crate) fn create(
     // styling. The inline rules win over class rules for the overflow
     // properties; the class still governs flex direction etc.
     let _ = div.set_attribute("style", overflow_declaration(axis));
+    // Size the content of an X-scrolling scroller to what it holds
+    // (`css::HSCROLL_CONTENT_RESET`). Set on an adopted SSR node too: the
+    // SSR backend stamps it, and setting it again is a no-op.
+    if axis.scrolls_x() {
+        let _ = div.set_attribute(css::HSCROLL_MARKER_ATTR, "");
+    }
     // NOTE for `apply_scroll_view_bounces`: this writes the whole style
     // ATTRIBUTE, so anything that lands here later must go through
     // `style().set_property(...)` rather than a second `set_attribute`,

@@ -51,6 +51,8 @@ mod keyframes;
 mod batch_queue;
 #[cfg(feature = "robot")]
 mod introspect;
+#[cfg(feature = "robot")]
+mod native_key;
 pub mod newcore;
 /// The wasm hot-patch tier's page half. Dev-only: `build --web` never
 /// enables the feature, so a shipped bundle compiles none of it.

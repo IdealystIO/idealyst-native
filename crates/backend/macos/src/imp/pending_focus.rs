@@ -43,6 +43,12 @@ fn same(a: &NSView, b: &NSView) -> bool {
 }
 
 fn make_first_responder_now(view: &NSView) {
+    // Not again on a field that already has focus: `makeFirstResponder:`
+    // ends the field editor's session and starts a new one with the whole
+    // text selected, so the next key would replace what was typed.
+    if crate::imp::view::holds_keyboard_focus(view) {
+        return;
+    }
     let window = window_of(view);
     if !window.is_null() {
         let _: bool = unsafe { msg_send![window, makeFirstResponder: view] };

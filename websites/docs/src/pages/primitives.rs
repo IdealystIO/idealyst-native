@@ -80,7 +80,9 @@ docs! {
 
     section(heading = "ScrollView") {
         p("A View that scrolls. Vertical by default; ", code("horizontal = true"),
-          " flips the axis."),
+          " flips the axis. A horizontal scroller's content is as wide as \
+           what it holds, not the viewport; give it ", code("min_width: 100%"),
+          " to fill the viewport when it is shorter."),
         code(rust, r##"
             ui! {
                 scroll_view {

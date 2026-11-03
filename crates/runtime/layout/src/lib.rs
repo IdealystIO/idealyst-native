@@ -229,8 +229,10 @@ pub struct LayoutTree {
     /// are exempted from the `100%` width clamp.
     hscroll_parents: HashSet<NodeId>,
     /// Direct children of a [`hscroll_parents`](Self::hscroll_parents)
-    /// node — exempt from the default width clamp so horizontal-scroll
-    /// content can exceed the viewport.
+    /// node — exempt from the default width clamp, and sized
+    /// `width: max-content` while the author leaves `width` unset, so
+    /// horizontal-scroll content is as wide as what it holds (see
+    /// [`apply_hscroll_content_width`](Self::apply_hscroll_content_width)).
     hscroll_content: HashSet<NodeId>,
     /// Author-set padding in px, per-node, per-side. Tracked
     /// separately from the Taffy node's effective padding so we can
@@ -617,6 +619,9 @@ impl LayoutTree {
         if let Some(ancestor) = self.real_ancestor(parent) {
             for n in self.flat_nodes(node) {
                 let _ = self.tree.remove_child(ancestor, n);
+                if self.hscroll_content.contains(&n) {
+                    self.unexempt_hscroll_content(n);
+                }
             }
             let _ = self.tree.mark_dirty(ancestor);
         }
@@ -1280,6 +1285,7 @@ impl LayoutTree {
         // produced (state overlays carry partial rules, so we must read
         // the merged result, not the incoming `rules`).
         self.apply_default_max_width(node.0, &mut style);
+        self.apply_hscroll_content_width(node.0, &mut style);
 
         // Track the `width: <percent>` + author `max_width: <definite px>`
         // pattern so `compute` can re-resolve its height at the capped width
@@ -1373,17 +1379,56 @@ impl LayoutTree {
         };
     }
 
+    /// Size horizontal-scroll content to its content along the scroll
+    /// axis: `width: max-content` while the author leaves `width` unset.
+    ///
+    /// A scroll view's children stack in a flex column (as on the web), so
+    /// a horizontal scroller's content is a CROSS-axis child, and
+    /// `align-items: stretch` would make it exactly the viewport's width
+    /// with everything past the viewport laid out outside its frame.
+    /// AppKit and UIKit hit-test a view only inside its superview's
+    /// bounds, so those children could not be clicked (a tab strip's
+    /// later tabs). `max-content` makes the content's box cover what it
+    /// holds on every backend; the web backend writes the same default
+    /// (`css::HSCROLL_CONTENT_RESET`). An author who wants short content
+    /// to fill the viewport adds `min_width: 100%`; an author `width` wins.
+    fn apply_hscroll_content_width(&self, node: NodeId, style: &mut Style) {
+        if self.hscroll_content.contains(&node) && self.auto_width.contains(&node) {
+            style.size.width = Dimension::max_content();
+        }
+    }
+
     /// Mark `node` as horizontal-scroll content: exempt it from the
-    /// default width clamp (so it can exceed its scroll viewport) and
-    /// clear any clamp already written to its Taffy style.
+    /// default width clamp (so it can exceed its scroll viewport), clear
+    /// any clamp already written to its Taffy style, and size it to its
+    /// content ([`apply_hscroll_content_width`](Self::apply_hscroll_content_width)).
     fn exempt_as_hscroll_content(&mut self, node: NodeId) {
         self.hscroll_content.insert(node);
-        if self.auto_max_width.contains(&node) {
-            if let Ok(mut style) = self.tree.style(node).cloned() {
-                if style.max_size.width != LengthPercentageAuto::auto() {
-                    style.max_size.width = LengthPercentageAuto::auto();
-                    let _ = self.tree.set_style(node, style);
-                }
+        if let Ok(mut style) = self.tree.style(node).cloned() {
+            let before = style.clone();
+            if self.auto_max_width.contains(&node) {
+                style.max_size.width = LengthPercentageAuto::auto();
+            }
+            self.apply_hscroll_content_width(node, &mut style);
+            if style != before {
+                let _ = self.tree.set_style(node, style);
+            }
+        }
+    }
+
+    /// Undo [`exempt_as_hscroll_content`](Self::exempt_as_hscroll_content)
+    /// for a node leaving its horizontal scroller: back to `width: auto`
+    /// (when the author never set one) and the default width clamp.
+    fn unexempt_hscroll_content(&mut self, node: NodeId) {
+        self.hscroll_content.remove(&node);
+        if let Ok(mut style) = self.tree.style(node).cloned() {
+            let before = style.clone();
+            if self.auto_width.contains(&node) {
+                style.size.width = Dimension::auto();
+            }
+            self.apply_default_max_width(node, &mut style);
+            if style != before {
+                let _ = self.tree.set_style(node, style);
             }
         }
     }
@@ -1461,7 +1506,8 @@ impl LayoutTree {
     /// `Both`: every scrolling axis gets `Overflow::Scroll` (so the
     /// content's extent on it never feeds the viewport's size), and when X
     /// scrolls the direct children are exempt from the default
-    /// `max-width: 100%` clamp. A two-axis viewport's content is therefore
+    /// `max-width: 100%` clamp and sized `width: max-content` unless the
+    /// author gives them a width. A two-axis viewport's content is therefore
     /// unconstrained on both axes — what the author's own direction and
     /// alignment give it — and [`scroll_content_extent`](Self::scroll_content_extent)
     /// reports it unclipped on both.
@@ -1494,8 +1540,9 @@ impl LayoutTree {
             style
         });
         // A horizontal scroller's content is meant to exceed the
-        // viewport (that's what scrolls), so its children must opt out
-        // of the default `max-width: 100%` clamp. Record the parent and
+        // viewport (that's what scrolls), so its children opt out of the
+        // default `max-width: 100%` clamp and are sized to their content
+        // (`exempt_as_hscroll_content`). Record the parent and
         // exempt any children already attached; `add_child` exempts ones
         // added later. Called at scroll-view create time, so the child
         // list is usually empty here — the `add_child` hook does most of
@@ -1886,6 +1933,59 @@ impl LayoutTree {
                 }
             }
         }
+    }
+
+    /// The main-axis size `root` lays out to when its cross axis is
+    /// `cross` and its main axis may grow to fit its content — a
+    /// virtualized row's natural height in a vertical list (`horizontal =
+    /// false`: width `cross`, height measured), or width in a horizontal
+    /// one. For `ItemSize::Measured` lists, whose rows are detached roots
+    /// that [`Self::compute`] would force to the box they are given.
+    ///
+    /// The cross axis is pinned to `cross` when the author left it `Auto`
+    /// (the row fills its lane, as `compute` would fill it); the main axis
+    /// keeps the author's own size if they set one, else sizes to its
+    /// content under max-content available space. Leaves the frames of
+    /// the measuring layout behind: call `compute` with the final box
+    /// before reading frames.
+    pub fn measure_main(&mut self, root: LayoutNode, horizontal: bool, cross: f32) -> f32 {
+        if self.contents.contains(&root.0) {
+            return 0.0;
+        }
+        let mut style = self.tree.style(root.0).cloned().unwrap_or_default();
+        let (cross_auto, main_auto) = if horizontal {
+            (self.auto_height.contains(&root.0), self.auto_width.contains(&root.0))
+        } else {
+            (self.auto_width.contains(&root.0), self.auto_height.contains(&root.0))
+        };
+        // `compute` overwrote the author's `Auto` axes with lengths; put
+        // the main axis back to `Auto` so it can follow the content.
+        let (cross_dim, main_dim) = if horizontal {
+            (&mut style.size.height, &mut style.size.width)
+        } else {
+            (&mut style.size.width, &mut style.size.height)
+        };
+        if cross_auto {
+            *cross_dim = Dimension::length(cross);
+        }
+        if main_auto {
+            *main_dim = Dimension::auto();
+        }
+        self.tree.set_style(root.0, style).expect("taffy set_style");
+        let space = if horizontal {
+            Size { width: AvailableSpace::MaxContent, height: AvailableSpace::Definite(cross) }
+        } else {
+            Size { width: AvailableSpace::Definite(cross), height: AvailableSpace::MaxContent }
+        };
+        let measure_fns = std::mem::take(&mut self.measure_fns);
+        self.tree
+            .compute_layout_with_measure(root.0, space, |inputs, node_id, _ctx, style| {
+                measure_leaf(inputs, style, measure_fns.get(&node_id))
+            })
+            .expect("taffy compute_layout");
+        self.measure_fns = measure_fns;
+        let size = self.tree.layout(root.0).map(|l| l.size).unwrap_or_default();
+        if horizontal { size.width } else { size.height }
     }
 
     /// Read the most recently computed frame for `node`. Returns the

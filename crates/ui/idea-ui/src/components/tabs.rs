@@ -170,17 +170,10 @@ component_styles! {
                 flex_shrink: 0.0,
                 flex_grow: 0.0,
                 flex_basis: Length::Auto,
-                // Size to the tabs on the CROSS axis as well. `flex_shrink`
-                // above stops the strip being compressed; this stops it being
-                // STRETCHED to the scroll viewport, which is a quieter bug
-                // with the same cause: the strip's own box stayed viewport-
-                // wide while its tabs were laid out past the edge. They
-                // painted (nothing clips them) and they scrolled, but UIKit
-                // hit-tests a subview only where its SUPERVIEW's bounds
-                // contain the point — so every tab past the first viewport
-                // was visible, moved with the strip, and silently ignored
+                // No width: as the horizontal scroller's content the strip
+                // is as wide as its tabs on every backend, so each tab lies
+                // inside the strip's box, where UIKit and AppKit deliver
                 // taps.
-                align_self: runtime_core::AlignSelf::FlexStart,
             }
             // `Tabs(padding_horizontal = …)`: insets the tabs from the bar's
             // ends while the divider still spans the full width (it is on
@@ -1024,30 +1017,53 @@ mod tests {
 
     /// Every tab is TAPPABLE, not just the ones that fit unscrolled.
     ///
-    /// `flex_shrink: 0` on the strip stops the tabs being squashed, but
-    /// it says nothing about the strip's own box on the cross axis,
-    /// where a flex item stretches to its container by default. So the
-    /// strip stayed as wide as the scroll viewport while Taffy laid its
-    /// tabs out past the edge. Nothing clips them, so they PAINTED, and
-    /// the scroller's contentSize comes from a deep walk, so they
-    /// SCROLLED — but UIKit hit-tests a subview only where its
-    /// superview's bounds contain the point, so every tab past the first
-    /// viewport quietly ignored taps. Measured on an iPhone 17 Pro Max:
-    /// tabs answered up to content x=440 (the viewport) and were dead
-    /// beyond it, at every scroll offset.
+    /// UIKit and AppKit hit-test a subview only where its superview's
+    /// bounds contain the point, so every tab must lie inside the strip's
+    /// box. A strip stretched to the scroll viewport laid its later tabs
+    /// out past its own edge: they painted and scrolled but ignored taps
+    /// (measured on an iPhone 17 Pro Max: tabs answered up to content
+    /// x=440, the viewport, and were dead beyond it). The real `scroller`
+    /// and `bar` styles, laid out by the Taffy wrapper the native backends
+    /// use: the strip is as wide as its tabs.
     ///
     /// The symptom is invisible in a screenshot, which is why this is a
     /// test and not something to eyeball.
     #[test]
     fn a_tab_is_tappable_however_far_along_the_strip_it_sits() {
+        use runtime_layout::LayoutTree;
+        const VIEWPORT: f32 = 390.0;
+        const TAB_W: f32 = 90.0;
+        const TABS: usize = 12;
         with_test_world(|| {
             theme();
-            let rules = runtime_core::resolve_style(&TabsStyles::bar().into_style_application());
-            assert_eq!(
-                rules.align_self,
-                Some(runtime_core::AlignSelf::FlexStart),
-                "the strip must size to its tabs on the CROSS axis too, or \
-                 its box clips hit-testing to the viewport"
+            let scroller_rules =
+                runtime_core::resolve_style(&TabsStyles::scroller().into_style_application());
+            let bar_rules = runtime_core::resolve_style(&TabsStyles::bar().into_style_application());
+            let mut layout = LayoutTree::new();
+            let root = layout.new_node();
+            let scroller = layout.new_node();
+            layout.set_overflow_scroll(scroller, true);
+            layout.set_style(scroller, &scroller_rules);
+            layout.add_child(root, scroller);
+            let strip = layout.new_node();
+            layout.set_style(strip, &bar_rules);
+            layout.add_child(scroller, strip);
+            let tabs: Vec<_> = (0..TABS)
+                .map(|_| {
+                    let tab = layout.new_node();
+                    layout.set_intrinsic_size(tab, TAB_W, 40.0);
+                    layout.add_child(strip, tab);
+                    tab
+                })
+                .collect();
+            layout.compute(root, VIEWPORT, 800.0);
+            let strip_w = layout.frame_of(strip).width;
+            let last = layout.frame_of(*tabs.last().unwrap());
+            assert!(strip_w > VIEWPORT, "the strip overflows the viewport, got {strip_w}");
+            assert!(
+                last.x + last.width <= strip_w,
+                "the last tab ends at {} outside the strip's {strip_w}",
+                last.x + last.width
             );
         });
     }

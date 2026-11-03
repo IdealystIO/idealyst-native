@@ -19,16 +19,23 @@ show `placeholder` (single-line only: a multi-line edit has no cue
 banner), toggle `secure` live, and report focus through `on_focus` and the
 `state focused` style. A field's `on_key_down` runs from the host's message
 pump before the app keyboard, so Enter-to-submit works and
-`PreventDefault` keeps the key out of the field. `on_blur` is a "may focus
-leave?" veto that Windows never asks, so it has no effect. A `text_area`
+`PreventDefault` keeps the key out of the field. `on_blur` runs when the
+field loses focus (`EN_KILLFOCUS`). Windows moves focus without asking
+first, so a `BlurOutcome::Keep` takes it back on the next turn, as web
+does: after a click on painted content, a native button or `blur()`, but
+not when focus moved to another field or to another app. A `text_area`
 grows with its content between `min_rows` and `max_rows`. Source:
-`lib.rs` (`create_text_input`, `create_text_area`), `field_keys.rs`.
+`lib.rs` (`create_text_input`, `create_text_area`), `field_keys.rs`,
+`blur_policy.rs`.
 
 `flat_list` is a painted scroll view holding only the rows in and near the
 viewport. Each row is laid out on its own at the list's width and its item
 size, rows mount and recycle as the list scrolls, and a data change
-recycles them all. `on_end_reached` fires once each time a scroll view or
-list reaches its end. Source: `virtualizer.rs`.
+recycles them all. With `ItemSize::Measured` the size is an estimate: a
+mounted row is measured at the list's width and laid out at its rendered
+size, and the rows after it, the scroll range and the visible window move
+to match. `on_end_reached` fires once each time a scroll view or list
+reaches its end. Source: `virtualizer.rs`, `virtual_rows.rs`.
 
 `open_url` hands the URL to the shell (`ShellExecuteW`): the default
 browser, or the registered handler for `mailto:` and other schemes.

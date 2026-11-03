@@ -32,6 +32,7 @@ pub fn virtualizer(
             layout: VirtualLayout::default(),
             style: None,
             a11y: AccessibilityProps::default(),
+            test_id: None,
             ref_fill: None,
             on_scroll: None,
             on_end_reached: None,
@@ -91,6 +92,14 @@ impl VirtualizerBuilder {
 
     pub fn style(mut self, style: impl IntoStyleProp) -> Self {
         self.prim.style = Some(style.into_style_prop());
+        self
+    }
+
+    /// Robot/automation anchor (`test_id = …`): the mount handler
+    /// registers the list under `id` in the vocabulary robot registry, and
+    /// its rows under the list (`robot` feature; inert otherwise).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.prim.test_id = Some(id);
         self
     }
 

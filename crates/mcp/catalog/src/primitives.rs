@@ -386,8 +386,8 @@ inventory::submit! {
             PropFieldSpec {
                 name: "on_blur",
                 type_str: "Fn() -> BlurOutcome",
-                doc: "Consulted when the input is about to lose focus via the dismiss path. Return BlurOutcome::Keep to veto and keep focus (keyboard stays up on mobile).",
-                constraint: "builder method (.on_blur(..)) — NOT an inline `ui!` prop: writing it inline is a compile error",
+                doc: "Cancelable blur: runs when the input loses focus (an outside tap/click, a programmatic or robot `blur()`). Return BlurOutcome::Keep to veto a blur that would leave nothing focused — the field keeps focus (keyboard stays up on mobile); moving focus to another field still moves it. BlurOutcome::Allow lets it go. `on_focus(false)` is the plain notification; this is the veto.",
+                constraint: "inline prop or builder method `.on_blur(..)`",
             },
             PropFieldSpec {
                 name: "on_focus",

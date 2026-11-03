@@ -148,6 +148,25 @@ mod app_key_policy;
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 mod app_pointer_policy;
 
+/// How a view clips its descendants, for the robot's `visible_frame`
+/// (`IntrospectionOps::content_clip`). Un-gated so the tests run on the
+/// host; the JNI read lives in `imp/view_rect.rs`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod content_clip_policy;
+
+/// The robot's key press → the Android `KeyEvent` (keycode + meta state, or
+/// committed characters) a hardware keyboard would deliver. Un-gated so the
+/// tables are tested on the host; the JNI delivery lives in
+/// `imp/native_key.rs`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod native_key_policy;
+
+/// A text field's `on_focus` / `on_blur` dispatch behind its one focus
+/// listener. Un-gated so the tests run on the host; the JNI half lives in
+/// `imp/text_focus.rs`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod text_focus_policy;
+
 /// Which Taffy roots are stack-presenter screens and in what order the
 /// pass computes them against their outlet. Un-gated like
 /// `sticky_compute` so the ordering tests run on the host; the registry

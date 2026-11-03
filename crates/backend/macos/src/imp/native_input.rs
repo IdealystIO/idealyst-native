@@ -38,6 +38,9 @@ use runtime_vocabulary::caps::{NativeInjection, PointerStep, PointerStepPhase};
 
 use crate::imp::MacosNode;
 
+mod key;
+pub(crate) use key::native_key;
+
 // NSEventType values.
 const LEFT_MOUSE_DOWN: usize = 1;
 const LEFT_MOUSE_UP: usize = 2;

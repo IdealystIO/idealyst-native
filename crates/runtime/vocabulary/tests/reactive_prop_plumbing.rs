@@ -854,3 +854,94 @@ fn no_on_blur_registers_no_handler() {
     );
     drop(realized);
 }
+
+/// REGRESSION: `on_blur` was unreachable from author code — the
+/// `text_input` an app writes in `ui!` is the glue wrapper, which had no
+/// `on_blur`, and `ui!` rejected the prop. Inline `on_blur = …` now lowers
+/// to the glue setter: the backend gets the author's handler, it runs on a
+/// blur, and its `Keep` comes back for the platform's veto.
+#[test]
+fn regression_ui_text_input_on_blur_reaches_the_backend_and_can_keep() {
+    use runtime_macros::ui;
+    use std::cell::Cell;
+    let h = harness();
+    let blurs = Rc::new(Cell::new(0));
+    let keep = Rc::new(Cell::new(true));
+    let realized = h.world.enter(|| {
+        let (blurs, keep) = (blurs.clone(), keep.clone());
+        let on_blur = move || {
+            blurs.set(blurs.get() + 1);
+            if keep.get() {
+                BlurOutcome::Keep
+            } else {
+                BlurOutcome::Allow
+            }
+        };
+        let tree: runtime_vocabulary::glue::Element = ui! {
+            view() {
+                text_input(value = String::new(), on_change = |_| {}, on_blur = on_blur)
+            }
+        };
+        realize(&h.backend, &h.registry, tree)
+    });
+    let handler = h.blur_handler(0).expect("ui!'s on_blur reached create_text_input");
+    assert_eq!(handler(), BlurOutcome::Keep, "the author's Keep is the platform's answer");
+    assert_eq!(blurs.get(), 1, "the author's handler ran");
+    keep.set(false);
+    assert_eq!(handler(), BlurOutcome::Allow);
+    assert_eq!(blurs.get(), 2);
+    drop(realized);
+}
+
+/// The glue's chained `.on_blur(…)` (the builder form after a `text_input(…)`
+/// call) threads the same handler.
+#[test]
+fn glue_text_input_on_blur_threads_to_backend() {
+    use runtime_vocabulary::glue::primitives::text_input::text_input as glue_text_input;
+    use runtime_vocabulary::glue::IntoElement;
+    let h = harness();
+    let realized = h.world.enter(|| {
+        let tree = glue_text_input(String::new(), |_| {})
+            .on_blur(|| BlurOutcome::Keep)
+            .into_element();
+        realize(&h.backend, &h.registry, tree)
+    });
+    let handler = h.blur_handler(0).expect("on_blur threaded");
+    assert_eq!(handler(), BlurOutcome::Keep);
+    drop(realized);
+}
+
+/// REGRESSION: the glue `text_area` had no `on_key_down` though its
+/// builder does, so author code could not intercept Tab / Enter in a
+/// text area.
+#[test]
+fn regression_glue_text_area_on_key_down_threads_to_backend() {
+    use runtime_shared::{KeyEvent, KeyOutcome};
+    use runtime_vocabulary::glue::primitives::text_area::text_area as glue_text_area;
+    use runtime_vocabulary::glue::IntoElement;
+    let h = harness();
+    let realized = h.world.enter(|| {
+        let tree = glue_text_area(String::new(), |_| {})
+            .on_key_down(|e: &KeyEvent| {
+                if e.key == "Tab" {
+                    KeyOutcome::PreventDefault
+                } else {
+                    KeyOutcome::Default
+                }
+            })
+            .into_element();
+        realize(&h.backend, &h.registry, tree)
+    });
+    let handler = h.key_down_handler(0).expect("the text area's on_key_down reached the backend");
+    let tab = KeyEvent {
+        key: "Tab".into(),
+        shift: false,
+        ctrl: false,
+        alt: false,
+        meta: false,
+        selection_start: 0,
+        selection_end: 0,
+    };
+    assert_eq!(handler(&tab), KeyOutcome::PreventDefault);
+    drop(realized);
+}

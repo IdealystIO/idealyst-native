@@ -1157,6 +1157,13 @@ mod native {
             AndroidBackend::update_text_input_secure_impl(self, node, secure)
         }
 
+        /// Fired by the field's `RustFocusListener` (`imp::text_focus`).
+        /// Without it a field's `on_focus` never ran on Android and the
+        /// robot saw no field focused.
+        fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
+            crate::imp::text_focus::set_focus_handler(node, flushing1(handler))
+        }
+
         fn update_text_input_keyboard(
             &mut self,
             node: &Self::Node,
@@ -1681,12 +1688,29 @@ mod native {
             crate::imp::view_rect::view_is_shown(node)
         }
 
+        fn content_clip(&self, node: &Self::Node) -> Option<caps::ContentClip> {
+            crate::imp::view_rect::content_clip(node)
+        }
+
+        /// `View.isFocused()`, read at query time.
+        fn is_focused(&self, node: &Self::Node) -> Option<bool> {
+            crate::imp::text_focus::is_focused(node)
+        }
+
         fn native_pointer(
             &self,
             _node: &Self::Node,
             steps: &[caps::PointerStep],
         ) -> Option<caps::NativeInjection> {
             crate::imp::view_rect::native_pointer(steps)
+        }
+
+        fn native_key(
+            &self,
+            node: &Self::Node,
+            press: &caps::KeyPress,
+        ) -> Option<caps::NativeInjection> {
+            crate::imp::native_key::native_key(node, press)
         }
 
         fn supports_screenshot(&self) -> bool {

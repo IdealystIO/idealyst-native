@@ -396,6 +396,26 @@ pub(crate) fn is_node_shown(node: &MacosNode) -> bool {
     alpha > TRANSPARENT
 }
 
+/// How AppKit clips `node`'s descendants (`IntrospectionOps::content_clip`):
+/// a scroll view (`scroll_view`, a virtualizer's outer `NSScrollView`)
+/// scrolls them into its clip view; a layer with `masksToBounds` (what
+/// `overflow: hidden` sets — `backend_apple_core::clip`) cuts them.
+pub(crate) fn content_clip(node: &MacosNode) -> runtime_vocabulary::caps::ContentClip {
+    use runtime_vocabulary::caps::ContentClip;
+    let view = node.as_view();
+    let scroller: bool = unsafe { msg_send![view, isKindOfClass: objc2::class!(NSScrollView)] };
+    if scroller {
+        return ContentClip::Scroll;
+    }
+    let layer: *mut objc2::runtime::AnyObject = unsafe { msg_send![view, layer] };
+    let masks: bool = !layer.is_null() && unsafe { msg_send![layer, masksToBounds] };
+    if masks {
+        ContentClip::Hidden
+    } else {
+        ContentClip::Visible
+    }
+}
+
 /// Opacity at or below which a view counts as invisible — the same bar the
 /// painted backends use for hit testing (`effective_opacity() <= 0.003`).
 const TRANSPARENT: f64 = 0.003;
@@ -511,7 +531,21 @@ impl TextInputOps for MacosTextInputOps {
     fn focus(&self, node: &dyn Any) {
         make_first_responder(node);
     }
+    /// A programmatic blur is a dismiss, so the field's cancelable `on_blur`
+    /// decides it, as the outside-click path does: a `Keep` leaves the field
+    /// editing. Asked only while the field holds focus — blurring a field
+    /// that isn't focused is a no-op with no `on_blur`, as on iOS (where
+    /// `resignFirstResponder` consults `textFieldShouldEndEditing:` only
+    /// for the editing field).
     fn blur(&self, node: &dyn Any) {
+        if let Some(n) = node.downcast_ref::<MacosNode>() {
+            let field = n.as_view();
+            if crate::imp::view::holds_keyboard_focus(field)
+                && !crate::imp::view::text_field_blur_allows(field)
+            {
+                return;
+            }
+        }
         resign_first_responder(node);
     }
     fn select_all(&self, node: &dyn Any) {

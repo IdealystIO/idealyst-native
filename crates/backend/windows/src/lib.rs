@@ -104,6 +104,8 @@ mod portal;
 
 #[cfg(feature = "robot")]
 mod native_input;
+#[cfg(feature = "robot")]
+mod native_key;
 
 /// `runtime_scene::Host` + the 30 capability traits on
 /// [`WindowsBackend`], plus the boot entry and flush driver.
@@ -113,6 +115,7 @@ pub mod app_identity;
 pub mod app_keys;
 pub mod app_pointer;
 pub mod app_situation;
+mod blur_policy;
 mod border_pattern;
 mod code;
 /// Author `cursor` style → the system cursor over the painted scene.
@@ -149,6 +152,7 @@ mod screenshot;
 pub mod user_activity;
 mod scene;
 pub mod view_input;
+mod virtual_rows;
 mod virtualizer;
 mod wrap;
 
@@ -371,6 +375,45 @@ fn to_crlf(text: &str) -> String {
 /// CRLF → LF: the framework's line break.
 fn from_crlf(text: &str) -> String {
     text.replace("\r\n", "\n")
+}
+
+/// A text field's `on_blur` answered `outcome` as `field` lost focus: take
+/// focus back when that is a `Keep` the focus move allows
+/// ([`blur_policy::retake_focus`]). Runs a scheduler turn after the
+/// `EN_KILLFOCUS`, once the focus change has landed.
+fn retake_focus_after_blur(
+    field: HWND,
+    outcome: runtime_shared::primitives::text_input::BlurOutcome,
+) {
+    use blur_policy::FocusNow;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
+    use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetClassNameW, IsWindow, GA_ROOT};
+    unsafe {
+        // The field was unmounted meanwhile (its blur was a teardown).
+        if !IsWindow(Some(field)).as_bool() {
+            return;
+        }
+        let now = GetFocus();
+        let place = if now == field {
+            FocusNow::ThisField
+        } else if now.is_invalid() {
+            FocusNow::LeftApp
+        } else if GetAncestor(now, GA_ROOT) != GetAncestor(field, GA_ROOT) {
+            FocusNow::LeftApp
+        } else {
+            // Every `EDIT` in the window is a `text_input` / `text_area`.
+            let mut class = [0u16; 16];
+            let n = GetClassNameW(now, &mut class).max(0) as usize;
+            if String::from_utf16_lossy(&class[..n]).eq_ignore_ascii_case("edit") {
+                FocusNow::AnotherField
+            } else {
+                FocusNow::Elsewhere
+            }
+        };
+        if blur_policy::retake_focus(outcome, place) {
+            let _ = SetFocus(Some(field));
+        }
+    }
 }
 
 fn window_text(hwnd: HWND) -> String {
@@ -752,12 +795,14 @@ struct CommandEntry {
 /// An `EDIT` control's notifications (`text_input`, `text_area`), keyed
 /// by control id beside [`CommandEntry`]: one control answers several
 /// codes — `EN_CHANGE` reports the text, `EN_SETFOCUS` / `EN_KILLFOCUS`
-/// drive `on_focus` and the node's `state focused` style.
+/// drive `on_focus` and the node's `state focused` style, and
+/// `EN_KILLFOCUS` asks a `text_input`'s `on_blur` (`blur_policy`).
 struct EditEntry {
     node: u64,
     hwnd: HWND,
     on_change: Rc<dyn Fn(String)>,
     on_focus: Option<Rc<dyn Fn(bool)>>,
+    on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
 }
 
 // =========================================================================
@@ -1420,15 +1465,25 @@ impl WindowsBackend {
                 // A text field shows focus however it arrived, so this is
                 // `state focused` (focus-visible) too.
                 let state = self.view_input.states.get(&e.node).cloned();
-                if on_focus.is_none() && state.is_none() {
+                let on_blur = if on { None } else { e.on_blur.clone() };
+                if on_focus.is_none() && state.is_none() && on_blur.is_none() {
                     return None;
                 }
+                let hwnd = e.hwnd;
                 Some(Rc::new(move || {
                     if let Some(s) = &state {
                         s(runtime_shared::StateBits::FOCUSED, on);
                     }
                     if let Some(f) = &on_focus {
                         f(on);
+                    }
+                    if let Some(f) = &on_blur {
+                        let outcome = f();
+                        // Next turn, not here: this runs inside the EDIT's
+                        // WM_KILLFOCUS, mid focus change (`blur_policy`).
+                        runtime_shared::scheduling::after_ms_detached(0, move || {
+                            retake_focus_after_blur(hwnd, outcome)
+                        });
                     }
                 }))
             }
@@ -2918,17 +2973,16 @@ impl WindowsBackend {
         self.invalidate();
     }
 
-    /// A single-line `EDIT`. `on_change` and focus ride `WM_COMMAND`
-    /// ([`EditEntry`]); `on_key_down` rides the host's pump
-    /// (`field_keys`). `on_blur` is the platform's "may focus leave?"
-    /// veto: Windows moves focus without asking, so it has no hook here.
+    /// A single-line `EDIT`. `on_change`, focus and `on_blur` ride
+    /// `WM_COMMAND` ([`EditEntry`]); `on_key_down` rides the host's pump
+    /// (`field_keys`).
     fn create_text_input(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
-        _on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
+        on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
         secure: bool,
         _a11y: &AccessibilityProps,
     ) -> WindowsNode {
@@ -2939,7 +2993,7 @@ impl WindowsBackend {
         }
         let hwnd = self.create_control_hwnd(class_edit(), initial_value, style, Some(control_id));
         let node = self.add_node(NodeKind::Control { hwnd });
-        self.edits.insert(control_id, EditEntry { node: node.id, hwnd, on_change, on_focus: None });
+        self.edits.insert(control_id, EditEntry { node: node.id, hwnd, on_change, on_focus: None, on_blur });
         if let Some(f) = on_key_down {
             self.field_keys.insert(hwnd.0 as isize, f);
         }
@@ -2987,7 +3041,7 @@ impl WindowsBackend {
                 }
             }
         });
-        self.edits.insert(control_id, EditEntry { node: id, hwnd, on_change: report, on_focus: None });
+        self.edits.insert(control_id, EditEntry { node: id, hwnd, on_change: report, on_focus: None, on_blur: None });
         if let Some(f) = on_key_down {
             self.field_keys.insert(hwnd.0 as isize, f);
         }
@@ -4053,8 +4107,17 @@ mod disabled_tests {
         }
         assert_eq!(unsafe { GetFocus() }, edit, "baseline: the enabled EDIT takes focus");
 
+        #[cfg(feature = "robot")]
+        assert_eq!(
+            runtime_vocabulary::caps::IntrospectionOps::is_focused(&be, &input),
+            Some(true),
+            "the robot's `focused` reads GetFocus()"
+        );
+
         StyleOps::set_disabled(&mut be, &input, true);
         assert!(!unsafe { IsWindowEnabled(edit) }.as_bool(), "Win32's own disabled state");
+        #[cfg(feature = "robot")]
+        assert_eq!(runtime_vocabulary::caps::IntrospectionOps::is_focused(&be, &input), Some(false));
         assert_ne!(unsafe { GetFocus() }, edit, "a field that goes disabled drops its focus");
 
         StyleOps::set_disabled(&mut be, &input, false);
@@ -4840,6 +4903,86 @@ mod capability_tests {
         b.command_action(cid, EN_SETFOCUS).expect("set focus handled")();
         b.command_action(cid, EN_KILLFOCUS).expect("kill focus handled")();
         assert_eq!(seen.borrow().as_slice(), ["FOCUSED:true", "focus:true", "FOCUSED:false", "focus:false"]);
+    }
+
+    /// `create_text_input` dropped the author's `on_blur`, so it never ran
+    /// on Windows and `BlurOutcome::Keep` could not keep focus. The EDIT's
+    /// `EN_KILLFOCUS` now asks it: `Keep` takes focus back from a dismiss
+    /// (focus handed to the window, as `blur()` does), `Allow` lets it go,
+    /// and a move to another field stands either way. The host here is a
+    /// `STATIC`, which routes no `WM_COMMAND`, so the test fires the
+    /// notification the way the host shell does; with no scheduler
+    /// installed the deferred re-take runs inline. Real HWNDs and focus, so
+    /// it runs on a Windows host (or Wine).
+    #[test]
+    fn regression_text_input_on_blur_keep_takes_focus_back() {
+        use runtime_shared::primitives::text_input::BlurOutcome;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
+        use windows::Win32::UI::WindowsAndMessaging::{WS_OVERLAPPEDWINDOW, WS_VISIBLE};
+        let title = to_pcwstr("blur-test");
+        let host = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                PCWSTR(windows::core::w!("STATIC").as_ptr()),
+                title.as_pcwstr(),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                0,
+                0,
+                400,
+                300,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("host window");
+        let mut b = WindowsBackend::new(host);
+        let calls = Rc::new(Cell::new(0));
+        let outcome = Rc::new(Cell::new(BlurOutcome::Keep));
+        let on_blur: runtime_shared::primitives::text_input::BlurHandler = {
+            let (calls, outcome) = (calls.clone(), outcome.clone());
+            Rc::new(move || {
+                calls.set(calls.get() + 1);
+                outcome.get()
+            })
+        };
+        let field = TextInputOps::create_text_input(
+            &mut b,
+            "",
+            None,
+            Rc::new(|_| {}),
+            None,
+            Some(on_blur),
+            false,
+            &AccessibilityProps::default(),
+        );
+        let cid = b.nodes[&field.id].control_id.expect("control id");
+        let (other, _) = input(&mut b, &Rc::default());
+        let blur_to = |to: HWND| {
+            unsafe {
+                let _ = SetFocus(Some(field.hwnd));
+                let _ = SetFocus(Some(to));
+            }
+            b.command_action(cid, EN_KILLFOCUS).expect("kill focus handled")();
+        };
+
+        blur_to(host);
+        assert_eq!(calls.get(), 1, "on_blur ran on the blur");
+        assert_eq!(unsafe { GetFocus() }, field.hwnd, "Keep took focus back");
+
+        outcome.set(BlurOutcome::Allow);
+        blur_to(host);
+        assert_eq!(calls.get(), 2);
+        assert_eq!(unsafe { GetFocus() }, host, "Allow lets the blur stand");
+
+        outcome.set(BlurOutcome::Keep);
+        blur_to(other.hwnd);
+        assert_eq!(calls.get(), 3);
+        assert_eq!(unsafe { GetFocus() }, other.hwnd, "Keep never blocks a move to another field");
+        unsafe {
+            let _ = DestroyWindow(host);
+        }
     }
 
     /// The placeholder and live secure toggling were dropped.

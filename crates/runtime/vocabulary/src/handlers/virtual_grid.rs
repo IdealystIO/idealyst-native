@@ -15,6 +15,9 @@
 //!   would have to agree with its whole row, so sizes are
 //!   author-supplied only (see the primitive's module docs). That
 //!   removes the scope-id → key reverse map entirely.
+//!
+//! Cells register in the robot registry under the grid's own element
+//! (`ElementKind::Virtualizer`), as a virtualizer's rows do under the list.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -24,14 +27,16 @@ use runtime_shared::primitives::virtual_grid::{CellKey, GridCallbacks};
 use runtime_scene::{realize, Element, MountCx, Realized, Registry};
 use runtime_world::{collect_owned, effect, untrack, Owned};
 
-use crate::caps::GridOps;
+use crate::caps::{GridOps, IntrospectionOps};
 use crate::prims::{PrimCell, VirtualGridPrim};
 use crate::style_attach::{attach_style, on_teardown, StyleServices};
+
+use super::virtualizer::RowParent;
 
 /// Register the `virtual_grid` handler (called from `register_builtins`).
 pub fn register_virtual_grid<H>(registry: &mut Registry<H>)
 where
-    H: GridOps + StyleServices + 'static,
+    H: GridOps + StyleServices + IntrospectionOps + 'static,
 {
     registry.register::<PrimCell<VirtualGridPrim>, _>(|cx, p, children| {
         mount_virtual_grid(cx, p.take(), children)
@@ -59,7 +64,7 @@ pub fn mount_virtual_grid<H>(
     _children: Vec<Element>,
 ) -> H::Node
 where
-    H: GridOps + StyleServices,
+    H: GridOps + StyleServices + IntrospectionOps,
 {
     let backend = cx.backend().clone();
     let registry: Rc<Registry<H>> = cx.registry().clone();
@@ -67,6 +72,9 @@ where
     let scopes: Rc<RefCell<HashMap<u64, CellScope<H::Node>>>> =
         Rc::new(RefCell::new(HashMap::new()));
     let next_scope_id: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
+    // Where cells register in the robot registry (filled below, once the
+    // grid itself is registered).
+    let cell_parent: Rc<RowParent> = Rc::new(RowParent::default());
 
     let col_count: Rc<dyn Fn() -> usize> = Rc::from(prim.col_count);
     let row_count: Rc<dyn Fn() -> usize> = Rc::from(prim.row_count);
@@ -79,22 +87,25 @@ where
         let render = prim.render_cell.clone();
         let scopes = scopes.clone();
         let next_id = next_scope_id.clone();
+        let cell_parent = cell_parent.clone();
         Rc::new(move |col, row| {
             // Element construction runs INSIDE the cell's collector and
             // untracked — only the backend's window math decides cell
             // lifetime, never a stray signal read during construction.
-            let ((node, realized), extra) = collect_owned(|| {
-                let element = untrack(|| render(col, row));
-                let realized = realize(&backend, &registry, element);
-                let mut nodes = realized.collect_nodes();
-                let node = match nodes.len() {
-                    1 => nodes.pop().expect("len checked"),
-                    n => panic!(
-                        "virtual_grid render_cell({col}, {row}) must produce a single-root \
-                         element (got {n} top-level nodes) — wrap fragment cells in an item"
-                    ),
-                };
-                (node, realized)
+            let ((node, realized), extra) = cell_parent.enter(|| {
+                collect_owned(|| {
+                    let element = untrack(|| render(col, row));
+                    let realized = realize(&backend, &registry, element);
+                    let mut nodes = realized.collect_nodes();
+                    let node = match nodes.len() {
+                        1 => nodes.pop().expect("len checked"),
+                        n => panic!(
+                            "virtual_grid render_cell({col}, {row}) must produce a single-root \
+                             element (got {n} top-level nodes) — wrap fragment cells in an item"
+                        ),
+                    };
+                    (node, realized)
+                })
             });
             let id = {
                 let mut n = next_id.borrow_mut();
@@ -140,6 +151,19 @@ where
     let node = backend
         .borrow_mut()
         .create_virtual_grid(callbacks, prim.overscan, &prim.a11y);
+    #[cfg(feature = "robot")]
+    {
+        let _robot = crate::robot::register_mount(
+            &backend,
+            &node,
+            crate::robot::ElementKind::Virtualizer,
+            None,
+            prim.a11y.label.clone(),
+            None,
+            crate::robot::MountActions::default(),
+        );
+        cell_parent.capture();
+    }
 
     // Data effect: touching BOTH counts subscribes to whatever signals
     // either closure reads, so a change to rows or columns re-queries

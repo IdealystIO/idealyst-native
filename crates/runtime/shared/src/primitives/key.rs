@@ -21,6 +21,9 @@
 //!   the delegate path covers printable input and emits one event per
 //!   character. The backend normalises both sides to the same
 //!   `KeyEvent::key` string vocabulary as web.
+//! - **macOS**: an `NSEvent` local key-down monitor that hands the event
+//!   to the field whose editor is the window's first responder, before
+//!   the field editor types it (`PreventDefault` swallows the event).
 //! - **Android**: maps to `View.OnKeyListener` with the action filter
 //!   `KeyEvent.ACTION_DOWN`. Android `KeyEvent` keycodes are
 //!   normalised to the web string vocabulary in

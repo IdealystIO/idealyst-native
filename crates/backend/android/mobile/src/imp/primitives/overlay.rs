@@ -58,11 +58,19 @@
 //!
 //! A `Dialog` gave hardware/gesture back dismissal for free via
 //! `setOnCancelListener`. A view overlay has no window to route back
-//! into, so for MODAL overlays we make the overlay focusable-in-touch-
-//! mode, request focus, and attach a `RustOverlayKeyListener`
-//! (`View.OnKeyListener`) that fires the user's `on_dismiss` on
-//! KEYCODE_BACK ACTION_UP and consumes the event. Non-modal overlays
-//! attach no key listener and back falls through to the app/navigator.
+//! into, so a MODAL overlay with an `on_dismiss` is a `RustModalOverlay`
+//! (`FrameLayout` subclass) whose `dispatchKeyEvent` fires `on_dismiss`
+//! on a KEYCODE_BACK / KEYCODE_ESCAPE ACTION_UP that nothing inside it
+//! consumed — whether the overlay itself or a field inside it holds focus
+//! — and consumes the key, so it never reaches the Activity's
+//! `OnBackPressedDispatcher` (stack presenters, `on_back` handlers).
+//! Modal overlays are focusable-in-touch-mode and take focus when
+//! revealed (`AndroidBackend::run_layout_pass`), not at creation: a
+//! `requestFocus` there lands on a view that is not yet attached and is
+//! then set `INVISIBLE`, which drops the focus — so nothing in the window
+//! held focus and Back went to the Activity (closing the app) instead of
+//! the overlay. Non-modal overlays are plain, non-focusable
+//! `FrameLayout`s, and back falls through to the app/navigator.
 //!
 //! ## Element-anchored: the same overlay, content placed by `AnchoredPlacer`
 //!
@@ -245,14 +253,22 @@ fn make_overlay_view(
         // LinearLayout) because the backend drives all child placement
         // through Taffy frames written onto FrameLayout.LayoutParams —
         // same shape as every other `view::create`d container.
-        let fl_class = env.find_class("android/widget/FrameLayout").unwrap();
-        let overlay = env
-            .new_object(
-                &fl_class,
-                "(Landroid/content/Context;)V",
-                &[JValue::Object(&b.context.as_obj())],
+        // A modal with an `on_dismiss` is a `RustModalOverlay` (a
+        // FrameLayout subclass): it closes on a Back / Escape that nothing
+        // inside it consumed, including while a field inside has focus.
+        let overlay = if trap_focus && has_dismiss {
+            let class = env.find_class("io/idealyst/runtime/RustModalOverlay").unwrap();
+            env.new_object(
+                &class,
+                "(Landroid/content/Context;J)V",
+                &[JValue::Object(&b.context.as_obj()), JValue::Long(dismiss_cb_ptr)],
             )
-            .unwrap();
+            .unwrap()
+        } else {
+            let fl_class = env.find_class("android/widget/FrameLayout").unwrap();
+            env.new_object(&fl_class, "(Landroid/content/Context;)V", &[JValue::Object(&b.context.as_obj())])
+                .unwrap()
+        };
 
         // MATCH_PARENT × MATCH_PARENT so the overlay fills the Activity
         // root regardless of the root's own layout. Use FrameLayout.
@@ -279,10 +295,11 @@ fn make_overlay_view(
 
         // Touch modality is content-driven (see module docs). For a
         // MODAL overlay we additionally:
-        //   - make the overlay focusable-in-touch-mode + requestFocus so
-        //     it can receive the hardware back key;
-        //   - attach a RustOverlayKeyListener that routes KEYCODE_BACK to
-        //     the user's on_dismiss (replacing Dialog.setOnCancelListener).
+        //   - make the overlay focusable-in-touch-mode so keys reach it
+        //     (it takes focus at reveal — see the module docs for why not
+        //     here); with an on_dismiss it is a RustModalOverlay (above),
+        //     whose Back / Escape handling replaces
+        //     Dialog.setOnCancelListener.
         // A NON-MODAL overlay stays non-focusable + non-clickable; a
         // FrameLayout with no consuming child returns false from
         // dispatchTouchEvent and the touch falls through to the app
@@ -298,22 +315,6 @@ fn make_overlay_view(
                 "(Z)V",
                 &[JValue::Bool(1)],
             );
-            let _ = env.call_method(&overlay, "requestFocus", "()Z", &[]);
-
-            if has_dismiss {
-                let listener_class = env
-                    .find_class("io/idealyst/runtime/RustOverlayKeyListener")
-                    .unwrap();
-                let listener = env
-                    .new_object(&listener_class, "(J)V", &[JValue::Long(dismiss_cb_ptr)])
-                    .unwrap();
-                let _ = env.call_method(
-                    &overlay,
-                    "setOnKeyListener",
-                    "(Landroid/view/View$OnKeyListener;)V",
-                    &[JValue::Object(&listener)],
-                );
-            }
         }
 
         // Add the overlay on top of the app content in the SAME window.

@@ -358,7 +358,7 @@ pub(crate) fn translate(raw: &RawKey) -> Option<AppKeyEvent> {
 /// `charactersIgnoringModifiers` and `isARepeat` are ONLY read for
 /// key-down/up: on an `NSEventTypeFlagsChanged` event both raise an
 /// Objective-C `NSInternalInconsistencyException`, which would abort the app.
-unsafe fn read_raw(event: *mut NSObject) -> Option<RawKey> {
+pub(crate) unsafe fn read_raw(event: *mut NSObject) -> Option<RawKey> {
     let event_type: usize = msg_send![event, type];
     let kind = RawKind::from_event_type(event_type)?;
     let key_code: u16 = msg_send![event, keyCode];

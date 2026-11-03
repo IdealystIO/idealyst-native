@@ -69,6 +69,54 @@ pub fn __acquire(_test: &str) -> Acquire {
     }
 }
 
+/// The platform names `#[robot_test(platforms = …)]` takes — the
+/// spellings of `idealyst test --<platform>` and of the app's
+/// `get_platform`.
+pub const PLATFORMS: [&str; 6] = ["web", "ios", "android", "macos", "linux", "windows"];
+
+/// The last path segment `#[robot_test(platforms = …)]` gives a test:
+/// `robot_only_` and the platforms, in [`PLATFORMS`] order, joined by
+/// `_` — `robot_only_ios_android`. The test's libtest name is
+/// `<fn>::robot_only_ios_android`, which is how a runner that only has
+/// the test binary's `--list` learns where it runs.
+pub fn platform_marker(platforms: &[&str]) -> String {
+    let mut ordered: Vec<&str> = PLATFORMS.iter().copied().filter(|p| platforms.contains(p)).collect();
+    ordered.dedup();
+    format!("robot_only_{}", ordered.join("_"))
+}
+
+/// The platforms a test declared, from its libtest name; `None` for a
+/// test that runs everywhere. Strict: only a last segment made exactly
+/// of `robot_only_` and known platform names counts.
+pub fn platforms_of_test(name: &str) -> Option<Vec<&'static str>> {
+    let leaf = name.rsplit("::").next()?;
+    let rest = leaf.strip_prefix("robot_only_")?;
+    let mut out = Vec::new();
+    for part in rest.split('_') {
+        out.push(*PLATFORMS.iter().find(|p| **p == part)?);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// [`__acquire`] for a test that declared its platforms: on any other
+/// platform it is skipped. `idealyst test` never runs it there (it is
+/// `#[ignore]`d and only included where it belongs); this check covers
+/// `cargo test -- --include-ignored` against whatever app is up.
+#[doc(hidden)]
+pub fn __acquire_on(test: &str, platforms: &[&str]) -> Acquire {
+    match __acquire(test) {
+        Acquire::Ready(mut app) => match app.try_platform() {
+            Ok(Some(p)) if !platforms.contains(&p.as_str()) => {
+                Acquire::Skip(format!("it runs on {} only, and the app is {p}", platforms.join(", ")))
+            }
+            Ok(_) => Acquire::Ready(app),
+            // Up but not answering: a failure, never a quiet pass.
+            Err(e) => panic!("{test}: the app did not say which platform it is: {e}"),
+        },
+        skip => skip,
+    }
+}
+
 fn establish() -> Conn {
     let addr = match locate_bridge() {
         Ok(a) => a,
@@ -108,6 +156,25 @@ fn locate_bridge() -> Result<SocketAddr, String> {
 /// registers in `apps-wine` beside it (`default_apps_dirs`).
 fn discover_in(project: Option<&std::path::Path>, apps_dirs: &[std::path::PathBuf]) -> Option<SocketAddr> {
     apps_dirs.iter().find_map(|d| discover(project, d))
+}
+
+#[cfg(test)]
+mod platform_tests {
+    use super::*;
+
+    /// The macro names a platform-bound test `<fn>::robot_only_<platforms>`;
+    /// the runner reads the platforms back from that name.
+    #[test]
+    fn a_test_name_round_trips_its_platforms() {
+        assert_eq!(platform_marker(&["android", "ios"]), "robot_only_ios_android");
+        assert_eq!(platforms_of_test("kb::robot_only_ios_android"), Some(vec!["ios", "android"]));
+        assert_eq!(platforms_of_test("suite::kb::robot_only_web"), Some(vec!["web"]));
+        assert_eq!(platforms_of_test("kb"), None);
+        assert_eq!(platforms_of_test("robot_only_"), None);
+        // An authored `#[ignore]` unmarks the name.
+        assert_eq!(platforms_of_test("kb::robot_only_ios_ignored"), None);
+        assert_eq!(platforms_of_test("robot_only_ios::helper"), None);
+    }
 }
 
 #[cfg(test)]

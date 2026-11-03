@@ -27,7 +27,7 @@ use std::rc::Rc;
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
-use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker};
+use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker, NSObject};
 use objc2_ui_kit::{UILabel, UITextField, UITextView, UIView};
 
 /// Per-side text inset, in points. Layout matches `UIEdgeInsets`
@@ -165,7 +165,14 @@ impl IdealystLabel {
 
 pub(crate) struct TextFieldIvars {
     insets: Cell<TextInsets>,
+    /// The framework's `FOCUSED` state driver (`StyleOps::attach_states`).
     focus_setter: RefCell<Option<Rc<dyn Fn(bool)>>>,
+    /// The `text_input`'s focus notifier
+    /// (`TextInputOps::set_text_input_focus_handler`): the author's
+    /// `on_focus`, and the robot's `focused` — the field a window-level
+    /// robot key lands in. A separate slot from `focus_setter`: a field
+    /// can have either without the other.
+    focus_handler: RefCell<Option<Rc<dyn Fn(bool)>>>,
 }
 
 declare_class!(
@@ -229,12 +236,32 @@ declare_class!(
             became
         }
 
-        /// Focus lost → flip FOCUSED off.
+        /// Focus lost → flip FOCUSED off. Only a field that HELD focus
+        /// reports the loss: `blur()` resigns unconditionally, and an
+        /// unfocused field's `on_focus(false)` would be a blur that never
+        /// happened (the web fires no `blur` for one).
         #[method(resignFirstResponder)]
         fn resign_first_responder(&self) -> bool {
+            let held: bool = unsafe { msg_send![self, isFirstResponder] };
             let resigned: bool = unsafe { msg_send![super(self), resignFirstResponder] };
-            self.fire_focus(false);
+            if held && resigned {
+                self.fire_focus(false);
+            }
             resigned
+        }
+
+        /// A hardware Escape while the field has focus closes the topmost
+        /// overlay (`keyboard::escape_key_commands`).
+        #[method_id(keyCommands)]
+        fn key_commands(&self) -> Option<Retained<NSObject>> {
+            crate::imp::keyboard::escape_key_commands(unsafe { msg_send_id![super(self), keyCommands] })
+        }
+
+        #[method(idealystEscapeDismiss:)]
+        fn escape_dismiss(&self, _command: *mut NSObject) {
+            crate::imp::ffi_guard::guard_ffi("IdealystTextField::escapeDismiss", || {
+                crate::imp::keyboard::escape_dismiss();
+            });
         }
 
         /// Obj-c setter for the inset ivar — `apply_text_insets_if_label`
@@ -253,6 +280,7 @@ impl IdealystTextField {
         let this = this.set_ivars(TextFieldIvars {
             insets: Cell::new(TextInsets::default()),
             focus_setter: RefCell::new(None),
+            focus_handler: RefCell::new(None),
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -279,9 +307,20 @@ impl IdealystTextField {
         *self.ivars().focus_setter.borrow_mut() = Some(setter);
     }
 
+    /// Install the `text_input`'s focus notifier.
+    pub(crate) fn set_focus_handler(&self, handler: Rc<dyn Fn(bool)>) {
+        *self.ivars().focus_handler.borrow_mut() = Some(handler);
+    }
+
+    /// Both slots are cloned out before either runs: the author's
+    /// `on_focus` may re-enter the field (focus another one, blur this).
     fn fire_focus(&self, on: bool) {
-        let cb = self.ivars().focus_setter.borrow().clone();
-        if let Some(cb) = cb {
+        let state = self.ivars().focus_setter.borrow().clone();
+        let handler = self.ivars().focus_handler.borrow().clone();
+        if let Some(cb) = state {
+            cb(on);
+        }
+        if let Some(cb) = handler {
             cb(on);
         }
     }
@@ -301,10 +340,23 @@ pub(crate) fn set_text_field_focus_setter(view: &UIView, setter: Rc<dyn Fn(bool)
     field.set_focus_setter(setter);
 }
 
+/// Install a `text_input`'s focus notifier on `view` if it is an
+/// `IdealystTextField`; no-op otherwise. The iOS analogue of macOS's
+/// `set_text_field_author_focus`.
+pub(crate) fn set_text_field_focus_handler(view: &UIView, handler: Rc<dyn Fn(bool)>) {
+    let is_ours: bool = unsafe { msg_send![view, isKindOfClass: IdealystTextField::class()] };
+    if !is_ours {
+        return;
+    }
+    // SAFETY: just confirmed the dynamic class is `IdealystTextField`.
+    let field: &IdealystTextField = unsafe { &*(view as *const UIView as *const IdealystTextField) };
+    field.set_focus_handler(handler);
+}
+
 declare_class!(
-    /// The `text_area` view: a stock `UITextView` plus ONE override,
-    /// `didMoveToWindow` — the attach hook of the attach-safe `focus()`
-    /// (`pending_focus`), the same one `IdealystTextField` carries.
+    /// The `text_area` view: a stock `UITextView` plus `didMoveToWindow` —
+    /// the attach hook of the attach-safe `focus()` (`pending_focus`) — and
+    /// the hardware-Escape key command, both as `IdealystTextField` has.
     pub(crate) struct IdealystTextView;
 
     unsafe impl ClassType for IdealystTextView {
@@ -322,6 +374,18 @@ declare_class!(
         fn did_move_to_window(&self) {
             let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
             crate::imp::pending_focus::view_moved_to_window(self);
+        }
+
+        #[method_id(keyCommands)]
+        fn key_commands(&self) -> Option<Retained<NSObject>> {
+            crate::imp::keyboard::escape_key_commands(unsafe { msg_send_id![super(self), keyCommands] })
+        }
+
+        #[method(idealystEscapeDismiss:)]
+        fn escape_dismiss(&self, _command: *mut NSObject) {
+            crate::imp::ffi_guard::guard_ffi("IdealystTextView::escapeDismiss", || {
+                crate::imp::keyboard::escape_dismiss();
+            });
         }
     }
 );

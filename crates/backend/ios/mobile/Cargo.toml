@@ -162,3 +162,19 @@ raw-window-handle = "0.6"
 [[test]]
 name = "z_index_stacking"
 harness = false
+
+[[test]]
+name = "keyboard_kinds"
+harness = false
+
+[[test]]
+name = "fullscreen_overlay"
+harness = false
+
+[[test]]
+name = "flat_list_measured"
+harness = false
+
+[[test]]
+name = "text_input_focus"
+harness = false

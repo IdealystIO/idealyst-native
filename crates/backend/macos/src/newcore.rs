@@ -148,6 +148,8 @@
 //! scene-`Registry` mount handlers — those must call [`schedule_flush`]
 //! after author callbacks themselves.
 
+mod field_keys;
+
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -963,12 +965,14 @@ impl caps::TextInputOps for MacosBackend {
         secure: bool,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        MacosBackend::create_text_input_impl(
+        // The field's key-downs reach `on_key_down` through the shared
+        // field-key monitor (`field_keys`), registered on the node below.
+        let node = MacosBackend::create_text_input_impl(
             self,
             initial_value,
             placeholder,
             flushing1(on_change),
-            on_key_down.map(flushing_key),
+            None,
             on_blur.map(|f| -> primitives::text_input::BlurHandler {
                 Rc::new(move || {
                     let outcome = f();
@@ -978,7 +982,11 @@ impl caps::TextInputOps for MacosBackend {
             }),
             secure,
             a11y,
-        )
+        );
+        if let Some(handler) = on_key_down {
+            field_keys::register_field(&node, flushing_key(handler));
+        }
+        node
     }
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
@@ -1008,7 +1016,9 @@ impl caps::TextInputOps for MacosBackend {
         on_key_down: Option<primitives::key::KeyDownHandler>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        MacosBackend::create_text_area_impl(
+        // Key-downs reach `on_key_down` through `field_keys`, as for
+        // `create_text_input`.
+        let node = MacosBackend::create_text_area_impl(
             self,
             initial_value,
             placeholder,
@@ -1016,9 +1026,13 @@ impl caps::TextInputOps for MacosBackend {
             min_rows,
             max_rows,
             flushing1(on_change),
-            on_key_down.map(flushing_key),
+            None,
             a11y,
-        )
+        );
+        if let Some(handler) = on_key_down {
+            field_keys::register_field(&node, flushing_key(handler));
+        }
+        node
     }
 
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
@@ -1348,13 +1362,18 @@ impl caps::PortalOps for MacosBackend {
         trap_focus: bool,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Dispatch-site glue: backdrop click dismissal runs the
-        // author's on_dismiss.
+        // Dispatch-site glue: the dismissal runs the author's on_dismiss.
+        // Escape reaches it through `field_keys` (topmost shown portal).
         let on_dismiss = on_dismiss.map(flushing0);
-        MacosBackend::create_portal_impl(self, target, on_dismiss, trap_focus, a11y)
+        let node = MacosBackend::create_portal_impl(self, target, on_dismiss.clone(), trap_focus, a11y);
+        if let Some(dismiss) = on_dismiss {
+            field_keys::register_portal(&node, dismiss);
+        }
+        node
     }
 
     fn release_portal(&mut self, node: &Self::Node) {
+        field_keys::unregister_portal(node);
         MacosBackend::release_portal_impl(self, node)
     }
 
@@ -1508,6 +1527,17 @@ impl caps::IntrospectionOps for MacosBackend {
         Some(crate::imp::handles::is_node_shown(node))
     }
 
+    fn content_clip(&self, node: &Self::Node) -> Option<caps::ContentClip> {
+        Some(crate::imp::handles::content_clip(node))
+    }
+
+    /// The window's first responder is the field (or the field editor
+    /// editing for it); a `text_area` asks of its inner `NSTextView`.
+    fn is_focused(&self, node: &Self::Node) -> Option<bool> {
+        let target = crate::imp::editable_text_target(node.as_view());
+        Some(crate::imp::view::holds_keyboard_focus(&target))
+    }
+
     fn hit_contains(&self, node: &Self::Node, x: f32, y: f32) -> Option<bool> {
         crate::imp::native_input::hit_contains(node, x, y)
     }
@@ -1522,6 +1552,10 @@ impl caps::IntrospectionOps for MacosBackend {
 
     fn resize_window(&self, node: &Self::Node, width: f32, height: f32) -> Option<caps::NativeInjection> {
         crate::imp::native_input::resize_window(node, width, height)
+    }
+
+    fn native_key(&self, node: &Self::Node, press: &caps::KeyPress) -> Option<caps::NativeInjection> {
+        crate::imp::native_input::native_key(node, press)
     }
 
     fn supports_native_introspection(&self) -> bool {

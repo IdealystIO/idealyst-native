@@ -147,6 +147,68 @@ fn portal_visibility_tracks_screen_nav_active_route() {
     assert_eq!(h.take_log(), ["set_portal_hidden n0 false"]);
 }
 
+/// The Escape stack (`escape_dismiss`) the key paths without their own
+/// Escape handling use: a portal with an `on_dismiss` joins it while
+/// mounted, a portal hidden because its screen is not the active route is
+/// passed over, and a portal without `on_dismiss` is never on it.
+#[test]
+fn escape_stack_skips_hidden_portals_and_drops_released_ones() {
+    use runtime_vocabulary::escape_dismiss::{dismiss_topmost, has_dismissable};
+    let h = harness();
+    let (active, open) = h.world.enter(|| (signal("home"), signal(true)));
+    let base_dismissed = Rc::new(Cell::new(0usize));
+    let screen_dismissed = Rc::new(Cell::new(0usize));
+    let (b, sd) = (base_dismissed.clone(), screen_dismissed.clone());
+    let _root = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            view()
+                .child(
+                    portal(PortalTarget::Viewport(ViewportPlacement::Center))
+                        .on_dismiss(move || b.set(b.get() + 1))
+                        .child(text().content("base"))
+                        .build(),
+                )
+                .child(portal(PortalTarget::Viewport(ViewportPlacement::Center)).child(text().content("no dismiss")).build())
+                .child(dyn_keyed(
+                    move || open.get(),
+                    move |&on| {
+                        if !on {
+                            return text().content("closed").build();
+                        }
+                        // A screen's portal: hidden while "home" is not active.
+                        provide(ScreenNav { active_route: active.read_only(), route: "home" });
+                        let sd = sd.clone();
+                        portal(PortalTarget::Viewport(ViewportPlacement::Center))
+                            .on_dismiss(move || sd.set(sd.get() + 1))
+                            .child(text().content("screen"))
+                            .build()
+                    },
+                ))
+                .build(),
+        )
+    });
+    assert!(dismiss_topmost());
+    assert_eq!((base_dismissed.get(), screen_dismissed.get()), (0, 1), "the topmost shown portal");
+
+    active.set("settings");
+    h.flush();
+    assert!(dismiss_topmost());
+    assert_eq!((base_dismissed.get(), screen_dismissed.get()), (1, 1), "a hidden portal is passed over");
+
+    active.set("home");
+    open.set(false);
+    h.flush();
+    assert!(dismiss_topmost());
+    assert_eq!((base_dismissed.get(), screen_dismissed.get()), (2, 1), "a released portal leaves the stack");
+
+    drop(_root);
+    h.flush();
+    assert!(!has_dismissable(), "nothing left once every portal is gone");
+    assert!(!dismiss_topmost());
+}
+
 /// A portal mounted AFTER the scope that provided `ScreenNav` has been
 /// torn down must not abort the app.
 ///

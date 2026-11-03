@@ -90,7 +90,8 @@ impl PaintModel {
     fn has_radius(&self) -> bool {
         self.radius.iter().any(|r| *r > 0.0)
     }
-    fn clips(&self) -> bool {
+    /// Whether the snapshot clips the children to the (rounded) box.
+    pub(crate) fn clips(&self) -> bool {
         self.overflow_hidden || self.has_radius()
     }
 }

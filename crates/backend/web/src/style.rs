@@ -250,11 +250,15 @@ impl WebBackend {
             let _ = sheet.insert_rule_with_index(css::VIEW_FLEX_RESET, 6);
 
             // Index 7 — no UA margin on `<pre>` (a `code_block`), as on
-            // native. See `css::PRE_MARGIN_RESET`. These eight fixed resets
-            // occupy indices 0–7; author rules append at sheet length
-            // (index 8+) or recycle deleted author slots, so these indices
-            // never collide.
+            // native. See `css::PRE_MARGIN_RESET`.
             let _ = sheet.insert_rule_with_index(css::PRE_MARGIN_RESET, 7);
+
+            // Index 8 — a horizontal scroller's content is as wide as what
+            // it holds, as on native. See `css::HSCROLL_CONTENT_RESET`.
+            // These nine fixed resets occupy indices 0–8; author rules
+            // append at sheet length (index 9+) or recycle deleted author
+            // slots, so these indices never collide.
+            let _ = sheet.insert_rule_with_index(css::HSCROLL_CONTENT_RESET, 8);
         }
         self.style_element.as_ref().unwrap().clone()
     }

@@ -1970,6 +1970,16 @@ impl caps::IntrospectionOps for WebBackend {
     }
 
     #[cfg(feature = "robot")]
+    fn is_focused(&self, node: &Self::Node) -> Option<bool> {
+        Some(crate::introspect::is_focused(&self.doc, node))
+    }
+
+    #[cfg(feature = "robot")]
+    fn content_clip(&self, node: &Self::Node) -> Option<caps::ContentClip> {
+        crate::introspect::content_clip(node)
+    }
+
+    #[cfg(feature = "robot")]
     fn hit_contains(&self, node: &Self::Node, x: f32, y: f32) -> Option<bool> {
         crate::introspect::hit_contains(node, x, y)
     }
@@ -1977,6 +1987,16 @@ impl caps::IntrospectionOps for WebBackend {
     #[cfg(feature = "robot")]
     fn native_pointer(&self, _node: &Self::Node, steps: &[caps::PointerStep]) -> Option<caps::NativeInjection> {
         Some(crate::introspect::native_pointer(steps))
+    }
+
+    #[cfg(feature = "robot")]
+    fn native_key(&self, _node: &Self::Node, press: &caps::KeyPress) -> Option<caps::NativeInjection> {
+        Some(crate::native_key::native_key(press))
+    }
+
+    #[cfg(feature = "robot")]
+    fn shortcut_modifier_is_meta(&self) -> bool {
+        crate::native_key::shortcut_modifier_is_meta()
     }
 
     // Geometry: the same DOM measurements a view ref's `frame()` and
@@ -3477,6 +3497,57 @@ mod tests {
         // One more turn: nothing (trap, presence) moves it afterwards.
         settle().await;
         assert!(active_is(&input), "the focus trap leaves an inside focus alone");
+        drop(realized);
+    }
+
+    /// REGRESSION (robot-e2e demo under `idealyst test --web`): the robot's
+    /// `focused` for a text input read FALSE after `focus`, though the input
+    /// was `document.activeElement`. A page without OS window focus (the
+    /// headless test browser's, always) gets no `focus` event for
+    /// `element.focus()`, and `focused` replayed those events. It now reads
+    /// `document.activeElement` (`IntrospectionOps::is_focused`). A second
+    /// window opened in front takes this page's window focus to reproduce it.
+    #[cfg(feature = "robot")]
+    #[wasm_bindgen_test]
+    async fn regression_robot_focused_is_true_on_the_first_focus_after_mount() {
+        use runtime_vocabulary::robot::{Query, Robot};
+        let (backend, registry, world) = focus_harness();
+        let realized = world.enter(|| {
+            realize(
+                &backend,
+                &registry,
+                runtime_vocabulary::builders::text_input().value("").test_id("first-focus").build(),
+            )
+        });
+        let input = realized.collect_nodes().pop().expect("the input");
+        let mut parent: web_glue::dom::Node = setup_mount_child();
+        Host::insert(&mut *backend.borrow_mut(), &mut parent, input.clone());
+        settle().await;
+        // Take OS focus away from this page, as a headless `idealyst test
+        // --web` page never has it: another window comes to the front.
+        let js = |body: &str| {
+            web_glue::js::Function::new_no_args(body).call0(&web_glue::JsValue::UNDEFINED).unwrap();
+        };
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        js("window.__iyFocusThief = window.open('about:blank', '_blank');");
+        settle().await;
+        assert!(!doc.has_focus(), "the test page lost window focus");
+        let robot = Robot::new();
+        let el = robot.find(Query::test_id("first-focus")).expect("the input is registered");
+        robot.focus(&el).unwrap();
+        settle().await;
+        assert!(active_is(&input), "the input took DOM focus");
+        let state = robot.state(&el).unwrap().expect("a text input reports state");
+        assert_eq!(
+            state.focused,
+            Some(true),
+            "the robot reports the focus it just gave"
+        );
+        robot.blur(&el).unwrap();
+        settle().await;
+        let state = robot.state(&el).unwrap().expect("a text input reports state");
+        assert_eq!(state.focused, Some(false), "and the blur");
+        js("window.__iyFocusThief.close(); window.focus();");
         drop(realized);
     }
 

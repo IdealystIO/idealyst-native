@@ -27,10 +27,17 @@ use std::rc::Rc;
 ///
 /// Platform contract (CLAUDE.md §7 — same observable result, native mechanism):
 /// - **iOS**: `UITextFieldDelegate.textFieldShouldEndEditing:` returns `NO` on
-///   `Keep` — a native veto, so the outside-tap `endEditing:` respects it.
-/// - **macOS**: the outside-click handler consults this before resigning.
+///   `Keep` — a native veto, so the outside-tap `endEditing:` and a
+///   programmatic `blur()` respect it.
+/// - **macOS**: the outside-click handler and `blur()` consult this before
+///   resigning.
 /// - **web**: `blur` is not preventable by spec, so `Keep` re-`focus()`es the
 ///   input (one frame of flicker; focus is retained).
+/// - **Android**: the field's focus listener asks on every loss and takes
+///   focus back on `Keep` when no other view took it.
+/// - **Windows**: the `EDIT`'s `EN_KILLFOCUS` asks; on `Keep` the field takes
+///   focus back on the next turn unless focus went to another field or
+///   another app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BlurOutcome {
