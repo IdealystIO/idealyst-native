@@ -2448,7 +2448,7 @@ checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
 
 [[package]]
 name = "catalog-scan"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "mcp-catalog",
  "proc-macro2",
@@ -6563,7 +6563,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.27.0"
+version = "1.27.1"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -10878,7 +10878,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-core"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "runtime-macros",
  "runtime-shared",
@@ -10895,14 +10895,14 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.22.0"
+version = "2.0.0"
 dependencies = [
  "runtime-macros-expand",
 ]
 
 [[package]]
 name = "runtime-macros-expand"
-version = "1.9.1"
+version = "2.0.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
