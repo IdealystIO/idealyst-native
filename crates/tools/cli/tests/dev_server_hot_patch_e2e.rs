@@ -24,6 +24,9 @@
 //! 3. a body edit after that rebuild patches the NEW process — the
 //!    session re-read the relinked binary.
 //!
+//! And without `--experimental-build` the tier is off: no agent loads,
+//! and the same body edit rebuilds and respawns the server.
+//!
 //! `#[ignore]`d: it compiles the framework for wasm32 and the host. macOS
 //! on Apple silicon only, the one host the server tier arms on:
 //!
@@ -351,21 +354,20 @@ fn pid(port: u16) -> String {
     http_get(port, "/api/pid").expect("the server answers /api/pid")
 }
 
-#[test]
-#[ignore = "compiles the framework for wasm32 and the host; run with --ignored"]
-fn a_body_edit_patches_the_running_server_and_a_shape_edit_respawns_it() {
-    let repo = repo_root();
-    // A stable directory: a fresh path is a cold build of both sides.
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dev_server_hot_patch_e2e");
-    materialize(&root, &repo);
-    let scratch = tempfile::tempdir().unwrap();
+/// Both tests build the same fixture directory (a fresh path is a cold
+/// build of both sides), so they take turns.
+static FIXTURE: Mutex<()> = Mutex::new(());
+
+/// Start `idealyst dev` on the fixture with `flags` added, and wait for
+/// the full-stack server and the first web build.
+fn start(root: &Path, scratch: &Path, port: u16, flags: &[&str]) -> Session {
     let log = Arc::new(Mutex::new(String::new()));
-    let events_path = scratch.path().join("events.jsonl");
-    let port = free_port();
+    let events_path = scratch.join("events.jsonl");
     let mut child = Command::new(env!("CARGO_BIN_EXE_idealyst"))
         .current_dir(root.join("app"))
         .env("IDEALYST_TEST_DRIVER", "1")
-        .args(["dev", "--web", "--local", "--experimental-build", "--no-robot", "--no-headless-client"])
+        .args(["dev", "--web", "--local", "--no-robot", "--no-headless-client"])
+        .args(flags)
         .args(["--port", &port.to_string()])
         .arg("--events-file")
         .arg(&events_path)
@@ -375,14 +377,27 @@ fn a_body_edit_patches_the_running_server_and_a_shape_edit_respawns_it() {
         .expect("spawn idealyst dev");
     pump(child.stdout.take().unwrap(), log.clone());
     pump(child.stderr.take().unwrap(), log.clone());
-    let session = Session { child, log: log.clone(), events: events_path };
-
+    let session = Session { child, log, events: events_path };
     session.wait_event(0, Duration::from_secs(1800), "server_ready(full_stack)", |e| {
         e["type"] == "server_ready" && e["kind"] == "full_stack"
     });
     session.wait_event(0, Duration::from_secs(1800), "the web build", |e| {
         e["type"] == "build_finished" && e["target"] == "web"
     });
+    session
+}
+
+#[test]
+#[ignore = "compiles the framework for wasm32 and the host; run with --ignored"]
+fn a_body_edit_patches_the_running_server_and_a_shape_edit_respawns_it() {
+    let _turn = FIXTURE.lock().unwrap_or_else(|e| e.into_inner());
+    let repo = repo_root();
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dev_server_hot_patch_e2e");
+    materialize(&root, &repo);
+    let scratch = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let session = start(&root, scratch.path(), port, &["--experimental-build"]);
+    let log = session.log.clone();
     // The server loaded the agent and reported in.
     let deadline = Instant::now() + Duration::from_secs(30);
     while !log.lock().unwrap().contains("hot-patch agent connected") {
@@ -440,6 +455,45 @@ fn a_body_edit_patches_the_running_server_and_a_shape_edit_respawns_it() {
     assert_eq!(patched["type"], "patch_built", "{patched}\n{}", summary(&session.events(), before));
     wait_answer(port, "/api/hello", "api / greeting v4", Duration::from_secs(5));
     assert_eq!(pid(port), second_pid);
+
+    drop(session);
+    materialize(&root, &repo);
+}
+
+/// The tier's off switch is the flag: without `--experimental-build` the
+/// session never arms it — no agent is loaded into the server, and the
+/// same body edit that is patched above rebuilds and respawns the server
+/// as `idealyst dev` always did. This is what makes the tier safe to pull.
+#[test]
+#[ignore = "compiles the framework for wasm32 and the host; run with --ignored"]
+fn without_experimental_build_a_body_edit_rebuilds_and_respawns_the_server() {
+    let _turn = FIXTURE.lock().unwrap_or_else(|e| e.into_inner());
+    let repo = repo_root();
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dev_server_hot_patch_e2e");
+    materialize(&root, &repo);
+    let scratch = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let session = start(&root, scratch.path(), port, &[]);
+    assert_eq!(http_get(port, "/api/hello").as_deref(), Some("api / greeting v1"));
+    let first_pid = pid(port);
+
+    let before = session.last_seq();
+    std::fs::write(root.join("shared/src/lib.rs"), shared("v2")).unwrap();
+    session.wait_event(before, Duration::from_secs(600), "the respawned server", |e| {
+        e["type"] == "server_ready" && e["kind"] == "full_stack"
+    });
+    wait_answer(port, "/api/hello", "api / greeting v2", Duration::from_secs(30));
+    assert_ne!(pid(port), first_pid, "without the flag a body edit must respawn the server");
+    let kinds = session.server_kinds(before, session.last_seq());
+    assert!(kinds.iter().any(|k| k == "build_started"), "the server was not rebuilt: {kinds:?}");
+    assert!(
+        !kinds.iter().any(|k| matches!(k.as_str(), "patch_built" | "patch_failed" | "patch_step")),
+        "the server tier ran without the flag: {kinds:?}"
+    );
+    assert!(
+        !session.log.lock().unwrap().contains("hot-patch agent connected"),
+        "the server loaded the hot-patch agent without the flag"
+    );
 
     drop(session);
     materialize(&root, &repo);
