@@ -123,7 +123,7 @@ contains it. Paths are relative to the SDK's own directory.
 [package.metadata.idealyst.android]
 runtime_kotlin = ["runtime/kotlin/io/example/RustFoo.kt"]
 runtime_java   = ["runtime/java/io/example/FooBridge.java"]
-androidx       = [["androidx.media3", "media3-exoplayer"]]
+androidx       = [["androidx.media3", "media3-exoplayer", "1.1.1"]]
 manifest_application = ["manifest/application.xml"]  # inside <application>
 manifest_root        = ["manifest/root.xml"]         # inside <manifest>
 res                  = ["res/xml/foo.xml"]           # compiled into the APK
@@ -143,12 +143,68 @@ res                  = ["res/xml/foo.xml"]           # compiled into the APK
 - **`res`**: each entry is `res/<type>/<file>` with a lowercase file name
   (`res/xml/device_admin.xml`). Two SDKs declaring the same resource is an
   error, because resource names share one namespace in the APK.
+- **`androidx`**: Maven libraries the SDK's Kotlin/Java needs, as
+  `[group, artifact, version]` (any group, not only `androidx.*`). See
+  "Android libraries" below for how they resolve.
 - Prefer `[package.metadata.idealyst] capabilities` for plain permissions:
   it also covers iOS and the app's reason strings.
 
 Everything an SDK declares lands in every app that depends on it, so an SDK
 should only declare components that stay inert until something enables
 them.
+
+## Android libraries (AndroidX)
+
+The framework's Kotlin runtime (`io.idealyst.runtime.*`) and the
+`FragmentActivity` the app's `MainActivity` extends need AndroidX. Every
+build links one pinned set: `PINNED_ANDROIDX` in
+`crates/tools/run/android/src/kotlin_runtime.rs`, the complete closure of
+fragment 1.6.2, activity 1.8.2, drawerlayout 1.2.0, recyclerview 1.3.2,
+core 1.12.0, lifecycle 2.6.2, savedstate 1.2.1 and kotlinx-coroutines 1.7.3,
+29 libraries in all. Each entry is an exact version, file type and SHA-1, so
+a clean machine links the same bytes the runtime was tested with, whatever
+Google has released since. The set predates the Kotlin-multiplatform split
+of lifecycle and savedstate and `androidx.navigationevent`.
+
+Each file comes from, in order:
+
+1. the gradle cache (`~/.gradle/caches/modules-2/files-2.1`, which Android
+   Studio fills), at exactly the pinned version and SHA-1;
+2. the idealyst cache, `~/.idealyst/maven`;
+3. Google's Maven repository, then Maven Central. The file is downloaded
+   once, refused unless its SHA-1 matches the pin, and kept in the
+   idealyst cache, so later builds are offline.
+
+An SDK's `androidx` entries resolve on top of the pinned set:
+
+- `["group", "artifact", "version"]` takes that version and its transitive
+  runtime dependencies, read from the published metadata. Where the POM
+  defers to Gradle module metadata (`.module`), the `.module` is read: a
+  Kotlin-multiplatform library's base artifact is an umbrella whose AAR has
+  no classes, and the `.module` sends Android to the `-android` (or `-jvm`)
+  variant, whose own `.module` lists the real AAR and the dependencies.
+  Where two requests for one library disagree, the higher version wins, as
+  in Gradle. Every downloaded file, metadata included, must match the
+  repository's `.sha1`.
+- `["group", "artifact"]` is accepted only for a library the framework pins,
+  and resolves to the pin. Any other library needs a version: "the newest"
+  would make the build depend on the day it ran.
+- A dependency on a pinned library always gets the pin; one asking for a
+  higher version is reported on stderr. Declaring a pinned library at a
+  different version fails the build.
+- The Kotlin stdlib is never downloaded (the Kotlin distribution's is
+  linked), nor `org.jetbrains:annotations` or `androidx.profileinstaller`.
+- An AAR with no `classes.jar` contributes its resources and no classes.
+
+Two environment variables control the caches:
+
+| Variable | Effect |
+|---|---|
+| `IDEALYST_MAVEN_CACHE=<dir>` | Use `<dir>` instead of `~/.idealyst/maven`. |
+| `IDEALYST_NO_GRADLE_CACHE=1` | Ignore the gradle cache, so a build behaves like one on a machine without Android Studio. |
+
+Together they reproduce a clean machine:
+`IDEALYST_MAVEN_CACHE=$(mktemp -d) IDEALYST_NO_GRADLE_CACHE=1 idealyst build --android`.
 
 ## Device-owner provisioning
 

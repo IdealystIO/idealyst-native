@@ -28,8 +28,8 @@
 //! runtime_kotlin = ["runtime/kotlin/io/foo/RustFoo.kt"]
 //! runtime_java   = ["runtime/java/io/foo/FooBridge.java"]
 //! androidx = [
-//!     ["androidx.media3", "media3-exoplayer"],
-//!     ["androidx.media3", "media3-common"],
+//!     ["androidx.media3", "media3-exoplayer", "1.1.1"],
+//!     ["androidx.fragment", "fragment"],  # pinned by the framework: no version
 //! ]
 //! ```
 //!
@@ -47,26 +47,37 @@
 //!
 //! # AndroidX resolution
 //!
-//! The runtime imports a handful of `androidx.*` classes
-//! (drawerlayout, fragment, recyclerview). Each (group, artifact) is
-//! looked up, in order, in:
+//! Every build links exactly [`PINNED_ANDROIDX`]: the libraries the Kotlin
+//! runtime (`io.idealyst.runtime.*`) and the wrapper's `FragmentActivity`
+//! are compiled and tested against, as a complete closure — each entry an
+//! exact version, file type and SHA-1. A clean machine therefore links the
+//! same bytes as a developer's machine, whatever Google has published
+//! since. Each file is taken from the gradle cache or the idealyst cache at
+//! its exact `<version>/<sha1>/` path, else downloaded once and refused
+//! unless its SHA-1 matches the pin (`crate::maven::fetch_pinned`).
 //!
-//! 1. the user's gradle cache (`~/.gradle/caches/modules-2/files-2.1/`),
-//!    which Android Studio populates;
-//! 2. the idealyst Maven cache (`~/.idealyst/maven/`, same
-//!    `<group>/<artifact>/<version>/<sha1>/<file>` layout);
-//! 3. Google's Maven repository, then Maven Central — downloaded once,
-//!    checked against the repository's `.sha1`, and stored in the
-//!    idealyst cache, so later builds are offline. The version is the
-//!    one the gradle cache resolved for the artifact's group (AndroidX
-//!    groups only work in lockstep), else the newest stable. See
-//!    `locate_artifacts` and `crate::maven`.
+//! An SDK's `androidx` entries are Maven coordinates (any group, not only
+//! `androidx.*`):
 //!
-//! An artifact found nowhere fails the build with every place it looked.
-//! Third-party AndroidX requirements get merged into the same resolution
-//! pass (deduped by (group, artifact)). SDKs must declare the full
-//! transitive closure they need — we don't read `.pom` files to chase
-//! dependencies.
+//! - `[group, artifact, version]` — that exact version. Its transitive
+//!   runtime closure is resolved from the published metadata
+//!   (`crate::maven::resolve_graph`): Gradle module metadata where the POM
+//!   defers to it — so a Kotlin-multiplatform umbrella resolves to its
+//!   `-android`/`-jvm` variant and that variant's dependencies — else the
+//!   POM. Where two requests disagree the higher version wins, as in Gradle.
+//! - `[group, artifact]` — only for a library the framework pins; it states
+//!   the SDK relies on it and resolves to the pin. Anything else needs a
+//!   version: picking "the newest" would make the build depend on the day
+//!   it ran.
+//!
+//! A dependency on a pinned library always gets the pin; one asking for a
+//! higher version is reported on stderr. Declaring a pinned library at a
+//! different version fails the build. An AAR without a `classes.jar` (a
+//! resources-only library) contributes its resources and no classes.
+//!
+//! `IDEALYST_MAVEN_CACHE` moves the idealyst cache (default
+//! `~/.idealyst/maven`); `IDEALYST_NO_GRADLE_CACHE=1` ignores the gradle
+//! cache, so a build behaves like one on a machine without Android Studio.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -74,6 +85,8 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
+
+use crate::maven::{Coord, Pin};
 
 /// The crate whose `runtime/kotlin/` tree is the framework's own Kotlin
 /// runtime (`RustNavigator`, `RustDrawerLayout`, the listener shims…).
@@ -84,82 +97,91 @@ const BACKEND_PACKAGE: &str = "backend-android-mobile";
 /// their Java package path (`io/idealyst/runtime/RustNavigator.kt`).
 const BACKEND_KOTLIN_DIR: &str = "runtime/kotlin";
 
-/// AndroidX modules the runtime references directly or transitively.
+/// The AndroidX closure every APK links, pinned: the libraries the runtime
+/// `.kt` files import (drawerlayout, fragment, recyclerview), the wrapper's
+/// `FragmentActivity` base, and every compile/runtime dependency their
+/// published metadata declares, at the versions that metadata resolves to.
 ///
-/// Order matters only insofar as the search picks the highest version
-/// available; the d8 step consumes the result as a set. Anything the
-/// runtime imports via `androidx.*` plus the standard transitive
-/// closure (Fragment depends on Activity/Lifecycle/SavedState, etc.).
+/// Why this line: it is the set the Kotlin runtime has been built, run and
+/// device-tested against (byte-identical to what Android Studio's gradle
+/// cache holds on the development machines — the SHA-1s are those cache
+/// directories), and it predates the Kotlin-multiplatform split of
+/// lifecycle (2.8) / savedstate (1.3) and `androidx.navigationevent`
+/// (activity 1.12), so the closure is 29 plain libraries. Only `collection`,
+/// `annotation` and `kotlinx-coroutines-core` were already multiplatform;
+/// their `-jvm` variants are pinned, which [`crate::maven::Pin::answers`]
+/// matches against requests for the umbrella name.
 ///
-/// Adding a new androidx import to the runtime usually means adding
-/// the corresponding (group, artifact) pair here so kotlinc can
-/// resolve the symbol and d8 has the class to dex.
-const REQUIRED_ANDROIDX: &[(&str, &str)] = &[
+/// Left out on purpose (`crate::maven::is_provided`): the Kotlin stdlib (the
+/// Kotlin distribution's is dexed), `org.jetbrains:annotations`, and
+/// `androidx.profileinstaller` (reached only through its own manifest
+/// entries, which the APK doesn't merge).
+///
+/// Moving a version means moving the whole closure: re-run
+/// `pinned_closure_is_complete_against_published_metadata` (network,
+/// `--ignored`), which checks every pinned library's runtime dependencies
+/// are pinned at that version or higher, and test an app on a device.
+pub const PINNED_ANDROIDX: &[Pin] = &[
     // Directly imported by the runtime .kt files.
-    ("androidx.drawerlayout", "drawerlayout"),
-    ("androidx.fragment", "fragment"),
-    ("androidx.recyclerview", "recyclerview"),
-    // Compile-time transitive closure. DrawerLayout extends a
-    // CustomView; Fragment extends ComponentActivity's host stack;
-    // RecyclerView pulls in core + customview.
-    ("androidx.customview", "customview"),
-    ("androidx.core", "core"),
-    // RecyclerView 1.3's runtime-scope dependency: its constructor calls
-    // `PoolingContainer`, so without it every `flat_list` crashes at
-    // `RecyclerView.<init>` with `NoClassDefFoundError:
-    // androidx/customview/poolingcontainer/PoolingContainer`.
-    ("androidx.customview", "customview-poolingcontainer"),
-    // PoolingContainer's own runtime dependency: it walks views with the
-    // `androidx.core.view.ViewGroupKt`/`ViewKt` extensions, which live in
-    // core-ktx, not core.
-    ("androidx.core", "core-ktx"),
-    ("androidx.activity", "activity"),
-    ("androidx.lifecycle", "lifecycle-common"),
-    ("androidx.lifecycle", "lifecycle-runtime"),
-    ("androidx.lifecycle", "lifecycle-viewmodel"),
-    ("androidx.lifecycle", "lifecycle-viewmodel-savedstate"),
-    // Fragment holds its view-lifecycle owner in a `MutableLiveData`, so the
-    // LiveData classes (`MutableLiveData`/`LiveData`/`MediatorLiveData`) must
-    // be dexed too, else `ClassNotFoundException: androidx.lifecycle.MutableLiveData`
-    // when a Fragment attaches. `-core` has the base classes; the full
-    // `lifecycle-livedata` adds `MediatorLiveData` (used by ViewModel-savedstate).
-    ("androidx.lifecycle", "lifecycle-livedata-core"),
-    ("androidx.lifecycle", "lifecycle-livedata"),
-    ("androidx.savedstate", "savedstate"),
-    // Lifecycle's internal observer map. `LifecycleRegistry` (used by every
-    // ComponentActivity/Fragment) instantiates `FastSafeIterableMap` from
-    // `androidx.arch.core:core-runtime`; its base `SafeIterableMap` +
-    // annotations live in `core-common`. Neither is reachable transitively
-    // through our flat list, so without them a FragmentActivity host crashes
-    // with `ClassNotFoundException: androidx.arch.core.internal.FastSafeIterableMap`.
-    ("androidx.arch.core", "core-runtime"),
-    ("androidx.arch.core", "core-common"),
-    // `collection` 1.4+ and `annotation` 1.8+ are Kotlin-multiplatform
-    // RELOCATIONS: the base artifact is POM-only and the real classes live in
-    // the `-jvm` variant. Our resolver picks the highest version WITH a binary,
-    // so the base artifact falls back to an OLD jar (collection 1.1.0) whose
-    // `SimpleArrayMap` lacks the synthetic `(int,int,DefaultConstructorMarker)`
-    // ctor `androidx.activity`/ComponentActivity calls → `NoSuchMethodError`
-    // crash when a FragmentActivity navigator host inits. Target the `-jvm`
-    // artifacts so the current classes get dexed.
-    ("androidx.collection", "collection-jvm"),
-    ("androidx.annotation", "annotation-jvm"),
-    ("androidx.versionedparcelable", "versionedparcelable"),
-    ("androidx.interpolator", "interpolator"),
-    ("androidx.loader", "loader"),
-    ("androidx.viewpager", "viewpager"),
-    // Modern lifecycle (2.6+) exposes its state as a `StateFlow` and drives
-    // `lifecycleScope` on `Dispatchers.Main.immediate`, so it pulls in
-    // kotlinx-coroutines. `kotlinx-coroutines-core` is a KMP relocation
-    // (base POM-only → `-jvm`; the resolver's `-jvm` fallback handles it),
-    // and `kotlinx-coroutines-android` registers the `Main` dispatcher via
-    // a `MainDispatcherFactory` ServiceLoader entry — without it the first
-    // `lifecycleScope` access throws "Module with the Main dispatcher is
-    // missing". Missing the core jar surfaces first as
-    // `ClassNotFoundException: kotlinx.coroutines.flow.StateFlowKt`.
-    ("org.jetbrains.kotlinx", "kotlinx-coroutines-core"),
-    ("org.jetbrains.kotlinx", "kotlinx-coroutines-android"),
+    pin("androidx.drawerlayout", "drawerlayout", "1.2.0", "aar", "7da3dd40844ad410dd3d75842ef2b00187829c77"),
+    pin("androidx.fragment", "fragment", "1.6.2", "aar", "ae9b6401f983c8479327acc1a5dfe48da7066a4e"),
+    pin("androidx.recyclerview", "recyclerview", "1.3.2", "aar", "e1d76099dbbd88ee0ee7c39cfa96ed0ea01bc8ad"),
+    // Fragment's host stack: FragmentActivity extends ComponentActivity.
+    pin("androidx.activity", "activity", "1.8.2", "aar", "bce54c84024b17c34f9d4cdeaf1ce39d3e750c9e"),
+    pin("androidx.core", "core", "1.12.0", "aar", "5aa3088ed93ba8ebaea2b8a83befdfa829339e7a"),
+    // RecyclerView's constructor calls `PoolingContainer`, which walks views
+    // with the `androidx.core.view.ViewGroupKt`/`ViewKt` extensions from
+    // core-ktx. Lockstep with core: core-ktx 1.13+ is an empty jar whose
+    // extensions moved into core 1.13.
+    pin("androidx.customview", "customview-poolingcontainer", "1.1.0", "aar", "95994b41b2e6e8c98b56f8cf96269495cc2855b1"),
+    pin("androidx.core", "core-ktx", "1.12.0", "aar", "1b80a40d6f34eb52c8de87c186feb57aa2a43ada"),
+    pin("androidx.customview", "customview", "1.1.0", "aar", "0a030aaf64c5419a89f7d91a33755c4629a43471"),
+    pin("androidx.lifecycle", "lifecycle-common", "2.6.2", "jar", "10f354fdb64868baecd67128560c5a0d6312c495"),
+    pin("androidx.lifecycle", "lifecycle-runtime", "2.6.2", "aar", "f0ef27053faa89b3ec06c4f118cea0a15edde35b"),
+    pin("androidx.lifecycle", "lifecycle-viewmodel", "2.6.2", "aar", "fa35bfdbbe0e7df1573e377cbdd15de35176141d"),
+    pin("androidx.lifecycle", "lifecycle-viewmodel-savedstate", "2.6.2", "aar", "483115c35b2926c3780dfdaf3f5d0342855e73b1"),
+    // Fragment holds its view-lifecycle owner in a `MutableLiveData`
+    // (`-core`); `MediatorLiveData` is in the full `lifecycle-livedata`.
+    pin("androidx.lifecycle", "lifecycle-livedata-core", "2.6.2", "aar", "23f66885a260f0a2cd6540927ea8795484afd2da"),
+    pin("androidx.lifecycle", "lifecycle-livedata", "2.6.2", "aar", "e7f6d9e232bf035af69c030917c1ccda8e840b57"),
+    pin("androidx.savedstate", "savedstate", "1.2.1", "aar", "e364fc9dec32aa569d855f85864e50250318a093"),
+    // `LifecycleRegistry` (every ComponentActivity/Fragment) instantiates
+    // `FastSafeIterableMap` from core-runtime; its base `SafeIterableMap`
+    // lives in core-common.
+    pin("androidx.arch.core", "core-runtime", "2.2.0", "aar", "39705982680d78556b679ef9d5400d4f17509b0b"),
+    pin("androidx.arch.core", "core-common", "2.2.0", "jar", "5e1b8b81dfd5f52c56a8d53b18ca759c19a301f3"),
+    // Kotlin-multiplatform already at these versions: the classes live in
+    // the `-jvm` variant (`collection` 1.4's `SimpleArrayMap` has the
+    // `(int,int,DefaultConstructorMarker)` ctor ComponentActivity calls).
+    pin("androidx.collection", "collection-jvm", "1.4.0", "jar", "e209fb7bd1183032f55a0408121c6251a81acb49"),
+    pin("androidx.annotation", "annotation-jvm", "1.8.0", "jar", "b8a16fe526014b7941c1debaccaf9c5153692dbb"),
+    pin("androidx.annotation", "annotation-experimental", "1.3.0", "aar", "5087c6f545117dcd474e69e1a93cacec9d7334af"),
+    pin("androidx.versionedparcelable", "versionedparcelable", "1.1.1", "aar", "18e18071e7715679e0593c570217edeb5ca48b9e"),
+    pin("androidx.interpolator", "interpolator", "1.0.0", "aar", "8a01fa254a23b9388571eb6334b03707c7d122d7"),
+    pin("androidx.loader", "loader", "1.1.0", "aar", "49591a915750c6483e1791daad039e0af71cb91c"),
+    pin("androidx.viewpager", "viewpager", "1.0.0", "aar", "1f90e13820f96c2fb868f9674079a551678d68b2"),
+    // `ComponentActivity.reportFullyDrawn` calls `androidx.tracing.Trace`.
+    pin("androidx.tracing", "tracing", "1.0.0", "aar", "69cef34711dffbc517e7a0a419ec4a98f84f496a"),
+    // core's `ResolvableFuture`/`ListenableFuture` users.
+    pin("androidx.concurrent", "concurrent-futures", "1.0.0", "jar", "c1e77e3ee6f4643b77496a1ddf7a2eef1aefdaa1"),
+    pin("com.google.guava", "listenablefuture", "1.0", "jar", "c949a840a6acbc5268d088e47b04177bf90b3cad"),
+    // Lifecycle 2.6 exposes its state as a `StateFlow` and drives
+    // `lifecycleScope` on `Dispatchers.Main.immediate`.
+    // `kotlinx-coroutines-android` registers that `Main` dispatcher through a
+    // `MainDispatcherFactory` ServiceLoader entry. The pair moves together.
+    pin("org.jetbrains.kotlinx", "kotlinx-coroutines-core-jvm", "1.7.3", "jar", "2b09627576f0989a436a00a4a54b55fa5026fb86"),
+    pin("org.jetbrains.kotlinx", "kotlinx-coroutines-android", "1.7.3", "jar", "38d9cad3a0b03a10453b56577984bdeb48edeed5"),
 ];
+
+const fn pin(
+    group: &'static str,
+    artifact: &'static str,
+    version: &'static str,
+    ext: &'static str,
+    sha1: &'static str,
+) -> Pin {
+    Pin { group, artifact, version, ext, sha1 }
+}
 
 /// Inputs the rest of the build pipeline consumes once kotlin/AAR
 /// processing finishes.
@@ -199,11 +221,25 @@ pub struct RuntimeArtifacts {
 /// source path so the R-class stub generator can extract `R.txt` +
 /// `AndroidManifest.xml` from it.
 struct ResolvedArtifact {
-    artifact: String,
+    /// `<group>.<artifact>` — unique across the closure, so it names the
+    /// artifact's extraction directories (`core` exists in several groups).
+    label: String,
     source: PathBuf,
     /// Path the d8 step consumes. For `.jar` artifacts this equals
-    /// `source`; for `.aar`, it's the extracted `classes.jar`.
-    classes_jar: PathBuf,
+    /// `source`; for `.aar`, it's the extracted `classes.jar`, or `None`
+    /// when the AAR ships no classes.
+    classes_jar: Option<PathBuf>,
+}
+
+/// One `androidx` entry of an SDK's `[package.metadata.idealyst.android]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AndroidxDecl {
+    /// The declaring crate, for diagnostics.
+    package: String,
+    group: String,
+    artifact: String,
+    /// `None` for the two-element form, valid only for a pinned library.
+    version: Option<String>,
 }
 
 /// One JVM source file contributed by a third-party SDK. Same shape
@@ -235,10 +271,9 @@ struct DiscoveredExtensions {
     backend_kotlin: Vec<ExtensionSource>,
     kotlin: Vec<ExtensionSource>,
     java: Vec<ExtensionSource>,
-    /// Additional (group, artifact) pairs to feed into AndroidX
-    /// resolution. Deduped against [`REQUIRED_ANDROIDX`] and against
-    /// itself before resolution runs.
-    androidx: Vec<(String, String)>,
+    /// SDK-declared Maven coordinates, resolved on top of
+    /// [`PINNED_ANDROIDX`] (see [`declared_roots`]).
+    androidx: Vec<AndroidxDecl>,
 }
 
 /// Run `cargo metadata` on the wrapper: the dependency graph every
@@ -328,29 +363,83 @@ fn extensions_from_metadata(json: &Value) -> Result<DiscoveredExtensions> {
 
         if let Some(deps) = android.get("androidx").and_then(|v| v.as_array()) {
             for entry in deps {
-                let pair = entry.as_array().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "{}: metadata.idealyst.android.androidx entries must be [group, artifact] arrays",
-                        pkg_name
-                    )
-                })?;
-                if pair.len() != 2 {
-                    anyhow::bail!(
-                        "{}: metadata.idealyst.android.androidx entry must have exactly 2 elements (group, artifact)",
-                        pkg_name
-                    );
-                }
-                let group = pair[0].as_str().ok_or_else(|| {
-                    anyhow::anyhow!("{}: androidx group must be a string", pkg_name)
-                })?;
-                let artifact = pair[1].as_str().ok_or_else(|| {
-                    anyhow::anyhow!("{}: androidx artifact must be a string", pkg_name)
-                })?;
-                out.androidx.push((group.to_string(), artifact.to_string()));
+                out.androidx.push(parse_androidx_entry(pkg_name, entry)?);
             }
         }
     }
     Ok(out)
+}
+
+/// One `androidx` entry: `[group, artifact, version]`, or `[group,
+/// artifact]` (checked against the pins by [`declared_roots`]).
+fn parse_androidx_entry(pkg_name: &str, entry: &Value) -> Result<AndroidxDecl> {
+    let parts: Option<Vec<&str>> =
+        entry.as_array().and_then(|a| a.iter().map(|v| v.as_str()).collect());
+    match parts.as_deref() {
+        Some([group, artifact]) => Ok(AndroidxDecl {
+            package: pkg_name.to_string(),
+            group: group.to_string(),
+            artifact: artifact.to_string(),
+            version: None,
+        }),
+        Some([group, artifact, version]) => Ok(AndroidxDecl {
+            package: pkg_name.to_string(),
+            group: group.to_string(),
+            artifact: artifact.to_string(),
+            version: Some(version.to_string()),
+        }),
+        _ => anyhow::bail!(
+            "{pkg_name}: metadata.idealyst.android.androidx entries must be \
+             [\"group\", \"artifact\", \"version\"] string arrays (got {entry})"
+        ),
+    }
+}
+
+/// The coordinates to resolve on top of `pins`: every declaration of an
+/// unpinned library. A declaration of a pinned library must not carry
+/// another version — the framework's Kotlin runtime is tested only against
+/// the pin — and an unpinned one must carry a version, so the build never
+/// depends on what a repository published last.
+fn declared_roots(decls: &[AndroidxDecl], pins: &[Pin]) -> Result<Vec<Coord>> {
+    let mut roots: Vec<Coord> = Vec::new();
+    for d in decls {
+        if let Some(pin) = crate::maven::pin_for(pins, &d.group, &d.artifact) {
+            if let Some(v) = &d.version {
+                if v != pin.version {
+                    anyhow::bail!(
+                        "{} declares {}:{}:{v}, but the framework pins {} — its Kotlin runtime \
+                         is built and tested against that version. Declare [\"{}\", \"{}\"] \
+                         (or the pinned version) instead",
+                        d.package,
+                        d.group,
+                        d.artifact,
+                        pin.coord(),
+                        d.group,
+                        d.artifact,
+                    );
+                }
+            }
+            continue;
+        }
+        let Some(version) = &d.version else {
+            anyhow::bail!(
+                "{} declares [\"{}\", \"{}\"] without a version. Only libraries the framework \
+                 pins may omit it; add the version the SDK is tested against: \
+                 [\"{}\", \"{}\", \"<version>\"]",
+                d.package,
+                d.group,
+                d.artifact,
+                d.group,
+                d.artifact,
+            );
+        };
+        let c = Coord::new(&d.group, &d.artifact, version);
+        if !roots.contains(&c) {
+            roots.push(c);
+        }
+    }
+    roots.sort();
+    Ok(roots)
 }
 
 /// Pull every entry for one `runtime_*` key (e.g. `"runtime_kotlin"`
@@ -507,18 +596,8 @@ pub fn build_runtime(
         Some(dir)
     };
 
-    // Build the merged AndroidX list: built-in pairs first (preserves
-    // existing resolution order) + any third-party pairs not already
-    // present. Dedup is by exact (group, artifact) match.
-    let mut androidx_pairs: Vec<(String, String)> = REQUIRED_ANDROIDX
-        .iter()
-        .map(|(g, a)| ((*g).to_string(), (*a).to_string()))
-        .collect();
-    for (g, a) in &extensions.androidx {
-        if !androidx_pairs.iter().any(|(eg, ea)| eg == g && ea == a) {
-            androidx_pairs.push((g.clone(), a.clone()));
-        }
-    }
+    // The pinned closure plus whatever SDKs declare beyond it.
+    let declared = declared_roots(&extensions.androidx, PINNED_ANDROIDX)?;
 
     let kotlin_dist = find_kotlin_dist()?;
     let kotlin_compiler_jar = kotlin_dist.join("lib/kotlin-compiler.jar");
@@ -538,8 +617,8 @@ pub fn build_runtime(
 
     let aar_cache = build_dir.join("aar-cache");
     fs::create_dir_all(&aar_cache)?;
-    let resolved = resolve_androidx(&aar_cache, &androidx_pairs)?;
-    let androidx_jars: Vec<PathBuf> = resolved.iter().map(|r| r.classes_jar.clone()).collect();
+    let resolved = resolve_androidx(&aar_cache, &declared)?;
+    let androidx_jars: Vec<PathBuf> = resolved.iter().filter_map(|r| r.classes_jar.clone()).collect();
 
     // Resource pipeline: pull each AAR's `res/` out, compile it to a
     // `.flata` via aapt2. The final aapt2 link (in lib.rs) consumes
@@ -688,132 +767,61 @@ fn find_kotlin_dist() -> Result<PathBuf> {
     )
 }
 
-/// Resolve every required androidx artifact's source (.aar or .jar)
-/// and extract its `classes.jar` (for .aar) under `out_dir`. Sources are
-/// searched in the order the module docs list: gradle cache, idealyst
-/// Maven cache, then a download into the idealyst cache.
-///
-/// `pairs` is the merged (first-party + third-party) list of
-/// (group, artifact) tuples. Order matters only for deterministic
-/// classpath assembly; resolution itself doesn't depend on it.
-fn resolve_androidx(
-    out_dir: &Path,
-    pairs: &[(String, String)],
-) -> Result<Vec<ResolvedArtifact>> {
-    let sources = ArtifactSources {
-        gradle: gradle_cache_dir(),
+/// Resolve [`PINNED_ANDROIDX`] plus the closure of `declared`, and extract
+/// each `.aar`'s `classes.jar` under `out_dir`. Pinned libraries come first,
+/// in list order, then the declared closure in coordinate order — a stable
+/// classpath. Where each file comes from is `crate::maven`'s business: the
+/// gradle cache, the idealyst cache, else a verified download.
+fn resolve_androidx(out_dir: &Path, declared: &[Coord]) -> Result<Vec<ResolvedArtifact>> {
+    let caches = crate::maven::Caches {
+        gradle: crate::maven::gradle_cache_dir(),
         idealyst: crate::maven::idealyst_maven_cache()?,
-        fetcher: &crate::maven::Curl,
     };
-    let sources_found = locate_artifacts(&sources, pairs)?;
-    let mut out = Vec::with_capacity(pairs.len());
-    for ((_, artifact), source) in pairs.iter().zip(sources_found) {
-        let classes_jar = extract_classes(&source, out_dir, artifact)?;
-        out.push(ResolvedArtifact {
-            artifact: artifact.clone(),
-            source,
-            classes_jar,
-        });
+    let sources = locate_androidx(&crate::maven::Curl, crate::maven::REPOSITORIES, &caches, PINNED_ANDROIDX, declared)?;
+    let mut out = Vec::with_capacity(sources.len());
+    for (coord, source) in sources {
+        let label = format!("{}.{}", coord.group, coord.artifact);
+        let classes_jar = extract_classes(&source, out_dir, &label)?;
+        out.push(ResolvedArtifact { label, source, classes_jar });
     }
     Ok(out)
 }
 
-/// Where [`locate_artifacts`] looks, in order.
-struct ArtifactSources<'a> {
-    /// `~/.gradle/caches/modules-2/files-2.1`, when it exists.
-    gradle: Option<PathBuf>,
-    /// `~/.idealyst/maven` — downloads land here, in the gradle layout.
-    idealyst: PathBuf,
-    fetcher: &'a dyn crate::maven::Fetch,
-}
-
-/// Each pair's `.aar`/`.jar`, in `pairs` order.
-///
-/// Every pair the gradle cache holds is taken from it first. The rest come
-/// from the idealyst cache or a download, at the version the gradle cache
-/// resolved for the same group (highest, if it holds several): AndroidX
-/// versions a group in lockstep and moves classes between its artifacts
-/// across releases, so a lone newest artifact next to an older cached
-/// sibling can miss classes both expect (`core-ktx` 1.13+ is empty because
-/// its extensions moved into `core`; next to a cached `core` 1.12 that
-/// leaves no `ViewGroupKt`, and RecyclerView's first detach crashes).
-fn locate_artifacts(sources: &ArtifactSources, pairs: &[(String, String)]) -> Result<Vec<PathBuf>> {
-    let mut found: Vec<std::result::Result<PathBuf, String>> = pairs
-        .iter()
-        .map(|(group, artifact)| match &sources.gradle {
-            Some(cache) => find_artifact(cache, group, artifact).map_err(|e| format!("{e:#}")),
-            None => Err("no gradle cache at ~/.gradle/caches/modules-2/files-2.1".to_string()),
-        })
-        .collect();
-    let group_version = |group: &str, found: &[std::result::Result<PathBuf, String>]| {
-        pairs
-            .iter()
-            .zip(found)
-            .filter(|((g, _), _)| g == group)
-            .filter_map(|(_, f)| f.as_ref().ok().and_then(|p| cached_version(p)))
-            .max_by(|a, b| parse_version(a).cmp(&parse_version(b)))
-    };
-    for i in 0..pairs.len() {
-        if let Err(gradle_miss) = &found[i] {
-            let (group, artifact) = &pairs[i];
-            let preferred = group_version(group, &found);
-            let p = locate_missing(sources, group, artifact, preferred.as_deref(), gradle_miss)?;
-            found[i] = Ok(p);
-        }
-    }
-    Ok(found.into_iter().map(|f| f.expect("every miss was located or returned an error")).collect())
-}
-
-/// The `<version>` directory a cached binary sits under
-/// (`<group>/<artifact>/<version>/<hash>/<file>`).
-fn cached_version(binary: &Path) -> Option<String> {
-    Some(binary.parent()?.parent()?.file_name()?.to_string_lossy().into_owned())
-}
-
-/// An artifact the gradle cache lacks: the idealyst cache, else a verified
-/// download into it. With a `preferred` (group) version only that version
-/// counts as a cache hit — a cached copy at another version is the
-/// mismatch [`locate_artifacts`] exists to avoid. A cache hit never touches
-/// the network, so a build is offline once each artifact has been fetched.
-/// (When the repository doesn't publish the group version, the newest
-/// stable is downloaded, and later builds re-check the repository for the
-/// group version before reusing it.)
-fn locate_missing(
-    sources: &ArtifactSources,
-    group: &str,
-    artifact: &str,
-    preferred: Option<&str>,
-    gradle_miss: &str,
-) -> Result<PathBuf> {
-    if sources.idealyst.is_dir() {
-        match preferred {
-            Some(version) => {
-                for name in [artifact.to_string(), format!("{artifact}-jvm")] {
-                    let dir = sources.idealyst.join(group).join(name).join(version);
-                    if dir.is_dir() {
-                        if let Some(p) = find_binary_in_version(&dir)? {
-                            return Ok(p);
-                        }
-                    }
-                }
-            }
-            None => {
-                if let Ok(p) = find_artifact(&sources.idealyst, group, artifact) {
-                    return Ok(p);
-                }
-            }
-        }
-    }
-    crate::maven::fetch_from_maven(sources.fetcher, &sources.idealyst, group, artifact, preferred)
-        .with_context(|| {
+/// The `.aar`/`.jar` of every pin, then of every library `declared` needs
+/// beyond the pins, each with the coordinate it was taken from.
+fn locate_androidx(
+    fetcher: &dyn crate::maven::Fetch,
+    repos: &[&str],
+    caches: &crate::maven::Caches,
+    pins: &[Pin],
+    declared: &[Coord],
+) -> Result<Vec<(Coord, PathBuf)>> {
+    let mut out = Vec::new();
+    for pin in pins {
+        let p = crate::maven::fetch_pinned(fetcher, repos, caches, pin).with_context(|| {
             format!(
-                "{group}:{artifact} is in neither the gradle cache ({gradle_miss}) nor {}, \
-                 and downloading it failed. Connect to the network for one build \
-                 (it is cached afterwards), or open a project that depends on it in \
-                 Android Studio to populate the gradle cache",
-                sources.idealyst.display()
+                "{} is in neither the gradle cache nor {}, and downloading it failed. \
+                 Connect to the network for one build (it is cached afterwards)",
+                pin.coord(),
+                caches.idealyst.display()
             )
-        })
+        })?;
+        out.push((pin.coord(), p));
+    }
+    if !declared.is_empty() {
+        let resolver = crate::maven::Resolver::new(fetcher, repos, caches);
+        let resolution = crate::maven::resolve_graph(&resolver, pins, declared)
+            .context("resolving the Android libraries SDKs declare")?;
+        for note in &resolution.pin_overrides {
+            eprintln!("[run-android] {note}; using the pinned version");
+        }
+        for node in resolution.nodes {
+            if let Some(binary) = node.binary {
+                out.push((node.coord, binary));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Pull each AAR's `res/` directory out, compile it with `aapt2 compile`
@@ -847,7 +855,7 @@ fn process_aar_resources(
         }
         // Each AAR gets its own `res/` extraction dir so aapt2 sees
         // a clean tree (it's strict about extraneous files).
-        let aar_res_dir = res_root.join(&r.artifact);
+        let aar_res_dir = res_root.join(&r.label);
         fs::create_dir_all(&aar_res_dir)?;
         // Skip extraction if the AAR has no resource files; aapt2
         // compile on an empty dir succeeds but emits no flat.
@@ -860,10 +868,10 @@ fn process_aar_resources(
             continue;
         }
 
-        let flat_path = res_root.join(format!("{}.flata", r.artifact));
+        let flat_path = res_root.join(format!("{}.flata", r.label));
         eprintln!(
             "[run-android] aapt2 compile (AAR {}) → {}",
-            r.artifact,
+            r.label,
             flat_path.display()
         );
         let status = Command::new(build_tools.join("aapt2"))
@@ -873,9 +881,9 @@ fn process_aar_resources(
             .arg("-o")
             .arg(&flat_path)
             .status()
-            .with_context(|| format!("spawn aapt2 compile for {}", r.artifact))?;
+            .with_context(|| format!("spawn aapt2 compile for {}", r.label))?;
         if !status.success() {
-            anyhow::bail!("aapt2 compile {} exited with {status}", r.artifact);
+            anyhow::bail!("aapt2 compile {} exited with {status}", r.label);
         }
         flats.push(flat_path);
     }
@@ -968,109 +976,37 @@ fn read_aar_package(aar: &Path) -> Result<Option<String>> {
     Ok(Some(rest[..end].to_string()))
 }
 
-fn gradle_cache_dir() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let p = PathBuf::from(home).join(".gradle/caches/modules-2/files-2.1");
-    p.is_dir().then_some(p)
-}
-
-/// Walk `<cache>/<group>/<artifact>/<version>/<hash>/<artifact>-<version>.{aar|jar}`
-/// and pick the highest version that actually has a binary artifact.
-/// Skips versions whose hash dirs contain only `.pom`/`.module` metadata
-/// — common for KMP-published modules like newer `androidx.collection`
-/// where the JVM artifact lives under a sibling `<artifact>-jvm`.
-///
-/// If the base artifact is metadata-only across every version, falls
-/// back to `<artifact>-jvm`. This handles every androidx KMP module
-/// uniformly without callers having to know which artifacts are KMP.
-fn find_artifact(cache: &Path, group: &str, artifact: &str) -> Result<PathBuf> {
-    match find_artifact_in(cache, group, artifact) {
-        Ok(p) => Ok(p),
-        Err(base_err) => match find_artifact_in(cache, group, &format!("{}-jvm", artifact)) {
-            Ok(p) => Ok(p),
-            Err(jvm_err) => anyhow::bail!(
-                "{}; fallback to {}-jvm also failed: {}",
-                base_err,
-                artifact,
-                jvm_err
-            ),
-        },
-    }
-}
-
-fn find_artifact_in(cache: &Path, group: &str, artifact: &str) -> Result<PathBuf> {
-    let artifact_root = cache.join(group).join(artifact);
-    if !artifact_root.is_dir() {
-        anyhow::bail!("{} does not exist", artifact_root.display());
-    }
-    let mut versions: Vec<(Vec<u64>, PathBuf)> = Vec::new();
-    for entry in fs::read_dir(&artifact_root)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        if let Some(parsed) = parse_version(&name) {
-            versions.push((parsed, entry.path()));
-        }
-    }
-    versions.sort_by(|a, b| a.0.cmp(&b.0));
-    while let Some((_, version_dir)) = versions.pop() {
-        if let Some(p) = find_binary_in_version(&version_dir)? {
-            return Ok(p);
-        }
-    }
-    anyhow::bail!(
-        "no binary .aar/.jar under any version of {} — only metadata (.pom/.module) found",
-        artifact_root.display()
-    )
-}
-
-fn find_binary_in_version(version_dir: &Path) -> Result<Option<PathBuf>> {
-    for hash_entry in fs::read_dir(version_dir)? {
-        let hash_entry = hash_entry?;
-        if !hash_entry.file_type()?.is_dir() {
-            continue;
-        }
-        for file_entry in fs::read_dir(hash_entry.path())? {
-            let file_entry = file_entry?;
-            let p = file_entry.path();
-            let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
-            if ext == "aar" || ext == "jar" {
-                return Ok(Some(p));
-            }
-        }
-    }
-    Ok(None)
-}
-
-fn parse_version(s: &str) -> Option<Vec<u64>> {
-    let cleaned: String = s.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
-    if cleaned.is_empty() {
-        return None;
-    }
-    let parts: Vec<u64> = cleaned
-        .split('.')
-        .map(|p| p.parse::<u64>().unwrap_or(0))
-        .collect();
-    if parts.is_empty() { None } else { Some(parts) }
-}
-
 /// AARs are zips with a `classes.jar` inside; bare .jar files are
 /// already the artifact. Either way, this returns a path the d8 step
-/// can consume directly.
-fn extract_classes(
-    aar_or_jar: &Path,
-    out_dir: &Path,
-    artifact_name: &str,
-) -> Result<PathBuf> {
+/// can consume directly — or `None` for an AAR with no `classes.jar`.
+///
+/// A library may legitimately ship no classes: a resources-only AAR, or a
+/// Kotlin-multiplatform umbrella (`lifecycle-runtime` 2.8+), whose AAR holds
+/// only an `AndroidManifest.xml` because the classes live in its `-android`
+/// variant. Such an AAR contributes its resources (if any) and nothing to
+/// the classpath.
+fn extract_classes(aar_or_jar: &Path, out_dir: &Path, label: &str) -> Result<Option<PathBuf>> {
     let ext = aar_or_jar.extension().and_then(|s| s.to_str()).unwrap_or("");
     if ext == "jar" {
-        return Ok(aar_or_jar.to_path_buf());
+        return Ok(Some(aar_or_jar.to_path_buf()));
     }
-    // .aar — unzip to find classes.jar, then move it to a stable name
-    // under out_dir.
-    let staging = out_dir.join(format!("{}-staging", artifact_name));
+    let listing = Command::new("unzip")
+        .arg("-Z1")
+        .arg(aar_or_jar)
+        .output()
+        .with_context(|| format!("spawn unzip -Z1 for {}", aar_or_jar.display()))?;
+    if !listing.status.success() {
+        anyhow::bail!(
+            "{} is not a readable AAR: {}",
+            aar_or_jar.display(),
+            String::from_utf8_lossy(&listing.stderr).trim()
+        );
+    }
+    if !zip_listing_has_classes(&String::from_utf8_lossy(&listing.stdout)) {
+        return Ok(None);
+    }
+    // Unzip to find classes.jar, then move it to a stable name under out_dir.
+    let staging = out_dir.join(format!("{label}-staging"));
     if staging.exists() {
         fs::remove_dir_all(&staging)?;
     }
@@ -1087,30 +1023,30 @@ fn extract_classes(
     if !status.success() {
         anyhow::bail!("unzip {} failed with {status}", aar_or_jar.display());
     }
-    let inner = staging.join("classes.jar");
-    if !inner.is_file() {
-        // Some AARs (api-only stubs) ship without classes — that's
-        // fine, but log so missing-symbol errors at d8 are easier to
-        // diagnose.
-        anyhow::bail!(
-            "{} has no classes.jar (api-only AAR?) — drop it from REQUIRED_ANDROIDX or vendor it differently",
-            aar_or_jar.display(),
-        );
-    }
-    let final_path = out_dir.join(format!("{}-classes.jar", artifact_name));
+    let final_path = out_dir.join(format!("{label}-classes.jar"));
     if final_path.exists() {
         fs::remove_file(&final_path)?;
     }
-    fs::rename(&inner, &final_path)?;
-    Ok(final_path)
+    fs::rename(staging.join("classes.jar"), &final_path)?;
+    let _ = fs::remove_dir_all(&staging);
+    Ok(Some(final_path))
+}
+
+/// Whether an `unzip -Z1` listing (one entry per line) has a top-level
+/// `classes.jar`.
+fn zip_listing_has_classes(listing: &str) -> bool {
+    listing.lines().any(|l| l.trim_end() == "classes.jar")
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        extensions_from_metadata, stage_extension_sources, ExtensionSource, BACKEND_KOTLIN_DIR,
-        BACKEND_PACKAGE, REQUIRED_ANDROIDX, ArtifactSources, locate_artifacts,
+        declared_roots, extensions_from_metadata, extract_classes, locate_androidx,
+        parse_androidx_entry, stage_extension_sources, zip_listing_has_classes, AndroidxDecl,
+        ExtensionSource, BACKEND_KOTLIN_DIR, BACKEND_PACKAGE, PINNED_ANDROIDX,
     };
+    use crate::maven::tests::{publish_kmp, FakeRepo, NoNetwork, REPO};
+    use crate::maven::{Caches, Coord, Pin};
     use std::path::{Path, PathBuf};
 
     /// `cargo metadata` JSON naming one package, the way the wrapper's
@@ -1218,7 +1154,7 @@ mod tests {
     }
 
     fn lists(group: &str, artifact: &str) -> bool {
-        REQUIRED_ANDROIDX.iter().any(|(g, a)| *g == group && *a == artifact)
+        PINNED_ANDROIDX.iter().any(|p| p.group == group && p.artifact == artifact)
     }
 
     /// Regression guard for the navigator-host transitive closure.
@@ -1234,20 +1170,19 @@ mod tests {
     ///     (Fragment's view-lifecycle owner)
     ///   - `org.jetbrains.kotlinx:kotlinx-coroutines-core` → `StateFlowKt`
     ///     (modern lifecycle exposes state as a StateFlow)
-    /// If any is dropped, navigator apps crash on launch. This test fails
-    /// before such a deletion ships, pointing at the class it would break.
+    /// If any is dropped, navigator apps crash on launch.
     #[test]
     fn fragment_activity_transitive_closure_is_dexed() {
         for (group, artifact) in [
             ("androidx.arch.core", "core-runtime"),
             ("androidx.arch.core", "core-common"),
             ("androidx.lifecycle", "lifecycle-livedata-core"),
-            ("org.jetbrains.kotlinx", "kotlinx-coroutines-core"),
+            ("org.jetbrains.kotlinx", "kotlinx-coroutines-core-jvm"),
             ("org.jetbrains.kotlinx", "kotlinx-coroutines-android"),
         ] {
             assert!(
                 lists(group, artifact),
-                "REQUIRED_ANDROIDX must include {group}:{artifact} — without it a \
+                "PINNED_ANDROIDX must include {group}:{artifact} — without it a \
                  FragmentActivity navigator host crashes at launch with a \
                  ClassNotFoundException for one of its classes",
             );
@@ -1275,175 +1210,286 @@ mod tests {
         ] {
             assert!(
                 lists(group, artifact),
-                "REQUIRED_ANDROIDX must include {group}:{artifact} — RecyclerView \
+                "PINNED_ANDROIDX must include {group}:{artifact} — RecyclerView \
                  (every flat_list) needs it at runtime",
             );
         }
     }
 
-    /// A `group/artifact/version/hash/file` tree under `root`, the layout
-    /// both caches share.
-    fn cached(root: &Path, group: &str, artifact: &str, version: &str, ext: &str) -> PathBuf {
-        let dir = root.join(group).join(artifact).join(version).join("0123abcd");
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join(format!("{artifact}-{version}.{ext}"));
-        std::fs::write(&file, b"bin").unwrap();
-        file
-    }
-
-    fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
-        list.iter().map(|(g, a)| (g.to_string(), a.to_string())).collect()
-    }
-
+    /// The pinned set is what makes a clean machine link the same libraries
+    /// as a developer's: every entry an exact numeric version with a file
+    /// type and SHA-1, one entry per library, and lockstep groups at one
+    /// version (`core`/`core-ktx`: core-ktx 1.13+ is empty because its
+    /// extensions moved into core).
     #[test]
-    fn a_gradle_cache_hit_never_reaches_the_network() {
-        let gradle = tempfile::tempdir().unwrap();
-        let idealyst = tempfile::tempdir().unwrap();
-        let hit = cached(gradle.path(), "androidx.core", "core", "1.12.0", "aar");
-        let sources = ArtifactSources {
-            gradle: Some(gradle.path().to_path_buf()),
-            idealyst: idealyst.path().to_path_buf(),
-            fetcher: &crate::maven::tests::NoNetwork,
-        };
-        let got = locate_artifacts(&sources, &pairs(&[("androidx.core", "core")])).unwrap();
-        assert_eq!(got, vec![hit]);
-    }
-
-    #[test]
-    fn an_idealyst_cache_hit_never_reaches_the_network() {
-        let gradle = tempfile::tempdir().unwrap();
-        let idealyst = tempfile::tempdir().unwrap();
-        let hit = cached(idealyst.path(), "androidx.customview", "customview-poolingcontainer", "1.1.0", "aar");
-        for gradle_dir in [Some(gradle.path().to_path_buf()), None] {
-            let sources = ArtifactSources {
-                gradle: gradle_dir,
-                idealyst: idealyst.path().to_path_buf(),
-                fetcher: &crate::maven::tests::NoNetwork,
-            };
-            let got = locate_artifacts(
-                &sources,
-                &pairs(&[("androidx.customview", "customview-poolingcontainer")]),
-            )
-            .unwrap();
-            assert_eq!(got, vec![hit.clone()]);
+    fn pinned_closure_is_exact_and_unique() {
+        let mut seen = std::collections::BTreeSet::new();
+        for p in PINNED_ANDROIDX {
+            assert!(
+                !p.version.is_empty() && p.version.split('.').all(|n| n.parse::<u64>().is_ok()),
+                "{}: pins must be exact stable versions",
+                p.coord()
+            );
+            assert!(matches!(p.ext, "aar" | "jar"), "{}: ext {}", p.coord(), p.ext);
+            assert!(
+                p.sha1.len() == 40 && p.sha1.chars().all(|c| c.is_ascii_hexdigit()),
+                "{}: sha1 {}",
+                p.coord(),
+                p.sha1
+            );
+            assert!(
+                seen.insert((p.group, crate::maven::library_name(p.artifact))),
+                "{} is pinned twice",
+                p.coord()
+            );
         }
-    }
-
-    /// The idealyst cache serves a group-aligned hit without the network.
-    #[test]
-    fn an_idealyst_cache_hit_at_the_group_version_never_reaches_the_network() {
-        let gradle = tempfile::tempdir().unwrap();
-        let idealyst = tempfile::tempdir().unwrap();
-        let core = cached(gradle.path(), "androidx.core", "core", "1.12.0", "aar");
-        let ktx = cached(idealyst.path(), "androidx.core", "core-ktx", "1.12.0", "aar");
-        let sources = ArtifactSources {
-            gradle: Some(gradle.path().to_path_buf()),
-            idealyst: idealyst.path().to_path_buf(),
-            fetcher: &crate::maven::tests::NoNetwork,
+        let version = |g: &str, a: &str| {
+            PINNED_ANDROIDX.iter().find(|p| p.group == g && p.artifact == a).unwrap().version
         };
-        // core-ktx listed first: the group version comes from the whole
-        // gradle pass, not from list order.
-        let got = locate_artifacts(
-            &sources,
-            &pairs(&[("androidx.core", "core-ktx"), ("androidx.core", "core")]),
-        )
-        .unwrap();
-        assert_eq!(got, vec![ktx, core]);
-    }
-
-    /// Regression: `core-ktx` resolved to the newest release (1.19.1, an
-    /// empty jar) next to the gradle cache's `core` 1.12.0, so
-    /// `androidx.core.view.ViewGroupKt` was on neither and every
-    /// `flat_list` crashed with `NoClassDefFoundError` when its
-    /// RecyclerView detached. A cached copy at another version — what the
-    /// first fix left in `~/.idealyst/maven` — must not be reused either.
-    #[test]
-    fn regression_missing_artifact_resolves_at_its_groups_cached_version() {
-        let gradle = tempfile::tempdir().unwrap();
-        let idealyst = tempfile::tempdir().unwrap();
-        cached(gradle.path(), "androidx.core", "core", "1.12.0", "aar");
-        cached(idealyst.path(), "androidx.core", "core-ktx", "1.19.1", "aar");
-        let mut repo = crate::maven::tests::FakeRepo::default();
-        let dir = "https://dl.google.com/android/maven2/androidx/core/core-ktx";
-        repo.files.insert(
-            format!("{dir}/maven-metadata.xml"),
-            b"<metadata><versioning><versions><version>1.12.0</version>\
-              <version>1.19.1</version></versions></versioning></metadata>"
-                .to_vec(),
-        );
-        let base = format!("{dir}/1.12.0/core-ktx-1.12.0");
-        repo.files.insert(format!("{base}.pom"), b"<project><packaging>aar</packaging></project>".to_vec());
-        repo.files.insert(format!("{base}.aar"), b"ktx".to_vec());
-        repo.files.insert(
-            format!("{base}.aar.sha1"),
-            sha1_smol::Sha1::from(b"ktx").digest().to_string().into_bytes(),
-        );
-        let sources = ArtifactSources {
-            gradle: Some(gradle.path().to_path_buf()),
-            idealyst: idealyst.path().to_path_buf(),
-            fetcher: &repo,
-        };
-        let got = locate_artifacts(
-            &sources,
-            &pairs(&[("androidx.core", "core"), ("androidx.core", "core-ktx")]),
-        )
-        .unwrap();
-        assert!(got[1].ends_with("core-ktx-1.12.0.aar"), "{}", got[1].display());
-    }
-
-    #[test]
-    fn a_miss_in_both_caches_downloads_into_the_idealyst_cache() {
-        let gradle = tempfile::tempdir().unwrap();
-        let idealyst = tempfile::tempdir().unwrap();
-        let repo = crate::maven::tests::FakeRepo::default();
-        let sources = ArtifactSources {
-            gradle: Some(gradle.path().to_path_buf()),
-            idealyst: idealyst.path().to_path_buf(),
-            fetcher: &repo,
-        };
-        // Nothing published: the error names both caches and the remedy.
-        let err = format!(
-            "{:#}",
-            locate_artifacts(&sources, &pairs(&[("androidx.customview", "customview-poolingcontainer")]))
-                .unwrap_err()
-        );
-        assert!(err.contains("neither the gradle cache") && err.contains("Connect to the network"), "{err}");
-        assert!(
-            repo.requested.borrow().iter().any(|u| u.starts_with(
-                "https://dl.google.com/android/maven2/androidx/customview/customview-poolingcontainer/"
-            )),
-            "the download goes to Google's Maven first: {:?}",
-            repo.requested.borrow()
-        );
-    }
-
-    /// `androidx.collection` (1.4+) and `androidx.annotation` (1.8+) are
-    /// Kotlin-multiplatform RELOCATIONS: the base coordinate is POM-only at
-    /// recent versions, but OLD binary jars (e.g. collection 1.1.0) linger in
-    /// the gradle cache. `find_artifact` picks the highest version WITH a
-    /// binary, so listing the bare coordinate silently dexes the stale jar —
-    /// whose `SimpleArrayMap` lacks the synthetic
-    /// `(int,int,DefaultConstructorMarker)` ctor that ComponentActivity calls,
-    /// crashing FragmentActivity init with `NoSuchMethodError`. The list MUST
-    /// pin the `-jvm` variant for these two. (kotlinx-coroutines-core is also
-    /// relocated, but its base is POM-only at EVERY cached version, so the
-    /// resolver's `-jvm` fallback handles it without an explicit pin.)
-    #[test]
-    fn kmp_relocated_modules_pin_jvm_variant() {
-        for (group, base) in [
-            ("androidx.collection", "collection"),
-            ("androidx.annotation", "annotation"),
+        for (g, a, b) in [
+            ("androidx.core", "core", "core-ktx"),
+            ("androidx.lifecycle", "lifecycle-runtime", "lifecycle-livedata"),
+            ("androidx.lifecycle", "lifecycle-runtime", "lifecycle-viewmodel-savedstate"),
+            ("androidx.arch.core", "core-runtime", "core-common"),
+            ("org.jetbrains.kotlinx", "kotlinx-coroutines-core-jvm", "kotlinx-coroutines-android"),
         ] {
-            assert!(
-                !lists(group, base),
-                "REQUIRED_ANDROIDX must NOT list the bare {group}:{base} — it's a KMP \
-                 relocation whose base coordinate resolves to a stale cached jar \
-                 (NoSuchMethodError on ComponentActivity init). Pin {base}-jvm instead",
-            );
-            assert!(
-                lists(group, &format!("{base}-jvm")),
-                "REQUIRED_ANDROIDX must pin {group}:{base}-jvm (the KMP relocation target)",
-            );
+            assert_eq!(version(g, a), version(g, b), "{g}:{a} and {g}:{b} must move together");
         }
+    }
+
+    /// Regression (CrewForge, clean Ubuntu 24.04): the KMP split of lifecycle
+    /// 2.8 / savedstate 1.3 and `androidx.navigationevent` (activity 1.12)
+    /// must never reach the framework's own closure — that is what an empty
+    /// `~/.idealyst/maven` picked when resolution meant "newest stable".
+    #[test]
+    fn regression_pins_predate_the_kmp_umbrellas() {
+        for p in PINNED_ANDROIDX {
+            assert_ne!(p.group, "androidx.navigationevent");
+            let below = |g: &str, a: &str, max: &[u64]| {
+                if p.group == g && p.artifact.starts_with(a) {
+                    let v: Vec<u64> = p.version.split('.').map(|n| n.parse().unwrap()).collect();
+                    assert!(v.as_slice() < max, "{} is past the KMP split", p.coord());
+                }
+            };
+            below("androidx.lifecycle", "lifecycle", &[2, 8]);
+            below("androidx.savedstate", "savedstate", &[1, 3]);
+            below("androidx.activity", "activity", &[1, 12]);
+        }
+    }
+
+    /// A pinned library resolves to exactly its pinned file. With both caches
+    /// empty, only the pinned files are requested — never a version listing
+    /// (`maven-metadata.xml`), so nothing is chosen by "newest".
+    #[test]
+    fn every_pin_is_fetched_at_its_exact_coordinate_and_nothing_else() {
+        let cache = tempfile::tempdir().unwrap();
+        let mut repo = FakeRepo::default();
+        // Pins whose bytes hash to their sha1: fake files, so the test pins
+        // are derived from the real list with the fake digests.
+        let fakes: Vec<(Pin, Vec<u8>)> = PINNED_ANDROIDX
+            .iter()
+            .map(|p| {
+                let body = format!("bytes of {}", p.coord()).into_bytes();
+                let sha = crate::maven::tests::sha1_hex(&body);
+                (Pin { sha1: Box::leak(sha.into_boxed_str()), ..*p }, body)
+            })
+            .collect();
+        for (pin, body) in &fakes {
+            let url = format!(
+                "{REPO}/{}/{}/{}/{}-{}.{}",
+                pin.group.replace('.', "/"), pin.artifact, pin.version, pin.artifact, pin.version, pin.ext
+            );
+            repo.serve(url, body);
+        }
+        let pins: Vec<Pin> = fakes.iter().map(|(p, _)| *p).collect();
+        let caches = Caches { gradle: None, idealyst: cache.path().to_path_buf() };
+        let got = locate_androidx(&repo, &[REPO], &caches, &pins, &[]).unwrap();
+        assert_eq!(got.len(), PINNED_ANDROIDX.len());
+        for ((coord, path), pin) in got.iter().zip(PINNED_ANDROIDX) {
+            assert_eq!(*coord, pin.coord());
+            assert!(path.ends_with(format!("{}-{}.{}", pin.artifact, pin.version, pin.ext)));
+        }
+        let requested = repo.requested.borrow();
+        assert!(requested.iter().all(|u| !u.contains("maven-metadata") && !u.ends_with(".pom") && !u.ends_with(".module")));
+        drop(requested);
+        // Second build: offline.
+        locate_androidx(&NoNetwork, &[REPO], &caches, &pins, &[]).unwrap();
+    }
+
+    /// A gradle cache holding other versions of a pinned library (newer or
+    /// older) is ignored for it; one holding the pinned file is used.
+    #[test]
+    fn the_gradle_cache_serves_only_the_pinned_file() {
+        let gradle = tempfile::tempdir().unwrap();
+        let idealyst = tempfile::tempdir().unwrap();
+        let pin = PINNED_ANDROIDX.iter().find(|p| p.artifact == "core").unwrap();
+        let at = |version: &str, hash: &str| {
+            let dir = gradle.path().join(pin.group).join(pin.artifact).join(version).join(hash);
+            std::fs::create_dir_all(&dir).unwrap();
+            let f = dir.join(format!("{}-{version}.{}", pin.artifact, pin.ext));
+            std::fs::write(&f, b"bin").unwrap();
+            f
+        };
+        at("1.19.1", "ffff");
+        let caches = Caches { gradle: Some(gradle.path().to_path_buf()), idealyst: idealyst.path().to_path_buf() };
+        let err = locate_androidx(&FakeRepo::default(), &[REPO], &caches, std::slice::from_ref(pin), &[]).unwrap_err();
+        assert!(format!("{err:#}").contains("androidx.core:core:1.12.0"), "{err:#}");
+        let hit = at(pin.version, pin.sha1);
+        let got = locate_androidx(&NoNetwork, &[REPO], &caches, std::slice::from_ref(pin), &[]).unwrap();
+        assert_eq!(got[0].1, hit);
+    }
+
+    fn decl(entry: serde_json::Value) -> anyhow::Result<AndroidxDecl> {
+        parse_androidx_entry("some-sdk", &entry)
+    }
+
+    #[test]
+    fn sdk_androidx_entries_take_an_optional_version() {
+        let d = decl(serde_json::json!(["androidx.media3", "media3-exoplayer", "1.1.1"])).unwrap();
+        assert_eq!(d.version.as_deref(), Some("1.1.1"));
+        assert_eq!(decl(serde_json::json!(["androidx.fragment", "fragment"])).unwrap().version, None);
+        for bad in [serde_json::json!(["only"]), serde_json::json!("a:b:c"), serde_json::json!(["a", 1])] {
+            assert!(decl(bad).unwrap_err().to_string().contains("some-sdk"));
+        }
+    }
+
+    #[test]
+    fn sdk_declarations_are_deterministic() {
+        let ok = [
+            decl(serde_json::json!(["androidx.fragment", "fragment"])).unwrap(),
+            decl(serde_json::json!(["androidx.fragment", "fragment", "1.6.2"])).unwrap(),
+            // The umbrella name of a pinned `-jvm` library is the pin.
+            decl(serde_json::json!(["androidx.collection", "collection"])).unwrap(),
+            decl(serde_json::json!(["androidx.media3", "media3-exoplayer", "1.1.1"])).unwrap(),
+            decl(serde_json::json!(["androidx.media3", "media3-exoplayer", "1.1.1"])).unwrap(),
+        ];
+        assert_eq!(
+            declared_roots(&ok, PINNED_ANDROIDX).unwrap(),
+            [Coord::new("androidx.media3", "media3-exoplayer", "1.1.1")]
+        );
+        // Unpinned without a version: "newest" would depend on the day.
+        let err = declared_roots(&[decl(serde_json::json!(["androidx.media3", "media3-common"])).unwrap()], PINNED_ANDROIDX)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("some-sdk") && err.contains("without a version"), "{err}");
+        // Pinned at another version: the runtime isn't tested against it.
+        let err = declared_roots(&[decl(serde_json::json!(["androidx.core", "core", "1.13.1"])).unwrap()], PINNED_ANDROIDX)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("androidx.core:core:1.12.0"), "{err}");
+    }
+
+    /// Regression (CrewForge, clean Ubuntu): an SDK-declared library that is
+    /// a KMP umbrella resolves through its `.module` to the `-android`
+    /// variant and that variant's dependencies, next to the pinned set.
+    #[test]
+    fn regression_a_declared_kmp_umbrella_brings_its_variant_closure() {
+        let cache = tempfile::tempdir().unwrap();
+        let mut repo = FakeRepo::default();
+        let root = Coord::new("com.example", "player", "2.0.0");
+        publish_kmp(&mut repo, &root, &[
+            ("androidx.navigationevent", "navigationevent", "1.0.0"),
+            // Pinned: answered by the pin, never fetched.
+            ("androidx.lifecycle", "lifecycle-runtime", "2.6.1"),
+        ]);
+        publish_kmp(&mut repo, &Coord::new("androidx.navigationevent", "navigationevent", "1.0.0"), &[]);
+        publish_kmp(&mut repo, &Coord::new("androidx.lifecycle", "lifecycle-runtime", "2.6.1"), &[]);
+        let caches = Caches { gradle: None, idealyst: cache.path().to_path_buf() };
+        let got = locate_androidx(&repo, &[REPO], &caches, &[], &[root]).unwrap();
+        let coords: Vec<String> = got.iter().map(|(c, _)| c.to_string()).collect();
+        assert_eq!(
+            coords,
+            ["androidx.lifecycle:lifecycle-runtime-android:2.6.1",
+             "androidx.navigationevent:navigationevent-android:1.0.0",
+             "com.example:player-android:2.0.0"],
+            "with no pins every dependency is walked"
+        );
+        let lifecycle = PINNED_ANDROIDX.iter().filter(|p| p.group == "androidx.lifecycle").copied().collect::<Vec<_>>();
+        let cache2 = tempfile::tempdir().unwrap();
+        let caches2 = Caches { gradle: None, idealyst: cache2.path().to_path_buf() };
+        // Pins present (served from the cache), so only the SDK closure is walked.
+        for p in &lifecycle {
+            let dir = cache2.path().join(p.group).join(p.artifact).join(p.version).join(p.sha1);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(format!("{}-{}.{}", p.artifact, p.version, p.ext)), b"pinned").unwrap();
+        }
+        let got = locate_androidx(&repo, &[REPO], &caches2, &lifecycle, &[Coord::new("com.example", "player", "2.0.0")]).unwrap();
+        let coords: Vec<String> = got.iter().skip(lifecycle.len()).map(|(c, _)| c.to_string()).collect();
+        assert_eq!(coords, ["androidx.navigationevent:navigationevent-android:1.0.0", "com.example:player-android:2.0.0"]);
+    }
+
+    #[test]
+    fn zip_listing_detects_classes_jar_at_the_top_level_only() {
+        assert!(zip_listing_has_classes("AndroidManifest.xml\nclasses.jar\nR.txt\n"));
+        assert!(!zip_listing_has_classes("AndroidManifest.xml\nMETA-INF/LICENSE.txt\n"));
+        assert!(!zip_listing_has_classes("libs/classes.jar\n"));
+    }
+
+    /// Regression (CrewForge, clean Ubuntu): `unzip … lifecycle-runtime-2.11.0.aar
+    /// classes.jar` failed with exit status 11 because that umbrella AAR holds
+    /// only `AndroidManifest.xml` and a LICENSE, and the build stopped. An AAR
+    /// with no `classes.jar` contributes no classes; it is not an error.
+    #[test]
+    fn regression_umbrella_aar_without_classes_jar_contributes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("META-INF")).unwrap();
+        std::fs::write(src.join("AndroidManifest.xml"), "<manifest package=\"androidx.lifecycle\"/>").unwrap();
+        std::fs::write(src.join("META-INF/LICENSE.txt"), "license").unwrap();
+        let zip = |name: &str, entries: &[&str]| {
+            let aar = dir.path().join(name);
+            let status = std::process::Command::new("zip")
+                .arg("-q").arg(&aar).args(entries).current_dir(&src).status().unwrap();
+            assert!(status.success());
+            aar
+        };
+        let out = dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let umbrella = zip("lifecycle-runtime-2.11.0.aar", &["AndroidManifest.xml", "META-INF/LICENSE.txt"]);
+        assert_eq!(extract_classes(&umbrella, &out, "androidx.lifecycle.lifecycle-runtime").unwrap(), None);
+
+        std::fs::write(src.join("classes.jar"), b"jar").unwrap();
+        let real = zip("lifecycle-runtime-android-2.11.0.aar", &["AndroidManifest.xml", "classes.jar"]);
+        let got = extract_classes(&real, &out, "androidx.lifecycle.lifecycle-runtime-android").unwrap().unwrap();
+        assert_eq!(std::fs::read(got).unwrap(), b"jar");
+    }
+
+    /// Checks the pinned set is a closed closure against the real
+    /// repositories: every pinned library's Android runtime dependencies
+    /// (read from its `.module`/POM exactly as the resolver reads them) are
+    /// pinned at that version or higher, or provided. Run with `--ignored`
+    /// after changing a pin.
+    #[test]
+    #[ignore = "network: reads metadata from dl.google.com and repo1.maven.org"]
+    fn pinned_closure_is_complete_against_published_metadata() {
+        let cache = tempfile::tempdir().unwrap();
+        let caches = Caches { gradle: None, idealyst: cache.path().to_path_buf() };
+        let resolver = crate::maven::Resolver::new(&crate::maven::Curl, crate::maven::REPOSITORIES, &caches);
+        let mut missing = Vec::new();
+        for pin in PINNED_ANDROIDX {
+            let node = resolver.node(&pin.coord()).unwrap();
+            assert_eq!(node.coord, pin.coord(), "a pin must name the variant that holds the classes");
+            let bin = node.binary.expect("pinned library publishes a binary");
+            assert_eq!(
+                sha1_smol::Sha1::from(std::fs::read(&bin).unwrap()).digest().to_string(),
+                pin.sha1,
+                "{}",
+                pin.coord()
+            );
+            for dep in node.dependencies {
+                if crate::maven::is_provided(&dep.group, &dep.artifact) {
+                    continue;
+                }
+                match crate::maven::pin_for(PINNED_ANDROIDX, &dep.group, &dep.artifact) {
+                    Some(p) if crate::maven::compare_versions(p.version, &dep.version)
+                        != std::cmp::Ordering::Less => {}
+                    other => missing.push(format!(
+                        "{} needs {}:{}:{} (pinned: {:?})",
+                        pin.coord(), dep.group, dep.artifact, dep.version, other.map(|p| p.coord().to_string())
+                    )),
+                }
+            }
+        }
+        assert!(missing.is_empty(), "the pinned closure is not closed:\n{}", missing.join("\n"));
     }
 }
