@@ -219,6 +219,14 @@ harness = false
 name = "two_axis_scroll"
 harness = false
 
+# Real-AppKit test of the robot screenshot (`src/imp/screenshot.rs`): the PNG
+# is upright — red on top stays on top — for an unflipped host, the flipped
+# `create_host_root` host (layer-backed or not), inside vertical and
+# horizontal scroll views, and for text. Main-thread only, as `focus_attach`.
+[[test]]
+name = "screenshot_orientation"
+harness = false
+
 # Real-AppKit test of `flat_list` with `ItemSize::Measured`: rows report the
 # size they render at (on mount and when their content changes later) and the
 # collection view re-spaces them by it; a Known list never measures, but its

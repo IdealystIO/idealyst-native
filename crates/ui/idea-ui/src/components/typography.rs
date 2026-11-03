@@ -12,13 +12,28 @@
 //!
 //! Color precedence: `tone: Some(...)` wins, then `muted: true`, then
 //! the theme's default text color.
+//!
+//! Text in more than one style that must flow as ONE paragraph — a bold
+//! name followed by a muted employee number, wrapping together — goes in
+//! `spans`, a list of [`TextSpan`]s rendered as a single text node:
+//!
+//! ```ignore
+//! ui! {
+//!     Typography(kind = typography_kind::H5, spans = vec![
+//!         TextSpan::new(name).bold(),
+//!         TextSpan::new(" #1234").muted(),
+//!     ])
+//! }
+//! ```
 
 use runtime_core::{
-    component, component_styles, text, Element, FontFamily, FontWeight, IdealystSchema, IntoElement, Reactive,
-    Role, SlotRestyle, StyleRules, TextAlign,
+    active_theme_untracked, component, component_styles, styled_text, text, Element, FontFamily, FontStyle,
+    FontWeight, IdealystSchema, IntoElement, Length, Reactive, Role, SlotRestyle, StyleRules, TextAlign, TextRun,
+    TextRunStyle, Tokenized,
 };
 
 use idea_theme::extensible::{semantic_tones, tone_arms, ToneRef};
+use idea_theme::{tokens, IdeaTokens};
 
 use crate::theme::IdeaThemeRef;
 
@@ -153,6 +168,164 @@ fn align_value(a: TextAlign) -> TypographyAlign {
     }
 }
 
+/// The font size a [`TypographyKind`] sets — the same token its `kind`
+/// arm in [`TypographyStyles`] uses (pinned by
+/// `span_sizes_match_the_kind_arms`). `None` for an app-defined kind: its
+/// size lives only in the app's restyle arm, so a span sized by it keeps
+/// the paragraph's size.
+fn kind_font_size(t: &IdeaTokens, kind: TypographyKind) -> Option<Tokenized<Length>> {
+    let ty = &t.typography;
+    Some(match kind.key() {
+        "display" => ty.display_size(),
+        "h1" => ty.h1_size(),
+        "h2" => ty.h2_size(),
+        "h3" => ty.h3_size(),
+        "h4" | "body_xl" => ty.body_xl_size(),
+        "h5" | "body_lg" => ty.body_lg_size(),
+        "h6" | "body" => ty.body_size(),
+        "body_sm" => ty.body_sm_size(),
+        "caption" => ty.caption_size(),
+        "overline" => ty.overline_size(),
+        _ => return None,
+    })
+}
+
+/// The family a [`TextSpan::mono`] span renders in: each backend walks the
+/// stack and lands on its platform monospace face (SF Mono on Apple, the
+/// `monospace` family on Android, the first installed match on web).
+pub const MONO_FONT_STACK: &str = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+
+/// One differently-styled run inside a [`Typography`] paragraph — see
+/// [`TypographyProps::spans`]. Every style is a delta over the
+/// paragraph: an unset field inherits the Typography's own `kind`, `tone`
+/// / `muted`, `weight` and font.
+///
+/// ```ignore
+/// vec![TextSpan::new("Jonas Lindqvist").bold(), TextSpan::new(" #1234").muted()]
+/// ```
+///
+/// Color precedence matches `Typography`'s: `tone` wins, then `muted`.
+/// Colors and sizes are theme tokens, so a span follows a theme swap like
+/// the rest of the text. Spans have no padding or corner radius — inline
+/// boxes can't be drawn the same way by every platform's text engine.
+#[derive(Clone, Default)]
+pub struct TextSpan {
+    /// The run's text, spaces included — `" #1234"` keeps its leading
+    /// space.
+    pub text: String,
+    /// Weight over the paragraph's.
+    pub weight: Option<FontWeight>,
+    /// Tone foreground color (the same color `Typography(tone = …)`
+    /// uses). Wins over `muted`.
+    pub tone: Option<ToneRef>,
+    /// The theme's muted text color.
+    pub muted: bool,
+    /// Italic.
+    pub italic: bool,
+    /// Monospace ([`MONO_FONT_STACK`]) — an id, a code.
+    pub mono: bool,
+    /// Font size of another typographic kind (`typography_kind::Caption`
+    /// for a smaller run). Only the size changes; the line height stays
+    /// the paragraph's. An app-defined kind keeps the paragraph's size.
+    pub size: Option<TypographyKind>,
+}
+
+impl TextSpan {
+    /// A span with no style of its own.
+    pub fn new(text: impl Into<String>) -> Self {
+        TextSpan { text: text.into(), ..Default::default() }
+    }
+
+    /// Set the weight.
+    pub fn weight(mut self, weight: FontWeight) -> Self {
+        self.weight = Some(weight);
+        self
+    }
+
+    /// `weight(FontWeight::Bold)`.
+    pub fn bold(self) -> Self {
+        self.weight(FontWeight::Bold)
+    }
+
+    /// Color the span with a tone's foreground.
+    pub fn tone(mut self, tone: impl Into<ToneRef>) -> Self {
+        self.tone = Some(tone.into());
+        self
+    }
+
+    /// Use the theme's muted text color.
+    pub fn muted(mut self) -> Self {
+        self.muted = true;
+        self
+    }
+
+    /// Italic.
+    pub fn italic(mut self) -> Self {
+        self.italic = true;
+        self
+    }
+
+    /// Monospace.
+    pub fn mono(mut self) -> Self {
+        self.mono = true;
+        self
+    }
+
+    /// Take the font size of `kind`.
+    pub fn size(mut self, kind: TypographyKind) -> Self {
+        self.size = Some(kind);
+        self
+    }
+
+    /// The framework run for this span. `theme` is the installed idea
+    /// theme (for `tone`); `None` only when no idea theme is installed,
+    /// where a tone falls back to the paragraph color.
+    fn to_run(&self, t: &IdeaTokens, theme: Option<&idea_theme::IdeaThemeRef>) -> TextRun {
+        let color = match (&self.tone, self.muted) {
+            (Some(tone), _) => theme.map(|th| tone.stroke_fg(th)),
+            (None, true) => Some(t.color.text_muted()),
+            (None, false) => None,
+        };
+        let style = TextRunStyle {
+            font_family: self.mono.then(|| FontFamily::System(MONO_FONT_STACK.into())),
+            font_weight: self.weight,
+            font_style: self.italic.then_some(FontStyle::Italic),
+            font_size: self.size.and_then(|k| kind_font_size(t, k)),
+            color,
+            ..Default::default()
+        };
+        if style.is_empty() {
+            TextRun::plain(self.text.clone())
+        } else {
+            TextRun::styled(self.text.clone(), style)
+        }
+    }
+}
+
+impl From<&str> for TextSpan {
+    fn from(text: &str) -> Self {
+        TextSpan::new(text)
+    }
+}
+
+impl From<String> for TextSpan {
+    fn from(text: String) -> Self {
+        TextSpan::new(text)
+    }
+}
+
+/// Lower spans to framework runs against the installed theme. Read
+/// UNTRACKED: run colors and sizes are token references, so a theme swap
+/// re-resolves them where the text is realized (the `var()` cascade on
+/// web, the theme cohort's re-realization elsewhere) — the run list
+/// itself doesn't change.
+fn spans_to_runs(spans: &[TextSpan]) -> Vec<TextRun> {
+    let t = tokens();
+    let theme = active_theme_untracked();
+    let theme = theme.downcast_ref::<idea_theme::IdeaThemeRef>();
+    spans.iter().map(|s| s.to_run(&t, theme)).collect()
+}
+
 // Reactive-by-default: `#[props]` wraps each data field `T` → `Reactive<T>`.
 // `content` routes to the `text()` sink; the style-driving props (kind/tone/
 // muted/font/align) route to the style sink. A bare value stays a zero-cost
@@ -168,6 +341,15 @@ pub struct TypographyProps {
     /// no parent rebuild. The `ui!`/`jsx!` dispatch coerces all of these
     /// via `.into()`, so call sites are unchanged for the static case.
     pub content: Reactive<String>,
+    /// Text in several styles, flowing as ONE paragraph: each
+    /// [`TextSpan`] carries its own weight / tone / muted / italic /
+    /// mono / size over this Typography's style, and the spans wrap
+    /// together — a muted number follows the last word of a bold name
+    /// onto its line instead of sitting beside a two-line block. When
+    /// non-empty it replaces `content`. A `Signal` / `rx!(…)` re-renders
+    /// the spans in place. `lines` truncates the whole paragraph.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub spans: Reactive<Vec<TextSpan>>,
     /// Typographic role (font size/weight/line-height): `Display`,
     /// `H1`…`H6`, `BodyXl`/`BodyLg`/`Body`/`BodySm`, `Caption`,
     /// `Overline`, or an app-defined [`TypographyKind`]. Default Body. A
@@ -230,6 +412,7 @@ impl Default for TypographyProps {
     fn default() -> Self {
         Self {
             content: Reactive::Static(String::new()),
+            spans: Reactive::Static(Vec::new()),
             kind: Reactive::Static(TypographyKind::default()),
             tone: Reactive::Static(None),
             muted: Reactive::Static(false),
@@ -311,8 +494,14 @@ pub fn Typography(props: &TypographyProps) -> Element {
 
     // Both branches produce the same wrapper type, so the role is folded
     // in after the style split (no `Bound<_>` type annotation — the
-    // builder's own type carries it).
-    let styled = text(content).with_style(style);
+    // builder's own type carries it). Spans and plain content are both a
+    // single text node; spans carry per-range styles.
+    let node = match props.spans.clone() {
+        Reactive::Static(spans) if spans.is_empty() => text(content),
+        Reactive::Static(spans) => styled_text(spans_to_runs(&spans)),
+        Reactive::Dynamic(spans) => styled_text(move || spans_to_runs(&spans())),
+    };
+    let styled = node.with_style(style);
     match role {
         Some(r) => styled.a11y_role(r).into_element(),
         None => styled.into_element(),
@@ -515,6 +704,46 @@ mod tests {
             assert!(both.font_family.is_some());
             let none = resolve(Typography(&TypographyProps::default()));
             assert_eq!(none.max_lines, None);
+        });
+    }
+
+    /// A span's `size(kind)` must set the same font size as that kind's
+    /// arm in the sheet — `kind_font_size` mirrors the arms, so a drift
+    /// between the two would make `TextSpan::size(H4)` disagree with
+    /// `Typography(kind = H4)`.
+    #[test]
+    fn span_sizes_match_the_kind_arms() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let t = tokens();
+            for kind in TypographyKind::BUILTINS.iter().copied() {
+                let sheet = resolve(Typography(&TypographyProps {
+                    kind: Reactive::Static(kind),
+                    ..Default::default()
+                }));
+                let span = kind_font_size(&t, kind);
+                assert_eq!(
+                    span.as_ref().and_then(|s| s.name()),
+                    sheet.font_size.as_ref().and_then(|s| s.name()),
+                    "kind {}",
+                    kind.key()
+                );
+            }
+        });
+    }
+
+    /// `lines` truncates a spans paragraph exactly like plain content: the
+    /// limit rides the node's style, and spans don't change the style.
+    #[test]
+    fn lines_applies_to_a_spans_paragraph() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let r = resolve(Typography(&TypographyProps {
+                spans: Reactive::Static(vec![TextSpan::new("Jonas Lindqvist").bold(), TextSpan::new(" #1234").muted()]),
+                lines: Reactive::Static(Some(1)),
+                ..Default::default()
+            }));
+            assert_eq!(r.max_lines, Some(1));
         });
     }
 

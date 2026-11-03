@@ -278,29 +278,26 @@ fn radio_indicator(
 /// taps first, so a tap on the ring fires exactly once.
 fn radio_row(
     is_selected: impl Fn() -> bool + Clone + 'static,
-    label: Option<(Element, Option<String>)>,
+    label: Option<Element>,
+    a11y_label: Option<String>,
     on_select: Rc<dyn Fn()>,
     disabled: Reactive<bool>,
     test_id: Option<&'static str>,
     values: AxisValues<RadioStyles>,
     styles: RadioSlotStyles,
 ) -> Element {
-    let (label_el, label_text) = match label {
-        Some((el, text)) => (Some(el), text),
-        None => (None, None),
-    };
     let row_disabled = disabled.clone();
     let indicator = radio_indicator(
         is_selected,
         on_select.clone(),
         disabled,
-        label_text,
+        a11y_label,
         test_id,
         values.clone(),
         styles.clone(),
     );
     // No label — the indicator IS the whole control; skip the wrapper row.
-    let Some(label_el) = label_el else { return indicator };
+    let Some(label_el) = label else { return indicator };
 
     // Builder form, not `ui!`: the `ui!` `view` emitter takes only
     // `style`/`test_id`/a11y props and DROPS anything else, so an
@@ -356,6 +353,13 @@ pub struct RadioProps {
     /// Optional robot/E2E test id, forwarded to the ring (the pressable
     /// that owns the press + focus). Inert outside a robot build.
     pub test_id: Option<&'static str>,
+    /// The ring's accessible name — what screen readers announce and what
+    /// the robot finds the ring by — without drawing any text. Defaults to
+    /// `label`. Set it on a label-less radio or when the visible label sits
+    /// OUTSIDE this component. Snapshot at build, like every a11y name
+    /// here. (`RadioGroup` options are always named by their label.)
+    #[prop(static)]
+    pub accessibility_label: Option<String>,
 }
 
 impl Default for RadioProps {
@@ -369,6 +373,7 @@ impl Default for RadioProps {
             size: Reactive::Static(RadioSize::default()),
             disabled: Reactive::Static(false),
             test_id: None,
+            accessibility_label: None,
             styles: Default::default(),
         }
     }
@@ -383,11 +388,13 @@ pub fn Radio(props: &RadioProps) -> Element {
     let styles = props.styles.clone();
     let values = with_tone(RadioStyles::values().set(props.variant.clone()).set(props.size.clone()), &props.tone);
     let label_style = RadioStyles::label().values(&values).overridden(styles.label.as_ref());
-    let label = crate::components::optional_reactive_text(props.label.clone(), label_style)
-        .map(|el| (el, props.label.get()));
+    let label = crate::components::optional_reactive_text(props.label.clone(), label_style);
+    // The ring's name: the override, else the visible label.
+    let a11y_label = props.accessibility_label.clone().or_else(|| props.label.get());
     radio_row(
         move || selected.get(),
         label,
+        a11y_label,
         props.on_select.clone(),
         props.disabled.clone(),
         props.test_id,
@@ -508,7 +515,8 @@ pub fn RadioGroup(props: RadioGroupProps) -> Element {
 
             radio_row(
                 move || value.get() == id,
-                Some((label, Some(a11y_label))),
+                Some(label),
+                Some(a11y_label),
                 on_select,
                 disabled.clone(),
                 test_id,
@@ -542,6 +550,33 @@ mod tests {
             .variant_keys()
             .iter()
             .any(|(axis, _)| axis == "__state_focused")
+    }
+
+    /// A label-less Radio had no accessible name (the Checkbox gap, found
+    /// alongside it): `accessibility_label` names the ring without drawing
+    /// text, and wins over a visible `label`.
+    #[test]
+    fn regression_radio_accessibility_label_names_a_label_less_ring() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let name = |props: &RadioProps| match classify(Radio(props)) {
+                P::Pressable { accessibility, .. } => accessibility.label,
+                P::View { children, .. } => match classify(children.into_iter().next().unwrap()) {
+                    P::Pressable { accessibility, .. } => accessibility.label,
+                    _ => panic!("the ring is the Pressable"),
+                },
+                _ => panic!("a Radio renders its ring or a row around it"),
+            };
+            let named = RadioProps { accessibility_label: Some("Ship by air".into()), ..Default::default() };
+            assert_eq!(name(&named).as_deref(), Some("Ship by air"));
+            let both = RadioProps {
+                label: Reactive::Static(Some("Air".into())),
+                accessibility_label: Some("Ship by air".into()),
+                ..Default::default()
+            };
+            assert_eq!(name(&both).as_deref(), Some("Ship by air"), "the override wins");
+            assert_eq!(name(&RadioProps::default()), None);
+        });
     }
 
     /// Mirror of the Checkbox regression: the focus ring rings the RING,

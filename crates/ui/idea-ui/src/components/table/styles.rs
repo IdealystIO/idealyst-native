@@ -601,8 +601,8 @@ component_styles! {
                 background: t.color.surface_alt(),
             }
             // A row group's band (`TableGroup`): its one spanning cell hands
-            // its horizontal padding to the band's pinned content
-            // (`band_lead` / `band_trail`), so that content rests exactly
+            // its horizontal padding to the band's pinned bar (`band_bar`'s
+            // `band_lead` / `band_trail`), so that content rests exactly
             // where it pins while the columns scroll — padding on the cell
             // would make it jump by the padding as it starts to pin. Sorts
             // after `inset_left` / `inset_right`, so it wins over them.
@@ -792,17 +792,36 @@ component_styles! {
             }
         }
 
-        /// A row group's band (`TableGroup`): its leading content — the
-        /// collapse toggle and the title — pinned to the scroller's left edge
-        /// (past any frozen columns the table added, an inline `left`), so it
-        /// stays in view while a `scroll_x` table's columns scroll beneath it.
-        slot band_lead {
-            base(t) {
+        /// A row group's band (`TableGroup`): the row holding its lead,
+        /// spacer and actions, pinned to the scroller's left edge (past any
+        /// frozen columns the table added, an inline `left`) so it stays in
+        /// view while a `scroll_x` table's columns scroll beneath it. The
+        /// band's cell spans the whole table, wider than the screen, so the
+        /// table caps the bar at the scroller's visible width (an inline
+        /// `max_width`): the actions end at the viewport's right edge and a
+        /// long title truncates before them. The bar grows to its cell
+        /// otherwise, so in a table that fits the actions end at its edge.
+        slot band_bar {
+            base(_t) {
                 position: Position::Sticky,
                 left: 0,
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                min_width: 0.0,
+            }
+        }
+
+        /// The band's leading content — the collapse toggle and the title.
+        /// Shrinks below its content (`min_width: 0`), so a one-line title
+        /// truncates before the actions.
+        slot band_lead {
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
                 gap: t.spacing.sm(),
+                flex_shrink: 1.0,
                 min_width: 0.0,
                 // The cell padding the band's cell hands over (its
                 // `row_kind: band` arm), so the title lines up with the
@@ -831,12 +850,12 @@ component_styles! {
             }
         }
 
-        /// The band's trailing actions (an add button, a menu), pinned to the
-        /// scroller's right edge.
+        /// The band's trailing actions (an add button, a menu), at the end
+        /// of the band bar — the scroller's right edge. Never shrinks: the
+        /// title gives way first.
         slot band_trail {
             base(t) {
-                position: Position::Sticky,
-                right: 0,
+                flex_shrink: 0.0,
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 gap: t.spacing.xs(),
@@ -851,13 +870,16 @@ component_styles! {
             }
         }
 
-        /// The band's title.
+        /// The band's title: one line, truncated when the band is narrower
+        /// than it (`min_width: 0` lets it shrink below its text).
         slot band_title {
             base(t) {
                 font_size: 14.0,
                 font_weight: FontWeight::SemiBold,
                 color: t.color.text(),
                 max_lines: 1u32,
+                flex_shrink: 1.0,
+                min_width: 0.0,
             }
         }
 

@@ -49,9 +49,11 @@ pub struct JsTextBinding {
 ///   `register_reactive_text_binding` on JS-binding backends (one
 ///   per-signal notifier effect, zero per-leaf effects), Bound-shape
 ///   fallback (via `compute_fallback`) elsewhere;
-/// - `Runs` — basic inline-styled runs via `create_styled_text`, created
-///   once (not re-realized on a theme swap — see the crate docs' known
-///   gaps).
+/// - `Runs` — inline-styled runs via `create_styled_text`. A `Const`
+///   list is created once; a `Dyn` list is created at its initial value
+///   and re-realized through `update_styled_text` on every change. Both
+///   re-realize on a theme swap (theme cohort) so per-run token colors
+///   follow the theme on backends whose token updates don't cascade.
 pub enum TextSourceProp {
     Value(Value<String>),
     /// Boxed: the binding spec carries six Vec/Rc columns (~136 bytes),
@@ -59,7 +61,7 @@ pub enum TextSourceProp {
     /// each builder-chain move memcpys it (part of the create-rows
     /// bench residual; see `StyleProp::Sheet`'s note).
     JsBinding(Box<JsTextBinding>),
-    Runs(Vec<TextRun>),
+    Runs(Value<Vec<TextRun>>),
 }
 
 /// The `text` primitive.

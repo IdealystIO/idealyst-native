@@ -56,6 +56,10 @@ pub use navigator::url_sync as nav_url_sync;
 /// outlet, which is what buys real push/pop animation and the
 /// interactive back gesture (see `navigator::native_push`).
 pub use navigator::native_push as nav_native_push;
+/// How far the shown navigator chain resolved toward a link — the robot's
+/// `open_link` completion check (see `navigator::inbound::progress`).
+#[cfg(feature = "robot")]
+pub(crate) use navigator::inbound::progress as nav_link_progress;
 pub use portal::{mount_portal, register_portal};
 pub use presence::{mount_presence, register_presence};
 pub use repeat::{mount_repeat, register_repeat};

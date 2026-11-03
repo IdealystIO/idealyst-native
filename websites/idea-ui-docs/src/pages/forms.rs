@@ -95,6 +95,7 @@ ui! {
                 Prop { name: "size",      ty: "ControlSize",             desc: "Sm / Md / Lg box scale. Default: Md." },
                 Prop { name: "disabled",  ty: "bool",                     desc: "When true, ignores presses (box and label) and dims the box. Takes a Signal/rx! too. Default: false." },
                 Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the box (the pressable), not the label row." },
+                Prop { name: "accessibility_label", ty: "Option<String>", desc: "The box's accessible name (screen readers, robot `label` queries) without drawing text. Defaults to `label`; set it on a label-less box — a table row's tick box: \"Mark Update ADP done\"." },
             ])
         }
     }])
@@ -189,6 +190,7 @@ ui! {
                 Prop { name: "selected",  ty: "Signal<bool>",      desc: "Standalone Radio only: whether this row is selected." },
                 Prop { name: "on_select", ty: "Rc<dyn Fn()>",      desc: "Standalone Radio only: fires when the row is clicked." },
                 Prop { name: "test_id", ty: "Option<&'static str>", desc: "Standalone Radio: robot / E2E id on the ring (the pressable). In a RadioGroup, give each option one with RadioOption::new(id, label).test_id(\"…\")." },
+                Prop { name: "accessibility_label", ty: "Option<String>", desc: "Standalone Radio: the ring's accessible name without drawing text. Defaults to `label`. RadioGroup options are named by their label." },
             ])
         }
     }])
@@ -526,8 +528,12 @@ ui! {
         Section(title = "Adornments".to_string()) {
             P(content = "Drop an `Adornment` into the `leading` or `trailing` slot — \
                 `Adornment::Icon(data)` renders a vector icon (muted, auto-sized to the field), \
-                `Adornment::button(data, on_press)` a tappable icon-sized glyph (a clear button, a \
-                password-visibility toggle), `Adornment::element(|| ui! { … })` any element for \
+                `Adornment::labeled_button(data, \"Show password\", on_press)` a tappable icon-sized \
+                glyph (a clear button, a password-visibility toggle) named for screen readers and \
+                the robot — `Adornment::button(data, on_press)` builds one with no name, which a \
+                screen reader reads as nothing. On a phone (below the `Md` breakpoint) the \
+                button's tap target grows to 44pt square around the glyph without growing the \
+                field. `Adornment::element(|| ui! { … })` any element for \
                 full control, and `Adornment::Group(vec![…])` several of those side by side in one \
                 slot (how `DateInput`'s clear ✕ sits beside its calendar button). Adornments lay \
                 out in a flex row inside the field box, so any width works.".to_string())
@@ -1330,7 +1336,7 @@ ui! {
                 Prop { name: "min / max",        ty: "Option<CivilDate>",                 desc: "Inclusive pickable window. Bare CivilDate values coerce." },
                 Prop { name: "is_date_disabled", ty: "Option<Rc<dyn Fn(CivilDate)->bool>>", desc: "Per-day veto — blocked days dim and take no press." },
                 Prop { name: "first_weekday",    ty: "Weekday",                           desc: "First grid column. Default Monday (ISO)." },
-                Prop { name: "labels",           ty: "Option<Rc<DateLabels>>",            desc: "Month/weekday display names. Default English." },
+                Prop { name: "labels",           ty: "Option<Rc<DateLabels>>",            desc: "Display strings: month/weekday names and the step chevrons' accessible names (\"Previous month\" / \"Next year\" / \"Next 12 years\", following the zoom). Default English." },
                 Prop { name: "framed",           ty: "bool",                              desc: "Draw the panel border. Off inside picker popups." },
             ])
         }
@@ -1523,7 +1529,7 @@ pub fn date_input() -> Element {
                 Prop { name: "error",           ty: "Option<String>",                desc: "Host-side error; a parse error takes precedence while present." },
                 Prop { name: "invalid_message", ty: "String",                        desc: "Error shown while the text doesn't parse. Default \"Invalid date\"." },
                 Prop { name: "picker",          ty: "bool",                          desc: "Show the trailing calendar button + popup. Default true." },
-                Prop { name: "clearable",       ty: "bool",                          desc: "Offer an ✕ left of the calendar button — empties the field, commits None. Default false." },
+                Prop { name: "clearable",       ty: "bool",                          desc: "Offer an ✕ left of the calendar button — empties the field, commits None. Default false. The ✕ and the calendar button are named from `labels` (\"Clear date\", \"Pick a date\") and take a 44pt tap target on phones." },
                 Prop { name: "min / max",       ty: "Option<CivilDate>",             desc: "Popup-only bounds — typed text is shape-validated, not range." },
                 Prop { name: "test_id", ty: "Option<&'static str>", desc: "DateInput / DateTimeInput: robot / E2E id on the text input." },
             ])

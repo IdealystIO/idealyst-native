@@ -114,7 +114,12 @@ builds compile) or `robot_select! { on: { … } off: { … } }` (one set of
 items per build), so a release build carries none of them.
 
 Deep links need no SDK: `open_link {url}` delivers a URL as the OS would,
-to observers, interceptors and then the navigators.
+to observers, interceptors and then the navigators. It opens the whole
+path the way a cold load of that URL does: a nested navigator that mounts
+only later (inside a `#[component(lazy)]` screen, or once its screen's
+data arrives) is moved as soon as it is up, and `App::open_link` waits
+for that — then fails naming the path it reached if a segment matches no
+screen.
 
 ## 3. Write the suite
 
@@ -173,18 +178,34 @@ app busy for long on purpose.
     `blur`, `scroll_to`, `scroll_into_view`;
   - `drag`, `drag_with_hold`, `drag_native`;
   - `tap_native`, `dispatch_click`;
+  - `context_click()` (a right click on web and desktop, a long press on
+    iOS and Android, so it opens a row's context menu the platform's
+    way), `long_press(hold)` (`robot_test::LONG_PRESS` is a safe hold),
+    `secondary_click()` (always the right click);
   - `press_key("Enter")` (focus the element, then press), and
     `app.press_key("ControlOrMeta+K")` to whatever has focus. See below.
-- **Read:** `state()`, `is_visible()`, `label()`, `count()`.
+- **Read:** `state()`, `is_visible()`, `label()`, `count()`, `keyboard()`
+  (a text field's soft-keyboard kind, `"email"`, …), `style()` (the
+  resolved style as a typed `Style`: color, weight, `text_decoration`, …).
 - **Assert:**
   - presence: `assert_visible`, `assert_hidden` (passes when nothing
     matches), `assert_in_viewport`, `assert_count`;
   - content: `assert_text`, `assert_text_contains`, `assert_value`;
   - state: `assert_checked`, `assert_enabled`, `assert_disabled`,
-    `assert_focused`.
+    `assert_focused`, `assert_keyboard("email")`;
+  - style: `assert_style(|s| s.is_line_through())` (waits, like every
+    assertion).
 - **App:**
   - navigation: `navigate` / `navigate_with` / `back`, `assert_path`,
-    `navigators()`, `open_link(url)`;
+    `assert_query(key, value)` (screen state carried in the URL's query,
+    e.g. a filter) / `assert_href(href)`, `navigators()` (with `query` and
+    `href`), `open_link(url)` / `try_open_link(url)`;
+  - booting: `load_url(url)` / `try_load_url(url)` starts the app over
+    at `url` (the page reloads there on web; Android relaunches with the
+    link) and waits for it to answer;
+  - cookies (web): `set_cookie(Cookie::new("device", "k1").http_only())`,
+    `cookies()`, `clear_cookie(name)`, `clear_cookies()`. A cookie set
+    before `load_url` reaches the server on the boot request;
   - functions: `call_function(name, args)`, `try_call_function`,
     `functions()`;
   - components: `component(name).invoke(method, args)` / `.prop(name)`;
@@ -325,8 +346,14 @@ and nothing moves when it is already in view. `click()` and `tap_native()`
 do it before tapping an element outside the window, and again when the tap
 lands on a neighbour because the element's scroll view clips it — a phone's
 tab strip with its last tabs off to the right needs no manual scrolling.
-`.no_scroll()` on the locator, or `app.set_auto_scroll(false)`, taps where
-the element is; `scroll_into_view()` scrolls without tapping. Only mounted
+`long_press`, `context_click`, `press_native`, `hover_native` and
+`drag_native` scroll the same way first. `.no_scroll()` on the locator, or
+`app.set_auto_scroll(false)`, acts where the element is;
+`scroll_into_view()` scrolls without tapping. On the web the page itself
+scrolls too, when the app's root is taller than the window and no
+`scroll_view` holds it; a native window doesn't scroll, so a screen taller
+than a phone's window needs a `scroll_view` for what is below the fold to
+be reachable — by a user or a test. Only mounted
 elements can be reached: a virtualized list's off-screen rows don't exist
 yet, so scroll the list itself (an app `#[method]` or robot function over
 its `scroll_to_index`).
@@ -339,6 +366,13 @@ its `scroll_to_index`).
 | Windows | Window messages posted to the child window a real click lands on |
 | iOS | `hit_test`: UIKit's hit test checks the point, then the press runs |
 | Linux | `unsupported`, so `click()` falls back |
+
+A context menu is a right click with a mouse and a long press with a
+finger. Write the row's `on_touch` to take both (a press whose
+`pointer_button().opens_context_menu()` opens the menu, any other press
+goes to a `long_press` recognizer) and test it with `context_click()`. On
+iOS and Linux, which can't inject input, the robot holds the press (and
+sends the right click) through the framework's own touch handlers.
 
 A native tap refuses the way a finger would fail, with a retryable error:
 - the element is not visible;

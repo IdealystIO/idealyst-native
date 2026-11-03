@@ -2638,11 +2638,18 @@ impl AndroidBackend {
     }
 
     pub(crate) fn update_styled_text_impl(&mut self, node: &GlobalRef, runs: &[runtime_shared::TextRun]) {
-        // Theme-cohort re-realization: rebuild the SpannableString so
-        // run token colors resolve against the new theme. No paragraph
-        // state to merge — unspanned ranges take the TextView's own
+        // A reactive run list's change, or the theme-cohort
+        // re-realization: rebuild the SpannableString so run token
+        // colors resolve against the current theme. No paragraph state
+        // to merge — unspanned ranges take the TextView's own
         // properties, which `apply_style` keeps current independently.
         primitives::text::set_styled(node, runs);
+        // New runs can wrap to a different height: the TextView's Taffy
+        // measure_fn re-runs only for a dirty node — same reason as
+        // `update_text_impl`.
+        let layout = self.layout_for_view(node);
+        self.layout.mark_dirty(layout);
+        crate::imp::scheduler::schedule_layout_pass_retry(0);
     }
 
     pub(crate) fn create_button_impl(&mut self, label: &str, on_click: &runtime_shared::Action, _leading_icon: Option<&runtime_shared::IconData>, _trailing_icon: Option<&runtime_shared::IconData>, a11y: &runtime_shared::accessibility::AccessibilityProps) -> GlobalRef {

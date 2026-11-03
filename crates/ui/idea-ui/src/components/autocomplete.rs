@@ -150,6 +150,12 @@ use crate::components::select::{
 // by `field::adornment_icon_px_for` (14 / 16 / 18) — pixel constants, which
 // is why these are too (stylesheets also can't add two tokens).
 
+/// The trailing ✕'s accessible name.
+pub const AUTOCOMPLETE_CLEAR_LABEL: &str = "Clear";
+/// The disclosure chevron's accessible name (it opens and closes the
+/// options menu).
+pub const AUTOCOMPLETE_TOGGLE_LABEL: &str = "Show options";
+
 /// Chevron-only right reserve at `sm`: 8 + 14 + 4.
 pub const AUTOCOMPLETE_PAD_SM_PX: f32 = 26.0;
 /// Chevron-only right reserve at `md`: 8 + 16 + 4.
@@ -620,7 +626,7 @@ fn clear_button(clear: Rc<dyn Fn()>, size: SelectSize, styles: &AutocompleteSlot
     let glyph = ui! { Icon(data = CLEAR_GLYPH, size = px, color = Some(muted)) };
     pressable(vec![glyph], move || (clear)())
         .preserves_focus(true)
-        .a11y_label("Clear")
+        .a11y_label(AUTOCOMPLETE_CLEAR_LABEL)
         .with_style(AutocompleteStyles::clear().overridden(styles.clear.as_ref()))
         .into_element()
 }
@@ -921,6 +927,8 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         }
     })
     .preserves_focus(true)
+    // Glyph-only, so named like the ✕ beside it.
+    .a11y_label(AUTOCOMPLETE_TOGGLE_LABEL)
     .with_style(AutocompleteStyles::chevron().overridden(styles.chevron.as_ref()))
     .into_element();
 

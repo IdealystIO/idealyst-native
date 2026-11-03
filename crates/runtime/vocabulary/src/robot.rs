@@ -86,7 +86,9 @@ use std::rc::Rc;
 
 use runtime_shared::primitives::portal::ViewportRect;
 
-use crate::caps::{ContentClip, IntrospectionOps, NativeInjection, PointerStep, PointerStepPhase};
+use crate::caps::{
+    ContentClip, IntrospectionOps, NativeInjection, PointerStep, PointerStepPhase, ResolvedStyle, ScrollPort, ScrollTarget,
+};
 
 mod key;
 pub use key::KeyMechanism;
@@ -177,6 +179,27 @@ pub struct ElementState {
     /// Whether the element is being pressed, as its style sees it (the
     /// `state pressed` variant).
     pub pressed: Option<bool>,
+    /// A text field's soft-keyboard kind, as the author set it
+    /// (`keyboard = KeyboardKind::…`; `Default` when unset).
+    pub keyboard: Option<runtime_shared::primitives::text_input::KeyboardKind>,
+    /// The keyboard kind the native widget holds, read back from it
+    /// ([`IntrospectionOps::keyboard_kind`]): what a user's soft keyboard
+    /// shows. `None` where the platform has no soft keyboard.
+    pub native_keyboard: Option<runtime_shared::primitives::text_input::KeyboardKind>,
+}
+
+/// The robot's name for a keyboard kind (`"email"`, `"phone"`, …), as
+/// `state.keyboard` reports it.
+pub fn keyboard_name(kind: runtime_shared::primitives::text_input::KeyboardKind) -> &'static str {
+    use runtime_shared::primitives::text_input::KeyboardKind as K;
+    match kind {
+        K::Default => "default",
+        K::Email => "email",
+        K::Phone => "phone",
+        K::Number => "number",
+        K::Decimal => "decimal",
+        K::Url => "url",
+    }
 }
 
 /// Whether an element can be seen: the toolkit shows it
@@ -313,6 +336,11 @@ impl ElementState {
         if let Some((x, y)) = self.scroll {
             map.insert("scroll".into(), serde_json::json!({ "x": x, "y": y }));
         }
+        for (key, kind) in [("keyboard", self.keyboard), ("native_keyboard", self.native_keyboard)] {
+            if let Some(kind) = kind {
+                map.insert(key.into(), serde_json::Value::String(keyboard_name(kind).into()));
+            }
+        }
         serde_json::Value::Object(map).to_string()
     }
 
@@ -384,6 +412,22 @@ pub(crate) struct ElementActions {
     /// A text field's key handling, for [`Robot::press_key`]'s dispatch
     /// fallback ([`KeyTarget`]).
     pub keys: Option<KeyTarget>,
+    /// The element's own scroller, or (`ScrollTarget::Host`) the one above
+    /// the app's tree ([`IntrospectionOps::scroll_port`]); see
+    /// [`Robot::scroll_into_view`].
+    pub scroll_port: Option<Rc<dyn Fn(ScrollTarget) -> Option<ScrollPort>>>,
+    /// Move that scroller ([`IntrospectionOps::set_scroll_offset`]), built
+    /// under the backend borrow and run after it is released.
+    pub set_scroll_port: Option<Rc<dyn Fn(ScrollTarget, f32, f32) -> Option<NativeInjection>>>,
+    /// A text field's native keyboard kind ([`IntrospectionOps::keyboard_kind`]).
+    pub native_keyboard: Option<Rc<dyn Fn() -> Option<runtime_shared::primitives::text_input::KeyboardKind>>>,
+    /// The toolkit's resolved style ([`IntrospectionOps::computed_style`]).
+    pub computed_style: Option<Rc<dyn Fn() -> Option<ResolvedStyle>>>,
+    /// The rules the framework last resolved and handed the backend for
+    /// this element (`style_attach::style_mirror`), linked by
+    /// [`link_interaction`]; [`Robot::style`] reports them where the
+    /// toolkit has no resolved style of its own to read.
+    pub style_rules: Option<crate::style_attach::style_mirror::Cell>,
 }
 
 /// The handler-supplied half of [`ElementActions`] — what the mount
@@ -829,6 +873,29 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
     };
     let native_key = key::native_key_closure(backend, node);
     let move_focus = key::move_focus_closure(backend, node);
+    let scroll_port = {
+        let b = backend.clone();
+        let n = node.clone();
+        Rc::new(move |t: ScrollTarget| b.borrow().scroll_port(&n, t)) as Rc<dyn Fn(ScrollTarget) -> Option<ScrollPort>>
+    };
+    let set_scroll_port = {
+        let b = backend.clone();
+        let n = node.clone();
+        // The borrow ends with this expression: the injection runs later.
+        Rc::new(move |t: ScrollTarget, x: f32, y: f32| b.borrow().set_scroll_offset(&n, t, x, y))
+            as Rc<dyn Fn(ScrollTarget, f32, f32) -> Option<NativeInjection>>
+    };
+    let native_keyboard = (kind == ElementKind::TextInput).then(|| {
+        let b = backend.clone();
+        let n = node.clone();
+        Rc::new(move || b.borrow().keyboard_kind(&n))
+            as Rc<dyn Fn() -> Option<runtime_shared::primitives::text_input::KeyboardKind>>
+    });
+    let computed_style = {
+        let b = backend.clone();
+        let n = node.clone();
+        Rc::new(move || b.borrow().computed_style(&n)) as Rc<dyn Fn() -> Option<ResolvedStyle>>
+    };
     backend.borrow().note_introspection_root(node);
     ensure_region_hook();
 
@@ -878,6 +945,11 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
                 native_key: Some(native_key),
                 move_focus: Some(move_focus),
                 keys,
+                scroll_port: Some(scroll_port),
+                set_scroll_port: Some(set_scroll_port),
+                native_keyboard,
+                computed_style: Some(computed_style),
+                style_rules: None,
             },
             parent,
             children: Vec::new(),
@@ -925,16 +997,23 @@ pub(crate) fn attach_touch_action(prim: &RegisteredPrim, handler: runtime_shared
 
 /// Link the interaction cell the handler's own `attach_style` just made (if
 /// it made one: an event-driven backend and a sheet with state variants) to
-/// the element. Call right after that `attach_style`, inside the same
-/// branch, so no other node's cell can be picked up.
+/// the element, and the style mirror the robot's `get_style` reads
+/// (`style_attach::style_mirror`). Call right after that `attach_style`,
+/// inside the same branch, so no other node's cells can be picked up.
 pub(crate) fn link_interaction(prim: &RegisteredPrim) {
-    let Some(cell) = crate::style_attach::interaction_mirror::take() else { return };
-    if !prim.live {
+    let cell = crate::style_attach::interaction_mirror::take();
+    let rules = crate::style_attach::style_mirror::take();
+    if !prim.live || (cell.is_none() && rules.is_none()) {
         return;
     }
     REGISTRY.with(|r| {
         if let Some(Some(entry)) = r.borrow_mut().entries.get_mut(prim.id.0 as usize) {
-            entry.actions.interaction = Some(cell);
+            if cell.is_some() {
+                entry.actions.interaction = cell;
+            }
+            if rules.is_some() {
+                entry.actions.style_rules = rules;
+            }
         }
     });
 }
@@ -955,6 +1034,10 @@ pub struct NavId(pub u32);
 pub struct NavSnapshotData {
     pub active_route: String,
     pub active_path: String,
+    /// The active screen's query (its `ScreenState`). Rides beside the
+    /// path, never inside it: `active_path` stays path-only, as everywhere
+    /// in the navigator substrate.
+    pub query: runtime_shared::primitives::navigator::QueryParams,
     pub depth: usize,
     pub can_go_back: bool,
     pub base: String,
@@ -974,6 +1057,8 @@ pub struct NavSnapshot {
     pub type_name: &'static str,
     pub active_route: String,
     pub active_path: String,
+    /// The active screen's query — see [`NavSnapshotData::query`].
+    pub query: runtime_shared::primitives::navigator::QueryParams,
     pub depth: usize,
     pub can_go_back: bool,
     /// `true` for the most-recently-dispatched-against navigator.
@@ -1159,6 +1244,7 @@ pub fn all_navigators() -> Vec<NavSnapshot> {
                 type_name,
                 active_route: data.active_route,
                 active_path: data.active_path,
+                query: data.query,
                 depth: data.depth,
                 can_go_back: data.can_go_back,
                 is_current,
@@ -1363,13 +1449,128 @@ fn refuse_if_disabled(actions: &ElementActions, action: &'static str) -> Result<
     }
 }
 
-/// A scroll view [`Robot::scroll_into_view`] moved, and the offset it
-/// moved it to (logical px).
+/// A scroller [`Robot::scroll_into_view`] moved, and the offset it moved it
+/// to (logical px).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScrollMove {
+    /// The scroller's element — with [`page`](Self::page), the app's root
+    /// element, whose host scroller moved.
     pub scroll_view: ElementId,
+    /// The scroller above the app's tree moved (the web page,
+    /// [`ScrollTarget::Host`]), not the element's own.
+    pub page: bool,
     pub x: f32,
     pub y: f32,
+}
+
+/// Where [`Robot::style`] read the style from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StyleSource {
+    /// The toolkit's resolved style ([`IntrospectionOps::computed_style`]).
+    Native,
+    /// The rules the framework resolved and handed the backend.
+    Framework,
+}
+
+impl StyleSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StyleSource::Native => "native",
+            StyleSource::Framework => "framework",
+        }
+    }
+}
+
+/// The CSS weight of a [`runtime_shared::FontWeight`].
+fn css_weight(w: runtime_shared::FontWeight) -> u16 {
+    use runtime_shared::FontWeight as W;
+    match w {
+        W::Thin => 100,
+        W::ExtraLight => 200,
+        W::Light => 300,
+        W::Normal => 400,
+        W::Medium => 500,
+        W::SemiBold => 600,
+        W::Bold => 700,
+        W::ExtraBold => 800,
+        W::Black => 900,
+    }
+}
+
+/// A framework-resolved style as the robot reports it: tokens resolved
+/// against the active theme, colors as sRGB floats, lengths in px (a
+/// percent or `auto` length has no px value and is left out).
+pub fn resolved_from_rules(r: &runtime_shared::StyleRules) -> ResolvedStyle {
+    use runtime_shared::{Length, TextAlign};
+    let color = |c: &Option<runtime_shared::Tokenized<runtime_shared::Color>>| {
+        c.as_ref().and_then(|c| runtime_shared::color::parse(&c.resolve().0).ok()).map(|c| c.to_srgb_f32())
+    };
+    let px = |l: &Option<runtime_shared::Tokenized<Length>>| match l.as_ref().map(|l| l.resolve()) {
+        Some(Length::Px(v)) => Some(v),
+        _ => None,
+    };
+    ResolvedStyle {
+        color: color(&r.color),
+        background: color(&r.background),
+        opacity: r.opacity.as_ref().map(|o| o.resolve()),
+        font_size: px(&r.font_size),
+        font_weight: r.font_weight.map(css_weight),
+        italic: r.font_style.map(|s| s == runtime_shared::FontStyle::Italic),
+        font_family: r.font_family.as_ref().map(|f| match f {
+            runtime_shared::FontFamily::System(name) => name.clone(),
+            runtime_shared::FontFamily::Typeface(t) => t.family_name.to_string(),
+        }),
+        underline: r.underline,
+        line_through: r.strikethrough,
+        text_align: r.text_align.map(|a| {
+            match a {
+                TextAlign::Left => "left",
+                TextAlign::Right => "right",
+                TextAlign::Center => "center",
+                TextAlign::Justify => "justify",
+            }
+            .to_string()
+        }),
+        border_width: r.border_top_width.as_ref().map(|w| w.resolve()),
+        border_color: color(&r.border_top_color),
+        corner_radius: px(&r.border_top_left_radius),
+    }
+}
+
+/// `get_style`'s JSON: `{"source": …, "style": {…}}`, absent fields
+/// omitted; colors `[r, g, b, a]` in `0..=1`; `text_decoration` is
+/// `"none"`, `"underline"`, `"line-through"` or `"underline line-through"`
+/// when either line is known.
+pub fn style_json(source: StyleSource, s: &ResolvedStyle) -> String {
+    use runtime_shared::__serde_json as serde_json;
+    let mut m = serde_json::Map::new();
+    let mut put = |k: &str, v: Option<serde_json::Value>| {
+        if let Some(v) = v {
+            m.insert(k.into(), v);
+        }
+    };
+    put("color", s.color.map(|c| serde_json::json!(c)));
+    put("background", s.background.map(|c| serde_json::json!(c)));
+    put("opacity", s.opacity.map(|v| serde_json::json!(v)));
+    put("font_size", s.font_size.map(|v| serde_json::json!(v)));
+    put("font_weight", s.font_weight.map(|v| serde_json::json!(v)));
+    put("font_style", s.italic.map(|i| serde_json::json!(if i { "italic" } else { "normal" })));
+    put("font_family", s.font_family.clone().map(serde_json::Value::String));
+    let decoration = match (s.underline, s.line_through) {
+        (None, None) => None,
+        (u, l) => Some(match (u == Some(true), l == Some(true)) {
+            (false, false) => "none",
+            (true, false) => "underline",
+            (false, true) => "line-through",
+            (true, true) => "underline line-through",
+        }),
+    };
+    put("text_decoration", decoration.map(|d| serde_json::json!(d)));
+    put("text_align", s.text_align.clone().map(serde_json::Value::String));
+    put("border_width", s.border_width.map(|v| serde_json::json!(v)));
+    put("border_color", s.border_color.map(|c| serde_json::json!(c)));
+    put("corner_radius", s.corner_radius.map(|v| serde_json::json!(v)));
+    serde_json::json!({ "source": source.as_str(), "style": serde_json::Value::Object(m) }).to_string()
 }
 
 /// The least scroll along one axis that brings `[start, start + len)`
@@ -1524,8 +1725,11 @@ fn visibility_and_frame(id: ElementId) -> Option<(Visibility, Option<ViewportRec
 
 /// The registered state of element `id`, if it has any.
 fn state_of(id: ElementId) -> Option<ElementState> {
-    let (f, interaction) = REGISTRY.with(|r| {
-        r.borrow().get(id).map(|e| (e.actions.state.clone(), e.actions.interaction.clone())).unwrap_or_default()
+    let (f, interaction, native_keyboard) = REGISTRY.with(|r| {
+        r.borrow()
+            .get(id)
+            .map(|e| (e.actions.state.clone(), e.actions.interaction.clone(), e.actions.native_keyboard.clone()))
+            .unwrap_or_default()
     });
     let mut state = match (f, &interaction) {
         (Some(f), _) => f(),
@@ -1536,6 +1740,11 @@ fn state_of(id: ElementId) -> Option<ElementState> {
         let bits = cell.get();
         state.hovered = Some(bits.contains(runtime_shared::StateBits::HOVERED));
         state.pressed = Some(bits.contains(runtime_shared::StateBits::PRESSED));
+    }
+    // Only a field that takes a keyboard kind (a `text_input`, not a
+    // `text_area`) reports the native one.
+    if state.keyboard.is_some() {
+        state.native_keyboard = native_keyboard.and_then(|f| f());
     }
     Some(state)
 }
@@ -1832,33 +2041,131 @@ impl Robot {
 
     /// Press the primary button (or a finger) down on `element`'s center
     /// with real platform input, and keep it down: what lights the
-    /// `state pressed` style. [`release_native`](Self::release_native)
-    /// lifts it. Split in two so a test can check the pressed state in
-    /// between; a backend that posts its events (macOS) delivers them on
-    /// the next run-loop turn, so poll for the state. Checked as
-    /// [`tap_native`](Self::tap_native) checks its point.
-    pub fn press_native(&self, element: &Element) -> Result<(), RobotError> {
+    /// `state pressed` style, and — held — what a long press is
+    /// ([`release_native`](Self::release_native) lifts it, after as much
+    /// real time as the test waits). Split in two so a test can check the
+    /// pressed state in between; a backend that posts its events (macOS)
+    /// delivers them on the next run-loop turn, so poll for the state.
+    /// Checked as [`tap_native`](Self::tap_native) checks its point.
+    ///
+    /// A backend with a hit test but no input injection (iOS) presses
+    /// through the hit test, as `tap_native` taps: on the deepest element
+    /// under the point, a `Began` into its touch handlers — the path the
+    /// framework's long-press recognizer and the dnd SDK's hold pickup
+    /// arm their timers on — held until the release delivers `Ended`; a
+    /// pressable there runs its press on the release.
+    pub fn press_native(&self, element: &Element) -> Result<TapMechanism, RobotError> {
         const ACTION: &str = "press_native";
         let (x, y) = self.native_point(element.id, None, ACTION)?;
-        self.check_hit(element.id, x, y, ACTION)?;
+        let hit = self.check_hit(element.id, x, y, ACTION)?;
         if self.inject(element.id, &[PointerStep { phase: PointerStepPhase::Down, x, y }])? {
-            Ok(())
-        } else {
-            Err(RobotError::Unsupported(ACTION))
+            return Ok(TapMechanism::Native);
         }
+        if hit != Some(true) {
+            return Err(RobotError::Unsupported(ACTION));
+        }
+        let target = deepest_hit_in(element.id, x, y);
+        let point = TouchPoint::new(x, y);
+        let mut held = HeldPress::Nothing;
+        for (id, actions) in self.press_chain(target)? {
+            if actions.click.is_some() {
+                refuse_if_disabled(&actions, ACTION)?;
+                held = HeldPress::Click(id);
+                break;
+            }
+            let Some(handler) = actions.touch else { continue };
+            let mut stream = SyntheticTouch::new(handler, self.window_origin(id));
+            if stream.deliver(TouchPhase::Began, point) {
+                held = HeldPress::Stream(stream);
+                break;
+            }
+        }
+        // A press still held from before is abandoned: its stream ends here
+        // rather than leaving a handler waiting for an `Ended` forever.
+        let previous = HELD_PRESS.with(|h| h.replace(held));
+        if let HeldPress::Stream(mut stream) = previous {
+            stream.catch_up();
+            stream.deliver(TouchPhase::Cancelled, point);
+        }
+        Ok(TapMechanism::HitTest)
     }
 
     /// Lift the press [`press_native`](Self::press_native) started, at
     /// `element`'s center. Not hit-checked: the release goes wherever the
-    /// pointer is, as a real one does.
-    pub fn release_native(&self, element: &Element) -> Result<(), RobotError> {
+    /// pointer is, as a real one does. Through the hit-test tier, the held
+    /// stream gets its `Ended` stamped with the real time that passed since
+    /// the press, so duration-reading recognizers see the hold.
+    pub fn release_native(&self, element: &Element) -> Result<TapMechanism, RobotError> {
         const ACTION: &str = "release_native";
         let (x, y) = self.native_point(element.id, None, ACTION)?;
         if self.inject(element.id, &[PointerStep { phase: PointerStepPhase::Up, x, y }])? {
-            Ok(())
-        } else {
-            Err(RobotError::Unsupported(ACTION))
+            return Ok(TapMechanism::Native);
         }
+        match HELD_PRESS.with(|h| h.replace(HeldPress::Nothing)) {
+            HeldPress::Stream(mut stream) => {
+                stream.catch_up();
+                stream.deliver(TouchPhase::Ended, TouchPoint::new(x, y));
+                Ok(TapMechanism::HitTest)
+            }
+            HeldPress::Click(id) => {
+                let target = REGISTRY
+                    .with(|r| r.borrow().get(id).map(|e| Element::from_registry(id, e)))
+                    .ok_or(RobotError::ElementGone)?;
+                self.click(&target)?;
+                Ok(TapMechanism::HitTest)
+            }
+            HeldPress::Nothing => {
+                let hit = REGISTRY.with(|r| r.borrow().get(element.id).and_then(|e| e.actions.hit.clone()));
+                match hit.and_then(|h| h(x, y)) {
+                    Some(_) => Ok(TapMechanism::HitTest),
+                    None => Err(RobotError::Unsupported(ACTION)),
+                }
+            }
+        }
+    }
+
+    /// Click the secondary (right) mouse button on `element`'s center
+    /// with real platform input — a context click, what opens a
+    /// right-click menu. It reaches touch handlers as a
+    /// `PointerButton::Secondary` `Began` (Began-only, the secondary-press
+    /// contract), through the toolkit's own event path: on web the page's
+    /// `pointerdown` / `mousedown` / `contextmenu` with `button: 2`.
+    /// Checked as [`tap_native`](Self::tap_native) checks its point.
+    ///
+    /// A backend whose injection has no secondary button (a touch
+    /// platform) or no injection at all, but a hit test, delivers the
+    /// secondary `Began` through the hit test: into the touch handlers of
+    /// the deepest element under the point, bubbling to an ancestor that
+    /// ignores it, stopping at a pressable — which swallows a secondary
+    /// press as it does on every backend. On a phone the platform's own
+    /// context gesture is a long press: hold [`press_native`](Self::press_native)
+    /// for it instead.
+    pub fn context_click_native(&self, element: &Element) -> Result<TapMechanism, RobotError> {
+        const ACTION: &str = "context_click";
+        let (x, y) = self.native_point(element.id, None, ACTION)?;
+        let hit = self.check_hit(element.id, x, y, ACTION)?;
+        if self.inject(element.id, &[PointerStep { phase: PointerStepPhase::SecondaryClick, x, y }])? {
+            return Ok(TapMechanism::Native);
+        }
+        if hit != Some(true) {
+            return Err(RobotError::Unsupported(ACTION));
+        }
+        let target = deepest_hit_in(element.id, x, y);
+        let point = TouchPoint::new(x, y);
+        for (id, actions) in self.press_chain(target)? {
+            let Some(handler) = actions.touch else {
+                if actions.click.is_some() {
+                    break;
+                }
+                continue;
+            };
+            let mut stream = SyntheticTouch::new(handler, self.window_origin(id));
+            stream.button = runtime_shared::PointerButton::Secondary;
+            if stream.deliver(TouchPhase::Began, point) {
+                break;
+            }
+        }
+        Ok(TapMechanism::HitTest)
     }
 
     /// Drag with real platform input along `points` — relative to
@@ -2140,48 +2447,79 @@ impl Robot {
     }
 
     /// Scroll `element` into view, as Playwright's `scrollIntoViewIfNeeded`
-    /// does: each scroll view it sits in, innermost first, moves the least
-    /// that shows the whole element inside that scroll view — and inside
-    /// the window, for the outermost one. An element larger than a scroll
-    /// view is aligned to its top/left. A scroll view moves only along the
-    /// axes it scrolls. Already visible: nothing moves. Returns the scroll
-    /// views it moved, with their new offsets.
+    /// does: each scroller it sits in, innermost first, moves the least
+    /// that shows the whole element inside that scroller — and inside the
+    /// window, for the outermost one. An element larger than a scroller is
+    /// aligned to its top/left. A scroller moves only along the axes it
+    /// scrolls, and never past its range. Already visible: nothing moves.
+    /// Returns the scrollers it moved, with their new offsets.
+    ///
+    /// The scrollers are every registered ancestor the toolkit scrolls —
+    /// a `scroll_view`, and any other element whose native object scrolls
+    /// ([`IntrospectionOps::scroll_port`]: a list's own scroller, a web
+    /// element whose CSS `overflow` scrolls) — then the scroller above the
+    /// app's tree, where there is one ([`ScrollTarget::Host`]: the web page,
+    /// whose document scrolls when the app's root outgrows the window). A
+    /// `scroll_view` moves through its own `set_scroll` route, any other
+    /// through [`IntrospectionOps::set_scroll_offset`].
     ///
     /// Works the same on every backend because it reads only what each
-    /// already reports — the element's and its scroll views' window frames
-    /// ([`IntrospectionOps::absolute_frame`]) and the scrollers' offsets —
-    /// and moves them through the robot's own `set_scroll` route. The
-    /// shifts are computed from ONE read of the frames, predicting that
-    /// scrolling a view by `d` moves everything inside it by `-d`, rather
-    /// than re-reading frames between scrolls: a backend may settle a
-    /// scroll's frames after the call returns (a deferred layout pass), and
-    /// a re-read there would see the old frames and scroll again.
+    /// reports — window frames ([`IntrospectionOps::absolute_frame`]) and
+    /// the scrollers' offsets and ranges. The shifts are computed from ONE
+    /// read of the frames, predicting that scrolling a view by `d` moves
+    /// everything inside it by `-d`, rather than re-reading frames between
+    /// scrolls: a backend may settle a scroll's frames after the call
+    /// returns (a deferred layout pass), and a re-read there would see the
+    /// old frames and scroll again.
     ///
     /// Only what is mounted can be scrolled to: a virtualized list's rows
-    /// beyond its window aren't elements yet, and the virtualizer's own
-    /// scroller is not a registered scroll view.
+    /// beyond its window aren't elements yet.
     pub fn scroll_into_view(&self, element: &Element) -> Result<Vec<ScrollMove>, RobotError> {
         const ACTION: &str = "scroll_into_view";
-        type Scroller = (
-            ElementId,
-            Rc<dyn Fn(f32, f32)>,
-            Option<runtime_shared::primitives::scroll_view::ScrollAxis>,
-            Option<Rc<dyn Fn() -> Option<ViewportRect>>>,
-        );
+        type PortFn = Rc<dyn Fn(ScrollTarget) -> Option<ScrollPort>>;
+        type SetPortFn = Rc<dyn Fn(ScrollTarget, f32, f32) -> Option<NativeInjection>>;
+        /// A registered ancestor (or, `page`, the root's host scroller)
+        /// that may scroll, with its closures cloned out of the registry.
+        struct Candidate {
+            id: ElementId,
+            page: bool,
+            set_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+            axis: Option<runtime_shared::primitives::scroll_view::ScrollAxis>,
+            frame: Option<Rc<dyn Fn() -> Option<ViewportRect>>>,
+            port: Option<PortFn>,
+            set_port: Option<SetPortFn>,
+        }
         // Closures cloned out under one borrow; none runs with it held.
-        let (frame, scrollers) = REGISTRY.with(|r| {
+        let (frame, candidates) = REGISTRY.with(|r| {
             let reg = r.borrow();
             let entry = reg.get(element.id).ok_or(RobotError::ElementGone)?;
-            let mut scrollers: Vec<Scroller> = Vec::new();
+            let mut out: Vec<Candidate> = Vec::new();
+            let mut root = (element.id, entry);
             let mut cur = entry.parent;
             while let Some(pid) = cur {
                 let Some(p) = reg.get(pid) else { break };
-                if let Some(set) = p.actions.set_scroll.clone() {
-                    scrollers.push((pid, set, p.actions.scroll_axis, p.actions.absolute_frame.clone()));
-                }
+                out.push(Candidate {
+                    id: pid,
+                    page: false,
+                    set_scroll: p.actions.set_scroll.clone(),
+                    axis: p.actions.scroll_axis,
+                    frame: p.actions.absolute_frame.clone(),
+                    port: p.actions.scroll_port.clone(),
+                    set_port: p.actions.set_scroll_port.clone(),
+                });
+                root = (pid, p);
                 cur = p.parent;
             }
-            Ok::<_, RobotError>((entry.actions.absolute_frame.clone(), scrollers))
+            out.push(Candidate {
+                id: root.0,
+                page: true,
+                set_scroll: None,
+                axis: None,
+                frame: None,
+                port: root.1.actions.scroll_port.clone(),
+                set_port: root.1.actions.set_scroll_port.clone(),
+            });
+            Ok::<_, RobotError>((entry.actions.absolute_frame.clone(), out))
         })?;
         // No laid-out box (not laid out yet, or a backend that doesn't
         // report one): nothing to scroll to.
@@ -2189,34 +2527,86 @@ impl Robot {
         let window = runtime_shared::viewport::viewport_size().get();
         let window = (window.width > 0.0 && window.height > 0.0)
             .then_some(ViewportRect { x: 0.0, y: 0.0, width: window.width, height: window.height });
+
+        /// A candidate that scrolls, read once.
+        struct Live {
+            candidate: Candidate,
+            port: ViewportRect,
+            offset: (f32, f32),
+            /// Per axis: `Some(max)` when the toolkit reports the range,
+            /// `None` when only the declared axis is known (no clamp at
+            /// the far end — the toolkit clamps).
+            range: (Option<f32>, Option<f32>),
+        }
+        let mut scrollers: Vec<Live> = Vec::new();
+        for c in candidates {
+            let which = if c.page { ScrollTarget::Host } else { ScrollTarget::Node };
+            let live = c.port.as_ref().and_then(|f| f(which));
+            let (port, offset, range) = match live {
+                Some(l) => {
+                    let Some(port) = l.port.or_else(|| c.frame.as_ref().and_then(|f| f())) else { continue };
+                    // An axis with no range doesn't scroll: a `scroll_view`
+                    // that grew to its content, or the cross axis.
+                    let declared = c.axis.unwrap_or_default();
+                    let x = (l.max_x > 0.0 && (c.axis.is_none() || declared.scrolls_x())).then_some(l.max_x);
+                    let y = (l.max_y > 0.0 && (c.axis.is_none() || declared.scrolls_y())).then_some(l.max_y);
+                    if x.is_none() && y.is_none() {
+                        continue;
+                    }
+                    (port, (l.x, l.y), (x.or(Some(0.0)), y.or(Some(0.0))))
+                }
+                // A `scroll_view` on a backend that reports no scroll port:
+                // its declared axes, its own box, its registered offset.
+                None if c.set_scroll.is_some() => {
+                    let Some(port) = c.frame.as_ref().and_then(|f| f()) else { continue };
+                    let axis = c.axis.unwrap_or_default();
+                    let offset = state_of(c.id).and_then(|s| s.scroll).map_or((0.0, 0.0), |(x, y)| (x as f32, y as f32));
+                    let range = (
+                        if axis.scrolls_x() { None } else { Some(0.0) },
+                        if axis.scrolls_y() { None } else { Some(0.0) },
+                    );
+                    (port, offset, range)
+                }
+                None => continue,
+            };
+            scrollers.push(Live { candidate: c, port, offset, range });
+        }
         let outermost = scrollers.len().saturating_sub(1);
         let mut moved = Vec::new();
-        for (i, (id, set_scroll, axis, port)) in scrollers.into_iter().enumerate() {
-            let Some(port) = port.and_then(|f| f()) else { continue };
-            // Inner scroll views are judged by their own box (an outer
-            // scroll brings them on screen); the outermost also by the
-            // window it is clipped to.
+        for (i, live) in scrollers.into_iter().enumerate() {
+            // Inner scrollers are judged by their own box (an outer scroll
+            // brings them on screen); the outermost also by the window it
+            // is clipped to.
             let port = match window {
-                Some(w) if i == outermost => overlap(port, w).unwrap_or(port),
-                _ => port,
+                Some(w) if i == outermost => overlap(live.port, w).unwrap_or(live.port),
+                _ => live.port,
             };
-            let axis = axis.unwrap_or_default();
-            let dx = if axis.scrolls_x() { reveal_shift(target.x, target.width, port.x, port.width) } else { 0.0 };
-            let dy = if axis.scrolls_y() { reveal_shift(target.y, target.height, port.y, port.height) } else { 0.0 };
-            if dx == 0.0 && dy == 0.0 {
-                continue;
-            }
-            let (x0, y0) = state_of(id).and_then(|s| s.scroll).map_or((0.0, 0.0), |(x, y)| (x as f32, y as f32));
-            // An offset is never negative; the far end is the toolkit's to
-            // clamp (the robot doesn't know the content size).
-            let (x1, y1) = ((x0 + dx).max(0.0), (y0 + dy).max(0.0));
+            let (x0, y0) = live.offset;
+            let shift = |range: Option<f32>, start, len, port_start, port_len, at: f32| -> f32 {
+                if range == Some(0.0) {
+                    return at;
+                }
+                let to = (at + reveal_shift(start, len, port_start, port_len)).max(0.0);
+                // The far end is the toolkit's to clamp when the range is
+                // unknown.
+                range.map_or(to, |max| to.min(max))
+            };
+            let x1 = shift(live.range.0, target.x, target.width, port.x, port.width, x0);
+            let y1 = shift(live.range.1, target.y, target.height, port.y, port.height, y0);
             if x1 == x0 && y1 == y0 {
                 continue;
             }
-            set_scroll(x1, y1);
+            let c = &live.candidate;
+            if let Some(set_scroll) = &c.set_scroll {
+                set_scroll(x1, y1);
+            } else {
+                let which = if c.page { ScrollTarget::Host } else { ScrollTarget::Node };
+                let Some(injection) = c.set_port.as_ref().and_then(|f| f(which, x1, y1)) else { continue };
+                injection().map_err(RobotError::Native)?;
+            }
             target.x -= x1 - x0;
             target.y -= y1 - y0;
-            moved.push(ScrollMove { scroll_view: id, x: x1, y: y1 });
+            moved.push(ScrollMove { scroll_view: c.id, page: c.page, x: x1, y: y1 });
         }
         if !moved.is_empty() {
             settle();
@@ -2359,6 +2749,7 @@ impl Robot {
         crate::robot_methods::reset();
         crate::robot_watch::reset();
         NAV_REGISTRY.with(|r| *r.borrow_mut() = NavRegistry::default());
+        HELD_PRESS.with(|h| *h.borrow_mut() = HeldPress::Nothing);
     }
 
     fn build_tree_node(reg: &Registry, id: ElementId) -> Option<TreeNode> {
@@ -2420,6 +2811,27 @@ impl Robot {
         visibility_of(element.id).ok_or(RobotError::ElementGone)
     }
 
+    /// The element's resolved visual style (the `get_style` verb) and where
+    /// it was read: [`StyleSource::Native`] — the toolkit's own resolution
+    /// ([`IntrospectionOps::computed_style`]: the web's `getComputedStyle`,
+    /// where CSS decides state, breakpoint, inheritance and preminted
+    /// classes) — else [`StyleSource::Framework`]: the rules the framework
+    /// resolved and last handed the backend, which on every native backend
+    /// IS what it applied. `None`: no style to report (the element has no
+    /// style and the toolkit offers no read).
+    pub fn style(&self, element: &Element) -> Result<Option<(StyleSource, ResolvedStyle)>, RobotError> {
+        let (computed, rules) = REGISTRY.with(|r| {
+            let reg = r.borrow();
+            let e = reg.get(element.id).ok_or(RobotError::ElementGone)?;
+            Ok::<_, RobotError>((e.actions.computed_style.clone(), e.actions.style_rules.clone()))
+        })?;
+        if let Some(style) = computed.and_then(|f| f()) {
+            return Ok(Some((StyleSource::Native, style)));
+        }
+        let rules = rules.and_then(|cell| cell.borrow().clone());
+        Ok(rules.map(|r| (StyleSource::Framework, resolved_from_rules(&r))))
+    }
+
     /// The part of the element's box a user could see, in window
     /// coordinates: its [`absolute_frame`](Self::absolute_frame) cut by the
     /// window and by every registered ancestor that clips its content
@@ -2463,6 +2875,22 @@ pub const SYNTHETIC_FRAME_NS: u64 = 16_666_667;
 /// the top of the range cannot collide with a live finger.
 const ROBOT_TOUCH_ID: TouchId = TouchId(u64::MAX);
 
+/// What the hit-test tier of [`Robot::press_native`] is holding until
+/// [`Robot::release_native`].
+enum HeldPress {
+    Nothing,
+    /// A touch stream whose `Began` a handler consumed; `Ended` on release.
+    Stream(SyntheticTouch),
+    /// A pressable under the point: its press runs on release.
+    Click(ElementId),
+}
+
+runtime_tls::thread_local! {
+    /// The hit-test tier's press, held between the `press_native` and
+    /// `release_native` verbs — real time (a long press) passes between them.
+    static HELD_PRESS: RefCell<HeldPress> = const { RefCell::new(HeldPress::Nothing) };
+}
+
 /// One synthesized pointer stream into one handler.
 struct SyntheticTouch {
     handler: runtime_shared::TouchHandler,
@@ -2472,6 +2900,9 @@ struct SyntheticTouch {
     timestamp_ns: u64,
     /// `Began`'s timestamp — what a hold is measured from.
     began_ns: u64,
+    /// The button the stream reports (`runtime_shared::pointer_button`)
+    /// before each dispatch: `Primary`, or `Secondary` for a context click.
+    button: runtime_shared::PointerButton,
 }
 
 impl SyntheticTouch {
@@ -2481,7 +2912,16 @@ impl SyntheticTouch {
             origin,
             timestamp_ns: runtime_shared::time::now_micros().saturating_mul(1_000),
             began_ns: 0,
+            button: runtime_shared::PointerButton::Primary,
         }
+    }
+
+    /// Bring the event clock up to now, for a stream held across real
+    /// time ([`Robot::press_native`]'s hit-test tier): its next event is
+    /// stamped when it is delivered, so the hold reads as long as it was.
+    fn catch_up(&mut self) {
+        let now = runtime_shared::time::now_micros().saturating_mul(1_000);
+        self.timestamp_ns = self.timestamp_ns.max(now);
     }
 
     /// Hold still at `window` until `hold_ms` after `Began`: one stationary
@@ -2509,9 +2949,10 @@ impl SyntheticTouch {
             self.began_ns = self.timestamp_ns;
         }
         self.timestamp_ns += SYNTHETIC_FRAME_NS;
-        // A plain primary press, as backends report before each dispatch.
+        // An unmodified press of the stream's button, as backends report
+        // before each dispatch.
         runtime_shared::set_pointer_modifiers(runtime_shared::PointerModifiers::default());
-        runtime_shared::set_pointer_button(runtime_shared::PointerButton::Primary);
+        runtime_shared::set_pointer_button(self.button);
         let consumed = (self.handler)(&event).consumed;
         settle();
         consumed
@@ -2633,6 +3074,13 @@ pub mod bridge {
     use super::*;
     use runtime_shared::__serde_json as serde_json;
 
+    /// `open_link`'s bound on in-call re-routing: one round per nested
+    /// navigator level that mounts synchronously after its parent's
+    /// commit. Each round must move the shown chain or the loop stops, so
+    /// the bound only guards against a navigator tree that keeps moving
+    /// without converging.
+    const OPEN_LINK_SYNC_ROUNDS: usize = 16;
+
     /// Invoke one bridge verb against the vocabulary registry. Must run on
     /// the UI thread (registry + driver env are thread-local). Queries
     /// run inside the installed driver env's `enter`; actions settle.
@@ -2664,13 +3112,18 @@ pub mod bridge {
             }
             "press_native" => {
                 let el = resolve_element(args)?;
-                robot.press_native(&el).map_err(|e| e.to_string())?;
-                Ok("{\"mechanism\":\"native\"}".into())
+                let how = robot.press_native(&el).map_err(|e| e.to_string())?;
+                Ok(format!("{{\"mechanism\":\"{}\"}}", how.as_str()))
             }
             "release_native" => {
                 let el = resolve_element(args)?;
-                robot.release_native(&el).map_err(|e| e.to_string())?;
-                Ok("{\"mechanism\":\"native\"}".into())
+                let how = robot.release_native(&el).map_err(|e| e.to_string())?;
+                Ok(format!("{{\"mechanism\":\"{}\"}}", how.as_str()))
+            }
+            "context_click" => {
+                let el = resolve_element(args)?;
+                let how = robot.context_click_native(&el).map_err(|e| e.to_string())?;
+                Ok(format!("{{\"mechanism\":\"{}\"}}", how.as_str()))
             }
             "hover_native" => {
                 let el = resolve_element(args)?;
@@ -2735,7 +3188,13 @@ pub mod bridge {
                 let moved = robot.scroll_into_view(&el).map_err(|e| e.to_string())?;
                 let scrolled: Vec<serde_json::Value> = moved
                     .iter()
-                    .map(|m| serde_json::json!({ "element_id": m.scroll_view.0, "x": m.x, "y": m.y }))
+                    .map(|m| {
+                        let mut v = serde_json::json!({ "element_id": m.scroll_view.0, "x": m.x, "y": m.y });
+                        if m.page {
+                            v["page"] = serde_json::Value::Bool(true);
+                        }
+                        v
+                    })
                     .collect();
                 Ok(serde_json::json!({ "scrolled": scrolled }).to_string())
             }
@@ -2744,6 +3203,13 @@ pub mod bridge {
                 let el = resolve_element(args)?;
                 robot.focus(&el).map_err(|e| e.to_string())?;
                 Ok("\"ok\"".into())
+            }
+            "get_style" => {
+                let el = resolve_element(args)?;
+                Ok(match robot.style(&el).map_err(|e| e.to_string())? {
+                    Some((source, style)) => style_json(source, &style),
+                    None => "{\"source\":null,\"style\":{}}".into(),
+                })
             }
             "get_state" => {
                 let el = resolve_element(args)?;
@@ -3054,12 +3520,44 @@ pub mod bridge {
             }
             "open_link" => {
                 let url = args["url"].as_str().ok_or("missing 'url' argument")?;
+                let target = runtime_shared::inbound_link::route_path(url);
                 // What a host does when the OS hands the running app a
                 // link: observers, interceptors, then the navigators — and
-                // the flush it owes (`settle`).
-                let landed = runtime_shared::inbound_link::deliver(url);
+                // the flush it owes (`settle`). `resume` is a client's
+                // follow-up for the SAME link: observers and interceptors
+                // already had it, so only the router runs again.
+                let routed = if args["resume"].as_bool().unwrap_or(false) {
+                    runtime_shared::inbound_link::route(url)
+                } else {
+                    runtime_shared::inbound_link::deliver(url)
+                };
                 settle();
-                Ok(landed.to_string())
+                // The router moves only navigators that exist. One the
+                // commit mounted outside the link's scope (a screen that
+                // builds its nested navigator in a later reactive pass)
+                // is live now, on its configured initial: keep routing
+                // while that moves the shown chain closer. A navigator
+                // behind an async load (a lazy chunk, a data fetch) is
+                // not up until the event loop runs — the answer says how
+                // far the link got, and the client resumes it.
+                let mut progress = entered(|| crate::handlers::nav_link_progress(&target));
+                if routed {
+                    for _ in 0..OPEN_LINK_SYNC_ROUNDS {
+                        if progress.1 || !runtime_shared::inbound_link::route(url) {
+                            break;
+                        }
+                        settle();
+                        let next = entered(|| crate::handlers::nav_link_progress(&target));
+                        let moved = next != progress;
+                        progress = next;
+                        if !moved {
+                            break;
+                        }
+                    }
+                }
+                let (reached, complete) = progress;
+                Ok(serde_json::json!({ "reached": reached, "complete": complete, "routed": routed })
+                    .to_string())
             }
             "list_functions" => Ok(crate::robot_fn::list_json()),
             "call_function" => {
@@ -3093,7 +3591,14 @@ pub mod bridge {
             .collect()
     }
 
-    /// Same bytes as runtime-shared's bridge `nav_snapshot_json`.
+    /// runtime-shared's bridge `nav_snapshot_json` plus `controllable`,
+    /// `query` and `href`.
+    ///
+    /// `query` is the active screen's query as a JSON object of decoded
+    /// values (a repeated key reports its first value, as
+    /// `QueryParams::get` does); `href` is `active_path` with the encoded
+    /// query appended — the URL web's address bar shows for this
+    /// navigator's screen. `active_path` itself stays path-only.
     fn nav_snapshot_json(s: &NavSnapshot) -> String {
         let stack: Vec<String> = s
             .stack
@@ -3110,15 +3615,22 @@ pub mod bridge {
             Some(id) => id.to_string(),
             None => "null".into(),
         };
+        let mut query = serde_json::Map::new();
+        for (k, v) in s.query.iter() {
+            query.entry(k.to_string()).or_insert_with(|| serde_json::Value::String(v.to_string()));
+        }
+        let href = runtime_shared::primitives::navigator::with_query(&s.active_path, &s.query);
         format!(
             "{{\"nav_id\":{},\"element_id\":{},\"type_name\":{},\"active_route\":{},\
-               \"active_path\":{},\"depth\":{},\"can_go_back\":{},\"is_current\":{},\
-               \"base\":{},\"stack\":[{}],\"controllable\":{}}}",
+               \"active_path\":{},\"query\":{},\"href\":{},\"depth\":{},\"can_go_back\":{},\
+               \"is_current\":{},\"base\":{},\"stack\":[{}],\"controllable\":{}}}",
             s.nav_id,
             element_id,
             serde_json::to_string(s.type_name).unwrap_or_else(|_| "\"\"".into()),
             serde_json::to_string(&s.active_route).unwrap_or_else(|_| "\"\"".into()),
             serde_json::to_string(&s.active_path).unwrap_or_else(|_| "\"\"".into()),
+            serde_json::Value::Object(query),
+            serde_json::to_string(&href).unwrap_or_else(|_| "\"\"".into()),
             s.depth,
             s.can_go_back,
             s.is_current,
@@ -3554,6 +4066,9 @@ mod tests {
                 alive_in.get().then(|| NavSnapshotData {
                     active_route: "detail".into(),
                     active_path: "/detail".into(),
+                    query: runtime_shared::primitives::navigator::QueryParams::parse(
+                        "tag=%7E7781&tag=2&q=a%20b",
+                    ),
                     depth: 2,
                     can_go_back: true,
                     base: String::new(),
@@ -3571,13 +4086,15 @@ mod tests {
             json_one,
             format!(
                 "{{\"nav_id\":{},\"element_id\":3,\"type_name\":\"stack_navigator\",\
-                 \"active_route\":\"detail\",\"active_path\":\"/detail\",\"depth\":2,\
-                 \"can_go_back\":true,\"is_current\":true,\
+                 \"active_route\":\"detail\",\"active_path\":\"/detail\",\
+                 \"query\":{{\"q\":\"a b\",\"tag\":\"~7781\"}},\"href\":\"/detail?tag=~7781&tag=2&q=a+b\",\
+                 \"depth\":2,\"can_go_back\":true,\"is_current\":true,\
                  \"base\":\"\",\"stack\":[{{\"route\":\"root\",\"path\":\"/\"}},\
                  {{\"route\":\"detail\",\"path\":\"/detail\"}}],\"controllable\":false}}",
                 id.0
             ),
-            "old-bridge wire shape plus the additive `controllable`"
+            "old-bridge wire shape plus the additive `query`, `href` and `controllable` \
+             (query decoded, first value of a repeated key; href = path + encoded query)"
         );
 
         // A second navigator; marking it active flips is_current.
@@ -3588,6 +4105,7 @@ mod tests {
                 Some(NavSnapshotData {
                     active_route: "home".into(),
                     active_path: "/".into(),
+                    query: Default::default(),
                     depth: 1,
                     can_go_back: false,
                     base: String::new(),

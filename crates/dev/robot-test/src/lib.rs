@@ -54,8 +54,8 @@ mod harness;
 pub mod parity;
 
 pub use app::{
-    parse_key, App, Component, ElementState, FunctionArg, FunctionInfo, Locator, NavigatorInfo, Platform, ScrollOffset,
-    Selector, SignalAssert, Viewport, DEFAULT_TIMEOUT,
+    parse_key, App, Component, Cookie, ElementState, FunctionArg, FunctionInfo, LinkOutcome, Locator, NavigatorInfo, Platform, ScrollOffset,
+    Selector, SignalAssert, Style, TextDecoration, Viewport, DEFAULT_TIMEOUT, LOAD_URL_TIMEOUT, LONG_PRESS,
 };
 pub use client::{
     default_apps_dir, default_apps_dirs, discover, discover_all, discover_project, is_transient, CallError,

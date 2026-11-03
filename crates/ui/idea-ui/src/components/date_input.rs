@@ -67,19 +67,23 @@ pub(crate) const CLEAR_GLYPH: IconData = IconData {
 
 /// The trailing adornment shared by [`DateInput`] / [`DateTimeInput`]:
 /// an optional clear ✕ (which empties the field and commits `None`)
-/// left of the optional calendar button.
+/// left of the optional calendar button. Both are glyph-only, so they
+/// take their accessible names from `labels` (`clear_date`, `pick_date`).
 fn trailing_adornments(
     clearable: bool,
     clear: Rc<dyn Fn()>,
     picker: bool,
     open: Signal<bool>,
+    labels: &DateLabels,
 ) -> Adornment {
     let mut items: Vec<Adornment> = Vec::new();
     if clearable {
-        items.push(Adornment::button(CLEAR_GLYPH, move || (clear)()));
+        items.push(Adornment::labeled_button(CLEAR_GLYPH, labels.clear_date.clone(), move || (clear)()));
     }
     if picker {
-        items.push(Adornment::button(CALENDAR_GLYPH, move || open.set(!open.peek())));
+        items.push(Adornment::labeled_button(CALENDAR_GLYPH, labels.pick_date.clone(), move || {
+            open.set(!open.peek())
+        }));
     }
     // An empty group renders nothing, so the no-adornment Field path
     // (bare input, no shell) is preserved when both are off.
@@ -185,6 +189,7 @@ pub fn DateInput(props: DateInputProps) -> Element {
         }),
         render: Rc::new({
             let f = format.clone();
+            let names = names.clone();
             move |d: CivilDate| format_date_with(d, &f, &names)
         }),
         invalid_message: props.invalid_message.get(),
@@ -203,6 +208,7 @@ pub fn DateInput(props: DateInputProps) -> Element {
         wiring.clear.clone(),
         props.picker.get(),
         open,
+        &names,
     );
 
     let field = ui! {
@@ -374,6 +380,7 @@ pub fn DateTimeInput(props: DateTimeInputProps) -> Element {
         }),
         render: Rc::new({
             let f = format.clone();
+            let names = names.clone();
             move |dt: CivilDateTime| format_datetime_with(dt, &f, &names)
         }),
         invalid_message: props.invalid_message.get(),
@@ -392,6 +399,7 @@ pub fn DateTimeInput(props: DateTimeInputProps) -> Element {
         wiring.clear.clone(),
         props.picker.get(),
         open,
+        &names,
     );
 
     let field = ui! {

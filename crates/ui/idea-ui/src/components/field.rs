@@ -85,7 +85,10 @@ use idea_theme::tokens;
 /// - [`Adornment::Element`] — any element, rendered as-is, for full control
 ///   (a button, badge, spinner, …).
 /// - [`Adornment::Button`] — a tappable icon-sized glyph (clear ✕,
-///   visibility toggle, …).
+///   visibility toggle, …), named for screen readers and the robot by its
+///   `label` ([`Adornment::labeled_button`]). On phones its tap target is
+///   floored at [`MIN_TOUCH_TARGET_PX`](crate::touch::MIN_TOUCH_TARGET_PX)
+///   without growing the field.
 /// - [`Adornment::Group`] — several of the above side by side in one slot.
 ///
 /// Adornments compose into a flex row alongside the input, so any width works.
@@ -105,7 +108,16 @@ pub enum Adornment {
     /// toggle, etc.: unlike dropping an `IconButton` into [`Adornment::Element`]
     /// (which stacks the button's own square padding on top of the field's),
     /// this stays icon-sized so it never inflates the field box.
-    Button(IconData, Rc<dyn Fn()>),
+    Button {
+        /// The glyph.
+        icon: IconData,
+        /// The accessible name — what a screen reader announces and what a
+        /// robot finds the button by. A glyph has no text to derive one
+        /// from, so name every button ("Clear date", "Show password").
+        label: Option<String>,
+        /// Fired on press.
+        on_press: Rc<dyn Fn()>,
+    },
     /// Several adornments side by side in ONE slot (e.g. `DateInput`'s
     /// clear ✕ next to its calendar button). Members render as siblings
     /// directly in the field's shell row — the shell's size-derived gap
@@ -122,10 +134,18 @@ impl Adornment {
         Adornment::Element(Rc::new(builder))
     }
 
-    /// Build an icon-sized [`Adornment::Button`]: `Adornment::button(icon, move
-    /// || visible.set(!visible.get()))`.
+    /// Build an unnamed icon-sized [`Adornment::Button`]. Prefer
+    /// [`Adornment::labeled_button`]: a glyph-only button with no name is
+    /// silent to a screen reader.
     pub fn button(icon: IconData, on_press: impl Fn() + 'static) -> Self {
-        Adornment::Button(icon, Rc::new(on_press))
+        Adornment::Button { icon, label: None, on_press: Rc::new(on_press) }
+    }
+
+    /// Build an icon-sized [`Adornment::Button`] with an accessible name:
+    /// `Adornment::labeled_button(EYE, "Show password", move ||
+    /// visible.set(!visible.get()))`.
+    pub fn labeled_button(icon: IconData, label: impl Into<String>, on_press: impl Fn() + 'static) -> Self {
+        Adornment::Button { icon, label: Some(label.into()), on_press: Rc::new(on_press) }
     }
 }
 
@@ -178,7 +198,7 @@ fn render_adornment(
             let muted = adornment_icon_color();
             vec![ui! { Icon(data = data.clone(), size = px, color = Some(muted)) }]
         }
-        Adornment::Button(data, on_press) => {
+        Adornment::Button { icon: data, label, on_press } => {
             let px = adornment_icon_px(size);
             let muted = adornment_icon_color();
             let glyph = ui! { Icon(data = data.clone(), size = px, color = Some(muted)) };
@@ -194,6 +214,10 @@ fn render_adornment(
                 Reactive::Static(false) => button,
                 Reactive::Static(true) => button.disabled(true),
                 live => button.disabled(move || live.get()),
+            };
+            let button = match label {
+                Some(name) => button.a11y_label(name.clone()),
+                None => button,
             };
             vec![button.into_element()]
         }
@@ -405,8 +429,11 @@ component_styles! {
         }
 
         /// A tappable [`Adornment::Button`]: icon-sized (no padding), a
-        /// pointer cursor, a subtle hover/press dim.
+        /// pointer cursor, a subtle hover/press dim. On phones its tap
+        /// target is floored at `MIN_TOUCH_TARGET_PX` square
+        /// (`adornment_touch_target`) without growing the field.
         slot adornment {
+            extend(adornment_touch_target)
             base(_t) {
                 cursor: Cursor::Pointer,
                 align_items: AlignItems::Center,
@@ -416,6 +443,33 @@ component_styles! {
             state pressed(_t) { opacity: 0.4 }
         }
     }
+}
+
+/// The adornment button's phone tap target: the shared
+/// [`touch_target`](crate::touch::touch_target) floor (44 square through
+/// the `Sm` band, released from `Md` up), plus a negative vertical margin
+/// of half the floor. The margin box then contributes no height to the
+/// shell row, so the field keeps the height its input gives it, and the
+/// row's `align-items: center` centers the 44pt box on the glyph — the hit
+/// area grows, the field does not. Horizontally the box stays in flow, so
+/// two adjacent buttons (`DateInput`'s ✕ and calendar) get non-overlapping
+/// targets. Not a margin that hugs the glyph: the glyph size follows the
+/// field `size`, and the zero-height margin box is right for every size.
+/// On a field shorter than the floor the box overhangs the shell, and a
+/// native hit-test that clips to the shell trims the overhang.
+fn adornment_touch_target(s: &mut SlotRestyle<'_, FieldStyles>) {
+    crate::touch::touch_target(s);
+    let outset = |m: f32| Some(Tokenized::Literal(Length::Px(m)));
+    s.base(|_| StyleRules {
+        margin_top: outset(-crate::touch::MIN_TOUCH_TARGET_PX / 2.0),
+        margin_bottom: outset(-crate::touch::MIN_TOUCH_TARGET_PX / 2.0),
+        ..Default::default()
+    });
+    s.breakpoint(crate::touch::TOUCH_TARGET_RELEASE, |_| StyleRules {
+        margin_top: outset(0.0),
+        margin_bottom: outset(0.0),
+        ..Default::default()
+    });
 }
 
 /// The input's tone arms: each registered tone paints the border its stroke

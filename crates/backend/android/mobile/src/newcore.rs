@@ -1696,6 +1696,25 @@ mod native {
             crate::imp::view_rect::content_clip(node)
         }
 
+        fn scroll_port(&self, node: &Self::Node, target: caps::ScrollTarget) -> Option<caps::ScrollPort> {
+            crate::imp::view_rect::scroll_port(node, target)
+        }
+
+        fn set_scroll_offset(
+            &self,
+            node: &Self::Node,
+            target: caps::ScrollTarget,
+            x: f32,
+            y: f32,
+        ) -> Option<caps::NativeInjection> {
+            crate::imp::view_rect::set_scroll_offset(node, target, x, y)
+        }
+
+        /// The `EditText`'s `inputType`, read back.
+        fn keyboard_kind(&self, node: &Self::Node) -> Option<runtime_shared::primitives::text_input::KeyboardKind> {
+            crate::imp::view_rect::keyboard_kind(node)
+        }
+
         /// `View.isFocused()`, read at query time.
         fn is_focused(&self, node: &Self::Node) -> Option<bool> {
             crate::imp::text_focus::is_focused(node)

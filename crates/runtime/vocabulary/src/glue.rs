@@ -553,26 +553,22 @@ pub mod styled_text {
     pub use runtime_shared::styled_text::{plain_text_of, TextRun, TextRunStyle};
 }
 
-/// What [`styled_text`] returns: `.with_style(…)` then [`IntoElement`].
-pub struct StyledText(crate::builders::TextBuilder);
+pub use crate::builders::IntoTextRuns;
+
+/// What [`styled_text`] returns — the same wrapper as [`text`]:
+/// `.with_style(…)`, the `a11y_*` setters, then [`IntoElement`].
+pub type StyledText = GlueText;
 
 /// One text node with inline-styled ranges — the vocabulary
 /// [`text()`](crate::builders::text) builder's `runs` channel, mounted
-/// via the caps `create_styled_text`.
-pub fn styled_text(runs: Vec<TextRun>) -> StyledText {
-    StyledText(crate::builders::text().runs(runs))
-}
-
-impl StyledText {
-    /// Attach the author style.
-    pub fn with_style(self, style: impl crate::style_attach::IntoStyleProp) -> Self {
-        StyledText(self.0.style(style))
-    }
-}
-
-impl IntoElement for StyledText {
-    fn into_element(self) -> Element {
-        self.0.build()
+/// via the caps `create_styled_text`. `runs` is a `Vec<TextRun>`
+/// (static) or a `Fn() -> Vec<TextRun>` closure (reactive: re-realized
+/// in place via `update_styled_text` when its signals change) — see
+/// [`IntoTextRuns`](crate::builders::IntoTextRuns).
+pub fn styled_text(runs: impl crate::builders::IntoTextRuns) -> StyledText {
+    GlueText {
+        b: crate::builders::text().runs(runs),
+        a11y: AccessibilityProps::default(),
     }
 }
 

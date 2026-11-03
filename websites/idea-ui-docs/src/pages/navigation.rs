@@ -297,7 +297,9 @@ pub fn pagination() -> Element {
                 P(content = "Controlled — `page` (1-based) is the source of truth; the chevrons \
                     and page buttons fire `on_change` with the requested page. For a large \
                     `total` the middle collapses to ellipses around the current page, with the \
-                    first and last always shown.".to_string())
+                    first and last always shown. On a phone (below `Md`) the ‹ › steppers take a \
+                    44pt tap target (the `nav` slot); the page numbers keep their compact width so \
+                    the row still fits.".to_string())
                 DemoSurface {
                     Pagination(page = page, total = 20usize, on_change = on_page)
                 }
@@ -317,6 +319,8 @@ ui! {
                     Prop { name: "page",      ty: "Signal<usize>",     desc: "Current page, 1-based. The host owns the signal." },
                     Prop { name: "total",     ty: "usize",             desc: "Total number of pages (>= 1)." },
                     Prop { name: "on_change", ty: "Rc<dyn Fn(usize)>", desc: "Fires with the requested page when the user navigates." },
+                    Prop { name: "previous_label", ty: "String", desc: "Accessible name of the ‹ stepper (screen readers, robot `label` queries). Default \"Previous page\"; pass a translation to localize." },
+                    Prop { name: "next_label", ty: "String", desc: "Accessible name of the › stepper. Default \"Next page\"." },
                 ])
             }
         },

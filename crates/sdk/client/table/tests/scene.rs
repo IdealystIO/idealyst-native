@@ -705,6 +705,57 @@ fn regression_watched_scroll_y_table_holder_passes_the_height_cap_through() {
     }
 }
 
+/// CrewForge (A7): a group band in a `scroll_x` table spans the whole
+/// table, wider than the screen, so its title had nothing to truncate
+/// against and ran under the band's actions. `on_viewport_width` gives
+/// the band the scroller's visible width: it places a probe across the
+/// scroller (absolute, `width: 100%`, zero height — the split head's
+/// viewport probe), and the scroller becomes its containing block while
+/// keeping its content-height wrapper rules. Without a listener the
+/// scroller holds only its content.
+#[test]
+fn regression_viewport_listener_probes_the_scrollers_visible_width() {
+    use runtime_vocabulary::prims::ScrollViewPrim;
+    let scroller_of = |t: Element| -> (ScrollViewPrim, Vec<Element>) {
+        let Element::Item { mut children, .. } = t else { panic!("surface view") };
+        let Element::Item { data, children } = children.pop().expect("the scroller") else {
+            panic!("the surface holds the scroller");
+        };
+        (data.downcast_ref::<PrimCell<ScrollViewPrim>>().expect("a scroll view").take(), children)
+    };
+    let world = World::new();
+    let (listened, plain) = world.enter(|| {
+        let listened = table(TableProps { children: vec![row(2)], scroll_x: true, ..Default::default() })
+            .on_viewport_width(|_| {})
+            .into_element();
+        let plain = table(TableProps { children: vec![row(2)], scroll_x: true, ..Default::default() }).into_element();
+        (listened, plain)
+    });
+
+    let (scroller, children) = scroller_of(listened);
+    let sheet = |p: Option<StyleProp>| match p {
+        Some(StyleProp::Sheet(app)) => resolve_style(&app),
+        _ => panic!("a sheet"),
+    };
+    let rules = sheet(scroller.style);
+    assert_eq!(rules.position, Some(glue::Position::Relative), "the probe's containing block");
+    assert_eq!(rules.flex_grow.as_ref().map(|t| t.resolve()), Some(0.0), "still content-height");
+    assert_eq!(children.len(), 2, "the probe, then the content");
+    let probe_prim = take_view_prim(&children[0]);
+    assert!(probe_prim.ref_fill.is_some(), "the probe is measured");
+    let probe = sheet(probe_prim.style);
+    assert_eq!(probe.position, Some(glue::Position::Absolute));
+    assert_eq!(
+        probe.width.as_ref().map(|t| t.resolve()),
+        Some(glue::Length::Percent(100.0)),
+        "as wide as the viewport, whatever the content's width"
+    );
+    assert_eq!(probe.height.as_ref().map(|t| t.resolve()), Some(glue::Length::Px(0.0)));
+
+    let (_, children) = scroller_of(plain);
+    assert_eq!(children.len(), 1, "no listener: no probe");
+}
+
 /// Binding a row (the drag-and-drop geometry seam) turns the native
 /// lowering into the PROXY shape: a row-spanning backdrop view is
 /// inserted before the bound row's cells (carrying the ref_fill), and

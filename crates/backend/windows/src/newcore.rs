@@ -1294,6 +1294,21 @@ impl caps::IntrospectionOps for WindowsBackend {
         })
     }
 
+    /// A scroller's offset and range (`scene::max_scroll_offsets`). Moving
+    /// one goes through its `scroll_view` handle: the backend's own scroll
+    /// write needs `&mut self`, which an injection doesn't hold.
+    #[cfg(feature = "robot")]
+    fn scroll_port(&self, node: &Self::Node, target: caps::ScrollTarget) -> Option<caps::ScrollPort> {
+        if target != caps::ScrollTarget::Node {
+            return None;
+        }
+        let meta = self.nodes.get(&node.id)?;
+        let crate::NodeKind::View(v) = &meta.kind else { return None };
+        let s = v.scroll.as_ref()?;
+        let (max_x, max_y) = crate::scene::max_scroll_offsets(self, node.id);
+        Some(caps::ScrollPort { x: s.offset_x, y: s.offset_y, max_x, max_y, port: None })
+    }
+
     /// `GetFocus()` is the field's `EDIT` (a `text_area` is one too), read
     /// at query time rather than replayed from `EN_SETFOCUS` /
     /// `EN_KILLFOCUS`.

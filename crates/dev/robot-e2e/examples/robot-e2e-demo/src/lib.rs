@@ -41,8 +41,8 @@
 use idea_ui::theme::IdeaThemeRef;
 use idea_ui::{install_idea_theme, light_theme, typography_kind, Stack, StackGap, StackPadding, Typography};
 use runtime_core::{
-    signal, stylesheet, text, ui, BlurOutcome, Element, FlexDirection, IntoElement, KeyEvent,
-    KeyOutcome, Length, Signal,
+    signal, stylesheet, text, ui, BlurOutcome, Element, FlexDirection, IntoElement, JustifyContent,
+    KeyEvent, KeyOutcome, KeyboardKind, Length, Signal, StyleRules,
 };
 
 #[cfg(feature = "robot")]
@@ -103,6 +103,7 @@ pub fn app() -> Element {
     let dialog_open: Signal<bool> = signal(false);
     DIALOG.with(|c| c.set(Some(dialog_open)));
     runtime_vocabulary::robot_fn::register(set_dialog::robot());
+    runtime_vocabulary::robot_fn::register(page_cookies::robot());
 
     // Kick off the E2E suite shortly after mount, once the first render
     // has populated the Robot registry. `after_ms_detached` self-manages
@@ -134,11 +135,95 @@ pub fn app() -> Element {
                 .on_dismiss(move || covered.set(None))
         }
     };
+    let tall_page: Signal<bool> = signal(false);
+    TALL_PAGE.with(|c| c.set(Some(tall_page)));
+    runtime_vocabulary::robot_fn::register(set_tall_page::robot());
+    runtime_vocabulary::robot_fn::register(page_scroll_y::robot());
+
+    // The screen is taller than a phone's window, so it scrolls: a
+    // vertical `scroll_view` filling the window holds it, as an app's
+    // screen does on every platform — a native window doesn't scroll
+    // content that overflows it, and a test reaches what is below the
+    // fold by scrolling it (`click()` does).
     ui! {
         view() {
-            screen(count, show_secret, name, name_focus)
+            scroll_view(style = PageScroll(), test_id = "page") {
+                screen(count, show_secret, name, name_focus)
+            }
+            tall_page_end(tall_page)
             cover
             dialog(dialog_open)
+        }
+    }
+}
+
+thread_local! {
+    static TALL_PAGE: std::cell::Cell<Option<Signal<bool>>> = const { std::cell::Cell::new(None) };
+}
+
+/// Show (or hide) [`tall_page_end`].
+#[runtime_core::robot_fn(name = "demo.set_tall_page")]
+fn set_tall_page(on: bool) -> Result<(), String> {
+    let tall = TALL_PAGE.with(|c| c.get()).ok_or("the app has not mounted")?;
+    tall.set(on);
+    Ok(())
+}
+
+/// How far the web page itself (the document) is scrolled, in CSS px. Web
+/// only: a native window doesn't scroll.
+#[runtime_core::robot_fn(name = "demo.page_scroll_y")]
+fn page_scroll_y() -> Result<f64, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let window = web_glue::JsValue::global();
+        window
+            .get("scrollY")
+            .map_err(|e| format!("{e:?}"))?
+            .as_f64()
+            .ok_or_else(|| "window.scrollY is not a number".to_string())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Err("the page scrolls only on web".into())
+    }
+}
+
+/// While `on`, a block taller than any window under the screen's scroll
+/// view, outside it, with a button at its bottom: content no `scroll_view`
+/// holds. On the web the document itself scrolls to reach the button —
+/// the path `regression_click_reaches_a_button_below_the_fold_of_a_page`
+/// tests. A native window doesn't scroll, so there it stays out of reach.
+fn tall_page_end(on: Signal<bool>) -> Element {
+    let taps: Signal<i32> = signal(0);
+    runtime_vocabulary::robot::watch_signal("page_bottom_taps", taps);
+    ui! {
+        if on.get() {
+            view(style = TallPage()) {
+                button(label = "Page bottom", on_click = move || taps.set(taps.get() + 1), test_id = "page-bottom")
+            }
+        }
+    }
+}
+
+stylesheet! {
+    pub PageScroll<IdeaThemeRef> {
+        base(_t) {
+            flex_grow: 1.0,
+            flex_basis: Length::Px(0.0),
+            min_height: Length::Px(0.0),
+        }
+    }
+}
+
+/// Taller than any window this demo runs at.
+const TALL_PAGE_HEIGHT: f32 = 3000.0;
+
+stylesheet! {
+    pub TallPage<IdeaThemeRef> {
+        base(_t) {
+            flex_shrink: 0.0,
+            min_height: Length::Px(TALL_PAGE_HEIGHT),
+            justify_content: JustifyContent::FlexEnd,
         }
     }
 }
@@ -169,13 +254,35 @@ fn set_dialog(open: bool) -> Result<(), String> {
 /// Back on Android) close it while the field holds focus, as they do with
 /// nothing focused.
 fn dialog(open: Signal<bool>) -> Element {
-    let draft: Signal<String> = signal(String::new());
     ui! {
         if open.get() {
             overlay(on_dismiss = move || open.set(false)) {
-                text_input(value = draft, on_change = move |s: String| draft.set(s), test_id = "dialog-field")
+                dialog_field()
             }
         }
+    }
+}
+
+/// The dialog's field, built fresh each time the dialog opens (its text
+/// does not outlive the dialog). While it reads "keep" it claims Escape for
+/// itself, as a field closing its own dropdown would, so the dialog must
+/// stay open.
+fn dialog_field() -> Element {
+    let draft: Signal<String> = signal(String::new());
+    let on_key_down = move |e: &KeyEvent| {
+        if e.key == "Escape" && draft.get() == "keep" {
+            KeyOutcome::PreventDefault
+        } else {
+            KeyOutcome::Default
+        }
+    };
+    ui! {
+        text_input(
+            value = draft,
+            on_change = move |s: String| draft.set(s),
+            on_key_down = on_key_down,
+            test_id = "dialog-field",
+        )
     }
 }
 
@@ -238,6 +345,79 @@ impl std::future::Future for Delay {
     }
 }
 
+/// The cookies the page's scripts can read (`document.cookie`): the
+/// script-visible half of what the browser sends the server. Web only; a
+/// native app's HTTP stack keeps its own cookies.
+#[runtime_core::robot_fn(name = "demo.page_cookies")]
+fn page_cookies() -> Result<String, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let document = web_glue::JsValue::global().get("document").map_err(|e| format!("{e:?}"))?;
+        document
+            .get("cookie")
+            .map_err(|e| format!("{e:?}"))?
+            .as_string()
+            .ok_or_else(|| "document.cookie is not a string".to_string())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Err("page cookies exist only on web".into())
+    }
+}
+
+/// A list row with a context menu, as a list app writes one: a right click
+/// opens it with a mouse, a long press with a finger. One touch handler
+/// takes both: a secondary button's press is the right click, any other
+/// press goes to the long-press recognizer. Each way it opened is counted
+/// (`menu_right_clicks`, `menu_long_presses`) and the last one is shown.
+fn context_row() -> Element {
+    use runtime_core::{long_press, pointer_button, LongPressRecognizer, TouchEvent, TouchPhase, TouchResponse};
+    let right_clicks: Signal<i32> = signal(0);
+    let long_presses: Signal<i32> = signal(0);
+    let last: Signal<&'static str> = signal("closed");
+    runtime_vocabulary::robot::watch_signal("menu_right_clicks", right_clicks);
+    runtime_vocabulary::robot::watch_signal("menu_long_presses", long_presses);
+    let held = long_press(LongPressRecognizer::new(), move || {
+        long_presses.set(long_presses.get() + 1);
+        last.set("long press");
+    });
+    let on_touch = move |e: &TouchEvent| {
+        if pointer_button().opens_context_menu() {
+            if e.phase == TouchPhase::Began {
+                right_clicks.set(right_clicks.get() + 1);
+                last.set("right click");
+            }
+            return TouchResponse::CONSUMED;
+        }
+        held(e)
+    };
+    ui! {
+        view(on_touch = on_touch, test_id = "menu-row") {
+            text(test_id = "menu-state") { move || format!("Row menu: {}", last.get()) }
+        }
+    }
+}
+
+/// A to-do the user marks done — struck through once done — and an email
+/// field, so a test can read an element's resolved style (`get_style`) and a
+/// field's soft-keyboard kind.
+fn todo_section() -> Element {
+    let done: Signal<bool> = signal(false);
+    runtime_vocabulary::robot::watch_signal("todo_done", done);
+    ui! {
+        view() {
+            text(test_id = "todo-item", style = move || todo_style(done.get())) { "Buy milk" }
+            button(label = "Mark done", on_click = move || done.set(!done.get()), test_id = "todo-toggle")
+            text_input(placeholder = "Email".to_string(), keyboard = KeyboardKind::Email, test_id = "email")
+        }
+    }
+}
+
+/// A to-do's text: struck through once done.
+fn todo_style(done: bool) -> StyleRules {
+    StyleRules { strikethrough: Some(done), ..Default::default() }
+}
+
 /// How many tabs [`tab_strip`] holds before its last one.
 const TAB_COUNT: i32 = 40;
 /// What the last tab sets the counter to.
@@ -255,6 +435,14 @@ fn tab_strip(count: Signal<i32>) -> Element {
                 }
                 button(label = "Last tab".to_string(), on_click = move || count.set(LAST_TAB), test_id = "tab-last")
             }
+        }
+    }
+}
+
+stylesheet! {
+    pub NavSection<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
         }
     }
 }
@@ -353,6 +541,11 @@ fn screen(count: Signal<i32>, show_secret: Signal<bool>, name: Signal<String>, n
         BlurOutcome::Allow
     };
 
+    // Taps on the button at the end of the screen, below the fold of a
+    // phone's window: reached by scrolling the screen's `scroll_view`.
+    let page_end_taps: Signal<i32> = signal(0);
+    runtime_vocabulary::robot::watch_signal("page_end_taps", page_end_taps);
+
     // The `secret` text mounts (and registers) only while `show_secret` is
     // true — so the E2E suite can assert it's *not* visible first, then
     // visible after a click. The labels are reactive: the registry
@@ -375,6 +568,8 @@ fn screen(count: Signal<i32>, show_secret: Signal<bool>, name: Signal<String>, n
             if show_secret.get() {
                 text(test_id = "secret") { "🔓 Secret unlocked" }
             }
+            // — A to-do with an email field —
+            todo_section()
             // — Tabs —
             tab_strip(count)
             // — Submit on Enter —
@@ -403,8 +598,72 @@ fn screen(count: Signal<i32>, show_secret: Signal<bool>, name: Signal<String>, n
                     }
                 }
             }
+            // — A row's context menu —
+            context_row()
             // — Re-run —
             button(label = "Run E2E suite again", on_click = run_suite, test_id = "run-suite")
+            // — Deep links through navigators that mount late —
+            deep_link_navigators()
+            // — The end of a screen taller than a phone's window —
+            button(label = "Page end", on_click = move || page_end_taps.set(page_end_taps.get() + 1), test_id = "page-end")
+        }
+    }
+}
+
+const NAV_HOME: runtime_vocabulary::glue::Route<()> = runtime_vocabulary::glue::Route::new("home", "/");
+const NAV_PROJECTS: runtime_vocabulary::glue::Route<()> =
+    runtime_vocabulary::glue::Route::new("projects", "/projects");
+const NAV_LIST: runtime_vocabulary::glue::Route<()> = runtime_vocabulary::glue::Route::new("list", "");
+const NAV_PROJECT: runtime_vocabulary::glue::Route<()> = runtime_vocabulary::glue::Route::new("project", "/:id");
+const NAV_OVERVIEW: runtime_vocabulary::glue::Route<()> = runtime_vocabulary::glue::Route::new("overview", "");
+const NAV_SCHEDULE: runtime_vocabulary::glue::Route<()> =
+    runtime_vocabulary::glue::Route::new("schedule", "/schedule");
+/// How long a screen "loads its data" before it shows its nested
+/// navigator — long enough that the navigator mounts on a later event-loop
+/// turn than the link's navigation.
+const NAV_LOAD_MS: i32 = 150;
+
+/// Navigators nested three deep, each level built only once its screen's
+/// data "arrives": `/projects/:id/schedule` from anywhere must open in one
+/// `open_link` call, as a cold load of the URL would, and the screen's
+/// query (a filter) is readable on the navigator state.
+///
+/// Styled to hug its content: a navigator's default is to fill its
+/// parent (`height: 100%`, `flex-grow: 1`), which in this page's column
+/// would take the window's height and squeeze the shrinkable tab strip
+/// above it to nothing.
+fn deep_link_navigators() -> Element {
+    runtime_vocabulary::builders::swap_navigator(&NAV_HOME)
+        .style(nav_section_style())
+        .screen(NAV_HOME, |_| ui! { text(test_id = "nav-home") { "Projects closed" } })
+        .screen(NAV_PROJECTS, |_| {
+            after_load(|| {
+                runtime_vocabulary::builders::stack_navigator(&NAV_LIST)
+                    .screen(NAV_LIST, |_| ui! { text(test_id = "nav-list") { "Project list" } })
+                    .screen(NAV_PROJECT, |_| {
+                        after_load(|| {
+                            runtime_vocabulary::builders::swap_navigator(&NAV_OVERVIEW)
+                                .screen(NAV_OVERVIEW, |_| ui! { text(test_id = "nav-overview") { "Overview" } })
+                                .screen(NAV_SCHEDULE, |_| ui! { text(test_id = "nav-schedule") { "Schedule" } })
+                                .build()
+                        })
+                    })
+                    .build()
+            })
+        })
+        .build()
+}
+
+/// `body` once a simulated fetch lands ([`NAV_LOAD_MS`]); a loading line
+/// until then.
+fn after_load(body: impl Fn() -> Element + 'static) -> Element {
+    let loaded: Signal<bool> = signal(false);
+    runtime_core::after_ms_scoped(NAV_LOAD_MS, move || loaded.set(true));
+    ui! {
+        if loaded.get() {
+            body()
+        } else {
+            text() { "Loading…" }
         }
     }
 }

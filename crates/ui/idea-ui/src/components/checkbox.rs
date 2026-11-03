@@ -236,6 +236,13 @@ pub struct CheckboxProps {
     /// Optional robot/E2E test id, forwarded to the interactive box (the
     /// pressable that owns the press + focus). Inert outside a robot build.
     pub test_id: Option<&'static str>,
+    /// The box's accessible name — what screen readers announce and what
+    /// the robot finds the box by — without drawing any text. Defaults to
+    /// `label`. Set it on a label-less checkbox (a table row's tick box:
+    /// "Mark Update ADP done") or when the visible label sits OUTSIDE this
+    /// component. Snapshot at build, like every a11y name here.
+    #[prop(static)]
+    pub accessibility_label: Option<String>,
 }
 
 impl Default for CheckboxProps {
@@ -250,6 +257,7 @@ impl Default for CheckboxProps {
             disabled: Reactive::Static(false),
             icon: Reactive::Static(None),
             test_id: None,
+            accessibility_label: None,
             styles: Default::default(),
         }
     }
@@ -335,10 +343,11 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
         live => box_el.disabled(move || live.get()),
     };
     // The label sits outside the pressable now, so the box can't derive its
-    // accessible name from child content — name it explicitly. Snapshot: a
-    // `Reactive` label's later values don't re-announce (the a11y prop bag is
-    // plain data, not reactive), which matches every other component here.
-    let box_el = match props.label.get() {
+    // accessible name from child content — name it explicitly: the override,
+    // else the visible label. Snapshot: a `Reactive` label's later values
+    // don't re-announce (the a11y prop bag is plain data, not reactive),
+    // which matches every other component here.
+    let box_el = match props.accessibility_label.clone().or_else(|| props.label.get()) {
         Some(text) => box_el.a11y_label(text),
         None => box_el,
     };
@@ -510,6 +519,36 @@ mod tests {
                 _ => panic!("the box is the Pressable"),
             }
             assert_eq!(&*seen.borrow(), &[true]);
+        });
+    }
+
+    /// CrewForge: a label-less Checkbox (a table row's tick box) had no
+    /// accessible name — screen readers announced an unnamed checkbox and
+    /// the robot could not find it by name. `accessibility_label` names
+    /// the box without drawing text, and wins over a visible `label`.
+    #[test]
+    fn regression_checkbox_accessibility_label_names_a_label_less_box() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let a11y = |props: &CheckboxProps| match classify(Checkbox(props)) {
+                P::Pressable { accessibility, .. } => accessibility,
+                P::View { children, .. } => match classify(children.into_iter().next().unwrap()) {
+                    P::Pressable { accessibility, .. } => accessibility,
+                    _ => panic!("the box is the Pressable"),
+                },
+                _ => panic!("a Checkbox renders its box or a row around it"),
+            };
+            let named = CheckboxProps { accessibility_label: Some("Mark Update ADP done".into()), ..Default::default() };
+            let got = a11y(&named);
+            assert_eq!(got.label.as_deref(), Some("Mark Update ADP done"));
+            assert_eq!(got.role, Some(Role::Checkbox));
+            let both = CheckboxProps {
+                label: Reactive::Static(Some("Done".into())),
+                accessibility_label: Some("Mark Update ADP done".into()),
+                ..Default::default()
+            };
+            assert_eq!(a11y(&both).label.as_deref(), Some("Mark Update ADP done"), "the override wins");
+            assert_eq!(a11y(&CheckboxProps::default()).label, None);
         });
     }
 

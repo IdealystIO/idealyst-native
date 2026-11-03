@@ -8,7 +8,11 @@ the same rules as a URL on web.
 
 - **The link launches the app:** the first mount opens the linked screen.
   If it is a stack screen, the stack's configured first screen goes below
-  it, so Back returns there.
+  it, so Back returns there. A nested navigator that mounts later — its
+  screen waits on data or a lazy chunk first — still opens its part of
+  the path: on web it reads the address bar; on the native targets the
+  launch path is held until a navigator reaches its end, or until the app
+  navigates anywhere first.
 - **The app is already running:** the navigators move to the same screen.
   A swap navigator selects it. A stack navigator pushes it on top of where
   the user was. A navigator whose part of the path is already showing stays

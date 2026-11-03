@@ -3404,6 +3404,7 @@ fn start_robot_relay(dir: &Path, args: &Args, app_name: &str) -> Option<robot_re
         cdp_profiles_dir: Some(project_state_dir(dir)),
         under_test: std::env::var(dev_events::sessions::LAUNCHED_BY_ENV).as_deref()
             == Ok(dev_events::sessions::LAUNCHED_BY_TEST),
+        relaunch: Some(relaunch_hook()),
     };
     let started = match declared {
         Some(port) => {
@@ -4843,7 +4844,29 @@ fn launch_android(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> 
         artifact.serial,
         artifact.apk.display(),
     );
+    *ANDROID_APP.lock().unwrap_or_else(|e| e.into_inner()) = Some(artifact.launched);
     Ok(())
+}
+
+/// The Android app this session last installed and started; the robot's
+/// `load_url` relaunches it at a deep link ([`relaunch_hook`]).
+static ANDROID_APP: Mutex<Option<run_android::LaunchedApp>> = Mutex::new(None);
+
+/// The relay's native `load_url` hook. Only Android can be relaunched at a
+/// link from here: `am start -S` stops the app and starts it with the link
+/// while the dev session keeps running. Not iOS: `simctl launch` with a URL
+/// starts the app without the environment the dev launch gave it (relay URL
+/// included), so it never reconnects. Not desktop: the dev session ends when
+/// the app it spawned quits.
+fn relaunch_hook() -> robot_relay::Relaunch {
+    robot_relay::Relaunch(Arc::new(|platform: &str, link: &str| {
+        if platform != "android" {
+            return Err(format!("this dev session cannot relaunch a {platform} app at a link"));
+        }
+        let app = ANDROID_APP.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let app = app.ok_or("no Android app was launched by this dev session")?;
+        run_android::relaunch_with_link(&app, link).map_err(|e| format!("{e:#}"))
+    }))
 }
 
 /// macOS launcher — build the AppKit-backed binary via

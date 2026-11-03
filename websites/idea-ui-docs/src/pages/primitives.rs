@@ -12,12 +12,13 @@ use icons_lucide::{
 };
 use idea_ui::{
     tone, typography_kind, variant, Button, Divider, DividerAxis, Grid, Icon, Image, Spacer,
-    Stack, StackAlign, StackAxis, StackGap, StackPadding, Surface, SurfaceColor, ToneRef,
-    Typography, TypographyKind,
+    Stack, StackAlign, StackAxis, StackGap, StackPadding, Surface, SurfaceColor, TextSpan,
+    ToneRef, Typography, TypographyKind,
 };
 
 use crate::pages::body;
 use crate::shell::{CodePanel, DemoSurface, Prop, PropsTable, Section, P};
+use crate::styles::SpansNarrow;
 
 // =============================================================================
 // Typography
@@ -41,9 +42,23 @@ pub fn typography() -> Element {
             }
         },
         ui! {
+            Section(title = "Mixed styles in one paragraph".to_string()) {
+                P(content = "`spans` renders runs in different styles as ONE text node, so they \
+                    wrap together like a sentence: a long bold name pushes the muted number onto \
+                    the next line instead of leaving it beside a two-line block. Each `TextSpan` \
+                    layers `bold()` / `weight`, `tone`, `muted()`, `italic()`, `mono()` and \
+                    `size(kind)` over the paragraph's own kind and tone. Non-empty spans replace \
+                    `content`; `lines` truncates the whole paragraph; `rx!(vec![...])` updates \
+                    the runs in place.".to_string())
+                DemoSurface { spans_demo() }
+                CodePanel(src = SPANS_SRC.to_string())
+            }
+        },
+        ui! {
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
                     Prop { name: "content", ty: "Reactive<String>",   desc: "Text. Literal, String, Signal<String>, or rx!(...)." },
+                    Prop { name: "spans",   ty: "Reactive<Vec<TextSpan>>", desc: "Runs in different styles flowing as one paragraph. Non-empty spans replace content." },
                     Prop { name: "kind",    ty: "TypographyKind",     desc: "Display / H1..H3 / BodyXl..BodySm / Caption / Overline. Default: Body." },
                     Prop { name: "tone",    ty: "Option<ToneRef>",    desc: "Optional semantic color. Overrides the muted flag when Some." },
                     Prop { name: "muted",   ty: "bool",               desc: "Use the theme's muted text color when tone is None." },
@@ -51,6 +66,35 @@ pub fn typography() -> Element {
             }
         },
     ])
+}
+
+const SPANS_SRC: &str = r#"Typography(spans = vec![
+    TextSpan::new("Jonas Lindqvist-Haraldsen").bold(),
+    TextSpan::new(" #1234").muted(),
+])"#;
+
+fn spans_demo() -> Element {
+    let info: ToneRef = tone::Info.into();
+    ui! {
+        Stack(gap = StackGap::Md) {
+            view(style = SpansNarrow()) {
+                Typography(kind = typography_kind::BodyLg, spans = vec![
+                    TextSpan::new("Jonas Lindqvist-Haraldsen").bold(),
+                    TextSpan::new(" #1234").muted(),
+                ])
+            }
+            Typography(spans = vec![
+                TextSpan::new("Run "),
+                TextSpan::new("cargo test").mono(),
+                TextSpan::new(", then "),
+                TextSpan::new("read the report").italic(),
+                TextSpan::new(" — "),
+                TextSpan::new("3 failures").tone(info).bold(),
+                TextSpan::new(" in "),
+                TextSpan::new("vocab").size(typography_kind::Caption).muted(),
+            ])
+        }
+    }
 }
 
 fn kind_gallery() -> Element {

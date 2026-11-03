@@ -1,13 +1,21 @@
 //! App-level keyboard source for the macOS backend.
 //!
-//! Unlike the per-`NSTextField` `on_key_down` (focus-scoped), this installs a
-//! single `NSEvent addLocalMonitorForEventsMatchingMask:` monitor for
-//! key-down, key-up AND flags-changed events. A local monitor sees every key
-//! event the app dequeues regardless of which view is first responder — a
-//! focused text field still receives its keys afterwards (the monitor returns
-//! the event unchanged unless a listener claims it). Each event becomes an
-//! [`AppKeyEvent`] delivered into the framework's [`KeyboardSink`].
-//! Drives `MacosBackend::set_keyboard_sink_impl`.
+//! The backend installs ONE `NSEvent addLocalMonitorForEventsMatchingMask:`
+//! monitor for key-down, key-up AND flags-changed events ([`ensure_key_monitor`]).
+//! A local monitor sees every key event the app dequeues regardless of which
+//! view is first responder — a focused text field still receives its keys
+//! afterwards (the monitor returns the event unchanged unless it is claimed).
+//! Each event becomes an [`AppKeyEvent`] delivered into every installed
+//! [`KeyboardSink`]. Drives `MacosBackend::set_keyboard_sink_impl`.
+//!
+//! Per key-down the monitor runs the DOM's order: the focused field's
+//! `on_key_down` (`newcore::field_keys`), then the app-level sinks — ALWAYS,
+//! even for a key the field prevented, as a `document` keydown listener
+//! hears it on web — then Escape's topmost-overlay dismissal. It is one
+//! monitor, not one per concern, because AppKit does not define the order
+//! local monitors run in: with a separate field monitor that swallowed a
+//! prevented key, the app sinks lost that key-down whenever the field
+//! monitor happened to run first.
 //!
 //! - **Modifier keys** never produce `keyDown`/`keyUp` on macOS — they arrive
 //!   as `NSEventTypeFlagsChanged`, which carries no up/down. The phase is
@@ -375,25 +383,108 @@ pub(crate) unsafe fn read_raw(event: *mut NSObject) -> Option<RawKey> {
     Some(RawKey { kind, key_code, flags, chars, is_repeat })
 }
 
+type SinkSlot = Rc<RefCell<Option<KeyboardSink>>>;
+
+#[derive(Default)]
+struct KeyMonitor {
+    /// The `addLocalMonitor…` token. Installed once, never removed: with no
+    /// sink, field or overlay registered the body only translates the event.
+    token: Option<Retained<NSObject>>,
+    /// Every backend's app-level sink slot, held weakly: a torn-down
+    /// [`AppKeyboard`] drops the slot and its entry is pruned.
+    sinks: Vec<std::rc::Weak<RefCell<Option<KeyboardSink>>>>,
+}
+
+thread_local! {
+    static KEY_MONITOR: RefCell<KeyMonitor> = RefCell::new(KeyMonitor::default());
+}
+
+/// Install the backend's one key monitor if it isn't yet. Called when an
+/// app-level sink, a field `on_key_down`, or an overlay's Escape dismissal
+/// is first registered.
+pub(crate) fn ensure_key_monitor() {
+    if KEY_MONITOR.with(|m| m.borrow().token.is_some()) {
+        return;
+    }
+    let block = RcBlock::new(|event: *mut NSObject| -> *mut NSObject {
+        let swallow = backend_apple_core::crash::abort_on_panic("key monitor", || unsafe { on_key_event(event) });
+        if swallow {
+            std::ptr::null_mut()
+        } else {
+            event
+        }
+    });
+    // `addLocalMonitor…` copies the handler block internally, so the local
+    // `block` may drop after this; the returned token is retained so the
+    // monitor is installed exactly once.
+    let token: *mut NSObject = unsafe {
+        msg_send![
+            class!(NSEvent),
+            addLocalMonitorForEventsMatchingMask: NS_EVENT_MASK_KEYS,
+            handler: &*block,
+        ]
+    };
+    let token = unsafe { Retained::retain(token) };
+    KEY_MONITOR.with(|m| m.borrow_mut().token = token);
+}
+
+/// The monitor body; `true` swallows the event (returns `nil` to AppKit).
+///
+/// A key-down/up is swallowed when the field's `on_key_down` prevented it
+/// (the field must not type it), when an app-level listener claimed it
+/// (`PreventDefault` — so AppKit doesn't `NSBeep` on an unhandled key), or
+/// when Escape dismissed an overlay (the field editor would otherwise run
+/// `cancelOperation:`, which pops up completions). `flagsChanged` is NEVER
+/// swallowed: AppKit tracks modifier state from it, and eating one would
+/// leave the rest of the app with a stuck modifier.
+///
+/// No registry borrow is held while author code runs: a listener may
+/// add/remove listeners (re-entering `set_keyboard_sink`), and a field
+/// handler may mount or release an overlay.
+unsafe fn on_key_event(event: *mut NSObject) -> bool {
+    let Some(raw) = read_raw(event) else { return false };
+    let Some(ev) = translate(&raw) else { return false };
+    let key_down = raw.kind == RawKind::KeyDown;
+    let window = if key_down { crate::newcore::field_keys::event_window(event) } else { std::ptr::null_mut() };
+
+    // 1. The focused field's own handler.
+    let field_prevented = key_down && crate::newcore::field_keys::field_prevents(window, &ev);
+
+    // 2. The app-level sinks, which hear every key whatever the field did.
+    let sinks: Vec<KeyboardSink> = KEY_MONITOR.with(|m| {
+        let mut m = m.borrow_mut();
+        m.sinks.retain(|w| w.strong_count() > 0);
+        m.sinks.iter().filter_map(|w| w.upgrade()?.borrow().clone()).collect()
+    });
+    let mut app_prevented = false;
+    for sink in sinks {
+        app_prevented |= sink.key(&ev) == KeyOutcome::PreventDefault;
+    }
+
+    // 3. Escape closes the topmost overlay, unless the field claimed it.
+    let dismissed = key_down && !field_prevented && crate::newcore::field_keys::escape_dismisses(window, &ev);
+
+    raw.kind != RawKind::FlagsChanged && (field_prevented || app_prevented || dismissed)
+}
+
 /// The installed app-level key source: the live sink (swappable without
-/// reinstalling), the `NSEvent` monitor token, and the focus-loss observers.
+/// reinstalling) the key monitor delivers into, and the focus-loss observers.
 pub(crate) struct AppKeyboard {
-    /// Shared with the monitor block and the observers. Callers CLONE the sink
-    /// out and drop the borrow before calling it: a listener may add/remove
-    /// listeners, which re-enters `set_keyboard_sink` on this backend.
-    sink: Rc<RefCell<Option<KeyboardSink>>>,
-    monitor: Retained<NSObject>,
+    /// Shared (weakly) with the key monitor and with the observers. Callers
+    /// CLONE the sink out and drop the borrow before calling it: a listener
+    /// may add/remove listeners, which re-enters `set_keyboard_sink` on this
+    /// backend.
+    sink: SinkSlot,
     observers: Vec<Retained<NSObject>>,
 }
 
 impl AppKeyboard {
     fn teardown(self) {
         // Clear the slot first: a focus-loss callback already queued on the
-        // main queue (observers defer one turn) then finds no sink.
+        // main queue (observers defer one turn) then finds no sink, and the
+        // key monitor stops delivering to it now (its weak entry dies when
+        // `self.sink` drops).
         self.sink.borrow_mut().take();
-        unsafe {
-            let _: () = msg_send![class!(NSEvent), removeMonitor: &*self.monitor];
-        }
         for observer in &self.observers {
             super::callbacks::remove_observer(observer);
         }
@@ -414,45 +505,9 @@ pub(crate) fn set_keyboard_sink(backend: &mut MacosBackend, sink: Option<Keyboar
         return;
     }
 
-    let slot: Rc<RefCell<Option<KeyboardSink>>> = Rc::new(RefCell::new(Some(sink)));
-
-    // The monitor block: NSEvent → AppKeyEvent → sink. Returns `nil` to
-    // SWALLOW a key-down/up a listener claimed (`PreventDefault`) — so AppKit
-    // doesn't `NSBeep` on an unhandled key — and the event unchanged
-    // otherwise so normal key routing (a focused text field) continues.
-    // `flagsChanged` is NEVER swallowed: AppKit tracks modifier state from
-    // it, and eating one would leave the rest of the app with a stuck
-    // modifier. Crash-loud per project policy (an FFI callback that unwinds
-    // aborts).
-    let block_slot = slot.clone();
-    let block = RcBlock::new(move |event: *mut NSObject| -> *mut NSObject {
-        let outcome = backend_apple_core::crash::abort_on_panic("app key monitor", || unsafe {
-            let Some(raw) = read_raw(event) else {
-                return None;
-            };
-            let ev = translate(&raw)?;
-            let sink = block_slot.borrow().clone()?;
-            Some((raw.kind, sink.key(&ev)))
-        });
-        match outcome {
-            Some((RawKind::KeyDown | RawKind::KeyUp, KeyOutcome::PreventDefault)) => std::ptr::null_mut(),
-            _ => event,
-        }
-    });
-
-    // `addLocalMonitor…` copies the handler block internally, so the local
-    // `block` may drop after this; we retain the returned monitor token to feed
-    // `removeMonitor:` later.
-    let monitor: *mut NSObject = unsafe {
-        msg_send![
-            class!(NSEvent),
-            addLocalMonitorForEventsMatchingMask: NS_EVENT_MASK_KEYS,
-            handler: &*block,
-        ]
-    };
-    let Some(monitor) = (unsafe { Retained::retain(monitor) }) else {
-        return;
-    };
+    let slot: SinkSlot = Rc::new(RefCell::new(Some(sink)));
+    KEY_MONITOR.with(|m| m.borrow_mut().sinks.push(Rc::downgrade(&slot)));
+    ensure_key_monitor();
 
     // Focus loss: the app deactivating, or any of its windows resigning key
     // (key focus moved to another window/app). Releases for keys held now
@@ -477,7 +532,7 @@ pub(crate) fn set_keyboard_sink(backend: &mut MacosBackend, sink: Option<Keyboar
         })
         .collect();
 
-    backend.app_keyboard = Some(AppKeyboard { sink: slot, monitor, observers });
+    backend.app_keyboard = Some(AppKeyboard { sink: slot, observers });
 }
 
 #[cfg(test)]

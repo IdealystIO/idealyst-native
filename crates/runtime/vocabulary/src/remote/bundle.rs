@@ -470,7 +470,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             // where a remote component is never used; everywhere else the
             // text handler runs the same `compute_fallback`.
             TextSourceProp::JsBinding(b) => TextContent::Value(getter(b.compute_fallback)),
-            TextSourceProp::Runs(runs) => TextContent::Runs(runs),
+            TextSourceProp::Runs(runs) => TextContent::Runs(val(runs)),
         };
         return Node::Text { common: common(p.test_id, p.style, p.a11y).with_fill(fill), content };
     }

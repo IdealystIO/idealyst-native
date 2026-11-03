@@ -38,9 +38,8 @@
 //!   equivalent closure forms — same observable reactivity, no wire
 //!   metadata.
 //!
-//! Other known gaps: styled-text runs (`create_styled_text`) are created
-//! once and not re-realized on a theme swap, and native container-query
-//! feedback has no container-width signal (see `style_attach`).
+//! Other known gap: native container-query feedback has no
+//! container-width signal (see `style_attach`).
 //!
 //! ## Node associated type
 //!

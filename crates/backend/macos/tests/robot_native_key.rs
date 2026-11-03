@@ -172,7 +172,13 @@ mod imp {
             vec![down("Meta", "MetaLeft", true), down("k", "KeyK", true), up("k", "KeyK", true), up("Meta", "MetaLeft", false)],
             "the app-level source hears Meta+K as a keyboard sends it: {got:?}"
         );
+        // REGRESSION: the field's `on_key_down` ran from its own NSEvent
+        // monitor and swallowed a prevented key; AppKit runs local monitors
+        // in no defined order, so the app-level source lost the key-down of
+        // Enter and "x" whenever that monitor ran first. On web a
+        // `document` listener hears a key the field prevented.
         assert!(got.contains(&down("Enter", "Enter", false)) && got.contains(&up("Enter", "Enter", false)), "{got:?}");
+        assert!(got.contains(&down("x", "KeyX", false)), "a key the field prevented still reaches on_key: {got:?}");
         assert!(got.contains(&down("Backspace", "Backspace", false)), "{got:?}");
         let bang = keys.borrow().iter().find(|e| e.key == "!").cloned().expect("! heard");
         assert!(bang.shift && bang.code == "Digit1", "{bang:?}");

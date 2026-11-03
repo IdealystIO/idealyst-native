@@ -536,6 +536,58 @@ mod tests {
         assert!((h - 2.0 * line).abs() < 0.5, "styled max_lines 2 must measure two lines, got {h}");
     }
 
+    // Regression: `update_styled_text` re-realized the attributed string
+    // but left the label's Taffy node clean, so a reactive run list that
+    // grew kept the previous content's measured height (Taffy re-invokes a
+    // measure_fn only for a dirty node). Reactive styled runs — an idea-ui
+    // `Typography` with `spans` bound to a signal — hit this on every
+    // change.
+    #[test]
+    fn regression_update_styled_text_remeasures_through_layout() {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut backend = MacosBackend::new(mtm);
+        let line = one_line_height(&mut backend);
+        let node = backend.create_styled_text_impl(
+            &[runtime_shared::TextRun::plain("Jonas")],
+            &Default::default(),
+        );
+        let label = backend.layout_of(node.as_view()).expect("styled text has a layout node");
+        let root = backend.layout.new_node();
+        backend.layout.add_child(root, label);
+        backend.layout.compute(root, 100.0, 2_000.0);
+        let before = backend.layout.frame_of(label).height as f64;
+        assert!((before - line).abs() < 0.5, "one short run is one line, got {before}");
+
+        backend.update_styled_text_impl(
+            &node,
+            &[runtime_shared::TextRun::plain("Jonas "), runtime_shared::TextRun::plain(LONG)],
+        );
+        backend.layout.compute(root, 100.0, 2_000.0);
+        let after = backend.layout.frame_of(label).height as f64;
+        assert!(after > line * 3.0, "the longer runs must re-measure to several lines, got {after}");
+    }
+
+    // A line limit survives a run update: `update_styled_text` rebuilds
+    // the attributed string, and the cell's `maximumNumberOfLines` must
+    // still govern the new one.
+    #[test]
+    fn max_lines_survives_a_styled_text_update() {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut backend = MacosBackend::new(mtm);
+        let line = one_line_height(&mut backend);
+        let node = backend.create_styled_text_impl(
+            &[runtime_shared::TextRun::plain("short")],
+            &Default::default(),
+        );
+        backend.apply_style_impl(&node, &style_with(Some(1)));
+        backend.update_styled_text_impl(
+            &node,
+            &[runtime_shared::TextRun::plain("The quick brown fox "), runtime_shared::TextRun::plain(LONG)],
+        );
+        let h = fitted_height(node.as_view(), 100.0);
+        assert!((h - line).abs() < 0.5, "styled max_lines 1 after an update must measure one line ({line}), got {h}");
+    }
+
     // One line never wraps: an embedded newline must not add a second line
     // (with a truncating `lineBreakMode` it did — two lines for `max_lines: 1`),
     // and the max-content width is the natural single-line width, so Taffy's

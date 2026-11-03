@@ -299,6 +299,17 @@ enum Zoom {
     Years,
 }
 
+/// The `(back, forward)` chevron names for what the body shows at
+/// `zoom`: a month of days steps a month, a year of months a year, a
+/// 12-year page twelve years.
+fn step_labels(labels: &DateLabels, zoom: Zoom) -> (&str, &str) {
+    match zoom {
+        Zoom::Days => (&labels.previous_month, &labels.next_month),
+        Zoom::Months => (&labels.previous_year, &labels.next_year),
+        Zoom::Years => (&labels.previous_years, &labels.next_years),
+    }
+}
+
 /// First cell of the 6×7 grid showing `(year, month)` with columns
 /// starting on `first_weekday` — the last `first_weekday` on or before
 /// the 1st of the month. Pure; unit-tested below.
@@ -397,30 +408,42 @@ pub(crate) fn calendar_view(core: Rc<CalendarCore>) -> Element {
         .with_style(CalendarStyles::title().overridden(core.styles.title.as_ref()))
         .into_element();
 
-    let header_children = vec![
-        ui! {
-            IconButton(
-                icon = Some(CHEVRON_LEFT),
-                on_click = on_prev,
-                tone = tone::Neutral,
-                variant = variant::Ghost,
-                size = IconButtonSize::Sm,
-            )
-        },
-        title,
-        ui! {
-            IconButton(
-                icon = Some(CHEVRON_RIGHT),
-                on_click = on_next,
-                tone = tone::Neutral,
-                variant = variant::Ghost,
-                size = IconButtonSize::Sm,
-            )
-        },
-    ];
-    let header = view(header_children)
-        .with_style(CalendarStyles::header().overridden(core.styles.header.as_ref()))
-        .into_element();
+    // The step chevrons are glyph-only, so each carries an accessible
+    // name — what they step by follows the zoom ("Previous month" over
+    // days, "Previous year" over months, …), so each rebuilds when the
+    // zoom changes (an a11y name is build-time data on a pressable).
+    let back_labels = core.labels.clone();
+    let fwd_labels = core.labels.clone();
+    let header_style = CalendarStyles::header().overridden(core.styles.header.as_ref());
+    let header = ui! {
+        view(style = header_style) {
+            match zoom.get() {
+                z => {
+                    IconButton(
+                        icon = Some(CHEVRON_LEFT),
+                        label = Some(step_labels(&back_labels, *z).0.to_string()),
+                        on_click = on_prev.clone(),
+                        tone = tone::Neutral,
+                        variant = variant::Ghost,
+                        size = IconButtonSize::Sm,
+                    )
+                }
+            }
+            title
+            match zoom.get() {
+                z => {
+                    IconButton(
+                        icon = Some(CHEVRON_RIGHT),
+                        label = Some(step_labels(&fwd_labels, *z).1.to_string()),
+                        on_click = on_next.clone(),
+                        tone = tone::Neutral,
+                        variant = variant::Ghost,
+                        size = IconButtonSize::Sm,
+                    )
+                }
+            }
+        }
+    };
 
     // --- body -------------------------------------------------------------
     // One grid per zoom level, rebuilt whenever anything the grid's

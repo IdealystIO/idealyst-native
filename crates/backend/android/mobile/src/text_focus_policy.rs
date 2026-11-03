@@ -127,6 +127,7 @@ mod tests {
 
     const EDIT_TEXT_KT: &str = include_str!("../runtime/kotlin/io/idealyst/runtime/RustEditText.kt");
     const TEXT_INPUT_RS: &str = include_str!("imp/primitives/text_input.rs");
+    const MODAL_OVERLAY_KT: &str = include_str!("../runtime/kotlin/io/idealyst/runtime/RustModalOverlay.kt");
 
     /// Code only, whitespace and `//` / KDoc lines dropped, so a statement
     /// matches however it is wrapped.
@@ -136,6 +137,20 @@ mod tests {
             .filter(|l| !l.trim_start().starts_with('*') && !l.trim_start().starts_with("/**"))
             .flat_map(str::split_whitespace)
             .collect()
+    }
+
+    /// Regression: a field whose `on_key_down` claimed Escape (on the key's
+    /// DOWN) still saw its modal close on the UP, because the overlay
+    /// dismissed on any unclaimed up. No JVM harness runs here, so this pins
+    /// the Kotlin; the robot-e2e test
+    /// `a_field_that_claims_escape_keeps_its_dialog_open` shows it on an
+    /// emulator.
+    #[test]
+    fn regression_a_claimed_escape_down_keeps_the_modal_open() {
+        let kt = code(MODAL_OVERLAY_KT);
+        assert!(kt.contains("privatevardownClaimedBelow=false"), "{kt}");
+        assert!(kt.contains("downClaimedBelow=claimed"), "the down records whether a child claimed it: {kt}");
+        assert!(kt.contains("if(claimedDown)returntrue"), "a claimed down's up does not dismiss: {kt}");
     }
 
     /// From API 37 a focused field took Escape to blur itself, so a modal

@@ -179,7 +179,10 @@ pub(crate) fn create(
         let dismiss = dismiss.clone();
         Some(crate::glue_dom::listen(&window, "keydown", Default::default(), move |ev| {
             let ev: web_glue::dom::KeyboardEvent = web_glue::JsCast::unchecked_into(ev);
-            if ev.key() == "Escape" {
+            // A focused field whose `on_key_down` prevented Escape keeps
+            // the overlay open (it may be closing its own dropdown) — the
+            // same rule iOS, Android and macOS dispatch by.
+            if ev.key() == "Escape" && !ev.default_prevented() {
                 (dismiss)();
             }
         }))

@@ -15,6 +15,7 @@ use runtime_shared::primitives::portal::ViewportRect;
 use runtime_shared::primitives::scroll_view::ScrollAxis;
 use runtime_vocabulary::builders::{pressable, scroll_view, view};
 use runtime_vocabulary::robot::bridge::invoke_command;
+use runtime_vocabulary::caps::ScrollPort;
 use runtime_vocabulary::robot::{Query, Robot, ScrollMove};
 
 fn rect(x: f32, y: f32, width: f32, height: f32) -> ViewportRect {
@@ -86,9 +87,9 @@ fn nested_scroll_views_each_scroll_the_least_along_their_own_axis() {
         moved,
         vec![
             // Tab right edge 1000 → strip right edge 400: 600 more.
-            ScrollMove { scroll_view: tabs, x: 700.0, y: 0.0 },
+            ScrollMove { scroll_view: tabs, page: false, x: 700.0, y: 0.0 },
             // Tab bottom 540 → window bottom 300.
-            ScrollMove { scroll_view: page_id, x: 0.0, y: 240.0 },
+            ScrollMove { scroll_view: page_id, page: false, x: 0.0, y: 240.0 },
         ]
     );
     assert_eq!(scroll_calls(), ["scroll_to 700 0 n2", "scroll_to 0 240 n0"]);
@@ -134,7 +135,7 @@ fn scrolls_back_and_aligns_an_oversized_element_to_the_start() {
 
     let moved = robot.scroll_into_view(&find(&robot, "tab")).unwrap();
 
-    assert_eq!(moved, vec![ScrollMove { scroll_view: tabs, x: 300.0, y: 350.0 }]);
+    assert_eq!(moved, vec![ScrollMove { scroll_view: tabs, page: false, x: 300.0, y: 350.0 }]);
     assert_eq!(scroll_calls(), ["scroll_to 300 350 n2"]);
     robot.reset();
 }
@@ -165,7 +166,7 @@ fn a_horizontal_scroller_is_never_asked_for_a_vertical_offset() {
 
     let moved = robot.scroll_into_view(&find(&robot, "chip")).unwrap();
 
-    assert_eq!(moved, vec![ScrollMove { scroll_view: find(&robot, "strip").id, x: 100.0, y: 0.0 }]);
+    assert_eq!(moved, vec![ScrollMove { scroll_view: find(&robot, "strip").id, page: false, x: 100.0, y: 0.0 }]);
     assert_eq!(scroll_calls(), ["scroll_to 100 0 n0"]);
     drop(realized);
     robot.reset();
@@ -184,6 +185,100 @@ fn the_verb_reports_what_it_scrolled() {
         from_str(&invoke_command("scroll_into_view", &json!({ "element_id": find(&robot, "tab").id.0 })).unwrap())
             .unwrap();
     assert_eq!(out, json!({ "scrolled": [{ "element_id": find(&robot, "page").id.0, "x": 0.0, "y": 240.0 }] }));
+    robot.reset();
+}
+
+fn port(x: f32, y: f32, max_x: f32, max_y: f32, at: Option<ViewportRect>) -> ScrollPort {
+    ScrollPort { x, y, max_x, max_y, port: at }
+}
+
+/// Regression (CrewForge 2026-11-03): a button below the fold of a page no
+/// `scroll_view` holds — on the web the document scrolls when the app's
+/// root outgrows the window — was never scrolled to, so `click()` failed
+/// with "outside the window". The page's own scroller (the host scroller
+/// above the app's tree) moves, by the least that shows the button.
+#[test]
+fn regression_click_scrolls_the_page_when_no_scroll_view_holds_the_element() {
+    let robot = Robot::new();
+    robot.reset();
+    let h = Harness::new();
+    let _r = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            view().child(view().child(pressable(|| {}).test_id("add").build()).build()).build(),
+        )
+    });
+    runtime_shared::viewport::set_viewport_size(runtime_shared::viewport::ViewportSize { width: 400.0, height: 300.0 });
+    h.shared.frames.borrow_mut().insert(0, rect(0.0, 0.0, 400.0, 1000.0));
+    h.shared.frames.borrow_mut().insert(1, rect(0.0, 0.0, 400.0, 1000.0));
+    h.shared.frames.borrow_mut().insert(2, rect(10.0, 600.0, 100.0, 40.0));
+    *h.shared.host_scroll.borrow_mut() = Some(port(0.0, 0.0, 0.0, 700.0, Some(rect(0.0, 0.0, 400.0, 300.0))));
+    host_mock::take_handle_log();
+
+    let moved = robot.scroll_into_view(&find(&robot, "add")).unwrap();
+
+    let root = robot.find_all(Query::kind(runtime_vocabulary::robot::ElementKind::View))[0].id;
+    // Bottom 640 → window bottom 300.
+    assert_eq!(moved, vec![ScrollMove { scroll_view: root, page: true, x: 0.0, y: 340.0 }]);
+    assert_eq!(host_mock::take_handle_log(), ["set_scroll_offset 0 340 host"]);
+    let out: Value =
+        from_str(&invoke_command("scroll_into_view", &json!({ "element_id": find(&robot, "add").id.0 })).unwrap())
+            .unwrap();
+    // The page is at 340 now, and the frames are the mock's to move: the
+    // robot reads them again and scrolls again from the new offset.
+    assert_eq!(out["scrolled"][0]["page"], json!(true), "{out}");
+    robot.reset();
+}
+
+/// A registered element whose native object scrolls without being a
+/// `scroll_view` (a list's own scroller, a web element whose CSS `overflow`
+/// scrolls) is scrolled through `set_scroll_offset`, by the least that
+/// shows the element and never past its range.
+#[test]
+fn a_scrolling_element_that_is_not_a_scroll_view_is_scrolled_too() {
+    let robot = Robot::new();
+    robot.reset();
+    let h = Harness::new();
+    let _r = h.world.enter(|| {
+        realize(&h.backend, &h.registry, view().test_id("list").child(pressable(|| {}).test_id("row").build()).build())
+    });
+    runtime_shared::viewport::set_viewport_size(runtime_shared::viewport::ViewportSize { width: 400.0, height: 300.0 });
+    h.shared.frames.borrow_mut().insert(0, rect(0.0, 0.0, 400.0, 200.0));
+    // The row's bottom is 260 px below the list's: 60 more than it holds.
+    h.shared.frames.borrow_mut().insert(1, rect(0.0, 420.0, 400.0, 40.0));
+    h.shared.scroll_ports.borrow_mut().insert(0, port(0.0, 0.0, 0.0, 200.0, None));
+    host_mock::take_handle_log();
+
+    let moved = robot.scroll_into_view(&find(&robot, "row")).unwrap();
+
+    // 460 - 200 = 260, clamped to the list's 200.
+    assert_eq!(moved, vec![ScrollMove { scroll_view: find(&robot, "list").id, page: false, x: 0.0, y: 200.0 }]);
+    assert_eq!(host_mock::take_handle_log(), ["set_scroll_offset 0 200 n0"]);
+    robot.reset();
+}
+
+/// A `scroll_view` that grew to its content (its range is 0) has nothing
+/// to scroll: it is passed over, and the scroller outside it moves. Asking
+/// it would have "moved" a scroller that cannot move, every retry.
+#[test]
+fn a_scroll_view_with_no_range_is_passed_over_for_the_one_outside_it() {
+    let robot = Robot::new();
+    robot.reset();
+    let h = Harness::new();
+    let _r = page(&h, ScrollAxis::Vertical);
+    // The inner scroller grew to 1000 px and reaches past the window.
+    h.shared.frames.borrow_mut().insert(2, rect(0.0, 0.0, 400.0, 1000.0));
+    h.shared.frames.borrow_mut().insert(3, rect(0.0, 700.0, 100.0, 30.0));
+    h.shared.scroll_ports.borrow_mut().insert(2, port(0.0, 0.0, 0.0, 0.0, None));
+    h.shared.scroll_ports.borrow_mut().insert(0, port(0.0, 0.0, 0.0, 700.0, None));
+    host_mock::take_handle_log();
+
+    let moved = robot.scroll_into_view(&find(&robot, "tab")).unwrap();
+
+    assert_eq!(moved, vec![ScrollMove { scroll_view: find(&robot, "page").id, page: false, x: 0.0, y: 430.0 }]);
+    // A scroll_view still moves through its own handle.
+    assert_eq!(scroll_calls(), ["scroll_to 0 430 n0"]);
     robot.reset();
 }
 

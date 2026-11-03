@@ -53,7 +53,7 @@ pub use portal::{
 pub use presence::{presence, PresenceBuilder};
 pub use virtual_grid::{virtual_grid, VirtualGridBuilder};
 pub use virtualizer::{virtualizer, VirtualizerBuilder};
-pub use text::{button, text, ButtonBuilder, TextBuilder};
+pub use text::{button, text, ButtonBuilder, IntoTextRuns, TextBuilder};
 pub use view::{
     keyboard_avoiding_view, pressable, scroll_view, view, PressableBuilder, ScrollViewBuilder,
     ViewBuilder,

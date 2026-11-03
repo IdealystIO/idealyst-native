@@ -82,7 +82,9 @@ pub mod wasm;
 /// - 7: [`Node::ScrollView`] carries `axis` (a [`runtime_shared::ScrollAxis`])
 ///   in place of `horizontal`.
 /// - 8: [`Node::View`] and [`Node::Pressable`] carry `on_focus`.
-pub const CODEC_VERSION: u32 = 8;
+/// - 9: [`TextContent::Runs`] is a [`Val`] (a reactive run list crosses
+///   as a getter).
+pub const CODEC_VERSION: u32 = 9;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.
@@ -360,8 +362,8 @@ pub enum Node {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum TextContent {
     Value(Val<String>),
-    /// Styled runs; a getter replies `Vec<TextRun>`.
-    Runs(Vec<runtime_shared::styled_text::TextRun>),
+    /// Styled runs; a getter replies `Vec<TextRun>` (CODEC_VERSION 9).
+    Runs(Val<Vec<runtime_shared::styled_text::TextRun>>),
 }
 
 /// An `IconData`. Its paths are `&'static` on the prim, so the host interns

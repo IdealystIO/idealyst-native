@@ -279,7 +279,9 @@ impl CivilDateTime {
 // Display labels
 // ---------------------------------------------------------------------------
 
-/// Month/weekday display names for the calendar UI. English by
+/// The date components' display strings: month/weekday names, and the
+/// accessible names of their icon-only buttons (the calendar's step
+/// chevrons, a date input's clear ✕ and calendar button). English by
 /// default ([`DateLabels::english`]); construct your own (or map the
 /// fields through your i18n layer) and pass it to the components'
 /// `labels` prop to localize. Weekday arrays are Monday-first
@@ -295,6 +297,23 @@ pub struct DateLabels {
     pub weekdays_short: [String; 7],
     /// Full weekday names, Monday-first (the `dddd` format token).
     pub weekdays: [String; 7],
+    /// Accessible name of the calendar's back chevron while it shows a
+    /// month of days ("Previous month").
+    pub previous_month: String,
+    /// Accessible name of the forward chevron over a month of days.
+    pub next_month: String,
+    /// Back chevron while the calendar shows a year of months.
+    pub previous_year: String,
+    /// Forward chevron while the calendar shows a year of months.
+    pub next_year: String,
+    /// Back chevron while the calendar shows a 12-year page.
+    pub previous_years: String,
+    /// Forward chevron while the calendar shows a 12-year page.
+    pub next_years: String,
+    /// Accessible name of a date input's clear ✕ ("Clear date").
+    pub clear_date: String,
+    /// Accessible name of a date input's calendar button ("Pick a date").
+    pub pick_date: String,
 }
 
 impl DateLabels {
@@ -315,6 +334,14 @@ impl DateLabels {
             weekdays: arr([
                 "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
             ]),
+            previous_month: "Previous month".to_string(),
+            next_month: "Next month".to_string(),
+            previous_year: "Previous year".to_string(),
+            next_year: "Next year".to_string(),
+            previous_years: "Previous 12 years".to_string(),
+            next_years: "Next 12 years".to_string(),
+            clear_date: "Clear date".to_string(),
+            pick_date: "Pick a date".to_string(),
         })
     }
 

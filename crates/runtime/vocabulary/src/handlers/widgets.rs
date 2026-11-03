@@ -462,14 +462,25 @@ where
     // A static kind is one call, skipped entirely for `Default` (what every
     // backend creates with); a live kind binds an effect that applies the
     // initial value now and re-applies per change.
+    // The robot's `state.keyboard`: the kind last handed the backend.
+    #[cfg(feature = "robot")]
+    let robot_keyboard = Rc::new(Cell::new(runtime_shared::primitives::text_input::KeyboardKind::Default));
     match prim.keyboard {
         Value::Const(runtime_shared::primitives::text_input::KeyboardKind::Default) => {}
-        Value::Const(kind) => backend.borrow_mut().update_text_input_keyboard(&node, kind),
+        Value::Const(kind) => {
+            backend.borrow_mut().update_text_input_keyboard(&node, kind);
+            #[cfg(feature = "robot")]
+            robot_keyboard.set(kind);
+        }
         live @ Value::Dyn(_) => {
             let b = backend.clone();
             let n = node.clone();
+            #[cfg(feature = "robot")]
+            let robot_keyboard = robot_keyboard.clone();
             bind_dyn(live, move |&k| {
                 b.borrow_mut().update_text_input_keyboard(&n, k);
+                #[cfg(feature = "robot")]
+                robot_keyboard.set(k);
             });
         }
     }
@@ -510,10 +521,12 @@ where
             let gate = disabled_gate.clone();
             let b = backend.clone();
             let n = node.clone();
+            let keyboard = robot_keyboard.clone();
             Rc::new(move || crate::robot::ElementState {
                 value: Some(crate::robot::StateValue::Text(text.borrow().clone())),
                 disabled: Some(gate_is_up(&gate)),
                 focused: Some(queried_focus(&b, &n).unwrap_or_else(|| focused.get())),
+                keyboard: Some(keyboard.get()),
                 ..Default::default()
             }) as Rc<dyn Fn() -> crate::robot::ElementState>
         };

@@ -43,6 +43,9 @@
 //! [`TableBound::on_scroll_edges`] reports which sides of the scroller
 //! have columns scrolled out of view ([`ScrollEdges`]) — what a frozen
 //! column needs to draw its edge only while content slides beneath it.
+//! [`TableBound::on_viewport_width`] reports the scroller's visible width
+//! — what content spanning the table (a group's band) is held to, so it
+//! stays inside the screen with the columns scrolling beneath it.
 //!
 //! # Scroll-y mode & a pinned head
 //!
@@ -734,6 +737,7 @@ pub struct TableBound {
     footer_slot: Option<Element>,
     columns: Vec<Option<ColumnSpec>>,
     on_edges: Option<Rc<dyn Fn(ScrollEdges)>>,
+    on_viewport: Option<Rc<dyn Fn(f32)>>,
     head_corner: Option<StyleProp>,
 }
 table_wrapper_common!(TableBound);
@@ -750,6 +754,24 @@ impl TableBound {
         self.on_edges = Some(Rc::new(f));
         self
     }
+
+    /// Report the width of a `scroll_x` table's scroller VIEWPORT — the
+    /// part of the columns on screen, a classic vertical scrollbar
+    /// excluded — in logical px. Called once the scroller is laid out,
+    /// then whenever the width changes; never twice with the same value.
+    /// Ignored without `scroll_x`, where the table is its viewport.
+    ///
+    /// For content that must fit the visible part of a table wider than
+    /// its scroller: a row spanning every column (a group's band) keeps
+    /// its title and actions inside the viewport with it. The width comes
+    /// from a zero-height probe placed across the scroller, so it is the
+    /// same measurement on every backend.
+    ///
+    /// The callback stops when the scope that built the table drops.
+    pub fn on_viewport_width(mut self, f: impl Fn(f32) + 'static) -> Self {
+        self.on_viewport = Some(Rc::new(f));
+        self
+    }
 }
 
 impl IntoElement for TableBound {
@@ -763,6 +785,7 @@ impl IntoElement for TableBound {
             footer_slot: self.footer_slot,
             columns: self.columns,
             on_edges: self.on_edges,
+            on_viewport: self.on_viewport,
             head_corner: self.head_corner,
         })
     }
@@ -814,6 +837,7 @@ pub fn table(mut props: TableProps) -> TableBound {
         footer_slot: props.footer_slot.take(),
         columns: std::mem::take(&mut props.columns),
         on_edges: None,
+        on_viewport: None,
         head_corner: props.head_corner.take(),
     }
 }
@@ -965,6 +989,7 @@ struct TableParts {
     footer_slot: Option<Element>,
     columns: Vec<Option<ColumnSpec>>,
     on_edges: Option<Rc<dyn Fn(ScrollEdges)>>,
+    on_viewport: Option<Rc<dyn Fn(f32)>>,
     head_corner: Option<StyleProp>,
 }
 
@@ -1126,6 +1151,84 @@ impl EdgeWatch {
         self.report.borrow_mut().take();
         self.subs.borrow_mut().clear();
     }
+}
+
+/// The measurement behind [`TableBound::on_viewport_width`]: a probe
+/// view across the scroller ([`split_head::probe_sheet`] — absolute,
+/// `width: 100%`, zero height), whose laid-out width is the viewport's.
+/// The callback hears only a CHANGED, non-zero width. Ownership mirrors
+/// [`EdgeWatch`]: the layout subscription holds a `Weak`, and the
+/// building scope's drop disarms it.
+struct ViewportWatch {
+    last: std::cell::Cell<Option<f32>>,
+    report: std::cell::RefCell<Option<Rc<dyn Fn(f32)>>>,
+    subs: std::cell::RefCell<Vec<runtime_shared::LayoutSubscription>>,
+}
+
+impl ViewportWatch {
+    fn new(report: Rc<dyn Fn(f32)>) -> Rc<Self> {
+        let watch = Rc::new(Self {
+            last: Default::default(),
+            report: std::cell::RefCell::new(Some(report)),
+            subs: Default::default(),
+        });
+        let on_drop = watch.clone();
+        glue::on_scope_drop(move || on_drop.disarm());
+        watch
+    }
+
+    /// Record a measured width. Zero is a scroller not laid out yet, not
+    /// a viewport — reporting it would collapse whatever sizes to it.
+    fn record(&self, width: f32) {
+        if width <= 0.0 || self.last.get() == Some(width) {
+            return;
+        }
+        self.last.set(Some(width));
+        // Cloned out so the callback runs with no borrow held.
+        let report = self.report.borrow().clone();
+        if let Some(report) = report {
+            report(width);
+        }
+    }
+
+    /// Track the probe's laid-out width.
+    fn watch(self: &Rc<Self>, handle: runtime_shared::ViewHandle) {
+        if self.report.borrow().is_none() {
+            return;
+        }
+        // Seeded from the current frame where the backend has one, so a
+        // backend whose layout callback only fires on a CHANGE still
+        // reports.
+        if let Some(frame) = handle.frame() {
+            self.record(frame.width);
+        }
+        let weak = Rc::downgrade(self);
+        let sub = handle.on_layout(move |w, _h| {
+            if let Some(watch) = weak.upgrade() {
+                watch.record(w);
+            }
+        });
+        self.subs.borrow_mut().push(sub);
+    }
+
+    fn disarm(&self) {
+        self.report.borrow_mut().take();
+        self.subs.borrow_mut().clear();
+    }
+}
+
+/// The viewport probe for [`TableBound::on_viewport_width`], placed as a
+/// child of the table's scroller — `None` when nothing listens or the
+/// table does not scroll sideways. The scroller must be its containing
+/// block ([`split_head::body_scroller_sheet`]).
+fn viewport_probe(scroll_x: bool, report: Option<Rc<dyn Fn(f32)>>) -> Option<Element> {
+    let watch = ViewportWatch::new(report.filter(|_| scroll_x)?);
+    Some(
+        runtime_vocabulary::builders::view()
+            .style(StyleProp::Sheet(Box::new(StyleApplication::new(split_head::probe_sheet()))))
+            .on_handle(move |h| watch.watch(h))
+            .build(),
+    )
 }
 
 /// The scroller around a scrolling table's `content` (horizontal,
@@ -1566,6 +1669,7 @@ pub mod item_lowering {
             footer_slot,
             columns: Vec::new(),
             on_edges: None,
+            on_viewport: None,
             head_corner: None,
         })
     }
@@ -1587,6 +1691,7 @@ pub mod item_lowering {
             footer_slot: None,
             columns: Vec::new(),
             on_edges: None,
+            on_viewport: None,
             head_corner: None,
         })
     }
@@ -1598,10 +1703,12 @@ pub mod item_lowering {
         let specs = column_specs(&parts.rows, columns, &parts.columns);
         let grid = needs_grid(&specs);
         let wrapped = parts.wrapped();
-        let TableParts { mut rows, style, scroll_x, scroll_y, header_slot, footer_slot, on_edges, head_corner, .. } =
-            parts;
+        let TableParts {
+            mut rows, style, scroll_x, scroll_y, header_slot, footer_slot, on_edges, on_viewport, head_corner, ..
+        } = parts;
         apply_row_collapse(&mut rows, !grid);
         let watch = on_edges.filter(|_| scroll_x).map(EdgeWatch::new);
+        let probe = viewport_probe(scroll_x, on_viewport);
         if scroll_y && rows.iter().any(is_head) {
             return split_head::web(
                 rows,
@@ -1613,6 +1720,7 @@ pub mod item_lowering {
                 header_slot,
                 footer_slot,
                 watch,
+                probe,
                 head_corner,
             );
         }
@@ -1665,12 +1773,15 @@ pub mod item_lowering {
         // default `flex-shrink: 1`, and a scroll container's automatic
         // minimum height is 0, so a `max_height` on the surface bounds it.
         let content = if scroll_x || scroll_y {
-            edge_watched_scroller(
-                glue::scroll_view(vec![table]),
-                scroller_axis(scroll_x, scroll_y),
-                watch,
-                None,
-            )
+            // The viewport probe, when one listens, is placed against the
+            // scroller, so the scroller is its containing block.
+            let scroller = match probe {
+                Some(probe) => glue::scroll_view(vec![probe, table]).with_style(StyleProp::Sheet(Box::new(
+                    StyleApplication::new(split_head::body_scroller_sheet()),
+                ))),
+                None => glue::scroll_view(vec![table]),
+            };
+            edge_watched_scroller(scroller, scroller_axis(scroll_x, scroll_y), watch, None)
         } else {
             table
         };
@@ -1763,9 +1874,11 @@ fn build_cell(
 #[cfg(not(target_arch = "wasm32"))]
 fn build_table(parts: TableParts) -> Element {
     let wrapped = parts.wrapped();
-    let TableParts { mut rows, style, scroll_x, scroll_y, header_slot, footer_slot, columns, on_edges, .. } =
-        parts;
+    let TableParts {
+        mut rows, style, scroll_x, scroll_y, header_slot, footer_slot, columns, on_edges, on_viewport, ..
+    } = parts;
     let watch = on_edges.filter(|_| scroll_x).map(EdgeWatch::new);
+    let probe = viewport_probe(scroll_x, on_viewport);
     apply_row_collapse(&mut rows, false);
     // The web clip's sheet, built here too: the premint dump runs this
     // (native) lowering, and emits CSS only for sheets it constructs —
@@ -1825,7 +1938,7 @@ fn build_table(parts: TableParts) -> Element {
             .build();
         let on_scroll = sync.clone();
         let body_scroller = edge_watched_scroller(
-            glue::scroll_view(vec![split_head::probe(&sync), content])
+            glue::scroll_view([split_head::probe(&sync)].into_iter().chain(probe).chain([content]).collect())
                 .bind(sync.body_ref())
                 .with_style(StyleProp::Sheet(Box::new(
                     StyleApplication::new(split_head::body_scroller_sheet())
@@ -1866,14 +1979,18 @@ fn build_table(parts: TableParts) -> Element {
         if let Some(watch) = watch.clone() {
             content = content.on_handle(move |h| watch.measure(h, |w| &w.content));
         }
-        let scroller = edge_watched_scroller(
-            glue::scroll_view(vec![content.build()]).with_style(StyleProp::Static(Rc::new(
+        // The viewport probe, when one listens, is placed against the
+        // scroller, so the scroller is its containing block.
+        let scroller = match probe {
+            Some(probe) => glue::scroll_view(vec![probe, content.build()]).with_style(StyleProp::Sheet(Box::new(
+                StyleApplication::new(split_head::body_scroller_sheet())
+                    .with_inline(native_styles::scroll_wrapper_rules(scroll_x)),
+            ))),
+            None => glue::scroll_view(vec![content.build()]).with_style(StyleProp::Static(Rc::new(
                 native_styles::scroll_wrapper_rules(scroll_x),
             ))),
-            scroller_axis(scroll_x, scroll_y),
-            watch,
-            None,
-        );
+        };
+        let scroller = edge_watched_scroller(scroller, scroller_axis(scroll_x, scroll_y), watch, None);
         surface_with_slots(scroller, style, header_slot, footer_slot)
     } else if wrapped {
         // Slots without scroll-x: surface > [header, grid holder,
@@ -3461,6 +3578,24 @@ mod scroll_edges_tests {
     fn unmeasured_scroller_hides_nothing() {
         assert_eq!(ScrollEdges::measure(0.0, 0.0, 900.0), ScrollEdges::default());
         assert_eq!(ScrollEdges::measure(0.0, 400.0, 0.0), ScrollEdges::default());
+    }
+
+    /// The viewport callback hears each changed width once, never a zero
+    /// (a scroller not laid out yet — a band sized to it would collapse),
+    /// and nothing after disarm.
+    #[test]
+    fn viewport_watch_reports_changed_widths_only_and_stops_when_disarmed() {
+        let world = runtime_world::World::new();
+        let heard = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = heard.clone();
+        let watch = world.enter(|| ViewportWatch::new(Rc::new(move |w| sink.borrow_mut().push(w))));
+        watch.record(0.0);
+        watch.record(390.0);
+        watch.record(390.0);
+        watch.record(844.0);
+        watch.disarm();
+        watch.record(390.0);
+        assert_eq!(*heard.borrow(), vec![390.0, 844.0]);
     }
 
     /// The callback hears each CHANGE once — a scroll delivers an event

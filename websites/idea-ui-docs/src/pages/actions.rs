@@ -52,6 +52,26 @@ pub fn button() -> Element {
             Section(title = "Sizes".to_string()) {
                 P(content = "Sm / Md / Lg drive padding and font scale together.".to_string())
                 DemoSurface { button_size_row() }
+                P(content = "On a phone every size is at least a 44 pt tap target: below the `Md` \
+                    breakpoint the box carries `min_width` / `min_height` of \
+                    `idea_ui::touch::MIN_TOUCH_TARGET_PX`, and from `Md` up it is its natural size. \
+                    The floor ships as build-time CSS (`@media` on web) like every other arm. Opt one \
+                    button out with the root slot override, or every Button with a restyle:".to_string())
+                CodePanel(src = TOUCH_OPT_OUT.to_string())
+            }
+        },
+        ui! {
+            Section(title = "Accessible name".to_string()) {
+                P(content = "A glyph label says nothing to a screen reader. `accessibility_label` \
+                    names the button — what VoiceOver / TalkBack announce and what a robot \
+                    `label = …` query finds — without changing what's drawn.".to_string())
+                DemoSurface { button_named_row() }
+                CodePanel(src = r##"Button(
+    label = "⌫",
+    accessibility_label = Some("Backspace".into()),
+    variant = variant::Ghost,
+    on_click = backspace,
+)"##.to_string())
             }
         },
         ui! {
@@ -98,6 +118,7 @@ pub fn button() -> Element {
                     Prop { name: "block",         ty: "bool",                  desc: "Stretch to fill the container width (full-bleed CTA). Default: false." },
                     Prop { name: "bind_to",       ty: "Option<Ref<PressableHandle>>", desc: "When Some, fills the given Ref on mount — anchor an overlay/popover to this button." },
                     Prop { name: "test_id", ty: "Option<&'static str>", desc: "Robot / E2E id on the pressable, in every state (a live loading/disabled rebuild re-registers it on the new pressable)." },
+                    Prop { name: "accessibility_label", ty: "Option<String>", desc: "Accessible name for screen readers and robot `label` queries, overriding the visible label without changing what's drawn. Default: None." },
                 ])
             }
         },
@@ -249,6 +270,24 @@ fn button_size_row() -> Element {
             Button(label = "Small".to_string(),  on_click = on_click.clone(), size = size::Sm)
             Button(label = "Medium".to_string(), on_click = on_click.clone(), size = size::Md)
             Button(label = "Large".to_string(),  on_click = on_click,         size = size::Lg)
+        }
+    }
+}
+
+const TOUCH_OPT_OUT: &str = r##"use idea_ui::touch::no_touch_target;
+
+// One Button:
+Button(label = "Compact".into(), on_click = go, styles = ButtonSlotStyles::default().root(no_touch_target()))
+
+// Every Button, once at boot:
+ButtonStyles::restyle(|s| { s.root().base(|_| no_touch_target()); });"##;
+
+fn button_named_row() -> Element {
+    let on_click: Rc<dyn Fn()> = Rc::new(|| {});
+    ui! {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
+            Button(label = "⌫".to_string(), accessibility_label = Some("Backspace".to_string()), on_click = on_click.clone(), variant = variant::Ghost)
+            Button(label = "✓".to_string(), accessibility_label = Some("Confirm".to_string()), on_click = on_click, variant = variant::Soft)
         }
     }
 }

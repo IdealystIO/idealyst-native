@@ -6,7 +6,8 @@
 //! walk the host's `WM_LBUTTONUP` routing uses to find a pressable).
 //!
 //! Each step is POSTED as the mouse message a real click produces
-//! (`WM_MOUSEMOVE`, `WM_LBUTTONDOWN` with `MK_LBUTTON`, `WM_LBUTTONUP`) to
+//! (`WM_MOUSEMOVE`, `WM_LBUTTONDOWN` with `MK_LBUTTON`, `WM_LBUTTONUP`; a
+//! secondary click is `WM_RBUTTONDOWN` with `MK_RBUTTON`, `WM_RBUTTONUP`) to
 //! the window a real click there lands on: the deepest visible child of
 //! the host under the point (`ChildWindowFromPointEx`, as the system
 //! routes mouse input to child windows), in that window's client device
@@ -27,7 +28,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::MapWindowPoints;
 use windows::Win32::UI::WindowsAndMessaging::{
     ChildWindowFromPointEx, PostMessageW, SetCursorPos, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP,
 };
 
 /// Marks a step that moves the cursor rather than posting a message.
@@ -39,6 +40,8 @@ use crate::WindowsBackend;
 
 /// `MK_LBUTTON`: the primary button is down.
 const MK_LBUTTON: usize = 0x0001;
+/// `MK_RBUTTON`: the secondary button is down.
+const MK_RBUTTON: usize = 0x0002;
 
 fn lparam(x: i32, y: i32) -> LPARAM {
     LPARAM((((y as u16) as u32) << 16 | (x as u16) as u32) as isize)
@@ -112,15 +115,17 @@ impl WindowsBackend {
         }
         let messages: Vec<(u32, usize, POINT)> = steps
             .iter()
-            .map(|s| {
+            .flat_map(|s| {
                 let (dx, dy) = (self.dpi.to_device(s.x), self.dpi.to_device(s.y));
                 let pt = POINT { x: dx.round() as i32, y: dy.round() as i32 };
-                match s.phase {
-                    PointerStepPhase::Down => (WM_LBUTTONDOWN, MK_LBUTTON, pt),
-                    PointerStepPhase::Move => (WM_MOUSEMOVE, MK_LBUTTON, pt),
-                    PointerStepPhase::Up => (WM_LBUTTONUP, 0, pt),
-                    PointerStepPhase::Hover => (HOVER, 0, pt),
-                }
+                let msgs: &[(u32, usize)] = match s.phase {
+                    PointerStepPhase::Down => &[(WM_LBUTTONDOWN, MK_LBUTTON)],
+                    PointerStepPhase::Move => &[(WM_MOUSEMOVE, MK_LBUTTON)],
+                    PointerStepPhase::Up => &[(WM_LBUTTONUP, 0)],
+                    PointerStepPhase::Hover => &[(HOVER, 0)],
+                    PointerStepPhase::SecondaryClick => &[(WM_RBUTTONDOWN, MK_RBUTTON), (WM_RBUTTONUP, 0)],
+                };
+                msgs.iter().map(move |&(m, k)| (m, k, pt))
             })
             .collect();
         let host = host.0 as isize;
@@ -146,7 +151,7 @@ impl WindowsBackend {
                     }
                     None => target_under(host, pt),
                 };
-                if msg == WM_LBUTTONDOWN {
+                if msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN {
                     captured = Some(hwnd);
                 }
                 unsafe { PostMessageW(Some(hwnd), msg, WPARAM(keys), lparam(local.x, local.y)) }

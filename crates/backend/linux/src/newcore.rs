@@ -1529,6 +1529,20 @@ impl caps::IntrospectionOps for LinuxBackend {
         })
     }
 
+    /// A `ScrolledWindow`'s adjustments: value, and upper less page size.
+    /// Moving one goes through its `scroll_view` handle (the backend's own
+    /// write needs `&mut self` to re-pin sticky children).
+    #[cfg(feature = "robot")]
+    fn scroll_port(&self, node: &Self::Node, target: caps::ScrollTarget) -> Option<caps::ScrollPort> {
+        if target != caps::ScrollTarget::Node {
+            return None;
+        }
+        let sw = node.widget().downcast_ref::<gtk4::ScrolledWindow>()?.clone();
+        let (h, v) = (sw.hadjustment(), sw.vadjustment());
+        let max = |a: &gtk4::Adjustment| (a.upper() - a.page_size() - a.lower()).max(0.0) as f32;
+        Some(caps::ScrollPort { x: h.value() as f32, y: v.value() as f32, max_x: max(&h), max_y: max(&v), port: None })
+    }
+
     /// The robot's `set_viewport`. GTK4 has no `gtk_window_resize`; a
     /// mapped window follows a new default size (the GTK4 migration
     /// guide's replacement). The default size covers the whole window —

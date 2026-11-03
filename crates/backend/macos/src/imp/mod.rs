@@ -3477,9 +3477,10 @@ impl MacosBackend {
     }
 
     pub(crate) fn update_styled_text_impl(&mut self, node: &MacosNode, runs: &[runtime_shared::TextRun]) {
-        // Theme-cohort re-realization (and any direct caller): keep the
-        // stored runs current and rebuild against the last-applied
-        // paragraph style so run token colors resolve on the NEW theme.
+        // A reactive run list's change, or the theme-cohort
+        // re-realization: keep the stored runs current and rebuild
+        // against the last-applied paragraph style so run token colors
+        // resolve on the current theme.
         let MacosNode::Label(label) = node else { return };
         let key = &**label as *const NSTextField as *const NSView as usize;
         let para = match self.styled_texts.get_mut(&key) {
@@ -3490,6 +3491,13 @@ impl MacosBackend {
             None => None,
         };
         styled_text::realize(label, runs, para.as_deref(), &self.font_registry);
+        // New runs can wrap to a different height (more text, a run font
+        // delta): Taffy only re-invokes the label's measure_fn for a dirty
+        // node, so without this the previous content's size keeps
+        // winning — same reason as `update_text_impl`.
+        if let Some(layout) = self.layout_of(node.as_view()) {
+            self.layout.mark_dirty(layout);
+        }
     }
 
     pub(crate) fn create_button_impl(

@@ -500,6 +500,8 @@ mod controls {
                 }))
                 .child(text().content(move || seen.get()))
                 .child(text().runs(vec![TextRun::plain("plain "), TextRun::plain("run")]))
+                // A reactive run list crosses as a getter (CODEC_VERSION 9).
+                .child(text().runs(move || vec![TextRun::plain("runs "), TextRun::plain(seen.get())]))
                 .child(button().label("star").leading_icon(STAR).on_press(|| {}))
                 .child(
                     image()

@@ -11,6 +11,244 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **SDK `androidx` entries need a version unless the library is pinned**
+  (`run-android`, `idealyst-cli`). Android builds now link one pinned
+  AndroidX set (see the Fixed entry "Android builds on a clean machine").
+  In `[package.metadata.idealyst.android] androidx`, a two-element
+  `["group", "artifact"]` entry is accepted only for a pinned library; any
+  other library must be `["group", "artifact", "version"]`, and declaring a
+  pinned library at a different version fails the build. No SDK in this
+  repository declares `androidx` entries.
+
+- **Robot: scroll into view reaches every scroller (the web page too);
+  text fields report their keyboard kind; `get_style` reads an element's
+  resolved style** (`runtime-vocabulary` MAJOR: `ScrollMove` gains `page`,
+  `ElementState` gains `keyboard` / `native_keyboard`, `apply_sheet` takes a
+  style record; new `IntrospectionOps::scroll_port` / `set_scroll_offset` /
+  `keyboard_kind` / `computed_style` with `None` defaults and the
+  `ScrollTarget` / `ScrollPort` / `ResolvedStyle` types; `host-mock` minor;
+  `robot-test` minor; `backend-web`, `backend-macos`, `backend-ios-mobile`,
+  `backend-android-mobile`, `backend-windows`, `backend-linux` patch;
+  `mcp-server` patch, docs only). `click()` on a button below the fold of a
+  page no `scroll_view` holds failed with "outside the window": on the web
+  the document itself scrolls there, and the robot only knew `scroll_view`s
+  (CrewForge B1). `scroll_into_view` now moves every registered ancestor
+  the toolkit scrolls (a virtualizer's scroller, a CSS-`overflow` element),
+  then the page (`page: true` in the answer), each within its range,
+  passing over a `scroll_view` with nothing to scroll. Text inputs report
+  `state.keyboard` (`"email"`, …) and, on web/iOS/Android, the kind the
+  native widget holds as `native_keyboard` (CrewForge B6); robot-test
+  `Locator::keyboard()`, `assert_keyboard`. New verb `get_style
+  {element_id}` → `{source, style}`: the browser's computed style on web,
+  the rules the framework handed the backend elsewhere (CrewForge B7);
+  robot-test `Locator::style()` → `Style`, `assert_style(|s| …)`,
+  `TextDecoration`. Verified live on web (390x844) and macOS
+  (`robot-e2e-demo`).
+
+- **Robot: right click and long press on every platform** (`runtime-vocabulary`
+  MAJOR: new `PointerStepPhase::SecondaryClick` on an exhaustive enum, and
+  `Robot::press_native` / `release_native` return
+  `Result<TapMechanism, _>`; `robot-test` minor; `mcp-server` minor;
+  `backend-web`, `backend-macos`, `backend-windows`,
+  `backend-android-mobile` patch; `robot-e2e` patch). A row's context menu
+  could not be tested: no verb sent a right click, and on iOS
+  `press_native` answered "unsupported", so no test could hold a long
+  press either (CrewForge B5). New verb `context_click {element_id}`
+  (MCP: `pointer_native` `action: "context_click"`): web sends the right
+  button's sequence with `contextmenu`, macOS posts right-mouse events,
+  Windows posts `WM_RBUTTONDOWN`/`UP`; elsewhere the robot sends a
+  `PointerButton::Secondary` `Began` through the framework's touch
+  handlers. `press_native` / `release_native` fall back the same way where
+  the backend can't inject input, holding the press for the real time
+  between them, so a `long_press` recognizer fires on iOS; on Android one
+  held gesture keeps one `downTime`. robot-test: `Locator::context_click()`
+  (a right click on web and desktop, an 800 ms long press on iOS and
+  Android), `long_press(hold)`, `secondary_click()`, `LONG_PRESS`. Every
+  real-input action — `long_press`, `context_click`, `press_native`,
+  `hover_native`, `drag_native` — scrolls its element into view first, as
+  `click()` does (`.no_scroll()` / `App::set_auto_scroll(false)` opt out;
+  `release_native` lifts where the press went down). `robot-e2e-demo`'s
+  screen is a vertical `scroll_view`: a native window doesn't scroll, so
+  its rows below a phone's fold were out of reach. A horizontal-only
+  `scroll_view` no longer takes the fill seed (`flex_grow: 1`,
+  `flex_basis: 0`) on the native backends (`runtime-layout` patch): it is
+  content-tall, as on web. Seeded, a tab strip in a column grew into the
+  leftover height and, inside a content-sized column, left the column
+  shorter than its content, so Android clipped the rows below it.
+  Virtualizers keep the seed on either axis. Verified live on web,
+  macOS, the iOS simulator and the Android emulator (`robot-e2e-demo`).
+
+- **idea-ui `Typography` takes `spans`: text in several styles flows as
+  one paragraph; styled runs are reactive and follow a theme swap on
+  native** (`idea-ui` MAJOR: new `TypographyProps` field;
+  `runtime-vocabulary` MAJOR: `TextSourceProp::Runs` holds a
+  `Value<Vec<TextRun>>` and `StyledText` is an alias of `GlueText`; remote
+  `CODEC_VERSION` 9; `host-mock` minor; `backend-macos`, `backend-ios`,
+  `backend-android` patch). A roster card's bold name and muted employee
+  number were two sibling Typography nodes in a row, so a wrapped name
+  left the number beside the two-line block instead of after the last
+  word (CrewForge A8). `Typography(spans = vec![TextSpan::new(name).bold(),
+  TextSpan::new(" #1234").muted()])` renders ONE text node whose runs the
+  platform text engine wraps together (nested spans in one element on
+  web/SSR, an attributed string on Apple, a `SpannableString` on Android,
+  rich spans on GPU). `TextSpan` sets `weight` / `bold()`, `tone(…)`,
+  `muted()`, `italic()`, `mono()` (`idea_ui::MONO_FONT_STACK`) and
+  `size(kind)` over the paragraph's style; colors and sizes are theme
+  tokens. `spans = rx!(vec![…])` re-renders in place; `lines` truncates
+  the whole paragraph; non-empty `spans` replaces `content`. Framework:
+  `text().runs(…)` / `styled_text(…)` take a `Vec<TextRun>` or a
+  `Fn() -> Vec<TextRun>` closure (`IntoTextRuns`) — a reactive list
+  re-realizes through `update_styled_text` — and `styled_text` returns the
+  `text` wrapper, so it gains the `a11y_*` setters. **Fixed:** a
+  styled-text node joins the theme cohort, so on every backend without the
+  web `var()` cascade a token-colored run re-resolves on a theme swap (it
+  kept the old theme's color); macOS, iOS and Android `update_styled_text`
+  mark the label's layout node dirty, so new runs re-measure instead of
+  keeping the previous height. **Remote components:** rebuild bundles — a
+  reactive run list crosses as a getter. Tests: vocabulary `vocab`
+  `reactive_styled_text_runs_rerealize_in_place`,
+  `regression_styled_text_runs_rerealize_on_theme_swap`,
+  `reactive_styled_text_theme_swap_uses_current_runs`; `remote_elements`
+  leaf parity (a reactive run list); backend-macos
+  `regression_update_styled_text_remeasures_through_layout`,
+  `max_lines_survives_a_styled_text_update`; idea-ui
+  `tests/typography_spans.rs`, `span_sizes_match_the_kind_arms`,
+  `lines_applies_to_a_spans_paragraph`.
+
+- **A group band's title truncates before its actions in a `scroll_x`
+  table, and a sticky box rests where it is laid out on native**
+  (`idea-ui` minor, `table` minor, `runtime-layout` patch; every native
+  backend through `runtime-layout`). A `TableGroup` band spans the whole
+  table, wider than a phone, and nothing held its content to the visible
+  width: a one-line title ran under the band's ⋯ instead of truncating
+  (CrewForge /settings/employee-fields at 390 pt). The band's lead,
+  spacer and actions now sit in one sticky bar (new `band_bar` slot,
+  `TableStyles::band_bar()`) pinned past the columns the table adds and
+  capped at the scroller's viewport past them; the lead and title shrink
+  (`min_width: 0`), and the actions end at the viewport's right edge.
+  **Restyles:** `band_lead` and `band_trail` are no longer sticky
+  themselves — a restyle that set their `left` / `right` belongs on
+  `band_bar`. The viewport comes from the new
+  `table::TableBound::on_viewport_width(f)`: a zero-height probe placed
+  across the scroller (the split head's viewport probe), reporting each
+  changed width; idea-ui listens only when a `scroll_x` table has a
+  band. `runtime-layout` no longer offsets a `position: Sticky` box by
+  its `top` / `right` / `bottom` / `left` — those are the sticky
+  registry's pin thresholds, and Taffy laid the box out as `Relative`
+  shifted by them (a frozen column `left: 44` behind the 44 px selection
+  column rested at x 88 on native, 44 on web; a `top: 32` table of
+  contents sat 32 px low until scrolled). Tests: `runtime-layout`
+  `regression_sticky_insets_are_pin_thresholds_not_layout_offsets`;
+  `table` `regression_viewport_listener_probes_the_scrollers_visible_width`,
+  `viewport_watch_reports_changed_widths_only_and_stops_when_disarmed`;
+  idea-ui
+  `regression_band_title_truncates_before_its_actions_in_a_phone_width_scroll_x_table`
+  (laid out at 390 px).
+
+- **idea-ui `Button` is a 44 pt tap target on phones, and takes an
+  `accessibility_label`** (`idea-ui`, MAJOR: new `ButtonProps` field).
+  Below the `Md` breakpoint every Button box now carries
+  `min_width` / `min_height` = `idea_ui::touch::MIN_TOUCH_TARGET_PX`
+  (44 — Apple HIG / WCAG 2.5.5), whatever its `size`; from `Md` up an
+  `@media` / breakpoint overlay releases both to `auto`, so wider layouts
+  are unchanged. Previously a default-size Button measured 23–26 pt tall
+  at a 390 pt viewport and `size::Lg` ~42 pt, with no way to floor it on
+  phones only. The rule is the new `idea_ui::touch` module —
+  `touch_target(slot)` (call from a slot's `extend` hook),
+  `touch_target_rules()`, `no_touch_target()`, `TOUCH_TARGET_RELEASE` —
+  for other interactive controls to adopt. Opt out per Button with
+  `styles = ButtonSlotStyles::default().root(no_touch_target())`, or for
+  every Button with `ButtonStyles::restyle(|s| { s.root().base(|_| no_touch_target()); })`.
+  `accessibility_label: Option<String>` names the pressable for screen
+  readers and robot `label` queries without changing the drawn label
+  (a `"⌫"` key announced as "Backspace"); a struct-literal `ButtonProps`
+  without `..Default::default()` must add it. Tests: idea-ui `button`
+  `regression_button_touch_target_floor_on_phones_only`,
+  `accessibility_label_names_the_pressable_not_the_text`;
+  `tests/button_touch_target.rs` (native apply at 390 / 1024 px, resize
+  across `Md`, opt-out, preminted `@media` release);
+  `tests/button_accessibility_label.rs` (robot find + click by the name,
+  across a `loading` rebuild).
+- **idea-ui glyph-only controls are named, and the pager steppers and
+  field adornment buttons are 44 pt tap targets on phones** (`idea-ui`,
+  MAJOR: new props fields, a new `DateLabels` field set, and
+  `Adornment::Button` becomes a struct variant). Screen readers announced
+  nothing and robot `label` queries found nothing for these, which were
+  glyphs with no name:
+  - `Checkbox` / `Radio` take `accessibility_label: Option<String>` (as
+    `Switch` already did), naming the box / ring without drawing text — a
+    table row's tick box: `Checkbox(value = done, on_change = f,
+    accessibility_label = Some("Mark Update ADP done".into()))`. Defaults
+    to `label`; the override wins.
+  - `Calendar` / `RangeCalendar` (and every date picker's popup): the step
+    chevrons are named for what they step — "Previous month" / "Next
+    month" over days, "Previous year" / "Next year" over months,
+    "Previous 12 years" / "Next 12 years" over a year page. The strings
+    live on `DateLabels` (`previous_month`, `next_month`,
+    `previous_year`, `next_year`, `previous_years`, `next_years`), the
+    date components' existing localization hook; a `DateLabels` built by
+    struct literal must add them.
+  - `DateInput` / `DateTimeInput`: the clear ✕ and calendar button are
+    named from `DateLabels::clear_date` / `pick_date` ("Clear date",
+    "Pick a date").
+  - `Adornment::Button` is now `Button { icon, label, on_press }`;
+    `Adornment::labeled_button(icon, "Show password", on_press)` builds a
+    named one (`Adornment::button(icon, on_press)` still builds an unnamed
+    one). A `Field` / `SegmentedControl` puts the label on the pressable.
+    Code that constructs or matches `Adornment::Button(icon, f)` must
+    switch to the struct form. Below the `Md` breakpoint a Field
+    adornment button is floored at `idea_ui::touch::MIN_TOUCH_TARGET_PX`
+    square (the `adornment` slot, through `touch_target`), with a negative
+    vertical margin of half the floor so the field keeps its height; the
+    glyph sits centered in the larger box, so on phones it moves inward
+    by the extra width.
+  - `Pagination` takes `previous_label` / `next_label` (default "Previous
+    page" / "Next page", `pagination::PREVIOUS_PAGE_LABEL` /
+    `NEXT_PAGE_LABEL`), and `TablePager` forwards the same two props. The
+    ‹ › steppers draw from a new `nav` slot (`PaginationSlotStyles::nav`;
+    a `button` restyle no longer reaches them) that is 44 pt square below
+    `Md` and the compact 32 from `Md` up; the page numbers keep their
+    32 pt width so a windowed row still fits a 390 pt phone.
+  - `Autocomplete`'s disclosure chevron is named "Show options"
+    (`AUTOCOMPLETE_TOGGLE_LABEL`; the ✕ keeps "Clear",
+    `AUTOCOMPLETE_CLEAR_LABEL`).
+  Tests: `tests/a11y_names_and_touch_targets.rs` (robot find-by-name for
+  every control above, Calendar names across zoom levels, Pagination and
+  DateInput adornment frames laid out at 390 and 1280 px); `checkbox`
+  `regression_checkbox_accessibility_label_names_a_label_less_box`;
+  `radio` `regression_radio_accessibility_label_names_a_label_less_ring`.
+- **`open_link` opens the whole path, through nested navigators that
+  mount late, and answers how far it got** (`runtime-vocabulary`,
+  `robot-test`, `mcp-server`). The router moves only navigators that
+  exist; one inside a `#[component(lazy)]` screen, or one a screen builds
+  once its data arrives, mounted after the link's commit and opened its
+  configured initial — so `open_link("/projects/7/schedule")` stopped at
+  `/projects`, answered `true`, and each further call went one level
+  deeper. **Wire change:** the verb now answers
+  `{"reached": "/projects", "complete": false, "routed": true}` instead of
+  a bare boolean — `routed` is the old answer, `reached` the deepest path
+  the SHOWN navigator chain resolved, `complete` whether that is the
+  link's whole path (and query). Within one call it keeps routing while
+  that moves the chain (a navigator mounted in the same flush);
+  `open_link {url, resume: true}` routes the same link again without
+  re-running observers or interceptors, for navigators that come up on a
+  later event-loop turn. `robot-test`'s `App::open_link` waits (up to the
+  app timeout) until the path is complete and panics naming the reached
+  path otherwise; it still returns `false` for a link no navigator took.
+  New `App::try_open_link` → `LinkOutcome { routed, reached, complete }`.
+  The MCP `open_link` tool resumes for up to 5 s. Upgrade `robot-test`
+  with the framework — an older client reads the object as `false`; the
+  new client still understands an older app's boolean. Navigator state
+  (`list_navigators` / `get_navigator_state`) gains `query` (the active
+  screen's decoded query parameters) and `href` (`active_path` plus the
+  encoded query) — `active_path` stays path-only — with `robot-test`
+  `NavigatorInfo::{query, href}` and `App::assert_query(key, value)` /
+  `App::assert_href(href)`. Tests: vocabulary `inbound_links`
+  `regression_open_link_resolves_the_whole_path_through_lazy_navigators`,
+  `regression_open_link_reaches_a_navigator_mounted_after_the_commit_in_one_call`,
+  `open_link_reports_an_intercepted_link_as_not_routed`,
+  `navigator_state_reports_the_active_query_and_href`; robot-test
+  `app_mock` `regression_open_link_waits_for_the_whole_nested_path` (+2).
 - **A horizontal scroller's content is as wide as what it holds, so every
   tab in a scrolling strip takes a click** (`runtime-layout`, `css`,
   `backend-web`, `backend-ssr`, `table`, `idea-ui`; every native backend
@@ -945,6 +1183,34 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **Robot: `load_url` and cookies** (`robot-relay` minor, but a
+  `RelayConfig` struct literal needs the new `relaunch` field;
+  `run-android` minor: `RunArtifact::launched` and `relaunch_with_link`;
+  `robot-test` minor; `idealyst-cli` patch). A test can boot the app at a
+  URL and set the cookies the server sees on that boot (CrewForge B4).
+  The relay serves `load_url {url}`, `set_cookie`, `get_cookies` and
+  `clear_cookies` itself, so `call_verb` reaches them too: on web it
+  drives the tab over DevTools (navigate, `Network.setCookie`, HttpOnly
+  included) and answers once the new instance has connected; on Android
+  `idealyst dev` relaunches the app with the link (`am start -S`). iOS and
+  desktop answer that the session can't relaunch them, and the cookie
+  verbs are web only. robot-test: `App::load_url` / `try_load_url`,
+  `set_cookie(Cookie)`, `cookies()`, `clear_cookie(name)`,
+  `clear_cookies()`, `LOAD_URL_TIMEOUT`. `idealyst test --web` keeps its
+  browser's profile in the session's state directory
+  (`.idealyst[/isolated/<key>]`), where the relay finds the tab, and
+  removes it afterwards. Verified in real headless Chrome and with
+  `idealyst test --web` on `robot-e2e-demo`. On Android the relaunched app
+  stopped at the first navigator: the root cleared the one-shot launch
+  slot once its synchronous mount was up, and a nested navigator that
+  mounts after its screen's data loads opened its own initial — web reads
+  the address bar there, a native host had nothing. The root now holds an
+  unreached launch path on a host with no URL surface until a navigator
+  resolves its end, or any navigation supersedes it, so a cold deep link
+  opens the same screen on every platform (`runtime-vocabulary` patch;
+  `docs/deep-links.md`). Verified with `idealyst test --android` on
+  `robot-e2e-demo`.
 
 - **Tab / Shift+Tab move focus on every platform, and a hardware Escape
   closes an iOS overlay with nothing focused** (`runtime-vocabulary`,
@@ -2697,6 +2963,94 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Android builds on a clean machine: AndroidX is pinned, and Gradle
+  module metadata is read** (`run-android` minor, `idealyst-cli` minor).
+  With an empty `~/.idealyst/maven` and no gradle cache (a fresh Ubuntu
+  24.04 box), `idealyst dev --local --android` picked the newest AndroidX
+  — core 1.19.1 → lifecycle 2.11.0 — whose base artifacts are
+  Kotlin-multiplatform umbrellas: the AAR holds only a manifest, so
+  `unzip … classes.jar` failed (exit 11), and with those swapped by hand
+  kotlinc failed on `NavigationEventDispatcherOwner`, because
+  `androidx.navigationevent` is declared only in the `-android` variant's
+  `.module` (CrewForge want_32aa547e). Every build now links one pinned
+  closure, `PINNED_ANDROIDX` (fragment 1.6.2, activity 1.8.2, core 1.12.0,
+  lifecycle 2.6.2, savedstate 1.2.1, recyclerview 1.3.2, drawerlayout
+  1.2.0, coroutines 1.7.3 — 29 libraries, each an exact version and SHA-1,
+  byte-identical to what the development machines' gradle caches held), so
+  nothing is ever resolved as "newest". SDK `androidx` entries take a
+  version (`["group", "artifact", "version"]`) and resolve with their
+  transitive closure: where the POM defers to Gradle module metadata the
+  resolver follows `available-at` to the `-android`/`-jvm` variant and
+  takes that variant's dependencies, every download sha1-verified. **SDK
+  authors:** a two-element entry is now accepted only for a pinned library;
+  any other needs a version, and declaring a pinned library at another
+  version fails the build. An AAR without `classes.jar` contributes no
+  classes instead of failing. New `IDEALYST_MAVEN_CACHE` (moves the cache)
+  and `IDEALYST_NO_GRADLE_CACHE=1` (ignores Android Studio's cache) let a
+  build reproduce a clean machine. See `docs/android-packaging.md`
+  ("Android libraries"). Tests: `run-android`
+  `regression_kmp_umbrella_resolves_to_its_android_variant`,
+  `regression_dependencies_declared_only_by_the_variant_are_resolved`,
+  `regression_umbrella_aar_without_classes_jar_contributes_nothing`,
+  `every_pin_is_fetched_at_its_exact_coordinate_and_nothing_else`, and
+  (network, `--ignored`) `pinned_closure_is_complete_against_published_metadata`.
+
+- **A field that prevents Escape keeps its overlay open on web and
+  Android** (`backend-web`, `backend-android-mobile`). When the focused
+  field's `on_key_down` returned `PreventDefault` for Escape (e.g. a field
+  closing its own dropdown), web's window Escape listener still dismissed
+  the overlay, and Android's `RustModalOverlay` — which saw the claimed
+  key-down but not a claimed key-up — dismissed on the up. iOS and macOS
+  already kept it open. Web now skips a prevented Escape; Android skips
+  the up of a down a field claimed. robot-e2e
+  `a_field_that_claims_escape_keeps_its_dialog_open` (all platforms) fails
+  without the fixes; `backend-android-mobile`
+  `regression_a_claimed_escape_down_keeps_the_modal_open` pins the Kotlin.
+
+- **macOS: `on_key` hears a key a text field's `on_key_down` prevented**
+  (`backend-macos` patch). The field's `on_key_down` and Escape's overlay
+  dismissal ran from their own `NSEvent` local monitor, beside the
+  app-level key monitor, and swallowed a prevented key; AppKit runs local
+  monitors in no defined order, so `on_key` listeners lost the key-down of
+  Enter in a field that submits on Enter (and of any key a field refused)
+  whenever that monitor ran first. One monitor now runs the field's
+  handler, then the app-level listeners (always), then Escape's dismissal,
+  as the web delivers them. Covered by `tests/robot_native_key.rs`.
+
+- **The macOS robot screenshot is upright** (`backend-macos` patch). Under
+  the framework's own flipped host (`create_host_root`, what
+  `idealyst dev --macos` mounts into) the `screenshot` verb returned the
+  app upside down, text included: `renderInContext:` draws a layer in its
+  own y-up space and skips the flip the compositor applies to a
+  `geometryFlipped` layer. The capture now mirrors each layer-tree root by
+  its `contentsAreFlipped`. Test: backend-macos `screenshot_orientation`
+  (unflipped / flipped / layer-backed hosts, vertical and horizontal
+  `scroll_view`, text).
+
+- **Server-rendered and GTK pressables carry their accessible name**
+  (`backend-ssr`, `backend-linux`). Both dropped a pressable's
+  `AccessibilityProps`, so a glyph-only `Button(accessibility_label = …)`
+  or a labelled `IconButton` had no name for a screen reader there. SSR
+  now writes `aria-label` / `title` (hint) / `aria-hidden`, matching the
+  live web pressable; GTK sets the accessible `Label` and `Description`
+  (GTK owns the `HIDDEN` state, so `hidden` isn't written there).
+  Windows, CPU and terminal still apply no a11y — they have no
+  accessibility tree (`docs/accessibility.md`). Tests: backend-ssr
+  `regression_ssr_pressable_carries_accessible_name`; backend-linux
+  `regression_gtk_layout_behaviors` §23.
+- **A navigator inside a reactive region's later branch sits under its
+  screen's base** (`runtime-vocabulary`). `mount_screen` pushes the
+  navigator base / screen state / route guards only for the synchronous
+  screen build; a `ui!` `if` (any `Dyn` / keyed region) that realized a
+  nested navigator on a later run — `if loaded { … }` once data arrived —
+  did so with those stacks empty, so the navigator took itself for the
+  root: it reported `/` as its path and resolved the whole URL against
+  its own routes, and no link could reach it. The navigator handlers now
+  install a `runtime_scene` region-context provider that captures the
+  ambient navigator context when a region is created and re-enters it
+  around each later realize (what `lazy` already did for its chunk body).
+  Test: vocabulary `inbound_links`
+  `regression_navigator_in_a_late_region_branch_keeps_the_screen_base`.
 - **The `idealyst` CLI compiles for Windows again** (`mcp-server`).
   `dev-events` was declared only for unix hosts while the dev-session,
   build-wait and status modules use it everywhere, so `mcp-server` — and

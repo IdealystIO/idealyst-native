@@ -85,6 +85,9 @@ fn a_native_tap_presses_the_button(app: &mut App) {
 #[robot_test]
 fn an_overlay_stops_a_native_tap(app: &mut App) {
     app.call_function("demo.set_count", json!({ "value": 0 }));
+    // In the window, so what refuses the raw tap below is the overlay, not
+    // the window's edge (an earlier test may have scrolled the screen).
+    app.test_id("inc").scroll_into_view();
     app.call_function("demo.set_cover", json!({ "on": true }));
     app.test_id("cover-label").assert_visible();
     let id = app.call("find_element", json!({ "test_id": "inc" }))["id"].clone();
@@ -238,4 +241,162 @@ fn escape_closes_a_modal_while_its_field_has_focus(app: &mut App) {
     app.test_id("dialog-field").assert_focused(true);
     app.press_key("Escape");
     app.test_id("dialog-field").assert_hidden();
+}
+
+/// Regression: on web the overlay's window Escape listener closed the
+/// dialog even when the focused field's `on_key_down` prevented Escape —
+/// iOS, Android and macOS keep it open. A prevented Escape is the field's.
+#[robot_test]
+fn a_field_that_claims_escape_keeps_its_dialog_open(app: &mut App) {
+    app.call_function("demo.set_dialog", json!({ "open": true }));
+    for key in ["k", "e", "e", "p"] {
+        app.test_id("dialog-field").press_key(key);
+    }
+    app.test_id("dialog-field").assert_value("keep");
+    app.test_id("dialog-field").press_key("Escape");
+    app.test_id("dialog-field").assert_visible();
+    app.call_function("demo.set_dialog", json!({ "open": false }));
+    app.test_id("dialog-field").assert_hidden();
+}
+
+/// A deep link through navigators that each mount only after their
+/// screen's data loads opens the whole path in one call — and the query it
+/// carries is on the navigator state.
+#[robot_test]
+fn open_link_reaches_navigators_that_mount_late(app: &mut App) {
+    assert!(app.open_link("robote2e://projects/7/schedule?asset_tag=~7781"));
+    app.test_id("nav-schedule").assert_visible();
+    app.assert_query("asset_tag", "~7781");
+    let navs = app.navigators();
+    let leaf = navs
+        .iter()
+        .find(|n| n.active_path.as_deref() == Some("/projects/7/schedule"))
+        .unwrap_or_else(|| panic!("no navigator shows the link: {navs:?}"));
+    assert_eq!(leaf.href.as_deref(), Some("/projects/7/schedule?asset_tag=~7781"));
+    // Back to the start for the rest of the suite.
+    assert!(app.open_link("robote2e://"));
+    app.test_id("nav-home").assert_visible();
+}
+
+/// The value of an `i32` signal the app watches.
+fn read_i32(app: &mut App, name: &str) -> i32 {
+    app.signal(name).value().parse().unwrap_or_else(|e| panic!("{name} is not an i32: {e}"))
+}
+
+/// `context_click` opens a row's context menu the way the platform's user
+/// does: a right click with a mouse, a long press on a phone.
+#[robot_test]
+fn context_click_opens_a_rows_menu(app: &mut App) {
+    let (right, held) = (read_i32(app, "menu_right_clicks"), read_i32(app, "menu_long_presses"));
+    app.test_id("menu-row").context_click();
+    if app.platform().is_mobile() {
+        app.signal("menu_long_presses").assert_eq(held + 1);
+        app.test_id("menu-state").assert_text("Row menu: long press");
+    } else {
+        app.signal("menu_right_clicks").assert_eq(right + 1);
+        app.test_id("menu-state").assert_text("Row menu: right click");
+    }
+}
+
+/// A long press held past the recognizer's threshold opens the menu on
+/// every platform, a mouse's held button included.
+#[robot_test]
+fn a_long_press_opens_a_rows_menu(app: &mut App) {
+    let held = read_i32(app, "menu_long_presses");
+    app.test_id("menu-row").long_press(robot_test::LONG_PRESS);
+    app.signal("menu_long_presses").assert_eq(held + 1);
+    app.test_id("menu-state").assert_text("Row menu: long press");
+}
+
+/// `load_url` boots the app at an address: the navigators open the URL's
+/// path from the first frame, and the app's state starts over.
+#[robot_test(platforms = [web, android])]
+fn load_url_boots_the_app_at_a_path(app: &mut App) {
+    app.load_url("/projects/7/schedule");
+    app.test_id("nav-schedule").assert_visible();
+    let navs = app.navigators();
+    assert!(
+        navs.iter().any(|n| n.active_path.as_deref() == Some("/projects/7/schedule")),
+        "no navigator shows the loaded path: {navs:?}"
+    );
+    app.signal("count").assert_eq(0);
+    // Back to the start for the rest of the suite.
+    app.load_url("/");
+    app.test_id("nav-home").assert_visible();
+}
+
+/// A cookie set before a page load is there when the app boots: the
+/// browser lists it (HttpOnly too) and the page's scripts read the one
+/// they may. Cleared afterwards so other tests boot without it.
+#[robot_test(platforms = [web])]
+fn cookies_set_before_a_load_reach_the_booted_page(app: &mut App) {
+    use robot_test::Cookie;
+    app.clear_cookies();
+    app.set_cookie(Cookie::new("theme", "dark"));
+    app.set_cookie(Cookie::new("device", "k1").http_only());
+    app.load_url("/");
+    let mut names: Vec<String> = app.cookies().into_iter().map(|c| c.name).collect();
+    names.sort();
+    assert_eq!(names, ["device", "theme"]);
+    let visible = app.call_function("demo.page_cookies", json!({}));
+    assert_eq!(visible, json!("theme=dark"), "HttpOnly `device` is hidden from scripts");
+    app.clear_cookie("device");
+    assert_eq!(app.cookies().len(), 1);
+    app.clear_cookies();
+    assert!(app.cookies().is_empty());
+}
+
+/// Regression (CrewForge 2026-11-03): a button below the fold of a page no
+/// `scroll_view` holds (`demo.set_tall_page`: a block taller than the
+/// window under the screen's scroll view). On the web the document itself
+/// scrolls; `click()` never scrolled it and failed with "outside the
+/// window". Web only: a native window doesn't scroll, so there the button
+/// is out of reach.
+#[robot_test(platforms = [web])]
+fn regression_click_reaches_a_button_below_the_fold_of_a_page(app: &mut App) {
+    app.call_function("demo.set_tall_page", json!({ "on": true }));
+    let before = read_i32(app, "page_bottom_taps");
+    let bottom = app.call("find_element", json!({ "test_id": "page-bottom" }));
+    assert_eq!(bottom["in_viewport"], json!(false), "below the fold: {bottom}");
+    app.test_id("page-bottom").click();
+    app.test_id("page-bottom").assert_in_viewport();
+    app.signal("page_bottom_taps").assert_eq(before + 1);
+    let scrolled = app.call_function("demo.page_scroll_y", json!({}));
+    assert!(scrolled.as_f64().is_some_and(|y| y > 0.0), "the document scrolled: {scrolled}");
+    app.call_function("demo.set_tall_page", json!({ "on": false }));
+    app.test_id("page-bottom").assert_hidden();
+}
+
+/// The screen is a vertical `scroll_view` taller than a phone's window:
+/// `click()` scrolls it until the button at its end is in view, then taps
+/// it — on every platform.
+#[robot_test]
+fn click_scrolls_the_screen_to_a_button_below_the_fold(app: &mut App) {
+    let before = read_i32(app, "page_end_taps");
+    app.test_id("page-end").click();
+    app.test_id("page-end").assert_in_viewport();
+    app.signal("page_end_taps").assert_eq(before + 1);
+}
+
+/// A to-do struck through once it is marked done: the resolved style, read
+/// back (`get_style`) — the browser's computed style on web, the rules the
+/// backend was handed on native.
+#[robot_test]
+fn a_done_todo_is_struck_through(app: &mut App) {
+    let style = app.test_id("todo-item").style();
+    assert!(!style.is_line_through(), "not done yet: {style:?}");
+    app.test_id("todo-toggle").click();
+    app.signal("todo_done").assert_eq(true);
+    app.test_id("todo-item").assert_style(|s| s.is_line_through());
+    app.test_id("todo-toggle").click();
+    app.test_id("todo-item").assert_style(|s| !s.is_line_through());
+}
+
+/// An email field reports the email keyboard — the kind it asked for and,
+/// where the platform has a soft keyboard, the one the native widget holds.
+#[robot_test]
+fn an_email_field_reports_the_email_keyboard(app: &mut App) {
+    app.test_id("email").assert_keyboard("email");
+    assert_eq!(app.test_id("email").keyboard().as_deref(), Some("email"));
+    app.test_id("name").assert_keyboard("default");
 }

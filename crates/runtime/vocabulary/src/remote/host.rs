@@ -370,7 +370,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     test_id,
                     content: match content {
                         TextContent::Value(v) => TextSourceProp::Value(value(conn, v)),
-                        TextContent::Runs(runs) => TextSourceProp::Runs(runs),
+                        TextContent::Runs(runs) => TextSourceProp::Runs(value(conn, runs)),
                     },
                     style,
                     a11y,

@@ -217,11 +217,14 @@ pub struct HeadlessBrowser {
     default_user_agent: String,
     /// Chrome's own stderr — the evidence when the browser is what failed.
     pub log: PathBuf,
+    /// The browser's profile, removed with it.
+    profile: PathBuf,
 }
 
 impl Drop for HeadlessBrowser {
     fn drop(&mut self) {
         super::kill_tree(&mut self.child);
+        let _ = std::fs::remove_dir_all(&self.profile);
     }
 }
 
@@ -229,7 +232,14 @@ impl HeadlessBrowser {
     /// Start the browser on a blank page and attach to it. Nothing is loaded
     /// until [`Self::show`] — so the app's first boot already sees the
     /// emulated screen.
-    pub fn launch(url: &str) -> Result<HeadlessBrowser> {
+    ///
+    /// The profile is created under `profiles_dir`, which is the dev
+    /// session's state directory (`<project>/.idealyst[/isolated/<key>]`):
+    /// the session's robot relay finds the browsers whose profiles sit
+    /// there (`robot_relay::cdp`) and drives this tab over DevTools for the
+    /// verbs the app cannot answer itself: `load_url`, the cookie verbs,
+    /// `screenshot`.
+    pub fn launch(url: &str, profiles_dir: &Path) -> Result<HeadlessBrowser> {
         let chrome = headless_browser().context(
             "no headless browser found — install Chrome/Chromium or set IDEALYST_CHROME",
         )?;
@@ -241,9 +251,13 @@ impl HeadlessBrowser {
         // next launch then hands its URL to a singleton that isn't there and exits
         // immediately — the app never dials, and the runner blames its own 240s
         // readiness wait. One killed run silently poisoned every run after it.
-        let profile = std::env::temp_dir().join(format!("idealyst-test-chrome-{}", std::process::id()));
+        let profile = profiles_dir.join(format!("test-chrome-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&profile);
-        let log = profile.with_extension("log");
+        std::fs::create_dir_all(&profile)
+            .with_context(|| format!("creating the browser profile {}", profile.display()))?;
+        // Inside the profile: a sibling file would sit beside the session's
+        // own state, and the profile is removed whole.
+        let log = profile.join("chrome-stderr.log");
         let errlog = std::fs::File::create(&log).map(Stdio::from).unwrap_or_else(|_| Stdio::null());
         let mut cmd = Command::new(&chrome);
         cmd.args([
@@ -284,6 +298,7 @@ impl HeadlessBrowser {
             url: url.to_string(),
             default_user_agent,
             log,
+            profile,
         })
     }
 
@@ -540,7 +555,8 @@ mod tests {
             return;
         }
         let page = "data:text/html,<meta name=viewport content='width=device-width'><body>hi</body>";
-        let mut b = HeadlessBrowser::launch(page).expect("launch");
+        let profiles = tempfile::tempdir().unwrap();
+        let mut b = HeadlessBrowser::launch(page, profiles.path()).expect("launch");
         let probe = "JSON.stringify([innerWidth, innerHeight, devicePixelRatio, navigator.maxTouchPoints, \
                      matchMedia('(pointer: coarse)').matches, navigator.userAgent])";
         let read = |b: &mut HeadlessBrowser| -> Value {
@@ -564,5 +580,24 @@ mod tests {
         assert_eq!(v[2], 1.0, "{v}");
         assert_eq!(v[3], 0, "{v}");
         assert!(!v[5].as_str().unwrap().contains("iPhone"), "{v}");
+    }
+
+    /// The runner's browser must be visible to the dev session's robot
+    /// relay, which looks for browser profiles in the session's state
+    /// directory: a profile elsewhere (the system temp dir) left `load_url`
+    /// and the cookie verbs answering "no browser tab found" under
+    /// `idealyst test`. The profile goes with the browser.
+    #[test]
+    fn regression_the_test_browser_profile_is_where_the_relay_looks() {
+        if headless_browser().is_none() {
+            eprintln!("skipping: no headless browser (set IDEALYST_CHROME)");
+            return;
+        }
+        let state = tempfile::tempdir().unwrap();
+        let b = HeadlessBrowser::launch("about:blank", state.path()).expect("launch");
+        let ports = robot_relay::cdp::browser_ports(state.path());
+        assert_eq!(ports.len(), 1, "the relay sees exactly the runner's browser: {ports:?}");
+        drop(b);
+        assert_eq!(std::fs::read_dir(state.path()).unwrap().count(), 0, "the profile is removed with the browser");
     }
 }

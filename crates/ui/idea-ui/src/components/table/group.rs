@@ -25,9 +25,12 @@
 //! - **The band** is a row of its own spanning the table's columns, in the
 //!   group tone (`RowTone::Group`, the header band's neutral tint): the
 //!   title, a collapse toggle when the group is collapsible, and trailing
-//!   `actions`. In a `scroll_x` table the title and toggle stay pinned to
-//!   the scroller's left edge (past the selection and grip columns) and
-//!   the actions to its right edge while the columns scroll beneath them.
+//!   `actions`. In a `scroll_x` table the band's content is held to the
+//!   scroller's visible width and pinned to its left edge (past the
+//!   selection and grip columns) while the columns scroll beneath it: the
+//!   title and toggle at the left, the actions at the right edge, and a
+//!   one-line title truncates before the actions rather than running
+//!   under them.
 //! - **Collapsing.** `collapsed = Some(signal)` adds the toggle; the app
 //!   owns the signal, so a collapse survives a rebuild of the table. A
 //!   collapsed group's rows keep their place but take no height — the
@@ -150,17 +153,22 @@ pub fn TableGroup(props: TableGroupProps) -> Element {
         }
     }
 
-    // The band's leading content pins past the columns the table adds —
-    // a width only the table knows, so it fills this in.
+    // The band's content pins past the columns the table adds, and in a
+    // `scroll_x` table is no wider than the scroller's viewport past them
+    // — widths only the table knows, so it fills them in.
     let band_lead = Rc::new(std::cell::RefCell::new(BandLead::default()));
+    let bar_of = band_lead.clone();
+    let bar_style = move || {
+        let lead = bar_of.borrow();
+        TableStyles::band_bar().into_style_application().with_inline_merged(band_bar_rules(
+            lead.pin.get(),
+            lead.viewport.and_then(|v| v.get()),
+        ))
+    };
     let lead_of = band_lead.clone();
     let lead_style = move || {
         let lead = lead_of.borrow();
-        let app = TableStyles::band_lead().into_style_application().with_inline_merged(runtime_core::StyleRules {
-            left: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(lead.pin.get()))),
-            ..Default::default()
-        });
-        lead.inset.get().apply(app, InsetSide::Left)
+        lead.inset.get().apply(TableStyles::band_lead().into_style_application(), InsetSide::Left)
     };
     let title = props.title.clone();
     let lead = match props.header {
@@ -172,12 +180,14 @@ pub fn TableGroup(props: TableGroupProps) -> Element {
     let band = ui! {
         TableRow(tone = props.tone, selectable = false, draggable = false, density = props.density) {
             TableCell(span = ColSpan::Rest) {
-                view(style = lead_style) {
-                    toggle
-                    lead
+                view(style = bar_style) {
+                    view(style = lead_style) {
+                        toggle
+                        lead
+                    }
+                    view(style = TableStyles::band_spacer()) {}
+                    trail
                 }
-                view(style = TableStyles::band_spacer()) {}
-                trail
             }
         }
     };
@@ -188,6 +198,21 @@ pub fn TableGroup(props: TableGroupProps) -> Element {
     RowMeta::update(&band, |m| m.band = Some(BandMeta { draggable: props.draggable, lead: band_lead }));
     rows.insert(0, band);
     table::table_group(table::TableGroupProps { children: rows, label: Some(label) })
+}
+
+/// The band bar's placement: pinned `pin` px from the scroller's left
+/// edge (past the columns the table adds), and — once a `scroll_x`
+/// table's viewport is measured — no wider than the viewport past them,
+/// so its actions end at the viewport's right edge and the title
+/// truncates before them. A cap, not a width: a table no wider than its
+/// viewport keeps the bar at its cell's width.
+pub(super) fn band_bar_rules(pin: f32, viewport: Option<f32>) -> runtime_core::StyleRules {
+    let px = |v: f32| Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(v)));
+    runtime_core::StyleRules {
+        left: px(pin),
+        max_width: viewport.and_then(|w| px((w - pin).max(0.0))),
+        ..Default::default()
+    }
 }
 
 /// The band's title text.

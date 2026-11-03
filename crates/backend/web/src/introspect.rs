@@ -172,7 +172,7 @@ fn read_element(el: &Element) -> NativeNode {
 /// `none`, or anything not in the computed `rgb[a]()` form (e.g. a gradient,
 /// which `background-color` never is). The browser always normalizes a
 /// resolved color to this form, so we don't reimplement the CSS color parser.
-fn parse_color(s: &str) -> Option<[f32; 4]> {
+pub(crate) fn parse_color(s: &str) -> Option<[f32; 4]> {
     let s = s.trim();
     let inner = s.strip_prefix("rgba(").or_else(|| s.strip_prefix("rgb("))?;
     let inner = inner.strip_suffix(')')?;
@@ -191,16 +191,16 @@ fn parse_color(s: &str) -> Option<[f32; 4]> {
 }
 
 /// Parse a `<length>` in px (computed styles resolve all lengths to px).
-fn parse_px(s: &str) -> Option<f32> {
+pub(crate) fn parse_px(s: &str) -> Option<f32> {
     s.trim().strip_suffix("px")?.trim().parse::<f32>().ok()
 }
 
-fn parse_f32(s: &str) -> Option<f32> {
+pub(crate) fn parse_f32(s: &str) -> Option<f32> {
     s.trim().parse::<f32>().ok()
 }
 
 /// Computed `font-weight` is numeric (`"400"`), but guard the keyword forms.
-fn parse_font_weight(s: &str) -> f32 {
+pub(crate) fn parse_font_weight(s: &str) -> f32 {
     match s.trim() {
         "normal" => 400.0,
         "bold" => 700.0,
@@ -209,7 +209,7 @@ fn parse_font_weight(s: &str) -> f32 {
 }
 
 /// First family in a computed `font-family` list, quotes stripped.
-fn first_font_family(s: &str) -> String {
+pub(crate) fn first_font_family(s: &str) -> String {
     s.split(',')
         .next()
         .unwrap_or("")
@@ -299,8 +299,9 @@ web_glue::import! {
            const t = document.elementFromPoint(x, y); return t && (t === e || e.contains(t)) ? 1 : 0; }";
 
     /// One step of a synthesized primary-pointer gesture at the viewport
-    /// point `(x, y)`: `phase` 0 down, 1 move, 2 up, 3 hover. Returns 0
-    /// when there is nothing at the down (or hover) point.
+    /// point `(x, y)`: `phase` 0 down, 1 move, 2 up, 3 hover, 4 secondary
+    /// click. Returns 0 when there is nothing at the down (or hover, or
+    /// secondary-click) point.
     ///
     /// Dispatched as a browser dispatches a touch: `pointerdown` +
     /// `mousedown` on the topmost element there, moves and the up to that
@@ -326,6 +327,13 @@ web_glue::import! {
     /// target, `pointerenter`/`mouseenter` on each ancestor it entered,
     /// then `pointermove`/`mousemove` — the order a browser sends. Untrusted
     /// events do not move CSS `:hover`; only real input does.
+    ///
+    /// A secondary click is a mouse's right button on the topmost element
+    /// there, in the order Chrome sends one on macOS and Linux:
+    /// `pointerdown` + `mousedown` (`button: 2`), `contextmenu` (skipped
+    /// when the `mousedown` was prevented, as a browser skips it), then
+    /// `pointerup` + `mouseup`. Always a mouse, also on a touch page: a
+    /// finger has no secondary button.
     fn js_pointer_step(phase: u32, x: f64, y: f64) -> u32 =
         "(phase, x, y) => { \
            const s = (globalThis.__idealystNativePointer ||= { down: null }); \
@@ -344,6 +352,13 @@ web_glue::import! {
                t.dispatchEvent(new PointerEvent('pointerover', m)); t.dispatchEvent(new MouseEvent('mouseover', m)); \
                for (const e of now.slice().reverse()) if (!was.includes(e)) { e.dispatchEvent(new PointerEvent('pointerenter', { ...m, bubbles: false })); e.dispatchEvent(new MouseEvent('mouseenter', { ...m, bubbles: false })); } } \
              t.dispatchEvent(new PointerEvent('pointermove', m)); t.dispatchEvent(new MouseEvent('mousemove', m)); \
+             return 1; } \
+           if (phase === 4) { \
+             const t = document.elementFromPoint(x, y); if (!t) return 0; \
+             const d = { ...o, button: 2, buttons: 2, pointerType: 'mouse' }, u = { ...d, buttons: 0 }; \
+             t.dispatchEvent(new PointerEvent('pointerdown', d)); \
+             if (t.dispatchEvent(new MouseEvent('mousedown', d))) t.dispatchEvent(new MouseEvent('contextmenu', d)); \
+             t.dispatchEvent(new PointerEvent('pointerup', u)); t.dispatchEvent(new MouseEvent('mouseup', u)); \
              return 1; } \
            const touch = navigator.maxTouchPoints > 0 && typeof Touch === 'function' && typeof TouchEvent === 'function'; \
            const press = (t) => { \
@@ -399,6 +414,7 @@ pub(crate) fn native_pointer(
                 PointerStepPhase::Move => 1,
                 PointerStepPhase::Up => 2,
                 PointerStepPhase::Hover => 3,
+                PointerStepPhase::SecondaryClick => 4,
             };
             if unsafe { js_pointer_step(phase, s.x as f64, s.y as f64) } == 0 {
                 return Err(format!("nothing in the page at ({}, {})", s.x, s.y));
@@ -566,6 +582,48 @@ mod is_shown_tests {
             seen.borrow().as_slice(),
             ["pointerdown", "touchstart", "touchmove", "pointerup", "touchend", "mousedown", "mouseup", "click"]
         );
+        root.remove();
+    }
+
+    web_glue::import! {
+        /// The `button` of every listed event the target receives, in order.
+        fn js_record_buttons(n: u32) -> u32 =
+            "(n) => { const t = G.get(n); const seen = []; \
+               for (const k of ['pointerdown', 'mousedown', 'contextmenu', 'pointerup', 'mouseup', 'click']) \
+                 t.addEventListener(k, (e) => seen.push(k + ':' + e.button + (e.pointerType ? ':' + e.pointerType : ''))); \
+               return G.add(seen); }";
+        fn js_joined(n: u32, out: usize) = "(n, o) => G.retStr(G.get(n).join(' '), o)";
+    }
+
+    /// CrewForge E2E report B5: a right-click menu could not be tested —
+    /// no verb sent a secondary click. On web it is the right button's
+    /// sequence a browser sends, `contextmenu` included, as a mouse even on
+    /// a touch page; the backend's own pointer listeners then deliver a
+    /// `PointerButton::Secondary` `Began` (see `touch.rs`).
+    #[wasm_bindgen_test]
+    fn regression_a_native_secondary_click_sends_the_right_button_sequence() {
+        use runtime_vocabulary::caps::{PointerStep, PointerStepPhase};
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let root = doc.create_element("div").unwrap();
+        root.set_attribute("style", "position:fixed;left:0;top:0;width:200px;height:200px").unwrap();
+        doc.body().unwrap().append_child(&root).unwrap();
+        let target = doc.create_element("div").unwrap();
+        target.set_attribute("style", "position:absolute;left:10px;top:10px;width:80px;height:30px").unwrap();
+        root.append_child(&target).unwrap();
+        let raw = AsRef::<web_glue::JsValue>::as_ref(&target).raw();
+        let seen = unsafe { js_record_buttons(raw) };
+
+        unsafe { js_set_touch_points(5) };
+        let click = [PointerStep { phase: PointerStepPhase::SecondaryClick, x: 50.0, y: 25.0 }];
+        let r = super::native_pointer(&click)();
+        unsafe { js_set_touch_points(0) };
+        r.unwrap();
+        assert_eq!(
+            web_glue::string::receive(|o| unsafe { js_joined(seen, o) }),
+            "pointerdown:2:mouse mousedown:2 contextmenu:2 pointerup:2:mouse mouseup:2"
+        );
+        let nothing = [PointerStep { phase: PointerStepPhase::SecondaryClick, x: 5000.0, y: 25.0 }];
+        assert!(super::native_pointer(&nothing)().is_err(), "nothing at the point");
         root.remove();
     }
 

@@ -459,10 +459,12 @@ impl caps::PressableOps for SsrBackend {
     fn create_pressable(
         &mut self,
         _on_click: Rc<dyn Fn()>,
-        _a11y: &AccessibilityProps,
+        a11y: &AccessibilityProps,
     ) -> Self::Node {
         // A bare clickable `<div>`, matching the web pressable: button
-        // a11y only. No inline cursor — `cursor` is now an
+        // role plus the author's accessible name / hint / hidden flag, so
+        // a server-rendered button announces the same name the live one
+        // does (web's `a11y::apply` writes these on the adopted element). No inline cursor — `cursor` is now an
         // author/component style property (`StyleRules::cursor`), so the
         // static first paint matches the live web pressable (neither sets
         // an inline cursor) and hydration adoption stays consistent. The
@@ -470,6 +472,15 @@ impl caps::PressableOps for SsrBackend {
         let mut node = HtmlNode::new("div");
         node.attrs.push(("role", "button".to_string()));
         node.attrs.push(("tabindex", "0".to_string()));
+        if let Some(label) = &a11y.label {
+            node.attrs.push(("aria-label", label.clone()));
+        }
+        if let Some(hint) = &a11y.hint {
+            node.attrs.push(("title", hint.clone()));
+        }
+        if a11y.hidden {
+            node.attrs.push(("aria-hidden", "true".to_string()));
+        }
         node.attrs.push((css::VIEW_MARKER_ATTR, String::new()));
         nref(node)
     }

@@ -46,7 +46,9 @@ fn Game() -> Element {
 
 Every listener sees every event. A key's default is prevented if any
 listener returns `KeyOutcome::PreventDefault`. Listeners also see keys typed
-into a focused text input, so act only on the keys you care about.
+into a focused text input, so act only on the keys you care about — including
+a key the field's `on_key_down` prevented: the field doesn't type it, but the
+listeners still hear it, as a `document` listener does on the web.
 
 ## `AppKeyEvent`
 
@@ -108,7 +110,10 @@ Implement `AppEnvOps::set_keyboard_sink(Option<KeyboardSink>)`. While a sink
 is installed:
 
 - Call `sink.key(&AppKeyEvent)` for every down and up, and swallow the native
-  event when it returns `PreventDefault`.
+  event when it returns `PreventDefault`. That includes a key a focused
+  field's `on_key_down` prevented: run the field's handler, then the sink,
+  in one deterministic order (on macOS one `NSEvent` monitor does both —
+  AppKit runs separate local monitors in no defined order).
 - Call `sink.focus_lost()` when the app stops receiving keys.
 - Never hold a borrow of backend state while calling the sink. A listener
   may add or remove listeners, which re-enters `set_keyboard_sink`.

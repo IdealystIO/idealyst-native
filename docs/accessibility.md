@@ -15,8 +15,10 @@ capability that carries a11y is `runtime_vocabulary::caps::A11yOps`
 `dump_accessibility_tree`), plus an `&AccessibilityProps` on every
 `create_*`.
 
-> **Status.** Shipped end-to-end. Every primitive carries an
-> `AccessibilityProps`, every native backend applies it, and the
+> **Status.** Shipped end-to-end on web, iOS, macOS, Android and the
+> GPU backend (see [Per-platform realization](#per-platform-realization)
+> for the partial and missing backends). Every primitive carries an
+> `AccessibilityProps`, and the
 > author-facing surface — granular `a11y_*` setters / `ui!` attributes, a
 > whole-struct `accessibility` setter, and the `announce()` free function
 > — is live on all primitives. See [Setting props](#setting-props).
@@ -243,6 +245,9 @@ silent no-op, as it is before the app has mounted.
 | Android | `AccessibilityNodeInfo` (contentDescription, state, actions) |
 | Web | ARIA (`role`, `aria-*`, `aria-live`) |
 | wgpu / GPU | a parallel semantics tree the host projects into platform AX |
+| SSR | pressables only: `aria-label`, `title` (hint), `aria-hidden` — what the live web pressable gets |
+| Linux (GTK4) | pressables only: accessible `Label` and `Description` (hint). `hidden` isn't written — GTK rewrites the `HIDDEN` state from widget visibility |
+| Windows, CPU, terminal | not applied — these backends paint their own scene and expose no accessibility tree yet |
 | Roku | no-op |
 
 The exact attribute-by-attribute tables live in

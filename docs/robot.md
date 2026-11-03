@@ -134,6 +134,8 @@ would see on screen — with no help from the app:
 | `focused` | `text_input`, `text_area` | Whether it holds keyboard focus, read from the toolkit at query time: web `document.activeElement`, iOS `isFirstResponder`, Android `View.isFocused()`, macOS the window's first responder (the field editor for a `text_input`), Linux the window's focus widget, Windows `GetFocus()`. A background or headless window, which gets no focus events, still reports it. A backend that can't read it falls back on the field's last focus/blur notification |
 | `scroll` | `scroll_view` | `{x, y}` content offset, read from the native scroller |
 | `hovered`, `pressed` | any element whose style has `state hovered` / `state pressed` variants | Whether that style state is on, as the backend set it |
+| `keyboard` | `text_input` | The soft-keyboard kind the app asked for (`keyboard = KeyboardKind::…`): `"default"`, `"email"`, `"phone"`, `"number"`, `"decimal"`, `"url"` |
+| `native_keyboard` | `text_input` | The kind the native widget holds, read back from it: web `inputmode`, iOS `keyboardType`, Android `inputType` (a masked type several kinds share reads as the first, the keyboard actually shown). Absent on desktop backends, which have no soft keyboard |
 
 It is the primitive's view, not the author's: an uncontrolled toggle reports
 what it was last flipped to, a controlled one the author's value after each
@@ -171,7 +173,7 @@ These actions run inside the app, through the framework: they test the
 framework's logic and the backend's widget updates, not the OS's event
 delivery or hit testing. For that, use the native tier below.
 
-## Native input: `tap_native`, `drag_native`, `hover_native`, `press_native`, `key`
+## Native input: `tap_native`, `drag_native`, `hover_native`, `press_native`, `context_click`, `key`
 
 `tap_native {element_id}` taps the element's center with real platform
 input, through the toolkit's own event path — hit testing, overlays,
@@ -219,6 +221,28 @@ then `tap_native`, falling back to the robot's `click` only where the backend
 answers `unsupported`. `tap_native()` has no fallback; `dispatch_click()` is
 the robot's `click` on purpose.
 
+### Resolved style
+
+`get_style {element_id}` reports the element's resolved visual style:
+`{source, style: {color, background, opacity, font_size, font_weight,
+font_style, font_family, text_decoration, text_align, border_width,
+border_color, corner_radius}}`. Colors are sRGB `[r, g, b, a]` in `0..=1`,
+lengths logical px, `font_weight` the CSS number, `text_decoration` one of
+`"none"`, `"underline"`, `"line-through"`, `"underline line-through"`.
+
+`source` says where it was read. `"native"`: the toolkit resolved it
+(`IntrospectionOps::computed_style` — the web's `getComputedStyle`, where
+CSS decides state pseudo-classes, `@media`, inheritance and preminted
+classes, none of which the framework resolves itself). `"framework"`: the
+rules the framework resolved and last handed the backend
+(`style_attach`'s style mirror, kept current through reactive styles and
+theme swaps) — on every native backend that IS what was applied. A field the
+framework's rules don't set is absent (no inherited values on native); the
+web reports every computed value. robot-test: `Locator::style()` returns a
+typed `Style` (`is_line_through()`, `is_underline()`, `is_bold()`), and
+`assert_style(|s| …)` waits for a style that lands late. For what the
+native widget draws, beside what it was handed, use `introspect_native`.
+
 ### Scrolling into view
 
 `scroll_into_view {element_id}` does what Playwright's
@@ -227,13 +251,28 @@ innermost first, moves by the least that shows the whole element inside it —
 and, for the outermost, inside the window. Each moves only along the axes it
 scrolls (a horizontal tab strip never gets a vertical offset); an element
 bigger than its scroll view is aligned to the start; an element already in
-view moves nothing. It answers `{scrolled: [{element_id, x, y}]}`, the
-scroll views it moved and their new offsets.
+view moves nothing. It answers `{scrolled: [{element_id, x, y, page?}]}`, the
+scrollers it moved and their new offsets.
+
+The scrollers are every registered ancestor the toolkit scrolls — a
+`scroll_view`, and any other element whose native object scrolls
+(`IntrospectionOps::scroll_port`: a virtualizer's own scroller, a web element
+whose CSS `overflow` scrolls) — and then the scroller above the app's tree
+(`ScrollTarget::Host`). That last one is the web page: when the app's root
+outgrows the window and no `scroll_view` holds it, the document scrolls, and
+an element below the fold is reached by scrolling it (`page: true` in the
+answer, with the root element's id). A native window doesn't scroll, so
+there is none off the web. Each scroller moves only within its range, and
+one with no range (a `scroll_view` that grew to its content) is passed over
+for the one outside it.
 
 It is implemented once, in the vocabulary (`Robot::scroll_into_view`), over
-what every backend already reports — the window frames of the element and
-its scroll views (`IntrospectionOps::absolute_frame`) and each scroller's
-offset — and moves them through the same route as `set_scroll`. The shifts
+what every backend reports — the window frames of the element and its
+scrollers (`IntrospectionOps::absolute_frame`) and each scroller's offset and
+range (`scroll_port`; web, macOS, iOS, Android, Windows and Linux report one)
+— and moves a `scroll_view` through the same route as `set_scroll`, any
+other scroller through `IntrospectionOps::set_scroll_offset` (web, macOS,
+iOS, Android). The shifts
 come from one read of the frames (scrolling a view by `d` moves its content
 by `-d`), so a backend that settles a scroll's frames a pass later is not
 scrolled twice.
@@ -241,7 +280,11 @@ scrolled twice.
 robot-test's `click()` and `tap_native()` use it before tapping an element
 that is outside the window, and again — then tap at once — when the tap is
 refused as outside the window or covered (an element in the window but
-clipped by its scroll view: the point lands on what is beside it). Opt out
+clipped by its scroll view: the point lands on what is beside it). Every
+other real-input action does the same before it sends: `long_press`,
+`context_click`, `secondary_click`, `press_native`, `hover_native` and
+`drag_native` (`release_native` scrolls nothing: it lifts where the press
+went down). Opt out
 per locator with `.no_scroll()`, or for the app with
 `App::set_auto_scroll(false)`; `Locator::scroll_into_view()` scrolls without
 tapping. An app from before the verb answers `unknown command`, and the tap
@@ -260,8 +303,16 @@ to a test through a component `#[method]` or a robot function).
 `hover_native {element_id}` moves a real mouse over the element's center
 with no button held (`on_hover`, the `state hovered` style).
 `press_native` / `release_native {element_id}` split a tap in two so a test
-can check the `state pressed` style in between. Same point checks as
-`tap_native`, no fallback:
+can check the `state pressed` style in between, or hold a long press: the
+press stays down for the real time between the two verbs. Same point
+checks as `tap_native`. Both answer `{mechanism}`: `native` with real input
+(web, macOS, Windows, Android: one gesture, one `downTime`), `hit_test`
+where the backend can't inject input (iOS, Linux). There the robot holds
+the press itself: `press_native` sends `Began` to the touch handlers under
+the point (as `tap_native`'s `hit_test` tier finds them), `release_native`
+sends `Ended` stamped with the time that passed, so a long-press
+recognizer's timer fires while the press is held and a pressable fires on
+the release. `hover_native` has no fallback:
 
 | Backend | Hover |
 |---|---|
@@ -272,6 +323,29 @@ can check the `state pressed` style in between. Same point checks as
 
 macOS posts its mouse events, so a pressed state lands on the next run-loop
 turn: poll for it.
+
+### Right click and long press
+
+`context_click {element_id}` sends a secondary (right) click to the
+element's center, with the same point checks, and answers `{mechanism}`:
+
+| Backend | Right click |
+|---|---|
+| Web | `pointerdown` + `mousedown` (`button: 2`), `contextmenu` (skipped when the `mousedown` was prevented, as a browser skips it), `pointerup` + `mouseup`: Chrome's order on macOS and Linux. Always a mouse, also on a touch page |
+| macOS | posted `rightMouseDown` / `rightMouseUp` events |
+| Windows | `WM_RBUTTONDOWN` (`MK_RBUTTON`) / `WM_RBUTTONUP`, posted where a real click lands |
+| Android, iOS, Linux | `hit_test`: the robot sends a `PointerButton::Secondary` `Began` into the touch handlers under the point. It bubbles past handlers that ignore it and stops at a pressable, as a right click does on a desktop backend |
+
+An app handles both gestures in one touch handler: a press whose
+`pointer_button().opens_context_menu()` is the right click, any other
+press goes to a `long_press` recognizer.
+
+robot-test's `Locator::context_click()` opens a context menu the way the
+platform's user does: the `context_click` verb on web and desktop, a long
+press on iOS and Android (`press_native`, `LONG_PRESS` (800 ms) of real
+time, `release_native` on the same element). `long_press(hold)` holds a
+press for `hold` on every platform; `secondary_click()` is always the
+`context_click` verb.
 
 ### Keys: `key`
 
@@ -383,12 +457,13 @@ Deep links need no SDK: `open_link {url}` delivers a URL as the OS would
 | Area | Verbs |
 |---|---|
 | Tree | `get_snapshot`, `get_children`, `get_parent`, `count_elements` |
-| Geometry / rendering | `get_frame`, `get_absolute_frame`, `get_device_frame`, `introspect_native`, `introspect_subtree`, `screenshot` |
-| Navigation | `list_navigators`, `get_navigator_state`, `navigate {nav_id, action: push\|replace\|reset\|pop, path}`, `open_link {url}` (a deep / universal link, as the OS delivers one: observers, interceptors, then the navigators; answers whether a navigator took it) |
+| Geometry / rendering | `get_frame`, `get_absolute_frame`, `get_device_frame`, `get_style`, `introspect_native`, `introspect_subtree`, `screenshot` |
+| Navigation | `list_navigators`, `get_navigator_state`, `navigate {nav_id, action: push\|replace\|reset\|pop, path}`, `open_link {url}` (a deep / universal link, as the OS delivers one: observers, interceptors, then the navigators; answers `{reached, complete, routed}` — the deepest path the shown navigators reached, whether that is the whole link, and whether a navigator took it at all; a nested navigator that mounts later (a lazy screen, a data fetch) is moved by `open_link {url, resume: true}`, which routes again without re-running observers or interceptors). Navigator entries carry `query` (the active screen's decoded query parameters) and `href` (`active_path` plus the encoded query); `active_path` itself is path-only |
 | Components | `list_components` (mounted instances), `get_component {instance_id}` (live props), `invoke_method {instance_id, method, args}` |
 | Signals | `list_watched_signals`, `read_signal`, `write_signal` (`watch_signal_writable` only), `get_signal_history` |
 | Functions | `list_functions`, `call_function`, `poll_function` (above) |
 | Viewport | `get_viewport` → `{width, height, breakpoint}` (logical px; `breakpoint` is `xs`…`xl`, what the app's responsive layout sees); `set_viewport {width, height}` resizes the window so its content area is that size — desktop backends only (macOS `setContentSize:`, Windows `SetWindowPos` on the top-level window, Linux the GTK window's default size), through `IntrospectionOps::resize_window`; elsewhere an error naming the alternative (the runner's `--viewport` on web, a device or simulator on mobile). A maximized or full-screen window refuses; the new size reaches `get_viewport` through the window's ordinary resize path |
+| Page (relay) | Answered by the relay, never forwarded to the app (as `screenshot`'s `cdp` is), so `call_verb` reaches them too. `load_url {url}` boots the app again at `url` and answers `{url}` once the new instance has said `hello`: on web the relay navigates the driven tab over DevTools (`url` resolves against the page's address; a change of `#fragment` only reloads); on Android it relaunches the app with the link through the dev session's hook (`am start -S -W -a VIEW -d <link>`; an app path `/x` becomes `https://localhost/x`, whose route is `/x`); iOS and desktop apps answer that the session can't relaunch them (a link launch on the simulator drops the environment the app reconnects with; a desktop dev session ends with its app). `set_cookie {name, value, url?, domain?, path?, http_only?, secure?, same_site?, expires?}` (default: the page's origin; HttpOnly allowed), `get_cookies` (the cookies sent to the page's address, HttpOnly included), `clear_cookies {name?}`: web only, a native app's HTTP stack keeps its own cookie store. All four need a tab in a browser the dev session launched (`idealyst test --web`, the headless web client): the relay finds it by the page's pairing nonce among the browser profiles in the session's state directory |
 | App | `get_logs`, `clear_logs`, `get_identity`, `ping`, `get_platform` → `{platform}` (`web`, `ios`, `android`, `macos`, `linux`, `windows` — the `idealyst test --<platform>` names — or `tvos`, `androidtv`, `roku`, a custom backend's own name, `unknown`) |
 
 ### Screenshots on web
@@ -450,8 +525,9 @@ fn sign_in(app: &mut App) {
   `dispatch_click`, `fill` / `type_text`, `set_toggle`, `set_slider`,
   `focus`, `blur`, `scroll_to`, `scroll_into_view`, `drag`,
   `drag_with_hold`, `drag_native`, `hover_native`, `press_native`,
-  `release_native`; `.no_scroll()` before `click` / `tap_native` taps
-  without scrolling first.
+  `release_native`, `context_click`, `long_press(hold)`,
+  `secondary_click` (above); `.no_scroll()` before `click` / `tap_native` /
+  any other real-input action acts without scrolling first.
 - Read: `state()` ([`ElementState`]), `is_visible()`, `label()`, `count()`.
 - Assert: `assert_visible`, `assert_hidden`, `assert_in_viewport`, `assert_text`,
   `assert_text_contains`, `assert_value`, `assert_checked`,
@@ -464,11 +540,21 @@ fn sign_in(app: &mut App) {
   `set_viewport(w, h)` (waits for the app to report the size; panics where
   the app can't resize itself) / `try_set_viewport` (returns why instead).
 - App: `navigate` / `navigate_with` / `back` / `assert_path` /
-  `navigators()`, `open_link(url)`, `call_function(name, args)` /
+  `assert_query(key, value)` / `assert_href(href)` / `navigators()`
+  (each with `query` and `href`), `open_link(url)` (waits until the whole
+  path shows, nested navigators that mount late included, and panics
+  naming the path it reached otherwise; `try_open_link` returns the
+  `LinkOutcome` instead), `call_function(name, args)` /
   `try_call_function` / `functions()` (waits for the function to register
   and for an async one to finish), `component(name).invoke(method, args)` / `.prop(name)`,
   `signal(name).assert_eq` / `.value()` / `.set(v)`, `logs()`,
   `screenshot()`, and `call(verb, args)` for any other verb.
+- Page: `load_url(url)` boots the app again at `url` and waits for the new
+  instance to answer (web and Android; up to the larger of the timeout and
+  `LOAD_URL_TIMEOUT`, 60 s; `try_load_url` returns the error), and
+  `set_cookie(Cookie::new(name, value).http_only())`, `cookies()`,
+  `clear_cookie(name)`, `clear_cookies()` on web. Set a cookie before
+  `load_url` for the server to see it at boot.
 
 `assert_visible` needs the element mounted and `visible`; `assert_hidden`
 passes when nothing matches or the match is not visible (a closed overlay,

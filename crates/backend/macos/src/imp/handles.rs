@@ -416,6 +416,65 @@ pub(crate) fn content_clip(node: &MacosNode) -> runtime_vocabulary::caps::Conten
     }
 }
 
+/// `IntrospectionOps::scroll_port` on macOS: an `NSScrollView` node (a
+/// `scroll_view`, a virtualizer's outer scroller) — its clip view's bounds
+/// origin is the offset, the document view's size less the clip view's the
+/// range. A window does not scroll: no `Host` scroller.
+pub(crate) fn scroll_port(
+    node: &MacosNode,
+    target: runtime_vocabulary::caps::ScrollTarget,
+) -> Option<runtime_vocabulary::caps::ScrollPort> {
+    if target != runtime_vocabulary::caps::ScrollTarget::Node {
+        return None;
+    }
+    let view = node.as_view();
+    let scroller: bool = unsafe { msg_send![view, isKindOfClass: objc2::class!(NSScrollView)] };
+    if !scroller {
+        return None;
+    }
+    let clip: *mut NSView = unsafe { msg_send![view, contentView] };
+    let doc: *mut NSView = unsafe { msg_send![view, documentView] };
+    if clip.is_null() || doc.is_null() {
+        return None;
+    }
+    let bounds: CGRect = unsafe { msg_send![&*clip, bounds] };
+    let content: CGRect = unsafe { msg_send![&*doc, frame] };
+    Some(runtime_vocabulary::caps::ScrollPort {
+        x: bounds.origin.x as f32,
+        y: bounds.origin.y as f32,
+        max_x: (content.size.width - bounds.size.width).max(0.0) as f32,
+        max_y: (content.size.height - bounds.size.height).max(0.0) as f32,
+        port: None,
+    })
+}
+
+/// `IntrospectionOps::set_scroll_offset` on macOS: the clip view scrolls
+/// to the point, then the scroll view is told (`reflectScrolledClipView:`)
+/// — which fires its scroll notifications, so it runs as an injection
+/// after the backend borrow is released.
+pub(crate) fn set_scroll_offset(
+    node: &MacosNode,
+    target: runtime_vocabulary::caps::ScrollTarget,
+    x: f32,
+    y: f32,
+) -> Option<runtime_vocabulary::caps::NativeInjection> {
+    scroll_port(node, target)?;
+    let node = node.clone();
+    Some(Box::new(move || {
+        let view = node.as_view();
+        let clip: *mut NSView = unsafe { msg_send![view, contentView] };
+        if clip.is_null() {
+            return Err("the scroll view has no clip view".into());
+        }
+        let point = objc2_foundation::CGPoint { x: x as f64, y: y as f64 };
+        unsafe {
+            let _: () = msg_send![&*clip, scrollToPoint: point];
+            let _: () = msg_send![view, reflectScrolledClipView: &*clip];
+        }
+        Ok(())
+    }))
+}
+
 /// Opacity at or below which a view counts as invisible — the same bar the
 /// painted backends use for hit testing (`effective_opacity() <= 0.003`).
 const TRANSPARENT: f64 = 0.003;

@@ -656,7 +656,9 @@ pub enum Position {
     /// `left` / `right` pin horizontally, and the axes are independent
     /// — a frozen column sets `left` (or `right`) only and keeps
     /// scrolling vertically with the content; a pinned footer sets
-    /// `bottom` only. With no side set, pins to the top edge.
+    /// `bottom` only. With no side set, pins to the top edge. The sides
+    /// are thresholds only, never offsets: the box is laid out in flow
+    /// (`runtime-layout` drops them from the Taffy style), as in CSS.
     ///
     /// The per-edge thresholds are resolved once, for every backend,
     /// by [`sticky::StickyInsets::from_style`](crate::sticky::StickyInsets::from_style),

@@ -1,5 +1,7 @@
-//! `screenshot` over the Chrome DevTools Protocol, for a tab in a browser
-//! the dev session launched.
+//! `screenshot` — and the browser controls `load_url` / `set_cookie` /
+//! `get_cookies` / `clear_cookies` ([`crate::browser`]) — over the Chrome
+//! DevTools Protocol, for a tab in a browser the dev session (or an
+//! `idealyst test` run) launched.
 //!
 //! A page can only rasterize itself by copying its DOM into an SVG
 //! `<foreignObject>` (`backend-web`'s `robot_screenshot`), which drops
@@ -68,6 +70,13 @@ pub fn browser_ports(dir: &Path) -> Vec<u16> {
 /// browsers on `ports`. `Err` says what was searched, for the agent to
 /// read.
 pub fn capture(ports: &[u16], nonce: &str) -> Result<Shot, String> {
+    with_page(ports, nonce, Page::screenshot)
+}
+
+/// Run `f` on the page target whose [`NONCE_GLOBAL`] is `nonce`, searching
+/// the browsers on `ports` — the driven tab, whatever else the browsers
+/// hold. `Err` says what was searched when no tab matches.
+pub fn with_page<T>(ports: &[u16], nonce: &str, f: impl FnOnce(&mut Page) -> Result<T, String>) -> Result<T, String> {
     if ports.is_empty() {
         return Err("no browser launched by this dev session answers CDP".into());
     }
@@ -78,7 +87,7 @@ pub fn capture(ports: &[u16], nonce: &str) -> Result<Shot, String> {
             searched += 1;
             let Ok(mut page) = Page::connect(&ws_url) else { continue };
             if matches!(page.nonce(), Ok(Some(n)) if n == nonce) {
-                return page.screenshot();
+                return f(&mut page);
             }
         }
     }
@@ -151,7 +160,7 @@ fn connect(port: u16) -> Result<TcpStream, String> {
 }
 
 /// One page target's CDP socket.
-struct Page {
+pub struct Page {
     ws: tungstenite::WebSocket<TcpStream>,
     next_id: u64,
 }
@@ -173,7 +182,7 @@ impl Page {
 
     /// Send one command and wait for its reply, skipping the events the
     /// target interleaves.
-    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+    pub fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id;
         self.next_id += 1;
         let frame = json!({ "id": id, "method": method, "params": params }).to_string();
@@ -200,6 +209,15 @@ impl Page {
             json!({ "expression": format!("globalThis.{NONCE_GLOBAL}"), "returnByValue": true }),
         )?;
         Ok(result["result"]["value"].as_str().map(str::to_string))
+    }
+
+    /// Evaluate `expression` in the page and return its value (JSON).
+    pub fn evaluate(&mut self, expression: &str) -> Result<Value, String> {
+        let result = self.call("Runtime.evaluate", json!({ "expression": expression, "returnByValue": true }))?;
+        if let Some(e) = result.get("exceptionDetails") {
+            return Err(format!("{expression}: {}", e["exception"]["description"].as_str().unwrap_or("threw")));
+        }
+        Ok(result["result"]["value"].clone())
     }
 
     fn screenshot(&mut self) -> Result<Shot, String> {

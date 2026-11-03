@@ -227,6 +227,25 @@ pub(crate) fn input_type(kind: runtime_shared::primitives::text_input::KeyboardK
     }
 }
 
+/// The keyboard kind an `inputType` shows — the robot's `native_keyboard`
+/// (`IntrospectionOps::keyboard_kind`): the kind whose [`input_type`]
+/// writes it. A masked type is shared by several kinds (`Default`, `Email`
+/// and `Url` all mask to text-password); it reads as the first of them, the
+/// keyboard the user actually gets. `None`: a type no kind writes.
+pub(crate) fn kind_of_input_type(t: i32) -> Option<runtime_shared::primitives::text_input::KeyboardKind> {
+    use runtime_shared::primitives::text_input::KeyboardKind as K;
+    K::ALL
+        .into_iter()
+        .find(|k| input_type(*k, false) == t)
+        .or_else(|| K::ALL.into_iter().find(|k| input_type(*k, true) == t))
+}
+
+/// `getInputType` of an `EditText`, as a keyboard kind.
+pub(crate) fn read_keyboard_kind(node: &GlobalRef) -> Option<runtime_shared::primitives::text_input::KeyboardKind> {
+    let t = with_env(|env| env.call_method(node.as_obj(), "getInputType", "()I", &[]).ok().and_then(|v| v.i().ok()))?;
+    kind_of_input_type(t)
+}
+
 /// `setInputType` on a single-line field, keeping its typeface.
 ///
 /// INVARIANT: `TextView.setInputType` swaps the typeface to MONOSPACE when
@@ -573,5 +592,9 @@ mod input_type_tests {
                 );
             }
         }
+        for k in K::ALL {
+            assert_eq!(super::kind_of_input_type(input_type(k, false)), Some(k), "{k:?} reads back");
+        }
+        assert_eq!(super::kind_of_input_type(0x81), Some(K::Default), "masked text reads as text");
     }
 }

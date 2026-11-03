@@ -116,6 +116,22 @@ fn trait_receiver(field: &AnyObject, sel: Sel) -> Retained<AnyObject> {
     unsafe { Retained::retain(target) }.unwrap_or_else(own)
 }
 
+/// The kind `field`'s `keyboardType` shows — the robot's
+/// `native_keyboard` (`IntrospectionOps::keyboard_kind`) — read from the
+/// receiver [`trait_receiver`] picks (the same forwarding invariant as the
+/// setters). A type no kind writes reads as the nearest kind's keyboard:
+/// none does, so it reads `None`.
+pub(crate) fn read(field: &AnyObject) -> Option<KeyboardKind> {
+    let from = trait_receiver(field, sel!(keyboardType));
+    let ty: isize = unsafe { msg_send![&*from, keyboardType] };
+    kind_of_keyboard_type(ty)
+}
+
+/// The kind whose [`traits`] write `keyboard_type`.
+pub(crate) fn kind_of_keyboard_type(keyboard_type: isize) -> Option<KeyboardKind> {
+    KeyboardKind::ALL.into_iter().find(|k| traits(*k).keyboard_type == keyboard_type)
+}
+
 /// Mask `field`'s text (`secureTextEntry`), sent to the receiver
 /// [`trait_receiver`] picks.
 pub(crate) fn set_secure(field: &AnyObject, secure: bool) {
@@ -189,5 +205,15 @@ mod tests {
             let t = traits(k);
             assert_eq!((t.autocapitalization, t.autocorrection), (2, 0), "{k:?}");
         }
+    }
+
+    /// Every kind's `UIKeyboardType` reads back as that kind (the robot's
+    /// `native_keyboard`); a type no kind writes reads as none.
+    #[test]
+    fn every_keyboard_type_reads_back_as_its_kind() {
+        for k in KeyboardKind::ALL {
+            assert_eq!(kind_of_keyboard_type(traits(k).keyboard_type), Some(k), "{k:?}");
+        }
+        assert_eq!(kind_of_keyboard_type(1), None, "ASCII-capable is no kind's");
     }
 }

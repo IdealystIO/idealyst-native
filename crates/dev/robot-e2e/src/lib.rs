@@ -348,7 +348,7 @@ impl Locator {
     pub fn press(&self) -> Result<(), String> {
         log(format!("  ▸ {}.press()", self.desc));
         let el = self.resolve()?;
-        let r = Robot::new().press_native(&el).map_err(|e| robot_err(&self.desc, "press", e));
+        let r = Robot::new().press_native(&el).map(|_| ()).map_err(|e| robot_err(&self.desc, "press", e));
         settle();
         r
     }
@@ -357,7 +357,7 @@ impl Locator {
     pub fn release(&self) -> Result<(), String> {
         log(format!("  ▸ {}.release()", self.desc));
         let el = self.resolve()?;
-        let r = Robot::new().release_native(&el).map_err(|e| robot_err(&self.desc, "release", e));
+        let r = Robot::new().release_native(&el).map(|_| ()).map_err(|e| robot_err(&self.desc, "release", e));
         settle();
         r
     }

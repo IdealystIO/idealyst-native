@@ -126,7 +126,7 @@ fn regression_text_entry_test_ids_land_on_the_input() {
         let tree = ui! {
             view {
                 Field(label = Some("Email".into()), value = text, test_id = Some("email"))
-                Field(value = text, secure = true, trailing = Adornment::Button(GLYPH, noop()), test_id = Some("password"))
+                Field(value = text, secure = true, trailing = Adornment::Button { icon: GLYPH, label: None, on_press: noop() }, test_id = Some("password"))
                 Textarea(label = Some("Notes".into()), value = text, test_id = Some("notes"))
                 TimeInput(value = time, test_id = Some("start-time"))
                 DateInput(value = date, test_id = Some("start-date"))

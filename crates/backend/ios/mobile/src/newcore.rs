@@ -1664,6 +1664,28 @@ mod ios_impl {
             Some(crate::hit_reach_policy::uikit::content_clip(node.as_view()))
         }
 
+        fn scroll_port(&self, node: &Self::Node, target: caps::ScrollTarget) -> Option<caps::ScrollPort> {
+            crate::imp::scroll_port::scroll_port(node, target)
+        }
+
+        fn set_scroll_offset(
+            &self,
+            node: &Self::Node,
+            target: caps::ScrollTarget,
+            x: f32,
+            y: f32,
+        ) -> Option<caps::NativeInjection> {
+            crate::imp::scroll_port::set_scroll_offset(node, target, x, y)
+        }
+
+        /// The field's `keyboardType`, read back.
+        fn keyboard_kind(&self, node: &Self::Node) -> Option<runtime_shared::primitives::text_input::KeyboardKind> {
+            match node {
+                crate::imp::IosNode::TextField(field) => crate::imp::keyboard_kind::read(field),
+                _ => None,
+            }
+        }
+
         /// `isFirstResponder`, read at query time.
         fn is_focused(&self, node: &Self::Node) -> Option<bool> {
             Some(unsafe { objc2::msg_send![node.as_view(), isFirstResponder] })

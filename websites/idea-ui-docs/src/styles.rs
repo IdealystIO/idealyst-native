@@ -522,6 +522,17 @@ stylesheet! {
     }
 }
 
+// The Typography `spans` demo's card: narrow enough that the bold name wraps,
+// so the page shows the muted number flowing after the name's last word.
+stylesheet! {
+    pub SpansNarrow<IdeaThemeRef> {
+        base(t) {
+            width: Length::pct(100.0),
+            max_width: 200.0,
+        }
+    }
+}
+
 // Side-by-side wrapping row: preview on the left, controls on the right.
 stylesheet! {
     pub DemoRow<IdeaThemeRef> {

@@ -622,7 +622,10 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<(String, Outco
                  build probably failed; run `idealyst dev --web` to see it"
             );
         }
-        browser = Some(HeadlessBrowser::launch(&format!("http://127.0.0.1:{port}/"))?);
+        browser = Some(HeadlessBrowser::launch(
+            &format!("http://127.0.0.1:{port}/"),
+            &session_state_dir(dir, isolated),
+        )?);
     }
 
     for size in &launch.sizes {
@@ -782,7 +785,10 @@ fn run_parity(args: &Args, dir: &Path, user_env: &[(String, String)]) -> Result<
                      build probably failed; run `idealyst dev --web` to see it"
                 );
             }
-            let mut b = HeadlessBrowser::launch(&format!("http://127.0.0.1:{port}/"))?;
+            let mut b = HeadlessBrowser::launch(
+                &format!("http://127.0.0.1:{port}/"),
+                &session_state_dir(dir, isolated.as_deref()),
+            )?;
             b.show(&Emulation::desktop(viewport.0, viewport.1))?;
             browsers.push(b);
         }
@@ -849,6 +855,19 @@ fn project_has_server(dir: &Path) -> bool {
     build_ios::parse_manifest(dir)
         .map(|m| m.app.server_bin.is_some() || m.app.server_manifest.is_some())
         .unwrap_or(false)
+}
+
+/// The state directory of the dev session the run launches
+/// (`idealyst dev`'s `project_state_dir` as that session computes it):
+/// `<project>/.idealyst`, or `.idealyst/isolated/<key>` for an isolated
+/// session. The runner's browser keeps its profile here so the session's
+/// relay can drive the tab.
+fn session_state_dir(dir: &Path, isolated: Option<&str>) -> PathBuf {
+    let state = dir.join(".idealyst");
+    match isolated {
+        Some(key) => state.join("isolated").join(key),
+        None => state,
+    }
 }
 
 /// The key the test session runs `idealyst dev --isolated` under, decided
@@ -1497,6 +1516,15 @@ fn wait_for_web_server(port: u16, timeout: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The runner's browser profile goes where `idealyst dev`'s
+    /// `project_state_dir` puts the session's state, isolated or not.
+    #[test]
+    fn the_session_state_dir_matches_the_dev_sessions() {
+        let dir = Path::new("/p");
+        assert_eq!(session_state_dir(dir, None), Path::new("/p/.idealyst"));
+        assert_eq!(session_state_dir(dir, Some("test-2")), Path::new("/p/.idealyst/isolated/test-2"));
+    }
 
     fn args(argv: &[&str]) -> Args {
         let mut full = vec!["idealyst-test"];

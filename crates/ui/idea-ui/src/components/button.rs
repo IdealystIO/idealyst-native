@@ -20,6 +20,15 @@
 //! `dimmed` arms. Every combination ships as build-time CSS, so applying a
 //! style is a class lookup.
 //!
+//! On phones the box is at least 44 × 44 pt whatever its `size`
+//! ([`touch_target`](crate::touch::touch_target): the floor sits on the
+//! `Xs` base and releases at `Md`). Opt one button out with
+//! `styles = ButtonSlotStyles::default().root(no_touch_target())`.
+//!
+//! `accessibility_label` renames the button for screen readers and robot
+//! queries without changing the drawn label — a glyph-only `"⌫"` key
+//! announced as "Backspace".
+//!
 //! Extend it at boot: `ButtonStyles::restyle(|s| …)` changes any slot,
 //! `ButtonVariant::define("raised")` adds a variant (give it a look with
 //! a restyle arm, or a tone-aware one with
@@ -180,6 +189,9 @@ component_styles! {
 /// The box's `(tone, variant)` fills and their hover/press feedback, for
 /// every registered tone.
 fn root_tone_variants(s: &mut SlotRestyle<'_, ButtonStyles>) {
+    // The phone tap-target floor: ≥ 44 pt at `Xs`/`Sm`, natural size from
+    // `Md` up. No `size` arm sets `min_*`, so the floor holds for every size.
+    crate::touch::touch_target(s);
     let tones = semantic_tones();
     for (key, recipe) in variant::builtin_recipes() {
         tone_variant_arms(s, &tones, key, recipe);
@@ -263,7 +275,9 @@ pub struct ButtonProps {
     /// Surface treatment (Filled, Soft, Outlined, Ghost, or an app value).
     /// Default Filled.
     pub variant: ButtonVariant,
-    /// Padding/font scale (Sm, Md, Lg). Default Md.
+    /// Padding/font scale (Sm, Md, Lg). Default Md. On phones (`Xs`/`Sm`
+    /// breakpoints) every size is floored at a 44 pt tap target — see
+    /// [`crate::touch`] for the rule and the opt-out.
     pub size: ButtonSize,
     /// Corner-radius scale (Sm, Md, Lg, Pill). Default Md.
     pub shape: ButtonShape,
@@ -311,6 +325,14 @@ pub struct ButtonProps {
     /// and the old one's registration is dropped with it). Inert outside a
     /// robot build.
     pub test_id: Option<&'static str>,
+    /// The button's accessible name — what screen readers announce and
+    /// what the robot reports as the pressable's `label` — when the
+    /// visible `label` doesn't say what the button does (a glyph like
+    /// `"⌫"`). Overrides the name only: the drawn label is unchanged.
+    /// Default `None` (no override; assistive tech reads the label text).
+    /// Snapshot at build, like every a11y name here.
+    #[prop(static)]
+    pub accessibility_label: Option<String>,
 }
 
 impl Default for ButtonProps {
@@ -329,6 +351,7 @@ impl Default for ButtonProps {
             trailing_icon: Reactive::Static(None),
             block: Reactive::Static(false),
             test_id: None,
+            accessibility_label: None,
             styles: Default::default(),
         }
     }
@@ -415,6 +438,7 @@ pub fn Button(props: &ButtonProps) -> Element {
         let values = values.clone();
         let styles = styles.clone();
         let test_id = props.test_id;
+        let accessibility_label = props.accessibility_label.clone();
         move |loading: bool, has_lead: bool, has_trail: bool, disabled: bool, block: bool| {
             // A loading spinner occupies the leading slot, so it needs the same
             // centered-row layout an icon does.
@@ -510,6 +534,12 @@ pub fn Button(props: &ButtonProps) -> Element {
                 .with_style(make_style(row_layout, block, disabled).overridden(styles.root.as_ref()));
             if inert {
                 bound = bound.disabled(true);
+            }
+            // The override names the PRESSABLE (every arm), never the label
+            // text node: the pressable is what assistive tech focuses and
+            // what a robot `label = …` query resolves to the press target.
+            if let Some(name) = accessibility_label.clone() {
+                bound = bound.a11y_label(name);
             }
             // The test id rides the PRESSABLE in every arm, so a robot
             // lookup always resolves the node that takes the press — never
@@ -1301,6 +1331,99 @@ mod tests {
             let rules = box_rules(ButtonProps { tone: Reactive::Static(Brand.into()), ..Default::default() });
             assert_eq!(rules.background.as_ref().and_then(|c| c.name()), Some("brand-button-fill"));
             reset_styles();
+        });
+    }
+
+    /// The breakpoint overlays a viewport turns on, mobile-first: every
+    /// threshold at or below it.
+    fn at(app: &StyleApplication, overlays: &[&'static str]) -> Rc<StyleRules> {
+        let mut app = app.clone();
+        for axis in overlays {
+            app = app.with(*axis, "on");
+        }
+        resolve_style(&app)
+    }
+
+    fn min_size(rules: &StyleRules) -> (Option<Length>, Option<Length>) {
+        let lit = |v: &Option<Tokenized<Length>>| v.as_ref().map(|t| t.resolve());
+        (lit(&rules.min_width), lit(&rules.min_height))
+    }
+
+    /// Everything but the touch floor — what must not change across widths.
+    fn without_min_size(rules: &StyleRules) -> StyleRules {
+        StyleRules { min_width: None, min_height: None, ..rules.clone() }
+    }
+
+    // CrewForge A6: a labelled Button was 23–26 pt tall at a 390 pt phone
+    // viewport, and even `size::Lg` (~42 pt) missed the 44 pt tap target.
+    // Every size is floored at `MIN_TOUCH_TARGET_PX` on `Xs` and `Sm`, and
+    // released to its natural size from `Md` up with nothing else changed.
+    #[test]
+    fn regression_button_touch_target_floor_on_phones_only() {
+        use crate::touch::MIN_TOUCH_TARGET_PX;
+        with_test_world(|| {
+            theme();
+            let floor = Some(Length::Px(MIN_TOUCH_TARGET_PX));
+            for size in [ButtonSize::Sm, ButtonSize::Md, ButtonSize::Lg] {
+                let (_, app) = pressable_parts(Button(&ButtonProps {
+                    label: Reactive::Static("Add item".into()),
+                    size: Reactive::Static(size),
+                    ..Default::default()
+                }));
+                let xs = at(&app, &[]);
+                assert_eq!(min_size(&xs), (floor, floor), "Xs floors {size:?} at the tap target");
+                let sm = at(&app, &["__bp_sm"]);
+                assert_eq!(min_size(&sm), (floor, floor), "Sm (large phones) keeps the floor for {size:?}");
+                for overlays in [
+                    &["__bp_sm", "__bp_md"][..],
+                    &["__bp_sm", "__bp_md", "__bp_lg"],
+                    &["__bp_sm", "__bp_md", "__bp_lg", "__bp_xl"],
+                ] {
+                    let wide = at(&app, overlays);
+                    assert_eq!(
+                        min_size(&wide),
+                        (Some(Length::Auto), Some(Length::Auto)),
+                        "{overlays:?}: the floor releases for {size:?}"
+                    );
+                    assert_eq!(
+                        without_min_size(&wide),
+                        without_min_size(&xs),
+                        "{overlays:?}: the touch floor is the only thing that varies with width"
+                    );
+                }
+            }
+        });
+    }
+
+    // A1: `accessibility_label` names the pressable without touching the
+    // drawn label; without it the pressable stays unnamed (the label text
+    // is the name). Robot lookup by the name: `tests/button_accessibility_label.rs`.
+    #[test]
+    fn accessibility_label_names_the_pressable_not_the_text() {
+        with_test_world(|| {
+            theme();
+            let named = ButtonProps {
+                label: Reactive::Static("⌫".into()),
+                accessibility_label: Some("Backspace".into()),
+                ..Default::default()
+            };
+            match classify(Button(&named)) {
+                P::Pressable { accessibility, mut children, .. } => {
+                    assert_eq!(accessibility.label.as_deref(), Some("Backspace"));
+                    match classify(children.remove(0)) {
+                        P::Text { text, accessibility, .. } => {
+                            assert_eq!(text.as_deref(), Some("⌫"), "the drawn label is unchanged");
+                            assert_eq!(accessibility.label, None, "the text node is not renamed");
+                        }
+                        _ => panic!("expected the label text"),
+                    }
+                }
+                _ => panic!("Button renders a Pressable"),
+            }
+            match classify(Button(&ButtonProps { label: Reactive::Static("Save".into()), ..Default::default() })) {
+                P::Pressable { accessibility, .. } => assert_eq!(accessibility.label, None),
+                _ => panic!("Button renders a Pressable"),
+            }
         });
     }
 }

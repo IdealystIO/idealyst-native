@@ -44,6 +44,8 @@ pub(crate) use key::native_key;
 // NSEventType values.
 const LEFT_MOUSE_DOWN: usize = 1;
 const LEFT_MOUSE_UP: usize = 2;
+const RIGHT_MOUSE_DOWN: usize = 3;
+const RIGHT_MOUSE_UP: usize = 4;
 const LEFT_MOUSE_DRAGGED: usize = 6;
 const MOUSE_MOVED: usize = 5;
 const MOUSE_ENTERED: usize = 8;
@@ -192,14 +194,18 @@ pub(crate) fn native_pointer(node: &MacosNode, steps: &[PointerStep]) -> Option<
     // Converted now, while the layout the robot measured is current.
     let events: Vec<(usize, CGPoint)> = steps
         .iter()
-        .map(|s| {
-            let kind = match s.phase {
-                PointerStepPhase::Down => LEFT_MOUSE_DOWN,
-                PointerStepPhase::Move => LEFT_MOUSE_DRAGGED,
-                PointerStepPhase::Up => LEFT_MOUSE_UP,
-                PointerStepPhase::Hover => MOUSE_MOVED,
+        .flat_map(|s| {
+            let at = to_window_base(content, s.x, s.y);
+            let kinds: &[usize] = match s.phase {
+                PointerStepPhase::Down => &[LEFT_MOUSE_DOWN],
+                PointerStepPhase::Move => &[LEFT_MOUSE_DRAGGED],
+                PointerStepPhase::Up => &[LEFT_MOUSE_UP],
+                PointerStepPhase::Hover => &[MOUSE_MOVED],
+                // `rightMouseDown:` delivers the Secondary `Began`; the up
+                // ends the click as a user's does (views ignore it).
+                PointerStepPhase::SecondaryClick => &[RIGHT_MOUSE_DOWN, RIGHT_MOUSE_UP],
             };
-            (kind, to_window_base(content, s.x, s.y))
+            kinds.iter().map(move |&k| (k, at))
         })
         .collect();
     Some(Box::new(move || {
@@ -223,7 +229,7 @@ pub(crate) fn native_pointer(node: &MacosNode, steps: &[PointerStep]) -> Option<
                     context: ctx,
                     eventNumber: 0isize,
                     clickCount: 1isize,
-                    pressure: if kind == LEFT_MOUSE_UP || kind == MOUSE_MOVED { 0.0f32 } else { 1.0f32 },
+                    pressure: if matches!(kind, LEFT_MOUSE_UP | RIGHT_MOUSE_UP | MOUSE_MOVED) { 0.0f32 } else { 1.0f32 },
                 ]
             };
             let event = event.ok_or("NSEvent refused the mouse event")?;

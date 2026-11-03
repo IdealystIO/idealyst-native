@@ -143,9 +143,27 @@ pub(crate) fn capture(view: &NSView) -> Result<Screenshot, String> {
             } else {
                 r.origin.y - bounds.origin.y
             };
+            // `renderInContext:` draws the layer in its OWN space — y-up,
+            // origin at its bounds origin — and applies `geometryFlipped`
+            // only to sublayers. The flip the compositor applies to the
+            // layer itself (a flipped view's layer is `geometryFlipped`,
+            // and so may be an ancestor in the window's layer tree) is
+            // skipped: unmirrored, a tree root under the framework's flipped
+            // host (`create_host_root`) renders upside down, text included,
+            // while one under an unflipped host is upright. `contentsAreFlipped` is
+            // that net on-screen flip (parity of `geometryFlipped` from the
+            // window's root layer down to this one): mirror it here.
+            let lb: CGRect = unsafe { msg_send![&**layer, bounds] };
+            let mirrored: bool = unsafe { msg_send![&**layer, contentsAreFlipped] };
             unsafe {
                 CGContextSaveGState(ctx);
-                CGContextTranslateCTM(ctx, x, y);
+                if mirrored {
+                    CGContextTranslateCTM(ctx, x, y + r.size.height);
+                    CGContextScaleCTM(ctx, 1.0, -1.0);
+                } else {
+                    CGContextTranslateCTM(ctx, x, y);
+                }
+                CGContextTranslateCTM(ctx, -lb.origin.x, -lb.origin.y);
                 let _: () = msg_send![&**layer, renderInContext: ctx];
                 CGContextRestoreGState(ctx);
             }

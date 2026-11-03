@@ -1278,6 +1278,16 @@ impl LayoutTree {
         if let Some(v) = rules.left.as_ref().map(|t| *t.value()) {
             style.inset.left = length_to_lpa(Some(v));
         }
+        // A sticky box's sides are its pin THRESHOLDS — the backend's
+        // sticky registry reads them from the style (`runtime_shared::sticky`)
+        // — not offsets: CSS lays a sticky box out in flow and moves it only
+        // once scrolled to a threshold. Taffy has no sticky and shifts a
+        // `Relative` box by its insets, so a frozen column `left: 44` after
+        // a 44px selection column rested at 88, and a `top: 32` table of
+        // contents sat 32px low until scrolled.
+        if rules.position == Some(FwPosition::Sticky) {
+            style.inset = Rect::auto();
+        }
 
         // Re-derive the default `max-width: 100%` cross-axis clamp from
         // the now-merged style. Runs last so it sees the final
@@ -1475,7 +1485,7 @@ impl LayoutTree {
 
     /// Mark a node as a scroll container on the given axis. Maps to
     /// Taffy's `overflow.x` / `overflow.y` = `Overflow::Scroll`, which
-    /// (a) gives the node a definite main-axis size from its parent's
+    /// (a) — with the fill seed below — gives the node a definite main-axis size from its parent's
     /// constraint rather than from its children's content (so the
     /// scroll viewport doesn't grow to fit its content) and (b)
     /// disables children's contribution to the parent's intrinsic
@@ -1497,8 +1507,14 @@ impl LayoutTree {
     /// tall as its content and has nothing to scroll. The native scroll view
     /// still does its own pixel clipping + content-offset; this call only
     /// fixes the Taffy *sizing* of the viewport node.
+    ///
+    /// This one-axis spelling — the virtualizers' — seeds the fill on
+    /// either axis: a list or grid viewport with no intrinsic size of its
+    /// own fills its parent. A `scroll_view` goes through
+    /// [`set_overflow_scroll_axis`](Self::set_overflow_scroll_axis), which
+    /// seeds only a vertical scroller.
     pub fn set_overflow_scroll(&mut self, node: LayoutNode, horizontal: bool) {
-        self.set_overflow_scroll_axis(node, runtime_shared::ScrollAxis::from_horizontal(horizontal));
+        self.mark_overflow_scroll(node, runtime_shared::ScrollAxis::from_horizontal(horizontal), true);
     }
 
     /// [`set_overflow_scroll`](Self::set_overflow_scroll) for any
@@ -1511,7 +1527,17 @@ impl LayoutTree {
     /// unconstrained on both axes — what the author's own direction and
     /// alignment give it — and [`scroll_content_extent`](Self::scroll_content_extent)
     /// reports it unclipped on both.
+    ///
+    /// The `scroll_view` path: the fill seed is written only when the
+    /// viewport scrolls vertically (see the note at the seed).
     pub fn set_overflow_scroll_axis(&mut self, node: LayoutNode, axis: runtime_shared::ScrollAxis) {
+        self.mark_overflow_scroll(node, axis, axis.scrolls_y());
+    }
+
+    /// [`set_overflow_scroll_axis`](Self::set_overflow_scroll_axis) /
+    /// [`set_overflow_scroll`](Self::set_overflow_scroll), with or without
+    /// the fill seed.
+    fn mark_overflow_scroll(&mut self, node: LayoutNode, axis: runtime_shared::ScrollAxis, seed_fill: bool) {
         let _ = self.tree.set_style(node.0, {
             let mut style = self
                 .tree
@@ -1535,8 +1561,23 @@ impl LayoutTree {
             // viewport still fills. `max_height` bounds it; `flex_basis`
             // with `flex_grow: 0` pins it. Pinned by
             // `an_author_pins_a_seeded_viewport_with_max_height_or_flex_basis_not_height`.
-            style.flex_basis = taffy::Dimension::from_length(0.0);
-            style.flex_grow = 1.0;
+            //
+            // A `scroll_view` is seeded only when it scrolls vertically
+            // (`seed_fill`). A horizontal-only one (a tab strip) is
+            // content-tall, as
+            // on web, whose `overflow-x` box has no flex seed: seeded, it
+            // grew into a column's leftover height (its row stretched
+            // every tab to it), and inside a content-sized column its
+            // zero basis left the column shorter than the content it then
+            // laid out — the overflow a clipping parent cut off. Its width
+            // needs no seed: a column stretches it, and in a row its
+            // automatic minimum is 0 (`overflow.x: Scroll`), so it shrinks
+            // to the space there is. Pinned by
+            // `regression_horizontal_scroller_in_a_column_is_content_tall_not_seeded`.
+            if seed_fill {
+                style.flex_basis = taffy::Dimension::from_length(0.0);
+                style.flex_grow = 1.0;
+            }
             style
         });
         // A horizontal scroller's content is meant to exceed the
@@ -2422,6 +2463,44 @@ fn grid_placement_line(
 mod tests {
     use super::*;
     use runtime_shared::Tokenized;
+
+    /// Regression: `position: Sticky` laid out as `Relative` WITH its
+    /// insets, so Taffy shifted every sticky box by its pin threshold — a
+    /// frozen column `left: 44` behind a 44px selection column rested at
+    /// x 88 on native (web: 44), and a table group's band bar ran 44px past
+    /// the viewport. A sticky box rests in flow; its sides are thresholds
+    /// the backend's sticky registry applies while scrolling. Switching
+    /// back to `Relative` restores the offsets.
+    #[test]
+    fn regression_sticky_insets_are_pin_thresholds_not_layout_offsets() {
+        let mut t = LayoutTree::new();
+        let row = t.new_node();
+        t.set_style(row, &StyleRules { flex_direction: Some(FwFlexDirection::Row), ..Default::default() });
+        let first = t.new_node();
+        t.set_intrinsic_size(first, 44.0, 20.0);
+        t.add_child(row, first);
+        let frozen = t.new_node();
+        let sticky = StyleRules {
+            position: Some(FwPosition::Sticky),
+            left: Some(runtime_shared::Tokenized::Literal(FwLength::Px(44.0))),
+            top: Some(runtime_shared::Tokenized::Literal(FwLength::Px(32.0))),
+            width: Some(runtime_shared::Tokenized::Literal(FwLength::Px(100.0))),
+            height: Some(runtime_shared::Tokenized::Literal(FwLength::Px(20.0))),
+            ..Default::default()
+        };
+        t.set_style(frozen, &sticky);
+        t.add_child(row, frozen);
+        t.compute(row, 390.0, 100.0);
+        let f = t.frame_of(frozen);
+        assert_eq!((f.x, f.y), (44.0, 0.0), "a sticky box rests in flow");
+
+        let relative = StyleRules { position: Some(FwPosition::Relative), ..sticky };
+        t.set_style(frozen, &relative);
+        t.compute(row, 390.0, 100.0);
+        let f = t.frame_of(frozen);
+        assert_eq!((f.x, f.y), (88.0, 32.0), "a relative box is offset by its insets");
+    }
+
 
     // -----------------------------------------------------------------
     // Viewport seeding — what `set_overflow_scroll` is FOR.
@@ -4614,6 +4693,74 @@ mod tests {
         let (w, h) = t.scroll_content_extent(scroller);
         assert!((w - 800.0).abs() < 1.0, "extent width unclipped on a two-axis scroller, got {w}");
         assert!((h - 1200.0).abs() < 1.0, "extent height unclipped on a two-axis scroller, got {h}");
+    }
+
+    /// Regression (Android `robot-e2e-demo`): a horizontal `scroll_view`
+    /// (a tab strip) in a column took the fill seed. In a bounded column
+    /// it grew into the leftover height, stretching every tab with it;
+    /// inside a content-sized column (a page's body in a vertical
+    /// scroller) its zero basis left the column shorter than the content
+    /// it laid out, so the rows below overflowed the column — and Android,
+    /// whose `ViewGroup`s clip their children, cut them off where no
+    /// scroll could reach. Web's `overflow-x` box is content-tall; so is
+    /// this one now.
+    #[test]
+    fn regression_horizontal_scroller_in_a_column_is_content_tall_not_seeded() {
+        use runtime_shared::ScrollAxis;
+        let fixed = |h: f32| {
+            let mut r = StyleRules::default();
+            r.height = Some(px(h));
+            r
+        };
+        let layout = |bounded: bool| {
+            let mut t = LayoutTree::new();
+            let root = t.new_node();
+            let mut rs = StyleRules::default();
+            rs.width = Some(px(390.0));
+            rs.height = Some(px(800.0));
+            rs.align_items = Some(runtime_shared::AlignItems::Stretch);
+            t.set_style(root, &rs);
+            // The body: content-tall, or filling the bounded root.
+            let body = t.new_node();
+            let mut bs = StyleRules::default();
+            bs.flex_direction = Some(FwFlexDirection::Column);
+            if bounded {
+                bs.flex_grow = Some(Tokenized::Literal(1.0));
+            } else {
+                bs.flex_shrink = Some(Tokenized::Literal(0.0));
+            }
+            t.set_style(body, &bs);
+            t.add_child(root, body);
+            let above = t.new_node();
+            t.set_style(above, &fixed(100.0));
+            t.add_child(body, above);
+            let strip = t.new_node();
+            t.set_overflow_scroll_axis(strip, ScrollAxis::Horizontal);
+            let mut ss = StyleRules::default();
+            ss.flex_direction = Some(FwFlexDirection::Row);
+            t.set_style(strip, &ss);
+            t.add_child(body, strip);
+            for _ in 0..10 {
+                let tab = t.new_node();
+                let mut tr = fixed(48.0);
+                tr.width = Some(px(88.0));
+                tr.flex_shrink = Some(Tokenized::Literal(0.0));
+                t.set_style(tab, &tr);
+                t.add_child(strip, tab);
+            }
+            let below = t.new_node();
+            t.set_style(below, &fixed(48.0));
+            t.add_child(body, below);
+            t.compute(root, 390.0, 800.0);
+            (t.frame_of(body), t.frame_of(strip), t.frame_of(below))
+        };
+        let (body, strip, below) = layout(false);
+        assert_eq!(strip.height, 48.0, "content-tall: {strip:?}");
+        assert_eq!(below.height, 48.0, "nothing shrinks: {below:?}");
+        assert_eq!(below.y + below.height, body.height, "the body holds its content: {body:?} {below:?}");
+        let (_, strip, _) = layout(true);
+        assert_eq!(strip.height, 48.0, "no growing into the leftover height: {strip:?}");
+        assert_eq!(strip.width, 390.0, "the column stretches it to its width");
     }
 
     /// `set_overflow_scroll(.., horizontal)` is the one-axis spelling of

@@ -471,6 +471,8 @@ fn register_static_cohort_batch<H: StyleServices>(
                 app,
                 handles_states_natively,
                 &ctx_for_cohort,
+                // Batched rows register no robot element: nothing reads it.
+                &crate::style_attach::style_mirror::Record::default(),
             );
         }
     }));

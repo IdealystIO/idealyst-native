@@ -127,6 +127,127 @@ fn glue_styled_text_mounts_runs_through_create_styled_text() {
     );
 }
 
+/// A reactive run list (`styled_text(move || …)`) mounts ONE styled-text
+/// node at its initial runs, re-realizes it in place through
+/// `update_styled_text` when a signal it reads changes — styles included
+/// — and never falls back to a plain `create_text`. The mount fire must
+/// not repeat the create as an update.
+#[test]
+fn reactive_styled_text_runs_rerealize_in_place() {
+    use runtime_shared::{FontWeight, TextRunStyle};
+    use runtime_vocabulary::glue::{styled_text, IntoElement, TextRun};
+
+    let h = harness();
+    let (element, name) = h.world.enter(|| {
+        let name = signal(String::from("Jonas"));
+        let element = styled_text(move || {
+            vec![
+                TextRun::styled(
+                    name.get(),
+                    TextRunStyle { font_weight: Some(FontWeight::Bold), ..Default::default() },
+                ),
+                TextRun::plain(" #1234"),
+            ]
+        })
+        .into_element();
+        (element, name)
+    });
+    let realized = h.world.enter(|| realize(&h.backend, &h.registry, element));
+    let log = h.take_log();
+    assert_eq!(log[0], "create n0 styled_text [\"Jonas\", \" #1234\"]", "{log:?}");
+    assert!(
+        !log.iter().any(|l| l.starts_with("update_styled_text")),
+        "the mount fire must not re-send the runs it just created: {log:?}"
+    );
+
+    h.world.enter(|| name.set("Jonas Lindqvist".into()));
+    h.world.flush();
+    assert_eq!(
+        h.take_log(),
+        vec!["update_styled_text n0 [\"Jonas Lindqvist\", \" #1234\"]".to_string()],
+    );
+    let runs = h.shared.live_runs.borrow().get(&0).cloned().expect("node 0 has runs");
+    assert_eq!(runs[0].style.as_ref().and_then(|s| s.font_weight), Some(FontWeight::Bold));
+    assert!(runs[1].style.is_none());
+
+    // Torn down: a later write reaches nothing.
+    drop(realized);
+    h.take_log();
+    h.world.enter(|| name.set("gone".into()));
+    h.world.flush();
+    assert!(!h.take_log().iter().any(|l| l.starts_with("update_styled_text")));
+}
+
+/// Regression: styled runs were created once and never re-realized on a
+/// theme swap, so on every backend that resolves run tokens at realize
+/// time (Apple, Android, GPU — everything but the web `var()` cascade) a
+/// run colored by a token kept the previous theme's color after a
+/// light/dark switch. The node now joins the theme cohort; after unmount
+/// it must leave it.
+#[test]
+fn regression_styled_text_runs_rerealize_on_theme_swap() {
+    use runtime_shared::{Color, TextRunStyle};
+    use runtime_vocabulary::glue::{styled_text, IntoElement, TextRun};
+
+    let h = harness();
+    let world = h.world.clone();
+    let realized = world.enter(|| {
+        theme::install_tokens(&[surface("#111")]);
+        let run = TextRun::styled(
+            "muted",
+            TextRunStyle {
+                color: Some(Tokenized::token("color-surface", Color("#000".into()))),
+                ..Default::default()
+            },
+        );
+        realize(&h.backend, &h.registry, styled_text(vec![TextRun::plain("a "), run]).into_element())
+    });
+    h.take_log();
+
+    world.enter(|| theme::update_tokens(&[surface("#222")]));
+    world.flush();
+    let log = h.take_log();
+    assert!(
+        log.contains(&"update_styled_text n0 [\"a \", \"muted\"]".to_string()),
+        "a theme swap re-realizes the runs: {log:?}"
+    );
+
+    drop(realized);
+    h.take_log();
+    world.enter(|| theme::update_tokens(&[surface("#333")]));
+    world.flush();
+    assert!(
+        !h.take_log().iter().any(|l| l.starts_with("update_styled_text")),
+        "an unmounted styled text leaves the cohort"
+    );
+}
+
+/// A reactive run list re-realizes its LATEST runs on a theme swap — not
+/// the ones it mounted with.
+#[test]
+fn reactive_styled_text_theme_swap_uses_current_runs() {
+    use runtime_vocabulary::glue::{styled_text, IntoElement, TextRun};
+
+    let h = harness();
+    let world = h.world.clone();
+    let (realized, n) = world.enter(|| {
+        theme::install_tokens(&[surface("#111")]);
+        let n = signal(1i32);
+        let el = styled_text(move || vec![TextRun::plain(format!("n={}", n.get()))]).into_element();
+        (realize(&h.backend, &h.registry, el), n)
+    });
+    world.enter(|| n.set(2));
+    world.flush();
+    h.take_log();
+    world.enter(|| theme::update_tokens(&[surface("#222")]));
+    world.flush();
+    assert!(
+        h.take_log().contains(&"update_styled_text n0 [\"n=2\"]".to_string()),
+        "the swap re-realizes the current runs"
+    );
+    drop(realized);
+}
+
 // ===========================================================================
 // StyleProp paths
 // ===========================================================================

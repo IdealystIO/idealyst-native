@@ -1470,6 +1470,32 @@ mod tests {
         assert!(html.contains(r#"tabindex="0""#), "focusable, got: {html}");
     }
 
+    /// Regression: the SSR pressable dropped its `AccessibilityProps`, so a
+    /// server-rendered `Button(accessibility_label = "Backspace")` /
+    /// labelled IconButton was announced by its glyph (or nothing) until
+    /// hydration. It carries the same `aria-label` / `title` /
+    /// `aria-hidden` the web backend's `a11y::apply` writes.
+    #[test]
+    fn regression_ssr_pressable_carries_accessible_name() {
+        let mut b = SsrBackend::new();
+        let a11y = AccessibilityProps {
+            label: Some("Back \"space\"".into()),
+            hint: Some("Deletes one digit".into()),
+            ..Default::default()
+        };
+        let node = b.create_pressable(Rc::new(|| {}), &a11y);
+        let html = { let mut s = String::new(); serialize(&node, &mut s); s };
+        assert!(html.contains(r#"aria-label="Back &quot;space&quot;""#), "escaped accessible name, got: {html}");
+        assert!(html.contains(r#"title="Deletes one digit""#), "hint maps to title like web, got: {html}");
+        assert!(!html.contains("aria-hidden"), "not hidden, got: {html}");
+
+        let hidden = AccessibilityProps { hidden: true, ..Default::default() };
+        let node = b.create_pressable(Rc::new(|| {}), &hidden);
+        let html = { let mut s = String::new(); serialize(&node, &mut s); s };
+        assert!(html.contains(r#"aria-hidden="true""#), "got: {html}");
+        assert!(!html.contains("aria-label"), "no name when none given, got: {html}");
+    }
+
     /// A reactive `when`/`switch`/`each` anchor is `display: contents`
     /// (layout-transparent), matching web — so a `position: sticky` child
     /// keeps the real parent as its containing block and keeps sticking.

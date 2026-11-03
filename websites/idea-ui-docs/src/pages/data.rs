@@ -881,7 +881,8 @@ TableFooter {
                     the paged table's footer: the range, a Rows picker and the page numbers. A set \
                     that fits on one page reads as a count (\"6 projects\", \"No projects\") with no \
                     page numbers, and the Rows picker shows only while a page size would change \
-                    what is shown. \
+                    what is shown. `previous_label` / `next_label` name the ‹ › steppers \
+                    (\"Previous page\" / \"Next page\" by default). \
                     `TableCards(columns, row_count, row_id, cell, max_cells, on_row_click, \
                     on_end_reached, selection, empty)` — the narrow form: a virtualized list of \
                     cards with measured heights, laid out from the same column specs, loading the \

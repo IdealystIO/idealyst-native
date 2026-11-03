@@ -15,12 +15,20 @@
 //! fires with the requested page. For large `total` the middle
 //! collapses to ellipses around the current page; first and last are
 //! always shown.
+//!
+//! The ‹ › steppers are glyph-only, so they carry accessible names
+//! (`previous_label` / `next_label`, "Previous page" / "Next page" by
+//! default — pass translated strings to localize), and on phones their
+//! tap target is floored at
+//! [`MIN_TOUCH_TARGET_PX`](crate::touch::MIN_TOUCH_TARGET_PX) square (the
+//! `nav` slot). The page numbers keep their compact width so a windowed
+//! row of them still fits a phone.
 
 use std::rc::Rc;
 
 use runtime_core::{
     component, component_styles, ui, AlignItems, Color, Cursor, Element, FlexDirection, FontWeight,
-    IdealystSchema, IntoElement, JustifyContent, Reactive, Signal, TextAlign,
+    IdealystSchema, IntoElement, JustifyContent, Reactive, Signal, SlotRestyle, TextAlign,
 };
 
 use crate::theme::IdeaThemeRef;
@@ -65,7 +73,49 @@ component_styles! {
             state disabled(_t) { opacity: 0.4 }
             transitions { background: 120ms EaseOut, color: 120ms EaseOut }
         }
+
+        /// The ‹ › steppers: the page button's look, floored at the phone
+        /// tap target (`crate::touch::touch_target`) — 44 square through
+        /// the `Sm` band, the page button's 32 from `Md` up. Its own slot,
+        /// not an arm of `button`: an arm outranks the breakpoint overlay
+        /// that releases the floor, so it would stay 44 at every width.
+        slot nav {
+            extend(nav_touch_target)
+            base(t) {
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                height: NAV_COMPACT_PX,
+                padding_horizontal: t.spacing.sm(),
+                border_radius: t.radius.md(),
+                background: Color("transparent".into()),
+                color: t.color.text(),
+                font_size: t.typography.body_sm_size(),
+                font_weight: FontWeight::Medium,
+                text_align: TextAlign::Center,
+                cursor: Cursor::Pointer,
+            }
+            state hovered(t) { background: t.color.surface_alt() }
+            state focused(t) { background: t.color.surface_alt() }
+            state disabled(_t) { opacity: 0.4 }
+            transitions { background: 120ms EaseOut, color: 120ms EaseOut }
+        }
     }
+}
+
+/// The steppers' compact square side, from `Md` up (the page buttons'
+/// `min_width` / `height`).
+const NAV_COMPACT_PX: f32 = 32.0;
+
+/// The `nav` slot's phone floor: `touch_target` (44 min square on
+/// phones, `auto` from its release breakpoint), then the compact
+/// `min_width` restored over that release — `auto` would let the ‹ glyph
+/// shrink the stepper below the page buttons beside it.
+fn nav_touch_target(s: &mut SlotRestyle<'_, PaginationStyles>) {
+    crate::touch::touch_target(s);
+    s.breakpoint(crate::touch::TOUCH_TARGET_RELEASE, |_| runtime_core::StyleRules {
+        min_width: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(NAV_COMPACT_PX))),
+        ..Default::default()
+    });
 }
 
 /// Pages shown without collapsing. Above this, the middle ellipsizes.
@@ -86,7 +136,20 @@ pub struct PaginationProps {
     pub total: usize,
     /// Fires with the requested page when the user navigates.
     pub on_change: Rc<dyn Fn(usize)>,
+    /// Accessible name of the ‹ stepper — what a screen reader announces
+    /// and what a robot finds it by. Default "Previous page"; pass a
+    /// translated string to localize.
+    #[prop(static)]
+    pub previous_label: String,
+    /// Accessible name of the › stepper. Default "Next page".
+    #[prop(static)]
+    pub next_label: String,
 }
+
+/// The ‹ stepper's default accessible name.
+pub const PREVIOUS_PAGE_LABEL: &str = "Previous page";
+/// The › stepper's default accessible name.
+pub const NEXT_PAGE_LABEL: &str = "Next page";
 
 impl Default for PaginationProps {
     fn default() -> Self {
@@ -94,6 +157,8 @@ impl Default for PaginationProps {
             page: runtime_core::signal(1),
             total: Reactive::Static(1),
             on_change: Rc::new(|_| {}),
+            previous_label: PREVIOUS_PAGE_LABEL.to_string(),
+            next_label: NEXT_PAGE_LABEL.to_string(),
             styles: Default::default(),
         }
     }
@@ -127,24 +192,46 @@ fn cells(current: usize, total: usize) -> Vec<Option<usize>> {
     out
 }
 
+/// A ‹ / › stepper: `target` is the page it moves to, `None` at either
+/// end (disabled). Named by `label` — the glyph alone says nothing to a
+/// screen reader.
 fn nav_button(
     glyph: &str,
+    label: &str,
     target: Option<usize>,
     on_change: Rc<dyn Fn(usize)>,
     styles: &PaginationSlotStyles,
 ) -> Element {
     let disabled = target.is_none();
-    let label = runtime_core::text(glyph.to_string()).into_element();
-    let mut b = runtime_core::pressable(vec![label], move || {
+    let glyph = runtime_core::text(glyph.to_string()).into_element();
+    let b = runtime_core::pressable(vec![glyph], move || {
         if let Some(t) = target {
             (on_change)(t);
         }
     })
-    .with_style(PaginationStyles::button().overridden(styles.button.as_ref()));
-    if disabled {
-        b = b.disabled(move || true);
-    }
+    .with_style(PaginationStyles::nav().overridden(styles.nav.as_ref()))
+    .a11y_label(label.to_string());
+    let b = if disabled { b.disabled(true) } else { b };
     b.into_element()
+}
+
+/// One windowed cell: `Some(n)` a page button (active when it is
+/// `current`), `None` an ellipsis.
+fn page_cell(cell: Option<usize>, current: usize, on_change: Rc<dyn Fn(usize)>, styles: &PaginationSlotStyles) -> Element {
+    match cell {
+        Some(n) => {
+            let label = runtime_core::text(n.to_string()).into_element();
+            // `active` is baked from `current` (this row is rebuilt per
+            // page change), not read reactively — no per-cell closure.
+            let style = PaginationStyles::button()
+                .set(PaginationActive::from(current == n))
+                .overridden(styles.button.as_ref());
+            runtime_core::pressable(vec![label], move || (on_change)(n)).with_style(style).into_element()
+        }
+        None => runtime_core::text("\u{2026}".to_string())
+            .with_style(PaginationStyles::button().overridden(styles.button.as_ref()))
+            .into_element(),
+    }
 }
 
 /// Renders prev/next chevrons around a windowed run of page buttons,
@@ -163,8 +250,12 @@ fn nav_button(
 pub fn Pagination(props: PaginationProps) -> Element {
     let page = props.page;
     let total = props.total.clone();
-    let on_change = props.on_change.clone();
-    let styles = props.styles.clone();
+    let parts = RowParts {
+        on_change: props.on_change.clone(),
+        styles: props.styles.clone(),
+        previous_label: props.previous_label.clone(),
+        next_label: props.next_label.clone(),
+    };
     // A direct `switch`, not a `ui!` `match`: the row has ONE shape, rebuilt
     // whenever its derived key changes. `ui!` has no keyed-rebuild form —
     // the equivalent would be a single-arm `match (page.get(), …) { k => … }`,
@@ -172,57 +263,38 @@ pub fn Pagination(props: PaginationProps) -> Element {
     // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape
     runtime_core::switch(
         move || (page.get(), total.get().max(1)),
-        move |&(current, total)| build_row(current, total, on_change.clone(), &styles),
+        move |&(current, total)| build_row(current, total, parts.clone()),
     )
 }
 
 /// Build the pagination row for a concrete `current` page. Called fresh by
 /// `switch` on every page or page-count change, so all derived values (nav
 /// targets, the windowed cells, the active mark) are computed live.
-fn build_row(
-    current: usize,
-    total: usize,
-    on_change: Rc<dyn Fn(usize)>,
-    styles: &PaginationSlotStyles,
-) -> Element {
-    let mut kids: Vec<Element> = Vec::new();
-
-    // Prev.
+fn build_row(current: usize, total: usize, row: RowParts) -> Element {
+    let RowParts { on_change, styles, previous_label, next_label } = row;
     let prev_target = if current > 1 { Some(current - 1) } else { None };
-    kids.push(nav_button("\u{2039}", prev_target, on_change.clone(), styles));
-
-    // Page cells.
-    for cell in cells(current, total) {
-        match cell {
-            Some(n) => {
-                let on_change_for = on_change.clone();
-                let label = runtime_core::text(n.to_string()).into_element();
-                // `active` is baked from `current` (this row is rebuilt per
-                // page change), not read reactively — no per-cell closure.
-                let style = PaginationStyles::button()
-                    .set(PaginationActive::from(current == n))
-                    .overridden(styles.button.as_ref());
-                let row = runtime_core::pressable(vec![label], move || (on_change_for)(n))
-                    .with_style(style)
-                    .into_element();
-                kids.push(row);
+    let next_target = if current < total { Some(current + 1) } else { None };
+    let row_style = PaginationStyles::row().overridden(styles.row.as_ref());
+    let window = cells(current, total);
+    ui! {
+        view(style = row_style) {
+            nav_button("\u{2039}", &previous_label, prev_target, on_change.clone(), &styles)
+            for cell in window {
+                page_cell(cell, current, on_change.clone(), &styles)
             }
-            None => {
-                kids.push(
-                    runtime_core::text("\u{2026}".to_string())
-                        .with_style(PaginationStyles::button().overridden(styles.button.as_ref()))
-                        .into_element(),
-                );
-            }
+            nav_button("\u{203A}", &next_label, next_target, on_change.clone(), &styles)
         }
     }
+}
 
-    // Next.
-    let next_target = if current < total { Some(current + 1) } else { None };
-    kids.push(nav_button("\u{203A}", next_target, on_change, styles));
-
-    let row_style = PaginationStyles::row().overridden(styles.row.as_ref());
-    ui! { view(style = row_style) { kids } }
+/// What every rebuild of the row reuses: the handler, the instance's slot
+/// overrides and the steppers' names.
+#[derive(Clone)]
+struct RowParts {
+    on_change: Rc<dyn Fn(usize)>,
+    styles: PaginationSlotStyles,
+    previous_label: String,
+    next_label: String,
 }
 
 #[cfg(test)]

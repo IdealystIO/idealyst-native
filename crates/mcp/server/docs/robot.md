@@ -32,7 +32,9 @@ Walk the element tree from an element: its children, or its parent (`null` at th
 
 ## get_state
 
-An element's own STATE, as a user would see it, with no help from the app: `{ value, checked, disabled, focused, hovered, pressed }`. `value` is a TextInput's text or a Slider's value; `checked` a Toggle's; `focused` a TextInput's. `hovered` / `pressed` are whether the element's `state hovered` / `state pressed` style is on; they are omitted on web (CSS owns hover there) and on elements whose style has no state variants. Fields the element doesn't have are omitted; a View/Text/Image returns `{}`.
+An element's own STATE, as a user would see it, with no help from the app: `{ value, checked, disabled, focused, hovered, pressed }`. `value` is a TextInput's text or a Slider's value; `checked` a Toggle's; `focused` a TextInput's. `hovered` / `pressed` are whether the element's `state hovered` / `state pressed` style is on; they are omitted on web (CSS owns hover there) and on elements whose style has no state variants. A TextInput adds `keyboard` (the soft-keyboard kind asked for: `default`, `email`, `phone`, `number`, `decimal`, `url`) and, on web/iOS/Android, `native_keyboard` (the kind the native widget holds).
+
+To read an element's resolved style, `call_verb` with `get_style` and `{ "element_id": … }`: `{ source, style: { color, background, opacity, font_size, font_weight, font_style, font_family, text_decoration, text_align, border_width, border_color, corner_radius } }`. `source` is `native` on web (the browser's computed style) and `framework` elsewhere (the rules the backend was handed); `text_decoration` is `none` / `underline` / `line-through` / `underline line-through`, colors `[r, g, b, a]` in 0..1. Absent fields: the style doesn't set them. Fields the element doesn't have are omitted; a View/Text/Image returns `{}`.
 
 Robot actions on a disabled element fail with "refused: the element is disabled", the same way the control refuses a user.
 
@@ -85,9 +87,10 @@ Real platform mouse input on an element, one `action` at a time:
 
 - `"hover"`: the pointer moves over the element's center with no button held. Drives `on_hover` and the `state hovered` style.
 - `"press"`: the primary button goes down on its center and stays down, so `get_state` can show `pressed: true`.
-- `"release"`: the button comes up at its center.
+- `"release"`: the button comes up at its center. The press is held for the real time between `press` and `release`, so the pair is a long press.
+- `"context_click"`: a secondary (right) click on its center, `contextmenu` included on web.
 
-The point is checked like `tap_native`'s. Some backends post their events (macOS), so the state can change a moment later: poll `get_state`. Errors with "unsupported" on touch platforms (iOS, Android) and Linux. On web the events reach `on_hover` handlers, but CSS `:hover` only follows a real pointer.
+The point is checked like `tap_native`'s. Returns `{ mechanism }`: `native` for real input, `hit_test` where the backend can't inject it (iOS, Linux; `context_click` on Android too): the robot then sends the press (or the right click) through the framework's own touch handlers, so long-press recognizers and context-menu handlers still run. Some backends post their events (macOS), so the state can change a moment later: poll `get_state`. `hover` errors with "unsupported" on iOS, Android and Linux. On web the events reach `on_hover` handlers, but CSS `:hover` only follows a real pointer.
 
 ## type_text
 
@@ -105,7 +108,7 @@ Give an element (typically a TextInput) keyboard focus, or take it away. `get_st
 
 Scrolls a ScrollView's content to offset (`x`, `y`) in logical px through the native scroll view, so its `on_scroll` / `on_end_reached` fire as for a user's scroll.
 
-To show an element rather than reach an offset, `call_verb` with `scroll_into_view` and `{ "element_id": … }`: every scroll view the element sits in (nested, either axis) moves the least that shows it in each and in the window, and the reply lists the scroll views it moved, `{ "scrolled": [{ "element_id", "x", "y" }] }`. Already in view, nothing moves. Do this before `tap_native` on an element outside the window. `get_platform` (also through `call_verb`) names the app's platform: `web`, `ios`, `android`, `macos`, `linux`, `windows`.
+To show an element rather than reach an offset, `call_verb` with `scroll_into_view` and `{ "element_id": … }`: every scroll view the element sits in (nested, either axis) moves the least that shows it in each and in the window, and the reply lists the scrollers it moved, `{ "scrolled": [{ "element_id", "x", "y", "page"? }] }`. Scrollers include any element whose native view scrolls, and on web the page itself (`page: true`) when the app's root outgrows the window. Already in view, nothing moves. Do this before `tap_native` on an element outside the window. `get_platform` (also through `call_verb`) names the app's platform: `web`, `ios`, `android`, `macos`, `linux`, `windows`.
 
 ## get_frame, get_absolute_frame
 
@@ -121,7 +124,7 @@ The running app's captured logs. `clear_logs` empties the buffer, so a later `ge
 
 ## list_navigators, get_navigator_state
 
-The app's navigators: `[{ nav_id, element_id, type_name, active_route, active_path, depth, can_go_back, is_current, base, stack: [{ route, path }], controllable }]`. `get_navigator_state` returns one entry.
+The app's navigators: `[{ nav_id, element_id, type_name, active_route, active_path, query, href, depth, can_go_back, is_current, base, stack: [{ route, path }], controllable }]`. `active_path` is path-only; `query` is the active screen's query parameters as an object of decoded values (a repeated key gives its first value) and `href` is `active_path` plus the encoded query — where screen state such as a filter shows. `get_navigator_state` returns one entry.
 
 ## navigate
 
@@ -135,7 +138,11 @@ With `width` and `height`, first resizes the app's window so its viewport is tha
 
 ## open_link
 
-Opens a URL in the app as if the OS delivered it: a deep link (`myapp://items/42`) or a universal link (`https://example.com/items/42`). The app's link observers see it, an interceptor may claim it, otherwise the navigators move to its path. Returns whether a navigator took it (or already showed it).
+Opens a URL in the app as if the OS delivered it: a deep link (`myapp://items/42`) or a universal link (`https://example.com/items/42`). The app's link observers see it, an interceptor may claim it, otherwise the navigators move to its path — every level of it, as a cold load of the URL would: a nested navigator that mounts later (a lazy screen, a data fetch) is moved once it is up, for up to 5 s. Returns `{ reached, complete, routed }`: the deepest path the shown navigators reached, whether that is the whole link (path and query), and whether a navigator took it at all (`false` when an interceptor claimed it or no screen matches). `complete: false` with `routed: true` means a segment matched no screen; `reached` says where it stopped.
+
+## load_url, set_cookie, get_cookies, clear_cookies (via call_verb)
+
+Served by the relay, not the app. `load_url {url}` boots the app again at `url` and returns `{url}` once the new instance has connected: the web tab navigates (`/x` resolves against the page), an Android app is relaunched with the link; iOS and desktop apps answer that the session can't relaunch them. `set_cookie {name, value, url?, domain?, path?, http_only?, secure?, same_site?, expires?}` (default: the page's origin), `get_cookies`, `clear_cookies {name?}` reach the browser's cookies, HttpOnly ones included; web only. They need a tab in a browser the dev session launched (`idealyst test --web`, the headless web client).
 
 ## list_watched_signals, read_signal
 

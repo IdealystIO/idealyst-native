@@ -565,6 +565,7 @@ pub fn attach_style<H: StyleServices>(
     // after its own attach can never pick up another node's cell.
     #[cfg(feature = "robot")]
     interaction_mirror::clear();
+    style_mirror::begin();
     // Diagnostic only (`--premint-report`); compiled out otherwise. Sits
     // ahead of the match so it sees every shape without touching an arm.
     #[cfg(idealyst_premint_report)]
@@ -583,6 +584,7 @@ pub fn attach_style<H: StyleServices>(
                 rules
             };
             backend.borrow_mut().apply_style(node, &rules);
+            style_mirror::current().record(&rules);
             // Teardown notification — the backend frees per-node style
             // state.
             let b = backend.clone();
@@ -828,6 +830,66 @@ fn noop_setter() -> Rc<dyn Fn(StateBits, bool)> {
     Rc::new(|_, _| {})
 }
 
+/// The rules the framework last resolved and handed the backend for one
+/// node — what the robot's `get_style` reports on a backend that receives
+/// fully resolved rules (every native one; the web resolves its own CSS and
+/// is read back from the browser instead). [`attach_style`] parks a fresh
+/// record in a slot; every apply path of that attach, its later effect and
+/// theme re-applies included, writes the rules it applies into it; the
+/// handler that registered the node takes it right after
+/// (`robot::link_interaction`), as it takes the interaction mirror. Without
+/// the `robot` feature the record is a zero-sized no-op.
+pub(crate) mod style_mirror {
+    use std::rc::Rc;
+
+    use runtime_shared::StyleRules;
+
+    /// The shared slot one node's applies write.
+    #[cfg(feature = "robot")]
+    pub(crate) type Cell = Rc<std::cell::RefCell<Option<Rc<StyleRules>>>>;
+
+    /// One node's record ([`record`](Self::record) is a no-op without
+    /// `robot`, or for a node the robot doesn't register).
+    #[derive(Clone, Default)]
+    pub(crate) struct Record(#[cfg(feature = "robot")] Option<Cell>);
+
+    impl Record {
+        #[inline]
+        pub(crate) fn record(&self, _rules: &Rc<StyleRules>) {
+            #[cfg(feature = "robot")]
+            if let Some(cell) = &self.0 {
+                *cell.borrow_mut() = Some(_rules.clone());
+            }
+        }
+    }
+
+    #[cfg(feature = "robot")]
+    runtime_tls::thread_local! {
+        static LAST: std::cell::RefCell<Option<Cell>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// A fresh record for the attach starting now, parked in the slot.
+    pub(crate) fn begin() {
+        #[cfg(feature = "robot")]
+        LAST.with(|l| *l.borrow_mut() = Some(Rc::new(std::cell::RefCell::new(None))));
+    }
+
+    /// The record of the attach in progress, for its apply paths to
+    /// capture.
+    pub(crate) fn current() -> Record {
+        #[cfg(feature = "robot")]
+        return Record(LAST.with(|l| l.borrow().clone()));
+        #[cfg(not(feature = "robot"))]
+        Record()
+    }
+
+    /// The record the last `attach_style` made.
+    #[cfg(feature = "robot")]
+    pub(crate) fn take() -> Option<Cell> {
+        LAST.with(|l| l.borrow_mut().take())
+    }
+}
+
 // ===========================================================================
 // SignalClass JS fast path (world-effect notifier)
 // ===========================================================================
@@ -1024,10 +1086,12 @@ fn attach_rules_dynamic<H: StyleServices>(
     let states = runtime_world::signal(StateBits::NONE);
     let b = backend.clone();
     let n = node.clone();
+    let style_rec = style_mirror::current();
     let _binding = effect(move || {
         let _ = states.get(); // subscribe: state flips re-apply
         let rules = f();
         b.borrow_mut().apply_style(&n, &rules);
+        style_rec.record(&rules);
     });
     // Teardown probe AFTER the binding effect, so `on_node_unstyled`
     // fires after the style effect's own teardown.
@@ -1089,7 +1153,8 @@ fn attach_sheet_static<H: StyleServices>(
     // Inline first apply (identical work to the dynamic effect's first
     // run, minus the effect). No container ancestor tracking on the new
     // core yet, so container overlays resolve at width 0 (module docs).
-    apply_sheet(backend, node, &app, handles_states_natively, &ctx);
+    let style_rec = style_mirror::current();
+    apply_sheet(backend, node, &app, handles_states_natively, &ctx, &style_rec);
 
     // Enroll in the per-world cohort: ONE shared driver re-applies on
     // theme change instead of N per-node effects (`theme_cohort`
@@ -1107,6 +1172,7 @@ fn attach_sheet_static<H: StyleServices>(
             &app_for_cohort,
             handles_states_natively,
             &ctx_for_cohort,
+            &style_rec,
         );
     }));
 
@@ -1292,6 +1358,7 @@ fn attach_sheet_dynamic<H: StyleServices>(
 
     let backend_for_effect = backend.clone();
     let node_for_effect = node.clone();
+    let style_rec = style_mirror::current();
     // Classes stamped by the previous PREMINTED fire, so the next one
     // can take them off. Only ever non-empty on a `--premint` build
     // whose applications actually premint; a live-engine node leaves it
@@ -1477,6 +1544,7 @@ fn attach_sheet_dynamic<H: StyleServices>(
             backend_for_effect
                 .borrow_mut()
                 .apply_style(&node_for_effect, &resolved);
+            style_rec.record(&resolved);
         }
     });
 
@@ -1517,6 +1585,7 @@ pub(crate) fn apply_sheet<H: StyleServices>(
     app: &StyleApplication,
     handles_states_natively: bool,
     ctx: &theme::ThemeCtx,
+    style_rec: &style_mirror::Record,
 ) {
     // Registration fast path (bulk-create hot spot): only pay the
     // sweep/flush prologue when the sheet is genuinely unregistered —
@@ -1548,6 +1617,7 @@ pub(crate) fn apply_sheet<H: StyleServices>(
             // keeping the common node off the reactive graph entirely.
             let resolved = resolve_now(app, default_font);
             backend.borrow_mut().apply_style(node, &resolved);
+            style_rec.record(&resolved);
         } else {
             // RESPONSIVE. Backends that handle variants natively (web) never
             // reach this branch — they get every overlay and let `@media` do
@@ -1565,11 +1635,13 @@ pub(crate) fn apply_sheet<H: StyleServices>(
             let backend = backend.clone();
             let node = node.clone();
             let app = app.clone();
+            let style_rec = style_rec.clone();
             effect(move || {
                 // Subscribes: `with_active_responsive` reads the bucket, so
                 // this re-runs whenever it changes.
                 let resolved = resolve_now(&app, default_font.clone());
                 backend.borrow_mut().apply_style(&node, &resolved);
+                style_rec.record(&resolved);
             });
         }
     }

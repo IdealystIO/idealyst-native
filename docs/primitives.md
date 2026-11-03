@@ -311,7 +311,7 @@ controlled via the optional `style` slot, not separate props.
 #### Styled runs — inline-styled ranges in one paragraph
 
 ```rust
-pub fn styled_text(runs: Vec<TextRun>) -> StyledText
+pub fn styled_text(runs: impl IntoTextRuns) -> GlueText   // StyledText = GlueText
 ```
 
 A text node whose content is a list of `TextRun`s, each optionally
@@ -344,13 +344,26 @@ is exactly why runs live inside one text node instead of being
 sibling nodes. Backends without a styled realization fall back to
 the concatenated plain text (same words, no styling).
 
+`IntoTextRuns` accepts a `Vec<TextRun>` (static) or a
+`Fn() -> Vec<TextRun>` closure (reactive; also `text().runs(...)`).
+A reactive list builds once at its initial value, then each change
+calls `TextOps::update_styled_text` on the same node — the native
+widget is never recreated, and backends mark the label's layout node
+dirty so the new runs re-measure:
+
+```rust
+styled_text(move || vec![
+    TextRun::styled(name.get(), bold),
+    TextRun::plain(" #1234"),
+])
+```
+
 Run colors/sizes are `Tokenized`, so chips track theme swaps: web
-emits them as `var(--token)` (CSS cascade), native backends
-re-realize through the theme cohort. The run list is static —
-reactive content stays on the plain `text(...)` closure path, and a
-`TextRunStyle` deliberately has no padding/radius (per-range
-box-decoration can't be expressed uniformly across attributed-text
-engines).
+emits them as `var(--token)` (CSS cascade); every styled-text node
+also registers in the theme cohort, and native backends re-realize
+its CURRENT runs on a swap. A `TextRunStyle` deliberately has no
+padding/radius (per-range box-decoration can't be expressed uniformly
+across attributed-text engines).
 
 **Underlines.** `RunUnderline` carries a line style (`Solid` /
 `Dotted` / `Dashed`) and an optional colour of its own, so a

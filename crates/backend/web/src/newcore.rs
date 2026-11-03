@@ -1984,6 +1984,32 @@ impl caps::IntrospectionOps for WebBackend {
     }
 
     #[cfg(feature = "robot")]
+    fn scroll_port(&self, node: &Self::Node, target: caps::ScrollTarget) -> Option<caps::ScrollPort> {
+        crate::introspect_reads::scroll_port(node, target)
+    }
+
+    #[cfg(feature = "robot")]
+    fn set_scroll_offset(
+        &self,
+        node: &Self::Node,
+        target: caps::ScrollTarget,
+        x: f32,
+        y: f32,
+    ) -> Option<caps::NativeInjection> {
+        crate::introspect_reads::set_scroll_offset(node, target, x, y)
+    }
+
+    #[cfg(feature = "robot")]
+    fn keyboard_kind(&self, node: &Self::Node) -> Option<runtime_shared::primitives::text_input::KeyboardKind> {
+        crate::introspect_reads::keyboard_kind(node)
+    }
+
+    #[cfg(feature = "robot")]
+    fn computed_style(&self, node: &Self::Node) -> Option<caps::ResolvedStyle> {
+        crate::introspect_reads::computed_style(node)
+    }
+
+    #[cfg(feature = "robot")]
     fn hit_contains(&self, node: &Self::Node, x: f32, y: f32) -> Option<bool> {
         crate::introspect::hit_contains(node, x, y)
     }

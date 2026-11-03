@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use runtime_core::{component, rx, signal, ui, Element, IdealystSchema, Length, Reactive, StyleRules};
 
-use crate::components::pagination::Pagination;
+use crate::components::pagination::{Pagination, NEXT_PAGE_LABEL, PREVIOUS_PAGE_LABEL};
 use crate::components::select::{Select, SelectOption, SelectSize, SelectSlotStyles};
 use crate::components::typography::Typography;
 
@@ -81,6 +81,13 @@ pub struct TablePagerProps {
     /// Fired with a newly picked page size. The host usually rewinds to
     /// the first page too.
     pub on_page_size: Option<Rc<dyn Fn(usize)>>,
+    /// Accessible name of the page numbers' ‹ stepper. Default "Previous
+    /// page"; pass a translated string to localize.
+    #[prop(static)]
+    pub previous_label: String,
+    /// Accessible name of the › stepper. Default "Next page".
+    #[prop(static)]
+    pub next_label: String,
 }
 
 impl Default for TablePagerProps {
@@ -93,6 +100,8 @@ impl Default for TablePagerProps {
             on_offset: Rc::new(|_| {}),
             page_sizes: Vec::new(),
             on_page_size: None,
+            previous_label: PREVIOUS_PAGE_LABEL.to_string(),
+            next_label: NEXT_PAGE_LABEL.to_string(),
             styles: Default::default(),
         }
     }
@@ -118,6 +127,7 @@ pub fn TablePager(props: &TablePagerProps) -> Element {
     let on_offset = props.on_offset.clone();
     let sizes = props.page_sizes.clone();
     let on_page_size = props.on_page_size.clone();
+    let (previous_label, next_label) = (props.previous_label.clone(), props.next_label.clone());
     let size_options: Vec<SelectOption> =
         sizes.iter().map(|n| SelectOption::new(n.to_string(), n.to_string())).collect();
     // The picker's own string signal, seeded from the page size; a pick
@@ -191,6 +201,8 @@ pub fn TablePager(props: &TablePagerProps) -> Element {
                                 Rc::new(move |p: usize| on_offset((p.max(1) - 1) * size))
                                     as Rc<dyn Fn(usize)>
                             },
+                            previous_label = previous_label.clone(),
+                            next_label = next_label.clone(),
                         )
                     }
                     None => {}

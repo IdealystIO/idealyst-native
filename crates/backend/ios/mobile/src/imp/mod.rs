@@ -18,6 +18,7 @@ pub(crate) mod keyboard_kind;
 pub(crate) mod pending_focus;
 pub(crate) mod pointer;
 pub(crate) mod screenshot;
+pub(crate) mod scroll_port;
 pub(crate) mod sticky;
 pub(crate) mod styled_text;
 pub(crate) mod text_inset;
@@ -1854,9 +1855,10 @@ impl IosBackend {
     }
 
     pub(crate) fn update_styled_text_impl(&mut self, node: &IosNode, runs: &[runtime_shared::TextRun]) {
-        // Theme-cohort re-realization (and any direct caller): keep the
-        // stored runs current and rebuild against the last-applied
-        // paragraph style so run token colors resolve on the NEW theme.
+        // A reactive run list's change, or the theme-cohort
+        // re-realization: keep the stored runs current and rebuild
+        // against the last-applied paragraph style so run token colors
+        // resolve on the current theme.
         let IosNode::Label(label) = node else { return };
         let key = &**label as *const UILabel as *const UIView as usize;
         let para = match self.styled_texts.get_mut(&key) {
@@ -1867,6 +1869,13 @@ impl IosBackend {
             None => None,
         };
         styled_text::realize(label, runs, para.as_deref(), &self.font_registry);
+        // New runs can wrap to a different height: Taffy re-measures only
+        // a dirty node, and setting `attributedText` tells it nothing —
+        // same reason as `update_text_impl`.
+        if let Some(layout) = self.layout_of(node.as_view()) {
+            self.layout.mark_dirty(layout);
+            schedule_layout_pass();
+        }
     }
 
     pub(crate) fn create_button_impl(

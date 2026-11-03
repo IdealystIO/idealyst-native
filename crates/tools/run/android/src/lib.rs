@@ -173,6 +173,52 @@ pub struct RunArtifact {
     /// adb serial of the device the APK was installed on
     /// (`emulator-5554`, a real device's USB serial, etc.).
     pub serial: String,
+    /// What [`relaunch_with_link`] needs to start the app again.
+    pub launched: LaunchedApp,
+}
+
+/// An app `run` installed and started: the device, and the activity that
+/// starts it.
+#[derive(Clone, Debug)]
+pub struct LaunchedApp {
+    pub adb: PathBuf,
+    pub serial: String,
+    /// `<package>/.MainActivity`.
+    pub component: String,
+}
+
+/// Cold-start `app` at `link`: `am start -S` force-stops the running
+/// process first, then starts the activity with a `VIEW` intent whose data
+/// is the link — the launch `Intent` `MainActivity.onCreate` hands to
+/// `setLaunchUrl`, so the app boots on the linked screen exactly as when
+/// the OS opens a link. The explicit component reaches the activity whether
+/// or not the link matches a declared `<intent-filter>`. `-W` returns once
+/// the launch completed. The relay URL, `adb reverse` and env baked into the
+/// install carry over, so the new process dials the same relay.
+pub fn relaunch_with_link(app: &LaunchedApp, link: &str) -> Result<()> {
+    let args = am_start_link_args(&app.serial, &app.component, link);
+    eprintln!("[run-android] adb {}", args.join(" "));
+    let status = Command::new(&app.adb)
+        .args(&args)
+        .status()
+        .with_context(|| format!("spawn {} shell am start", app.adb.display()))?;
+    if !status.success() {
+        anyhow::bail!("adb am start exited with {status}");
+    }
+    Ok(())
+}
+
+/// The `adb` arguments for [`relaunch_with_link`]. `adb shell` hands its
+/// arguments to the device's shell as one command line, so the link is
+/// single-quoted there: a `&` or `?` in a URL would otherwise be shell
+/// syntax.
+fn am_start_link_args(serial: &str, component: &str, link: &str) -> Vec<String> {
+    let quoted = format!("'{}'", link.replace('\'', r"'\''"));
+    ["-s", serial, "shell", "am", "start", "-S", "-W", "-a", "android.intent.action.VIEW", "-d"]
+        .iter()
+        .map(|s| s.to_string())
+        .chain([quoted, "-n".to_string(), component.to_string()])
+        .collect()
 }
 
 pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
@@ -236,6 +282,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
 
     Ok(RunArtifact {
         apk: signed_apk,
+        launched: LaunchedApp { adb: adb.clone(), serial: serial.clone(), component },
         serial,
     })
 }
@@ -1629,6 +1676,21 @@ fn xml_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// `load_url` on Android: a cold start with the link as the `VIEW`
+    /// intent's data, quoted for the device shell so a query string stays
+    /// one argument.
+    #[test]
+    fn a_link_relaunch_force_stops_and_quotes_the_link_for_the_device_shell() {
+        let args = super::am_start_link_args("emulator-5554", "com.x/.MainActivity", "https://localhost/a?b=1&c='d'");
+        assert_eq!(
+            args,
+            [
+                "-s", "emulator-5554", "shell", "am", "start", "-S", "-W", "-a", "android.intent.action.VIEW", "-d",
+                r"'https://localhost/a?b=1&c='\''d'\'''", "-n", "com.x/.MainActivity",
+            ]
+        );
+    }
+
     /// `idealyst test` sets `IDEALYST_TEST_DRIVER` so an app's in-app
     /// self-test stands down, but an Android app has no environment to
     /// inherit: the self-test ran under the host suite and changed the

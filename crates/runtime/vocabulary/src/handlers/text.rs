@@ -1,6 +1,10 @@
 //! Text-family handlers: `text`, `button`.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use runtime_scene::{Element, MountCx};
+use runtime_shared::styled_text::TextRun;
 use runtime_world::{effect, Value};
 
 use crate::caps::{ButtonOps, IntrospectionOps, TextOps};
@@ -23,8 +27,11 @@ use super::bind_value;
 ///   world-root notifier effect per signal (`notify_signal_text_js`, the
 ///   signal-class delivery pattern) and NO per-leaf effect; elsewhere it
 ///   lowers to the `Dyn` shape via `compute_fallback`.
-/// - `Runs`: `create_styled_text` once (basic styled runs; not
-///   re-realized on a theme swap — crate docs' known gaps).
+/// - `Runs`: `create_styled_text` at the (initial) run list; a `Dyn` list
+///   binds an effect that re-realizes via `update_styled_text` per
+///   change (the mount fire skips — it would repeat the create). Either
+///   way the node joins the theme cohort, which re-realizes its current
+///   runs on a swap (non-cascade backends).
 ///
 /// Then attach_style → ref-fill.
 pub fn mount_text<H>(cx: &mut MountCx<'_, H>, prim: TextPrim, _children: Vec<Element>) -> H::Node
@@ -37,7 +44,7 @@ where
     // stale after the binding updates the backend (the registry entry
     // is never re-registered on signal change).
     #[cfg(feature = "robot")]
-    let mut robot_label: Option<String> = None;
+    let robot_label: Option<String>;
     #[cfg(feature = "robot")]
     let mut robot_label_fn: Option<std::rc::Rc<dyn Fn() -> Option<String>>> = None;
     let node = match prim.content {
@@ -198,13 +205,69 @@ where
             }
         }
         TextSourceProp::Runs(runs) => {
-            // Styled runs are static content — report the concatenated
-            // plain text, the same value the styled node renders.
-            #[cfg(feature = "robot")]
-            {
-                robot_label = Some(runtime_shared::styled_text::plain_text_of(&runs));
-            }
-            backend.borrow_mut().create_styled_text(&runs, &prim.a11y)
+            let (node, current) = match runs {
+                Value::Const(runs) => {
+                    #[cfg(feature = "robot")]
+                    {
+                        robot_label = Some(runtime_shared::styled_text::plain_text_of(&runs));
+                    }
+                    let node = backend.borrow_mut().create_styled_text(&runs, &prim.a11y);
+                    (node, Rc::new(RefCell::new(Rc::new(runs))))
+                }
+                Value::Dyn(compute) => {
+                    let compute: Rc<dyn Fn() -> Vec<TextRun>> = Rc::from(compute);
+                    #[cfg(feature = "robot")]
+                    {
+                        let c = compute.clone();
+                        robot_label_fn = Some(Rc::new(move || {
+                            Some(runtime_shared::styled_text::plain_text_of(&runtime_world::untrack(|| c())))
+                        }));
+                    }
+                    // Create at the initial value (untracked — the binding
+                    // effect below owns the subscription), so a backend
+                    // that only renders the first realization (SSR) gets
+                    // the styled runs, not an empty node patched later.
+                    let initial = runtime_world::untrack(|| compute());
+                    #[cfg(feature = "robot")]
+                    {
+                        robot_label = Some(runtime_shared::styled_text::plain_text_of(&initial));
+                    }
+                    let node = backend.borrow_mut().create_styled_text(&initial, &prim.a11y);
+                    let current = Rc::new(RefCell::new(Rc::new(initial)));
+                    let b = backend.clone();
+                    let n = node.clone();
+                    let cur = current.clone();
+                    let mut first = true;
+                    let _binding = effect(move || {
+                        // Every fire reads `compute` TRACKED (that is the
+                        // subscription); the first fire's runs are what
+                        // was just created, so it skips the backend call.
+                        let runs = compute();
+                        if std::mem::take(&mut first) {
+                            return;
+                        }
+                        b.borrow_mut().update_styled_text(&n, &runs);
+                        *cur.borrow_mut() = Rc::new(runs);
+                    });
+                    (node, current)
+                }
+            };
+            // Theme swap: per-run colors/sizes are `Tokenized`. Web emits
+            // them as `var()` (the cascade re-tints and the driver stops
+            // before fan-out); every other backend resolves tokens when it
+            // realizes the runs, so the node re-realizes its CURRENT runs
+            // from the theme cohort. Without this a native styled run keeps
+            // the previous theme's colors after a light/dark switch.
+            crate::theme::ensure_theme_driver(&backend);
+            let ctx = crate::theme::theme_ctx();
+            let b = backend.clone();
+            let n = node.clone();
+            let cohort_id = crate::theme::cohort_register(Rc::new(move || {
+                let runs = current.borrow().clone();
+                b.borrow_mut().update_styled_text(&n, &runs);
+            }));
+            on_teardown(move || ctx.cohort_unregister(cohort_id));
+            node
         }
     };
     #[cfg(feature = "robot")]

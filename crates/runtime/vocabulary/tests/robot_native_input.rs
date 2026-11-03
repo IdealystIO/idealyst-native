@@ -180,7 +180,9 @@ fn a_native_drag_injects_the_path_in_window_coordinates() {
 /// `hover_native` moves the pointer over the element's center with no
 /// button held; `press_native` / `release_native` split a tap so a test can
 /// check the pressed state between them. Same point checks as a tap, and no
-/// fallback where the backend can't inject (a touch platform can't hover).
+/// hover fallback where the backend can't inject (a touch platform can't
+/// hover); a split press there goes through the hit test (see
+/// `a_held_press_through_the_hit_test_*`).
 #[test]
 fn hover_and_split_press_inject_their_own_steps() {
     let robot = Robot::new();
@@ -197,8 +199,8 @@ fn hover_and_split_press_inject_their_own_steps() {
     }
     let go = find(&robot, "go");
     assert_eq!(robot.hover_native(&go), Ok(()));
-    assert_eq!(robot.press_native(&go), Ok(()));
-    assert_eq!(robot.release_native(&go), Ok(()));
+    assert_eq!(robot.press_native(&go), Ok(TapMechanism::Native));
+    assert_eq!(robot.release_native(&go), Ok(TapMechanism::Native));
     let at = |phase| PointerStep { phase, x: 70.0, y: 40.0 };
     assert_eq!(
         got.borrow().as_slice(),
@@ -212,6 +214,8 @@ fn hover_and_split_press_inject_their_own_steps() {
 
     *h.shared.native_input.borrow_mut() = None;
     assert_eq!(robot.hover_native(&go), Err(RobotError::Unsupported("hover_native")));
+    // No injection and no frame (so no hit test either): nothing can press.
+    h.shared.frames.borrow_mut().remove(&1);
     assert_eq!(robot.press_native(&go), Err(RobotError::Unsupported("press_native")));
 }
 
@@ -301,5 +305,176 @@ fn regression_hit_test_tap_on_non_interactive_content_lands_without_error() {
     // The refusal stays about the point.
     h.shared.covered.borrow_mut().insert(1);
     assert!(matches!(robot.tap_native(&row), Err(RobotError::Covered { .. })));
+    robot.reset();
+}
+
+/// `context_click` injects ONE secondary-button click at the element's
+/// center — the backend turns it into its platform's right-click sequence —
+/// and reports the native mechanism over the bridge.
+#[test]
+fn a_context_click_injects_a_secondary_click_at_the_center() {
+    let robot = Robot::new();
+    robot.reset();
+    let h = Harness::new();
+    let presses = Rc::new(Cell::new(0));
+    let _r = fixture(&h, presses.clone());
+    let got: Rc<RefCell<Vec<PointerStep>>> = Rc::default();
+    {
+        let got = got.clone();
+        *h.shared.native_input.borrow_mut() = Some(Rc::new(move |steps: &[PointerStep]| {
+            got.borrow_mut().extend_from_slice(steps);
+            Ok(())
+        }));
+    }
+    let go = find(&robot, "go");
+    assert_eq!(robot.context_click_native(&go), Ok(TapMechanism::Native));
+    assert_eq!(
+        got.borrow().as_slice(),
+        &[PointerStep { phase: PointerStepPhase::SecondaryClick, x: 70.0, y: 40.0 }]
+    );
+    let out: Value = runtime_shared::__serde_json::from_str(
+        &invoke_command("context_click", &json!({ "element_id": go.id.0 })).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(out, json!({ "mechanism": "native" }));
+    assert_eq!(presses.get(), 0, "a right click is not a press");
+
+    // The same point checks as a tap.
+    h.shared.covered.borrow_mut().insert(1);
+    assert!(matches!(robot.context_click_native(&go), Err(RobotError::Covered { action: "context_click", .. })));
+    robot.reset();
+}
+
+/// CrewForge E2E report B5: a right-click menu (the Schedule grid's "Mark
+/// as absent") is an `on_touch` that opens on a `PointerButton::Secondary`
+/// `Began`, and no verb could send one. Through the hit-test tier (a
+/// backend that can't inject a secondary click) the robot delivers that
+/// `Began` to the handler under the point, reporting `Secondary` while it
+/// runs, bubbling past a handler that ignores it — and never runs a
+/// pressable's press.
+#[test]
+fn regression_context_click_reaches_a_secondary_press_handler() {
+    use runtime_shared::{PointerButton, TouchEvent, TouchPhase, TouchResponse};
+    let robot = Robot::new();
+    robot.reset();
+    let h = Harness::new();
+    let seen: Rc<RefCell<Vec<(TouchPhase, PointerButton)>>> = Rc::default();
+    let presses = Rc::new(Cell::new(0));
+    let _r = {
+        let (seen, presses) = (seen.clone(), presses.clone());
+        h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .child(
+                        view()
+                            .test_id("cell")
+                            .on_touch(Rc::new(move |e: &TouchEvent| {
+                                seen.borrow_mut().push((e.phase, runtime_shared::pointer_button()));
+                                if runtime_shared::pointer_button().opens_context_menu() {
+                                    TouchResponse::CONSUMED
+                                } else {
+                                    TouchResponse::IGNORED
+                                }
+                            }))
+                            .child(
+                                view()
+                                    .test_id("label")
+                                    .on_touch(Rc::new(|_: &TouchEvent| TouchResponse::IGNORED))
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                    .child(pressable(move || presses.set(presses.get() + 1)).test_id("btn").build())
+                    .build(),
+            )
+        })
+    };
+    runtime_shared::viewport::set_viewport_size(runtime_shared::viewport::ViewportSize { width: 400.0, height: 300.0 });
+    {
+        // root 0, cell 1, label 2 inside it, btn 3 beside.
+        let mut frames = h.shared.frames.borrow_mut();
+        frames.insert(1, rect(0.0, 0.0, 200.0, 50.0));
+        frames.insert(2, rect(10.0, 10.0, 100.0, 30.0));
+        frames.insert(3, rect(0.0, 100.0, 100.0, 40.0));
+    }
+    let label = find(&robot, "label");
+    assert_eq!(robot.context_click_native(&label), Ok(TapMechanism::HitTest));
+    assert_eq!(seen.borrow().as_slice(), &[(TouchPhase::Began, PointerButton::Secondary)]);
+
+    let out: Value = runtime_shared::__serde_json::from_str(
+        &invoke_command("context_click", &json!({ "element_id": find(&robot, "cell").id.0 })).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(out, json!({ "mechanism": "hit_test" }));
+    assert_eq!(seen.borrow().len(), 2, "Began-only, one per click");
+
+    // A pressable swallows a secondary press: nothing runs.
+    assert_eq!(robot.context_click_native(&find(&robot, "btn")), Ok(TapMechanism::HitTest));
+    assert_eq!(presses.get(), 0);
+    robot.reset();
+}
+
+/// A long press on a backend that can't inject (iOS): `press_native`
+/// delivers `Began` through the hit test and HOLDS the stream; real time
+/// passes between the two verbs (the test sleeps, as a robot-test
+/// `long_press` does); `release_native` delivers `Ended` stamped with that
+/// real time. A pressable under the point is pressed on the release.
+#[test]
+fn a_held_press_through_the_hit_test_spans_real_time() {
+    use runtime_shared::{TouchEvent, TouchPhase, TouchResponse};
+    // A real monotonic clock, as every native host installs at mount.
+    runtime_shared::time::install_time_source(Box::new(runtime_shared::time::InstantTimeSource::new()));
+    let robot = Robot::new();
+    robot.reset();
+    let h = Harness::new();
+    let events: Rc<RefCell<Vec<(TouchPhase, u64)>>> = Rc::default();
+    let presses = Rc::new(Cell::new(0));
+    let _r = {
+        let (events, presses) = (events.clone(), presses.clone());
+        h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .child(
+                        view()
+                            .test_id("row")
+                            .on_touch(Rc::new(move |e: &TouchEvent| {
+                                events.borrow_mut().push((e.phase, e.timestamp_ns));
+                                TouchResponse::CONSUMED
+                            }))
+                            .build(),
+                    )
+                    .child(pressable(move || presses.set(presses.get() + 1)).test_id("btn").build())
+                    .build(),
+            )
+        })
+    };
+    runtime_shared::viewport::set_viewport_size(runtime_shared::viewport::ViewportSize { width: 400.0, height: 300.0 });
+    {
+        let mut frames = h.shared.frames.borrow_mut();
+        frames.insert(1, rect(0.0, 0.0, 200.0, 50.0));
+        frames.insert(2, rect(0.0, 100.0, 100.0, 40.0));
+    }
+    let row = find(&robot, "row");
+    assert_eq!(robot.press_native(&row), Ok(TapMechanism::HitTest));
+    assert_eq!(events.borrow().iter().map(|e| e.0).collect::<Vec<_>>(), [TouchPhase::Began]);
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    let out: Value = runtime_shared::__serde_json::from_str(
+        &invoke_command("release_native", &json!({ "element_id": row.id.0 })).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(out, json!({ "mechanism": "hit_test" }));
+    let ev = events.borrow().clone();
+    assert_eq!(ev.iter().map(|e| e.0).collect::<Vec<_>>(), [TouchPhase::Began, TouchPhase::Ended]);
+    assert!(ev[1].1 - ev[0].1 >= 60_000_000, "the hold is as long as the real time that passed: {ev:?}");
+
+    let btn = find(&robot, "btn");
+    assert_eq!(robot.press_native(&btn), Ok(TapMechanism::HitTest));
+    assert_eq!(presses.get(), 0, "a press runs on release, as a finger lifting does");
+    assert_eq!(robot.release_native(&btn), Ok(TapMechanism::HitTest));
+    assert_eq!(presses.get(), 1);
     robot.reset();
 }

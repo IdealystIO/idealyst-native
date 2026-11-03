@@ -408,6 +408,9 @@ pub enum PointerNativeAction {
     Press,
     /// Lift the press at it.
     Release,
+    /// Right-click it.
+    #[serde(rename = "context_click")]
+    ContextClick,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -1651,7 +1654,7 @@ impl CatalogService {
         self.robot_call("drag_native", app.as_deref(), body).await
     }
 
-    #[tool(description = "Hover, press (and hold) or release on an element with real platform input.")]
+    #[tool(description = "Hover, press (hold), release or right-click an element with real input.")]
     async fn pointer_native(
         &self,
         Parameters(args): Parameters<RobotPointerNative>,
@@ -1660,6 +1663,7 @@ impl CatalogService {
             PointerNativeAction::Hover => "hover_native",
             PointerNativeAction::Press => "press_native",
             PointerNativeAction::Release => "release_native",
+            PointerNativeAction::ContextClick => "context_click",
         };
         self.robot_call(verb, args.app.as_deref(), json!({ "element_id": args.element_id })).await
     }
@@ -1778,9 +1782,26 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<RobotOpenLink>,
     ) -> Result<CallToolResult, McpError> {
-        let app = args.app.clone();
-        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
-        self.robot_call("open_link", app.as_deref(), body).await
+        // Carried on until the whole path shows: a nested navigator that
+        // mounts late (a lazy screen, a data fetch) is only up once the
+        // app's event loop has run, so the app answers how far one call
+        // got and a `resume` (routing only — observers and interceptors
+        // saw the link once) moves the next level.
+        let bridge = self.resolve_bridge(args.app.as_deref()).await?;
+        let text = |v: &serde_json::Value| serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
+        let mut answer = match bridge.call("open_link", json!({ "url": args.url })).await {
+            Ok(v) => v,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while answer["routed"] == true && answer["complete"] == false && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            match bridge.call("open_link", json!({ "url": args.url, "resume": true })).await {
+                Ok(v) => answer = v,
+                Err(e) => return Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            }
+        }
+        Ok(CallToolResult::success(vec![Content::text(text(&answer))]))
     }
 
     #[tool(description = "List test functions the app registered (`#[robot_fn]`, SDK controls like `location.set`).")]
@@ -6846,7 +6867,12 @@ mod tests {
         svc.drag_native(Parameters(RobotDragNative { element_id: 5, points: vec![[1.0, 2.0], [3.0, 4.0]], app: None }))
             .await
             .unwrap();
-        for action in [PointerNativeAction::Hover, PointerNativeAction::Press, PointerNativeAction::Release] {
+        for action in [
+            PointerNativeAction::Hover,
+            PointerNativeAction::Press,
+            PointerNativeAction::Release,
+            PointerNativeAction::ContextClick,
+        ] {
             svc.pointer_native(Parameters(RobotPointerNative { element_id: 6, action, app: None })).await.unwrap();
         }
 
@@ -6873,6 +6899,7 @@ mod tests {
             ("hover_native", json!({ "element_id": 6 })),
             ("press_native", json!({ "element_id": 6 })),
             ("release_native", json!({ "element_id": 6 })),
+            ("context_click", json!({ "element_id": 6 })),
         ];
         let got: Vec<(&str, serde_json::Value)> = seen.iter().map(|(c, a)| (c.as_str(), a.clone())).collect();
         assert_eq!(got, expected);

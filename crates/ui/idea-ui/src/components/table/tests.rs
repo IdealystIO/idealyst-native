@@ -1010,7 +1010,8 @@ fn regression_table_density_reaches_every_cell() {
 
 /// The cells of a table that may be WRAPPED (scroll-x / frame slots):
 /// the surface view holds [header slot?, content, footer slot?], and a
-/// scroll-x content is a horizontal scroller around the plain table.
+/// scroll-x content is a horizontal scroller around the plain table (after
+/// the viewport probe, when the table's bands listen for its width).
 fn any_grid_cells(t: Element, wrapped: bool, header_slot: bool, scroll_x: bool) -> Vec<Element> {
     if !wrapped {
         return grid_cells(t);
@@ -1025,7 +1026,7 @@ fn any_grid_cells(t: Element, wrapped: bool, header_slot: bool, scroll_x: bool) 
     }
     match peel_owned_keepalive(content) {
         Element::Item { children, .. } => {
-            grid_cells(children.into_iter().next().expect("the scroller wraps the table"))
+            grid_cells(children.into_iter().last().expect("the scroller wraps the table"))
         }
         _ => panic!("scroll-x content is the scroller"),
     }
@@ -1149,7 +1150,7 @@ fn plain_scroll_cells(t: Element) -> Vec<Element> {
     };
     match peel_owned_keepalive(holder.into_iter().next().expect("the holder wraps the scroller")) {
         Element::Item { children, .. } => {
-            grid_cells(children.into_iter().next().expect("the scroller wraps the table"))
+            grid_cells(children.into_iter().last().expect("the scroller wraps the table"))
         }
         _ => panic!("the holder's child is the scroller"),
     }
@@ -1865,10 +1866,10 @@ fn live_inset_resizes_the_leading_added_column() {
         let select = style_of(cells.next().unwrap());
         let name = style_of(cells.next().unwrap());
         let band_cell = cells.nth(2).expect("the band's cell");
-        let band_lead = match classify(cell_content(band_cell).into_iter().next().unwrap()) {
+        let band_bar = match classify(cell_content(band_cell).into_iter().next().unwrap()) {
             P::View { children, .. } => match classify(children.into_iter().next().unwrap()) {
                 P::View { style, .. } => style.expect("styled"),
-                _ => panic!("band lead"),
+                _ => panic!("band bar"),
             },
             _ => panic!("the band content is a row"),
         };
@@ -1879,7 +1880,7 @@ fn live_inset_resizes_the_leading_added_column() {
             assert_eq!(px_of(&s.padding_left), Some(inset_px));
             assert_eq!(px_of(&s.width), Some(SELECT_COLUMN_WIDTH_PX + grow));
             assert_eq!(px_of(&name.resolve().left), Some(SELECT_COLUMN_WIDTH_PX + grow));
-            assert_eq!(px_of(&band_lead.resolve().left), Some(SELECT_COLUMN_WIDTH_PX + grow));
+            assert_eq!(px_of(&band_bar.resolve().left), Some(SELECT_COLUMN_WIDTH_PX + grow));
         };
         check(16.0);
         inset.set(TableInset::Px(28.0));
@@ -3032,9 +3033,9 @@ fn regression_band_trailing_action_centres_over_the_actions_column() {
 }
 
 /// CrewForge (10e): in a `scroll_x` table the band's title stays in view —
-/// its leading content pins to the scroller's left edge, past the frozen
+/// the band's bar pins to the scroller's left edge, past the frozen
 /// columns the table added (here a selection column frozen with the first
-/// column), and its actions pin to the right edge.
+/// column), and holds the lead, the spacer and the actions.
 #[test]
 fn band_content_pins_to_the_scrollers_edges() {
     with_test_world(|| {
@@ -3055,24 +3056,35 @@ fn band_content_pins_to_the_scrollers_edges() {
         let cells: Vec<_> = any_grid_cells(t, true, false, true).into_iter().filter(|c| !is_backdrop(c)).collect();
         // header: select, name, role; band: select, band cell.
         let band_cell = cells.into_iter().nth(4).expect("the band's cell");
-        let wrapper = cell_content(band_cell).into_iter().next().expect("the band content");
-        let parts = match classify(wrapper) {
-            P::View { children, .. } => children,
-            _ => panic!("the band content is a row"),
-        };
-        let rules: Vec<_> = parts
-            .into_iter()
-            .map(|p| match classify(p) {
-                P::View { style, .. } => style.expect("styled").resolve(),
-                _ => panic!("band part"),
-            })
-            .collect();
-        assert_eq!(rules.len(), 3, "lead, spacer, actions");
-        assert_eq!(rules[0].position, Some(runtime_core::Position::Sticky));
-        assert_eq!(px_of(&rules[0].left), Some(SELECT_COLUMN_WIDTH_PX), "past the frozen selection column");
-        assert_eq!(rules[2].position, Some(runtime_core::Position::Sticky));
-        assert_eq!(px_of(&rules[2].right), Some(0.0), "the actions pin to the right edge");
+        let (bar, parts) = band_parts(band_cell);
+        assert_eq!(bar.position, Some(runtime_core::Position::Sticky));
+        assert_eq!(px_of(&bar.left), Some(SELECT_COLUMN_WIDTH_PX), "past the frozen selection column");
+        assert_eq!(parts.len(), 3, "lead, spacer, actions");
+        // Inside the pinned bar nothing pins on its own: a sticky inside a
+        // sticky would be translated twice on the native backends.
+        assert!(parts.iter().all(|p| p.position != Some(runtime_core::Position::Sticky)));
     });
+}
+
+/// A band cell's bar and its parts (lead, spacer, actions), resolved.
+fn band_parts(band_cell: Element) -> (Rc<runtime_core::StyleRules>, Vec<Rc<runtime_core::StyleRules>>) {
+    let inner = cell_content(band_cell).into_iter().next().expect("the band content");
+    let bar = match classify(inner) {
+        P::View { children, .. } => children.into_iter().next().expect("the band bar"),
+        _ => panic!("the band content is a row"),
+    };
+    let (bar, parts) = match classify(bar) {
+        P::View { style, children, .. } => (style.expect("styled bar").resolve(), children),
+        _ => panic!("the band bar is a view"),
+    };
+    let parts = parts
+        .into_iter()
+        .map(|p| match classify(p) {
+            P::View { style, .. } => style.expect("styled").resolve(),
+            _ => panic!("band part"),
+        })
+        .collect();
+    (bar, parts)
 }
 
 /// CrewForge (want_682ae4c8, want_1749af8b): a card's fields were always
@@ -3121,5 +3133,137 @@ fn regression_cell_text_states_a_line_height_for_wrapped_values() {
     with_test_world(|| {
         let rules = cell_text_rules(body_cell("a sentence long enough to wrap inside a flex column"));
         assert_eq!(rules.line_height.as_ref().map(|l| l.resolve()), Some(20.0));
+    });
+}
+
+/// CrewForge (A7, /settings/employee-fields at 390pt): a `TableGroup` band
+/// in a `scroll_x` table spans the whole table, wider than the phone, and
+/// nothing held its content to the visible width — so a one-line title
+/// ("States: Employment Details" + its tag) never truncated and ran under
+/// the band's ⋯ (pinned to the viewport's right edge). The band's bar is
+/// now capped at the scroller's viewport past the frozen columns: laid
+/// out by the Taffy wrapper the native backends use, at scroll 0, the
+/// actions end at the viewport's right edge and the title truncates
+/// before them. The web band carries the same rules.
+#[test]
+fn regression_band_title_truncates_before_its_actions_in_a_phone_width_scroll_x_table() {
+    use runtime_layout::{AvailableSpace, LayoutTree, MeasureFn, Size};
+    const VIEWPORT: f32 = 390.0;
+    const TABLE_W: f32 = 900.0;
+    // The title's one-line width: far wider than the phone.
+    const TITLE_W: f32 = 600.0;
+    const LINE_H: f32 = 20.0;
+    const ACTION_W: f32 = 32.0;
+    with_test_world(|| {
+        idea_theme::theme::install_idea_theme(crate::light_theme());
+        let g = TableGroup(TableGroupProps {
+            children: vec![id_row("a", &["Ana", "Lead"], true, true)],
+            title: Reactive::Static("States: Employment Details".into()),
+            actions: Some(runtime_core::text("+".to_string()).into_element()),
+            ..Default::default()
+        });
+        // The band's handle, to play the scroller's viewport probe.
+        let mut band = None;
+        table::visit_rows(&g, |row| {
+            if let Some(b) = rows::row_meta(row).and_then(|m| m.band.clone()) {
+                band = Some(b.lead);
+            }
+        });
+        let band = band.expect("the band row");
+        let t = Table(TableProps {
+            scroll_x: true,
+            selection: Some(signal(BTreeSet::new())),
+            columns: vec![TableColumn::new("name").width(160.0).pinned(ColumnPin::Left), TableColumn::new("role")],
+            children: vec![row_of(vec![head_cell("Name"), head_cell("Role")]), g],
+            ..Default::default()
+        });
+        let viewport = band.borrow().viewport.expect("a scroll_x table measures its viewport for its bands");
+        viewport.set(Some(VIEWPORT));
+        idea_theme::testing::commit();
+        let cells: Vec<_> = any_grid_cells(t, true, false, true).into_iter().filter(|c| !is_backdrop(c)).collect();
+        // header: select, name, role; band: select, band cell.
+        let (bar, parts) = band_parts(cells.into_iter().nth(4).expect("the band's cell"));
+        let pin = SELECT_COLUMN_WIDTH_PX;
+        assert_eq!(px_of(&bar.max_width), Some(VIEWPORT - pin), "the bar is held to the visible width");
+        let title_rules = runtime_core::resolve_style(&TableStyles::band_title().into_style_application());
+
+        // scroller > content (the table's width) > [selection cell, band cell > bar].
+        let mut layout = LayoutTree::new();
+        let root = layout.new_node();
+        let scroller = layout.new_node();
+        layout.set_overflow_scroll(scroller, true);
+        layout.add_child(root, scroller);
+        let content = layout.new_node();
+        layout.set_style(
+            content,
+            &runtime_core::StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(TABLE_W))),
+                flex_direction: Some(runtime_core::FlexDirection::Row),
+                ..Default::default()
+            },
+        );
+        layout.add_child(scroller, content);
+        let select = layout.new_node();
+        layout.set_style(
+            select,
+            &runtime_core::StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(pin))),
+                flex_shrink: Some(Tokenized::Literal(0.0)),
+                ..Default::default()
+            },
+        );
+        layout.add_child(content, select);
+        let cell = layout.new_node();
+        layout.set_style(
+            cell,
+            &runtime_core::StyleRules {
+                flex_grow: Some(Tokenized::Literal(1.0)),
+                flex_direction: Some(runtime_core::FlexDirection::Row),
+                ..Default::default()
+            },
+        );
+        layout.add_child(content, cell);
+        // The bar's own style, sticky `left` included: the layout tree treats
+        // a sticky inset as a pin threshold (the backend pins after layout),
+        // so at scroll 0 the bar rests in flow past the frozen columns.
+        let bar_node = layout.new_node();
+        layout.set_style(bar_node, &bar);
+        layout.add_child(cell, bar_node);
+        let nodes: Vec<_> = parts
+            .iter()
+            .map(|rules| {
+                let n = layout.new_node();
+                layout.set_style(n, rules);
+                layout.add_child(bar_node, n);
+                n
+            })
+            .collect();
+        let (lead, trail) = (nodes[0], nodes[2]);
+        let title = layout.new_node();
+        layout.set_style(title, &title_rules);
+        let one_line: MeasureFn = Rc::new(|known: Size<Option<f32>>, avail: Size<AvailableSpace>| Size {
+            width: known.width.unwrap_or(match avail.width {
+                AvailableSpace::Definite(w) => TITLE_W.min(w),
+                _ => TITLE_W,
+            }),
+            height: LINE_H,
+        });
+        layout.set_measure_fn(title, one_line);
+        layout.add_child(lead, title);
+        let action = layout.new_node();
+        layout.set_intrinsic_size(action, ACTION_W, ACTION_W);
+        layout.add_child(trail, action);
+        layout.compute(root, VIEWPORT, 800.0);
+
+        // Window x of a node: its frame plus its ancestors' up to the content.
+        let x_in = |chain: &[runtime_layout::LayoutNode]| chain.iter().map(|n| layout.frame_of(*n).x).sum::<f32>();
+        let bar_x = x_in(&[cell, bar_node]);
+        let title_right = x_in(&[cell, bar_node, lead, title]) + layout.frame_of(title).width;
+        let trail_left = x_in(&[cell, bar_node, trail]);
+        let trail_right = trail_left + layout.frame_of(trail).width;
+        assert_eq!(bar_x, pin, "the bar starts past the frozen selection column");
+        assert!(trail_right <= VIEWPORT + 0.5, "the actions end inside the viewport, got {trail_right}");
+        assert!(title_right <= trail_left + 0.5, "the title ends at {title_right}, under the actions at {trail_left}");
+        assert!(layout.frame_of(title).width < TITLE_W, "the title truncates");
     });
 }

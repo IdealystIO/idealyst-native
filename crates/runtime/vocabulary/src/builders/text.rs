@@ -13,6 +13,35 @@ use crate::style_attach::IntoStyleProp;
 
 use super::TextContent;
 
+/// Styled-run coercion for [`TextBuilder::runs`]: a `Vec<TextRun>` is a
+/// static run list, a `Fn() -> Vec<TextRun>` closure is a reactive one
+/// (the binding effect re-runs it when the signals it reads change), and
+/// a `Value<Vec<TextRun>>` passes through.
+pub trait IntoTextRuns {
+    fn into_runs(self) -> Value<Vec<TextRun>>;
+}
+
+impl IntoTextRuns for Vec<TextRun> {
+    fn into_runs(self) -> Value<Vec<TextRun>> {
+        Value::Const(self)
+    }
+}
+
+impl IntoTextRuns for Value<Vec<TextRun>> {
+    fn into_runs(self) -> Value<Vec<TextRun>> {
+        self
+    }
+}
+
+impl<F> IntoTextRuns for F
+where
+    F: Fn() -> Vec<TextRun> + 'static,
+{
+    fn into_runs(self) -> Value<Vec<TextRun>> {
+        Value::Dyn(Box::new(self))
+    }
+}
+
 /// Start a `text` — a text leaf. Content via [`content`](TextBuilder::content)
 /// (or [`child`](TextBuilder::child), the spelling the macro uses), styled
 /// runs via [`runs`](TextBuilder::runs).
@@ -48,10 +77,13 @@ impl TextBuilder {
         self.content(content)
     }
 
-    /// Inline-styled runs (basic path: one `create_styled_text`; theme
-    /// re-realization is deferred — see crate docs).
-    pub fn runs(mut self, runs: Vec<TextRun>) -> Self {
-        self.prim.content = TextSourceProp::Runs(runs);
+    /// Inline-styled runs: ONE text node whose ranges carry their own
+    /// style deltas (`create_styled_text`). A `Vec<TextRun>` is static; a
+    /// closure returning one is reactive — re-realized in place
+    /// (`update_styled_text`) when the signals it reads change. See
+    /// [`IntoTextRuns`].
+    pub fn runs(mut self, runs: impl IntoTextRuns) -> Self {
+        self.prim.content = TextSourceProp::Runs(runs.into_runs());
         self
     }
 

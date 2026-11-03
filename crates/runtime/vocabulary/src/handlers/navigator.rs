@@ -140,6 +140,34 @@ use crate::style_attach::{attach_style, StyleProp, StyleServices};
 pub trait NavCaps: ViewOps + StyleServices + LifecycleOps + IntrospectionOps {}
 impl<T: ViewOps + StyleServices + LifecycleOps + IntrospectionOps> NavCaps for T {}
 
+/// Carry the screen's navigator context (base, screen state, route,
+/// ambient navigator) into every later realization of a reactive region
+/// created inside it (`runtime_scene::install_region_context`).
+///
+/// `mount_screen` pushes those guards only for the synchronous screen
+/// build. A region's branch swap or new keyed row realizes later, from
+/// its driver effect, when the stacks are empty — so a navigator inside
+/// `if loaded { … }` that appears after the data lands read an EMPTY
+/// base, took itself for the root, and resolved the whole URL against
+/// its own routes (its active path reported `/`, and a deep link could
+/// never reach it). `lazy` captures the same context directly for the
+/// same reason. Once per thread: providers accumulate.
+fn install_nav_region_context() {
+    runtime_tls::thread_local! {
+        static INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if INSTALLED.with(|c| c.replace(true)) {
+        return;
+    }
+    runtime_scene::install_region_context(|| {
+        let captured = runtime_shared::primitives::navigator::capture_ambient_nav_context();
+        Rc::new(move |f: &mut dyn FnMut()| {
+            let _restore = captured.enter();
+            f();
+        })
+    });
+}
+
 /// Install the three navigator handlers on `registry`. Called by
 /// [`register_builtins`](crate::handlers::register_builtins).
 pub fn register_navigator<H: NavCaps + 'static>(registry: &mut Registry<H>) {
@@ -148,6 +176,7 @@ pub fn register_navigator<H: NavCaps + 'static>(registry: &mut Registry<H>) {
     // has navigators routes warm links the way the launch slot routes
     // the cold one.
     runtime_shared::inbound_link::install_router(Rc::new(inbound::open_path));
+    install_nav_region_context();
     registry.register::<PrimCell<SwapNavigatorPrim>, _>(|cx, p, children| {
         mount_swap_navigator(cx, p.take(), children)
     });
@@ -712,9 +741,15 @@ pub mod url_sync {
 
 /// Inbound-link routing — move the LIVE navigators to an app path.
 ///
-/// The cold-start link needs nothing here: the host seeds the launch slot
+/// The cold-start link needs little here: the host seeds the launch slot
 /// and every navigator in the synchronous initial mount resolves its own
-/// slice of it ([`resolve_initial`]). A link that arrives while the app
+/// slice of it ([`resolve_initial`]). A navigator that mounts AFTER that
+/// mount — inside a screen that waits on data or a lazy chunk — finds the
+/// slot cleared; on web it reads the address bar instead, and on a host
+/// with no URL surface the root holds the unreached launch path here
+/// ([`hold_unreached_launch`]) until a navigator reaches its end or any
+/// navigation supersedes it — so a cold deep link opens the same screen on
+/// every platform. A link that arrives while the app
 /// runs (`runtime_shared::inbound_link::deliver`) finds navigators that
 /// already show something, and [`open_path`] is how it moves them — so the
 /// same link opens the same screen whether it launched the app or not.
@@ -762,6 +797,53 @@ pub mod inbound {
         static LIVE: RefCell<Vec<(u64, Rc<LiveNav>)>> = const { RefCell::new(Vec::new()) };
         static NEXT_ID: Cell<u64> = const { Cell::new(0) };
         static LINK_PATH: RefCell<Option<Rc<str>>> = const { RefCell::new(None) };
+        static LAUNCH: RefCell<LaunchHold> = const { RefCell::new(LaunchHold { held: None, reached: false }) };
+    }
+
+    /// The cold-start link's path past the root's mount, on a host with
+    /// no URL surface. One thread-local (not two) for Android's TLS key
+    /// budget.
+    pub(super) struct LaunchHold {
+        /// The launch path the navigators mounted so far stopped short of.
+        held: Option<Rc<str>>,
+        /// A navigator resolved the end of the launch slot's path during
+        /// the current initial mount.
+        reached: bool,
+    }
+
+    /// A navigator resolved the launch slot's path to its end (the leaf).
+    pub(super) fn note_launch_reached() {
+        LAUNCH.with(|l| l.borrow_mut().reached = true);
+    }
+
+    /// The root's initial mount is up and `launch` is the launch slot it
+    /// is about to clear. With no URL-sync service (a native host: nothing
+    /// a late navigator could read the URL back from) and no navigator
+    /// having reached the path's end, hold it for the navigators that
+    /// mount later — a screen that builds its nested navigator once its
+    /// data loads, which on web reads the same path from the address bar.
+    /// `None` (a nested navigator with an empty base, finishing after an
+    /// earlier clear) changes nothing.
+    pub(super) fn hold_unreached_launch(launch: Option<String>) {
+        let Some(launch) = launch else { return };
+        let native = url_sync::service().is_none();
+        LAUNCH.with(|l| {
+            let mut l = l.borrow_mut();
+            l.held = (native && !l.reached).then(|| Rc::from(launch));
+            l.reached = false;
+        });
+    }
+
+    /// The held launch path ([`hold_unreached_launch`]), if any.
+    pub(super) fn held_launch() -> Option<String> {
+        LAUNCH.with(|l| l.borrow().held.as_deref().map(str::to_string))
+    }
+
+    /// Drop the held launch path: a navigator reached its end, or the app
+    /// navigated (any command supersedes it — the user has moved on, and a
+    /// navigator rebuilt later must not reopen where the app launched).
+    pub(super) fn release_launch() {
+        let _ = LAUNCH.try_with(|l| l.borrow_mut().held = None);
     }
 
     /// Register a mounted navigator; it deregisters at navigator teardown
@@ -846,6 +928,56 @@ pub mod inbound {
             (nav.dispatch)(cmd, (!leaf).then(|| link.clone()));
         }
         landed
+    }
+
+    /// How far the SHOWING navigator chain has resolved toward `full`
+    /// (`/path?query`): the deepest active path, and whether it is the
+    /// whole of `full` (path and, when the link has one, query).
+    ///
+    /// [`open_path`] only moves navigators that exist. A navigator that
+    /// mounts after the link's commit — inside a lazy chunk, or a region
+    /// that waits on data — misses the scoped link path and opens its
+    /// configured initial, so one call can stop levels short of the end.
+    /// This is how a caller (the robot's `open_link`) finds out, and keeps
+    /// routing until the chain reaches the end or stops moving.
+    ///
+    /// The walk follows what is SHOWN, not every live navigator: starting
+    /// at the root(s), the next level is a navigator whose base is the
+    /// current level's active path — a navigator kept alive in a hidden
+    /// screen (`LazyPersistent`, a stack entry below the top) has a base
+    /// no shown screen has, so it never counts. Where several navigators
+    /// sit at one level (a navigator inside an index screen shares its
+    /// parent's base), the one whose path leads toward `full` wins.
+    pub fn progress(full: &str) -> (String, bool) {
+        let (path, query) = split_query(full);
+        let target = url_key(path);
+        let navs: Vec<(u64, Rc<LiveNav>)> = LIVE.with(|l| l.borrow().clone());
+        let leads_to_target = |active: &str| {
+            let a: Vec<&str> = active.split('/').filter(|s| !s.is_empty()).collect();
+            let t: Vec<&str> = target.split('/').filter(|s| !s.is_empty()).collect();
+            a.len() <= t.len() && a.iter().zip(&t).all(|(x, y)| x == y)
+        };
+        let mut at = "/".to_string();
+        let mut leaf: Option<Rc<LiveNav>> = None;
+        let mut visited: Vec<u64> = Vec::new();
+        loop {
+            let level: Vec<&(u64, Rc<LiveNav>)> = navs
+                .iter()
+                .filter(|(id, n)| !visited.contains(id) && url_key(&n.base) == at)
+                .collect();
+            let pick = level
+                .iter()
+                .filter(|(_, n)| leads_to_target(&n.active_path.peek()))
+                .max_by_key(|(_, n)| n.active_path.peek().split('/').filter(|s| !s.is_empty()).count())
+                .or_else(|| level.last());
+            let Some((id, nav)) = pick else { break };
+            visited.push(*id);
+            at = url_key(&nav.active_path.peek());
+            leaf = Some(nav.clone());
+        }
+        let complete = at == target
+            && (query.is_empty() || leaf.is_some_and(|n| n.active_query.peek() == query));
+        (at, complete)
     }
 }
 
@@ -1036,6 +1168,9 @@ impl CommandChannel {
     /// handle-routed. Two dispatches in one window compose (tick +2 →
     /// one driver wake draining both, in order).
     fn dispatch(&self, cmd: NavCommand, suppress_sync_after: bool, link: Option<Rc<str>>) {
+        // Any navigation supersedes a held launch path (see
+        // `inbound::release_launch`).
+        inbound::release_launch();
         self.queue.borrow_mut().push_back((cmd, suppress_sync_after, link));
         self.tick.update(|n| n + 1);
     }
@@ -1212,7 +1347,11 @@ fn resolve_initial(config: &NavConfig, base: &str) -> InitialResolution {
             from_launch_url,
         })
     };
-    if let Some(hit) = resolve_from(peek_initial_path(), true) {
+    let launch = peek_initial_path();
+    if let Some(hit) = resolve_from(launch.clone(), true) {
+        if launch.is_some_and(|l| url_key(&hit.path) == url_key(split_query(&l).0)) {
+            inbound::note_launch_reached();
+        }
         return hit;
     }
     // A navigator mounting inside an inbound-link commit (see [`inbound`]):
@@ -1225,6 +1364,26 @@ fn resolve_initial(config: &NavConfig, base: &str) -> InitialResolution {
         if names_a_screen_below_us {
             if let Some(hit) = resolve_from(Some(link), false) {
                 return hit;
+            }
+        }
+    }
+    // The launch path the initial mount stopped short of, held by the
+    // root on a host with no URL surface ([`inbound::hold_unreached_launch`])
+    // — a navigator that mounts once its screen's data loads. Not while a
+    // launch is mounting (the slot answers that), and gated like the
+    // sources around it. Released once a navigator reaches its end.
+    if launch.is_none() {
+        if let Some(held) = inbound::held_launch() {
+            let held_path = split_query(&held).0.to_string();
+            let names_a_screen_below_us =
+                match_prefix(&held_path, base).is_some_and(|(_, rem)| !rem.is_empty());
+            if names_a_screen_below_us {
+                if let Some(hit) = resolve_from(Some(held), false) {
+                    if url_key(&hit.path) == url_key(&held_path) {
+                        inbound::release_launch();
+                    }
+                    return hit;
+                }
             }
         }
     }
@@ -1494,6 +1653,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
                 Some(crate::robot::NavSnapshotData {
                     active_route: route.clone(),
                     active_path: path.clone(),
+                    query: active_query.peek(),
                     depth: 1,
                     can_go_back: false,
                     base: base.clone(),
@@ -1633,8 +1793,10 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     backend.borrow_mut().hydrate_nav_screen_end();
     // Root navigator: the nested subtree mounted synchronously above, so
     // every nested navigator already peeked the launch URL. Clear the
-    // slot so a later rebuild isn't poisoned.
+    // slot so a later rebuild isn't poisoned — holding the path for the
+    // navigators that mount later where no address bar can serve them.
     if base.is_empty() {
+        inbound::hold_unreached_launch(peek_initial_path());
         set_initial_path(None);
     }
 
@@ -2279,6 +2441,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
                 Some(crate::robot::NavSnapshotData {
                     active_route: active_route.peek().to_string(),
                     active_path: active_path.peek(),
+                    query: active_query.peek(),
                     depth: depth.peek(),
                     can_go_back: can_go_back.peek(),
                     base: base.clone(),
@@ -2415,7 +2578,10 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     backend.borrow_mut().hydrate_nav_screen_begin(&root, &base);
     let initial = shared.mount(initial_route, &initial_path, initial_params, initial_query.clone());
     backend.borrow_mut().hydrate_nav_screen_end();
+    // Root: clear the launch slot, holding an unreached path for late
+    // navigators (see the swap mount).
     if base.is_empty() {
+        inbound::hold_unreached_launch(peek_initial_path());
         set_initial_path(None);
     }
 

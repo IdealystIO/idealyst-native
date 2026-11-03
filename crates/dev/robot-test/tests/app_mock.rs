@@ -6,7 +6,7 @@
 //! harness need a live app + relay, so they're verified end-to-end via
 //! `idealyst test`; this covers the client logic in plain `cargo test`.)
 
-use robot_test::{App, Selector};
+use robot_test::{App, Cookie, Selector};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -63,6 +63,16 @@ struct Mock {
     revealed_taps: u32,
     /// `get_platform`'s answer; `None` answers as an app from before it.
     platform: Option<&'static str>,
+    /// `open_link` levels the deep link has reached (one more per resume,
+    /// as nested navigators that mount late are moved).
+    link_levels: usize,
+    /// The browser's cookies (`set_cookie` / `get_cookies` / `clear_cookies`).
+    cookies: Vec<Value>,
+    /// `load_url` reboots: the path becomes the URL's, the count resets.
+    /// `false` answers as a native app the dev session can't relaunch.
+    loads_web: bool,
+    /// `get_style` calls on "todo" (Text 60): struck through from the third.
+    style_looks: u32,
 }
 
 /// A mock app:
@@ -161,8 +171,43 @@ fn respond(cmd: &str, args: &Value, m: &mut Mock) -> Result<Value, String> {
     }
     Ok(match cmd {
         "ping" => json!("pong"),
+        "load_url" if !m.loads_web => {
+            return Err("load_url is unsupported on ios: booting a native app at a URL relaunches it".into())
+        }
+        "load_url" => {
+            let url = args["url"].as_str().unwrap_or_default();
+            m.path = url.to_string();
+            m.count = 0;
+            json!({ "url": format!("http://127.0.0.1:3000{url}") })
+        }
+        "set_cookie" => {
+            let name = args["name"].clone();
+            m.cookies.retain(|c| c["name"] != name);
+            let mut c = args.clone();
+            c.as_object_mut().unwrap().remove("url");
+            c["domain"] = json!("127.0.0.1");
+            c["path"] = json!("/");
+            m.cookies.push(c);
+            json!({ "name": name })
+        }
+        "get_cookies" => json!(m.cookies),
+        "get_style" if args["element_id"] == json!(60) => {
+            m.style_looks += 1;
+            let deco = if m.style_looks >= 3 { "line-through" } else { "none" };
+            json!({ "source": "framework", "style": { "text_decoration": deco, "font_weight": 700, "color": [1.0, 0.0, 0.0, 1.0] } })
+        }
+        "clear_cookies" => {
+            match args.get("name") {
+                Some(name) => m.cookies.retain(|c| &c["name"] != name),
+                None => m.cookies.clear(),
+            }
+            json!("ok")
+        }
         "find_element" => match args.get("test_id").and_then(|v| v.as_str()) {
             Some("inc") => json!({ "id": 7, "kind": "Button", "label": "+ increment", "test_id": "inc", "state": { "disabled": false } }),
+            Some("todo") => json!({ "id": 60, "kind": "Text", "label": "Buy milk", "test_id": "todo" }),
+            Some("email") => json!({ "id": 61, "kind": "TextInput", "label": null, "test_id": "email",
+                                     "state": { "value": "", "keyboard": "email", "native_keyboard": "email" } }),
             Some("counter") => {
                 let shown = if m.counter_lag { m.count - 1 } else { m.count };
                 m.counter_lag = false;
@@ -221,6 +266,10 @@ fn respond(cmd: &str, args: &Value, m: &mut Mock) -> Result<Value, String> {
             }
             _ => json!({ "scrolled": [] }),
         },
+        // Real-input presses and right clicks land wherever they are sent.
+        "press_native" | "release_native" | "hover_native" | "drag_native" | "context_click" => {
+            json!({ "mechanism": "native" })
+        }
         "tap_native" => match args["element_id"].as_u64() {
             Some(50) if !m.tab_revealed => {
                 return Err("action 'tap_native' refused: the point (700, 20) is outside the window (scroll the element into view)".into())
@@ -264,17 +313,43 @@ fn respond(cmd: &str, args: &Value, m: &mut Mock) -> Result<Value, String> {
         // Watched values come back as a JSON string of the Debug form.
         "read_signal" if args["name"] == "count" => json!(m.count.to_string()),
         "read_signal" => return Err("no such signal".into()),
-        "list_navigators" => json!([{ "nav_id": 1, "type_name": "stack_navigator", "active_route": "home",
-                                      "active_path": m.path, "depth": 1, "can_go_back": false,
-                                      "is_current": true, "controllable": true }]),
+        "list_navigators" => {
+            let (path, query) = m.path.split_once('?').unwrap_or((&m.path, ""));
+            let query: serde_json::Map<String, Value> = query
+                .split('&')
+                .filter_map(|kv| kv.split_once('='))
+                .map(|(k, v)| (k.to_string(), json!(v)))
+                .collect();
+            json!([{ "nav_id": 1, "type_name": "stack_navigator", "active_route": "home",
+                     "active_path": path, "query": query, "href": m.path, "depth": 1,
+                     "can_go_back": false, "is_current": true, "controllable": true }])
+        }
         "navigate" => {
             m.path = args["path"].as_str().unwrap_or("/").into();
             json!("ok")
         }
+        // `myapp://projects/7/schedule` sits under navigators that mount
+        // late: each call reaches one more level. `…/bogus` stops at
+        // `/projects/7` for good. `myapp://gated` is claimed by an
+        // interceptor. Anything else lands at once.
         "open_link" => {
             let url = args["url"].as_str().unwrap_or("");
-            m.path = url.split_once("://").map(|(_, rest)| format!("/{rest}")).unwrap_or_default();
-            json!(true)
+            let target = url.split_once("://").map(|(_, rest)| format!("/{rest}")).unwrap_or_default();
+            if target == "/gated" {
+                return Ok(json!({ "reached": m.path, "complete": false, "routed": false }));
+            }
+            let segs: Vec<&str> = target.split('/').filter(|s| !s.is_empty()).collect();
+            if segs.first() == Some(&"projects") {
+                if args["resume"] != json!(true) {
+                    m.link_levels = 0;
+                }
+                let reachable = if segs.last() == Some(&"bogus") { segs.len() - 1 } else { segs.len() };
+                m.link_levels = (m.link_levels + 1).min(reachable);
+                m.path = format!("/{}", segs[..m.link_levels].join("/"));
+                return Ok(json!({ "reached": m.path, "complete": m.path == target, "routed": true }));
+            }
+            m.path = target;
+            json!({ "reached": m.path.split('?').next().unwrap(), "complete": true, "routed": true })
         }
         "list_functions" => json!([
             { "name": "demo.count", "doc": "Counts.", "args": [{ "name": "by", "type": "u32" }], "returns": "u32", "async": false },
@@ -397,6 +472,52 @@ fn navigate_and_wait_for_the_path() {
     assert_eq!(app.navigators()[0].active_path.as_deref(), Some("/settings"));
     assert!(app.open_link("myapp://inbox"));
     app.assert_path("/inbox");
+}
+
+/// A deep link under navigators that mount late lands in ONE
+/// `open_link` call: the client carries it on (`resume`) as each level
+/// comes up, instead of stopping at the first.
+#[test]
+fn regression_open_link_waits_for_the_whole_nested_path() {
+    let (addr, state) = spawn_mock_app_with(Mock::default());
+    let mut app = App::connect(addr).unwrap();
+    assert!(app.open_link("myapp://projects/7/schedule"));
+    app.assert_path("/projects/7/schedule");
+    let resumes = state.lock().unwrap().requests.iter().filter(|(c, a)| c == "open_link" && a["resume"] == true).count();
+    assert_eq!(resumes, 2, "resumed until the last level showed");
+}
+
+/// A segment no screen matches: `open_link` fails naming where it got.
+#[test]
+fn open_link_names_the_path_it_reached_when_it_stops_short() {
+    let mut app = app();
+    app.set_timeout(Duration::from_millis(300));
+    let outcome = app.try_open_link("myapp://projects/7/bogus");
+    assert_eq!(
+        outcome,
+        robot_test::LinkOutcome { routed: true, reached: "/projects/7".into(), complete: false }
+    );
+    let msg = panic_message(|| {
+        app.open_link("myapp://projects/7/bogus");
+    });
+    assert!(msg.contains("reached \"/projects/7\""), "got: {msg}");
+    // A link an interceptor claims is not resumed, and reports false.
+    assert!(!app.open_link("myapp://gated"));
+}
+
+/// The active screen's query rides beside the path-only `active_path`.
+#[test]
+fn navigator_query_and_href_assertions() {
+    let mut app = app();
+    assert!(app.open_link("myapp://assets?asset_tag=~7781"));
+    app.assert_path("/assets");
+    app.assert_query("asset_tag", "~7781");
+    app.assert_href("/assets?asset_tag=~7781");
+    let nav = &app.navigators()[0];
+    assert_eq!(nav.query.get("asset_tag").map(String::as_str), Some("~7781"));
+    app.set_timeout(Duration::from_millis(200));
+    let msg = panic_message(|| app.assert_query("asset_tag", "~1"));
+    assert!(msg.contains("the query is"), "got: {msg}");
 }
 
 /// A missing element fails after the timeout, saying what it last saw.
@@ -750,4 +871,172 @@ fn platform_is_asked_once_and_absent_on_an_old_app() {
     assert_eq!(Platform::from_id("windows"), Platform::Windows);
     assert_eq!(Platform::from_id("tvos"), Platform::Other("tvos".into()));
     assert!(Platform::Linux.is_native() && !Platform::Web.is_native());
+}
+
+/// CrewForge E2E report B5: right-click menus. `context_click` is the
+/// platform's own context gesture — a secondary click (the `context_click`
+/// verb) on desktop and web, scrolled into view first like a tap; on a
+/// phone a long press: `press_native`, [`LONG_PRESS`] of real time, then
+/// `release_native` on the same element.
+#[test]
+fn context_click_right_clicks_on_desktop_and_long_presses_on_a_phone() {
+    let (addr, state) = spawn_mock_app_with(Mock { platform: Some("macos"), ..Mock::default() });
+    let mut app = App::connect(addr).unwrap();
+    assert_eq!(app.test_id("tab").context_click(), "native");
+    let sent: Vec<String> = verbs(&state).into_iter().filter(|v| v != "get_platform").collect();
+    assert_eq!(sent, ["scroll_into_view", "context_click"]);
+
+    let (addr, state) = spawn_mock_app_with(Mock { platform: Some("ios"), ..Mock::default() });
+    let mut app = App::connect(addr).unwrap();
+    let started = std::time::Instant::now();
+    app.test_id("cta").context_click();
+    assert!(started.elapsed() >= robot_test::LONG_PRESS, "held for {:?}", started.elapsed());
+    let m = state.lock().unwrap();
+    let presses: Vec<(&str, &Value)> = m
+        .requests
+        .iter()
+        .filter(|(c, _)| c.ends_with("_native"))
+        .map(|(c, a)| (c.as_str(), a))
+        .collect();
+    assert_eq!(
+        presses,
+        [("press_native", &json!({ "element_id": 30 })), ("release_native", &json!({ "element_id": 30 }))]
+    );
+}
+
+/// Android E2E (robot-e2e-demo): `long_press` on a row below the fold of
+/// a phone's screen. Every real-input action scrolls its element into view
+/// first, as `click` does — `long_press`, `press_native`, `hover_native`,
+/// `drag_native` — and `release_native` scrolls nothing (it lifts where
+/// the press went down). `.no_scroll()` and `set_auto_scroll(false)` opt
+/// out of all of them.
+#[test]
+fn every_native_pointer_action_scrolls_its_element_into_view_first() {
+    let (addr, state) = spawn_mock_app_with(Mock { platform: Some("android"), ..Mock::default() });
+    let mut app = App::connect(addr).unwrap();
+    let fresh = |state: &Arc<Mutex<Mock>>| {
+        let mut m = state.lock().unwrap();
+        m.tab_revealed = false;
+        m.requests.clear();
+    };
+    app.test_id("tab").long_press(Duration::from_millis(10));
+    assert_eq!(verbs(&state), ["scroll_into_view", "press_native", "release_native"]);
+    fresh(&state);
+    app.test_id("tab").press_native();
+    assert_eq!(verbs(&state), ["scroll_into_view", "press_native"]);
+    app.test_id("tab").release_native();
+    assert_eq!(verbs(&state), ["scroll_into_view", "press_native", "release_native"]);
+    fresh(&state);
+    app.test_id("tab").hover_native();
+    assert_eq!(verbs(&state), ["scroll_into_view", "hover_native"]);
+    fresh(&state);
+    app.test_id("tab").drag_native(&[(1.0, 2.0), (30.0, 2.0)]);
+    assert_eq!(verbs(&state), ["scroll_into_view", "drag_native"]);
+    let drag = state.lock().unwrap().requests.iter().find(|(c, _)| c == "drag_native").unwrap().1.clone();
+    assert_eq!(drag, json!({ "points": [[1.0, 2.0], [30.0, 2.0]], "element_id": 50 }));
+
+    fresh(&state);
+    app.test_id("tab").no_scroll().press_native();
+    app.set_auto_scroll(false);
+    app.test_id("tab").hover_native();
+    app.test_id("tab").long_press(Duration::from_millis(10));
+    assert_eq!(verbs(&state), ["press_native", "hover_native", "press_native", "release_native"]);
+}
+
+/// `long_press(hold)` holds a real press for `hold`, and `secondary_click`
+/// sends the right click on every platform, a phone included.
+#[test]
+fn long_press_holds_for_the_given_time_and_secondary_click_is_always_a_right_click() {
+    let (addr, state) = spawn_mock_app_with(Mock { platform: Some("android"), ..Mock::default() });
+    let mut app = App::connect(addr).unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(app.test_id("cta").long_press(Duration::from_millis(150)), "native");
+    assert!(started.elapsed() >= Duration::from_millis(150));
+    assert_eq!(app.test_id("cta").secondary_click(), "native");
+    let sent: Vec<String> = verbs(&state).into_iter().filter(|v| v != "get_platform").collect();
+    assert_eq!(sent, ["press_native", "release_native", "context_click"]);
+}
+
+/// `load_url` boots the app again at the URL and outlasts the per-call I/O
+/// timeout (the reload takes longer than an action's reply), then puts that
+/// timeout back.
+#[test]
+fn load_url_waits_for_the_reboot_past_the_io_timeout() {
+    let (addr, state) = spawn_mock_app_with(Mock { loads_web: true, count: 4, ..Mock::default() });
+    let mut app = App::connect(addr).unwrap();
+    app.set_io_timeout(Duration::from_millis(200));
+    state.lock().unwrap().delay_next = Some(Duration::from_millis(500));
+    assert_eq!(app.load_url("/projects/7"), "http://127.0.0.1:3000/projects/7");
+    assert_eq!(state.lock().unwrap().count, 0, "a fresh app");
+    app.assert_path("/projects/7");
+    let sent = verbs(&state);
+    let at = sent.iter().position(|v| v == "load_url").unwrap();
+    assert_eq!(sent[at + 1], "ping", "waits for the new instance to answer: {sent:?}");
+
+    // The short I/O timeout is back for every other call.
+    state.lock().unwrap().delay_next = Some(Duration::from_millis(500));
+    assert!(app.try_call("ping", json!({})).is_err(), "the 200 ms I/O timeout is restored");
+}
+
+/// A platform that can't be relaunched says so; `try_load_url` returns it.
+#[test]
+fn load_url_on_a_platform_that_cannot_relaunch_reports_it() {
+    let mut app = app();
+    let err = app.try_load_url("/x").unwrap_err().to_string();
+    assert!(err.contains("unsupported on ios"), "{err}");
+}
+
+/// Cookies round-trip: set (HttpOnly included), read back, cleared by name
+/// and all at once. `url` is only for setting and is not sent when unset.
+#[test]
+fn cookies_are_set_read_and_cleared() {
+    let (addr, state) = spawn_mock_app_with(Mock::default());
+    let mut app = App::connect(addr).unwrap();
+    app.set_cookie(Cookie::new("device", "k1").http_only());
+    app.set_cookie(Cookie { same_site: Some("Lax".into()), ..Cookie::new("theme", "dark") });
+    let sent = state.lock().unwrap().requests.iter().find(|(c, _)| c == "set_cookie").unwrap().1.clone();
+    assert_eq!(sent, json!({ "name": "device", "value": "k1", "http_only": true }));
+
+    let cookies = app.cookies();
+    let names: Vec<&str> = cookies.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["device", "theme"]);
+    assert_eq!(cookies[0].http_only, Some(true));
+    assert_eq!(cookies[1].same_site.as_deref(), Some("Lax"));
+    assert_eq!(cookies[1].domain.as_deref(), Some("127.0.0.1"));
+
+    app.clear_cookie("device");
+    assert_eq!(app.cookies().len(), 1);
+    app.clear_cookies();
+    assert!(app.cookies().is_empty());
+}
+
+/// `style()` reads `get_style` into a typed `Style`; `assert_style` waits
+/// for a style that lands late (a to-do struck through after its toggle).
+#[test]
+fn style_reads_and_waits_for_the_resolved_style() {
+    let mut app = app();
+    let s = app.test_id("todo").style();
+    assert_eq!(s.source, "framework");
+    assert_eq!(s.text_decoration, Some(robot_test::TextDecoration::None));
+    assert!(s.is_bold());
+    assert_eq!(s.color, Some([1.0, 0.0, 0.0, 1.0]));
+    app.test_id("todo").assert_style(|s| s.is_line_through());
+    let msg = panic_message(|| {
+        app.set_timeout(Duration::from_millis(200));
+        app.test_id("todo").assert_style(|s| s.is_underline());
+    });
+    assert!(msg.contains("assert_style") && msg.contains("LineThrough"), "{msg}");
+}
+
+/// A text field reports its keyboard kind.
+#[test]
+fn keyboard_reports_the_fields_keyboard_kind() {
+    let mut app = app();
+    assert_eq!(app.test_id("email").keyboard().as_deref(), Some("email"));
+    app.test_id("email").assert_keyboard("email");
+    let msg = panic_message(|| {
+        app.set_timeout(Duration::from_millis(200));
+        app.test_id("email").assert_keyboard("phone");
+    });
+    assert!(msg.contains("keyboard is Some(\"email\")"), "{msg}");
 }

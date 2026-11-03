@@ -145,6 +145,10 @@ pub struct Shared {
     /// actually be showing. Same reason as `released`: additive, so no
     /// existing assertion moves.
     pub live_text: RefCell<BTreeMap<Node, String>>,
+    /// The CURRENT run list of a styled-text node, following
+    /// `create_styled_text` / `update_styled_text` — what the node would
+    /// be rendering, styles included (the op log carries texts only).
+    pub live_runs: RefCell<BTreeMap<Node, Vec<TextRun>>>,
 
     // --- captured platform callbacks, in creation order ---
     /// `attach_states` setters (flip interaction states like a native
@@ -250,6 +254,19 @@ pub struct Shared {
     /// `IntrospectionOps::content_clip` per node (absent = `None`, can't
     /// tell) — set by a test as a style's `overflow` would.
     pub clips: RefCell<BTreeMap<Node, caps::ContentClip>>,
+    /// `IntrospectionOps::scroll_port(node, Node)` per node (absent =
+    /// `None`, not a scroller). `set_scroll_offset` moves the entry and
+    /// logs `set_scroll_offset <x> <y> n<node>` to the handle log.
+    pub scroll_ports: RefCell<BTreeMap<Node, caps::ScrollPort>>,
+    /// `IntrospectionOps::scroll_port(_, Host)` — the page's scroller
+    /// (absent = `None`, the window doesn't scroll). `set_scroll_offset`
+    /// logs `set_scroll_offset <x> <y> host`.
+    pub host_scroll: RefCell<Option<caps::ScrollPort>>,
+    /// `IntrospectionOps::keyboard_kind` per node (absent = `None`).
+    pub keyboard_kinds: RefCell<BTreeMap<Node, runtime_shared::primitives::text_input::KeyboardKind>>,
+    /// `IntrospectionOps::computed_style` per node (absent = `None`, the
+    /// robot reports the framework's rules).
+    pub computed_styles: RefCell<BTreeMap<Node, caps::ResolvedStyle>>,
     /// `IntrospectionOps::is_focused` per node (absent = `None`, can't
     /// tell) — set by a test as the toolkit's focus would move.
     pub toolkit_focus: RefCell<BTreeMap<Node, bool>>,
@@ -292,6 +309,7 @@ impl Default for Shared {
             parent: RefCell::new(BTreeMap::new()),
             released: RefCell::new(HashSet::new()),
             live_text: RefCell::new(BTreeMap::new()),
+            live_runs: RefCell::new(BTreeMap::new()),
             state_setters: RefCell::new(Vec::new()),
             press_handlers: RefCell::new(Vec::new()),
             button_presses: RefCell::new(Vec::new()),
@@ -331,6 +349,10 @@ impl Default for Shared {
             frames: RefCell::new(BTreeMap::new()),
             hidden: RefCell::new(std::collections::BTreeSet::new()),
             clips: RefCell::new(BTreeMap::new()),
+            scroll_ports: RefCell::new(BTreeMap::new()),
+            host_scroll: RefCell::new(None),
+            keyboard_kinds: RefCell::new(BTreeMap::new()),
+            computed_styles: RefCell::new(BTreeMap::new()),
             toolkit_focus: RefCell::new(BTreeMap::new()),
             covered: RefCell::new(std::collections::BTreeSet::new()),
             native_input: RefCell::new(None),
@@ -842,13 +864,16 @@ impl caps::TextOps for HostMock {
 
     fn create_styled_text(&mut self, runs: &[TextRun], _a11y: &AccessibilityProps) -> Node {
         let texts: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();
-        self.mint(format!("styled_text {texts:?}"))
+        let node = self.mint(format!("styled_text {texts:?}"));
+        self.s.live_runs.borrow_mut().insert(node, runs.to_vec());
+        node
     }
 
     fn update_styled_text(&mut self, node: &Node, runs: &[TextRun]) {
         let texts: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();
         self.s
             .rec("update_styled_text", format!("update_styled_text n{node} {texts:?}"));
+        self.s.live_runs.borrow_mut().insert(*node, runs.to_vec());
     }
 
     fn update_text(&mut self, node: &Node, content: &str) {
@@ -1629,6 +1654,50 @@ impl caps::IntrospectionOps for HostMock {
 
     fn content_clip(&self, node: &Node) -> Option<caps::ContentClip> {
         self.s.clips.borrow().get(node).copied()
+    }
+
+    fn scroll_port(&self, node: &Node, target: caps::ScrollTarget) -> Option<caps::ScrollPort> {
+        match target {
+            caps::ScrollTarget::Node => self.s.scroll_ports.borrow().get(node).copied(),
+            caps::ScrollTarget::Host => *self.s.host_scroll.borrow(),
+        }
+    }
+
+    fn set_scroll_offset(
+        &self,
+        node: &Node,
+        target: caps::ScrollTarget,
+        x: f32,
+        y: f32,
+    ) -> Option<caps::NativeInjection> {
+        self.scroll_port(node, target)?;
+        let (s, node) = (self.s.clone(), *node);
+        Some(Box::new(move || {
+            let (x, y, at) = match target {
+                caps::ScrollTarget::Node => {
+                    let mut ports = s.scroll_ports.borrow_mut();
+                    let p = ports.get_mut(&node).ok_or("not a scroller")?;
+                    (p.x, p.y) = (x.clamp(0.0, p.max_x), y.clamp(0.0, p.max_y));
+                    (p.x, p.y, format!("n{node}"))
+                }
+                caps::ScrollTarget::Host => {
+                    let mut host = s.host_scroll.borrow_mut();
+                    let p = host.as_mut().ok_or("no host scroller")?;
+                    (p.x, p.y) = (x.clamp(0.0, p.max_x), y.clamp(0.0, p.max_y));
+                    (p.x, p.y, "host".to_string())
+                }
+            };
+            HANDLE_LOG.with(|l| l.borrow_mut().push(format!("set_scroll_offset {x} {y} {at}")));
+            Ok(())
+        }))
+    }
+
+    fn keyboard_kind(&self, node: &Node) -> Option<runtime_shared::primitives::text_input::KeyboardKind> {
+        self.s.keyboard_kinds.borrow().get(node).copied()
+    }
+
+    fn computed_style(&self, node: &Node) -> Option<caps::ResolvedStyle> {
+        self.s.computed_styles.borrow().get(node).cloned()
     }
 
     fn is_focused(&self, node: &Node) -> Option<bool> {

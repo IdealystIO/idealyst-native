@@ -142,10 +142,11 @@
 //! - **The band** spans the table in `RowTone::Group` (the header band's
 //!   neutral tint), with the title (or any `header` content), a collapse
 //!   toggle when the group is collapsible, and trailing `actions`. In a
-//!   `scroll_x` table the title stays pinned to the scroller's left edge
-//!   (past the frozen columns the table added) and the actions to its
-//!   right edge while the columns scroll beneath them. `density` sets the
-//!   band's own padding.
+//!   `scroll_x` table the band's content is held to the scroller's
+//!   visible width and pinned to its left edge (past the frozen columns
+//!   the table added) while the columns scroll beneath it: the title at
+//!   the left, the actions at the viewport's right edge, and a long title
+//!   truncates before the actions. `density` sets the band's own padding.
 //! - **Collapsing**: `collapsed = Some(signal)` adds the toggle (announced
 //!   as expanded / collapsed). A collapsed group's rows keep their place
 //!   but take no height — nothing is rebuilt — and a column model keeps
@@ -1011,12 +1012,18 @@ pub fn Table(props: TableProps) -> Element {
         .collect();
     let reorder = props.on_reorder.map(|cb| Reorder::new(&body, cb));
     let selection = props.selection;
-    // A band's content pins past the frozen columns the table adds, and
-    // takes the leading edge inset when its cell is the row's first.
+    // A band's content pins past the frozen columns the table adds, takes
+    // the leading edge inset when its cell is the row's first, and in a
+    // `scroll_x` table is held to the scroller's visible width — the
+    // band's cell spans the whole table, wider than the screen, so its
+    // title would otherwise never truncate and run under its actions.
+    let band_viewport = (props.scroll_x && metas.iter().flatten().any(|m| m.band.is_some()))
+        .then(|| signal(None::<f32>));
     for meta in metas.iter().flatten() {
         if let Some(band) = &meta.band {
             let mut lead_of = band.lead.borrow_mut();
             lead_of.pin = lead_pin_width.clone();
+            lead_of.viewport = band_viewport;
             if lead.is_empty() {
                 lead_of.inset = side_inset(&props.inset_left, &props.inset_x);
             }
@@ -1360,6 +1367,10 @@ pub fn Table(props: TableProps) -> Element {
         head_corner,
     })
     .with_style(style);
+    let table = match band_viewport {
+        Some(viewport) => table.on_viewport_width(move |w| viewport.set(Some(w))),
+        None => table,
+    };
     match edges {
         Some(edges) => table.on_scroll_edges(move |e| edges.set(e)).into_element(),
         None => table.into_element(),

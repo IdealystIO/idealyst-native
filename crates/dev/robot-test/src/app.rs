@@ -37,6 +37,17 @@ use std::time::{Duration, Instant};
 /// How long actions and assertions wait by default.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long [`Locator::context_click`] holds a press on a touch platform:
+/// past UIKit's 0.5 s `minimumPressDuration`, Android's long-press timeout
+/// and the framework's `DEFAULT_LONG_PRESS_THRESHOLD_MS` (500 ms), with
+/// room for a busy UI thread. A good default for [`Locator::long_press`].
+pub const LONG_PRESS: Duration = Duration::from_millis(800);
+
+/// How long [`App::load_url`] waits, at least, for the app to boot again:
+/// a page reload fetches and starts the wasm bundle, a native relaunch
+/// cold-starts the app; both take longer than an action's reply.
+pub const LOAD_URL_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// How often a waiting action or assertion looks again.
 const POLL: Duration = Duration::from_millis(50);
 
@@ -215,11 +226,13 @@ impl App {
         Ok(Some(p))
     }
 
-    /// Whether [`Locator::click`] and [`Locator::tap_native`] first scroll
-    /// an element that is out of view into it, as Playwright does — on by
-    /// default. Off, a tap on an element outside the window or clipped by
-    /// its scroll view waits, then fails, as it would for a user who
-    /// doesn't scroll. One locator opts out with [`Locator::no_scroll`].
+    /// Whether [`Locator::click`], [`Locator::tap_native`] and the other
+    /// real-input actions (`long_press`, `context_click`, `press_native`,
+    /// `hover_native`, `drag_native`) first scroll an element that is out
+    /// of view into it, as Playwright does — on by default. Off, one on an
+    /// element outside the window or clipped by its scroll view waits, then
+    /// fails, as it would for a user who doesn't scroll. One locator opts
+    /// out with [`Locator::no_scroll`].
     pub fn set_auto_scroll(&mut self, on: bool) {
         self.auto_scroll = on;
     }
@@ -266,11 +279,58 @@ impl App {
 
     /// Open `url` as if the OS handed it to the running app (a deep link
     /// or universal link): observers see it, an interceptor may claim it,
-    /// otherwise the navigators move to it. Returns whether a navigator
-    /// took it (or already showed it). Follow with
-    /// [`assert_path`](Self::assert_path).
+    /// otherwise the navigators move to it — and waits until the WHOLE
+    /// path shows, every nested navigator included, as a cold load of the
+    /// same URL would open it. A navigator that mounts late (inside a
+    /// `#[component(lazy)]` screen, or once a screen's data arrives) is
+    /// moved as soon as it is up.
+    ///
+    /// Returns `false` when no navigator took the link (an interceptor
+    /// claimed it, or no screen matches); `true` once the full path shows.
+    /// Panics, naming the path it did reach, when the link was taken but
+    /// stops short within the timeout (a segment no screen matches). See
+    /// [`try_open_link`](Self::try_open_link) for the outcome without the
+    /// panic.
     pub fn open_link(&mut self, url: &str) -> bool {
-        self.call("open_link", json!({ "url": url })) == true
+        let outcome = self.try_open_link(url);
+        if outcome.routed && !outcome.complete {
+            panic!(
+                "open_link({url:?}): reached {:?}, not the whole path, after {:?}",
+                outcome.reached, self.timeout
+            );
+        }
+        outcome.routed
+    }
+
+    /// [`open_link`](Self::open_link), returning how far the link got
+    /// instead of panicking. Still waits up to the timeout for the path
+    /// to complete. Sending the link is an action, so a busy app fails it
+    /// at once (it is never delivered twice); carrying it on to
+    /// navigators that mount later only routes again, which is safe to
+    /// repeat.
+    pub fn try_open_link(&mut self, url: &str) -> LinkOutcome {
+        let first = self.call("open_link", json!({ "url": url }));
+        let mut outcome = LinkOutcome::from_answer(&first)
+            .unwrap_or_else(|| panic!("open_link: unexpected shape {first}"));
+        if !outcome.routed || outcome.complete {
+            return outcome;
+        }
+        let deadline = Instant::now() + self.timeout;
+        while Instant::now() < deadline {
+            std::thread::sleep(POLL);
+            match self.query("open_link", json!({ "url": url, "resume": true })) {
+                Ok(v) => {
+                    outcome = LinkOutcome::from_answer(&v)
+                        .unwrap_or_else(|| panic!("open_link: unexpected shape {v}"));
+                    if outcome.complete {
+                        break;
+                    }
+                }
+                Err(Failure::Fatal(e)) => panic!("open_link({url:?}): {e}"),
+                Err(_) => {}
+            }
+        }
+        outcome
     }
 
     /// Assert the current navigator's active path is `path`, waiting for it.
@@ -282,6 +342,37 @@ impl App {
                 Ok(())
             } else {
                 Err(Failure::NotYet(format!("the active path is {:?}", nav.active_path)))
+            }
+        });
+    }
+
+    /// Assert the current navigator's screen has query parameter `key`
+    /// set to `value` (decoded), waiting for it — e.g. that a filter is
+    /// carried in the URL: `assert_query("asset_tag", "~7781")`. Screen
+    /// state lives in the query, beside the path-only
+    /// [`assert_path`](Self::assert_path).
+    pub fn assert_query(&mut self, key: &str, value: &str) {
+        let desc = format!("assert_query({key:?}, {value:?})");
+        self.wait(&desc, |app| {
+            let nav = Self::pick_navigator(app.try_navigators()?)?;
+            if nav.query.get(key).map(String::as_str) == Some(value) {
+                Ok(())
+            } else {
+                Err(Failure::NotYet(format!("the query is {:?}", nav.query)))
+            }
+        });
+    }
+
+    /// Assert the current navigator's `href` — active path plus encoded
+    /// query, the URL web's address bar shows — is `href`, waiting for it.
+    pub fn assert_href(&mut self, href: &str) {
+        let desc = format!("assert_href({href:?})");
+        self.wait(&desc, |app| {
+            let nav = Self::pick_navigator(app.try_navigators()?)?;
+            if nav.href.as_deref() == Some(href) {
+                Ok(())
+            } else {
+                Err(Failure::NotYet(format!("the href is {:?}", nav.href)))
             }
         });
     }
@@ -374,6 +465,74 @@ impl App {
     pub fn functions(&mut self) -> Vec<FunctionInfo> {
         serde_json::from_value(self.read("functions()", "list_functions", json!({})))
             .unwrap_or_else(|e| panic!("list_functions: unexpected shape: {e}"))
+    }
+
+    // --- booting at a URL, cookies ---
+
+    /// Boot the app again at `url`, as a user opening that address would,
+    /// and return once the new instance answers. Unlike
+    /// [`open_link`](Self::open_link), which routes the running app, this
+    /// starts it over: what the app reads at boot (the initial path, the
+    /// cookies the server sees) is what `url` gives it, and its state starts
+    /// fresh.
+    ///
+    /// On web the page navigates (`/x` resolves against the current page,
+    /// so the same dev server serves it); a URL that differs only in its
+    /// `#fragment` reloads. On Android the app is relaunched with the link
+    /// (an app path becomes `https://localhost/x`, whose route is `/x`).
+    /// iOS and desktop apps answer that they can't be relaunched by the
+    /// dev session. Waits up to the larger of the app's timeout and
+    /// [`LOAD_URL_TIMEOUT`]. Panics on failure; see
+    /// [`try_load_url`](Self::try_load_url).
+    pub fn load_url(&mut self, url: &str) -> String {
+        self.try_load_url(url).unwrap_or_else(|e| panic!("load_url({url:?}) failed: {e}"))
+    }
+
+    /// [`load_url`](Self::load_url), returning the error instead of
+    /// panicking. `Ok` is the address the app was loaded at.
+    pub fn try_load_url(&mut self, url: &str) -> anyhow::Result<String> {
+        let wait = self.timeout.max(LOAD_URL_TIMEOUT);
+        let io = self.client.io_timeout();
+        self.client.set_io_timeout(wait)?;
+        let answer = self.client.call("load_url", json!({ "url": url }));
+        self.client.set_io_timeout(io)?;
+        let loaded = answer?
+            .get("url")
+            .and_then(|u| u.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("load_url: the answer has no url"))?;
+        // The relay answered once the new instance said hello; its first
+        // frame may still be building, so wait for it to answer a query.
+        self.client.wait_ready(wait)?;
+        Ok(loaded)
+    }
+
+    /// Set a cookie in the web page's browser, HttpOnly ones included; it
+    /// applies from the next request, so set it before
+    /// [`load_url`](Self::load_url) for the server to see it at boot. A
+    /// cookie with neither `url` nor `domain` belongs to the page's origin.
+    /// Web only: a native app's HTTP stack keeps its own cookie store, which
+    /// the robot does not reach, and the call panics saying so.
+    pub fn set_cookie(&mut self, cookie: Cookie) {
+        let args = serde_json::to_value(&cookie).expect("a cookie serializes");
+        self.call("set_cookie", args);
+    }
+
+    /// The cookies the browser sends to the page's address, HttpOnly ones
+    /// included. Web only, as [`set_cookie`](Self::set_cookie).
+    pub fn cookies(&mut self) -> Vec<Cookie> {
+        let v = self.call("get_cookies", json!({}));
+        serde_json::from_value(v.clone()).unwrap_or_else(|e| panic!("get_cookies: unexpected shape {v}: {e}"))
+    }
+
+    /// Delete every cookie in the page's browser. Web only.
+    pub fn clear_cookies(&mut self) {
+        self.call("clear_cookies", json!({}));
+    }
+
+    /// Delete the page origin's cookie named `name`. Web only.
+    pub fn clear_cookie(&mut self, name: &str) {
+        self.call("clear_cookies", json!({ "name": name }));
     }
 
     // --- whole-app ---
@@ -753,6 +912,71 @@ pub struct ElementState {
     pub hovered: Option<bool>,
     /// Whether the element's `state pressed` style is on.
     pub pressed: Option<bool>,
+    /// A text field's soft-keyboard kind as the app asked for it
+    /// (`"default"`, `"email"`, `"phone"`, `"number"`, `"decimal"`,
+    /// `"url"`).
+    pub keyboard: Option<String>,
+    /// The kind the native widget holds (UIKit's `keyboardType`, Android's
+    /// `inputType`, the web's `inputmode`). `None` where the platform has
+    /// no soft keyboard.
+    pub native_keyboard: Option<String>,
+}
+
+/// An element's resolved style, as `get_style` reports it
+/// ([`Locator::style`]). `source` is `"native"` when the toolkit resolved
+/// it (the web's `getComputedStyle`) and `"framework"` when it is the rules
+/// the framework handed the backend (every native backend). Absent fields:
+/// the style doesn't set it.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct Style {
+    #[serde(skip)]
+    pub source: String,
+    /// Text color, sRGB `[r, g, b, a]` in `0..=1`.
+    pub color: Option<[f32; 4]>,
+    pub background: Option<[f32; 4]>,
+    pub opacity: Option<f32>,
+    pub font_size: Option<f32>,
+    /// CSS weight, `100..=900`.
+    pub font_weight: Option<u16>,
+    /// `"normal"` or `"italic"`.
+    pub font_style: Option<String>,
+    pub font_family: Option<String>,
+    pub text_decoration: Option<TextDecoration>,
+    /// `"left"`, `"center"`, `"right"` or `"justify"`.
+    pub text_align: Option<String>,
+    pub border_width: Option<f32>,
+    pub border_color: Option<[f32; 4]>,
+    pub corner_radius: Option<f32>,
+}
+
+impl Style {
+    /// Struck through.
+    pub fn is_line_through(&self) -> bool {
+        matches!(self.text_decoration, Some(TextDecoration::LineThrough | TextDecoration::UnderlineLineThrough))
+    }
+
+    /// Underlined.
+    pub fn is_underline(&self) -> bool {
+        matches!(self.text_decoration, Some(TextDecoration::Underline | TextDecoration::UnderlineLineThrough))
+    }
+
+    /// Bold or heavier (weight ≥ 600).
+    pub fn is_bold(&self) -> bool {
+        self.font_weight.is_some_and(|w| w >= 600)
+    }
+}
+
+/// [`Style::text_decoration`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+pub enum TextDecoration {
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "underline")]
+    Underline,
+    #[serde(rename = "line-through")]
+    LineThrough,
+    #[serde(rename = "underline line-through")]
+    UnderlineLineThrough,
 }
 
 /// A scroll view's content offset, logical px.
@@ -953,19 +1177,24 @@ impl<'a> Locator<'a> {
         self.tap(false)
     }
 
-    /// Move a real mouse over the element (no button held). Panics on a
-    /// platform with no hovering pointer.
-    pub fn hover_native(self) {
-        self.act("hover_native", json!({}));
+    /// Move a real mouse over the element (no button held), once it is
+    /// visible and scrolled into view as [`click`](Self::click) does.
+    /// Panics on a platform with no hovering pointer.
+    pub fn hover_native(mut self) {
+        self.pointer("hover_native", "hover_native", json!({}), None);
     }
 
     /// Press the primary button down on the element with real input and
-    /// keep it down; [`release_native`](Self::release_native) lifts it.
-    pub fn press_native(self) {
-        self.act("press_native", json!({}));
+    /// keep it down, once it is visible, enabled and scrolled into view as
+    /// [`click`](Self::click) does; [`release_native`](Self::release_native)
+    /// lifts it.
+    pub fn press_native(mut self) {
+        self.pointer("press_native", "press_native", json!({}), None);
     }
 
-    /// Lift a [`press_native`](Self::press_native) at the element.
+    /// Lift a [`press_native`](Self::press_native) at the element. Scrolls
+    /// nothing: the press is lifted where it went down, and a scroll while
+    /// it is held would move the content under the finger.
     pub fn release_native(self) {
         self.act("release_native", json!({}));
     }
@@ -978,15 +1207,30 @@ impl<'a> Locator<'a> {
     }
 
     /// Drag with real platform input along `points` (relative to the
-    /// element's top-left, as [`drag`](Self::drag) takes them). Panics on a
-    /// backend that can't synthesize input.
-    pub fn drag_native(self, points: &[(f32, f32)]) {
+    /// element's top-left, as [`drag`](Self::drag) takes them), once the
+    /// element is visible, enabled and scrolled into view as
+    /// [`click`](Self::click) does. Panics on a backend that can't
+    /// synthesize input.
+    pub fn drag_native(mut self, points: &[(f32, f32)]) {
         let pts: Vec<[f32; 2]> = points.iter().map(|&(x, y)| [x, y]).collect();
-        self.act("drag_native", json!({ "points": pts }));
+        self.pointer("drag_native", "drag_native", json!({ "points": pts }), None);
     }
 
     fn tap(mut self, fallback: bool) -> String {
-        let desc = format!("{}.{}", self.sel.desc, if fallback { "click" } else { "tap_native" });
+        let name = if fallback { "click" } else { "tap_native" };
+        self.pointer(name, "tap_native", json!({}), fallback.then_some("click")).0
+    }
+
+    /// Send the pointer verb `send` (a real-input verb: `tap_native`,
+    /// `press_native`, `hover_native`, `drag_native`, `context_click`) with
+    /// `args` at the element, as a user would: once it is visible and
+    /// enabled, scrolled into view first unless told not to
+    /// ([`no_scroll`](Self::no_scroll), [`App::set_auto_scroll`]). A backend
+    /// that can't synthesize the input answers "unsupported": with a
+    /// `fallback` verb that runs instead, without one it fails. Returns the
+    /// mechanism the app reports and the element's id.
+    fn pointer(&mut self, name: &str, send: &str, args: Value, fallback: Option<&str>) -> (String, u64) {
+        let desc = format!("{}.{name}", self.sel.desc);
         let deadline = Instant::now() + self.app.timeout;
         loop {
             let attempt = self.resolve().and_then(|el| {
@@ -1002,28 +1246,32 @@ impl<'a> Locator<'a> {
                 if scroll && el["in_viewport"] == false {
                     self.reveal(id)?;
                 }
-                let mut tapped = self.send_action("tap_native", json!({ "element_id": id }));
+                let mut args = args.clone();
+                if let Value::Object(map) = &mut args {
+                    map.insert("element_id".into(), json!(id));
+                }
+                let mut sent = self.send_action(send, args.clone());
                 // In the window but clipped by its scroll view (the point
                 // lands on whatever is beside it) or past the window edge:
-                // scroll, and tap again if that moved anything.
-                if let Err(Failure::NotYet(e)) = &tapped {
+                // scroll, and send again if that moved anything.
+                if let Err(Failure::NotYet(e)) = &sent {
                     if scroll && (e.contains("outside the window") || e.contains("covers the point")) && self.reveal(id)? {
-                        tapped = self.send_action("tap_native", json!({ "element_id": id }));
+                        sent = self.send_action(send, args);
                     }
                 }
-                match tapped {
-                    Ok(v) => Ok(v["mechanism"].as_str().unwrap_or("native").to_string()),
-                    Err(Failure::NotYet(e)) if e.contains("unsupported") => {
-                        if !fallback {
-                            return Err(Failure::Fatal(e));
+                match sent {
+                    Ok(v) => Ok((v["mechanism"].as_str().unwrap_or("native").to_string(), id)),
+                    Err(Failure::NotYet(e)) if e.contains("unsupported") => match fallback {
+                        Some(verb) => {
+                            self.send_action(verb, json!({ "element_id": id })).map(|_| ("robot".to_string(), id))
                         }
-                        self.send_action("click", json!({ "element_id": id })).map(|_| "robot".to_string())
-                    }
+                        None => Err(Failure::Fatal(e)),
+                    },
                     Err(e) => Err(e),
                 }
             });
             match attempt {
-                Ok(how) => return how,
+                Ok(done) => return done,
                 Err(Failure::Fatal(e)) => panic!("{desc}: {e}"),
                 Err(e) if Instant::now() >= deadline => {
                     panic!("{desc} — still failing after {:?}: {}", self.app.timeout, e.message())
@@ -1033,8 +1281,55 @@ impl<'a> Locator<'a> {
         }
     }
 
-    /// Tap where the element is now: [`click`](Self::click) and
-    /// [`tap_native`](Self::tap_native) won't scroll it into view first,
+    /// Long-press the element: a real press at its center held for `hold`,
+    /// then lifted — what a touch platform's long-press recognizers (the
+    /// framework's `long_press`, the dnd SDK's hold pickup, Android's own
+    /// long click) fire on. The press goes in as [`click`](Self::click)'s
+    /// does (visible, enabled, scrolled into view); real time passes while
+    /// it is held. Returns the mechanism: `"native"` (platform input) or
+    /// `"hit_test"` (iOS: the backend's hit test confirmed the point and the
+    /// press went into the element's touch handlers, held the same way).
+    /// [`LONG_PRESS`] clears every platform's long-press threshold.
+    pub fn long_press(mut self, hold: Duration) -> String {
+        let (how, id) = self.pointer("long_press", "press_native", json!({}), None);
+        std::thread::sleep(hold);
+        // Sent once, never retried: a release the app did not answer may
+        // still land, and a second one would lift a press nobody made.
+        if let Err(e) = self.app.client.call("release_native", json!({ "element_id": id })) {
+            panic!("{}.long_press: lifting the press failed: {e}", self.sel.desc);
+        }
+        how
+    }
+
+    /// Open the element's context menu as a user of the platform does: a
+    /// secondary (right) click on desktop and web — the `context_click`
+    /// verb, which reaches the app's touch handlers as a
+    /// `PointerButton::Secondary` press — and a [`long_press`](Self::long_press)
+    /// of [`LONG_PRESS`] on iOS and Android, whose context gesture is a
+    /// hold. Returns the mechanism the app reports.
+    pub fn context_click(mut self) -> String {
+        let platform = self.app.try_platform().unwrap_or_else(|e| panic!("context_click: {e}"));
+        if platform.is_some_and(|p| p.is_mobile()) {
+            return self.long_press(LONG_PRESS);
+        }
+        self.pointer("context_click", "context_click", json!({}), None).0
+    }
+
+    /// A secondary (right) click on the element on every platform — the
+    /// `context_click` verb, with no long-press substitute on a phone (there
+    /// it goes through the backend's hit test as a secondary press, as an
+    /// iPad with a mouse delivers one). For a test of the secondary-button
+    /// path itself; [`context_click`](Self::context_click) is what a user
+    /// does.
+    pub fn secondary_click(mut self) -> String {
+        self.pointer("secondary_click", "context_click", json!({}), None).0
+    }
+
+    /// Act where the element is now: [`click`](Self::click),
+    /// [`tap_native`](Self::tap_native) and the other real-input actions
+    /// ([`long_press`](Self::long_press), [`context_click`](Self::context_click),
+    /// [`press_native`](Self::press_native), [`hover_native`](Self::hover_native),
+    /// [`drag_native`](Self::drag_native)) won't scroll it into view first,
     /// so one out of view waits, then fails. For a test of what a user who
     /// doesn't scroll can reach. See [`App::set_auto_scroll`].
     pub fn no_scroll(mut self) -> Self {
@@ -1238,6 +1533,69 @@ impl<'a> Locator<'a> {
         });
     }
 
+    /// A text field's soft-keyboard kind (`"email"`, …): the one the native
+    /// widget holds where the platform has a soft keyboard, else the one
+    /// the app asked for. Waits for the element.
+    pub fn keyboard(self) -> Option<String> {
+        let st = self.state();
+        st.native_keyboard.or(st.keyboard)
+    }
+
+    /// Assert a text field's soft-keyboard kind (`assert_keyboard("email")`)
+    /// — both the kind the app asked for and, where the platform has a soft
+    /// keyboard, the one the native widget holds.
+    pub fn assert_keyboard(self, expected: &str) {
+        let what = format!("assert_keyboard({expected:?})");
+        self.expect(&what, |el| {
+            let st = state_of(el);
+            let ok = st.keyboard.as_deref() == Some(expected)
+                && st.native_keyboard.as_deref().is_none_or(|n| n == expected);
+            ok.then_some(()).ok_or(format!("keyboard is {:?}, native {:?}", st.keyboard, st.native_keyboard))
+        });
+    }
+
+    /// The element's resolved style (the `get_style` verb), once it exists.
+    pub fn style(mut self) -> Style {
+        let desc = format!("{}.style()", self.sel.desc);
+        let deadline = Instant::now() + self.app.timeout;
+        loop {
+            match self.read_style() {
+                Ok(s) => return s,
+                Err(Failure::Fatal(e)) => panic!("{desc}: {e}"),
+                Err(e) if Instant::now() >= deadline => {
+                    panic!("{desc} — still failing after {:?}: {}", self.app.timeout, e.message())
+                }
+                Err(_) => std::thread::sleep(POLL),
+            }
+        }
+    }
+
+    /// Assert on the element's resolved style until `check` holds or the
+    /// timeout passes: `assert_style(|s| s.is_line_through())`.
+    pub fn assert_style(mut self, check: impl Fn(&Style) -> bool) {
+        let desc = format!("{}.assert_style(…)", self.sel.desc);
+        let deadline = Instant::now() + self.app.timeout;
+        loop {
+            let last = match self.read_style() {
+                Ok(s) if check(&s) => return,
+                Ok(s) => format!("the style is {s:?}"),
+                Err(Failure::Fatal(e)) => panic!("{desc}: {e}"),
+                Err(e) => e.message().to_string(),
+            };
+            if Instant::now() >= deadline {
+                panic!("{desc} — still failing after {:?}: {last}", self.app.timeout);
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+
+    fn read_style(&mut self) -> Result<Style, Failure> {
+        let el = self.resolve()?;
+        let id = Self::id_of(&el)?;
+        let out = self.send_action("get_style", json!({ "element_id": id }))?;
+        style_of(&out).map_err(Failure::Fatal)
+    }
+
     /// Assert the control refuses input.
     pub fn assert_disabled(self) {
         self.expect("assert_disabled()", |el| {
@@ -1294,6 +1652,14 @@ impl<'a> Locator<'a> {
 }
 
 /// The `state` an element JSON carries (`{}` when it has none).
+/// A `get_style` answer as a [`Style`].
+fn style_of(out: &Value) -> Result<Style, String> {
+    let mut style: Style = serde_json::from_value(out.get("style").cloned().unwrap_or(json!({})))
+        .map_err(|e| format!("get_style answered {out}: {e}"))?;
+    style.source = out.get("source").and_then(|s| s.as_str()).unwrap_or("").to_string();
+    Ok(style)
+}
+
 fn state_of(el: &Value) -> ElementState {
     el.get("state")
         .cloned()
@@ -1323,6 +1689,14 @@ pub struct NavigatorInfo {
     pub active_route: Option<String>,
     #[serde(default)]
     pub active_path: Option<String>,
+    /// The active screen's query parameters, decoded (a repeated key
+    /// reports its first value). Empty from an app too old to report it.
+    #[serde(default)]
+    pub query: std::collections::BTreeMap<String, String>,
+    /// `active_path` plus the encoded query (`/assets?tag=~7781`). `None`
+    /// from an app too old to report it.
+    #[serde(default)]
+    pub href: Option<String>,
     #[serde(default)]
     pub depth: usize,
     #[serde(default)]
@@ -1331,6 +1705,75 @@ pub struct NavigatorInfo {
     pub is_current: bool,
     #[serde(default)]
     pub controllable: bool,
+}
+
+/// A browser cookie: what [`App::set_cookie`] sets and [`App::cookies`]
+/// returns. Unset fields take the browser's defaults when setting
+/// (`url`/`domain`: the page's origin; a session cookie without
+/// `expires`); `url` is only for setting and never comes back.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Cookie {
+    pub name: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Hidden from page scripts (`document.cookie`); still sent to the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secure: Option<bool>,
+    /// `Strict`, `Lax` or `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub same_site: Option<String>,
+    /// Seconds since the Unix epoch; a session cookie has none (the
+    /// browser reports `-1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<f64>,
+}
+
+impl Cookie {
+    /// A cookie for the page's origin.
+    pub fn new(name: &str, value: &str) -> Self {
+        Self { name: name.to_string(), value: value.to_string(), ..Self::default() }
+    }
+
+    /// The same cookie, hidden from page scripts.
+    pub fn http_only(mut self) -> Self {
+        self.http_only = Some(true);
+        self
+    }
+}
+
+/// How far [`App::try_open_link`] got.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkOutcome {
+    /// Whether a navigator took the link — `false` when an interceptor
+    /// claimed it or no screen matches.
+    pub routed: bool,
+    /// The deepest path the shown navigators reached.
+    pub reached: String,
+    /// Whether that is the link's whole path (and query, if it had one).
+    pub complete: bool,
+}
+
+impl LinkOutcome {
+    /// The `open_link` answer: `{reached, complete, routed}`, or the bare
+    /// `true`/`false` of an app from before it reported progress (taken as
+    /// complete when routed — such an app can't say more).
+    fn from_answer(v: &Value) -> Option<Self> {
+        if let Some(routed) = v.as_bool() {
+            return Some(Self { routed, reached: String::new(), complete: routed });
+        }
+        Some(Self {
+            routed: v["routed"].as_bool()?,
+            reached: v["reached"].as_str()?.to_string(),
+            complete: v["complete"].as_bool()?,
+        })
+    }
 }
 
 /// One robot function, as `list_functions` reports it.

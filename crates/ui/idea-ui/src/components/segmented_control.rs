@@ -522,16 +522,20 @@ fn render_adornment(
         Adornment::Icon(data) => {
             vec![ui! { Icon(data = data.clone(), size = Reactive::Dynamic(Rc::new(px)), color = Reactive::Dynamic(Rc::new(glyph_color))) }]
         }
-        Adornment::Button(data, on_press) => {
+        Adornment::Button { icon: data, label, on_press } => {
             let glyph = ui! { Icon(data = data.clone(), size = Reactive::Dynamic(Rc::new(px)), color = Reactive::Dynamic(Rc::new(glyph_color))) };
             let on_press = on_press.clone();
             // An icon-sized pressable inside the segment's: its recognizer
             // consumes the tap, so pressing it does not also select the
             // segment — the same "button in a clickable row" contract as
             // `TableRow`.
-            vec![pressable(vec![glyph], move || on_press())
-                .with_style(SegmentedControlStyles::adornment().overridden(styles.adornment.as_ref()))
-                .into_element()]
+            let button = pressable(vec![glyph], move || on_press())
+                .with_style(SegmentedControlStyles::adornment().overridden(styles.adornment.as_ref()));
+            let button = match label {
+                Some(name) => button.a11y_label(name.clone()),
+                None => button,
+            };
+            vec![button.into_element()]
         }
         Adornment::Group(items) => {
             items.iter().flat_map(|a| render_adornment(a, selected, size.clone(), styles)).collect()

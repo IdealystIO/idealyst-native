@@ -230,6 +230,106 @@ pub trait IntrospectionOps: Host {
     fn resize_window(&self, node: &Self::Node, width: f32, height: f32) -> Option<NativeInjection> {
         None
     }
+
+    /// The scroll position and range of a scroller the toolkit scrolls —
+    /// `node` itself ([`ScrollTarget::Node`]: a `scroll_view`, a list's own
+    /// scroller, a web element whose CSS `overflow` scrolls), or the
+    /// scroller OUTSIDE the app's tree that holds `node`
+    /// ([`ScrollTarget::Host`]: the web page itself — the document, or an
+    /// element above the mount point). The robot's `scroll_into_view`
+    /// walks every registered ancestor for the first and the root for the
+    /// second, so an element is reached through scrollers no `scroll_view`
+    /// declared. `None` = not a scroller, or this backend can't tell (a
+    /// native window does not scroll, so `Host` is `None` off the web).
+    #[allow(unused_variables)]
+    fn scroll_port(&self, node: &Self::Node, target: ScrollTarget) -> Option<ScrollPort> {
+        None
+    }
+
+    /// Move the scroller [`scroll_port`](Self::scroll_port) reports to the
+    /// offset `(x, y)` (logical px, clamped by the toolkit). Returned as an
+    /// injection, like [`native_pointer`](Self::native_pointer): a scroll
+    /// fires the scroller's own notifications (`on_scroll`, AppKit's
+    /// `reflectScrolledClipView:`), whose effects borrow the backend.
+    /// `None` = this backend can't move it.
+    #[allow(unused_variables)]
+    fn set_scroll_offset(&self, node: &Self::Node, target: ScrollTarget, x: f32, y: f32) -> Option<NativeInjection> {
+        None
+    }
+
+    /// The soft-keyboard kind the toolkit holds for text field `node`, read
+    /// back from the native widget (the web's `inputmode`, UIKit's
+    /// `keyboardType`, Android's `inputType`) — the robot's
+    /// `native_keyboard`, beside the kind the author asked for. `None` =
+    /// the platform has no soft keyboard, or the read failed.
+    #[allow(unused_variables)]
+    fn keyboard_kind(&self, node: &Self::Node) -> Option<runtime_shared::primitives::text_input::KeyboardKind> {
+        None
+    }
+
+    /// `node`'s visual style as the toolkit resolved it — the browser's
+    /// `getComputedStyle`, where CSS (state pseudo-classes, `@media`,
+    /// inheritance, preminted classes) decides what the framework never
+    /// resolves itself. `None` = the robot reports the rules the framework
+    /// resolved and handed the backend, which on a backend that receives
+    /// fully resolved rules (every native one) IS the applied style.
+    #[allow(unused_variables)]
+    fn computed_style(&self, node: &Self::Node) -> Option<ResolvedStyle> {
+        None
+    }
+}
+
+/// Which scroller [`IntrospectionOps::scroll_port`] means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollTarget {
+    /// The node itself.
+    Node,
+    /// The scroller outside the app's tree holding the node: the web page.
+    Host,
+}
+
+/// A scroller's position and range ([`IntrospectionOps::scroll_port`]),
+/// logical px.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollPort {
+    /// The current offset.
+    pub x: f32,
+    pub y: f32,
+    /// The largest offset on each axis; `0` on an axis that does not
+    /// scroll (its content fits, or the scroller doesn't scroll that way).
+    pub max_x: f32,
+    pub max_y: f32,
+    /// The part of the window the scroller shows its content in, in
+    /// [`IntrospectionOps::absolute_frame`]'s space — its box less borders
+    /// and scroll bars. `None` = the robot uses the node's own box.
+    pub port: Option<ViewportRect>,
+}
+
+/// A node's resolved visual style — what the robot's `get_style` reports
+/// ([`IntrospectionOps::computed_style`]). Absent fields: the style doesn't
+/// set it (framework rules), or the toolkit has no value for it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ResolvedStyle {
+    /// Text color, sRGB `[r, g, b, a]` in `0..=1`.
+    pub color: Option<[f32; 4]>,
+    /// Background color, sRGB `[r, g, b, a]` in `0..=1`.
+    pub background: Option<[f32; 4]>,
+    pub opacity: Option<f32>,
+    /// Logical px.
+    pub font_size: Option<f32>,
+    /// CSS weight, `100..=900`.
+    pub font_weight: Option<u16>,
+    pub italic: Option<bool>,
+    pub font_family: Option<String>,
+    pub underline: Option<bool>,
+    pub line_through: Option<bool>,
+    /// `"left"`, `"center"`, `"right"` or `"justify"`.
+    pub text_align: Option<String>,
+    /// Logical px (the top edge's, when the edges differ).
+    pub border_width: Option<f32>,
+    pub border_color: Option<[f32; 4]>,
+    /// Logical px (the top-left corner's).
+    pub corner_radius: Option<f32>,
 }
 
 /// How a node clips its descendants ([`IntrospectionOps::content_clip`]),
@@ -249,7 +349,8 @@ pub enum ContentClip {
 
 /// One step of a [`IntrospectionOps::native_pointer`] gesture: the primary
 /// button (or one finger) going down, moving while down, or lifting — or a
-/// mouse moving with no button held ([`PointerStepPhase::Hover`]) — at
+/// mouse moving with no button held ([`PointerStepPhase::Hover`]), or a
+/// secondary-button click ([`PointerStepPhase::SecondaryClick`]) — at
 /// `(x, y)` logical px in the window.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PointerStep {
@@ -268,6 +369,14 @@ pub enum PointerStepPhase {
     /// hover (`on_hover`, the `state hovered` style). Touch backends have
     /// no hovering pointer and answer `None` for a gesture containing it.
     Hover,
+    /// The secondary (right) mouse button pressed and released at the
+    /// point: a context click, delivered as the platform delivers a user's
+    /// (`rightMouseDown:`/`rightMouseUp:`, `WM_RBUTTONDOWN`/`UP`, a
+    /// `button: 2` pointer sequence and `contextmenu`). It reaches touch
+    /// handlers as a `PointerButton::Secondary` `Began`. Touch backends
+    /// have no secondary button and answer `None` for a gesture
+    /// containing it; their context gesture is a long press.
+    SecondaryClick,
 }
 
 /// A prepared [`IntrospectionOps::native_pointer`] injection; `Err` says

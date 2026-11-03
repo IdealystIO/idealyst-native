@@ -195,6 +195,25 @@ pub struct LinuxNode {
     pub(crate) widget: gtk4::Widget,
 }
 
+/// A pressable's author a11y on its GTK accessible — the same contract as
+/// web (`aria-label` / `title`), UIKit and AppKit: `label` is the
+/// accessible name Orca announces (a glyph-only button's `"⌫"` read as
+/// "Backspace"), `hint` the description. Unset fields are left alone so
+/// GTK's own fallback (the name computed from child text) still applies.
+///
+/// Not `hidden`: GTK owns `GTK_ACCESSIBLE_STATE_HIDDEN` and rewrites it
+/// from widget visibility on every map/unmap, so a value written here
+/// would not survive the first show.
+pub(crate) fn apply_pressable_a11y(widget: &gtk4::Widget, a11y: &AccessibilityProps) {
+    use gtk4::accessible::Property;
+    if let Some(label) = a11y.label.as_deref() {
+        widget.update_property(&[Property::Label(label)]);
+    }
+    if let Some(hint) = a11y.hint.as_deref() {
+        widget.update_property(&[Property::Description(hint)]);
+    }
+}
+
 
 impl std::fmt::Debug for LinuxNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2460,7 +2479,7 @@ impl LinuxBackend {
     fn create_pressable(
         &mut self,
         on_click: Rc<dyn Fn()>,
-        _a11y: &AccessibilityProps,
+        a11y: &AccessibilityProps,
     ) -> LinuxNode {
         // A styled container (IdealystView) with a click gesture — the
         // framework's Pressable is "a View that fires a callback".
@@ -2469,6 +2488,7 @@ impl LinuxBackend {
         let fire = on_click.clone();
         gesture.connect_released(move |_, _, _, _| (fire)());
         widget.add_controller(gesture);
+        apply_pressable_a11y(widget.upcast_ref(), a11y);
         self.wrap(widget.upcast::<gtk4::Widget>(), NodeKind::Pressable)
     }
 
@@ -5890,6 +5910,57 @@ mod layout_tests {
         // area AND in descendants that declare nothing, while an `Auto`
         // descendant keeps its own — the click-through overlay shape.
         crate::view::input_transparency_tests::regression_click_through_none_root_keeps_auto_children_pickable();
+
+        // --- 23. A pressable carries its author a11y name on its GTK
+        // accessible. Regression: `create_pressable` dropped its
+        // `AccessibilityProps`, so a glyph-only `Button(label = "⌫",
+        // accessibility_label = "Backspace")` (or a labelled IconButton) had
+        // no name for Orca, unlike web/UIKit/AppKit/Android.
+        regression_pressable_carries_accessible_name();
+    }
+
+    /// `gtk_test_accessible_check_property` returns NULL when the property
+    /// holds `expected`, else a message. (Variadic C — no safe binding.)
+    fn check_string_property(
+        widget: &gtk4::Widget,
+        property: gtk4::AccessibleProperty,
+        expected: &str,
+    ) -> Result<(), String> {
+        use gtk4::glib::translate::{IntoGlib, ToGlibPtr};
+        let want = std::ffi::CString::new(expected).unwrap();
+        let acc: &gtk4::Accessible = widget.upcast_ref();
+        let msg = unsafe {
+            gtk4::ffi::gtk_test_accessible_check_property(acc.to_glib_none().0, property.into_glib(), want.as_ptr())
+        };
+        if msg.is_null() {
+            Ok(())
+        } else {
+            let text = unsafe { std::ffi::CStr::from_ptr(msg) }.to_string_lossy().into_owned();
+            unsafe { gtk4::glib::ffi::g_free(msg.cast()) };
+            Err(text)
+        }
+    }
+
+    fn regression_pressable_carries_accessible_name() {
+        use gtk4::AccessibleProperty;
+        use runtime_shared::accessibility::AccessibilityProps;
+        let mut backend = LinuxBackend::new(gtk4::Window::new());
+        let a11y = AccessibilityProps {
+            label: Some("Backspace".into()),
+            hint: Some("Deletes one digit".into()),
+            ..Default::default()
+        };
+        let named = backend.create_pressable(std::rc::Rc::new(|| {}), &a11y);
+        check_string_property(&named.widget, AccessibleProperty::Label, "Backspace")
+            .expect("the pressable's accessible label is the author's name");
+        check_string_property(&named.widget, AccessibleProperty::Description, "Deletes one digit")
+            .expect("the hint is the accessible description");
+
+        let plain = backend.create_pressable(std::rc::Rc::new(|| {}), &AccessibilityProps::default());
+        assert!(
+            !gtk4::test_accessible_has_property(&plain.widget, AccessibleProperty::Label),
+            "no author name → no label set, so GTK's computed name still applies"
+        );
     }
 }
 

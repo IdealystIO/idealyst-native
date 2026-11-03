@@ -148,7 +148,7 @@
 //! scene-`Registry` mount handlers — those must call [`schedule_flush`]
 //! after author callbacks themselves.
 
-mod field_keys;
+pub(crate) mod field_keys;
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
@@ -969,8 +969,8 @@ impl caps::TextInputOps for MacosBackend {
         secure: bool,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // The field's key-downs reach `on_key_down` through the shared
-        // field-key monitor (`field_keys`), registered on the node below.
+        // The field's key-downs reach `on_key_down` through the backend's
+        // key monitor (`field_keys`), registered on the node below.
         let node = MacosBackend::create_text_input_impl(
             self,
             initial_value,
@@ -1533,6 +1533,20 @@ impl caps::IntrospectionOps for MacosBackend {
 
     fn content_clip(&self, node: &Self::Node) -> Option<caps::ContentClip> {
         Some(crate::imp::handles::content_clip(node))
+    }
+
+    fn scroll_port(&self, node: &Self::Node, target: caps::ScrollTarget) -> Option<caps::ScrollPort> {
+        crate::imp::handles::scroll_port(node, target)
+    }
+
+    fn set_scroll_offset(
+        &self,
+        node: &Self::Node,
+        target: caps::ScrollTarget,
+        x: f32,
+        y: f32,
+    ) -> Option<caps::NativeInjection> {
+        crate::imp::handles::set_scroll_offset(node, target, x, y)
     }
 
     /// The window's first responder is the field (or the field editor

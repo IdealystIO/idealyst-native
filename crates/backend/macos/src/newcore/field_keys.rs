@@ -2,53 +2,49 @@
 //! overlay — the two key behaviors web and Windows give and AppKit has no
 //! per-control hook for.
 //!
-//! One `NSEvent` local monitor for key-downs, installed the first time a
-//! field registers a handler or a portal registers a dismisser. For each
-//! key-down, in the DOM's order:
+//! Both run from the backend's one key monitor (`imp::keyboard`), which is
+//! installed the first time a field registers a handler or a portal
+//! registers a dismisser. For each key-down, in the DOM's order:
 //!
-//! 1. **Field `on_key_down`.** The event window's first responder is a
-//!    field editor (an `NSTextView` with `isFieldEditor`) whose delegate is
-//!    a registered `text_input`'s `NSTextField`, or a registered
-//!    `text_area`'s own `NSTextView` (or the scroll view hosting it). The
-//!    handler gets the key from the app-level source's own translation
-//!    (`imp::keyboard::translate`) and the editor's selection
+//! 1. **Field `on_key_down`** ([`field_prevents`]). The event window's first
+//!    responder is a field editor (an `NSTextView` with `isFieldEditor`)
+//!    whose delegate is a registered `text_input`'s `NSTextField`, or a
+//!    registered `text_area`'s own `NSTextView` (or the scroll view hosting
+//!    it). The handler gets the key from the app-level source's own
+//!    translation (`imp::keyboard::translate`) and the editor's selection
 //!    (`selectedRange`, UTF-16 like every platform's). `PreventDefault`
-//!    returns `nil`: the event is swallowed, so the field never types it.
-//! 2. **Escape → topmost `on_dismiss`.** A not-swallowed Escape calls the
-//!    `on_dismiss` of the most recently mounted portal that is shown in the
-//!    event's window, and is swallowed (the field editor would otherwise
-//!    run `cancelOperation:`, which pops up completions). Mirrors the
-//!    Windows host's `escape_dismiss`.
+//!    swallows the event, so the field never types it — the app-level
+//!    `on_key` listeners still hear it, as a `document` listener does on web.
+//! 2. **Escape → topmost `on_dismiss`** ([`escape_dismisses`]). An Escape the
+//!    field didn't prevent calls the `on_dismiss` of the most recently
+//!    mounted portal that is shown in the event's window, and is swallowed
+//!    (the field editor would otherwise run `cancelOperation:`, which pops
+//!    up completions). Mirrors the Windows host's `escape_dismiss`.
 //!
 //! Registrations hold the view weakly and are pruned when it dies; a
 //! portal's dismisser is also removed when the portal is released. Author
 //! handlers run with no registry borrow held (a handler may mount or
-//! release a portal, which re-enters the registry), and the monitor never
+//! release a portal, which re-enters the registry), and nothing here
 //! touches the backend.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use block2::RcBlock;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::AnyObject;
 use objc2::{class, msg_send};
 use objc2_app_kit::NSView;
 use objc2_foundation::NSObject;
-use runtime_shared::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
+use runtime_shared::primitives::key::{AppKeyEvent, KeyDownHandler, KeyEvent, KeyOutcome};
 
-use crate::imp::keyboard::{read_raw, translate, RawKind};
+use crate::imp::keyboard::ensure_key_monitor;
 use crate::imp::MacosNode;
-
-/// `NSEventMaskKeyDown`.
-const MASK_KEY_DOWN: usize = 1 << 10;
 
 #[derive(Default)]
 struct Registry {
     fields: Vec<(Weak<NSView>, KeyDownHandler)>,
     /// Mount order: the last shown one is the topmost.
     portals: Vec<(usize, Weak<NSView>, Rc<dyn Fn()>)>,
-    monitor: Option<Retained<AnyObject>>,
 }
 
 thread_local! {
@@ -60,7 +56,7 @@ thread_local! {
 pub(crate) fn register_field(node: &MacosNode, handler: KeyDownHandler) {
     let weak = Weak::from(node.as_view());
     REGISTRY.with(|r| r.borrow_mut().fields.push((weak, handler)));
-    ensure_monitor();
+    ensure_key_monitor();
 }
 
 /// Escape in the portal's window calls `dismiss` while the portal is the
@@ -68,7 +64,7 @@ pub(crate) fn register_field(node: &MacosNode, handler: KeyDownHandler) {
 pub(crate) fn register_portal(node: &MacosNode, dismiss: Rc<dyn Fn()>) {
     let weak = Weak::from(node.as_view());
     REGISTRY.with(|r| r.borrow_mut().portals.push((node.view_key(), weak, dismiss)));
-    ensure_monitor();
+    ensure_key_monitor();
 }
 
 /// The portal was released: its Escape dismissal goes with it.
@@ -77,67 +73,47 @@ pub(crate) fn unregister_portal(node: &MacosNode) {
     REGISTRY.with(|r| r.borrow_mut().portals.retain(|(k, _, _)| *k != key));
 }
 
-fn ensure_monitor() {
-    if REGISTRY.with(|r| r.borrow().monitor.is_some()) {
-        return;
+/// The window a key event is for: its own, else the key window. Null when
+/// there is neither.
+pub(crate) unsafe fn event_window(event: *mut NSObject) -> *mut AnyObject {
+    let window: *mut AnyObject = msg_send![event, window];
+    if !window.is_null() {
+        return window;
     }
-    let block = RcBlock::new(|event: *mut NSObject| -> *mut NSObject {
-        let swallow = backend_apple_core::crash::abort_on_panic("field key monitor", || unsafe { on_key_down(event) });
-        if swallow {
-            std::ptr::null_mut()
-        } else {
-            event
-        }
-    });
-    let monitor: *mut AnyObject = unsafe {
-        msg_send![class!(NSEvent), addLocalMonitorForEventsMatchingMask: MASK_KEY_DOWN, handler: &*block]
-    };
-    let monitor = unsafe { Retained::retain(monitor) };
-    REGISTRY.with(|r| r.borrow_mut().monitor = monitor);
+    let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+    msg_send![app, keyWindow]
 }
 
-/// The monitor body; `true` swallows the event.
-unsafe fn on_key_down(event: *mut NSObject) -> bool {
-    let Some(raw) = read_raw(event) else { return false };
-    if raw.kind != RawKind::KeyDown {
-        return false;
-    }
-    let Some(ev) = translate(&raw) else { return false };
-    let mut window: *mut AnyObject = msg_send![event, window];
-    if window.is_null() {
-        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
-        window = msg_send![app, keyWindow];
-    }
+/// Run the `on_key_down` of the field focused in `window` for the key-down
+/// `ev`; `true` when it prevented the key (the event must be swallowed).
+pub(crate) unsafe fn field_prevents(window: *mut AnyObject, ev: &AppKeyEvent) -> bool {
     if window.is_null() {
         return false;
     }
-
-    // 1. The focused field's own handler.
     let responder: *mut AnyObject = msg_send![window, firstResponder];
-    if let Some((handler, editor)) = field_handler(responder) {
-        let range: objc2_foundation::NSRange = msg_send![editor, selectedRange];
-        let key_event = KeyEvent {
-            key: ev.key.clone(),
-            shift: ev.shift,
-            ctrl: ev.ctrl,
-            alt: ev.alt,
-            meta: ev.meta,
-            selection_start: range.location,
-            selection_end: range.location + range.length,
-        };
-        if handler(&key_event) == KeyOutcome::PreventDefault {
-            return true;
-        }
-    }
+    let Some((handler, editor)) = field_handler(responder) else { return false };
+    let range: objc2_foundation::NSRange = msg_send![editor, selectedRange];
+    let key_event = KeyEvent {
+        key: ev.key.clone(),
+        shift: ev.shift,
+        ctrl: ev.ctrl,
+        alt: ev.alt,
+        meta: ev.meta,
+        selection_start: range.location,
+        selection_end: range.location + range.length,
+    };
+    handler(&key_event) == KeyOutcome::PreventDefault
+}
 
-    // 2. Escape closes the topmost overlay in this window.
-    if ev.key == "Escape" {
-        if let Some(dismiss) = topmost_dismiss(window) {
-            dismiss();
-            return true;
-        }
+/// For an Escape key-down, call the dismisser of the topmost overlay shown
+/// in `window`; `true` when one ran (the event must be swallowed).
+pub(crate) unsafe fn escape_dismisses(window: *mut AnyObject, ev: &AppKeyEvent) -> bool {
+    if window.is_null() || ev.key != "Escape" {
+        return false;
     }
-    false
+    let Some(dismiss) = topmost_dismiss(window) else { return false };
+    dismiss();
+    true
 }
 
 /// The registered handler for the field `responder` is editing, with the

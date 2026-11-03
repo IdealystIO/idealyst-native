@@ -104,9 +104,10 @@ pub(super) struct BandMeta {
     /// Whether the group moves as a whole in `Table(on_group_reorder = …)`.
     pub draggable: bool,
     /// The band content's left pin — the width of the frozen columns the
-    /// table adds before it — and, when the band's cell is the row's first,
-    /// the table's leading edge inset. The table sets both while it
-    /// builds; the band's style reads them when it resolves.
+    /// table adds before it — the scroller's visible width in a `scroll_x`
+    /// table, and, when the band's cell is the row's first, the table's
+    /// leading edge inset. The table sets them while it builds; the
+    /// band's style reads them when it resolves.
     pub lead: Rc<std::cell::RefCell<BandLead>>,
 }
 
@@ -115,11 +116,16 @@ pub(super) struct BandMeta {
 pub(super) struct BandLead {
     pub pin: Reactive<f32>,
     pub inset: Reactive<super::TableInset>,
+    /// A `scroll_x` table's scroller viewport width, once measured
+    /// (`table::TableBound::on_viewport_width`). `None` outside a
+    /// `scroll_x` table, where the band's cell is already the visible
+    /// width.
+    pub viewport: Option<runtime_core::Signal<Option<f32>>>,
 }
 
 impl Default for BandLead {
     fn default() -> Self {
-        BandLead { pin: Reactive::Static(0.0), inset: Reactive::Static(super::TableInset::None) }
+        BandLead { pin: Reactive::Static(0.0), inset: Reactive::Static(super::TableInset::None), viewport: None }
     }
 }
 

@@ -408,12 +408,21 @@ fn calendar_body_swaps_grid_per_zoom_and_rebuilds_per_month() {
         let d: Signal<Option<CivilDate>> = signal(CivilDate::new(2026, 8, 3));
         ui! { Calendar(value = d, on_change = Rc::new(move |x: CivilDate| d.set(Some(x))) as Rc<dyn Fn(CivilDate)>) }
     });
-    // Header pressables in tree order: prev, title, next.
+    // Header pressables in registration order: prev, title, next. The
+    // chevrons rebuild on a zoom change (their accessible names follow
+    // the zoom), registering fresh handlers after these, so `NEXT` is only
+    // the live chevron until the first title press.
     const TITLE: usize = 1;
     const NEXT: usize = 2;
     let labels = page_labels(&h);
     assert_eq!(&labels[..8], ["August 2026", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]);
     assert_eq!(labels.len(), 1 + 7 + 42, "title + weekday row + six weeks: {labels:?}");
+
+    // Month navigation rebuilds the day grid for the new month.
+    press(&h, NEXT);
+    let sept = page_labels(&h);
+    assert_eq!(sept[0], "September 2026");
+    assert_ne!(sept[8..], labels[8..], "the day cells follow the visible month");
 
     // Title cycles Days → Months → Years → Days.
     press(&h, TITLE);
@@ -427,13 +436,7 @@ fn calendar_body_swaps_grid_per_zoom_and_rebuilds_per_month() {
     assert_eq!(years[1..], (2016..=2027).map(|y| y.to_string()).collect::<Vec<_>>()[..]);
     press(&h, TITLE);
     let back = page_labels(&h);
-    assert_eq!(back, labels, "back at Days, same month");
-
-    // Month navigation rebuilds the day grid for the new month.
-    press(&h, NEXT);
-    let sept = page_labels(&h);
-    assert_eq!(sept[0], "September 2026");
-    assert_ne!(sept[8..], labels[8..], "the day cells follow the visible month");
+    assert_eq!(back, sept, "back at Days, same month");
 }
 
 /// `clearable` puts a ✕ left of the chevron that exists only while there

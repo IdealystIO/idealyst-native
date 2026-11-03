@@ -10741,6 +10741,7 @@ dependencies = [
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
+ "web-glue",
 ]
 
 [[package]]

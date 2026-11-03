@@ -122,6 +122,9 @@ pub mod recipes;
 #[doc(hidden)]
 pub mod test_support;
 pub mod theme;
+/// The phone tap-target floor (`MIN_TOUCH_TARGET_PX`, `touch_target`)
+/// interactive controls apply at the `Xs`/`Sm` breakpoints.
+pub mod touch;
 mod theme_runtime;
 
 // `theme`, `intent`, `theme_runtime`, and the extensible-system trait
@@ -303,8 +306,8 @@ pub use components::toast::{
     ToastEntry, ToastHost, ToastHostProps, ToastPlacement,
 };
 pub use components::typography::{
-    typography_kind, Typography, TypographyAlign, TypographyKind, TypographyProps, TypographyRestyle,
-    TypographySlotStyles, TypographyStyles, TypographyTone, TypographyWeight,
+    typography_kind, TextSpan, Typography, TypographyAlign, TypographyKind, TypographyProps, TypographyRestyle,
+    TypographySlotStyles, TypographyStyles, TypographyTone, TypographyWeight, MONO_FONT_STACK,
 };
 
 // Historical note: an earlier `Btn` alias for `Button` existed because the

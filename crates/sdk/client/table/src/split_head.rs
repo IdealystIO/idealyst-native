@@ -642,6 +642,7 @@ pub(super) fn web(
     header_slot: Option<Element>,
     footer_slot: Option<Element>,
     watch: Option<Rc<EdgeWatch>>,
+    viewport_probe: Option<Element>,
     head_corner: Option<StyleProp>,
 ) -> Element {
     let sync = HeadSync::new(columns);
@@ -712,7 +713,9 @@ pub(super) fn web(
 
     let on_scroll = sync.clone();
     let body_scroller = edge_watched_scroller(
-        glue::scroll_view(vec![probe(&sync), client_probe(&sync), body_table])
+        glue::scroll_view(
+            [probe(&sync), client_probe(&sync)].into_iter().chain(viewport_probe).chain([body_table]).collect(),
+        )
             .bind(sync.body_ref())
             .with_style(sync.body_scroller_style()),
         scroller_axis(scroll_x, true),

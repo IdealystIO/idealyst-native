@@ -48,6 +48,13 @@
 //! `source` (a native app's, a runtime-server session's `client` /
 //! `replay`) is forwarded untouched.
 //!
+//! ## `load_url` and cookies
+//!
+//! `load_url`, `set_cookie`, `get_cookies` and `clear_cookies` are served
+//! by the relay too, never forwarded: they act around the app — boot a
+//! fresh instance at a URL, reach the browser's cookie jar — which the app
+//! cannot do to itself. See [`browser`].
+//!
 //! ## Several apps
 //!
 //! Every open connection is tracked ([`RelayHandle::apps`],
@@ -77,7 +84,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tungstenite::Message;
 
+pub mod browser;
 pub mod cdp;
+
+pub use browser::Relaunch;
 
 /// How long a TCP-side request waits for an app to be connected before failing.
 const APP_WAIT: Duration = Duration::from_secs(3);
@@ -168,6 +178,11 @@ pub struct RelayConfig {
     /// the same app interleaves its steps with the suite's — its
     /// `set_count(0)` lands between the suite's tap and its assertion.
     pub under_test: bool,
+    /// How `load_url` boots a native app at a URL: the dev session that
+    /// launched it relaunches it with the deep link ([`browser`]). `None`:
+    /// `load_url` on a native app reports it unsupported. A web app needs
+    /// none — its tab is navigated over CDP.
+    pub relaunch: Option<Relaunch>,
 }
 
 impl Default for RelayConfig {
@@ -183,6 +198,7 @@ impl Default for RelayConfig {
             on_apps: None,
             cdp_profiles_dir: None,
             under_test: false,
+            relaunch: None,
         }
     }
 }
@@ -226,6 +242,8 @@ struct Inner {
     nonces: Mutex<HashMap<u64, String>>,
     /// See [`RelayConfig::cdp_profiles_dir`].
     cdp_profiles_dir: Option<PathBuf>,
+    /// See [`RelayConfig::relaunch`].
+    relaunch: Option<Relaunch>,
 }
 
 impl Inner {
@@ -368,6 +386,7 @@ pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
         on_apps: config.on_apps.clone(),
         nonces: Mutex::new(HashMap::new()),
         cdp_profiles_dir: config.cdp_profiles_dir.clone(),
+        relaunch: config.relaunch.clone(),
     });
 
     // App side: accept WS dial-ins.
@@ -555,8 +574,16 @@ fn tcp_session(stream: TcpStream, inner: &Arc<Inner>) {
         }
 
         let wait = response_wait(&req);
-        let result =
-            if cmd == "screenshot" { screenshot(inner, &args, wait) } else { forward(inner, &cmd, &args, wait) };
+        let result = if cmd == "screenshot" {
+            screenshot(inner, &args, wait)
+        } else if browser::VERBS.contains(&cmd.as_str()) {
+            // A reboot outlasts an action's reply: a caller that names no
+            // wait (the MCP's `call_verb`) gets the boot's.
+            let wait = if cmd == "load_url" && req.get("timeout_ms").is_none() { browser::LOAD_URL_WAIT } else { wait };
+            browser::serve(inner, &cmd, &args, wait)
+        } else {
+            forward(inner, &cmd, &args, wait)
+        };
         match result {
             Ok(mut resp) => {
                 if let Value::Object(map) = &mut resp {
@@ -877,6 +904,7 @@ mod tests {
                 on_apps: None,
                 nonces: Mutex::new(HashMap::new()),
                 cdp_profiles_dir: None,
+                relaunch: None,
             }),
         };
         // Paths that don't exist: Drop's remove_file is a no-op.
