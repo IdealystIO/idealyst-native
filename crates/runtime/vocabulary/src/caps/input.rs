@@ -4,7 +4,8 @@ use std::rc::Rc;
 
 use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::{
-    FileDropHandler, HoverHandler, TouchHandler, TouchId, ViewHandle, WheelHandler,
+    FileDropHandler, FocusWithinHandler, HoverHandler, TouchHandler, TouchId, ViewHandle,
+    WheelHandler,
 };
 use runtime_scene::Host;
 
@@ -25,7 +26,8 @@ pub trait ViewOps: Host {
 }
 
 /// Raw input channels installed on already-created nodes: touch, wheel,
-/// hover, OS file drag-and-drop, and the focus-preservation mark.
+/// hover, keyboard focus-within, OS file drag-and-drop, and the
+/// focus-preservation mark.
 /// Third-party nodes get `on_touch`/`on_hover` too — which is why these
 /// live apart from [`ViewOps`].
 pub trait InputOps: Host {
@@ -51,6 +53,19 @@ pub trait InputOps: Host {
     /// Wire `handler` to pointer-enter/leave (`true` on enter).
     #[allow(unused_variables)]
     fn install_hover_handler(&mut self, node: &Self::Node, handler: HoverHandler) {
+        // default: no-op
+    }
+
+    /// Wire `handler` to keyboard focus entering (`true`) / leaving
+    /// (`false`) `node` or any descendant — focus-within, gated on
+    /// keyboard focus (`:focus-visible`), see
+    /// [`runtime_shared::focus`]. Called for a `view` / `pressable` with
+    /// an `on_focus`. A backend may report raw transitions (repeats,
+    /// a `false` while nothing was focused): the vocabulary dedups.
+    ///
+    /// Default: no-op, for a backend with no keyboard-focus model.
+    #[allow(unused_variables)]
+    fn install_focus_handler(&mut self, node: &Self::Node, handler: FocusWithinHandler) {
         // default: no-op
     }
 

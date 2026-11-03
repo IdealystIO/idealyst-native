@@ -7,12 +7,24 @@
 //! its key listener and the virtual keyboard's character map), the root's
 //! app-level key listener, and the activity's unhandled-key fallbacks.
 //! Delivered synchronously on the UI thread.
+//!
+//! ## Tab moves focus
+//!
+//! A real key reaches the decor view through `ViewRootImpl`'s input stage,
+//! which — when the view tree leaves a Tab down unhandled — runs its focus
+//! navigation: `findFocus()`, `focusSearch(FOCUS_FORWARD / FOCUS_BACKWARD)`
+//! and `requestFocus(direction)` on the result. Calling `dispatchKeyEvent`
+//! enters below that stage, so the injection runs the same navigation
+//! itself for an unhandled Tab, through the same public calls: the
+//! platform's `FocusFinder` picks the next view, a multi-line `EditText`
+//! still takes the Tab as text (it handles the key), and a field's
+//! `on_key_down` that claims it stops the move.
 
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::JNIEnv;
 use runtime_vocabulary::caps::{KeyPress, NativeInjection};
 
-use crate::native_key_policy::{plan, KeyPlan};
+use crate::native_key_policy::{plan, tab_focus_direction, KeyPlan};
 
 // KeyEvent.ACTION_* / InputDevice.SOURCE_KEYBOARD.
 const ACTION_DOWN: i32 = 0;
@@ -78,7 +90,12 @@ fn deliver(env: &mut JNIEnv, decor: &JObject, plan: &KeyPlan) -> Result<(), Stri
                         ],
                     )
                     .map_err(|e| fail(env, "new KeyEvent", e))?;
-                dispatch(env, decor, ev)?;
+                let handled = dispatch(env, decor, ev)?;
+                if action == ACTION_DOWN && !handled {
+                    if let Some(direction) = tab_focus_direction(*key_code, *meta_state) {
+                        navigate_focus(env, decor, direction)?;
+                    }
+                }
             }
         }
         KeyPlan::Characters(text) => {
@@ -99,8 +116,35 @@ fn deliver(env: &mut JNIEnv, decor: &JObject, plan: &KeyPlan) -> Result<(), Stri
     Ok(())
 }
 
-fn dispatch(env: &mut JNIEnv, decor: &JObject, ev: JObject) -> Result<(), String> {
+/// Whether the view tree handled the event.
+fn dispatch(env: &mut JNIEnv, decor: &JObject, ev: JObject) -> Result<bool, String> {
     let out = env.call_method(decor, "dispatchKeyEvent", "(Landroid/view/KeyEvent;)Z", &[JValue::Object(&ev)]);
     let _ = env.delete_local_ref(ev);
-    out.map(|_| ()).map_err(|e| fail(env, "dispatchKeyEvent", e))
+    out.and_then(|v| v.z()).map_err(|e| fail(env, "dispatchKeyEvent", e))
+}
+
+/// `ViewRootImpl.performFocusNavigation` for an unhandled Tab (module docs,
+/// "Tab moves focus"): from the focused view, the next one in `direction`
+/// takes focus; with nothing focused, the window's default focus.
+fn navigate_focus(env: &mut JNIEnv, decor: &JObject, direction: i32) -> Result<(), String> {
+    let focused = env
+        .call_method(decor, "findFocus", "()Landroid/view/View;", &[])
+        .and_then(|v| v.l())
+        .map_err(|e| fail(env, "findFocus", e))?;
+    if focused.is_null() {
+        env.call_method(decor, "restoreDefaultFocus", "()Z", &[]).map_err(|e| fail(env, "restoreDefaultFocus", e))?;
+        return Ok(());
+    }
+    let next = env
+        .call_method(&focused, "focusSearch", "(I)Landroid/view/View;", &[JValue::Int(direction)])
+        .and_then(|v| v.l())
+        .map_err(|e| fail(env, "focusSearch", e))?;
+    let same = !next.is_null() && env.is_same_object(&next, &focused).map_err(|e| fail(env, "IsSameObject", e))?;
+    if !next.is_null() && !same {
+        env.call_method(&next, "requestFocus", "(I)Z", &[JValue::Int(direction)])
+            .map_err(|e| fail(env, "requestFocus", e))?;
+    }
+    let _ = env.delete_local_ref(next);
+    let _ = env.delete_local_ref(focused);
+    Ok(())
 }

@@ -26,6 +26,7 @@ pub fn view() -> ViewBuilder {
             on_touch: None,
             on_wheel: None,
             on_hover: None,
+            on_focus: None,
             on_file_drop: None,
             preserves_focus: false,
             is_container: false,
@@ -91,6 +92,13 @@ impl ViewBuilder {
         self
     }
 
+    /// Keyboard focus entered (`true`) / left (`false`) this view or any
+    /// descendant. See [`runtime_shared::focus`].
+    pub fn on_focus(mut self, handler: impl Fn(bool) + 'static) -> Self {
+        self.prim.on_focus = Some(Rc::new(handler));
+        self
+    }
+
     pub fn on_file_drop(mut self, handler: FileDropHandler) -> Self {
         self.prim.on_file_drop = Some(handler);
         self
@@ -151,6 +159,7 @@ pub fn pressable(on_press: impl Fn() + 'static) -> PressableBuilder {
             test_id: None,
             on_press: Rc::new(on_press),
             on_hover: None,
+            on_focus: None,
             disabled: None,
             preserves_focus: false,
             style: None,
@@ -195,6 +204,13 @@ impl PressableBuilder {
     /// Pointer-enter/leave notifications (`true` on enter), as on a view.
     pub fn on_hover(mut self, handler: impl Fn(bool) + 'static) -> Self {
         self.prim.on_hover = Some(Rc::new(handler));
+        self
+    }
+
+    /// Keyboard focus entered (`true`) / left (`false`) this pressable
+    /// (or a descendant), as on a view. See [`runtime_shared::focus`].
+    pub fn on_focus(mut self, handler: impl Fn(bool) + 'static) -> Self {
+        self.prim.on_focus = Some(Rc::new(handler));
         self
     }
 

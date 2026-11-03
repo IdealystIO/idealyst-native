@@ -307,6 +307,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
             on_touch,
             on_wheel,
             on_hover,
+            on_focus,
             on_file_drop,
             children,
         } => {
@@ -319,6 +320,10 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     on_touch: on_touch.map(|id| Rc::new(handler(conn, id, TouchResponse::default)) as _),
                     on_wheel: on_wheel.map(|id| Rc::new(handler(conn, id, TouchResponse::default)) as _),
                     on_hover: on_hover.map(|id| {
+                        let h = handler::<bool, ()>(conn, id, || ());
+                        Rc::new(move |v: bool| h(&v)) as _
+                    }),
+                    on_focus: on_focus.map(|id| {
                         let h = handler::<bool, ()>(conn, id, || ());
                         Rc::new(move |v: bool| h(&v)) as _
                     }),
@@ -335,13 +340,17 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 build_all(conn, children)?,
             )
         }
-        Node::Pressable { common, on_press, on_hover, disabled, preserves_focus, children } => {
+        Node::Pressable { common, on_press, on_hover, on_focus, disabled, preserves_focus, children } => {
             let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(PressablePrim {
                     test_id,
                     on_press: fire(conn, on_press),
                     on_hover: on_hover.map(|id| {
+                        let h = handler::<bool, ()>(conn, id, || ());
+                        Rc::new(move |v: bool| h(&v)) as _
+                    }),
+                    on_focus: on_focus.map(|id| {
                         let h = handler::<bool, ()>(conn, id, || ());
                         Rc::new(move |v: bool| h(&v)) as _
                     }),

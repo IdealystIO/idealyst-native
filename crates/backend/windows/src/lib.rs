@@ -1466,7 +1466,13 @@ impl WindowsBackend {
                 // `state focused` (focus-visible) too.
                 let state = self.view_input.states.get(&e.node).cloned();
                 let on_blur = if on { None } else { e.on_blur.clone() };
-                if on_focus.is_none() && state.is_none() && on_blur.is_none() {
+                // `on_focus` of the field's enclosing views (focus-within).
+                // A text field is keyboard focus on any focus, as
+                // `:focus-visible` treats it. Moving between two fields of
+                // one wrapper reports KILLFOCUS `false` then SETFOCUS
+                // `true`; the vocabulary dedups to transitions.
+                let within = self.focus_within_chain(e.node);
+                if on_focus.is_none() && state.is_none() && on_blur.is_none() && within.is_empty() {
                     return None;
                 }
                 let hwnd = e.hwnd;
@@ -1475,6 +1481,9 @@ impl WindowsBackend {
                         s(runtime_shared::StateBits::FOCUSED, on);
                     }
                     if let Some(f) = &on_focus {
+                        f(on);
+                    }
+                    for f in &within {
                         f(on);
                     }
                     if let Some(f) = &on_blur {
@@ -1489,6 +1498,23 @@ impl WindowsBackend {
             }
             _ => None,
         }
+    }
+
+    /// The `on_focus` handlers of `node` and its ancestors (`children` read
+    /// in reverse), innermost first.
+    fn focus_within_chain(&self, node: u64) -> Vec<runtime_shared::FocusWithinHandler> {
+        let mut out = Vec::new();
+        if self.view_input.focus.is_empty() {
+            return out;
+        }
+        let mut cur = Some(node);
+        while let Some(id) = cur {
+            if let Some(h) = self.view_input.focus.get(&id) {
+                out.push(h.clone());
+            }
+            cur = self.children.iter().find(|(_, kids)| kids.contains(&id)).map(|(p, _)| *p);
+        }
+        out
     }
 
     /// Clone out the `on_change` fire closure for the trackbar whose
@@ -4903,6 +4929,28 @@ mod capability_tests {
         b.command_action(cid, EN_SETFOCUS).expect("set focus handled")();
         b.command_action(cid, EN_KILLFOCUS).expect("kill focus handled")();
         assert_eq!(seen.borrow().as_slice(), ["FOCUSED:true", "focus:true", "FOCUSED:false", "focus:false"]);
+    }
+
+    /// `on_focus` on a VIEW is focus-within: a text field's own focus
+    /// notifications reach the handlers of every enclosing view, and a
+    /// field outside the view reports nothing to it.
+    #[test]
+    fn view_on_focus_hears_its_fields_focus() {
+        let mut b = WindowsBackend::new(host());
+        use runtime_scene::Host;
+        use runtime_vocabulary::caps::ViewOps;
+        let mut wrap = ViewOps::create_view(&mut b, &AccessibilityProps::default());
+        let (a, a_cid) = input(&mut b, &Rc::default());
+        let (_outside, out_cid) = input(&mut b, &Rc::default());
+        Host::insert(&mut b, &mut wrap, a.clone());
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let s = seen.clone();
+        InputOps::install_focus_handler(&mut b, &wrap, Rc::new(move |on| s.borrow_mut().push(on)));
+        b.command_action(a_cid, EN_SETFOCUS).expect("field focus reaches the wrapper")();
+        b.command_action(a_cid, EN_KILLFOCUS).expect("field blur reaches the wrapper")();
+        assert_eq!(seen.borrow().as_slice(), [true, false]);
+        assert!(b.command_action(out_cid, EN_SETFOCUS).is_none(), "a field outside the view has nothing to report");
+        assert_eq!(seen.borrow().len(), 2);
     }
 
     /// `create_text_input` dropped the author's `on_blur`, so it never ran

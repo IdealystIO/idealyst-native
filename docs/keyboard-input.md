@@ -95,7 +95,12 @@ on-screen keyboard types into text fields and does not produce app-level
 key events. On both, a focused text field takes the keys for itself: while
 it has focus, app-level listeners get nothing (held keys are released when
 it takes focus, so nothing sticks), and app-level keys resume once focus
-returns to the app's root view.
+returns to the app's root view. On iOS that return is not automatic, except
+while an overlay with an `on_dismiss` is open: then, whenever nothing holds
+first responder (the overlay just opened, a field resigned), the backend
+gives it back to the key responder — or, with no app listener, to an
+invisible responder of its own — so a hardware Escape still closes the
+overlay.
 
 ## Writing a backend
 

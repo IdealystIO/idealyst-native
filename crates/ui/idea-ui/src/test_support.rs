@@ -12,7 +12,7 @@
 //!   icon `color`, text-input `secure`) — assertions compare values,
 //!   not reactive wrappers;
 //! - handler presence collapses to `bool` (`on_touch`, `on_hover`,
-//!   `ref_fill`) — tests only ever asserted `is_some()`;
+//!   `on_focus`, `ref_fill`) — tests only ever asserted `is_some()`;
 //! - styles normalize to [`TStyle`] (sheet application vs raw rules,
 //!   static vs closure), resolvable via [`TStyle::resolve`].
 //!
@@ -92,6 +92,7 @@ pub enum P {
         preserves_focus: bool,
         on_touch: bool,
         on_hover: bool,
+        on_focus: bool,
         ref_fill: bool,
         accessibility: AccessibilityProps,
         /// `Some` for a `keyboard_avoiding_view`.
@@ -277,6 +278,7 @@ mod imp {
                 preserves_focus: p.preserves_focus,
                 on_touch: p.on_touch.is_some(),
                 on_hover: p.on_hover.is_some(),
+                on_focus: p.on_focus.is_some(),
                 ref_fill: p.ref_fill.is_some(),
                 accessibility: p.a11y,
                 keyboard_avoid: p.keyboard_avoid,

@@ -14,7 +14,7 @@ use super::bind_value;
 /// Mount a `view`.
 ///
 /// Sequence: `create_view` → (`mark_container`) → children →
-/// attach_style → safe-area → touch/wheel/hover/file-drop →
+/// attach_style → safe-area → touch/wheel/hover/focus/file-drop →
 /// `mark_preserves_focus` → ref-fill.
 ///
 /// - safe-area applies at mount and re-applies whenever the platform
@@ -76,6 +76,7 @@ where
     if prim.on_touch.is_some()
         || prim.on_wheel.is_some()
         || prim.on_hover.is_some()
+        || prim.on_focus.is_some()
         || prim.on_file_drop.is_some()
     {
         let alive = crate::callback_guard::ScopeAlive::current();
@@ -98,6 +99,11 @@ where
                 .borrow_mut()
                 .install_hover_handler(&node, alive.wrap_hover(h));
         }
+        if let Some(h) = prim.on_focus {
+            backend
+                .borrow_mut()
+                .install_focus_handler(&node, focus_transitions(alive.wrap_focus(h)));
+        }
         if let Some(h) = prim.on_file_drop {
             backend
                 .borrow_mut()
@@ -112,6 +118,27 @@ where
         fill(handle);
     }
     node
+}
+
+/// Forward only CHANGES of keyboard-focus-within to `h`, starting from
+/// "not focused".
+///
+/// Backends report raw transitions and several produce repeats: focus
+/// moving between two descendants reports `false` then `true` on macOS
+/// (the old responder resigns before the new one becomes), a GTK / DOM
+/// focus-in on a mouse-focused descendant reports `false` while nothing
+/// was reported focused. Deduplicating here keeps every backend's report
+/// simple and gives authors the contract in `runtime_shared::focus`:
+/// each call is a real transition.
+pub(crate) fn focus_transitions(
+    h: runtime_shared::FocusWithinHandler,
+) -> runtime_shared::FocusWithinHandler {
+    let last = Cell::new(false);
+    Rc::new(move |focused: bool| {
+        if last.replace(focused) != focused {
+            h(focused);
+        }
+    })
 }
 
 /// Mount a `pressable`.
@@ -188,6 +215,11 @@ where
         // Guarded like a view's input handlers: the toolkit owns the
         // hover tracker's lifetime and can fire it after the scope dies.
         backend.borrow_mut().install_hover_handler(&node, alive.wrap_hover(h));
+    }
+    if let Some(h) = prim.on_focus {
+        backend
+            .borrow_mut()
+            .install_focus_handler(&node, focus_transitions(alive.wrap_focus(h)));
     }
     let state_setter = prim
         .style

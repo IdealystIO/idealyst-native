@@ -56,7 +56,12 @@ fn create_inner(
     // widget calls back into `Java_io_idealyst_runtime_RustTextWatcher_nativeChanged`
     // on every keystroke.
     with_env(|env| {
-        let class = env.find_class("android/widget/EditText").unwrap();
+        // `RustEditText`: an `EditText` that passes an unmodified Escape on
+        // to the enclosing modal and the app's key listeners (from API 37
+        // `TextView` takes it to blur the field — see the Kotlin class).
+        let class = env
+            .find_class("io/idealyst/runtime/RustEditText")
+            .expect("RustEditText class missing — bundle the kotlin runtime");
         let local = env
             .new_object(
                 &class,

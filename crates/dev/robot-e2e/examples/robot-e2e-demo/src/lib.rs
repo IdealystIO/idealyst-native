@@ -296,6 +296,34 @@ fn submit_field() -> Element {
     }
 }
 
+/// Two fields side by side in the focus order, nothing focusable between
+/// them: Tab from the first lands on the second, Shift+Tab back, on every
+/// platform's own traversal.
+fn tab_fields() -> Element {
+    ui! {
+        view() {
+            text_input(placeholder = "First".to_string(), test_id = "tab-first")
+            text_input(placeholder = "Second".to_string(), test_id = "tab-second")
+        }
+    }
+}
+
+/// A field outside a view with `on_focus`, then a field inside it: the
+/// view's keyboard focus-within is the watched `focus_within` signal, so a
+/// test can Tab into and out of the view and read what it heard.
+fn focus_within_fields() -> Element {
+    let within: Signal<bool> = signal(false);
+    runtime_vocabulary::robot::watch_signal("focus_within", within);
+    ui! {
+        view() {
+            text_input(placeholder = "Outside".to_string(), test_id = "focus-outer")
+            view(on_focus = move |focused: bool| within.set(focused)) {
+                text_input(placeholder = "Inside".to_string(), test_id = "focus-inner")
+            }
+        }
+    }
+}
+
 /// ~1s gives the first layout/paint time to settle before the suite runs.
 const INITIAL_RUN_DELAY_MS: i32 = 1000;
 
@@ -351,6 +379,10 @@ fn screen(count: Signal<i32>, show_secret: Signal<bool>, name: Signal<String>, n
             tab_strip(count)
             // — Submit on Enter —
             submit_field()
+            // — Tab order —
+            tab_fields()
+            // — Keyboard focus within a view —
+            focus_within_fields()
             // — Name + greeting —
             Typography(content = "Greeting".to_string(), kind = typography_kind::H2)
             text_input(
@@ -413,9 +445,13 @@ fn run_suite() {
                 expect(&page.get_by_test_id("greeting")).to_have_text("Hello, Ada")?;
                 Ok(())
             }),
-            test("the screen exposes four primitive buttons", |page: &Page| {
-                use runtime_vocabulary::robot::ElementKind;
-                expect(&page.get_by_role(ElementKind::Button)).to_have_count(4)?;
+            // By test_id, not by counting every Button on screen: the
+            // screen also carries the tab strip and other fixtures, whose
+            // buttons are not this suite's concern.
+            test("the screen exposes its four control buttons", |page: &Page| {
+                for id in ["inc", "dec", "toggle-secret", "run-suite"] {
+                    expect(&page.get_by_test_id(id)).to_have_count(1)?;
+                }
                 Ok(())
             }),
         ],

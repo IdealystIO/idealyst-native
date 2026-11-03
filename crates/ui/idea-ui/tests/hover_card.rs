@@ -1,6 +1,7 @@
 //! `HoverCard` mounted on the recording host: the pointer path (open and
-//! close delays, bridging trigger → card), the touch path (long-press,
-//! click-away), Escape, and the test ids.
+//! close delays, bridging trigger → card), the keyboard path (focus on the
+//! trigger opens at once, focus into the card keeps it open), the touch
+//! path (long-press, click-away), Escape, and the test ids.
 //!
 //! Timers run through host-mock's pumped scheduler, which queues every
 //! `after_ms` and fires the queue on `pump_timers()` with the delays
@@ -67,6 +68,30 @@ impl Mounted {
             .1
             .clone();
         handler(entering);
+        self.h.flush();
+    }
+
+    /// The trigger wrapper's `on_focus` — the first one installed (the
+    /// card is not mounted yet when the trigger is). Fired as the platform
+    /// does when keyboard focus lands on / leaves the button it wraps.
+    fn focus_trigger(&self, focused: bool) {
+        let handler = self.h.focus_within_handler(0).1;
+        handler(focused);
+        self.h.flush();
+    }
+
+    /// The open card's `on_focus` — the latest one installed.
+    fn focus_card(&self, focused: bool) {
+        let handler = self
+            .h
+            .shared
+            .focus_within_handlers
+            .borrow()
+            .last()
+            .expect("a focus handler")
+            .1
+            .clone();
+        handler(focused);
         self.h.flush();
     }
 
@@ -330,4 +355,76 @@ fn card_test_id_is_gone_after_close() {
     assert_eq!(all.len(), 1, "exactly one live card: {all:?}");
     m.escape();
     assert!(Robot::new().find_all(Query::test_id(CARD)).is_empty());
+}
+
+/// Keyboard focus on the trigger opens the card at once — no open delay,
+/// and no backdrop (the same no-catcher card a hover opens).
+#[test]
+fn keyboard_focus_on_the_trigger_opens_at_once() {
+    let m = Mounted::new();
+    m.focus_trigger(true);
+    assert!(m.card_open(), "focus opens without waiting:\n{}", m.screen());
+    assert_eq!(m.live("pressable"), 0, "no click-away catcher:\n{}", m.screen());
+}
+
+#[test]
+fn blur_closes_after_the_close_delay() {
+    let m = Mounted::new();
+    m.focus_trigger(true);
+    m.focus_trigger(false);
+    assert!(m.card_open(), "the close waits for the close delay");
+    m.elapse();
+    assert!(!m.card_open(), "focus left the trigger:\n{}", m.screen());
+}
+
+/// Tab from the trigger into a focusable inside the card: the trigger
+/// reports the loss first, then the card the gain. The card must survive
+/// the hand-off.
+#[test]
+fn focus_moving_into_the_card_keeps_it_open() {
+    let m = Mounted::new();
+    m.focus_trigger(true);
+    m.focus_trigger(false);
+    m.focus_card(true);
+    m.elapse();
+    assert!(m.card_open(), "focus reached the card inside the close delay");
+    m.focus_card(false);
+    m.elapse();
+    assert!(!m.card_open(), "focus left the card too:\n{}", m.screen());
+}
+
+/// The pointer still resting on the trigger keeps a focus-opened card up
+/// after a blur, and focus keeps a hover-opened card up after the pointer
+/// leaves: either reason is enough.
+#[test]
+fn hover_and_focus_each_hold_the_card_open() {
+    let m = Mounted::new();
+    m.hover_trigger(true);
+    m.focus_trigger(true);
+    m.focus_trigger(false);
+    m.elapse();
+    assert!(m.card_open(), "the pointer still rests on the trigger");
+    m.focus_trigger(true);
+    m.hover_trigger(false);
+    m.elapse();
+    assert!(m.card_open(), "focus still sits on the trigger");
+}
+
+/// Escape while the trigger keeps focus: the card stays closed — a later
+/// pointer leave must not re-decide "focused, so open" — and the next
+/// focus reopens it.
+#[test]
+fn escape_while_focused_stays_closed_until_focused_again() {
+    let m = Mounted::new();
+    m.hover_trigger(true);
+    m.focus_trigger(true);
+    m.escape();
+    assert!(!m.card_open());
+    m.hover_trigger(false);
+    m.elapse();
+    assert!(!m.card_open(), "a pointer leave after Escape reopens nothing");
+    // The platform reports the blur and the next focus.
+    m.focus_trigger(false);
+    m.focus_trigger(true);
+    assert!(m.card_open(), "focusing the trigger again reopens it");
 }

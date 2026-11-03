@@ -4,6 +4,8 @@ pub(crate) mod animated;
 pub(crate) mod app_state;
 pub mod callbacks;
 pub(crate) mod ffi_guard;
+pub(crate) mod focus_within;
+pub(crate) mod focus_traversal;
 pub(crate) mod graphics;
 pub(crate) mod handles;
 pub(crate) mod icon;
@@ -1180,6 +1182,9 @@ impl IosBackend {
         };
         self.callback_targets.push(dt_obj);
 
+        // The overlay responder's home: Escape with nothing focused
+        // (`keyboard`, "Escape closes the topmost overlay").
+        keyboard::set_key_focus_host(&view);
         self.host_root = Some(view);
     }
 
@@ -4280,6 +4285,12 @@ impl IosBackend {
         // dismissable portals (`imp::keyboard`, "Escape closes the
         // topmost overlay").
         use runtime_shared::primitives::portal::PortalTarget;
+
+        // A dismissable portal: make sure a responder of ours can take
+        // the Escape when nothing has focus.
+        if _on_dismiss.is_some() {
+            keyboard::claim_key_focus_soon();
+        }
 
         let (anchor_spec, container_rules) = match &target {
             PortalTarget::Viewport(placement) => {

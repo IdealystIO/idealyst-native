@@ -205,7 +205,7 @@ pub fn claim_dir(
 /// How a refusal names who started a session, from its registry entry's
 /// `launched_by`. Only `user` — recorded when stdin was a terminal — is
 /// called a person; a session nothing vouches for says so.
-fn started_by(launched_by: &str) -> String {
+pub(crate) fn started_by(launched_by: &str) -> String {
     match launched_by {
         sessions::LAUNCHED_BY_MCP => "an agent, through `idealyst mcp`".to_string(),
         sessions::LAUNCHED_BY_USER => "a person, at a terminal".to_string(),
@@ -221,14 +221,14 @@ fn started_by(launched_by: &str) -> String {
 /// Whether process `pid` exists. Off unix every entry counts as live,
 /// which only matters for an entry a crash left behind.
 #[cfg(unix)]
-fn pid_is_live(pid: u32) -> bool {
+pub(crate) fn pid_is_live(pid: u32) -> bool {
     // SAFETY: signal 0 checks for existence and delivers nothing.
     let rc = unsafe { libc::kill(pid as i32, 0) };
     rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 #[cfg(not(unix))]
-fn pid_is_live(_pid: u32) -> bool {
+pub(crate) fn pid_is_live(_pid: u32) -> bool {
     true
 }
 

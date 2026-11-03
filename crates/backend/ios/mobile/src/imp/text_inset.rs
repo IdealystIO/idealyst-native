@@ -246,6 +246,9 @@ declare_class!(
             let resigned: bool = unsafe { msg_send![super(self), resignFirstResponder] };
             if held && resigned {
                 self.fire_focus(false);
+                // Focus left for nowhere with an overlay open: keep a
+                // responder for its Escape (`keyboard::claim_key_focus`).
+                crate::imp::keyboard::claim_key_focus_soon();
             }
             resigned
         }
@@ -355,8 +358,9 @@ pub(crate) fn set_text_field_focus_handler(view: &UIView, handler: Rc<dyn Fn(boo
 
 declare_class!(
     /// The `text_area` view: a stock `UITextView` plus `didMoveToWindow` —
-    /// the attach hook of the attach-safe `focus()` (`pending_focus`) — and
-    /// the hardware-Escape key command, both as `IdealystTextField` has.
+    /// the attach hook of the attach-safe `focus()` (`pending_focus`) — the
+    /// hardware-Escape key command, and the overlay-responder reclaim on
+    /// resign, all as `IdealystTextField` has.
     pub(crate) struct IdealystTextView;
 
     unsafe impl ClassType for IdealystTextView {
@@ -374,6 +378,18 @@ declare_class!(
         fn did_move_to_window(&self) {
             let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
             crate::imp::pending_focus::view_moved_to_window(self);
+        }
+
+        /// Focus left for nowhere with an overlay open: keep a responder
+        /// for its Escape (`keyboard::claim_key_focus`).
+        #[method(resignFirstResponder)]
+        fn resign_first_responder(&self) -> bool {
+            let held: bool = unsafe { msg_send![self, isFirstResponder] };
+            let resigned: bool = unsafe { msg_send![super(self), resignFirstResponder] };
+            if held && resigned {
+                crate::imp::keyboard::claim_key_focus_soon();
+            }
+            resigned
         }
 
         #[method_id(keyCommands)]

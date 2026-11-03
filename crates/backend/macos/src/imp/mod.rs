@@ -3228,6 +3228,28 @@ impl MacosBackend {
         flipped.set_hover_handler(handler);
     }
 
+    pub(crate) fn install_focus_handler_impl(
+        &mut self,
+        node: &MacosNode,
+        handler: runtime_shared::FocusWithinHandler,
+    ) {
+        // Same FlippedView path as `install_hover_handler`: the handler sits
+        // on the view, and `view::report_focus_within` walks from whichever
+        // responder took / lost focus up through its ancestors to find it.
+        let MacosNode::View(view) = node else {
+            return;
+        };
+        let cls = objc2::class!(IdealystFlippedView);
+        let is_flipped: bool = unsafe { msg_send![&**view, isKindOfClass: cls] };
+        if !is_flipped {
+            return;
+        }
+        // SAFETY: dynamic class confirmed `IdealystFlippedView`; layout is
+        // `NSView` + our ivars, ABI-compatible here.
+        let flipped: &FlippedView = unsafe { &*(Retained::as_ptr(view) as *const FlippedView) };
+        flipped.set_focus_within_handler(handler);
+    }
+
     pub(crate) fn install_file_drop_handler_impl(
         &mut self,
         node: &MacosNode,

@@ -142,6 +142,13 @@ harness = false
 name = "app_keyboard"
 harness = false
 
+# Real-AppKit test of `on_focus` (`InputOps::install_focus_handler`): first-
+# responder transitions on pressables / text fields reach the handlers of the
+# view and its ancestors. Main-thread only, for the same reason as `focus_attach`.
+[[test]]
+name = "focus_within"
+harness = false
+
 # Real-AppKit test of the app-level pointer source (`src/imp/pointer.rs`):
 # the NSEvent mouse monitor, PreventDefault swallowing, the eaten-release
 # reconcile, pointer lock + focus-loss drop, cursor hiding and teardown.

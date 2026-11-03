@@ -19,7 +19,7 @@
 //! ## Batchable shape
 //!
 //! - Row is a `view` with no `safe_area`, no `preserves_focus`, no
-//!   `is_container`, no `ref_fill`, and style `None` or a static sheet
+//!   `on_focus`, no `is_container`, no `ref_fill`, and style `None` or a static sheet
 //!   application (`StyleProp::Sheet`) with NO state overlays.
 //! - Children are exclusively `text` with `Value::Const` content, no
 //!   style, no `ref_fill` — or nested batchable views.
@@ -336,8 +336,12 @@ where
         return None;
     };
     let mut prim = cell.take();
+    // `on_focus` takes the per-node path: its focus-within listener needs
+    // the row's real subtree in place (and its dedup state per node),
+    // which the deferred batched-row handler install below doesn't model.
     if prim.ref_fill.is_some()
         || prim.preserves_focus
+        || prim.on_focus.is_some()
         || prim.is_container
         || !prim.safe_area.is_empty()
     {

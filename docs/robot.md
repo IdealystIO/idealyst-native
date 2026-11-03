@@ -295,10 +295,10 @@ capital with a shortcut modifier means the letter (`"Meta+K"` reports
 | Backend | Mechanism | How |
 |---|---|---|
 | Web | `native` | `keydown` / `keypress` / `keyup` `KeyboardEvent`s on `document.activeElement` (or `<body>`), bubbling, so the field's `on_key_down`, `on_key` listeners and an overlay's Escape listener hear them. Script-dispatched events are untrusted and the browser performs no default action, so the backend performs the ones a test relies on when `keydown` isn't prevented: typing, Backspace/Delete, arrows/Home/End and Ctrl/⌘+A in a field (then its `input` event, so `on_change` runs), a newline for Enter in a `text_area`, Tab/Shift+Tab focus traversal, Enter/Space clicking a focused button or link |
-| macOS | `native` | `NSEvent` key events posted to the app (`postEvent:`), with `flagsChanged` for each modifier around them, after making the window key: the key window's first responder types or deletes, the app key monitor hears them |
+| macOS | `native` | `NSEvent` key events posted to the app (`postEvent:`), with `flagsChanged` for each modifier around them, after making the window key: the key window's first responder types or deletes, the app key monitor hears them. Shift+Tab carries the back-tab character (U+0019), as AppKit types it, so the field editor moves focus back |
 | Windows | `native` | `WM_KEYDOWN` / `WM_KEYUP` (`WM_SYS*` with Alt) posted to the focused child, the modifier bits set in the thread's keyboard state while they're delivered; `TranslateMessage` makes the `WM_CHAR` |
-| Android | `native` | `KeyEvent` down and up to the decor view's `dispatchKeyEvent`, the hardware-keyboard path; a character no key types goes as `ACTION_MULTIPLE` text |
-| iOS, Linux | `dispatch` | An app can't create key events (no public API on iOS; Linux needs XTest). The framework's key paths run instead: the focused field's `on_key_down`, the app's `on_key` listeners, then, unless either prevented it, the field's text edit (a typed character appended, Backspace removing the last one, Enter a newline in a `text_area`: the caret is taken to be at the end) and, for Escape, the topmost overlay's `on_dismiss` — then the release. A window-level press (no `element_id`) edits the `text_input` that reports focus. Tab doesn't move focus |
+| Android | `native` | `KeyEvent` down and up to the decor view's `dispatchKeyEvent`, the hardware-keyboard path; a character no key types goes as `ACTION_MULTIPLE` text. That call enters below `ViewRootImpl`'s input stage, so a Tab the view tree leaves unhandled gets that stage's focus navigation from the injection itself: `focusSearch(FOCUS_FORWARD / FOCUS_BACKWARD)` from the focused view, then `requestFocus` |
+| iOS, Linux | `dispatch` | An app can't create key events (no public API on iOS; Linux needs XTest). The framework's key paths run instead: the focused field's `on_key_down`, the app's `on_key` listeners, then, unless either prevented it, the field's text edit (a typed character appended, Backspace removing the last one, Enter a newline and Tab a tab character in a `text_area`: the caret is taken to be at the end), any other Tab or Shift+Tab moves focus through the platform's own traversal (`IntrospectionOps::move_focus`), and Escape closes the topmost overlay's `on_dismiss` — then the release. A window-level press (no `element_id`) edits the `text_input` that reports focus |
 
 A single-line field's Enter has no default anywhere: submitting is the
 field's `on_key_down` seeing `"Enter"`. An Escape nothing consumed closes
@@ -309,11 +309,17 @@ dismissable portals (`runtime_vocabulary::escape_dismiss`) — the same
 stack an iPad's hardware-keyboard Escape uses, since UIKit has no Escape
 handling for the window-level views a portal mounts as.
 
-Tab traversal is the one toolkit default `dispatch` lacks: focus order is
-the toolkit's (which controls take focus, in what visual order), and the
-framework has no cross-platform model of it to run instead. A `text_area`
-reports no focus, so a window-level press reaches one only when the press
-names it (`element_id`).
+Tab and Shift+Tab move focus in the toolkit's own order on every backend.
+On `dispatch` the backend runs it: Linux emits `move-focus` on the GTK
+window — the signal its Tab bindings emit — which walks the widget focus
+chain and, past the last focusable widget, leaves focus where it is (GTK4
+doesn't wrap); iOS moves first responder among the window's enabled text
+fields and editable text views in view-tree order, skipping hidden,
+transparent and interaction-disabled subtrees, wrapping past the last —
+the stops a real hardware-keyboard Tab moves between on iPhone, which
+UIKit's text fields do on their own. Pressables are Tab stops where the
+toolkit makes them ones (web always; macOS, Windows, Android, GTK per
+their keyboard-navigation settings); iOS moves Tab among text inputs only.
 
 ## Functions
 
@@ -501,6 +507,11 @@ prints `SKIP` and returns. The body sits in a module (`use super::*`),
 so it names the file's items through `crate::`, not `super::`. A test
 with no app to reach still prints `SKIP` and returns — bare `cargo test`
 without `idealyst dev` up stays green; `idealyst test` always has an app.
+The app an `idealyst test` run launched is that run's alone: its relay
+marks the registration `under_test`, a bare `cargo test` never discovers
+it (it skips, or finds your own `idealyst dev`), and the MCP's robot tools
+refuse it. A second driver would interleave its steps with the suite's —
+its `set_count(0)` landing between the suite's tap and its assertion.
 
 Per-test setup is a `Fixture` the test asks for by type
 (`fn t(app: &mut App, user: &SignedIn)`, by `&` or `&mut`): `setup(app)`
@@ -518,7 +529,8 @@ earlier run is ignored — and runs the `tests/robot.rs` suite against it
 (compiled before the app launches, then run directly). The dev session's
 output goes to a log file named on failure. `--windows` runs on a remote
 machine with `IDEALYST_WINDOWS_REMOTE` (docs/windows.md); `--linux` needs a
-Linux host. `--attach` drives an app already running.
+Linux host. `--attach` drives an app already running — never one another
+`idealyst test` run launched (its registration is `under_test`).
 
 The session gets its own port (`--port`, else a free one) on every
 platform, so a full-stack app's server — and the `IDEALYST_SERVER_URL` a
@@ -527,9 +539,27 @@ The session also runs as `idealyst dev --isolated test` (`--isolated
 <key>` / `--no-isolated` to change it): its build dirs, log, lock and
 `.idealyst/isolated/test/` relay files are its own, so it runs beside the
 developer's session of the project. The runner drives the registration the
-session it launched wrote (matched by the dev process's pid), never another
-session of the project. `--web` on a project without a server can't be
-isolated (it stages into the project's own `pkg/`) and runs unisolated.
+session it launched wrote, never another session of the project: only a
+registration under the dev process's pid (its relay's — web, macOS, iOS,
+Android) or a process it started (a Linux app's own bridge) is taken, and
+until it appears the runner keeps waiting rather than falling back to
+another new one. `--windows`, whose app (under Wine, or remote) registers
+under a pid that is no local process, takes a new registration no other
+live `idealyst dev` wrote. A launched session that exits before
+registering (a refusal, a failed build) ends the wait with the reason it
+printed. `--web`
+on a project without a server can't be isolated (it stages into the
+project's own `pkg/`) and runs unisolated.
+
+One session runs per key and project, so two runs with the default key
+can't both launch. Before building anything the runner looks up the
+session registry (`~/.idealyst/dev-sessions/`): if a live session already
+holds the run's key (another `idealyst test`, or an `idealyst dev
+--isolated test`), the run is refused with that session's pid, launcher
+and age. Runs in parallel take a key each — `--isolated <key>`, or
+`--isolated auto` for the first free one of `test`, `test-2`, … (a
+`--parity` run suffixes each key with the platform). An entry whose
+process is gone (a crashed run) holds nothing.
 
 One run can cover several configurations, each a full pass of the suite
 with its own line in the summary (any failure fails the run):

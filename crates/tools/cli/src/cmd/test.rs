@@ -21,6 +21,7 @@ mod browser;
 use anyhow::{Context, Result};
 use browser::{device_preset, Emulation, HeadlessBrowser};
 use clap::Parser;
+use dev_events::sessions::{self, SessionEntry};
 use robot_test::{default_apps_dirs, discover_all, RobotClient};
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -119,9 +120,14 @@ pub struct Args {
     /// runs beside the developer's own `idealyst dev` of the project instead
     /// of sharing (or being refused by) its build dirs, log, lock and relay
     /// files. Default `test`, a stable key so the session's build cache is
-    /// warm from the second run on. Not available for `--web` on a project
-    /// without a server (that shape stages into the project's own `pkg/`),
-    /// which runs unisolated unless this flag is given explicitly.
+    /// warm from the second run on. One session runs per key: while a live
+    /// session holds the key (another `idealyst test` of the project, or an
+    /// `idealyst dev --isolated <KEY>`), the run is refused before anything
+    /// builds. `auto` takes the first free key of `test`, `test-2`,
+    /// `test-3`, … — for runs in parallel (a CI matrix, several agents);
+    /// each key keeps its own build cache. Not available for `--web` on a
+    /// project without a server (that shape stages into the project's own
+    /// `pkg/`), which runs unisolated unless this flag is given explicitly.
     #[arg(long, value_name = "KEY", conflicts_with = "no_isolated")]
     pub isolated: Option<String>,
     /// Run the test session unisolated: in the project's own target dirs and
@@ -471,7 +477,15 @@ pub fn run(args: Args) -> Result<()> {
     };
 
     let launches = plan_launches(&args, platform)?;
-    let isolated = if args.attach { None } else { isolation_key(&args, platform, project_has_server(&dir))? };
+    // Decided, and checked against the live sessions, before anything
+    // builds: a key another session holds is refused here, not after a
+    // launch `idealyst dev` would refuse.
+    let isolated = if args.attach {
+        None
+    } else {
+        let wanted = isolation_key(&args, platform, project_has_server(&dir))?;
+        session_key(wanted.as_deref(), None, &dir, &registered_sessions(), &session_is_live)?
+    };
     if let Some(key) = &isolated {
         eprintln!("[test] dev session isolated as `{key}` (beside any `idealyst dev` of this project)");
     }
@@ -560,7 +574,6 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<(String, Outco
     // to: when launching, wait for a new one.
     let preexisting: Vec<SocketAddr> = if args.attach { Vec::new() } else { discover_all_in(dir, &apps_dirs) };
     let mut kill = Kill(Vec::new());
-    let mut owner: Option<u32> = None;
     let dev_log: Option<PathBuf> = (!args.attach).then(|| dev_log_path(platform, index));
     let see_log = |what: &str| match &dev_log {
         Some(log) => format!("{what} — the dev session's output is in {}", log.display()),
@@ -590,16 +603,15 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<(String, Outco
         let file = std::fs::File::create(log).with_context(|| format!("creating {}", log.display()))?;
         cmd.arg(dir).stdout(file.try_clone()?).stderr(file);
         eprintln!("[test] dev session log: {}", log.display());
-        let child = own_group(&mut cmd).spawn().context("spawning `idealyst dev`")?;
-        owner = Some(child.id());
-        kill.0.push(child);
+        kill.0.push(own_group(&mut cmd).spawn().context("spawning `idealyst dev`")?);
     }
 
     // Wait for the relay registration for this project (a cold build can take a
     // while), then for web open the page headlessly so the app dials.
     eprintln!("[test] waiting for the app to come up…");
-    let addr = wait_for_registration(dir, &apps_dirs, &preexisting, owner, Duration::from_secs(300))
-        .with_context(|| see_log("the app never registered with the relay (build failed?)"))?;
+    let launched = Launched { platform, child: kill.0.last_mut(), log: dev_log.as_deref() };
+    let addr = wait_for_registration(dir, &apps_dirs, &preexisting, launched, Duration::from_secs(300))
+        .with_context(|| see_log("the app never registered with the relay"))?;
 
     // Declared after `kill`, so it is dropped (browser closed) first.
     let mut browser: Option<HeadlessBrowser> = None;
@@ -705,11 +717,22 @@ fn run_parity(args: &Args, dir: &Path, user_env: &[(String, String)]) -> Result<
     eprintln!("[parity] viewport pinned to {}x{} on every platform", viewport.0, viewport.1);
 
     let has_server = project_has_server(dir);
+    // Every platform's key, checked before anything launches.
+    let registered = registered_sessions();
+    let keys = args
+        .parity
+        .iter()
+        .map(|p| {
+            let platform = normalize_platform(p)?;
+            let wanted = isolation_key(args, &platform, has_server)?;
+            session_key(wanted.as_deref(), Some(&platform), dir, &registered, &session_is_live)
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut kill = Kill(Vec::new());
     let mut browsers: Vec<HeadlessBrowser> = Vec::new();
     // Apps already registered for this project before we launch anything — so a
     // dev session the user left running isn't mistaken for one of ours.
-    let mut seen: HashSet<SocketAddr> = discover_all_in(dir, &apps_dirs).into_iter().collect();
+    let mut seen: Vec<SocketAddr> = discover_all_in(dir, &apps_dirs);
     let mut bridges: Vec<(String, SocketAddr)> = Vec::new();
 
     for (i, platform) in args.parity.iter().enumerate() {
@@ -723,7 +746,7 @@ fn run_parity(args: &Args, dir: &Path, user_env: &[(String, String)]) -> Result<
         eprintln!("[parity] launching {platform} app via `idealyst dev` (port {port})…");
         // Every platform's session is its own isolated session (one session
         // per key per project), keyed `<key>-<platform>`.
-        let isolated = isolation_key(args, &platform, has_server)?.map(|k| format!("{k}-{platform}"));
+        let isolated = keys[i].clone();
         let mut cmd = dev_command(
             &self_exe,
             &DevOpts {
@@ -738,18 +761,19 @@ fn run_parity(args: &Args, dir: &Path, user_env: &[(String, String)]) -> Result<
         cmd.arg(dir).stdout(Stdio::null()).stderr(Stdio::null());
         kill.0.push(own_group(&mut cmd).spawn().context("spawning `idealyst dev`")?);
 
-        // Wait for THIS launch's registration: the first live, project-matching
-        // bridge that wasn't there before. The registration file carries no
-        // platform field, so "new since launch" is how we attribute it — which
-        // is why launches are sequential, not concurrent.
-        let addr = wait_for_new_registration(dir, &apps_dirs, &seen, Duration::from_secs(300))
+        // Wait for THIS launch's registration: new since the launch, and
+        // written by this launch's `idealyst dev` (see `fresh_registration`).
+        // The registration file carries no platform field, so launches are
+        // sequential, not concurrent.
+        let launched = Launched { platform: &platform, child: kill.0.last_mut(), log: None };
+        let addr = wait_for_registration(dir, &apps_dirs, &seen, launched, Duration::from_secs(300))
             .with_context(|| {
                 format!(
                     "the {platform} app never registered (build failed? \
                      run `idealyst dev --{platform}` to see)"
                 )
             })?;
-        seen.insert(addr);
+        seen.push(addr);
 
         if platform == "web" {
             if !wait_for_web_server(port, Duration::from_secs(600)) {
@@ -907,6 +931,9 @@ fn dev_command(self_exe: &Path, o: &DevOpts) -> Command {
     }
     cmd.envs(o.env.iter().map(|(k, v)| (k, v)));
     cmd.env("IDEALYST_TEST_DRIVER", "1");
+    // The suite drives this app alone: the session's relay marks its
+    // registration `under_test`, which discovery skips.
+    cmd.env(dev_events::sessions::LAUNCHED_BY_ENV, dev_events::sessions::LAUNCHED_BY_TEST);
     cmd.env("IDEALYST_WINDOW_SIZE", format!("{}x{}", o.window.0, o.window.1));
     cmd.env("IDEALYST_DEV_NO_RESUME", "1");
     cmd
@@ -1086,29 +1113,6 @@ fn discover_all_in(project_dir: &Path, apps_dirs: &[PathBuf]) -> Vec<SocketAddr>
     apps_dirs.iter().flat_map(|d| discover_all(Some(project_dir), d)).collect()
 }
 
-/// Poll for a live, project-matching bridge whose address isn't already in
-/// `seen` — i.e. the app the most recent launch produced.
-fn wait_for_new_registration(
-    project_dir: &Path,
-    apps_dirs: &[PathBuf],
-    seen: &HashSet<SocketAddr>,
-    timeout: Duration,
-) -> Option<SocketAddr> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Some(addr) = discover_all_in(project_dir, apps_dirs)
-            .into_iter()
-            .find(|a| !seen.contains(a))
-        {
-            return Some(addr);
-        }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        std::thread::sleep(Duration::from_secs(1));
-    }
-}
-
 /// Poll until the app answers a ping, reconnecting each attempt — the bridge
 /// isn't pingable until the app dials the relay, which can be long after the
 /// relay (and thus the registration) comes up.
@@ -1130,7 +1134,7 @@ fn wait_until_ready(addr: SocketAddr, timeout: Duration) -> Result<()> {
 /// Every live registration for `project_dir` across `apps_dirs`, with the
 /// pid that wrote it (the relay's registration carries the `idealyst dev`
 /// process's pid; an app that self-hosts its bridge writes its own).
-fn live_registrations(project_dir: &Path, apps_dirs: &[PathBuf]) -> Vec<(SocketAddr, Option<u32>)> {
+fn live_registrations(project_dir: &Path, apps_dirs: &[PathBuf]) -> Vec<(SocketAddr, Option<u32>, bool)> {
     let want = std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
     let mut out = Vec::new();
     for dir in apps_dirs {
@@ -1155,52 +1159,307 @@ fn live_registrations(project_dir: &Path, apps_dirs: &[PathBuf]) -> Vec<(SocketA
             if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_err() {
                 continue; // stale registration
             }
-            out.push((addr, reg["pid"].as_u64().and_then(|p| u32::try_from(p).ok())));
+            let pid = reg["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
+            out.push((addr, pid, reg["under_test"].as_bool().unwrap_or(false)));
         }
     }
     out
 }
 
-/// The registration of the app just launched: live, for THIS project, and
-/// not there before the launch — `discover` falls back to any live app, and
-/// a registration left by an earlier run's still-closing session is live
-/// too. Among those, the one the launched `idealyst dev` (pid `owner`)
-/// wrote wins, so a developer's own session of the project that registers
-/// meanwhile is never the one driven; failing that (an app that self-hosts
-/// its bridge, a remote Windows app), the first new one.
+/// Which registrations a launch takes as its app's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Accept {
+    /// `--attach`: any live registration of the project, except an app
+    /// another `idealyst test` run launched (`under_test`) — attaching to it
+    /// would drive that run's app under its suite.
+    Any,
+    /// Only one written by the launched `idealyst dev` (pid) or a process
+    /// it started. Under `--local` (always, for a test session) `idealyst
+    /// dev` hosts the relay for web, macOS, iOS and Android, and the relay
+    /// registers with the dev process's pid; a Linux app self-hosts its
+    /// bridge and registers with its own pid, a descendant of the dev
+    /// process.
+    Owned(u32),
+    /// `--windows`: [`Accept::Owned`] when one is live, else any not
+    /// written by another live `idealyst dev`. A Windows app under Wine or
+    /// on a remote machine (`IDEALYST_WINDOWS_REMOTE`) registers under a
+    /// pid that is no process of this host, so ownership can't be told.
+    OwnedOrUnclaimed(u32),
+}
+
+impl Accept {
+    /// The rule for a launch of `platform` (`owner`: the launched `idealyst
+    /// dev`; `None` when attaching).
+    fn for_launch(platform: &str, owner: Option<u32>) -> Accept {
+        match owner {
+            None => Accept::Any,
+            Some(pid) if platform == "windows" => Accept::OwnedOrUnclaimed(pid),
+            Some(pid) => Accept::Owned(pid),
+        }
+    }
+}
+
+/// The registration of the app just launched: live, for THIS project, not
+/// there before the launch (a registration left by an earlier run's
+/// still-closing session is live too), and taken under `accept`. There is
+/// no "first new one" fallback for a launch whose owner is known: another
+/// `idealyst test` of the project whose session started a moment before
+/// ours registers AFTER our snapshot of `preexisting`, so it looks new —
+/// adopting it drove that run's app with this run's suite while that run
+/// drove it too, and then tore it down. Until the owner's registration
+/// appears, there is none. `foreign`: the live `idealyst dev` sessions of
+/// the project other than ours ([`foreign_dev_pids`]), skipped under
+/// [`Accept::OwnedOrUnclaimed`].
 fn fresh_registration(
     project_dir: &Path,
     apps_dirs: &[PathBuf],
     preexisting: &[SocketAddr],
-    owner: Option<u32>,
+    accept: Accept,
+    foreign: &[u32],
 ) -> Option<SocketAddr> {
     let fresh: Vec<(SocketAddr, Option<u32>)> = live_registrations(project_dir, apps_dirs)
         .into_iter()
-        .filter(|(addr, _)| !preexisting.contains(addr))
+        .filter(|(addr, _, under_test)| {
+            !preexisting.contains(addr) && !(accept == Accept::Any && *under_test)
+        })
+        .map(|(addr, pid, _)| (addr, pid))
         .collect();
-    fresh
-        .iter()
-        .find(|(_, pid)| owner.is_some() && *pid == owner)
-        .or_else(|| fresh.first())
-        .map(|(addr, _)| *addr)
+    let owned = |owner: u32| {
+        fresh.iter().find(|(_, pid)| pid.is_some_and(|p| p == owner || descends_from(p, owner)))
+    };
+    let found = match accept {
+        Accept::Any => fresh.first(),
+        Accept::Owned(owner) => owned(owner),
+        Accept::OwnedOrUnclaimed(owner) => owned(owner)
+            .or_else(|| fresh.iter().find(|(_, pid)| !pid.is_some_and(|p| foreign.contains(&p)))),
+    };
+    found.map(|(addr, _)| *addr)
 }
 
+/// Whether process `pid` was started, directly or not, by `ancestor`
+/// (its parent chain, read with `ps`). False where `ps` isn't available.
+fn descends_from(pid: u32, ancestor: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let mut at = pid;
+        // A chain deeper than this is not a dev session's app.
+        for _ in 0..16 {
+            let Some(parent) = Command::new("ps")
+                .args(["-o", "ppid=", "-p", &at.to_string()])
+                .stderr(Stdio::null())
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+            else {
+                return false;
+            };
+            if parent == ancestor {
+                return true;
+            }
+            if parent <= 1 {
+                return false;
+            }
+            at = parent;
+        }
+        false
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, ancestor);
+        false
+    }
+}
+
+/// The `idealyst dev` a launch spawned, while its registration is awaited.
+struct Launched<'a> {
+    /// The platform launched ([`Accept::for_launch`]).
+    platform: &'a str,
+    /// `None` when attaching to an app this run didn't launch.
+    child: Option<&'a mut Child>,
+    /// Where its output goes, read for the reason it exited.
+    log: Option<&'a Path>,
+}
+
+/// Poll for the launched app's registration ([`fresh_registration`]). A
+/// launched `idealyst dev` that exits first — refused because another
+/// session holds its key, a build that failed — ends the wait with the
+/// reason it gave, rather than waiting out `timeout` for an app that will
+/// never come.
 fn wait_for_registration(
     project_dir: &Path,
     apps_dirs: &[PathBuf],
     preexisting: &[SocketAddr],
-    owner: Option<u32>,
+    mut launched: Launched,
     timeout: Duration,
-) -> Option<SocketAddr> {
+) -> Result<SocketAddr> {
+    let owner = launched.child.as_ref().map(|c| c.id());
+    let accept = Accept::for_launch(launched.platform, owner);
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(addr) = fresh_registration(project_dir, apps_dirs, preexisting, owner) {
-            return Some(addr);
+        // Before the registrations: a session that was refused must not
+        // leave a window in which another session's registration is read.
+        if let Some(child) = launched.child.as_mut() {
+            if let Some(status) = child.try_wait().context("waiting on `idealyst dev`")? {
+                let log = launched.log.and_then(|p| std::fs::read_to_string(p).ok());
+                anyhow::bail!(dev_exit_message(&status.to_string(), log.as_deref()));
+            }
+        }
+        let foreign = match accept {
+            Accept::OwnedOrUnclaimed(owner) => {
+                foreign_dev_pids(project_dir, owner, &registered_sessions(), &session_is_live)
+            }
+            Accept::Any | Accept::Owned(_) => Vec::new(),
+        };
+        if let Some(addr) = fresh_registration(project_dir, apps_dirs, preexisting, accept, &foreign) {
+            return Ok(addr);
         }
         if Instant::now() >= deadline {
-            return None;
+            anyhow::bail!("no registration within {timeout:?} (build failed?)");
         }
         std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// Why a launched `idealyst dev` ended before its app registered: the
+/// `Error:` line it printed last (its refusal names the session holding
+/// the key), or just its exit status.
+fn dev_exit_message(status: &str, log: Option<&str>) -> String {
+    let reason = log.and_then(|l| l.lines().rev().find_map(|line| line.strip_prefix("Error: ")));
+    match reason {
+        Some(reason) => format!("`idealyst dev` exited ({status}) before its app registered: {reason}"),
+        None => format!("`idealyst dev` exited ({status}) before its app registered"),
+    }
+}
+
+/// `--isolated auto`: the run takes the first free key of `test`,
+/// `test-2`, `test-3`, … ([`session_key`]).
+const AUTO_ISOLATION_KEY: &str = "auto";
+
+/// The machine's registered `idealyst dev` sessions, crashed ones
+/// included (see [`session_is_live`]).
+fn registered_sessions() -> Vec<SessionEntry> {
+    sessions::registry_dir()
+        .map(|d| sessions::read_all(&d).into_iter().map(|(_, e)| e).collect())
+        .unwrap_or_default()
+}
+
+/// Whether a registered session is running. A session that crashed left
+/// its entry behind; its pid is gone, so its key is free. (Its `dev.lock`
+/// went with its process: the OS drops the lock.)
+fn session_is_live(pid: u32) -> bool {
+    crate::dev_control::pid_is_live(pid)
+}
+
+/// The live session of `dir` with isolation key `key` (`None`: the
+/// directory's own session), if one holds it. Matched on directory and
+/// key before `is_live` runs — the registry keeps every crashed session.
+fn key_holder<'a>(
+    entries: &'a [SessionEntry],
+    dir: &Path,
+    key: Option<&str>,
+    is_live: &dyn Fn(u32) -> bool,
+) -> Option<&'a SessionEntry> {
+    entries
+        .iter()
+        .filter(|e| sessions::in_dir_keyed(std::slice::from_ref(*e), dir, key).is_some())
+        .find(|e| is_live(e.pid))
+}
+
+/// The pids of the live `idealyst dev` sessions of `dir`, any key, other
+/// than `owner`: their relays' registrations are never this launch's
+/// ([`Accept::OwnedOrUnclaimed`]).
+/// Every session writes its registry entry before it starts its relay, so
+/// a registration from one is never seen before its entry.
+fn foreign_dev_pids(dir: &Path, owner: u32, entries: &[SessionEntry], is_live: &dyn Fn(u32) -> bool) -> Vec<u32> {
+    entries
+        .iter()
+        .filter(|e| e.pid != owner && sessions::in_dir_keyed(std::slice::from_ref(*e), dir, e.isolated.as_deref()).is_some())
+        .filter(|e| is_live(e.pid))
+        .map(|e| e.pid)
+        .collect()
+}
+
+/// The key this run's session takes, from the one [`isolation_key`] chose
+/// (`wanted`), suffixed `-<platform>` for a `--parity` launch:
+///
+/// - [`AUTO_ISOLATION_KEY`]: the first of `test`, `test-2`, … that no live
+///   session of `dir` holds;
+/// - any other key, or none: itself, unless a live session holds it — then
+///   the run is refused, naming that session. `idealyst dev` would refuse
+///   the launch anyway; refusing here says why before anything builds.
+fn session_key(
+    wanted: Option<&str>,
+    platform: Option<&str>,
+    dir: &Path,
+    entries: &[SessionEntry],
+    is_live: &dyn Fn(u32) -> bool,
+) -> Result<Option<String>> {
+    let suffixed = |base: String| match platform {
+        Some(p) => format!("{base}-{p}"),
+        None => base,
+    };
+    let key = match wanted {
+        Some(AUTO_ISOLATION_KEY) => {
+            let free = (1..)
+                .map(|n| suffixed(if n == 1 { DEFAULT_ISOLATION_KEY.to_string() } else { format!("{DEFAULT_ISOLATION_KEY}-{n}") }))
+                .find(|k| key_holder(entries, dir, Some(k), is_live).is_none())
+                .expect("finitely many sessions hold keys");
+            return Ok(Some(free));
+        }
+        Some(k) => Some(suffixed(k.to_string())),
+        None => None,
+    };
+    if let Some(holder) = key_holder(entries, dir, key.as_deref(), is_live) {
+        anyhow::bail!(key_held_message(dir, key.as_deref(), holder, unix_now()));
+    }
+    Ok(key)
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default()
+}
+
+/// The refusal of a run whose session key `holder` already holds.
+fn key_held_message(dir: &Path, key: Option<&str>, holder: &SessionEntry, now: u64) -> String {
+    let who = format!(
+        "pid {}, started by {} {}, idealyst {}",
+        holder.pid,
+        crate::dev_control::started_by(&holder.launched_by),
+        started_ago(holder.started_at, now),
+        holder.cli_version,
+    );
+    match key {
+        Some(key) => format!(
+            "an `idealyst dev --isolated {key}` session already runs for {} ({who}) — another \
+             `idealyst test` of this project, or a session started with that key. One session runs \
+             per key, and this run's app would be launched under the same one. Wait for it to \
+             finish, stop it (`kill -INT {}`), or run beside it under a key of its own: \
+             `--isolated <key>` (its own build cache; a key's first run builds cold) or \
+             `--isolated auto` (the first free `test`, `test-2`, …).",
+            dir.display(),
+            holder.pid,
+        ),
+        None => format!(
+            "an `idealyst dev` session of {} already runs ({who}), and this run launches the \
+             directory's own session (`--no-isolated`, or `--web` on a project without a server, \
+             which can't be isolated). Stop it (`kill -INT {}`), drive it instead with \
+             `idealyst test --attach`, or run isolated where the project allows it.",
+            dir.display(),
+            holder.pid,
+        ),
+    }
+}
+
+/// `started_at` (unix seconds) as "12 min ago".
+fn started_ago(started_at: u64, now: u64) -> String {
+    if started_at == 0 {
+        return "at an unknown time".to_string();
+    }
+    let secs = now.saturating_sub(started_at);
+    match secs {
+        0..60 => format!("{secs} s ago"),
+        60..3600 => format!("{} min ago", secs / 60),
+        _ => format!("{} h {} min ago", secs / 3600, secs % 3600 / 60),
     }
 }
 
@@ -1269,6 +1528,18 @@ mod tests {
         assert!(envs.contains(&("IDEALYST_DEV_NO_RESUME".into(), "1".into())), "{envs:?}");
         assert!(envs.contains(&("IDEALYST_TEST_DRIVER".into(), "1".into())), "{envs:?}");
         assert_eq!(argv(&cmd), ["dev", "--local", "--web", "--port", "8080"]);
+    }
+
+    /// A bare `cargo test` of the suite, run while `idealyst test` had the
+    /// app up, discovered that app and drove it beside the suite — on
+    /// Android a tap's count was reset before the suite read it. The
+    /// session says it is `idealyst test`'s, so its relay marks the
+    /// registration `under_test` and discovery leaves it alone.
+    #[test]
+    fn regression_the_test_session_says_it_is_launched_by_idealyst_test() {
+        let envs = envs(&dev_command(Path::new("idealyst"), &opts("android", 8080, None, &[])));
+        let want = (dev_events::sessions::LAUNCHED_BY_ENV.to_string(), dev_events::sessions::LAUNCHED_BY_TEST.to_string());
+        assert!(envs.contains(&want), "{envs:?}");
     }
 
     /// `--port` reaches the dev session on every platform. Passed on web
@@ -1465,9 +1736,9 @@ mod tests {
         let dirs = vec![apps.clone()];
         let developers = register("a-developer", 111);
         let ours = register("b-ours", 222);
-        let got = fresh_registration(&project, &dirs, &[], Some(222)).unwrap();
+        let got = fresh_registration(&project, &dirs, &[], Accept::Owned(222), &[]).unwrap();
         assert_eq!(got.port(), ours.local_addr().unwrap().port());
-        let got = fresh_registration(&project, &dirs, &[], Some(111)).unwrap();
+        let got = fresh_registration(&project, &dirs, &[], Accept::Owned(111), &[]).unwrap();
         assert_eq!(got.port(), developers.local_addr().unwrap().port());
         let _ = std::fs::remove_dir_all(&apps);
     }
@@ -1530,11 +1801,212 @@ mod tests {
         let dirs = vec![apps.clone()];
         let preexisting: Vec<SocketAddr> = discover_all(Some(&project), &apps);
         assert_eq!(preexisting.len(), 1);
-        assert_eq!(fresh_registration(&project, &dirs, &preexisting, None), None, "the old run's app is not this one");
+        assert_eq!(fresh_registration(&project, &dirs, &preexisting, Accept::Any, &[]), None, "the old run's app is not this one");
         let new = register("new");
-        let got = fresh_registration(&project, &dirs, &preexisting, None).expect("the launched app");
+        let got = fresh_registration(&project, &dirs, &preexisting, Accept::Any, &[]).expect("the launched app");
         assert_eq!(got.port(), new.local_addr().unwrap().port());
         drop(old);
         let _ = std::fs::remove_dir_all(&apps);
+    }
+
+    /// A registered session of `dir` under `key` (`None`: the directory's
+    /// own), as `idealyst dev` writes it.
+    fn session(pid: u32, dir: &Path, key: Option<&str>) -> SessionEntry {
+        let mut e = SessionEntry::new(pid, dir.display().to_string(), "http://127.0.0.1:9", "t");
+        e.isolated = key.map(str::to_string);
+        e.launched_by = sessions::LAUNCHED_BY_UNKNOWN.into();
+        e.cli_version = "1.25.0".into();
+        e.started_at = 1_000;
+        e
+    }
+
+    fn project_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("idealyst-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Two `idealyst test` runs of one project both took the key `test`:
+    /// the second's `idealyst dev` was refused, and the run went on to
+    /// drive the first run's app. A live holder of the key now refuses the
+    /// run before anything builds, naming the holder and the way to run
+    /// beside it.
+    #[test]
+    fn regression_a_run_whose_key_a_live_session_holds_is_refused_up_front() {
+        let dir = project_dir("key-held");
+        let entries = vec![session(4242, &dir, Some("test")), session(77, &dir, Some("other"))];
+        let live = |pid: u32| pid == 4242 || pid == 77;
+        let err = session_key(Some("test"), None, &dir, &entries, &live).unwrap_err().to_string();
+        for part in ["--isolated test", "pid 4242", "started by an unknown launcher", "--isolated auto", "--isolated <key>"] {
+            assert!(err.contains(part), "{part:?} missing from: {err}");
+        }
+        // Another key, or another project, is free.
+        assert_eq!(session_key(Some("ci"), None, &dir, &entries, &live).unwrap().as_deref(), Some("ci"));
+        let elsewhere = project_dir("key-held-elsewhere");
+        assert_eq!(session_key(Some("test"), None, &elsewhere, &entries, &live).unwrap().as_deref(), Some("test"));
+        // Unisolated, the directory's own session is the holder.
+        let own = vec![session(5, &dir, None)];
+        let err = session_key(None, None, &dir, &own, &|_| true).unwrap_err().to_string();
+        assert!(err.contains("--attach") && err.contains("pid 5"), "{err}");
+        assert_eq!(session_key(None, None, &dir, &entries, &live).unwrap(), None, "isolated sessions don't hold it");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&elsewhere);
+    }
+
+    /// A run that crashed left its registry entry behind; its process is
+    /// gone, so the key is free — a dead holder never blocks a run.
+    #[test]
+    fn a_crashed_sessions_key_is_free() {
+        let dir = project_dir("key-stale");
+        let entries = vec![session(4242, &dir, Some("test"))];
+        assert_eq!(session_key(Some("test"), None, &dir, &entries, &|_| false).unwrap().as_deref(), Some("test"));
+        // Against the real process table: a pid that cannot be running.
+        let entries = vec![session(u32::MAX - 1, &dir, Some("test"))];
+        assert_eq!(session_key(Some("test"), None, &dir, &entries, &session_is_live).unwrap().as_deref(), Some("test"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--isolated auto` takes the first key no live session holds; a
+    /// parity launch suffixes it with the platform.
+    #[test]
+    fn isolated_auto_takes_the_first_free_test_key() {
+        let dir = project_dir("key-auto");
+        assert_eq!(session_key(Some("auto"), None, &dir, &[], &|_| true).unwrap().as_deref(), Some("test"));
+        let entries = vec![
+            session(1, &dir, Some("test")),
+            session(2, &dir, Some("test-2")),
+            session(3, &dir, Some("test-3")),
+            session(4, &dir, Some("test-macos")),
+        ];
+        let live = |pid: u32| pid != 3;
+        assert_eq!(session_key(Some("auto"), None, &dir, &entries, &live).unwrap().as_deref(), Some("test-3"));
+        assert_eq!(session_key(Some("auto"), Some("macos"), &dir, &entries, &live).unwrap().as_deref(), Some("test-2-macos"));
+        assert_eq!(session_key(Some("auto"), Some("web"), &dir, &entries, &live).unwrap().as_deref(), Some("test-web"));
+        // An explicit parity key is checked suffixed.
+        assert!(session_key(Some("test"), Some("macos"), &dir, &entries, &live).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--attach` takes a live app of the project, but never one another
+    /// `idealyst test` run launched (its relay marks it `under_test`):
+    /// attaching to it drove that run's app while its own suite drove it.
+    #[test]
+    fn regression_attach_never_takes_another_test_runs_app() {
+        use std::net::TcpListener;
+        let apps = project_dir("attach-under-test");
+        let project = apps.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let register = |name: &str, under_test: bool| {
+            let live = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = live.local_addr().unwrap().port();
+            let reg = serde_json::json!({
+                "name": name, "pid": 4242, "port": port,
+                "project_root": project, "under_test": under_test,
+            });
+            std::fs::write(apps.join(format!("{name}.json")), reg.to_string()).unwrap();
+            live
+        };
+        let dirs = vec![apps.clone()];
+        let _test_run = register("test-run", true);
+        assert_eq!(fresh_registration(&project, &dirs, &[], Accept::Any, &[]), None, "another run's app");
+        let dev = register("dev-session", false);
+        let got = fresh_registration(&project, &dirs, &[], Accept::Any, &[]).expect("the developer's app");
+        assert_eq!(got.port(), dev.local_addr().unwrap().port());
+    }
+
+    /// The other run's session registered after this run snapshotted the
+    /// project's registrations, so it looked "new"; this run's own session
+    /// had been refused and never registered, and the run adopted the
+    /// other's as "the first new one". A launch with a known owner takes
+    /// only its owner's registration (or one a process it started wrote).
+    #[test]
+    fn regression_a_launch_never_adopts_another_sessions_registration() {
+        use std::net::TcpListener;
+        let apps = project_dir("foreign-apps");
+        let project = apps.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let register = |name: &str, pid: u32| {
+            let live = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = live.local_addr().unwrap().port();
+            let reg = serde_json::json!({ "name": name, "pid": pid, "port": port, "project_root": project });
+            std::fs::write(apps.join(format!("{name}.json")), reg.to_string()).unwrap();
+            live
+        };
+        let _other_run = register("other-run", 4242);
+        let dirs = vec![apps.clone()];
+        let ours = std::process::id();
+
+        // Our session's registration hasn't appeared: there is none yet.
+        assert_eq!(fresh_registration(&project, &dirs, &[], Accept::Owned(ours), &[]), None);
+        assert_eq!(Accept::for_launch("macos", Some(ours)), Accept::Owned(ours));
+        assert_eq!(Accept::for_launch("linux", Some(ours)), Accept::Owned(ours));
+        assert_eq!(Accept::for_launch("macos", None), Accept::Any, "--attach");
+        // What the runner did before: the first new registration.
+        assert!(fresh_registration(&project, &dirs, &[], Accept::Any, &[]).is_some());
+
+        // An app our session started (a Linux app self-hosting its bridge)
+        // registers under its own pid, a descendant of ours.
+        #[cfg(unix)]
+        {
+            let mut app = Command::new("sleep").arg("30").spawn().unwrap();
+            let mine = register("our-app", app.id());
+            let got = fresh_registration(&project, &dirs, &[], Accept::Owned(ours), &[]).expect("our app's");
+            assert_eq!(got.port(), mine.local_addr().unwrap().port());
+            let _ = app.kill();
+            let _ = app.wait();
+            std::fs::remove_file(apps.join("our-app.json")).unwrap();
+        }
+
+        // `--windows` can't tell ownership by pid, but never takes another
+        // live dev session's registration.
+        let entries = vec![session(4242, &project, Some("test")), session(9, &apps, Some("test"))];
+        let foreign = foreign_dev_pids(&project, ours, &entries, &|_| true);
+        assert_eq!(foreign, [4242], "the other run's session of this project, not another project's");
+        assert_eq!(fresh_registration(&project, &dirs, &[], Accept::OwnedOrUnclaimed(ours), &foreign), None);
+        assert!(foreign_dev_pids(&project, 4242, &entries, &|_| true).is_empty(), "ours is never foreign");
+        let _ = std::fs::remove_dir_all(&apps);
+    }
+
+    /// The runner waited out its 300 s for a session `idealyst dev` had
+    /// refused at once — or, with another run's registration around, drove
+    /// that. The launched session's exit ends the wait with its reason,
+    /// even while a registration it didn't write is live.
+    #[test]
+    fn regression_a_refused_dev_session_ends_the_wait_with_its_reason() {
+        use std::net::TcpListener;
+        let apps = project_dir("refused-apps");
+        let project = apps.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let live = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = live.local_addr().unwrap().port();
+        let reg = serde_json::json!({ "name": "self-hosted", "pid": 333, "port": port, "project_root": project });
+        std::fs::write(apps.join("self-hosted.json"), reg.to_string()).unwrap();
+        let log = apps.join("dev.log");
+        let refusal = "an isolated `idealyst dev --isolated test` session already runs in /p (pid 4242)";
+        std::fs::write(&log, format!("[dev] lint\nError: {refusal}\n")).unwrap();
+
+        #[cfg(unix)]
+        let mut child = Command::new("sh").args(["-c", "exit 1"]).spawn().unwrap();
+        #[cfg(windows)]
+        let mut child = Command::new("cmd").args(["/C", "exit 1"]).spawn().unwrap();
+        child.wait().unwrap();
+        let launched = Launched { platform: "macos", child: Some(&mut child), log: Some(&log) };
+        let err = wait_for_registration(&project, std::slice::from_ref(&apps), &[], launched, Duration::from_secs(5))
+            .expect_err("the launch was refused");
+        assert!(err.to_string().contains(refusal), "{err}");
+        drop(live);
+        let _ = std::fs::remove_dir_all(&apps);
+    }
+
+    #[test]
+    fn a_dev_exit_names_its_last_error_and_the_holder_its_age() {
+        assert_eq!(dev_exit_message("exit status: 1", None), "`idealyst dev` exited (exit status: 1) before its app registered");
+        let log = "Error: first\nnoise\nError: last\ntrailing";
+        assert!(dev_exit_message("exit status: 1", Some(log)).ends_with(": last"));
+        assert_eq!(started_ago(1_000, 1_030), "30 s ago");
+        assert_eq!(started_ago(1_000, 1_000 + 12 * 60 + 5), "12 min ago");
+        assert_eq!(started_ago(1_000, 1_000 + 2 * 3600 + 60), "2 h 1 min ago");
+        assert_eq!(started_ago(0, 5_000), "at an unknown time");
     }
 }

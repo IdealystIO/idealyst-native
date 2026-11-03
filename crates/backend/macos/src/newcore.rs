@@ -801,6 +801,10 @@ impl caps::InputOps for MacosBackend {
         MacosBackend::install_hover_handler_impl(self, node, flushing1(handler))
     }
 
+    fn install_focus_handler(&mut self, node: &Self::Node, handler: runtime_shared::FocusWithinHandler) {
+        MacosBackend::install_focus_handler_impl(self, node, flushing1(handler))
+    }
+
     fn mark_preserves_focus(&mut self, node: &Self::Node) {
         MacosBackend::mark_preserves_focus_impl(self, node)
     }

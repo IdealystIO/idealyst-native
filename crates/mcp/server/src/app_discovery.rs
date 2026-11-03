@@ -69,6 +69,10 @@ pub struct DiscoveredApp {
     /// seen the app's `hello`. Lets a parity caller target two platforms of
     /// the **same** app distinctly.
     pub platform: Option<String>,
+    /// `under_test` from the JSON: the app of an `idealyst test` run, which
+    /// drives it alone, so robot tools refuse it
+    /// (`catalog_service::select_app`).
+    pub under_test: bool,
 }
 
 /// Live, lock-protected map of `name → DiscoveredApp`. Cheap to
@@ -267,6 +271,7 @@ fn parse_registration_file(path: &Path) -> Option<DiscoveredApp> {
         pid,
         bridge_addr: format!("127.0.0.1:{port}"),
         platform,
+        under_test: v.get("under_test").and_then(|x| x.as_bool()).unwrap_or(false),
     })
 }
 
@@ -477,10 +482,40 @@ mod tests {
                 pid: 12,
                 bridge_addr: "127.0.0.1:4779".into(),
                 platform: Some("web".into()),
+                under_test: false,
             },
         );
         add_project_registration(&root, &mut found, |_| true);
         assert_eq!(found.len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    /// An agent's robot tools drove the app of an `idealyst test` run
+    /// beside the run's own suite, each resetting state the other asserted
+    /// on. The registration says the app is under test; listing shows it,
+    /// and every robot tool refuses it — named or as the only live app.
+    #[test]
+    fn regression_robot_tools_refuse_the_app_of_an_idealyst_test_run() {
+        let root = std::env::temp_dir().join(format!("mcp-under-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let reg = root.join("demo-7.json");
+        std::fs::write(
+            &reg,
+            r#"{"port":4780,"pid":7,"name":"demo","project_root":"/p","proto":1,"platform":"android","under_test":true}"#,
+        )
+        .unwrap();
+        let tested = parse_registration_file(&reg).expect("parses");
+        assert!(tested.under_test);
+
+        let err = crate::catalog_service::select_app(Some("demo"), vec![tested.clone()]).unwrap_err();
+        assert!(err.contains("`idealyst test` run"), "{err}");
+        let err = crate::catalog_service::select_app(None, vec![tested.clone()]).unwrap_err();
+        assert!(err.contains("`idealyst test` run"), "{err}");
+
+        // The project's own dev session beside it stays drivable.
+        let own = DiscoveredApp { under_test: false, platform: Some("macos".into()), pid: 8, ..tested.clone() };
+        let picked = crate::catalog_service::select_app(Some("demo:macos"), vec![tested, own]).expect("the dev session");
+        assert_eq!(picked.pid, 8);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

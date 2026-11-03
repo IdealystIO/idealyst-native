@@ -142,65 +142,7 @@ impl RobotResolver {
         app: Option<&str>,
         discovery: &crate::app_discovery::DiscoveryTable,
     ) -> Result<Arc<RobotBridge>, McpError> {
-        let live = discovery.snapshot();
-        let entry = match app {
-            // The selector is `name` or — to disambiguate two platforms of one
-            // app — `name:platform` (e.g. `todo:web`).
-            Some(sel) => {
-                let (name, platform) = match sel.split_once(':') {
-                    Some((n, p)) => (n, Some(p)),
-                    None => (sel, None),
-                };
-                let matches: Vec<_> = live
-                    .iter()
-                    .filter(|a| a.name == name)
-                    .filter(|a| platform.map_or(true, |p| a.platform.as_deref() == Some(p)))
-                    .collect();
-                match matches.as_slice() {
-                    [one] => (*one).clone(),
-                    [] => {
-                        return Err(McpError::invalid_params(
-                            format!(
-                                "app {:?} not running. Live apps: {:?}. \
-                                 Run `idealyst dev` in the target project.",
-                                sel,
-                                app_selectors(&live)
-                            ),
-                            None,
-                        ));
-                    }
-                    _ => {
-                        return Err(McpError::invalid_params(
-                            format!(
-                                "{:?} is ambiguous across platforms; pass `name:platform` \
-                                 (one of: {:?})",
-                                sel,
-                                app_selectors(&live)
-                            ),
-                            None,
-                        ));
-                    }
-                }
-            }
-            None if live.len() == 1 => live.into_iter().next().unwrap(),
-            None if live.is_empty() => {
-                return Err(McpError::invalid_params(
-                    "no live apps discovered — run `idealyst dev` in a project first"
-                        .to_string(),
-                    None,
-                ));
-            }
-            None => {
-                return Err(McpError::invalid_params(
-                    format!(
-                        "{} apps live; specify `app` (one of: {:?})",
-                        live.len(),
-                        app_selectors(&live)
-                    ),
-                    None,
-                ));
-            }
-        };
+        let entry = select_app(app, discovery.snapshot()).map_err(|m| McpError::invalid_params(m, None))?;
         let mut bridges = self.bridges.lock().await;
         // Cache per bridge ADDRESS (unique per app), not per name — two
         // same-name apps must not share one connection.
@@ -210,6 +152,72 @@ impl RobotResolver {
             .clone();
         Ok(bridge)
     }
+}
+
+/// The live app a robot tool's `app` argument names — `name`, or
+/// `name:platform` to tell two platforms of one app apart — or the only
+/// live app when it names none. Refuses an app an `idealyst test` run
+/// launched (`under_test`): that run's suite drives it alone, and a second
+/// driver's steps interleave with the suite's (a test saw its tap's count
+/// reset before it read it).
+pub(crate) fn select_app(
+    app: Option<&str>,
+    live: Vec<crate::app_discovery::DiscoveredApp>,
+) -> Result<crate::app_discovery::DiscoveredApp, String> {
+    let entry = match app {
+        // The selector is `name` or — to disambiguate two platforms of one
+        // app — `name:platform` (e.g. `todo:web`).
+        Some(sel) => {
+            let (name, platform) = match sel.split_once(':') {
+                Some((n, p)) => (n, Some(p)),
+                None => (sel, None),
+            };
+            let matches: Vec<_> = live
+                .iter()
+                .filter(|a| a.name == name)
+                .filter(|a| platform.map_or(true, |p| a.platform.as_deref() == Some(p)))
+                .collect();
+            match matches.as_slice() {
+                [one] => (*one).clone(),
+                [] => {
+                    return Err(format!(
+                        "app {:?} not running. Live apps: {:?}. \
+                         Run `idealyst dev` in the target project.",
+                        sel,
+                        app_selectors(&live)
+                    ));
+                }
+                _ => {
+                    return Err(format!(
+                        "{:?} is ambiguous across platforms; pass `name:platform` \
+                         (one of: {:?})",
+                        sel,
+                        app_selectors(&live)
+                    ));
+                }
+            }
+        }
+        None if live.len() == 1 => live.into_iter().next().unwrap(),
+        None if live.is_empty() => {
+            return Err("no live apps discovered — run `idealyst dev` in a project first".to_string());
+        }
+        None => {
+            return Err(format!(
+                "{} apps live; specify `app` (one of: {:?})",
+                live.len(),
+                app_selectors(&live)
+            ));
+        }
+    };
+    if entry.under_test {
+        return Err(format!(
+            "{:?} is the app of an `idealyst test` run, which drives it alone: a second driver \
+             interleaves with the suite's steps. Drive your own session of the project \
+             (`run_dev`, or `idealyst dev`) instead.",
+            app.unwrap_or(&entry.name)
+        ));
+    }
+    Ok(entry)
 }
 
 /// The unambiguous selector string for each live app: `name` when its name is
@@ -1060,6 +1068,7 @@ impl CatalogService {
                 pid: 0,
                 bridge_addr: addr.clone(),
                 platform: None,
+                under_test: false,
             }],
         }
     }
@@ -1907,6 +1916,9 @@ impl CatalogService {
                     "project_root": a.project_root,
                     "bridge_addr": a.bridge_addr,
                     "pid": a.pid,
+                    // Robot tools refuse it: an `idealyst test` run's suite
+                    // drives it alone (`select_app`).
+                    "under_test": a.under_test,
                 })
             })
             .collect();

@@ -115,6 +115,11 @@ pub struct FlippedViewIvars {
     /// `mouseExited:` — the macOS counterpart of web's
     /// `pointerenter`/`pointerleave`. `None` for views with no `on_hover`.
     hover_handler: RefCell<Option<HoverHandler>>,
+    /// Installed by `InputOps::install_focus_handler` for a view / pressable
+    /// with an `on_focus`. Fired by [`report_focus_within`] when keyboard
+    /// focus lands on this view or a descendant (`true`) or leaves it
+    /// (`false`) — the macOS counterpart of web's `focusin`/`focusout`.
+    focus_within_handler: RefCell<Option<runtime_shared::FocusWithinHandler>>,
     /// The live hover-tracking area, retained so `updateTrackingAreas` can
     /// remove the stale one before installing a fresh one. `None` until a
     /// `state_setter` OR `hover_handler` is attached (only views that need
@@ -667,8 +672,15 @@ declare_class!(
             // every click read as a stuck "selected" state on buttons and
             // switches. Tab / programmatic focus arrive on a non-mouse event
             // and still show it.
-            if ok && !current_event_is_pointer_press() {
-                self.fire_focus_state(true);
+            if ok {
+                // Same `:focus-visible` rule for `on_focus`: a click-focused
+                // control reports `false` (deduped by the vocabulary), so a
+                // focus-driven HoverCard does not open on every click.
+                let keyboard = !current_event_is_pointer_press();
+                if keyboard {
+                    self.fire_focus_state(true);
+                }
+                report_focus_within(self, keyboard);
             }
             ok
         }
@@ -677,6 +689,7 @@ declare_class!(
             let ok: bool = unsafe { msg_send![super(self), resignFirstResponder] };
             if ok {
                 self.fire_focus_state(false);
+                report_focus_within(self, false);
             }
             ok
         }
@@ -914,6 +927,7 @@ impl FlippedView {
             cursor: RefCell::new(None),
             state_setter: RefCell::new(None),
             hover_handler: RefCell::new(None),
+            focus_within_handler: RefCell::new(None),
             tracking_area: RefCell::new(None),
             file_drop_handler: RefCell::new(None),
             activate: RefCell::new(None),
@@ -1010,6 +1024,12 @@ impl FlippedView {
     pub(crate) fn set_hover_handler(&self, handler: HoverHandler) {
         *self.ivars().hover_handler.borrow_mut() = Some(handler);
         let _: () = unsafe { msg_send![self, updateTrackingAreas] };
+    }
+
+    /// Install (or replace) the `on_focus` handler. Called by
+    /// `InputOps::install_focus_handler`; fired by [`report_focus_within`].
+    pub(crate) fn set_focus_within_handler(&self, handler: runtime_shared::FocusWithinHandler) {
+        *self.ivars().focus_within_handler.borrow_mut() = Some(handler);
     }
 
     /// Install (or replace) the `on_file_drop` handler and register this view as
@@ -1664,6 +1684,8 @@ declare_class!(
                 if let Some(f) = self.ivars().focus_setter.borrow().as_ref() {
                     f(true);
                 }
+                // A text area is `:focus-visible` on any focus.
+                report_focus_within(self, true);
             }
             ok
         }
@@ -1674,6 +1696,7 @@ declare_class!(
                 if let Some(f) = self.ivars().focus_setter.borrow().as_ref() {
                     f(false);
                 }
+                report_focus_within(self, false);
             }
             ok
         }
@@ -1891,6 +1914,58 @@ fn centered_drawing_rect(base: CGRect, natural: CGSize, i: LabelInsets) -> CGRec
 /// ("RefCell already borrowed"). A real user click already arrives on a clean
 /// run-loop turn, so deferring one tick is invisible there and makes every
 /// other focus path safe. Cloned out of the `RefCell`s first (reentrancy).
+/// Report keyboard focus entering (`true`) / leaving (`false`) `view` to the
+/// `on_focus` handlers of `view` and every ancestor `FlippedView` — the
+/// focus-within walk (web's bubbling `focusin`/`focusout`).
+///
+/// Called from every first-responder transition the backend observes:
+/// pressable / link hosts, the text-field cells, the text area. Moving focus
+/// between two descendants of one wrapper reports `false` (old responder
+/// resigns) then `true` (new one becomes); the vocabulary dedups to
+/// transitions, and both land on the same deferred turn in order.
+///
+/// Deferred one run-loop tick in a reactive `cycle`, as
+/// `fire_focus_state` is: `makeFirstResponder:` can run inside a reactive
+/// flush (programmatic focus, autofocus), and the author handler writes
+/// signals — firing synchronously there aborts with "RefCell already
+/// borrowed".
+pub(crate) fn report_focus_within(view: &NSView, focused: bool) {
+    let mut handlers: Vec<runtime_shared::FocusWithinHandler> = Vec::new();
+    let flipped = FlippedView::class();
+    let mut cur: *const NSView = view;
+    while !cur.is_null() {
+        // SAFETY: `cur` is `view` or a superview AppKit just returned; the
+        // chain is retained by the window for this synchronous walk.
+        let v: &NSView = unsafe { &*cur };
+        let is_flipped: bool = unsafe { msg_send![v, isKindOfClass: flipped] };
+        if is_flipped {
+            let fv: &FlippedView = unsafe { &*(cur as *const FlippedView) };
+            if let Some(h) = fv.ivars().focus_within_handler.borrow().clone() {
+                handlers.push(h);
+            }
+        }
+        cur = unsafe { msg_send![v, superview] };
+    }
+    if handlers.is_empty() {
+        return;
+    }
+    runtime_shared::after_ms_detached(0, move || {
+        runtime_shared::cycle(|| {
+            for h in &handlers {
+                h(focused);
+            }
+        });
+    });
+}
+
+/// `endEditing:` hands the cell no view; its control view is the field.
+fn cell_report_focus_left<T: objc2::Message>(cell: &T) {
+    let control: *const NSView = unsafe { msg_send![cell, controlView] };
+    if !control.is_null() {
+        report_focus_within(unsafe { &*control }, false);
+    }
+}
+
 fn cell_fire_focus(ivars: &CellIvars, on: bool) {
     let cb = ivars.focus_setter.borrow().clone();
     let author = ivars.author_focus.borrow().clone();
@@ -2081,6 +2156,7 @@ declare_class!(
             suppress_editor_focus_ring(editor);
             // The field editor just engaged → the field is focused.
             cell_fire_focus(self.ivars(), true);
+            report_focus_within(view, true);
         }
 
         #[method(selectWithFrame:inView:editor:delegate:start:length:)]
@@ -2110,6 +2186,7 @@ declare_class!(
             suppress_editor_focus_ring(editor);
             // Click-to-edit installs the field editor here → focused.
             cell_fire_focus(self.ivars(), true);
+            report_focus_within(view, true);
         }
 
         // Editing ended (focus lost / committed) → clear FOCUSED.
@@ -2117,6 +2194,7 @@ declare_class!(
         fn end_editing(&self, editor: &NSText) {
             let _: () = unsafe { msg_send![super(self), endEditing: editor] };
             cell_fire_focus(self.ivars(), false);
+            cell_report_focus_left(self);
         }
     }
 );
@@ -2184,6 +2262,7 @@ declare_class!(
             };
             suppress_editor_focus_ring(editor);
             cell_fire_focus(self.ivars(), true);
+            report_focus_within(view, true);
         }
 
         #[method(selectWithFrame:inView:editor:delegate:start:length:)]
@@ -2210,12 +2289,14 @@ declare_class!(
             };
             suppress_editor_focus_ring(editor);
             cell_fire_focus(self.ivars(), true);
+            report_focus_within(view, true);
         }
 
         #[method(endEditing:)]
         fn end_editing(&self, editor: &NSText) {
             let _: () = unsafe { msg_send![super(self), endEditing: editor] };
             cell_fire_focus(self.ivars(), false);
+            cell_report_focus_left(self);
         }
     }
 );

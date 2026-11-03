@@ -787,6 +787,19 @@ impl caps::InputOps for LinuxBackend {
         };
         crate::states::install_hover(&node.widget(), handler)
     }
+
+    /// Author-facing `.on_focus(…)` — keyboard focus-within. See
+    /// `states::install_focus_within`.
+    fn install_focus_handler(&mut self, node: &Self::Node, handler: runtime_shared::FocusWithinHandler) {
+        let handler: runtime_shared::FocusWithinHandler = {
+            let f = handler;
+            Rc::new(move |focused| {
+                f(focused);
+                schedule_flush();
+            })
+        };
+        crate::states::install_focus_within(&node.widget(), handler)
+    }
 }
 
 impl caps::PressableOps for LinuxBackend {
@@ -1482,6 +1495,23 @@ impl caps::IntrospectionOps for LinuxBackend {
             return Some(false);
         };
         Some(gtk4::prelude::RootExt::focus(&root).is_some_and(|f| &f == widget || f.is_ancestor(widget)))
+    }
+
+    /// GTK's own Tab traversal: `move-focus` on the window, the signal the
+    /// window's Tab / Shift+Tab bindings emit. GtkWindow's handler walks
+    /// the focus chain (`gtk_widget_child_focus`) — exactly what a user's
+    /// Tab does, including keeping focus on the last focusable widget when
+    /// there is nothing further (GTK4 does not wrap). GTK4 has no
+    /// public way to synthesize the key event itself, so this is the path
+    /// just below it.
+    #[cfg(feature = "robot")]
+    fn move_focus(&self, node: &Self::Node, forward: bool) -> Option<caps::NativeInjection> {
+        let window = node.widget().root()?.downcast::<gtk4::Window>().ok()?;
+        let direction = if forward { gtk4::DirectionType::TabForward } else { gtk4::DirectionType::TabBackward };
+        Some(Box::new(move || {
+            window.emit_move_focus(direction);
+            Ok(())
+        }))
     }
 
     /// A `ScrolledWindow` (`scroll_view`, a virtualizer) scrolls its

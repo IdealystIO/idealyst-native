@@ -16,7 +16,9 @@ import android.widget.FrameLayout
  * only a key nothing below consumed dismisses. That covers both the overlay
  * itself holding focus (it takes focus when revealed) and a field inside it
  * holding focus — a `View.OnKeyListener` on the overlay would run only in the
- * first case.
+ * first case. A field passes an unclaimed Escape on to here: it is a
+ * [RustEditText], which declines the API 37+ `TextView` default of taking
+ * Escape to blur itself.
  *
  * Ordering with the rest of Back handling: the view tree sees a key before
  * the Activity, so the topmost modal (the one holding focus) takes Back

@@ -71,6 +71,40 @@ pub(crate) fn plan(press: &KeyPress) -> Option<KeyPlan> {
     press.text().map(|c| KeyPlan::Characters(c.to_string()))
 }
 
+// View.FOCUS_* (View.java).
+pub(crate) const FOCUS_BACKWARD: i32 = 0x1;
+pub(crate) const FOCUS_FORWARD: i32 = 0x2;
+const KEYCODE_TAB: i32 = 61;
+// KeyEvent.META_SYM_ON / META_FUNCTION_ON and the right-side bits — the
+// rest of what `KeyEvent.hasNoModifiers()` counts (lock states don't).
+const META_SYM_ON: i32 = 0x4;
+const META_FUNCTION_ON: i32 = 0x8;
+const META_SHIFT_RIGHT_ON: i32 = 0x80;
+const META_ALT_RIGHT_ON: i32 = 0x20;
+const META_CTRL_RIGHT_ON: i32 = 0x4000;
+const META_META_RIGHT_ON: i32 = 0x40000;
+
+/// The focus direction an unhandled key down moves focus in, as
+/// `ViewRootImpl`'s `performFocusNavigation` decides it for Tab: forward for
+/// a bare Tab (`hasNoModifiers`), backward for Shift+Tab
+/// (`hasModifiers(META_SHIFT_ON)`), none with any other modifier.
+pub(crate) fn tab_focus_direction(key_code: i32, meta_state: i32) -> Option<i32> {
+    if key_code != KEYCODE_TAB {
+        return None;
+    }
+    let held = |bits: i32| meta_state & bits != 0;
+    let shift = held(META_SHIFT_ON | META_SHIFT_LEFT_ON | META_SHIFT_RIGHT_ON);
+    let other = held(META_ALT_ON | META_ALT_LEFT_ON | META_ALT_RIGHT_ON)
+        || held(META_CTRL_ON | META_CTRL_LEFT_ON | META_CTRL_RIGHT_ON)
+        || held(META_META_ON | META_META_LEFT_ON | META_META_RIGHT_ON)
+        || held(META_SYM_ON | META_FUNCTION_ON);
+    match (shift, other) {
+        (false, false) => Some(FOCUS_FORWARD),
+        (true, false) => Some(FOCUS_BACKWARD),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +163,23 @@ mod tests {
             let Some(KeyPlan::Key { key_code, .. }) = plan(&press) else { panic!("{spec} has no keycode") };
             assert_eq!(keycode_code_name(key_code), Some(press.code.as_str()), "{spec}");
         }
+    }
+
+    #[test]
+    fn tab_moves_focus_forward_and_shift_tab_backward_only() {
+        let dir = |spec| {
+            let Some(KeyPlan::Key { key_code, meta_state }) = plan_of(spec) else { panic!("{spec}") };
+            tab_focus_direction(key_code, meta_state)
+        };
+        assert_eq!(dir("Tab"), Some(FOCUS_FORWARD));
+        assert_eq!(dir("Shift+Tab"), Some(FOCUS_BACKWARD));
+        assert_eq!(dir("Control+Tab"), None);
+        assert_eq!(dir("Alt+Tab"), None);
+        assert_eq!(dir("Meta+Tab"), None);
+        assert_eq!(dir("Control+Shift+Tab"), None);
+        assert_eq!(dir("Enter"), None);
+        // Caps Lock is a lock state, not a modifier.
+        assert_eq!(tab_focus_direction(61, 0x0010_0000), Some(FOCUS_FORWARD));
     }
 
     #[test]

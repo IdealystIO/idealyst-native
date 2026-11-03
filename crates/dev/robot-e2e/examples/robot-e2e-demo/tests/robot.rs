@@ -164,6 +164,35 @@ fn pressed_keys_edit_a_field_and_enter_submits_it(app: &mut App) {
     app.signal("note").assert_eq("\"Hi\"");
 }
 
+/// Tab moves keyboard focus to the next field and Shift+Tab back, through
+/// the platform's own focus traversal.
+#[robot_test]
+fn tab_moves_focus_between_fields(app: &mut App) {
+    app.test_id("tab-first").focus();
+    app.test_id("tab-first").assert_focused(true);
+    app.press_key("Tab");
+    app.test_id("tab-second").assert_focused(true);
+    app.test_id("tab-first").assert_focused(false);
+    app.press_key("Shift+Tab");
+    app.test_id("tab-first").assert_focused(true);
+    app.test_id("tab-second").assert_focused(false);
+}
+
+/// `view(on_focus = …)` hears keyboard focus reaching a field inside it
+/// (through each platform's own Tab traversal) and leaving it.
+#[robot_test]
+fn tab_into_and_out_of_a_view_reports_focus_within(app: &mut App) {
+    app.test_id("focus-outer").focus();
+    app.signal("focus_within").assert_eq("false");
+    app.press_key("Tab");
+    app.test_id("focus-inner").assert_focused(true);
+    app.signal("focus_within").assert_eq("true");
+    // Out again by moving focus to the field before it.
+    app.test_id("focus-outer").focus();
+    app.test_id("focus-outer").assert_focused(true);
+    app.signal("focus_within").assert_eq("false");
+}
+
 /// Focusing a field reports it focused from the first focus after load, and
 /// blurring it reports the blur. (On web, a headless browser window that
 /// is not the OS's focused window delivers no `focus` event for the first

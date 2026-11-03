@@ -1231,3 +1231,24 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustFocusListener_nativeF
     );
     keep as jboolean
 }
+
+/// `RustFocusWithinListener.nativeFocusWithin` — a `view` / `pressable`
+/// `on_focus` report (`imp/focus_within.rs`).
+///
+/// # Safety
+///
+/// `ptr` must come from `focus_within::install`'s leak (never freed).
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustFocusWithinListener_nativeFocusWithin(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+    focused: jboolean,
+) {
+    if ptr == 0 {
+        return;
+    }
+    let slot = &*(ptr as *const crate::imp::focus_within::FocusWithinSlot);
+    let handler = slot.handler.clone();
+    run_void_callback("focus-within", std::panic::AssertUnwindSafe(|| handler(focused != 0)));
+}

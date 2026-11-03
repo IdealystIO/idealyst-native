@@ -405,6 +405,14 @@ impl ScopeAlive {
         self.wrap1(f)
     }
 
+    /// `on_focus` — plain notification, nothing to answer with.
+    pub fn wrap_focus(
+        &self,
+        f: runtime_shared::FocusWithinHandler,
+    ) -> runtime_shared::FocusWithinHandler {
+        self.wrap1(f)
+    }
+
     /// Wheel / scroll-wheel handler.
     pub fn wrap_wheel(&self, f: runtime_shared::WheelHandler) -> runtime_shared::WheelHandler {
         let anchor = self.0.clone();

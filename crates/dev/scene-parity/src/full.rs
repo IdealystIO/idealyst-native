@@ -501,6 +501,14 @@ impl FullRecorder {
         self.rec.push(format!("install_hover_handler {node}"));
     }
 
+    fn install_focus_handler_impl(
+        &mut self,
+        node: &PNode,
+        _handler: runtime_shared::FocusWithinHandler,
+    ) {
+        self.rec.push(format!("install_focus_handler {node}"));
+    }
+
     fn install_file_drop_handler_impl(
         &mut self,
         node: &PNode,
@@ -1108,6 +1116,10 @@ impl caps::InputOps for FullRecorder {
 
     fn install_hover_handler(&mut self, node: &PNode, handler: runtime_shared::HoverHandler) {
         self.install_hover_handler_impl(node, handler)
+    }
+
+    fn install_focus_handler(&mut self, node: &PNode, handler: runtime_shared::FocusWithinHandler) {
+        self.install_focus_handler_impl(node, handler)
     }
 
     fn install_file_drop_handler(

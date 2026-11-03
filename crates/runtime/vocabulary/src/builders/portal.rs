@@ -498,6 +498,7 @@ fn backdrop_layer(backdrop: BackdropMode, backdrop_style: Option<StyleProp>, on_
             test_id: None,
             on_press,
             on_hover: None,
+            on_focus: None,
             disabled: None,
             preserves_focus: false,
             style: Some(StyleProp::Static(Rc::new(fill))),

@@ -2418,6 +2418,14 @@ impl WebBackend {
         primitives::hover::install(node, handler);
     }
 
+    pub(crate) fn install_focus_handler_impl(
+        &mut self,
+        node: &Node,
+        handler: runtime_shared::FocusWithinHandler,
+    ) {
+        primitives::focus::install(node, handler);
+    }
+
     pub(crate) fn install_file_drop_handler_impl(
         &mut self,
         node: &Node,

@@ -63,6 +63,16 @@ fn regression_ui_view_on_hover_and_on_wheel_attach() {
 }
 
 #[test]
+fn ui_view_on_focus_attaches_a_focus_handler() {
+    let ops = mount_ops(|| ui! {
+        view(on_focus = |_focused: bool| {}) {
+            text { "inside" }
+        }
+    });
+    assert!(has_op(&ops, "install_focus_handler"), "on_focus dropped; ops:\n{}", ops.join("\n"));
+}
+
+#[test]
 fn regression_ui_view_bind_fills_the_ref() {
     let h = Harness::new();
     let r: Ref<ViewHandle> = Ref::new();

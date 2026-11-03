@@ -467,6 +467,15 @@ impl PointerEvent {
     }
 }
 
+impl FocusEvent {
+    /// `relatedTarget`: on `focusout`/`blur` the element GAINING focus, on
+    /// `focusin`/`focus` the one losing it; `None` when focus comes from
+    /// or goes to outside the document.
+    pub fn related_target(&self) -> Option<EventTarget> {
+        obj(&self.0, "relatedTarget")
+    }
+}
+
 impl WheelEvent {
     pub fn delta_x(&self) -> f64 {
         num(&self.0, "deltaX")

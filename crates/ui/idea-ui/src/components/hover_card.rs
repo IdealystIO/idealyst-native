@@ -32,7 +32,17 @@
 //!   transparent click-away catcher (the one `Popover` uses) sits behind
 //!   it, so the page under the card does not scroll or take presses until
 //!   the card is closed.
-//! - **Escape** closes it (the anchored portal's `on_dismiss`).
+//! - **Keyboard** — keyboard focus on the trigger (Tab onto the button it
+//!   wraps; `on_focus` on the wrapper, which hears its children) opens the
+//!   card at once: no open delay, since a focus is deliberate where a
+//!   pointer pass may not be. Focus leaving the trigger closes it after
+//!   [`HoverCardProps::close_delay_ms`], unless focus moved into the card
+//!   (or the pointer rests on either) — the same bridge the pointer uses.
+//!   A click that focuses the trigger is not keyboard focus and does not
+//!   pin the card open.
+//! - **Escape** closes it (the anchored portal's `on_dismiss`). While focus
+//!   stays on the trigger it stays closed; focusing the trigger again
+//!   reopens it.
 //!
 //! ## No backdrop on hover
 //!
@@ -47,11 +57,17 @@
 //! ## Accessibility
 //!
 //! The card carries `Role::Tooltip` — it describes its trigger and does
-//! not take focus. Opening on keyboard focus of the trigger is not wired:
-//! a `view` / `pressable` has no focus-change channel to observe
-//! (only `text_input` reports focus), so a keyboard user does not see the
-//! card. Keep what the card says available elsewhere (the progress
-//! value itself, a details screen).
+//! not take focus itself. A keyboard user sees it by focusing the trigger,
+//! which needs a focusable trigger: a card around a `Button` opens on Tab,
+//! one around a bare `Progress` (nothing focusable) cannot be reached by
+//! keyboard — keep what such a card says available elsewhere. What takes
+//! keyboard focus is the platform's: a `Button` (a `pressable`) on web,
+//! macOS (Tab with Full Keyboard Access, as for any AppKit button) and
+//! Android (keyboard / D-pad); text inputs everywhere. A `pressable` is not
+//! a focus target on Linux, Windows or iOS, so there only a text input
+//! inside the trigger opens it from the keyboard (see `on_focus` in the
+//! primitives docs). A touch-only phone has no keyboard focus; the
+//! long-press opens the card there.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -210,6 +226,9 @@ struct HoverIntent {
     shown: Cell<bool>,
     over_trigger: Cell<bool>,
     over_card: Cell<bool>,
+    /// Keyboard focus is on the trigger / inside the card (`on_focus`).
+    focus_trigger: Cell<bool>,
+    focus_card: Cell<bool>,
     generation: Cell<u64>,
     open_delay_ms: Reactive<u32>,
     close_delay_ms: Reactive<u32>,
@@ -227,6 +246,26 @@ impl HoverIntent {
         self.settle();
     }
 
+    /// Keyboard focus reached the trigger: open now (module docs). Losing
+    /// it re-decides like a pointer leave, so focus moving into the card
+    /// inside the close delay keeps it open.
+    fn focus_trigger(self: &Rc<Self>, focused: bool) {
+        self.focus_trigger.set(focused);
+        if focused {
+            self.bump();
+            if !self.shown.get() {
+                self.set_shown(true, false);
+            }
+        } else {
+            self.settle();
+        }
+    }
+
+    fn focus_card(self: &Rc<Self>, focused: bool) {
+        self.focus_card.set(focused);
+        self.settle();
+    }
+
     fn bump(&self) -> u64 {
         let g = self.generation.get().wrapping_add(1);
         self.generation.set(g);
@@ -237,7 +276,10 @@ impl HoverIntent {
     /// pointer is over either box, close after the close delay when it is
     /// over neither. Any pending timer goes stale.
     fn settle(self: &Rc<Self>) {
-        let want = self.over_trigger.get() || self.over_card.get();
+        let want = self.over_trigger.get()
+            || self.over_card.get()
+            || self.focus_trigger.get()
+            || self.focus_card.get();
         let generation = self.bump();
         if want == self.shown.get() {
             return;
@@ -261,17 +303,24 @@ impl HoverIntent {
         self.set_shown(true, true);
     }
 
-    /// Escape / a tap outside: close now.
+    /// Escape / a tap outside: close now. Focus that is still on the
+    /// trigger stops asking for the card — otherwise the next pointer
+    /// leave would re-decide "focused, so open" and undo the Escape. It
+    /// asks again on the next focus (`on_focus` reports transitions, so
+    /// that is a fresh `true` after the trigger loses focus).
     fn close_now(&self) {
         self.bump();
+        self.focus_trigger.set(false);
         self.set_shown(false, false);
     }
 
     fn set_shown(&self, shown: bool, by_touch: bool) {
         self.shown.set(shown);
         if !shown {
-            // The card unmounts without reporting a pointer leave.
+            // The card unmounts without reporting a pointer leave or a
+            // focus loss.
             self.over_card.set(false);
+            self.focus_card.set(false);
         }
         self.touch_open.set(by_touch);
         self.open.set(shown);
@@ -279,8 +328,8 @@ impl HoverIntent {
 }
 
 /// The card surface: a column `view` holding the author's content, with
-/// the tooltip role and the card test id. Returned as a builder because the
-/// caller chains `.on_hover`, which `ui!` has no attribute for.
+/// the tooltip role and the card test id. Returned as a builder: the caller
+/// chains the card's `.on_hover` / `.on_focus` onto it.
 fn card_surface(
     content: &HoverCardContent,
     styles: &HoverCardSlotStyles,
@@ -317,6 +366,8 @@ pub fn HoverCard(props: HoverCardProps) -> Element {
         shown: Cell::new(false),
         over_trigger: Cell::new(false),
         over_card: Cell::new(false),
+        focus_trigger: Cell::new(false),
+        focus_card: Cell::new(false),
         generation: Cell::new(0),
         open_delay_ms: props.open_delay_ms,
         close_delay_ms: props.close_delay_ms,
@@ -338,9 +389,13 @@ pub fn HoverCard(props: HoverCardProps) -> Element {
     // and the handler setters, which the macro has no attribute for.
     let anchor = {
         let intent = intent.clone();
+        let focus_intent = intent.clone();
         let wrapper = runtime_core::view(kids)
             .bind(anchor_ref)
             .on_hover(move |entering| intent.hover_trigger(entering))
+            // Focus-within: the wrapper is not a tab stop; it hears the
+            // focusable trigger it wraps.
+            .on_focus(move |focused| focus_intent.focus_trigger(focused))
             // Returns the recognizer's response so the press still reaches
             // the trigger's own handler.
             .on_touch(move |ev| lp_handler(ev))
@@ -356,6 +411,10 @@ pub fn HoverCard(props: HoverCardProps) -> Element {
     let on_card_hover = {
         let intent = intent.clone();
         move |entering: bool| intent.hover_card(entering)
+    };
+    let on_card_focus = {
+        let intent = intent.clone();
+        move |focused: bool| intent.focus_card(focused)
     };
     let dismiss: Rc<dyn Fn()> = {
         let intent = intent.clone();
@@ -374,6 +433,7 @@ pub fn HoverCard(props: HoverCardProps) -> Element {
                     AnchorTarget::from(anchor_ref),
                     vec![card_surface(&content, &styles, card_test_id)
                         .on_hover(on_card_hover.clone())
+                        .on_focus(on_card_focus.clone())
                         .into_element()],
                 )
                 .side(side.get())
@@ -395,8 +455,9 @@ mod tests {
     use crate::test_support::{classify, P};
     use idea_theme::testing::with_test_world;
 
-    /// The trigger wrapper carries the hover handler (pointer open/close)
-    /// and the touch handler (long-press), and the card is a reactive
+    /// The trigger wrapper carries the hover handler (pointer open/close),
+    /// the focus handler (keyboard open/close) and the touch handler
+    /// (long-press), and the card is a reactive
     /// sibling spliced in by a `fragment`, so the wrapper adds no layout box
     /// beyond the trigger's own.
     #[test]
@@ -414,12 +475,16 @@ mod tests {
             assert_eq!(kids.len(), 2, "fragment = anchor view + reactive card");
             match classify(kids.remove(0)) {
                 P::View {
-                    on_hover, on_touch, ..
+                    on_hover,
+                    on_touch,
+                    on_focus,
+                    ..
                 } => {
                     assert!(
                         on_hover,
                         "the anchor must carry on_hover (pointer open/close)"
                     );
+                    assert!(on_focus, "the anchor must carry on_focus (keyboard open/close)");
                     assert!(on_touch, "the anchor must carry on_touch (long-press)");
                 }
                 _ => panic!("the first fragment child must be the anchor View"),

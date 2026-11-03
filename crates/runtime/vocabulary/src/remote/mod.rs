@@ -81,7 +81,8 @@ pub mod wasm;
 /// - 6: [`Node::Pressable`] carries `on_hover`.
 /// - 7: [`Node::ScrollView`] carries `axis` (a [`runtime_shared::ScrollAxis`])
 ///   in place of `horizontal`.
-pub const CODEC_VERSION: u32 = 7;
+/// - 8: [`Node::View`] and [`Node::Pressable`] carry `on_focus`.
+pub const CODEC_VERSION: u32 = 8;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.
@@ -130,6 +131,8 @@ pub enum Node {
         on_touch: Option<Cb>,
         on_wheel: Option<Cb>,
         on_hover: Option<Cb>,
+        /// Takes a `bool` (CODEC_VERSION 8).
+        on_focus: Option<Cb>,
         /// Takes a [`WireFileDrop`].
         on_file_drop: Option<Cb>,
         children: Vec<Node>,
@@ -139,6 +142,8 @@ pub enum Node {
         on_press: Cb,
         /// Takes a `bool` (CODEC_VERSION 6).
         on_hover: Option<Cb>,
+        /// Takes a `bool` (CODEC_VERSION 8).
+        on_focus: Option<Cb>,
         disabled: Option<Val<bool>>,
         preserves_focus: bool,
         children: Vec<Node>,

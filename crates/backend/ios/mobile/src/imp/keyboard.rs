@@ -47,8 +47,19 @@
 //!   input owns a field's presses; a field never sees Escape as a text change,
 //!   so its `on_key_down` has nothing to consume first.
 //!
-//! With neither (no field focused and no app key listener) no framework view
-//! is first responder and UIKit delivers the press to no view of ours.
+//! - **The overlay responder** (`IdealystEscapeResponder`, below) when no
+//!   view holds first responder at all — nothing focused and no app key
+//!   listener. UIKit gathers key commands only from the first responder up
+//!   its chain, so with no first responder an Escape reached no view of
+//!   ours and an open overlay stayed open. While a dismissable portal is
+//!   open, the backend makes a responder of its own first responder
+//!   whenever none holds it ([`claim_key_focus_soon`]): when the portal
+//!   opens, and when a field that held focus resigns. It is a plain view,
+//!   not a text input, so taking first responder shows no keyboard; and it
+//!   only ever takes first responder from nothing, never from a field. With
+//!   an app key listener installed, the app's key responder is the one
+//!   reclaimed (it closes the overlay on Escape itself, and the app keeps
+//!   hearing keys).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -258,6 +269,134 @@ impl IdealystKeyResponder {
     }
 }
 
+declare_class!(
+    /// The overlay responder (module docs, "Escape closes the topmost
+    /// overlay"): an invisible view that can hold first responder and
+    /// offers the Escape key command while a dismissable portal is open.
+    pub(crate) struct IdealystEscapeResponder;
+
+    unsafe impl ClassType for IdealystEscapeResponder {
+        type Super = UIView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystEscapeResponder";
+    }
+
+    impl DeclaredClass for IdealystEscapeResponder {
+        type Ivars = ();
+    }
+
+    unsafe impl IdealystEscapeResponder {
+        #[method(canBecomeFirstResponder)]
+        fn can_become_first_responder(&self) -> bool {
+            true
+        }
+
+        #[method_id(keyCommands)]
+        fn key_commands(&self) -> Option<Retained<NSObject>> {
+            escape_key_commands(None)
+        }
+
+        #[method(idealystEscapeDismiss:)]
+        fn escape_dismiss(&self, _command: *mut NSObject) {
+            crate::imp::ffi_guard::guard_ffi("IdealystEscapeResponder::escapeDismiss", || {
+                escape_dismiss();
+            });
+        }
+    }
+);
+
+/// The responders [`claim_key_focus`] may make first responder: the
+/// overlay responder, added to the host root at first use, and the app's
+/// key responder while an app key listener is installed (preferred).
+#[derive(Default)]
+struct KeyFocusSlots {
+    host_view: Option<Retained<UIView>>,
+    escape: Option<Retained<IdealystEscapeResponder>>,
+    app: Option<Retained<IdealystKeyResponder>>,
+}
+
+thread_local! {
+    static KEY_FOCUS: RefCell<KeyFocusSlots> = RefCell::new(KeyFocusSlots::default());
+}
+
+/// Record the host root the overlay responder lives in. Called from
+/// `IosBackend::set_host_root`.
+pub(crate) fn set_key_focus_host(view: &Retained<UIView>) {
+    KEY_FOCUS.with(|k| {
+        let mut k = k.borrow_mut();
+        if let Some(old) = k.escape.take() {
+            let _: () = unsafe { msg_send![&*old, removeFromSuperview] };
+        }
+        k.host_view = Some(view.clone());
+    });
+}
+
+/// Whether `view` or any view under it is first responder.
+fn holds_first_responder(view: &UIView) -> bool {
+    unsafe {
+        if msg_send![view, isFirstResponder] {
+            return true;
+        }
+        let subviews: Retained<NSObject> = msg_send_id![view, subviews];
+        let count: usize = msg_send![&*subviews, count];
+        (0..count).any(|i| {
+            let child: *mut UIView = msg_send![&*subviews, objectAtIndex: i];
+            child.as_ref().is_some_and(holds_first_responder)
+        })
+    }
+}
+
+/// Make a responder of ours first responder when a dismissable portal is
+/// open and nothing in the host's window holds first responder (module
+/// docs). Returns whether one took it. Never takes first responder from a
+/// view that holds it — a field the user is typing in keeps its focus.
+pub(crate) fn claim_key_focus() -> bool {
+    if !runtime_vocabulary::escape_dismiss::has_dismissable() {
+        return false;
+    }
+    let Some(host) = KEY_FOCUS.with(|k| k.borrow().host_view.clone()) else {
+        return false;
+    };
+    let window: Option<Retained<UIView>> = unsafe { msg_send_id![&*host, window] };
+    let Some(window) = window else {
+        return false;
+    };
+    let controller: *mut NSObject = unsafe { msg_send![&*window, rootViewController] };
+    let controller_holds = !controller.is_null() && unsafe { msg_send![controller, isFirstResponder] };
+    if controller_holds || holds_first_responder(&window) {
+        return false;
+    }
+    let mtm = MainThreadMarker::new().expect("UIKit responders are main-thread only");
+    let app: Option<Retained<IdealystKeyResponder>> = KEY_FOCUS.with(|k| k.borrow().app.clone());
+    if let Some(app) = app {
+        return unsafe { msg_send![&*app, becomeFirstResponder] };
+    }
+    let escape = KEY_FOCUS.with(|k| {
+        k.borrow_mut()
+            .escape
+            .get_or_insert_with(|| {
+                let responder: Retained<IdealystEscapeResponder> =
+                    unsafe { msg_send_id![super(mtm.alloc::<IdealystEscapeResponder>().set_ivars(())), init] };
+                // Zero frame, in the host root: invisible, in the window.
+                let _: () = unsafe { msg_send![&*host, addSubview: &*responder] };
+                responder
+            })
+            .clone()
+    });
+    unsafe { msg_send![&*escape, becomeFirstResponder] }
+}
+
+/// [`claim_key_focus`] on the next main-queue turn: after the portal being
+/// mounted is in its window (and a field inside it that focuses on mount
+/// has), or after focus that is moving between fields has landed.
+pub(crate) fn claim_key_focus_soon() {
+    crate::imp::portal::schedule_main(|| {
+        crate::imp::ffi_guard::guard_ffi("keyboard::claim_key_focus", || {
+            claim_key_focus();
+        });
+    });
+}
+
 /// The installed app-level key source: the responder view and the slot its
 /// sink lives in (swappable without re-taking first responder).
 pub(crate) struct AppKeyboard {
@@ -276,6 +415,7 @@ impl AppKeyboard {
             let _: bool = msg_send![&*self.responder, resignFirstResponder];
             let _: () = msg_send![&*self.responder, removeFromSuperview];
         }
+        KEY_FOCUS.with(|k| k.borrow_mut().app = None);
     }
 }
 
@@ -317,6 +457,7 @@ pub(crate) fn set_keyboard_sink(backend: &mut IosBackend, sink: Option<KeyboardS
             object: nil,
         ];
     }
+    KEY_FOCUS.with(|k| k.borrow_mut().app = Some(responder.clone()));
     backend.app_keyboard = Some(AppKeyboard { sink: slot, responder });
 }
 

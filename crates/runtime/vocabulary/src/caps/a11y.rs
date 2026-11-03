@@ -193,6 +193,20 @@ pub trait IntrospectionOps: Host {
         None
     }
 
+    /// Move keyboard focus in `node`'s window to the next (`forward`) or
+    /// previous focusable element, in the platform's own focus order —
+    /// what Tab / Shift+Tab does there. The robot's key dispatch (a backend
+    /// without [`native_key`](Self::native_key)) runs it for an unconsumed
+    /// Tab. `None` = the backend can't move focus, and Tab moves nothing.
+    ///
+    /// Returned as an injection, like [`native_key`](Self::native_key):
+    /// moving focus fires the elements' focus and blur handlers, which are
+    /// author code that may borrow the backend.
+    #[allow(unused_variables)]
+    fn move_focus(&self, node: &Self::Node, forward: bool) -> Option<NativeInjection> {
+        None
+    }
+
     /// Whether the platform's shortcut modifier is Command (Meta) — what a
     /// robot `ControlOrMeta` resolves to. Apple platforms by default; the
     /// web backend asks the browser which OS it runs on.

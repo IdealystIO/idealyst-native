@@ -102,6 +102,10 @@ pub const LAUNCHED_BY_ENV: &str = "IDEALYST_DEV_LAUNCHED_BY";
 
 /// [`SessionEntry::launched_by`] of a session `idealyst mcp` started.
 pub const LAUNCHED_BY_MCP: &str = "mcp";
+/// [`SessionEntry::launched_by`] of a session `idealyst test` started for
+/// its suite. Its robot relay marks the app's registration `under_test`, so
+/// nothing that discovers apps on its own drives it beside the suite.
+pub const LAUNCHED_BY_TEST: &str = "test";
 /// [`SessionEntry::launched_by`] of a session typed at a terminal.
 pub const LAUNCHED_BY_USER: &str = "user";
 /// [`SessionEntry::launched_by`] when the launcher said nothing and the

@@ -1640,6 +1640,17 @@ impl GlueView {
         self
     }
 
+    /// Keyboard focus entered (`true`) / left (`false`) this view or any
+    /// descendant — focus-WITHIN, counting only keyboard focus (the focus
+    /// a ring shows, `:focus-visible`). The view itself never becomes a
+    /// tab stop; it hears the focusable children it wraps. No-op where
+    /// the platform has no keyboard focus (a touch-only phone without a
+    /// hardware keyboard). See `runtime_shared::focus`.
+    pub fn on_focus(mut self, handler: impl Fn(bool) + 'static) -> Self {
+        self.b = self.b.on_focus(handler);
+        self
+    }
+
     /// File drag-and-drop handler.
     pub fn on_file_drop(
         mut self,
@@ -3934,6 +3945,14 @@ impl GluePressable {
     /// Pointer-enter/leave notifications (`true` on enter), as on a view.
     pub fn on_hover(mut self, handler: impl Fn(bool) + 'static) -> Self {
         self.b = self.b.on_hover(handler);
+        self
+    }
+
+    /// Keyboard focus entered (`true`) / left (`false`) this pressable —
+    /// Tab / programmatic focus, not a click (`:focus-visible`), as on a
+    /// view. See `runtime_shared::focus`.
+    pub fn on_focus(mut self, handler: impl Fn(bool) + 'static) -> Self {
+        self.b = self.b.on_focus(handler);
         self
     }
 

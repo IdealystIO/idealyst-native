@@ -439,6 +439,12 @@ status = "gap"
 reason = "on_hover is inert"
 
 [[allow]]
+method = "InputOps::install_focus_handler"
+backends = ["gpu"]
+status = "gap"
+reason = "on_focus is inert (focus is a tapped TextInput only; no keyboard traversal to report)"
+
+[[allow]]
 method = "InputOps::install_wheel_handler"
 backends = ["linux", "gpu"]
 status = "gap"

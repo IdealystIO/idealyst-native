@@ -423,3 +423,134 @@ fn a_window_backspace_edits_only_the_field_that_reports_focus() {
     assert_eq!(text(&robot, "email"), "Hi", "Backspace edits the focused field");
     robot.reset();
 }
+
+/// host-mock's stand-in for a platform's focus traversal: the text fields
+/// in mount order, Tab moving `toolkit_focus` to the next and Shift+Tab to
+/// the previous, wrapping. Records the node each traversal was asked
+/// through, and checks it runs with the backend free (moving focus runs
+/// focus handlers, author code that may borrow it).
+fn install_focus_ring(h: &Harness) -> Rc<RefCell<Vec<(host_mock::Node, bool)>>> {
+    let asked: Rc<RefCell<Vec<(host_mock::Node, bool)>>> = Rc::default();
+    let (shared, backend, log) = (h.shared.clone(), h.backend.clone(), asked.clone());
+    *h.shared.focus_traversal.borrow_mut() = Some(Rc::new(move |through, forward| {
+        let _free = backend.try_borrow_mut().map_err(|_| "the backend is still borrowed".to_string())?;
+        log.borrow_mut().push((through, forward));
+        let ring: Vec<host_mock::Node> = shared
+            .kinds
+            .borrow()
+            .iter()
+            .filter(|(_, k)| k.starts_with("text_input") || k.starts_with("text_area"))
+            .map(|(n, _)| *n)
+            .collect();
+        let mut focus = shared.toolkit_focus.borrow_mut();
+        let at = ring.iter().position(|n| focus.get(n) == Some(&true));
+        let next = match (at, forward) {
+            (None, true) => 0,
+            (None, false) => ring.len() - 1,
+            (Some(i), true) => (i + 1) % ring.len(),
+            (Some(i), false) => (i + ring.len() - 1) % ring.len(),
+        };
+        for (i, n) in ring.iter().enumerate() {
+            focus.insert(*n, i == next);
+        }
+        Ok(())
+    }));
+    asked
+}
+
+fn focused(robot: &Robot, id: &str) -> bool {
+    robot.state(&find(robot, id)).unwrap().unwrap().focused == Some(true)
+}
+
+/// REGRESSION (robot E2E `tab_moves_focus_between_fields` on iOS and
+/// Linux): on the dispatch mechanism Tab reached the field and the app and
+/// stopped — focus stayed in the first field, where every native key path
+/// moves it to the next. An unconsumed Tab now runs the platform's focus
+/// traversal (`IntrospectionOps::move_focus`) forward, Shift+Tab backward,
+/// through the focused field's window; with no field focused, through the
+/// window the press went to.
+#[test]
+fn regression_dispatch_tab_moves_focus_in_the_platform_order() {
+    let robot = Robot::new();
+    robot.reset();
+    key_input::reset_for_tests();
+    let h = Harness::new();
+    let _r = form(&h, Rc::default());
+    let asked = install_focus_ring(&h);
+    let app_keys: Rc<RefCell<Vec<String>>> = Rc::default();
+    let _listener = {
+        let app_keys = app_keys.clone();
+        key_input::add_listener(move |e| {
+            if e.is_press() {
+                app_keys.borrow_mut().push(format!("{}{}", if e.shift { "Shift+" } else { "" }, e.key));
+            }
+            KeyOutcome::Default
+        })
+    };
+
+    // Nothing focused: the window's traversal starts at the first field.
+    assert_eq!(verb(json!({ "key": "Tab" })).unwrap(), json!({ "mechanism": "dispatch" }));
+    assert!(focused(&robot, "email"), "Tab from nowhere focuses the first field");
+    assert!(!focused(&robot, "notes"));
+
+    verb(json!({ "key": "Tab" })).unwrap();
+    assert!(focused(&robot, "notes"), "Tab moves to the next field");
+    assert!(!focused(&robot, "email"));
+    verb(json!({ "key": "Shift+Tab" })).unwrap();
+    assert!(focused(&robot, "email"), "Shift+Tab moves back");
+
+    // Shift+Tab went through the focused field — the text area — not the
+    // window, and the app still heard every key.
+    let notes_node = *h.shared.kinds.borrow().iter().find(|(_, k)| k.starts_with("text_area")).unwrap().0;
+    assert_eq!(asked.borrow().last(), Some(&(notes_node, false)));
+    assert_eq!(app_keys.borrow().as_slice(), ["Tab", "Tab", "Shift+Tab"]);
+    assert_eq!(text(&robot, "email"), "", "Tab types nothing in a single-line field");
+    robot.reset();
+}
+
+/// What Tab does instead of moving focus: a text area takes a plain Tab as
+/// text (as `UITextView` and GTK's `TextView` do — Shift+Tab still leaves
+/// it); a field's `on_key_down` or an app listener that prevents it keeps
+/// focus where it is; Control+Tab is not traversal; and a backend without
+/// traversal moves nothing.
+#[test]
+fn tab_that_is_consumed_or_typed_moves_no_focus() {
+    let robot = Robot::new();
+    robot.reset();
+    key_input::reset_for_tests();
+    let h = Harness::new();
+    let _r = form(&h, Rc::default());
+    let asked = install_focus_ring(&h);
+    let notes = find(&robot, "notes");
+    robot.press_key(Some(&notes), &KeyChord::parse("a").unwrap()).unwrap();
+    let notes_node = *h.shared.kinds.borrow().iter().find(|(_, k)| k.starts_with("text_area")).unwrap().0;
+    h.shared.toolkit_focus.borrow_mut().insert(notes_node, true);
+
+    verb(json!({ "key": "Tab" })).unwrap();
+    assert_eq!(text(&robot, "notes"), "a\t", "a text area types the tab");
+    assert!(focused(&robot, "notes"));
+    assert!(asked.borrow().is_empty(), "no traversal");
+
+    verb(json!({ "key": "Control+Tab" })).unwrap();
+    assert!(focused(&robot, "notes") && asked.borrow().is_empty(), "Control+Tab is not traversal");
+
+    let app_takes_tab = key_input::add_listener(|e| {
+        if e.key == "Tab" {
+            KeyOutcome::PreventDefault
+        } else {
+            KeyOutcome::Default
+        }
+    });
+    verb(json!({ "key": "Shift+Tab" })).unwrap();
+    assert!(focused(&robot, "notes") && asked.borrow().is_empty(), "an app listener that takes Tab keeps focus");
+    drop(app_takes_tab);
+
+    verb(json!({ "key": "Shift+Tab" })).unwrap();
+    assert!(focused(&robot, "email"), "Shift+Tab leaves the text area");
+    assert_eq!(text(&robot, "notes"), "a\t");
+
+    *h.shared.focus_traversal.borrow_mut() = None;
+    verb(json!({ "key": "Tab" })).unwrap();
+    assert!(focused(&robot, "email"), "no traversal on the backend: focus stays");
+    robot.reset();
+}

@@ -10,6 +10,7 @@ Robot tools (`find_element`, `click`, `screenshot`, …) act on a **running** ap
 - With several registered, it is required. The error lists the candidates.
 - `selector` is the app `name`, or `name:platform` when one app runs on two platforms (`todo:web` vs `todo:macos`).
 - `compare_native_parity` takes two selectors, `app_a` and `app_b`.
+- An entry with `"under_test": true` is the app of an `idealyst test` run. That run's suite drives it alone, so Robot tools refuse it: your steps would interleave with the suite's. Start your own session (`run_dev`) to drive the project.
 
 Apps are discovered from per-process registration files at `~/.idealyst/apps/<name>-<pid>.json` (see `list_apps`). With `--robot-port`, the server talks to that one bridge and ignores discovery. With `--no-robot`, every Robot tool returns an error.
 

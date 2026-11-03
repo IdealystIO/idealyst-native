@@ -178,3 +178,11 @@ harness = false
 [[test]]
 name = "text_input_focus"
 harness = false
+
+[[test]]
+name = "key_focus"
+harness = false
+
+[[test]]
+name = "focus_within"
+harness = false

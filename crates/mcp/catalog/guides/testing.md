@@ -362,8 +362,11 @@ Apple platforms and Control elsewhere. Both return the mechanism:
 `"native"` on web, macOS, Windows and Android (real key events),
 `"dispatch"` on iOS and Linux, where the framework's key paths run instead
 (the focused field's `on_key_down`, `on_key` listeners, then the field's
-text edit). Either way Backspace deletes and an unconsumed Escape closes the
-topmost overlay with an `on_dismiss`; Tab moves focus only on `"native"`.
+text edit). Either way Backspace deletes, an unconsumed Escape closes the
+topmost overlay with an `on_dismiss`, and Tab / Shift+Tab move focus to the
+next / previous field in the platform's own order — assert it with
+`assert_focused`. Which controls are Tab stops is the platform's: a button
+is one on web, never on iOS.
 
 ## 4. Run it on every platform
 
@@ -389,6 +392,13 @@ idealyst test --windows  <project>     # a Windows host, or IDEALYST_WINDOWS_REM
   turns it off. A `--web` run of a project without a server can't be
   isolated (that shape stages into the project's own `pkg/`), so it runs
   unisolated;
+- runs one session per key: while another run (or an `idealyst dev
+  --isolated test`) holds the key, the run is refused before anything
+  builds, naming that session's pid, who started it and when. To run in
+  parallel — a CI matrix, several agents — give each run its own key, or
+  pass `--isolated auto` to take the first free one of `test`, `test-2`,
+  … (each key has its own build cache, so a key's first run builds cold).
+  A run that crashed doesn't hold its key: its process is gone;
 - marks it test-driven, which is what `is_test_driven()` reads;
 - waits for *this* project's app to register;
 - runs the suite against it, once per size, device or simulator;
@@ -396,7 +406,7 @@ idealyst test --windows  <project>     # a Windows host, or IDEALYST_WINDOWS_REM
 
 `--filter <name>` narrows the run, `--test <file>` picks another test
 target, and `--attach` drives an app you already started with
-`idealyst dev`. Under a bare `cargo test`, with no app reachable, each
+`idealyst dev` (never the app of another `idealyst test` run). Under a bare `cargo test`, with no app reachable, each
 `#[robot_test]` skips instead of failing. The runner asks the app its
 platform and runs only the `platforms = …` tests that belong to it, naming
 the rest on a `[test] not on <platform>: …` line.

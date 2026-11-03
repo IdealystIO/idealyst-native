@@ -377,6 +377,10 @@ pub(crate) struct ElementActions {
     /// Real key input in this element's window
     /// ([`IntrospectionOps::native_key`]); see [`Robot::press_key`].
     pub native_key: Option<key::NativeKey>,
+    /// The platform's focus traversal in this element's window
+    /// ([`IntrospectionOps::move_focus`]), for a Tab on
+    /// [`Robot::press_key`]'s dispatch fallback.
+    pub move_focus: Option<key::MoveFocus>,
     /// A text field's key handling, for [`Robot::press_key`]'s dispatch
     /// fallback ([`KeyTarget`]).
     pub keys: Option<KeyTarget>,
@@ -824,6 +828,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
             as Rc<dyn Fn(&[PointerStep]) -> Option<NativeInjection>>
     };
     let native_key = key::native_key_closure(backend, node);
+    let move_focus = key::move_focus_closure(backend, node);
     backend.borrow().note_introspection_root(node);
     ensure_region_hook();
 
@@ -871,6 +876,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
                 native_pointer: Some(native_pointer),
                 resize_window,
                 native_key: Some(native_key),
+                move_focus: Some(move_focus),
                 keys,
             },
             parent,

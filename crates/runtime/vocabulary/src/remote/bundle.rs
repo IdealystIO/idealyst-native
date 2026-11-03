@@ -443,6 +443,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             on_touch: p.on_touch.map(|f| handler(move |e| f(e))),
             on_wheel: p.on_wheel.map(|f| handler(move |e| f(e))),
             on_hover: p.on_hover.map(|f| handler(move |h: &bool| f(*h))),
+            on_focus: p.on_focus.map(|f| handler(move |h: &bool| f(*h))),
             on_file_drop: p.on_file_drop.map(|f| handler(move |e: &WireFileDrop| f(&file_drop(e)))),
             children: encode_all(children),
         };
@@ -454,6 +455,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             on_press: register(Entry::Fire(p.on_press)),
             on_hover: p.on_hover.map(|f| handler(move |h: &bool| f(*h))),
+            on_focus: p.on_focus.map(|f| handler(move |h: &bool| f(*h))),
             disabled: p.disabled.map(val),
             preserves_focus: p.preserves_focus,
             children: encode_all(children),

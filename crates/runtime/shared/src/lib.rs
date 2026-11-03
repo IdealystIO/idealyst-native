@@ -16,7 +16,7 @@
 //!   Android TLS-key-limit note on `cached_stylesheet`),
 //! - assets + fonts (`assets`, `typeface!` / `face!` /
 //!   `__face_source!`),
-//! - the animation system, touch/hover/wheel/file-drop event types and
+//! - the animation system, touch/hover/focus/wheel/file-drop event types and
 //!   gesture recognizers,
 //! - the substrate's own reactive arena (`Signal` / `Effect` / `Ref` /
 //!   `Reactive`), separate from the `runtime-world` kernel. The shared
@@ -123,6 +123,7 @@ pub mod unsupported;
 pub mod touch;
 pub mod wheel;
 pub mod hover;
+pub mod focus;
 pub mod file_drop;
 pub mod inbound_link;
 pub mod primitives;
@@ -297,6 +298,7 @@ pub use touch::{
 };
 pub use wheel::{WheelEvent, WheelHandler, WheelKind};
 pub use hover::HoverHandler;
+pub use focus::FocusWithinHandler;
 pub use file_drop::{DroppedFile, FileDropEvent, FileDropHandler, FileDropPhase};
 pub use touch::recognizer::{
     AsyncNotifier, GestureState, Recognizer, RecognizerCtx, RecognizerKind, RecognizerUpdate,

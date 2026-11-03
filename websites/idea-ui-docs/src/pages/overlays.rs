@@ -366,11 +366,16 @@ pub fn hover_card() -> Element {
                     backdrop when opened by the pointer, so the page and the trigger stay \
                     clickable and scrollable. Placement (side, align, offset) and staying on \
                     screen work as for Tooltip and Popover.".to_string())
+                P(content = "Keyboard: focusing the trigger with Tab opens the card at once — \
+                    no open delay. Moving focus away closes it after close_delay_ms, unless \
+                    focus moved into the card. A click that happens to focus the trigger \
+                    does not count; only keyboard focus does.".to_string())
                 Callout(label = "Keyboard".to_string()) {
-                    P(content = "Focusing the trigger with Tab does not open the card yet: \
-                        views and buttons report no focus changes to observe. Don't put \
-                        anything only in a HoverCard that a keyboard or screen-reader user \
-                        needs.".to_string())
+                    P(content = "The trigger has to be focusable for this: a card around a \
+                        Button opens on Tab, one around a bare Progress cannot. Buttons take \
+                        Tab focus on web, macOS (with Full Keyboard Access) and Android; on \
+                        Linux, Windows and iOS only text inputs do. Don't put anything only \
+                        in a HoverCard that a keyboard or screen-reader user needs.".to_string())
                 }
             }
 

@@ -92,6 +92,12 @@ pub(crate) struct ViewInput {
     pub(crate) touch: HashMap<u64, TouchHandler>,
     pub(crate) wheel: HashMap<u64, WheelHandler>,
     pub(crate) hover: HashMap<u64, HoverHandler>,
+    /// `on_focus` (focus-within) handlers, by node. Fired from a text
+    /// field's `EN_SETFOCUS` / `EN_KILLFOCUS` for the field and every
+    /// ancestor (`WindowsBackend::focus_within_chain`). Painted views and
+    /// pressables are not keyboard-focusable on this backend, so only the
+    /// native fields inside a view report.
+    pub(crate) focus: HashMap<u64, runtime_shared::FocusWithinHandler>,
     pub(crate) file_drop: HashMap<u64, FileDropHandler>,
     /// The view that accepted the OS file drag currently over the window.
     drag_target: Option<u64>,
@@ -122,6 +128,7 @@ impl ViewInput {
         self.touch.remove(&id);
         self.wheel.remove(&id);
         self.hover.remove(&id);
+        self.focus.remove(&id);
         self.file_drop.remove(&id);
         if self.drag_target == Some(id) {
             self.drag_target = None;

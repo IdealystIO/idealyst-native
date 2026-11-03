@@ -161,6 +161,13 @@ pub struct RelayConfig {
     /// `<project>/.idealyst`). `screenshot` with `source` `cdp` / `auto`
     /// searches their browsers for the driven tab. `None` disables it.
     pub cdp_profiles_dir: Option<PathBuf>,
+    /// The session is an `idealyst test` run's, which drives its app alone:
+    /// the registrations say so (`"under_test": true`), and discovery that
+    /// picks an app for a caller who did not name one (`robot_test::discover`,
+    /// a bare `cargo test` of the suite) skips it. A second client driving
+    /// the same app interleaves its steps with the suite's — its
+    /// `set_count(0)` lands between the suite's tap and its assertion.
+    pub under_test: bool,
 }
 
 impl Default for RelayConfig {
@@ -175,6 +182,7 @@ impl Default for RelayConfig {
             project_registration: None,
             on_apps: None,
             cdp_profiles_dir: None,
+            under_test: false,
         }
     }
 }
@@ -391,7 +399,7 @@ pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
     let mut registration_errors = Vec::new();
     let reg_path = match (config.register, &config.identity) {
         (true, Some(id)) => match home_apps_dir() {
-            Some(dir) => write_registration(&dir, tcp_addr.port(), id)
+            Some(dir) => write_registration(&dir, tcp_addr.port(), id, config.under_test)
                 .map_err(|e| registration_errors.push(format!("{e:#}")))
                 .ok(),
             None => {
@@ -406,7 +414,7 @@ pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
     *inner.reg_path.lock().unwrap() = reg_path.clone();
 
     let project_reg_path = match (&config.project_registration, &config.identity) {
-        (Some(path), Some(id)) => write_project_registration(path, tcp_addr.port(), id)
+        (Some(path), Some(id)) => write_project_registration(path, tcp_addr.port(), id, config.under_test)
             .map_err(|e| registration_errors.push(format!("{e:#}")))
             .ok(),
         _ => None,
@@ -730,21 +738,14 @@ fn home_apps_dir() -> Option<PathBuf> {
 /// Write the `<dir>/<name>-<pid>.json` registration (`dir` is
 /// `~/.idealyst/apps`) the MCP server discovers. Same JSON shape (and
 /// `proto:1`) the native bridge writes.
-fn write_registration(dir: &Path, tcp_port: u16, id: &Identity) -> anyhow::Result<PathBuf> {
+fn write_registration(dir: &Path, tcp_port: u16, id: &Identity, under_test: bool) -> anyhow::Result<PathBuf> {
     use anyhow::Context as _;
     std::fs::create_dir_all(dir)
         .with_context(|| format!("cannot create the app registration dir {}", dir.display()))?;
     let pid = std::process::id();
     let label = id.name.replace(['.', ' '], "-");
     let path = dir.join(format!("{label}-{pid}.json"));
-    let body = json!({
-        "port": tcp_port,
-        "pid": pid,
-        "name": id.name,
-        "bundle_id": id.bundle_id,
-        "project_root": id.project_root,
-        "proto": 1,
-    });
+    let body = registration_body(tcp_port, pid, id, under_test);
     std::fs::write(&path, body.to_string())
         .with_context(|| format!("cannot write the app registration {}", path.display()))?;
     Ok(path)
@@ -754,23 +755,34 @@ fn write_registration(dir: &Path, tcp_port: u16, id: &Identity) -> anyhow::Resul
 /// [`write_registration`]'s (`pid` included — it is the dev process's, and
 /// meaningless outside its container, so a reader checks liveness by
 /// connecting to `port` instead).
-fn write_project_registration(path: &Path, tcp_port: u16, id: &Identity) -> anyhow::Result<PathBuf> {
+fn write_project_registration(path: &Path, tcp_port: u16, id: &Identity, under_test: bool) -> anyhow::Result<PathBuf> {
     use anyhow::Context as _;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("cannot create the project registration dir {}", dir.display()))?;
     }
-    let body = json!({
+    let body = registration_body(tcp_port, std::process::id(), id, under_test);
+    std::fs::write(path, body.to_string())
+        .with_context(|| format!("cannot write the project registration {}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+/// The registration JSON both files carry. `under_test` is written only
+/// when set ([`RelayConfig::under_test`]), so a reader that predates it
+/// sees the shape it always did.
+fn registration_body(tcp_port: u16, pid: u32, id: &Identity, under_test: bool) -> Value {
+    let mut body = json!({
         "port": tcp_port,
-        "pid": std::process::id(),
+        "pid": pid,
         "name": id.name,
         "bundle_id": id.bundle_id,
         "project_root": id.project_root,
         "proto": 1,
     });
-    std::fs::write(path, body.to_string())
-        .with_context(|| format!("cannot write the project registration {}", path.display()))?;
-    Ok(path.to_path_buf())
+    if under_test {
+        body["under_test"] = json!(true);
+    }
+    body
 }
 
 /// Patch `"platform"` into the registration file we wrote at start, using the
@@ -811,8 +823,35 @@ mod tests {
         std::fs::write(root.join(".idealyst"), "not a dir").unwrap();
         let dir = root.join(".idealyst").join("apps");
         let id = Identity { name: "todo".into(), bundle_id: None, project_root: None };
-        let err = format!("{:#}", write_registration(&dir, 1, &id).unwrap_err());
+        let err = format!("{:#}", write_registration(&dir, 1, &id, false).unwrap_err());
         assert!(err.contains(&dir.display().to_string()), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A bare `cargo test` of a suite drove the app an `idealyst test` run
+    /// had launched, interleaving its steps with the run's (Android:
+    /// "count stayed 0" after a tap, a greeting already "Hello, Ada").
+    /// Discovery can only skip that app if both registrations say whose
+    /// it is.
+    #[test]
+    fn regression_an_idealyst_test_sessions_registrations_say_it_is_under_test() {
+        let root = std::env::temp_dir().join(format!("relay_under_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let id = Identity { name: "todo".into(), bundle_id: None, project_root: Some("/p".into()) };
+        let read = |p: &Path| serde_json::from_str::<Value>(&std::fs::read_to_string(p).unwrap()).unwrap();
+
+        let reg = write_registration(&root.join("apps"), 7, &id, true).unwrap();
+        let project = write_project_registration(&root.join("robot.json"), 7, &id, true).unwrap();
+        for p in [&reg, &project] {
+            let v = read(p);
+            assert_eq!(v["under_test"], json!(true), "{v}");
+            assert_eq!(v["port"], json!(7), "{v}");
+        }
+
+        // Any other session's registration has the shape it always had.
+        std::fs::remove_file(&reg).unwrap();
+        let plain = write_registration(&root.join("apps"), 7, &id, false).unwrap();
+        assert!(read(&plain).get("under_test").is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 

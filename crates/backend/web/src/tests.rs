@@ -3741,6 +3741,81 @@ fn web_on_hover_ignores_touch_pointers() {
     assert_eq!(fired.get(), 1, "mouse pointers must still fire on_hover");
 }
 
+/// `on_focus` is focus-WITHIN: a wrapper hears keyboard focus landing on
+/// its descendants (`focusin` bubbles), stays focused while focus moves
+/// between two of them (`focusout` whose `relatedTarget` is inside is
+/// skipped), and reports `false` once focus leaves. Text fields are always
+/// `:focus-visible`, which keeps this independent of the browser's
+/// keyboard-vs-pointer heuristic.
+#[wasm_bindgen_test]
+fn web_on_focus_reports_focus_within_the_wrapper() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let wrap = doc.create_element("div").unwrap();
+    let a = doc.create_element("input").unwrap();
+    let b = doc.create_element("input").unwrap();
+    let outside = doc.create_element("input").unwrap();
+    wrap.append_child(&a).unwrap();
+    wrap.append_child(&b).unwrap();
+    doc.body().unwrap().append_child(&wrap).unwrap();
+    doc.body().unwrap().append_child(&outside).unwrap();
+
+    let states: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+    let s = states.clone();
+    backend.install_focus_handler_impl(
+        &wrap.clone().unchecked_into(),
+        Rc::new(move |f: bool| s.borrow_mut().push(f)),
+    );
+
+    let html = |e: &web_glue::dom::Element| e.clone().unchecked_into::<web_glue::dom::HtmlElement>();
+    html(&a).focus().unwrap();
+    html(&b).focus().unwrap();
+    html(&outside).focus().unwrap();
+
+    // a: focusin(true). a→b: focusout skipped (b is inside), focusin(true).
+    // b→outside: focusout(false).
+    assert_eq!(*states.borrow(), vec![true, true, false]);
+    wrap.remove();
+    outside.remove();
+}
+
+/// REGRESSION guard for the keyboard-only contract: focus that does not
+/// match `:focus-visible` (a click focusing a button) must report `false`,
+/// never `true` — otherwise every click on a HoverCard's button trigger
+/// would pin the card open. A synthetic `focusin` on an unfocused element
+/// is the reachable stand-in: it bubbles like the real one, and its target
+/// is not `:focus-visible`.
+#[wasm_bindgen_test]
+fn web_on_focus_ignores_focus_that_is_not_focus_visible() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let wrap = doc.create_element("div").unwrap();
+    let child = doc.create_element("div").unwrap();
+    wrap.append_child(&child).unwrap();
+    doc.body().unwrap().append_child(&wrap).unwrap();
+
+    let states: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+    let s = states.clone();
+    backend.install_focus_handler_impl(
+        &wrap.clone().unchecked_into(),
+        Rc::new(move |f: bool| s.borrow_mut().push(f)),
+    );
+    let init = web_glue::dom::EventInit::new();
+    init.set_bubbles(true);
+    let ev = web_glue::dom::Event::new_with_event_init_dict("focusin", &init).unwrap();
+    child.dispatch_event(&ev).unwrap();
+    assert_eq!(*states.borrow(), vec![false]);
+    wrap.remove();
+}
+
 /// `on_load` fires when the `<img>` dispatches its `load` event, carrying
 /// the (natural) dimensions read off the element. A synthetic `load`
 /// event on a src-less `<img>` reports `0×0` (no real bitmap), which is

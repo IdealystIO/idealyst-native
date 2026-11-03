@@ -3402,6 +3402,8 @@ fn start_robot_relay(dir: &Path, args: &Args, app_name: &str) -> Option<robot_re
         // The headless web client's profiles live here
         // (`spawn_headless_client`); the relay screenshots its tab over CDP.
         cdp_profiles_dir: Some(project_state_dir(dir)),
+        under_test: std::env::var(dev_events::sessions::LAUNCHED_BY_ENV).as_deref()
+            == Ok(dev_events::sessions::LAUNCHED_BY_TEST),
     };
     let started = match declared {
         Some(port) => {

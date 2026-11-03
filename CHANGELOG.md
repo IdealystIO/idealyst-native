@@ -946,6 +946,61 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Tab / Shift+Tab move focus on every platform, and a hardware Escape
+  closes an iOS overlay with nothing focused** (`runtime-vocabulary`,
+  `backend-linux`, `backend-ios-mobile`, `backend-android-mobile`,
+  `backend-macos`, `host-mock`). New `IntrospectionOps::move_focus(node, forward)`: the
+  platform's own focus traversal, which the robot's key `dispatch`
+  mechanism (iOS, Linux) runs for a Tab nothing consumed — a `text_area`
+  still types a plain Tab, as `UITextView` and GTK's `TextView` do. Linux
+  emits `move-focus` on the GTK window (what its Tab bindings emit); iOS
+  moves first responder among the window's enabled text inputs in tree
+  order, wrapping (`imp::focus_traversal`) — the same stops a real
+  hardware Tab moves between on iPhone, which UIKit does unaided (verified
+  with `idb ui key 43`). Android's `native` key injection enters
+  `dispatchKeyEvent` below `ViewRootImpl`'s input stage, so an unhandled
+  Tab never got that stage's focus navigation; the injection now runs it
+  (`focusSearch` + `requestFocus`), and `tab_moves_focus_between_fields`
+  passes there too. macOS posted the robot's Shift+Tab as `"\t"` with the
+  Shift flag, which the field editor reads as `insertTab:` — focus moved
+  forward; it is now the back-tab character (U+0019) AppKit types for
+  Shift+Tab (`backend-macos`). iOS: UIKit gathers key commands only from the first
+  responder, so with no field focused and no app key listener an Escape
+  reached no view of ours and an open overlay stayed open; while a
+  dismissable portal is open the backend now makes its own invisible
+  responder (or the app key responder) first responder whenever nothing
+  holds it — on open and when a field resigns — never taking focus from a
+  field. Tests: vocabulary `regression_dispatch_tab_moves_focus_in_the_
+  platform_order`, `tab_that_is_consumed_or_typed_moves_no_focus`;
+  backend-linux `robot_tab_traversal` (Xvfb); backend-ios-mobile
+  simulator test `key_focus`; backend-android-mobile
+  `tab_moves_focus_forward_and_shift_tab_backward_only`; backend-macos
+  `regression_shift_tab_types_the_back_tab_character`; robot-e2e demo
+  `tab_moves_focus_between_fields` on web, macOS, iOS and Android.
+
+- **`on_focus` on `view` and `pressable`: keyboard focus within**
+  (`runtime-shared`, `runtime-vocabulary`, `runtime-macros-expand`,
+  `backend-web`, `backend-macos`, `backend-linux`, `backend-windows`,
+  `backend-ios-mobile`, `backend-android-mobile`, `web-glue`, `host-mock`,
+  minor; **wire:** `CODEC_VERSION` 8). `view(on_focus = |focused| …)` and
+  `pressable(..).on_focus(..)` fire `true` when keyboard focus lands on the
+  node or anything inside it and `false` when it leaves — focus-WITHIN, so
+  a wrapping view hears the buttons it holds without becoming a tab stop.
+  Only keyboard focus counts (Tab, programmatic focus: the `:focus-visible`
+  rule the `FOCUSED` style state uses); a click that focuses a button does
+  not, a text field counts on any focus. Each call is a transition. New
+  capability `InputOps::install_focus_handler` (no-op default), type
+  `runtime_shared::FocusWithinHandler`. Web: `focusin`/`focusout` +
+  `:focus-visible`. macOS: first-responder changes of pressables and text
+  inputs, reported up the superview chain. Linux: the window's
+  `focus-widget` / `focus-visible`. Windows, iOS: the text inputs inside
+  the view (pressables are not focus targets there). Android: the window's
+  global focus listener (`RustFocusWithinListener`, new Kotlin class);
+  pressables count under keyboard / D-pad focus. Not on the GPU, terminal
+  and SSR backends. `ViewPrim` / `PressablePrim` gain an `on_focus` field
+  (struct literals must add it); a bundle built against codec 7 is refused
+  by an app on 8 and vice versa.
+
 - **Robot `key` verb: press keys through each platform's real key path**
   (`runtime-vocabulary`, `runtime-shared`, `robot-test`, minor;
   `backend-web`, `backend-macos`, `backend-windows`,
@@ -1010,9 +1065,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   and a tap outside closes it; Escape closes it. The card has
   `Role::Tooltip`; `test_id` lands on the trigger wrapper and
   `card_test_id` on the card. Restyle the card through the `card` slot
-  (`HoverCardStyles` / `HoverCardSlotStyles`). Focusing the trigger from
-  the keyboard does not open it: views and pressables report no focus
-  changes. New docs page `/overlays/hover-card`.
+  (`HoverCardStyles` / `HoverCardSlotStyles`). Keyboard focus on the
+  trigger (Tab onto the button it wraps, through the new `view.on_focus`)
+  opens it at once, and focus leaving closes it after `close_delay_ms`
+  unless focus moved into the card; a click that focuses the trigger does
+  not count. New docs page `/overlays/hover-card`.
 
 - **`idealyst dev` says when the server's `cargo run` recompiles, and
   why** (`dev-events`, `idealyst-cli`, `dev-tui`, `dev-http`, `dev-reload`,
@@ -2639,6 +2696,57 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **The `idealyst` CLI compiles for Windows again** (`mcp-server`).
+  `dev-events` was declared only for unix hosts while the dev-session,
+  build-wait and status modules use it everywhere, so `mcp-server` — and
+  the CLI that embeds it — failed to build on Windows. It is a plain
+  dependency now; `tests/manifest_platforms.rs` keeps it out of
+  target-gated tables.
+
+- **Escape closes an Android modal while a field in it has focus, on API
+  37 too** (`backend-android-mobile`). From API 37 `TextView` takes an
+  unmodified Escape itself — it blurs the field and reports the key
+  handled — so the modal's `RustModalOverlay` never saw it and stayed
+  open, and the app's key listeners never heard it. Fields are now a
+  `RustEditText`, which passes that Escape on (after the field's own
+  `on_key_down`, which can still claim it), as on API 36 and below and
+  on every other backend.
+- **Nothing else drives the app of an `idealyst test` run**
+  (`robot-relay`, `robot-test`, `idealyst-cli`, `mcp-server`,
+  `dev-events`). A bare `cargo test` of the suite discovered the app the
+  run had launched (any live registration of the project would do) and
+  drove it beside the run's own suite, and so could an agent's robot
+  tools. Each reset state the other was asserting on: on Android the
+  robot-e2e demo failed intermittently with a tapped count back at 0, a
+  greeting already typed, an overlay left open. `idealyst test` now
+  starts its session with `IDEALYST_DEV_LAUNCHED_BY=test`; the session's
+  relay writes `"under_test": true` into its registrations;
+  `robot_test::discover` skips such an app, and the MCP's robot tools
+  refuse it with a message pointing at `run_dev` (`list_apps` shows the
+  flag).
+- **Two `idealyst test` runs of one project no longer drive each other's
+  app** (`idealyst-cli`). Both ran their session as `idealyst dev
+  --isolated test`; the second's `idealyst dev` was refused (one session
+  per key), and the runner, which had snapshotted the project's
+  registrations before the first run's relay registered, adopted that
+  relay as "new" — so it ran its suite against the other run's app,
+  concurrently with it, until the other run tore it down (broken pipe).
+  Without that overlap it waited out 300 s for an app that never came.
+  Now the runner refuses before building when a live session holds its
+  key, naming its pid, launcher and age; takes only the registration its
+  own `idealyst dev` (or a process it started) wrote, waiting for it
+  rather than falling back to the first new one (`--windows`, whose
+  Wine/remote app registers under no local pid, still falls back, but
+  never to another live `idealyst dev`'s); and ends the wait with the
+  refusal when its own session exits before registering. New
+  `--isolated auto` takes the first free key of `test`, `test-2`, … for
+  runs in parallel. A crashed run's entry (dead pid) holds nothing.
+  Tests: `regression_a_run_whose_key_a_live_session_holds_is_refused_up_front`,
+  `regression_a_launch_never_adopts_another_sessions_registration`,
+  `regression_a_refused_dev_session_ends_the_wait_with_its_reason`,
+  `isolated_auto_takes_the_first_free_test_key`,
+  `a_crashed_sessions_key_is_free`.
 
 - **`idealyst dev --android` builds again in its default (runtime-server)
   mode** (`build-android`). The generated runtime-server wrapper still

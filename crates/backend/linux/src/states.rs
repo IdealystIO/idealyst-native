@@ -203,3 +203,82 @@ pub(crate) fn install_hover(widget: &gtk4::Widget, handler: runtime_shared::Hove
     }
     widget.add_controller(motion);
 }
+
+/// Wire the author's `.on_focus(…)` handler — keyboard focus entering
+/// (`true`) / leaving (`false`) `widget` or a descendant.
+///
+/// Driven by the WINDOW's `focus-widget` and `focus-visible` properties,
+/// not an `EventControllerFocus`: the controller only reports while the
+/// window is the active one, so focus moved in a background window (a
+/// robot run, a second window in front) went unheard — the same trap
+/// `IntrospectionOps::is_focused` avoids by reading the focus widget. On
+/// every change the widget reports whether the focus widget is inside it
+/// AND shows focus — the `:focus-visible` rule [`attach`] uses for
+/// `FOCUSED` (a click-focused button reports `false`; GTK flips
+/// `focus-visible` on with the first Tab, which re-reports `true`). The
+/// vocabulary dedups the repeats.
+///
+/// The window is only known once the widget is rooted, so the two
+/// property handlers connect on `realize` and disconnect on `unrealize`;
+/// they hold the widget weakly.
+pub(crate) fn install_focus_within(widget: &gtk4::Widget, handler: runtime_shared::FocusWithinHandler) {
+    use std::cell::RefCell;
+    type Hooks = Rc<RefCell<Option<(gtk4::glib::WeakRef<gtk4::Window>, Vec<gtk4::glib::SignalHandlerId>)>>>;
+    let hooks: Hooks = Rc::new(RefCell::new(None));
+    let connect = {
+        let hooks = hooks.clone();
+        let target = widget.downgrade();
+        move || {
+            if hooks.borrow().is_some() {
+                return;
+            }
+            let Some(w) = target.upgrade() else { return };
+            let Some(window) = w.root().and_then(|r| r.downcast::<gtk4::Window>().ok()) else { return };
+            let report = {
+                let (h, target) = (handler.clone(), target.clone());
+                move |window: &gtk4::Window| {
+                    let Some(w) = target.upgrade() else { return };
+                    h(keyboard_focus_within(window, &w));
+                }
+            };
+            let r = report.clone();
+            let a = window.connect_notify_local(Some("focus-widget"), move |win, _| r(win));
+            let b = window.connect_notify_local(Some("focus-visible"), move |win, _| report(win));
+            *hooks.borrow_mut() = Some((window.downgrade(), vec![a, b]));
+        }
+    };
+    connect();
+    widget.connect_realize(move |_| connect());
+    widget.connect_unrealize(move |_| {
+        if let Some((window, ids)) = hooks.borrow_mut().take() {
+            if let Some(window) = window.upgrade() {
+                for id in ids {
+                    window.disconnect(id);
+                }
+            }
+        }
+    });
+}
+
+/// Whether `window`'s focus widget is `within` (or inside it) and shows
+/// focus: a text entry always does, anything else when the window is
+/// `focus-visible`.
+fn keyboard_focus_within(window: &gtk4::Window, within: &gtk4::Widget) -> bool {
+    let Some(focused) = gtk4::prelude::GtkWindowExt::focus(window) else { return false };
+    if &focused != within && !focused.is_ancestor(within) {
+        return false;
+    }
+    // An entry's focus lands on its inner `GtkText`; `is_text_entry` tests a
+    // node widget, so walk from the focused widget up to `within`.
+    let mut cur = Some(focused);
+    while let Some(w) = cur {
+        if is_text_entry(&w) {
+            return true;
+        }
+        if &w == within {
+            break;
+        }
+        cur = w.parent();
+    }
+    window.property::<bool>("focus-visible")
+}

@@ -203,6 +203,9 @@ pub struct Shared {
     pub touch_handlers: RefCell<Vec<(Node, TouchHandler)>>,
     /// Hover handlers installed via `InputOps::install_hover_handler`.
     pub hover_handlers: RefCell<Vec<(Node, HoverHandler)>>,
+    /// Focus-within handlers installed via `InputOps::install_focus_handler`
+    /// (`view` / `pressable` `on_focus`), with their target node.
+    pub focus_within_handlers: RefCell<Vec<(Node, runtime_shared::FocusWithinHandler)>>,
     /// Every installed wheel handler, image load / error handler and text
     /// input focus handler, in install order — so tests can fire them.
     pub wheel_handlers: RefCell<Vec<(Node, WheelHandler)>>,
@@ -263,6 +266,11 @@ pub struct Shared {
     /// the injection calls `deliver` with the press, after the robot has
     /// released the backend borrow.
     pub native_keys: RefCell<Option<Rc<dyn Fn(&caps::KeyPress) -> Result<(), String>>>>,
+    /// `IntrospectionOps::move_focus`: `None` (the default) = no focus
+    /// traversal; `Some(traverse)` = the injection calls `traverse` with the
+    /// node the robot asked through and the direction (`true` = forward),
+    /// after the robot has released the backend borrow.
+    pub focus_traversal: RefCell<Option<Rc<dyn Fn(Node, bool) -> Result<(), String>>>>,
     /// `IntrospectionOps::shortcut_modifier_is_meta` (default `false`).
     pub shortcut_is_meta: Cell<bool>,
     /// The app-level keyboard sink currently installed
@@ -304,6 +312,7 @@ impl Default for Shared {
             file_drop_handlers: RefCell::new(Vec::new()),
             touch_handlers: RefCell::new(Vec::new()),
             hover_handlers: RefCell::new(Vec::new()),
+            focus_within_handlers: RefCell::new(Vec::new()),
             wheel_handlers: RefCell::new(Vec::new()),
             image_load_handlers: RefCell::new(Vec::new()),
             image_error_handlers: RefCell::new(Vec::new()),
@@ -326,6 +335,7 @@ impl Default for Shared {
             covered: RefCell::new(std::collections::BTreeSet::new()),
             native_input: RefCell::new(None),
             native_keys: RefCell::new(None),
+            focus_traversal: RefCell::new(None),
             shortcut_is_meta: Cell::new(false),
             keyboard_sink: RefCell::new(None),
             pointer_sink: RefCell::new(None),
@@ -786,6 +796,12 @@ impl caps::InputOps for HostMock {
         self.s
             .rec_v("install_hover_handler", format!("install_hover_handler n{node}"));
         self.s.hover_handlers.borrow_mut().push((*node, handler));
+    }
+
+    fn install_focus_handler(&mut self, node: &Node, handler: runtime_shared::FocusWithinHandler) {
+        self.s
+            .rec_v("install_focus_handler", format!("install_focus_handler n{node}"));
+        self.s.focus_within_handlers.borrow_mut().push((*node, handler));
     }
 
     fn mark_preserves_focus(&mut self, node: &Node) {
@@ -1653,6 +1669,12 @@ impl caps::IntrospectionOps for HostMock {
         Some(Box::new(move || deliver(&press)))
     }
 
+    fn move_focus(&self, node: &Node, forward: bool) -> Option<caps::NativeInjection> {
+        let traverse = self.s.focus_traversal.borrow().clone()?;
+        let node = *node;
+        Some(Box::new(move || traverse(node, forward)))
+    }
+
     fn shortcut_modifier_is_meta(&self) -> bool {
         self.s.shortcut_is_meta.get()
     }
@@ -1845,6 +1867,7 @@ impl Harness {
         drop(std::mem::take(&mut *self.shared.file_drop_handlers.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.touch_handlers.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.hover_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.focus_within_handlers.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.wheel_handlers.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.image_load_handlers.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.image_error_handlers.borrow_mut()));
@@ -1876,6 +1899,14 @@ impl Harness {
     /// focus or blur event would.
     pub fn text_input_focus_handler(&self, i: usize) -> Rc<dyn Fn(bool)> {
         self.shared.focus_handlers.borrow()[i].1.clone()
+    }
+
+    /// The i-th handler `InputOps::install_focus_handler` received (a
+    /// `view` / `pressable` `on_focus`), with its node, as the backend
+    /// holds it — call it the way a platform focus-in / focus-out would.
+    pub fn focus_within_handler(&self, i: usize) -> (Node, runtime_shared::FocusWithinHandler) {
+        let h = self.shared.focus_within_handlers.borrow();
+        (h[i].0, h[i].1.clone())
     }
 
     /// The `on_blur` handler the i-th `create_text_input` received, or

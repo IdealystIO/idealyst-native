@@ -8,7 +8,9 @@
 //! - `IDEALYST_ROBOT_BRIDGE=host:port` set (by `idealyst test`) → connect there.
 //! - else discover a running app under `~/.idealyst/apps`, preferring the one
 //!   whose `project_root` matches this crate's `CARGO_MANIFEST_DIR` (the case
-//!   where you ran `idealyst dev` in another terminal).
+//!   where you ran `idealyst dev` in another terminal). An app an
+//!   `idealyst test` run launched is never picked: that run drives it alone
+//!   ([`discover`]).
 //! - else **skip** — no app is reachable, so every test prints a skip note and
 //!   returns. This is what keeps a bare `cargo test` (with no app up) green
 //!   instead of red.

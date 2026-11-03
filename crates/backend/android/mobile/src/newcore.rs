@@ -952,6 +952,10 @@ mod native {
         fn claim_touch(&mut self, node: &Self::Node, touch_id: TouchId) {
             AndroidBackend::claim_touch_impl(self, node, touch_id)
         }
+
+        fn install_focus_handler(&mut self, node: &Self::Node, handler: runtime_shared::FocusWithinHandler) {
+            crate::imp::focus_within::install(node, flushing1(handler))
+        }
     }
 
     impl caps::PressableOps for AndroidBackend {

@@ -214,10 +214,20 @@ struct AppReg {
     port: u16,
     #[serde(default)]
     project_root: String,
+    /// The app belongs to an `idealyst test` run (its relay writes this):
+    /// that run's suite drives it alone.
+    #[serde(default)]
+    under_test: bool,
 }
 
 /// Discover a running app's bridge address. If `project_dir` is given, prefer
 /// the app whose `project_root` matches; otherwise return the first live app.
+///
+/// An app an `idealyst test` run launched (`"under_test"` in its
+/// registration) is never returned: the run hands its suite the address
+/// itself (`IDEALYST_ROBOT_BRIDGE`), and anything that found the app here
+/// instead — a bare `cargo test` of the same suite — would drive it beside
+/// the run, each resetting state the other is asserting on.
 pub fn discover(project_dir: Option<&Path>, apps_dir: &Path) -> Option<SocketAddr> {
     let want = project_dir
         .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
@@ -233,6 +243,9 @@ pub fn discover(project_dir: Option<&Path>, apps_dir: &Path) -> Option<SocketAdd
         else {
             continue;
         };
+        if reg.under_test {
+            continue;
+        }
         let Ok(addr) = format!("127.0.0.1:{}", reg.port).parse::<SocketAddr>() else {
             continue;
         };

@@ -13,9 +13,9 @@ pub enum KeyMechanism {
     /// Real platform key events, through the toolkit's event path.
     Native,
     /// The framework's own key dispatch: the focused field's `on_key_down`,
-    /// the app-level listeners (`on_key`), then the field's text edit and
-    /// Escape's overlay dismissal. Used where the platform has no key
-    /// injection (iOS, Linux GTK).
+    /// the app-level listeners (`on_key`), then the field's text edit,
+    /// Tab's focus traversal and Escape's overlay dismissal. Used where the
+    /// platform has no key injection (iOS, Linux GTK).
     Dispatch,
 }
 
@@ -52,6 +52,17 @@ pub(crate) fn native_key_closure<H: IntrospectionOps>(backend: &Rc<RefCell<H>>, 
     })
 }
 
+/// The platform's focus traversal in an element's window
+/// ([`IntrospectionOps::move_focus`]): built under the backend borrow, run
+/// after it is released.
+pub(crate) type MoveFocus = Rc<dyn Fn(bool) -> Option<NativeInjection>>;
+
+pub(crate) fn move_focus_closure<H: IntrospectionOps>(backend: &Rc<RefCell<H>>, node: &H::Node) -> MoveFocus {
+    let b = backend.clone();
+    let n = node.clone();
+    Rc::new(move |forward: bool| b.borrow().move_focus(&n, forward))
+}
+
 impl Robot {
     /// Press a key, as a user at a keyboard would: a key down and up
     /// delivered to whatever holds keyboard focus. With `element`, focus it
@@ -68,11 +79,11 @@ impl Robot {
     /// ([`KeyMechanism::Dispatch`]): the focused field's `on_key_down`,
     /// the app-level listeners (`on_key`), then — unless either prevented
     /// it — the field's text edit (a typed character appended, Backspace
-    /// removing the last one, Enter a newline in a `text_area`: the caret
-    /// is taken to be at the end) and, for Escape, the topmost overlay's
-    /// `on_dismiss` ([`crate::escape_dismiss`]), and the release. Focus
-    /// traversal on Tab is the toolkit's own and needs the native
-    /// mechanism.
+    /// removing the last one, Enter a newline and Tab a tab character in a
+    /// `text_area`: the caret is taken to be at the end), for any other
+    /// Tab or Shift+Tab the platform's own focus traversal
+    /// ([`IntrospectionOps::move_focus`]), for Escape the topmost overlay's
+    /// `on_dismiss` ([`crate::escape_dismiss`]), and the release.
     pub fn press_key(&self, element: Option<&Element>, chord: &KeyChord) -> Result<KeyMechanism, RobotError> {
         const ACTION: &str = "key";
         let target = match element {
@@ -101,14 +112,15 @@ impl Robot {
             settle();
             return Ok(KeyMechanism::Native);
         }
-        dispatch_key(target, &press);
+        let result = dispatch_key(target, window, &press);
         settle();
-        Ok(KeyMechanism::Dispatch)
+        result.map(|()| KeyMechanism::Dispatch)
     }
 }
 
 /// [`KeyMechanism::Dispatch`]: the press through the framework's key paths.
-fn dispatch_key(target: Option<ElementId>, press: &KeyPress) {
+/// `window` is the element whose window an unfocused press goes to.
+fn dispatch_key(target: Option<ElementId>, window: Option<ElementId>, press: &KeyPress) -> Result<(), RobotError> {
     let actions_of = |id: ElementId| REGISTRY.with(|r| r.borrow().get(id).map(|e| e.actions.clone()));
     // The field the key lands in: the element just focused, when it is a
     // field, else whichever field reports focus.
@@ -155,9 +167,23 @@ fn dispatch_key(target: Option<ElementId>, press: &KeyPress) {
         meta: press.meta,
     };
     prevented |= runtime_shared::key_input::deliver(&down) == KeyOutcome::PreventDefault;
+    let mut traversal = Ok(());
     if !prevented {
-        if let Some(a) = &field {
-            edit_field(a, press, text_of(a));
+        let edited = match &field {
+            Some(a) => edit_field(a, press, text_of(a)),
+            None => false,
+        };
+        // Tab a field didn't take as text moves focus, in the platform's
+        // order, within the focused field's window (an overlay may be a
+        // window of its own) or else the target's.
+        if !edited && press.key == "Tab" && !(press.ctrl || press.alt || press.meta) {
+            let move_focus = field
+                .as_ref()
+                .and_then(|a| a.move_focus.clone())
+                .or_else(|| window.and_then(actions_of).and_then(|a| a.move_focus));
+            if let Some(inject) = move_focus.and_then(|m| m(!press.shift)) {
+                traversal = inject().map_err(RobotError::Native);
+            }
         }
         // The platform default every native key path has: an Escape nothing
         // consumed closes the topmost overlay with an `on_dismiss`.
@@ -167,34 +193,42 @@ fn dispatch_key(target: Option<ElementId>, press: &KeyPress) {
     }
     settle();
     runtime_shared::key_input::deliver(&AppKeyEvent { phase: KeyPhase::Up, ..down });
+    traversal
 }
 
-/// The text edit a key makes in a field with the caret at the end.
-fn edit_field(actions: &ElementActions, press: &KeyPress, text: String) {
-    let (Some(set_text), Some(keys)) = (actions.set_text.clone(), actions.keys.as_ref()) else { return };
+/// The text edit a key makes in a field with the caret at the end; whether
+/// the key was the field's (it took Backspace on empty text too). A
+/// multi-line field takes an unmodified Tab as a tab character, as
+/// `UITextView` and GTK's `TextView` — the dispatch platforms' text areas
+/// — do; a single-line field leaves Tab to focus traversal.
+fn edit_field(actions: &ElementActions, press: &KeyPress, text: String) -> bool {
+    let (Some(set_text), Some(keys)) = (actions.set_text.clone(), actions.keys.as_ref()) else { return false };
     if actions.state.as_ref().is_some_and(|s| s().is_disabled()) {
-        return;
+        return false;
     }
+    let plain = !(press.ctrl || press.meta || press.alt);
     let edited = match press.key.as_str() {
-        "Backspace" if press.ctrl || press.meta || press.alt => return,
+        "Backspace" if !plain => return false,
         "Backspace" => {
             let mut t = text;
             if t.pop().is_none() {
-                return;
+                return true;
             }
             t
         }
         "Enter" if keys.multiline && !(press.ctrl || press.meta) => text + "\n",
+        "Tab" if keys.multiline && plain && !press.shift => text + "\t",
         _ => match press.text() {
             Some(c) => {
                 let mut t = text;
                 t.push(c);
                 t
             }
-            None => return,
+            None => return false,
         },
     };
     set_text(edited);
+    true
 }
 
 /// Parse the `key` verb's `{key, modifiers?}` into a chord.

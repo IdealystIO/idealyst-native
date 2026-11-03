@@ -245,6 +245,33 @@ A `View` has no native behavior beyond "be a container." It exists
 to be the thing components hang structure off of — every layout
 component you write is going to compose `View`s.
 
+**Keyboard focus — `on_focus`.** `view(on_focus = |focused: bool| …)`
+fires `true` when keyboard focus lands on the view or anything inside
+it and `false` when it leaves that subtree. It is focus-*within*: the
+view never becomes a tab stop itself; it hears the focusable children it
+wraps (a `HoverCard` opens when the button it wraps takes focus). Only
+keyboard focus counts — Tab, arrow / D-pad navigation, programmatic
+focus: the focus a ring shows, the same `:focus-visible` rule the
+`state focused` style uses. A click that focuses a button does not fire
+it; a text field fires on any focus. Every call is a transition (the
+framework drops repeats). `pressable` takes the same `on_focus`.
+
+What can take keyboard focus is the platform's, and `on_focus` reports
+what the platform has:
+
+| Backend | Mechanism | Focus targets |
+|---|---|---|
+| Web | `focusin` / `focusout` + `:focus-visible` | pressables, buttons, links, inputs |
+| macOS | first-responder changes, walked up the superview chain | pressables / links (Tab with Full Keyboard Access), text inputs |
+| Linux | the window's `focus-widget` / `focus-visible` | native buttons, toggles, sliders, text inputs (a `pressable` is not a focus target) |
+| Windows | the text fields' `EN_SETFOCUS` / `EN_KILLFOCUS` | text inputs (painted pressables take no focus) |
+| iOS | `UITextField` / `UITextView` begin / end editing | text inputs (hardware keyboard Tab moves among them) |
+| Android | the window's global focus listener; touch mode gates it | text inputs; pressables under keyboard / D-pad focus |
+| GPU, terminal, SSR | — | never fires |
+
+A touch-only phone with no keyboard has no keyboard focus beyond the
+text field being typed into.
+
 ### `keyboard_avoiding_view` — a view that stays clear of the soft keyboard
 
 ```rust
@@ -391,9 +418,10 @@ pub fn pressable<F: Fn() + 'static>(children: Vec<Element>, on_click: F) -> Glue
 
 A container with a press callback and no chrome of its own: everything
 visual comes from its style and children. It takes `disabled`,
-`preserves_focus`, `bind`, the accessibility setters, and `on_hover`
+`preserves_focus`, `bind`, the accessibility setters, `on_hover`
 (pointer enter/leave, as on a `view`), so a hoverable row is one
-pressable rather than a pressable wrapped in a listening view.
+pressable rather than a pressable wrapped in a listening view, and
+`on_focus` (keyboard focus, as on a `view` — see above).
 
 **One press, innermost target.** A press inside a press (a button in a
 clickable row, a pressable in a pressable card) fires only the innermost

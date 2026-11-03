@@ -115,4 +115,47 @@ mod tests {
         slots.focus_changed(true);
         assert_eq!(seen.borrow().as_slice(), [false, true]);
     }
+
+    // Escape in a field. The behavior is the platform `TextView`'s (API 37
+    // blurs the field on Escape and reports it handled) against our
+    // `EditText` subclass, which needs an emulator to observe — the demo's
+    // `escape_closes_a_modal_while_its_field_has_focus` is the end-to-end
+    // check, and failed on API 37 before the subclass. With no JVM test
+    // harness in this repo, these pin the contract at the closest host-
+    // reachable layer: the Kotlin the APK compiles, and the class the
+    // field is created as.
+
+    const EDIT_TEXT_KT: &str = include_str!("../runtime/kotlin/io/idealyst/runtime/RustEditText.kt");
+    const TEXT_INPUT_RS: &str = include_str!("imp/primitives/text_input.rs");
+
+    /// Code only, whitespace and `//` / KDoc lines dropped, so a statement
+    /// matches however it is wrapped.
+    fn code(src: &str) -> String {
+        src.lines()
+            .map(|l| l.split_once("//").map_or(l, |(code, _)| code))
+            .filter(|l| !l.trim_start().starts_with('*') && !l.trim_start().starts_with("/**"))
+            .flat_map(str::split_whitespace)
+            .collect()
+    }
+
+    /// From API 37 a focused field took Escape to blur itself, so a modal
+    /// whose field held focus never saw it and stayed open (the robot-e2e
+    /// demo on `showcase_api37`). The field is a `RustEditText`, which
+    /// declines an unmodified Escape in both key phases before `TextView`
+    /// sees it.
+    #[test]
+    fn regression_a_field_passes_escape_on_to_its_modal() {
+        let kt = code(EDIT_TEXT_KT);
+        assert!(kt.contains("classRustEditText(context:Context):EditText(context)"), "{kt}");
+        for phase in ["onKeyDown", "onKeyUp"] {
+            assert!(
+                kt.contains(&format!("overridefun{phase}(keyCode:Int,event:KeyEvent):Boolean=if(passesOn(keyCode,event))falseelsesuper.{phase}(keyCode,event)")),
+                "{phase} must decline Escape: {kt}"
+            );
+        }
+        assert!(kt.contains("keyCode==KeyEvent.KEYCODE_ESCAPE&&event.hasNoModifiers()"), "{kt}");
+        let rs = code(TEXT_INPUT_RS);
+        assert!(rs.contains("find_class(\"io/idealyst/runtime/RustEditText\")"), "text_input creates a RustEditText");
+        assert!(!rs.contains("find_class(\"android/widget/EditText\")"), "no plain EditText field left");
+    }
 }

@@ -47,7 +47,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "view",
         pascal_name: "View",
-        docs: "Container primitive — holds zero or more child primitives in a layout box. Maps to UIView (iOS), FrameLayout (Android), <div> (web), and NSView (macOS). Supports per-side safe-area opt-in via `safe_area`, raw touch via `on_touch`, wheel via `on_wheel`, hover via `on_hover`, and OS file drops via `on_file_drop` — all inline props. Like every primitive, `view` rejects a prop it does not have at compile time (a typo like `on_tuch` is an error naming the valid props), where it used to drop it silently.",
+        docs: "Container primitive — holds zero or more child primitives in a layout box. Maps to UIView (iOS), FrameLayout (Android), <div> (web), and NSView (macOS). Supports per-side safe-area opt-in via `safe_area`, raw touch via `on_touch`, wheel via `on_wheel`, hover via `on_hover`, keyboard focus-within via `on_focus`, and OS file drops via `on_file_drop` — all inline props. Like every primitive, `view` rejects a prop it does not have at compile time (a typo like `on_tuch` is an error naming the valid props), where it used to drop it silently.",
         props: &[
             PropFieldSpec {
                 name: "children",
@@ -80,6 +80,12 @@ inventory::submit! {
                 type_str: "Fn(bool)",
                 doc: "Pointer enter (`true`) / leave (`false`). No-op on touch-only backends.",
                 constraint: "inline prop or builder method `.on_hover(..)`",
+            },
+            PropFieldSpec {
+                name: "on_focus",
+                type_str: "Fn(bool)",
+                doc: "Keyboard focus entered (`true`) / left (`false`) this view or any descendant — focus-WITHIN, so a wrapping view hears the buttons inside it without becoming a tab stop itself. Counts keyboard focus only (Tab, programmatic focus — the focus a ring shows, CSS `:focus-visible`); a click that focuses a button does not fire it, a text field fires on any focus. Fires only on transitions. What can take keyboard focus is the platform's: pressables/buttons/inputs on web; pressables (Tab with Full Keyboard Access) and text inputs on macOS; native controls and text inputs on Linux (a `pressable` is not a focus target there); text inputs on Windows and iOS; text inputs and keyboard/D-pad-focused pressables on Android. Never fires on the GPU, terminal and SSR backends.",
+                constraint: "inline prop or builder method `.on_focus(..)` — also on `pressable`",
             },
             PropFieldSpec {
                 name: "on_file_drop",
@@ -234,6 +240,18 @@ inventory::submit! {
                 type_str: "bool",
                 doc: "Pressing this pressable does not blur the focused text input (see `view.preserves_focus`). Set on controls that adorn an input — a combobox's disclosure chevron, a clear-text button — so activating them keeps the field focused.",
                 constraint: "builder method `.preserves_focus(true)`",
+            },
+            PropFieldSpec {
+                name: "on_hover",
+                type_str: "Fn(bool)",
+                doc: "Pointer enter (`true`) / leave (`false`), as on `view`.",
+                constraint: "builder method `.on_hover(..)`",
+            },
+            PropFieldSpec {
+                name: "on_focus",
+                type_str: "Fn(bool)",
+                doc: "Keyboard focus entered (`true`) / left (`false`) this pressable — Tab or programmatic focus, not a click. Same contract as `view.on_focus`.",
+                constraint: "builder method `.on_focus(..)`",
             },
             COMMON_ACCESSIBILITY_FIELD,
         ],

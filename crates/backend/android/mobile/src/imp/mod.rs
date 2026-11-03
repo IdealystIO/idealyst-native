@@ -36,6 +36,7 @@ mod style;
 pub(crate) mod view_rect;
 pub(crate) mod native_key;
 pub(crate) mod text_focus;
+pub(crate) mod focus_within;
 
 use crate::phase_timer;
 use runtime_shared::primitives::navigator::NavigatorOps;

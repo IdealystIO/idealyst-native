@@ -985,6 +985,10 @@ impl caps::InputOps for WebBackend {
         WebBackend::install_hover_handler_impl(self, node, flushing1(handler))
     }
 
+    fn install_focus_handler(&mut self, node: &Self::Node, handler: runtime_shared::FocusWithinHandler) {
+        WebBackend::install_focus_handler_impl(self, node, flushing1(handler))
+    }
+
     fn mark_preserves_focus(&mut self, node: &Self::Node) {
         WebBackend::mark_preserves_focus_impl(self, node)
     }

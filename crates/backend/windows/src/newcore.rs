@@ -674,6 +674,12 @@ impl caps::InputOps for WindowsBackend {
         self.view_input.hover.insert(node.id, flushing1(handler));
     }
 
+    /// `on_focus`: fired from text fields' focus changes inside `node`
+    /// (see `ViewInput::focus`).
+    fn install_focus_handler(&mut self, node: &Self::Node, handler: runtime_shared::FocusWithinHandler) {
+        self.view_input.focus.insert(node.id, flushing1(handler));
+    }
+
     fn install_file_drop_handler(&mut self, node: &Self::Node, handler: FileDropHandler) {
         let f = handler;
         let handler: FileDropHandler = Rc::new(move |ev| {

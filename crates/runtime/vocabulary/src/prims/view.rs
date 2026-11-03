@@ -5,7 +5,7 @@ use std::rc::Rc;
 use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::primitives::scroll_view::{ScrollAxis, ScrollViewHandle};
 use runtime_shared::{
-    FileDropHandler, HoverHandler, PressableHandle, SafeAreaSides, TouchHandler, ViewHandle,
+    FileDropHandler, FocusWithinHandler, HoverHandler, PressableHandle, SafeAreaSides, TouchHandler, ViewHandle,
     WheelHandler,
 };
 use runtime_world::Value;
@@ -27,6 +27,9 @@ pub struct ViewPrim {
     pub on_touch: Option<TouchHandler>,
     pub on_wheel: Option<WheelHandler>,
     pub on_hover: Option<HoverHandler>,
+    /// Keyboard focus entered (`true`) / left (`false`) this view or a
+    /// descendant — `InputOps::install_focus_handler`.
+    pub on_focus: Option<FocusWithinHandler>,
     pub on_file_drop: Option<FileDropHandler>,
     pub preserves_focus: bool,
     pub is_container: bool,
@@ -50,6 +53,9 @@ pub struct PressablePrim {
     /// Pointer-enter/leave notifications (`true` on enter), installed
     /// through the same `InputOps::install_hover_handler` as a view's.
     pub on_hover: Option<HoverHandler>,
+    /// Keyboard focus entered (`true`) / left (`false`) this pressable
+    /// or a descendant, as on a view.
+    pub on_focus: Option<FocusWithinHandler>,
     pub disabled: Option<Value<bool>>,
     pub preserves_focus: bool,
     pub style: Option<StyleProp>,

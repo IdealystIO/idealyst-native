@@ -65,6 +65,9 @@ pub(crate) fn virtual_key_code(code: &str) -> u16 {
     (0u16..0x80).find(|&kc| physical_code(kc).is_empty()).unwrap_or(0xFF)
 }
 
+/// `NSBackTabCharacter`: what AppKit reports for Shift+Tab.
+const BACK_TAB: &str = "\u{19}";
+
 /// What `-[NSEvent characters]` holds for a key: the control character a
 /// named key types, the private-use function-key code point AppKit uses
 /// for keys that type nothing (`NSUpArrowFunctionKey` = U+F700, …), or the
@@ -117,7 +120,11 @@ pub(crate) fn event_sequence(press: &KeyPress) -> Vec<(usize, u16, usize, String
         out.push((FLAGS_CHANGED, kc, flags, String::new()));
     }
     let key_code = virtual_key_code(&press.code);
-    match characters(&press.key) {
+    // Shift+Tab types the back-tab character, which is what the field
+    // editor maps to `insertBacktab:` (focus back); a "\t" with the Shift
+    // flag is `insertTab:` and moves focus forward.
+    let chars = if press.key == "Tab" && press.shift { Some(BACK_TAB.into()) } else { characters(&press.key) };
+    match chars {
         Some(chars) => {
             out.push((KEY_DOWN, key_code, flags, chars.clone()));
             out.push((KEY_UP, key_code, flags, chars));
@@ -244,5 +251,20 @@ mod tests {
         assert_eq!(shift[0], (FLAGS_CHANGED, 0x38, FLAG_SHIFT | DEV_LSHIFT, String::new()));
         assert_eq!(shift[1], (FLAGS_CHANGED, 0x38, 0, String::new()));
         assert_eq!(event_sequence(&press("Enter", "Enter", false, false)).len(), 2);
+    }
+
+    /// REGRESSION (robot E2E `tab_moves_focus_between_fields` on macOS):
+    /// Shift+Tab was posted as "\t" with the Shift flag, which the field
+    /// editor reads as `insertTab:` — focus moved forward. AppKit types
+    /// Shift+Tab as the back-tab character.
+    #[test]
+    fn regression_shift_tab_types_the_back_tab_character() {
+        let tab = press("Tab", "Tab", false, false);
+        assert!(event_sequence(&tab).iter().any(|(k, _, _, c)| *k == KEY_DOWN && c == "\t"));
+        let back = press("Tab", "Tab", true, false);
+        let down = event_sequence(&back).into_iter().find(|(k, ..)| *k == KEY_DOWN).unwrap();
+        assert_eq!(down.3, "\u{19}");
+        assert_eq!(down.1, 0x30, "still the Tab key");
+        assert_ne!(down.2 & FLAG_SHIFT, 0);
     }
 }

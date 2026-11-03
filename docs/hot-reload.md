@@ -2214,7 +2214,8 @@ characters). Everything the session writes moves under `isolated/<key>/`:
 Its builds therefore cannot race the other session's, and the developer's
 MCP keeps finding the developer's app. The cost is its own build cache:
 the first session of a key builds cold, later sessions of the same key
-reuse it, so give a test runner a stable key (`--isolated test`). It
+reuse it, so give a test runner a stable key (`--isolated test`; `idealyst
+test` uses `test`, or with `--isolated auto` the first free `test-N`). It
 conflicts only with another session of the same key and directory; its
 registry entry carries the key, and the MCP's "session of this
 directory" stays the one without a key.

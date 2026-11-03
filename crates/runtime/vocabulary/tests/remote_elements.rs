@@ -1348,6 +1348,55 @@ mod pressable_hover {
     }
 }
 
+/// `view` / `pressable` `on_focus` crosses (CODEC_VERSION 8): the crossed
+/// handler reaches `install_focus_handler` on the same node and keyboard
+/// focus reaches the author, exactly like the native tree.
+mod focus_within {
+    use super::*;
+
+    fn script(remote: bool) -> Vec<String> {
+        let h = Harness::new();
+        let (tree, seen) = h.world.enter(|| {
+            let seen = signal(Vec::<String>::new());
+            let note = move |s: String| seen.update(|v| { let mut v = v.clone(); v.push(s); v });
+            let tree = view()
+                .on_focus(move |f| note(format!("view {f}")))
+                .child(
+                    pressable(|| {})
+                        .on_focus(move |f| note(format!("pressable {f}")))
+                        .child(text().content("row")),
+                )
+                .build();
+            (tree, seen)
+        });
+        let tree = if remote { cross(tree) } else { tree };
+        let realized = h.mount(tree);
+        h.flush();
+        let handlers = h.shared.focus_within_handlers.borrow().clone();
+        assert_eq!(handlers.len(), 2, "one on the view, one on the pressable");
+        let pressable_node: Vec<_> = h.shared.press_by_node.borrow().keys().copied().collect();
+        assert!(pressable_node.contains(&handlers[0].0) || pressable_node.contains(&handlers[1].0));
+        for (_, f) in &handlers {
+            f(true);
+        }
+        for (_, f) in &handlers {
+            f(false);
+        }
+        h.flush();
+        let mut got = h.world.enter(|| seen.get());
+        drop(realized);
+        got.sort();
+        got
+    }
+
+    #[test]
+    fn on_focus_reaches_the_backend_natively_and_crossed() {
+        let native = script(false);
+        assert_eq!(native, vec!["pressable false", "pressable true", "view false", "view true"]);
+        assert_eq!(script(true), native, "the crossed tree hears focus like the native one");
+    }
+}
+
 /// `toggle` / `slider` `disabled` crosses too (CODEC_VERSION 4): a crossed
 /// control goes inert exactly like the native one.
 mod control_disabled {

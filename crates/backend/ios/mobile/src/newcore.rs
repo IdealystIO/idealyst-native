@@ -879,6 +879,10 @@ mod ios_impl {
         fn mark_preserves_focus(&mut self, node: &Self::Node) {
             IosBackend::mark_preserves_focus_impl(self, node)
         }
+
+        fn install_focus_handler(&mut self, node: &Self::Node, handler: runtime_shared::FocusWithinHandler) {
+            IosBackend::install_focus_handler_impl(self, node, flushing1(handler))
+        }
     }
 
     impl caps::PressableOps for IosBackend {
@@ -1663,6 +1667,10 @@ mod ios_impl {
         /// `isFirstResponder`, read at query time.
         fn is_focused(&self, node: &Self::Node) -> Option<bool> {
             Some(unsafe { objc2::msg_send![node.as_view(), isFirstResponder] })
+        }
+
+        fn move_focus(&self, node: &Self::Node, forward: bool) -> Option<caps::NativeInjection> {
+            Some(IosBackend::move_focus_impl(self, node, forward))
         }
 
         fn hit_contains(&self, node: &Self::Node, x: f32, y: f32) -> Option<bool> {
