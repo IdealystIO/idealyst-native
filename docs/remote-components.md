@@ -128,7 +128,7 @@ Props are taken exactly as declared:
 
 | Prop type | What the component gets |
 |---|---|
-| A value: numbers, `bool`, `String`, `Vec`/`Option` of them, style types (`Color`, `Length`, `StyleRules`, …) | A copy, fixed at mount |
+| A value: numbers, `bool`, `String`, `&'static str`, `Vec`/`Option` of them, style types (`Color`, `Length`, `StyleRules`, …), `IconData`, `ImageSource` | A copy, fixed at mount |
 | Your own type with `#[derive(Remote)]` | A copy, field by field |
 | `ReadSignal<T>` | The app's signal, read live: when the app changes it, the component updates |
 | `Signal<T>` | The app's signal, read live, and the component can write it |
@@ -165,6 +165,17 @@ asks the app for its own copy, by name, and the app renders it natively. So:
 - If the app doesn't have a component the bundle asks for (an older app with a
   newer bundle), that component shows an error in its place, and the rest of
   the screen renders.
+- A prop the call site sets must have a type that crosses: values (including
+  `&'static str` test ids, re-created app-side as interned strings, and
+  `ImageSource` — a URL stays live, an asset's bytes cross with it),
+  callbacks, `Reactive`, signals, children, refs and `#[derive(Remote)]`
+  types. A prop that can't cross (a slot style override, a shared model like
+  idea-ui's table columns) shows an error in that component's place. Every
+  app component's props are checked up front by
+  `remote::host::uncrossable_app_props()`; a component library asserts on it
+  in a test (idea-ui's is in `crates/streaming/spike/tests/idea_ui.rs`) so a
+  new prop type that can't cross fails CI rather than the first bundle that
+  sets it.
 
 A consequence: a helper that should exist only in the bundle can't be a
 `#[component]` (it would be an import of the app's copy). Write it as a plain

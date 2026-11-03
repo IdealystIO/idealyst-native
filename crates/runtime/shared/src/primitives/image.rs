@@ -192,6 +192,20 @@ impl From<Asset<kinds::Image>> for ImageSource {
     }
 }
 
+impl ImageSource {
+    /// The variant's name (`"Url"`, `"Asset"`), for diagnostics that must
+    /// name a variant they can't handle — code outside this crate can't
+    /// match exhaustively (`#[non_exhaustive]`), so this match is where a
+    /// new variant gets its name.
+    #[doc(hidden)]
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            ImageSource::Url(_) => "Url",
+            ImageSource::Asset(_) => "Asset",
+        }
+    }
+}
+
 
 
 

@@ -83,7 +83,9 @@ pub mod wasm;
 ///   in place of `horizontal`.
 /// - 8: [`Node::View`] and [`Node::Pressable`] carry `on_focus`.
 /// - 9: [`TextContent::Runs`] is a [`Val`] (a reactive run list crosses
-///   as a getter).
+///   as a getter). `&'static str`, `ImageSource` and `KeyboardKind` cross
+///   as props and plain data: a field of one of those types, which a
+///   bundle used to send as nothing, now carries its value.
 pub const CODEC_VERSION: u32 = 9;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
@@ -388,10 +390,11 @@ impl From<runtime_shared::primitives::icon::IconData> for WireIcon {
 }
 
 /// The most the interners below leak for the process's life, in bytes.
-/// The prims hold names, icons and asset bytes as `&'static`, so what
-/// crosses is leaked once per DISTINCT value — bounded, for a real bundle,
-/// by what it ships (its names, icons and `include_bytes!` assets; fonts and
-/// images run to a few MB) times the versions loaded. A bundle that keeps
+/// The prims hold names, icons and asset bytes as `&'static` (and props
+/// hold test ids and other `&'static str`s), so what crosses is leaked once
+/// per DISTINCT value — bounded, for a real bundle, by what it ships (its
+/// string literals, icons and `include_bytes!` assets; fonts and images run
+/// to a few MB) times the versions loaded. A bundle that keeps
 /// sending NEW values (generated, or hostile) would grow the app without
 /// limit; past this budget the interners answer placeholders and the app
 /// stops the bundle ([`take_intern_exceeded`]). 64 MB is an order of
@@ -434,7 +437,7 @@ pub(crate) fn take_intern_exceeded() -> bool {
 }
 
 /// Interned `'static` copies of what crosses as owned data but is
-/// `'static` on the other side (an icon's paths, a name). Either side may
+/// `'static` on the other side (an icon's paths, a name, a `test_id`). Either side may
 /// need them: the app for a bundle's icon, a bundle for one the app sends.
 /// Each distinct value is leaked once, within [`INTERN_BUDGET_BYTES`]
 /// (past it: `""`).
@@ -492,6 +495,74 @@ pub enum WireAssetSource {
     Bundled { path: String },
     BundledEmbedded { path: String, bytes: Vec<u8>, extension: String },
     Remote { url: String },
+}
+
+impl From<runtime_shared::assets::Asset<runtime_shared::assets::kinds::Image>> for WireAsset {
+    fn from(a: runtime_shared::assets::Asset<runtime_shared::assets::kinds::Image>) -> Self {
+        WireAsset { id: a.id.0, source: a.source.into() }
+    }
+}
+
+impl From<runtime_shared::assets::AssetSource> for WireAssetSource {
+    fn from(s: runtime_shared::assets::AssetSource) -> Self {
+        use runtime_shared::assets::AssetSource;
+        match s {
+            AssetSource::Embedded { bytes, extension } => {
+                WireAssetSource::Embedded { bytes: bytes.to_vec(), extension: extension.to_owned() }
+            }
+            AssetSource::Bundled { path } => WireAssetSource::Bundled { path: path.to_owned() },
+            AssetSource::BundledEmbedded { path, bytes, extension } => WireAssetSource::BundledEmbedded {
+                path: path.to_owned(),
+                bytes: bytes.to_vec(),
+                extension: extension.to_owned(),
+            },
+            AssetSource::Remote { url } => WireAssetSource::Remote { url: url.to_owned() },
+        }
+    }
+}
+
+impl WireAsset {
+    /// The image asset this names, its strings and bytes interned (an
+    /// `Asset` holds them as `&'static`).
+    pub(crate) fn interned(self) -> runtime_shared::assets::Asset<runtime_shared::assets::kinds::Image> {
+        runtime_shared::assets::Asset::new(runtime_shared::assets::AssetId(self.id), self.source.interned())
+    }
+}
+
+impl WireAssetSource {
+    pub(crate) fn interned(self) -> runtime_shared::assets::AssetSource {
+        use runtime_shared::assets::AssetSource;
+        match self {
+            WireAssetSource::Embedded { bytes, extension } => {
+                AssetSource::Embedded { bytes: intern_bytes(bytes), extension: intern(&extension) }
+            }
+            WireAssetSource::Bundled { path } => AssetSource::Bundled { path: intern(&path) },
+            WireAssetSource::BundledEmbedded { path, bytes, extension } => AssetSource::BundledEmbedded {
+                path: intern(&path),
+                bytes: intern_bytes(bytes),
+                extension: intern(&extension),
+            },
+            WireAssetSource::Remote { url } => AssetSource::Remote { url: intern(&url) },
+        }
+    }
+}
+
+/// An asset's bytes as `'static`, as [`intern`] does a string: one leak per
+/// DISTINCT blob, within [`INTERN_BUDGET_BYTES`] (past it: empty).
+fn intern_bytes(b: Vec<u8>) -> &'static [u8] {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static BLOBS: OnceLock<Mutex<HashSet<&'static [u8]>>> = OnceLock::new();
+    let mut blobs = BLOBS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&x) = blobs.get(&b[..]) {
+        return x;
+    }
+    if !charge_intern(b.len()) {
+        return &[];
+    }
+    let x: &'static [u8] = Box::leak(b.into_boxed_slice());
+    blobs.insert(x);
+    x
 }
 
 /// A `FileDropEvent` without the web-only opaque `source` (a bundle runs on
@@ -914,6 +985,70 @@ pub trait RemoteValue: Sized + 'static {
     fn decode_many(n: usize, input: &mut &[u8]) -> Result<Vec<Self>, String> {
         (0..n).map(|_| Self::decode(input)).collect()
     }
+
+    /// Report what inside `Self` can't cross as plain data ([`CrossCheck`]).
+    /// A leaf type crosses whole; containers forward to their elements and
+    /// `#[derive(Remote)]` checks each field.
+    #[doc(hidden)]
+    fn check_value(_c: &mut CrossCheck) {}
+}
+
+/// What a static walk of a type found that can't cross: the type names, and
+/// where they sit. A field type that can't cross compiles (the probes defer
+/// the error to the moment a value crosses — so a library can derive
+/// `Remote` everywhere), which also means nothing fails until a bundle
+/// uses it; [`host::uncrossable_app_props`] walks every app component's
+/// props up front, for a test to assert on.
+#[doc(hidden)]
+#[derive(Default, Debug)]
+pub struct CrossCheck {
+    failed: Vec<String>,
+    /// The derived types being walked, innermost last (recursion guard,
+    /// and the path a failure is reported under).
+    open: Vec<&'static str>,
+}
+
+impl CrossCheck {
+    /// `T` can't cross `how` ("as a prop", "as plain data").
+    pub fn fail<T>(&mut self, how: &str) {
+        let at = if self.open.is_empty() { String::new() } else { format!(" (in {})", self.open.join(" > ")) };
+        let msg = format!("`{}` can't cross {how}{at}", std::any::type_name::<T>());
+        if !self.failed.contains(&msg) {
+            self.failed.push(msg);
+        }
+    }
+    /// Start walking a derived type's fields; `false` when it is already
+    /// being walked (a type that contains itself).
+    pub fn enter<T>(&mut self) -> bool {
+        let name = std::any::type_name::<T>();
+        if self.open.contains(&name) {
+            return false;
+        }
+        self.open.push(name);
+        true
+    }
+    pub fn leave(&mut self) {
+        self.open.pop();
+    }
+    pub fn into_failures(self) -> Vec<String> {
+        self.failed
+    }
+}
+
+/// What inside `T` can't cross from a bundle to an app component.
+#[doc(hidden)]
+pub fn uncrossable_import<T: ImportArg>() -> Vec<String> {
+    let mut c = CrossCheck::default();
+    T::check_import(&mut c);
+    c.into_failures()
+}
+
+/// What inside `T` can't cross as plain data.
+#[doc(hidden)]
+pub fn uncrossable_value<T: RemoteValue>() -> Vec<String> {
+    let mut c = CrossCheck::default();
+    T::check_value(&mut c);
+    c.into_failures()
 }
 
 /// `RemoteValue` through serde (postcard).
@@ -944,6 +1079,9 @@ impl<T: RemoteValue> RemoteValue for Option<T> {
     fn decode(input: &mut &[u8]) -> Result<Self, String> {
         Ok(if __try_receive_value::<bool>(input)? { Some(T::decode(input)?) } else { None })
     }
+    fn check_value(c: &mut CrossCheck) {
+        T::check_value(c)
+    }
 }
 
 /// What a fallible `#[host_fn]` returns (`async fn take_photo(..) ->
@@ -960,6 +1098,10 @@ impl<T: RemoteValue, E: RemoteValue> RemoteValue for Result<T, E> {
     fn decode(input: &mut &[u8]) -> Result<Self, String> {
         Ok(if __try_receive_value::<bool>(input)? { Ok(T::decode(input)?) } else { Err(E::decode(input)?) })
     }
+    fn check_value(c: &mut CrossCheck) {
+        T::check_value(c);
+        E::check_value(c);
+    }
 }
 
 impl<T: RemoteValue> RemoteValue for Vec<T> {
@@ -970,6 +1112,9 @@ impl<T: RemoteValue> RemoteValue for Vec<T> {
     fn decode(input: &mut &[u8]) -> Result<Self, String> {
         let n = checked_len(__try_receive_value::<u64>(input)?, input)?;
         T::decode_many(n, input)
+    }
+    fn check_value(c: &mut CrossCheck) {
+        T::check_value(c)
     }
 }
 
@@ -983,6 +1128,9 @@ impl<T: RemoteValue, const N: usize> RemoteValue for [T; N] {
         let n = checked_len(N as u64, input)?;
         T::decode_many(n, input)?.try_into().map_err(|_| "array length".to_string())
     }
+    fn check_value(c: &mut CrossCheck) {
+        T::check_value(c)
+    }
 }
 
 macro_rules! value_tuple {
@@ -995,6 +1143,9 @@ macro_rules! value_tuple {
             }
             fn decode(input: &mut &[u8]) -> Result<Self, String> {
                 Ok(($($n::decode(input)?,)+))
+            }
+            fn check_value(c: &mut CrossCheck) {
+                $($n::check_value(c);)+
             }
         }
     };
@@ -1011,6 +1162,9 @@ impl<T: RemoteValue + Clone> RemoteValue for crate::glue::Reactive<T> {
     }
     fn decode(input: &mut &[u8]) -> Result<Self, String> {
         Ok(crate::glue::Reactive::Static(T::decode(input)?))
+    }
+    fn check_value(c: &mut CrossCheck) {
+        T::check_value(c)
     }
 }
 
@@ -1041,6 +1195,7 @@ remote_value!(
     runtime_shared::primitives::key::KeyEvent,
     runtime_shared::primitives::key::KeyOutcome,
     runtime_shared::primitives::image::ImageLoadEvent,
+    runtime_shared::primitives::text_input::KeyboardKind,
     runtime_shared::touch::TouchPoint,
     runtime_shared::host::ColorScheme,
 );
@@ -1084,6 +1239,124 @@ impl RemoteValue for runtime_shared::primitives::icon::IconData {
 }
 cross_as_value!(runtime_shared::primitives::icon::IconData);
 
+/// A `&'static str` — a `test_id`, a row item's id literal. The two sides
+/// are different binaries (a wasm bundle and the app), so the text crosses
+/// as a string (the same bytes as a `String`, so its shape is `str`) and the
+/// receiving side materializes it with [`intern`]: one leak per DISTINCT
+/// string for the process's life. That is bounded because the values are
+/// the sending binary's own literals (a `&'static str` it didn't leak
+/// itself), and capped by [`INTERN_BUDGET_BYTES`] for a bundle that
+/// generates new ones — past it the app stops the bundle.
+impl RemoteValue for &'static str {
+    fn encode(&self, out: &mut Vec<u8>) {
+        __send_value(self, out)
+    }
+    fn decode(input: &mut &[u8]) -> Result<Self, String> {
+        Ok(intern(&__try_receive_value::<String>(input)?))
+    }
+}
+cross_as_value!(&'static str);
+
+/// An `ImageSource`'s variant on the wire: a `u8` tag, then its payload.
+const IMAGE_URL: u8 = 0;
+const IMAGE_ASSET: u8 = 1;
+/// A variant the codec has no encoding for: its name follows, and the
+/// receiving side refuses it naming the variant (only the component that
+/// took it fails).
+const IMAGE_UNSUPPORTED: u8 = 2;
+
+fn image_unsupported(name: String) -> String {
+    format!("an image source of kind `{name}` can't cross a remote boundary (only URLs and assets do)")
+}
+
+/// An image source an app component takes from a bundle (idea-ui's
+/// `Image(src = …)`). A URL crosses as the `Reactive<String>` it is —
+/// a live one stays live (a getter into the bundle); an asset crosses as
+/// its id and source, embedded bytes included, interned app-side like the
+/// `image` primitive's.
+impl ImportArg for runtime_shared::primitives::image::ImageSource {
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn send(self, out: &mut Vec<u8>) {
+        use runtime_shared::primitives::image::ImageSource;
+        match self {
+            ImageSource::Url(url) => {
+                __send_value(&IMAGE_URL, out);
+                // runtime-shared's `Reactive` (what `ImageSource` holds) is
+                // the glue's under another name: cross as the glue's.
+                let url = match url {
+                    runtime_shared::Reactive::Static(s) => crate::glue::Reactive::Static(s),
+                    runtime_shared::Reactive::Dynamic(f) => crate::glue::Reactive::Dynamic(f),
+                };
+                url.send(out);
+            }
+            ImageSource::Asset(a) => {
+                __send_value(&IMAGE_ASSET, out);
+                __send_value(&WireAsset::from(a), out);
+            }
+            other => {
+                __send_value(&IMAGE_UNSUPPORTED, out);
+                __send_value(&other.variant_name(), out);
+            }
+        }
+    }
+    #[cfg(not(idealyst_stream_guest))]
+    fn receive(input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String> {
+        use runtime_shared::primitives::image::ImageSource;
+        match __try_receive_value::<u8>(input)? {
+            IMAGE_URL => Ok(ImageSource::Url(match <crate::glue::Reactive<String> as ImportArg>::receive(input, cx)? {
+                crate::glue::Reactive::Static(s) => runtime_shared::Reactive::Static(s),
+                crate::glue::Reactive::Dynamic(f) => runtime_shared::Reactive::Dynamic(f),
+            })),
+            IMAGE_ASSET => Ok(ImageSource::Asset(__try_receive_value::<WireAsset>(input)?.interned())),
+            IMAGE_UNSUPPORTED => Err(image_unsupported(__try_receive_value(input)?)),
+            n => Err(format!("an image source has no kind {n}: the app and the bundle disagree about it")),
+        }
+    }
+}
+
+/// An image source as plain data (a `#[derive(Remote)]` row's field, a
+/// remote component's prop): a URL crosses as its CURRENT value, like any
+/// `Reactive` inside data.
+impl RemoteValue for runtime_shared::primitives::image::ImageSource {
+    fn encode(&self, out: &mut Vec<u8>) {
+        use runtime_shared::primitives::image::ImageSource;
+        match self {
+            ImageSource::Url(url) => {
+                __send_value(&IMAGE_URL, out);
+                __send_value(&url.get(), out);
+            }
+            ImageSource::Asset(a) => {
+                __send_value(&IMAGE_ASSET, out);
+                __send_value(&WireAsset::from(*a), out);
+            }
+            other => {
+                __send_value(&IMAGE_UNSUPPORTED, out);
+                __send_value(&other.variant_name(), out);
+            }
+        }
+    }
+    fn decode(input: &mut &[u8]) -> Result<Self, String> {
+        use runtime_shared::primitives::image::ImageSource;
+        match __try_receive_value::<u8>(input)? {
+            IMAGE_URL => Ok(ImageSource::Url(runtime_shared::Reactive::Static(__try_receive_value::<String>(input)?))),
+            IMAGE_ASSET => Ok(ImageSource::Asset(__try_receive_value::<WireAsset>(input)?.interned())),
+            IMAGE_UNSUPPORTED => Err(image_unsupported(__try_receive_value(input)?)),
+            n => Err(format!("an image source has no kind {n}: the app and the bundle disagree about it")),
+        }
+    }
+}
+
+impl RemoteProp for runtime_shared::primitives::image::ImageSource {
+    #[cfg(not(idealyst_stream_guest))]
+    fn send(&self, out: &mut Vec<u8>, _keep: &mut host::Keep) {
+        RemoteValue::encode(self, out)
+    }
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn receive(input: &mut &[u8]) -> Self {
+        <Self as RemoteValue>::decode(input).unwrap_or_else(|e| panic!("remote codec: a value does not decode: {e}"))
+    }
+}
+
 fn codec_encode<T: RemoteValue>(v: &T, out: &mut Vec<u8>) {
     v.encode(out)
 }
@@ -1104,6 +1377,7 @@ fn signal_codec<T: RemoteValue>() -> runtime_world::remote::Codec<T> {
 pub trait ViaValue<T> {
     fn encode_value(&self, v: &T, out: &mut Vec<u8>);
     fn decode_value(&self, input: &mut &[u8]) -> Result<T, String>;
+    fn check_value(&self, c: &mut CrossCheck);
 }
 
 impl<T: RemoteValue> ViaValue<T> for Arg<T> {
@@ -1113,12 +1387,16 @@ impl<T: RemoteValue> ViaValue<T> for Arg<T> {
     fn decode_value(&self, input: &mut &[u8]) -> Result<T, String> {
         T::decode(input)
     }
+    fn check_value(&self, c: &mut CrossCheck) {
+        T::check_value(c)
+    }
 }
 
 #[doc(hidden)]
 pub trait ViaNoValue<T> {
     fn encode_value(&self, v: &T, out: &mut Vec<u8>);
     fn decode_value(&self, input: &mut &[u8]) -> Result<T, String>;
+    fn check_value(&self, c: &mut CrossCheck);
 }
 
 impl<T> ViaNoValue<T> for &Arg<T> {
@@ -1127,6 +1405,9 @@ impl<T> ViaNoValue<T> for &Arg<T> {
     }
     fn decode_value(&self, _input: &mut &[u8]) -> Result<T, String> {
         Err(format!("a value of type `{}` can't cross as plain data", std::any::type_name::<T>()))
+    }
+    fn check_value(&self, c: &mut CrossCheck) {
+        c.fail::<T>("as plain data")
     }
 }
 
@@ -1201,6 +1482,13 @@ pub trait ImportArg: Sized + 'static {
     fn receive_many(n: usize, input: &mut &[u8], cx: &host::ImportCx) -> Result<Vec<Self>, String> {
         (0..n).map(|_| Self::receive(input, cx)).collect()
     }
+
+    /// Report what inside `Self` can't cross from a bundle ([`CrossCheck`]).
+    /// A leaf type crosses whole; containers forward to their elements (a
+    /// signal's and a callback's to their values' [`RemoteValue`] check)
+    /// and `#[derive(Remote)]` checks each field.
+    #[doc(hidden)]
+    fn check_import(_c: &mut CrossCheck) {}
 }
 
 /// The probe the emission calls a prop's crossing through: [`ViaImport`]
@@ -1222,6 +1510,7 @@ pub trait ViaImport<T> {
     fn send(&self, v: T, out: &mut Vec<u8>);
     #[cfg(not(idealyst_stream_guest))]
     fn receive(&self, input: &mut &[u8], cx: &host::ImportCx) -> Result<T, String>;
+    fn check_import(&self, c: &mut CrossCheck);
 }
 
 impl<T: ImportArg> ViaImport<T> for Arg<T> {
@@ -1233,6 +1522,9 @@ impl<T: ImportArg> ViaImport<T> for Arg<T> {
     fn receive(&self, input: &mut &[u8], cx: &host::ImportCx) -> Result<T, String> {
         T::receive(input, cx)
     }
+    fn check_import(&self, c: &mut CrossCheck) {
+        T::check_import(c)
+    }
 }
 
 #[doc(hidden)]
@@ -1241,6 +1533,7 @@ pub trait ViaUnsupported<T> {
     fn send(&self, v: T, out: &mut Vec<u8>);
     #[cfg(not(idealyst_stream_guest))]
     fn receive(&self, input: &mut &[u8], cx: &host::ImportCx) -> Result<T, String>;
+    fn check_import(&self, c: &mut CrossCheck);
 }
 
 impl<T> ViaUnsupported<T> for &Arg<T> {
@@ -1252,6 +1545,9 @@ impl<T> ViaUnsupported<T> for &Arg<T> {
     #[cfg(not(idealyst_stream_guest))]
     fn receive(&self, _input: &mut &[u8], _cx: &host::ImportCx) -> Result<T, String> {
         Err(format!("a prop of type `{}` can't cross from a remote component yet", std::any::type_name::<T>()))
+    }
+    fn check_import(&self, c: &mut CrossCheck) {
+        c.fail::<T>("from a remote component")
     }
 }
 
@@ -1278,6 +1574,9 @@ pub trait ImportProps: Sized + 'static {
     fn prop_shapes() -> Vec<(&'static str, String)> {
         Vec::new()
     }
+    /// Check every field's type ([`ImportArg::check_import`]).
+    #[doc(hidden)]
+    fn check_props(_c: &mut CrossCheck) {}
 }
 
 impl ImportProps for () {
@@ -1304,6 +1603,7 @@ pub trait ViaProps<T> {
     #[cfg(not(idealyst_stream_guest))]
     fn receive_props(&self, base: T, input: &mut &[u8], cx: &host::ImportCx) -> Result<T, String>;
     fn prop_shapes(&self) -> Vec<(&'static str, String)>;
+    fn check_props(&self, c: &mut CrossCheck);
 }
 
 impl<T: ImportProps> ViaProps<T> for Arg<T> {
@@ -1318,6 +1618,9 @@ impl<T: ImportProps> ViaProps<T> for Arg<T> {
     fn prop_shapes(&self) -> Vec<(&'static str, String)> {
         T::prop_shapes()
     }
+    fn check_props(&self, c: &mut CrossCheck) {
+        T::check_props(c)
+    }
 }
 
 #[doc(hidden)]
@@ -1329,6 +1632,9 @@ pub trait ViaUnsupportedProps<T> {
     /// None known: the props can't cross anyway.
     fn prop_shapes(&self) -> Vec<(&'static str, String)> {
         Vec::new()
+    }
+    fn check_props(&self, c: &mut CrossCheck) {
+        c.fail::<T>("from a remote component (declare them with `#[props]`)")
     }
 }
 
@@ -1499,6 +1805,9 @@ impl<T: ImportArg> ImportArg for Option<T> {
             Ok(None)
         }
     }
+    fn check_import(c: &mut CrossCheck) {
+        T::check_import(c)
+    }
 }
 
 impl<T: ImportArg> ImportArg for Vec<T> {
@@ -1511,6 +1820,9 @@ impl<T: ImportArg> ImportArg for Vec<T> {
     fn receive(input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String> {
         let n = checked_len(__try_receive_value::<u64>(input)?, input)?;
         T::receive_many(n, input, cx)
+    }
+    fn check_import(c: &mut CrossCheck) {
+        T::check_import(c)
     }
 }
 
@@ -1665,6 +1977,9 @@ impl<T: ImportArg> ImportArg for crate::glue::Reactive<T> {
             Ok(crate::glue::Reactive::Static(T::receive(input, cx)?))
         }
     }
+    fn check_import(c: &mut CrossCheck) {
+        T::check_import(c)
+    }
 }
 
 /// A callback prop: runs in the bundle.
@@ -1709,6 +2024,10 @@ impl<A: RemoteValue, B: RemoteValue> ImportArg for std::rc::Rc<dyn Fn(A, B)> {
             }));
         }))
     }
+    fn check_import(c: &mut CrossCheck) {
+        A::check_value(c);
+        B::check_value(c);
+    }
 }
 
 /// A one-argument callback prop: `on_change: Fn(bool)` (`R = ()`), or one
@@ -1731,6 +2050,10 @@ impl<A: RemoteValue, R: RemoteValue + Default> ImportArg for std::rc::Rc<dyn Fn(
                 .and_then(|reply| R::decode(&mut &reply[..]).ok())
                 .unwrap_or_default()
         }))
+    }
+    fn check_import(c: &mut CrossCheck) {
+        A::check_value(c);
+        R::check_value(c);
     }
 }
 
@@ -1786,6 +2109,9 @@ where
     fn receive(input: &mut &[u8], _cx: &host::ImportCx) -> Result<Self, String> {
         runtime_world::remote::receive_signal(__try_receive_value::<SignalHandle>(input)?, signal_codec::<T>())
     }
+    fn check_import(c: &mut CrossCheck) {
+        T::check_value(c)
+    }
 }
 
 impl<T> ImportArg for runtime_world::ReadSignal<T>
@@ -1801,6 +2127,9 @@ where
     fn receive(input: &mut &[u8], _cx: &host::ImportCx) -> Result<Self, String> {
         runtime_world::remote::receive_signal(__try_receive_value::<SignalHandle>(input)?, signal_codec::<T>())
             .map(|s| s.read_only())
+    }
+    fn check_import(c: &mut CrossCheck) {
+        T::check_value(c)
     }
 }
 
@@ -1831,6 +2160,12 @@ macro_rules! __remote_props {
             $crate::__remote_props_receive! { $($f : $t),* }
             fn prop_shapes() -> ::std::vec::Vec<(&'static str, ::std::string::String)> {
                 ::std::vec![$( (::core::stringify!($f), $crate::__shape_of!($t)) ),*]
+            }
+            fn check_props(__c: &mut $crate::remote::CrossCheck) {
+                #[allow(unused_imports)]
+                use $crate::remote::{ViaImport as _, ViaUnsupported as _};
+                let _ = &__c;
+                $( (&$crate::remote::Arg::<$t>::new()).check_import(__c); )*
             }
         }
     };
@@ -2081,10 +2416,21 @@ macro_rules! __remote_app_component {
                 use $crate::remote::{ViaProps as _, ViaUnsupportedProps as _};
                 (&$crate::remote::Arg::<$props>::new()).prop_shapes()
             }
+            fn __uncrossable() -> ::std::vec::Vec<::std::string::String> {
+                #[allow(unused_imports)]
+                use $crate::remote::{ViaProps as _, ViaUnsupportedProps as _};
+                let mut __c = $crate::remote::CrossCheck::default();
+                (&$crate::remote::Arg::<$props>::new()).check_props(&mut __c);
+                __c.into_failures()
+            }
             #[$crate::remote::__linkme::distributed_slice($crate::remote::host::APP_COMPONENTS)]
             #[linkme(crate = $crate::remote::__linkme)]
-            static __ENTRY: $crate::remote::host::AppComponent =
-                $crate::remote::host::AppComponent { name: $name, build: __build, props: __props };
+            static __ENTRY: $crate::remote::host::AppComponent = $crate::remote::host::AppComponent {
+                name: $name,
+                build: __build,
+                props: __props,
+                uncrossable: __uncrossable,
+            };
         };
     };
 }

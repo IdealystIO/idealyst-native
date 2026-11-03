@@ -2697,6 +2697,38 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Changed
 
+- **`ui!`, `#[component]`, `#[props]` and `stylesheet!` generate a third
+  less code** (`runtime-macros-expand` / `runtime-macros`, `runtime-vocabulary`
+  minor; performance only, no behaviour change). On `websites/website`
+  (wasm32) the framework macros' output fell from 2.41 MB to 1.39 MB
+  (`-Zmacro-stats`), the expanded crate from 1.81 MB to 1.51 MB, and the
+  post-expansion AST / HIR by 15% / 14%; on `idea-ui` the expanded crate
+  fell from 4.19 MB to 3.74 MB (HIR −10%). What changed:
+  - a `ui!` component call is `glue::__site(Props { .. },
+    __remote_site!([..]))`: only the set of prop names passes through the
+    vocabulary's per-build macro, so a call site's child tree is no longer
+    re-copied through a `macro_rules!` once per nesting level
+    (`__remote_site!` was 34% of the website's macro output);
+  - child lists are `glue::__children().child(a).child(b).done()` instead of
+    a `Vec` block with one `ChildList::append_to` statement per child;
+  - the inspector registration (`__inspect_component!`) and `#[props]`'s
+    `InspectProps` impl are expanded only when the vocabulary's `robot`
+    feature is on; elsewhere the probes are dropped unexpanded;
+  - `__apply_literal` / `__apply_children` are generated only under
+    `runtime-macros/ui-overlay`, the one feature whose emission calls them;
+  - a component body passes through `__remote_guest_split!` as one token
+    tree (`app_expr:`), not token by token;
+  - a `stylesheet!` builder's `into_style_prop` closure calls the same
+    body as `into_style_application` instead of carrying a copy, and the
+    generated items lost their multi-paragraph doc comments.
+
+  The new macros emit names only this `runtime-vocabulary` defines
+  (`glue::__site`, `glue::__children`, `__inspect_component!`,
+  `__inspect_enabled!`, `__remote_guest_split!`'s `app_expr:` arm): release
+  `runtime-vocabulary` with them and raise `runtime-core`'s floor on it. The
+  vocabulary keeps the forms `runtime-macros` 1.22 and older emit, so older
+  macros still expand against it.
+
 - **`spawn_async` is now `spawn_detached`; the old name is deprecated**
   (`runtime-shared`, `lint`, and the SDKs and examples that called it).
   The task was always detached: it keeps running after the component,
@@ -2962,6 +2994,29 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **Remote components using idea-ui load again: `&'static str` and
+  `ImageSource` props cross** (`runtime-vocabulary` minor, `runtime-shared`
+  patch, `runtime-macros-expand` minor, `idea-ui` patch). idea-ui 16 gave
+  every interactive component and the row items (`Tab`, `MenuEntry`,
+  `RadioOption`, `SelectOption`, `SegmentOption`) a `test_id:
+  Option<&'static str>`, and idea-ui's `Image.src` became an `ImageSource`
+  (idea-ui 14.1); neither type crossed the remote boundary, so a bundle
+  using `Button`, `Stack`, `Tabs`, `Menu`, `RadioGroup` or `Image` showed
+  "a prop of type `Option<&str>` can't cross from a remote component yet"
+  (or trapped: "can't cross as plain data") in place of its screen. A
+  `&'static str` now crosses as a string and the receiving side interns it
+  (one leak per distinct string, inside the existing 64 MB interning
+  budget); an `ImageSource` URL crosses as its `Reactive<String>` (a live
+  one stays live), an asset as its id and source with embedded bytes. Also
+  crossing now: `KeyboardKind` (`Field(keyboard = …)`) and idea-ui's
+  `TextSpan` (`Typography(spans = …)`). Every app component's props can be
+  checked up front with `remote::host::uncrossable_app_props()` (each
+  `ImportArg` / `RemoteValue` reports what inside it can't cross;
+  `#[derive(Remote)]` checks field by field) — the spike's idea-ui test
+  asserts idea-ui's list, so a new prop type that can't cross fails CI.
+  Within codec version 9 (unreleased): a field of these types, which a
+  bundle sent as nothing, now carries its value.
 
 - **Android builds on a clean machine: AndroidX is pinned, and Gradle
   module metadata is read** (`run-android` minor, `idealyst-cli` minor).

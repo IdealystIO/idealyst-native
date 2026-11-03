@@ -205,6 +205,17 @@ pub(crate) fn derive_with(input: DeriveInput, context: bool) -> syn::Result<Toke
     };
     let name_str = name.to_string();
 
+    // The static crossing check (`remote::CrossCheck`): every field type,
+    // through the same probes the codec uses, so a field that would fail
+    // when a value crosses is reported without one.
+    let field_types: Vec<&syn::Type> = match &input.data {
+        Data::Struct(st) => st.fields.iter().map(|f| &f.ty).collect(),
+        Data::Enum(e) => e.variants.iter().flat_map(|v| v.fields.iter().map(|f| &f.ty)).collect(),
+        Data::Union(_) => unreachable!("refused above"),
+    };
+    let check_imports = field_types.iter().map(|t| quote! { (&#v::Arg::<#t>::new()).check_import(__c); });
+    let check_values = field_types.iter().map(|t| quote! { (&#v::Arg::<#t>::new()).check_value(__c); });
+
     let context_entry = if context { quote! { ::runtime_vocabulary::__remote_context_entry!(#name); } } else { quote!() };
 
     Ok(quote! {
@@ -237,6 +248,14 @@ pub(crate) fn derive_with(input: DeriveInput, context: bool) -> syn::Result<Toke
                         #recv
                     }
                 }
+                fn check_import(__c: &mut #v::CrossCheck) {
+                    #[allow(unused_imports)]
+                    use #v::{ViaImport as _, ViaUnsupported as _};
+                    if __c.enter::<Self>() {
+                        #(#check_imports)*
+                        __c.leave();
+                    }
+                }
             }
             impl #v::RemoteValue for #name {
                 fn encode(&self, __out: &mut ::std::vec::Vec<u8>) {
@@ -249,6 +268,14 @@ pub(crate) fn derive_with(input: DeriveInput, context: bool) -> syn::Result<Toke
                     use #v::{ViaValue as _, ViaNoValue as _};
                     let _ = &__in;
                     #decode
+                }
+                fn check_value(__c: &mut #v::CrossCheck) {
+                    #[allow(unused_imports)]
+                    use #v::{ViaValue as _, ViaNoValue as _};
+                    if __c.enter::<Self>() {
+                        #(#check_values)*
+                        __c.leave();
+                    }
                 }
             }
             impl #v::RemoteProp for #name {
@@ -287,6 +314,9 @@ mod tests {
         let out = derive(e).unwrap().to_string();
         assert!(out.contains("Self :: Button (__f0)") && out.contains("Self :: Custom { el }"), "{out}");
         assert!(out.contains("RemoteShape for Close"), "{out}");
+        // Every variant's fields join the static crossing check.
+        assert!(out.contains("fn check_import") && out.contains("fn check_value"), "{out}");
+        assert!(out.contains("Arg :: < Rc < dyn Fn () > > :: new ()) . check_import"), "{out}");
     }
 
     #[test]

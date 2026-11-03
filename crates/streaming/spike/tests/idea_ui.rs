@@ -175,3 +175,74 @@ fn a_bundles_own_stylesheet_uses_the_apps_theme_tokens() {
     assert!(dark.iter().all(|d| !light.contains(d)), "the swap didn't restyle the bundle's nodes: {light:?} → {dark:?}");
     assert_eq!(runtime_vocabulary::remote::host::live_trees(), 0);
 }
+
+/// idea-ui props KNOWN not to cross from a bundle yet, as (component path
+/// under `idea_ui::components::`, type). Each fails only when a bundle sets
+/// it — the app's default stands in otherwise. Render slots built from a
+/// context the app makes (`SubMenuSlot`, `AutocompleteSlot`), shared models
+/// (`Rc<DateLabels>`, the table's column/row model), animation drivers and
+/// `FontFamily` (it holds `&'static` typeface tables) have no encoding.
+/// Every `*SlotStyles` (per-instance slot overrides) is in the same state:
+/// a bundle restyles through its own `stylesheet!`s instead. Fixing one
+/// means deleting its line here; ADDING one is a decision, not a test fix.
+const KNOWN_UNCROSSABLE: &[(&str, &str)] = &[
+    ("autocomplete::Autocomplete", "alloc::rc::Rc<dyn core::ops::function::Fn(idea_ui::components::autocomplete::AutocompleteSlotCx) -> runtime_scene::element::Element>"),
+    ("calendar::Calendar", "core::option::Option<alloc::rc::Rc<idea_ui::date::DateLabels>>"),
+    ("calendar::RangeCalendar", "core::option::Option<alloc::rc::Rc<idea_ui::date::DateLabels>>"),
+    ("date_input::DateInput", "core::option::Option<alloc::rc::Rc<idea_ui::date::DateLabels>>"),
+    ("date_input::DateTimeInput", "core::option::Option<alloc::rc::Rc<idea_ui::date::DateLabels>>"),
+    ("date_picker::DatePicker", "core::option::Option<alloc::rc::Rc<idea_ui::date::DateLabels>>"),
+    ("date_picker::DateRangePicker", "core::option::Option<alloc::rc::Rc<idea_ui::date::DateLabels>>"),
+    ("date_picker::DateTimePicker", "core::option::Option<alloc::rc::Rc<idea_ui::date::DateLabels>>"),
+    ("menu::SubMenu", "alloc::rc::Rc<dyn core::ops::function::Fn(idea_ui::components::menu::SubMenuSlotCx) -> runtime_scene::element::Element>"),
+    ("modal::Modal", "core::option::Option<runtime_vocabulary::glue::animation::AnimatedValue<f32>>"),
+    ("table::Table", "runtime_vocabulary::glue::Reactive<idea_ui::components::table::TableInset>"),
+    ("table::Table", "alloc::vec::Vec<idea_ui::components::table::columns::TableColumn>"),
+    ("table::Table", "core::option::Option<runtime_world::Signal<alloc::collections::btree::map::BTreeMap<idea_ui::components::table::columns::ColumnId, f32>>>"),
+    ("table::Table", "core::option::Option<alloc::rc::Rc<dyn core::ops::function::Fn(idea_ui::components::table::columns::ColumnId, core::option::Option<f32>)>>"),
+    ("table::Table", "core::option::Option<runtime_world::Signal<alloc::collections::btree::set::BTreeSet<idea_ui::components::table::rows::RowId>>>"),
+    ("table::Table", "core::option::Option<idea_ui::components::table::TableEmpty>"),
+    ("table::TableCell", "table::ColSpan"),
+    ("table::TableRow", "core::option::Option<idea_ui::components::table::rows::RowId>"),
+    ("table::cards::TableCardItem", "alloc::rc::Rc<idea_ui::components::table::cards::CardsModel>"),
+    ("table::cards::TableCards", "alloc::vec::Vec<idea_ui::components::table::columns::TableColumn>"),
+    ("table::cards::TableCards", "alloc::rc::Rc<dyn core::ops::function::Fn(usize) -> idea_ui::components::table::rows::RowId>"),
+    ("table::cards::TableCards", "alloc::rc::Rc<dyn core::ops::function::Fn(usize, &'_ idea_ui::components::table::columns::ColumnId) -> runtime_scene::element::Element>"),
+    ("table::cards::TableCards", "core::option::Option<runtime_world::Signal<alloc::collections::btree::set::BTreeSet<idea_ui::components::table::rows::RowId>>>"),
+    ("table::columns::ColumnResizeHandle", "idea_ui::components::table::columns::TableColumn"),
+    ("table::columns::ColumnResizeHandle", "runtime_world::Signal<alloc::collections::btree::map::BTreeMap<idea_ui::components::table::columns::ColumnId, f32>>"),
+    ("table::columns::ColumnResizeHandle", "core::option::Option<alloc::rc::Rc<dyn core::ops::function::Fn(idea_ui::components::table::columns::ColumnId, core::option::Option<f32>)>>"),
+    ("table::group::TableGroup", "core::option::Option<idea_ui::components::table::rows::RowId>"),
+    ("typography::Typography", "runtime_vocabulary::glue::Reactive<core::option::Option<runtime_shared::style::FontFamily>>"),
+];
+
+/// Every idea-ui component's props cross from a bundle, but the known
+/// list above — checked statically, prop type by prop type
+/// (`#[derive(Remote)]` row items field by field), so a new prop type that
+/// can't cross fails here rather than in the first bundle that sets it.
+/// `test_id: Option<&'static str>` (on components and on the row items:
+/// `Tab`, `MenuEntry`, `RadioOption`, …), `Image.src: ImageSource` and
+/// `Typography.spans` each broke remote areas with no test naming the type.
+#[test]
+fn every_idea_ui_component_s_props_cross_from_a_bundle() {
+    use runtime_vocabulary::remote::host::{app_component_names, uncrossable_app_props};
+    const PREFIX: &str = "idea_ui::components::";
+    let registered = app_component_names().into_iter().filter(|n| n.starts_with(PREFIX)).count();
+    assert!(registered > 50, "only {registered} idea-ui components registered for bundles: the sweep would prove nothing");
+    let mut found: Vec<(String, String)> = Vec::new();
+    for (component, failures) in uncrossable_app_props() {
+        let Some(component) = component.strip_prefix(PREFIX) else { continue };
+        for failure in failures {
+            // "`<type>` can't cross <how> (in <path>)"
+            let ty = failure.split('`').nth(1).unwrap_or(&failure).to_string();
+            if !ty.ends_with("SlotStyles") {
+                found.push((component.to_string(), ty));
+            }
+        }
+    }
+    let known: Vec<(String, String)> = KNOWN_UNCROSSABLE.iter().map(|(c, t)| (c.to_string(), t.to_string())).collect();
+    let new: Vec<String> = found.iter().filter(|f| !known.contains(f)).map(|(c, t)| format!("{c}: `{t}`")).collect();
+    assert!(new.is_empty(), "idea-ui props that can't cross from a remote component:\n{}", new.join("\n"));
+    let fixed: Vec<String> = known.iter().filter(|k| !found.contains(k)).map(|(c, t)| format!("{c}: `{t}`")).collect();
+    assert!(fixed.is_empty(), "these cross now — drop them from KNOWN_UNCROSSABLE:\n{}", fixed.join("\n"));
+}

@@ -6,9 +6,8 @@
 //! app's own registry afterwards; nothing downstream knows it is remote.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
-use std::sync::{Mutex, OnceLock};
 
 use runtime_scene::{dyn_element, dyn_guarded, Element};
 use runtime_shared::accessibility::{AccessibilityAction, AccessibilityProps, AccessibilityTraits};
@@ -408,9 +407,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                         let h = handler::<(), ()>(conn, id, || ());
                         Rc::new(move || h(&())) as _
                     }),
-                    asset: asset.map(|a| {
-                        runtime_shared::assets::Asset::new(runtime_shared::assets::AssetId(a.id), asset_source(a.source))
-                    }),
+                    asset: asset.map(WireAsset::interned),
                     style,
                     a11y,
                     ref_fill: fill_handle(conn, fill, Held::Image),
@@ -929,46 +926,14 @@ fn wire_file_drop(e: &runtime_shared::file_drop::FileDropEvent) -> WireFileDrop 
     WireFileDrop { phase, position: e.position }
 }
 
-/// The prims hold icon and asset data as `&'static`: decoded ones are
-/// interned, one leak per DISTINCT icon / byte blob for the process's
-/// life, within the interners' shared budget (`INTERN_BUDGET_BYTES`).
+/// An icon with nothing to draw: a live icon's value once the bundle
+/// can't be called.
 fn blank_icon() -> runtime_shared::primitives::icon::IconData {
     runtime_shared::primitives::icon::IconData {
         view_box: (0, 0),
         paths: &[],
         fill_rule: runtime_shared::primitives::icon::FillRule::NonZero,
         filled: false,
-    }
-}
-
-fn intern_bytes(b: Vec<u8>) -> &'static [u8] {
-    static BLOBS: OnceLock<Mutex<HashSet<&'static [u8]>>> = OnceLock::new();
-    let mut blobs = BLOBS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(&x) = blobs.get(&b[..]) {
-        return x;
-    }
-    // Within the interners' shared budget (see `INTERN_BUDGET_BYTES`).
-    if !super::charge_intern(b.len()) {
-        return &[];
-    }
-    let x: &'static [u8] = Box::leak(b.into_boxed_slice());
-    blobs.insert(x);
-    x
-}
-
-fn asset_source(s: WireAssetSource) -> runtime_shared::assets::AssetSource {
-    use runtime_shared::assets::AssetSource;
-    match s {
-        WireAssetSource::Embedded { bytes, extension } => {
-            AssetSource::Embedded { bytes: intern_bytes(bytes), extension: intern(&extension) }
-        }
-        WireAssetSource::Bundled { path } => AssetSource::Bundled { path: intern(&path) },
-        WireAssetSource::BundledEmbedded { path, bytes, extension } => AssetSource::BundledEmbedded {
-            path: intern(&path),
-            bytes: intern_bytes(bytes),
-            extension: intern(&extension),
-        },
-        WireAssetSource::Remote { url } => AssetSource::Remote { url: intern(&url) },
     }
 }
 
@@ -1228,6 +1193,9 @@ pub struct AppComponent {
     pub build: fn(&mut &[u8], &ImportCx) -> Result<Element, String>,
     /// Each prop's name and [shape](super::shape).
     pub props: fn() -> Vec<(&'static str, String)>,
+    /// What in its props can't cross from a bundle ([`super::CrossCheck`]):
+    /// empty when every prop type crosses.
+    pub uncrossable: fn() -> Vec<String>,
 }
 
 /// Filled at link time: no startup work, and nothing in apps without
@@ -1260,6 +1228,22 @@ pub static REMOTE_MOUNTS: [RemoteMount];
 /// The names of the app components bundles may import.
 pub fn app_component_names() -> Vec<&'static str> {
     APP_COMPONENTS.iter().map(|c| c.name).collect()
+}
+
+/// Every app component with a prop type that can't cross from a bundle,
+/// and what can't. A prop that can't cross only fails when a bundle sets
+/// it, so a test asserting this is empty (for a component library's
+/// prefix) is what catches a new prop type before a bundle does.
+pub fn uncrossable_app_props() -> Vec<(&'static str, Vec<String>)> {
+    let mut out: Vec<_> = APP_COMPONENTS
+        .iter()
+        .filter_map(|c| {
+            let failed = (c.uncrossable)();
+            (!failed.is_empty()).then_some((c.name, failed))
+        })
+        .collect();
+    out.sort_by_key(|(name, _)| *name);
+    out
 }
 
 /// What an imported component's props decode against: the bundle they came

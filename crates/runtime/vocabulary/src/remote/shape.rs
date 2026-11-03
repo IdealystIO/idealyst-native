@@ -184,6 +184,8 @@ named_shape!(
     runtime_shared::primitives::key::KeyEvent => "KeyEvent",
     runtime_shared::primitives::key::KeyOutcome => "KeyOutcome",
     runtime_shared::primitives::image::ImageLoadEvent => "ImageLoadEvent",
+    runtime_shared::primitives::image::ImageSource => "ImageSource",
+    runtime_shared::primitives::text_input::KeyboardKind => "KeyboardKind",
     runtime_shared::touch::TouchPoint => "TouchPoint",
     runtime_shared::host::ColorScheme => "ColorScheme",
 );

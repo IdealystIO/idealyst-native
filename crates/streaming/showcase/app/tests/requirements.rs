@@ -11,7 +11,9 @@ use remote_host::remote::{install_with, provides};
 use remote_showcase::{host_fns, BUILT_IN};
 
 const BUTTON: &str = "idea_ui::components::button::Button";
-const CODEC: u32 = 2;
+// The app's wire codec — the one a bundle built from this tree is checked
+// against (a literal here went stale on every codec bump).
+const CODEC: u32 = runtime_vocabulary::remote::CODEC_VERSION;
 
 fn requires() -> remote_bundle::Requires {
     build_remote::requires::requires(BUILT_IN).expect("the bundle's requirements")

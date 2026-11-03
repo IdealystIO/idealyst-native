@@ -495,7 +495,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             alt: val(p.alt),
             on_load: p.on_load.map(|f| handler(move |e| f(e))),
             on_error: p.on_error.map(|f| handler(move |_: &()| f())),
-            asset: p.asset.map(|a| WireAsset { id: a.id.0, source: wire_asset_source(a.source) }),
+            asset: p.asset.map(WireAsset::from),
         };
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<IconPrim>>() {
@@ -816,22 +816,6 @@ fn val_map<T: 'static, W: Serialize + 'static>(v: Value<T>, map: fn(T) -> W) -> 
     match v {
         Value::Const(v) => Val::Const(map(v)),
         Value::Dyn(f) => Val::Dyn(register(Entry::Get(Rc::new(move || to_bytes(&map(f())))))),
-    }
-}
-
-fn wire_asset_source(s: runtime_shared::assets::AssetSource) -> WireAssetSource {
-    use runtime_shared::assets::AssetSource;
-    match s {
-        AssetSource::Embedded { bytes, extension } => {
-            WireAssetSource::Embedded { bytes: bytes.to_vec(), extension: extension.to_owned() }
-        }
-        AssetSource::Bundled { path } => WireAssetSource::Bundled { path: path.to_owned() },
-        AssetSource::BundledEmbedded { path, bytes, extension } => WireAssetSource::BundledEmbedded {
-            path: path.to_owned(),
-            bytes: bytes.to_vec(),
-            extension: extension.to_owned(),
-        },
-        AssetSource::Remote { url } => WireAssetSource::Remote { url: url.to_owned() },
     }
 }
 

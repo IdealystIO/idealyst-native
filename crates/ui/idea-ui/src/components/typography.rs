@@ -208,7 +208,7 @@ pub const MONO_FONT_STACK: &str = "ui-monospace, SFMono-Regular, Menlo, Consolas
 /// Colors and sizes are theme tokens, so a span follows a theme swap like
 /// the rest of the text. Spans have no padding or corner radius — inline
 /// boxes can't be drawn the same way by every platform's text engine.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, runtime_core::Remote)]
 pub struct TextSpan {
     /// The run's text, spaces included — `" #1234"` keeps its leading
     /// space.
