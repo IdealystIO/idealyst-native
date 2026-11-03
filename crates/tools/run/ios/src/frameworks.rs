@@ -109,6 +109,84 @@ pub fn collect_ios_frameworks(wrapper_manifest: &Path) -> Result<Vec<Framework>>
     Ok(merge_frameworks(&sdk_frameworks))
 }
 
+/// The framework set for one package of a workspace: the [`BASE`] set unioned
+/// with the frameworks declared across `package`'s normal-dependency closure in
+/// `workspace_manifest`'s `cargo metadata` resolve graph.
+///
+/// The runtime-server shell (`backend-ios-rs-shell`) has no generated
+/// wrapper — it is built straight out of the framework workspace — so
+/// [`collect_ios_frameworks`] has no closure to walk. Linking only the base set
+/// dropped the frameworks the shell's own dependencies declare
+/// (`backend-ios-mobile`'s GameController), and the link failed with
+/// `_GCMouseDidConnectNotification` undefined. Walking the package's closure
+/// (not every workspace member) links exactly what the shell can reach.
+pub fn collect_ios_frameworks_for_package(workspace_manifest: &Path, package: &str) -> Result<Vec<Framework>> {
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version", "1"])
+        .arg("--manifest-path")
+        .arg(workspace_manifest)
+        .output()
+        .with_context(|| format!("spawn cargo metadata --manifest-path {}", workspace_manifest.display()))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "cargo metadata failed for {}: {}",
+            workspace_manifest.display(),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    let json: Value = serde_json::from_slice(&output.stdout).with_context(|| "parse cargo metadata JSON")?;
+    Ok(merge_frameworks(&closure_frameworks(&json, package)))
+}
+
+/// The pure core of [`collect_ios_frameworks_for_package`]: frameworks declared
+/// by `package` and every package reachable from it through normal
+/// (non-dev, non-build) dependencies in the resolve graph.
+fn closure_frameworks(metadata: &Value, package: &str) -> Vec<String> {
+    use std::collections::{HashMap, HashSet};
+    let packages = metadata.get("packages").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let by_id: HashMap<&str, &Value> =
+        packages.iter().filter_map(|p| Some((p.get("id")?.as_str()?, p))).collect();
+    let Some(root) = packages
+        .iter()
+        .find(|p| p.get("name").and_then(|n| n.as_str()) == Some(package))
+        .and_then(|p| p.get("id")?.as_str())
+    else {
+        return Vec::new();
+    };
+    let nodes = metadata.pointer("/resolve/nodes").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let edges: HashMap<&str, Vec<&str>> = nodes
+        .iter()
+        .filter_map(|n| {
+            let id = n.get("id")?.as_str()?;
+            let deps = n
+                .get("deps")?
+                .as_array()?
+                .iter()
+                .filter(|d| {
+                    d.get("dep_kinds").and_then(|k| k.as_array()).is_none_or(|kinds| {
+                        kinds.iter().any(|k| k.get("kind").is_none_or(|v| v.is_null()))
+                    })
+                })
+                .filter_map(|d| d.get("pkg")?.as_str())
+                .collect();
+            Some((id, deps))
+        })
+        .collect();
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut stack = vec![root];
+    let mut out = Vec::new();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if let Some(fws) = by_id.get(id).and_then(|p| p.pointer("/metadata/idealyst/ios/frameworks")).and_then(|v| v.as_array()) {
+            out.extend(fws.iter().filter_map(|f| f.as_str().map(str::to_owned)));
+        }
+        stack.extend(edges.get(id).into_iter().flatten().copied());
+    }
+    out
+}
+
 /// Test-only: build the merged framework list from an explicit set of
 /// SDK-declared framework names, skipping `cargo metadata`. Used by callers'
 /// render tests so they don't need a real wrapper on disk.
@@ -236,6 +314,41 @@ fn fnv1a32(input: &str, seed: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    /// Regression: `idealyst dev --ios` (runtime-server) linked only the base
+    /// set, so `backend-ios-mobile`'s GameController was missing and the
+    /// shell failed to link. The shell's closure must carry it — and nothing
+    /// from packages the shell does not depend on.
+    #[test]
+    fn regression_runtime_server_shell_links_its_dependencies_frameworks() {
+        let meta = serde_json::json!({
+            "packages": [
+                {"id": "shell", "name": "backend-ios-rs-shell", "metadata": null},
+                {"id": "mobile", "name": "backend-ios-mobile",
+                 "metadata": {"idealyst": {"ios": {"frameworks": ["GameController"]}}}},
+                {"id": "devonly", "name": "some-test-helper",
+                 "metadata": {"idealyst": {"ios": {"frameworks": ["XCTest"]}}}},
+                {"id": "unrelated", "name": "screen-recorder",
+                 "metadata": {"idealyst": {"ios": {"frameworks": ["ReplayKit"]}}}}
+            ],
+            "resolve": {"nodes": [
+                {"id": "shell", "deps": [
+                    {"pkg": "mobile", "dep_kinds": [{"kind": null}]},
+                    {"pkg": "devonly", "dep_kinds": [{"kind": "dev"}]}
+                ]},
+                {"id": "mobile", "deps": []},
+                {"id": "devonly", "deps": []},
+                {"id": "unrelated", "deps": []}
+            ]}
+        });
+        let names: Vec<String> = merge_frameworks(&closure_frameworks(&meta, "backend-ios-rs-shell"))
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert!(names.contains(&"GameController".to_string()), "{names:?}");
+        assert!(!names.contains(&"ReplayKit".to_string()), "{names:?}");
+        assert!(!names.contains(&"XCTest".to_string()), "{names:?}");
+    }
+
     use super::*;
     use serde_json::json;
 

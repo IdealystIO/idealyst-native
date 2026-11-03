@@ -222,8 +222,8 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // device process needs no app permissions).
     let mut permission_plist = String::new();
     // The wrapper manifest (local mode only) is what `cargo metadata` walks to
-    // derive the linked frameworks from the dep graph. runtime-server mode runs
-    // the app on the dev host, so the device process needs only the base set.
+    // derive the linked frameworks from the dep graph. runtime-server mode
+    // walks the shell crate's closure instead (step 4).
     let mut wrapper_manifest: Option<PathBuf> = None;
     let (lib_dir, lib_name) = match &opts.mode {
         RunMode::Local => {
@@ -311,10 +311,15 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // Frameworks are DERIVED from the dep graph (base set + each SDK's
     // `[package.metadata.idealyst.ios].frameworks`), not hardcoded — a
     // screen-capture sim build must link ReplayKit or its class fails to load.
-    // runtime-server mode has no wrapper, so it links just the base set.
-    let frameworks = match &wrapper_manifest {
-        Some(m) => frameworks::collect_ios_frameworks(m)?,
-        None => frameworks::collect_ios_frameworks(Path::new("/nonexistent"))?,
+    // runtime-server mode has no wrapper: it links what the shell crate's own
+    // dependency closure declares (backend-ios-mobile's GameController).
+    let frameworks = match (&wrapper_manifest, &opts.mode) {
+        (Some(m), _) => frameworks::collect_ios_frameworks(m)?,
+        (None, RunMode::RuntimeServer { .. }) => {
+            let workspace_root = opts.source.workspace_root().expect("checked when the shell was built");
+            frameworks::collect_ios_frameworks_for_package(&workspace_root.join("Cargo.toml"), IOS_AAS_SHELL_PACKAGE)?
+        }
+        (None, RunMode::Local) => frameworks::collect_ios_frameworks(Path::new("/nonexistent"))?,
     };
     let exe_path = app_bundle.join(&executable_name);
     compile_and_link(&swift_dir, &lib_dir, &lib_name, &exe_path, &frameworks)?;
