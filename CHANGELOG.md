@@ -1185,7 +1185,8 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 ### Added
 
 - **Server in-place patches on arm64 Linux** (`idealyst-cli` minor;
-  `build-runtime-server` minor: `hotpatch::elf`). `idealyst dev
+  `build-runtime-server` minor: `HostBinCache::format`,
+  `HostBinCache::tls_block_offset`). `idealyst dev
   --experimental-build` now patches a full-stack session's running server
   on arm64 Linux too — a dev container on an Apple silicon Mac — as it
   does on macOS: the patch links as an ELF shared object, reaches the

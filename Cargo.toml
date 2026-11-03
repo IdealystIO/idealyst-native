@@ -560,7 +560,7 @@ dev-reload = { path = "crates/dev/reload", version = "8.2.0", registry = "idealy
 web-dev-host = { path = "crates/dev/web-host" }
 build-ios = { path = "crates/tools/build/ios", version = "3.2.0", registry = "idealyst" }
 run-ios = { path = "crates/tools/run/ios", version = "4.0.1", registry = "idealyst" }
-build-runtime-server = { path = "crates/tools/build/runtime-server", version = "6.1.0", registry = "idealyst" }
+build-runtime-server = { path = "crates/tools/build/runtime-server", version = "6.2.0", registry = "idealyst" }
 build-android = { path = "crates/tools/build/android", version = "3.0.1", registry = "idealyst" }
 run-android = { path = "crates/tools/run/android", version = "5.0.0", registry = "idealyst" }
 build-roku = { path = "crates/tools/build/roku", version = "3.0.0", registry = "idealyst" }
@@ -790,7 +790,7 @@ swap-demo = { path = "crates/sdk/client/navigators/swap/examples/swap-demo", ver
 todo-sync-demo = { path = "crates/sdk/client/sync/examples/todo-sync-demo", version = "1.5.2", registry = "idealyst" }
 toolbar-demo = { path = "crates/sdk/client/toolbar/examples/toolbar-demo", version = "1.5.2", registry = "idealyst" }
 video-compose-demo = { path = "crates/sdk/client/video-compose/examples/video-compose-demo", version = "1.5.2", registry = "idealyst" }
-idealyst-cli = { path = "crates/tools/cli", version = "1.28.0", registry = "idealyst" }
+idealyst-cli = { path = "crates/tools/cli", version = "1.29.0", registry = "idealyst" }
 ota-publish = { path = "crates/ota/publish", version = "0.1.0", registry = "idealyst" }
 
 # Dev profile: `opt-level = "z"` works around a wasm OOB seen at
