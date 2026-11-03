@@ -69,6 +69,7 @@ pub fn synthesize(
     // often defined by another unit of the same replay. Stubbing that
     // name as well defines it twice, and the link fails with `duplicate
     // symbol` on every patch of a crate bigger than one unit.
+    let elf = cache.format == BinaryFormat::Elf;
     let mut undefs: HashSet<String> = HashSet::new();
     let mut defined: HashSet<String> = HashSet::new();
     for obj_path in tip_objs {
@@ -87,7 +88,14 @@ pub fn synthesize(
                 }
                 continue;
             }
-            if is_system_symbol(name) {
+            if elf {
+                // A thread-local of the binary was relaxed to its offset
+                // by `bind`; the name stays in the symbol table with no
+                // reference left, and is the loader's to ignore.
+                if sym.kind() == SymbolKind::Tls {
+                    continue;
+                }
+            } else if is_system_symbol(name) {
                 continue;
             }
             undefs.insert(name.to_string());
@@ -152,7 +160,13 @@ pub fn synthesize(
         // a silent SIGSEGV is the worst possible outcome.
         let rust_internal: Vec<&String> = deferred
             .iter()
-            .filter(|n| n.starts_with("__ZN") || n.starts_with("_$LT"))
+            .filter(|n| {
+                if elf {
+                    n.starts_with("_ZN") || n.starts_with("_R")
+                } else {
+                    n.starts_with("__ZN") || n.starts_with("_$LT")
+                }
+            })
             .collect();
         if !rust_internal.is_empty() {
             anyhow::bail!(
@@ -196,10 +210,18 @@ pub fn synthesize(
     // 3. Build the Mach-O object in memory. One section
     // (`__TEXT,__text`), one symbol per trampoline.
     let mut obj = WriteObject::new(
-        BinaryFormat::MachO,
+        if elf { BinaryFormat::Elf } else { BinaryFormat::MachO },
         Architecture::Aarch64,
         Endianness::Little,
     );
+    // The C spelling of `main` and of the symbols defined here: Mach-O
+    // names carry the leading underscore already (read from the tip's
+    // nlist), ELF names have none.
+    let main_name = if elf { "main" } else { "_main" };
+    // ELF: everything but the anchor is hidden, so references inside the
+    // patch bind at link time and the loader never looks these names up
+    // (the binary may export the same names; a lookup would find those).
+    let local_scope = if elf { SymbolScope::Linkage } else { SymbolScope::Dynamic };
     // Disable the writer's automatic Mach-O mangling (which prepends
     // a leading underscore to every symbol). The names we read from
     // the tip's nlist already include the C-ABI underscore prefix —
@@ -213,7 +235,7 @@ pub fn synthesize(
     // Each trampoline's instruction sequence aligned to 4 bytes.
     if !has_main_in_tip {
         // _main: ret  →  0xD65F03C0  (RET, lr in x30)
-        emit_symbol(&mut obj, text_id, "_main", &encode_ret());
+        emit_symbol(&mut obj, text_id, main_name, &encode_ret(), SymbolScope::Dynamic);
     }
 
     // Dispatch on symbol kind:
@@ -238,8 +260,12 @@ pub fn synthesize(
         match sym.kind {
             K::Text => {
                 let bytes = encode_trampoline(*abs_addr);
-                emit_symbol(&mut obj, text_id, name, &bytes);
+                emit_symbol(&mut obj, text_id, name, &bytes, local_scope);
             }
+            // ELF: `elf::bind` rewrote every reference to the binary's
+            // data into a load from a cell (below); an absolute symbol here
+            // would only invite the linker's relative GOT slot.
+            _ if elf => {}
             other => {
                 // Darwin reports many statics as Unknown.
                 let kind = if matches!(other, K::Unknown | K::Tls) { K::Data } else { other };
@@ -257,9 +283,29 @@ pub fn synthesize(
         }
     }
     if bindings.ctor_ran {
-        emit_symbol(&mut obj, text_id, super::bind::CTOR_RAN, &encode_ret());
+        emit_symbol(&mut obj, text_id, super::bind::CTOR_RAN, &encode_ret(), local_scope);
     }
-    for (name, link_addr) in &bindings.absolute {
+    if elf {
+        // One 8-byte cell per bound static, holding its run-time address:
+        // what `elf::bind` pointed the references at. Plain bytes, no
+        // relocation for the linker or the loader to adjust.
+        let cells = obj.section_id(StandardSection::ReadOnlyData);
+        for (name, link_addr) in &bindings.absolute {
+            let address = (*link_addr as i64 + slide) as u64;
+            let id = obj.add_symbol(WriteSymbol {
+                name: name.as_bytes().to_vec(),
+                value: 0,
+                size: 8,
+                scope: SymbolScope::Linkage,
+                kind: SymbolKind::Data,
+                weak: false,
+                section: SymbolSection::Undefined,
+                flags: SymbolFlags::None,
+            });
+            obj.add_symbol_data(id, cells, &address.to_le_bytes(), 8);
+        }
+    }
+    for (name, link_addr) in bindings.absolute.iter().filter(|_| !elf) {
         obj.add_symbol(WriteSymbol {
             name: name.as_bytes().to_vec(),
             value: (*link_addr as i64 + slide) as u64,
@@ -272,7 +318,7 @@ pub fn synthesize(
         });
     }
 
-    let bytes = obj.write().context("serialize stub Mach-O")?;
+    let bytes = obj.write().context("serialize the stub object")?;
     std::fs::write(stub_o_path, &bytes)
         .with_context(|| format!("write {}", stub_o_path.display()))?;
     Ok(())
@@ -281,13 +327,19 @@ pub fn synthesize(
 /// Insert a defined symbol into `__TEXT,__text` pointing at the
 /// given instruction bytes. Symbol is global so the patch dylib's
 /// linker can resolve undefined refs in the tip objects against it.
-fn emit_symbol(obj: &mut WriteObject<'_>, text_id: object::write::SectionId, name: &str, code: &[u8]) {
+fn emit_symbol(
+    obj: &mut WriteObject<'_>,
+    text_id: object::write::SectionId,
+    name: &str,
+    code: &[u8],
+    scope: SymbolScope,
+) {
     let sym_id = obj.add_symbol(WriteSymbol {
         name: name.as_bytes().to_vec(),
         value: 0,
         size: code.len() as u64,
         kind: SymbolKind::Text,
-        scope: SymbolScope::Dynamic,
+        scope,
         weak: false,
         section: SymbolSection::Section(text_id),
         flags: SymbolFlags::None,

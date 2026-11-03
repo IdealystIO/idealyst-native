@@ -35,8 +35,8 @@
 //!    instantiations (below).
 //! 4. **Stub**: every symbol the patch uses but does not define resolves
 //!    into the running binary ([`super::stub`]).
-//! 5. **Link** with `-dead_strip`, rooted at exactly the functions of
-//!    step 3 (marked `N_NO_DEAD_STRIP`, [`mark_roots`]) and `main`, the
+//! 5. **Link** with `-dead_strip` (`--gc-sections` on Linux), rooted at
+//!    exactly the functions of step 3 ([`mark_roots`]) and `main`, the
 //!    anchor the agent finds the patch's load address by. The binary was
 //!    linked with dead code stripped, so a re-emitted crate holds code
 //!    the binary never kept, and that code references functions the
@@ -70,8 +70,8 @@
 //! the session reported the edit applied), and `fn main`, which never
 //! runs again.
 //!
-//! macOS on arm64 only, as the rest of the native patch builder
-//! ([`super::link`]).
+//! arm64 only: Mach-O (macOS) and ELF (Linux) binaries, the object
+//! format read from the binary ([`HostBinCache::format`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -150,10 +150,10 @@ struct TextIndex {
 impl TextIndex {
     fn of(path: &Path, data: &[u8]) -> Result<Self> {
         let file = object::File::parse(data).with_context(|| format!("parse {}", path.display()))?;
-        let section = file
-            .section_by_name("__text")
-            .with_context(|| format!("{} has no __text section", path.display()))?;
-        let (offset, _) = section.file_range().context("the __text section has no file range")?;
+        let text = if file.format() == object::BinaryFormat::Elf { ".text" } else { "__text" };
+        let section =
+            file.section_by_name(text).with_context(|| format!("{} has no {text} section", path.display()))?;
+        let (offset, _) = section.file_range().with_context(|| format!("the {text} section has no file range"))?;
         let index = section.index();
         let mut starts: Vec<u64> = file
             .symbols()
@@ -250,14 +250,19 @@ impl ServerPatchBuilder {
 
         // 2. Statics.
         let t = Instant::now();
-        let (bound, bindings) = super::bind::bind(&objects, &self.cache, &dir.join("bound"))
-            .context("binding the patch's statics to the running server's")?;
+        let (bound, bindings) = if self.cache.format == object::BinaryFormat::Elf {
+            super::elf::bind(&objects, &self.cache, &dir.join("bound"), slide)
+        } else {
+            super::bind::bind(&objects, &self.cache, &dir.join("bound"))
+        }
+        .context("binding the patch's statics to the running server's")?;
         on_step("bind", t.elapsed());
 
         // 3. Roots, marked in copies of the objects.
         let t = Instant::now();
         let names: Vec<&str> = crates.iter().map(|c| c.crate_name.as_str()).collect();
         let (linked, roots) = mark_roots(&bound, &self.cache, &names, &dir.join("marked"))?;
+        let elf = self.cache.format == object::BinaryFormat::Elf;
         if roots.is_empty() {
             bail!(
                 "none of the replayed functions of {} is in the running server — its build of \
@@ -284,8 +289,12 @@ impl ServerPatchBuilder {
 
         // 5. Link.
         let t = Instant::now();
-        let dylib = dir.join(format!("libpatch-{seq}.dylib"));
-        super::link::link_patch(&linked, &stub, &dylib, &dir.join("link.args")).context("linking the patch")?;
+        let dylib = dir.join(format!("libpatch-{seq}.{}", if elf { "so" } else { "dylib" }));
+        if elf {
+            super::link::link_patch_elf(&linked, &stub, &dylib, &dir).context("linking the patch")?;
+        } else {
+            super::link::link_patch(&linked, &stub, &dylib, &dir.join("link.args")).context("linking the patch")?;
+        }
         on_step("link", t.elapsed());
 
         // 6. Pairs.
@@ -315,8 +324,9 @@ impl ServerPatchBuilder {
     }
 }
 
-/// Whether the function `symbol` (as the object files spell it, Mach-O
-/// underscore included) is one a patch of `crates` redirects. See the
+/// Whether the function `symbol` (as the object files spell it, with
+/// Mach-O's leading underscore or ELF's none) is one a patch of `crates`
+/// redirects. See the
 /// module docs for what is left out and why.
 ///
 /// Only Rust-mangled names: a `#[no_mangle]` function is the decision's
@@ -324,7 +334,9 @@ impl ServerPatchBuilder {
 /// defines besides (`main`, allocator shims) are entry points nothing
 /// should redirect.
 pub fn detour_candidate(symbol: &str, crates: &[&str]) -> bool {
-    let bare = symbol.strip_prefix('_').unwrap_or(symbol);
+    // Mach-O prefixes every C name with `_` (`__R…`, `__ZN…`); ELF does
+    // not (`_R…`, `_ZN…`).
+    let bare = if symbol.starts_with("__") { &symbol[1..] } else { symbol };
     if !(bare.starts_with("_R") || bare.starts_with("_ZN")) {
         return false;
     }
@@ -376,8 +388,9 @@ const N_SECT: u8 = 0xe;
 const N_NO_DEAD_STRIP: u16 = 0x0020;
 
 /// Copy each object into `out_dir` with every detour candidate it
-/// defines marked `N_NO_DEAD_STRIP`, and return the copies with the set
-/// of marked names (the roots).
+/// defines marked so the linker keeps it (Mach-O: the symbol
+/// `N_NO_DEAD_STRIP`; ELF: its section `SHF_GNU_RETAIN`), and return the
+/// copies with the set of marked names (the roots).
 ///
 /// A name defined by two objects is left out: a function the patch
 /// defines twice cannot be paired with one of the binary's.
@@ -408,7 +421,11 @@ pub fn mark_roots(
         .collect();
     let mut out = Vec::with_capacity(files.len());
     for (i, (path, mut bytes)) in files.into_iter().enumerate() {
-        set_no_dead_strip(&mut bytes, &roots).with_context(|| format!("mark {}", path.display()))?;
+        if cache.format == object::BinaryFormat::Elf {
+            super::elf::retain_roots(&mut bytes, &roots).with_context(|| format!("mark {}", path.display()))?;
+        } else {
+            set_no_dead_strip(&mut bytes, &roots).with_context(|| format!("mark {}", path.display()))?;
+        }
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let to = out_dir.join(format!("{i:04}-{name}"));
         std::fs::write(&to, &bytes).with_context(|| format!("write {}", to.display()))?;
@@ -417,7 +434,7 @@ pub fn mark_roots(
     Ok((out, roots))
 }
 
-/// Every symbol defined in a text section of a Mach-O object, with its
+/// Every symbol defined in a text section of an object, with its
 /// symbol-table index.
 fn text_definitions(bytes: &[u8]) -> Result<Vec<(String, usize)>> {
     let file = object::File::parse(bytes)?;
@@ -501,7 +518,7 @@ fn pair(dylib: &Path, cache: &HostBinCache, base: &TextIndex, roots: &BTreeSet<S
     let mut anchor = 0u64;
     for sym in file.symbols() {
         let Ok(name) = sym.name() else { continue };
-        if name == "_main" {
+        if name == "_main" || (file.format() == object::BinaryFormat::Elf && name == "main") {
             anchor = sym.address();
         }
         if sym.section_index().is_some_and(|i| text.contains(&i)) {
@@ -543,6 +560,17 @@ mod tests {
     #[test]
     fn a_plain_function_of_the_crate_is_redirected() {
         assert!(detour_candidate(PLAIN_FN, &["detour_probe"]));
+    }
+
+    /// ELF spells the same symbols without Mach-O's leading underscore;
+    /// stripping one anyway left `RNv…`, which is no Rust symbol, and no
+    /// Linux function was ever redirected.
+    #[test]
+    fn the_elf_spelling_of_a_function_is_redirected_too() {
+        assert!(detour_candidate(&PLAIN_FN[1..], &["detour_probe"]));
+        assert!(!detour_candidate(&CLOSURE[1..], &["detour_probe"]));
+        assert!(!detour_candidate("main", &["detour_probe"]));
+        assert!(!detour_candidate("__rust_alloc", &["detour_probe"]));
     }
 
     #[test]

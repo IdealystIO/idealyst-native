@@ -56,6 +56,7 @@ use anyhow::{Context, Result};
 
 mod bind;
 mod cache;
+mod elf;
 /// Server hot patches: functions redirected in place in a running
 /// native binary (see the module docs).
 pub mod detour;

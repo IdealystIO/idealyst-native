@@ -4,7 +4,8 @@
 //! `idealyst dev` compiles this file on its own with `rustc --crate-type
 //! cdylib --cfg idealyst_hot_agent` (no cargo, no dependencies) and has
 //! the server load it at exec: `idealyst run-linked`, the runner the
-//! session gives `cargo run`, sets `DYLD_INSERT_LIBRARIES`. The server's
+//! session gives `cargo run`, sets `DYLD_INSERT_LIBRARIES` (macOS) or
+//! `LD_PRELOAD` (Linux). The server's
 //! own code knows nothing about it. `build_runtime_server`'s
 //! `hotpatch::detour` module builds the patches and documents the design;
 //! this file is the half that runs inside the server.
@@ -25,7 +26,7 @@
 //! # The jump, and why other threads are stopped while it is written
 //!
 //! When the patch's copy is within ±128 MB, the jump is one `b`. It
-//! usually is not (dyld maps the patch wherever it likes), so the jump is
+//! usually is not (the loader maps the patch wherever it likes), so the jump is
 //! `ldr x16, #8; br x16; .quad target` — 16 bytes over the function's
 //! first four instructions. x16 is the intra-procedure-call scratch
 //! register the arm64 ABI lets any call clobber, which the linker's own
@@ -50,7 +51,16 @@
 //! byte-identical (it did not change); one that changed needs its patch
 //! within `b` reach, or the patch is refused.
 //!
-//! # Why through a new page
+//! On Linux, which has no call to suspend another thread, "suspended"
+//! means stopped by a signal whose handler waits until the agent is done
+//! (the Linux `sys` module explains how).
+//!
+//! # Writing the text: in place on Linux, through a new page on macOS
+//!
+//! Linux lets the process make its own text writable and executable for
+//! the moment of the write (`mprotect`), so with the other threads
+//! stopped the agent writes the words in place and cleans the
+//! instruction cache.
 //!
 //! The binary's text is mapped read-execute, and macOS refuses a
 //! writable-and-executable mapping to an ordinary process (measured:
@@ -268,6 +278,446 @@ pub mod proto {
             pairs.push(Pair { base, size, patch });
         }
         Ok(Pairs { anchor, pairs })
+    }
+}
+
+// ── the running process (Linux) ─────────────────────────────────────────
+
+/// Linux has no call that suspends another thread of the process, so the
+/// agent stops them with a signal: each thread's handler records where
+/// it is (pc, lr, frame pointer) and waits on a futex until the agent
+/// releases it. Every thread then is either in the handler or about to
+/// enter it, so none runs the text being written. Text pages are made
+/// writable (`mprotect` RWX — Linux allows it, unlike macOS), the words
+/// written, the instruction cache cleaned, and the pages made read-execute
+/// again before the threads go. Leaving the handler is an exception
+/// return, which synchronizes each thread's instruction fetch with the
+/// new words.
+///
+/// The structures are declared here, not taken from the `libc` crate: the
+/// session compiles this file on its own, with no dependencies. The tests
+/// check them against `libc`'s.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+mod sys {
+    use std::ffi::{c_char, c_int, c_long, c_void, CStr, CString};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+
+    #[repr(C)]
+    pub struct SigAction {
+        pub sa_sigaction: usize,
+        pub sa_mask: [u64; 16],
+        pub sa_flags: c_int,
+        pub sa_restorer: usize,
+    }
+
+    #[repr(C)]
+    pub struct DlPhdrInfo {
+        pub dlpi_addr: u64,
+        pub dlpi_name: *const c_char,
+        pub dlpi_phdr: *const Phdr,
+        pub dlpi_phnum: u16,
+    }
+
+    #[repr(C)]
+    pub struct Phdr {
+        pub p_type: u32,
+        pub p_flags: u32,
+        pub p_offset: u64,
+        pub p_vaddr: u64,
+        pub p_paddr: u64,
+        pub p_filesz: u64,
+        pub p_memsz: u64,
+        pub p_align: u64,
+    }
+
+    extern "C" {
+        fn dlopen(path: *const c_char, mode: c_int) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
+        fn dlerror() -> *const c_char;
+        fn getpagesize() -> c_int;
+        fn getpid() -> c_int;
+        fn syscall(number: c_long, ...) -> c_long;
+        fn mprotect(addr: *mut c_void, len: usize, prot: c_int) -> c_int;
+        fn sigaction(sig: c_int, act: *const SigAction, old: *mut SigAction) -> c_int;
+        fn __libc_current_sigrtmin() -> c_int;
+        fn __clear_cache(start: *mut c_char, end: *mut c_char);
+        fn dl_iterate_phdr(
+            cb: unsafe extern "C" fn(*mut DlPhdrInfo, usize, *mut c_void) -> c_int,
+            data: *mut c_void,
+        ) -> c_int;
+    }
+
+    const RTLD_NOW: c_int = 0x2;
+    const RTLD_LOCAL: c_int = 0;
+    const PROT_READ: c_int = 1;
+    const PROT_WRITE: c_int = 2;
+    const PROT_EXEC: c_int = 4;
+    const SA_SIGINFO: c_int = 4;
+    const SA_RESTART: c_int = 0x1000_0000;
+    const SYS_GETTID: c_long = 178;
+    const SYS_OPENAT: c_long = 56;
+    const SYS_CLOSE: c_long = 57;
+    const SYS_READ: c_long = 63;
+    const SYS_PROCESS_VM_READV: c_long = 270;
+    const AT_FDCWD: c_int = -100;
+    const SYS_TGKILL: c_long = 131;
+    const SYS_FUTEX: c_long = 98;
+    const FUTEX_WAIT_PRIVATE: c_int = 128;
+    const FUTEX_WAKE_PRIVATE: c_int = 129;
+    const PT_LOAD: u32 = 1;
+    const PF_X: u32 = 1;
+    /// Offsets into the arm64 `ucontext_t` the handler is given: its
+    /// `mcontext_t` (16-aligned after flags, link, stack and the 128-byte
+    /// signal mask) holds `fault_address`, then `regs[31]`, `sp`, `pc`.
+    pub const UC_REGS: usize = 184;
+    pub const UC_PC: usize = UC_REGS + 32 * 8;
+    /// Frames walked per thread before giving up on finding the bottom.
+    const MAX_FRAMES: usize = 4096;
+    /// Threads the agent can stop at once; a process with more refuses the
+    /// patch (the session rebuilds).
+    const MAX_THREADS: usize = 4096;
+    /// How long every listed thread has to reach the handler.
+    const STOP_DEADLINE: std::time::Duration = std::time::Duration::from_millis(500);
+
+    pub fn page_size() -> u64 {
+        unsafe { getpagesize() as u64 }
+    }
+
+    /// `dlopen` the patch with every symbol bound now: a symbol nothing
+    /// supplies fails HERE, with the loader's message.
+    pub fn load(path: &std::path::Path) -> Result<*mut c_void, String> {
+        let c = CString::new(path.as_os_str().to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+        let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_LOCAL) };
+        if h.is_null() {
+            let msg = unsafe {
+                let e = dlerror();
+                if e.is_null() { "dlopen failed".to_string() } else { CStr::from_ptr(e).to_string_lossy().into_owned() }
+            };
+            return Err(msg);
+        }
+        Ok(h)
+    }
+
+    pub fn symbol(handle: *mut c_void, name: &str) -> Option<u64> {
+        let c = CString::new(name).ok()?;
+        let p = unsafe { dlsym(handle, c.as_ptr()) };
+        (!p.is_null()).then_some(p as u64)
+    }
+
+    /// The executable's load address (its "slide": a PIE is linked at 0)
+    /// and the range of its executable segment.
+    pub struct Image {
+        pub slide: u64,
+        pub text_start: u64,
+        pub text_end: u64,
+    }
+
+    pub fn main_image() -> Result<Image, String> {
+        unsafe extern "C" fn first(info: *mut DlPhdrInfo, _: usize, data: *mut c_void) -> c_int {
+            let info = &*info;
+            // The executable is the object with no name; the loader lists
+            // it first, ahead of preloaded libraries.
+            if !info.dlpi_name.is_null() && *info.dlpi_name != 0 {
+                return 0;
+            }
+            let out = &mut *(data as *mut Option<Image>);
+            for i in 0..info.dlpi_phnum as usize {
+                let p = &*info.dlpi_phdr.add(i);
+                if p.p_type == PT_LOAD && p.p_flags & PF_X != 0 {
+                    let start = info.dlpi_addr + p.p_vaddr;
+                    *out = Some(Image { slide: info.dlpi_addr, text_start: start, text_end: start + p.p_memsz });
+                    return 1;
+                }
+            }
+            0
+        }
+        let mut out: Option<Image> = None;
+        unsafe { dl_iterate_phdr(first, &mut out as *mut _ as *mut c_void) };
+        out.ok_or_else(|| "the loader lists no executable segment for the program".into())
+    }
+
+    /// The new words of one text page.
+    pub struct Prepared {
+        pub start: u64,
+        len: u64,
+        words: Vec<(u64, u32)>,
+    }
+
+    pub fn prepare(start: u64, page: u64, words: &[(u64, u32)]) -> Result<Prepared, String> {
+        Ok(Prepared { start, len: page, words: words.to_vec() })
+    }
+
+    // The stop protocol's shared state, one stop at a time ([`STOP_LOCK`]).
+    /// Held for a whole stop. Two concurrent stops would each signal the
+    /// other's caller into the handler, and both would wait for a release
+    /// neither can give. The agent's one thread is the only caller in a
+    /// server; tests stop from several threads at once. A caller blocked
+    /// here is stopped like any other thread meanwhile.
+    static STOP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static GENERATION: AtomicU32 = AtomicU32::new(0);
+    /// Set while a stop is in progress. A signal that reaches its thread
+    /// after the stop gave up on it (the thread had signals blocked past
+    /// the deadline) finds it clear and returns at once, instead of
+    /// waiting for a release that already happened.
+    static STOPPING: AtomicBool = AtomicBool::new(false);
+    static ARRIVED: AtomicUsize = AtomicUsize::new(0);
+    static LEFT: AtomicUsize = AtomicUsize::new(0);
+    static SLOT: AtomicUsize = AtomicUsize::new(0);
+    /// Per stopped thread: pc, lr, fp, thread id.
+    static STATE: [[AtomicU64; 4]; MAX_THREADS] = [const { [const { AtomicU64::new(0) }; 4] }; MAX_THREADS];
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+
+    /// Runs on each stopped thread. Async-signal-safe: atomics and futex
+    /// calls only.
+    unsafe extern "C" fn on_stop(_: c_int, _: *mut c_void, ctx: *mut c_void) {
+        // The generation first: a release clears STOPPING before it moves
+        // the generation, so a handler that sees STOPPING set waits on a
+        // generation the release has not moved yet.
+        let generation = GENERATION.load(Ordering::Acquire);
+        if !STOPPING.load(Ordering::Acquire) {
+            return;
+        }
+        let i = SLOT.fetch_add(1, Ordering::AcqRel);
+        if i < MAX_THREADS {
+            let uc = ctx as *const u8;
+            let reg = |at: usize| (uc.add(at) as *const u64).read();
+            STATE[i][0].store(reg(UC_PC), Ordering::Relaxed);
+            STATE[i][1].store(reg(UC_REGS + 30 * 8), Ordering::Relaxed);
+            STATE[i][2].store(reg(UC_REGS + 29 * 8), Ordering::Relaxed);
+            STATE[i][3].store(syscall(SYS_GETTID) as u64, Ordering::Relaxed);
+        }
+        ARRIVED.fetch_add(1, Ordering::Release);
+        while GENERATION.load(Ordering::Acquire) == generation {
+            syscall(SYS_FUTEX, GENERATION.as_ptr(), FUTEX_WAIT_PRIVATE, generation, std::ptr::null::<c_void>());
+        }
+        LEFT.fetch_add(1, Ordering::Release);
+    }
+
+    fn stop_signal() -> c_int {
+        // Real-time signals above the C library's own; this one is not
+        // used by glibc, Rust's runtime or tokio.
+        unsafe { __libc_current_sigrtmin() + 7 }
+    }
+
+    fn install() -> Result<(), String> {
+        let mut err = Ok(());
+        INSTALLED.call_once(|| unsafe {
+            let act = SigAction {
+                sa_sigaction: on_stop as *const () as usize,
+                // Every signal blocked while the handler runs.
+                sa_mask: [u64::MAX; 16],
+                sa_flags: SA_SIGINFO | SA_RESTART,
+                sa_restorer: 0,
+            };
+            if sigaction(stop_signal(), &act, std::ptr::null_mut()) != 0 {
+                err = Err(format!("sigaction failed: {}", std::io::Error::last_os_error()));
+            }
+        });
+        err
+    }
+
+    fn me() -> i32 {
+        unsafe { syscall(SYS_GETTID) as i32 }
+    }
+
+    /// The process's other threads, by id.
+    fn others() -> Result<Vec<i32>, String> {
+        let me = me();
+        let dir = std::fs::read_dir("/proc/self/task").map_err(|e| format!("list /proc/self/task: {e}"))?;
+        Ok(dir
+            .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok())
+            .filter(|&t| t != me)
+            .collect())
+    }
+
+    /// How many of the `signalled` threads have neither reached the
+    /// handler (by the first `arrived` slots) nor exited. No allocation.
+    unsafe fn pending(signalled: &[i32], arrived: usize, pid: c_int) -> usize {
+        let arrived = arrived.min(MAX_THREADS);
+        signalled
+            .iter()
+            .filter(|&&t| !(0..arrived).any(|i| STATE[i][3].load(Ordering::Relaxed) == t as u64))
+            // Signal 0 checks the thread exists; ESRCH once it has exited.
+            .filter(|&&t| syscall(SYS_TGKILL, pid, t, 0) == 0)
+            .count()
+    }
+
+    /// Release every stopped thread and wait until all have left the
+    /// handler: the next stop reuses the slots.
+    fn release(stopped: usize) {
+        LEFT.store(0, Ordering::Relaxed);
+        STOPPING.store(false, Ordering::Release);
+        GENERATION.fetch_add(1, Ordering::Release);
+        unsafe { syscall(SYS_FUTEX, GENERATION.as_ptr(), FUTEX_WAKE_PRIVATE, i32::MAX) };
+        let deadline = std::time::Instant::now() + STOP_DEADLINE;
+        while LEFT.load(Ordering::Acquire) < stopped && std::time::Instant::now() < deadline {
+            std::hint::spin_loop();
+        }
+    }
+
+    /// Whether a stopped thread may be inside one of `windows`: its pc,
+    /// its lr, or a return address on its frame chain. No allocation.
+    unsafe fn busy(slot: usize, windows: &[(u64, u64)]) -> bool {
+        let (pc, lr, mut fp) = (
+            STATE[slot][0].load(Ordering::Relaxed),
+            STATE[slot][1].load(Ordering::Relaxed),
+            STATE[slot][2].load(Ordering::Relaxed),
+        );
+        if super::plan::in_window(pc, windows) || super::plan::in_window(lr, windows) {
+            return true;
+        }
+        for _ in 0..MAX_FRAMES {
+            if fp == 0 || fp % 8 != 0 {
+                break;
+            }
+            // Read through the kernel, which fails instead of faulting on
+            // a frame pointer that does not point into a stack.
+            let Some(record) = read_frame(fp) else { break };
+            if super::plan::in_window(record[1], windows) {
+                return true;
+            }
+            // Frames grow down: the caller's record is higher.
+            if record[0] <= fp {
+                break;
+            }
+            fp = record[0];
+        }
+        false
+    }
+
+    #[repr(C)]
+    struct IoVec {
+        base: *mut c_void,
+        len: usize,
+    }
+
+    /// A frame record (saved fp, saved lr) at `fp`, or `None` when that
+    /// memory is not readable. No allocation.
+    unsafe fn read_frame(fp: u64) -> Option<[u64; 2]> {
+        let mut record = [0u64; 2];
+        let local = IoVec { base: record.as_mut_ptr() as *mut c_void, len: 16 };
+        let remote = IoVec { base: fp as *mut c_void, len: 16 };
+        let n = syscall(SYS_PROCESS_VM_READV, getpid(), &local as *const IoVec, 1usize, &remote as *const IoVec, 1usize, 0usize);
+        (n == 16).then_some(record)
+    }
+
+    /// How many threads the process has now, from `/proc/self/status`,
+    /// read with raw system calls into a stack buffer: it runs while other
+    /// threads are stopped, and one of them may hold the allocator's lock.
+    unsafe fn thread_count() -> Option<usize> {
+        let fd = syscall(SYS_OPENAT, AT_FDCWD, c"/proc/self/status".as_ptr(), 0 as c_int);
+        if fd < 0 {
+            return None;
+        }
+        let mut buf = [0u8; 4096];
+        let mut len = 0usize;
+        loop {
+            let n = syscall(SYS_READ, fd, buf.as_mut_ptr().add(len), buf.len() - len);
+            if n <= 0 {
+                break;
+            }
+            len += n as usize;
+            if len == buf.len() {
+                break;
+            }
+        }
+        syscall(SYS_CLOSE, fd);
+        let text = &buf[..len];
+        let key = b"\nThreads:";
+        let at = text.windows(key.len()).position(|w| w == key)? + key.len();
+        let mut count = 0usize;
+        let mut digits = 0;
+        for &b in &text[at..] {
+            match b {
+                b' ' | b'\t' if digits == 0 => continue,
+                b'0'..=b'9' => {
+                    count = count * 10 + (b - b'0') as usize;
+                    digits += 1;
+                }
+                _ => break,
+            }
+        }
+        (digits > 0).then_some(count)
+    }
+
+    /// Why a write failed, formatted only once the threads are released.
+    enum WriteError {
+        Writable(i32),
+        Executable(i32),
+    }
+
+    /// Write the words of `pages`, in place. Runs with every other thread
+    /// stopped; allocates nothing.
+    unsafe fn write(pages: &[Prepared]) -> Result<(), WriteError> {
+        let errno = || std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        for p in pages {
+            let addr = p.start as *mut c_void;
+            if mprotect(addr, p.len as usize, PROT_READ | PROT_WRITE | PROT_EXEC) != 0 {
+                return Err(WriteError::Writable(errno()));
+            }
+            for &(at, word) in &p.words {
+                std::ptr::write_volatile(at as *mut u32, word);
+            }
+            __clear_cache(p.start as *mut c_char, (p.start + p.len) as *mut c_char);
+            if mprotect(addr, p.len as usize, PROT_READ | PROT_EXEC) != 0 {
+                return Err(WriteError::Executable(errno()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Stop every other thread, and write `pages` if none of them is
+    /// inside a window; release them either way. `Ok(false)`: a thread was
+    /// busy, try again.
+    pub fn swap_stopped(pages: &[Prepared], windows: &[(u64, u64)]) -> Result<bool, String> {
+        let _one_at_a_time = STOP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        install()?;
+        let threads = others()?;
+        if threads.len() > MAX_THREADS {
+            return Err(format!("{} threads; the agent stops at most {MAX_THREADS}", threads.len()));
+        }
+        SLOT.store(0, Ordering::Relaxed);
+        ARRIVED.store(0, Ordering::Relaxed);
+        STOPPING.store(true, Ordering::Release);
+        let pid = unsafe { getpid() };
+        let sig = stop_signal();
+        // Threads that exited since the listing are dropped from it here,
+        // or by `pending` below when they exit after the signal: a thread
+        // that ends before its handler runs never arrives (tokio's
+        // blocking pool ends idle threads all the time).
+        let mut signalled: Vec<i32> = Vec::with_capacity(threads.len());
+        for &t in &threads {
+            if unsafe { syscall(SYS_TGKILL, pid, t, sig) } == 0 {
+                signalled.push(t);
+            }
+        }
+        let deadline = std::time::Instant::now() + STOP_DEADLINE;
+        loop {
+            let arrived = ARRIVED.load(Ordering::Acquire);
+            if arrived >= signalled.len() || unsafe { pending(&signalled, arrived, pid) } == 0 {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                let waiting = unsafe { pending(&signalled, arrived, pid) };
+                release(arrived);
+                return Err(format!("{waiting} of {} threads did not stop for the patch", signalled.len()));
+            }
+            std::hint::spin_loop();
+        }
+        let stopped = ARRIVED.load(Ordering::Acquire);
+        // Every thread the process has now must be one that stopped: a
+        // thread started after the listing is running. Try again.
+        let unchanged = unsafe { thread_count() } == Some(stopped + 1);
+        let clear = unchanged && (windows.is_empty() || (0..stopped).all(|i| unsafe { !busy(i, windows) }));
+        let written = if clear { unsafe { write(pages) } } else { Ok(()) };
+        release(stopped);
+        // A failure mid-way left earlier pages written: the patch is partly
+        // applied, and the session rebuilds and restarts this process.
+        match written {
+            Ok(()) => Ok(clear),
+            Err(WriteError::Writable(e)) => Err(format!("mprotect(RWX) of a text page failed (errno {e})")),
+            Err(WriteError::Executable(e)) => Err(format!("mprotect(RX) of a text page failed (errno {e})")),
+        }
     }
 }
 
@@ -642,7 +1092,7 @@ mod sys {
 
 /// Apply one patch: load it, then detour every pair. Returns how many
 /// functions were redirected.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(any(target_os = "macos", target_os = "linux"), target_arch = "aarch64"))]
 pub fn apply(dylib: &std::path::Path, pairs_file: &std::path::Path) -> Result<usize, String> {
     /// How often a busy thread may push the swap back, a millisecond
     /// apart, before the patch is refused.
@@ -678,9 +1128,9 @@ pub fn apply(dylib: &std::path::Path, pairs_file: &std::path::Path) -> Result<us
     Err(format!("a thread stayed inside a function being patched for {ATTEMPTS} attempts"))
 }
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(all(any(target_os = "macos", target_os = "linux"), target_arch = "aarch64")))]
 pub fn apply(_dylib: &std::path::Path, _pairs_file: &std::path::Path) -> Result<usize, String> {
-    Err("server hot patching supports macOS on Apple silicon only".into())
+    Err("server hot patching supports arm64 macOS and Linux only".into())
 }
 
 /// The agent's session: hello, then one command per line until the
@@ -689,9 +1139,9 @@ pub fn apply(_dylib: &std::path::Path, _pairs_file: &std::path::Path) -> Result<
 pub fn serve(socket: &str) -> std::io::Result<()> {
     let stream = std::os::unix::net::UnixStream::connect(socket)?;
     let mut out = stream.try_clone()?;
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(all(any(target_os = "macos", target_os = "linux"), target_arch = "aarch64"))]
     let slide = sys::main_image().map(|i| i.slide).unwrap_or(0);
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[cfg(not(all(any(target_os = "macos", target_os = "linux"), target_arch = "aarch64")))]
     let slide = 0u64;
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
     out.write_all(proto::format_hello(PROTOCOL, std::process::id(), slide, &exe).as_bytes())?;
@@ -753,6 +1203,106 @@ extern "C" fn agent_init() {
 #[cfg_attr(target_os = "macos", link_section = "__DATA,__mod_init_func,mod_init_funcs")]
 #[cfg_attr(target_os = "linux", link_section = ".init_array")]
 static AGENT_INIT: extern "C" fn() = agent_init;
+
+/// The Linux `sys` checked inside a real process (run in a Linux arm64
+/// container: `docker run … cargo test -p build-runtime-server`).
+#[cfg(all(test, target_os = "linux", target_arch = "aarch64"))]
+mod linux_tests {
+    use super::sys;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    /// The agent declares the C structures itself (it compiles with no
+    /// dependencies); a wrong offset reads the wrong register, and a
+    /// thread inside a window would be patched under.
+    #[test]
+    fn the_hand_declared_structures_match_libc() {
+        assert_eq!(std::mem::size_of::<sys::SigAction>(), std::mem::size_of::<libc::sigaction>());
+        assert_eq!(std::mem::offset_of!(sys::SigAction, sa_flags), std::mem::offset_of!(libc::sigaction, sa_flags));
+        let mcontext = std::mem::offset_of!(libc::ucontext_t, uc_mcontext);
+        assert_eq!(sys::UC_REGS, mcontext + std::mem::offset_of!(libc::mcontext_t, regs));
+        assert_eq!(sys::UC_PC, mcontext + std::mem::offset_of!(libc::mcontext_t, pc));
+    }
+
+    /// A thread that ends between its stop signal and its handler never
+    /// arrives; the stop must count it out instead of waiting for it until
+    /// the deadline and refusing the patch. Threads come and go here the
+    /// whole time, as a tokio blocking pool's do.
+    #[test]
+    fn regression_a_thread_that_exits_during_a_stop_does_not_fail_it() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let churn = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let short: Vec<_> = (0..4).map(|_| std::thread::spawn(|| std::hint::black_box(0))).collect();
+                    for t in short {
+                        t.join().unwrap();
+                    }
+                }
+            })
+        };
+        let mut completed = 0;
+        for round in 0..300 {
+            if sys::swap_stopped(&[], &[]).unwrap_or_else(|e| panic!("round {round}: {e}")) {
+                completed += 1;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        churn.join().unwrap();
+        assert!(completed > 0, "no round completed");
+    }
+
+    #[test]
+    fn the_executable_image_contains_this_code() {
+        let image = sys::main_image().unwrap();
+        let here = the_executable_image_contains_this_code as usize as u64;
+        assert!((image.text_start..image.text_end).contains(&here));
+    }
+
+    /// Stopping the world under busy threads and threads blocked in system
+    /// calls, many times over: every round completes, and every thread
+    /// keeps running afterwards.
+    #[test]
+    fn every_thread_stops_and_resumes_round_after_round() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let work = Arc::new(AtomicU64::new(0));
+        let mut threads = Vec::new();
+        for _ in 0..6 {
+            let (stop, work) = (stop.clone(), work.clone());
+            threads.push(std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    work.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+        for _ in 0..2 {
+            let stop = stop.clone();
+            threads.push(std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(3));
+                }
+            }));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // A round may report "try again" when the test harness started or
+        // ended a thread meanwhile; it must never fail.
+        let mut completed = 0;
+        for round in 0..300 {
+            if sys::swap_stopped(&[], &[]).unwrap_or_else(|e| panic!("round {round}: {e}")) {
+                completed += 1;
+            }
+        }
+        assert!(completed > 0, "no round completed");
+        let before = work.load(Ordering::Relaxed);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(work.load(Ordering::Relaxed) > before, "the workers did not resume");
+        stop.store(true, Ordering::Relaxed);
+        for t in threads {
+            t.join().unwrap();
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

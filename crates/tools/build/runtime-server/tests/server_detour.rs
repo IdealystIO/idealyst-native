@@ -2,8 +2,8 @@
 //!
 //! This builds a real two-crate program the way cargo would — a library
 //! (`shared`) and a binary (`srv`) that calls it — and runs it with the
-//! hot-patch agent loaded (`DYLD_INSERT_LIBRARIES`, as `idealyst
-//! run-linked` does). Eight threads call `shared::greeting` the whole time
+//! hot-patch agent loaded (`DYLD_INSERT_LIBRARIES` / `LD_PRELOAD`, as
+//! `idealyst run-linked` does). Eight threads call `shared::greeting` the whole time
 //! through every way a server reaches a function: a direct call from the
 //! binary's crate, a function pointer stored at startup, and a trait
 //! object built at startup. The test then edits the library's body,
@@ -19,13 +19,19 @@
 //! * a writable static the library owns kept its state across the patch;
 //! * a second patch of the same crate re-redirects the same functions;
 //! * a patch whose live code needs a function the binary does not
-//!   contain is refused by the agent's `dlopen`, and the process carries
-//!   on with what it ran before.
+//!   contain is refused — by the agent's `dlopen` (macOS), or already by
+//!   the builder, which sees the Rust symbol is nowhere to bind (Linux) —
+//!   and the process carries on with what it ran before.
 //!
-//! macOS on Apple silicon only: the native patch builder links Mach-O
-//! arm64 (`hotpatch::link`).
+//! arm64 macOS and Linux, the hosts the native patch builder links for
+//! (Mach-O / ELF). On a Mac, run the Linux leg in an arm64 container:
+//!
+//! ```text
+//! docker run --rm -v $PWD:/work -w /work mcr.microsoft.com/devcontainers/rust:1 \
+//!   cargo test -p build-runtime-server --test server_detour
+//! ```
 
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#![cfg(all(any(target_os = "macos", target_os = "linux"), target_arch = "aarch64"))]
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
@@ -204,7 +210,7 @@ impl AgentSession {
 fn build_agent(dir: &Path) -> PathBuf {
     let src = dir.join("hot_agent.rs");
     std::fs::write(&src, AGENT_SOURCE).unwrap();
-    let out = dir.join(format!("lib{AGENT_CRATE}.dylib"));
+    let out = dir.join(format!("lib{AGENT_CRATE}.{}", if cfg!(target_os = "macos") { "dylib" } else { "so" }));
     let status = Command::new(rustc())
         .args(["--edition=2021", "--crate-type", "cdylib", "--crate-name", AGENT_CRATE, "--cfg", AGENT_CFG])
         .arg(&src)
@@ -234,7 +240,7 @@ fn a_running_server_runs_the_patched_body_through_every_kind_of_call() {
     let socket = dir.join("agent.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let mut child = Command::new(&exe)
-        .env("DYLD_INSERT_LIBRARIES", &agent_lib)
+        .env(if cfg!(target_os = "macos") { "DYLD_INSERT_LIBRARIES" } else { "LD_PRELOAD" }, &agent_lib)
         .env(agent::SOCKET_ENV, &socket)
         // The patch of a binary this small usually lands within `b`
         // reach; a real server's does not. Exercise the long jump, which
@@ -270,11 +276,11 @@ fn a_running_server_runs_the_patched_body_through_every_kind_of_call() {
     let patch_shared = |body: &str| {
         std::fs::write(dir.join("shared/src/lib.rs"), SHARED.replace("    // BODY\n    1", body)).unwrap();
         let crates = [PatchCrate { crate_name: "shared".into(), capture: CapturedInvocation { ..clone(&capture) } }];
-        builder.build(&crates, slide, &|| false, &|_, _| {}).expect("build the patch")
+        builder.build(&crates, slide, &|| false, &|_, _| {})
     };
 
     // ── 1. A body edit, applied while eight threads call it ──────────
-    let p = patch_shared("    2");
+    let p = patch_shared("    2").expect("build the patch");
     assert!(p.detours >= 3, "greeting, Plain::greet and calls should all be redirected: {p:?}");
     match session.apply(1, &p.dylib, &p.pairs) {
         agent::proto::Reply::Ok { detoured, .. } => assert_eq!(detoured, p.detours),
@@ -283,19 +289,24 @@ fn a_running_server_runs_the_patched_body_through_every_kind_of_call() {
     assert_eq!(server.check(), "direct=2 stored=2 dynamic=20 calls_grew=true bad=0");
 
     // ── 2. A second edit of the same crate ────────────────────────────
-    let p = patch_shared("    3");
+    let p = patch_shared("    3").expect("build the patch");
     assert!(matches!(session.apply(2, &p.dylib, &p.pairs), agent::proto::Reply::Ok { .. }));
     assert_eq!(server.check(), "direct=3 stored=3 dynamic=30 calls_grew=true bad=0");
 
     // ── 3. Live code needing a function the binary never linked ──────
     // `std::fs::canonicalize` is nowhere in the base: dead-stripped from
     // it, so the patch imports it and `dlopen(RTLD_NOW)` cannot bind it.
-    let p = patch_shared("    std::fs::canonicalize(\"/\").map(|p| p.as_os_str().len() as u64 + 40).unwrap_or(41)");
-    match session.apply(3, &p.dylib, &p.pairs) {
-        agent::proto::Reply::Err { message, .. } => {
-            assert!(message.contains("canonicalize") || message.contains("symbol"), "{message}")
+    match patch_shared("    std::fs::canonicalize(\"/\").map(|p| p.as_os_str().len() as u64 + 40).unwrap_or(41)") {
+        Err(e) => {
+            let message = format!("{e:#}");
+            assert!(message.contains("canonicalize"), "{message}");
         }
-        other => panic!("a patch with an unbindable import was applied: {other:?}"),
+        Ok(p) => match session.apply(3, &p.dylib, &p.pairs) {
+            agent::proto::Reply::Err { message, .. } => {
+                assert!(message.contains("canonicalize") || message.contains("symbol"), "{message}")
+            }
+            other => panic!("a patch with an unbindable import was applied: {other:?}"),
+        },
     }
     assert_eq!(server.check(), "direct=3 stored=3 dynamic=30 calls_grew=true bad=0", "a refused patch changed nothing");
     assert_eq!(server.child.id(), pid);

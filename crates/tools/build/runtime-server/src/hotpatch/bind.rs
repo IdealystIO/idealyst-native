@@ -1,4 +1,5 @@
-//! Point a patch's statics at the running binary's (Mach-O, arm64).
+//! Point a patch's statics at the running binary's (Mach-O, arm64; the
+//! ELF twin is [`super::elf`]).
 //!
 //! [`super::statics`] decides WHICH statics are bound; this rewrites the
 //! replayed `.rcgu.o` files so the linked dylib uses the running binary's

@@ -12,9 +12,9 @@
 //!    thread-local-descriptor section — the statics a patch's own
 //!    copies are bound to ([`super::bind`]).
 //!
-//! The cache mirrors `HotpatchModuleCache` in `dx`'s codebase;
-//! the only structural divergence is that we drop the wasm /
-//! Windows fields since we only target Mach-O for v1.
+//! The cache mirrors `HotpatchModuleCache` in `dx`'s codebase,
+//! without its wasm / Windows fields: it reads Mach-O (macOS) and
+//! ELF (Linux) binaries.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -39,7 +39,6 @@ pub struct CachedSymbol {
     pub is_weak: bool,
 }
 
-#[derive(Default)]
 pub struct HostBinCache {
     /// `symbol_name → cached metadata`. Exact-name lookups are the
     /// fast path used by [`Self::resolve_runtime`].
@@ -56,12 +55,33 @@ pub struct HostBinCache {
     stripped_to_full: HashMap<String, String>,
     /// Link-time address of `_main` / `main`.
     pub main_addr: u64,
+    /// The binary's object format: Mach-O, or ELF (Linux).
+    pub format: object::BinaryFormat,
+    /// ELF only: where the executable's TLS block starts relative to the
+    /// thread pointer ([`super::elf::tls_block_offset`]). A thread-local's
+    /// cached `address` is its offset into that block. `None` without a
+    /// `PT_TLS` segment.
+    pub tls_block_offset: Option<u64>,
     /// Every symbol in a section that holds state — writable data,
     /// zero-fill, thread-local descriptors
     /// ([`super::bind::is_state_section`]), grouped for pairing: a
     /// patch's static of the same name is bound to this one
     /// ([`super::statics::pair`]).
     pub state_symbols: super::statics::ProgramStatics,
+}
+
+/// An empty Mach-O cache: what unit tests fill by hand.
+impl Default for HostBinCache {
+    fn default() -> Self {
+        Self {
+            symbols: HashMap::new(),
+            stripped_to_full: HashMap::new(),
+            main_addr: 0,
+            format: object::BinaryFormat::MachO,
+            tls_block_offset: None,
+            state_symbols: Default::default(),
+        }
+    }
 }
 
 impl HostBinCache {
@@ -76,20 +96,31 @@ impl HostBinCache {
         let mut main_addr: u64 = 0;
         let mut state_sections: HashMap<object::SectionIndex, bool> = HashMap::new();
         let mut state_symbols: Vec<String> = Vec::new();
+        let format = obj.format();
         for sym in obj.symbols() {
             let Ok(name) = sym.name() else { continue };
-            if name.is_empty() || sym.address() == 0 {
+            // An ELF thread-local's address is its offset into the TLS
+            // block, and the first one's is 0; anything else at 0 is an
+            // import, not something the binary defines.
+            let tls = format == object::BinaryFormat::Elf && sym.kind() == SymbolKind::Tls;
+            if name.is_empty() || (sym.address() == 0 && !tls) {
                 continue;
+            }
+            if format == object::BinaryFormat::Elf && !super::elf::is_item(name) {
+                continue; // an arm64 mapping symbol (`$x`, `$d`)
             }
             if let Some(index) = sym.section_index() {
                 let is_state = *state_sections.entry(index).or_insert_with(|| {
-                    obj.section_by_index(index).is_ok_and(|s| {
-                        let segment = s.segment_name().ok().flatten().unwrap_or("");
-                        let flags = match s.flags() {
-                            object::SectionFlags::MachO { flags } => flags,
-                            _ => 0,
-                        };
-                        super::bind::is_state_section(segment, s.name().unwrap_or(""), flags)
+                    obj.section_by_index(index).is_ok_and(|s| match format {
+                        object::BinaryFormat::Elf => super::elf::is_state_section(s.name().unwrap_or("")),
+                        _ => {
+                            let segment = s.segment_name().ok().flatten().unwrap_or("");
+                            let flags = match s.flags() {
+                                object::SectionFlags::MachO { flags } => flags,
+                                _ => 0,
+                            };
+                            super::bind::is_state_section(segment, s.name().unwrap_or(""), flags)
+                        }
                     })
                 });
                 if is_state {
@@ -133,10 +164,24 @@ impl HostBinCache {
             );
         }
 
+        let tls_block_offset = match &obj {
+            object::File::Elf64(e) => {
+                use object::read::elf::ProgramHeader as _;
+                let endian = e.endian();
+                e.elf_program_headers()
+                    .iter()
+                    .find(|p| p.p_type(endian) == object::elf::PT_TLS)
+                    .map(|p| super::elf::tls_block_offset(p.p_align(endian)))
+            }
+            _ => None,
+        };
+
         Ok(Self {
             symbols,
             stripped_to_full,
             main_addr,
+            format,
+            tls_block_offset,
             state_symbols: super::statics::ProgramStatics::new(state_symbols.iter().map(String::as_str)),
         })
     }

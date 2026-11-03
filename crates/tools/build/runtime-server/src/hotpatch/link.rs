@@ -12,8 +12,9 @@
 //! into ld doubles that. Going straight to ld trims one spawn
 //! out of the per-patch hot path.
 //!
-//! v1 is macOS aarch64. Linux + Windows + wasm follow the same
-//! shape but differ in linker flags + invocation. The `ld -v`
+//! macOS arm64 links with ld64 here; a Linux server patch links with
+//! [`link_patch_elf`]. Windows follows the same shape with its own
+//! linker flags. The `ld -v`
 //! output here is Apple's classic ld64 (project ld-1267+); the
 //! arg set tracks what `cc -dynamiclib` would have passed to it
 //! after its own flag translation.
@@ -146,6 +147,57 @@ pub fn link_patch(objs: &[PathBuf], stub_obj: &Path, out: &Path, filelist: &Path
     if !output.status.success() {
         anyhow::bail!(
             "ld exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).lines().take(12).collect::<Vec<_>>().join("\n")
+        );
+    }
+    Ok(())
+}
+
+/// [`link_patch`] for a Linux server: `cc -shared` (the system linker,
+/// through the driver, which supplies the C runtime pieces a shared
+/// object needs).
+///
+/// - `--gc-sections`: roots are the sections [`super::elf::retain_roots`]
+///   marked `SHF_GNU_RETAIN` (the redirected functions) and what the
+///   exported `main` reaches, so code of the re-emitted crates the binary
+///   never kept is dropped, with the references only it made.
+/// - A version script exports `main` alone: no `pub fn` of a crate becomes
+///   a root by being global, and nothing the patch defines can be
+///   interposed by the binary's same-named exports. `main` is the anchor
+///   the agent `dlsym`s to learn where the patch was loaded.
+/// - Inputs go through a response file (`@file`): a crate replays into up
+///   to 256 objects, and several crates' worth overflow `ARG_MAX`.
+/// - Anything still undefined (libc, the unwinder) is left for the loader,
+///   which a shared object allows by default.
+pub fn link_patch_elf(objs: &[PathBuf], stub_obj: &Path, out: &Path, work: &Path) -> Result<()> {
+    if objs.is_empty() {
+        anyhow::bail!("link_patch_elf called with no objects");
+    }
+    let script = work.join("exports.ver");
+    std::fs::write(&script, "{ global: main; local: *; };\n").with_context(|| format!("write {}", script.display()))?;
+    let mut args = String::new();
+    for o in objs.iter().map(PathBuf::as_path).chain(std::iter::once(stub_obj)) {
+        // GCC's response files are whitespace-separated with quoting.
+        args.push('"');
+        args.push_str(&o.display().to_string().replace('\\', "\\\\").replace('"', "\\\""));
+        args.push_str("\"\n");
+    }
+    let rsp = work.join("link.args");
+    std::fs::write(&rsp, args).with_context(|| format!("write {}", rsp.display()))?;
+    let cc = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
+    let output = Command::new(&cc)
+        .args(["-shared", "-fPIC", "-Wl,--gc-sections"])
+        .arg(format!("-Wl,--version-script={}", script.display()))
+        .arg(format!("@{}", rsp.display()))
+        .arg("-o")
+        .arg(out)
+        .output()
+        .with_context(|| format!("spawn {}", cc.to_string_lossy()))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "{} exited with {}: {}",
+            cc.to_string_lossy(),
             output.status,
             String::from_utf8_lossy(&output.stderr).lines().take(12).collect::<Vec<_>>().join("\n")
         );
