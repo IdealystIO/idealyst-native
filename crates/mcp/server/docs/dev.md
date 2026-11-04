@@ -29,7 +29,9 @@ Arguments:
 - `screenshot_dir`: where the relay saves screenshot PNGs.
 - `no_build` (web only): skip the initial build and just serve.
 - `no_watch`: saves are queued, not applied; `rebuild_dev` applies the queue as one save (overlay patch, hot patch or rebuild, as the save would have been). See `rebuild_dev`.
-- `experimental_build`: arms both experimental tiers. On web `local`, a save that only ADDS items — a helper and its first call, a new component, a type and its impls — hot patches instead of rebuilding (see "Adding items" in the framework's `docs/hot-reload.md`). On a full-stack session on arm64 macOS or Linux, a body edit patches the running server in place. `idealyst dev` has `--experimental-web-additive` and `--experimental-server-patch` for one tier alone.
+- `experimental_build`: arms both experimental tiers. On web `local`, a save that only ADDS items — a helper and its first call, a new component, a type and its impls — hot patches instead of rebuilding (see "Adding items" in the framework's `docs/hot-reload.md`). On a full-stack session on arm64 macOS or Linux, a body edit patches the running server in place.
+- `experimental_server_patch`: only the server half of `experimental_build`.
+- `experimental_web_additive`: only the web half of `experimental_build`.
 - `metrics`: record what every save cost — its tier and why, each stage's time, and for a cargo build every crate recompiled with its compile time and cargo's reason. Read the records with `read_build_metrics`.
 - `metrics_diffs`: `metrics`, plus each saved file's diff against the previous save. Keeps a copy of every watched text file in memory for the session.
 - `dir`: project directory; defaults to the server's working directory.

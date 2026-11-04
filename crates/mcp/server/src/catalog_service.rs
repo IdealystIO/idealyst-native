@@ -578,9 +578,17 @@ pub struct RunDevArgs {
     /// Queue saves instead of applying them; `rebuild_dev` applies the queue.
     #[serde(default)]
     pub no_watch: bool,
-    /// Web `--local`: hot patch saves that only add items (experimental).
+    /// Both experimental tiers: `experimental_web_additive` and
+    /// `experimental_server_patch`.
     #[serde(default)]
     pub experimental_build: bool,
+    /// Full-stack on arm64 macOS or Linux: patch the running server in place
+    /// on a body edit (experimental).
+    #[serde(default)]
+    pub experimental_server_patch: bool,
+    /// Web `--local`: hot patch saves that only add items (experimental).
+    #[serde(default)]
+    pub experimental_web_additive: bool,
     /// Record what every save cost; read with `read_build_metrics`.
     #[serde(default)]
     pub metrics: bool,
@@ -1965,6 +1973,8 @@ impl CatalogService {
             no_build: args.no_build,
             no_watch: args.no_watch,
             experimental_build: args.experimental_build,
+            experimental_server_patch: args.experimental_server_patch,
+            experimental_web_additive: args.experimental_web_additive,
             metrics: args.metrics,
             metrics_diffs: args.metrics_diffs,
         };

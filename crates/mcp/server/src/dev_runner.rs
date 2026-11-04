@@ -72,6 +72,12 @@ pub struct DevLaunch {
     /// save that only adds items hot patches instead of rebuilding, and a
     /// full-stack session patches its running server in place.
     pub experimental_build: bool,
+    /// `--experimental-server-patch`: only the server half of
+    /// `experimental_build`.
+    pub experimental_server_patch: bool,
+    /// `--experimental-web-additive`: only the web half of
+    /// `experimental_build`.
+    pub experimental_web_additive: bool,
     /// `--metrics`: record what every save cost (`read_build_metrics`).
     pub metrics: bool,
     /// `--metrics-diffs`: `--metrics` plus each save's diff.
@@ -90,6 +96,8 @@ fn dev_flags(launch: &DevLaunch) -> Vec<std::ffi::OsString> {
         (launch.no_build, "--no-build"),
         (launch.no_watch, "--no-watch"),
         (launch.experimental_build, "--experimental-build"),
+        (launch.experimental_server_patch, "--experimental-server-patch"),
+        (launch.experimental_web_additive, "--experimental-web-additive"),
         // `--metrics-diffs` implies `--metrics`; the CLI takes either.
         (launch.metrics && !launch.metrics_diffs, "--metrics"),
         (launch.metrics_diffs, "--metrics-diffs"),
@@ -569,6 +577,14 @@ mod tests {
         assert_eq!(
             flags(DevLaunch { no_watch: true, bridge_port: Some(9000), ..Default::default() }),
             ["--no-watch", "--bridge-port", "9000"]
+        );
+        assert_eq!(
+            flags(DevLaunch { experimental_server_patch: true, ..Default::default() }),
+            ["--experimental-server-patch"]
+        );
+        assert_eq!(
+            flags(DevLaunch { experimental_web_additive: true, ..Default::default() }),
+            ["--experimental-web-additive"]
         );
         assert!(flags(DevLaunch::default()).is_empty());
     }
