@@ -20,6 +20,7 @@ never match. This crate is the only place both run on one input.
 ```
 cargo test -p ui-lowering-parity                    # the emission contract
 cargo test -p ui-lowering-parity --features ui-overlay   # + the overlay's
+cargo test -p ui-lowering-parity --features ui-overlay,hot-reload   # + scoped impls
 ```
 
 The goldens are the SAME files either way. That is the byte-identity
@@ -39,6 +40,7 @@ gate: turning the feature on must not change what a site builds.
 | `round_trip.rs` | `Element(original) + apply(diff(desc(original), desc(edited))) == Element(edited)` |
 | `apply_literal.rs` | `#[component]`/`#[props]`' generated `__apply_literal`: application through the `Reactive` wrap, integer narrowing, refusal reporting, and the blanket fallback for a props type the macro never touched |
 | `double_eval.rs` | props the emitter used to splice twice stay spliced once |
+| `symbol_stability.rs` | adding a component ahead of a neighbour, or a component and hand-written impl at end of file, renames none of the neighbours' generated impls (real compile, v0 mangling, `nm`) |
 | `overlay_props.rs` | `overlay(click_through = …)` reaches the portal (it used to compile and be dropped) |
 
 ## How a fixture is recorded

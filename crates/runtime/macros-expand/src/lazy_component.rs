@@ -199,6 +199,58 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
         }
     };
 
+    let impls = crate::symbol_scope::scoped(
+        crate::symbol_scope::Owner::Component,
+        fn_name,
+        quote! {
+            #[automatically_derived]
+            impl ::core::default::Default for #props_ident {
+                fn default() -> Self {
+                    Self {
+                        #(#default_fields)*
+                        loading: ::core::default::Default::default(),
+                        error: ::core::default::Default::default(),
+                        #style_default
+                    }
+                }
+            }
+
+            #[automatically_derived]
+            impl ::runtime_core::BuildElement for #props_ident {
+                fn build(self) -> ::runtime_core::Element {
+                    // The `#[wasm_split]` attribute expands to `wasm_split::…`
+                    // paths; alias runtime-core's re-export so the author crate
+                    // needs no direct `wasm-split` dep. `#[allow(unused_imports)]`
+                    // covers the native expansion, which names no `wasm_split`.
+                    #[allow(unused_imports)]
+                    use ::runtime_core::__wasm_split as wasm_split;
+
+                    // The component's body — hoisted into a chunk. Receives the
+                    // props (config fields ride along, unused) and calls the fn,
+                    // which returns the body thunk (see `lazy_body_fn` above).
+                    #lazy_body_fn
+
+                    // Pull the loading/error config out (cheap `Rc` clones) before
+                    // the props move into the loader.
+                    let __loading = ::core::clone::Clone::clone(&self.loading).__into_handler();
+                    let __error = ::core::clone::Clone::clone(&self.error).__into_handler();
+                    #style_take
+
+                    let __loader = #loader_expr;
+                    let mut __b = ::runtime_core::primitives::lazy::lazy_split(__loader);
+                    if let ::core::option::Option::Some(__l) = __loading {
+                        __b = __b.placeholder(move || __l());
+                    }
+                    if let ::core::option::Option::Some(__e) = __error {
+                        __b = __b.on_error(move |__err| __e(__err));
+                    }
+                    #style_apply
+                    ::runtime_core::IntoElement::into_element(__b)
+                }
+            }
+        },
+    );
+
     quote! {
         #[doc = #struct_doc]
         #clone_derive
@@ -212,54 +264,10 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
             #style_field
         }
 
-        #[automatically_derived]
-        impl ::core::default::Default for #props_ident {
-            fn default() -> Self {
-                Self {
-                    #(#default_fields)*
-                    loading: ::core::default::Default::default(),
-                    error: ::core::default::Default::default(),
-                    #style_default
-                }
-            }
-        }
-
         #(#fn_docs)*
         #[allow(non_camel_case_types)]
         #vis type #fn_name = #props_ident;
 
-        #[automatically_derived]
-        impl ::runtime_core::BuildElement for #props_ident {
-            fn build(self) -> ::runtime_core::Element {
-                // The `#[wasm_split]` attribute expands to `wasm_split::…`
-                // paths; alias runtime-core's re-export so the author crate
-                // needs no direct `wasm-split` dep. `#[allow(unused_imports)]`
-                // covers the native expansion, which names no `wasm_split`.
-                #[allow(unused_imports)]
-                use ::runtime_core::__wasm_split as wasm_split;
-
-                // The component's body — hoisted into a chunk. Receives the
-                // props (config fields ride along, unused) and calls the fn,
-                // which returns the body thunk (see `lazy_body_fn` above).
-                #lazy_body_fn
-
-                // Pull the loading/error config out (cheap `Rc` clones) before
-                // the props move into the loader.
-                let __loading = ::core::clone::Clone::clone(&self.loading).__into_handler();
-                let __error = ::core::clone::Clone::clone(&self.error).__into_handler();
-                #style_take
-
-                let __loader = #loader_expr;
-                let mut __b = ::runtime_core::primitives::lazy::lazy_split(__loader);
-                if let ::core::option::Option::Some(__l) = __loading {
-                    __b = __b.placeholder(move || __l());
-                }
-                if let ::core::option::Option::Some(__e) = __error {
-                    __b = __b.on_error(move |__err| __e(__err));
-                }
-                #style_apply
-                ::runtime_core::IntoElement::into_element(__b)
-            }
-        }
+        #impls
     }
 }

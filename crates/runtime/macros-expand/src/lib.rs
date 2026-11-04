@@ -84,6 +84,7 @@ mod external_emit;
 /// the `hot-reload` feature, threaded as `hot_split` so one test binary
 /// can drive both legs.
 mod hot_split;
+mod symbol_scope;
 #[cfg(feature = "catalog")]
 mod mcp_emit;
 mod axis_values;

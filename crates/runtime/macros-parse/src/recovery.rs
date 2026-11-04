@@ -81,7 +81,9 @@ pub fn emit_shell(input: &TokenStream2, rest: TokenStream2) -> TokenStream2 {
 /// regresses to the bare-`compile_error!` baseline — revisit the gate
 /// (a `#[cfg(rust_analyzer)]` emission, which currently trips
 /// `unexpected_cfgs` in consumer crates, becomes the alternative).
-fn host_has_no_span_lines(input: &TokenStream2) -> bool {
+/// `symbol_scope` in `runtime-macros-expand` relies on it the same way: there
+/// the failure would be a false "no method" on every scoped impl in the editor.
+pub fn host_has_no_span_lines(input: &TokenStream2) -> bool {
     input.clone().into_iter().all(|tt| {
         let (s, e) = (tt.span().start(), tt.span().end());
         s == e && s.line <= 1 && s.column == 0

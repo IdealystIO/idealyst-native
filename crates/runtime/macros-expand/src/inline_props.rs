@@ -292,41 +292,49 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr, import_ke
 
     let (build_mut, overlay_prologue) = crate::props_attr::overlay_build_prologue(fn_name);
 
-    quote! {
-        #apply_literal
+    let impls = crate::symbol_scope::scoped(
+        crate::symbol_scope::Owner::Component,
+        fn_name,
+        quote! {
+            #apply_literal
 
+            #[automatically_derived]
+            impl ::core::default::Default for #props_ident {
+                fn default() -> Self {
+                    Self { #(#default_fields)* }
+                }
+            }
+
+            // How these props cross from a remote bundle (a no-op unless this
+            // build hosts or is one).
+            ::runtime_vocabulary::__remote_props!(#props_ident { #(#import_fields),* });
+
+            #[automatically_derived]
+            impl ::runtime_core::BuildElement for #props_ident {
+                fn build(#build_mut self) -> ::runtime_core::Element {
+                    #overlay_prologue
+                    // Coerce via `IntoElement` so a component returning a
+                    // richer type than bare `Element` still satisfies the
+                    // trait — same as the legacy impl.
+                    ::runtime_core::IntoElement::into_element(#fn_name(#(#build_args),*))
+                }
+                #build_set
+            }
+        },
+    );
+
+    quote! {
         #[doc = #struct_doc]
         #[allow(non_camel_case_types)]
         #vis struct #props_ident {
             #(#field_defs)*
         }
 
-        #[automatically_derived]
-        impl ::core::default::Default for #props_ident {
-            fn default() -> Self {
-                Self { #(#default_fields)* }
-            }
-        }
-
-        // How these props cross from a remote bundle (a no-op unless this
-        // build hosts or is one).
-        ::runtime_vocabulary::__remote_props!(#props_ident { #(#import_fields),* });
-
         #(#fn_docs)*
         #[allow(non_camel_case_types)]
         #vis type #fn_name = #props_ident;
 
-        #[automatically_derived]
-        impl ::runtime_core::BuildElement for #props_ident {
-            fn build(#build_mut self) -> ::runtime_core::Element {
-                #overlay_prologue
-                // Coerce via `IntoElement` so a component returning a
-                // richer type than bare `Element` still satisfies the
-                // trait — same as the legacy impl.
-                ::runtime_core::IntoElement::into_element(#fn_name(#(#build_args),*))
-            }
-            #build_set
-        }
+        #impls
     }
 }
 

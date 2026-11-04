@@ -194,11 +194,18 @@ pub(crate) fn emit(item: TokenStream2) -> TokenStream2 {
     } else {
         TokenStream2::new()
     };
+    let impls = crate::symbol_scope::scoped(
+        crate::symbol_scope::Owner::Props,
+        &input.ident,
+        quote! {
+            #literals
+            #inspect
+            #import
+        },
+    );
     quote! {
         #input
-        #literals
-        #inspect
-        #import
+        #impls
     }
 }
 

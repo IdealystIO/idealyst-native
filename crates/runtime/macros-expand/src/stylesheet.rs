@@ -1359,24 +1359,31 @@ fn emit_variant_enum(decl: &StyleSheetDecl, axis: &VariantAxisDecl) -> TokenStre
         let v = format_ident!("{}", pascal(&arm.name));
         quote! { Self::#v }
     });
+    let impls = crate::symbol_scope::scoped(
+        crate::symbol_scope::Owner::Sheet,
+        &enum_name,
+        quote! {
+            impl ::runtime_core::VariantEnum for #enum_name {
+                fn as_variant_str(self) -> &'static str {
+                    match self {
+                        #(#arm_arms,)*
+                    }
+                }
+                fn all_variants() -> &'static [Self] {
+                    &[ #(#all_variants_items,)* ]
+                }
+            }
+            #default_impl
+            #remote
+        },
+    );
     quote! {
         #[derive(::std::clone::Clone, ::std::marker::Copy, ::std::fmt::Debug, ::std::cmp::PartialEq, ::std::cmp::Eq)]
         #[doc = #enum_doc]
         #vis enum #enum_name {
             #(#variants,)*
         }
-        impl ::runtime_core::VariantEnum for #enum_name {
-            fn as_variant_str(self) -> &'static str {
-                match self {
-                    #(#arm_arms,)*
-                }
-            }
-            fn all_variants() -> &'static [Self] {
-                &[ #(#all_variants_items,)* ]
-            }
-        }
-        #default_impl
-        #remote
+        #impls
     }
 }
 
@@ -1636,6 +1643,55 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
         }
     };
 
+    let impls = crate::symbol_scope::scoped(
+        crate::symbol_scope::Owner::Sheet,
+        name,
+        quote! {
+            impl #name {
+                /// A builder with every axis at its default and no overrides.
+                pub fn new() -> Self {
+                    Self {
+                        #(#default_axis_fields,)*
+                        #(#default_override_fields,)*
+                        __reactive: false,
+                    }
+                }
+
+                /// The underlying `Rc<StyleSheet>`, for APIs that don't take a builder.
+                pub fn sheet() -> ::std::rc::Rc<::runtime_core::StyleSheet> {
+                    #stylesheet_fn()
+                }
+
+                #(#axis_setters)*
+                #(#override_setters)*
+
+                /// The live-engine `StyleApplication` this builder describes, for
+                /// composing or introspecting resolved styles. Never preminted;
+                /// reactive setter inputs are read once, without subscribing.
+                pub fn into_style_application(self) -> ::runtime_core::StyleApplication {
+                    self.__style_application()
+                }
+
+                // The one body behind `into_style_application` and the
+                // `into_style_prop` closure. By reference: `SheetDynamic`
+                // re-runs that closure, so it can't consume the builder.
+                #[doc(hidden)]
+                fn __style_application(&self) -> ::runtime_core::StyleApplication {
+                    let mut __app = ::runtime_core::StyleApplication::new(#stylesheet_fn());
+                    #(#axis_applies)*
+                    #(#override_applies)*
+                    __app
+                }
+            }
+
+            impl ::std::default::Default for #name {
+                fn default() -> Self { Self::new() }
+            }
+
+            #conversion_impl
+        },
+    );
+
     quote! {
         #vis struct #name {
             #(#axis_fields,)*
@@ -1646,48 +1702,7 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
             __reactive: ::std::primitive::bool,
         }
 
-        impl #name {
-            /// A builder with every axis at its default and no overrides.
-            pub fn new() -> Self {
-                Self {
-                    #(#default_axis_fields,)*
-                    #(#default_override_fields,)*
-                    __reactive: false,
-                }
-            }
-
-            /// The underlying `Rc<StyleSheet>`, for APIs that don't take a builder.
-            pub fn sheet() -> ::std::rc::Rc<::runtime_core::StyleSheet> {
-                #stylesheet_fn()
-            }
-
-            #(#axis_setters)*
-            #(#override_setters)*
-
-            /// The live-engine `StyleApplication` this builder describes, for
-            /// composing or introspecting resolved styles. Never preminted;
-            /// reactive setter inputs are read once, without subscribing.
-            pub fn into_style_application(self) -> ::runtime_core::StyleApplication {
-                self.__style_application()
-            }
-
-            // The one body behind `into_style_application` and the
-            // `into_style_prop` closure. By reference: `SheetDynamic`
-            // re-runs that closure, so it can't consume the builder.
-            #[doc(hidden)]
-            fn __style_application(&self) -> ::runtime_core::StyleApplication {
-                let mut __app = ::runtime_core::StyleApplication::new(#stylesheet_fn());
-                #(#axis_applies)*
-                #(#override_applies)*
-                __app
-            }
-        }
-
-        impl ::std::default::Default for #name {
-            fn default() -> Self { Self::new() }
-        }
-
-        #conversion_impl
+        #impls
 
         // The free function shadows the struct name for call sites like
         // `Card().size(...).kind(...)`.

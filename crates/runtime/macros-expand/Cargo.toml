@@ -63,6 +63,10 @@ debug-stats = []
 # replacement can be jump-table-swapped at runtime. When off, the
 # macro emits the function exactly as the author wrote it — no
 # wrapper, no indirection, zero production overhead.
+#
+# Also gives each `#[component]`, `#[props]` and `stylesheet!` impl a named
+# parent const, so adding a component renames no neighbour's symbol (see
+# `src/symbol_scope.rs`).
 hot-reload = []
 
 # Catalog capture — when on, `#[component]`, `#[derive(IdealystSchema)]`,

@@ -34,6 +34,10 @@ default = []
 # must not change what a site builds. Forwards to `runtime-core` so this
 # crate can also `#[cfg]` on it.
 ui-overlay = ["runtime-core/ui-overlay"]
+# Run the suites with the hot-patch emission on: `#[component]`, `#[props]`
+# and `stylesheet!` then scope their impls (`symbol_scope` in
+# runtime-macros-expand), and the overlay hooks must keep working from there.
+hot-reload = ["runtime-core/hot-reload"]
 
 [dependencies]
 # `ui!` / `#[component]` / `stylesheet!` — the macro set under test.

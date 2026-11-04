@@ -151,6 +151,7 @@ fn corpus() -> Vec<(&'static str, TokenStream2, TokenStream2)> {
 #[cfg(not(any(
     feature = "catalog",
     feature = "debug-stats",
+    feature = "hot-reload",
     feature = "strict-docs",
     feature = "ui-overlay",
 )))]
@@ -164,8 +165,8 @@ fn golden_path(name: &str) -> std::path::PathBuf {
 /// golden, character for character.
 ///
 /// Frozen against the crate's DEFAULT feature set. `catalog`,
-/// `debug-stats`, `strict-docs` and `ui-overlay` each add emission of
-/// their own, so the freeze is skipped when one of them is on rather
+/// `debug-stats`, `hot-reload` (its impl scopes), `strict-docs` and
+/// `ui-overlay` each add emission of their own, so the freeze is skipped when one of them is on rather
 /// than carrying a golden per feature power set — those features have
 /// their own targeted tests, and the invariant this one exists for
 /// (the hot-reload split must not leak into a production build) is
@@ -173,6 +174,7 @@ fn golden_path(name: &str) -> std::path::PathBuf {
 #[cfg(not(any(
     feature = "catalog",
     feature = "debug-stats",
+    feature = "hot-reload",
     feature = "strict-docs",
     feature = "ui-overlay",
 )))]

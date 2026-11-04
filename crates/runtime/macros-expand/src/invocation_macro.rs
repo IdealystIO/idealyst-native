@@ -124,6 +124,29 @@ pub(crate) fn generate_build_impl(
     // one of the two paths emits it for any given type.
     let overlay_props = crate::props_attr::overlay_props_impl(path);
 
+    let impls = crate::symbol_scope::scoped(
+        crate::symbol_scope::Owner::Component,
+        fn_name,
+        quote! {
+            #overlay_props
+
+            #[automatically_derived]
+            impl ::runtime_core::BuildElement for #path {
+                fn build(#build_mut self) -> ::runtime_core::Element {
+                    #overlay_prologue
+                    // Coerce via `IntoElement` so a component returning a richer
+                    // type than bare `Element` still satisfies `-> Element`:
+                    // identity for `Element`, `.primitive` for `Bound`/`Bindable`
+                    // (a legacy-props `#[method]` component returns `Bindable<Handle>`). The tag
+                    // form drops the handle — use the fn-call form to `.bind` it.
+                    #build_body
+                }
+                #build_set
+                #defaults_method
+            }
+        },
+    );
+
     quote! {
         // Tag alias: `ui! { Foo(...) }` uses the tag as the type name, so
         // this bridges `Foo` to its real props struct. The component fn
@@ -134,22 +157,7 @@ pub(crate) fn generate_build_impl(
         #[allow(non_camel_case_types)]
         #vis type #fn_name = #path;
 
-        #overlay_props
-
-        #[automatically_derived]
-        impl ::runtime_core::BuildElement for #path {
-            fn build(#build_mut self) -> ::runtime_core::Element {
-                #overlay_prologue
-                // Coerce via `IntoElement` so a component returning a richer
-                // type than bare `Element` still satisfies `-> Element`:
-                // identity for `Element`, `.primitive` for `Bound`/`Bindable`
-                // (a legacy-props `#[method]` component returns `Bindable<Handle>`). The tag
-                // form drops the handle — use the fn-call form to `.bind` it.
-                #build_body
-            }
-            #build_set
-            #defaults_method
-        }
+        #impls
     }
 }
 
@@ -163,21 +171,36 @@ fn emit_no_args_impl(
     fn_name: &Ident,
     docs: &[&syn::Attribute],
 ) -> TokenStream2 {
+    // `Default` by hand, not derived: a derive's impl lands at module level,
+    // outside the scope.
+    let impls = crate::symbol_scope::scoped(
+        crate::symbol_scope::Owner::Component,
+        fn_name,
+        quote! {
+            #[automatically_derived]
+            impl ::core::default::Default for #fn_name {
+                fn default() -> Self {
+                    Self {}
+                }
+            }
+
+            #[automatically_derived]
+            impl ::runtime_core::BuildElement for #fn_name {
+                fn build(self) -> ::runtime_core::Element {
+                    // See the props-bearing impl: coerce so `Bound`/`Bindable`
+                    // returns satisfy `-> Element`.
+                    ::runtime_core::IntoElement::into_element(#fn_name())
+                }
+            }
+        },
+    );
     quote! {
         #(#docs)*
         #[doc(hidden)]
-        #[derive(::core::default::Default)]
         #[allow(non_camel_case_types)]
         #vis struct #fn_name {}
 
-        #[automatically_derived]
-        impl ::runtime_core::BuildElement for #fn_name {
-            fn build(self) -> ::runtime_core::Element {
-                // See the props-bearing impl: coerce so `Bound`/`Bindable`
-                // returns satisfy `-> Element`.
-                ::runtime_core::IntoElement::into_element(#fn_name())
-            }
-        }
+        #impls
     }
 }
 
