@@ -16,10 +16,13 @@
 //! ```
 //!
 //! Same tone × variant axes as [`Badge`](super::badge::Badge) — the only
-//! difference is the optional close affordance. Styling is [`TagStyles`]:
-//! `root` (the pill), `label`, `close` (the close button) and `glyph` (its
-//! `×`). The label and the `×` carry the fill's foreground on their own
-//! nodes: native text inherits no color from its container.
+//! difference is the optional close affordance. `leading` puts an
+//! [`Adornment`] before the label: `Adornment::Icon(MAP)`, or
+//! `Adornment::element(|| ui! { view(style = StatusDot()) })` for a status dot.
+//! Styling is [`TagStyles`]: `root` (the pill), `label`, `icon` (a leading
+//! icon), `close` (the close button) and `glyph` (its `×`). The label and the
+//! `×` carry the fill's foreground on their own nodes: native text inherits no
+//! color from its container.
 
 use std::rc::Rc;
 
@@ -30,7 +33,8 @@ use runtime_core::{
 
 use idea_theme::extensible::{categorization_tones, tone, ToneRef};
 
-use crate::components::tone_slots::{foreground_arms, surface_arms, with_tone};
+use crate::components::field::Adornment;
+use crate::components::tone_slots::{foreground_arms, pill_adornment, surface_arms, with_tone};
 use crate::modifiers::{marker_into_axis, variant};
 use crate::theme::IdeaThemeRef;
 
@@ -70,7 +74,18 @@ component_styles! {
             }
         }
 
-        /// The close button: a 16×16 hit box with no fill of its own.
+        /// A leading [`Adornment::Icon`] / [`Adornment::Button`] glyph: a fixed
+        /// square (icons have no intrinsic size) in the fill's foreground.
+        slot icon {
+            extend(text_foregrounds)
+            base(_t) {
+                width: 14.0,
+                height: 14.0,
+                flex_shrink: 0.0,
+            }
+        }
+
+        /// The close button (and a leading [`Adornment::Button`]): a 16×16 hit box with no fill of its own.
         slot close {
             base(t) {
                 background: Color("transparent".into()),
@@ -133,6 +148,12 @@ pub struct TagProps {
     /// Surface treatment (Soft, Filled, Outlined, Ghost, or an app value).
     /// Default Soft.
     pub variant: TagVariant,
+    /// Drawn before the label: a status dot (`Adornment::element(|| ui! { … })`)
+    /// or an icon (`Adornment::Icon(MAP)`, in the fill's foreground). Default
+    /// [`Adornment::None`]. An element-builder, so it stays bare: reactivity
+    /// lives inside the built tree.
+    #[prop(static)]
+    pub leading: Adornment,
     /// When `Some`, a close button renders to the right of the label.
     pub on_remove: Option<Rc<dyn Fn()>>,
     /// Optional robot/E2E test id, forwarded to the tag's interactive
@@ -148,6 +169,7 @@ impl Default for TagProps {
             label: Reactive::Static(String::new()),
             tone: tone::Neutral.into(),
             variant: Reactive::Static(TagVariant::default()),
+            leading: Adornment::None,
             on_remove: None,
             test_id: None,
             styles: Default::default(),
@@ -166,6 +188,18 @@ pub fn Tag(props: &TagProps) -> Element {
     let label_style = TagStyles::label().values(&values).overridden(styles.label.as_ref());
     let label_el: Element = ui! { text(style = label_style) { label } };
 
+    let leading = {
+        let icon_values = values.clone();
+        let icon_styles = styles.clone();
+        let button_values = values.clone();
+        let button_styles = styles.clone();
+        pill_adornment(
+            &props.leading,
+            &(Rc::new(move || TagStyles::icon().values(&icon_values).overridden(icon_styles.icon.as_ref())) as Rc<dyn Fn() -> _>),
+            &(Rc::new(move || TagStyles::close().values(&button_values).overridden(button_styles.close.as_ref())) as Rc<dyn Fn() -> _>),
+        )
+    };
+
     let close: Option<Element> = props.on_remove.clone().map(|on_remove| {
         let glyph = runtime_core::text("×".to_string())
             .with_style(TagStyles::glyph().values(&values).overridden(styles.glyph.as_ref()))
@@ -179,16 +213,19 @@ pub fn Tag(props: &TagProps) -> Element {
     let pill_test_id = if close.is_some() { None } else { props.test_id };
     let root_style = TagStyles::root().values(&values).overridden(styles.root.as_ref());
 
-    // `close` is an `Option<Element>` — absent, it splats to nothing.
+    // `leading` is the adornment the caller handed in, already built; `close`
+    // is an `Option<Element>` — absent, it splats to nothing.
     match pill_test_id {
         Some(id) => ui! {
             view(style = root_style, test_id = id) {
+                leading
                 label_el
                 close
             }
         },
         None => ui! {
             view(style = root_style) {
+                leading
                 label_el
                 close
             }
@@ -277,6 +314,49 @@ mod tests {
             assert_eq!(color, container_fg());
             assert_eq!(color.0.to_ascii_lowercase(), "#ffffff");
     });
+    }
+
+    // The pill's `leading` sits before the label; a glyph takes the fill's
+    // foreground, because native icons inherit no color.
+    #[test]
+    fn leading_adornment_comes_first_in_the_fill_foreground() {
+        with_test_world(|| {
+            theme();
+            let props = TagProps {
+                label: Reactive::Static("In 06:02".into()),
+                tone: tone::Primary.into(),
+                variant: variant::Filled.into(),
+                leading: Adornment::Icon(crate::components::icon::EMPTY_ICON),
+                ..Default::default()
+            };
+            let mut children = view_children(Tag(&props));
+            assert_eq!(children.len(), 2, "[icon, label]");
+            match classify(children.remove(0)) {
+                P::Icon { color, .. } => {
+                    assert_eq!(color.expect("the glyph is tinted"), container_fg());
+                }
+                _ => panic!("the leading icon comes first"),
+            }
+            assert!(matches!(classify(children.remove(0)), P::Text { .. }));
+        });
+    }
+
+    #[test]
+    fn leading_element_is_built_and_no_adornment_adds_no_node() {
+        with_test_world(|| {
+            theme();
+            let dotted = TagProps {
+                label: Reactive::Static("Scheduled".into()),
+                leading: Adornment::element(|| ui! { view() }),
+                ..Default::default()
+            };
+            let mut children = view_children(Tag(&dotted));
+            assert_eq!(children.len(), 2, "[dot, label]");
+            assert!(matches!(classify(children.remove(0)), P::View { .. }));
+
+            let plain = TagProps { label: Reactive::Static("06:02 – 18:10".into()), ..Default::default() };
+            assert_eq!(view_children(Tag(&plain)).len(), 1, "a tag with no leading is the label alone");
+        });
     }
 
     // The close `×` is also a bare text node; it must carry the color too.

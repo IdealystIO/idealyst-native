@@ -6,12 +6,67 @@
 //! them shares — the surface fill, the text foreground — plus the prop →
 //! axis plumbing for the shared `tone` palette.
 
+use std::rc::Rc;
+
 use runtime_core::component_styles::ComponentStyles;
-use runtime_core::{AxisValues, Reactive, SlotRestyle, StyleRules, Tokenized};
+use runtime_core::{
+    icon, pressable, resolve_style, AxisValues, Color, Element, IconData, IntoElement, Reactive, SlotRestyle, SlotStyle,
+    StyleRules, Tokenized,
+};
 
 use idea_theme::extensible::{tone_variant_arms, with_idea_theme, ResolutionCtx, ToneRef};
 
+use crate::components::field::Adornment;
 use crate::modifiers::variant;
+
+/// Build a pill's (`Tag`, `Chip`) `leading` adornment: empty for `None` / an
+/// empty group, one element per leaf otherwise. `Icon` and `Button` glyphs draw
+/// `icon_slot`, which carries the pill's foreground; `Element` is the author's
+/// own tree and is left as built.
+pub(crate) fn pill_adornment<S: ComponentStyles + 'static>(
+    adornment: &Adornment,
+    icon_slot: &Rc<dyn Fn() -> SlotStyle<S>>,
+    button_slot: &Rc<dyn Fn() -> SlotStyle<S>>,
+) -> Vec<Element> {
+    match adornment {
+        Adornment::None => Vec::new(),
+        Adornment::Element(build) => vec![build()],
+        Adornment::Icon(data) => vec![pill_icon(data.clone(), icon_slot)],
+        Adornment::Button { icon: data, label, on_press } => {
+            let on_press = on_press.clone();
+            // The pressable's recognizer consumes the tap, so pressing it does
+            // not also select a pressable pill around it.
+            let button = pressable(vec![pill_icon(data.clone(), icon_slot)], move || on_press()).with_style(button_slot());
+            let button = match label {
+                Some(name) => button.a11y_label(name.clone()),
+                None => button,
+            };
+            vec![button.into_element()]
+        }
+        Adornment::Group(items) => items.iter().flat_map(|a| pill_adornment(a, icon_slot, button_slot)).collect(),
+    }
+}
+
+/// One icon tinted with `slot`'s foreground. A preminted slot's class carries
+/// the `color`, and the SVG inherits it as `currentColor` (under
+/// `--premint-only` a resolve here would panic). Elsewhere native icons inherit
+/// nothing, so the color is resolved inside the setter's closure: a live axis
+/// (a `Chip` flipping `selected`, a reactive `tone`) retints in place.
+fn pill_icon<S: ComponentStyles + 'static>(data: IconData, slot: &Rc<dyn Fn() -> SlotStyle<S>>) -> Element {
+    let el = icon(data).with_style(slot());
+    if slot().into_style_application().attaches_preminted() {
+        return el.into_element();
+    }
+    let slot = slot.clone();
+    el.color(move || {
+        resolve_style(&slot().into_style_application())
+            .color
+            .clone()
+            .map(|c| c.resolve())
+            .unwrap_or_else(|| Color("currentColor".into()))
+    })
+    .into_element()
+}
 
 /// One compound per `(tone, built-in variant)` carrying the variant
 /// recipe's full surface (fill, border, foreground).

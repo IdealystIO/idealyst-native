@@ -41,7 +41,9 @@
 //! ## Styling
 //! [`ChipStyles`]: `root` (the pill — tone × variant compounds over the
 //! categorization tones, `size`, the `interactive` cursor and a themed
-//! focus ring) and `label` (the fill's foreground on its own node).
+//! focus ring), `label` (the fill's foreground on its own node), `icon` (a
+//! leading icon) and `adornment` (a leading [`Adornment::Button`]). `leading`
+//! puts an [`Adornment`] before the label, like `Tag` and `SegmentOption`.
 
 use std::rc::Rc;
 
@@ -53,7 +55,10 @@ use runtime_core::{
 
 use idea_theme::extensible::{categorization_tones, tone, ToneRef};
 
-use crate::components::tone_slots::{focus_ring_compounds, foreground_arms, recipe_compounds, surface_arms};
+use crate::components::field::Adornment;
+use crate::components::tone_slots::{
+    focus_ring_compounds, foreground_arms, pill_adornment, recipe_compounds, surface_arms,
+};
 use crate::components::ControlSize;
 use crate::modifiers::{marker_into_axis, variant};
 use crate::theme::IdeaThemeRef;
@@ -110,6 +115,30 @@ component_styles! {
                 #[default]
                 md(t) { font_size: t.typography.body_sm_size() }
                 lg(t) { font_size: t.typography.body_size() }
+            }
+        }
+
+        /// A leading [`Adornment::Icon`] / [`Adornment::Button`] glyph: a fixed
+        /// square (icons have no intrinsic size) in the fill's foreground,
+        /// scaled with the label.
+        slot icon {
+            extend(label_foregrounds)
+            base(_t) { flex_shrink: 0.0 }
+            variant size {
+                sm(_t) { width: 12.0, height: 12.0 }
+                #[default]
+                md(_t) { width: 14.0, height: 14.0 }
+                lg(_t) { width: 16.0, height: 16.0 }
+            }
+        }
+
+        /// A leading [`Adornment::Button`]'s hit box: no fill of its own, the
+        /// glyph centered.
+        slot adornment {
+            base(_t) {
+                align_items: AlignItems::Center,
+                justify_content: runtime_core::JustifyContent::Center,
+                cursor: runtime_core::Cursor::Pointer,
             }
         }
     }
@@ -195,6 +224,12 @@ pub struct ChipProps {
     /// the label's font size (Sm: caption type, tight inset; Md: body-sm
     /// type, the Tag's geometry; Lg: body type, roomier inset).
     pub size: ChipSize,
+    /// Drawn before the label: a status dot (`Adornment::element(|| ui! { … })`)
+    /// or an icon (`Adornment::Icon(MAP)`, in the fill's foreground). Default
+    /// [`Adornment::None`]. An element-builder, so it stays bare: reactivity
+    /// lives inside the built tree.
+    #[prop(static)]
+    pub leading: Adornment,
     /// Optional robot/E2E test id, forwarded to the pill — the pressable
     /// when `on_select` is set, the plain view otherwise. Inert outside a
     /// robot build.
@@ -210,6 +245,7 @@ impl Default for ChipProps {
             tone: tone::Neutral.into(),
             variant: Reactive::Static(ChipVariant::default()),
             size: Reactive::Static(ChipSize::default()),
+            leading: Adornment::None,
             test_id: None,
             styles: Default::default(),
         }
@@ -251,15 +287,26 @@ pub fn Chip(props: &ChipProps) -> Element {
         .overridden(props.styles.root.as_ref());
     let label_style = ChipStyles::label().values(&values).overridden(props.styles.label.as_ref());
     let label_el: Element = ui! { text(style = label_style) { label } };
+    let mut children = {
+        let icon_values = values.clone();
+        let icon_styles = props.styles.clone();
+        let button_styles = props.styles.clone();
+        pill_adornment(
+            &props.leading,
+            &(Rc::new(move || ChipStyles::icon().values(&icon_values).overridden(icon_styles.icon.as_ref())) as Rc<dyn Fn() -> _>),
+            &(Rc::new(move || ChipStyles::adornment().overridden(button_styles.adornment.as_ref())) as Rc<dyn Fn() -> _>),
+        )
+    };
+    children.push(label_el);
 
     // §9.6: a pressable only when the host supplied a handler. An inert chip
     // is a plain view — a no-op pressable would swallow the tap and block
     // hit-test fall-through to whatever sits under it.
     match on_select {
         Some(cb) => {
-            with_test_id!(pressable(vec![label_el], move || (cb)()), props.test_id).with_style(style).into_element()
+            with_test_id!(pressable(children, move || (cb)()), props.test_id).with_style(style).into_element()
         }
-        None => with_test_id!(view(vec![label_el]), props.test_id).with_style(style).into_element(),
+        None => with_test_id!(view(children), props.test_id).with_style(style).into_element(),
     }
 }
 
@@ -294,6 +341,48 @@ mod tests {
     use super::*;
     use crate::test_support::{classify, P};
     use idea_theme::testing::with_test_world;
+
+    /// The leading adornment sits before the label on a pressable chip and an
+    /// inert one, and an icon recolors when the chip's lit state flips.
+    #[test]
+    fn leading_adornment_comes_first_and_its_icon_follows_selected() {
+        with_test_world(|| {
+            use idea_theme::theme::{install_idea_theme, light_theme};
+            install_idea_theme(light_theme());
+            let on_select: Option<std::rc::Rc<dyn Fn()>> = Some(std::rc::Rc::new(|| {}));
+            let selected = runtime_core::signal(true);
+            let build = |on_select: Option<std::rc::Rc<dyn Fn()>>| {
+                Chip(&ChipProps {
+                    label: Reactive::Static("Rust".to_string()),
+                    selected: Reactive::Dynamic(std::rc::Rc::new(move || selected.get())),
+                    on_select,
+                    variant: Reactive::Static(ChipVariant::Filled),
+                    tone: tone::Primary.into(),
+                    leading: Adornment::Icon(crate::components::icon::EMPTY_ICON),
+                    ..Default::default()
+                })
+            };
+            let icon_color = |el: Element| {
+                let children = match classify(el) {
+                    P::Pressable { children, .. } | P::View { children, .. } => children,
+                    _ => panic!("a chip is a pressable or a view"),
+                };
+                assert_eq!(children.len(), 2, "[icon, label]");
+                let mut children = children.into_iter();
+                let color = match classify(children.next().unwrap()) {
+                    P::Icon { color, .. } => color.expect("the glyph is tinted"),
+                    _ => panic!("the leading icon comes first"),
+                };
+                assert!(matches!(classify(children.next().unwrap()), P::Text { .. }));
+                color
+            };
+            let lit = icon_color(build(on_select.clone()));
+            assert_eq!(icon_color(build(None)), lit, "inert and pressable chips tint alike");
+            selected.set(false);
+            idea_theme::testing::commit();
+            assert_ne!(icon_color(build(on_select)), lit, "a muted chip's glyph is not the fill's foreground");
+        });
+    }
 
     #[test]
     fn defaults_are_unselected_and_inert() {
