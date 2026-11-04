@@ -5,15 +5,16 @@
 //!
 //! ```text
 //! let __idealyst_inspect = ::runtime_vocabulary::__inspect_component!(
-//!     "Name", file!(), line!(), { vec![ /* one probe per prop */ ] });
+//!     "Name", [label: "Reactive<String>", count: "Reactive<i32>"]);
 //! __idealyst_inspect.finish(::runtime_core::component_scope(move || { … }))
 //! ```
 //!
-//! and `#[props]` implements `InspectProps` for its struct (inside
-//! `__inspect_enabled!`), which the explicit-props form (`props: &FooProps`)
-//! reads through. Both macros are the vocabulary's, defined per its `robot`
-//! feature: outside a robot build the probes are dropped unexpanded and the
-//! bracket is the identity. The runtime side
+//! and `#[props]` implements `InspectProps` for its struct through
+//! `__inspect_props!(FooProps, [..])`, which the explicit-props form
+//! (`props: &FooProps`, written `__inspect_component!("Name", (props))`) reads
+//! through. Both macros are the vocabulary's, defined per its `robot` feature,
+//! and take the props as data: only a robot build expands them into probes, so
+//! every other build pays for a name and a type string per prop. The runtime side
 //! (`runtime_vocabulary::robot_methods` / `robot_props`) documents why the
 //! probes cost nothing outside robot builds and how they classify a prop.
 
@@ -56,40 +57,32 @@ pub(crate) fn render_type(ty: &Type) -> String {
     out
 }
 
-/// One probe expression for a named value of type `ty`.
-fn probe_entry(name: &str, ty: &Type, value: TokenStream2) -> TokenStream2 {
+/// `name: "type"`, one entry of the macros' prop lists.
+fn prop_entry(name: &syn::Ident, ty: &Type) -> TokenStream2 {
     let ty_str = render_type(ty);
-    quote! {
-        ::runtime_core::__inspect::entry(
-            #name,
-            #ty_str,
-            (&&&&&::runtime_core::__inspect::PropProbe(#value)).__probe(),
-        )
-    }
+    quote! { #name: #ty_str }
 }
 
-/// The `Vec<PropEntry>` expression for a component fn's props.
+/// The props argument of `__inspect_component!` for a component fn.
 ///
-/// - Explicit-props form (one `props` param): read through the struct's
-///   `InspectProps` impl (from `#[props]`), empty for any other struct.
-/// - Inline form: one probe per ident parameter, skipping the injected
+/// - Explicit-props form (one `props` param): `(props)`, read through the
+///   struct's `InspectProps` impl (from `#[props]`), empty for any other struct.
+/// - Inline form: one entry per ident parameter, skipping the injected
 ///   `bind_to` handle prop (it is plumbing, not author data).
 /// - Generic fns: empty. Autoref specialization only resolves at a
 ///   concrete call site (`robot_props` module docs).
-fn props_expr(item_fn: &ItemFn, legacy_props: bool, bind_to_injected: bool) -> TokenStream2 {
+fn props_arg(item_fn: &ItemFn, legacy_props: bool, bind_to_injected: bool) -> TokenStream2 {
     if !item_fn.sig.generics.params.is_empty() {
-        return quote! { ::std::vec::Vec::new() };
+        return quote! { [] };
     }
     if legacy_props {
         if let Some(FnArg::Typed(pt)) = item_fn.sig.inputs.first() {
             if let Pat::Ident(pi) = &*pt.pat {
                 let ident = &pi.ident;
-                return quote! {
-                    (&&::runtime_core::__inspect::PropsProbe(&#ident)).__props()
-                };
+                return quote! { (#ident) };
             }
         }
-        return quote! { ::std::vec::Vec::new() };
+        return quote! { [] };
     }
     let entries = item_fn.sig.inputs.iter().filter_map(|arg| {
         let FnArg::Typed(pt) = arg else { return None };
@@ -97,10 +90,9 @@ fn props_expr(item_fn: &ItemFn, legacy_props: bool, bind_to_injected: bool) -> T
         if bind_to_injected && pi.ident == "bind_to" {
             return None;
         }
-        let ident = &pi.ident;
-        Some(probe_entry(&ident.to_string(), &pt.ty, quote! { &#ident }))
+        Some(prop_entry(&pi.ident, &pt.ty))
     });
-    quote! { ::std::vec![ #(#entries),* ] }
+    quote! { [#(#entries),*] }
 }
 
 /// Wrap an already-`component_scope`d body (see `wrap_component_body_new_core`)
@@ -111,7 +103,7 @@ pub(crate) fn wrap_body(item_fn: &mut ItemFn, legacy_props: bool, bind_to_inject
         return;
     }
     let name = item_fn.sig.ident.to_string();
-    let props = props_expr(item_fn, legacy_props, bind_to_injected);
+    let props = props_arg(item_fn, legacy_props, bind_to_injected);
     let Some(syn::Stmt::Expr(scoped, None)) = item_fn.block.stmts.pop() else {
         unreachable!("checked: one statement");
     };
@@ -119,16 +111,7 @@ pub(crate) fn wrap_body(item_fn: &mut ItemFn, legacy_props: bool, bind_to_inject
     // expands the probes (the props closure); every other build gets the
     // identity bracket without type-checking them.
     let register: syn::Stmt = syn::parse_quote! {
-        let __idealyst_inspect = ::runtime_vocabulary::__inspect_component!(
-            #name,
-            ::core::file!(),
-            ::core::line!(),
-            {
-                #[allow(unused_imports)]
-                use ::runtime_core::__inspect::probe::*;
-                #props
-            }
-        );
+        let __idealyst_inspect = ::runtime_vocabulary::__inspect_component!(#name, #props);
     };
     // Built as AST with the parsed body MOVED in. The obvious
     // `parse_quote! { __idealyst_inspect.finish(#scoped) }` prints the whole
@@ -149,30 +132,15 @@ pub(crate) fn wrap_body(item_fn: &mut ItemFn, legacy_props: bool, bind_to_inject
     item_fn.block.stmts.push(syn::Stmt::Expr(finish, None));
 }
 
-/// `impl InspectProps for Struct` for a `#[props]` struct — one probe per
-/// named field, reading `self.field`. Empty for a generic struct (see
-/// [`props_expr`]).
+/// `__inspect_props!` for a `#[props]` struct: one entry per named field.
+/// Empty for a generic struct (see [`props_arg`]).
 pub(crate) fn inspect_props_impl(input: &syn::DeriveInput, fields: &[(syn::Ident, Type)]) -> TokenStream2 {
     if !input.generics.params.is_empty() {
         return TokenStream2::new();
     }
     let ident = &input.ident;
-    let entries = fields
-        .iter()
-        .map(|(name, ty)| probe_entry(&name.to_string(), ty, quote! { &self.#name }));
-    // Kept by the vocabulary's `__inspect_enabled!` in robot builds only:
-    // nothing outside one reads it.
-    quote! {
-        ::runtime_vocabulary::__inspect_enabled! {{
-            impl ::runtime_core::__inspect::InspectProps for #ident {
-                fn __inspect_props(&self) -> ::std::vec::Vec<::runtime_core::__inspect::PropEntry> {
-                    #[allow(unused_imports)]
-                    use ::runtime_core::__inspect::probe::*;
-                    ::std::vec![ #(#entries),* ]
-                }
-            }
-        }}
-    }
+    let entries = fields.iter().map(|(name, ty)| prop_entry(name, ty));
+    quote! { ::runtime_vocabulary::__inspect_props!(#ident, [#(#entries),*]); }
 }
 
 #[cfg(test)]
@@ -210,9 +178,8 @@ mod tests {
             false,
         );
         assert!(out.contains("__inspect_component"), "{out}");
-        assert!(out.contains("\"label\""), "{out}");
-        assert!(out.contains("\"Reactive<String>\""), "{out}");
-        assert!(out.contains("\"count\""), "{out}");
+        assert!(out.contains("label : \"Reactive<String>\""), "{out}");
+        assert!(out.contains("count : \"Reactive<i32>\""), "{out}");
         assert!(out.contains("__idealyst_inspect . finish"), "{out}");
     }
 
@@ -223,8 +190,7 @@ mod tests {
              ::runtime_core::component_scope(move || { body() }) }",
             true,
         );
-        assert!(out.contains("PropsProbe (& props)"), "{out}");
-        assert!(!out.contains("PropProbe (& props)"), "{out}");
+        assert!(out.contains("__inspect_component ! (\"counter\" , (props))"), "{out}");
     }
 
     #[test]
@@ -235,7 +201,7 @@ mod tests {
             false,
         );
         assert!(out.contains("__inspect_component"), "{out}");
-        assert!(!out.contains("PropProbe"), "{out}");
+        assert!(out.contains("[]"), "{out}");
     }
 
     #[test]

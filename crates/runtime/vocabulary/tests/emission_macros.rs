@@ -77,6 +77,16 @@ mod item_position {
 /// the `robot` feature.)
 #[cfg(feature = "robot")]
 #[test]
+fn a_robot_build_registers_a_prop_list() {
+    let label = String::from("x");
+    let reg = runtime_vocabulary::__inspect_component!("Probe", [label: "String"]);
+    let el: Element = reg.finish(runtime_scene::fragment(Vec::new()));
+    drop(el);
+}
+
+/// The form `runtime-macros` 2.0 and older emit.
+#[cfg(feature = "robot")]
+#[test]
 fn a_robot_build_registers_with_the_props_block() {
     let reg = runtime_vocabulary::__inspect_component!("Probe", ::core::file!(), ::core::line!(), {
         ::std::vec::Vec::new()

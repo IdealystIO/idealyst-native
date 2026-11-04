@@ -69,7 +69,7 @@ fn Tally(initial: i32) -> Element {
 }
 
 /// The explicit-props form: its Props table is `#[props]`'s
-/// `InspectProps` impl, which the vocabulary's `__inspect_enabled!` keeps
+/// `InspectProps` impl, which the vocabulary's `__inspect_props!` keeps
 /// in robot builds only.
 #[runtime_macros::props]
 #[derive(Default)]

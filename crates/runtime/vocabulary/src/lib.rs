@@ -209,17 +209,42 @@ macro_rules! __remote_native_body {
 }
 
 /// `#[component]`'s registration bracket for the component registry (the
-/// inspector's component tree and Props table, `robot_methods`). In a robot
-/// build: `__inspect::__inspect_component(name, file, line, || props)`. In
-/// any other build the props probes are dropped unexpanded — they never run
-/// there, and each one is a closure body and an autoref method lookup per
-/// prop for the compiler to check — and the bracket is the identity.
-/// Chosen by the VOCABULARY's `robot` feature, so the component's crate
-/// declares none.
+/// inspector's component tree and Props table, `robot_methods`). The call is
+/// data, one entry per prop: `__inspect_component!("Name", [label: "String"])`,
+/// or `__inspect_component!("Name", (props))` for the explicit-props form,
+/// which reads through the struct's `InspectProps`. In a robot build that
+/// expands to `__inspect::__inspect_component(name, file, line, || probes)`.
+/// In any other build it is dropped as one token tree, because the probes never
+/// run there and each is a closure body and an autoref method lookup per prop
+/// for the compiler to check, and the bracket is the identity. Chosen by the
+/// VOCABULARY's `robot` feature, so the component's crate declares none.
+///
+/// The `($name, $file, $line, $props)` arm is what `runtime-macros` 2.0 and
+/// older emit.
 #[cfg(feature = "robot")]
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __inspect_component {
+    ($name:literal, [$($p:ident : $t:literal),* $(,)?]) => {
+        $crate::glue::__inspect::__inspect_component($name, ::core::file!(), ::core::line!(), || {
+            #[allow(unused_imports)]
+            use $crate::glue::__inspect::probe::*;
+            ::std::vec![$(
+                $crate::glue::__inspect::entry(
+                    ::core::stringify!($p),
+                    $t,
+                    (&&&&&$crate::glue::__inspect::PropProbe(&$p)).__probe(),
+                )
+            ),*]
+        })
+    };
+    ($name:literal, ($p:ident)) => {
+        $crate::glue::__inspect::__inspect_component($name, ::core::file!(), ::core::line!(), || {
+            #[allow(unused_imports)]
+            use $crate::glue::__inspect::probe::*;
+            (&&$crate::glue::__inspect::PropsProbe(&$p)).__props()
+        })
+    };
     ($name:expr, $file:expr, $line:expr, $props:tt) => {
         $crate::glue::__inspect::__inspect_component($name, $file, $line, || $props)
     };
@@ -228,15 +253,46 @@ macro_rules! __inspect_component {
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __inspect_component {
+    ($name:expr, $props:tt) => {
+        $crate::glue::__inspect::__inspect_off()
+    };
     ($name:expr, $file:expr, $line:expr, $props:tt) => {
         $crate::glue::__inspect::__inspect_off()
     };
 }
 
-/// `#[props]`'s `InspectProps` impl (the explicit-props form's Props table):
-/// kept in a robot build, dropped unexpanded everywhere else. The items
-/// arrive as one brace group so the non-robot arm skips them as a single
-/// token tree.
+/// `#[props]`'s `InspectProps` impl (the explicit-props form's Props table),
+/// from the same one-entry-per-field data as [`__inspect_component!`]: expanded
+/// in a robot build, dropped as one token tree everywhere else.
+#[cfg(feature = "robot")]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __inspect_props {
+    ($ty:ident, [$($f:ident : $t:literal),* $(,)?]) => {
+        impl $crate::glue::__inspect::InspectProps for $ty {
+            fn __inspect_props(&self) -> ::std::vec::Vec<$crate::glue::__inspect::PropEntry> {
+                #[allow(unused_imports)]
+                use $crate::glue::__inspect::probe::*;
+                ::std::vec![$(
+                    $crate::glue::__inspect::entry(
+                        ::core::stringify!($f),
+                        $t,
+                        (&&&&&$crate::glue::__inspect::PropProbe(&self.$f)).__probe(),
+                    )
+                ),*]
+            }
+        }
+    };
+}
+#[cfg(not(feature = "robot"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __inspect_props {
+    ($ty:ident, $fields:tt) => {};
+}
+
+/// What `runtime-macros` 2.0 and older emit for `#[props]`: the `InspectProps`
+/// impl as items, kept in a robot build and dropped everywhere else.
 #[cfg(feature = "robot")]
 #[macro_export]
 #[doc(hidden)]
