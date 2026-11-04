@@ -5,6 +5,8 @@
 //! module holds only the decision it makes, so the policy is testable without a
 //! live `View` tree. Same rationale as `sticky_compute` — see its module docs.
 
+use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
+
 /// Should a just-completed `insert` kick a coalesced layout pass?
 ///
 /// A subtree that mounts AFTER the initial build's `finish()` layout pass — a
@@ -179,6 +181,30 @@ pub(crate) fn root_pass(cell_box: Option<(f32, f32)>, viewport: (f32, f32)) -> R
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) fn needs_spacing_decoration(layout: runtime_shared::VirtualLayout) -> bool {
     layout.main_spacing != 0.0 || layout.cross_spacing != 0.0
+}
+
+/// Diameter of an [`ActivityIndicatorSize::Small`] spinner, in dp.
+///
+/// The diameters are the ones `UIActivityIndicatorView` reports on iOS. A
+/// `ProgressBar`'s own metrics (16dp / 48dp / 76dp under Material) would make
+/// the same author tree a different size per phone platform, and its drawable
+/// scales to its frame, so nothing depends on them.
+pub(crate) const ACTIVITY_INDICATOR_SMALL_DP: f32 = 20.0;
+/// Diameter of an [`ActivityIndicatorSize::Large`] spinner, in dp.
+pub(crate) const ACTIVITY_INDICATOR_LARGE_DP: f32 = 37.0;
+
+/// What a spinner's layout leaf measures: an author-pinned dimension wins,
+/// the other falls back to the diameter for `size`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn activity_indicator_measure(
+    known: (Option<f32>, Option<f32>),
+    size: ActivityIndicatorSize,
+) -> (f32, f32) {
+    let diameter = match size {
+        ActivityIndicatorSize::Small => ACTIVITY_INDICATOR_SMALL_DP,
+        ActivityIndicatorSize::Large => ACTIVITY_INDICATOR_LARGE_DP,
+    };
+    (known.0.unwrap_or(diameter), known.1.unwrap_or(diameter))
 }
 
 #[cfg(test)]
@@ -361,5 +387,30 @@ mod spacing_decoration_tests {
         assert!(!needs_spacing_decoration(VirtualLayout::default()));
         let gap = VirtualLayout { main_spacing: 8.0, ..VirtualLayout::default() };
         assert!(needs_spacing_decoration(gap));
+    }
+}
+
+#[cfg(test)]
+mod activity_indicator_tests {
+    use super::*;
+
+    /// The spinner's leaf had no measurer, so an unsized spinner laid out at
+    /// 0x0 and drew nothing. Every `activity_indicator` the framework mounts
+    /// with no pinned size goes through this answer.
+    #[test]
+    fn regression_android_activity_indicator_collapsed_to_nothing() {
+        for size in [ActivityIndicatorSize::Small, ActivityIndicatorSize::Large] {
+            let (w, h) = activity_indicator_measure((None, None), size);
+            assert!(w > 0.0 && h > 0.0, "{size:?} measured {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn activity_indicator_size_picks_the_diameter_and_a_pinned_dimension_wins() {
+        let measure = activity_indicator_measure;
+        assert_eq!(measure((None, None), ActivityIndicatorSize::Small), (20.0, 20.0));
+        assert_eq!(measure((None, None), ActivityIndicatorSize::Large), (37.0, 37.0));
+        assert_eq!(measure((Some(64.0), None), ActivityIndicatorSize::Small), (64.0, 20.0));
+        assert_eq!(measure((None, Some(8.0)), ActivityIndicatorSize::Large), (37.0, 8.0));
     }
 }
