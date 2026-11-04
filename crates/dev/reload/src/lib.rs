@@ -3466,9 +3466,11 @@ pub enum Patched {
 ///
 /// `patch` gets the saved paths and the save's supersession token, and
 /// runs after `change_detected` and BEFORE `build_started`, so a save it
-/// applies never shows as a build. A rebuild request (`r`, a session
-/// request) and a save that owes consumers a wake-up skip it and build.
-/// The full-stack server's watcher uses it for its in-place patches.
+/// applies never shows as a build. A rebuild request with no saves behind
+/// it (`r`, a session request) and a save that owes consumers a wake-up
+/// skip it and build. Under `--no-watch` a request that releases queued
+/// saves is those saves, and offers them like any other. The full-stack
+/// server's watcher uses it for its in-place patches.
 pub fn start_watch_patching<F, P>(
     paths: Vec<PathBuf>,
     signal: Arc<ReloadSignal>,
@@ -3559,7 +3561,7 @@ where
                 run_save(&rx, &saves, first, Duration::from_millis(MAX_COALESCE_MS), |batches, token| {
                     deferred.note(batches);
                     let requests = request_ids(batches);
-                    let forced = !requests.is_empty() || batches.iter().any(|m| matches!(m, WatchMsg::Rebuild(_)));
+                    let mut forced = batches.iter().any(|m| matches!(m, WatchMsg::Rebuild(_)));
                     let mut paths: Vec<PathBuf> = Vec::new();
                     let mut any_ok = false;
                     let mut fs_batches = 0usize;
@@ -3586,7 +3588,13 @@ where
                     // save, whose real file arrives in its own batch. A run
                     // the last attempt owes a wake-up, or one a rebuild
                     // request asked for, still goes ahead.
-                    if !forced && !owed && !names_work(&paths, any_ok) {
+                    let work = names_work(&paths, any_ok);
+                    // A request whose released saves are no work still asks
+                    // for a build, as one with nothing queued does. One that
+                    // released real saves IS those saves, and `--no-watch`
+                    // has no other way to reach the patch step below.
+                    forced |= !requests.is_empty() && !work;
+                    if !forced && !owed && !work {
                         return Attempt::Finished;
                     }
                     report_taken(&reporter, label, &requests);
@@ -4886,6 +4894,85 @@ mod tests {
         assert!(control.request_rebuild());
         built_rx.recv_timeout(Duration::from_secs(20)).expect("a rebuild request builds");
         assert!(offered_rx.try_recv().is_err(), "a rebuild request was offered to the patch");
+    }
+
+    /// CrewForge A18: under `--no-watch` every save arrives through a rebuild
+    /// request, and any request skipped the patch step, so `--no-watch` never
+    /// patched the server. A request that releases queued saves is those
+    /// saves and decides like them; what it answers is still reported. One
+    /// with nothing queued, or only scratch files, stays a forced build.
+    #[test]
+    fn regression_under_no_watch_a_request_offers_its_queued_saves_to_the_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let (reporter, q) = capture();
+        let (built_tx, built_rx) = mpsc::channel();
+        let (offered_tx, offered_rx) = mpsc::channel::<Vec<PathBuf>>();
+        let (_watch, control) = start_watch_patching(
+            vec![src.clone()],
+            ReloadSignal::new(),
+            "server",
+            reporter,
+            true,
+            move |paths: &[PathBuf], _: &Supersede| {
+                let _ = offered_tx.send(paths.to_vec());
+                if paths.iter().all(|p| p.ends_with("apply.rs")) { Patched::Applied } else { Patched::Rebuild }
+            },
+            move || {
+                let _ = built_tx.send(());
+                Ok(Rebuilt::Unchanged)
+            },
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut seen = Vec::new();
+        while !seen.iter().any(|e| matches!(e, dev_events::DevEvent::Watching { .. })) {
+            assert!(std::time::Instant::now() < deadline, "the watcher never started");
+            seen.extend(events(&q));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let quiet = Duration::from_millis(DEBOUNCE_MS * 4 + 500);
+        let wait_taken = |request: u64| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            let mut seen = Vec::new();
+            while !seen.iter().any(|e| matches!(e, dev_events::DevEvent::RebuildTaken { request: r, .. } if *r == request)) {
+                assert!(std::time::Instant::now() < deadline, "request {request} was never taken: {seen:?}");
+                seen.extend(events(&q));
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+
+        // A queued save the patch applies: no build, and the request is taken.
+        std::fs::write(src.join("apply.rs"), "pub fn f() {}\n").unwrap();
+        assert!(offered_rx.recv_timeout(quiet).is_err(), "a save was offered before any request");
+        assert!(control.request_rebuild_numbered(1));
+        let offered = offered_rx.recv_timeout(Duration::from_secs(20)).expect("the queued save was not offered to the patch");
+        assert!(offered.iter().any(|p| p.ends_with("apply.rs")), "{offered:?}");
+        wait_taken(1);
+        assert!(built_rx.recv_timeout(quiet).is_err(), "an applied patch also built");
+
+        // A queued save the patch refuses: it builds, as that save.
+        std::fs::write(src.join("rebuild.rs"), "pub fn g() {}\n").unwrap();
+        std::thread::sleep(quiet);
+        assert!(control.request_rebuild_numbered(2));
+        offered_rx.recv_timeout(Duration::from_secs(20)).expect("the second queued save was not offered");
+        built_rx.recv_timeout(Duration::from_secs(20)).expect("a refused patch must build");
+        wait_taken(2);
+
+        // Nothing queued: forced, and the patch is not asked.
+        std::thread::sleep(quiet);
+        assert!(control.request_rebuild_numbered(3));
+        built_rx.recv_timeout(Duration::from_secs(20)).expect("a request with nothing queued forces a build");
+        assert!(offered_rx.try_recv().is_err(), "a forced build was offered to the patch");
+
+        // Only an editor's scratch file queued: no work, so the request forces too.
+        std::thread::sleep(quiet);
+        std::fs::write(src.join(".apply.rs.swp"), "x").unwrap();
+        std::thread::sleep(quiet);
+        assert!(control.request_rebuild_numbered(4));
+        built_rx.recv_timeout(Duration::from_secs(20)).expect("a request whose queue is no work forces a build");
+        assert!(offered_rx.try_recv().is_err(), "a scratch file was offered to the patch");
     }
 
     /// Two agents' rebuild requests: the second arrives while the first's

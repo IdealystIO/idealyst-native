@@ -2524,7 +2524,10 @@ The decision is `decided` for target `server`; a patch is `patch_step`s
 and a `patch_built` naming the functions redirected (`build-metrics.jsonl`
 records `hot patch: N function(s) redirected`), and a failed one a
 `patch_failed`, after which the watcher runs the usual `cargo build` and
-respawn. A rebuild request (`r`) always rebuilds.
+respawn. A rebuild request (`r`) rebuilds, unless `--no-watch` has saves
+queued: a request that releases them is those saves, and they are decided
+like any other, so `--no-watch` patches too. A request with nothing queued
+is a forced rebuild.
 
 **Staleness you can still meet.** A patch changes what runs from each
 function's next call. State computed when the server started — a router

@@ -283,6 +283,32 @@ impl Session {
         }
     }
 
+    /// Wait until `count` server processes' hot-patch agents have connected.
+    fn wait_agent(&self, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while self.log.lock().unwrap().matches("hot-patch agent connected").count() < count {
+            assert!(
+                Instant::now() < deadline,
+                "{count} hot-patch agent(s) never connected:\n{}",
+                tail(&self.log.lock().unwrap())
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// `POST /rebuild` through the session's registry entry: `rebuild_dev`.
+    fn rebuild(&self) -> u64 {
+        let registry = dev_events::sessions::registry_dir().expect("a registry dir");
+        let entry = dev_events::sessions::read_all(&registry)
+            .into_iter()
+            .map(|(_, e)| e)
+            .find(|e| e.pid == self.child.id())
+            .expect("the session is registered");
+        let (code, body) = dev_events::sessions::request(&entry, "POST", "/rebuild", Duration::from_secs(5)).unwrap();
+        assert_eq!(code, 202, "{body}");
+        serde_json::from_str::<Value>(&body).unwrap()["request"].as_u64().expect("a request number")
+    }
+
     /// The server's events since `after`, by type.
     fn server_kinds(&self, after: u64, until: u64) -> Vec<String> {
         self.events()
@@ -466,6 +492,59 @@ fn a_body_edit_patches_the_running_server_and_a_shape_edit_respawns_it() {
     assert_eq!(patched["type"], "patch_built", "{patched}\n{}", summary(&session.events(), before));
     wait_answer(port, "/api/hello", "api / greeting v4", Duration::from_secs(5));
     assert_eq!(pid(port), second_pid);
+
+    drop(session);
+    materialize(&root, &repo);
+}
+
+/// CrewForge A18: under `--no-watch` every save reaches the server's watcher
+/// through a rebuild request, and any request skipped the patch, so the tier
+/// never ran. A request that releases a queued save is that save; one with
+/// nothing queued still forces a rebuild and a respawn.
+#[test]
+#[ignore = "compiles the framework for wasm32 and the host; run with --ignored"]
+fn regression_under_no_watch_a_rebuild_request_patches_the_running_server() {
+    let _turn = FIXTURE.lock().unwrap_or_else(|e| e.into_inner());
+    let repo = repo_root();
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dev_server_hot_patch_e2e");
+    materialize(&root, &repo);
+    let scratch = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let session = start(&root, scratch.path(), port, &["--experimental-server-patch", "--no-watch"]);
+    session.wait_agent(1);
+    assert_eq!(http_get(port, "/api/hello").as_deref(), Some("api / greeting v1"));
+    let first_pid = pid(port);
+
+    // ── a queued save and a request: patched in place ────────────────
+    let before = session.last_seq();
+    std::fs::write(root.join("shared/src/lib.rs"), shared("v2")).unwrap();
+    session.wait_event(before, Duration::from_secs(30), "the queued save", |e| {
+        e["target"] == "server" && e["type"] == "change_detected"
+    });
+    assert_eq!(http_get(port, "/api/hello").as_deref(), Some("api / greeting v1"), "--no-watch applied a save");
+    let request = session.rebuild();
+    let patched = session.wait_event(before, Duration::from_secs(600), "the server's patch", |e| {
+        e["target"] == "server" && matches!(e["type"].as_str(), Some("patch_built" | "patch_failed" | "build_started"))
+    });
+    assert_eq!(patched["type"], "patch_built", "the request did not patch: {patched}\n{}", summary(&session.events(), before));
+    let taken = session.wait_event(before, Duration::from_secs(5), "the request taken", |e| {
+        e["target"] == "server" && e["type"] == "rebuild_taken" && e["request"] == request
+    });
+    assert!(seq(&taken) < seq(&patched), "request {request} was not taken before its patch");
+    wait_answer(port, "/api/hello", "api / greeting v2", Duration::from_secs(5));
+    assert_eq!(pid(port), first_pid, "the server was respawned, not patched");
+
+    // ── a request with nothing queued: a forced rebuild and a respawn ──
+    let before = session.last_seq();
+    session.rebuild();
+    let started = session.wait_event(before, Duration::from_secs(60), "the forced build", |e| {
+        e["target"] == "server" && matches!(e["type"].as_str(), Some("patch_built" | "patch_failed" | "build_started"))
+    });
+    assert_eq!(started["type"], "build_started", "{started}");
+    assert_eq!(started["cause"], "forced", "{started}");
+    session.wait_event(before, Duration::from_secs(600), "the forced build's end", |e| {
+        e["target"] == "server" && e["type"] == "build_finished"
+    });
 
     drop(session);
     materialize(&root, &repo);
