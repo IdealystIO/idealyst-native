@@ -2757,6 +2757,7 @@ mod a11y_tests {
             _is_placeholder: bool,
             _buffer: &'a glyphon::Buffer,
             _caret_x_local: f32,
+            _text_offset_x: f32,
             _text_color: [f32; 4],
             _field_bg: Option<[f32; 4]>,
             _rects: &mut Vec<crate::pipeline::Instance>,

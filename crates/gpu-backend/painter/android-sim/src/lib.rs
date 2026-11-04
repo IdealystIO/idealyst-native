@@ -510,6 +510,7 @@ impl Painter for AndroidSim {
         is_placeholder: bool,
         buffer: &'a Buffer,
         caret_x_local: f32,
+        text_offset_x: f32,
         text_color: [f32; 4],
         field_bg: Option<[f32; 4]>,
         rects: &mut Vec<RectInstance>,
@@ -533,7 +534,8 @@ impl Painter for AndroidSim {
         ));
 
         let glyph_color = if is_placeholder { M3_ON_SURFACE_VARIANT } else { text_color };
-        let text_x = x + TEXT_INPUT_HPAD;
+        let inner_x = x + TEXT_INPUT_HPAD;
+        let text_x = inner_x + text_offset_x;
         let text_y = y + TEXT_INPUT_VPAD;
         let inner_w = (w - TEXT_INPUT_HPAD * 2.0).max(0.0);
         texts.push(StagedText {
@@ -542,9 +544,9 @@ impl Painter for AndroidSim {
             y: text_y,
             color: glyph_color,
             clip: TextBounds {
-                left: text_x as i32,
+                left: inner_x as i32,
                 top: y as i32,
-                right: (text_x + inner_w) as i32,
+                right: (inner_x + inner_w) as i32,
                 bottom: (y + h) as i32,
             },
         });
@@ -1043,4 +1045,29 @@ fn measure_buffer(buffer: &Buffer) -> (f32, f32) {
         total_h += run.line_height;
     }
     (max_w, total_h)
+}
+
+#[cfg(test)]
+mod text_input_align_tests {
+    use super::*;
+    use glyphon::{FontSystem, Metrics};
+
+    /// `text_offset_x` moves the text and the caret, and the clip stays the
+    /// field's: the offset only says where the line starts in it.
+    #[test]
+    fn regression_text_input_paints_its_text_at_the_alignment_offset() {
+        let skin = AndroidSim::new();
+        let buffer = Buffer::new(&mut FontSystem::new(), Metrics::new(17.0, 20.0));
+        let paint = |offset: f32| {
+            let (mut rects, mut texts) = (Vec::new(), Vec::new());
+            skin.paint_text_input(10.0, 0.0, 300.0, 36.0, true, true, false, &buffer, 20.0, offset, [0.0; 4], None, &mut rects, &mut texts);
+            let text = &texts[0];
+            (text.x, text.clip.left, rects.last().expect("the caret").rect[0])
+        };
+        let (start_x, start_clip, start_caret) = paint(0.0);
+        let (x, clip, caret) = paint(100.0);
+        assert_eq!(x, start_x + 100.0);
+        assert_eq!(caret, start_caret + 100.0);
+        assert_eq!(clip, start_clip);
+    }
 }

@@ -1931,6 +1931,13 @@ fn walk<'a>(
                             now,
                         )
                     });
+                    // A text area keeps to the start: one offset can't align the
+                    // lines of a multi-line buffer.
+                    let text_offset_x = if matches!(data.kind, NodeKind::TextInput { .. }) {
+                        crate::widgets::text_input_text_offset(r.text_align, w, caret_local)
+                    } else {
+                        0.0
+                    };
                     skin.paint_text_input(
                         x,
                         y,
@@ -1941,6 +1948,7 @@ fn walk<'a>(
                         is_placeholder,
                         &entry.buffer,
                         caret_local,
+                        text_offset_x,
                         r.color,
                         field_bg,
                         rects,

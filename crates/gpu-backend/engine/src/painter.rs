@@ -139,7 +139,9 @@ pub trait Painter {
     );
 
     /// Append rect + text instances for a TextInput. `field_bg`
-    /// overrides the field's fill color.
+    /// overrides the field's fill color. `text_offset_x` is how far the text and
+    /// caret sit past the field's leading padding, for its `text_align`
+    /// ([`crate::widgets::text_input_text_offset`]).
     #[allow(clippy::too_many_arguments)]
     fn paint_text_input<'a>(
         &self,
@@ -152,6 +154,7 @@ pub trait Painter {
         is_placeholder: bool,
         buffer: &'a Buffer,
         caret_x_local: f32,
+        text_offset_x: f32,
         text_color: [f32; 4],
         field_bg: Option<[f32; 4]>,
         rects: &mut Vec<RectInstance>,
