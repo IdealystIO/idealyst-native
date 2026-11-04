@@ -198,8 +198,15 @@ pub(crate) fn apply_rules(
         // the value matches web + iOS + macOS (CLAUDE.md §7). Explicit
         // colors still win — see `style_diff::effective_text_color`.
         // Editable widgets (`EditText`) keep their native default until
-        // the author sets a color.
+        // the author sets a color, and go back to it when a style drops it.
         let is_edit = super::is_edit_text(env, &view);
+        if is_edit
+            && rules.color.is_none()
+            && state.last_text_color.is_some()
+            && !state.anim_text_color_owned
+        {
+            restore_edit_text_colors(env, node, state, rules.color_transition);
+        }
         let resolved_color = if is_edit {
             rules.color.as_ref().map(|t| t.resolve())
         } else {
@@ -210,8 +217,16 @@ pub(crate) fn apply_rules(
         };
         if let Some(c) = resolved_color {
             if let Some(packed) = parse_color(&c.0) {
+                if is_edit && state.natural_text_colors.is_none() {
+                    state.natural_text_colors = natural_object(
+                        env,
+                        &view,
+                        "getTextColors",
+                        "()Landroid/content/res/ColorStateList;",
+                    );
+                }
                 let prev = state.last_text_color;
-                let changed = prev != Some(packed);
+                let changed = prev != Some(packed) && !state.anim_text_color_owned;
                 state.last_text_color = Some(packed);
                 if changed {
                     match (prev, rules.color_transition) {
@@ -235,12 +250,25 @@ pub(crate) fn apply_rules(
         if let Some(runtime_shared::Length::Px(size)) =
             rules.font_size.as_ref().map(|t| t.resolve())
         {
+            if state.natural_text_size_px.is_none() {
+                state.natural_text_size_px = env
+                    .call_method(&view, "getTextSize", "()F", &[])
+                    .and_then(|v| v.f())
+                    .ok();
+            }
             // font-size isn't animatable in v1; snap.
             let _ = env.call_method(
                 &view,
                 "setTextSize",
                 "(IF)V",
-                &[JValue::Int(1), JValue::Float(size)],
+                &[JValue::Int(COMPLEX_UNIT_DIP), JValue::Float(size)],
+            );
+        } else if let Some(natural) = state.natural_text_size_px.take() {
+            let _ = env.call_method(
+                &view,
+                "setTextSize",
+                "(IF)V",
+                &[JValue::Int(COMPLEX_UNIT_PX), JValue::Float(natural)],
             );
         }
         // Font family / weight / style — route through the registry
@@ -249,11 +277,32 @@ pub(crate) fn apply_rules(
         // bare `font_weight: Bold` reach `Typeface.create` /
         // `Typeface.defaultFromStyle`. Apply only when any typography
         // slot is set; views without an explicit typography rule
-        // keep their platform default.
+        // keep their platform default, and a view a style has left goes
+        // back to it. The two-argument `setTypeface` with style 0 also clears
+        // the fake bold and skew a synthesized face left on the paint.
         let has_typography_family = rules.font_family.is_some()
             || rules.font_weight.is_some()
             || rules.font_style.is_some();
-        if has_typography_family {
+        if !has_typography_family {
+            if let Some(natural) = state.natural_typeface.take() {
+                let null = JObject::null();
+                let typeface = natural.as_ref().map(|t| t.as_obj()).unwrap_or(&null);
+                let _ = env.call_method(
+                    &view,
+                    "setTypeface",
+                    "(Landroid/graphics/Typeface;I)V",
+                    &[JValue::Object(typeface), JValue::Int(0)],
+                );
+            }
+        } else {
+            if state.natural_typeface.is_none() {
+                state.natural_typeface = Some(natural_object(
+                    env,
+                    &view,
+                    "getTypeface",
+                    "()Landroid/graphics/Typeface;",
+                ));
+            }
             let weight = rules
                 .font_weight
                 .as_ref()
@@ -403,12 +452,34 @@ pub(crate) fn apply_rules(
         // cursor drawable would require a custom Drawable subclass; for
         // v1 we snap on Android even when iOS/web tween smoothly. The
         // mismatch is documented; revisit if a use case demands parity.
+        // A style that drops it gives the view back the cursor it had.
+        if rules.caret_color.is_none() && state.last_caret_color.take().is_some() {
+            if let Some(natural) = state.natural_cursor.take() {
+                let null = JObject::null();
+                let cursor = natural.as_ref().map(|d| d.as_obj()).unwrap_or(&null);
+                let _ = env.call_method(
+                    &view,
+                    "setTextCursorDrawable",
+                    "(Landroid/graphics/drawable/Drawable;)V",
+                    &[JValue::Object(cursor)],
+                );
+                clear_pending_exception(env);
+            }
+        }
         if let Some(c) = rules.caret_color.as_ref().map(|t| t.resolve()) {
             if let Some(packed) = parse_color(&c.0) {
                 let prev = state.last_caret_color;
                 let changed = prev != Some(packed);
                 state.last_caret_color = Some(packed);
                 if changed {
+                    if state.natural_cursor.is_none() {
+                        state.natural_cursor = Some(natural_object(
+                            env,
+                            &view,
+                            "getTextCursorDrawable",
+                            "()Landroid/graphics/drawable/Drawable;",
+                        ));
+                    }
                     let _ = (|| -> jni::errors::Result<()> {
                         let gd_class = env
                             .find_class("android/graphics/drawable/GradientDrawable")?;
@@ -445,11 +516,19 @@ pub(crate) fn apply_rules(
     // --- Opacity (View.alpha). Animatable via ObjectAnimator.ofFloat.
     //     `rules.opacity` is `Option<Tokenized<f32>>`; resolve to the
     //     concrete value (native has no token system).
-    if let Some(o) = rules.opacity.as_ref().map(|t| t.resolve()) {
+    //     A style that drops it goes back to opaque, fading over the same
+    //     transition. `alpha` is one field for static and animated values, so
+    //     while an animation or a presence owns it only the static value moves.
+    let want_alpha = crate::layout_policy::stated_or_rest(
+        rules.opacity.as_ref().map(|t| t.resolve()),
+        state.last_alpha,
+        crate::layout_policy::ALPHA_OPAQUE,
+    );
+    if let Some(o) = want_alpha {
         let changed = state.last_alpha.map(|p| (p - o).abs() > 0.001).unwrap_or(true);
         let prev = state.last_alpha;
         state.last_alpha = Some(o);
-        if changed {
+        if changed && !state.anim_alpha_owned && !state.presence_alpha_owned {
             match (prev, rules.opacity_transition) {
                 (Some(from), Some(t)) if (from - o).abs() > 0.001 => {
                     cancel_animator(env, state.anim_alpha.take());
@@ -498,12 +577,29 @@ pub(crate) fn apply_rules(
     ) {
         let _t = crate::phase_timer::PhaseTimer::start("apply_drawable_path");
         apply_drawable_path(env, node, state, rules);
-    } else if let Some(c) = rules.background.as_ref().map(|t| t.resolve()) {
-        if let Some(packed) = parse_color(&c.0) {
+    }
+    if !(has_border || has_radius || has_gradient) {
+        // A style that left the drawable path takes the drawable with it, or its
+        // radius and fill stay on the view.
+        if state.drawable.is_some() {
+            drop_background_drawable(env, node, state);
+        }
+        let stated = rules
+            .background
+            .as_ref()
+            .and_then(|t| parse_color(&t.resolve().0));
+        if stated.is_none() && state.last_bg.is_some() && natural_background_drawable(state).is_some() {
+            restore_natural_background(env, node, state);
+        } else if let Some(packed) = crate::layout_policy::stated_or_rest(
+            stated,
+            state.last_bg,
+            crate::layout_policy::BACKGROUND_CLEAR,
+        ) {
             let prev = state.last_bg;
-            let changed = prev != Some(packed);
+            let changed = prev != Some(packed) && !state.anim_background_owned;
             state.last_bg = Some(packed);
             if changed {
+                remember_natural_background(env, &view, state);
                 match (prev, rules.background_transition) {
                     (Some(from), Some(t)) if from != packed => {
                         cancel_animator(env, state.anim_bg.take());
@@ -536,9 +632,9 @@ pub(crate) fn apply_rules(
     //     setting. Skew isn't supported on `View` directly — would
     //     need a `Matrix` + custom drawable — skipped for now.
     //
-    //     `None` resets all transform properties to identity so a
-    //     style change that *removes* the transform reverts the
-    //     view. This is the hot path for pan / drag interactions.
+    //     A style change that *removes* the transform reverts the axes the
+    //     last style owned to identity. This is the hot path for pan / drag
+    //     interactions.
     apply_transform(env, &view, state, rules);
 }
 
@@ -661,11 +757,24 @@ fn apply_transform(
         }
     }
     // Change/first-apply tracking for `transitions { transform: … }`.
-    let mask: u8 = (style_writes_tx as u8)
-        | ((style_writes_ty as u8) << 1)
-        | ((style_writes_sx as u8) << 2)
-        | ((style_writes_sy as u8) << 3)
-        | ((style_writes_rot as u8) << 4);
+    use crate::layout_policy::{
+        transform_axes_to_write, AXIS_ROTATE, AXIS_SCALE_X, AXIS_SCALE_Y, AXIS_TRANSLATE_X,
+        AXIS_TRANSLATE_Y,
+    };
+    let mask: u8 = (if style_writes_tx { AXIS_TRANSLATE_X } else { 0 })
+        | (if style_writes_ty { AXIS_TRANSLATE_Y } else { 0 })
+        | (if style_writes_sx { AXIS_SCALE_X } else { 0 })
+        | (if style_writes_sy { AXIS_SCALE_Y } else { 0 })
+        | (if style_writes_rot { AXIS_ROTATE } else { 0 });
+    // A slot the last style owned and this one dropped goes back to identity, which
+    // is what `vals` holds for an axis the style doesn't state.
+    let owned_before = state.last_static_transform.map(|(m, _)| m).unwrap_or(0);
+    let writes = transform_axes_to_write(owned_before, mask);
+    let style_writes_tx = writes & AXIS_TRANSLATE_X != 0;
+    let style_writes_ty = writes & AXIS_TRANSLATE_Y != 0;
+    let style_writes_sx = writes & AXIS_SCALE_X != 0;
+    let style_writes_sy = writes & AXIS_SCALE_Y != 0;
+    let style_writes_rot = writes & AXIS_ROTATE != 0;
     let vals = [tx_px, ty_px, sx, sy, rot_deg];
     let seen_before = state.last_static_transform.is_some();
     let changed = state
@@ -893,6 +1002,7 @@ fn apply_drawable_path(
     // mutate the drawable in place.
     let first_create = state.drawable.is_none();
     if first_create {
+        remember_natural_background(env, &view, state);
         let class = env
             .find_class("android/graphics/drawable/GradientDrawable")
             .unwrap();
@@ -918,41 +1028,61 @@ fn apply_drawable_path(
     if let Some(g) = rules.background_gradient.as_ref() {
         apply_gradient_to_drawable(env, &view, &drawable_obj, g, state);
     } else {
-        // Re-set the gradient type to the default (linear, all-equal
-        // colors → solid) so a previous gradient drawable becomes a
-        // plain fill again. `GradientDrawable.LINEAR_GRADIENT = 0`.
+        // Re-set the gradient type to the default so a previous gradient
+        // drawable becomes a plain fill again.
+        // `GradientDrawable.LINEAR_GRADIENT = 0`. `setColor` is what lets go of
+        // the stops: the type alone keeps painting them, and the fill below only
+        // writes when the colour changes.
         let _ = env.call_method(
             &drawable_obj,
             "setGradientType",
             "(I)V",
             &[JValue::Int(0)],
         );
+        if !state.gradient_stops.is_empty() {
+            state.gradient_stops.clear();
+            state.gradient_offsets.clear();
+            state.gradient_radial_extent = None;
+            state.gradient_radial_radius_factor = None;
+            let _ = env.call_method(
+                &drawable_obj,
+                "setColor",
+                "(I)V",
+                &[JValue::Int(state.last_bg.unwrap_or(crate::layout_policy::BACKGROUND_CLEAR))],
+            );
+        }
     }
 
     // --- Fill color (no-op when gradient is set — `setColors` already
     //     wrote the per-stop fill, and authors mixing both would be
     //     overridden one way or the other; the gradient wins).
     if rules.background_gradient.is_none() {
-        if let Some(c) = rules.background.as_ref().map(|t| t.resolve()) {
-            if let Some(packed) = parse_color(&c.0) {
-                let prev = state.last_bg;
-                let changed = prev != Some(packed);
-                state.last_bg = Some(packed);
-                if changed {
-                    match (prev, rules.background_transition) {
-                        (Some(from), Some(t)) if from != packed => {
-                            cancel_animator(env, state.anim_bg.take());
-                            state.anim_bg =
-                                start_drawable_argb_animator(env, &drawable, "color", from, packed, t);
-                        }
-                        _ => {
-                            let _ = env.call_method(
-                                &drawable_obj,
-                                "setColor",
-                                "(I)V",
-                                &[JValue::Int(packed)],
-                            );
-                        }
+        let stated = rules
+            .background
+            .as_ref()
+            .and_then(|t| parse_color(&t.resolve().0));
+        if let Some(packed) = crate::layout_policy::stated_or_rest(
+            stated,
+            state.last_bg,
+            crate::layout_policy::BACKGROUND_CLEAR,
+        ) {
+            let prev = state.last_bg;
+            let changed = prev != Some(packed) && !state.anim_background_owned;
+            state.last_bg = Some(packed);
+            if changed {
+                match (prev, rules.background_transition) {
+                    (Some(from), Some(t)) if from != packed => {
+                        cancel_animator(env, state.anim_bg.take());
+                        state.anim_bg =
+                            start_drawable_argb_animator(env, &drawable, "color", from, packed, t);
+                    }
+                    _ => {
+                        let _ = env.call_method(
+                            &drawable_obj,
+                            "setColor",
+                            "(I)V",
+                            &[JValue::Int(packed)],
+                        );
                     }
                 }
             }
@@ -1284,6 +1414,13 @@ fn apply_drawable_path(
             "(Z)V",
             &[JValue::Bool(1)],
         );
+    } else if radii_changed {
+        let _ = env.call_method(
+            &view,
+            "setClipToOutline",
+            "(Z)V",
+            &[JValue::Bool(0)],
+        );
     }
     // Mirror corner radii onto the per-side border drawable (if
     // installed) so its `drawRoundRect`/edge-clipping path respects
@@ -1329,6 +1466,111 @@ fn apply_drawable_path(
     if !first_create {
         let _ = env.call_method(&view, "invalidate", "()V", &[]);
     }
+}
+
+/// `TypedValue.COMPLEX_UNIT_PX`: `getTextSize` reports px.
+const COMPLEX_UNIT_PX: i32 = 0;
+/// `TypedValue.COMPLEX_UNIT_DIP`: a style's `font_size` is dp.
+const COMPLEX_UNIT_DIP: i32 = 1;
+
+/// Read an object off `view`, null included. A getter newer than the running API
+/// level reads as null, with its exception cleared so it can't reach the next call.
+fn natural_object(env: &mut JNIEnv, view: &JObject, getter: &str, sig: &str) -> Option<GlobalRef> {
+    let object = env.call_method(view, getter, sig, &[]).and_then(|v| v.l());
+    clear_pending_exception(env);
+    object
+        .ok()
+        .filter(|o| !o.is_null())
+        .and_then(|o| env.new_global_ref(o).ok())
+}
+
+fn clear_pending_exception(env: &mut JNIEnv) {
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+}
+
+/// An `EditText`'s colours go back to its theme's `ColorStateList`. Not an int: it
+/// holds the disabled and hint states too. A transition fades to the list's default
+/// colour instead, since an animator can't end on a list.
+fn restore_edit_text_colors(
+    env: &mut JNIEnv,
+    node: &GlobalRef,
+    state: &mut NodeAnim,
+    transition: Option<runtime_shared::Transition>,
+) {
+    let from = state.last_text_color.take();
+    let Some(natural) = state.natural_text_colors.clone() else { return };
+    cancel_animator(env, state.anim_text_color.take());
+    if let (Some(from), Some(t)) = (from, transition) {
+        let to = env
+            .call_method(natural.as_obj(), "getDefaultColor", "()I", &[])
+            .and_then(|v| v.i());
+        clear_pending_exception(env);
+        if let Ok(to) = to {
+            state.anim_text_color = start_argb_animator(env, node, "textColor", from, to, t);
+            return;
+        }
+    }
+    let _ = env.call_method(
+        node.as_obj(),
+        "setTextColor",
+        "(Landroid/content/res/ColorStateList;)V",
+        &[JValue::Object(natural.as_obj())],
+    );
+}
+
+/// Keep the view's own background before a style first replaces it.
+fn remember_natural_background(env: &mut JNIEnv, view: &JObject, state: &mut NodeAnim) {
+    if state.natural_background.is_none() {
+        state.natural_background = Some(natural_object(
+            env,
+            view,
+            "getBackground",
+            "()Landroid/graphics/drawable/Drawable;",
+        ));
+    }
+}
+
+/// The view's own background drawable, if it had one: a `Button`'s or an
+/// `EditText`'s, which a clear colour would lose.
+fn natural_background_drawable(state: &NodeAnim) -> Option<GlobalRef> {
+    state.natural_background.clone().flatten()
+}
+
+/// Give the view back its own background. `setBackground` takes a drawable's padding
+/// onto the view, so the style's padding is written again.
+fn restore_natural_background(env: &mut JNIEnv, node: &GlobalRef, state: &mut NodeAnim) {
+    let view = node.as_obj();
+    cancel_animator(env, state.anim_bg.take());
+    state.last_bg = None;
+    let null = JObject::null();
+    let natural = natural_background_drawable(state);
+    let background = natural.as_ref().map(|d| d.as_obj()).unwrap_or(&null);
+    let _ = env.call_method(
+        &view,
+        "setBackground",
+        "(Landroid/graphics/drawable/Drawable;)V",
+        &[JValue::Object(background)],
+    );
+    let padding = state.last_padding.map(|p| JValue::Int(p.unwrap_or(0)));
+    let _ = env.call_method(&view, "setPadding", "(IIII)V", &padding);
+}
+
+/// A style that left the drawable path: no border, radius or gradient remain. The
+/// flat path writes the fill the style states, over the view's own background.
+fn drop_background_drawable(env: &mut JNIEnv, node: &GlobalRef, state: &mut NodeAnim) {
+    state.drawable = None;
+    state.last_radii = [None; 4];
+    state.gradient_stops.clear();
+    state.gradient_offsets.clear();
+    state.gradient_radial_extent = None;
+    state.gradient_radial_radius_factor = None;
+    let _ = env.call_method(node.as_obj(), "setClipToOutline", "(Z)V", &[JValue::Bool(0)]);
+    for anim in std::mem::take(&mut state.anim_radii) {
+        cancel_animator(env, anim);
+    }
+    restore_natural_background(env, node, state);
 }
 
 fn set_corner_radii(env: &mut JNIEnv, drawable: &JObject, r: [f32; 4]) {

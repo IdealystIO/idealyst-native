@@ -255,7 +255,29 @@ pub(crate) struct NodeAnim {
     /// it, while an alignment is in force; `None` = no alignment to undo. See
     /// `crate::layout_policy::text_align_update`.
     pub(crate) natural_horizontal_gravity: Option<i32>,
+    /// The opacity the last style stated, `Some(1.0)` once it has been dropped;
+    /// `None` while no style has stated one. See `layout_policy::stated_or_rest`.
     pub(crate) last_alpha: Option<f32>,
+    /// `AnimProp::Opacity` has written `alpha`, which is the one field for static
+    /// and animated values. The animated value overrides the stylesheet from then
+    /// on, as it does on web.
+    pub(crate) anim_alpha_owned: bool,
+    /// A presence state stating an opacity is in force on this view.
+    pub(crate) presence_alpha_owned: bool,
+    /// `AnimProp::BackgroundColor` has written the view's background.
+    pub(crate) anim_background_owned: bool,
+    /// `AnimProp::ForegroundColor` has written the text colour.
+    pub(crate) anim_text_color_owned: bool,
+    /// What each of these was before a style first replaced it, for a style that
+    /// drops it. Read from the view, since each control has its own: an `EditText`'s
+    /// text colours follow its theme, a `Button` has a text size and a background.
+    /// The outer `None` is "not read yet"; the background, cursor and typeface can
+    /// each be null.
+    pub(crate) natural_text_colors: Option<GlobalRef>,
+    pub(crate) natural_text_size_px: Option<f32>,
+    pub(crate) natural_typeface: Option<Option<GlobalRef>>,
+    pub(crate) natural_cursor: Option<Option<GlobalRef>>,
+    pub(crate) natural_background: Option<Option<GlobalRef>>,
     /// `translationZ` (device px) the last style apply wrote for the
     /// node's stacking value; `None` = never written (still `0`). See
     /// `crate::z_index_policy`.
@@ -3747,6 +3769,26 @@ impl AndroidBackend {
         // plus alpha — no composition needed. Each AnimProp maps
         // directly to one setter via JNI.
         use runtime_shared::animation::AnimProp as P;
+        {
+            use crate::layout_policy as policy;
+            let state = self.anim_state.entry(Self::node_key(node)).or_default();
+            let axes = match prop {
+                P::Opacity => {
+                    state.anim_alpha_owned = true;
+                    0
+                }
+                P::TranslateX => policy::AXIS_TRANSLATE_X,
+                P::TranslateY => policy::AXIS_TRANSLATE_Y,
+                P::Scale => policy::AXIS_SCALE_X | policy::AXIS_SCALE_Y,
+                P::ScaleX => policy::AXIS_SCALE_X,
+                P::ScaleY => policy::AXIS_SCALE_Y,
+                P::RotateZ => policy::AXIS_ROTATE,
+                _ => 0,
+            };
+            if let Some((owned, _)) = state.last_static_transform.as_mut() {
+                *owned &= !axes;
+            }
+        }
         let (method, sig) = match prop {
             P::Opacity => ("setAlpha", "(F)V"),
             P::TranslateX => ("setTranslationX", "(F)V"),
@@ -3828,6 +3870,13 @@ impl AndroidBackend {
         let a = (value[3].clamp(0.0, 1.0) * 255.0).round() as u32;
         let argb = ((a & 0xff) << 24) | ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff);
         let argb_i32 = argb as i32;
+
+        let state = self.anim_state.entry(Self::node_key(node)).or_default();
+        match prop {
+            P::BackgroundColor => state.anim_background_owned = true,
+            P::ForegroundColor => state.anim_text_color_owned = true,
+            _ => {}
+        }
 
         match prop {
             P::BackgroundColor => {
@@ -3913,7 +3962,21 @@ impl AndroidBackend {
         state: runtime_shared::PresenceState,
         transition: Option<(u32, runtime_shared::Easing)>,
     ) {
-        let alpha = state.opacity.unwrap_or(1.0);
+        // A state stating an opacity holds `alpha` against a restyle; with none it
+        // rests on the static value. A presence writes these transform fields, so
+        // they stop being the style's.
+        let alpha = {
+            use crate::layout_policy as policy;
+            let anim = self.anim_state.entry(Self::node_key(node)).or_default();
+            anim.presence_alpha_owned = state.opacity.is_some();
+            if let Some((owned, _)) = anim.last_static_transform.as_mut() {
+                *owned &= !(policy::AXIS_TRANSLATE_X
+                    | policy::AXIS_TRANSLATE_Y
+                    | policy::AXIS_SCALE_X
+                    | policy::AXIS_SCALE_Y);
+            }
+            state.opacity.or(anim.last_alpha).unwrap_or(policy::ALPHA_OPAQUE)
+        };
         let tx_dp = state.translate_x.unwrap_or(0.0);
         let ty_dp = state.translate_y.unwrap_or(0.0);
         let scale = state.scale.unwrap_or(1.0);

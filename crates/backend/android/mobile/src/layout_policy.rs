@@ -100,6 +100,45 @@ pub(crate) fn text_align_update(
     }
 }
 
+/// The value a style's prop leaves on the view: what it states; else, once a style
+/// has stated it, `rest`, the value with no style; else nothing, so a prop no style
+/// ever stated is not written and an animation on the same field is left alone.
+///
+/// The drop remembers `rest` rather than forgetting, so the next stated value
+/// transitions from where the view is.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn stated_or_rest<T: Copy>(stated: Option<T>, last: Option<T>, rest: T) -> Option<T> {
+    stated.or(last.map(|_| rest))
+}
+
+/// `alpha` with no style.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) const ALPHA_OPAQUE: f32 = 1.0;
+/// `backgroundColor` with no style: transparent.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) const BACKGROUND_CLEAR: i32 = 0;
+
+/// Transform slots, in the mask `NodeAnim::last_static_transform` keeps. A View's
+/// translation, scale and rotation are the fields animations and presences write
+/// too, so a restyle only touches what the style owns.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) const AXIS_TRANSLATE_X: u8 = 1 << 0;
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) const AXIS_TRANSLATE_Y: u8 = 1 << 1;
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) const AXIS_SCALE_X: u8 = 1 << 2;
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) const AXIS_SCALE_Y: u8 = 1 << 3;
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) const AXIS_ROTATE: u8 = 1 << 4;
+
+/// The slots an apply writes: the ones the style states, and the ones the last style
+/// owned and this one dropped, which go back to identity.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn transform_axes_to_write(last_owned: u8, stated: u8) -> u8 {
+    last_owned | stated
+}
+
 /// Android `ViewGroup.LayoutParams` sentinels. Named because `-1` and `-2`
 /// in a size field are the two magic numbers this file exists to keep honest.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -456,5 +495,46 @@ mod list_row_box_tests {
         assert_eq!(list_row_box(false, 411.0, None, || 57.0), (411.0, 57.0));
         assert_eq!(list_row_box(true, 200.0, Some(80.0), || 0.0), (80.0, 200.0));
         assert_eq!(list_row_box(true, 200.0, None, || 96.0), (96.0, 200.0));
+    }
+}
+
+#[cfg(test)]
+mod style_reset_tests {
+    use super::*;
+
+    /// A variant with `opacity: 0.5` flipping to one without it stayed at 0.5: the
+    /// style path only wrote `setAlpha` when a style stated one.
+    #[test]
+    fn regression_android_dropped_opacity_kept_its_old_value() {
+        assert_eq!(stated_or_rest(None, Some(0.5), ALPHA_OPAQUE), Some(1.0));
+        assert_eq!(stated_or_rest(Some(0.25), Some(0.5), ALPHA_OPAQUE), Some(0.25));
+    }
+
+    /// Same shape for a flat fill: `last_bg` kept the colour on the view.
+    #[test]
+    fn regression_android_dropped_background_kept_its_old_value() {
+        assert_eq!(stated_or_rest(None, Some(0x7f00_ff00_u32 as i32), BACKGROUND_CLEAR), Some(0));
+    }
+
+    /// A prop no style stated is never written, whatever an animation put there.
+    #[test]
+    fn a_prop_no_style_stated_is_left_alone() {
+        assert_eq!(stated_or_rest(None, None, ALPHA_OPAQUE), None);
+    }
+
+    /// A variant with a `transform` flipping to one without it stayed moved: only
+    /// the axes the new style stated were written.
+    #[test]
+    fn regression_android_dropped_transform_axis_kept_its_old_value() {
+        let owned = AXIS_TRANSLATE_X | AXIS_SCALE_X | AXIS_SCALE_Y;
+        assert_eq!(transform_axes_to_write(owned, 0), owned);
+        assert_eq!(transform_axes_to_write(owned, AXIS_ROTATE), owned | AXIS_ROTATE);
+    }
+
+    /// The Switch thumb: a theme re-fire on a style with no transform owns nothing,
+    /// and an animated translate is left where it is.
+    #[test]
+    fn a_style_owning_no_axes_writes_none() {
+        assert_eq!(transform_axes_to_write(0, 0), 0);
     }
 }
