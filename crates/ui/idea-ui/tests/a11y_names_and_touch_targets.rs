@@ -28,7 +28,7 @@ use idea_ui::date::CivilDate;
 use idea_ui::touch::MIN_TOUCH_TARGET_PX;
 use idea_ui::{
     install_idea_theme, light_theme, Adornment, Autocomplete, Calendar, Checkbox, ControlSize, Field, Pagination,
-    Radio, SelectOption, TablePager,
+    Radio, RadioGroup, RadioOption, SelectOption, TablePager,
 };
 use runtime_core::{signal, ui, Element, Length, Signal, StyleRules, Tokenized};
 use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size};
@@ -201,6 +201,18 @@ impl Laid {
         out
     }
 
+    /// The node whose children include `child`.
+    fn parent_of(&self, child: u32) -> u32 {
+        fn walk(h: &host_mock::Harness, n: u32, child: u32) -> Option<u32> {
+            let children = h.children_of(n);
+            if children.contains(&child) {
+                return Some(n);
+            }
+            children.into_iter().find_map(|c| walk(h, c, child))
+        }
+        walk(&self.h, self.root, child).expect("the node is in the tree")
+    }
+
     fn size(&self, n: u32) -> (f32, f32) {
         let (_, _, w, h) = self.abs[&n];
         (w, h)
@@ -355,4 +367,78 @@ fn regression_field_adornment_buttons_meet_the_phone_tap_target_without_growing_
         shell_height(&desktop, desktop_buttons[0]),
         "the field box is the same height on a phone"
     );
+}
+
+fn radio_group() -> Element {
+    let picked = signal("camera".to_string());
+    ui! {
+        view {
+            RadioGroup(
+                value = picked,
+                on_change = Rc::new(move |id: String| picked.set(id)) as Rc<dyn Fn(String)>,
+                options = vec![
+                    RadioOption::new("camera", "Camera"),
+                    RadioOption::new("library", "Library"),
+                    RadioOption::new("either", "Either"),
+                ],
+            )
+        }
+    }
+}
+
+/// CrewForge want_49e63639: a RadioGroup's options sat 28 apart at 390, under
+/// the 44 phone target. Each labelled row (the node carrying the tap) now meets
+/// the floor with no dead strip between rows; the ring stays 20; from `Md` up
+/// the row hugs the ring and the group keeps its gap.
+#[test]
+fn regression_radio_rows_meet_the_phone_tap_target() {
+    let phone = lay_out(PHONE, radio_group);
+    let rings = phone.pressables();
+    assert_eq!(rings.len(), 3, "{}", phone.h.tree(phone.root));
+    let row_of = |laid: &Laid, ring: u32| laid.parent_of(ring);
+    for &ring in &rings {
+        assert_eq!(phone.size(ring), (20.0, 20.0), "the ring is unchanged");
+        let (_, row_h) = phone.size(row_of(&phone, ring));
+        assert!(row_h >= MIN_TOUCH_TARGET_PX, "row is {row_h} tall at 390:\n{}", phone.h.tree(phone.root));
+    }
+    let top = |laid: &Laid, n: u32| laid.abs[&n].1;
+    let first = row_of(&phone, rings[0]);
+    let second = row_of(&phone, rings[1]);
+    assert_eq!(top(&phone, first) + phone.size(first).1, top(&phone, second), "phone rows touch: no dead strip");
+
+    let desktop = lay_out(DESKTOP, radio_group);
+    let rings = desktop.pressables();
+    let first = row_of(&desktop, rings[0]);
+    let second = row_of(&desktop, rings[1]);
+    assert!(desktop.size(first).1 < MIN_TOUCH_TARGET_PX, "the floor is released at Lg");
+    assert!(top(&desktop, second) - (top(&desktop, first) + desktop.size(first).1) > 0.0, "desktop keeps the gap");
+    assert_eq!(desktop.size(rings[0]), (20.0, 20.0));
+}
+
+fn labelled_checkbox() -> Element {
+    let on = signal(false);
+    ui! {
+        view {
+            Checkbox(
+                value = on,
+                on_change = Rc::new(move |v| on.set(v)) as Rc<dyn Fn(bool)>,
+                label = Some("Include archived".to_string()),
+            )
+        }
+    }
+}
+
+/// The same floor on a labelled Checkbox row; the box stays 20.
+#[test]
+fn regression_checkbox_rows_meet_the_phone_tap_target() {
+    let phone = lay_out(PHONE, labelled_checkbox);
+    let tick = phone.pressables()[0];
+    assert_eq!(phone.size(tick), (20.0, 20.0), "the box is unchanged");
+    let row = phone.parent_of(tick);
+    assert!(phone.size(row).1 >= MIN_TOUCH_TARGET_PX, "row at 390:\n{}", phone.h.tree(phone.root));
+
+    let desktop = lay_out(DESKTOP, labelled_checkbox);
+    let tick = desktop.pressables()[0];
+    let row = desktop.parent_of(tick);
+    assert!(desktop.size(row).1 < MIN_TOUCH_TARGET_PX, "the floor is released at Lg");
 }

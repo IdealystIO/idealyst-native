@@ -122,8 +122,10 @@ component_styles! {
         }
 
         /// Box + label, vertically centered — a plain layout view; the box
-        /// inside is the focus target.
+        /// inside is the focus target. The row carries the tap, so it wears the
+        /// phone tap-target floor ([`crate::touch`]); the box stays its size.
         slot row {
+            extend(row_touch_target)
             base(t) {
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
@@ -141,6 +143,12 @@ component_styles! {
             }
         }
     }
+}
+
+/// The labelled row's phone tap target: the shared floor, released at
+/// [`TOUCH_TARGET_RELEASE`](crate::touch::TOUCH_TARGET_RELEASE).
+fn row_touch_target(s: &mut SlotRestyle<'_, CheckboxStyles>) {
+    crate::touch::touch_target(s);
 }
 
 /// The checked fills and, above them, the 2px focus ring.

@@ -40,8 +40,8 @@ use std::rc::Rc;
 
 use runtime_core::{
     accessibility::Role, component, component_styles, derived, tap, AlignItems, AxisValues, Cursor, Element,
-    FlexDirection, FontWeight, IdealystSchema, IntoElement, JustifyContent, Reactive, Signal, SlotRestyle,
-    StyleRules, TapRecognizer,
+    FlexDirection, FontWeight, IdealystSchema, IntoElement, JustifyContent, Length, Reactive, Signal, SlotRestyle,
+    StyleRules, TapRecognizer, Tokenized,
 };
 
 use idea_theme::extensible::{semantic_tones, tone_arms, tone_compounds, ToneRef};
@@ -121,8 +121,10 @@ component_styles! {
         }
 
         /// Ring + label, vertically centered — a plain layout view; the ring
-        /// inside is the focus target.
+        /// inside is the focus target. The row carries the tap, so it wears the
+        /// phone tap-target floor ([`crate::touch`]); the ring stays its size.
         slot row {
+            extend(row_touch_target)
             base(t) {
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
@@ -140,20 +142,40 @@ component_styles! {
             }
         }
 
-        /// A `RadioGroup`'s options, stacked.
+        /// A `RadioGroup`'s options, stacked. A column's rows touch while the
+        /// phone floor is on, so a tap between two options still lands on one
+        /// (`group_gap`).
         slot group {
-            base(t) {
+            extend(group_gap)
+            base(_t) {
                 flex_direction: FlexDirection::Column,
-                gap: t.spacing.sm(),
             }
             /// Layout direction.
             variant axis {
                 #[default]
                 column(_t) { flex_direction: FlexDirection::Column }
-                row(_t) { flex_direction: FlexDirection::Row }
+                row(t) { flex_direction: FlexDirection::Row, gap: t.spacing.sm() }
             }
         }
     }
+}
+
+/// The labelled row's phone tap target: the shared floor, released at
+/// [`TOUCH_TARGET_RELEASE`](crate::touch::TOUCH_TARGET_RELEASE).
+fn row_touch_target(s: &mut SlotRestyle<'_, RadioStyles>) {
+    crate::touch::touch_target(s);
+}
+
+/// The group's gap: none below the floor's release, where each row is already
+/// [`MIN_TOUCH_TARGET_PX`](crate::touch::MIN_TOUCH_TARGET_PX) tall and a gap
+/// would be a dead strip between two targets; `sm` above it, where rows hug
+/// their ring. The `row` axis sets its own gap at every width.
+fn group_gap(s: &mut SlotRestyle<'_, RadioStyles>) {
+    s.base(|_| StyleRules { gap: Some(Tokenized::Literal(Length::Px(0.0))), ..Default::default() });
+    s.breakpoint(crate::touch::TOUCH_TARGET_RELEASE, |t| StyleRules {
+        gap: Some(t.spacing.sm()),
+        ..Default::default()
+    });
 }
 
 /// The selected ring's stroke — the tone's solid accent, not the recipe's
