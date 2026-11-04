@@ -178,6 +178,17 @@ pub fn resolve(style: &StyleRules, prev: &TextPaint, inherited: &Inherited) -> T
     tp
 }
 
+/// `GtkEditable:xalign` for a `GtkEntry` styled `text_align`. A style with no
+/// alignment is the start, so a field can go back to it. `Justify` is the start
+/// too: an entry holds one line.
+pub fn entry_xalign(align: Option<TextAlign>) -> f32 {
+    match align {
+        Some(TextAlign::Center) => 0.5,
+        Some(TextAlign::Right) => 1.0,
+        Some(TextAlign::Left | TextAlign::Justify) | None => 0.0,
+    }
+}
+
 /// How a `GtkLabel` is configured to honour a paint's `max_lines`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LineLimit {
