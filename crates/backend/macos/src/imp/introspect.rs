@@ -82,8 +82,8 @@ fn read_view(view: &Retained<NSView>) -> NativeNode {
     let frame = abs_rect(view).unwrap_or(NativeRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 });
     let mut node = NativeNode::leaf(class_name, frame);
 
-    // hidden + opacity are view-level (alphaValue) combined with the layer's
-    // opacity, matching how the framework applies alpha (view.setAlphaValue).
+    // hidden + opacity are view-level, matching how the framework applies alpha
+    // (view.setAlphaValue).
     let hidden: bool = unsafe { msg_send![&**view, isHidden] };
     node.set(keys::HIDDEN, Some(NativeValue::Flag(hidden)));
     let alpha: CGFloat = unsafe { msg_send![&**view, alphaValue] };
@@ -131,11 +131,9 @@ fn read_view(view: &Retained<NSView>) -> NativeNode {
             }
         }
 
-        let layer_opacity: f32 = unsafe { msg_send![layer, opacity] };
-        node.set(
-            keys::OPACITY,
-            Some(NativeValue::Number((alpha as f32) * layer_opacity)),
-        );
+        // `alphaValue` alone: on a layer-backed view it IS the layer's `opacity`, so
+        // multiplying the two reports 0.25 for a view at 0.5.
+        node.set(keys::OPACITY, Some(NativeValue::Number(alpha as f32)));
 
         let shadow_opacity: f32 = unsafe { msg_send![layer, shadowOpacity] };
         if shadow_opacity > 0.0 {
@@ -366,6 +364,17 @@ mod tests {
             other => panic!("expected background_color, got {other:?}"),
         }
     }
+    /// The native readback multiplied `alphaValue` by the layer's `opacity`, which on
+    /// a layer-backed view is the same field, so a view at 0.5 read as 0.25.
+    #[test]
+    fn regression_macos_native_opacity_read_back_squared() {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let view: Retained<NSView> = Retained::into_super(FlippedView::new(mtm));
+        let _: () = unsafe { msg_send![&view, setWantsLayer: true] };
+        let _: () = unsafe { msg_send![&view, setAlphaValue: 0.5_f64] };
+        assert_eq!(read_view(&view).props.get(keys::OPACITY), Some(&NativeValue::Number(0.5)));
+    }
+
     // ---- dashed / dotted borders -------------------------------------------
 
     fn bordered_view(style: &runtime_shared::StyleRules) -> (Retained<NSView>, Retained<NSObject>) {

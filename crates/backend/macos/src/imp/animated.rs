@@ -113,11 +113,9 @@ impl AnimatedState {
 pub(crate) type AnimatedStateMap = HashMap<usize, RefCell<AnimatedState>>;
 
 /// Apply `style.opacity` to the view's `alphaValue`, going back to opaque when a
-/// style drops it. Use `NSView.setAlphaValue:` (matches iOS's `UIView.setAlpha:`),
-/// NOT `CALayer.setOpacity:`: the two multiply in AppKit's rendering pipeline, so
-/// routing static opacity through the layer while animated opacity goes through
-/// the view would give (static * animated), and a sheet resting at `opacity: 0.0`
-/// that a raf body fades in would stay invisible.
+/// style drops it. `NSView.setAlphaValue:` matches iOS's `UIView.setAlpha:`, and the
+/// animated path writes the same field, so a sheet resting at `opacity: 0.0` that a
+/// raf body fades in reaches the value it is given.
 pub(crate) fn apply_static_opacity(
     view: &NSView,
     style: &runtime_shared::StyleRules,
