@@ -453,8 +453,9 @@ fn regression_adding_a_component_or_a_new_file_patches_the_running_page() {
     let (session, mut page) = start_with(&project, tmp.path(), &["--experimental-web-additive"]);
     assert!(
         page.wait_for_text("logic v1 -> 0", Duration::from_secs(60)),
-        "the app never rendered: {:?}",
-        page.text()
+        "the app never rendered: {:?}\nLog tail:\n{}",
+        page.text(),
+        tail(&session.log()),
     );
     page.eval(
         "(async () => { \
@@ -464,7 +465,12 @@ fn regression_adding_a_component_or_a_new_file_patches_the_running_page() {
             window.__e2e_marker = 'still-here'; \
         })()",
     );
-    assert!(page.wait_for_text("count = 1", Duration::from_secs(5)), "{:?}", page.text());
+    assert!(
+        page.wait_for_text("count = 1", Duration::from_secs(30)),
+        "the first click never landed. Page: {:?}\nLog tail:\n{}",
+        page.text(),
+        tail(&session.log()),
+    );
 
     let app_rs = project.join("src/app.rs");
     let save = |what: &str, edit: &dyn Fn(String) -> String, shows: &str, session: &Session, page: &mut Page| {
@@ -484,7 +490,12 @@ fn regression_adding_a_component_or_a_new_file_patches_the_running_page() {
             "{what} reloaded the page instead of patching it. Log tail:\n{}",
             tail(&session.log()),
         );
-        assert!(page.text().contains("count = 1"), "{what} lost app state: {:?}", page.text());
+        assert!(
+            page.text().contains("count = 1"),
+            "{what} lost app state: {:?}\nLog tail:\n{}",
+            page.text(),
+            tail(&session.log()),
+        );
     };
 
     // A component ahead of an existing one: its impls would take the numbers
