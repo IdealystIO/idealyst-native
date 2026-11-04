@@ -680,10 +680,13 @@ pub(crate) struct TextVisual {
 }
 
 impl TextVisual {
+    /// The colour of a text no style has reached.
+    const DEFAULT_COLOR: Rgba = Rgba::BLACK;
+
     pub(crate) fn new(content: &str) -> Self {
         Self {
             content: content.to_string(),
-            color: Rgba::BLACK,
+            color: Self::DEFAULT_COLOR,
             anim_color: None,
             font_key: None,
             plan: None,
@@ -3864,28 +3867,24 @@ impl WindowsBackend {
                         resolve_radius(&style.border_bottom_left_radius),
                     ];
                 }
+                // Every prop is assigned whether the rules state it or not:
+                // they are the node's full merged style, so an absent prop was
+                // dropped and goes back to what `TextVisual::new` starts with.
                 NodeKind::Text(t) => {
-                    if let Some(rgba) = resolve_color(&style.color) {
-                        t.color = rgba;
-                    }
-                    // Assigned unconditionally, like `max_lines` below: a style
-                    // without an alignment goes back to the start.
+                    t.color = resolve_color(&style.color).unwrap_or(TextVisual::DEFAULT_COLOR);
                     t.align = style.text_align.unwrap_or(runtime_shared::TextAlign::Left);
-                    // Paint-only: alignment needs no re-measure. Font and
-                    // line-height feed the wrap plan / line advance, so
-                    // either changing rebuilds the measure fn.
+                    // Paint-only: colour and alignment need no re-measure. Font,
+                    // line-height and `max_lines` feed the wrap plan or line
+                    // advance, so a change rebuilds the measure fn.
                     let lh = style.line_height.as_ref().map(|v| v.resolve());
-                    if lh.is_some() && t.line_height != lh {
+                    if t.line_height != lh {
                         t.line_height = lh;
                         remeasure = true;
                     }
-                    if font_key.is_some() && t.font_key != font_key {
+                    if t.font_key != font_key {
                         t.font_key = font_key.clone();
                         remeasure = true;
                     }
-                    // Assigned unconditionally (unlike `line_height` and the
-                    // font above): a style WITHOUT `max_lines` must lift a limit
-                    // an earlier style set. The measure fn captures it.
                     let max_lines = style.max_lines.filter(|n| *n > 0);
                     if t.max_lines != max_lines {
                         t.max_lines = max_lines;
@@ -3893,9 +3892,7 @@ impl WindowsBackend {
                     }
                 }
                 NodeKind::Image(p) => {
-                    if let Some(fit) = style.object_fit {
-                        p.object_fit = fit;
-                    }
+                    p.object_fit = style.object_fit.unwrap_or_default();
                 }
                 // Code runs carry their own tokenizer colors + mono
                 // font; author style contributes box/layout only.
@@ -5335,6 +5332,47 @@ mod capability_tests {
         assert!(matches!(align(&b), TextAlign::Right));
         b.apply_style(&node, &Rc::new(StyleRules::default()));
         assert!(matches!(align(&b), TextAlign::Left), "a dropped alignment goes back to the start");
+    }
+
+    /// A painted `text` kept its colour, `line_height` and font when a style
+    /// dropped them, and an `image` its `object_fit`, while web resets them through
+    /// the class swap: a variant without them stayed as it was.
+    #[test]
+    fn regression_windows_dropped_style_props_kept_their_old_value() {
+        use runtime_shared::{Color, FontWeight, Length, ObjectFit, Tokenized};
+        let mut b = WindowsBackend::new(host());
+        let node = runtime_vocabulary::caps::TextOps::create_text(&mut b, "12", &AccessibilityProps::default());
+        let read = |b: &WindowsBackend| match &b.nodes[&node.id].kind {
+            NodeKind::Text(t) => (t.color, t.line_height, t.font_key.clone()),
+            _ => panic!("a text node"),
+        };
+        let unstyled = read(&b);
+        b.apply_style(&node, &Rc::new(StyleRules {
+            color: Some(Tokenized::Literal(Color("#ff0000".into()))),
+            line_height: Some(Tokenized::Literal(40.0)),
+            font_size: Some(Tokenized::Literal(Length::Px(30.0))),
+            font_weight: Some(FontWeight::Bold),
+            ..Default::default()
+        }));
+        let styled = read(&b);
+        assert_ne!(styled.0, unstyled.0);
+        assert_eq!(styled.1, Some(40.0));
+        assert!(styled.2.is_some());
+        b.apply_style(&node, &Rc::new(StyleRules::default()));
+        let dropped = read(&b);
+        assert_eq!(dropped.0, unstyled.0, "colour");
+        assert_eq!(dropped.1, None, "line_height");
+        assert!(dropped.2.is_none(), "font");
+
+        let image = b.create_image("", None, &AccessibilityProps::default());
+        let fit = |b: &WindowsBackend| match &b.nodes[&image.id].kind {
+            NodeKind::Image(p) => p.object_fit,
+            _ => panic!("an image node"),
+        };
+        b.apply_style(&image, &Rc::new(StyleRules { object_fit: Some(ObjectFit::Cover), ..Default::default() }));
+        assert!(matches!(fit(&b), ObjectFit::Cover));
+        b.apply_style(&image, &Rc::new(StyleRules::default()));
+        assert!(matches!(fit(&b), ObjectFit::Contain), "object_fit");
     }
 
     /// A `text_area` is a multi-line EDIT, so it takes the same alignment bits, the
