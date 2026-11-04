@@ -24,7 +24,8 @@
 //! 3. a body edit after that rebuild patches the NEW process — the
 //!    session re-read the relinked binary.
 //!
-//! And without `--experimental-build` the tier is off: no agent loads,
+//! And without `--experimental-build` or `--experimental-server-patch`
+//! the tier is off: no agent loads,
 //! and the same body edit rebuilds and respawns the server.
 //!
 //! `#[ignore]`d: it compiles the framework for wasm32 and the host. arm64
@@ -406,7 +407,7 @@ fn a_body_edit_patches_the_running_server_and_a_shape_edit_respawns_it() {
     materialize(&root, &repo);
     let scratch = tempfile::tempdir().unwrap();
     let port = free_port();
-    let session = start(&root, scratch.path(), port, &["--experimental-build"]);
+    let session = start(&root, scratch.path(), port, &["--experimental-server-patch"]);
     let log = session.log.clone();
     // The server loaded the agent and reported in.
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -470,7 +471,7 @@ fn a_body_edit_patches_the_running_server_and_a_shape_edit_respawns_it() {
     materialize(&root, &repo);
 }
 
-/// The tier's off switch is the flag: without `--experimental-build` the
+/// The tier's off switch is the flag: without one that arms it the
 /// session never arms it — no agent is loaded into the server, and the
 /// same body edit that is patched above rebuilds and respawns the server
 /// as `idealyst dev` always did. This is what makes the tier safe to pull.

@@ -768,7 +768,8 @@ pub struct BuildOptions {
     /// subsecond patch can link against. Dev-only; set by the `--local`
     /// web loop when the hot-patch tier is armed.
     pub hot_patch: bool,
-    /// Take ADDITIVE hot patches (`idealyst dev --experimental-build`):
+    /// Take ADDITIVE hot patches (`idealyst dev --experimental-build` or
+    /// `--experimental-web-additive`):
     /// a save whose shape moved only by new items is patched, verified
     /// after its replay (`build_web::hotpatch_additive`), instead of
     /// rebuilt (`dev_overlay::Workspace::additive`). Off by default;

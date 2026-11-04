@@ -455,8 +455,23 @@ pub struct Args {
     ///   the server is built from patches the running server in place
     ///   instead of rebuilding and respawning it. See "The server is
     ///   patched in place" in docs/hot-reload.md.
+    ///
+    /// To arm only one: `--experimental-server-patch`,
+    /// `--experimental-web-additive`.
     #[arg(long)]
     pub experimental_build: bool,
+
+    /// EXPERIMENTAL: only the full-stack server half of
+    /// `--experimental-build`. A body edit patches the running server in
+    /// place; a save on the web side that only adds items still rebuilds.
+    #[arg(long)]
+    pub experimental_server_patch: bool,
+
+    /// EXPERIMENTAL: only the web half of `--experimental-build`. With
+    /// `--local`, a save that only adds items is hot patched instead of
+    /// rebuilt; every server save still rebuilds and respawns the server.
+    #[arg(long)]
+    pub experimental_web_additive: bool,
 
     /// Do not act on saves as they happen. Every watcher of the session
     /// (the web bundle, a full-stack server, the runtime-server host,
@@ -943,7 +958,7 @@ pub fn run(args: Args) -> Result<()> {
         entry.targets = active_targets.iter().map(|t| t.as_str().to_string()).collect();
         entry.local = args.local;
         entry.no_watch = args.no_watch;
-        entry.experimental_build = args.experimental_build;
+        entry.experimental_build = args.experimental_build || args.experimental_web_additive;
         entry.started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -1763,9 +1778,18 @@ fn hot_patch_armed(args: &Args) -> bool {
 
 /// Whether the session patches its full-stack server in place
 /// (`crate::server_hot`): an experimental tier, so `--experimental-build`
-/// opts in, and only a server this session builds can be patched.
+/// or `--experimental-server-patch` opts in, and only a server this session
+/// builds can be patched.
 fn server_hot_wanted(args: &Args) -> bool {
-    args.experimental_build && !args.no_build
+    (args.experimental_build || args.experimental_server_patch) && !args.no_build
+}
+
+/// Whether a web save that only adds items is hot patched
+/// (`dev_reload::BuildOptions::experimental_build`): `--experimental-build`
+/// or `--experimental-web-additive` opts in, on a session whose hot tier is
+/// armed.
+fn web_additive_wanted(args: &Args) -> bool {
+    hot_patch_armed(args) && (args.experimental_build || args.experimental_web_additive)
 }
 
 /// Features of a `--local` web bundle: the dev set plus the app's own
@@ -2303,7 +2327,7 @@ fn launch_web(
                     // packaging tail. Splitting stays the default.
                     wasm_split: args.split,
                     hot_patch: hot_patch_armed(args),
-                    experimental_build: hot_patch_armed(args) && args.experimental_build,
+                    experimental_build: web_additive_wanted(args),
                     no_watch: args.no_watch,
                     debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
                 dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
@@ -2954,7 +2978,7 @@ fn full_stack_bundle_options(
         // Wire mode's browser runs none of the app's code, so there is
         // nothing in the page for a patch to redirect.
         hot_patch: !wire && hot_patch_armed(args),
-        experimental_build: !wire && hot_patch_armed(args) && args.experimental_build,
+        experimental_build: !wire && web_additive_wanted(args),
         no_watch: args.no_watch,
         debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
         dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
@@ -3067,7 +3091,7 @@ fn launch_web_with_backend(
     // because nothing could restart it.
     // In-place patches of the running server (`crate::server_hot`): only
     // when this session builds and watches it, and `--experimental-build`
-    // opts in.
+    // or `--experimental-server-patch` opts in.
     let server_hot = if !server_hot_wanted(args) {
         None
     } else {
@@ -5237,6 +5261,8 @@ impl Args {
             no_split: self.no_split,
             split: self.split,
             experimental_build: self.experimental_build,
+            experimental_server_patch: self.experimental_server_patch,
+            experimental_web_additive: self.experimental_web_additive,
             no_watch: self.no_watch,
             debuginfo: self.debuginfo.clone(),
             dev_opt: self.dev_opt.clone(),
@@ -5650,9 +5676,10 @@ mod tests {
 
     /// Patching the running server is experimental: a plain session
     /// rebuilds and respawns it on every server save, and only
-    /// `--experimental-build` (with a server this session builds) arms it.
+    /// `--experimental-build` or `--experimental-server-patch` (with a
+    /// server this session builds) arms it.
     #[test]
-    fn the_server_is_patched_in_place_only_under_experimental_build() {
+    fn the_server_is_patched_in_place_only_when_a_flag_arms_it() {
         assert!(!server_hot_wanted(&parse_dev(&["idealyst", "dev", "--web", "--local"])));
         assert!(server_hot_wanted(&parse_dev(&["idealyst", "dev", "--web", "--local", "--experimental-build"])));
         assert!(
@@ -5660,6 +5687,29 @@ mod tests {
             "the server tier does not need --local"
         );
         assert!(!server_hot_wanted(&parse_dev(&["idealyst", "dev", "--web", "--experimental-build", "--no-build"])));
+        assert!(server_hot_wanted(&parse_dev(&["idealyst", "dev", "--web", "--experimental-server-patch"])));
+        assert!(!server_hot_wanted(&parse_dev(&["idealyst", "dev", "--web", "--experimental-server-patch", "--no-build"])));
+        assert!(!server_hot_wanted(&parse_dev(&["idealyst", "dev", "--web", "--local", "--experimental-web-additive"])));
+    }
+
+    /// CrewForge A3: asking for server patching also armed additive web
+    /// patches, a net loss for adding components. Each half has its own
+    /// switch, and `--experimental-build` still arms both.
+    #[test]
+    fn regression_server_patching_does_not_arm_additive_web_patches() {
+        let additive = |flags: &[&str]| {
+            let mut argv = vec!["idealyst", "dev", "--web", "--local"];
+            argv.extend_from_slice(flags);
+            web_additive_wanted(&parse_dev(&argv))
+        };
+        assert!(!additive(&[]));
+        assert!(!additive(&["--experimental-server-patch"]));
+        assert!(additive(&["--experimental-build"]));
+        assert!(additive(&["--experimental-web-additive"]));
+        assert!(
+            !web_additive_wanted(&parse_dev(&["idealyst", "dev", "--web", "--experimental-web-additive"])),
+            "no hot tier without --local"
+        );
     }
 
     /// There is no page running the app's code in runtime-server mode,

@@ -21,7 +21,8 @@
 //! file (written owner-only) can drive the session.
 //!
 //! A session that crashed leaves its entry behind; a reader checks the
-//! pid before trusting one (`idealyst mcp` prunes dead ones).
+//! pid before trusting one. `idealyst mcp` and every `idealyst dev` starting
+//! delete the entries of dead processes.
 //!
 //! One project directory has at most one session: its sessions would
 //! share a target directory, a `dev.log` and a metrics file, and two
@@ -56,7 +57,8 @@ pub struct SessionEntry {
     pub local: bool,
     /// `--no-watch`: saves wait for a rebuild request.
     pub no_watch: bool,
-    /// `--experimental-build`: additive hot patches.
+    /// Additive web hot patches are armed: `--experimental-build` or
+    /// `--experimental-web-additive`.
     pub experimental_build: bool,
     /// Unix seconds.
     pub started_at: u64,

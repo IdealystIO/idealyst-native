@@ -68,8 +68,9 @@ pub struct DevLaunch {
     /// `--no-watch`: saves are queued until a rebuild request
     /// (`rebuild_dev`) applies them.
     pub no_watch: bool,
-    /// `--experimental-build`: web `--local` only — a save that only adds
-    /// items hot patches instead of rebuilding.
+    /// `--experimental-build`: both experimental tiers. On web `--local` a
+    /// save that only adds items hot patches instead of rebuilding, and a
+    /// full-stack session patches its running server in place.
     pub experimental_build: bool,
     /// `--metrics`: record what every save cost (`read_build_metrics`).
     pub metrics: bool,
