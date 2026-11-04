@@ -595,6 +595,8 @@ pub struct TableCellPrim {
     /// Filled with the `<td>`/`<th>`'s handle at mount ([`bind_cell`]) —
     /// the anchor animated drag offsets attach to.
     pub ref_fill: Option<Box<dyn FnOnce(runtime_shared::ViewHandle)>>,
+    /// Robot/automation anchor ([`set_cell_test_id`]).
+    pub test_id: Option<&'static str>,
     /// The cell's column sizing ([`TableCellProps::column`]), read by
     /// [`table`] before mount.
     pub column: Option<ColumnSpec>,
@@ -1861,6 +1863,7 @@ pub mod item_lowering {
                 on_touch: None,
                 on_hover: None,
                 ref_fill: None,
+                test_id: None,
                 column: None,
                 grid: false,
                 roles: false,
@@ -2819,6 +2822,19 @@ pub fn set_cell_interaction(cell: &Element, on_touch: TouchHandler, on_hover: Ho
     });
 }
 
+/// Give a built cell's own node (native grid item / web `<td>`-`<th>`) a
+/// robot/automation anchor. A cell is the row's one node every lowering has:
+/// a native row dissolves into the grid, and the row's tap lands on its cells.
+pub fn set_cell_test_id(cell: &Element, id: &'static str) {
+    visit_cell(cell, &mut |view, table_cell| {
+        if let Some(p) = view {
+            p.test_id = Some(id);
+        } else if let Some(p) = table_cell {
+            p.test_id = Some(id);
+        }
+    });
+}
+
 /// Bind a built row's proxy surface: `fill` receives the row's
 /// [`ViewHandle`](runtime_shared::ViewHandle) at mount — the `<tr>`'s
 /// on web, the row-spanning backdrop view's on native (emitting the
@@ -3266,7 +3282,7 @@ where
     let backend = cx.backend().clone();
     let tag = if data.header { "th" } else { "td" };
     let mut node = backend.borrow_mut().create_element(tag);
-    let robot = register_extension_node(&backend, &node, None);
+    let robot = register_extension_node(&backend, &node, data.test_id);
     // `table` resolved any `Rest` span to a count before mount.
     let span = data.span.resolve(1);
     if span > 1 {

@@ -44,6 +44,7 @@ fn regression_robot_click_presses_a_web_table_row() {
             }),
             Rc::new(|_| {}),
         );
+        table::set_cell_test_id(&cell, "intake-row");
         let element =
             item_lowering::table_item(vec![item_lowering::row_item(vec![cell], None)], None, false);
         realize(&backend, &registry, element)
@@ -58,5 +59,8 @@ fn regression_robot_click_presses_a_web_table_row() {
 
     robot.click(&label).expect("click on the row's text reaches the row handler");
     assert_eq!(pressed.get(), 1);
+    let anchor = robot.find(Query::test_id("intake-row")).expect("the cell carries its test id");
+    robot.click(&anchor).expect("click on the anchored cell reaches the row handler");
+    assert_eq!(pressed.get(), 2);
     robot.reset();
 }

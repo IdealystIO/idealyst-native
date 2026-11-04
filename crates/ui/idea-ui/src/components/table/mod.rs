@@ -1699,6 +1699,11 @@ pub struct TableRowProps {
     /// web, a row-spanning backdrop view on native. Anchor a hover card
     /// or popover to a row with it, or read the row's frame.
     pub bind_to: Option<Ref<ViewHandle>>,
+    /// Optional robot/E2E test id, forwarded to the row's first cell (the row
+    /// itself dissolves into the grid on native, and its press lands on its
+    /// cells), so `app.test_id(…).click()` presses the row. Inert outside a
+    /// robot build.
+    pub test_id: Option<&'static str>,
     /// The row's identity: what `Table(selection = …)` holds for it. A row
     /// without one has no selection box.
     #[cfg_attr(feature = "docs", doc_control(skip))]
@@ -1732,6 +1737,7 @@ impl Default for TableRowProps {
             on_row_click: None,
             tone: Reactive::Static(RowTone::None),
             bind_to: None,
+            test_id: None,
             id: None,
             selectable: true,
             draggable: true,
@@ -1748,6 +1754,9 @@ pub fn TableRow(props: TableRowProps) -> Element {
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut children);
+    }
+    if let (Some(id), Some(first)) = (props.test_id, children.first()) {
+        table::set_cell_test_id(first, id);
     }
 
     // Tone first, so a clickable row's hover axes compose OVER it. A

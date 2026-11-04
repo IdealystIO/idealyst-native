@@ -228,3 +228,53 @@ fn regression_loading_button_test_id_is_on_the_pressable_across_rebuilds() {
     h.world.enter(|| robot.click(&after)).expect("the rebuilt pressable takes the click");
     assert_eq!(clicks.get(), 1, "the click reached on_click");
 }
+
+/// CrewForge want_4e521378: nothing could press an idea-ui Table row from a
+/// robot suite. `TableRow(test_id = …)` anchors the row, a click on it (or on any
+/// text in the row) fires `on_row_click`, and a row without a handler is not
+/// pressable.
+#[test]
+fn regression_robot_presses_a_table_row_by_test_id() {
+    let robot = runtime_vocabulary::robot::Robot::new();
+    robot.reset();
+    let h = host_mock::Harness::new();
+    let pressed = std::rc::Rc::new(std::cell::Cell::new(0));
+    let sink = pressed.clone();
+    let tree = h.world.enter(|| {
+        idea_ui::install_idea_theme(idea_ui::light_theme());
+        let on_row_click: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(move || sink.set(sink.get() + 1));
+        use idea_ui::{Table, TableCell, TableRow};
+        runtime_core::ui! {
+            Table {
+                TableRow {
+                    TableCell(header = true, text = Some("Name".to_string()))
+                    TableCell(header = true, text = Some("Hours".to_string()))
+                }
+                TableRow(on_row_click = Some(on_row_click), test_id = Some("intake")) {
+                    TableCell(text = Some("New Hire Intake".to_string()))
+                    TableCell(text = Some("12".to_string()))
+                }
+                TableRow(test_id = Some("plain")) {
+                    TableCell(text = Some("Audit".to_string()))
+                    TableCell(text = Some("3".to_string()))
+                }
+            }
+        }
+    });
+    let _realized = h.mount(tree);
+    h.flush();
+
+    use runtime_vocabulary::robot::Query;
+    let row = robot.find(Query::test_id("intake")).expect("the row's anchor is registered");
+    robot.click(&row).expect("the anchored row presses");
+    assert_eq!(pressed.get(), 1);
+
+    let text = robot.find(Query::label("12")).expect("another cell's text");
+    robot.click(&text).expect("a click anywhere in the row reaches its handler");
+    assert_eq!(pressed.get(), 2);
+
+    let plain = robot.find(Query::test_id("plain")).expect("the anchor needs no handler");
+    assert!(robot.click(&plain).is_err(), "a row with no on_row_click has nothing to press");
+    assert_eq!(pressed.get(), 2);
+    robot.reset();
+}
