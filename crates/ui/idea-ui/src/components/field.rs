@@ -1440,6 +1440,26 @@ mod tests {
         });
     }
 
+    /// A reactive `text_align` going back to `Natural` hands the backends a style
+    /// with no alignment. Not `Left`: natural starts right-to-left text on the
+    /// right. Each backend restores its natural alignment from that absence.
+    #[test]
+    fn text_align_going_back_to_natural_states_nothing() {
+        with_test_world(|| {
+            theme();
+            let align = Rc::new(std::cell::Cell::new(FieldAlign::Right));
+            let current = align.clone();
+            let props = FieldProps {
+                text_align: Reactive::Dynamic(Rc::new(move || current.get())),
+                ..Default::default()
+            };
+            let input = input_style_source(Field(&props));
+            assert_eq!(input.resolve().text_align, Some(TextAlign::Right));
+            align.set(FieldAlign::Natural);
+            assert_eq!(input.resolve().text_align, None);
+        });
+    }
+
     /// The resolved style of the `text_input` anywhere in a built Field
     /// (the adorned layout nests it inside the row shell).
     fn nested_input_rules(el: Element) -> Option<runtime_core::StyleRules> {
