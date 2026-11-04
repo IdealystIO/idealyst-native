@@ -802,10 +802,12 @@ pub(crate) mod interaction_mirror {
 
     runtime_tls::thread_local! {
         static LAST: RefCell<Option<Rc<Cell<StateBits>>>> = const { RefCell::new(None) };
+        static LAST_SETTER: RefCell<Option<Rc<dyn Fn(StateBits, bool)>>> = const { RefCell::new(None) };
     }
 
     pub(crate) fn clear() {
         LAST.with(|l| *l.borrow_mut() = None);
+        LAST_SETTER.with(|l| *l.borrow_mut() = None);
     }
 
     /// A fresh cell for one node, parked in the slot.
@@ -820,9 +822,16 @@ pub(crate) mod interaction_mirror {
         cell.set(if on { bits.with(bit) } else { bits.without(bit) });
     }
 
-    /// The cell the last `attach_style` made, if it made one.
-    pub(crate) fn take() -> Option<Rc<Cell<StateBits>>> {
-        LAST.with(|l| l.borrow_mut().take())
+    /// The state setter the backend was handed for the cell just parked:
+    /// what the robot's hit-test tier lights `pressed` through on a backend
+    /// it cannot inject input into.
+    pub(crate) fn park_setter(setter: &Rc<dyn Fn(StateBits, bool)>) {
+        LAST_SETTER.with(|l| *l.borrow_mut() = Some(setter.clone()));
+    }
+
+    /// The cell the last `attach_style` made, if it made one, and its setter.
+    pub(crate) fn take() -> (Option<Rc<Cell<StateBits>>>, Option<Rc<dyn Fn(StateBits, bool)>>) {
+        (LAST.with(|l| l.borrow_mut().take()), LAST_SETTER.with(|l| l.borrow_mut().take()))
     }
 }
 
@@ -1115,6 +1124,8 @@ fn attach_rules_dynamic<H: StyleServices>(
         interaction_mirror::flip(&mirror, bit, on);
     });
     let setter = alive.wrap2(raw);
+    #[cfg(feature = "robot")]
+    interaction_mirror::park_setter(&setter);
     backend.borrow_mut().attach_states(node, setter.clone());
     setter
 }
@@ -1568,7 +1579,10 @@ fn attach_sheet_dynamic<H: StyleServices>(
                 #[cfg(feature = "robot")]
                 interaction_mirror::flip(&mirror, bit, on);
             });
-            alive.wrap2(raw)
+            let setter = alive.wrap2(raw);
+            #[cfg(feature = "robot")]
+            interaction_mirror::park_setter(&setter);
+            setter
         }
         None => noop_setter(),
     };

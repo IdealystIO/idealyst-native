@@ -386,6 +386,10 @@ pub(crate) struct ElementActions {
     /// (`style_attach::interaction_mirror`), linked by
     /// [`link_interaction`]. Fills [`ElementState::hovered`] / `pressed`.
     pub interaction: Option<Rc<std::cell::Cell<runtime_shared::StateBits>>>,
+    /// The setter that style's state machine takes native input through, the
+    /// one the backend was handed. [`Robot::press_native`]'s hit-test tier
+    /// lights `pressed` through it where no real press can be injected.
+    pub set_interaction: Option<Rc<dyn Fn(runtime_shared::StateBits, bool)>>,
     /// The toolkit's answer to "is it shown" ([`IntrospectionOps::is_shown`]).
     pub shown: Option<Rc<dyn Fn() -> Option<bool>>>,
     /// How it clips its descendants ([`IntrospectionOps::content_clip`]).
@@ -937,6 +941,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
                 slider_drag,
                 state,
                 interaction: None,
+                set_interaction: None,
                 shown: Some(shown),
                 clip: Some(clip),
                 hit: Some(hit),
@@ -1001,7 +1006,7 @@ pub(crate) fn attach_touch_action(prim: &RegisteredPrim, handler: runtime_shared
 /// (`style_attach::style_mirror`). Call right after that `attach_style`,
 /// inside the same branch, so no other node's cells can be picked up.
 pub(crate) fn link_interaction(prim: &RegisteredPrim) {
-    let cell = crate::style_attach::interaction_mirror::take();
+    let (cell, set_interaction) = crate::style_attach::interaction_mirror::take();
     let rules = crate::style_attach::style_mirror::take();
     if !prim.live || (cell.is_none() && rules.is_none()) {
         return;
@@ -1010,6 +1015,9 @@ pub(crate) fn link_interaction(prim: &RegisteredPrim) {
         if let Some(Some(entry)) = r.borrow_mut().entries.get_mut(prim.id.0 as usize) {
             if cell.is_some() {
                 entry.actions.interaction = cell;
+            }
+            if set_interaction.is_some() {
+                entry.actions.set_interaction = set_interaction;
             }
             if rules.is_some() {
                 entry.actions.style_rules = rules;
@@ -2053,7 +2061,11 @@ impl Robot {
     /// under the point, a `Began` into its touch handlers — the path the
     /// framework's long-press recognizer and the dnd SDK's hold pickup
     /// arm their timers on — held until the release delivers `Ended`; a
-    /// pressable there runs its press on the release.
+    /// pressable there runs its press on the release. Every element from
+    /// that one up to the root goes `pressed` for the hold, through the
+    /// setter the backend's own press tracking drives: UIKit hands a touch
+    /// to the recognizers of the hit view and of each of its ancestors, and
+    /// nothing else in this tier would light the state.
     pub fn press_native(&self, element: &Element) -> Result<TapMechanism, RobotError> {
         const ACTION: &str = "press_native";
         let (x, y) = self.native_point(element.id, None, ACTION)?;
@@ -2087,6 +2099,17 @@ impl Robot {
             stream.catch_up();
             stream.deliver(TouchPhase::Cancelled, point);
         }
+        unlight_held_press();
+        let lit: Vec<_> = self
+            .press_chain(target)?
+            .into_iter()
+            .filter_map(|(_, actions)| actions.set_interaction)
+            .collect();
+        for set in &lit {
+            set(runtime_shared::StateBits::PRESSED, true);
+        }
+        HELD_LIT.with(|h| *h.borrow_mut() = lit);
+        settle();
         Ok(TapMechanism::HitTest)
     }
 
@@ -2101,6 +2124,7 @@ impl Robot {
         if self.inject(element.id, &[PointerStep { phase: PointerStepPhase::Up, x, y }])? {
             return Ok(TapMechanism::Native);
         }
+        unlight_held_press();
         match HELD_PRESS.with(|h| h.replace(HeldPress::Nothing)) {
             HeldPress::Stream(mut stream) => {
                 stream.catch_up();
@@ -2750,6 +2774,7 @@ impl Robot {
         crate::robot_watch::reset();
         NAV_REGISTRY.with(|r| *r.borrow_mut() = NavRegistry::default());
         HELD_PRESS.with(|h| *h.borrow_mut() = HeldPress::Nothing);
+        HELD_LIT.with(|h| h.borrow_mut().clear());
     }
 
     fn build_tree_node(reg: &Registry, id: ElementId) -> Option<TreeNode> {
@@ -2889,6 +2914,20 @@ runtime_tls::thread_local! {
     /// The hit-test tier's press, held between the `press_native` and
     /// `release_native` verbs — real time (a long press) passes between them.
     static HELD_PRESS: RefCell<HeldPress> = const { RefCell::new(HeldPress::Nothing) };
+    /// The state setters that press lit `pressed` on.
+    static HELD_LIT: RefCell<Vec<Rc<dyn Fn(runtime_shared::StateBits, bool)>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Clear `pressed` on whatever the hit-test tier's held press lit.
+fn unlight_held_press() {
+    let lit = HELD_LIT.with(|h| std::mem::take(&mut *h.borrow_mut()));
+    if lit.is_empty() {
+        return;
+    }
+    for set in &lit {
+        set(runtime_shared::StateBits::PRESSED, false);
+    }
+    settle();
 }
 
 /// One synthesized pointer stream into one handler.

@@ -416,6 +416,72 @@ fn regression_context_click_reaches_a_secondary_press_handler() {
     robot.reset();
 }
 
+/// On a backend that can't inject (iOS), `press_native` held the press and
+/// never told the style's state machine, so `to_be_pressed` timed out on a
+/// control a real finger lights. The press lights the element under the point
+/// and its ancestors, as a real touch reaches every recognizer up the chain,
+/// and the release clears them.
+#[test]
+fn regression_ios_press_through_the_hit_test_never_lit_pressed() {
+    use runtime_shared::{StyleRules, StyleSheet};
+    let robot = Robot::new();
+    robot.reset();
+    let h = Harness::new();
+    let width = |px: f32| StyleRules { width: Some(runtime_shared::Length::Px(px).into()), ..Default::default() };
+    let sheet = move || {
+        Rc::new(
+            StyleSheet::new(move |_| width(10.0))
+                .variant("__state_hovered", "on", move |_| width(20.0))
+                .variant("__state_pressed", "on", move |_| width(30.0)),
+        )
+    };
+    let presses = Rc::new(Cell::new(0));
+    let _r = {
+        let presses = presses.clone();
+        h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .test_id("card")
+                    .style(sheet())
+                    .child(pressable(move || presses.set(presses.get() + 1)).test_id("go").style(sheet()).build())
+                    .child(view().test_id("aside").style(sheet()).build())
+                    .build(),
+            )
+        })
+    };
+    runtime_shared::viewport::set_viewport_size(runtime_shared::viewport::ViewportSize { width: 400.0, height: 300.0 });
+    {
+        let mut frames = h.shared.frames.borrow_mut();
+        frames.insert(0, rect(0.0, 0.0, 400.0, 300.0));
+        frames.insert(1, rect(20.0, 20.0, 100.0, 40.0));
+        frames.insert(2, rect(20.0, 100.0, 100.0, 40.0));
+    }
+    let pressed = |id: &str| robot.state(&find(&robot, id)).unwrap().unwrap().pressed;
+    assert_eq!(pressed("go"), Some(false));
+
+    let go = find(&robot, "go");
+    assert_eq!(robot.press_native(&go), Ok(TapMechanism::HitTest));
+    assert_eq!(pressed("go"), Some(true), "the control under the finger");
+    assert_eq!(pressed("card"), Some(true), "its ancestor's recognizer sees the touch too");
+    assert_eq!(pressed("aside"), Some(false), "a sibling does not");
+    assert_eq!(presses.get(), 0, "a press runs on release");
+
+    assert_eq!(robot.release_native(&go), Ok(TapMechanism::HitTest));
+    assert_eq!(pressed("go"), Some(false));
+    assert_eq!(pressed("card"), Some(false));
+    assert_eq!(presses.get(), 1);
+
+    // A press abandoned by the next one does not stay lit.
+    let aside = find(&robot, "aside");
+    assert_eq!(robot.press_native(&go), Ok(TapMechanism::HitTest));
+    assert_eq!(robot.press_native(&aside), Ok(TapMechanism::HitTest));
+    assert_eq!(pressed("go"), Some(false));
+    assert_eq!(pressed("aside"), Some(true));
+    robot.reset();
+}
+
 /// A long press on a backend that can't inject (iOS): `press_native`
 /// delivers `Began` through the hit test and HOLDS the stream; real time
 /// passes between the two verbs (the test sleeps, as a robot-test
