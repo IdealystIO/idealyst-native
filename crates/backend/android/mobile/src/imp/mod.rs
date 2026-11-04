@@ -3274,6 +3274,11 @@ impl AndroidBackend {
         primitives::scroll_view::observe_end(self, node, horizontal, threshold, on_end)
     }
 
+    pub(crate) fn release_virtualizer_impl(&mut self, node: &GlobalRef) {
+        self.list_end_watchers.remove(&Self::node_key(node));
+        primitives::virtualizer::release(node)
+    }
+
     pub(crate) fn virtualizer_data_changed_impl(&mut self, node: &GlobalRef) {
         primitives::virtualizer::data_changed(node)
     }

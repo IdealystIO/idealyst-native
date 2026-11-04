@@ -37,6 +37,9 @@ thread_local! {
     /// Mounted rows by their root view's key. An entry lives exactly as long
     /// as the row is bound.
     static ROWS: RefCell<HashMap<usize, Row>> = RefCell::new(HashMap::new());
+    /// The callbacks pointer each live list's rows are recorded under, by the
+    /// list's view key.
+    static LIST_CALLBACKS: RefCell<HashMap<usize, jlong>> = RefCell::new(HashMap::new());
 }
 
 /// Record a row just mounted, and ask for the layout pass that gives it its
@@ -51,6 +54,29 @@ pub(crate) fn note_row(
     let row = Row { view: view.clone(), list, scope_id, horizontal, known_main };
     ROWS.with(|r| r.borrow_mut().insert(AndroidBackend::node_key_of(view), row));
     crate::schedule_layout_pass();
+}
+
+/// Tear down the list `node`: its adapter goes, recycling every bound row
+/// (each release is a no-op by now, the handler drained them first), so
+/// nothing the toolkit still has queued can ask freed state for a count, and
+/// no row stays behind in [`ROWS`].
+pub(crate) fn release(node: &GlobalRef) {
+    let key = AndroidBackend::node_key_of(node);
+    with_env(|env| {
+        let none = jni::objects::JObject::null();
+        let detached = env.call_method(
+            node.as_obj(),
+            "setAdapter",
+            "(Landroidx/recyclerview/widget/RecyclerView$Adapter;)V",
+            &[JValue::Object(&none)],
+        );
+        if detached.is_err() {
+            let _ = env.exception_clear();
+        }
+    });
+    if let Some(list) = LIST_CALLBACKS.with(|l| l.borrow_mut().remove(&key)) {
+        ROWS.with(|r| r.borrow_mut().retain(|_, row| row.list != list));
+    }
 }
 
 /// Forget the row `scope_id` of `list`, which is being released.
@@ -254,7 +280,9 @@ pub(crate) fn create(
         }
 
         apply_default_layout_params(env, &rv);
-        env.new_global_ref(rv).unwrap()
+        let node = env.new_global_ref(rv).unwrap();
+        LIST_CALLBACKS.with(|l| l.borrow_mut().insert(AndroidBackend::node_key_of(&node), ptr));
+        node
     })
 }
 

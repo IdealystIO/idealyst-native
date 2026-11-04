@@ -1484,6 +1484,10 @@ mod native {
             AndroidBackend::virtualizer_data_changed_impl(self, node)
         }
 
+        fn release_virtualizer(&mut self, node: &Self::Node) {
+            AndroidBackend::release_virtualizer_impl(self, node)
+        }
+
         fn make_virtualizer_handle(
             &self,
             node: &Self::Node,

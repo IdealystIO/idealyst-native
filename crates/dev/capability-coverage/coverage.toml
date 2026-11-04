@@ -650,6 +650,6 @@ reason = "scroll_to_index and other list refs are inert"
 
 [[allow]]
 method = "VirtualizerOps::release_virtualizer"
-backends = ["android", "gpu"]
+backends = ["gpu"]
 status = "gap"
 reason = "queued platform events can reach freed row scopes"
