@@ -3657,34 +3657,36 @@ impl IosBackend {
     pub(crate) fn apply_style_impl(&mut self, node: &IosNode, style: &Rc<StyleRules>) {
         let view = node.as_view();
         apply_style_to_view(view, style);
+        self.impl_apply_static_opacity(node, style);
 
         // Pointer events: `None` makes the subtree hit-transparent (with
-        // explicit-`Auto` descendants opting back in) — the AppShell
-        // scrim / overlay click-through pattern web gets from CSS
-        // `pointer-events`. Enforced by `IdealystTouchView`'s
-        // `hitTest:withEvent:` override; the verdict logic is shared
-        // with macOS (Rule #7). `Some` overwrites, unset leaves the
-        // prior apply.
-        if let Some(p) = style.pointer_events {
-            let is_touch_view: bool =
-                unsafe { msg_send![view, isKindOfClass: objc2::class!(IdealystTouchView)] };
-            if is_touch_view {
-                let touch_view: &touch::IdealystTouchView =
-                    unsafe { &*(view as *const UIView as *const touch::IdealystTouchView) };
-                touch_view.set_pointer_events(Some(p));
-            } else {
-                // A portal container — the node `create_portal` returns,
-                // so where an overlay's `click_through(true)` lands. It
-                // enforces the `none` in its own `hitTest:`.
-                let is_portal_container: bool = unsafe {
-                    msg_send![view, isKindOfClass: objc2::class!(IdealystOverlayPassthroughView)]
+        // explicit-`Auto` descendants opting back in) — the AppShell scrim /
+        // overlay click-through pattern web gets from CSS `pointer-events`.
+        // Enforced by `IdealystTouchView`'s `hitTest:withEvent:` override; the
+        // verdict logic is shared with macOS (Rule #7). A style that drops it
+        // goes back to none stated, which a descendant reads as inheriting.
+        //
+        // `::class()`, not `class!`: every styled view comes here, including ones
+        // styled before any touch view has registered the class.
+        let is_touch_view: bool = unsafe {
+            msg_send![view, isKindOfClass: <touch::IdealystTouchView as objc2::ClassType>::class()]
+        };
+        if is_touch_view {
+            let touch_view: &touch::IdealystTouchView =
+                unsafe { &*(view as *const UIView as *const touch::IdealystTouchView) };
+            touch_view.set_pointer_events(style.pointer_events);
+        } else {
+            // A portal container — the node `create_portal` returns,
+            // so where an overlay's `click_through(true)` lands. It
+            // enforces the `none` in its own `hitTest:`.
+            let is_portal_container: bool = unsafe {
+                msg_send![view, isKindOfClass: <callbacks::OverlayPassthroughView as objc2::ClassType>::class()]
+            };
+            if is_portal_container {
+                let container: &callbacks::OverlayPassthroughView = unsafe {
+                    &*(view as *const UIView as *const callbacks::OverlayPassthroughView)
                 };
-                if is_portal_container {
-                    let container: &callbacks::OverlayPassthroughView = unsafe {
-                        &*(view as *const UIView as *const callbacks::OverlayPassthroughView)
-                    };
-                    container.set_pointer_events(Some(p));
-                }
+                container.set_pointer_events(style.pointer_events);
             }
         }
 
@@ -3843,6 +3845,12 @@ impl IosBackend {
             let state = self.animated_states.entry(key).or_default();
             state.gradient_layer = Some(installed.0);
             state.gradient_stops = installed.1;
+        } else if style.background_gradient.is_none() {
+            let state = self.animated_states.entry(node.view_key()).or_default();
+            if state.gradient_layer.take().is_some() {
+                state.gradient_stops.clear();
+                backend_ios_core::style::remove_gradient(view);
+            }
         }
 
         // Mirror the resolved style into the Taffy node so flex
@@ -3969,7 +3977,11 @@ impl IosBackend {
 
         match node {
             IosNode::Label(_) => {
-                apply_text_style(view, style, true, &self.font_registry);
+                let color_animated = self
+                    .animated_states
+                    .get(&node.view_key())
+                    .is_some_and(|s| s.foreground_color.is_some());
+                apply_text_style(view, style, true, color_animated, &self.font_registry);
                 // UIKit has no text-transform, so the transform is the
                 // STRING. Re-applied here rather than at create time
                 // because the style arrives after the text does, and
@@ -4020,7 +4032,9 @@ impl IosBackend {
                 }
             }
             IosNode::Button(button) => {
+                let button_state = self.animated_states.entry(node.view_key()).or_default();
                 if let Some(color) = &style.color {
+                    button_state.style_title_color = true;
                     let color_val = color.resolve();
                     let c = color_to_uicolor(&color_val);
                     if let Some(trans) = &style.color_transition {
@@ -4032,6 +4046,13 @@ impl IosBackend {
                     } else {
                         let _: () = unsafe { msg_send![button, setTitleColor: &*c, forState: 0u64] };
                     }
+                } else if std::mem::take(&mut button_state.style_title_color)
+                    && button_state.foreground_color.is_none()
+                {
+                    // Nil is the button's own: `UIButtonTypeSystem` then titles in
+                    // its tint, whatever the appearance.
+                    let nil: *const NSObject = std::ptr::null();
+                    let _: () = unsafe { msg_send![button, setTitleColor: nil, forState: 0u64] };
                 }
                 // Buttons mirror Label typography: route through the
                 // font registry so a custom typeface on a button-style
@@ -4040,16 +4061,22 @@ impl IosBackend {
                     || style.font_size.is_some()
                     || style.font_weight.is_some()
                     || style.font_style.is_some();
-                if has_typography {
-                    let title_label: Option<Retained<UILabel>> =
-                        unsafe { msg_send_id![button, titleLabel] };
-                    if let Some(tl) = title_label {
-                        apply_text_style(&tl, style, true, &self.font_registry);
+                let title_label: Option<Retained<UILabel>> =
+                    unsafe { msg_send_id![button, titleLabel] };
+                if let Some(tl) = title_label {
+                    if has_typography {
+                        apply_text_style(&tl, style, true, false, &self.font_registry);
+                    } else {
+                        backend_apple_core::style_reset::restore_natural_font(&tl);
                     }
                 }
             }
-            IosNode::TextField(field) => {
-                apply_text_style(view, style, false, &self.font_registry);
+            IosNode::TextField(_) => {
+                let color_animated = self
+                    .animated_states
+                    .get(&node.view_key())
+                    .is_some_and(|s| s.foreground_color.is_some());
+                apply_text_style(view, style, false, color_animated, &self.font_registry);
                 // Editable controls follow the installed THEME, not the OS
                 // appearance: resolve background→color-surface, text→color-text
                 // when the author didn't set them, so a bare text_input isn't a
@@ -4057,46 +4084,28 @@ impl IosBackend {
                 // explicit color-surface/color-text actually paints. See
                 // `backend_ios_core::style::apply_editable_text_control_style`.
                 backend_ios_core::style::apply_editable_text_control_style(view, style);
-                // Caret color → UIKit `tintColor`. On a UITextField the
-                // caret + selection handles both follow tintColor, so a
-                // single setter covers them. Mirrors the web `caret-color`
-                // mapping. The text color itself lives on `color` and is
+                // On a UITextField the caret + selection handles both follow
+                // tintColor. The text color itself lives on `color` and is
                 // already applied by `apply_text_style` above.
-                if let Some(caret) = &style.caret_color {
-                    let c = color_to_uicolor(&caret.resolve());
-                    if let Some(trans) = &style.caret_color_transition {
-                        let field_ref: Retained<UITextField> = field.clone();
-                        let trans = *trans;
-                        animate(&trans, Rc::new(move || {
-                            let _: () = unsafe { msg_send![&field_ref, setTintColor: &*c] };
-                        }));
-                    } else {
-                        let _: () = unsafe { msg_send![field, setTintColor: &*c] };
-                    }
-                }
+                let caret_state = self.animated_states.entry(node.view_key()).or_default();
+                apply_caret_color(view, style, &mut caret_state.style_caret_color);
             }
-            IosNode::TextView(textview) => {
+            IosNode::TextView(_) => {
                 // UITextView is the multi-line analogue. Same text
                 // styling path applies (font, color, font-size); we
                 // pass `is_label = false` because UITextView is an
                 // editable widget, not a label.
-                apply_text_style(view, style, false, &self.font_registry);
+                let color_animated = self
+                    .animated_states
+                    .get(&node.view_key())
+                    .is_some_and(|s| s.foreground_color.is_some());
+                apply_text_style(view, style, false, color_animated, &self.font_registry);
                 // Theme-driven background + text color (color-surface /
                 // color-text fallback when unset) so the multi-line
                 // text_area / idea-ui Textarea isn't a dark box in dark mode.
                 backend_ios_core::style::apply_editable_text_control_style(view, style);
-                if let Some(caret) = &style.caret_color {
-                    let c = color_to_uicolor(&caret.resolve());
-                    if let Some(trans) = &style.caret_color_transition {
-                        let view_ref: Retained<UITextView> = textview.clone();
-                        let trans = *trans;
-                        animate(&trans, Rc::new(move || {
-                            let _: () = unsafe { msg_send![&view_ref, setTintColor: &*c] };
-                        }));
-                    } else {
-                        let _: () = unsafe { msg_send![textview, setTintColor: &*c] };
-                    }
-                }
+                let caret_state = self.animated_states.entry(node.view_key()).or_default();
+                apply_caret_color(view, style, &mut caret_state.style_caret_color);
             }
             _ => {}
         }
@@ -5764,5 +5773,32 @@ mod backend_self_handle_tests {
         })
         .join()
         .expect("test thread panicked");
+    }
+}
+
+/// Caret color → UIKit `tintColor`, mirroring the web `caret-color` mapping. A style
+/// that drops it writes nil, which is the view's own again: `tintColor` inherits from
+/// its superview. `in_force` says a style's colour is on the view.
+fn apply_caret_color(view: &UIView, style: &StyleRules, in_force: &mut bool) {
+    let Some(caret) = &style.caret_color else {
+        if std::mem::take(in_force) {
+            let nil: *const NSObject = std::ptr::null();
+            let _: () = unsafe { msg_send![view, setTintColor: nil] };
+        }
+        return;
+    };
+    *in_force = true;
+    let c = color_to_uicolor(&caret.resolve());
+    match &style.caret_color_transition {
+        Some(trans) => {
+            let view_ref: Retained<UIView> = objc2::ClassType::retain(view);
+            let trans = *trans;
+            animate(&trans, Rc::new(move || {
+                let _: () = unsafe { msg_send![&*view_ref, setTintColor: &*c] };
+            }));
+        }
+        None => {
+            let _: () = unsafe { msg_send![view, setTintColor: &*c] };
+        }
     }
 }

@@ -3,7 +3,7 @@
 //! unit-test on the host target (the rest of those paths is UIKit-only
 //! and compiles to nothing off-device).
 //!
-//! Three decisions live here, all regression-prone enough to deserve
+//! Four decisions live here, all regression-prone enough to deserve
 //! host tests:
 //!
 //!   1. [`resolve_corner_radius`] — what `apply_style` should do with a
@@ -27,6 +27,10 @@
 //!
 //!   3. [`ns_text_alignment`] — what alignment a style with or without
 //!      `text_align` gets. See `regression_ios_removed_text_align_restores_natural`.
+//!
+//!   4. [`transform_axes`] — which transform slots a style owns, so a style that
+//!      drops an axis resets it and leaves an animation's alone. See
+//!      `regression_ios_dropped_transform_axis_kept_its_old_value`.
 
 use runtime_shared::{Color, Length, StyleRules, Tokenized};
 
@@ -317,6 +321,43 @@ pub fn layout_affecting_key(style: &StyleRules) -> String {
     s
 }
 
+/// A translate-x transform slot, in the mask [`transform_axes`] returns.
+pub const AXIS_TRANSLATE_X: u8 = 1 << 0;
+/// A translate-y transform slot.
+pub const AXIS_TRANSLATE_Y: u8 = 1 << 1;
+/// An x-scale transform slot.
+pub const AXIS_SCALE_X: u8 = 1 << 2;
+/// A y-scale transform slot.
+pub const AXIS_SCALE_Y: u8 = 1 << 3;
+/// A rotation transform slot.
+pub const AXIS_ROTATE: u8 = 1 << 4;
+
+/// The transform slots a style's `transform` writes.
+///
+/// A view's transform is composed from slots that static transforms, `AnimatedValue`s
+/// and presence states all write, so a restyle can't clear them wholesale: idea-ui's
+/// Switch animates its thumb's translate through them, and a theme toggle re-fires
+/// the thumb's style, which states no transform, and would snap it back to off.
+/// The backend clears the slots the last style owned and this one doesn't; an
+/// animated or presence write takes a slot out of the style's ownership.
+pub fn transform_axes(ops: Option<&[runtime_shared::Transform]>) -> u8 {
+    use runtime_shared::{Length, Transform};
+    ops.unwrap_or_default().iter().fold(0, |axes, op| {
+        axes | match op {
+            Transform::TranslateX(Length::Px(_) | Length::Percent(_)) => AXIS_TRANSLATE_X,
+            Transform::TranslateY(Length::Px(_) | Length::Percent(_)) => AXIS_TRANSLATE_Y,
+            // Neither `Auto` nor `Full` means anything on a translate: `Auto` defers
+            // to layout, which a transform has no part in, and `Full` is the
+            // corner-radius pill. Both leave the identity.
+            Transform::TranslateX(Length::Auto | Length::Full | Length::FitContent)
+            | Transform::TranslateY(Length::Auto | Length::Full | Length::FitContent) => 0,
+            Transform::Scale(_) | Transform::ScaleXY { .. } => AXIS_SCALE_X | AXIS_SCALE_Y,
+            Transform::Rotate(_) => AXIS_ROTATE,
+            Transform::SkewX(_) | Transform::SkewY(_) => 0,
+        }
+    })
+}
+
 /// UIKit `NSTextAlignmentNatural`: follows the direction of the text itself.
 pub const NS_TEXT_ALIGNMENT_NATURAL: isize = 4;
 
@@ -476,6 +517,44 @@ mod tests {
     }
 
     // === Paint-only vs layout-affecting (the perf bug) =================
+
+    // === transform slots ===============================================
+
+    /// A variant with a `transform` flipping to one without it stayed moved:
+    /// `apply_static_transform` only cleared the slots the NEW style wrote, so the
+    /// reset needs the slots the OLD one owned. UIKit is what stops being written
+    /// to, so the reachable half on the host is which slots those are.
+    #[test]
+    fn regression_ios_dropped_transform_axis_kept_its_old_value() {
+        use runtime_shared::Transform;
+        let old = [Transform::TranslateX(Length::Px(10.0)), Transform::Scale(2.0)];
+        let owned = transform_axes(Some(&old));
+        let new = transform_axes(None);
+        assert_eq!(
+            owned & !new,
+            AXIS_TRANSLATE_X | AXIS_SCALE_X | AXIS_SCALE_Y,
+            "the dropped slots are the ones to clear"
+        );
+    }
+
+    /// A percent translate is the same slot as a px one, so going from one to the
+    /// other is not a drop.
+    #[test]
+    fn transform_axes_treat_px_and_percent_translates_alike() {
+        use runtime_shared::Transform;
+        assert_eq!(
+            transform_axes(Some(&[Transform::TranslateY(Length::Percent(50.0))])),
+            transform_axes(Some(&[Transform::TranslateY(Length::Px(1.0))])),
+        );
+    }
+
+    /// A theme re-fire on a style with no transform owns nothing, so an animated
+    /// thumb keeps its slot.
+    #[test]
+    fn a_style_with_no_transform_owns_no_slots() {
+        assert_eq!(transform_axes(None), 0);
+        assert_eq!(transform_axes(Some(&[])), 0);
+    }
 
     // === text_align → NSTextAlignment ==================================
 

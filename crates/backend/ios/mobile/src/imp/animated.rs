@@ -42,6 +42,9 @@ use objc2_foundation::{CGFloat, NSObject};
 use objc2_ui_kit::UIView;
 
 use backend_ios_core::style::color_to_uicolor;
+use backend_ios_core::style_diff::{
+    transform_axes, AXIS_ROTATE, AXIS_SCALE_X, AXIS_SCALE_Y, AXIS_TRANSLATE_X, AXIS_TRANSLATE_Y,
+};
 
 use super::IosBackend;
 use super::IosNode;
@@ -51,7 +54,23 @@ use super::IosNode;
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AnimatedTransformState {
+    /// The last `AnimProp::Opacity` written. `alpha` is one field for static and
+    /// animated values, and while this is set a restyle leaves it alone: the
+    /// animated value overrides the stylesheet, as it does on web.
     pub opacity: Option<f32>,
+    /// The opacity the last style stated, `Some(1.0)` once it has been dropped;
+    /// `None` while no style has stated one. See
+    /// `backend_apple_core::style_reset::static_opacity_update`.
+    pub static_opacity: Option<f32>,
+    /// A presence state stating an opacity is in force on this view.
+    pub presence_opacity: bool,
+    /// The transform slots the last style wrote and nothing has written since
+    /// (`backend_ios_core::style_diff::transform_axes`).
+    pub static_axes: u8,
+    /// A style's `color` is on this button's title.
+    pub style_title_color: bool,
+    /// A style's `caret_color` is on this input's `tintColor`.
+    pub style_caret_color: bool,
     pub translate_x: Option<f32>,
     pub translate_y: Option<f32>,
     pub scale_x: Option<f32>,
@@ -277,8 +296,8 @@ impl IosBackend {
     ///
     /// Called from `apply_style` whether or not the stylesheet
     /// includes a `transform` block — when it doesn't, the slots
-    /// are reset to `None` so a style change that *removes* the
-    /// transform reverts the view to identity.
+    /// the last style wrote are reset to `None`, so a style change that
+    /// *removes* the transform reverts the view to identity.
     pub(crate) fn apply_static_transform(
         &mut self,
         node: &IosNode,
@@ -297,75 +316,27 @@ impl IosBackend {
         let seen_before = state.static_transform_seen;
         state.static_transform_seen = true;
 
-        // Pre-scan: which axes does the style's transform block
-        // ACTUALLY drive? Only those get cleared+overwritten below.
-        // We can't blanket-clear translate_x/y/scale_x/y/rotate_z
-        // because those slots are shared with the animation system —
-        // a `AnimatedValue<f32>` bound to `AnimProp::TranslateX`
-        // writes the same field. E.g. idea-ui's Switch
-        // animates its thumb's TranslateX via that path; a theme
-        // toggle re-fires `apply_style` from the cohort for the
-        // thumb's static stylesheet, which has NO transform: op,
-        // so a blanket clear would zero `translate_x` and never
-        // restore it \u{2014} the thumb would snap from "on" back to 0. Same trap applies
-        // to scale_x/y / rotate_z any time author code animates
-        // those props.
-        let mut style_writes_tx = false;
-        let mut style_writes_ty = false;
-        let mut style_writes_pct_x = false;
-        let mut style_writes_pct_y = false;
-        let mut style_writes_sx = false;
-        let mut style_writes_sy = false;
-        let mut style_writes_rot = false;
-        if let Some(ops) = style.transform.as_ref() {
-            for op in ops {
-                match op {
-                    Transform::TranslateX(Length::Px(_)) => style_writes_tx = true,
-                    Transform::TranslateY(Length::Px(_)) => style_writes_ty = true,
-                    Transform::TranslateX(Length::Percent(_)) => style_writes_pct_x = true,
-                    Transform::TranslateY(Length::Percent(_)) => style_writes_pct_y = true,
-                    // Neither `Auto` nor `Full` means anything on a
-                    // translate: `Auto` defers to layout, which a
-                    // transform has no part in, and `Full` is the
-                    // corner-radius pill. Both leave the identity.
-                    Transform::TranslateX(Length::Auto | Length::Full | Length::FitContent)
-                    | Transform::TranslateY(Length::Auto | Length::Full | Length::FitContent) => {}
-                    Transform::Scale(_) => {
-                        style_writes_sx = true;
-                        style_writes_sy = true;
-                    }
-                    Transform::ScaleXY { .. } => {
-                        style_writes_sx = true;
-                        style_writes_sy = true;
-                    }
-                    Transform::Rotate(_) => style_writes_rot = true,
-                    Transform::SkewX(_) | Transform::SkewY(_) => {}
-                }
-            }
-        }
-
-        // Clear only the axes the style explicitly controls. If the
-        // style USED to set X and now doesn't, that's "removing the
-        // transform" \u{2014} the call site should explicitly animate
-        // back to 0 in that case (CSS-transition parity); we don't
-        // clobber an animation-owned slot on the assumption that the
-        // style change "removed" what it never wrote in the first
-        // place.
-        if style_writes_tx || style_writes_pct_x {
+        // The slots are shared with the animation system, so clear only the ones
+        // this style writes and the ones the last style wrote and this one dropped.
+        // See `transform_axes`. A transition on the transform fades the drop too.
+        let axes = transform_axes(style.transform.as_deref());
+        let clear = axes | state.static_axes;
+        state.static_axes = axes;
+        if clear & AXIS_TRANSLATE_X != 0 {
             state.translate_x = None;
             state.static_translate_pct_x = None;
         }
-        if style_writes_ty || style_writes_pct_y {
+        if clear & AXIS_TRANSLATE_Y != 0 {
             state.translate_y = None;
             state.static_translate_pct_y = None;
         }
-        if style_writes_sx {
+        if clear & AXIS_SCALE_X != 0 {
             state.scale_x = None;
         }
-        if style_writes_sy {
+        if clear & AXIS_SCALE_Y != 0 {
             state.scale_y = None;
         }
-        if style_writes_rot {
+        if clear & AXIS_ROTATE != 0 {
             state.rotate_z = None;
         }
 
@@ -449,9 +420,39 @@ impl IosBackend {
             {
                 animate_set_transform(&view, matrix, t);
             }
-            _ => {
+            // Only on a change: every restyle reaches here, and a presence may be
+            // animating this view's transform to the same model value.
+            _ if changed => {
                 let _: () = unsafe { msg_send![&*view, setTransform: matrix] };
             }
+            _ => {}
+        }
+    }
+
+    /// Apply `style.opacity` to the view's `alpha`, going back to opaque when a style
+    /// drops it, over `opacity_transition` if there is one.
+    pub(crate) fn impl_apply_static_opacity(
+        &mut self,
+        node: &IosNode,
+        style: &runtime_shared::StyleRules,
+    ) {
+        let state = self.animated_states.entry(node.view_key()).or_default();
+        let update = backend_apple_core::style_reset::static_opacity_update(
+            style.opacity.as_ref().map(|t| t.resolve()),
+            state.static_opacity,
+            state.opacity.is_some() || state.presence_opacity,
+        );
+        state.static_opacity = update.remember;
+        let Some(alpha) = update.write else { return };
+        let view = node.as_view();
+        match &style.opacity_transition {
+            Some(trans) => {
+                let view_ref = view.retain();
+                backend_ios_core::style::animate(trans, std::rc::Rc::new(move || {
+                    unsafe { view_ref.setAlpha(alpha as CGFloat) };
+                }));
+            }
+            None => unsafe { view.setAlpha(alpha as CGFloat) },
         }
     }
 
@@ -477,15 +478,31 @@ impl IosBackend {
             | AnimProp::ScaleY
             | AnimProp::RotateZ => {
                 match prop {
-                    AnimProp::TranslateX => state.translate_x = Some(value),
-                    AnimProp::TranslateY => state.translate_y = Some(value),
+                    AnimProp::TranslateX => {
+                        state.translate_x = Some(value);
+                        state.static_axes &= !AXIS_TRANSLATE_X;
+                    }
+                    AnimProp::TranslateY => {
+                        state.translate_y = Some(value);
+                        state.static_axes &= !AXIS_TRANSLATE_Y;
+                    }
                     AnimProp::Scale => {
                         state.scale_x = Some(value);
                         state.scale_y = Some(value);
+                        state.static_axes &= !(AXIS_SCALE_X | AXIS_SCALE_Y);
                     }
-                    AnimProp::ScaleX => state.scale_x = Some(value),
-                    AnimProp::ScaleY => state.scale_y = Some(value),
-                    AnimProp::RotateZ => state.rotate_z = Some(value),
+                    AnimProp::ScaleX => {
+                        state.scale_x = Some(value);
+                        state.static_axes &= !AXIS_SCALE_X;
+                    }
+                    AnimProp::ScaleY => {
+                        state.scale_y = Some(value);
+                        state.static_axes &= !AXIS_SCALE_Y;
+                    }
+                    AnimProp::RotateZ => {
+                        state.rotate_z = Some(value);
+                        state.static_axes &= !AXIS_ROTATE;
+                    }
                     _ => unreachable!(),
                 }
                 if state.any_transform_set() {
@@ -648,10 +665,11 @@ impl IosBackend {
     /// value.
     ///
     /// We reuse the same [`AnimatedTransformState`] slots the
-    /// `AnimatedValue` path writes (`opacity`, `translate_x/y`,
-    /// `scale_x/y`) and the same [`AnimatedTransformState::compose`]
-    /// matrix, so presence and `AnimatedValue` agree on the final
-    /// `setTransform:`/`setAlpha:` output. The presence handler drives
+    /// `AnimatedValue` path writes (`translate_x/y`, `scale_x/y`) and the
+    /// same [`AnimatedTransformState::compose`] matrix, so presence and
+    /// `AnimatedValue` agree on the final `setTransform:`/`setAlpha:`
+    /// output. A state stating an opacity holds `alpha` against a restyle;
+    /// with none it rests on the static value. The presence handler drives
     /// enter/exit as discrete state writes (apply-before-paint, then
     /// snap-to-rest one frame later for enter; apply exit-state then
     /// drop for exit), so we only ever animate from the *current*
@@ -678,13 +696,14 @@ impl IosBackend {
         // the shared transform slots so `compose()` reflects them and
         // a subsequent `AnimatedValue`/`apply_style` sees consistent
         // state.
-        let target_alpha = state.opacity.unwrap_or(1.0) as CGFloat;
-        st.opacity = Some(target_alpha as f32);
+        st.presence_opacity = state.opacity.is_some();
+        let target_alpha = state.opacity.or(st.static_opacity).unwrap_or(1.0) as CGFloat;
         st.translate_x = Some(state.translate_x.unwrap_or(0.0));
         st.translate_y = Some(state.translate_y.unwrap_or(0.0));
         let s = state.scale.unwrap_or(1.0);
         st.scale_x = Some(s);
         st.scale_y = Some(s);
+        st.static_axes &= !(AXIS_TRANSLATE_X | AXIS_TRANSLATE_Y | AXIS_SCALE_X | AXIS_SCALE_Y);
         let matrix = st.compose();
 
         // Block applied either inside UIView.animate (transition) or

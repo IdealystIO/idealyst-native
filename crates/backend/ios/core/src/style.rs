@@ -141,6 +141,12 @@ pub fn install_gradient(
     Some((gradient_layer, stops_srgb))
 }
 
+/// Remove the gradient sublayer a style has dropped.
+pub fn remove_gradient(view: &UIView) {
+    let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
+    backend_apple_core::sublayers::remove_named_sublayers(&layer, "idealyst_gradient");
+}
+
 /// Per-frame writer for `AnimProp::GradientStopColor(idx)`. Updates
 /// the cached `stops[idx]` and re-applies `setColors:` on the
 /// stored gradient layer — no layer walk, no sublayer rebuild.
@@ -358,7 +364,7 @@ pub fn sync_corner_radius(view: &UIView) {
         // Read the stashed requested radius (set by apply_style when
         // it couldn't clamp). `valueForKey:` returns nil for missing
         // associations.
-        let key = objc2_foundation::NSString::from_str("idealyst_requested_corner_radius");
+        let key = objc2_foundation::NSString::from_str(backend_apple_core::style_reset::REQUESTED_CORNER_RADIUS_KEY);
         let value_ptr: *mut NSObject = msg_send![&layer, valueForKey: &*key];
         if value_ptr.is_null() {
             return;
@@ -649,18 +655,8 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // choose). The framework's flex semantics live entirely in
     // runtime-layout.
 
-    // Opacity
-    if let Some(opacity) = style.opacity.as_ref().map(|t| t.resolve()) {
-        if let Some(trans) = &style.opacity_transition {
-            let view_ref: Retained<UIView> = unsafe { Retained::retain(view as *const UIView as *mut UIView).unwrap() };
-            let trans = *trans;
-            animate(&trans, Rc::new(move || {
-                unsafe { view_ref.setAlpha(opacity as CGFloat) };
-            }));
-        } else {
-            unsafe { view.setAlpha(opacity as CGFloat) };
-        }
-    }
+    // Opacity is the caller's: `alpha` is one field for static and animated values,
+    // and the caller holds the per-view state that tells them apart.
 
     // Corner radius. Clamp to half the view's explicit width/height if
     // either is supplied — UIKit's `cornerRadius` is NOT clamped to
@@ -701,7 +697,7 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         // can re-clamp on a later resize, independent of which branch
         // we take below.
         let key = objc2_foundation::NSString::from_str(
-            "idealyst_requested_corner_radius",
+            backend_apple_core::style_reset::REQUESTED_CORNER_RADIUS_KEY,
         );
         let cls = objc2::class!(NSNumber);
         let number: *mut NSObject = unsafe {
@@ -733,6 +729,8 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         // and idea-ui's `Card`, which documents + tests the same default.
         // Forcing the mask here also cost a full OFFSCREEN RENDER PASS on
         // every rounded view with children. See `backend_apple_core::clip`.
+    } else {
+        backend_apple_core::style_reset::clear_requested_corner_radius(&layer);
     }
 
     // Border. The framework exposes a CSS-style per-side API
@@ -916,9 +914,7 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // again (Rule #7); see that module for why `border_radius` must NOT
     // promote this to "clip" (CSS semantics + an offscreen render pass per
     // rounded view).
-    if let Some(clip) = backend_apple_core::clip::clips_to_bounds(style) {
-        unsafe { view.setClipsToBounds(clip) };
-    }
+    backend_apple_core::style_reset::apply_clip(&layer, backend_apple_core::clip::clips_to_bounds(style));
 
     // Width / height: owned entirely by Taffy. Authors' explicit
     // `width` / `height` flow through `LayoutTree::set_style` into Taffy's
@@ -928,10 +924,13 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // redundant for framework-managed views.
 }
 
+/// `color_animated`: an `AnimProp::ForegroundColor` owns the text colour, and
+/// overrides the stylesheet as it does on web.
 pub fn apply_text_style(
     view: &UIView,
     style: &StyleRules,
     is_label: bool,
+    color_animated: bool,
     font_registry: &crate::font::FontRegistry,
 ) {
     // Text color: same precedence as background (explicit > theme
@@ -949,7 +948,9 @@ pub fn apply_text_style(
     // `style_diff::effective_text_color`. Editable widgets (TextField /
     // TextView, `is_label = false`) keep their native default until the
     // author sets a color.
-    let resolved_color = if is_label {
+    let resolved_color = if color_animated {
+        None
+    } else if is_label {
         Some(crate::style_diff::effective_text_color(style.color.as_ref()).resolve())
     } else {
         style.color.as_ref().map(|color| color.resolve())
@@ -973,14 +974,17 @@ pub fn apply_text_style(
 
     // Font: route family + weight + style + size through the font
     // registry first. Falls back to the system-font path below if no
-    // custom typeface applies. Apply only when the author actually
-    // set a typography knob — leaving every untyped view's default
-    // system font alone matches the prior behavior.
+    // custom typeface applies. A view no typography knob has reached keeps its
+    // default font, and one a style has left goes back to it. Read from the view,
+    // since a label, a field and a text view each have their own.
     let has_typography = style.font_family.is_some()
         || style.font_size.is_some()
         || style.font_weight.is_some()
         || style.font_style.is_some();
-    if has_typography {
+    if !has_typography {
+        backend_apple_core::style_reset::restore_natural_font(view);
+    } else {
+        backend_apple_core::style_reset::remember_natural_font(view);
         let weight = style
             .font_weight
             .as_ref()
