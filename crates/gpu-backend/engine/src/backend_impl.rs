@@ -2719,7 +2719,7 @@ mod a11y_tests {
     use runtime_shared::accessibility::{
         AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
     };
-    use runtime_shared::ColorScheme;
+    use runtime_shared::{ColorScheme, Tokenized};
 
     /// Standalone `Painter` for headless accessibility tests. Implements
     /// the full trait surface with no-op paints — the a11y tests
@@ -3245,6 +3245,109 @@ mod a11y_tests {
         let back = node.borrow().render.shadow.expect("the glow is back");
         let later = Instant::now() + std::time::Duration::from_secs(1);
         assert_eq!(b.animator.sample_color(key, back.color, later), [1.0, 0.0, 1.0, 1.0], "it fades back in fully");
+    }
+
+    /// Regression: `RenderStyle::apply` kept every prop a style dropped, so a
+    /// variant flipping to one without `opacity`, a `color`, a font or a
+    /// `transform` stayed as it was, while web resets through the class swap. Each
+    /// prop goes back to what a node with no style has.
+    #[test]
+    fn regression_gpu_dropped_style_props_keep_their_old_value() {
+        use runtime_shared::{FontFamily, FontStyle, FontWeight, ObjectFit, Transform};
+        let color = |c: &str| Some(Tokenized::Literal(runtime_shared::Color(c.into())));
+        let full = Rc::new(StyleRules {
+            background: color("#ff0000"),
+            color: color("#00ff00"),
+            font_size: Some(Tokenized::Literal(runtime_shared::Length::Px(30.0))),
+            font_family: Some(FontFamily::System("Menlo".into())),
+            font_weight: Some(FontWeight::Bold),
+            font_style: Some(FontStyle::Italic),
+            object_fit: Some(ObjectFit::Cover),
+            opacity: Some(Tokenized::Literal(0.5)),
+            border_top_width: Some(Tokenized::Literal(2.0)),
+            border_right_width: Some(Tokenized::Literal(2.0)),
+            border_bottom_width: Some(Tokenized::Literal(2.0)),
+            border_left_width: Some(Tokenized::Literal(2.0)),
+            border_top_color: color("#0000ff"),
+            border_right_color: color("#0000ff"),
+            border_bottom_color: color("#0000ff"),
+            border_left_color: color("#0000ff"),
+            border_style: Some(runtime_shared::BorderStyle::Dashed),
+            transform: Some(vec![
+                Transform::TranslateX(runtime_shared::Length::Px(10.0)),
+                Transform::Scale(2.0),
+            ]),
+            ..Default::default()
+        });
+        let mut b = make_backend();
+        let node = b.create_text_impl("Twelve", &AccessibilityProps::default());
+        let layout = node.borrow().layout;
+        let unstyled = crate::style_convert::RenderStyle::default();
+
+        b.apply_style_impl(&node, &full);
+        assert_eq!(node.borrow().render.opacity, 0.5);
+        assert_eq!(b.text.borrow().buffers[&layout].buffer.metrics().font_size, 30.0);
+
+        b.apply_style_impl(&node, &Rc::new(StyleRules::default()));
+        let r = node.borrow().render.clone();
+        assert_eq!(r.background, None, "background");
+        assert_eq!(r.color, unstyled.color, "color");
+        assert_eq!(r.font_size, unstyled.font_size, "font_size");
+        assert_eq!(r.font_family, None, "font_family");
+        assert_eq!(r.font_weight, FontWeight::Normal, "font_weight");
+        assert_eq!(r.font_style, FontStyle::Normal, "font_style");
+        assert_eq!(r.object_fit, unstyled.object_fit, "object_fit");
+        assert_eq!(r.opacity, 1.0, "opacity");
+        assert_eq!(r.border_width, [0.0; 4], "border widths");
+        assert_eq!(r.border_color, unstyled.border_color, "border colours");
+        assert_eq!(r.border_style, runtime_shared::BorderStyle::Solid, "border style");
+        assert_eq!(r.static_translate, unstyled.static_translate, "translate");
+        assert_eq!(r.static_scale, [1.0, 1.0], "scale");
+        assert_eq!(
+            b.text.borrow().buffers[&layout].buffer.metrics().font_size,
+            unstyled.font_size,
+            "the shaped text follows the font size back"
+        );
+    }
+
+    /// A dropped `color` fades over its `color_transition` like any other change
+    /// of colour, from the old value to the unstyled one.
+    #[test]
+    fn dropped_color_fades_over_its_transition() {
+        let mut b = make_backend();
+        let node = b.create_text_impl("Twelve", &AccessibilityProps::default());
+        let layout = node.borrow().layout;
+        let key = TweenKey::new(layout, AnimProperty::TextColor);
+        let color_transition = Some(runtime_shared::Transition::new(150, runtime_shared::Easing::Linear));
+        b.apply_style_impl(&node, &Rc::new(StyleRules {
+            color: Some(Tokenized::Literal(runtime_shared::Color("#ffffff".into()))),
+            color_transition,
+            ..Default::default()
+        }));
+
+        b.apply_style_impl(&node, &Rc::new(StyleRules { color_transition, ..Default::default() }));
+        let rest = node.borrow().render.color;
+        let start = Instant::now();
+        assert_eq!(rest, crate::style_convert::RenderStyle::default().color);
+        assert!(b.animator.sample_color(key, rest, start)[0] > 0.9, "it starts from the old colour");
+        let done = start + std::time::Duration::from_secs(1);
+        assert_eq!(b.animator.sample_color(key, rest, done), rest, "and ends on the unstyled one");
+    }
+
+    /// A restyle that never stated these props leaves an animated value alone:
+    /// the animated overrides are composed on top of `render`, not written into it.
+    #[test]
+    fn dropped_opacity_keeps_the_animated_override() {
+        let mut b = make_backend();
+        let node = b.create_view_impl(&AccessibilityProps::default());
+        b.apply_style_impl(&node, &Rc::new(StyleRules {
+            opacity: Some(Tokenized::Literal(0.5)),
+            ..Default::default()
+        }));
+        b.set_animated_f32_impl(&node, runtime_shared::animation::AnimProp::Opacity, 0.25);
+        b.apply_style_impl(&node, &Rc::new(StyleRules::default()));
+        assert_eq!(node.borrow().render.opacity, 1.0);
+        assert_eq!(node.borrow().animated.as_ref().and_then(|a| a.opacity), Some(0.25));
     }
 
     /// Regression: `RenderStyle` kept the last alignment when a style dropped it,

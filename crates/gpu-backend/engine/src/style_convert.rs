@@ -179,12 +179,14 @@ impl Default for RenderStyle {
 }
 
 impl RenderStyle {
-    /// Project from the framework's `StyleRules`. Properties that
-    /// the rules leave unset keep their previous render value — call
-    /// sites should start from the existing `RenderStyle`, not from
-    /// `default()`, so a state overlay setting only `background`
-    /// preserves the base's borders and font size.
+    /// Project from the framework's `StyleRules`. `apply_style` hands over
+    /// the node's full merged rules every time (state overlays included), so
+    /// a property they leave unset was dropped, not "unchanged": it goes back
+    /// to [`RenderStyle::default`], the value of a node with no style, the
+    /// way a class swap resets it on web.
     pub fn apply(&mut self, rules: &StyleRules) {
+        *self = Self::default();
+
         // `.resolve()` subscribes the enclosing apply-style Effect to
         // the per-token signal for each referenced token. Token swaps
         // re-fire only nodes that touched the changed token.
@@ -219,8 +221,7 @@ impl RenderStyle {
         if let Some(fit) = rules.object_fit {
             self.object_fit = fit;
         }
-        // Absence clears, for the same reason as the shadow below: the style
-        // dropped it. `Left` is the renderer's natural, not a stated left
+        // `Left` is the renderer's natural, not a stated left
         // (`text::text_align_to_glyphon`), so right-to-left text keeps its start.
         self.text_align = rules.text_align.unwrap_or(TextAlign::Left);
         if let Some(o) = rules.opacity.as_ref() {
@@ -237,26 +238,13 @@ impl RenderStyle {
         self.corner_radius[3] = px(rules.border_bottom_left_radius.as_ref());
 
         // Border widths.
-        self.border_width[0] = rules
-            .border_top_width
-            .as_ref()
-            .map(|t| t.resolve())
-            .unwrap_or(self.border_width[0]);
-        self.border_width[1] = rules
-            .border_right_width
-            .as_ref()
-            .map(|t| t.resolve())
-            .unwrap_or(self.border_width[1]);
-        self.border_width[2] = rules
-            .border_bottom_width
-            .as_ref()
-            .map(|t| t.resolve())
-            .unwrap_or(self.border_width[2]);
-        self.border_width[3] = rules
-            .border_left_width
-            .as_ref()
-            .map(|t| t.resolve())
-            .unwrap_or(self.border_width[3]);
+        self.border_width = [
+            &rules.border_top_width,
+            &rules.border_right_width,
+            &rules.border_bottom_width,
+            &rules.border_left_width,
+        ]
+        .map(|w| w.as_ref().map(|t| t.resolve()).unwrap_or(0.0));
 
         if let Some(c) = rules.border_top_color.as_ref() {
             self.border_color[0] = parse_color(&c.resolve());
@@ -278,10 +266,7 @@ impl RenderStyle {
         // on the rules; we project to RGBA + concrete f32s so the
         // renderer can stage a shadow rect instance without
         // touching the framework's `Tokenized` types on the hot
-        // path. Absence CLEARS it, unlike the keep-previous fields
-        // above: `apply_style` hands over the node's full merged
-        // rules every time, so an absent shadow means the style
-        // dropped it (a hover glow leaving), not "unchanged".
+        // path.
         self.shadow = rules.shadow.as_ref().map(|sh| ResolvedShadow {
             offset: [sh.x, sh.y],
             blur: sh.blur,
@@ -291,7 +276,6 @@ impl RenderStyle {
         // Background gradient. Resolved into rect-fraction-space so
         // the shader's per-fragment math doesn't need the pixel
         // size — clamp / project happens in 0..1 across the box.
-        // Absence clears, for the same reason as the shadow.
         self.gradient = rules.background_gradient.as_ref().and_then(resolve_gradient);
 
         // Static transform — `TranslateX(50%)` etc. from the
@@ -302,11 +286,6 @@ impl RenderStyle {
         // the per-axis scale. Rotate / Skew are dropped — adding
         // those is a small extension when a real design needs them.
         if let Some(transforms) = rules.transform.as_ref() {
-            // Reset to identity each apply so a re-styled node
-            // doesn't carry a stale transform from its previous
-            // resolution.
-            self.static_translate = [TransformLength::default(); 2];
-            self.static_scale = [1.0, 1.0];
             for t in transforms {
                 match t {
                     Transform::TranslateX(len) => {
