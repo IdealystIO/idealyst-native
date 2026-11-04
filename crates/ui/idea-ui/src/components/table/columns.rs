@@ -129,12 +129,24 @@ pub enum CardSlot {
     /// cap; past the cap it moves to the row's detail sheet. The default.
     #[default]
     Field,
+    /// A [`Field`](Self::Field) that takes the whole line, for a long value
+    /// that would wrap in half of it. It counts toward the same cap.
+    FieldWide,
     /// The card's title — the row's identity. The first column is the
     /// title when no column claims it.
     Title,
     /// The value opposite the title on the title line — the one a reader
-    /// scans the list for (a status, a date).
+    /// scans the list for (a status, a date). In a
+    /// [`CardPresentation::Hairline`](super::CardPresentation::Hairline) list
+    /// it goes on the meta line.
     Opposite,
+    /// A piece of a [`CardPresentation::Hairline`](super::CardPresentation::Hairline)
+    /// row's one meta line, with the `Opposite` column, in column order. On a
+    /// framed card it is a [`Field`](Self::Field).
+    Meta,
+    /// The chip at the end of the title line, before the actions: the row's
+    /// attention marker.
+    Trailing,
     /// The trailing control on the title line — the row's menu.
     Actions,
     /// Straight to the row's detail sheet, never on the card itself.

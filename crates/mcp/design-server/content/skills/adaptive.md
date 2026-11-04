@@ -78,7 +78,7 @@ breakpoint table, so two parts of the screen flip at different widths.
 | List → detail | push the detail; Back pops | list pane beside detail pane; selecting replaces | `list_detail_adaptive` |
 | Confirm / short task | bottom sheet (`ModalPresentation::Sheet`, < `Md`) | centered dialog | `settings_form` |
 | Filters, row actions | bottom sheet | anchored `Popover` / `Menu` | — |
-| Data grid | `TableCards` (a card per row) | `Table` | — |
+| Data grid | `TableCards` (a card per row, or `CardPresentation::Hairline` for one line per record) | `Table` | — |
 | Page actions | wrap under the title; overflow into a menu | inline, right-aligned | `page_layout` |
 | Multi-column form | one column | two columns from `Md` only for short paired fields | `settings_form` |
 | Dashboard tiles | one column | 2 → 4 columns | `dashboard` |

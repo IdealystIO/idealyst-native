@@ -289,13 +289,13 @@ pub use components::switch::{
 #[cfg(feature = "table")]
 pub use components::table::{
     dragged_width, move_in_place, page_window_text, pager_count_text, rows_picker_matters, select_all_state,
-    slide_offset, toggle_select_all, CardSlot, CellAlign, CellPadding, CellTone, ColSpan, ColumnId,
+    slide_offset, toggle_select_all, CardPresentation, CardSlot, CellAlign, CellPadding, CellTone, ColSpan, ColumnId,
     ColumnPin, ColumnResizeCallback, ColumnWidths, RowId, RowTone, SelectAllState, SortState,
     Table, TableCards, TableCardsProps, TableCell, TableCellProps, TableColumn, TableDensity,
     TableEmpty, TableFooter, TableFooterProps, TableGroup, TableGroupProps, TableInset, TablePager, TablePagerProps,
     TableProps, TableRestyle, TableRow, TableRowProps, TableSlotStyles, TableStyles, TableTone, TableVariant,
     ACTIONS_COLUMN_WIDTH_PX, CARD_CELL_CAP,
-    CARD_ESTIMATE_PX, CARD_GAP_PX, CARD_LOAD_AHEAD_PX, COLUMN_RESET_DOUBLE_CLICK_NS,
+    CARD_ESTIMATE_PX, CARD_GAP_PX, CARD_LOAD_AHEAD_PX, CARD_ROW_MIN_HEIGHT_PX, COLUMN_RESET_DOUBLE_CLICK_NS,
     COLUMN_RESIZE_MIN_PX, GRIP_COLUMN_WIDTH_PX, SELECT_COLUMN_WIDTH_PX,
 };
 pub use components::tabs::{Tab, TabIndicator, Tabs, TabsActive, TabsPad, TabsProps, TabsSlotStyles, TabsStyles};

@@ -186,7 +186,8 @@
 //! Below `Sm` a table becomes [`TableCards`]: a virtualized list of
 //! cards laid out from the same column specs (title, opposite, labelled
 //! cells up to a cap, the rest behind "+N more"), with measured heights
-//! and load-on-scroll. See its module docs for the switch.
+//! and load-on-scroll, or `CardPresentation::Hairline` for one line per
+//! record. See its module docs for the switch.
 //!
 //! # Per-cell columns: width, alignment, truncation
 //!
@@ -403,7 +404,10 @@ mod rows;
 mod select;
 
 
-pub use cards::{TableCards, TableCardsProps, CARD_CELL_CAP, CARD_ESTIMATE_PX, CARD_GAP_PX, CARD_LOAD_AHEAD_PX};
+pub use cards::{
+    CardPresentation, TableCards, TableCardsProps, CARD_CELL_CAP, CARD_ESTIMATE_PX, CARD_GAP_PX, CARD_LOAD_AHEAD_PX,
+    CARD_ROW_MIN_HEIGHT_PX,
+};
 pub use columns::{
     dragged_width, CardSlot, CellPadding, ColumnId, ColumnResizeCallback, ColumnWidths,
     TableColumn, ACTIONS_COLUMN_WIDTH_PX, COLUMN_RESET_DOUBLE_CLICK_NS, COLUMN_RESIZE_MIN_PX,

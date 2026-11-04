@@ -21,6 +21,7 @@ use runtime_core::{
     Overflow, Position, TextAlign, TextTransform,
 };
 
+use super::cards::CARD_ROW_MIN_HEIGHT_PX;
 use crate::theme::IdeaThemeRef;
 
 component_styles! {
@@ -1036,7 +1037,9 @@ component_styles! {
         /// border, radius, and a gap between cards (the list's `gap`). A reflowed
         /// row is two-dimensional — a title line over a grid of labelled cells — so
         /// the card boundary is what says where one record ends; a shared hairline
-        /// between rows would compete with the rule above the cells.
+        /// between rows would compete with the rule above the cells. A
+        /// `CardPresentation::Hairline` list has no cells, so it draws `card_row`
+        /// instead.
         slot cards_list {
             base(_t) {
                 flex_grow: 1.0,
@@ -1126,6 +1129,12 @@ component_styles! {
                 gap: t.spacing.xs(),
                 min_width: 0.0,
             }
+            /// `CardSlot::FieldWide` takes the line whatever sits around it.
+            variant span {
+                #[default]
+                half(_t) {}
+                wide(_t) { width: Length::Percent(100.0) }
+            }
         }
 
         slot card_label {
@@ -1145,6 +1154,89 @@ component_styles! {
             base(_t) {
                 flex_direction: FlexDirection::Row,
                 justify_content: JustifyContent::FlexStart,
+            }
+        }
+
+        /// The select-all line above a selectable list: the tri-state box and
+        /// "N selected", pinned while the rows scroll.
+        slot cards_header {
+            base(t) {
+                flex_shrink: 0.0,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding_vertical: t.spacing.xs(),
+                padding_horizontal: t.spacing.lg(),
+            }
+        }
+
+        /// One row of a `CardPresentation::Hairline` list: [selection box]
+        /// title over meta line … trailing chip [row menu]. Edge to edge, no
+        /// frame; the theme's border separates the rows.
+        slot card_row {
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: t.spacing.sm(),
+                min_height: CARD_ROW_MIN_HEIGHT_PX,
+                padding_vertical: t.spacing.sm(),
+                padding_horizontal: t.spacing.lg(),
+                border_bottom_width: 1.0,
+                border_bottom_color: t.color.border(),
+            }
+            // A row with a press: `on_row_click`, or its detail sheet.
+            variant interactive {
+                #[default]
+                off(_t) {}
+                on(_t) { cursor: Cursor::Pointer }
+            }
+        }
+
+        /// A hairline row's title over its meta line, taking the width the
+        /// chip and the menu leave.
+        slot card_row_body {
+            base(t) {
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                min_width: 0.0,
+                gap: t.spacing.xs(),
+            }
+        }
+
+        slot card_row_title {
+            base(t) {
+                font_size: t.typography.body_size(),
+                font_weight: FontWeight::Medium,
+                color: t.color.text(),
+                min_width: 0.0,
+            }
+        }
+
+        /// A hairline row's one meta line.
+        slot card_meta {
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: t.spacing.xs(),
+                font_size: t.typography.caption_size(),
+                color: t.color.text_muted(),
+                min_width: 0.0,
+            }
+        }
+
+        /// The dot between two pieces of the meta line.
+        slot card_meta_separator {
+            base(t) {
+                font_size: t.typography.caption_size(),
+                color: t.color.text_muted(),
+            }
+        }
+
+        /// The `CardSlot::Trailing` chip's holder: it keeps its size and the
+        /// body gives way.
+        slot card_trailing {
+            base(_t) {
+                flex_shrink: 0.0,
+                align_items: AlignItems::FlexEnd,
             }
         }
 

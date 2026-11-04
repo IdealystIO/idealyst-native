@@ -67,20 +67,53 @@ pub fn toggle_select_all(selected: &BTreeSet<RowId>, visible: &[RowId]) -> BTree
     next
 }
 
-/// The header row's tri-state box.
+/// The header row's tri-state box, over the rows the table was built with.
 pub(super) fn select_all_box(selection: Signal<BTreeSet<RowId>>, visible: Rc<Vec<RowId>>) -> Element {
+    let nothing_to_select = visible.is_empty();
+    select_all_control(
+        selection,
+        Rc::new(move || visible.clone()),
+        Reactive::Static(nothing_to_select),
+        Reactive::Static(None),
+    )
+}
+
+/// The tri-state box over a list of rows that can change under it, with an
+/// optional label beside it: `TableCards`' select-all line.
+pub(super) fn select_all_line(
+    selection: Signal<BTreeSet<RowId>>,
+    visible: runtime_core::Memo<Vec<RowId>>,
+    label: Reactive<Option<String>>,
+) -> Element {
+    select_all_control(
+        selection,
+        Rc::new(move || Rc::new(visible.get())),
+        Reactive::derive(move || visible.with(|v| v.is_empty())),
+        label,
+    )
+}
+
+fn select_all_control(
+    selection: Signal<BTreeSet<RowId>>,
+    visible: Rc<dyn Fn() -> Rc<Vec<RowId>>>,
+    disabled: Reactive<bool>,
+    label: Reactive<Option<String>>,
+) -> Element {
     let state = {
         let visible = visible.clone();
-        memo(move || selection.with(|s| select_all_state(s, &visible)))
+        memo(move || {
+            let visible = visible();
+            selection.with(|s| select_all_state(s, &visible))
+        })
     };
     // The checkbox is controlled by a `Signal<bool>`; it follows the
     // derived state (checked for some or all, the dash telling them apart).
     let checked = signal(false);
     let _ = effect(move || checked.set(state.get() != SelectAllState::None));
-    let nothing_to_select = visible.is_empty();
     Checkbox(&CheckboxProps {
         value: checked,
         on_change: Rc::new(move |_| {
+            let visible = visible();
             let next = selection.with(|s| toggle_select_all(s, &visible));
             selection.set(next);
         }),
@@ -88,7 +121,8 @@ pub(super) fn select_all_box(selection: Signal<BTreeSet<RowId>>, visible: Rc<Vec
             (state.get() == SelectAllState::Some).then_some(MIXED_MARK)
         })),
         size: ControlSize::Sm.into(),
-        disabled: Reactive::Static(nothing_to_select),
+        disabled,
+        label,
         ..Default::default()
     })
 }

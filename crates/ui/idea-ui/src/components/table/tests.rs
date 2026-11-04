@@ -3123,6 +3123,52 @@ fn regression_a_card_field_alone_on_its_line_takes_the_full_width() {
     });
 }
 
+/// CrewForge (want_1749af8b): a long text field could only sit in half a line
+/// beside another field. `CardSlot::FieldWide` (the `span: wide` arm) takes the
+/// whole line whatever its neighbours are, laid out by the same Taffy wrapper.
+#[test]
+fn regression_a_wide_card_field_takes_its_line_beside_a_half_field() {
+    use runtime_layout::LayoutTree;
+    const CARD_WIDTH: f32 = 340.0;
+    with_test_world(|| {
+        let fields_rules = runtime_core::resolve_style(&TableStyles::card_fields().into_style_application());
+        let half = runtime_core::resolve_style(&TableStyles::card_field().into_style_application());
+        let wide = runtime_core::resolve_style(&TableStyles::card_field().set(TableSpan::Wide).into_style_application());
+        let mut layout = LayoutTree::new();
+        let row = layout.new_node();
+        layout.set_style(row, &fields_rules);
+        let frames: Vec<_> = [&half, &wide, &half]
+            .into_iter()
+            .map(|rules| {
+                let f = layout.new_node();
+                layout.set_style(f, rules);
+                layout.add_child(row, f);
+                f
+            })
+            .collect();
+        layout.compute(row, CARD_WIDTH, 800.0);
+        let widths: Vec<f32> = frames.iter().map(|f| layout.frame_of(*f).width).collect();
+        assert_eq!(widths, vec![CARD_WIDTH, CARD_WIDTH, CARD_WIDTH], "the wide field pushes its neighbours onto their own lines");
+    });
+}
+
+/// The hairline row: no frame, the theme's border underneath, and the floor a
+/// one-line record needs.
+#[test]
+fn card_row_is_unframed_with_a_hairline_under_it() {
+    with_test_world(|| {
+        let r = runtime_core::resolve_style(&TableStyles::card_row().into_style_application());
+        assert!(r.border_top_width.is_none() && r.border_left_width.is_none(), "no frame");
+        assert!(r.border_top_left_radius.is_none(), "no card corners");
+        assert_eq!(
+            r.border_bottom_color.as_ref().map(|c| c.clone().resolve()),
+            Some(idea_theme::tokens().color.border().resolve()),
+            "the theme's border separates the rows"
+        );
+        assert_eq!(r.min_height, Some(runtime_core::Tokenized::Literal(Length::Px(CARD_ROW_MIN_HEIGHT_PX))));
+    });
+}
+
 /// CrewForge (want_23538e50): a cell's `text` had no line height, so it
 /// computed to `line-height: normal` (about 16px at 14px) and a value
 /// that wraps — a `flex` column's prose — stacked its lines with no
