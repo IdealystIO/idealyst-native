@@ -11,7 +11,26 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
-- **Hugging components follow their parent's alignment** (`idea-ui` major,
+- **A style that drops a prop resets it on every native backend** (`render-wgpu`,
+  `backend-macos`, `backend-ios-mobile`, `backend-ios-core` major: `apply_text_style`
+  takes `color_animated` and `apply_style_to_view` no longer writes opacity,
+  `backend-android-mobile`, `backend-windows`, `backend-terminal`, `backend-cpu`).
+  A view returns to what it had with no style, as a class swap does on web:
+  font, colour, opacity, transform, radius, gradient, overflow, background,
+  border and `object_fit`. On iOS, macOS and Android a restyle no longer
+  overwrites an animated opacity, and a `presence` rests on the stylesheet's
+  opacity rather than 1.0.
+- **A rounded view on macOS no longer clips its children unless it asks to**
+  (`backend-macos`). State `overflow: Hidden` to clip, as on web and iOS. Own-layer
+  shadows paint from mount, so an elevated Card can gain a shadow it never had,
+  and a rounded gradient follows its radius on macOS and iOS.
+- **`--local` and full-stack local web bundles move to a new `idealyst-web-<key>`
+  once, one cold build** (`idealyst-cli`). The CLI now needs an `idealyst` with
+  the `dev` feature, so upgrade them together.
+- **A known-size `flat_list` row fills its slot on web** (`backend-web`), as on
+  native. A row that sets its own size keeps it, and measured rows are unchanged.
+
+- **Hugging components follow- **Hugging components follow their parent's alignment** (`idea-ui` major,
   `runtime-shared` major: `Length::FitContent`, `runtime-layout`, wire protocol
   26). Button, Tag, Chip, Badge, IconButton, Avatar and Spinner no longer set
   `align_self: Center`, and SegmentedControl and Calendar no longer set
@@ -1201,7 +1220,27 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
-- **idea-ui additions** (`idea-ui` major, `table` major): `leading` on Tag and
+- **Checks through a dev session** (`idealyst-cli`, `dev-reload`, `dev-events`,
+  `build-web`, `mcp-server`). `idealyst check --session [DIR]`, `rebuild_dev` with
+  `apply: false` and `POST /check` run the session's own build and apply nothing:
+  no restart, no reload, saves stay queued, and the next rebuild finds those
+  crates fresh. `idealyst check --session --tests -p <crate>` compiles a crate's
+  test modules in the session's server target directory.
+- **`[package.metadata.idealyst.dev]` declares a session's build settings**
+  (`idealyst-cli`, `build-web`). A differing cache-affecting flag warns before
+  building, a one-off override no longer retires the configured build's directory,
+  and `--no-config` ignores the table.
+- **`idealyst` `dev` feature** forwarding `runtime-core/dev`, so `idealyst dev --web`
+  builds an app naming only `idealyst`.
+- **`introspect_native` reads the real widget on iOS and Android**, and painter
+  state on the GPU backend (`backend-ios-mobile`, `backend-android-mobile`,
+  `render-wgpu`, `runtime-vocabulary` major: `Robot::introspect_native` returns
+  `ActionNotAvailable` on a backend with no read, and a backend overriding it must
+  also override `supports_native_introspection`). `robot-e2e` gains
+  `to_have_native_opacity` and `to_have_native_length`.
+- **Robot `set_scroll` works on a `flat_list`** (`runtime-vocabulary`).
+
+- **idea-ui additions** (- **idea-ui additions** (`idea-ui` major, `table` major): `leading` on Tag and
   Chip; `group` headings on `SelectOption`, in Select and Autocomplete;
   Autocomplete remote mode (`filter`, `on_query`, `loading`, `loading_text`,
   `allow_free_text`); TableCards `CardPresentation::Hairline`,
@@ -3083,7 +3122,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
-- **A body edit reached only through a closure reaches the page** (`build-web`).
+- **Android primitives** (`backend-android-mobile`). `activity_indicator` is visible
+  and follows `size` and `color`. `on_end_reached` fires on `scroll_view` and
+  `flat_list`. `flat_list` rows sit in their slot and honour `fixed_size`, so a
+  list follows its data instead of stopping after the first row, and a torn-down
+  list releases its adapter, rows and watcher.
+- **`activity_indicator` follows a live size** on iOS, Android, macOS, Linux, Windows,
+  the GPU backend and terminal, and layout follows it. Windows honours size at
+  creation, so a `Large` spinner there is 32 tall.
+- **Robot `press_native` lights `state pressed`** on backends without input injection
+  (`runtime-vocabulary`). **iOS `is_shown`** no longer squares the opacity, and
+  **macOS native opacity readback** no longer squares it.
+- **Going to another web build configuration and back no longer serves the other
+  configuration's bundle** (`build-web`).
+
+- **A body edit reached only through a closure- **A body edit reached only through a closure reaches the page** (`build-web`).
   A patch redirected only changed functions and their direct callers, but its
   jump table is read only by a component's hot call. So an edit that runs in a
   closure a component only boxes (a reactive `text`, an `on_click`), or in a
