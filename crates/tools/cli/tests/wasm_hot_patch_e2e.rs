@@ -383,6 +383,10 @@ impl Page {
 /// Spawn `idealyst dev --web --local` in `project` and a headless Chrome
 /// on it, and attach to the page.
 fn start(project: &Path, scratch: &Path) -> (Session, Page) {
+    start_with(project, scratch, &[])
+}
+
+fn start_with(project: &Path, scratch: &Path, flags: &[&str]) -> (Session, Page) {
     let chrome = browser()
         .expect("this test needs Chrome/Chromium, or IDEALYST_BROWSER pointing at one");
     let log = Arc::new(Mutex::new(String::new()));
@@ -392,6 +396,7 @@ fn start(project: &Path, scratch: &Path) -> (Session, Page) {
     let mut dev = Command::new(env!("CARGO_BIN_EXE_idealyst"))
         .current_dir(project)
         .args(["dev", "--web", "--local", "--port", &port.to_string()])
+        .args(flags)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -428,6 +433,119 @@ fn start(project: &Path, scratch: &Path) -> (Session, Page) {
     );
     let page = Page::attach(debug_port);
     (session, page)
+}
+
+/// The additive edits CrewForge measured as rebuilds (`idealyst-hotpatch-breakdown.md`
+/// tests 3 and 3b), through the real macros, the real dev loop and a real page.
+/// `build-web`'s `wasm_patch_additive` proves the pairing with hand-written
+/// expansions and `ui-lowering-parity`'s `symbol_stability` proves the macros'
+/// symbols; only this proves the two together. Each save must keep the marker
+/// a reload would clear.
+#[test]
+#[ignore = "compiles the framework for wasm32 and drives headless Chrome; run with --ignored"]
+fn regression_adding_a_component_or_a_new_file_patches_the_running_page() {
+    let repo = repo_root();
+    let tmp = tempfile::tempdir().unwrap();
+    let project = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wasm_hot_patch_additive_e2e");
+    materialize(&project, &repo);
+    let _ = std::fs::remove_dir_all(project.join("src/app"));
+
+    let (session, mut page) = start_with(&project, tmp.path(), &["--experimental-web-additive"]);
+    assert!(
+        page.wait_for_text("logic v1 -> 0", Duration::from_secs(60)),
+        "the app never rendered: {:?}",
+        page.text()
+    );
+    page.eval(
+        "(async () => { \
+            const b = [...document.querySelectorAll('button,[role=button]')] \
+                .find(e => e.textContent.trim() === '+1'); \
+            b.click(); \
+            window.__e2e_marker = 'still-here'; \
+        })()",
+    );
+    assert!(page.wait_for_text("count = 1", Duration::from_secs(5)), "{:?}", page.text());
+
+    let app_rs = project.join("src/app.rs");
+    let save = |what: &str, edit: &dyn Fn(String) -> String, shows: &str, session: &Session, page: &mut Page| {
+        let source = std::fs::read_to_string(&app_rs).unwrap();
+        let edited = edit(source.clone());
+        assert_ne!(source, edited, "{what}: the edit changed nothing");
+        std::fs::write(&app_rs, edited).unwrap();
+        assert!(
+            page.wait_for_text(shows, Duration::from_secs(240)),
+            "{what} never reached the page. Page: {:?}\nLog tail:\n{}",
+            page.text(),
+            tail(&session.log()),
+        );
+        assert_eq!(
+            page.eval("window.__e2e_marker"),
+            json!("still-here"),
+            "{what} reloaded the page instead of patching it. Log tail:\n{}",
+            tail(&session.log()),
+        );
+        assert!(page.text().contains("count = 1"), "{what} lost app state: {:?}", page.text());
+    };
+
+    // A component ahead of an existing one: its impls would take the numbers
+    // of `Badge`'s, were they not scoped to the component.
+    save(
+        "a component ahead of its neighbour",
+        &|s| {
+            s.replace(
+                "#[component]\nfn Badge(",
+                "#[component]\nfn Ahead(label: String) -> Element {\n    ui! { text { \"ahead {label}\" } }\n}\n\n#[component]\nfn Badge(",
+            )
+            .replace(
+                "Badge(label = \"draft\".to_string())",
+                "Ahead(label = \"one\".to_string())\n            Badge(label = \"draft\".to_string())",
+            )
+        },
+        "ahead one",
+        &session,
+        &mut page,
+    );
+
+    // CrewForge's test 3: a component, an explicit `#[props]` struct and a
+    // hand-written `Default`, at the end of the file. A hand-written impl is
+    // numbered ahead of every macro-generated one.
+    save(
+        "a component, props and a hand-written Default at the end of the file",
+        &|s| {
+            let added = "\n#[runtime_core::props]\npub struct TrailerProps {\n    pub label: String,\n}\n\n\
+                         impl Default for TrailerProps {\n    fn default() -> Self {\n        \
+                         Self { label: \"trailer\".to_string().into() }\n    }\n}\n\n\
+                         #[component]\nfn Trailer(props: &TrailerProps) -> Element {\n    \
+                         let label = props.label.clone();\n    ui! { text { move || label.get() } }\n}\n";
+            let rendered =
+                s.replace("Ahead(label = \"one\".to_string())", "Ahead(label = \"one\".to_string())\n            Trailer()");
+            format!("{rendered}{added}")
+        },
+        "trailer",
+        &session,
+        &mut page,
+    );
+
+    // CrewForge's test 3b: a component in a new file, with only `mod` and
+    // `use` lines and a body edit in the existing file.
+    std::fs::create_dir_all(project.join("src/app")).unwrap();
+    std::fs::write(
+        project.join("src/app/added.rs"),
+        "use runtime_core::{component, ui, Element};\n\n\
+         #[component]\npub fn Added() -> Element {\n    ui! { text { \"from a new file\" } }\n}\n",
+    )
+    .unwrap();
+    save(
+        "a component in a new file",
+        &|s| {
+            let s = s.replacen("use std::cell::RefCell;", "mod added;\nuse added::Added;\nuse std::cell::RefCell;", 1);
+            s.replace("Trailer()", "Trailer()\n            Added()")
+        },
+        "from a new file",
+        &session,
+        &mut page,
+    );
+    assert_own_mode(&session.log());
 }
 
 #[test]
