@@ -3122,6 +3122,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Server patches reach more of a real app** (`build-runtime-server`, `dev-reload`,
+  `idealyst-cli`; `--experimental-build` or `--experimental-server-patch`). Under
+  `--no-watch`, a rebuild request that releases queued saves can patch the running
+  server. Objects with more than 65,280 sections parse, and a static the linker
+  stripped from the binary no longer refuses a patch, so large crates such as
+  `api-server` patch. A generic instantiation named only by stripped code no longer
+  refuses one, and one live code needs comes from the upstream rlib when that runs
+  the same code. A session check that relinks the server no longer misleads the
+  unchanged-function check for short functions.
+- **A server patch's replay continues the build's incremental session, and is killed
+  past `IDEALYST_SERVER_PATCH_BUDGET_SECS`** (default 60, `0` for no limit), after
+  which the save rebuilds (`build-runtime-server`, `idealyst-cli`).
 - **Android primitives** (`backend-android-mobile`). `activity_indicator` is visible
   and follows `size` and `color`. `on_end_reached` fires on `scroll_view` and
   `flat_list`. `flat_list` rows sit in their slot and honour `fixed_size`, so a
