@@ -81,7 +81,6 @@ use runtime_core::{
 };
 
 use crate::components::popover::dismiss_catcher;
-use crate::components::tooltip::trigger_wrapper_sheet;
 use crate::theme::IdeaThemeRef;
 
 component_styles! {
@@ -398,9 +397,7 @@ pub fn HoverCard(props: HoverCardProps) -> Element {
             .on_focus(move |focused| focus_intent.focus_trigger(focused))
             // Returns the recognizer's response so the press still reaches
             // the trigger's own handler.
-            .on_touch(move |ev| lp_handler(ev))
-            // Layout-transparent: the trigger sits where it would bare.
-            .with_style(trigger_wrapper_sheet());
+            .on_touch(move |ev| lp_handler(ev));
         with_test_id!(wrapper, props.test_id).into_element()
     };
 

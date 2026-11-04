@@ -26,7 +26,7 @@
 //! inherits no color from the disc).
 
 use runtime_core::{
-    component, component_styles, image_from, ui, AlignItems, AlignSelf, Element, FontWeight, IdealystSchema,
+    component, component_styles, image_from, ui, AlignItems, Element, FontWeight, IdealystSchema,
     ImageSource, IntoElement, JustifyContent, Length, ObjectFit, Overflow, Reactive, SlotRestyle, TextAlign,
     TextTransform,
 };
@@ -50,12 +50,10 @@ component_styles! {
                 border_radius: t.radius.pill(),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                // Hug: a row of mixed-size avatars centers rather than
-                // top-aligning under the parent's `align-items: stretch`.
-                align_self: AlignSelf::Center,
                 overflow: Overflow::Hidden,
             }
-            /// The diameter: 24 / 32 / 40 / 56 / 80 px.
+            /// The diameter: 24 / 32 / 40 / 56 / 80 px. Fixed on both axes, so a
+            /// flex parent can't stretch it and its alignment places it.
             variant size {
                 xs(_t) { width: 24.0, height: 24.0 }
                 sm(_t) { width: 32.0, height: 32.0 }
@@ -257,7 +255,7 @@ mod tests {
     use crate::test_support::{classify, TStyle, P};
     use idea_theme::testing::{commit, with_test_world};
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, signal, AlignSelf, Color, Tokenized};
+    use runtime_core::{resolve_style, signal, Color, Tokenized};
 
     /// The disc's and the initials' styles of an initials Avatar.
     fn disc_and_text(props: &AvatarProps) -> (TStyle, TStyle) {
@@ -366,12 +364,10 @@ mod tests {
         });
     }
 
-    // Regression: an Avatar is a fixed-size atom — it must center on its
-    // parent's cross axis (`align_self: Center`) so a row of mixed-size
-    // avatars centers instead of top-aligning under the default
-    // `align-items: stretch` (the Avatar "Sizes" row report).
+    // Regression (want_b06f208f): an Avatar is placed by its parent, so no
+    // `align_self`. A row of mixed sizes centres with `align = Center`.
     #[test]
-    fn avatar_centers_on_cross_axis() {
+    fn regression_avatar_leaves_alignment_to_its_parent() {
         with_test_world(|| {
             install_idea_theme(light_theme());
             // `application()` evaluates a reactive style closure or returns the
@@ -380,11 +376,7 @@ mod tests {
                 P::View { style, .. } => style.expect("Avatar attaches a style").application(),
                 _ => panic!("Avatar renders a styled View"),
             };
-            assert_eq!(
-                resolve_style(&app).align_self,
-                Some(AlignSelf::Center),
-                "an Avatar centers on the cross axis instead of stretching/top-aligning"
-            );
+            assert_eq!(resolve_style(&app).align_self, None);
     });
     }
 }

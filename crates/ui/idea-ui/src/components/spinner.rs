@@ -8,18 +8,18 @@
 //! closed-enum [`crate::components::spinner`].
 
 use runtime_core::primitives::activity_indicator::{activity_indicator, ActivityIndicatorSize};
-use runtime_core::{component, component_styles, AlignSelf, Element, IdealystSchema, IntoElement, VariantEnum};
+use runtime_core::{component, component_styles, Element, IdealystSchema, IntoElement, Length, VariantEnum};
 
 use crate::theme::IdeaThemeRef;
 
 component_styles! {
     /// The styled sections of [`Spinner`].
     pub Spinner<IdeaThemeRef> {
-        /// The indicator. It hugs and centers on its parent's cross axis,
-        /// so a row of mixed-size spinners centers instead of top-aligning
-        /// under the default `align-items: stretch`.
+        /// The indicator. It hugs by size, so a flex parent's `align-items:
+        /// stretch` can't grow it and the parent's alignment places it. A row of
+        /// mixed sizes centres with `align = Center`.
         slot root {
-            base(_t) { align_self: AlignSelf::Center }
+            base(_t) { width: Length::FitContent, height: Length::FitContent }
         }
     }
 }

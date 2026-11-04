@@ -23,7 +23,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, component_styles, icon, resolve_style, text, ui, AlignItems, AlignSelf, Color, Cursor, Element,
+    component, component_styles, icon, resolve_style, text, ui, AlignItems, Color, Cursor, Element,
     FontWeight, IconData, IdealystSchema, IntoElement, JustifyContent, Length, PressableHandle, Reactive, Ref,
     SlotRestyle, StyleRules, TextAlign, Tokenized, UserSelect,
 };
@@ -50,16 +50,13 @@ component_styles! {
                 text_align: TextAlign::Center,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                // Hug + center on the cross axis: a flex parent's default
-                // `align-items: stretch` otherwise top-aligns the square in
-                // a row of mixed sizes.
-                align_self: AlignSelf::Center,
                 cursor: Cursor::Pointer,
                 user_select: UserSelect::None,
                 // A resting value for the hover/press dim to animate back to.
                 opacity: 1.0,
             }
-            /// The square's side: 24 / 32 / 48 px, fully round.
+            /// The square's side: 24 / 32 / 48 px, fully round. Fixed on both
+            /// axes, so a flex parent can't stretch it and its alignment places it.
             variant size {
                 sm(t) {
                     padding: t.spacing.xs(),
@@ -700,12 +697,10 @@ mod tests {
         });
     }
 
-    // Regression: an IconButton must center on its parent's cross axis
-    // (`align_self: Center`) so a row of mixed-size icon buttons centers
-    // instead of top-aligning under the parent's default `align-items:
-    // stretch` (the IconButton "Sizes" row report).
+    // Regression (want_b06f208f): an IconButton is placed by its parent, so no
+    // `align_self`. A row of mixed sizes centres with `align = Center`.
     #[test]
-    fn icon_button_centers_on_cross_axis() {
+    fn regression_icon_button_leaves_alignment_to_its_parent() {
         with_test_world(|| {
             theme();
             let app = match classify(IconButton(&IconButtonProps::default())) {
@@ -715,11 +710,7 @@ mod tests {
                 },
                 _ => panic!("IconButton renders a Pressable"),
             };
-            assert_eq!(
-                runtime_core::resolve_style(&app).align_self,
-                Some(AlignSelf::Center),
-                "an IconButton centers on the cross axis instead of stretching/top-aligning"
-            );
+            assert_eq!(runtime_core::resolve_style(&app).align_self, None);
     });
     }
 

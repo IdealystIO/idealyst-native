@@ -48,7 +48,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, component_styles, pressable, recipe, ui, view, AlignItems, AlignSelf, Element,
+    component, component_styles, pressable, recipe, ui, view, AlignItems, Element,
     FlexDirection, FontWeight, IdealystSchema, IntoElement, Length, Reactive, SlotRestyle, StyleRules,
     TextAlign,
 };
@@ -74,7 +74,11 @@ component_styles! {
         slot root {
             extend(root_surfaces)
             base(t) {
-                align_self: AlignSelf::Center,
+                // Hug by size, not an `align_self`: it stops a flex parent's
+                // `align-items: stretch` growing the pill and leaves the parent's
+                // alignment in charge of where it goes.
+                width: Length::FitContent,
+                height: Length::FitContent,
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 gap: t.spacing.xs(),

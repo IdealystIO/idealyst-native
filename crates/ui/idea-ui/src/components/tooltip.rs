@@ -29,14 +29,12 @@
 //! hint wraps *inside* one rounded surface instead of painting a ragged
 //! background strip per line. For clickable content reach for `Popover`.
 
-use std::rc::Rc;
-
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
     after_ms_detached, component, long_press, signal, ui, ChildList, Element, IdealystSchema,
-    IntoElement, JustifyContent, LongPressRecognizer, Reactive, Ref, StyleRules, StyleSheet,
-    ViewHandle, component_styles, Color, FlexDirection, TextAlign,
+    IntoElement, LongPressRecognizer, Reactive, Ref, ViewHandle, component_styles, Color,
+    FlexDirection, TextAlign,
 };
 
 use crate::theme::IdeaThemeRef;
@@ -130,32 +128,6 @@ impl Default for TooltipProps {
     }
 }
 
-/// The trigger wrapper's sheet: layout-transparent, so the trigger lands
-/// where it would without a Tooltip. `HoverCard` wraps its trigger with the
-/// same sheet.
-///
-/// - No `align_self`: the wrapper follows the parent's `align_items` like
-///   the bare trigger would. Not `align_self: Center` (what the pills hug with): that
-///   overrides the parent, so a Tooltip centred its trigger in a column
-///   and `Stack(align = Start)` could not pull it back.
-/// - `justify_content: Center`: in a row the parent's default stretch
-///   makes the wrapper as tall as the line, and the trigger is the
-///   wrapper's (column) main axis. A pill that hugs with `align_self: Center`
-///   (Badge, Tag, IconButton) centres itself on the row's cross axis when
-///   bare, so it is centred in the stretched wrapper too, not dropped to its
-///   top. In a column the wrapper is as tall as its content, so this is a
-///   no-op there. A Button hugs by size and sits at the top of a stretching
-///   row when bare, so a Tooltip does move that one trigger, to the middle.
-pub(crate) fn trigger_wrapper_sheet() -> Rc<StyleSheet> {
-    // `r#static` auto-premints by content, and the wrapper builds with the
-    // TRIGGER (crawl-visible), not with the lazily-opened bubble — so the
-    // dump does see this construction and its CSS ships.
-    Rc::new(StyleSheet::r#static(StyleRules {
-        justify_content: Some(JustifyContent::Center),
-        ..Default::default()
-    }))
-}
-
 /// The bubble surface: a `view` BOX carrying the background, border, padding,
 /// radius and the max-width clamp, with the label `text` inside it.
 ///
@@ -205,7 +177,15 @@ pub fn Tooltip(props: TooltipProps) -> Element {
         after_ms_detached(dismiss_ms, move || open.set(false));
     });
 
-    // The trigger, wrapped so we can attach the anchor ref + hover/touch.
+    // The trigger, wrapped so we can attach the anchor ref + hover/touch. Unstyled,
+    // so layout-transparent: the wrapper follows the parent's `align_items` as the
+    // bare trigger would, and a hugging trigger keeps to its own size inside it.
+    // Any `align_self` or `justify_content` here would move the trigger.
+    //
+    // In a stretching parent the wrapper is the line's width, and the bubble
+    // anchors to it: a hugging trigger at the start of a default column has its
+    // bubble centred on the line. `align = ElementAlign::Start` on the Tooltip, or
+    // a parent with `Stack(align = Start)`, puts the bubble over the trigger.
     let mut kids: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut kids);
@@ -217,8 +197,6 @@ pub fn Tooltip(props: TooltipProps) -> Element {
         // Touch: long-press → show (auto-dismiss). Returns the recognizer's
         // response so the press still bubbles for the trigger's own handler.
         .on_touch(move |ev| lp_handler(ev))
-        // Layout-transparent: the trigger sits where it would bare.
-        .with_style(trigger_wrapper_sheet())
         .into_element();
 
     // The bubble — anchored to the wrapper, present only while `open`. The

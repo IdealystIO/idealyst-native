@@ -23,16 +23,21 @@ use runtime_layout::{AvailableSpace, Frame, LayoutNode, LayoutTree, Size};
 
 pub const CHAR_ADVANCE: f32 = 8.0;
 pub const LINE_HEIGHT: f32 = 20.0;
+pub const SPINNER_SIDE: f32 = 20.0;
 
 /// Single-line text measure: content width at a fixed advance, capped by a
-/// definite width.
+/// definite width. Its min-content is the longest word, where a platform's text
+/// would wrap, so a pill hugging a long label stays inside its parent.
 fn text_measure(content: String) -> runtime_layout::MeasureFn {
     Rc::new(move |known: Size<Option<f32>>, avail: Size<AvailableSpace>| {
         let full = content.chars().count() as f32 * CHAR_ADVANCE;
         let width = match (known.width, avail.width) {
             (Some(w), _) => w,
             (None, AvailableSpace::Definite(w)) => full.min(w),
-            (None, _) => full,
+            (None, AvailableSpace::MinContent) => {
+                content.split_whitespace().map(|w| w.chars().count()).max().unwrap_or(0) as f32 * CHAR_ADVANCE
+            }
+            (None, AvailableSpace::MaxContent) => full,
         };
         Size { width, height: known.height.unwrap_or(LINE_HEIGHT) }
     })
@@ -114,6 +119,17 @@ pub fn lay_out(pane_width: f32, pane_height: f32, build: impl FnOnce() -> Elemen
         layout.set_style(ln, &rules);
         if let Some(content) = kind.strip_prefix("text ") {
             layout.set_measure_fn(ln, text_measure(content.trim_matches('"').to_string()));
+        }
+        if kind == "activity_indicator" {
+            // The native spinner's own size, reported through a measure fn as
+            // iOS, macOS and Linux do.
+            layout.set_measure_fn(
+                ln,
+                Rc::new(|known: Size<Option<f32>>, _| Size {
+                    width: known.width.unwrap_or(SPINNER_SIDE),
+                    height: known.height.unwrap_or(SPINNER_SIDE),
+                }),
+            );
         }
         ids.insert(node, ln);
         for child in h.children_of(node) {

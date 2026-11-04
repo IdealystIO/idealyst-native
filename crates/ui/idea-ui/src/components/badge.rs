@@ -17,7 +17,7 @@
 //! component style.
 
 use runtime_core::{
-    component, component_styles, text, AlignSelf, Element, FontWeight, IdealystSchema, IntoElement, Reactive,
+    component, component_styles, text, Element, FontWeight, IdealystSchema, IntoElement, Length, Reactive,
     SlotRestyle, TextAlign, TextTransform,
 };
 
@@ -37,10 +37,12 @@ component_styles! {
         slot root {
             extend(root_surfaces)
             base(t) {
-                // Hug: keep the pill sized to content instead of stretching
-                // to a flex parent's cross axis (which would grow it to the
-                // row height and float its label to the top).
-                align_self: AlignSelf::Center,
+                // Hug by size: stretching to a flex parent's cross axis would
+                // grow the pill to the row height and float its label to the top.
+                // Not an `align_self`, which would also override the parent's
+                // alignment.
+                width: Length::FitContent,
+                height: Length::FitContent,
                 padding_vertical: 2.0,
                 padding_horizontal: t.spacing.sm(),
                 border_radius: t.radius.pill(),
@@ -109,12 +111,13 @@ mod tests {
     use crate::test_support::{classify, P, TStyle};
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, AlignSelf};
+    use runtime_core::{resolve_style, Tokenized};
 
-    // Regression: a Badge is an inline pill — it must HUG its content
-    // (`align_self: Center`), not inherit a flex parent's default
-    // `align-items: stretch` and grow to the row's height, which floated the
-    // label to the top of an over-tall pill (the Intents-row report).
+    // Regression: a Badge is an inline pill — it must HUG its content, not
+    // inherit a flex parent's default `align-items: stretch` and grow to the
+    // row's height, which floated the label to the top of an over-tall pill
+    // (the Intents-row report). It hugs by size and says nothing about
+    // `align_self`, which would override the parent's alignment.
     #[test]
     fn badge_hugs_content_not_stretch() {
         with_test_world(|| {
@@ -127,11 +130,10 @@ mod tests {
                 },
                 _ => panic!("Badge renders a styled Text node"),
             };
-            assert_eq!(
-                resolve_style(&app).align_self,
-                Some(AlignSelf::Center),
-                "a Badge sizes to content (centered), never stretching to the parent cross axis"
-            );
+            let rules = resolve_style(&app);
+            assert_eq!(rules.width, Some(Tokenized::Literal(Length::FitContent)), "hugs its width");
+            assert_eq!(rules.height, Some(Tokenized::Literal(Length::FitContent)), "hugs its height");
+            assert_eq!(rules.align_self, None, "the parent's alignment places a Badge");
     });
     }
 }

@@ -1,6 +1,6 @@
 //! Regression (reported against idea-ui 5.2.0): a SegmentedControl could not
-//! fill its container. The track pins `align_self: FlexStart` +
-//! `flex_shrink: 0` so it hugs its options, and there was no prop to opt
+//! fill its container. The track hugs its options (`Length::FitContent` +
+//! `flex_shrink: 0`), and there was no prop to opt
 //! out — in a 240px side panel the Align / Vertical controls sat at ~160px
 //! while the Fields beside them filled the panel. `block = true` now
 //! stretches the track and splits it evenly between the segments.

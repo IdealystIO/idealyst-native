@@ -31,12 +31,13 @@
 //! Layout is a row: a flex-growing title/body column, then the optional
 //! `action`, then the optional `close`. The action and close slots take
 //! caller-supplied elements verbatim (they carry their own styling and
-//! handlers).
+//! handlers) and sit in the banner's middle; the built-in `×` keeps to the
+//! top corner.
 
 use std::rc::Rc;
 
 use runtime_core::{
-    component, component_styles, ui, AlignItems, Color, Cursor, Element, FlexDirection, FontWeight,
+    component, component_styles, ui, AlignItems, AlignSelf, Color, Cursor, Element, FlexDirection, FontWeight,
     IdealystSchema, IntoElement, JustifyContent, Length, Reactive, SlotRestyle, TextAlign,
 };
 
@@ -58,6 +59,9 @@ component_styles! {
             base(t) {
                 flex_direction: FlexDirection::Row,
                 justify_content: JustifyContent::SpaceBetween,
+                // The trailing `action` and a `Custom` close sit in the banner's
+                // middle whatever element they are.
+                align_items: AlignItems::Center,
                 gap: t.spacing.md(),
                 padding_vertical: t.spacing.md(),
                 padding_horizontal: t.spacing.lg(),
@@ -71,6 +75,7 @@ component_styles! {
         slot content {
             base(_t) {
                 flex_direction: FlexDirection::Column,
+                align_self: AlignSelf::Stretch,
                 flex_grow: 1.0,
                 min_width: 0.0,
                 // Below the theme's smallest spacing step (`xs` = 4px).
@@ -102,6 +107,8 @@ component_styles! {
             base(t) {
                 background: Color("transparent".into()),
                 padding: 0.0,
+                // The top corner of a multi-line banner, level with the title.
+                align_self: AlignSelf::FlexStart,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 cursor: Cursor::Pointer,
@@ -254,17 +261,14 @@ pub fn Alert(props: AlertProps) -> Element {
     };
 
     // Outer row: content column, then optional action, then optional close.
-    let mut children: Vec<Element> = Vec::with_capacity(3);
-    children.push(content_col);
-    if let Some(action) = action_node {
-        children.push(action);
+    let root_style = AlertStyles::root().values(&values).overridden(styles.root.as_ref());
+    ui! {
+        view(style = root_style) {
+            content_col
+            action_node
+            close_node
+        }
     }
-    if let Some(close) = close_node {
-        children.push(close);
-    }
-    runtime_core::view(children)
-        .with_style(AlertStyles::root().values(&values).overridden(styles.root.as_ref()))
-        .into_element()
 }
 
 #[cfg(test)]

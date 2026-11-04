@@ -27,8 +27,8 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, component_styles, ui, AlignItems, AlignSelf, Color, Cursor, Element, FlexDirection, FontWeight,
-    IdealystSchema, IntoElement, JustifyContent, Reactive, SlotRestyle, TextAlign,
+    component, component_styles, ui, AlignItems, Color, Cursor, Element, FlexDirection, FontWeight,
+    IdealystSchema, IntoElement, JustifyContent, Length, Reactive, SlotRestyle, TextAlign,
 };
 
 use idea_theme::extensible::{categorization_tones, tone, ToneRef};
@@ -48,9 +48,11 @@ component_styles! {
         slot root {
             extend(root_surfaces)
             base(t) {
-                // Hug: sized to content, not stretched to a flex parent's
-                // cross axis.
-                align_self: AlignSelf::Center,
+                // Hug by size, not an `align_self`: it stops a flex parent's
+                // `align-items: stretch` growing the pill and leaves the parent's
+                // alignment in charge of where it goes.
+                width: Length::FitContent,
+                height: Length::FitContent,
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 gap: t.spacing.xs(),

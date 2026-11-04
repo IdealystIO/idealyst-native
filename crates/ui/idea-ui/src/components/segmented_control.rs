@@ -128,13 +128,13 @@ component_styles! {
         axis size { sm, #[default] md, lg }
 
         /// The track. Hugs its segments on both axes, so a control inside a
-        /// stretching column stays the width of its options — unless
-        /// `block`, which fills the container like Button's `block`.
+        /// stretching column stays the width of its options and the parent's
+        /// alignment places it — unless `block`, which fills the container like
+        /// Button's `block`.
         slot track {
             base(t) {
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Stretch,
-                align_self: runtime_core::AlignSelf::FlexStart,
                 flex_shrink: 0.0,
                 padding: SEGMENT_TRACK_INSET,
                 gap: SEGMENT_TRACK_INSET,
@@ -145,7 +145,7 @@ component_styles! {
             }
             variant block {
                 #[default]
-                off(_t) {}
+                off(_t) { width: Length::FitContent, height: Length::FitContent }
                 on(_t) {
                     width: Length::Percent(100.0),
                     align_self: runtime_core::AlignSelf::Stretch,

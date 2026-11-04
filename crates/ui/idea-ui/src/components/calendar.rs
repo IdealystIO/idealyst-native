@@ -62,7 +62,10 @@ component_styles! {
                 gap: t.spacing.xs(),
                 padding: t.spacing.sm(),
                 border_radius: t.radius.md(),
-                align_self: runtime_core::AlignSelf::FlexStart,
+                // Hug by size, not an `align_self`, so the parent's alignment
+                // places the panel.
+                width: Length::FitContent,
+                height: Length::FitContent,
             }
             // `framed` — standalone (inline) calendars draw their own border;
             // popup embeddings turn it off (the menu panel already has one).

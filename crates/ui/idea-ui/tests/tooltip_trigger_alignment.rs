@@ -11,21 +11,21 @@
 //! once with the trigger wrapped in a Tooltip, once bare — and compares
 //! the trigger's absolute frame. The cases cover both axes and the
 //! parent alignments that matter: a column (stretch, start, centre), a
-//! row whose taller sibling stretches the line, where a pill that hugs with
-//! `align_self: Center` must stay vertically centred as it does on its own,
-//! and a Button in a row the parent centres.
+//! row whose taller sibling stretches the line, where a hugging trigger stays
+//! at the top as it does on its own, and a Button in a row the parent centres.
 //!
 //! The layout is real (`tests/common`: host-mock tree mirrored into
-//! Taffy). It fails with the wrapper at
-//! `align_self: Center`.
+//! Taffy). It fails with the wrapper at `align_self: Center`, and with a
+//! `justify_content: Center` wrapper in the stretched row.
 
 mod common;
 
 use std::rc::Rc;
 
 use common::{find, lay_out};
-use idea_ui::{Badge, Button, Stack, StackAlign, StackAxis, Tooltip, Typography};
+use idea_ui::{Badge, Button, IconButton, Stack, StackAlign, StackAxis, Tooltip, Typography};
 use runtime_core::{ui, Element};
+use runtime_layout::Frame;
 
 const PANE_WIDTH: f32 = 600.0;
 const PANE_HEIGHT: f32 = 800.0;
@@ -33,28 +33,27 @@ const PANE_HEIGHT: f32 = 800.0;
 const SHORT: &str = "Short name";
 const LONG: &str = "a much longer line than the name above it";
 
-/// Lay `parent` out with and without a Tooltip around the trigger and
-/// assert the node matching `trigger` (a host-mock kind prefix) has the
-/// same absolute frame both ways.
-fn assert_tooltip_is_transparent(
-    case: &str,
-    trigger: &str,
-    parent: impl Fn(bool) -> Element,
-) {
+/// Lay `parent` out without and with a Tooltip around the trigger, and return the
+/// absolute frame of the node matching `trigger` (a host-mock kind prefix) both ways.
+fn bare_and_wrapped(case: &str, trigger: &str, parent: impl Fn(bool) -> Element) -> (Frame, Frame) {
     let bare = lay_out(PANE_WIDTH, PANE_HEIGHT, || parent(false));
     let wrapped = lay_out(PANE_WIDTH, PANE_HEIGHT, || parent(true));
     let b = find(&bare.h, bare.root, trigger)
         .unwrap_or_else(|| panic!("{case}: no {trigger} bare:\n{}", bare.h.tree(bare.root)));
     let w = find(&wrapped.h, wrapped.root, trigger)
         .unwrap_or_else(|| panic!("{case}: no {trigger} wrapped:\n{}", wrapped.h.tree(wrapped.root)));
-    let (fb, fw) = (bare.frames[&b], wrapped.frames[&w]);
+    (bare.frames[&b], wrapped.frames[&w])
+}
+
+/// The trigger has the same absolute frame with and without a Tooltip.
+fn assert_tooltip_is_transparent(case: &str, trigger: &str, parent: impl Fn(bool) -> Element) {
+    let (fb, fw) = bare_and_wrapped(case, trigger, parent);
     assert!(
         (fb.x - fw.x).abs() < 0.01
             && (fb.y - fw.y).abs() < 0.01
             && (fb.width - fw.width).abs() < 0.01
             && (fb.height - fw.height).abs() < 0.01,
-        "{case}: the Tooltip moved its trigger — bare {fb:?}, wrapped {fw:?}\n{}",
-        wrapped.h.tree(wrapped.root)
+        "{case}: the Tooltip moved its trigger — bare {fb:?}, wrapped {fw:?}"
     );
 }
 
@@ -98,20 +97,19 @@ fn tooltip_trigger_keeps_its_place_in_a_centred_column() {
     });
 }
 
-/// The case the wrapper's `justify_content` exists for: a row stretched by a
-/// taller sibling. A Badge centres itself on the cross axis; wrapped, it must
-/// not drop to the top of a stretched wrapper.
-#[test]
-fn tooltip_badge_trigger_stays_centred_in_a_stretched_row() {
-    assert_tooltip_is_transparent("row, align stretch, Badge", "text \"New", |tooltip| {
+/// A row stretched by a taller sibling: the wrapper stretches, and each trigger
+/// sits at its top, where it sits bare. It fails with a `justify_content: Center`
+/// wrapper, which drops the trigger to the middle.
+fn in_a_stretched_row(build: fn() -> Element) -> impl Fn(bool) -> Element {
+    move |tooltip| {
         ui! {
             Stack(axis = StackAxis::Row) {
                 if tooltip {
-                    Tooltip(text = "Added today".to_string()) {
-                        Badge(label = "New".to_string())
+                    Tooltip(text = "A hint".to_string()) {
+                        { build() }
                     }
                 } else {
-                    Badge(label = "New".to_string())
+                    { build() }
                 }
                 Stack(gap = idea_ui::StackGap::Md) {
                     Typography(content = LONG.to_string())
@@ -120,7 +118,36 @@ fn tooltip_badge_trigger_stays_centred_in_a_stretched_row() {
                 }
             }
         }
-    });
+    }
+}
+
+#[test]
+fn regression_tooltip_button_trigger_moved_in_a_stretched_row() {
+    assert_tooltip_is_transparent("Button", "pressable", in_a_stretched_row(|| {
+        ui! { Button(label = "Save".to_string(), on_click = Rc::new(|| {}) as Rc<dyn Fn()>) }
+    }));
+}
+
+#[test]
+fn regression_tooltip_badge_trigger_moved_in_a_stretched_row() {
+    assert_tooltip_is_transparent("Badge", "text \"New", in_a_stretched_row(|| ui! { Badge(label = "New".to_string()) }));
+}
+
+#[test]
+fn regression_tooltip_icon_button_trigger_moved_in_a_stretched_row() {
+    assert_tooltip_is_transparent("IconButton", "pressable", in_a_stretched_row(|| ui! { IconButton(glyph = "x".to_string()) }));
+}
+
+/// A trigger that stretches to the line keeps its place. It keeps to its own
+/// height in the wrapper, whose main axis that is, so only the position compares.
+#[test]
+fn regression_tooltip_text_trigger_moved_in_a_stretched_row() {
+    let (bare, wrapped) = bare_and_wrapped(
+        "Typography",
+        "text \"Short",
+        in_a_stretched_row(|| ui! { Typography(content = SHORT.to_string()) }),
+    );
+    assert_eq!((bare.x, bare.y), (wrapped.x, wrapped.y), "bare {bare:?}, wrapped {wrapped:?}");
 }
 
 /// A Button trigger in a row the parent aligns: wrapped or bare, same frame.

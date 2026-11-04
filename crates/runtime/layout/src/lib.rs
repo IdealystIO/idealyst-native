@@ -1364,7 +1364,9 @@ impl LayoutTree {
     /// size wider than their parent's inline box — matching how CSS
     /// only fits-to-content/clamps normal-flow boxes:
     /// - **explicit `width`** (`!auto_width`): the author owns the size;
-    ///   a `width: 600` carousel inside a 300 viewport must stay 600.
+    ///   a `width: 600` carousel inside a 300 viewport must stay 600. Not
+    ///   `FitContent`, which is content-sized and caps at the parent: Taffy
+    ///   sums a flex container's item bases without capping them.
     /// - **`position: absolute`**: resolves against its containing block
     ///   and may exceed it (e.g. an `aspect_ratio` overlay sized from a
     ///   percentage height — the `aspect_ratio_resolves_width…` test).
@@ -1380,7 +1382,7 @@ impl LayoutTree {
         }
         let exempt = style.position == Position::Absolute
             || style.aspect_ratio.is_some()
-            || !self.auto_width.contains(&node)
+            || (!self.auto_width.contains(&node) && style.size.width != Dimension::fit_content())
             || self.hscroll_content.contains(&node);
         style.max_size.width = if exempt {
             LengthPercentageAuto::auto()
@@ -3117,6 +3119,39 @@ mod tests {
             assert_eq!((f.width, f.height), (60.0, 20.0), "hugs at {align:?}");
             assert_eq!(f.x, x, "the parent places it at {align:?}");
         }
+    }
+
+    /// A fit-content row holding long text stays inside its parent and leaves the
+    /// text room to wrap. Taffy sums a flex container's item bases, so the cap comes
+    /// from the default `max-width: 100%`, the same cap an auto-width box has.
+    #[test]
+    fn regression_fit_content_row_overflowed_its_parent() {
+        let mut t = LayoutTree::new();
+        let column = t.new_node();
+        let row = t.new_node();
+        t.set_style(
+            row,
+            &StyleRules {
+                flex_direction: Some(runtime_shared::FlexDirection::Row),
+                width: Some(Tokenized::Literal(FwLength::FitContent)),
+                ..Default::default()
+            },
+        );
+        let text = t.new_node();
+        let measure: MeasureFn = std::rc::Rc::new(|known: Size<Option<f32>>, available: Size<AvailableSpace>| {
+            let width = known.width.unwrap_or(match available.width {
+                AvailableSpace::Definite(w) => w.min(1000.0),
+                AvailableSpace::MinContent => 40.0,
+                AvailableSpace::MaxContent => 1000.0,
+            });
+            Size { width, height: 20.0 }
+        });
+        t.set_measure_fn(text, measure);
+        t.add_child(row, text);
+        t.add_child(column, row);
+        t.compute(column, 400.0, 400.0);
+        assert_eq!(t.frame_of(row).width, 400.0, "the row stays inside its parent");
+        assert_eq!(t.frame_of(text).width, 400.0, "and the text wraps at it");
     }
 
     /// Fit-content caps at the available width, where `max-content` overflows.
