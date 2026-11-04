@@ -948,3 +948,80 @@ fn the_project_configuration_chooses_the_build() {
     drop(back);
     materialize(&root, &repo, "");
 }
+
+fn idealyst_check(dir: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_idealyst")).current_dir(dir).arg("check").args(args).output().expect("run idealyst check")
+}
+
+/// A crate that compiles only with `beta` on: a host `idealyst check` of it
+/// passes only if the table's `features` reached cargo.
+fn tiny_project(dir: &Path, table: &str) {
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "tiny"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[features]
+beta = []
+
+[package.metadata.idealyst.app]
+name = "Tiny"
+bundle_id = "com.example.tiny"
+version = "0.0.1"
+targets = ["terminal"]
+{table}
+[workspace]
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/lib.rs"), "#[cfg(not(feature = \"beta\"))]\ncompile_error!(\"beta is off\");\n").unwrap();
+}
+
+/// Feature 4: `idealyst check` reads the same table. Without one it is the
+/// same `cargo check` it always was.
+#[test]
+fn a_plain_check_reads_the_configured_features() {
+    let dir = tempfile::tempdir().unwrap();
+    tiny_project(dir.path(), "");
+    let out = idealyst_check(dir.path(), &[]);
+    assert!(!out.status.success(), "no table, no feature: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("beta is off"));
+    tiny_project(dir.path(), "\n[package.metadata.idealyst.dev]\nfeatures = [\"beta\"]\n");
+    let out = idealyst_check(dir.path(), &[]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // A misspelled key is an error at the start, naming the table.
+    tiny_project(dir.path(), "\n[package.metadata.idealyst.dev]\nfeature = [\"beta\"]\n");
+    let out = idealyst_check(dir.path(), &[]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("[package.metadata.idealyst.dev]"));
+}
+
+/// `--session`'s command line: `-p` means the crate whose tests `--tests`
+/// compiles, and nothing else. A targeted check of one crate does not exist,
+/// so it must not parse into a whole-session one. And with no session the
+/// command says what to do instead of checking something else.
+#[test]
+fn the_session_flags_refuse_what_they_do_not_do() {
+    let dir = tempfile::tempdir().unwrap();
+    tiny_project(dir.path(), "");
+    for args in [
+        &["--session", "-p", "tiny"][..],
+        &["--tests", "-p", "tiny"],
+        &["--session", "--tests"],
+        &["--session", "--release"],
+        &["--session", "--platform", "web"],
+    ] {
+        let out = idealyst_check(dir.path(), args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = idealyst_check(dir.path(), &["--session"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no `idealyst dev` session is running"), "{stderr}");
+}
