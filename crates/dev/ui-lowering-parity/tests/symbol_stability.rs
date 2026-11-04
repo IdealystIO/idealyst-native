@@ -40,6 +40,12 @@ stylesheet! {
     }
 }
 
+stylesheet! {
+    pub Plain<()> {
+        base(_t) { padding: 3 }
+    }
+}
+
 #[component]
 pub fn Inline(label: String, #[prop(default = 3)] count: i32) -> Element {
     ui! { text { "{label} {count}" } }
@@ -248,7 +254,7 @@ fn regression_adding_a_component_keeps_every_neighbours_symbol() {
     let base = symbols(&dir, &fill("", "", ""));
 
     // Sanity: the fixture really does emit the impl symbols under test.
-    for needle in ["__component_scope_Inline", "__component_scope_Explicit", "__props_scope_ExplicitProps", "__sheet_scope_Card"] {
+    for needle in ["__component_scope_Inline", "__component_scope_Explicit", "__props_scope_ExplicitProps", "__sheet_scope_Card", "__sheet_scope_Plain"] {
         assert!(base.iter().any(|s| s.contains(needle)), "no symbol under {needle} in:\n{base:#?}");
     }
 
