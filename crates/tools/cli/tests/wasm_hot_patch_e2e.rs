@@ -397,6 +397,9 @@ fn start_with(project: &Path, scratch: &Path, flags: &[&str]) -> (Session, Page)
         .current_dir(project)
         .args(["dev", "--web", "--local", "--port", &port.to_string()])
         .args(flags)
+        // This test drives its own Chrome; without this the session also opens
+        // the default browser, a second client of every patch.
+        .env("IDEALYST_TEST_DRIVER", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
