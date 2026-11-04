@@ -142,6 +142,27 @@ pub fn __rule<T, U: ::core::convert::Into<T>>(value: U) -> ::core::option::Optio
     ::core::option::Option::Some(value.into())
 }
 
+/// `IntoStyleProp` for a `stylesheet!` with no axes and no overrides: its one
+/// preminted class, or the live sheet. Inlined so `preminted`, a constant at the
+/// call site, removes the sheet and all its rules from a preminted build.
+#[doc(hidden)]
+#[inline(always)]
+pub fn __plain_sheet_prop(
+    preminted: bool,
+    class: &'static str,
+    sheet: fn() -> ::std::rc::Rc<glue::StyleSheet>,
+) -> glue::StyleProp {
+    if preminted {
+        glue::StyleProp::Preminted {
+            inline: ::core::option::Option::None,
+            class: ::std::borrow::Cow::Borrowed(class),
+            overrides: ::core::option::Option::None,
+        }
+    } else {
+        glue::StyleProp::Sheet(::std::boxed::Box::new(glue::StyleApplication::new(sheet())))
+    }
+}
+
 /// In a remote bundle build, the `BuildElement` overrides of an imported app
 /// component: `build_set` sends only the fields its call site set, and
 /// `__build_site` also leaves the record of which ones (`remote::site`).

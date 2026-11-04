@@ -1549,6 +1549,14 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
     //
     // The preminted return: the `::runtime_core::…` path below lands on
     // `::runtime_vocabulary::glue::StyleProp` after the `finish` retarget.
+    // A sheet with no axes and no overrides has no setter, so its builder can
+    // never turn reactive and every instance styles alike. It takes
+    // `__plain_sheet_prop` and has no `__reactive` field, no reactive branch and
+    // no class to assemble.
+    if decl.variants.is_empty() && decl.overrides.is_empty() {
+        return emit_plain_builder(decl, base_class, premintable, &stylesheet_fn);
+    }
+
     let premint_return = quote! {
         return ::runtime_core::StyleProp::Preminted {
             // The generated builder has no inline-layer surface yet; an
@@ -1712,6 +1720,70 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
     }
 }
 
+/// The builder of a sheet with nothing to set: see the note in [`emit_builder`].
+fn emit_plain_builder(
+    decl: &StyleSheetDecl,
+    base_class: &str,
+    premintable: bool,
+    stylesheet_fn: &Ident,
+) -> TokenStream2 {
+    let vis = &decl.vis;
+    let name = &decl.name;
+    let entry_fn = &decl.name;
+    // The cfg stays here, on the author's crate: the vocabulary is not built
+    // knowing what this sheet's build was preminted with.
+    let preminted = if premintable {
+        quote! { ::core::cfg!(idealyst_premint) }
+    } else {
+        quote! { false }
+    };
+    let impls = crate::symbol_scope::scoped(
+        crate::symbol_scope::Owner::Sheet,
+        name,
+        quote! {
+            impl #name {
+                /// A builder; this sheet has no axes or overrides to set.
+                pub fn new() -> Self {
+                    Self {}
+                }
+
+                /// The underlying `Rc<StyleSheet>`, for APIs that don't take a builder.
+                pub fn sheet() -> ::std::rc::Rc<::runtime_core::StyleSheet> {
+                    #stylesheet_fn()
+                }
+
+                /// The live-engine `StyleApplication` this builder describes, for
+                /// composing or introspecting resolved styles. Never preminted.
+                pub fn into_style_application(self) -> ::runtime_core::StyleApplication {
+                    ::runtime_core::StyleApplication::new(#stylesheet_fn())
+                }
+            }
+
+            impl ::std::default::Default for #name {
+                fn default() -> Self { Self::new() }
+            }
+
+            #[allow(unexpected_cfgs)]
+            impl ::runtime_core::IntoStyleProp for #name {
+                fn into_style_prop(self) -> ::runtime_core::StyleProp {
+                    ::runtime_vocabulary::__plain_sheet_prop(#preminted, #base_class, #stylesheet_fn)
+                }
+            }
+        },
+    );
+    quote! {
+        #vis struct #name {}
+
+        #impls
+
+        // The free function shadows the struct name for call sites like
+        // `Card().size(...).kind(...)`.
+        /// A fresh builder (`Self::new()`).
+        #[allow(non_snake_case)]
+        #vis fn #entry_fn() -> #name { #name::new() }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1768,6 +1840,27 @@ mod tests {
                 "`#[allow(dead_code)]` missing on {}",
                 quote!(#item)
             );
+        }
+    }
+
+    #[test]
+    fn a_sheet_with_nothing_to_set_has_no_reactive_path() {
+        let file = expand(quote! { pub Plain<()> { base(_t) { padding: 8 } } });
+        let text = quote!(#file).to_string();
+        assert!(text.contains("__plain_sheet_prop"), "{text}");
+        assert!(!text.contains("__reactive") && !text.contains("PremintedDynamic"), "{text}");
+    }
+
+    #[test]
+    fn a_sheet_with_an_axis_or_an_override_keeps_its_reactive_path() {
+        for sheet in [
+            quote! { pub Axis<()> { base(_t) { padding: 8 } variant size { #[default] sm(_t) {} } } },
+            quote! { pub Over<()> { base(_t) { padding: 8 } override padding: f32 } },
+        ] {
+            let file = expand(sheet);
+            let text = quote!(#file).to_string();
+            assert!(text.contains("PremintedDynamic") && text.contains("__reactive"), "{text}");
+            assert!(!text.contains("__plain_sheet_prop"), "{text}");
         }
     }
 

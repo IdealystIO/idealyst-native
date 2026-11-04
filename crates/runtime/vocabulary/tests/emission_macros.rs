@@ -87,6 +87,27 @@ fn an_imported_components_overrides_are_nothing_outside_a_bundle() {
     let _ = NoOverrides.build_set(&["label"]);
 }
 
+/// A sheet with nothing to set is its class in a preminted build, without its
+/// rules ever being built, and the live sheet otherwise.
+#[test]
+fn a_plain_sheet_is_its_class_or_its_sheet() {
+    use runtime_vocabulary::glue::{StyleProp, StyleSheet};
+    fn unreachable_sheet() -> std::rc::Rc<StyleSheet> {
+        panic!("a preminted build must not build the sheet")
+    }
+    match runtime_vocabulary::__plain_sheet_prop(true, "iy-1", unreachable_sheet) {
+        StyleProp::Preminted { class, inline: None, overrides: None } => assert_eq!(class, "iy-1"),
+        _ => panic!("expected the preminted class"),
+    }
+    fn live_sheet() -> std::rc::Rc<StyleSheet> {
+        std::rc::Rc::new(StyleSheet::new(|_| Default::default()))
+    }
+    assert!(matches!(
+        runtime_vocabulary::__plain_sheet_prop(false, "iy-1", live_sheet),
+        StyleProp::Sheet(_)
+    ));
+}
+
 /// In a robot build the registration bracket is the real one: the props
 /// block becomes the closure `__inspect_component` calls. (The non-robot
 /// side — probes dropped unexpanded — is pinned in
