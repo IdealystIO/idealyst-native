@@ -28,13 +28,16 @@
 //!
 //! # Why an unchanged function may still need redirecting
 //!
-//! The table only redirects calls made THROUGH it. A direct call in base
-//! code goes to the base's copy. So an unchanged function that calls a
-//! changed one directly — or calls something that does — must be
-//! redirected too, or its base copy keeps calling the old body. The set
-//! to redirect is the changed functions plus every function that reaches
-//! one through direct calls ([`plan`]). Calls through the table or a
-//! vtable reach the redirected entry anyway and add nothing.
+//! A patch does not write to the page's `__indirect_function_table`: its jump
+//! table is a map only `dev_hot::call` reads, and only a component's
+//! `__<Name>_hot_impl` is called that way. Every other call in base code,
+//! direct or through a vtable or `fn` pointer, runs the base's copy. So an
+//! unchanged function that calls a changed one, takes its address, or refers
+//! to a vtable holding it must be redirected too, up to the component whose
+//! rebuild reaches it ([`plan`]). A closure built by base code that outlives
+//! the rebuild keeps its base body, which is why the slots are not simply
+//! overwritten: a new body could read an old instance whose
+//! captures have a different layout.
 //!
 //! Anything this cannot account for turns the filter off for that patch
 //! (every function redirected): a crate with no baseline, an
@@ -56,6 +59,8 @@ pub struct FnFacts {
     pub calls: Vec<String>,
     /// Functions whose address (table slot) it takes, by symbol name.
     pub addr_of: Vec<String>,
+    /// Data symbols it refers to, by name: how a function reaches a vtable.
+    pub data_refs: Vec<String>,
 }
 
 /// Every defined function of one crate's objects, by symbol name, and
@@ -65,6 +70,9 @@ pub struct FnFacts {
 pub struct CrateFns {
     pub fns: HashMap<String, FnFacts>,
     pub data_addr_of: Vec<(String, String)>,
+    /// Data symbols that point at other data symbols (a vtable inside a
+    /// `static`): `(holder, data symbol)`.
+    pub data_data_of: Vec<(String, String)>,
     /// What each object file defines and needs, for [`keep_objects`].
     pub objects: Vec<ObjectFacts>,
 }
@@ -118,6 +126,7 @@ impl CrateFns {
                     existing.digest = truncate(h.finalize().into());
                     existing.calls.extend(facts.calls);
                     existing.addr_of.extend(facts.addr_of);
+                    existing.data_refs.extend(facts.data_refs);
                 }
                 Some(_) => {}
                 None => {
@@ -126,6 +135,7 @@ impl CrateFns {
             }
         }
         self.data_addr_of.extend(other.data_addr_of);
+        self.data_data_of.extend(other.data_data_of);
         self.objects.extend(other.objects);
     }
 }
@@ -173,7 +183,8 @@ pub fn keep_objects(plan: &RedirectPlan, crates: &[&CrateFns]) -> Vec<std::path:
 /// What the jump table redirects, and what the patch link keeps.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RedirectPlan {
-    /// Functions that differ from the base, or reach one by direct calls.
+    /// Functions that differ from the base, or reach one by a direct call, an
+    /// address they take or a vtable they refer to.
     pub redirect: BTreeSet<String>,
     /// [`Self::slotted`], plus whatever takes the address of one of them
     /// — a function, or a data symbol: the objects defining these are the
@@ -204,21 +215,52 @@ pub fn plan(crates: &[(&CrateFns, Option<&CrateFns>)]) -> Option<RedirectPlan> {
         }
     }
 
-    // Reverse direct-call edges across every crate of the patch: a
-    // dependent's function calls a library's directly, by name.
+    // Reverse edges across every crate of the patch: a dependent's function
+    // reaches a library's by name.
     let mut callers: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut takers: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut data_readers: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut data_holders_of_fn: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut data_holders_of_data: HashMap<&str, Vec<&str>> = HashMap::new();
     for (now, _) in crates {
         for (name, facts) in &now.fns {
             for callee in &facts.calls {
                 callers.entry(callee.as_str()).or_default().push(name.as_str());
             }
+            for target in &facts.addr_of {
+                takers.entry(target.as_str()).or_default().push(name.as_str());
+            }
+            for data in &facts.data_refs {
+                data_readers.entry(data.as_str()).or_default().push(name.as_str());
+            }
+        }
+        for (holder, f) in &now.data_addr_of {
+            data_holders_of_fn.entry(f.as_str()).or_default().push(holder.as_str());
+        }
+        for (holder, data) in &now.data_data_of {
+            data_holders_of_data.entry(data.as_str()).or_default().push(holder.as_str());
         }
     }
     let mut redirect: BTreeSet<String> = BTreeSet::new();
     let mut stack: Vec<&str> = changed.iter().copied().collect();
     while let Some(f) = stack.pop() {
-        if redirect.insert(f.to_string()) {
-            stack.extend(callers.get(f).into_iter().flatten().copied());
+        if !redirect.insert(f.to_string()) {
+            continue;
+        }
+        stack.extend(callers.get(f).into_iter().flatten().copied());
+        // `dev_hot::call` reaches a component's hot impl through the jump
+        // table, so what takes its address need not be redirected.
+        if is_hot_impl(f) {
+            continue;
+        }
+        stack.extend(takers.get(f).into_iter().flatten().copied());
+        let mut holders: Vec<&str> = data_holders_of_fn.get(f).cloned().unwrap_or_default();
+        let mut seen: HashSet<&str> = HashSet::new();
+        while let Some(data) = holders.pop() {
+            if seen.insert(data) {
+                stack.extend(data_readers.get(data).into_iter().flatten().copied());
+                holders.extend(data_holders_of_data.get(data).into_iter().flatten().copied());
+            }
         }
     }
 
@@ -246,6 +288,14 @@ pub fn plan(crates: &[(&CrateFns, Option<&CrateFns>)]) -> Option<RedirectPlan> {
         }
     }
     Some(RedirectPlan { redirect, roots, slotted, changed: changed.len() })
+}
+
+/// Whether `symbol` is a non-generic component's `__<Name>_hot_impl` itself
+/// rather than a closure inside it, whose name also carries that path. A
+/// generic component's does not match and is followed further up, which only
+/// redirects more.
+fn is_hot_impl(symbol: &str) -> bool {
+    symbol.starts_with("_RNv") && symbol.ends_with("_hot_impl")
 }
 
 fn truncate(d: [u8; 32]) -> [u8; 16] {
@@ -494,6 +544,7 @@ pub fn analyze_object(bytes: &[u8]) -> Result<CrateFns> {
         h.update([0]);
         let mut calls = Vec::new();
         let mut addr_of = Vec::new();
+        let mut data_refs = Vec::new();
         let mut cursor = body.start;
         while next < sorted.len() && code_start + (sorted[next].offset as usize) < body.end {
             let r = sorted[next];
@@ -529,7 +580,8 @@ pub fn analyze_object(bytes: &[u8]) -> Result<CrateFns> {
                         h.update(name.as_bytes());
                         addr_of.push(name);
                     }
-                    Some(Sym::Data { .. }) => {
+                    Some(Sym::Data { name, .. }) => {
+                        data_refs.push(name.clone());
                         h.update(b"got.mem");
                         let id = data_identity(
                             r.index, &symbols, &segments, data_start, &data_relocs, bytes, &mut data_ids,
@@ -546,6 +598,9 @@ pub fn analyze_object(bytes: &[u8]) -> Result<CrateFns> {
                 MemoryAddrLeb | MemoryAddrSleb | MemoryAddrI32 | MemoryAddrRelSleb | MemoryAddrLeb64
                 | MemoryAddrSleb64 | MemoryAddrI64 | MemoryAddrRelSleb64 | MemoryAddrTlsSleb
                 | MemoryAddrTlsSleb64 | MemoryAddrLocrelI32 => {
+                    if let Some(Sym::Data { name, .. }) = sym {
+                        data_refs.push(name.clone());
+                    }
                     let id = data_identity(
                         r.index, &symbols, &segments, data_start, &data_relocs, bytes, &mut data_ids,
                         &mut visiting,
@@ -566,29 +621,35 @@ pub fn analyze_object(bytes: &[u8]) -> Result<CrateFns> {
             // by name; it is part of whichever function references it.
             continue;
         };
-        let facts = FnFacts { digest: truncate(h.finalize().into()), calls, addr_of };
+        let facts = FnFacts { digest: truncate(h.finalize().into()), calls, addr_of, data_refs };
         out.merge(CrateFns { fns: HashMap::from([(name, facts)]), ..CrateFns::default() });
     }
 
-    // Data symbols that hold a function's address.
+    // Data symbols that hold a function's address, or another data symbol's.
     if let Some(start) = data_start {
         for r in &data_relocs {
             use RelocationType::*;
-            if !matches!(r.ty, TableIndexI32 | TableIndexI64 | TableIndexSleb | TableIndexSleb64) {
-                continue;
-            }
-            let Some(target) = symbols.get(r.index as usize).and_then(func_name) else { continue };
             let at = start + r.offset as usize;
-            let holder = symbols.iter().find_map(|s| match s {
-                Sym::Data { name, def: Some((seg, off, size)) } => {
-                    let range = segments.get(*seg as usize)?;
-                    let lo = range.start + *off as usize;
-                    (at >= lo && at < lo + *size as usize).then(|| name.clone())
+            let holder = || {
+                symbols.iter().find_map(|s| match s {
+                    Sym::Data { name, def: Some((seg, off, size)) } => {
+                        let range = segments.get(*seg as usize)?;
+                        let lo = range.start + *off as usize;
+                        (at >= lo && at < lo + *size as usize).then(|| name.clone())
+                    }
+                    _ => None,
+                })
+            };
+            if matches!(r.ty, TableIndexI32 | TableIndexI64 | TableIndexSleb | TableIndexSleb64) {
+                let Some(target) = symbols.get(r.index as usize).and_then(func_name) else { continue };
+                if let Some(holder) = holder() {
+                    out.data_addr_of.push((holder, target));
                 }
-                _ => None,
-            });
-            if let Some(holder) = holder {
-                out.data_addr_of.push((holder, target));
+            } else if matches!(r.ty, MemoryAddrI32 | MemoryAddrI64) {
+                let Some(Sym::Data { name: target, .. }) = symbols.get(r.index as usize) else { continue };
+                if let Some(holder) = holder() {
+                    out.data_data_of.push((holder, target.clone()));
+                }
             }
         }
     }
@@ -604,6 +665,7 @@ mod tests {
             digest: [digest; 16],
             calls: calls.iter().map(|s| s.to_string()).collect(),
             addr_of: addr_of.iter().map(|s| s.to_string()).collect(),
+            data_refs: Vec::new(),
         }
     }
 
@@ -611,11 +673,11 @@ mod tests {
         CrateFns { fns: fns.iter().map(|(n, f)| (n.to_string(), f.clone())).collect(), ..CrateFns::default() }
     }
 
-    /// The changed function, everything that reaches it by direct calls
-    /// (across crates), and the address-takers that keep its slot —
+    /// The changed function, everything that reaches it by a direct call or
+    /// its address (across crates), and the data holding its address —
     /// nothing else.
     #[test]
-    fn the_plan_redirects_the_changed_and_their_direct_callers() {
+    fn the_plan_redirects_the_changed_and_what_reaches_them() {
         let lib_base = krate(&[("lib::g", facts(1, &[], &[])), ("lib::h", facts(2, &[], &[]))]);
         let lib_now = krate(&[("lib::g", facts(9, &[], &[])), ("lib::h", facts(2, &[], &[]))]);
         let app = krate(&[
@@ -631,7 +693,7 @@ mod tests {
         assert_eq!(p.changed, 1);
         assert_eq!(
             p.redirect.iter().map(String::as_str).collect::<Vec<_>>(),
-            vec!["app::calls_caller", "app::calls_g", "lib::g"]
+            vec!["app::calls_caller", "app::calls_g", "app::points_at_g", "lib::g"]
         );
         assert!(p.roots.contains("app::points_at_g") && p.roots.contains("app::VTABLE"));
         assert!(!p.roots.contains("app::calls_caller"), "redirected only through its callee's slot: not a root");
@@ -683,8 +745,8 @@ use core::hint::black_box;
     /// Against real rustc output. The same source digests the same; a
     /// string literal's edit (an anonymous data symbol, named by
     /// position) changes its function; the plan redirects it and every
-    /// direct caller up the chain, and keeps the function that takes one
-    /// of their addresses as a root — but not the unrelated one.
+    /// caller up the chain, and the function that takes one of their
+    /// addresses — but not the unrelated one.
     #[test]
     fn real_objects_find_a_literal_edit_and_its_callers() {
         let base = compile(SRC);
@@ -701,13 +763,46 @@ use core::hint::black_box;
         assert!(p.redirect.contains(label), "{p:?}");
         assert!(p.redirect.contains(uses) && p.redirect.contains(far), "callers up the chain: {p:?}");
         assert!(!p.redirect.contains(indep) && !p.roots.contains(indep), "{p:?}");
-        assert!(p.roots.contains(ptr) && !p.redirect.contains(ptr), "the address-taker is only a root: {p:?}");
+        assert!(p.roots.contains(ptr) && p.redirect.contains(ptr), "the address-taker runs base code otherwise: {p:?}");
         assert!(p.slotted.contains(far), "{p:?}");
 
         // A different arithmetic constant changes the bytes themselves.
         let now = compile(&SRC.replace("31", "37"));
         let p = plan(&[(&now, Some(&base))]).unwrap();
         assert_eq!(p.redirect.iter().map(String::as_str).collect::<Vec<_>>(), vec![name(&now, "11independent")]);
+    }
+
+    /// The shape of `ui! { text { move || logic_line(count.get()) } }`: the
+    /// edited code runs in a closure its component only boxes. Nothing calls
+    /// the closure directly and the component's own bytes do not change, so a
+    /// plan following direct calls alone redirected the closure, the rebuild
+    /// ran the base component, and the base component boxed the base closure:
+    /// the page reported a patch and kept showing the old text.
+    #[test]
+    fn regression_a_body_edit_reached_only_through_a_boxed_closure_reaches_the_page() {
+        const SRC: &str = r#"
+use core::hint::black_box;
+extern crate alloc;
+use alloc::boxed::Box;
+#[inline(never)] pub fn label(i: usize) -> u8 { black_box("first").as_bytes()[i % 5] }
+#[inline(never)] pub fn __Root_hot_impl() -> Box<dyn Fn(usize) -> u8> { Box::new(|i| label(black_box(i))) }
+#[inline(never)] pub fn Root() -> Box<dyn Fn(usize) -> u8> {
+    let inner: fn() -> Box<dyn Fn(usize) -> u8> = __Root_hot_impl;
+    black_box(inner)()
+}
+#[inline(never)] pub fn unrelated(x: u32) -> u32 { x.wrapping_mul(31) ^ 7 }
+"#;
+        let base = compile(SRC);
+        let now = compile(&SRC.replace("\"first\"", "\"later\""));
+        let p = plan(&[(&now, Some(&base))]).unwrap();
+        let hot_impl = now.fns.keys().find(|k| k.ends_with("15___Root_hot_impl")).expect("the hot impl");
+        assert!(p.redirect.contains(hot_impl), "the rebuild must run a component that boxes the new closure: {p:?}");
+        assert!(p.slotted.contains(hot_impl), "a component is redirected through its slot: {p:?}");
+        assert!(
+            !p.redirect.contains(name(&now, "4Root")),
+            "`dev_hot::call` reaches the hot impl through the table, so the outer fn stays: {p:?}"
+        );
+        assert!(!p.redirect.contains(name(&now, "9unrelated")), "{p:?}");
     }
 
     fn object(path: &str, defines: &[&str], refs: &[&str], init: bool) -> ObjectFacts {

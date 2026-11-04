@@ -3083,6 +3083,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A body edit reached only through a closure reaches the page** (`build-web`).
+  A patch redirected only changed functions and their direct callers, but its
+  jump table is read only by a component's hot call. So an edit that runs in a
+  closure a component only boxes (a reactive `text`, an `on_click`), or in a
+  function only such a closure calls, reported a hot patch and left the page
+  running the old code. The plan now follows addresses and vtables up to the
+  component.
 - **Adding a component hot patches** (`runtime-macros`, `runtime-macros-expand`,
   `build-web`, `dev-overlay`, `runtime-macros-parse`; `--experimental-build` or
   `--experimental-web-additive`). Under `hot-reload` a component's impls live in

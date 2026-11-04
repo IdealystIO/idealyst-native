@@ -813,9 +813,14 @@ the session's web target directory.
 
 A patch re-emits whole crates, but its jump table redirects only the
 functions whose code differs from the base's, plus every function that
-reaches one of them through direct calls (a direct call in base code goes
-to the base's copy, so an unchanged caller of a changed function has to be
-redirected too). The link keeps only the object files those need. A
+reaches one of them by a direct call, by taking its address or through a
+vtable, up to the component whose rebuild reaches it. The table is a map only
+`dev_hot::call` reads, so every other call in base code runs the base's copy:
+without this, a body edit that runs in a closure a component only boxes (a
+reactive `text`, an `on_click`) reports a patch and changes nothing. Slots are
+not overwritten instead, because a closure built by base code that outlives the
+rebuild could then run a new body against captures of an old layout. The link
+keeps only the object files those need. A
 one-line edit in a crate ~30 others depend on used to redirect 32,195
 functions (CrewForge); on `examples/welcome` an app-crate edit that used to
 redirect 653 redirects 4.
