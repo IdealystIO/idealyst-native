@@ -1171,9 +1171,7 @@ impl caps::StyleOps for TerminalBackend {
             // restores the default; an animated z still wins (see
             // `NodeData::animated_z`).
             d.static_z = style.stacking_z() as f32;
-            if let Some(o) = static_opacity {
-                d.opacity = o;
-            }
+            d.opacity = static_opacity.unwrap_or(1.0);
             // Preserve any already-animated stop overrides if the
             // gradient's shape didn't change — re-applying a static
             // stylesheet (state overlays, theme refresh) shouldn't

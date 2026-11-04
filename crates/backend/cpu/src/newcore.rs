@@ -1094,9 +1094,7 @@ impl caps::StyleOps for CpuBackend {
             data.style = Some(style.clone());
             data.fg = fg;
             data.bg = bg;
-            if let Some(o) = opacity {
-                data.opacity = o;
-            }
+            data.opacity = opacity.unwrap_or(1.0);
             data.border_widths = bw;
             data.border_colors = bc;
             data.border_style = style.border_style.unwrap_or_default();

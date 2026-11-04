@@ -1096,6 +1096,21 @@ mod regression_tests {
         );
     }
 
+    /// A style with `opacity` flipping to one without it stayed at the old
+    /// value: `opacity` alone was only written when stated.
+    #[test]
+    fn regression_terminal_dropped_opacity_kept_its_old_value() {
+        let mut be = TerminalBackend::new();
+        let node = be.create_view(&AccessibilityProps::default());
+        be.apply_style(&node, &Rc::new(StyleRules {
+            opacity: Some(Tokenized::Literal(0.5)),
+            ..Default::default()
+        }));
+        assert_eq!(be.nodes[&node.id].opacity, 0.5);
+        be.apply_style(&node, &Rc::new(StyleRules::default()));
+        assert_eq!(be.nodes[&node.id].opacity, 1.0);
+    }
+
     fn char_key(c: &str) -> TerminalKey {
         TerminalKey::press(c)
     }

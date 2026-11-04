@@ -312,6 +312,19 @@ fn regression_cpu_disabled_button_still_fires() {
     assert!(inner_fired.get() && !card_fired.get());
 }
 
+/// A style with `opacity` flipping to one without it stayed at the old value,
+/// while every prop next to it was reassigned: `opacity` alone was only written
+/// when stated.
+#[test]
+fn regression_cpu_dropped_opacity_kept_its_old_value() {
+    let mut b = CpuBackend::new(4, 4);
+    let n = b.create_view(&AccessibilityProps::default());
+    b.apply_style(&n, &Rc::new(StyleRules { opacity: Some(Tokenized::Literal(0.5)), ..Default::default() }));
+    assert_eq!(b.nodes[&n.id].opacity, 0.5);
+    b.apply_style(&n, &Rc::new(StyleRules::default()));
+    assert_eq!(b.nodes[&n.id].opacity, 1.0);
+}
+
 #[test]
 fn set_animated_f32_opacity_overrides_static() {
     let mut backend = CpuBackend::new(10, 10);
