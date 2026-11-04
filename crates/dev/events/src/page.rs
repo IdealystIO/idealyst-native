@@ -50,6 +50,8 @@ pub fn wants(event: &DevEvent) -> bool {
         | DevEvent::BuildTimed { .. }
         | DevEvent::UnitBuilt { .. }
         | DevEvent::UnitDirty { .. }
+        | DevEvent::CheckStarted { .. }
+        | DevEvent::CheckFinished { .. }
         | DevEvent::PageAck { .. }
         | DevEvent::Warning { .. }
         | DevEvent::Log { .. }
@@ -70,5 +72,23 @@ mod tests {
     #[test]
     fn regression_the_page_hears_that_cargo_run_is_recompiling_the_server() {
         assert!(wants(&DevEvent::ServerRecompiling { target: crate::SERVER_TARGET.into(), cause: None }));
+    }
+
+    /// A check applies nothing, so the page's status line must not move.
+    #[test]
+    fn a_check_says_nothing_to_the_page() {
+        assert!(!wants(&DevEvent::CheckStarted { target: "web".into(), request: 1, tests: None }));
+        assert!(!wants(&DevEvent::CheckFinished {
+            target: "web".into(),
+            report: crate::CheckReport {
+                request: 1,
+                ok: false,
+                compiled: vec![],
+                errors: vec![],
+                failure: None,
+                tests: None,
+                ms: 1,
+            },
+        }));
     }
 }

@@ -1,6 +1,6 @@
 //! Shared test data.
 
-use dev_events::{
+use dev_events::{CheckReport, 
     BuildCause, BuildOutcome, CrateTiming, Decision, DevEvent, Diagnostic, DirtyReason, HotTier, Mode, PageAck,
     RelayState, RobotApp, ServerDown, ServerKind, SessionServer, SidecarUpdate, StreamRoute,
     SupersededWork, Timing, SERVER_TARGET,
@@ -78,6 +78,19 @@ pub fn every_event() -> Vec<DevEvent> {
         DevEvent::StageStarted { target: web(), stage: "cargo".into() },
         DevEvent::StageFinished { target: web(), stage: "cargo".into(), ms: 1 },
         DevEvent::CargoProgress { target: web(), compiled: 1, total: None, current: Some("a".into()) },
+        DevEvent::CheckStarted { target: web(), request: 1, tests: Some("a".into()) },
+        DevEvent::CheckFinished {
+            target: web(),
+            report: CheckReport {
+                request: 1,
+                ok: false,
+                compiled: vec!["a (lib)".into()],
+                errors: vec![],
+                failure: Some("cargo could not run".into()),
+                tests: Some("a".into()),
+                ms: 12,
+            },
+        },
         DevEvent::UnitDirty {
             target: web(),
             package: "a".into(),

@@ -264,6 +264,12 @@ impl ServerHot {
         *self.inner.loading.lock().unwrap() = handle;
     }
 
+    /// Finish reading the last build's binary: a check is about to relink
+    /// that path, and the base must describe the running program.
+    pub(crate) fn settle(&self) {
+        let _ = self.base();
+    }
+
     fn base(&self) -> Result<Arc<Base>> {
         if let Some(handle) = self.inner.loading.lock().unwrap().take() {
             let loaded = handle.join().map_err(|_| anyhow::anyhow!("reading the server binary panicked"))?;

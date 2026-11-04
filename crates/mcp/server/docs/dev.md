@@ -28,6 +28,7 @@ Arguments:
 - `bridge_port`: pin the Robot bridge to a fixed port instead of an ephemeral one.
 - `screenshot_dir`: where the relay saves screenshot PNGs.
 - `no_build` (web only): skip the initial build and just serve.
+- A project's `[package.metadata.idealyst.dev]` table supplies the build settings no flag names: see "Configuring the build" in `docs/hot-reload.md`. A `run_dev` flag that differs from it warns in the session log.
 - `no_watch`: saves are queued, not applied; `rebuild_dev` applies the queue as one save (overlay patch, hot patch or rebuild, as the save would have been). See `rebuild_dev`.
 - `experimental_build`: arms both experimental tiers. On web `local`, a save that only ADDS items — a helper and its first call, a new component, a type and its impls — hot patches instead of rebuilding (see "Adding items" in the framework's `docs/hot-reload.md`). On a full-stack session on arm64 macOS or Linux, a body edit patches the running server in place.
 - `experimental_server_patch`: only the server half of `experimental_build`. `idealyst dev --experimental-web-additive` arms only the web half.
@@ -140,6 +141,12 @@ Takes `session_id` or `pid`, and `detail`.
 Asks a session to rebuild now, exactly as pressing `r` in its terminal panel does: every watcher it runs (the web bundle, a full-stack server, the runtime-server host, app icons) gets the request. Under `--no-watch`, a watcher with queued saves applies them as ONE save, through the same decision a save takes — so a literal edit still lands as an overlay patch and a body edit as a hot patch; with nothing queued, it rebuilds. Returns as soon as the request is taken: `{ request, requested: { accepted, request, targets, no_watch } }`, where `request` is the session's number for this request and `targets` the watchers that took it. To wait for the outcome, call `wait_for_build` with `request: <request>`: it waits for exactly the builds that apply it, not a later request's. A session from an older CLI returns no `request`; wait on it with `after:` a cursor taken before the request. `read_dev_log` has the detail.
 
 Takes `session_id` or `pid`, and works on a person's session as on this server's own. A session started with `--no-build` has no watcher to take the request, and says so.
+
+**Build without applying: `apply: false`.** The session runs its own build of what is on disk, in its own target dirs with its own flags and environment, queued with its other work, and stops before anything is applied: no server restart, no page reload, and saves a `--no-watch` session holds stay held for the next real request. The compile is not wasted: the next `rebuild_dev` finds those crates fresh and only links, restarts and reloads. Prefer this to `cargo check` when a session is running, which keeps a separate cache and compiles everything again. It is a real build, so it is slower than `cargo check` on a first compile.
+
+It waits for the result, up to 600 s: `{ status, request, targets, unchecked, reports }`. `status` is `passed`, `failed` (the tool result is an error) or `running` (past the wait; `dev_status` lists it under `checks` when it ends). `reports` has, per target, `ok`, `compiled` (the units cargo did not find fresh, as `package (kind)`), `errors` (`file`, `line`, `column`, `message`, `code`, `rendered`), `failure` (why, when the compiler said nothing) and `ms`. `unchecked` names watchers of the session it does not cover, such as the runtime-server host; native targets have no watcher and are not listed. `request` is the check's own number, not one `wait_for_build` takes. A save made during a check waits for it, and a check right after a rebuild waits for the replay-cache seeding to finish.
+
+Test modules have no parameter here: `idealyst check --session --tests -p <crate>` compiles them the same way, through the session and in its cache, and exits non-zero on an error. Checking one crate without its test modules is not available.
 
 ## stop_dev
 

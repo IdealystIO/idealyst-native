@@ -2047,6 +2047,8 @@ The event types, by what they say:
 | `watching` | the watch set, and again when a save changes the dependency graph |
 | `watcher_ready` | the watcher that announced `watching` is taking saves. Between the two the web loop scans the workspace (seconds on a large one), and a save made then is held and reported right after this. Not re-sent on a rewatch |
 | `rebuild_requested` | a rebuild was requested (the panel's `r`, `POST /rebuild`): the session's number for it (`request`, from 1) and the `targets` whose watchers took it |
+| `check_started` | a target began a check (`idealyst check --session`): its build of what is on disk, with nothing applied. `tests` names the crate whose test harness it compiles, when it does. Opens no episode, and the check's own cargo events stay out of the stream |
+| `check_finished` | a check ended: `request` (its own series, apart from rebuild requests), `ok`, `compiled`, `errors`, `failure`, `tests`, `ms` |
 | `rebuild_taken` | a target's watcher took request `request` into the work it is starting, so this episode's outcome answers it. Sent before that work's first event, and again by each restart of superseded work. A watcher takes requests in order; one made while a build runs is taken by the next build |
 | `change_detected` | files changed, with their crates; `folded` counts the extra batches in the same save |
 | `decided` | the tier: `overlay`, `hot_patch`, `rebuild` (with the reason), `unchanged` |
@@ -2184,6 +2186,124 @@ sees the target as `queued: true` — a `change_detected` with nothing
 after it in the raw snapshot (`detail`); the session's registry entry
 (`no_watch: true`) says why.
 
+### Checking through a session — `idealyst check --session`
+
+`cargo check` and a plain `idealyst check` keep a cache of their own, and
+the session compiles the same edit again. A check through the session builds
+in the session's cache instead, and applies nothing:
+
+```text
+idealyst check --session [DIR]              # exit 0, or non-zero with the errors
+```
+
+or `rebuild_dev` with `apply: false` from `idealyst mcp`, or `POST /check` on
+the control endpoint, then `GET /check/<n>`.
+
+Each target runs the command its own build runs (same target dir, flags,
+features, profile and environment, the hot-patch capture wrapper included)
+and stops before anything can be seen: no server restart, no packaging, no
+page reload, no change to the page's status badge. The next real rebuild finds
+those crates fresh and only links, restarts and reloads. The result is
+per target: pass or fail, the compiler's errors with file, line and column,
+the units compiled, and the time.
+
+A check runs in the watcher's queue, so it cannot race a rebuild or a patch's
+replay; a save that arrives during one waits for it. It is not a rebuild
+request. It has its own numbering, and saves a `--no-watch` session holds stay
+held for the next real request, which reports them as usual. It takes what is
+on disk, held saves included.
+
+- **The running program stays the baseline.** A check relinks the server's
+  binary on disk, so a real rebuild that finds nothing to compile compares
+  that binary with what is running, not with what the check left, and
+  restarts. Web works the same way through the pass stamp: cargo's module no
+  longer matches the one the passes last finished over, so the next real build
+  packages it. A check moves neither the hot-patch base nor the staged bundle,
+  and a further body edit still patches the running program. The rlibs it
+  rewrote are the ones the next replay reads, which compile the same symbols.
+- **Seeds finish first.** A check right after a rebuild waits for the replay
+  cache's background seeds: a crate seeded after a check of an unapplied edit
+  would digest that edit's inlined code into its baseline, and later patches
+  would diff against what the page never ran.
+- **A failed check** moves nothing either, though a dependency it compiled
+  stays compiled. A hot patch tried before the error is fixed can then fail
+  its replay against the half-rebuilt rlibs; it falls back to a rebuild.
+- **Cost.** It is a real build with codegen and a link, so a first compile is
+  slower than `cargo check`. What it buys is not doing that compile twice.
+
+What it covers: the web bundle of a `--local` session and a full-stack
+server, the builds the session runs in its own loop. The answer's `unchecked`
+names other watchers (the runtime-server host); native targets, which have no
+such loop, are not checked. Checking one crate with `-p` alone, stopping early,
+is not available: selecting a package alone can resolve different features, so
+it could pass on a build the session never runs.
+
+**Test modules.** `idealyst check --session --tests -p <crate>` compiles that
+crate's test targets in the session's server target dir (`cargo test
+--no-run`), and does not run them. Cargo resolves features over the workspace members
+selected on its command line, so the server's package stays selected and only
+target filters aim the build at the crate; with the same features every
+dependency is reused and only the harness compiles. Two things can add to that,
+and the units compiled say so: a dev-dependency that turns on a feature of a
+shared dependency recompiles that dependency and what is above it, and a server
+package with a library of its own gets that library's harness too, since
+`--lib` cannot be aimed at one package. The crate must be a local package of
+the server's build. A harness goes around the capture wrapper, whose records
+are per crate name and would replace what a hot patch replays. It disturbs the
+session no more than a check does.
+
+### Configuring the build — `[package.metadata.idealyst.dev]`
+
+A project can declare its session's build, so that a plain `idealyst dev
+crates/app-main` needs no build flags:
+
+```toml
+[package.metadata.idealyst.dev]
+local = true
+features = ["beta"]
+debuginfo = "line-tables"   # or cargo's "line-tables-only"; "full", "none"
+dev_opt = "optimized"       # or "fast"
+premint = false
+premint_only = false
+premint_report = false
+split = false
+no_robot = false
+experimental_build = false
+```
+
+Every key is the flag of its name, and gives the same `idealyst-web-<key>`
+directory as that flag does. An unknown key is an error, since a misspelled one
+would otherwise mean a different build with no word about it. With no table a
+session behaves as it always has: flags and defaults, no warnings, no
+protection. In `Cargo.toml` rather than `dev.toml` because these choose the
+build and belong to the project, where `dev.toml` holds a machine's ports.
+
+Platform filters (`--web` selects from `targets`) and behaviour flags (ports,
+`--no-watch`, `--metrics`, `--interactive`, `--experimental-build`) stay flags
+and warn about nothing.
+
+A cache-affecting flag (`--features`, `--debuginfo`, `--dev-opt`, `--premint`,
+`--premint-only`, `--premint-report`, `--split`, `--no-robot`, `--local`) still
+works and wins, `--features` replacing the configured list, and warns before
+anything builds when it differs from the table, naming the cost: a separate
+directory, so a full dependency rebuild. `--no-config` turns off what the table
+turns on: only the flags on the command line choose the build. An isolated
+session (`--isolated`) has its own directories, so its flags cost the project's
+build nothing and it does not warn; `idealyst test` runs such a session, which
+reads the table like any other.
+
+A slot holds one live directory, and a new key retires the previous one. The
+directory matching the table is exempt: a session records that key beside the
+slot records (`idealyst-web-keys/<slot>.configured`), so a one-off `--debuginfo
+full` leaves it for the next plain session, which compiles no dependencies, and
+`idealyst clean --stale` keeps it too. The one-off's own directory is retired
+when the slot moves back. Changing or removing the table moves or drops that
+record, and the old directory retires like any other.
+
+`idealyst check` reads `features` from the table for its `cargo check` of the
+app. The other settings choose how a build is cached, which a `cargo check`
+does not share.
+
 ### Every session is reachable — the session registry
 
 Each `idealyst dev`, whether a person started it in a terminal or
@@ -2208,6 +2328,12 @@ control endpoint on a loopback port that answers
   request during its first build and applies it as its first work; the
   runtime-server host and a full-stack server join `targets` once their
   first build is up.
+- `POST /check` (`?tests=<crate>` for a test harness) — build what is on disk
+  and apply nothing (202, or 409 when no watcher can), answering `{ request,
+  targets, unchecked }`. See "Checking through a session";
+- `GET /check/<n>` — that check so far: `{ request, targets, unchecked, done,
+  ok, reports }`, with one `check_finished` report per target that has ended.
+  `GET /status` lists the newest three under `checks`.
 
 Every request carries `Authorization: Bearer <token>` from the entry. A
 web page can reach any loopback port, so the endpoint refuses a request

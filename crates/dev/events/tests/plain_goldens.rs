@@ -647,3 +647,49 @@ fn the_runtime_server_host_lines() {
         None
     );
 }
+
+/// A check says it applies nothing, and a failed one shows the compiler's
+/// error, with its location, where a person is reading.
+#[test]
+fn the_check_lines() {
+    assert_eq!(
+        line(DevEvent::CheckStarted { target: web(), request: 1, tests: None }).as_deref(),
+        Some("[check web] building what is on disk; nothing is applied")
+    );
+    assert_eq!(
+        line(DevEvent::CheckStarted { target: "server".into(), request: 1, tests: Some("shared".into()) }).as_deref(),
+        Some("[check server] compiling the test harness of shared; nothing is applied")
+    );
+    let report = |ok, compiled: Vec<String>, errors| dev_events::CheckReport {
+        request: 1,
+        ok,
+        compiled,
+        errors,
+        failure: None,
+        tests: None,
+        ms: 40,
+    };
+    assert_eq!(
+        line(DevEvent::CheckFinished { target: web(), report: report(true, vec![], vec![]) }).as_deref(),
+        Some("[check web] passed in 40 ms, 0 unit(s) compiled")
+    );
+    let error = Diagnostic {
+        level: "error".into(),
+        message: "mismatched types".into(),
+        code: None,
+        file: Some("src/lib.rs".into()),
+        line: Some(3),
+        column: Some(1),
+        package: None,
+        rendered: "error: mismatched types\n --> src/lib.rs:3:1\n".into(),
+        ansi: None,
+    };
+    assert_eq!(
+        line(DevEvent::CheckFinished {
+            target: web(),
+            report: report(false, vec!["shared (lib)".into()], vec![error]),
+        })
+        .as_deref(),
+        Some("[check web] FAILED in 40 ms, 1 unit(s) compiled: shared (lib)\nerror: mismatched types\n --> src/lib.rs:3:1")
+    );
+}

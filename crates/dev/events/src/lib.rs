@@ -85,6 +85,7 @@
 
 pub mod broadcast;
 pub mod cargo;
+pub mod check;
 pub mod child;
 pub mod plain;
 pub mod page;
@@ -510,6 +511,31 @@ impl SessionServer {
     }
 }
 
+/// How one target's check ended ([`DevEvent::CheckFinished`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CheckReport {
+    /// The check's number within the session, from 1. Its own series, apart
+    /// from rebuild requests: a check applies nothing, and a target's taking
+    /// a later rebuild request means it applied the earlier ones.
+    pub request: u64,
+    /// Whether the build succeeded.
+    pub ok: bool,
+    /// The units cargo did not find fresh, as `package (kind)`.
+    pub compiled: Vec<String>,
+    /// The compiler's errors. `file`, `line` and `column` locate each one;
+    /// `ansi` is left out.
+    pub errors: Vec<Diagnostic>,
+    /// Why it failed when the compiler did not say: cargo could not run, or
+    /// a package does not resolve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    /// The crate whose test harness this compiled, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests: Option<String>,
+    pub ms: u64,
+}
+
 /// Everything the dev loop reports.
 ///
 /// `target` names the row a status view files the event under: `web`
@@ -623,6 +649,22 @@ pub enum DevEvent {
         target: String,
         #[serde(flatten)]
         cause: BuildCause,
+    },
+    /// `target` started a check ([`check`]): the session's build of what is
+    /// on disk, with nothing applied. Not a build for any status view: no
+    /// `build_started` opens an episode, and the page is not told.
+    /// `tests` names the crate whose test harness it compiles, when it does.
+    CheckStarted {
+        target: String,
+        request: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tests: Option<String>,
+    },
+    /// A check ended. The report is inlined.
+    CheckFinished {
+        target: String,
+        #[serde(flatten)]
+        report: CheckReport,
     },
     /// A build stage started (`cargo`, `wasm-bindgen`, `wasm-split`, …).
     StageStarted { target: String, stage: String },

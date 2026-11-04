@@ -11,6 +11,61 @@ use std::path::Path;
 use anyhow::Result;
 use serde::Deserialize;
 
+/// `[package.metadata.idealyst.dev]`: the build settings of this project's
+/// `idealyst dev`, so a plain `idealyst dev crates/app` needs no build flags.
+///
+/// In `Cargo.toml`, not `dev.toml`: the settings choose a build's cache and
+/// belong to the project and its other developers, where `dev.toml` holds one
+/// machine's ports. Every key is the flag of its name; unknown keys are an
+/// error, because a misspelled one otherwise means a different build with no
+/// word about it. Absent table: exactly the flags and their defaults.
+///
+/// ```toml
+/// [package.metadata.idealyst.dev]
+/// local = true
+/// features = ["beta"]
+/// debuginfo = "line-tables"
+/// dev_opt = "optimized"
+/// experimental_build = false
+/// ```
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectBuildConfig {
+    pub local: Option<bool>,
+    pub features: Option<Vec<String>>,
+    /// `--debuginfo`: `line-tables` (or cargo's `line-tables-only`), `full`, `none`.
+    pub debuginfo: Option<String>,
+    /// `--dev-opt`: `optimized`, `fast`.
+    pub dev_opt: Option<String>,
+    pub premint: Option<bool>,
+    pub premint_only: Option<bool>,
+    pub premint_report: Option<bool>,
+    pub split: Option<bool>,
+    pub no_robot: Option<bool>,
+    pub experimental_build: Option<bool>,
+}
+
+impl ProjectBuildConfig {
+    /// The table in `<dir>/Cargo.toml`. `None` when there is no such table or
+    /// no manifest to read (the commands that need one report that themselves).
+    pub fn load(dir: &Path) -> Result<Option<Self>> {
+        let Ok(text) = std::fs::read_to_string(dir.join("Cargo.toml")) else { return Ok(None) };
+        Self::parse(&text)
+    }
+
+    fn parse(manifest: &str) -> Result<Option<Self>> {
+        // A manifest that does not parse is cargo's to report, in its words.
+        let Ok(value) = toml::from_str::<toml::Value>(manifest) else { return Ok(None) };
+        let table = value.get("package").and_then(|p| p.get("metadata")).and_then(|m| m.get("idealyst")).and_then(|i| i.get("dev"));
+        let Some(table) = table else { return Ok(None) };
+        let config = table
+            .clone()
+            .try_into::<Self>()
+            .map_err(|e| anyhow::anyhow!("[package.metadata.idealyst.dev]: {e}"))?;
+        Ok(Some(config))
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct DevConfig {
     /// Optional fixed port for the Robot bridge. When set, the
@@ -223,6 +278,25 @@ impl DevConfig {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn the_build_table_is_optional_and_strict() {
+        let no_table = "[package]\nname = \"a\"\n[package.metadata.idealyst.app]\nname = \"A\"\n";
+        assert_eq!(ProjectBuildConfig::parse(no_table).unwrap(), None);
+        let table = "[package.metadata.idealyst.dev]\nlocal = true\nfeatures = [\"beta\"]\ndebuginfo = \"line-tables-only\"\n";
+        let config = ProjectBuildConfig::parse(table).unwrap().unwrap();
+        assert_eq!(config.local, Some(true));
+        assert_eq!(config.features.as_deref(), Some(&["beta".to_string()][..]));
+        assert_eq!(config.debuginfo.as_deref(), Some("line-tables-only"));
+        // A typo is an error rather than a different build. So is a behaviour
+        // flag, which stays a flag.
+        for bad in ["loca = true", "no_watch = true", "port = 3000"] {
+            let text = format!("[package.metadata.idealyst.dev]\n{bad}\n");
+            let e = ProjectBuildConfig::parse(&text).unwrap_err().to_string();
+            assert!(e.contains("[package.metadata.idealyst.dev]"), "{e}");
+        }
+        assert_eq!(ProjectBuildConfig::parse("not toml [[").unwrap(), None, "cargo reports that");
+    }
 
     /// `idealyst.toml`'s `[cache]` overlays into DevConfig with its named
     /// connection resolved to a URL, exactly like `[pubsub]` — so the

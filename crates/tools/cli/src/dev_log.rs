@@ -23,7 +23,7 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use dev_events::{DevEvent, JsonLines, PlainLines, Queue, Reporter, Sink, Verbosity};
+use dev_events::{DevEvent, Envelope, JsonLines, PlainLines, Queue, Reporter, Sink, Verbosity};
 
 /// How the terminal shows the session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,7 +141,7 @@ pub fn start(ui: Ui, log_path: &Path, events: &EventsOut) -> anyhow::Result<Sess
             Some(q)
         }
     };
-    let mut others: Vec<Arc<dyn Sink>> = Vec::new();
+    let mut others: Vec<Arc<dyn Sink>> = vec![Arc::new(CheckBoard)];
     match open_log(log_path) {
         Ok(file) => others.push(Arc::new(PlainLines::new(file, Verbosity::Verbose))),
         // The log is a convenience; a session that cannot write it still
@@ -234,6 +234,8 @@ pub fn attach_signal(signal: &Arc<dev_reload::ReloadSignal>) {
     }
     reporter.subscribe(Box::new(dev_reload::PageSink::new(signal.clone())));
     signal.report_acks_to(reporter);
+    let checker = signal.clone();
+    register_checker("web", Arc::new(move |n, tests| tests.is_none() && checker.request_check(n)));
     if let Some(events) = session_events() {
         signal.serve_events(events);
     }
@@ -354,6 +356,136 @@ fn send_request(rebuilders: &Mutex<Vec<(String, Rebuilder)>>, n: u64) -> Vec<Str
     targets
 }
 
+/// One way to ask a watcher to check, for check `n`, with the crate whose test
+/// harness to compile: `true` when the watcher took it. A target that cannot
+/// do what is asked (the web bundle compiling a host test harness) says no.
+pub type Checker = Arc<dyn Fn(u64, Option<&str>) -> bool + Send + Sync>;
+
+/// The session's check triggers, as [`rebuilders`] holds its rebuild triggers.
+fn checkers() -> &'static Mutex<Vec<(String, Checker)>> {
+    static C: OnceLock<Mutex<Vec<(String, Checker)>>> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// Register a watcher that can check, under the event target it reports as.
+pub fn register_checker(target: &str, check: Checker) {
+    if let Ok(mut c) = checkers().lock() {
+        c.push((target.to_string(), check));
+    }
+}
+
+/// A check request, as [`request_check`] made it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckRequested {
+    /// Numbers the check within the session, from 1: its own series, so a
+    /// check never moves the rebuild requests' numbering.
+    pub request: u64,
+    /// The targets whose watchers took it.
+    pub targets: Vec<String>,
+    /// Watchers of the session this check does not cover.
+    pub unchecked: Vec<String>,
+}
+
+/// What a check's targets have reported so far.
+#[derive(Default)]
+struct CheckState {
+    targets: Vec<String>,
+    unchecked: Vec<String>,
+    reports: std::collections::BTreeMap<String, dev_events::CheckReport>,
+}
+
+/// How many finished checks stay readable.
+const KEPT_CHECKS: usize = 32;
+
+fn check_board() -> &'static Mutex<std::collections::BTreeMap<u64, CheckState>> {
+    static B: OnceLock<Mutex<std::collections::BTreeMap<u64, CheckState>>> = OnceLock::new();
+    B.get_or_init(Default::default)
+}
+
+/// Files each [`DevEvent::CheckFinished`] where `GET /check/<n>` reads it.
+struct CheckBoard;
+
+impl Sink for CheckBoard {
+    fn emit(&self, envelope: &Envelope) {
+        if let DevEvent::CheckFinished { target, report } = &envelope.event {
+            if let Ok(mut board) = check_board().lock() {
+                file_report(&mut board, target, report.clone());
+            }
+        }
+    }
+}
+
+fn file_report(board: &mut std::collections::BTreeMap<u64, CheckState>, target: &str, report: dev_events::CheckReport) {
+    board.entry(report.request).or_default().reports.insert(target.to_string(), report);
+    while board.len() > KEPT_CHECKS {
+        board.pop_first();
+    }
+}
+
+/// Ask every watcher that can to check what is on disk. Nothing is applied;
+/// each reports [`DevEvent::CheckFinished`]. `tests` names a crate whose test
+/// harness to compile instead.
+pub fn request_check(tests: Option<&str>) -> CheckRequested {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let request = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let rebuilder_targets: Vec<String> =
+        rebuilders().lock().map(|r| r.iter().map(|(t, _)| t.clone()).collect()).unwrap_or_default();
+    // Filed before it is sent: a target can finish before this returns.
+    let mut board = check_board().lock().unwrap_or_else(|p| p.into_inner());
+    let requested = send_check(checkers(), &rebuilder_targets, request, tests);
+    let state = board.entry(request).or_default();
+    state.targets = requested.targets.clone();
+    state.unchecked = requested.unchecked.clone();
+    requested
+}
+
+/// Send check `n` to every checker. A rebuild target with no checker (the
+/// runtime-server host) is reported as not covered, except the icon watcher,
+/// which compiles nothing.
+fn send_check(
+    checkers: &Mutex<Vec<(String, Checker)>>,
+    rebuilder_targets: &[String],
+    n: u64,
+    tests: Option<&str>,
+) -> CheckRequested {
+    let mut targets: Vec<String> = checkers
+        .lock()
+        .map(|c| c.iter().filter(|(_, check)| check(n, tests)).map(|(t, _)| t.clone()).collect())
+        .unwrap_or_default();
+    targets.dedup();
+    let mut unchecked: Vec<String> =
+        rebuilder_targets.iter().filter(|t| *t != "icon" && !targets.contains(t)).cloned().collect();
+    unchecked.dedup();
+    CheckRequested { request: n, targets, unchecked }
+}
+
+/// Check `n`'s state, for `GET /check/<n>`: `None` when this session has no
+/// such check. `done` when every target that took it has reported, `ok` when
+/// all of those passed too.
+pub fn check_state(n: u64) -> Option<serde_json::Value> {
+    let board = check_board().lock().unwrap_or_else(|p| p.into_inner());
+    board.get(&n).map(|state| check_state_json(n, state))
+}
+
+fn check_state_json(n: u64, state: &CheckState) -> serde_json::Value {
+    let done = state.targets.iter().all(|t| state.reports.contains_key(t));
+    serde_json::json!({
+        "request": n,
+        "targets": state.targets,
+        "unchecked": state.unchecked,
+        "done": done,
+        "ok": done && state.reports.values().all(|r| r.ok),
+        "reports": state.reports,
+    })
+}
+
+/// The newest checks, oldest first, for `GET /status`.
+pub fn recent_checks() -> Vec<serde_json::Value> {
+    let board = check_board().lock().unwrap_or_else(|p| p.into_inner());
+    let skip = board.len().saturating_sub(3);
+    board.iter().skip(skip).map(|(n, state)| check_state_json(*n, state)).collect()
+}
+
 /// `dlog!("tag", "fmt {}", arg)` — shorthand for the common
 /// `format!`-then-`dlog` pattern.
 #[macro_export]
@@ -366,6 +498,58 @@ macro_rules! dlog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn report(request: u64, ok: bool) -> dev_events::CheckReport {
+        dev_events::CheckReport { request, ok, compiled: vec![], errors: vec![], failure: None, tests: None, ms: 1 }
+    }
+
+    /// A check is done only when every target that took it has reported, and
+    /// one failing target fails the check; `ok` is never true before `done`,
+    /// so a caller reading it early cannot take it for a pass.
+    #[test]
+    fn a_check_is_done_when_every_target_reported_and_ok_when_all_passed() {
+        let mut board = std::collections::BTreeMap::new();
+        board.insert(1, CheckState { targets: vec!["web".into(), "server".into()], ..CheckState::default() });
+        let read = |board: &std::collections::BTreeMap<u64, CheckState>| check_state_json(1, &board[&1]);
+        assert_eq!(read(&board)["done"], false);
+        assert_eq!(read(&board)["ok"], false);
+        file_report(&mut board, "web", report(1, true));
+        assert_eq!(read(&board)["done"], false, "the server has not reported");
+        assert_eq!(read(&board)["ok"], false);
+        file_report(&mut board, "server", report(1, false));
+        assert_eq!(read(&board)["done"], true);
+        assert_eq!(read(&board)["ok"], false, "the server failed");
+        assert_eq!(read(&board)["reports"]["web"]["ok"], true);
+    }
+
+    #[test]
+    fn the_board_keeps_the_newest_checks() {
+        let mut board = std::collections::BTreeMap::new();
+        for n in 1..=(KEPT_CHECKS as u64 + 5) {
+            file_report(&mut board, "web", report(n, true));
+        }
+        assert_eq!(board.len(), KEPT_CHECKS);
+        assert!(!board.contains_key(&1));
+    }
+
+    /// A target with no checker is named as not covered: "passed" must not
+    /// read as covering a target nothing compiled. The icon watcher compiles
+    /// nothing, so it is not one. A checker that declines is not covered either.
+    #[test]
+    fn a_check_names_what_it_did_not_cover() {
+        let checkers: Mutex<Vec<(String, Checker)>> = Mutex::new(vec![
+            ("web".into(), Arc::new(|_, tests: Option<&str>| tests.is_none())),
+            ("server".into(), Arc::new(|_, _| true)),
+        ]);
+        let rebuilders = ["web".to_string(), "server".to_string(), "icon".to_string(), "sidecar".to_string()];
+        let all = send_check(&checkers, &rebuilders, 5, None);
+        assert_eq!(all.request, 5);
+        assert_eq!(all.targets, ["web", "server"]);
+        assert_eq!(all.unchecked, ["sidecar"]);
+        let tests = send_check(&checkers, &rebuilders, 6, Some("shared"));
+        assert_eq!(tests.targets, ["server"]);
+        assert_eq!(tests.unchecked, ["web", "sidecar"]);
+    }
 
     /// A request names the targets whose watchers took it, so a wait on
     /// it does not wait for one that is gone; every taker gets the same

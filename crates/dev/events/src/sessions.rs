@@ -258,6 +258,64 @@ pub fn request(entry: &SessionEntry, method: &str, path: &str, timeout: Duration
     Ok((status, body.to_string()))
 }
 
+/// How often [`run_check`] asks whether a check has finished.
+pub const CHECK_POLL: Duration = Duration::from_millis(200);
+
+/// How a check request ended, for a caller that waited.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CheckAnswer {
+    /// `GET /check/<n>`'s body with `done: true`.
+    Done(serde_json::Value),
+    /// Past `wait`: `GET /check/<n>`'s body with `done: false`.
+    Running(serde_json::Value),
+}
+
+/// Ask `entry`'s session to check (`POST /check`, `tests` naming a crate whose
+/// test harness to compile), and wait up to `wait` for every target it went
+/// to. Refusals and a session that stops answering are `Err`, in words.
+pub fn run_check(entry: &SessionEntry, tests: Option<&str>, wait: Duration) -> Result<CheckAnswer, String> {
+    let timeout = Duration::from_secs(5);
+    let unreachable = |e: std::io::Error| {
+        format!("the session (pid {}) did not answer on {}: {e}", entry.pid, entry.control_url)
+    };
+    let path = match tests {
+        Some(krate) => format!("/check?tests={krate}"),
+        None => "/check".to_string(),
+    };
+    let (code, body) = request(entry, "POST", &path, timeout).map_err(unreachable)?;
+    let asked: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+    match code {
+        200..=299 => {}
+        // An endpoint from before checks answers its route list.
+        404 => {
+            return Err(format!(
+                "the session (pid {}, idealyst {}) cannot check: it is older than `POST /check`. Restart it",
+                entry.pid, entry.cli_version
+            ))
+        }
+        _ => {
+            let why = asked["error"].as_str().unwrap_or(&body);
+            return Err(format!("the session (pid {}) refused the check: {why}", entry.pid));
+        }
+    }
+    let n = asked["request"].as_u64().ok_or_else(|| format!("the session's answer names no check: {body}"))?;
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        let (code, body) = request(entry, "GET", &format!("/check/{n}"), timeout).map_err(unreachable)?;
+        if code != 200 {
+            return Err(format!("the session (pid {}) answered {code} for check {n}: {body}", entry.pid));
+        }
+        let state: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("{e}: {body}"))?;
+        if state["done"].as_bool() == Some(true) {
+            return Ok(CheckAnswer::Done(state));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(CheckAnswer::Running(state));
+        }
+        std::thread::sleep(CHECK_POLL);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

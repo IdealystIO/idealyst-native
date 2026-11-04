@@ -22,6 +22,27 @@ use serde_json::{json, Value};
 use crate::build_wait::Tracker;
 
 /// Fold `body` (`GET /status`'s answer: `session` and `events`).
+/// What `rebuild_dev` with `apply: false` answers: `status` is `passed`,
+/// `failed` or, past its wait, `running`, then the session's own record of the
+/// check (per target `ok`, `compiled`, `errors` with `file`, `line`, `column`
+/// and `message`, `failure`, `ms`).
+pub fn check_answer(answer: &dev_events::sessions::CheckAnswer) -> Value {
+    use dev_events::sessions::CheckAnswer;
+    let (status, state, next) = match answer {
+        CheckAnswer::Done(state) if state["ok"] == true => {
+            ("passed", state, "nothing was applied; rebuild_dev without `apply` applies it, and finds these crates fresh")
+        }
+        CheckAnswer::Done(state) => ("failed", state, "the running app is untouched; fix the errors and check again"),
+        CheckAnswer::Running(state) => {
+            ("running", state, "still building: dev_status lists the check under `checks` when it ends")
+        }
+    };
+    let mut out = state.clone();
+    out["status"] = status.into();
+    out["next"] = next.into();
+    out
+}
+
 pub fn summarize(body: &Value) -> Value {
     let session = &body["session"];
     let events: &[Value] = body["events"].as_array().map(Vec::as_slice).unwrap_or(&[]);
@@ -168,11 +189,46 @@ pub fn summarize(body: &Value) -> Value {
     if !other.is_empty() {
         o.insert("other".into(), json!(other));
     }
+    if body["checks"].as_array().is_some_and(|c| !c.is_empty()) {
+        o.insert("checks".into(), body["checks"].clone());
+    }
     o.insert(
         "next".into(),
         json!("`detail: true` returns the session's event snapshot as sent, the watched roots and every diagnostic included"),
     );
     out
+}
+
+#[cfg(test)]
+mod check_answer_tests {
+    use super::*;
+    use dev_events::sessions::CheckAnswer;
+
+    /// A failed check answers `failed` with the compiler's location, and a
+    /// check past its wait is not mistaken for either outcome.
+    #[test]
+    fn a_checks_status_comes_from_the_sessions_record() {
+        let state = |done: bool, ok: bool| {
+            json!({ "request": 1, "done": done, "ok": ok, "targets": ["web"], "reports": {
+                "web": { "ok": ok, "errors": [{ "file": "src/lib.rs", "line": 3, "message": "boom" }] }
+            }})
+        };
+        let failed = check_answer(&CheckAnswer::Done(state(true, false)));
+        assert_eq!(failed["status"], "failed");
+        assert_eq!(failed["reports"]["web"]["errors"][0]["line"], 3);
+        assert_eq!(check_answer(&CheckAnswer::Done(state(true, true)))["status"], "passed");
+        let running = check_answer(&CheckAnswer::Running(state(false, false)));
+        assert_eq!(running["status"], "running");
+        assert!(running["next"].as_str().unwrap().contains("dev_status"));
+    }
+
+    /// `dev_status` carries the session's newest checks, and nothing when none ran.
+    #[test]
+    fn dev_status_carries_the_checks() {
+        let body = |checks| json!({ "session": {}, "events": [], "checks": checks });
+        assert!(summarize(&body(json!([]))).get("checks").is_none());
+        assert_eq!(summarize(&body(json!([{ "request": 2 }])))["checks"][0]["request"], 2);
+    }
 }
 
 #[cfg(test)]

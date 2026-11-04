@@ -26,6 +26,7 @@ mod headless_client;
 mod memory_limit;
 mod platform;
 mod server_hot;
+mod session_check;
 
 pub use platform::Platform;
 
@@ -77,7 +78,8 @@ enum Command {
     /// Store Connect (`.ipa`). macOS → Mac App Store (`.pkg`) or Developer ID
     /// notarized `.dmg`.
     Publish(cmd::publish::Args),
-    /// Type-check across configured platforms.
+    /// Type-check across configured platforms, or (`--session`) build through
+    /// a running dev session without applying anything.
     Check(cmd::check::Args),
     /// Lint source for idealyst idiom drift (raw reactive primitives,
     /// hand-built elements, non-PascalCase components). Use

@@ -62,6 +62,11 @@ pub fn render(event: &DevEvent) -> Option<String> {
         | DevEvent::WatcherReady { .. }
         | DevEvent::RebuildRequested { .. }
         | DevEvent::RebuildTaken { .. } => return None,
+        DevEvent::CheckStarted { target, tests, .. } => match tests {
+            Some(krate) => format!("[check {target}] compiling the test harness of {krate}; nothing is applied"),
+            None => format!("[check {target}] building what is on disk; nothing is applied"),
+        },
+        DevEvent::CheckFinished { target, report } => crate::check::summary(target, report),
         DevEvent::Decided { decision, .. } => match decision {
             Decision::Unchanged => "[dev] no UI or code change in this save, no rebuild".into(),
             Decision::Rebuild { reason: Some(why) } => format!("[dev] rebuilding: {why}"),

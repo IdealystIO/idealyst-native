@@ -586,6 +586,64 @@ pub fn referenced_web_keys(root: &Path) -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// What a [`WEB_KEYS_DIR`] record's name ends in when it holds the key of an
+/// app's CONFIGURED build rather than the key a slot last built with. See
+/// [`protect_configured_build`].
+const CONFIGURED_RECORD_SUFFIX: &str = ".configured";
+
+/// Keep `configured`'s dir from being retired, for the project at
+/// `project_dir`, whatever key its slot moves to: a one-off `--debuginfo full`
+/// must not delete the build the project's `[package.metadata.idealyst.dev]`
+/// describes, the one the next plain `idealyst dev` wants.
+///
+/// A record beside the slot records, so [`referenced_web_keys`] counts it and
+/// `idealyst clean --stale` keeps the dir too. The app's previous such record
+/// goes first: a project that changes or drops its configuration no longer
+/// pins the old directory, which then retires like any other. With `None` (no
+/// configuration) that removal is all that happens, and the common case of no
+/// record reads one directory.
+///
+/// `session` locates the target root; `configured` gives the key and slot.
+pub fn protect_configured_build(project_dir: &Path, configured: Option<&BuildOptions>, session: &BuildOptions) {
+    let Ok(project_dir) = fs::canonicalize(project_dir) else { return };
+    let Ok(manifest) = parse_manifest(&project_dir) else { return };
+    let Some(root) = web_target_dir(&project_dir, session).parent().map(Path::to_path_buf) else { return };
+    let record = configured.map(|c| {
+        (format!("{}{CONFIGURED_RECORD_SUFFIX}", web_key_slot(&manifest.name, c)), config_key(c, &project_dir))
+    });
+    set_configured_record(&root, &manifest.name, record.as_ref().map(|(slot, key)| (slot.as_str(), key.as_str())));
+}
+
+fn set_configured_record(root: &Path, app: &str, record: Option<(&str, &str)>) {
+    let keys = root.join(WEB_KEYS_DIR);
+    for entry in fs::read_dir(&keys).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let of_app = name.split('.').next() == Some(app) && name.ends_with(CONFIGURED_RECORD_SUFFIX);
+        if of_app && record.is_none_or(|(slot, _)| slot != name) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    if let Some((slot, key)) = record {
+        if fs::create_dir_all(&keys).is_ok() {
+            let _ = fs::write(keys.join(slot), key);
+        }
+    }
+}
+
+/// The keys of the configured builds recorded under `root`.
+fn configured_web_keys(root: &Path) -> std::collections::HashSet<String> {
+    fs::read_dir(root.join(WEB_KEYS_DIR))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(CONFIGURED_RECORD_SUFFIX))
+        .filter_map(|e| fs::read_to_string(e.path()).ok())
+        .map(|k| k.trim().to_string())
+        .filter(|k| is_web_key(k))
+        .collect()
+}
+
 /// A key as [`config_key`] renders it: 8 lowercase hex digits. Checked
 /// before a recorded key is turned into a path to delete.
 fn is_web_key(k: &str) -> bool {
@@ -600,10 +658,11 @@ fn is_web_key(k: &str) -> bool {
 /// `idealyst-web-<key>` dir for good (CrewForge: a 2.6 GB dir three weeks
 /// after its config moved on).
 ///
-/// The previous dir is kept when another slot still records its key (in-tree
-/// examples share dirs: the key leaves out the app unless hot-patching),
-/// or when a build holds its cargo locks; `idealyst clean --stale` sweeps
-/// whatever no slot references.
+/// The previous dir is kept when it is the app's configured build
+/// ([`protect_configured_build`]), when another slot still records its key
+/// (in-tree examples share dirs: the key leaves out the app unless
+/// hot-patching), or when a build holds its cargo locks; `idealyst clean
+/// --stale` sweeps whatever no record references.
 pub fn record_web_key(root: &Path, slot: &str, key: &str) -> Option<PathBuf> {
     let keys = root.join(WEB_KEYS_DIR);
     let record = keys.join(slot);
@@ -612,6 +671,12 @@ pub fn record_web_key(root: &Path, slot: &str, key: &str) -> Option<PathBuf> {
     fs::write(&record, key).ok()?;
     let previous = previous.filter(|p| p != key && is_web_key(p))?;
     let dir = root.join(format!("idealyst-web-{previous}"));
+    // Before the shared-dir case below, which forgets this app's units: the
+    // next session of the configuration is this app, and a sibling's prune
+    // must not take them meanwhile.
+    if configured_web_keys(root).contains(&previous) {
+        return None;
+    }
     if referenced_web_keys(root).contains(&previous) {
         // Another slot still builds there: keep the dir, but stop keeping
         // THIS app's units in it — its record would otherwise pin them
@@ -690,6 +755,44 @@ pub fn web_target_dir(project_dir: &Path, opts: &BuildOptions) -> PathBuf {
 /// involved.
 pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     build_inner(project_dir, opts, true)
+}
+
+/// The cargo half of [`build`] alone: the same command, flags and environment,
+/// including the hot-patch capture wrapper, in the same target dir, and then
+/// nothing. A dev session's check (`dev_reload`).
+///
+/// Nothing a page reads moves: no pass runs, `pkg/` and the staged bundle stay
+/// as they are, no pass stamp is written and nothing is pruned. So the next
+/// [`build`] finds cargo's work done and, because its module no longer matches
+/// the stamp of the last completed passes ([`passes_skippable`]), packages and
+/// publishes it. Comparing against what cargo found on entry would call that
+/// "unchanged" and leave the page on the old bundle.
+pub fn compile_only(project_dir: &Path, opts: BuildOptions) -> Result<()> {
+    let project_dir = fs::canonicalize(project_dir)
+        .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
+    let manifest = parse_manifest(&project_dir)?;
+    let bin_name = manifest.name.clone();
+    ensure_entry_point(&project_dir, &bin_name)?;
+    cargo_build_wasm(
+        &opts.reporter,
+        &project_dir,
+        &bin_name,
+        &web_target_dir(&project_dir, &opts),
+        opts.release,
+        opts.wasm_split,
+        opts.hot_patch,
+        opts.debuginfo,
+        opts.dev_opt,
+        opts.strip_panics,
+        opts.premint,
+        opts.premint_only,
+        opts.premint_report,
+        opts.hydrate,
+        &opts.user_features,
+        &opts.source,
+        &project_dir,
+    )
+    .map(drop)
 }
 
 /// Why [`restage`] refused: the packaged module is not cargo's current
@@ -1079,6 +1182,11 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
         if let Some(after) = &after {
             after.write(&stamp_file, &reporter);
         }
+        // `pkg/` is one directory across keys, and it now holds this key's
+        // output: another key's stamp would pass it off as its own on the way
+        // back (`--debuginfo full`, then a plain session whose kept target dir
+        // finds its module unchanged) and serve this build's bundle.
+        clear_other_pass_stamps(&build_dir, &stamp_file);
     }
 
     if opts.premint {
@@ -2619,6 +2727,16 @@ fn passes_skippable(
     match (before, after, recorded) {
         (Some(b), Some(a), Some(r)) => outputs_present && b == a && r == a,
         _ => false,
+    }
+}
+
+/// Drop every `.wasm-stamp-*` in `build_dir` except `keep`: see the caller.
+fn clear_other_pass_stamps(build_dir: &Path, keep: &Path) {
+    for entry in fs::read_dir(build_dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path != keep && entry.file_name().to_string_lossy().starts_with(".wasm-stamp-") {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
@@ -4352,6 +4470,72 @@ mod regression_tests {
         std::fs::write(root.join(WEB_KEYS_DIR).join("evil.dev"), "../../etc").unwrap();
         assert_eq!(record_web_key(root, "evil.dev", "cccccccc"), None);
         assert!(!referenced_web_keys(root).contains("../../etc"));
+    }
+
+    /// A one-off override moves the slot away from the configured build, and
+    /// the dir that build lives in stays, with its units still recorded. The
+    /// override's own dir is retired on the way back.
+    #[test]
+    fn regression_a_one_off_flag_retired_the_configured_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for k in ["aaaaaaaa", "bbbbbbbb", "cccccccc"] {
+            std::fs::create_dir_all(root.join(format!("idealyst-web-{k}"))).unwrap();
+        }
+        let slot = "app.dev.hotpatch";
+        set_configured_record(root, "app", Some(("app.dev.hotpatch.configured", "aaaaaaaa")));
+        assert_eq!(record_web_key(root, slot, "aaaaaaaa"), None);
+        // The override: without the record this returned the configured dir.
+        assert_eq!(record_web_key(root, slot, "bbbbbbbb"), None);
+        assert!(root.join("idealyst-web-aaaaaaaa").is_dir(), "the configured build was retired");
+        assert!(referenced_web_keys(root).contains("aaaaaaaa"), "`clean --stale` would sweep it");
+        // Another override retires the first, not the configured build.
+        assert_eq!(record_web_key(root, slot, "cccccccc"), Some(root.join("idealyst-web-bbbbbbbb")));
+        assert_eq!(record_web_key(root, slot, "aaaaaaaa"), Some(root.join("idealyst-web-cccccccc")));
+        assert!(root.join("idealyst-web-aaaaaaaa").is_dir());
+    }
+
+    /// With no configuration nothing is pinned: exactly the retirement every
+    /// project without one always had, and dropping a configuration un-pins
+    /// the dir it protected. Records of another app are not touched.
+    #[test]
+    fn no_configuration_pins_nothing_and_dropping_one_unpins_its_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for k in ["aaaaaaaa", "bbbbbbbb"] {
+            std::fs::create_dir_all(root.join(format!("idealyst-web-{k}"))).unwrap();
+        }
+        set_configured_record(root, "app", Some(("app.dev.configured", "aaaaaaaa")));
+        set_configured_record(root, "other", Some(("other.dev.configured", "bbbbbbbb")));
+        set_configured_record(root, "app", None);
+        assert!(!root.join(WEB_KEYS_DIR).join("app.dev.configured").exists());
+        assert!(root.join(WEB_KEYS_DIR).join("other.dev.configured").exists(), "another app's record");
+        // A changed configuration replaces the record rather than adding one.
+        set_configured_record(root, "app", Some(("app.dev.configured", "aaaaaaaa")));
+        set_configured_record(root, "app", Some(("app.dev.hotpatch.configured", "bbbbbbbb")));
+        assert!(!root.join(WEB_KEYS_DIR).join("app.dev.configured").exists());
+        set_configured_record(root, "app", None);
+        set_configured_record(root, "other", None);
+        assert_eq!(record_web_key(root, "app.dev", "aaaaaaaa"), None);
+        assert_eq!(record_web_key(root, "app.dev", "bbbbbbbb"), Some(root.join("idealyst-web-aaaaaaaa")));
+    }
+
+    /// `pkg/` is shared across keys while stamps are per key. Going from a
+    /// configuration to an override and back keeps the first key's target
+    /// dir, so its module is unchanged and its stamp matches, and only this
+    /// stops the override's `pkg/` being served as the configuration's.
+    #[test]
+    fn regression_a_round_trip_through_an_override_served_its_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        for key in ["aaaaaaaa", "bbbbbbbb"] {
+            std::fs::write(dir.join(format!(".wasm-stamp-{key}")), "stamp").unwrap();
+        }
+        std::fs::write(dir.join("unrelated"), "x").unwrap();
+        clear_other_pass_stamps(dir, &dir.join(".wasm-stamp-bbbbbbbb"));
+        assert!(!dir.join(".wasm-stamp-aaaaaaaa").exists());
+        assert!(dir.join(".wasm-stamp-bbbbbbbb").exists());
+        assert!(dir.join("unrelated").exists());
     }
 
     #[test]

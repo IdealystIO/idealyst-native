@@ -23,6 +23,33 @@ use dev_events::sessions::{self, SessionEntry};
 pub struct Actions {
     pub status: Box<dyn Fn() -> Vec<serde_json::Value> + Send + Sync>,
     pub rebuild: Box<dyn Fn() -> crate::dev_log::Requested + Send + Sync>,
+    /// Build what is on disk and apply nothing, with the crate whose test
+    /// harness to compile instead (`crate::dev_log::request_check`).
+    pub check: Box<dyn Fn(Option<&str>) -> crate::dev_log::CheckRequested + Send + Sync>,
+    /// A check's state so far, by number.
+    pub check_state: Box<dyn Fn(u64) -> Option<serde_json::Value> + Send + Sync>,
+    /// The newest checks, for `GET /status`.
+    pub recent_checks: Box<dyn Fn() -> Vec<serde_json::Value> + Send + Sync>,
+}
+
+/// Whether `name` can only be read as a package name on cargo's command line:
+/// a leading `-` would be read as a flag.
+fn is_package_name(name: &str) -> bool {
+    !name.starts_with('-')
+        && !name.is_empty()
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The crate `POST /check?tests=<crate>` names: see [`is_package_name`].
+fn tests_query(query: &str) -> Result<Option<&str>, String> {
+    let mut tests = None;
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        match pair.split_once('=') {
+            Some(("tests", name)) if is_package_name(name) => tests = Some(name),
+            _ => return Err(format!("unknown or malformed parameter `{pair}`; `tests=<crate>` is the one this takes")),
+        }
+    }
+    Ok(tests)
 }
 
 /// Answer one request: `(status code, JSON body)`. `authorization` is the
@@ -43,10 +70,43 @@ pub fn handle(
     if authorization != Some(expected.as_str()) {
         return (401, r#"{"error":"missing or wrong token; read it from this session's registry entry"}"#.into());
     }
+    let (path, query) = path.split_once('?').unwrap_or((path, ""));
     match (method, path) {
         ("GET", "/status") => {
-            let body = serde_json::json!({ "session": entry.public(), "events": (actions.status)() });
+            let body = serde_json::json!({
+                "session": entry.public(),
+                "events": (actions.status)(),
+                "checks": (actions.recent_checks)(),
+            });
             (200, body.to_string())
+        }
+        ("POST", "/check") => {
+            let tests = match tests_query(query) {
+                Ok(tests) => tests,
+                Err(error) => return (400, serde_json::json!({ "error": error }).to_string()),
+            };
+            let r = (actions.check)(tests);
+            if r.targets.is_empty() {
+                let error = match tests {
+                    Some(_) => "no watcher can compile a test harness: test modules compile in the session's \
+                                server target dir, and this session builds no server, or its first server build \
+                                has not finished"
+                        .to_string(),
+                    None => "no watcher can check: the session was started with --no-build, or its first build \
+                             has not finished"
+                        .to_string(),
+                };
+                return (409, serde_json::json!({ "error": error, "unchecked": r.unchecked }).to_string());
+            }
+            let body = serde_json::json!({ "request": r.request, "targets": r.targets, "unchecked": r.unchecked });
+            (202, body.to_string())
+        }
+        ("GET", p) if p.starts_with("/check/") => {
+            let state = p["/check/".len()..].parse().ok().and_then(|n| (actions.check_state)(n));
+            match state {
+                Some(state) => (200, state.to_string()),
+                None => (404, r#"{"error":"this session has no such check"}"#.into()),
+            }
         }
         ("POST", "/rebuild") => {
             // `request` is what a wait on this rebuild's outcome names
@@ -60,7 +120,7 @@ pub fn handle(
             });
             (if r.targets.is_empty() { 409 } else { 202 }, body.to_string())
         }
-        _ => (404, r#"{"error":"GET /status or POST /rebuild"}"#.into()),
+        _ => (404, r#"{"error":"GET /status, POST /rebuild, POST /check or GET /check/<n>"}"#.into()),
     }
 }
 
@@ -113,7 +173,7 @@ pub fn start_in(registry: &Path, mut entry: SessionEntry, actions: Actions) -> O
                 let authorization = header("authorization");
                 let has_origin = header("origin").is_some();
                 let method = request.method().as_str().to_string();
-                let path = request.url().split('?').next().unwrap_or("").to_string();
+                let path = request.url().to_string();
                 let (code, body) = handle(&method, &path, authorization.as_deref(), has_origin, &entry, &actions);
                 let json = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
                     .expect("a valid header");
@@ -265,6 +325,14 @@ mod tests {
                 let n = rebuilds.fetch_add(1, Ordering::SeqCst) as u64 + 1;
                 crate::dev_log::Requested { request: n, targets: vec!["web".into()] }
             }),
+            check: Box::new(|tests| crate::dev_log::CheckRequested {
+                request: 9,
+                // A session that builds no server has nothing to compile a harness in.
+                targets: if tests == Some("no-server") { vec![] } else { vec!["web".into()] },
+                unchecked: vec!["sidecar".into()],
+            }),
+            check_state: Box::new(|n| (n == 9).then(|| serde_json::json!({ "request": 9, "done": true }))),
+            recent_checks: Box::new(|| vec![serde_json::json!({ "request": 9 })]),
         }
     }
 
@@ -273,6 +341,43 @@ mod tests {
         e.app = "app".into();
         e.no_watch = true;
         e
+    }
+
+    /// A check is requested and read back apart from a rebuild, with the same
+    /// guards: it must not run the rebuild action, and only a token holder
+    /// gets to start a build.
+    #[test]
+    fn a_check_is_its_own_route_behind_the_same_guards() {
+        let n = Arc::new(AtomicUsize::new(0));
+        let a = actions(n.clone());
+        let e = entry();
+        assert_eq!(handle("POST", "/check", None, false, &e, &a).0, 401);
+        assert_eq!(handle("POST", "/check", Some("Bearer tok"), true, &e, &a).0, 403);
+        let (code, body) = handle("POST", "/check", Some("Bearer tok"), false, &e, &a);
+        assert_eq!(code, 202, "{body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["request"], 9);
+        assert_eq!(v["unchecked"][0], "sidecar", "what the check does not cover is said");
+        assert_eq!(n.load(Ordering::SeqCst), 0, "a check ran the rebuild action");
+        assert_eq!(handle("GET", "/check/9", Some("Bearer tok"), false, &e, &a).0, 200);
+        assert_eq!(handle("GET", "/check/8", Some("Bearer tok"), false, &e, &a).0, 404);
+        assert_eq!(handle("GET", "/check/x", Some("Bearer tok"), false, &e, &a).0, 404);
+        let (code, body) = handle("POST", "/check?tests=no-server", Some("Bearer tok"), false, &e, &a);
+        assert_eq!(code, 409, "{body}");
+        assert!(body.contains("server target dir"), "{body}");
+        let (_, status) = handle("GET", "/status", Some("Bearer tok"), false, &e, &a);
+        assert!(status.contains(r#""checks":[{"request":9}]"#), "{status}");
+    }
+
+    /// `tests` reaches cargo's command line, so nothing but a package name
+    /// gets through.
+    #[test]
+    fn the_tests_parameter_is_a_package_name_or_refused() {
+        assert_eq!(tests_query(""), Ok(None));
+        assert_eq!(tests_query("tests=crewforge-core_2"), Ok(Some("crewforge-core_2")));
+        for bad in ["tests=", "tests=--all", "tests=a%20b", "tests=a b", "other=1", "tests"] {
+            assert!(tests_query(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

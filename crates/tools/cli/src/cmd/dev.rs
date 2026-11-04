@@ -407,8 +407,11 @@ pub struct Args {
     /// source lines while dropping the DWARF for locals and types, which
     /// on a large app is most of the module — and every byte is
     /// re-packaged and re-compiled by the browser on each reload. `full` restores cargo's `debug = 2`; `none` drops it.
-    #[arg(long, default_value = "line-tables")]
-    pub debuginfo: String,
+    // `Option`: telling "the flag was given" from "nobody said" is what lets a
+    // project's configuration fill it and a differing flag warn
+    // (`apply_project_config`). Filled before anything reads it.
+    #[arg(long)]
+    pub debuginfo: Option<String>,
 
     /// Web only, debug builds only: how much CPU each rebuild spends
     /// optimizing. `optimized` (default) keeps workspace members at the
@@ -424,8 +427,15 @@ pub struct Args {
     /// right after a `cargo clean`), where a framework-crate edit
     /// measured 7.3s under `fast` vs 14.2s under `optimized`. Release
     /// builds set their own posture and ignore this.
-    #[arg(long, default_value = "optimized")]
-    pub dev_opt: String,
+    #[arg(long)]
+    pub dev_opt: Option<String>,
+
+    /// Ignore `[package.metadata.idealyst.dev]`: only the flags on this
+    /// command line choose the build. It warns as any flag does when that
+    /// differs from the configuration. See "Configuring the build" in
+    /// docs/hot-reload.md.
+    #[arg(long)]
+    pub no_config: bool,
 
     /// Web + `--local` only: run the `wasm-split` pass on every rebuild,
     /// the way a release build does. OFF by default: lazy loading is a
@@ -803,12 +813,199 @@ fn ambient_lint_pass(dir: &Path) {
     }
 }
 
-pub fn run(args: Args) -> Result<()> {
+/// A cache-affecting flag that differs from the project's configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfigDifference {
+    /// As typed: `--debuginfo full`.
+    flag: String,
+    /// What the configuration says, default included: `line-tables`.
+    configured: String,
+    /// The key to set: `debuginfo`.
+    key: &'static str,
+}
+
+impl ConfigDifference {
+    /// The warning, naming what it costs. `web`: the session builds the web
+    /// bundle, whose directory is keyed on these settings.
+    fn warning(&self, web: bool) -> String {
+        let cost = if web {
+            "This builds in a separate directory (a full dependency rebuild); the configured build's \
+             directory is kept, and the next plain `idealyst dev` finds it warm."
+        } else {
+            "This builds with other settings than the configured build."
+        };
+        format!(
+            "`{}` differs from this project's configuration (`{}`). {cost} Set `{}` in \
+             [package.metadata.idealyst.dev] to make it permanent.",
+            self.flag, self.configured, self.key,
+        )
+    }
+}
+
+/// Fill `args` from the project's configuration, and say which flags differ.
+///
+/// A flag on the command line wins, as it would in cargo: `--features` replaces
+/// the configured list, and a boolean flag turns on what the configuration
+/// leaves off. `--no-config` is the way to turn off what it turns on. Settings
+/// nobody gave stay at the framework's defaults. Behaviour flags (platform
+/// filters, ports, `--no-watch`, `--metrics`, `--interactive`) do not affect
+/// the build's cache and are not compared. `experimental_build` is read but
+/// not compared for the same reason.
+fn apply_project_config(args: &mut Args, config: &crate::dev_config::ProjectBuildConfig) -> Result<Vec<ConfigDifference>> {
+    let mut differences = Vec::new();
+    let flags_only = args.no_config;
+
+    // The configured value of each, default included, in the CLI's spelling.
+    let configured_debuginfo = config.debuginfo.as_deref().unwrap_or("line-tables");
+    let configured_dev_opt = config.dev_opt.as_deref().unwrap_or("optimized");
+    build_web::DebugInfo::from_cli(configured_debuginfo)
+        .context("`debuginfo` in [package.metadata.idealyst.dev]")?;
+    build_web::DevOpt::from_cli(configured_dev_opt).context("`dev_opt` in [package.metadata.idealyst.dev]")?;
+
+    match &args.debuginfo {
+        Some(flag) => {
+            if build_web::DebugInfo::from_cli(flag)? != build_web::DebugInfo::from_cli(configured_debuginfo)? {
+                differences.push(ConfigDifference {
+                    flag: format!("--debuginfo {flag}"),
+                    configured: configured_debuginfo.to_string(),
+                    key: "debuginfo",
+                });
+            }
+        }
+        None if flags_only => {
+            if build_web::DebugInfo::from_cli(configured_debuginfo)? != build_web::DebugInfo::default() {
+                differences.push(ConfigDifference {
+                    flag: "--no-config".into(),
+                    configured: format!("debuginfo = {configured_debuginfo}"),
+                    key: "debuginfo",
+                });
+            }
+        }
+        None => args.debuginfo = Some(configured_debuginfo.to_string()),
+    }
+    match &args.dev_opt {
+        Some(flag) => {
+            if build_web::DevOpt::from_cli(flag)? != build_web::DevOpt::from_cli(configured_dev_opt)? {
+                differences.push(ConfigDifference {
+                    flag: format!("--dev-opt {flag}"),
+                    configured: configured_dev_opt.to_string(),
+                    key: "dev_opt",
+                });
+            }
+        }
+        None if flags_only => {
+            if build_web::DevOpt::from_cli(configured_dev_opt)? != build_web::DevOpt::default() {
+                differences.push(ConfigDifference {
+                    flag: "--no-config".into(),
+                    configured: format!("dev_opt = {configured_dev_opt}"),
+                    key: "dev_opt",
+                });
+            }
+        }
+        None => args.dev_opt = Some(configured_dev_opt.to_string()),
+    }
+
+    let configured_features = config.features.clone().unwrap_or_default();
+    let set = |list: &[String]| -> std::collections::BTreeSet<String> {
+        list.iter().filter(|f| !f.is_empty()).cloned().collect()
+    };
+    if args.features.is_empty() && !flags_only {
+        args.features = configured_features.clone();
+    } else if set(&args.features) != set(&configured_features) {
+        differences.push(ConfigDifference {
+            flag: if args.features.is_empty() {
+                "--no-config".to_string()
+            } else {
+                format!("--features {}", args.features.join(","))
+            },
+            configured: format!("[{}]", configured_features.join(", ")),
+            key: "features",
+        });
+    }
+
+    let mut flag = |on: &mut bool, name: &'static str, key: &'static str, configured: Option<bool>| {
+        let configured = configured.unwrap_or(false);
+        if *on && !configured {
+            differences.push(ConfigDifference { flag: name.to_string(), configured: format!("{key} = false"), key });
+        } else if !*on && configured {
+            if flags_only {
+                differences.push(ConfigDifference { flag: "--no-config".to_string(), configured: format!("{key} = true"), key });
+            } else {
+                *on = true;
+            }
+        }
+    };
+    flag(&mut args.local, "--local", "local", config.local);
+    flag(&mut args.premint, "--premint", "premint", config.premint);
+    flag(&mut args.premint_only, "--premint-only", "premint_only", config.premint_only);
+    flag(&mut args.premint_report, "--premint-report", "premint_report", config.premint_report);
+    flag(&mut args.split, "--split", "split", config.split);
+    flag(&mut args.no_robot, "--no-robot", "no_robot", config.no_robot);
+    // No comparison: it decides what a save may do, and no cargo flag or
+    // target dir moves with it.
+    if !flags_only && config.experimental_build == Some(true) {
+        args.experimental_build = true;
+    }
+    Ok(differences)
+}
+
+/// The arguments of this session with every cache-affecting setting taken from
+/// the configuration alone: what a plain `idealyst dev` of the project builds,
+/// whatever flags this one was given.
+fn configured_args(args: &Args, config: &crate::dev_config::ProjectBuildConfig) -> Result<Args> {
+    let mut configured = args.shallow_clone();
+    configured.no_config = false;
+    configured.debuginfo = None;
+    configured.dev_opt = None;
+    configured.features = Vec::new();
+    configured.local = false;
+    configured.premint = false;
+    configured.premint_only = false;
+    configured.premint_report = false;
+    configured.split = false;
+    configured.no_robot = false;
+    apply_project_config(&mut configured, config)?;
+    Ok(configured)
+}
+
+/// Keep the directory a plain `idealyst dev` of this project builds in from
+/// being retired by this session, whose flags may have moved its build slot
+/// elsewhere ([`dev_reload::protect_configured_build`]). A project with no
+/// configuration only has any earlier protection dropped.
+fn protect_configured_web_build(
+    dir: &Path,
+    args: &Args,
+    source: &build_ios::FrameworkSource,
+    wire: bool,
+) -> Result<()> {
+    let options = |a: &Args, wire: bool| {
+        full_stack_bundle_options(a, source, PathBuf::new(), None, None, wire.then_some(0))
+    };
+    let session = options(args, wire)?;
+    let configured = match crate::dev_config::ProjectBuildConfig::load(dir)? {
+        Some(config) => {
+            let configured = configured_args(args, &config)?;
+            Some(options(&configured, !configured.local)?)
+        }
+        None => None,
+    };
+    dev_reload::protect_configured_build(dir, configured.as_ref(), &session);
+    Ok(())
+}
+
+pub fn run(mut args: Args) -> Result<()> {
     if args.events_schema {
         println!("{}", serde_json::to_string_pretty(&dev_events::json_schema())?);
         return Ok(());
     }
     let dir = crate::framework_source::abs_project_dir(&args.dir)?;
+
+    // Before anything reads a build setting. Absent, the flags and their
+    // defaults stand, with nothing to compare them with.
+    let config_differences = match crate::dev_config::ProjectBuildConfig::load(&dir)? {
+        Some(config) => apply_project_config(&mut args, &config)?,
+        None => Vec::new(),
+    };
 
     // Before anything resolves a path: every target dir, wrapper root,
     // staging dir and log below moves under `isolated/<key>/`.
@@ -932,6 +1129,13 @@ pub fn run(args: Args) -> Result<()> {
         log_file: Some(log_path.display().to_string()),
         server: session_server,
     });
+    // Before anything builds. Not for an isolated session: it builds under
+    // its own key, so no flag of its can cost the project's own build anything.
+    if args.isolated.is_none() {
+        for difference in &config_differences {
+            session.reporter.warn("dev", difference.warning(active_targets.contains(&Target::Web)));
+        }
+    }
     // A web target runs the post-link passes in this process — the
     // command_export neutralize on every rebuild, wasm-split under
     // `--split`, and the hot-patch tier's base prep (~3.7 GB on CrewForge)
@@ -984,6 +1188,9 @@ pub fn run(args: Args) -> Result<()> {
                         .unwrap_or_default()
                 }),
                 rebuild: Box::new(crate::dev_log::request_rebuild),
+                check: Box::new(crate::dev_log::request_check),
+                check_state: Box::new(crate::dev_log::check_state),
+                recent_checks: Box::new(crate::dev_log::recent_checks),
             },
         );
         match &registration {
@@ -2121,6 +2328,7 @@ fn launch_web(
     use dev_http::{serve_static, AasContext, PreloadContext, ReloadContext};
 
     let source = crate::framework_source::resolve(dir)?;
+    protect_configured_web_build(dir, args, &source, runtime_server_port.is_some())?;
 
     // Full-stack projects (those declaring a `server_bin` or a
     // standalone `server_manifest`) bypass the built-in static-file dev
@@ -2329,8 +2537,8 @@ fn launch_web(
                     hot_patch: hot_patch_armed(args),
                     experimental_build: web_additive_wanted(args),
                     no_watch: args.no_watch,
-                    debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
-                dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
+                    debuginfo: args.debuginfo_setting()?,
+                dev_opt: args.dev_opt_setting()?,
                 reporter: dev_events::global(),
                 },
             )?;
@@ -2669,8 +2877,8 @@ fn launch_ssr(
                 wasm_split: args.split,
                 // Set only by the --local web loop when the hot-patch tier is armed.
                 hot_patch: false,
-                debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
-                dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
+                debuginfo: args.debuginfo_setting()?,
+                dev_opt: args.dev_opt_setting()?,
                 reporter: dev_events::global(),
                 },
         )
@@ -2980,8 +3188,8 @@ fn full_stack_bundle_options(
         hot_patch: !wire && hot_patch_armed(args),
         experimental_build: !wire && web_additive_wanted(args),
         no_watch: args.no_watch,
-        debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
-        dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
+        debuginfo: args.debuginfo_setting()?,
+        dev_opt: args.dev_opt_setting()?,
         reporter: dev_events::global(),
     })
 }
@@ -3128,9 +3336,9 @@ fn launch_web_with_backend(
     let concurrent = !builds_contend(&web_target, &server_target);
     let mut server_build = None;
     let mut pending_setup = setup;
-    let start_server_build = |setup: Option<(Vec<PathBuf>, ServerBuild)>| {
-        setup.map(|(roots, build)| {
-            spawn_server_build(roots, build, server_signal.clone(), reporter.clone(), server_hot.clone())
+    let start_server_build = |setup: Option<(Vec<PathBuf>, ServerBuild, Arc<ServerCheck>)>| {
+        setup.map(|(roots, build, check)| {
+            spawn_server_build(roots, build, check, server_signal.clone(), reporter.clone(), server_hot.clone())
         })
     };
     if watched {
@@ -3974,6 +4182,7 @@ fn stop_server(server: ServerProc) {
 fn spawn_server_build(
     roots: Vec<PathBuf>,
     mut build: ServerBuild,
+    check: Arc<ServerCheck>,
     server_signal: Arc<dev_reload::ReloadSignal>,
     reporter: dev_events::Reporter,
     hot: Option<crate::server_hot::ServerHot>,
@@ -4031,6 +4240,15 @@ fn spawn_server_build(
                         );
                         control.request_rebuild();
                     }
+                    let check_control = control.clone();
+                    crate::dev_log::register_checker(
+                        dev_events::SERVER_TARGET,
+                        std::sync::Arc::new(move |n, tests| {
+                            let check = check.clone();
+                            let tests = tests.map(String::from);
+                            check_control.run_between_saves(std::sync::Arc::new(move || check.run(n, tests.clone())))
+                        }),
+                    );
                     crate::dev_log::register_rebuilder(
                         dev_events::SERVER_TARGET,
                         std::sync::Arc::new(move |n| control.request_rebuild_numbered(n)),
@@ -4196,6 +4414,72 @@ struct ServerBuildShared {
 /// then runs, reporting whether the binary moved.
 type ServerBuild = Box<dyn FnMut() -> Result<dev_reload::Rebuilt> + Send + 'static>;
 
+/// A check of the server: its build with nothing applied. Run on the server
+/// watcher's thread, between saves.
+struct ServerCheck {
+    base_args: Vec<String>,
+    manifest: PathBuf,
+    target_dir: PathBuf,
+    priority: BuildPriority,
+    hot: Option<crate::server_hot::ServerHot>,
+}
+
+impl ServerCheck {
+    fn run(&self, request: u64, tests: Option<String>) {
+        let reporter = dev_events::global();
+        let krate = tests.clone();
+        dev_events::check::run(&reporter, dev_events::SERVER_TARGET, request, tests, |private| {
+            let mut cmd = match &krate {
+                Some(krate) => self.test_command(krate)?,
+                None => self.build_command(),
+            };
+            let (status, _) = dev_events::process::run_cargo(&mut cmd, private, dev_events::SERVER_TARGET, None)
+                .map_err(|e| format!("run cargo for the server: {e}"))?;
+            if status.success() { Ok(()) } else { Err(format!("cargo exited with {status}")) }
+        });
+    }
+
+    /// The very command the server's watcher builds with, so cargo finds the
+    /// same units, and the next real build finds this one's work done. That
+    /// build then has only to tell the binary moved: see `last` in
+    /// [`server_watch_setup`], which this leaves alone. So does what follows a
+    /// real build here: no `hold_reloads`, no prune, no new hot-patch base.
+    fn build_command(&self) -> Command {
+        let mut cmd = Command::new("cargo");
+        prepare_server_build(&mut cmd, &self.base_args, &self.target_dir, self.priority);
+        if let Some(hot) = &self.hot {
+            // The last real build's binary is read in the background, from
+            // the path this build is about to relink.
+            hot.settle();
+            cmd.envs(hot.build_env());
+        }
+        cmd
+    }
+
+    /// `cargo test --no-run` of `krate`'s test targets, beside the server
+    /// (`crate::session_check`). Not through the capture wrapper: captures are
+    /// keyed by crate name, and a harness's `--test` invocation would replace
+    /// the capture a hot patch replays for the library. The wrapper is not in
+    /// cargo's fingerprint, so the units still match the session's.
+    fn test_command(&self, krate: &str) -> std::result::Result<Command, String> {
+        let meta = Command::new("cargo")
+            .args(["metadata", "--format-version", "1", "--manifest-path"])
+            .arg(&self.manifest)
+            .output()
+            .map_err(|e| format!("run `cargo metadata`: {e}"))?;
+        if !meta.status.success() {
+            return Err(format!("`cargo metadata` failed: {}", String::from_utf8_lossy(&meta.stderr).trim()));
+        }
+        let meta: serde_json::Value =
+            serde_json::from_slice(&meta.stdout).map_err(|e| format!("parse `cargo metadata`: {e}"))?;
+        let args = crate::session_check::test_build_args(&self.base_args, &meta, &self.manifest, krate)?;
+        let mut cmd = Command::new("cargo");
+        cmd.args(["test", "--no-run"]).args(args).arg("--target-dir").arg(&self.target_dir);
+        self.priority.apply(&mut cmd);
+        Ok(cmd)
+    }
+}
+
 /// Resolve what the server's watcher needs: the source roots to watch,
 /// and a closure that rebuilds it and reports whether the binary moved.
 ///
@@ -4235,10 +4519,17 @@ fn server_watch_setup(
     prune: bool,
     shared: ServerBuildShared,
     hot: Option<crate::server_hot::ServerHot>,
-) -> Result<(Vec<PathBuf>, ServerBuild)> {
+) -> Result<(Vec<PathBuf>, ServerBuild, Arc<ServerCheck>)> {
     // Base command + the manifest whose local closure we watch.
     let (watched_manifest, base_args) = server_build_args(dir, manifest)?;
     let variant = server_record_variant(&watched_manifest, &base_args);
+    let check = Arc::new(ServerCheck {
+        base_args: base_args.clone(),
+        manifest: watched_manifest.clone(),
+        target_dir: target_dir.to_path_buf(),
+        priority: BuildPriority::server_build(),
+        hot: hot.clone(),
+    });
 
     let roots = dev_reload::watch_roots(&watched_manifest);
     let target_dir = target_dir.to_path_buf();
@@ -4255,6 +4546,10 @@ fn server_watch_setup(
     };
     let reporter = dev_events::global();
     let priority = BuildPriority::server_build();
+    // The binary the session last started or will start: what is RUNNING. Only
+    // this closure moves it, so a check that relinks the binary without
+    // applying it leaves this behind, and the real build after it, which finds
+    // nothing to compile, still sees the binary moved and restarts the server.
     let mut last: Option<BinStamp> = None;
     let build = move || -> Result<dev_reload::Rebuilt> {
         // Held from the start of the build: a bundle rebuild that
@@ -4317,7 +4612,7 @@ fn server_watch_setup(
             Ok(dev_reload::Rebuilt::Unchanged)
         }
     };
-    Ok((roots, Box::new(build)))
+    Ok((roots, Box::new(build), check))
 }
 
 /// Turn `cmd` (`cargo`) into the server's `cargo build`: the verb, the
@@ -5250,6 +5545,16 @@ impl Args {
     /// and the rest is `Copy` / small `String`s — a tiny manual
     /// clone keeps it explicit which fields cross the thread
     /// boundary.
+    /// `--debuginfo`, or its default.
+    fn debuginfo_setting(&self) -> Result<build_web::DebugInfo> {
+        self.debuginfo.as_deref().map_or(Ok(build_web::DebugInfo::default()), build_web::DebugInfo::from_cli)
+    }
+
+    /// `--dev-opt`, or its default.
+    fn dev_opt_setting(&self) -> Result<build_web::DevOpt> {
+        self.dev_opt.as_deref().map_or(Ok(build_web::DevOpt::default()), build_web::DevOpt::from_cli)
+    }
+
     fn shallow_clone(&self) -> Self {
         Self {
             dir: self.dir.clone(),
@@ -5264,6 +5569,7 @@ impl Args {
             experimental_server_patch: self.experimental_server_patch,
             experimental_web_additive: self.experimental_web_additive,
             no_watch: self.no_watch,
+            no_config: self.no_config,
             debuginfo: self.debuginfo.clone(),
             dev_opt: self.dev_opt.clone(),
             no_robot: self.no_robot,
@@ -5408,6 +5714,148 @@ mod tests {
         match TestCli::parse_from(argv).cmd {
             TestCmd::Dev(a) => a,
         }
+    }
+
+    fn config(toml: &str) -> crate::dev_config::ProjectBuildConfig {
+        toml::from_str(toml).unwrap()
+    }
+
+    /// The web key a session of `args` builds under, as it is computed for
+    /// the real build.
+    fn web_dir(args: &Args) -> PathBuf {
+        // A stable path: the armed tier's key carries the project's.
+        let project = std::env::temp_dir().join("idealyst-config-key-test");
+        std::fs::create_dir_all(&project).unwrap();
+        let opts = full_stack_bundle_options(args, &test_source(), PathBuf::from("/dist"), None, None, None).unwrap();
+        dev_reload::web_target_dir(&project, &opts)
+    }
+
+    /// Criterion: a declared build is byte-identical to the flagged command,
+    /// for every cache-affecting setting at once and for each alone.
+    #[test]
+    fn the_configured_build_is_the_flagged_builds_directory() {
+        let cases: &[(&str, &[&str])] = &[
+            ("local = true", &["--local"]),
+            ("local = true\nfeatures = [\"beta\", \"alpha\"]", &["--local", "--features", "alpha,beta"]),
+            ("local = true\ndebuginfo = \"full\"", &["--local", "--debuginfo", "full"]),
+            ("local = true\ndebuginfo = \"line-tables-only\"", &["--local", "--debuginfo", "line-tables"]),
+            ("local = true\ndev_opt = \"fast\"", &["--local", "--dev-opt", "fast"]),
+            ("local = true\npremint = true", &["--local", "--premint"]),
+            ("local = true\npremint_only = true", &["--local", "--premint-only"]),
+            ("local = true\npremint_report = true", &["--local", "--premint-report"]),
+            ("local = true\nsplit = true", &["--local", "--split"]),
+            ("local = true\nno_robot = true", &["--local", "--no-robot"]),
+            ("", &[]),
+        ];
+        for (toml, flags) in cases {
+            let mut plain = parse_dev(&["x", "dev"]);
+            let differences = apply_project_config(&mut plain, &config(toml)).unwrap();
+            assert_eq!(differences, [], "{toml}");
+            let mut argv = vec!["x", "dev"];
+            argv.extend_from_slice(flags);
+            let flagged = parse_dev(&argv);
+            assert_eq!(web_dir(&plain), web_dir(&flagged), "`{toml}` against {flags:?}");
+        }
+    }
+
+    /// No configuration means today's flags and defaults: the session keeps
+    /// the directory it had before the table existed.
+    #[test]
+    fn with_no_flags_and_no_configuration_the_defaults_stand() {
+        let args = parse_dev(&["x", "dev"]);
+        assert_eq!(args.debuginfo, None);
+        assert_eq!(args.debuginfo_setting().unwrap(), build_web::DebugInfo::LineTables);
+        assert_eq!(args.dev_opt_setting().unwrap(), build_web::DevOpt::Optimized);
+        assert!(!args.local);
+    }
+
+    /// Each differing cache-affecting flag warns and still wins; a flag that
+    /// agrees says nothing, and neither do the behaviour flags.
+    #[test]
+    fn a_differing_flag_warns_and_wins_and_a_behaviour_flag_does_not_warn() {
+        let table = "local = true\ndebuginfo = \"line-tables-only\"\nfeatures = [\"beta\"]";
+        let mut args = parse_dev(&["x", "dev", "--debuginfo", "full", "--no-robot"]);
+        let differences = apply_project_config(&mut args, &config(table)).unwrap();
+        assert_eq!(args.debuginfo_setting().unwrap(), build_web::DebugInfo::Full, "the flag wins");
+        assert!(args.local, "what no flag named stays configured");
+        assert_eq!(args.features, ["beta"]);
+        let flags: Vec<&str> = differences.iter().map(|d| d.flag.as_str()).collect();
+        assert_eq!(flags, ["--debuginfo full", "--no-robot"]);
+        let web = differences[0].warning(true);
+        for needle in [
+            "`--debuginfo full` differs from this project's configuration (`line-tables-only`)",
+            "separate directory (a full dependency rebuild)",
+            "directory is kept",
+            "Set `debuginfo` in [package.metadata.idealyst.dev]",
+        ] {
+            assert!(web.contains(needle), "{web}");
+        }
+        assert!(!differences[0].warning(false).contains("separate directory"), "only the web bundle's dir is keyed");
+
+        // Agreeing, in the other spelling, and in another order.
+        let mut args = parse_dev(&["x", "dev", "--local", "--debuginfo", "line-tables", "--features", "beta"]);
+        assert_eq!(apply_project_config(&mut args, &config(table)).unwrap(), []);
+
+        for behaviour in [
+            &["--web"][..],
+            &["--ios"],
+            &["--port", "9000"],
+            &["--no-watch"],
+            &["--metrics"],
+            &["--interactive"],
+            &["--experimental-build"],
+        ] {
+            let mut argv = vec!["x", "dev"];
+            argv.extend_from_slice(behaviour);
+            let mut args = parse_dev(&argv);
+            assert_eq!(apply_project_config(&mut args, &config(table)).unwrap(), [], "{behaviour:?}");
+        }
+    }
+
+    /// `experimental_build` reads from the table, and is no cache setting.
+    #[test]
+    fn experimental_build_is_configured_but_never_compared() {
+        let mut args = parse_dev(&["x", "dev"]);
+        apply_project_config(&mut args, &config("experimental_build = true")).unwrap();
+        assert!(args.experimental_build);
+        let mut args = parse_dev(&["x", "dev", "--experimental-build"]);
+        assert_eq!(apply_project_config(&mut args, &config("experimental_build = false")).unwrap(), []);
+    }
+
+    /// The way to turn off what the table turns on: flags alone, and it says so.
+    #[test]
+    fn no_config_ignores_the_table_and_warns_what_that_turns_off() {
+        let table = "local = true\nfeatures = [\"beta\"]\ndebuginfo = \"full\"";
+        let mut args = parse_dev(&["x", "dev", "--no-config"]);
+        let differences = apply_project_config(&mut args, &config(table)).unwrap();
+        assert!(!args.local);
+        assert!(args.features.is_empty());
+        assert_eq!(args.debuginfo, None);
+        let keys: Vec<&str> = differences.iter().map(|d| d.key).collect();
+        assert_eq!(keys, ["debuginfo", "features", "local"]);
+        assert!(differences.iter().all(|d| d.flag == "--no-config"));
+    }
+
+    /// A bad value in the table is an error at the start, naming the table.
+    #[test]
+    fn a_bad_configured_value_names_the_table() {
+        let mut args = parse_dev(&["x", "dev"]);
+        let e = apply_project_config(&mut args, &config("debuginfo = \"loud\"")).unwrap_err();
+        assert!(format!("{e:#}").contains("[package.metadata.idealyst.dev]"), "{e:#}");
+    }
+
+    /// The configured view drops this session's flags: it is what a plain
+    /// `idealyst dev` builds, which is the directory protected from retiring.
+    #[test]
+    fn the_configured_view_ignores_the_sessions_flags() {
+        let table = "local = true\ndebuginfo = \"line-tables\"";
+        let mut plain = parse_dev(&["x", "dev"]);
+        apply_project_config(&mut plain, &config(table)).unwrap();
+        let mut oneoff = parse_dev(&["x", "dev", "--debuginfo", "full", "--features", "e2e", "--no-robot"]);
+        apply_project_config(&mut oneoff, &config(table)).unwrap();
+        assert_ne!(web_dir(&oneoff), web_dir(&plain));
+        let configured = configured_args(&oneoff, &config(table)).unwrap();
+        assert_eq!(web_dir(&configured), web_dir(&plain));
     }
 
     /// A `FrameworkSource` for option-shaping tests. Which variant it

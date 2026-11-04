@@ -22,6 +22,13 @@
 //! `#[server]` bodies, the db layer behind them — so this is the one
 //! command that checks such a project whole, without guessing feature
 //! sets or target dirs.
+//!
+//! `--session` is a different command in the same place: it asks the running
+//! `idealyst dev` session of the directory to run its own build of what is on
+//! disk and apply nothing, in the session's target dirs, so the compile is the
+//! one the next real rebuild would do and is not repeated by it. A plain
+//! `idealyst check` keeps its separate `cargo check` cache. See "Checking
+//! through a session" in docs/hot-reload.md.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -69,13 +76,103 @@ pub struct Args {
     /// Skip the server half even though the manifest declares one.
     #[arg(long, conflicts_with = "server")]
     pub no_server: bool,
+
+    /// Build through the running `idealyst dev` session of this directory,
+    /// applying nothing: the session's own builds, in its target dirs, with
+    /// its flags, features and environment, queued with its other work. No
+    /// server restart, no page reload, and saves a `--no-watch` session holds
+    /// stay held. Exits non-zero when a target fails. The next real rebuild
+    /// finds the crates compiled here fresh and only links, restarts or
+    /// reloads.
+    #[arg(long, conflicts_with_all = ["platform", "release", "device", "server", "no_server"])]
+    pub session: bool,
+
+    /// With `--session -p <crate>`: compile that crate's test modules
+    /// (`cargo test --no-run`) in the session's server target dir, with
+    /// features resolved together with the server's package so dependencies
+    /// are reused. Does not run them.
+    #[arg(long, requires = "session", requires = "package")]
+    pub tests: bool,
+
+    /// The crate `--tests` compiles. Only with `--tests`: a build of one crate
+    /// without its test modules is not available.
+    #[arg(short = 'p', long, value_name = "CRATE", requires = "tests")]
+    pub package: Option<String>,
 }
 
 const SERVER_LABEL: &str = "<host, server>";
 
+/// How long `--session` waits for the session's builds: a cold first check
+/// of a large project is many minutes, and nothing is lost by waiting.
+const SESSION_CHECK_WAIT: std::time::Duration = std::time::Duration::from_secs(4 * 60 * 60);
+
+/// `idealyst check --session`: see the module docs.
+fn run_through_session(dir: &std::path::Path, tests: Option<&str>) -> Result<()> {
+    let registry = dev_events::sessions::registry_dir().context("this user has no session registry directory")?;
+    let sessions = mcp_server::live_dev_sessions_in(&registry);
+    let Some(entry) = dev_events::sessions::in_dir(&sessions, dir) else {
+        anyhow::bail!(
+            "no `idealyst dev` session is running in {}. Start one, or drop `--session` for a \
+             `cargo check` sweep in its own cache.",
+            dir.display()
+        );
+    };
+    let answer = dev_events::sessions::run_check(entry, tests, SESSION_CHECK_WAIT).map_err(anyhow::Error::msg)?;
+    let state = match answer {
+        dev_events::sessions::CheckAnswer::Done(state) => state,
+        dev_events::sessions::CheckAnswer::Running(state) => anyhow::bail!(
+            "check {} is still running after {} hours",
+            state["request"],
+            SESSION_CHECK_WAIT.as_secs() / 3600
+        ),
+    };
+    let (ok, lines) = session_report(&state, tests);
+    for line in lines {
+        eprintln!("{line}");
+    }
+    anyhow::ensure!(ok, "`idealyst check --session` failed");
+    Ok(())
+}
+
+/// What a finished `GET /check/<n>` says, in lines, and whether it passed.
+fn session_report(state: &serde_json::Value, tests: Option<&str>) -> (bool, Vec<String>) {
+    let mut lines = Vec::new();
+    for (target, report) in state["reports"].as_object().into_iter().flatten() {
+        match serde_json::from_value::<dev_events::CheckReport>(report.clone()) {
+            Ok(report) => {
+                lines.push(dev_events::check::summary(target, &report));
+                // The point of the shared cache is that only the harness compiles.
+                if let Some(krate) = tests {
+                    let others = report.compiled.iter().filter(|u| !u.starts_with(&format!("{krate} ("))).count();
+                    if report.ok && others > 0 {
+                        lines.push(format!(
+                            "[check {target}] {others} other unit(s) compiled: a dev-dependency of the test build \
+                             turned on a feature the session's build leaves off, or those crates had edits"
+                        ));
+                    }
+                }
+            }
+            Err(e) => lines.push(format!("[check {target}] unreadable report: {e}")),
+        }
+    }
+    for target in state["unchecked"].as_array().into_iter().flatten().filter_map(|t| t.as_str()) {
+        lines.push(format!("[check] not checked: {target}"));
+    }
+    (state["ok"] == true, lines)
+}
+
 pub fn run(args: Args) -> Result<()> {
     let dir = crate::framework_source::abs_project_dir(&args.dir)?;
+    if args.session {
+        return run_through_session(&dir, args.package.as_deref().filter(|_| args.tests));
+    }
     let manifest = parse_manifest(&dir)?;
+    // The project's configured features reach the app's check, as they reach
+    // its dev builds. The other settings choose how a build is cached, and a
+    // `cargo check` has its own cache.
+    let features = crate::dev_config::ProjectBuildConfig::load(&dir)?
+        .and_then(|c| c.features)
+        .unwrap_or_default();
 
     // Resolve which targets to check. Explicit `--platform` wins;
     // otherwise fall back to the manifest's declared targets — the same
@@ -105,7 +202,7 @@ pub fn run(args: Args) -> Result<()> {
     let mut failures: Vec<String> = Vec::new();
     for triple in &triples {
         eprintln!("[check] cargo check {}", triple.label());
-        match check_one(&dir, triple, args.release) {
+        match check_one(&dir, triple, args.release, &features) {
             Ok(()) => eprintln!("[check] {} OK", triple.label()),
             Err(e) => {
                 eprintln!("[check] {} FAILED: {e}", triple.label());
@@ -250,11 +347,14 @@ fn dedup_preserve_order(xs: Vec<Target>) -> Vec<Target> {
 }
 
 /// Run a single `cargo check` for one triple in the project dir.
-fn check_one(dir: &std::path::Path, triple: &CheckTriple, release: bool) -> Result<()> {
+fn check_one(dir: &std::path::Path, triple: &CheckTriple, release: bool, features: &[String]) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(dir).arg("check");
     if release {
         cmd.arg("--release");
+    }
+    if !features.is_empty() {
+        cmd.arg("--features").arg(features.join(","));
     }
     if let CheckTriple::Cross(t) = triple {
         cmd.arg("--target").arg(t);

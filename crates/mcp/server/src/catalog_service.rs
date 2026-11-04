@@ -619,6 +619,19 @@ pub struct DevSessionArgs {
     pub pid: Option<u32>,
 }
 
+/// Args for `rebuild_dev`.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct RebuildDevArgs {
+    /// From `run_dev`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<u64>,
+    /// From `list_dev_sessions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apply: Option<bool>,
+}
+
 /// Args for `dev_status`.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct DevStatusArgs {
@@ -922,6 +935,11 @@ pub struct ConfigureVscodeRequest {
 /// `stop_dev` kills it: its teardown stops simulators and servers, which
 /// takes longer than this server's own sessions are given.
 const EXTERNAL_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long `rebuild_dev` with `apply: false` waits for the session's builds,
+/// the longest `wait_for_build` waits. Past it the answer is `running`, and
+/// `dev_status` has the result.
+const SESSION_CHECK_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 
 impl CatalogService {
     /// Stop every dev session `run_dev` started, as the server shuts down.
@@ -2018,15 +2036,34 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Rebuild a dev session now, as its panel's `r` does (under --no-watch: apply the queued saves).")]
+    #[tool(description = "Rebuild a session, applying queued saves; `apply: false` only builds.")]
     async fn rebuild_dev(
         &self,
-        Parameters(args): Parameters<DevSessionArgs>,
+        Parameters(args): Parameters<RebuildDevArgs>,
     ) -> Result<CallToolResult, McpError> {
         let live = match self.resolve_session(args.session_id, args.pid) {
             Ok(l) => l,
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
         };
+        if args.apply == Some(false) {
+            let answer = tokio::task::spawn_blocking(move || {
+                dev_events::sessions::run_check(&live.entry, None, SESSION_CHECK_WAIT)
+            })
+            .await;
+            return Ok(match answer {
+                Ok(Ok(answer)) => {
+                    let out = crate::dev_status::check_answer(&answer);
+                    let text = serde_json::to_string_pretty(&out).unwrap();
+                    if out["status"] == "failed" {
+                        CallToolResult::error(vec![Content::text(text)])
+                    } else {
+                        CallToolResult::success(vec![Content::text(text)])
+                    }
+                }
+                Ok(Err(e)) => CallToolResult::error(vec![Content::text(e)]),
+                Err(e) => CallToolResult::error(vec![Content::text(format!("check failed: {e}"))]),
+            });
+        }
         match tokio::task::spawn_blocking(move || crate::dev_sessions::rebuild(&live.entry)).await {
             Ok(Ok(v)) => {
                 // A session that numbers requests answers with `request`;

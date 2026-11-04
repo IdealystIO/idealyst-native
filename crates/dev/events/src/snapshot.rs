@@ -189,6 +189,9 @@ impl SessionState {
             // Per-unit history, hundreds to a build: nothing a consumer
             // joining later needs to know the session's present.
             DevEvent::UnitBuilt { .. } | DevEvent::UnitDirty { .. } => {}
+            // A check opens no episode; the control endpoint's `/check/<n>`
+            // answers for it.
+            DevEvent::CheckStarted { .. } | DevEvent::CheckFinished { .. } => {}
         }
     }
 

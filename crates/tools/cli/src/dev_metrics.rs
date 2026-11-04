@@ -1118,6 +1118,24 @@ mod tests {
             vec![
                 (1_000, change(&["/w/a.rs"])),
                 (2_000, change(&["/w/a.rs", "/w/b.rs"])),
+                // A check compiles what is queued and applies nothing: the
+                // saves are still waiting, for the same request.
+                (5_000, DevEvent::CheckStarted { target: web(), request: 1, tests: None }),
+                (
+                    6_000,
+                    DevEvent::CheckFinished {
+                        target: web(),
+                        report: dev_events::CheckReport {
+                            request: 1,
+                            ok: true,
+                            compiled: vec!["app (lib)".into()],
+                            errors: vec![],
+                            failure: None,
+                            tests: None,
+                            ms: 1_000,
+                        },
+                    },
+                ),
                 (9_800, DevEvent::RebuildRequested { request: 1, targets: vec![web()] }),
                 (9_800, DevEvent::RebuildTaken { target: web(), request: 1 }),
                 (9_801, change(&["/w/a.rs", "/w/b.rs"])),

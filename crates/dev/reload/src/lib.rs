@@ -185,6 +185,54 @@ enum WatchMsg {
     /// `--no-watch` queue (see [`release`]): the batch answers the request
     /// and is decided like any save.
     Request(u64),
+    /// Check `n` of the bundle ([`ReloadSignal::request_check`]): run between
+    /// saves, and never a save itself. See [`Deferred`].
+    Check(u64),
+    /// Work a [`WatchControl`] queued to run between saves.
+    Job(QueuedJob),
+}
+
+/// Work for a watcher's own thread, between saves
+/// ([`WatchControl::run_between_saves`]). An `Arc` because the batch that
+/// drains it may be handed to several attempts at a save.
+pub type QueuedJob = Arc<dyn Fn() + Send + Sync>;
+
+/// The checks and jobs a watch loop took out of its inbox, to run once the
+/// save in flight is over.
+///
+/// They come through the inbox for the queue's ordering guarantee: nothing
+/// else in the loop runs at the same time, so a check's cargo cannot race a
+/// rebuild for the target dir or rewrite the rlibs under a patch's replay.
+/// [`run_save`] drains the inbox into a save's batches, so they are collected
+/// from there as well as from the message that woke the loop. An attempt's
+/// batches are the union of the burst's, which is why noting one twice is
+/// harmless.
+#[derive(Default)]
+struct Deferred {
+    checks: BTreeSet<u64>,
+    jobs: Vec<QueuedJob>,
+}
+
+impl Deferred {
+    fn note(&mut self, batch: &[WatchMsg]) {
+        for msg in batch {
+            match msg {
+                WatchMsg::Check(n) => {
+                    self.checks.insert(*n);
+                }
+                WatchMsg::Job(job) if !self.jobs.iter().any(|j| Arc::ptr_eq(j, job)) => {
+                    self.jobs.push(job.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Whether `batch` holds nothing a save's decision looks at: no attempt is
+/// made for it, as it would otherwise start with nothing to do.
+fn only_deferred(batch: &[WatchMsg]) -> bool {
+    batch.iter().all(|m| matches!(m, WatchMsg::Check(_) | WatchMsg::Job(_)))
 }
 
 /// The numbered rebuild requests in `batch`, each once, in order.
@@ -341,6 +389,18 @@ impl ReloadSignal {
     fn send_rebuild(&self, request: Option<u64>) -> bool {
         match self.rebuild.lock().unwrap().as_ref() {
             Some(tx) => tx.send(WatchMsg::Rebuild(request)).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Queue check `request` of the bundle: the session's cargo build of what
+    /// is on disk, in the session's target dir, and nothing after it (see
+    /// [`run_web_check`]). Its result is reported as
+    /// [`dev_events::DevEvent::CheckFinished`]. `false` when no watch loop is
+    /// running on this signal.
+    pub fn request_check(&self, request: u64) -> bool {
+        match self.rebuild.lock().unwrap().as_ref() {
+            Some(tx) => tx.send(WatchMsg::Check(request)).is_ok(),
             None => false,
         }
     }
@@ -1040,7 +1100,10 @@ fn recover_first_build(
     // The retry loop takes saves at once: nothing to prepare.
     reporter.emit(dev_events::DevEvent::WatcherReady { target: TARGET.into() });
 
-    retry_first_build(rx, queued.as_ref(), |requests| {
+    let check = |request| {
+        run_web_check(dir, opts, request);
+    };
+    retry_first_build(rx, queued.as_ref(), check, |requests| {
         report_taken(&reporter, TARGET, requests);
         reporter.emit(dev_events::DevEvent::BuildStarted {
             target: TARGET.into(),
@@ -1074,6 +1137,7 @@ fn recover_first_build(
 fn retry_first_build<A>(
     rx: &mpsc::Receiver<WatchMsg>,
     queued: Option<&Queued>,
+    mut check: impl FnMut(u64),
     mut build: impl FnMut(&[u64]) -> Option<A>,
 ) -> Option<A> {
     while let Ok(msg) = rx.recv() {
@@ -1082,12 +1146,22 @@ fn retry_first_build<A>(
             WatchMsg::Rebuild(_) | WatchMsg::Request(_) => true,
             WatchMsg::Fs(r) => names_work(&event_paths(r), r.is_ok()),
             WatchMsg::Paths(paths) => !paths.is_empty(),
+            WatchMsg::Check(_) | WatchMsg::Job(_) => false,
         });
+        if work {
+            while let Ok(more) = rx.try_recv() {
+                batch.extend(release(more, queued));
+            }
+        }
+        // First: the check answers about the bundle's sources, whatever the
+        // build below does with them, and whoever asked is waiting.
+        let mut deferred = Deferred::default();
+        deferred.note(&batch);
+        for request in deferred.checks {
+            check(request);
+        }
         if !work {
             continue;
-        }
-        while let Ok(more) = rx.try_recv() {
-            batch.extend(release(more, queued));
         }
         if let Some(built) = build(&request_ids(&batch)) {
             return Some(built);
@@ -1650,6 +1724,30 @@ impl HotPatchBase {
         }
     }
 
+    /// A check is about to rewrite the rlibs this base's replays read: let
+    /// the background seeds finish against the rlibs the base was built with.
+    ///
+    /// A seed's digests become a crate's baseline, "what the running program
+    /// holds". The source probe proves a seed's OWN sources are the base's,
+    /// but not its dependencies': seeded after a check of an unapplied edit
+    /// in a dependency, a crate would digest that edit's inlined code into
+    /// its baseline, and a later patch would diff against something the page
+    /// never ran. Waiting costs the check whatever seeding has left; pausing
+    /// them instead would only move the same problem to after it.
+    fn settle_for_check(&mut self) {
+        if !self.armed || self.retired.is_some() {
+            return;
+        }
+        // No base to index yet, or one that cannot be: then no seeds either,
+        // and the patch that needs it reports why.
+        if self.ensure_builder().is_err() {
+            return;
+        }
+        if let Some(builder) = &self.builder {
+            builder.wait_for_seeds();
+        }
+    }
+
     /// The rebuild failed: the page still runs this base, so its seeds go
     /// on.
     fn resume_seeds(&self) {
@@ -2055,12 +2153,22 @@ fn watch_loop(
 
     while let Ok(first) = rx.recv() {
         let first = release(first, queued.as_ref());
+        let mut deferred = Deferred::default();
+        deferred.note(&first);
+        if only_deferred(&first) {
+            base.settle_for_check();
+            for request in std::mem::take(&mut deferred.checks) {
+                run_web_check(&dir, &opts, request);
+            }
+            continue;
+        }
         // Set when a superseded rebuild left a new bundle on disk that no
         // page was reloaded onto. The save must then end in a reload: an
         // overlay or hot patch decided against that bundle would be
         // applied to a page still running the one before it.
         let mut reload_owed = false;
         run_save(&rx, &saves, first, Duration::from_millis(MAX_COALESCE_MS), |batch, token| {
+            deferred.note(batch);
             // Every batch's paths, not only the first's: a multi-file save
             // arrives as several batches, and a file only a later batch
             // names must still be in the decision (else its crate's other
@@ -2083,7 +2191,7 @@ fn watch_loop(
                         any_ok = true;
                         changed_paths.extend(paths.iter().cloned());
                     }
-                    WatchMsg::Rebuild(_) | WatchMsg::Request(_) => {}
+                    WatchMsg::Rebuild(_) | WatchMsg::Request(_) | WatchMsg::Check(_) | WatchMsg::Job(_) => {}
                 }
             }
             let folded = fs_batches.saturating_sub(1);
@@ -2383,6 +2491,12 @@ fn watch_loop(
         // the record now describes what is on disk and what a page loading
         // it is replayed.
         record(&ws, &base, base_inputs.as_ref());
+        if !deferred.checks.is_empty() {
+            base.settle_for_check();
+            for request in std::mem::take(&mut deferred.checks) {
+                run_web_check(&dir, &opts, request);
+            }
+        }
     }
 }
 
@@ -3310,6 +3424,13 @@ impl WatchControl {
     pub fn request_rebuild_numbered(&self, request: u64) -> bool {
         self.tx.send(WatchMsg::Rebuild(Some(request))).is_ok()
     }
+
+    /// Run `job` on the watcher's thread between saves: not a save, so it
+    /// neither takes what a `--no-watch` queue holds nor wakes anyone. `false`
+    /// when the watcher is gone.
+    pub fn run_between_saves(&self, job: QueuedJob) -> bool {
+        self.tx.send(WatchMsg::Job(job)).is_ok()
+    }
 }
 
 /// [`start_watch`], with `--no-watch` ([`BuildOptions::no_watch`]: saves
@@ -3426,10 +3547,17 @@ where
             while let Ok(msg) = rx.recv() {
                 let mut first = release(msg, queued.as_ref());
                 first.extend(drain(&rx));
+                let mut deferred = Deferred::default();
+                deferred.note(&first);
+                if only_deferred(&first) {
+                    deferred.jobs.iter().for_each(|job| job());
+                    continue;
+                }
                 if first.iter().all(|m| matches!(m, WatchMsg::Fs(Err(_)))) {
                     continue;
                 }
                 run_save(&rx, &saves, first, Duration::from_millis(MAX_COALESCE_MS), |batches, token| {
+                    deferred.note(batches);
                     let requests = request_ids(batches);
                     let forced = !requests.is_empty() || batches.iter().any(|m| matches!(m, WatchMsg::Rebuild(_)));
                     let mut paths: Vec<PathBuf> = Vec::new();
@@ -3447,7 +3575,7 @@ where
                                 any_ok = true;
                                 paths.extend(p.iter().cloned());
                             }
-                            WatchMsg::Rebuild(_) | WatchMsg::Request(_) => {}
+                            WatchMsg::Rebuild(_) | WatchMsg::Request(_) | WatchMsg::Check(_) | WatchMsg::Job(_) => {}
                         }
                     }
                     let folded = fs_batches.saturating_sub(1);
@@ -3530,6 +3658,7 @@ where
                     // the supersession limit, is the next save.
                     Attempt::Finished
                 });
+                deferred.jobs.iter().for_each(|job| job());
             }
         })
         .context("spawn watch thread")?;
@@ -3554,6 +3683,29 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<build_web::BuildArtifac
     // Same path `idealyst build web` uses; the dev loop is just
     // "do that, but on debounced file changes".
     build_web::build(dir, to_build_web_options(opts))
+}
+
+/// Check `request` of the bundle at `dir`: the session's own cargo build
+/// ([`build_web::compile_only`]), reported apart from the session's builds
+/// ([`dev_events::check`]). Everything a page can see comes after cargo, and
+/// the packaged module carries no record of it, so the next real build finds
+/// cargo's module differs from what the passes last ran over and packages it.
+fn run_web_check(dir: &Path, opts: &BuildOptions, request: u64) {
+    dev_events::check::run(&opts.reporter, TARGET, request, None, |private| {
+        let mut web = to_build_web_options(opts);
+        web.reporter = private.clone();
+        build_web::compile_only(dir, web).map_err(|e| format!("{e:#}"))
+    });
+}
+
+/// Keep the directory this session's configuration builds in from being
+/// retired by a one-off session with other flags
+/// ([`build_web::protect_configured_build`]). `None`: the project configures
+/// nothing, and any earlier protection is dropped.
+pub fn protect_configured_build(dir: &Path, configured: Option<&BuildOptions>, session: &BuildOptions) {
+    let session = to_build_web_options(session);
+    let configured = configured.map(to_build_web_options);
+    build_web::protect_configured_build(dir, configured.as_ref(), &session);
 }
 
 /// Map the dev-loop options onto a full `build_web::BuildOptions`.
@@ -4031,7 +4183,7 @@ mod tests {
         let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = attempts.clone();
         let worker = std::thread::spawn(move || {
-            retry_first_build(&rx, None, |_| {
+            retry_first_build(&rx, None, |_| {}, |_| {
                 // The first retry still fails; the second is fixed.
                 match count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
                     0 => None,
@@ -4061,7 +4213,7 @@ mod tests {
         assert!(queued.hold(vec![PathBuf::from("/w/src/app.rs")], true, TARGET, &reporter));
         tx.send(WatchMsg::Rebuild(Some(3))).unwrap();
         let mut attempts = 0;
-        let built = retry_first_build(&rx, Some(&queued), |requests| {
+        let built = retry_first_build(&rx, Some(&queued), |_| {}, |requests| {
             assert_eq!(requests, &[3], "the attempt applies the request that released the queue");
             attempts += 1;
             Some(attempts)
@@ -4070,7 +4222,117 @@ mod tests {
         assert!(queued.take().is_empty(), "the request released the queued save");
 
         drop(tx);
-        assert_eq!(retry_first_build(&rx, Some(&queued), |_| Some(())), None);
+        assert_eq!(retry_first_build(&rx, Some(&queued), |_| {}, |_| Some(())), None);
+    }
+
+    /// A check during a failed first build answers (whoever asked is
+    /// waiting), builds nothing, and leaves the queue for a rebuild request.
+    #[test]
+    fn a_check_after_a_failed_first_build_is_answered_and_builds_nothing() {
+        let (tx, rx) = mpsc::channel();
+        let queued = Queued::default();
+        let (reporter, _q) = capture();
+        assert!(queued.hold(vec![PathBuf::from("/w/src/app.rs")], true, TARGET, &reporter));
+        tx.send(WatchMsg::Check(7)).unwrap();
+        drop(tx);
+        let mut checks = Vec::new();
+        let built = retry_first_build(&rx, Some(&queued), |n| checks.push(n), |_| Some(()));
+        assert_eq!(built, None, "a check is not a build");
+        assert_eq!(checks, [7]);
+        assert_eq!(queued.take().len(), 1, "a check released the queued save");
+    }
+
+    /// A check goes through the queue but is no rebuild request: it must not
+    /// take the saves a `--no-watch` session holds, or the next real request
+    /// would find nothing to apply and its numbering would be off.
+    #[test]
+    fn a_check_leaves_the_saves_it_compiled_queued() {
+        let queued = Queued::default();
+        let (reporter, _q) = capture();
+        assert!(queued.hold(vec![PathBuf::from("/w/src/app.rs")], true, TARGET, &reporter));
+        let released = release(WatchMsg::Check(1), Some(&queued));
+        assert!(only_deferred(&released));
+        let released = release(WatchMsg::Job(Arc::new(|| {})), Some(&queued));
+        assert!(only_deferred(&released));
+        let released = release(WatchMsg::Rebuild(Some(4)), Some(&queued));
+        assert_eq!(request_ids(&released), [4], "numbered by the rebuild series alone");
+        assert!(matches!(&released[0], WatchMsg::Paths(p) if p.len() == 1), "the request still applies them");
+    }
+
+    /// A batch drained into a save still hands over its checks, however many
+    /// attempts the save takes.
+    #[test]
+    fn a_check_drained_into_a_save_runs_once_after_it() {
+        let job: QueuedJob = Arc::new(|| {});
+        let batch = vec![WatchMsg::Check(2), WatchMsg::Job(job.clone()), WatchMsg::Paths(vec![])];
+        let mut deferred = Deferred::default();
+        deferred.note(&batch);
+        deferred.note(&batch);
+        assert_eq!(deferred.checks.into_iter().collect::<Vec<_>>(), [2]);
+        assert_eq!(deferred.jobs.len(), 1);
+        assert!(!only_deferred(&batch));
+    }
+
+    /// A job runs between saves, on the watcher's thread: it is no save and no
+    /// build to anyone reading the session, it wakes nobody, and what
+    /// `--no-watch` holds is still there for the rebuild request after it.
+    #[test]
+    fn a_job_between_saves_is_no_build_and_keeps_the_held_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let (reporter, q) = capture();
+        let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = builds.clone();
+        let signal = ReloadSignal::new();
+        let (_handle, control) = start_watch_with(vec![src.clone()], signal.clone(), "server", reporter, true, move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Rebuilt::Changed)
+        })
+        .unwrap();
+        let wait = |pred: &dyn Fn(&[dev_events::Envelope]) -> bool, seen: &mut Vec<dev_events::Envelope>| {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                seen.extend(q.drain());
+                if pred(seen) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "timed out: {seen:#?}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let mut seen = Vec::new();
+        wait(&|e| e.iter().any(|x| matches!(x.event, dev_events::DevEvent::WatcherReady { .. })), &mut seen);
+        std::fs::write(src.join("a.rs"), "1").unwrap();
+        wait(&|e| e.iter().any(|x| matches!(x.event, dev_events::DevEvent::ChangeDetected { .. })), &mut seen);
+        seen.clear();
+
+        let (ran_tx, ran_rx) = mpsc::channel();
+        let ran_tx = Mutex::new(ran_tx);
+        assert!(control.run_between_saves(Arc::new(move || {
+            ran_tx.lock().unwrap().send(std::thread::current().name().map(String::from)).unwrap();
+        })));
+        let thread = ran_rx.recv_timeout(Duration::from_secs(20)).expect("the job ran");
+        assert_eq!(thread.as_deref(), Some("idealyst-watch-server"), "it ran in the watcher's queue");
+        std::thread::sleep(Duration::from_millis(200));
+        seen.extend(q.drain());
+        assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 0, "a job ran the build");
+        assert_eq!(signal.current(), 0, "a job woke consumers");
+        assert!(
+            !seen.iter().any(|e| matches!(
+                e.event,
+                dev_events::DevEvent::BuildStarted { .. } | dev_events::DevEvent::BuildFinished { .. } | dev_events::DevEvent::RebuildTaken { .. }
+            )),
+            "{seen:#?}"
+        );
+
+        assert!(control.request_rebuild_numbered(1));
+        wait(&|e| e.iter().any(|x| matches!(x.event, dev_events::DevEvent::BuildFinished { .. })), &mut seen);
+        assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            seen.iter().any(|e| matches!(&e.event, dev_events::DevEvent::ChangeDetected { paths, .. } if !paths.is_empty())),
+            "the request applied the save the job left alone: {seen:#?}"
+        );
     }
 
     /// A reporter whose events a test can read back.
