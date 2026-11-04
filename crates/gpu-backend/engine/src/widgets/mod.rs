@@ -121,9 +121,9 @@ pub const TEXT_INPUT_HPAD: f32 = 10.0;
 /// system font in a 36pt field.
 pub const TEXT_INPUT_VPAD: f32 = 8.0;
 
-/// How far a text input's text sits past its leading padding, for `align`, in a
-/// field `field_w` wide holding a line `line_w` wide. Text wider than the field
-/// starts at the padding.
+/// How far a line sits past a text input's or text area's leading padding, for
+/// `align`, in a field `field_w` wide holding a line `line_w` wide. Text wider than
+/// the field starts at the padding.
 pub fn text_input_text_offset(align: TextAlign, field_w: f32, line_w: f32) -> f32 {
     let slack = (field_w - TEXT_INPUT_HPAD * 2.0 - line_w).max(0.0);
     match align {

@@ -141,7 +141,9 @@ pub trait Painter {
     /// Append rect + text instances for a TextInput. `field_bg`
     /// overrides the field's fill color. `text_offset_x` is how far the text and
     /// caret sit past the field's leading padding, for its `text_align`
-    /// ([`crate::widgets::text_input_text_offset`]).
+    /// ([`crate::widgets::text_input_text_offset`]). A TextArea comes here too, at
+    /// an offset of 0: its `buffer` has each line aligned already, and
+    /// `caret_x_local` includes where the first one went.
     #[allow(clippy::too_many_arguments)]
     fn paint_text_input<'a>(
         &self,

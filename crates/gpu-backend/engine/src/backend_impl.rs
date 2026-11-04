@@ -662,9 +662,9 @@ impl WgpuBackend {
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
-        // No-wrap (code) vs. soft-wrap. The wgpu text path is still a
-        // single-line MVP (multi-line wrap + caret are pending the
-        // text-shaping work noted below), so `wrap` is accepted and
+        // No-wrap (code) vs. soft-wrap. The wgpu text path doesn't wrap and
+        // its caret tracks the first line (multi-line wrap + caret are pending
+        // the text-shaping work noted below), so `wrap` is accepted and
         // honored as a follow-up. No `auto_grow`: content-height growth
         // is intrinsic sizing, which lands with the same shaping work.
         _wrap: bool,
@@ -678,8 +678,9 @@ impl WgpuBackend {
     ) -> WgpuNode {
         // MVP: shape identical to TextInput, larger default height.
         // The renderer + host treat NodeKind::TextArea the same as
-        // NodeKind::TextInput for now; multi-line wrap + caret are
-        // pending separate text-shaping work.
+        // NodeKind::TextInput but for `text_align`, which its lines
+        // carry; multi-line wrap + caret are pending separate
+        // text-shaping work.
         let layout = self.layout.new_node();
         let visible = if initial_value.is_empty() {
             placeholder.unwrap_or("")
@@ -690,6 +691,7 @@ impl WgpuBackend {
             let mut text = self.text.borrow_mut();
             let mut fs = self.font_system.borrow_mut();
             text.create(&mut fs, layout, visible, 17.0);
+            text.mark_text_area(&mut fs, layout);
         }
         self.layout
             .set_intrinsic_size(layout, -1.0, TEXT_AREA_DEFAULT_HEIGHT);
@@ -1876,12 +1878,13 @@ impl WgpuBackend {
         let had_prior_style = node.borrow().style.is_some();
         let old_render = node.borrow().render.clone();
 
-        let (is_text, font_size, new_render) = {
+        let (is_text, is_text_area, font_size, new_render) = {
             let mut data = node.borrow_mut();
             data.render.apply(style);
             data.style = Some(style.clone());
             (
                 matches!(data.kind, NodeKind::Text { .. } | NodeKind::Button { .. }),
+                matches!(data.kind, NodeKind::TextArea { .. }),
                 data.render.font_size,
                 data.render.clone(),
             )
@@ -2006,6 +2009,10 @@ impl WgpuBackend {
             drop(text);
             drop(fs);
             self.layout.mark_dirty(layout);
+        }
+        if is_text_area {
+            let mut fs = self.font_system.borrow_mut();
+            self.text.borrow_mut().set_align(&mut fs, layout, new_render.text_align);
         }
         request_redraw();
     }
@@ -3238,6 +3245,28 @@ mod a11y_tests {
         let back = node.borrow().render.shadow.expect("the glow is back");
         let later = Instant::now() + std::time::Duration::from_secs(1);
         assert_eq!(b.animator.sample_color(key, back.color, later), [1.0, 0.0, 1.0, 1.0], "it fades back in fully");
+    }
+
+    /// Regression: `RenderStyle` kept the last alignment when a style dropped it,
+    /// so a `text` stayed aligned, both on the buffer's lines and on the offset the
+    /// renderer works out from `render.text_align`. Back to `None` on the lines is
+    /// cosmic-text's natural, which starts right-to-left text on the right.
+    #[test]
+    fn regression_gpu_removed_text_align_keeps_alignment_on_text() {
+        use runtime_shared::TextAlign;
+        let mut b = make_backend();
+        let node = b.create_text_impl("Twelve", &AccessibilityProps::default());
+        let layout = node.borrow().layout;
+        let rules = |text_align| Rc::new(StyleRules { text_align, ..Default::default() });
+        let line_align = |b: &WgpuBackend| b.text.borrow().buffers[&layout].buffer.lines[0].align();
+
+        b.apply_style_impl(&node, &rules(Some(TextAlign::Right)));
+        assert_eq!(node.borrow().render.text_align, TextAlign::Right);
+        assert_eq!(line_align(&b), Some(glyphon::cosmic_text::Align::Right));
+
+        b.apply_style_impl(&node, &rules(None));
+        assert_eq!(node.borrow().render.text_align, TextAlign::Left);
+        assert_eq!(line_align(&b), None);
     }
 
     /// Regression: before this landed, `create_text_area` hit the

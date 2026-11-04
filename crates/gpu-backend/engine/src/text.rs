@@ -16,7 +16,7 @@
 //! measure closure capture `Weak` handles and `borrow_mut` them
 //! safely.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use glyphon::{
     cosmic_text::Align as GAlign, Attrs, Buffer, Cache, Color as GColor, Family, FontSystem,
@@ -189,12 +189,57 @@ fn apply_buffer_align(buffer: &mut Buffer, align: TextAlign) {
 /// `Rc<RefCell<TextStore>>` to this.
 pub struct TextStore {
     pub buffers: HashMap<LayoutNode, BufferEntry>,
+    /// Nodes whose buffer is a text area's: unwrapped, but as wide as the field,
+    /// which is what cosmic-text aligns each line within. See
+    /// [`TextStore::sync_text_area_widths`].
+    text_areas: HashSet<LayoutNode>,
 }
 
 impl TextStore {
     pub fn new() -> Self {
         Self {
             buffers: HashMap::new(),
+            text_areas: HashSet::new(),
+        }
+    }
+
+    /// Make `id`'s buffer a text area's. A line runs on past the field rather than
+    /// wrapping (soft wrap and its caret aren't part of the GPU text area) and each
+    /// line aligns inside the width [`Self::sync_text_area_widths`] gives it.
+    pub fn mark_text_area(&mut self, font_system: &mut FontSystem, id: LayoutNode) {
+        if let Some(entry) = self.buffers.get_mut(&id) {
+            entry.buffer.set_wrap(font_system, Wrap::None);
+            self.text_areas.insert(id);
+        }
+    }
+
+    /// Give each text area's buffer the width `inner_width` reports. A buffer with
+    /// no width has nothing to align a line in. Laid-out widths only exist once the
+    /// frame's layout has run, so the renderer calls this ahead of its walk.
+    pub fn sync_text_area_widths(
+        &mut self,
+        font_system: &mut FontSystem,
+        inner_width: impl Fn(LayoutNode) -> f32,
+    ) {
+        for id in &self.text_areas {
+            let Some(entry) = self.buffers.get_mut(id) else { continue };
+            let width = inner_width(*id);
+            if entry.buffer.size().0 != Some(width) {
+                entry.buffer.set_size(font_system, Some(width), None);
+                entry.buffer.shape_until_scroll(font_system, false);
+            }
+        }
+    }
+
+    /// Set `id`'s alignment alone, for a node whose font doesn't come from its
+    /// style. The text stays as it's shaped.
+    pub fn set_align(&mut self, font_system: &mut FontSystem, id: LayoutNode, align: TextAlign) {
+        if let Some(entry) = self.buffers.get_mut(&id) {
+            if entry.attrs.align != align {
+                entry.attrs.align = align;
+                apply_buffer_align(&mut entry.buffer, align);
+                entry.buffer.shape_until_scroll(font_system, false);
+            }
         }
     }
 
@@ -371,6 +416,7 @@ impl TextStore {
     /// the node's lifetime).
     pub fn remove(&mut self, id: LayoutNode) {
         self.buffers.remove(&id);
+        self.text_areas.remove(&id);
     }
 
     /// Re-shape `id`'s buffer against a width constraint and return

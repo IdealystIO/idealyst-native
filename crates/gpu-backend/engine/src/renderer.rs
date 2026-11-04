@@ -455,6 +455,12 @@ impl Renderer {
         // The text store is its own `Rc<RefCell<>>` so glyphon
         // buffer refs stay valid across the encode.
         let backend = host.backend().borrow();
+        // Ahead of the read borrow: text areas align their lines inside a width
+        // that only exists now layout has run.
+        host.text_store().borrow_mut().sync_text_area_widths(
+            &mut host.font_system().borrow_mut(),
+            |id| (backend.layout.frame_of(id).width - crate::widgets::TEXT_INPUT_HPAD * 2.0).max(0.0),
+        );
         let text_store = host.text_store().borrow();
         // Hold the chrome-glyph cache for the full render — the
         // skin's `paint_device_chrome` pushes `&Buffer` refs
@@ -1918,12 +1924,24 @@ fn walk<'a>(
                 // the blink. Unfocused inputs never paint a caret.
                 let draw_caret = is_focused && caret_visible;
                 if let Some(entry) = text_store.buffers.get(&data.layout) {
-                    let caret_local = entry
+                    let line_w = entry
                         .buffer
                         .layout_runs()
                         .next()
                         .map(|r| r.line_w)
                         .unwrap_or(0.0);
+                    // An input moves its one line by an offset. A text area's
+                    // buffer already places each of its lines
+                    // (`TextStore::sync_text_area_widths`), so only the caret,
+                    // on the first line, needs to know where that one went.
+                    let align_offset =
+                        crate::widgets::text_input_text_offset(r.text_align, w, line_w);
+                    let (text_offset_x, caret_local) =
+                        if matches!(data.kind, NodeKind::TextInput { .. }) {
+                            (align_offset, line_w)
+                        } else {
+                            (0.0, line_w + align_offset)
+                        };
                     let field_bg = r.background.map(|bg_rest| {
                         backend.animator.sample_color(
                             TweenKey::new(data.layout, AnimProperty::BackgroundColor),
@@ -1931,13 +1949,6 @@ fn walk<'a>(
                             now,
                         )
                     });
-                    // A text area keeps to the start: one offset can't align the
-                    // lines of a multi-line buffer.
-                    let text_offset_x = if matches!(data.kind, NodeKind::TextInput { .. }) {
-                        crate::widgets::text_input_text_offset(r.text_align, w, caret_local)
-                    } else {
-                        0.0
-                    };
                     skin.paint_text_input(
                         x,
                         y,

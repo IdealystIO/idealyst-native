@@ -219,9 +219,10 @@ impl RenderStyle {
         if let Some(fit) = rules.object_fit {
             self.object_fit = fit;
         }
-        if let Some(a) = rules.text_align.as_ref() {
-            self.text_align = *a;
-        }
+        // Absence clears, for the same reason as the shadow below: the style
+        // dropped it. `Left` is the renderer's natural, not a stated left
+        // (`text::text_align_to_glyphon`), so right-to-left text keeps its start.
+        self.text_align = rules.text_align.unwrap_or(TextAlign::Left);
         if let Some(o) = rules.opacity.as_ref() {
             self.opacity = o.resolve();
         }
@@ -542,5 +543,18 @@ mod tests {
         let sh = style.shadow.expect("shadow");
         assert_eq!(sh.color, parse_color(&Color::from("#ff00ff")));
         assert_eq!((sh.offset, sh.blur), ([0.0, 2.0], 12.0));
+    }
+
+    /// Regression: `RenderStyle::apply` kept the last `text_align` when a style
+    /// dropped it, so a `Field(text_align)` going back to `Natural` or a variant
+    /// without an alignment stayed where it was. `Left` is what the renderer
+    /// treats as natural (see `text::text_align_to_glyphon`).
+    #[test]
+    fn regression_gpu_removed_text_align_keeps_alignment() {
+        let mut style = RenderStyle::default();
+        style.apply(&StyleRules { text_align: Some(TextAlign::Right), ..Default::default() });
+        assert_eq!(style.text_align, TextAlign::Right);
+        style.apply(&StyleRules::default());
+        assert_eq!(style.text_align, TextAlign::Left, "a dropped alignment goes back to natural");
     }
 }
