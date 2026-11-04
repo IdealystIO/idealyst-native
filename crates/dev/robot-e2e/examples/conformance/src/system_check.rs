@@ -15,7 +15,9 @@
 //! (`crates/dev/capability-coverage` finds those statically): hover and
 //! press states, the cursor, text input values written from code, focus
 //! and blur, placeholders, text areas, virtualized lists, scroll-end,
-//! external links, presence animations.
+//! external links, presence animations. A style dropping a prop sits with
+//! them: every native toolkit keeps the last value it was given, so a
+//! backend has to write the reset itself.
 
 use std::collections::BTreeMap;
 
@@ -96,6 +98,13 @@ const SCROLL: Manual = Manual {
             Reaching the bottom bumps \"end reached\".",
     tests: &["reaching the end of a scroll view is reported"],
 };
+const STYLE_DROP: Manual = Manual {
+    id: "style-drop",
+    title: "A style dropping a prop",
+    steps: "\"Toggle\" flips the box between a style with a half opacity and one that states none: \
+            with none it is fully opaque.",
+    tests: &["a style that drops opacity goes back to opaque"],
+};
 const LINK: Manual = Manual {
     id: "link",
     title: "External link",
@@ -115,7 +124,8 @@ const KEYBOARD: Manual = Manual {
     tests: &[],
 };
 
-const MANUAL: [&Manual; 8] = [&HOVER, &INPUT, &AREA, &LIST, &SCROLL, &LINK, &PRESENCE, &KEYBOARD];
+const MANUAL: [&Manual; 9] =
+    [&HOVER, &INPUT, &AREA, &LIST, &SCROLL, &STYLE_DROP, &LINK, &PRESENCE, &KEYBOARD];
 
 /// Indexes into [`MANUAL`], so a section names its check with a plain
 /// (static, `Default`) prop.
@@ -124,9 +134,10 @@ const INPUT_I: usize = 1;
 const AREA_I: usize = 2;
 const LIST_I: usize = 3;
 const SCROLL_I: usize = 4;
-const LINK_I: usize = 5;
-const PRESENCE_I: usize = 6;
-const KEYBOARD_I: usize = 7;
+const STYLE_DROP_I: usize = 5;
+const LINK_I: usize = 6;
+const PRESENCE_I: usize = 7;
+const KEYBOARD_I: usize = 8;
 
 /// The fixture's hover / press look. `cursor` is on the base so the hand
 /// shows whenever the pointer is over it.
@@ -183,6 +194,7 @@ pub(crate) fn system_check_page(results: Results, nav: NavCell) -> Element {
             CheckSection(index = AREA_I, automated = automated, manual = manual) { AreaFixture() }
             CheckSection(index = LIST_I, automated = automated, manual = manual) { ListFixture() }
             CheckSection(index = SCROLL_I, automated = automated, manual = manual) { ScrollFixture() }
+            CheckSection(index = STYLE_DROP_I, automated = automated, manual = manual) { StyleDropFixture() }
             CheckSection(index = LINK_I, automated = automated, manual = manual) { LinkFixture() }
             CheckSection(index = PRESENCE_I, automated = automated, manual = manual) { PresenceFixture() }
             CheckSection(index = KEYBOARD_I, automated = automated, manual = manual) { KeyboardFixture() }
@@ -383,6 +395,24 @@ fn ScrollFixture() -> Element {
                 }
             }
             text(test_id = "cap-scroll-end") { move || format!("end reached: {}", ends.get()) }
+        }
+    }
+}
+
+#[component]
+fn StyleDropFixture() -> Element {
+    let faded = signal(true);
+    let toggle = move || faded.update(|f| !f);
+    let faded_style = move || StyleRules {
+        opacity: faded.get().then_some(0.5.into()),
+        height: Some(Length::Px(24.0).into()),
+        background: Some(Color("#2563eb".into()).into()),
+        ..Default::default()
+    };
+    ui! {
+        view(style = section()) {
+            view(test_id = "cap-opacity", style = faded_style)
+            button(label = "Toggle", test_id = "cap-opacity-toggle", on_click = toggle)
         }
     }
 }

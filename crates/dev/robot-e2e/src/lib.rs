@@ -622,6 +622,32 @@ impl Expect {
         }
     }
 
+    /// The opacity the NATIVE widget reports (`Robot::introspect_native`) is
+    /// `expected`. Reads the widget, so it catches a backend that keeps a value its
+    /// style has dropped, which the resolved style can't: on a native backend that
+    /// is the rules the framework handed over. Skips on a backend with no native
+    /// readback.
+    pub fn to_have_native_opacity(self, expected: f32) -> Result<(), String> {
+        use runtime_shared::introspect::{keys, NativeValue};
+        let desc = &self.loc.desc;
+        let el = self.loc.resolve()?;
+        let node = match Robot::new().introspect_native(&el) {
+            Ok(Some(node)) => node,
+            Ok(None) | Err(RobotError::ActionNotAvailable(_)) => {
+                return Err(skip(format!("expect({desc}).toHaveNativeOpacity(): no native readback on this platform")))
+            }
+            Err(e) => return Err(format!("expect({desc}).toHaveNativeOpacity(): {e:?}")),
+        };
+        match node.props.get(keys::OPACITY) {
+            Some(NativeValue::Number(actual)) if (actual - expected).abs() < 0.01 => {
+                log(format!("  ✓ expect({desc}).toHaveNativeOpacity({expected})"));
+                Ok(())
+            }
+            Some(other) => Err(format!("expect({desc}).toHaveNativeOpacity({expected}) — the widget reports {other:?}")),
+            None => Err(skip(format!("expect({desc}).toHaveNativeOpacity(): this platform reads no opacity"))),
+        }
+    }
+
     /// `expect(locator).toHaveCount(n)` — number of matches.
     pub fn to_have_count(self, n: usize) -> Result<(), String> {
         let actual = self.loc.count();

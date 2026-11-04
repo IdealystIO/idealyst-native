@@ -336,6 +336,11 @@ fn capabilities_suite() -> robot_e2e::Suite {
                 .act(|p: &Page| p.get_by_test_id("cap-scroll").scroll_to(0.0, 10_000.0))
                 .poll(|p: &Page| expect(&p.get_by_test_id("cap-scroll-end")).to_have_text("end reached: 1"))
                 .build(),
+            flow("a style that drops opacity goes back to opaque")
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-opacity")).to_have_native_opacity(0.5))
+                .act(|p: &Page| p.get_by_test_id("cap-opacity-toggle").click())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-opacity")).to_have_native_opacity(1.0))
+                .build(),
             test("external links have an opener", |_p: &Page| {
                 if runtime_shared::can_open_urls() {
                     Ok(())
