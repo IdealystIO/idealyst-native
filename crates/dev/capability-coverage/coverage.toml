@@ -203,6 +203,62 @@ status = "na"
 reason = "touch-first: trackpad scrolling arrives as a pan"
 
 [[allow]]
+method = "IntrospectionOps::computed_style"
+backends = ["*"]
+except = ["web", "ssr", "terminal", "cpu"]
+status = "na"
+reason = "trait docs: natives receive fully resolved rules, so the rules the robot reports ARE the applied style; only the browser's CSS resolves more"
+
+[[allow]]
+method = "IntrospectionOps::shortcut_modifier_is_meta"
+backends = ["*"]
+except = ["web", "ssr", "terminal", "cpu"]
+status = "na"
+reason = "the default reads the platform, which is right off the web; only a browser has to ask which OS it runs on"
+
+[[allow]]
+method = "IntrospectionOps::move_focus"
+backends = ["web", "macos", "android", "windows"]
+status = "na"
+reason = "native_key delivers Tab through the platform's own focus path; the robot calls move_focus only on a backend without native_key"
+
+[[allow]]
+method = "IntrospectionOps::native_key"
+backends = ["ios"]
+status = "na"
+reason = "UIKit has no public API to create key events; the robot runs the framework's key paths (KeyMechanism::Dispatch)"
+
+[[allow]]
+method = "IntrospectionOps::resize_window"
+backends = ["web", "ios", "android"]
+status = "na"
+reason = "trait docs: the app can't size its own window on a browser tab or a phone screen; set_viewport reports unsupported"
+
+[[allow]]
+method = "IntrospectionOps::keyboard_kind"
+backends = ["macos", "linux", "windows"]
+status = "na"
+reason = "trait docs: no soft keyboard"
+
+[[allow]]
+method = "IntrospectionOps::set_scroll_offset"
+backends = ["linux", "windows"]
+status = "na"
+reason = "scroll_port reports only scroll_view and virtualizer nodes here, and the robot moves those through their own handle's set_scroll"
+
+[[allow]]
+method = "AppEnvOps::set_system_back_wanted"
+backends = ["web", "macos", "ios", "linux", "windows"]
+status = "na"
+reason = "trait docs: no system Back to route. The browser's Back is history, and iOS's swipe back belongs to the stack navigator"
+
+[[allow]]
+method = "ActivityIndicatorOps::update_activity_indicator_size"
+backends = ["cpu"]
+status = "na"
+reason = "no spinner: the primitive is a placeholder here"
+
+[[allow]]
 method = "IntrospectionOps::capture_screenshot"
 backends = ["web"]
 status = "na"
@@ -284,7 +340,7 @@ reason = "partial backend (software rasterizer), not audited method by method: a
 
 [[allow]]
 method = "A11yOps::update_accessibility"
-backends = ["linux", "windows"]
+backends = ["windows"]
 status = "gap"
 reason = "screen readers see nothing"
 
@@ -293,12 +349,6 @@ method = "A11yOps::announce_for_accessibility"
 backends = ["linux", "windows"]
 status = "gap"
 reason = "live-region announcements are dropped"
-
-[[allow]]
-method = "ActivityIndicatorOps::update_activity_indicator_size"
-backends = ["macos", "ios", "android", "linux", "windows", "gpu"]
-status = "gap"
-reason = "a live size source is ignored after creation"
 
 [[allow]]
 method = "AppEnvOps::url_opener"
@@ -475,18 +525,6 @@ status = "gap"
 reason = "robot tap_native cannot confirm the hit"
 
 [[allow]]
-method = "IntrospectionOps::introspect_native"
-backends = ["ios", "android", "gpu"]
-status = "gap"
-reason = "native parity reads are stubs (deliberately deferred)"
-
-[[allow]]
-method = "IntrospectionOps::supports_native_introspection"
-backends = ["ios", "android", "gpu"]
-status = "gap"
-reason = "native parity reads are stubs (deliberately deferred)"
-
-[[allow]]
 method = "IntrospectionOps::is_shown"
 backends = ["gpu"]
 status = "gap"
@@ -497,6 +535,70 @@ method = "IntrospectionOps::native_pointer"
 backends = ["ios", "linux", "gpu"]
 status = "gap"
 reason = "robot tap_native falls back to actions (Linux needs XTest)"
+
+[[allow]]
+method = "IntrospectionOps::native_key"
+backends = ["linux"]
+status = "gap"
+reason = "robot key presses run the framework's key paths: GTK4 has no key synthesis, and XTest (X11 only) would have to carry it, as for native_pointer"
+
+# The GPU hosts boot no robot bridge (`install_robot_env`), so nothing can drive
+# these until one does. Each needs that first; `is_focused` also needs a way to
+# the focused input, which the winit Host owns and the backend can't reach.
+
+[[allow]]
+method = "IntrospectionOps::content_clip"
+backends = ["gpu"]
+status = "gap"
+reason = "no robot bridge on the GPU hosts: visible_frame ignores clipping"
+
+[[allow]]
+method = "IntrospectionOps::is_focused"
+backends = ["gpu"]
+status = "gap"
+reason = "no robot bridge on the GPU hosts, and focus lives on Host, out of the backend's reach"
+
+[[allow]]
+method = "IntrospectionOps::keyboard_kind"
+backends = ["gpu"]
+status = "gap"
+reason = "no robot bridge on the GPU hosts; the phone hosts have a soft keyboard, and update_text_input_keyboard is missing too"
+
+[[allow]]
+method = "IntrospectionOps::move_focus"
+backends = ["gpu"]
+status = "gap"
+reason = "no robot bridge on the GPU hosts, and no keyboard traversal to call"
+
+[[allow]]
+method = "IntrospectionOps::native_key"
+backends = ["gpu"]
+status = "gap"
+reason = "no robot bridge on the GPU hosts; Host::key is the real path, and an injection would go through it"
+
+[[allow]]
+method = "IntrospectionOps::resize_window"
+backends = ["gpu"]
+status = "gap"
+reason = "no robot bridge on the GPU hosts; the desktop hosts have a window to resize"
+
+[[allow]]
+method = "IntrospectionOps::scroll_port"
+backends = ["gpu"]
+status = "gap"
+reason = "no robot bridge on the GPU hosts"
+
+[[allow]]
+method = "IntrospectionOps::set_scroll_offset"
+backends = ["gpu"]
+status = "gap"
+reason = "no robot bridge on the GPU hosts, and make_scroll_view_handle is inert too"
+
+[[allow]]
+method = "AppEnvOps::set_system_back_wanted"
+backends = ["gpu"]
+status = "gap"
+reason = "the Android host routes no Back to system_back, so on_back never runs there"
 
 [[allow]]
 method = "LifecycleOps::run_layout"
@@ -614,7 +716,7 @@ reason = "text area refs are inert"
 
 [[allow]]
 method = "TextInputOps::set_text_input_focus_handler"
-backends = ["ios", "android", "gpu"]
+backends = ["gpu"]
 status = "gap"
 reason = "on_focus never fires"
 
