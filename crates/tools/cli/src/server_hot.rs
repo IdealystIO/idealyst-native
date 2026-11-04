@@ -22,8 +22,9 @@
 //! - **Each save** ([`ServerHot::try_patch`]) is decided against the base's
 //!   sources (`dev_overlay::native`); a patchable one replays only the
 //!   edited crates, links the patch and has the agent apply it. Anything
-//!   else — and any failure on the way — returns `Rebuild`, and the
-//!   watcher runs today's `cargo build` + respawn.
+//!   else — and any failure on the way, a replay past its time budget
+//!   among them — returns `Rebuild`, and the watcher runs today's
+//!   `cargo build` + respawn.
 //!
 //! arm64 macOS and Linux (the patch builder links Mach-O and ELF arm64);
 //! elsewhere the session never arms it and every server save rebuilds.
@@ -51,6 +52,29 @@ pub(crate) const AGENT_LIB_ENV: &str = "IDEALYST_HOT_AGENT_LIB";
 /// gives up on it and rebuilds. Loading a patch and swapping its pages
 /// takes milliseconds; this only bounds a server that stopped answering.
 const APPLY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// `IDEALYST_SERVER_PATCH_BUDGET_SECS`: how long a patch's replays may run
+/// before the session kills them and rebuilds. `0` means no limit.
+const REPLAY_BUDGET_ENV: &str = "IDEALYST_SERVER_PATCH_BUDGET_SECS";
+
+/// The default budget. A patch is worth waiting for while it can beat the
+/// rebuild it stands in for: CrewForge's slowest server rebuild takes 53 s of
+/// cargo, and its largest crate replays in 12–24 s on a warm session.
+const DEFAULT_REPLAY_BUDGET: Duration = Duration::from_secs(60);
+
+/// The budget `value` of [`REPLAY_BUDGET_ENV`] asks for: fractions are fine,
+/// `0` is no limit, and anything unreadable is the default.
+fn replay_budget(value: Option<&str>) -> Option<Duration> {
+    match value.map(|v| v.trim().parse::<f64>()) {
+        None => Some(DEFAULT_REPLAY_BUDGET),
+        Some(Ok(secs)) if secs == 0.0 => None,
+        Some(Ok(secs)) => Some(Duration::try_from_secs_f64(secs).unwrap_or(DEFAULT_REPLAY_BUDGET)),
+        Some(Err(_)) => {
+            crate::dlog!("dev server", "{REPLAY_BUDGET_ENV} is not a number of seconds; using the default");
+            Some(DEFAULT_REPLAY_BUDGET)
+        }
+    }
+}
 
 /// Whether this host can patch a native server at all.
 pub(crate) fn supported() -> bool {
@@ -257,7 +281,8 @@ impl ServerHot {
                 // that patches the server usually hot patches the web bundle
                 // in the same second, and that patch is the one on screen.
                 let nice = crate::build_priority::BuildPriority::server_build().nice();
-                let builder = ServerPatchBuilder::new(&exe, patches)?.with_replay_nice(nice);
+                let budget = replay_budget(std::env::var(REPLAY_BUDGET_ENV).ok().as_deref());
+                let builder = ServerPatchBuilder::new(&exe, patches)?.with_replay_nice(nice).with_replay_budget(budget);
                 Ok(Base { exe, stamp, builder, sources: Mutex::new(sources) })
             })
             .ok();
@@ -684,6 +709,16 @@ mod tests {
 
     fn unit(name: &str, bin: bool) -> Option<Unit> {
         Some(Unit { crate_name: name.into(), bin })
+    }
+
+    #[test]
+    fn the_replay_budget_defaults_and_parses() {
+        assert_eq!(replay_budget(None), Some(DEFAULT_REPLAY_BUDGET));
+        assert_eq!(replay_budget(Some("0")), None, "0 is no limit");
+        assert_eq!(replay_budget(Some("120")), Some(Duration::from_secs(120)));
+        assert_eq!(replay_budget(Some("0.5")), Some(Duration::from_millis(500)));
+        assert_eq!(replay_budget(Some("soon")), Some(DEFAULT_REPLAY_BUDGET));
+        assert_eq!(replay_budget(Some("-1")), Some(DEFAULT_REPLAY_BUDGET));
     }
 
     #[test]

@@ -2451,10 +2451,14 @@ tasks — and nothing in it consults a jump table. So on arm64 macOS and
 Linux the session patches it the other way round: the running binary's
 own functions are redirected. A save the decision below accepts:
 
-1. replays ONLY the edited crates with `--emit=obj` (the captures come
-   from the server's own builds, which run through the `idealyst` rustc
-   wrapper; the wrapper does not enter cargo's fingerprint, so arming the
-   tier costs no rebuild);
+1. replays ONLY the edited crates (the captures come from the server's own
+   builds, which run through the `idealyst` rustc wrapper; the wrapper does
+   not enter cargo's fingerprint, so arming the tier costs no rebuild). A
+   library's replay is cargo's own rustc invocation with the output directory
+   moved, so it continues the build's incremental session rather than
+   compiling cold. On CrewForge's `api-server`, 171K lines, that is about 12 s
+   against about 62 s for the first replay of a session on arm64 Linux, and it
+   leaves its work there for the rebuild if the patch is refused;
 2. binds the patch's statics and thread-locals to the server's storage
    and neutralizes constructors it already ran, exactly as for the
    sidecar ([Statics are the running program's](#statics-are-the-running-programs));
@@ -2530,6 +2534,10 @@ each server build starts):
 - anything that fails on the way: the patch link, the agent's `dlopen`,
   a server that is not the last build yet, an edited function shorter than
   the agent's 16-byte jump when the patch loads out of `b` reach;
+- a replay past its budget, 60 s by default. It is killed, which leaves the
+  incremental session and every build artifact as they were, and the save
+  rebuilds. `IDEALYST_SERVER_PATCH_BUDGET_SECS=<seconds>` sets it (fractions
+  are fine; `0` is no limit).
 
 The decision is `decided` for target `server`; a patch is `patch_step`s
 and a `patch_built` naming the functions redirected (`build-metrics.jsonl`

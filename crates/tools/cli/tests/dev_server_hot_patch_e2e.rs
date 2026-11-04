@@ -24,6 +24,10 @@
 //! 3. a body edit after that rebuild patches the NEW process — the
 //!    session re-read the relinked binary.
 //!
+//! Under `--no-watch`, the request that releases a queued save patches, with
+//! or without a session check before it. A replay past its time budget is
+//! killed and the save rebuilds.
+//!
 //! And without `--experimental-build` or `--experimental-server-patch`
 //! the tier is off: no agent loads,
 //! and the same body edit rebuilds and respawns the server.
@@ -398,10 +402,15 @@ static FIXTURE: Mutex<()> = Mutex::new(());
 /// Start `idealyst dev` on the fixture with `flags` added, and wait for
 /// the full-stack server and the first web build.
 fn start(root: &Path, scratch: &Path, port: u16, flags: &[&str]) -> Session {
+    start_with_env(root, scratch, port, flags, &[])
+}
+
+fn start_with_env(root: &Path, scratch: &Path, port: u16, flags: &[&str], env: &[(&str, &str)]) -> Session {
     let log = Arc::new(Mutex::new(String::new()));
     let events_path = scratch.join("events.jsonl");
     let mut child = Command::new(env!("CARGO_BIN_EXE_idealyst"))
         .current_dir(root.join("app"))
+        .envs(env.iter().copied())
         .env("IDEALYST_TEST_DRIVER", "1")
         .args(["dev", "--web", "--local", "--no-robot", "--no-headless-client"])
         .args(flags)
@@ -545,6 +554,96 @@ fn regression_under_no_watch_a_rebuild_request_patches_the_running_server() {
     session.wait_event(before, Duration::from_secs(600), "the forced build's end", |e| {
         e["target"] == "server" && e["type"] == "build_finished"
     });
+
+    drop(session);
+    materialize(&root, &repo);
+}
+
+/// A session check relinks the binary's path while the server keeps running the
+/// build the session's base describes, and a `--no-watch` queue is checked before
+/// it is applied. The request after a check patches the running server, against
+/// the build it runs; the rebuild after that finds the binary moved, and respawns.
+#[test]
+#[ignore = "compiles the framework for wasm32 and the host; run with --ignored"]
+fn regression_a_check_leaves_the_base_describing_the_running_server() {
+    let _turn = FIXTURE.lock().unwrap_or_else(|e| e.into_inner());
+    let repo = repo_root();
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dev_server_hot_patch_e2e");
+    materialize(&root, &repo);
+    let scratch = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let session = start(&root, scratch.path(), port, &["--experimental-server-patch", "--no-watch"]);
+    session.wait_agent(1);
+    let first_pid = pid(port);
+
+    let before = session.last_seq();
+    std::fs::write(root.join("shared/src/lib.rs"), shared("v2")).unwrap();
+    session.wait_event(before, Duration::from_secs(30), "the queued save", |e| {
+        e["target"] == "server" && e["type"] == "change_detected"
+    });
+    let checked = Command::new(env!("CARGO_BIN_EXE_idealyst"))
+        .current_dir(root.join("app"))
+        .args(["check", "--session"])
+        .output()
+        .expect("run idealyst check");
+    assert!(checked.status.success(), "{}", String::from_utf8_lossy(&checked.stderr));
+    session.wait_event(before, Duration::from_secs(600), "the server's check", |e| {
+        e["type"] == "check_finished" && e["target"] == "server"
+    });
+    assert_eq!(http_get(port, "/api/hello").as_deref(), Some("api / greeting v1"), "a check applied a save");
+
+    let after_check = session.last_seq();
+    session.rebuild();
+    let patched = session.wait_event(after_check, Duration::from_secs(600), "the server's patch", |e| {
+        e["target"] == "server" && matches!(e["type"].as_str(), Some("patch_built" | "patch_failed" | "build_started"))
+    });
+    assert_eq!(patched["type"], "patch_built", "{patched}\n{}", summary(&session.events(), after_check));
+    wait_answer(port, "/api/hello", "api / greeting v2", Duration::from_secs(5));
+    assert_eq!(pid(port), first_pid, "the request respawned the server");
+
+    // Nothing queued: the check's build is what cargo finds, and the binary it
+    // left differs from the running server's, so this restarts.
+    let forced = session.last_seq();
+    session.rebuild();
+    session.wait_event(forced, Duration::from_secs(600), "the respawned server", |e| {
+        e["type"] == "server_ready" && e["kind"] == "full_stack"
+    });
+    wait_answer(port, "/api/hello", "api / greeting v2", Duration::from_secs(30));
+    assert_ne!(pid(port), first_pid, "the binary a check relinked was never started");
+
+    drop(session);
+    materialize(&root, &repo);
+}
+
+/// CrewForge A19: a replay past its budget is killed and the save rebuilds,
+/// and the rebuild's server answers with the edit.
+#[test]
+#[ignore = "compiles the framework for wasm32 and the host; run with --ignored"]
+fn regression_a_replay_past_its_budget_rebuilds_and_the_edit_lands() {
+    let _turn = FIXTURE.lock().unwrap_or_else(|e| e.into_inner());
+    let repo = repo_root();
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dev_server_hot_patch_e2e");
+    materialize(&root, &repo);
+    let scratch = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let env = [("IDEALYST_SERVER_PATCH_BUDGET_SECS", "0.001")];
+    let session = start_with_env(&root, scratch.path(), port, &["--experimental-server-patch"], &env);
+    session.wait_agent(1);
+    assert_eq!(http_get(port, "/api/hello").as_deref(), Some("api / greeting v1"));
+    let first_pid = pid(port);
+
+    let before = session.last_seq();
+    std::fs::write(root.join("shared/src/lib.rs"), shared("v2")).unwrap();
+    let failed = session.wait_event(before, Duration::from_secs(60), "the abandoned patch", |e| {
+        e["target"] == "server" && matches!(e["type"].as_str(), Some("patch_built" | "patch_failed" | "build_started"))
+    });
+    assert_eq!(failed["type"], "patch_failed", "{failed}");
+    assert!(failed["reason"].as_str().is_some_and(|r| r.contains("budget")), "{failed}");
+    session.wait_event(seq(&failed), Duration::from_secs(600), "the respawned server", |e| {
+        e["type"] == "server_ready" && e["kind"] == "full_stack"
+    });
+    wait_answer(port, "/api/hello", "api / greeting v2", Duration::from_secs(30));
+    assert_ne!(pid(port), first_pid, "the rebuild did not respawn the server");
 
     drop(session);
     materialize(&root, &repo);

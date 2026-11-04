@@ -4917,7 +4917,9 @@ mod tests {
             true,
             move |paths: &[PathBuf], _: &Supersede| {
                 let _ = offered_tx.send(paths.to_vec());
-                if paths.iter().all(|p| p.ends_with("apply.rs")) { Patched::Applied } else { Patched::Rebuild }
+                // By the file that decides: FSEvents can also name the fresh
+                // temp directory the test created just before the watch.
+                if paths.iter().any(|p| p.ends_with("rebuild.rs")) { Patched::Rebuild } else { Patched::Applied }
             },
             move || {
                 let _ = built_tx.send(());

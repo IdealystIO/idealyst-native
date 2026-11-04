@@ -21,10 +21,11 @@
 //!
 //! # A patch, step by step
 //!
-//! 1. **Replay** each edited crate's captured rustc invocation with
-//!    `--emit=obj` (see [`super::replay`]: 256 codegen units, its own
-//!    incremental directory, `-Cmetadata` untouched so symbols are named
-//!    exactly as in the binary). Crates replay concurrently.
+//! 1. **Replay** each edited crate's captured rustc invocation unchanged but
+//!    for its output directory ([`replay::run_rustc_server_replay`]), so it
+//!    continues the base build's own incremental session and its symbols are
+//!    named exactly as in the binary. Crates replay concurrently, within a
+//!    time budget ([`ServerPatchBuilder::with_replay_budget`]).
 //! 2. **Bind** statics: the patch's references to writable statics and
 //!    thread-locals the binary already has are pointed at the binary's
 //!    storage ([`super::bind`], [`super::statics`]), and constructors the
@@ -142,6 +143,8 @@ pub struct ServerPatchBuilder {
     seq: std::sync::atomic::AtomicU64,
     /// Niceness increment of a patch's replays ([`Self::with_replay_nice`]).
     replay_nice: i32,
+    /// How long a patch's replays may run ([`Self::with_replay_budget`]).
+    replay_budget: Option<Duration>,
 }
 
 /// Where each function of a linked image ends, and its bytes: what tells
@@ -211,7 +214,7 @@ impl ServerPatchBuilder {
         drop(data);
         std::fs::create_dir_all(&out_dir).with_context(|| format!("create {}", out_dir.display()))?;
         let linked = std::fs::metadata(exe).and_then(|m| m.modified()).ok();
-        Ok(Self { cache, text, linked, out_dir, seq: std::sync::atomic::AtomicU64::new(0), replay_nice: 0 })
+        Ok(Self { cache, text, linked, out_dir, seq: std::sync::atomic::AtomicU64::new(0), replay_nice: 0, replay_budget: None })
     }
 
     /// Run each patch's replays at niceness increment `nice` (`0`, the
@@ -225,9 +228,20 @@ impl ServerPatchBuilder {
         self
     }
 
+    /// Abandon a patch whose replays pass `budget`: a large crate's replay can
+    /// cost more than the rebuild that follows a refusal, and a patch has to
+    /// beat that rebuild to be worth waiting for. The replay is killed, which
+    /// is as safe as a superseding save's kill ([`replay::run_rustc_server_replay`]).
+    /// `None`, the default: no limit.
+    pub fn with_replay_budget(mut self, budget: Option<Duration>) -> Self {
+        self.replay_budget = budget;
+        self
+    }
+
     /// Build a patch of `crates` for a server running at ASLR `slide`.
     /// `cancel` is polled throughout; a cancelled build returns an error
-    /// that `is::<replay::Cancelled>()`.
+    /// that `is::<replay::Cancelled>()`, and one whose replays passed the
+    /// budget an error that `is::<replay::OverBudget>()`.
     pub fn build(
         &self,
         crates: &[PatchCrate],
@@ -246,19 +260,26 @@ impl ServerPatchBuilder {
 
         // 1. Replay, concurrently.
         let started = Instant::now();
+        let over_budget = || self.replay_budget.is_some_and(|b| started.elapsed() > b);
+        let stop = || cancel() || over_budget();
         let results: Vec<(String, Result<Vec<PathBuf>>, Duration)> = std::thread::scope(|s| {
+            let stop = &stop;
             let handles: Vec<_> = crates
                 .iter()
                 .map(|c| {
                     s.spawn(move || {
                         let t = Instant::now();
-                        let r = replay::run_rustc_emit_obj_niced(&c.capture, &[], cancel, self.replay_nice);
+                        let r = replay::run_rustc_server_replay(&c.capture, stop, self.replay_nice);
                         (c.crate_name.clone(), r, t.elapsed())
                     })
                 })
                 .collect();
             handles.into_iter().map(|h| h.join().expect("a replay thread panicked")).collect()
         });
+        if !cancel() && over_budget() && results.iter().any(|(_, r, _)| matches!(r, Err(e) if e.is::<replay::Cancelled>())) {
+            let budget = self.replay_budget.unwrap_or_default();
+            return Err(replay::OverBudget { budget }.into());
+        }
         let mut objects = Vec::new();
         let mut timings = Vec::new();
         for (name, result, took) in results {
@@ -539,10 +560,11 @@ pub fn mark_roots(
     let mut defined: HashMap<String, usize> = HashMap::new();
     for path in objects {
         let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-        for (name, _) in text_definitions(&bytes).with_context(|| format!("parse {}", path.display()))? {
-            *defined.entry(name).or_default() += 1;
+        let names = text_definitions(&bytes).with_context(|| format!("parse {}", path.display()))?;
+        for (name, _) in &names {
+            *defined.entry(name.clone()).or_default() += 1;
         }
-        files.push((path, bytes));
+        files.push((path, bytes, names));
     }
     let roots: BTreeSet<String> = defined
         .into_iter()
@@ -554,7 +576,13 @@ pub fn mark_roots(
         .map(|(name, _)| name)
         .collect();
     let mut out = Vec::with_capacity(files.len());
-    for (i, (path, mut bytes)) in files.into_iter().enumerate() {
+    for (i, (path, mut bytes, names)) in files.into_iter().enumerate() {
+        // Nothing to mark: linked as it stands, which spares a large crate's
+        // instantiation-only units a copy each.
+        if !names.iter().any(|(name, _)| roots.contains(name)) {
+            out.push(path.clone());
+            continue;
+        }
         if cache.format == object::BinaryFormat::Elf {
             super::elf::retain_roots(&mut bytes, &roots).with_context(|| format!("mark {}", path.display()))?;
         } else {
@@ -718,6 +746,60 @@ mod tests {
         let base = replayed_at(ServerPatchBuilder::new(&exe, tmp.path().join("patches")).unwrap());
         let niced = ServerPatchBuilder::new(&exe, tmp.path().join("patches")).unwrap().with_replay_nice(7);
         assert_eq!(replayed_at(niced), (base + 7).min(19));
+    }
+
+    /// CrewForge A19: `api-server` replayed for 127.6 s where a rebuild costs
+    /// 53 s, and nothing stopped it. A fake rustc that never finishes: the
+    /// budget kills it (a stale child would hold the session's lock), and says
+    /// so apart from a superseding save, which the session answers differently.
+    #[cfg(unix)]
+    #[test]
+    fn regression_a_replay_past_its_budget_is_killed() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let rustc = tmp.path().join("fake-rustc.sh");
+        let pid = tmp.path().join("pid.txt");
+        std::fs::write(&rustc, format!("#!/bin/sh\necho $$ > {}\nexec sleep 300\n", pid.display())).unwrap();
+        std::fs::set_permissions(&rustc, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let capture = || PatchCrate {
+            crate_name: "app".into(),
+            capture: CapturedInvocation {
+                rustc: rustc.display().to_string(),
+                args: vec!["--crate-name".into(), "app".into(), "--out-dir".into(), tmp.path().join("deps").display().to_string()],
+                cwd: tmp.path().display().to_string(),
+                env: vec![("PATH".into(), std::env::var("PATH").unwrap_or_default())],
+            },
+        };
+        let exe = std::env::current_exe().unwrap();
+        let builder = ServerPatchBuilder::new(&exe, tmp.path().join("patches"))
+            .unwrap()
+            .with_replay_budget(Some(Duration::from_millis(400)));
+        let started = Instant::now();
+        let err = builder.build(&[capture()], 0, &|| false, &|_, _| {}).expect_err("over budget");
+        assert!(err.is::<replay::OverBudget>(), "{err:#}");
+        assert!(started.elapsed() < Duration::from_secs(30), "the kill did not end the wait");
+        // No pid file: on a loaded machine the kill can beat the script's first line.
+        if let Ok(pid) = std::fs::read_to_string(&pid) {
+            let running = std::process::Command::new("kill")
+                .args(["-0", pid.trim()])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(!running.success(), "the replay outlived its budget");
+        }
+
+        // A save that supersedes it first is a supersession, not a budget.
+        let start = Instant::now();
+        let cancel = || start.elapsed() > Duration::from_millis(200);
+        let err = builder.build(&[capture()], 0, &cancel, &|_, _| {}).expect_err("superseded");
+        assert!(err.is::<replay::Cancelled>(), "{err:#}");
+
+        // No budget: only a cancel stops it.
+        let unlimited = ServerPatchBuilder::new(&exe, tmp.path().join("patches")).unwrap();
+        let start = Instant::now();
+        let cancel = || start.elapsed() > Duration::from_millis(600);
+        let err = unlimited.build(&[capture()], 0, &cancel, &|_, _| {}).expect_err("cancelled");
+        assert!(err.is::<replay::Cancelled>(), "{err:#}");
     }
 
     // Real v0 symbols (Mach-O spelling) from a probe crate named

@@ -8,7 +8,8 @@
 //! here to:
 //!
 //!  1. Load the on-disk capture file
-//!  2. Rewrite the argv into a patch compile — see [`replay_args`]
+//!  2. Rewrite the argv into a patch compile — see [`replay_args`], or
+//!     [`run_rustc_server_replay`] for a server patch
 //!  3. Spawn rustc with the captured env + cwd
 //!  4. Collect every `.o` from the replay's private out-dir
 //!
@@ -125,6 +126,21 @@ impl std::fmt::Display for Cancelled {
 
 impl std::error::Error for Cancelled {}
 
+/// A server patch abandoned because its replays passed their time budget
+/// ([`super::detour::ServerPatchBuilder::with_replay_budget`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverBudget {
+    pub budget: std::time::Duration,
+}
+
+impl std::fmt::Display for OverBudget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the replay passed its {:?} budget and was killed", self.budget)
+    }
+}
+
+impl std::error::Error for OverBudget {}
+
 /// How often a running replay asks `cancel`. Short against a replay
 /// (hundreds of ms on a small crate, seconds on a big one), long enough
 /// that the polling costs nothing.
@@ -196,21 +212,131 @@ fn run_rustc_emit_obj_at(
     cancel: &(dyn Fn() -> bool + Sync),
     nice: i32,
 ) -> Result<Vec<PathBuf>> {
+    let out_dir = replay_out_dir(&captured.args)?;
+    let args = replay_args(&captured.args, extra, &out_dir);
+    run_args(captured, &args, &out_dir, cancel, nice)?;
+    collect_objects(&args, &out_dir)
+}
+
+/// A replay for a server patch: the base build's own rustc invocation, with
+/// only its output directory moved.
+///
+/// So it continues the base's incremental session, instead of keeping one of
+/// its own. rustc discards a session whose tracked options differ, and `--emit`
+/// is tracked, so an `--emit=obj` replay needs its own directory ([`replay_args`]),
+/// and the first one after a session starts compiles the whole crate from cold:
+/// 61.8 s on CrewForge's `api-server` against 12.6 s warm (arm64 Linux, six
+/// cores). The web's replays have to pay that (a wasm patch adds
+/// `-Crelocation-model=pic`) and warm theirs ahead of time; a server patch adds
+/// no flag, so it can use the session a build already left. And a refused patch
+/// then leaves its work in that session, so the rebuild after it reuses the
+/// replay's codegen.
+///
+/// `-Cmetadata` stays with the rest, so symbols are named as in the binary, and
+/// nothing cargo fingerprints moves: the session is not in cargo's fingerprint,
+/// so the next build's units stay fresh.
+///
+/// A binary (whose `--emit=link` would link a whole program) and a compile with
+/// no incremental session take [`run_rustc_emit_obj_niced`]'s path.
+///
+/// Killing one mid-compile is safe as [`run_rustc_emit_obj_cancellable`] says,
+/// for the base's session too: it finalizes only on success, and the next
+/// compile starts from the newest finalized one.
+pub fn run_rustc_server_replay(
+    captured: &CapturedInvocation,
+    cancel: &(dyn Fn() -> bool + Sync),
+    nice: i32,
+) -> Result<Vec<PathBuf>> {
+    let out_dir = replay_out_dir(&captured.args)?;
+    let Some(args) = shared_session_args(&captured.args, &out_dir) else {
+        return run_rustc_emit_obj_at(captured, &[], cancel, nice);
+    };
+    run_args(captured, &args, &out_dir, cancel, nice)?;
+    let rlib = out_dir.join(format!(
+        "lib{}{}.rlib",
+        arg_value(&args, "--crate-name").unwrap_or_default(),
+        codegen_value(&args, "extra-filename").unwrap_or_default()
+    ));
+    // rustc keeps a unit's object beside the rlib only when split debuginfo
+    // needs it there; a crate without debuginfo has them only in the rlib.
+    let listed = collect_objects(&args, &out_dir)?;
+    let objects = if listed.is_empty() { extract_objects(&rlib, &out_dir)? } else { listed };
+    // Hundreds of MB on a large crate, and nothing reads it now.
+    let _ = std::fs::remove_file(&rlib);
+    Ok(objects)
+}
+
+/// The captured invocation with only its output directory moved, if it can
+/// continue the base's session: a library, compiled incrementally.
+fn shared_session_args(captured: &[String], out_dir: &Path) -> Option<Vec<String>> {
+    let is_library = captured
+        .windows(2)
+        .filter(|w| w[0] == "--crate-type")
+        .map(|w| w[1].as_str())
+        .chain(captured.iter().filter_map(|a| a.strip_prefix("--crate-type=")))
+        .all(|t| matches!(t, "lib" | "rlib"));
+    codegen_value(captured, "incremental")?;
+    if !is_library {
+        return None;
+    }
+    let mut args = Vec::with_capacity(captured.len());
+    let mut iter = captured.iter();
+    while let Some(a) = iter.next() {
+        if a == "--out-dir" {
+            let _ = iter.next();
+            args.push("--out-dir".to_string());
+            args.push(out_dir.display().to_string());
+        } else if a.starts_with("--out-dir=") {
+            args.push(format!("--out-dir={}", out_dir.display()));
+        } else {
+            args.push(a.clone());
+        }
+    }
+    Some(args)
+}
+
+/// The codegen units of an rlib, written to `out_dir`.
+fn extract_objects(rlib: &Path, out_dir: &Path) -> Result<Vec<PathBuf>> {
+    use object::read::archive::ArchiveFile;
+    let file = std::fs::File::open(rlib).with_context(|| format!("open {}", rlib.display()))?;
+    let cache = object::ReadCache::new(file);
+    let archive = ArchiveFile::parse(&cache).with_context(|| format!("parse {}", rlib.display()))?;
+    let mut out = Vec::new();
+    for member in archive.members() {
+        let member = member?;
+        let name = String::from_utf8_lossy(member.name()).into_owned();
+        if !name.ends_with(".rcgu.o") {
+            continue;
+        }
+        let path = out_dir.join(&name);
+        std::fs::write(&path, member.data(&cache)?).with_context(|| format!("write {}", path.display()))?;
+        out.push(path);
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Run the compile `args`, in a fresh `out_dir`, until it ends or `cancel` says.
+fn run_args(
+    captured: &CapturedInvocation,
+    args: &[String],
+    out_dir: &Path,
+    cancel: &(dyn Fn() -> bool + Sync),
+    nice: i32,
+) -> Result<()> {
     if cancel() {
         return Err(Cancelled.into());
     }
-    let out_dir = replay_out_dir(&captured.args)?;
     // A fresh directory per replay. With many codegen units rustc writes
     // one object per unit under a HASHED name, so a previous replay's
     // objects never get overwritten, and linking whatever is lying in
     // the directory would link stale code next to the new.
-    let _ = std::fs::remove_dir_all(&out_dir);
-    std::fs::create_dir_all(&out_dir)
+    let _ = std::fs::remove_dir_all(out_dir);
+    std::fs::create_dir_all(out_dir)
         .with_context(|| format!("create {}", out_dir.display()))?;
-    let args = replay_args(&captured.args, extra, &out_dir);
 
     let mut cmd = Command::new(&captured.rustc);
-    cmd.args(&args).current_dir(&captured.cwd);
+    cmd.args(args).current_dir(&captured.cwd);
     cmd.env_clear();
     for (k, v) in &captured.env {
         cmd.env(k, v);
@@ -292,7 +418,7 @@ fn run_rustc_emit_obj_at(
         // replay runs against artifacts a concurrent cargo may be
         // rewriting, and "can't find crate" alone does not say whether
         // the file was missing, replaced, or never there.
-        let missing: Vec<&str> = extern_paths(&args)
+        let missing: Vec<&str> = extern_paths(args)
             .filter(|p| !std::path::Path::new(p).exists())
             .collect();
         if missing.is_empty() {
@@ -306,17 +432,20 @@ fn run_rustc_emit_obj_at(
         );
     }
 
-    // Every object in the private out-dir is this replay's: the dir was
-    // emptied first. Artifact notifications are not enough on their
-    // own — with several codegen units rustc reports the objects it
-    // wrote, but a unit reused from the incremental cache is copied in
-    // without one.
-    let listed: Vec<PathBuf> = std::fs::read_dir(&out_dir)
+    Ok(())
+}
+
+/// Every object in a replay's private out-dir is the replay's: the dir was
+/// emptied first. Artifact notifications are not enough on their own — with
+/// several codegen units rustc reports the objects it wrote, but a unit reused
+/// from the incremental cache is copied in without one.
+fn collect_objects(args: &[String], out_dir: &Path) -> Result<Vec<PathBuf>> {
+    let listed: Vec<PathBuf> = std::fs::read_dir(out_dir)
         .with_context(|| format!("read {}", out_dir.display()))?
         .flatten()
         .map(|e| e.path())
         .collect();
-    Ok(replay_objects(listed, &args))
+    Ok(replay_objects(listed, args))
 }
 
 /// The objects a replay's out-dir holds, minus rustc's single-unit copy.
@@ -725,6 +854,123 @@ mod tests {
             .count();
         assert_eq!(finalized, 1, "the replay after the kill should have finalized its session");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A rustc invocation as cargo gives it for a library.
+    fn base_compile(root: &Path, debuginfo: &str) -> CapturedInvocation {
+        let mut captured = slow_crate(root);
+        captured.args.extend(["-C".to_string(), format!("debuginfo={debuginfo}")]);
+        captured.args.extend(["-C".to_string(), "metadata=sharedsession".to_string()]);
+        captured.args.extend(["-C".to_string(), "extra-filename=-shared".to_string()]);
+        captured
+    }
+
+    /// rustc's own compile of `captured`, as cargo would run it.
+    fn run_base(captured: &CapturedInvocation, root: &Path) {
+        std::fs::create_dir_all(root.join("deps")).unwrap();
+        let out = Command::new(&captured.rustc).args(&captured.args).current_dir(root).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    fn finalized_sessions(incremental: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for krate in std::fs::read_dir(incremental).into_iter().flatten().flatten() {
+            for session in std::fs::read_dir(krate.path()).into_iter().flatten().flatten() {
+                let p = session.path();
+                let name = session.file_name().to_string_lossy().to_string();
+                if p.is_dir() && name.starts_with("s-") && !name.ends_with("-working") {
+                    out.push(p);
+                }
+            }
+        }
+        out
+    }
+
+    /// CrewForge A19: a server replay kept a session of its own, so the first
+    /// replay of a crate compiled it from cold, past the rebuild that would
+    /// have cost a third of that. A replay right after the base build, of the
+    /// same source, must reuse every unit the base compiled.
+    #[cfg(unix)]
+    #[test]
+    fn regression_a_server_replay_continues_the_base_builds_session() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = tempfile::tempdir().unwrap();
+        // CrewForge's profile: rustc keeps these units beside the rlib, so the
+        // reused ones can be told from the rebuilt ones.
+        let mut captured = base_compile(tmp.path(), "line-tables-only");
+        captured.args.extend(["-C".to_string(), "split-debuginfo=unpacked".to_string()]);
+        run_base(&captured, tmp.path());
+        let incremental = tmp.path().join("incremental");
+        assert_eq!(finalized_sessions(&incremental).len(), 1);
+
+        let objects = run_rustc_server_replay(&captured, &|| false, 0).expect("the replay compiles");
+        assert!(!objects.is_empty());
+        assert!(objects.iter().all(|o| o.is_file() && o.to_string_lossy().ends_with(".rcgu.o")));
+        // rustc hard-links a unit it reuses from the session into the out-dir.
+        let reused = objects.iter().filter(|o| std::fs::metadata(o).unwrap().nlink() > 1).count();
+        assert_eq!(reused, objects.len(), "{reused} of {} units were reused", objects.len());
+        assert!(!tmp.path().join("incremental-hotpatch").exists(), "the replay kept a session of its own");
+        assert!(tmp.path().join("deps").join("libkilltest-shared.rlib").is_file(), "the base's rlib stays");
+        let out_dir = replay_out_dir(&captured.args).unwrap();
+        assert!(!out_dir.join("libkilltest-shared.rlib").exists(), "the replay's rlib is removed");
+    }
+
+    /// Without debuginfo rustc deletes the units after archiving them, which an
+    /// `--emit=obj` replay never saw: a crate of `debug = 0` must still replay.
+    #[test]
+    fn regression_a_server_replay_of_a_crate_without_debuginfo_has_objects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let captured = base_compile(tmp.path(), "0");
+        run_base(&captured, tmp.path());
+        let objects = run_rustc_server_replay(&captured, &|| false, 0).expect("the replay compiles");
+        assert!(objects.len() > 1, "{objects:?}");
+        for o in &objects {
+            object::File::parse(&*std::fs::read(o).unwrap()).expect("a real object");
+        }
+    }
+
+    /// The budget and a superseding save kill a replay the same way, and now it
+    /// runs in the base's own session. The base's artifacts stay as they were,
+    /// and the next compile, replay or cargo's, starts from what it finalized.
+    #[test]
+    fn regression_a_killed_server_replay_leaves_the_base_intact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let captured = base_compile(tmp.path(), "0");
+        run_base(&captured, tmp.path());
+        let rlib = tmp.path().join("deps").join("libkilltest-shared.rlib");
+        let stamp = |p: &Path| (std::fs::metadata(p).unwrap().len(), std::fs::metadata(p).unwrap().modified().unwrap());
+        let before = stamp(&rlib);
+        let incremental = tmp.path().join("incremental");
+        let finalized = finalized_sessions(&incremental);
+        // A body edit, so the replay has work to be killed in.
+        let src = tmp.path().join("lib.rs");
+        let edited = std::fs::read_to_string(&src).unwrap().replace("fold(5,", "fold(5 + 1,");
+        std::fs::write(&src, &edited).unwrap();
+
+        let killed = run_rustc_server_replay(&captured, &|| !working_sessions(&incremental).is_empty(), 0);
+        assert!(killed.expect_err("the kill").is::<Cancelled>());
+        assert_eq!(stamp(&rlib), before, "the kill touched the base's rlib");
+        assert_eq!(finalized_sessions(&incremental), finalized, "the kill replaced a finalized session");
+
+        let objects = run_rustc_server_replay(&captured, &|| false, 0).expect("the replay after a kill compiles");
+        assert!(objects.len() > 1);
+        // And cargo's own next compile: fresh enough to finish, on its session.
+        run_base(&captured, tmp.path());
+        assert!(stamp(&rlib).1 > before.1);
+    }
+
+    /// A binary's `--emit=link` would link a program, and a compile with no
+    /// session has none to continue: both keep the `--emit=obj` replay.
+    #[test]
+    fn only_an_incremental_library_shares_the_base_session() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let lib = args(&["--crate-type", "lib", "--emit=dep-info,metadata,link", "-C", "incremental=/i", "--out-dir", "/d"]);
+        let shared = shared_session_args(&lib, Path::new("/o")).unwrap();
+        assert_eq!(shared, args(&["--crate-type", "lib", "--emit=dep-info,metadata,link", "-C", "incremental=/i", "--out-dir", "/o"]));
+        let bin = args(&["--crate-type", "bin", "--emit=link", "-C", "incremental=/i", "--out-dir", "/d"]);
+        assert!(shared_session_args(&bin, Path::new("/o")).is_none());
+        let cold = args(&["--crate-type", "lib", "--out-dir", "/d"]);
+        assert!(shared_session_args(&cold, Path::new("/o")).is_none());
     }
 
     /// Asked before anything is spawned, too: a replay that is already
