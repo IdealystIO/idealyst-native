@@ -11,6 +11,23 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **Hugging components follow their parent's alignment** (`idea-ui` major,
+  `runtime-shared` major: `Length::FitContent`, `runtime-layout`, wire protocol
+  26). Button, Tag, Chip, Badge, IconButton, Avatar and Spinner no longer set
+  `align_self: Center`, and SegmentedControl and Calendar no longer set
+  `FlexStart`, so a parent's `align` now applies to them. In a default column
+  they move from centred to the start; in a default stretching row, from
+  vertically centred to the top. Use `align = Center` on the parent for the old
+  look. A pill restyled with `align_self: Stretch` needs a `width` to stretch.
+  Dev and app builds must move to wire protocol 26 together.
+- **Tooltip and HoverCard triggers land where they would bare** (`idea-ui`
+  major). The wrapper no longer centres its trigger in a stretching row. In a
+  default column the wrapper is the line's width, so the bubble centres on the
+  line and hovering the line's empty space opens it; `Stack(align = Start)` or
+  `align = ElementAlign::Start` on the trigger's parent avoids both.
+- **`build-metrics.jsonl`'s `total_ms` under `--no-watch` starts at the rebuild
+  request** (`idealyst-cli`). The queue wait is the new `queued_ms`.
+
 - **SDK `androidx` entries need a version unless the library is pinned**
   (`run-android`, `idealyst-cli`). Android builds now link one pinned
   AndroidX set (see the Fixed entry "Android builds on a clean machine").
@@ -1184,6 +1201,29 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **idea-ui additions** (`idea-ui` major, `table` major): `leading` on Tag and
+  Chip; `group` headings on `SelectOption`, in Select and Autocomplete;
+  Autocomplete remote mode (`filter`, `on_query`, `loading`, `loading_text`,
+  `allow_free_text`); TableCards `CardPresentation::Hairline`,
+  `CardSlot::FieldWide`, `Meta` and `Trailing`, `cell_empty`, `cell_caption`,
+  a select-all line and `selection_label`; `TableScroller` (a table needs
+  `scroll_y`, or TableCards, for it to scroll); `Field(text_align)`;
+  `TableRow(test_id)`; `Checkbox(indeterminate)`.
+- **Live checked state on pressables** (`runtime-vocabulary` major,
+  `runtime-shared`, every backend with an a11y layer). `a11y_state` reports
+  checked and other state on the same node as it changes. A checkbox, radio or
+  switch role now says unchecked; SSR writes the authored role.
+- **`anchored_overlay` stays clear of sticky bars** (`runtime-vocabulary` major,
+  `runtime-shared`, backends). `.collision_insets(..)`, the inline `ui!` prop,
+  and `provide_overlay_insets(..)`, which Select, Menu and Autocomplete inherit.
+  The most recent live provision applies, not the nearest ancestor. Remote
+  `CODEC_VERSION` is 10, so remote bundles must be rebuilt.
+- **`idealyst dev` arms one experimental tier at a time** (`idealyst-cli`,
+  `mcp-server`). `--experimental-server-patch` and
+  `--experimental-web-additive`, also on `run_dev`; `--experimental-build` still
+  arms both.
+- **`build-metrics.jsonl` records `queued_ms` and `concurrent_ms`**
+  (`idealyst-cli`, `mcp-server`).
 - **Server in-place patches on arm64 Linux** (`idealyst-cli` minor;
   `build-runtime-server` minor: `HostBinCache::format`,
   `HostBinCache::tls_block_offset`). `idealyst dev
@@ -3043,6 +3083,36 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Adding a component hot patches** (`runtime-macros`, `runtime-macros-expand`,
+  `build-web`, `dev-overlay`, `runtime-macros-parse`; `--experimental-build` or
+  `--experimental-web-additive`). Under `hot-reload` a component's impls live in
+  a const named for it, so a new one renames no neighbour's symbol, and a
+  renumbered function is paired with its base name, which covers derives and
+  author impls. A new file patches when other files change only by `mod` and
+  `use` lines and body edits. New writable state in an added body is refused
+  before the replay. A refused save names each item that changed and says the
+  comparison is with the last build. A name a file defines for itself no longer
+  blocks a save.
+- **Less generated code per macro use** (`runtime-macros-expand`,
+  `runtime-vocabulary`). `website` −15%, `idea-ui` −7% by `-Zmacro-stats`.
+  `runtime-macros-expand` now needs the matching `runtime-vocabulary`.
+- **A failed first web build no longer leaves the server API-only**
+  (`idealyst-cli`). The first good bundle restarts a server that started with
+  none.
+- **A server patch's replay runs at the server build's priority**
+  (`build-runtime-server`, `idealyst-cli`; `IDEALYST_SERVER_BUILD_NICE`).
+- **`idealyst dev` deletes dead sessions' registry entries when it starts**
+  (`idealyst-cli`, `mcp-server`).
+- **Robot `blur`, `focus` and `key Tab` run focus handlers in a page without
+  window focus** (`backend-web`), so commit-on-blur fields save under MCP.
+- **GPU anchored overlays flip and clamp** (`render-wgpu` major:
+  `Painter::paint_text_input` gains a parameter).
+- **`text_align` reaches a text input on Linux, Windows and the GPU sim skins**;
+  on Android an aligned input stays vertically centred (`backend-linux`,
+  `backend-windows`, `render-wgpu`, `backend-android-mobile`).
+- **Radio and Checkbox rows meet the 44pt phone tap target; Checkbox, Radio and
+  Switch report checked state** (`idea-ui`).
+- **`docs-app` compiles again** (`docs-app`).
 - **Remote components using idea-ui load again: `&'static str` and
   `ImageSource` props cross** (`runtime-vocabulary` minor, `runtime-shared`
   patch, `runtime-macros-expand` minor, `idea-ui` patch). idea-ui 16 gave
