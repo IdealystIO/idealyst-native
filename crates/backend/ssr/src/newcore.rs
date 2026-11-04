@@ -78,7 +78,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_scene::{realize, Element, Host, Registry};
-use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::accessibility::{AccessibilityProps, Role};
 use runtime_shared::StyleRules;
 use runtime_vocabulary::caps;
 use runtime_world::World;
@@ -461,25 +461,22 @@ impl caps::PressableOps for SsrBackend {
         _on_click: Rc<dyn Fn()>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // A bare clickable `<div>`, matching the web pressable: button
-        // role plus the author's accessible name / hint / hidden flag, so
-        // a server-rendered button announces the same name the live one
-        // does (web's `a11y::apply` writes these on the adopted element). No inline cursor — `cursor` is now an
+        // A bare clickable `<div>`, matching the web pressable: the same
+        // role and ARIA attributes `web::a11y::apply` writes on the adopted
+        // element, so a server-rendered checkbox announces its name and
+        // state before hydration. No inline cursor — `cursor` is an
         // author/component style property (`StyleRules::cursor`), so the
         // static first paint matches the live web pressable (neither sets
         // an inline cursor) and hydration adoption stays consistent. The
         // click handler is the live bundle's job on hydration.
         let mut node = HtmlNode::new("div");
-        node.attrs.push(("role", "button".to_string()));
-        node.attrs.push(("tabindex", "0".to_string()));
-        if let Some(label) = &a11y.label {
-            node.attrs.push(("aria-label", label.clone()));
-        }
-        if let Some(hint) = &a11y.hint {
-            node.attrs.push(("title", hint.clone()));
-        }
-        if a11y.hidden {
-            node.attrs.push(("aria-hidden", "true".to_string()));
+        for (attr, value) in a11y.dom_attributes(Some(Role::Button)) {
+            if let Some(value) = value {
+                node.attrs.push((attr, value.to_string()));
+                if attr == "role" {
+                    node.attrs.push(("tabindex", "0".to_string()));
+                }
+            }
         }
         node.attrs.push((css::VIEW_MARKER_ATTR, String::new()));
         nref(node)
@@ -1281,6 +1278,38 @@ impl caps::WireBindingOps for SsrBackend {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The server's first paint names a checkable pressable's role and state,
+    /// as the hydrated element will. SSR hard-coded `role="button"`, so a
+    /// checkbox was announced as a button until the bundle ran.
+    #[test]
+    fn regression_ssr_pressable_writes_authored_role_and_checked_state() {
+        use runtime_shared::accessibility::AccessibilityTraits;
+        let attrs = |role, traits| {
+            let mut b = SsrBackend::new();
+            let node = <SsrBackend as caps::PressableOps>::create_pressable(
+                &mut b,
+                Rc::new(|| {}),
+                &AccessibilityProps { role, traits, ..Default::default() },
+            );
+            let attrs = node.borrow().attrs.clone();
+            attrs
+        };
+        let get = |attrs: &[(&'static str, String)], name: &str| {
+            attrs.iter().find(|(a, _)| *a == name).map(|(_, v)| v.clone())
+        };
+
+        let off = attrs(Some(Role::Checkbox), AccessibilityTraits::empty());
+        assert_eq!(get(&off, "role").as_deref(), Some("checkbox"));
+        assert_eq!(get(&off, "aria-checked").as_deref(), Some("false"));
+
+        let on = attrs(Some(Role::Checkbox), AccessibilityTraits::CHECKED);
+        assert_eq!(get(&on, "aria-checked").as_deref(), Some("true"));
+
+        let plain = attrs(None, AccessibilityTraits::empty());
+        assert_eq!(get(&plain, "role").as_deref(), Some("button"));
+        assert_eq!(get(&plain, "aria-checked"), None);
+    }
 
     /// REGRESSION: SSR's `Host::supports_splice` must be `false`. An
     /// anchored render is what the web hydration boot adopts (module

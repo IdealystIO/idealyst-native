@@ -244,6 +244,10 @@ pub struct Shared {
     pub mint_class: RefCell<Option<Rc<dyn Fn(&StyleRules) -> Option<String>>>>,
     /// Per-node scroll offsets served by `ScrollOps::node_scroll`.
     pub scroll_offsets: RefCell<BTreeMap<Node, (f32, f32)>>,
+    /// Each pressable's accessibility bag and inferred role: the one it was
+    /// created with, or the latest `update_accessibility`.
+    pub a11y: RefCell<BTreeMap<Node, (AccessibilityProps, Option<Role>)>>,
+    pub a11y_updates: Cell<usize>,
     /// Frames served by `IntrospectionOps::{frame,absolute_frame,device_frame}`.
     pub frames: RefCell<BTreeMap<Node, ViewportRect>>,
     /// Nodes hidden (or faded to nothing) — set by a test as a toolkit
@@ -346,6 +350,8 @@ impl Default for Shared {
             style_line: RefCell::new(None),
             mint_class: RefCell::new(None),
             scroll_offsets: RefCell::new(BTreeMap::new()),
+            a11y: RefCell::new(BTreeMap::new()),
+            a11y_updates: Cell::new(0),
             frames: RefCell::new(BTreeMap::new()),
             hidden: RefCell::new(std::collections::BTreeSet::new()),
             clips: RefCell::new(BTreeMap::new()),
@@ -841,9 +847,10 @@ impl caps::InputOps for HostMock {
 }
 
 impl caps::PressableOps for HostMock {
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Node {
+    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Node {
         self.s.press_handlers.borrow_mut().push(on_click.clone());
         let node = self.mint("pressable".into());
+        self.s.a11y.borrow_mut().insert(node, (a11y.clone(), None));
         self.s.press_by_node.borrow_mut().insert(node, on_click);
         node
     }
@@ -1608,9 +1615,11 @@ impl caps::A11yOps for HostMock {
     fn update_accessibility(
         &mut self,
         node: &Node,
-        _a11y: &AccessibilityProps,
-        _inferred_role: Option<Role>,
+        a11y: &AccessibilityProps,
+        inferred_role: Option<Role>,
     ) {
+        self.s.a11y.borrow_mut().insert(*node, (a11y.clone(), inferred_role));
+        self.s.a11y_updates.set(self.s.a11y_updates.get() + 1);
         self.s
             .rec_v("update_accessibility", format!("update_accessibility n{node}"));
     }
@@ -1873,6 +1882,22 @@ impl Harness {
     /// Drain the op log.
     pub fn take_log(&self) -> Vec<String> {
         std::mem::take(&mut *self.shared.log.borrow_mut())
+    }
+
+    /// The accessibility bag a pressable holds, by its a11y label: what
+    /// `create_pressable` got, or the latest `update_accessibility`.
+    pub fn a11y_by_label(&self, label: &str) -> Option<AccessibilityProps> {
+        self.shared
+            .a11y
+            .borrow()
+            .values()
+            .find(|(props, _)| props.label.as_deref() == Some(label))
+            .map(|(props, _)| props.clone())
+    }
+
+    /// How many `update_accessibility` calls reached the mock.
+    pub fn a11y_update_count(&self) -> usize {
+        self.shared.a11y_updates.get()
     }
 
     /// Copy the op log without draining.

@@ -50,7 +50,7 @@
 //! configured priority.
 
 use runtime_shared::accessibility::{
-    AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
+    AccessibilityProps, AccessibilityTraits, CheckedState, LiveRegionPriority, Role,
 };
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::JNIEnv;
@@ -378,7 +378,7 @@ fn clear_exception(env: &mut JNIEnv) {
 /// the host's resource table instead.
 fn compose_label(props: &AccessibilityProps, _role: Option<Role>) -> Option<String> {
     let base = props.label.clone();
-    let tail = state_tail(props.traits);
+    let tail = state_tail(props);
 
     match (base, tail) {
         (None, None) => None,
@@ -392,13 +392,14 @@ fn compose_label(props: &AccessibilityProps, _role: Option<Role>) -> Option<Stri
 /// first-class Android View setter. Kept terse — TalkBack reads the
 /// whole `contentDescription`, so verbose phrasing here would clog
 /// the announcement.
-fn state_tail(traits: AccessibilityTraits) -> Option<String> {
+fn state_tail(props: &AccessibilityProps) -> Option<String> {
+    let traits = props.traits;
     let mut parts: Vec<&'static str> = Vec::new();
-    // MIXED supersedes CHECKED (tri-state checkbox).
-    if traits.contains(AccessibilityTraits::MIXED) {
-        parts.push("mixed");
-    } else if traits.contains(AccessibilityTraits::CHECKED) {
-        parts.push("checked");
+    match props.checked_state() {
+        Some(CheckedState::Mixed) => parts.push("mixed"),
+        Some(CheckedState::Checked) => parts.push("checked"),
+        Some(CheckedState::Unchecked) => parts.push("not checked"),
+        None => {}
     }
     if traits.contains(AccessibilityTraits::EXPANDED) {
         parts.push("expanded");
@@ -458,20 +459,27 @@ mod tests {
 
     #[test]
     fn state_tail_empty_traits_is_none() {
-        let traits = AccessibilityTraits::default();
-        assert!(state_tail(traits).is_none());
+        assert!(state_tail(&AccessibilityProps::default()).is_none());
     }
 
     #[test]
     fn state_tail_checked_and_expanded() {
         let traits = AccessibilityTraits::CHECKED | AccessibilityTraits::EXPANDED;
-        assert_eq!(state_tail(traits).as_deref(), Some("checked, expanded"));
+        let props = AccessibilityProps { traits, ..Default::default() };
+        assert_eq!(state_tail(&props).as_deref(), Some("checked, expanded"));
     }
 
     #[test]
     fn state_tail_mixed_supersedes_checked() {
         let traits = AccessibilityTraits::MIXED | AccessibilityTraits::CHECKED;
-        assert_eq!(state_tail(traits).as_deref(), Some("mixed"));
+        let props = AccessibilityProps { traits, ..Default::default() };
+        assert_eq!(state_tail(&props).as_deref(), Some("mixed"));
+    }
+
+    #[test]
+    fn state_tail_says_not_checked_for_an_authored_checkable_role() {
+        let props = AccessibilityProps { role: Some(Role::Checkbox), ..Default::default() };
+        assert_eq!(state_tail(&props).as_deref(), Some("not checked"));
     }
 
     #[test]

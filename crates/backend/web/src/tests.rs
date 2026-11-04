@@ -2240,6 +2240,40 @@ fn web_touch_ignored_child_still_bubbles_to_ancestor() {
 /// A `Pressable` (idea-ui `Button` / `IconButton`) inside a view that carries
 /// `on_touch` — the "clickable table row with buttons in it" pattern — must
 /// swallow the press so the ancestor's `on_touch` tap does NOT also fire.
+/// A checkbox built on a pressable must say `aria-checked="false"` when it is
+/// off: that role requires the attribute, and a checkbox without it reads as
+/// unchecked forever in Playwright and to assistive tech whatever its value.
+#[wasm_bindgen_test]
+fn regression_web_checkable_pressable_writes_aria_checked() {
+    use runtime_shared::accessibility::{AccessibilityProps, AccessibilityTraits, Role};
+    use std::rc::Rc;
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let bag = |role, traits| AccessibilityProps { role, traits, ..Default::default() };
+    let checked_attr = |node: &web_glue::dom::Node| {
+        node.dyn_ref::<web_glue::dom::Element>().unwrap().get_attribute("aria-checked")
+    };
+    let inferred = Some(Role::Button);
+
+    let node = backend.create_pressable_impl(
+        Rc::new(|| {}),
+        &bag(Some(Role::Checkbox), AccessibilityTraits::empty()),
+    );
+    assert_eq!(checked_attr(&node).as_deref(), Some("false"));
+
+    backend.update_accessibility_impl(&node, &bag(Some(Role::Checkbox), AccessibilityTraits::CHECKED), inferred);
+    assert_eq!(checked_attr(&node).as_deref(), Some("true"));
+
+    backend.update_accessibility_impl(&node, &bag(Some(Role::Checkbox), AccessibilityTraits::MIXED), inferred);
+    assert_eq!(checked_attr(&node).as_deref(), Some("mixed"));
+
+    backend.update_accessibility_impl(&node, &bag(Some(Role::Checkbox), AccessibilityTraits::empty()), inferred);
+    assert_eq!(checked_attr(&node).as_deref(), Some("false"), "turning it off writes false, not nothing");
+
+    let plain = backend.create_pressable_impl(Rc::new(|| {}), &AccessibilityProps::default());
+    assert_eq!(checked_attr(&plain), None, "a button has no checked state");
+}
+
 /// A pressable activates through a native `click`, a different event channel
 /// from the pointer-based `on_touch` responder chain, so before the fix the
 /// button's `pointerdown` bubbled straight to the row and BOTH fired. The

@@ -14,19 +14,16 @@
 //! attributes directly off the DOM, so the web backend doesn't need
 //! a parallel semantics tree — `dump_accessibility_tree` stays `None`.
 
-use runtime_shared::accessibility::{
-    AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
-};
+use runtime_shared::accessibility::{AccessibilityProps, LiveRegionPriority, Role};
 use web_glue::JsCast;
 use web_glue::dom::{Element, Node};
 
-/// Apply / refresh every ARIA attribute on `node` from `props`.
+/// Apply / refresh every ARIA attribute on `node` from `props`, per the
+/// table in [`AccessibilityProps::dom_attributes`].
 ///
 /// `inferred_role` is the primitive's default role (see
-/// [`runtime_shared::accessibility::default_role`]). If
-/// `props.role.is_none()` and `inferred_role.is_some()`, the inferred
-/// role is written; if both are `None`, the `role` attribute is left
-/// absent. Author-supplied `props.role` always wins.
+/// [`runtime_shared::accessibility::default_role`]); an author-supplied
+/// `props.role` always wins.
 ///
 /// Idempotent: every attribute is either written or explicitly
 /// removed. Calling twice with the same `props` produces the same DOM
@@ -36,113 +33,15 @@ pub(crate) fn apply(node: &Node, props: &AccessibilityProps, inferred_role: Opti
         // Text nodes etc. — no attributes, nothing to do.
         return;
     };
-
-    // Role: explicit override wins; otherwise fall back to the
-    // primitive's default. Skip when both are None (don't emit
-    // `role=""`).
-    let resolved_role = props.role.or(inferred_role);
-    set_or_remove(elem, "role", resolved_role.map(role_to_aria));
-
-    // Label / hint / id.
-    set_or_remove(elem, "aria-label", props.label.as_deref());
-    // `aria-describedby` would require an external description node
-    // we'd have to manage. For the simpler case of a free-form hint
-    // string, `title` is the standard fallback that screen readers
-    // also announce (and tooltip-on-hover for sighted users is a free
-    // benefit). When we grow proper described-by support — pointing
-    // at another node's id — this becomes a slot for that node ref.
-    set_or_remove(elem, "title", props.hint.as_deref());
-    set_or_remove(elem, "id", props.identifier.as_deref());
-
-    // `aria-hidden` / per-trait state flags.
-    set_or_remove(elem, "aria-hidden", if props.hidden { Some("true") } else { None });
-    apply_traits(elem, props.traits);
-
-    // Live region: written as `aria-live="polite"|"assertive"` on the
-    // element itself. For elements that need their own live-region
-    // wrapper (e.g. a Status banner where the parent View should be
-    // the live region), authors set `live_region` on the right node.
-    set_or_remove(
-        elem,
-        "aria-live",
-        props.live_region.map(|p| live_region_attr(p)),
-    );
-}
-
-fn role_to_aria(role: Role) -> &'static str {
-    // ARIA 1.2 role strings. See WAI-ARIA. Each variant here matches
-    // the table in `docs/accessibility-design.md` §1.
-    match role {
-        // Structural
-        Role::Button => "button",
-        Role::Link => "link",
-        Role::Image => "img",
-        Role::Text => "", // ARIA has no first-class "text" role; leave empty so set_or_remove drops it
-        Role::Header => "heading",
-        Role::List => "list",
-        Role::ListItem => "listitem",
-        Role::Group => "group",
-        Role::Separator => "separator",
-        // Input
-        Role::TextField => "textbox",
-        Role::TextArea => "textbox",
-        Role::Switch => "switch",
-        Role::Slider => "slider",
-        Role::Checkbox => "checkbox",
-        Role::RadioButton => "radio",
-        Role::RadioGroup => "radiogroup",
-        Role::ComboBox => "combobox",
-        Role::SearchField => "searchbox",
-        // Disclosure / navigation
-        Role::Tab => "tab",
-        Role::TabList => "tablist",
-        Role::TabPanel => "tabpanel",
-        Role::NavigationLink => "link",
-        Role::MenuItem => "menuitem",
-        Role::Menu => "menu",
-        Role::MenuBar => "menubar",
-        Role::Toolbar => "toolbar",
-        // Feedback
-        Role::Alert => "alert",
-        Role::Status => "status",
-        Role::ProgressBar => "progressbar",
-        Role::Spinner => "progressbar",
-        // Container / overlay
-        Role::Dialog => "dialog",
-        Role::AlertDialog => "alertdialog",
-        Role::Drawer => "dialog",
-        Role::Popover => "dialog",
-        Role::Tooltip => "tooltip",
-        Role::Region => "region",
-        // `Role` is `#[non_exhaustive]` — future roles default to no
-        // ARIA mapping until we choose one explicitly. Returning ""
-        // (which set_or_remove drops) is safer than guessing.
-        _ => "",
-    }
-}
-
-#[cfg(test)]
-mod role_tests {
-    //! Pure ARIA role-mapping coverage. Mirrors the Android/macOS a11y
-    //! role tests — guards a `Role` variant silently losing its ARIA
-    //! mapping. `role_to_aria` touches no `web_sys`, so it runs on host.
-    use super::*;
-
-    #[test]
-    fn role_to_aria_maps_load_bearing_roles() {
-        assert_eq!(role_to_aria(Role::Button), "button");
-        assert_eq!(role_to_aria(Role::Link), "link");
-        assert_eq!(role_to_aria(Role::Switch), "switch");
-        assert_eq!(role_to_aria(Role::Checkbox), "checkbox");
-        assert_eq!(role_to_aria(Role::TabList), "tablist");
-        assert_eq!(role_to_aria(Role::Dialog), "dialog");
-        assert_eq!(role_to_aria(Role::AlertDialog), "alertdialog");
-        assert_eq!(role_to_aria(Role::ProgressBar), "progressbar");
-        // Spinner is an indeterminate progressbar in ARIA.
-        assert_eq!(role_to_aria(Role::Spinner), "progressbar");
-        // `Text` has no first-class ARIA role → empty (dropped by
-        // `set_or_remove`).
-        assert_eq!(role_to_aria(Role::Text), "");
+    for (attr, value) in props.dom_attributes(inferred_role) {
+        match value {
+            Some(v) => {
+                let _ = elem.set_attribute(attr, v);
+            }
+            None => {
+                let _ = elem.remove_attribute(attr);
+            }
+        }
     }
 }
 
@@ -150,71 +49,6 @@ fn live_region_attr(p: LiveRegionPriority) -> &'static str {
     match p {
         LiveRegionPriority::Polite => "polite",
         LiveRegionPriority::Assertive => "assertive",
-    }
-}
-
-fn apply_traits(elem: &Element, traits: AccessibilityTraits) {
-    // Each flag maps to one ARIA attribute. `set_or_remove` always
-    // gets a `Some(_)` (the flag's bool serialized as "true"/"false")
-    // OR we explicitly `remove_attribute` when the flag has no
-    // meaningful "false" representation (e.g. `aria-busy="false"` is
-    // legal but noisy; we'd rather not have the attribute at all when
-    // the flag is off).
-    bool_or_remove(elem, "aria-selected", traits.contains(AccessibilityTraits::SELECTED));
-    bool_or_remove(elem, "aria-disabled", traits.contains(AccessibilityTraits::DISABLED));
-    // aria-expanded is tri-state (true/false/undefined). We use
-    // EXPANDED for "true" and COLLAPSED for "false" so authors can
-    // disambiguate "is currently collapsed" from "has no expand state."
-    if traits.contains(AccessibilityTraits::EXPANDED) {
-        let _ = elem.set_attribute("aria-expanded", "true");
-    } else if traits.contains(AccessibilityTraits::COLLAPSED) {
-        let _ = elem.set_attribute("aria-expanded", "false");
-    } else {
-        let _ = elem.remove_attribute("aria-expanded");
-    }
-    // aria-checked: similar tri-state w/ "mixed" support.
-    if traits.contains(AccessibilityTraits::MIXED) {
-        let _ = elem.set_attribute("aria-checked", "mixed");
-    } else if traits.contains(AccessibilityTraits::CHECKED) {
-        let _ = elem.set_attribute("aria-checked", "true");
-    } else {
-        let _ = elem.remove_attribute("aria-checked");
-    }
-    bool_or_remove(elem, "aria-busy", traits.contains(AccessibilityTraits::BUSY));
-    bool_or_remove(elem, "aria-required", traits.contains(AccessibilityTraits::REQUIRED));
-    bool_or_remove(elem, "aria-readonly", traits.contains(AccessibilityTraits::READONLY));
-    bool_or_remove(elem, "aria-invalid", traits.contains(AccessibilityTraits::INVALID));
-    // UPDATES_FREQUENTLY → aria-live=polite (only if the author hasn't
-    // already set a live_region). We don't override an explicit
-    // live_region here — that's set by the caller via `props.live_region`.
-    // This branch only kicks in when the trait flag is on AND no
-    // explicit live_region was set. To avoid overwriting, we only
-    // emit when there's no existing aria-live attribute.
-    if traits.contains(AccessibilityTraits::UPDATES_FREQUENTLY)
-        && !elem.has_attribute("aria-live")
-    {
-        let _ = elem.set_attribute("aria-live", "polite");
-    }
-}
-
-fn set_or_remove(elem: &Element, attr: &str, value: Option<&str>) {
-    match value {
-        // `Some("")` from role mapping means "this role has no ARIA
-        // equivalent" — clear the attribute.
-        Some("") | None => {
-            let _ = elem.remove_attribute(attr);
-        }
-        Some(v) => {
-            let _ = elem.set_attribute(attr, v);
-        }
-    }
-}
-
-fn bool_or_remove(elem: &Element, attr: &str, on: bool) {
-    if on {
-        let _ = elem.set_attribute(attr, "true");
-    } else {
-        let _ = elem.remove_attribute(attr);
     }
 }
 

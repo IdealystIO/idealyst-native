@@ -1311,6 +1311,47 @@ mod text_keyboard {
     }
 }
 
+/// `pressable` `a11y_state` crosses (CODEC_VERSION 10): the host's binding
+/// re-reads the bundle's getter, so a crossed checkbox reports its state live.
+mod pressable_a11y_state {
+    use super::*;
+    use runtime_shared::accessibility::{AccessibilityProps, AccessibilityTraits, Role};
+
+    fn script(remote: bool) -> Vec<bool> {
+        let h = Harness::new();
+        let (tree, value) = h.world.enter(|| {
+            let value = signal(true);
+            let tree = pressable(|| {})
+                .a11y(AccessibilityProps {
+                    label: Some("box".into()),
+                    role: Some(Role::Checkbox),
+                    ..Default::default()
+                })
+                .a11y_state(move || AccessibilityTraits::checked_if(value.get()))
+                .build();
+            (tree, value)
+        });
+        let tree = if remote { cross(tree) } else { tree };
+        let realized = h.mount(tree);
+        h.flush();
+        let read = || {
+            h.a11y_by_label("box").expect("holds its bag").traits.contains(AccessibilityTraits::CHECKED)
+        };
+        let first = read();
+        h.world.enter(|| value.set(false));
+        h.flush();
+        let second = read();
+        drop(realized);
+        vec![first, second]
+    }
+
+    #[test]
+    fn pressable_a11y_state_follows_its_signal_natively_and_crossed() {
+        assert_eq!(script(false), vec![true, false]);
+        assert_eq!(script(true), script(false), "the crossed pressable reports like the native one");
+    }
+}
+
 /// `pressable` takes `on_hover` like a view (CODEC_VERSION 6 carries it
 /// across the wire): the handler reaches `install_hover_handler` on the
 /// pressable's own node, and pointer enter/leave reach the author, so a

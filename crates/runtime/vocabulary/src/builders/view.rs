@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::accessibility::{AccessibilityProps, AccessibilityTraits};
 use runtime_shared::primitives::scroll_view::{ScrollAxis, ScrollViewHandle};
 use runtime_shared::{
     FileDropHandler, PressableHandle, SafeAreaSides, TouchHandler, ViewHandle,
@@ -161,6 +161,7 @@ pub fn pressable(on_press: impl Fn() + 'static) -> PressableBuilder {
             on_hover: None,
             on_focus: None,
             disabled: None,
+            a11y_state: None,
             preserves_focus: false,
             style: None,
             a11y: AccessibilityProps::default(),
@@ -193,6 +194,13 @@ impl PressableBuilder {
 
     pub fn disabled(mut self, disabled: impl IntoValue<bool>) -> Self {
         self.prim.disabled = Some(disabled.into_value());
+        self
+    }
+
+    /// Live accessibility state, ORed onto the static `a11y` traits. See
+    /// [`PressablePrim::a11y_state`].
+    pub fn a11y_state(mut self, state: impl IntoValue<AccessibilityTraits>) -> Self {
+        self.prim.a11y_state = Some(state.into_value());
         self
     }
 

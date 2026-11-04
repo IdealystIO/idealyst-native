@@ -25,7 +25,7 @@
 use accesskit::{Live, Node, NodeId, Rect, Tree, TreeUpdate};
 use runtime_shared::accessibility::{
     AccessibilityNode, AccessibilityProps, AccessibilityRect, AccessibilityTraits,
-    AccessibilityTree, LiveRegionPriority, Role,
+    AccessibilityTree, CheckedState, LiveRegionPriority, Role,
 };
 
 /// Map a framework `Role` to AccessKit's `Role`. Every variant of the
@@ -154,11 +154,11 @@ fn apply_props(node: &mut Node, props: &AccessibilityProps) {
     if t.contains(AccessibilityTraits::COLLAPSED) {
         node.set_expanded(false);
     }
-    if t.contains(AccessibilityTraits::CHECKED) {
-        node.set_toggled(accesskit::Toggled::True);
-    }
-    if t.contains(AccessibilityTraits::MIXED) {
-        node.set_toggled(accesskit::Toggled::Mixed);
+    match props.checked_state() {
+        Some(CheckedState::Unchecked) => node.set_toggled(accesskit::Toggled::False),
+        Some(CheckedState::Checked) => node.set_toggled(accesskit::Toggled::True),
+        Some(CheckedState::Mixed) => node.set_toggled(accesskit::Toggled::Mixed),
+        None => {}
     }
     if t.contains(AccessibilityTraits::BUSY) {
         node.set_busy();
@@ -423,6 +423,22 @@ mod tests {
         assert_eq!(ak.toggled(), Some(accesskit::Toggled::True));
         assert!(ak.is_required());
         assert!(ak.is_disabled());
+    }
+
+    /// An authored checkbox with no `CHECKED` trait is toggled off, rather than
+    /// having no toggle state, which AT reads as "not a checkbox state at all".
+    #[test]
+    fn regression_unchecked_checkbox_reports_toggled_false() {
+        let n = node(
+            6,
+            Role::Checkbox,
+            rect(0.0, 0.0, 20.0, 20.0),
+            AccessibilityProps { role: Some(Role::Checkbox), ..Default::default() },
+            vec![],
+        );
+        let update = build_tree(&AccessibilityTree { root: n });
+        let (_, ak) = update.nodes.iter().find(|(id, _)| *id == NodeId(6)).unwrap();
+        assert_eq!(ak.toggled(), Some(accesskit::Toggled::False));
     }
 
     /// `hidden` and `live_region` map onto AccessKit's `hidden` flag +

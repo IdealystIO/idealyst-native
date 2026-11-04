@@ -1405,7 +1405,16 @@ impl caps::AssetOps for LinuxBackend {
 // A11y + animation + introspection
 // ---------------------------------------------------------------------------
 
-impl caps::A11yOps for LinuxBackend {}
+impl caps::A11yOps for LinuxBackend {
+    fn update_accessibility(
+        &mut self,
+        node: &Self::Node,
+        a11y: &AccessibilityProps,
+        _inferred_role: Option<runtime_shared::accessibility::Role>,
+    ) {
+        crate::apply_pressable_a11y(&node.widget, a11y);
+    }
+}
 
 impl caps::AnimationOps for LinuxBackend {
     // The trait defaults are no-ops: without these overrides every

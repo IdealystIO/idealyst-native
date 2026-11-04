@@ -192,6 +192,74 @@ impl std::fmt::Debug for AccessibilityAction {
     }
 }
 
+impl AccessibilityTraits {
+    /// [`CHECKED`](Self::CHECKED) when `on`, else no traits: the usual body
+    /// of a pressable's `a11y_state` binding for a two-state control.
+    pub fn checked_if(on: bool) -> Self {
+        if on {
+            Self::CHECKED
+        } else {
+            Self::empty()
+        }
+    }
+}
+
+impl Role {
+    /// A role whose element always has a checked state, so "no `CHECKED`
+    /// trait" means "unchecked" rather than "not applicable".
+    pub fn is_checkable(self) -> bool {
+        matches!(self, Role::Checkbox | Role::RadioButton | Role::Switch)
+    }
+
+    /// The WAI-ARIA 1.2 role string; `None` for a role with no ARIA
+    /// equivalent. The web and SSR backends both write this, so a server
+    /// render and its hydrated element agree.
+    pub fn aria(self) -> Option<&'static str> {
+        Some(match self {
+            Role::Button => "button",
+            Role::Link | Role::NavigationLink => "link",
+            Role::Image => "img",
+            Role::Header => "heading",
+            Role::List => "list",
+            Role::ListItem => "listitem",
+            Role::Group => "group",
+            Role::Separator => "separator",
+            Role::TextField | Role::TextArea => "textbox",
+            Role::Switch => "switch",
+            Role::Slider => "slider",
+            Role::Checkbox => "checkbox",
+            Role::RadioButton => "radio",
+            Role::RadioGroup => "radiogroup",
+            Role::ComboBox => "combobox",
+            Role::SearchField => "searchbox",
+            Role::Tab => "tab",
+            Role::TabList => "tablist",
+            Role::TabPanel => "tabpanel",
+            Role::MenuItem => "menuitem",
+            Role::Menu => "menu",
+            Role::MenuBar => "menubar",
+            Role::Toolbar => "toolbar",
+            Role::Alert => "alert",
+            Role::Status => "status",
+            Role::ProgressBar | Role::Spinner => "progressbar",
+            Role::Dialog | Role::Drawer | Role::Popover => "dialog",
+            Role::AlertDialog => "alertdialog",
+            Role::Tooltip => "tooltip",
+            Role::Region => "region",
+            _ => return None,
+        })
+    }
+}
+
+/// What assistive tech is told about a checkable element.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckedState {
+    Unchecked,
+    Checked,
+    /// Indeterminate: a tri-state checkbox over a partly selected group.
+    Mixed,
+}
+
 // ---------------------------------------------------------------------------
 // AccessibilityProps — the shape passed to every `create_*`.
 // ---------------------------------------------------------------------------
@@ -282,6 +350,82 @@ impl AccessibilityProps {
             && self.live_region.is_none()
             && self.actions.is_empty()
             && self.identifier.is_none()
+    }
+
+    /// The checked state every backend reports. `MIXED` wins over `CHECKED`.
+    ///
+    /// With neither trait the answer depends on [`role`](Self::role), the
+    /// AUTHORED role and not a primitive's inferred one: a pressable that
+    /// says it is a checkbox is unchecked, while a native toggle (inferred
+    /// `Switch`) reports its own state, and a label written here would go
+    /// stale when the user flips it.
+    pub fn checked_state(&self) -> Option<CheckedState> {
+        if self.traits.contains(AccessibilityTraits::MIXED) {
+            Some(CheckedState::Mixed)
+        } else if self.traits.contains(AccessibilityTraits::CHECKED) {
+            Some(CheckedState::Checked)
+        } else if self.role.is_some_and(Role::is_checkable) {
+            Some(CheckedState::Unchecked)
+        } else {
+            None
+        }
+    }
+
+    /// Every DOM attribute this bag controls, each with its value or `None`
+    /// for "absent". The web backend writes or removes each one (so a
+    /// reactive update can clear a stale value); the SSR backend prints the
+    /// present ones. One table, so a hydrated element keeps what the server
+    /// sent.
+    ///
+    /// `inferred_role` is the primitive's default, used when the author set
+    /// no role.
+    pub fn dom_attributes(
+        &self,
+        inferred_role: Option<Role>,
+    ) -> [(&'static str, Option<&str>); 14] {
+        let flag = |trait_: AccessibilityTraits| self.traits.contains(trait_).then_some("true");
+        let t = self.traits;
+        [
+            ("role", self.role.or(inferred_role).and_then(Role::aria)),
+            ("aria-label", self.label.as_deref()),
+            // A free-form hint has no node for `aria-describedby` to point
+            // at. Screen readers announce `title` as the description.
+            ("title", self.hint.as_deref()),
+            ("id", self.identifier.as_deref()),
+            ("aria-hidden", self.hidden.then_some("true")),
+            ("aria-selected", flag(AccessibilityTraits::SELECTED)),
+            ("aria-disabled", flag(AccessibilityTraits::DISABLED)),
+            (
+                "aria-expanded",
+                if t.contains(AccessibilityTraits::EXPANDED) {
+                    Some("true")
+                } else if t.contains(AccessibilityTraits::COLLAPSED) {
+                    Some("false")
+                } else {
+                    None
+                },
+            ),
+            (
+                "aria-checked",
+                self.checked_state().map(|state| match state {
+                    CheckedState::Unchecked => "false",
+                    CheckedState::Checked => "true",
+                    CheckedState::Mixed => "mixed",
+                }),
+            ),
+            ("aria-busy", flag(AccessibilityTraits::BUSY)),
+            ("aria-required", flag(AccessibilityTraits::REQUIRED)),
+            ("aria-readonly", flag(AccessibilityTraits::READONLY)),
+            ("aria-invalid", flag(AccessibilityTraits::INVALID)),
+            (
+                "aria-live",
+                match self.live_region {
+                    Some(LiveRegionPriority::Polite) => Some("polite"),
+                    Some(LiveRegionPriority::Assertive) => Some("assertive"),
+                    None => t.contains(AccessibilityTraits::UPDATES_FREQUENTLY).then_some("polite"),
+                },
+            ),
+        ]
     }
 }
 
@@ -437,6 +581,71 @@ pub fn default_role(kind: PrimitiveKind) -> Option<Role> {
 
 #[cfg(test)]
 mod tests {
+    fn attr(props: &AccessibilityProps, name: &str) -> Option<String> {
+        props
+            .dom_attributes(Some(Role::Button))
+            .iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name} is in the table"))
+            .1
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn aria_checked_says_false_only_for_an_authored_checkable_role() {
+        let with = |role, traits| AccessibilityProps { role, traits, ..Default::default() };
+        let checkbox = Some(Role::Checkbox);
+        let none = AccessibilityTraits::empty();
+        for role in [Role::Checkbox, Role::RadioButton, Role::Switch] {
+            assert_eq!(attr(&with(Some(role), none), "aria-checked").as_deref(), Some("false"));
+        }
+        assert_eq!(attr(&with(checkbox, AccessibilityTraits::CHECKED), "aria-checked").as_deref(), Some("true"));
+        assert_eq!(
+            attr(&with(checkbox, AccessibilityTraits::CHECKED | AccessibilityTraits::MIXED), "aria-checked").as_deref(),
+            Some("mixed"),
+            "MIXED wins over CHECKED"
+        );
+        assert_eq!(attr(&with(None, none), "aria-checked"), None, "a plain button has no checked state");
+        assert_eq!(attr(&with(Some(Role::Tab), none), "aria-checked"), None);
+    }
+
+    #[test]
+    fn an_inferred_switch_leaves_the_checked_state_to_the_native_control() {
+        let props = AccessibilityProps::default();
+        let table = props.dom_attributes(Some(Role::Switch));
+        assert!(table.iter().any(|(n, v)| *n == "role" && *v == Some("switch")));
+        assert!(table.iter().any(|(n, v)| *n == "aria-checked" && v.is_none()));
+    }
+
+    #[test]
+    fn updates_frequently_is_a_polite_live_region_unless_one_was_authored() {
+        let frequent = AccessibilityProps {
+            traits: AccessibilityTraits::UPDATES_FREQUENTLY,
+            ..Default::default()
+        };
+        assert_eq!(attr(&frequent, "aria-live").as_deref(), Some("polite"));
+        let authored = AccessibilityProps {
+            live_region: Some(LiveRegionPriority::Assertive),
+            ..frequent
+        };
+        assert_eq!(attr(&authored, "aria-live").as_deref(), Some("assertive"));
+    }
+
+    #[test]
+    fn aria_maps_load_bearing_roles() {
+        assert_eq!(Role::Button.aria(), Some("button"));
+        assert_eq!(Role::Link.aria(), Some("link"));
+        assert_eq!(Role::Switch.aria(), Some("switch"));
+        assert_eq!(Role::Checkbox.aria(), Some("checkbox"));
+        assert_eq!(Role::RadioButton.aria(), Some("radio"));
+        assert_eq!(Role::TabList.aria(), Some("tablist"));
+        assert_eq!(Role::Dialog.aria(), Some("dialog"));
+        assert_eq!(Role::AlertDialog.aria(), Some("alertdialog"));
+        // ARIA has no spinner: it is an indeterminate progressbar.
+        assert_eq!(Role::Spinner.aria(), Some("progressbar"));
+        assert_eq!(Role::Text.aria(), None, "ARIA has no first-class text role");
+    }
+
     use super::*;
 
     #[test]

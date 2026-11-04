@@ -5,7 +5,10 @@ use std::rc::Rc;
 
 use runtime_scene::{Element, MountCx};
 
-use crate::caps::{InputOps, IntrospectionOps, PressableOps, SafeAreaOps, ScrollOps, ViewOps};
+use runtime_shared::accessibility::{default_role, AccessibilityTraits, PrimitiveKind};
+use runtime_world::{effect, untrack, Value};
+
+use crate::caps::{A11yOps, InputOps, IntrospectionOps, PressableOps, SafeAreaOps, ScrollOps, ViewOps};
 use crate::prims::{PressablePrim, ScrollViewPrim, ViewPrim};
 use crate::style_attach::{attach_style, StyleServices};
 
@@ -144,20 +147,37 @@ pub(crate) fn focus_transitions(
 /// Mount a `pressable`.
 ///
 /// Sequence: (press-block wrap) → `create_pressable` → children →
-/// attach_style → ref-fill → disabled binding → `mark_preserves_focus`.
+/// attach_style → ref-fill → disabled binding → a11y-state binding →
+/// `mark_preserves_focus`.
 ///
 /// The press-block wrap is the uniform-disable mechanism: a
 /// bare pressable is not a native form control, so `set_disabled` alone
 /// can't make it inert — the shared flag blocks the callback across
 /// mouse/keyboard/programmatic activation on every backend.
+///
+/// The a11y state's first value goes in the `create_pressable` bag, so a
+/// backend that only reads the bag at creation (SSR) still prints it, and
+/// later values go through `A11yOps::update_accessibility`.
 pub fn mount_pressable<H>(
     cx: &mut MountCx<'_, H>,
     prim: PressablePrim,
     children: Vec<Element>,
 ) -> H::Node
 where
-    H: PressableOps + InputOps + StyleServices + IntrospectionOps,
+    H: PressableOps + InputOps + StyleServices + IntrospectionOps + A11yOps,
 {
+    let mut a11y = prim.a11y;
+    let base_traits = a11y.traits;
+    let a11y_state = prim.a11y_state;
+    a11y.traits = base_traits
+        | match &a11y_state {
+            None => AccessibilityTraits::empty(),
+            Some(Value::Const(state)) => *state,
+            // Untracked: the binding below is what subscribes.
+            Some(Value::Dyn(state)) => untrack(state),
+        };
+    let shown_traits = Rc::new(Cell::new(a11y.traits));
+
     let (on_press, press_block): (Rc<dyn Fn()>, Option<Rc<Cell<bool>>>) = if prim.disabled.is_some()
     {
         let flag = Rc::new(Cell::new(false));
@@ -186,10 +206,11 @@ where
     // as the view refuses a user.
     #[cfg(feature = "robot")]
     let robot_click = on_press.clone();
-    let mut node = backend.borrow_mut().create_pressable(on_press, &prim.a11y);
+    let mut node = backend.borrow_mut().create_pressable(on_press, &a11y);
     #[cfg(feature = "robot")]
     let _robot = {
         let blocked = press_block.clone();
+        let (shown, robot_a11y) = (shown_traits.clone(), a11y.clone());
         crate::robot::register_mount(
             &backend,
             &node,
@@ -198,12 +219,21 @@ where
             // An icon-only button has no text of its own: its a11y label
             // is the name VoiceOver/TalkBack read, and so the one a robot
             // query (`label = …`) finds it by.
-            prim.a11y.label.clone(),
+            a11y.label.clone(),
             None,
             crate::robot::MountActions {
                 click: Some(robot_click),
                 state: Some(Rc::new(move || crate::robot::ElementState {
                     disabled: Some(blocked.as_ref().is_some_and(|b| b.get())),
+                    // What a screen reader is told, read back: mixed is not
+                    // checked, as in Playwright's `toBeChecked`.
+                    checked: runtime_shared::accessibility::AccessibilityProps {
+                        role: robot_a11y.role,
+                        traits: shown.get(),
+                        ..Default::default()
+                    }
+                    .checked_state()
+                    .map(|state| state == runtime_shared::accessibility::CheckedState::Checked),
                     ..Default::default()
                 })),
                 ..Default::default()
@@ -246,6 +276,17 @@ where
             b.borrow_mut().set_disabled(&n, d);
             if let Some(setter) = state_setter.as_ref() {
                 setter(runtime_shared::StateBits::DISABLED, d);
+            }
+        });
+    }
+    if let Some(Value::Dyn(state)) = a11y_state {
+        let (b, n) = (backend.clone(), node.clone());
+        let _ = effect(move || {
+            let next = base_traits | state();
+            if shown_traits.replace(next) != next {
+                a11y.traits = next;
+                b.borrow_mut()
+                    .update_accessibility(&n, &a11y, default_role(PrimitiveKind::Pressable));
             }
         });
     }

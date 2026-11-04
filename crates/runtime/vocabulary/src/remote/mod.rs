@@ -86,7 +86,8 @@ pub mod wasm;
 ///   as a getter). `&'static str`, `ImageSource` and `KeyboardKind` cross
 ///   as props and plain data: a field of one of those types, which a
 ///   bundle used to send as nothing, now carries its value.
-pub const CODEC_VERSION: u32 = 9;
+/// - 10: [`Node::Pressable`] carries `a11y_state`.
+pub const CODEC_VERSION: u32 = 10;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.
@@ -149,6 +150,9 @@ pub enum Node {
         /// Takes a `bool` (CODEC_VERSION 8).
         on_focus: Option<Cb>,
         disabled: Option<Val<bool>>,
+        /// [`AccessibilityTraits`](runtime_shared::accessibility::AccessibilityTraits)
+        /// bits (CODEC_VERSION 10).
+        a11y_state: Option<Val<u16>>,
         preserves_focus: bool,
         children: Vec<Node>,
     },

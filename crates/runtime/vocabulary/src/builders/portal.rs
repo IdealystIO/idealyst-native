@@ -500,6 +500,7 @@ fn backdrop_layer(backdrop: BackdropMode, backdrop_style: Option<StyleProp>, on_
             on_hover: None,
             on_focus: None,
             disabled: None,
+            a11y_state: None,
             preserves_focus: false,
             style: Some(StyleProp::Static(Rc::new(fill))),
             a11y: AccessibilityProps::default(),

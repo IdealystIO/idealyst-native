@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::accessibility::{AccessibilityProps, AccessibilityTraits};
 use runtime_shared::primitives::scroll_view::{ScrollAxis, ScrollViewHandle};
 use runtime_shared::{
     FileDropHandler, FocusWithinHandler, HoverHandler, PressableHandle, SafeAreaSides, TouchHandler, ViewHandle,
@@ -57,6 +57,11 @@ pub struct PressablePrim {
     /// or a descendant, as on a view.
     pub on_focus: Option<FocusWithinHandler>,
     pub disabled: Option<Value<bool>>,
+    /// Live accessibility state (checked, expanded, selected, …), ORed onto
+    /// `a11y.traits` and re-sent through `A11yOps::update_accessibility` when
+    /// it changes. The node stays put, so keyboard focus survives; rebuilding
+    /// the element to change a trait would drop it.
+    pub a11y_state: Option<Value<AccessibilityTraits>>,
     pub preserves_focus: bool,
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,

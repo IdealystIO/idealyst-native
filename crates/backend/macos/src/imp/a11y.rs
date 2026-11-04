@@ -63,7 +63,7 @@
 //!   semantics.
 
 use runtime_shared::accessibility::{
-    AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
+    AccessibilityProps, AccessibilityTraits, CheckedState, LiveRegionPriority, Role,
 };
 use objc2::msg_send;
 use objc2_app_kit::NSView;
@@ -165,7 +165,7 @@ pub(crate) fn apply(node: &MacosNode, props: &AccessibilityProps, inferred_role:
         let _: () = unsafe { msg_send![view, setAccessibilityExpanded: expanded] };
     }
 
-    let value = derive_accessibility_value(props.traits);
+    let value = derive_accessibility_value(props);
     set_string_or_clear(view, sel_set_accessibility_value(), value);
 }
 
@@ -286,17 +286,15 @@ fn role_to_ns_accessibility_subrole(role: Role) -> Option<&'static NSString> {
 /// string in addition means assistive tech that doesn't surface the
 /// boolean attribute (older AT, scripts reading the value attribute)
 /// still gets the state announcement.
-fn derive_accessibility_value(traits: AccessibilityTraits) -> Option<&'static str> {
-    if traits.contains(AccessibilityTraits::MIXED) {
-        Some("mixed")
-    } else if traits.contains(AccessibilityTraits::CHECKED) {
-        Some("1")
-    } else if traits.contains(AccessibilityTraits::EXPANDED) {
-        Some("expanded")
-    } else if traits.contains(AccessibilityTraits::COLLAPSED) {
-        Some("collapsed")
-    } else {
-        None
+fn derive_accessibility_value(props: &AccessibilityProps) -> Option<&'static str> {
+    let traits = props.traits;
+    match props.checked_state() {
+        Some(CheckedState::Mixed) => Some("mixed"),
+        Some(CheckedState::Checked) => Some("1"),
+        Some(CheckedState::Unchecked) => Some("0"),
+        None if traits.contains(AccessibilityTraits::EXPANDED) => Some("expanded"),
+        None if traits.contains(AccessibilityTraits::COLLAPSED) => Some("collapsed"),
+        None => None,
     }
 }
 
@@ -517,24 +515,34 @@ mod tests {
     #[test]
     fn accessibility_value_reflects_state_traits() {
         assert_eq!(
-            derive_accessibility_value(AccessibilityTraits::CHECKED),
+            value_of(AccessibilityTraits::CHECKED),
             Some("1")
         );
         assert_eq!(
-            derive_accessibility_value(AccessibilityTraits::EXPANDED),
+            value_of(AccessibilityTraits::EXPANDED),
             Some("expanded")
         );
         assert_eq!(
-            derive_accessibility_value(AccessibilityTraits::COLLAPSED),
+            value_of(AccessibilityTraits::COLLAPSED),
             Some("collapsed")
         );
-        assert_eq!(derive_accessibility_value(AccessibilityTraits::empty()), None);
+        assert_eq!(value_of(AccessibilityTraits::empty()), None);
         // MIXED wins over CHECKED (the precedence in the helper).
         assert_eq!(
-            derive_accessibility_value(
-                AccessibilityTraits::MIXED | AccessibilityTraits::CHECKED
-            ),
+            value_of(AccessibilityTraits::MIXED | AccessibilityTraits::CHECKED),
             Some("mixed")
-        );
+        )
+    }
+
+    #[test]
+    fn accessibility_value_says_unchecked_for_an_authored_checkable_role() {
+        let unchecked = |role| AccessibilityProps { role: Some(role), ..Default::default() };
+        assert_eq!(derive_accessibility_value(&unchecked(Role::Checkbox)), Some("0"));
+        assert_eq!(derive_accessibility_value(&unchecked(Role::RadioButton)), Some("0"));
+        assert_eq!(derive_accessibility_value(&unchecked(Role::Button)), None);
+    }
+
+    fn value_of(traits: AccessibilityTraits) -> Option<&'static str> {
+        derive_accessibility_value(&AccessibilityProps { traits, ..Default::default() })
     }
 }

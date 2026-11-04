@@ -147,6 +147,26 @@ let archive = AccessibilityAction {
 Every primitive exposes the same a11y surface — both as builder methods
 on the value a constructor returns and as attributes inside `ui!` / `jsx!`.
 
+### Live state on a pressable
+
+The prop bag is read when a node is created. A control whose state changes
+while mounted binds it with `a11y_state`, a closure that returns the current
+`AccessibilityTraits`. They are ORed onto `a11y_traits` and reach the backend
+through `A11yOps::update_accessibility`, on the same node, so keyboard focus
+stays where it is:
+
+```rust
+pressable(vec![glyph], toggle)
+    .a11y_role(Role::Checkbox)
+    .a11y_state(move || AccessibilityTraits::checked_if(value.get()))
+```
+
+With an authored `Checkbox`, `RadioButton` or `Switch` role, no `CHECKED` trait
+is reported as unchecked (`aria-checked="false"` on the web, value `0` on Apple
+platforms, "not checked" on Android, `Toggled::False` in AccessKit, `false` in
+GTK); `MIXED` is indeterminate. Windows has no accessibility implementation.
+The robot's `state.checked` reports the same answer.
+
 ### Granular setters — the common case
 
 Each maps to one `AccessibilityProps` field. As `ui!` attributes (the
@@ -159,6 +179,7 @@ named-prop form) and as builder methods, the names are identical:
 | `a11y_role` | `role` | `Role` |
 | `a11y_hidden` | `hidden` | `bool` |
 | `a11y_traits` | `traits` | `AccessibilityTraits` |
+| `a11y_state` (pressable only) | ORed onto `traits`, live | `impl IntoValue<AccessibilityTraits>` |
 | `live_region` | `live_region` | `LiveRegionPriority` |
 
 ```rust

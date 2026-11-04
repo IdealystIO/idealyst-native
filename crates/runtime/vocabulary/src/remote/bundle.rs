@@ -457,6 +457,12 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             on_hover: p.on_hover.map(|f| handler(move |h: &bool| f(*h))),
             on_focus: p.on_focus.map(|f| handler(move |h: &bool| f(*h))),
             disabled: p.disabled.map(val),
+            a11y_state: p.a11y_state.map(|state| {
+                val(match state {
+                    Value::Const(t) => Value::Const(t.bits()),
+                    Value::Dyn(f) => Value::Dyn(Box::new(move || f().bits())),
+                })
+            }),
             preserves_focus: p.preserves_focus,
             children: encode_all(children),
         };

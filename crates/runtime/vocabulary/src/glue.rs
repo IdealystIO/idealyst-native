@@ -3982,6 +3982,23 @@ impl GluePressable {
         self
     }
 
+    /// Live accessibility state, ORed onto `a11y_traits`: what assistive
+    /// tech is told about a control whose state changes while it is mounted.
+    /// A closure reading signals re-applies in place, keeping keyboard focus.
+    ///
+    /// ```ignore
+    /// pressable(vec![glyph], toggle)
+    ///     .a11y_role(Role::Checkbox)
+    ///     .a11y_state(move || AccessibilityTraits::checked_if(value.get()))
+    /// ```
+    ///
+    /// With a checkable role (`Checkbox`, `RadioButton`, `Switch`), no
+    /// `CHECKED` trait is reported as unchecked; `MIXED` is indeterminate.
+    pub fn a11y_state(mut self, state: impl IntoValue<AccessibilityTraits>) -> Self {
+        self.b = self.b.a11y_state(state);
+        self
+    }
+
     pub fn preserves_focus(mut self, preserve: bool) -> Self {
         self.b = self.b.preserves_focus(preserve);
         self

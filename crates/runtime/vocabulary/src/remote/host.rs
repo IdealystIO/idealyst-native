@@ -339,7 +339,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 build_all(conn, children)?,
             )
         }
-        Node::Pressable { common, on_press, on_hover, on_focus, disabled, preserves_focus, children } => {
+        Node::Pressable { common, on_press, on_hover, on_focus, disabled, a11y_state, preserves_focus, children } => {
             let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(PressablePrim {
@@ -354,6 +354,9 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                         Rc::new(move |v: bool| h(&v)) as _
                     }),
                     disabled: disabled.map(|v| value(conn, v)),
+                    a11y_state: a11y_state.map(|v| {
+                        value_with(conn, v, AccessibilityTraits::from_bits_retain, AccessibilityTraits::empty)
+                    }),
                     preserves_focus,
                     style,
                     a11y,

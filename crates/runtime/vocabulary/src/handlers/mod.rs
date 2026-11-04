@@ -17,7 +17,7 @@ use runtime_scene::Registry;
 use runtime_world::{effect, Value};
 
 use crate::caps::{
-    ActivityIndicatorOps, AllCaps, AssetOps, ButtonOps, IconOps, ImageOps, InputOps,
+    A11yOps, ActivityIndicatorOps, AllCaps, AssetOps, ButtonOps, IconOps, ImageOps, InputOps,
     IntrospectionOps, LinkOps, PressableOps, SafeAreaOps, ScrollOps, SliderOps, TextInputOps,
     TextOps, ToggleOps, ViewOps,
 };
@@ -114,7 +114,7 @@ pub fn register_button<H: ButtonOps + StyleServices + IntrospectionOps + 'static
     registry.register::<PrimCell<ButtonPrim>, _>(|cx, p, children| mount_button(cx, p.take(), children));
 }
 /// Register the `pressable` primitive handler.
-pub fn register_pressable<H: PressableOps + InputOps + StyleServices + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
+pub fn register_pressable<H: PressableOps + InputOps + StyleServices + IntrospectionOps + A11yOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<PressablePrim>, _>(|cx, p, children| mount_pressable(cx, p.take(), children));
 }
 /// Register the `image` primitive handler.

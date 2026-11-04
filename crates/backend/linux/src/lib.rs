@@ -201,16 +201,51 @@ pub struct LinuxNode {
 /// "Backspace"), `hint` the description. Unset fields are left alone so
 /// GTK's own fallback (the name computed from child text) still applies.
 ///
+/// The checked state and expanded state are written or reset on every call,
+/// since `A11yOps::update_accessibility` delivers their changes.
+///
 /// Not `hidden`: GTK owns `GTK_ACCESSIBLE_STATE_HIDDEN` and rewrites it
 /// from widget visibility on every map/unmap, so a value written here
 /// would not survive the first show.
 pub(crate) fn apply_pressable_a11y(widget: &gtk4::Widget, a11y: &AccessibilityProps) {
-    use gtk4::accessible::Property;
+    use gtk4::accessible::{Property, State};
+    use runtime_shared::accessibility::{AccessibilityTraits, CheckedState};
     if let Some(label) = a11y.label.as_deref() {
         widget.update_property(&[Property::Label(label)]);
     }
     if let Some(hint) = a11y.hint.as_deref() {
         widget.update_property(&[Property::Description(hint)]);
+    }
+    let checked = match a11y.checked_state() {
+        Some(CheckedState::Unchecked) => Some(gtk4::AccessibleTristate::False),
+        Some(CheckedState::Checked) => Some(gtk4::AccessibleTristate::True),
+        Some(CheckedState::Mixed) => Some(gtk4::AccessibleTristate::Mixed),
+        None => None,
+    };
+    match checked {
+        Some(checked) => widget.update_state(&[State::Checked(checked)]),
+        None => widget.reset_state(gtk4::AccessibleState::Checked),
+    }
+    let expanded = if a11y.traits.contains(AccessibilityTraits::EXPANDED) {
+        Some(true)
+    } else if a11y.traits.contains(AccessibilityTraits::COLLAPSED) {
+        Some(false)
+    } else {
+        None
+    };
+    widget.update_state(&[State::Expanded(expanded)]);
+}
+
+/// The GTK role for a pressable, where it differs from the generic one. GTK
+/// reads `accessible-role` once at construction, so this is decided before
+/// the widget exists.
+pub(crate) fn pressable_gtk_role(a11y: &AccessibilityProps) -> gtk4::AccessibleRole {
+    use runtime_shared::accessibility::Role;
+    match a11y.role {
+        Some(Role::Checkbox) => gtk4::AccessibleRole::Checkbox,
+        Some(Role::RadioButton) => gtk4::AccessibleRole::Radio,
+        Some(Role::Switch) => gtk4::AccessibleRole::Switch,
+        _ => gtk4::AccessibleRole::Button,
     }
 }
 
@@ -2483,7 +2518,9 @@ impl LinuxBackend {
     ) -> LinuxNode {
         // A styled container (IdealystView) with a click gesture — the
         // framework's Pressable is "a View that fires a callback".
-        let widget = IdealystView::new();
+        let widget: IdealystView = gtk4::glib::Object::builder()
+            .property("accessible-role", pressable_gtk_role(a11y))
+            .build();
         let gesture = gtk4::GestureClick::new();
         let fire = on_click.clone();
         gesture.connect_released(move |_, _, _, _| (fire)());
@@ -4319,6 +4356,38 @@ mod layout_tests {
         }
         use runtime_shared::accessibility::AccessibilityProps;
         use runtime_shared::{PointerEvents, StyleRules};
+
+        // --- Checkable pressable: GTK fixes `accessible-role` at construction
+        // (a later write is ignored), so the role must be chosen before the
+        // widget exists. Orca reads the checked state only off a checkable role.
+        {
+            use gtk4::prelude::AccessibleExt;
+            use runtime_shared::accessibility::{AccessibilityTraits, Role};
+            let bag = AccessibilityProps {
+                role: Some(Role::Checkbox),
+                label: Some("Include archived".into()),
+                ..Default::default()
+            };
+            let widget: crate::IdealystView = gtk4::glib::Object::builder()
+                .property("accessible-role", crate::pressable_gtk_role(&bag))
+                .build();
+            let as_widget: &gtk4::Widget = widget.upcast_ref();
+            assert_eq!(as_widget.accessible_role(), gtk4::AccessibleRole::Checkbox);
+            crate::apply_pressable_a11y(as_widget, &bag);
+            crate::apply_pressable_a11y(
+                as_widget,
+                &AccessibilityProps { traits: AccessibilityTraits::CHECKED, ..bag.clone() },
+            );
+            crate::apply_pressable_a11y(
+                as_widget,
+                &AccessibilityProps { traits: AccessibilityTraits::MIXED, ..bag },
+            );
+            assert_eq!(
+                crate::pressable_gtk_role(&AccessibilityProps::default()),
+                gtk4::AccessibleRole::Button,
+                "a pressable with no authored role is a button",
+            );
+        }
 
         // --- 1. Non-root nodes must report their Taffy size as the
         // MINIMUM. `GtkFixedLayout` (the GtkFixed document inside a

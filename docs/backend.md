@@ -600,8 +600,8 @@ override may choose a different native view class (macOS does, for its
 deep-descent `hitTest:`) but must still register a contents layout node.
 The placeholder is never animated — `apply_presence` targets the child's
 own nodes — and the vocabulary handler applies a non-default a11y bag to
-it through `A11yOps::update_accessibility`, so the default ignores the
-`a11y` argument. Pinned by `runtime-vocabulary/tests/presence_layout.rs`.
+it through `A11yOps::update_accessibility` (the same seam a pressable's
+`a11y_state` binding uses), so the default ignores the `a11y` argument. Pinned by `runtime-vocabulary/tests/presence_layout.rs`.
 
 ---
 

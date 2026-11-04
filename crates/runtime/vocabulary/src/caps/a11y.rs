@@ -10,8 +10,9 @@ use runtime_scene::Host;
 
 /// The accessibility surface that does NOT live on `create_*` prop
 /// bags: reactive prop-bag replacement, live-region announcements, and
-/// the GPU-backend parallel semantics tree. Serves the handlers'
-/// reactive a11y effect and the `announce()` free function's installer.
+/// the GPU-backend parallel semantics tree. Serves a pressable's
+/// `a11y_state` binding (`mount_pressable`), the presence placeholder's
+/// bag, and the `announce()` free function's installer.
 pub trait A11yOps: Host {
     /// Replace the accessibility prop bag on an existing node.
     /// `inferred_role` is the primitive's default role, so update
