@@ -75,7 +75,7 @@ use runtime_shared::{
 use runtime_layout::LayoutTree;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateFontIndirectW, DeleteObject, GetDC, GetTextExtentPoint32W, HFONT, HGDIOBJ,
     InvalidateRect, ReleaseDC, SelectObject, SetWindowRgn, HDC, LOGFONTW,
@@ -176,15 +176,19 @@ const ES_PASSWORD: u32 = 0x0020;
 const ES_MULTILINE: u32 = 0x0004;
 const ES_AUTOVSCROLL: u32 = 0x0040;
 const ES_WANTRETURN: u32 = 0x1000;
+const ES_CENTER: u32 = 0x0001;
+const ES_RIGHT: u32 = 0x0002;
 const WS_VSCROLL_STYLE: u32 = 0x0020_0000;
 // Edit control messages.
 pub(crate) const EM_SETSEL: u32 = 0x00B1;
 pub(crate) const EM_GETSEL: u32 = 0x00B0;
 pub(crate) const EM_REPLACESEL: u32 = 0x00C2;
 const EM_SETPASSWORDCHAR: u32 = 0x00CC;
+const EM_GETPASSWORDCHAR: u32 = 0x00D2;
 /// `EM_SETCUEBANNER` (ECM_FIRST + 1): the placeholder. Needs Common
 /// Controls v6 (`enable_visual_styles`).
 const EM_SETCUEBANNER: u32 = 0x1501;
+const EM_GETCUEBANNER: u32 = 0x1502;
 /// The mask character a secure field draws (U+25CF, what Windows' own
 /// password boxes use).
 const SECURE_MASK_CHAR: usize = 0x25CF;
@@ -364,6 +368,50 @@ fn set_cue_banner(hwnd: HWND, placeholder: Option<&str>) {
     let wide: Vec<u16> = placeholder.unwrap_or("").encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
         SendMessageW(hwnd, EM_SETCUEBANNER, Some(WPARAM(1)), Some(LPARAM(wide.as_ptr() as isize)));
+    }
+}
+
+/// `style` with its alignment bits set for `align` (`ES_LEFT` is zero). `Justify`
+/// is left: an `EDIT` has no such mode, and neither has a text input elsewhere.
+fn edit_style_for_align(style: u32, align: Option<runtime_shared::TextAlign>) -> u32 {
+    use runtime_shared::TextAlign;
+    let bits = match align {
+        Some(TextAlign::Center) => ES_CENTER,
+        Some(TextAlign::Right) => ES_RIGHT,
+        Some(TextAlign::Left | TextAlign::Justify) | None => 0,
+    };
+    (style & !(ES_CENTER | ES_RIGHT)) | bits
+}
+
+fn edit_is_aligned(hwnd: HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, GWL_STYLE};
+    (unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32) & (ES_CENTER | ES_RIGHT) != 0
+}
+
+fn window_width(hwnd: HWND) -> i32 {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let mut rect = RECT::default();
+    let _ = unsafe { GetWindowRect(hwnd, &mut rect) };
+    rect.right - rect.left
+}
+
+/// Place a centred or right-aligned `EDIT`'s text for its current width. The
+/// control keeps the offset it worked out when the text was set, so a field styled
+/// before layout sized it would stay at the zero-width offset, off its left edge.
+/// Writing the text recomputes it. Called inside a backend borrow, so the
+/// `EN_CHANGE` is dropped.
+fn reflow_aligned_edit(hwnd: HWND) {
+    let text = to_pcwstr(&window_text(hwnd));
+    let (mut start, mut end) = (0u32, 0u32);
+    unsafe {
+        SendMessageW(
+            hwnd,
+            EM_GETSEL,
+            Some(WPARAM(&mut start as *mut u32 as usize)),
+            Some(LPARAM(&mut end as *mut u32 as isize)),
+        );
+        let _ = SetWindowTextW(hwnd, text.as_pcwstr());
+        SendMessageW(hwnd, EM_SETSEL, Some(WPARAM(start as usize)), Some(LPARAM(end as isize)));
     }
 }
 
@@ -2103,6 +2151,16 @@ impl WindowsBackend {
             .iter()
             .filter(|(hwnd, ..)| !hwnd.is_invalid())
             .collect();
+        let reflow: Vec<HWND> = self
+            .edits
+            .values()
+            .filter(|e| edit_is_aligned(e.hwnd))
+            .filter(|e| {
+                let moved = moves.iter().find(|(hwnd, ..)| *hwnd == e.hwnd);
+                moved.is_some_and(|(hwnd, _, _, w, ..)| window_width(*hwnd) != *w)
+            })
+            .map(|e| e.hwnd)
+            .collect();
         if !moves.is_empty() {
             unsafe {
                 let mut hdwp = BeginDeferWindowPos(moves.len() as i32).unwrap_or_default();
@@ -2125,6 +2183,9 @@ impl WindowsBackend {
                     let _ = EndDeferWindowPos(hdwp);
                 }
             }
+        }
+        for hwnd in reflow {
+            reflow_aligned_edit(hwnd);
         }
         for (hwnd, _, _, _, _, region) in control_moves {
             if hwnd.is_invalid() {
@@ -3844,12 +3905,111 @@ impl WindowsBackend {
                 | NodeKind::External { .. } => {}
             }
         }
+        self.sync_edit_align(node.id, style.text_align);
         // Rebuild the wrap plan + measure fn in the resolved font so
         // layout matches what's drawn.
         if remeasure {
             self.set_text_measure(node.id);
         }
         self.invalidate();
+    }
+
+    /// Give an `EDIT` control `align`. A style with no alignment is the natural
+    /// one, so a field can go back to it.
+    ///
+    /// An `EDIT` takes its alignment from the style it was created with:
+    /// `SetWindowLong` updates the bits and the text stays where it was (the Win32
+    /// docs say these styles can't change after creation). So the control is
+    /// rebuilt in place, once per change of alignment, carrying over what the old
+    /// one held; its undo history is the one thing lost. This runs inside a backend
+    /// borrow, where the host drops `EDIT` notifications, so the focus moving across
+    /// doesn't reach the author as a blur.
+    fn sync_edit_align(&mut self, id: u64, align: Option<runtime_shared::TextAlign>) {
+        use windows::Win32::Graphics::Gdi::MapWindowPoints;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongW, GetWindowRect, SetWindowPos, GWL_STYLE, SW_HIDE,
+        };
+
+        let Some(meta) = self.nodes.get(&id) else { return };
+        let (Some(old), Some(cid)) = (meta.hwnd(), meta.control_id) else { return };
+        if !self.edits.contains_key(&cid) {
+            return;
+        }
+        let style = unsafe { GetWindowLongW(old, GWL_STYLE) } as u32;
+        let wanted = edit_style_for_align(style, align);
+        if wanted == style {
+            return;
+        }
+
+        let text = to_pcwstr(&window_text(old));
+        let (mut sel_start, mut sel_end) = (0u32, 0u32);
+        let mut banner = [0u16; 512];
+        let mut corners = [POINT::default(); 2];
+        let mut rect = RECT::default();
+        let mask = unsafe {
+            SendMessageW(
+                old,
+                EM_GETSEL,
+                Some(WPARAM(&mut sel_start as *mut u32 as usize)),
+                Some(LPARAM(&mut sel_end as *mut u32 as isize)),
+            );
+            SendMessageW(
+                old,
+                EM_GETCUEBANNER,
+                Some(WPARAM(banner.as_mut_ptr() as usize)),
+                Some(LPARAM(banner.len() as isize)),
+            );
+            let _ = GetWindowRect(old, &mut rect);
+            corners[0] = POINT { x: rect.left, y: rect.top };
+            corners[1] = POINT { x: rect.right, y: rect.bottom };
+            MapWindowPoints(None, Some(self.host_hwnd), &mut corners);
+            SendMessageW(old, EM_GETPASSWORDCHAR, None, None)
+        };
+
+        // Sized before it holds any text, so a wide field's text doesn't scroll
+        // against a zero-width box.
+        let new = self.create_control_hwnd(class_edit(), "", wanted, Some(cid));
+        if new.is_invalid() {
+            return;
+        }
+        unsafe {
+            let _ = SetWindowPos(
+                new,
+                Some(old),
+                corners[0].x,
+                corners[0].y,
+                corners[1].x - corners[0].x,
+                corners[1].y - corners[0].y,
+                SWP_NOACTIVATE,
+            );
+            if style & WS_VISIBLE.0 == 0 {
+                let _ = ShowWindow(new, SW_HIDE);
+            }
+            SendMessageW(new, EM_SETPASSWORDCHAR, Some(WPARAM(mask.0 as usize)), Some(LPARAM(0)));
+            SendMessageW(new, EM_SETCUEBANNER, Some(WPARAM(1)), Some(LPARAM(banner.as_ptr() as isize)));
+            let _ = SetWindowTextW(new, text.as_pcwstr());
+            SendMessageW(new, EM_SETSEL, Some(WPARAM(sel_start as usize)), Some(LPARAM(sel_end as isize)));
+            if GetFocus() == old {
+                let _ = SetFocus(Some(new));
+            }
+        }
+
+        if let Some(meta) = self.nodes.get_mut(&id) {
+            meta.kind = NodeKind::Control { hwnd: new };
+        }
+        if let Some(entry) = self.edits.get_mut(&cid) {
+            entry.hwnd = new;
+        }
+        if let Some(keys) = self.field_keys.remove(&(old.0 as isize)) {
+            self.field_keys.insert(new.0 as isize, keys);
+        }
+        // The next layout pass cuts the new window's region.
+        self.hwnd_regions.remove(&(old.0 as isize));
+        self.layout_dirty = true;
+        unsafe {
+            let _ = DestroyWindow(old);
+        }
     }
 }
 
@@ -5036,8 +5196,6 @@ mod capability_tests {
     /// The placeholder and live secure toggling were dropped.
     #[test]
     fn regression_placeholder_and_secure_toggle_reach_the_edit() {
-        const EM_GETPASSWORDCHAR: u32 = 0x00D2;
-        const EM_GETCUEBANNER: u32 = 0x1502;
         let mut b = WindowsBackend::new(host());
         let (node, _) = input(&mut b, &Rc::default());
         let banner = |h: HWND| {
@@ -5053,6 +5211,112 @@ mod capability_tests {
         assert_eq!(mask(node.hwnd), SECURE_MASK_CHAR);
         TextInputOps::update_text_input_secure(&mut b, &node, false);
         assert_eq!(mask(node.hwnd), 0);
+    }
+
+    /// `Field(text_align)` had no effect: `apply_style` skipped controls. An
+    /// EDIT reads its alignment from the style it was created with, so the
+    /// control is rebuilt, and the rebuilt one must carry everything the old one
+    /// held. `EM_POSFROMCHAR` reports where the text actually lays out.
+    #[test]
+    fn regression_text_input_ignored_text_align() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, IsWindowEnabled, SetFocus};
+        use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, SetWindowPos, SWP_NOMOVE};
+        use runtime_shared::TextAlign;
+        const EM_POSFROMCHAR: u32 = 0x00D6;
+        const WIDTH: i32 = 300;
+
+        let host_window = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                PCWSTR(windows::core::w!("STATIC").as_ptr()),
+                PCWSTR::null(),
+                windows::Win32::UI::WindowsAndMessaging::WS_POPUP | WS_VISIBLE,
+                0,
+                0,
+                400,
+                300,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("host window");
+        let mut b = WindowsBackend::new(host_window);
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let (node, cid) = input(&mut b, &log);
+        TextInputOps::update_text_input_value(&mut b, &node, "12");
+        unsafe { SetWindowPos(node.hwnd, None, 0, 0, WIDTH, 24, SWP_NOMOVE | SWP_NOZORDER).unwrap() };
+        let aligned = |align: Option<TextAlign>| Rc::new(StyleRules { text_align: align, ..Default::default() });
+        let edit = |b: &WindowsBackend| b.nodes[&node.id].hwnd().expect("control");
+        let text_x = |h: HWND| unsafe { SendMessageW(h, EM_POSFROMCHAR, Some(WPARAM(0)), Some(LPARAM(0))) }.0 as i16 as i32;
+
+        let left = edit(&b);
+        let left_x = text_x(left);
+        assert!(left_x < WIDTH / 4, "starts at the left, got {left_x}");
+        b.apply_style(&node, &aligned(None));
+        assert_eq!(edit(&b), left, "a style naming no new alignment keeps the control");
+
+        unsafe { SetFocus(Some(left)).unwrap() };
+        unsafe { SendMessageW(left, EM_SETSEL, Some(WPARAM(1)), Some(LPARAM(2))) };
+        b.apply_style(&node, &aligned(Some(TextAlign::Right)));
+        let right = edit(&b);
+        assert!(text_x(right) > WIDTH / 2, "at the right, got {}", text_x(right));
+        b.apply_style(&node, &aligned(Some(TextAlign::Right)));
+        assert_eq!(edit(&b), right, "the same alignment again keeps the control, and its caret");
+
+        // What the rebuilt control carries.
+        assert_eq!(window_text(right), "12");
+        assert_eq!(unsafe { GetFocus() }, right, "keeps the focus");
+        let (mut start, mut end) = (0u32, 0u32);
+        unsafe {
+            SendMessageW(
+                right,
+                EM_GETSEL,
+                Some(WPARAM(&mut start as *mut u32 as usize)),
+                Some(LPARAM(&mut end as *mut u32 as isize)),
+            )
+        };
+        assert_eq!((start, end), (1, 2), "keeps the selection");
+        let mut rect = RECT::default();
+        unsafe { GetWindowRect(right, &mut rect).unwrap() };
+        assert_eq!(rect.right - rect.left, WIDTH, "keeps its frame");
+        let mut banner = [0u16; 64];
+        unsafe { SendMessageW(right, EM_GETCUEBANNER, Some(WPARAM(banner.as_mut_ptr() as usize)), Some(LPARAM(banner.len() as isize))) };
+        assert_eq!(String::from_utf16_lossy(&banner[..9]), "Type here", "keeps the placeholder");
+        let wide: Vec<u16> = "typed".encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe { SetWindowTextW(right, PCWSTR(wide.as_ptr())).unwrap() };
+        b.command_action(cid, EN_CHANGE).expect("EN_CHANGE handled")();
+        assert_eq!(log.borrow().as_slice(), ["typed"], "reports through the same on_change");
+        TextInputOps::update_text_input_value(&mut b, &node, "12");
+        assert_eq!(window_text(edit(&b)), "12", "takes values from code");
+
+        b.set_disabled(&node, true);
+        TextInputOps::update_text_input_secure(&mut b, &node, true);
+        b.apply_style(&node, &aligned(Some(TextAlign::Center)));
+        let center = edit(&b);
+        let x = text_x(center);
+        assert!(x > WIDTH / 4 && x < WIDTH * 3 / 4, "in the middle, got {x}");
+        assert!(!unsafe { IsWindowEnabled(center) }.as_bool(), "keeps disabled");
+        let mask = unsafe { SendMessageW(center, EM_GETPASSWORDCHAR, None, None) }.0 as usize;
+        assert_eq!(mask, SECURE_MASK_CHAR, "keeps its mask");
+
+        // A style with no alignment is the natural one: `Field` going back to
+        // `FieldAlign::Natural` states nothing.
+        b.apply_style(&node, &aligned(None));
+        let back = text_x(edit(&b));
+        assert!(back < WIDTH / 4, "back at the left, got {back}");
+
+        // The usual order: the first style arrives before layout has given the
+        // control a size.
+        let mut root = b.create_view(&Default::default());
+        let late = TextInputOps::create_text_input(&mut b, "12", None, Rc::new(|_| {}), None, None, false, &Default::default());
+        b.apply_style(&late, &aligned(Some(TextAlign::Right)));
+        let late_id = late.id;
+        b.insert(&mut root, late);
+        b.finish(root);
+        let sized = b.nodes[&late_id].hwnd().expect("control");
+        assert!(text_x(sized) > WIDTH / 2, "at the right once laid out, got {}", text_x(sized));
     }
 
     /// `text_area` was painted, read-only text. It is a multi-line EDIT:
