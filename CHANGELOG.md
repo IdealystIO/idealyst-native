@@ -1220,8 +1220,8 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `CODEC_VERSION` is 10, so remote bundles must be rebuilt.
 - **`idealyst dev` arms one experimental tier at a time** (`idealyst-cli`,
   `mcp-server`). `--experimental-server-patch` and
-  `--experimental-web-additive`, also on `run_dev`; `--experimental-build` still
-  arms both.
+  `--experimental-web-additive`; `run_dev` has `experimental_server_patch`.
+  `--experimental-build` still arms both.
 - **`build-metrics.jsonl` records `queued_ms` and `concurrent_ms`**
   (`idealyst-cli`, `mcp-server`).
 - **Server in-place patches on arm64 Linux** (`idealyst-cli` minor;

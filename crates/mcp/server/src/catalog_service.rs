@@ -542,10 +542,7 @@ pub struct RobotScreenshotArgs {
     pub source: Option<String>,
 }
 
-/// Args for `run_dev` — launch an `idealyst dev` session detached and
-/// tracked. Mirrors the subset of `idealyst dev` CLI flags worth
-/// driving from MCP: target platforms, the `--local` mode toggle, and
-/// the robot knobs.
+/// Args for `run_dev`: launch a tracked `idealyst dev` session.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct RunDevArgs {
     /// Project dir (default: the server's cwd).
@@ -557,7 +554,7 @@ pub struct RunDevArgs {
     /// Every platform the host can build.
     #[serde(default)]
     pub all: bool,
-    /// Native build + file-watch rebuilds instead of hot reload (required for web Robot).
+    /// Native build + file-watch rebuilds (required for web Robot).
     #[serde(default)]
     pub local: bool,
     /// Force a headless Chromium for web.
@@ -575,21 +572,16 @@ pub struct RunDevArgs {
     /// Web: serve without the initial build.
     #[serde(default)]
     pub no_build: bool,
-    /// Queue saves instead of applying them; `rebuild_dev` applies the queue.
+    /// Queue saves; `rebuild_dev` applies them.
     #[serde(default)]
     pub no_watch: bool,
-    /// Both experimental tiers: `experimental_web_additive` and
-    /// `experimental_server_patch`.
+    /// Both experimental tiers.
     #[serde(default)]
     pub experimental_build: bool,
-    /// Full-stack on arm64 macOS or Linux: patch the running server in place
-    /// on a body edit (experimental).
+    /// Patch the running server in place.
     #[serde(default)]
     pub experimental_server_patch: bool,
-    /// Web `--local`: hot patch saves that only add items (experimental).
-    #[serde(default)]
-    pub experimental_web_additive: bool,
-    /// Record what every save cost; read with `read_build_metrics`.
+    /// Record each save's cost (`read_build_metrics`).
     #[serde(default)]
     pub metrics: bool,
     /// `metrics`, plus each save's diff.
@@ -1974,7 +1966,6 @@ impl CatalogService {
             no_watch: args.no_watch,
             experimental_build: args.experimental_build,
             experimental_server_patch: args.experimental_server_patch,
-            experimental_web_additive: args.experimental_web_additive,
             metrics: args.metrics,
             metrics_diffs: args.metrics_diffs,
         };
