@@ -27,7 +27,8 @@ use runtime_shared::{FontFamily, FontWeight, StyleRules, TextRun, TextRunStyle};
 
 use backend_apple_core::font::FontRegistry;
 use backend_apple_core::styled_text::{
-    build_attributed, parse_font_stack, run_font_size, run_needs_font, underline_mask,
+    build_attributed, parse_font_stack, run_font_size, run_needs_font, set_paragraph_alignment,
+    underline_mask,
     with_italic_trait, RunAttrs, StackEntry,
 };
 use backend_ios_core::font::{resolve_uifont, system_font, ui_font_with_name};
@@ -119,6 +120,12 @@ pub(crate) fn realize(
         .collect();
 
     let attributed = build_attributed(&assembled);
+    // Assigning `attributedText` replaces the label's alignment with the string's,
+    // and with no paragraph style that is natural. With no `text_align` natural is
+    // what's wanted.
+    if let Some(align) = para.and_then(|s| s.text_align) {
+        set_paragraph_alignment(&attributed, backend_ios_core::style_diff::ns_text_alignment(Some(align)));
+    }
     let _: () =
         unsafe { msg_send![label, setAttributedText: &*attributed as &NSAttributedString] };
     // `max_lines`: assigning `attributedText` re-derives the label's style

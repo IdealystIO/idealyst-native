@@ -3,7 +3,7 @@
 //! unit-test on the host target (the rest of those paths is UIKit-only
 //! and compiles to nothing off-device).
 //!
-//! Two decisions live here, both regression-prone enough to deserve
+//! Three decisions live here, all regression-prone enough to deserve
 //! host tests:
 //!
 //!   1. [`resolve_corner_radius`] — what `apply_style` should do with a
@@ -24,6 +24,9 @@
 //!      NOT schedule a layout pass — doing so on every reactive re-style
 //!      is the "layout runs on every press" churn. See
 //!      `regression_ios_paint_only_skips_layout`.
+//!
+//!   3. [`ns_text_alignment`] — what alignment a style with or without
+//!      `text_align` gets. See `regression_ios_removed_text_align_restores_natural`.
 
 use runtime_shared::{Color, Length, StyleRules, Tokenized};
 
@@ -314,6 +317,25 @@ pub fn layout_affecting_key(style: &StyleRules) -> String {
     s
 }
 
+/// UIKit `NSTextAlignmentNatural`: follows the direction of the text itself.
+pub const NS_TEXT_ALIGNMENT_NATURAL: isize = 4;
+
+/// The `NSTextAlignment` for a style's `text_align`.
+///
+/// No alignment is natural, the value a label or input starts with, so a restyle
+/// that drops `text_align` restores what it always had. Not `Left`: a
+/// right-to-left paragraph starts on the right.
+pub fn ns_text_alignment(align: Option<runtime_shared::TextAlign>) -> isize {
+    use runtime_shared::TextAlign;
+    match align {
+        None => NS_TEXT_ALIGNMENT_NATURAL,
+        Some(TextAlign::Left) => 0,
+        Some(TextAlign::Center) => 1,
+        Some(TextAlign::Right) => 2,
+        Some(TextAlign::Justify) => 3,
+    }
+}
+
 /// UIKit `NSLineBreakByWordWrapping` — the label default this backend
 /// pins (wrap, never truncate) when no line limit is set.
 pub const NS_LINE_BREAK_BY_WORD_WRAPPING: isize = 0;
@@ -378,7 +400,7 @@ pub fn icon_scale(width: f64, height: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_shared::{Color, Length, StyleRules, Tokenized};
+    use runtime_shared::{Color, Length, StyleRules, TextAlign, Tokenized};
 
     fn px(v: f32) -> Tokenized<Length> {
         Tokenized::Literal(Length::Px(v))
@@ -454,6 +476,29 @@ mod tests {
     }
 
     // === Paint-only vs layout-affecting (the perf bug) =================
+
+    // === text_align → NSTextAlignment ==================================
+
+    /// A `Field(text_align)` flipping from `Right` back to `Natural`, or a
+    /// stylesheet variant dropping `text_align`, left the old alignment on the
+    /// `UILabel` / `UITextField` / `UITextView`: `apply_text_style` only wrote it
+    /// when the style stated one. `UIKit` is what stops being written to, so the
+    /// reachable half on the host is the value absence maps to.
+    #[test]
+    fn regression_ios_removed_text_align_restores_natural() {
+        assert_eq!(ns_text_alignment(None), NS_TEXT_ALIGNMENT_NATURAL);
+        // Natural follows the text's direction; `Left` would break right-to-left.
+        assert_ne!(ns_text_alignment(None), ns_text_alignment(Some(TextAlign::Left)));
+    }
+
+    #[test]
+    fn text_align_maps_to_uikit_raw_values() {
+        assert_eq!(ns_text_alignment(Some(TextAlign::Left)), 0);
+        assert_eq!(ns_text_alignment(Some(TextAlign::Center)), 1);
+        assert_eq!(ns_text_alignment(Some(TextAlign::Right)), 2);
+        assert_eq!(ns_text_alignment(Some(TextAlign::Justify)), 3);
+        assert_eq!(NS_TEXT_ALIGNMENT_NATURAL, 4);
+    }
 
     // === max_lines → UIKit line config =================================
 

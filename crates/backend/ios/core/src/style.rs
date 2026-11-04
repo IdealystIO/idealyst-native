@@ -1019,14 +1019,12 @@ pub fn apply_text_style(
         }
     }
 
-    // Text alignment
-    if let Some(ta) = &style.text_align {
-        let align: isize = match ta {
-            runtime_shared::TextAlign::Left => 0,
-            runtime_shared::TextAlign::Center => 1,
-            runtime_shared::TextAlign::Right => 2,
-            runtime_shared::TextAlign::Justify => 3,
-        };
+    // Text alignment, on every apply so a style that drops it goes back to
+    // natural. Only on a change: every restyle reaches here, and `UITextView`
+    // re-attributes its whole text storage on a write.
+    let align = crate::style_diff::ns_text_alignment(style.text_align);
+    let current: isize = unsafe { msg_send![view, textAlignment] };
+    if current != align {
         let _: () = unsafe { msg_send![view, setTextAlignment: align] };
     }
 
