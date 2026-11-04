@@ -1,7 +1,8 @@
-//! `text_align` on a `text_input` (`Field(text_align = …)`): the `GtkEntry` paints
-//! its own text, so the style has to reach `GtkEditable:xalign`. It didn't, and a
-//! figure typed in a right-aligned column sat at the left. A style going back to
-//! none goes back to the start.
+//! `text_align` on a `text_input` (`Field(text_align = …)`) and a `text_area`: a
+//! `GtkEntry` and a `GtkTextView` paint their own text, so the style has to reach
+//! `GtkEditable:xalign` and `GtkTextView:justification`. It didn't, and a figure
+//! typed in a right-aligned column sat at the left. A style going back to none goes
+//! back to the start.
 //!
 //! One test on purpose: GTK must be driven from the thread that ran `gtk::init`.
 
@@ -13,7 +14,7 @@ use std::rc::Rc;
 use backend_linux::{gtk4, newcore, LinuxBackend};
 use gtk4::prelude::*;
 use runtime_shared::{Length, StyleRules, TextAlign};
-use runtime_vocabulary::builders::{text_input, view};
+use runtime_vocabulary::builders::{text_area, text_input, view};
 
 fn entries(root: &gtk4::Widget, out: &mut Vec<gtk4::Entry>) {
     if let Ok(e) = root.clone().downcast::<gtk4::Entry>() {
@@ -26,8 +27,19 @@ fn entries(root: &gtk4::Widget, out: &mut Vec<gtk4::Entry>) {
     }
 }
 
+fn text_views(root: &gtk4::Widget, out: &mut Vec<gtk4::TextView>) {
+    if let Ok(e) = root.clone().downcast::<gtk4::TextView>() {
+        out.push(e);
+    }
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        text_views(&c, out);
+        child = c.next_sibling();
+    }
+}
+
 #[test]
-fn regression_gtk_entry_ignored_text_align() {
+fn regression_gtk_entry_and_text_view_ignored_text_align() {
     if gtk4::init().is_err() {
         eprintln!("SKIP: no display / GTK init failed");
         return;
@@ -52,6 +64,16 @@ fn regression_gtk_entry_ignored_text_align() {
                     })
                     .build(),
             )
+            .child(
+                text_area()
+                    .value("One\nTwo".to_string())
+                    .style(move || StyleRules {
+                        width: Some(Length::Px(300.0).into()),
+                        text_align: align.get(),
+                        ..Default::default()
+                    })
+                    .build(),
+            )
             .build()
     });
     window.present();
@@ -62,11 +84,24 @@ fn regression_gtk_entry_ignored_text_align() {
     let entry = found.pop().expect("the text_input's GtkEntry");
     let align = slot.borrow().expect("slot filled");
 
+    let mut found = Vec::new();
+    text_views(window.upcast_ref(), &mut found);
+    let area = found.pop().expect("the text_area's GtkTextView");
+
+    use gtk4::Justification as J;
     assert_eq!(EditableExt::alignment(&entry), 1.0, "right");
-    for (value, xalign) in [(Some(TextAlign::Center), 0.5), (Some(TextAlign::Left), 0.0), (Some(TextAlign::Right), 1.0), (None, 0.0)] {
+    assert_eq!(area.justification(), J::Right, "right");
+    for (value, xalign, justification) in [
+        (Some(TextAlign::Center), 0.5, J::Center),
+        (Some(TextAlign::Left), 0.0, J::Left),
+        (Some(TextAlign::Right), 1.0, J::Right),
+        (Some(TextAlign::Justify), 0.0, J::Fill),
+        (None, 0.0, J::Left),
+    ] {
         align.set(value);
         newcore::flush_sync();
         assert_eq!(EditableExt::alignment(&entry), xalign, "{value:?}");
+        assert_eq!(area.justification(), justification, "{value:?}");
     }
-    println!("ran: GtkEntry xalign follows text_align");
+    println!("ran: GtkEntry xalign and GtkTextView justification follow text_align");
 }

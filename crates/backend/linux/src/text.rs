@@ -189,6 +189,18 @@ pub fn entry_xalign(align: Option<TextAlign>) -> f32 {
     }
 }
 
+/// `GtkTextView:justification` for a `text_area` styled `text_align`. A style with
+/// no alignment is `Left`, the view's default, which GTK reads as the start of the
+/// paragraph's own direction: right-to-left text still starts on the right.
+pub fn text_area_justification(align: Option<TextAlign>) -> gtk4::Justification {
+    match align {
+        Some(TextAlign::Center) => gtk4::Justification::Center,
+        Some(TextAlign::Right) => gtk4::Justification::Right,
+        Some(TextAlign::Justify) => gtk4::Justification::Fill,
+        Some(TextAlign::Left) | None => gtk4::Justification::Left,
+    }
+}
+
 /// How a `GtkLabel` is configured to honour a paint's `max_lines`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LineLimit {

@@ -2938,6 +2938,9 @@ impl LinuxBackend {
                 if let Some(entry) = self.nodes.get(&id).and_then(|st| st.widget.downcast_ref::<gtk4::Entry>()) {
                     gtk4::prelude::EditableExt::set_alignment(entry, text::entry_xalign(style.text_align));
                 }
+                if let Some(view) = self.nodes.get(&id).and_then(|st| text_area_view(&st.widget)) {
+                    view.set_justification(text::text_area_justification(style.text_align));
+                }
                 self.apply_native_widget_css(id, style);
                 // …and their BOX is painted by the parent at this node's Taffy
                 // frame, so it lands on the same border box web draws on rather
