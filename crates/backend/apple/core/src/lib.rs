@@ -178,6 +178,10 @@ pub mod layer_paint_order;
 /// unit tests.
 pub mod dispatch_hook;
 
+/// What a view goes back to when a style drops a prop. The decisions are NOT
+/// OS-gated and test on any host; the native halves are Apple-only.
+pub mod style_reset;
+
 /// Per-view `on_layout` subscriber registry shared by the UIKit and
 /// AppKit backends (the Apple `ResizeObserver` analog). [`layout_subs::fire`]
 /// runs the callbacks then fires [`dispatch_hook`] so their staged

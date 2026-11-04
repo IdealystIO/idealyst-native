@@ -64,6 +64,18 @@ pub(crate) struct AnimatedState {
     /// against the view's width on each frame.
     pub(crate) static_translate_pct_x: Option<f32>,
     pub(crate) static_translate_pct_y: Option<f32>,
+    /// The opacity the last style stated, `Some(1.0)` once it has been dropped;
+    /// `None` while no style has stated one. See
+    /// `backend_apple_core::style_reset::static_opacity_update`.
+    pub(crate) static_opacity: Option<f32>,
+    /// `AnimProp::Opacity` has written `alphaValue`, which is the one field for
+    /// static and animated opacity alike. The animated value overrides the
+    /// stylesheet from then on, as it does on web.
+    pub(crate) anim_opacity: bool,
+    /// A presence state stating an opacity is in force on this view.
+    pub(crate) presence_opacity: bool,
+    /// `AnimProp::ForegroundColor` has written `textColor`.
+    pub(crate) anim_text_color: bool,
     /// True after the first `apply_static_transform` on this view.
     /// Gates `transitions { transform: … }`: the initial apply snaps
     /// (CSS parity — transitions fire on *changes*), later applies
@@ -88,6 +100,10 @@ impl AnimatedState {
             anim_z_index: None,
             static_translate_pct_x: None,
             static_translate_pct_y: None,
+            static_opacity: None,
+            anim_opacity: false,
+            presence_opacity: false,
+            anim_text_color: false,
             static_transform_seen: false,
         }
     }
@@ -95,6 +111,31 @@ impl AnimatedState {
 
 /// Per-backend cache keyed by NSView pointer. Owned by the backend.
 pub(crate) type AnimatedStateMap = HashMap<usize, RefCell<AnimatedState>>;
+
+/// Apply `style.opacity` to the view's `alphaValue`, going back to opaque when a
+/// style drops it. Use `NSView.setAlphaValue:` (matches iOS's `UIView.setAlpha:`),
+/// NOT `CALayer.setOpacity:`: the two multiply in AppKit's rendering pipeline, so
+/// routing static opacity through the layer while animated opacity goes through
+/// the view would give (static * animated), and a sheet resting at `opacity: 0.0`
+/// that a raf body fades in would stay invisible.
+pub(crate) fn apply_static_opacity(
+    view: &NSView,
+    style: &runtime_shared::StyleRules,
+    states: &mut AnimatedStateMap,
+) {
+    let key = view as *const NSView as usize;
+    let state = states.entry(key).or_insert_with(|| RefCell::new(AnimatedState::new()));
+    let mut s = state.borrow_mut();
+    let update = backend_apple_core::style_reset::static_opacity_update(
+        style.opacity.as_ref().map(|t| t.resolve()),
+        s.static_opacity,
+        s.anim_opacity || s.presence_opacity,
+    );
+    s.static_opacity = update.remember;
+    if let Some(alpha) = update.write {
+        let _: () = unsafe { msg_send![view, setAlphaValue: alpha as f64] };
+    }
+}
 
 /// Apply the static `transform: [...]` from a `StyleRules` to the
 /// view's transform state. Called from `apply_style`. Percent
@@ -402,6 +443,7 @@ pub(crate) fn set_animated_f32(
 
     match prop {
         AnimProp::Opacity => {
+            state.borrow_mut().anim_opacity = true;
             // NSView's `alphaValue` is the AppKit equivalent of UIView's
             // `alpha`. It cascades through the view hierarchy and is
             // CALayer-independent — works even for layer-less NSViews.

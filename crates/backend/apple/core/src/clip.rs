@@ -48,10 +48,10 @@ use runtime_shared::{Overflow, StyleRules};
 /// * `Some(false)` — `overflow: visible`; explicitly clear the mask, so a
 ///   reactive style change from `hidden` back to `visible` actually releases
 ///   it.
-/// * `None`        — the author said nothing about overflow; leave the
-///   platform default (unclipped) alone. **A `border_radius` must not
-///   promote this to `Some(true)`** — that is the regression this module
-///   exists to prevent.
+/// * `None`        — the author said nothing about overflow; the view has what
+///   it has with no style (`style_reset::apply_clip`), which is the platform
+///   default. **A `border_radius` must not promote this to `Some(true)`** —
+///   that is the regression this module exists to prevent.
 pub fn clips_to_bounds(style: &StyleRules) -> Option<bool> {
     style
         .overflow

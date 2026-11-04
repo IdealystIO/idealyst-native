@@ -249,6 +249,14 @@ pub(crate) fn sync_gradient_sublayer(view: &NSView) {
     }
 }
 
+/// Remove the gradient a style has dropped.
+pub(crate) fn remove_gradient(view: &NSView) {
+    let layer: *mut NSObject = unsafe { msg_send![view, layer] };
+    if !layer.is_null() {
+        remove_existing(unsafe { &*layer });
+    }
+}
+
 fn remove_existing(layer: &NSObject) {
     // Two-phase (see `backend_apple_core::sublayers`): `sublayers` is a live
     // array, so removing inside an index walk aborts on a re-apply.

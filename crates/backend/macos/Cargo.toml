@@ -134,6 +134,13 @@ raw-window-handle = "0.6"
 name = "text_align"
 harness = false
 
+# Real-AppKit test of a style dropping a prop (`src/imp/animated.rs`,
+# `text_style.rs`, `mod.rs`): property reads, a rendered bitmap, and animations
+# on the same fields left alone. Main-thread only, like `text_align`.
+[[test]]
+name = "style_reset"
+harness = false
+
 # Real-AppKit test of the attach-safe `focus()` (`src/imp/pending_focus.rs`).
 # AppKit only builds windows on the MAIN thread, and libtest runs every case on
 # a worker thread (see `rect_is_window_relative_not_parent_relative`, which has

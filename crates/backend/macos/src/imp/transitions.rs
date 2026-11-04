@@ -113,9 +113,18 @@ pub(crate) fn apply_color(
             ACTIVE.with(|a| {
                 a.borrow_mut().remove(&key);
             });
-            set_color(view, prop, is_scroll, to);
+            // Every hover and press restyle reaches here, and a native write
+            // would clobber a value an animation put there since the last change.
+            if from != Some(to) {
+                set_color(view, prop, is_scroll, to);
+            }
         }
     }
+}
+
+/// Whether a colour has been applied to `view`'s `prop`.
+pub(crate) fn has_color(view: &NSView, prop: ColorProp) -> bool {
+    LAST.with(|l| l.borrow().contains_key(&(view as *const NSView as usize, prop)))
 }
 
 /// Forget a view's transition state when it's torn down (`clear_children` /

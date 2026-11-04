@@ -1122,6 +1122,11 @@ impl FlippedView {
         });
     }
 
+    /// Whether a hover cursor is installed.
+    pub(crate) fn has_cursor(&self) -> bool {
+        self.ivars().cursor.borrow().is_some()
+    }
+
     /// Set (or clear, with `None`) the hover cursor and ask the window to
     /// rebuild this view's cursor rects so the change takes effect without
     /// waiting for the next geometry pass. Called from `apply_style` when

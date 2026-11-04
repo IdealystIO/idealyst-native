@@ -14,17 +14,27 @@ use objc2_foundation::{CGFloat, CGSize, NSObject, NSString};
 ///
 /// `is_label`: true for NSTextField in label mode (different
 /// `setStringValue:` path); false for NSTextView (uses `setString:`
-/// and behaves like a UITextView).
+/// and behaves like a UITextView). `color_animated`: an `AnimProp::ForegroundColor`
+/// owns the text colour, and overrides the stylesheet as it does on web.
 pub(crate) fn apply_text_style(
     view: &NSView,
     style: &StyleRules,
     is_label: bool,
+    color_animated: bool,
     font_registry: &FontRegistry,
 ) {
     // Text color — via the transition system so `color: …` animates over
     // `color_transition` (e.g. the theme toggle's text fade) instead of snapping.
-    if let Some(color) = &style.color {
-        let rgba = crate::imp::style_color_rgba(&color.resolve());
+    // A label with no color takes the theme's `color-text`, which `create_text`
+    // seeds and which is NOT `NSColor.labelColor`: that tracks the OS appearance. An
+    // editable control's default is written by its `apply_style` arm.
+    let color = match &style.color {
+        Some(color) => Some(color.resolve()),
+        None if is_label => Some(crate::imp::theme_text_color()),
+        None => None,
+    };
+    if let (Some(color), false) = (color, color_animated) {
+        let rgba = crate::imp::style_color_rgba(&color);
         crate::imp::transitions::apply_color(
             view,
             crate::imp::transitions::ColorProp::TextColor,
@@ -68,7 +78,15 @@ pub(crate) fn apply_text_style(
         // #7: converge output).
         let font = resolve_nsfont(font_registry, style.font_family.as_ref(), weight, fstyle, size)
             .unwrap_or_else(|| system_font(weight, size));
-        let _: () = unsafe { msg_send![view, setFont: &*font] };
+        backend_apple_core::style_reset::remember_natural_font(view);
+        // Only on a change: every focus-ring and hover restyle reaches here.
+        let current: Option<Retained<NSObject>> = unsafe { msg_send_id![view, font] };
+        let same: bool = current.is_some_and(|c| unsafe { msg_send![&c, isEqual: &*font] });
+        if !same {
+            let _: () = unsafe { msg_send![view, setFont: &*font] };
+        }
+    } else {
+        backend_apple_core::style_reset::restore_natural_font(view);
     }
 
     apply_text_alignment(view, style.text_align);

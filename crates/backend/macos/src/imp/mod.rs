@@ -1618,21 +1618,6 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     // because the returned `GradientState` lives in the backend's
     // per-view cache — `apply_style_to_view` doesn't have access.
 
-    // Opacity. Use `NSView.setAlphaValue:` (matches iOS's
-    // `UIView.setAlpha:`), NOT `CALayer.setOpacity:`. The two
-    // multiply in AppKit's rendering pipeline, so routing static
-    // opacity through the layer while animated opacity goes through
-    // the view (`AnimProp::Opacity` → `setAlphaValue:`) would make
-    // any author who set both static AND animated opacity get
-    // (static * animated) — visibly broken whenever the static
-    // value is < 1 (a sheet resting at `opacity: 0.0` that a raf
-    // body fades in via `setAlphaValue:` would stay invisible).
-    // Both Apple backends route static + animated through the
-    // same field.
-    if let Some(opacity) = style.opacity.as_ref().map(|t| t.resolve()) {
-        let _: () = unsafe { msg_send![view, setAlphaValue: opacity as f64] };
-    }
-
     // Corner radius. Same caveat as iOS: AppKit's `cornerRadius`
     // isn't clamped to `min(W, H)/2`, so the CSS-idiomatic
     // `border-radius: 999px` renders nothing on a small box. We
@@ -1648,6 +1633,7 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     .filter_map(|r| r.map(|t| length_to_px(&t.resolve())))
     .fold(0.0_f64, f64::max);
     if radius > 0.0 {
+        backend_apple_core::style_reset::remember_natural_clip(&layer);
         fn px_half(t: &runtime_shared::Tokenized<runtime_shared::Length>) -> Option<f64> {
             match t.resolve() {
                 runtime_shared::Length::Px(v) => Some(v as f64 / 2.0),
@@ -1662,6 +1648,16 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
             (None, Some(h)) => Some(h),
             (None, None) => None,
         };
+        // Stash the requested value as an associated `NSNumber` whichever branch
+        // runs: the layout pass (`sync_corner_radius`) reads it back and clamps
+        // against the real bounds (and re-clamps on resize), and a style that
+        // drops the radius finds it there. Same pattern iOS uses: Core Animation
+        // does not clamp `cornerRadius` the way CSS does, and a radius over half
+        // the short side renders the layer empty.
+        let key = NSString::from_str(backend_apple_core::style_reset::REQUESTED_CORNER_RADIUS_KEY);
+        let number: Retained<NSObject> =
+            unsafe { msg_send_id![objc2::class!(NSNumber), numberWithDouble: radius] };
+        let _: () = unsafe { msg_send![&layer, setValue: &*number, forKey: &*key] };
         match cap {
             Some(c) => {
                 let effective = radius.min(c);
@@ -1669,17 +1665,8 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
             }
             None => {
                 // Without explicit px dimensions we can't know `min(W, H)/2`
-                // until Taffy assigns a frame, so stash the requested value as
-                // an associated `NSNumber`; the layout pass (`sync_corner_radius`)
-                // reads it back and clamps against the real bounds (and re-clamps
-                // on resize). Same pattern iOS uses: Core Animation does not clamp
-                // `cornerRadius` the way CSS does, and a radius over half the short
-                // side renders the layer empty.
-                let key = NSString::from_str("idealyst_requested_corner_radius");
-                let number: Retained<NSObject> = unsafe {
-                    msg_send_id![objc2::class!(NSNumber), numberWithDouble: radius]
-                };
-                let _: () = unsafe { msg_send![&layer, setValue: &*number, forKey: &*key] };
+                // until Taffy assigns a frame.
+                //
                 // If the view is ALREADY laid out (real bounds), clamp against
                 // those and apply NOW. A re-apply with no layout pass to follow —
                 // e.g. a FOCUSED state change re-running `apply_style` — would
@@ -1705,6 +1692,8 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
         // dominant scroll cost measured on nicho-ca. The `Overflow` block below
         // owns the clip decision. See the iOS twin in
         // `backend-ios-core::style::apply_style`.
+    } else {
+        backend_apple_core::style_reset::clear_requested_corner_radius(&layer);
     }
 
     // Border. Routes uniform→CALayer stroke (follows cornerRadius) /
@@ -1724,14 +1713,19 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     // Overflow → CALayer `masksToBounds` (AppKit's equivalent of UIView's
     // `clipsToBounds`). Mirrors iOS `style.rs` so the backends converge (Rule
     // #7): a plain `overflow: Hidden` view clips its children on macOS too. When
-    // overflow is unset we leave `masksToBounds` at the layer default (false) —
-    // the cornerRadius branch above does not force it on, so a rounded view
-    // that never asked to clip doesn't pay for an offscreen mask pass.
+    // overflow is unset `masksToBounds` goes back to what the layer had with no
+    // style (false, unless it is an image view's).
     // Clipping is a layer mask — it does NOT detach a child's hosted
     // `CAMetalLayer`; the view is already layer-backed (`setWantsLayer` above) and
     // the GPU surface keeps presenting, clipped to bounds.
-    if let Some(clip) = backend_apple_core::clip::clips_to_bounds(style) {
-        let _: () = unsafe { msg_send![&layer, setMasksToBounds: clip] };
+    //
+    // AppKit's backing layer turns `masksToBounds` on itself whenever `cornerRadius`
+    // goes non-zero (read back on a plain `NSView`), so a rounded view with no
+    // `overflow` keeps that clip, and the radius branch above kept the value from
+    // before it, for when the radius goes.
+    let clip = backend_apple_core::clip::clips_to_bounds(style);
+    if clip.is_some() || radius == 0.0 {
+        backend_apple_core::style_reset::apply_clip(&layer, clip);
     }
     // `masksToBounds` clips the layer's WHOLE composite, and an outer drop
     // shadow is by definition painted outside the bounds — so a view asking for
@@ -1746,11 +1740,15 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     //
     // Cursor: only our `FlippedView` host (view / pressable / link) carries the
     // cursor-rect override — native controls keep their own system cursor (an
-    // `NSTextField` shows the iBeam). `Some(Auto)` clears any prior cursor; an
-    // unset `cursor` leaves whatever a previous apply installed.
-    if let Some(c) = style.cursor {
-        if let Some(fv) = as_flipped_view(view) {
-            fv.set_cursor(view::cursor_for(c));
+    // `NSTextField` shows the iBeam). `Auto` clears any prior cursor, and so does
+    // a style that drops it.
+    if let Some(fv) = as_flipped_view(view) {
+        match style.cursor {
+            Some(c) => fv.set_cursor(view::cursor_for(c)),
+            // Only on a change: `set_cursor` has the window rebuild its cursor
+            // rects, and every hover and press restyle reaches here.
+            None if fv.has_cursor() => fv.set_cursor(None),
+            None => {}
         }
     }
 
@@ -1758,12 +1756,10 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     // explicit-`Auto` descendants opting back in) — the AppShell scrim /
     // overlay click-through pattern web gets from CSS `pointer-events`.
     // Enforced by `FlippedView`'s `hitTest:` override; the verdict logic
-    // is shared with iOS (Rule #7). `Some` overwrites, unset leaves the
-    // prior apply (matching `cursor`).
-    if let Some(p) = style.pointer_events {
-        if let Some(fv) = as_flipped_view(view) {
-            fv.set_pointer_events(Some(p));
-        }
+    // is shared with iOS (Rule #7). A style that drops it goes back to none
+    // stated, which a descendant reads as inheriting.
+    if let Some(fv) = as_flipped_view(view) {
+        fv.set_pointer_events(style.pointer_events);
     }
 
     // Text selection: macOS controls it per text widget via `setSelectable:`
@@ -1793,8 +1789,9 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
 /// Returns `None` for native controls (`NSTextField`, `NSSwitch`, …). Mirrors
 /// the class-check + pointer-cast `install_touch_handler` already uses.
 fn as_flipped_view(view: &NSView) -> Option<&FlippedView> {
-    let is_flipped: bool =
-        unsafe { msg_send![view, isKindOfClass: objc2::class!(IdealystFlippedView)] };
+    // `FlippedView::class()`, not `class!`: every styled view comes here, and a
+    // label can be styled before any flipped view has registered the class.
+    let is_flipped: bool = unsafe { msg_send![view, isKindOfClass: FlippedView::class()] };
     if is_flipped {
         // SAFETY: just confirmed the dynamic class is `IdealystFlippedView`.
         Some(unsafe { &*(view as *const NSView as *const FlippedView) })
@@ -2329,7 +2326,7 @@ fn sync_corner_radius(view: &NSView) {
         return;
     }
     let layer: &NSObject = unsafe { &*layer_ptr };
-    let key = NSString::from_str("idealyst_requested_corner_radius");
+    let key = NSString::from_str(backend_apple_core::style_reset::REQUESTED_CORNER_RADIUS_KEY);
     let value_ptr: *mut NSObject = unsafe { msg_send![layer, valueForKey: &*key] };
     if value_ptr.is_null() {
         return;
@@ -3387,8 +3384,8 @@ impl MacosBackend {
         // mode — so a light-theme app would render invisible white text on a
         // dark-mode Mac. Resolving the `color-text` token here (the same path a
         // styled `color:` token resolves through) makes a raw `text()` match
-        // web/iOS/Android. An explicit `style.color` still wins: `apply_style`'s
-        // text path only writes a color when `style.color.is_some()`.
+        // web/iOS/Android. An explicit `style.color` wins, and `apply_style`'s text
+        // path comes back to this colour when a style drops it.
         let theme_color = color_to_nscolor(&theme_text_color());
         let _: () = unsafe { msg_send![&label, setTextColor: &*theme_color] };
 
@@ -4924,6 +4921,7 @@ impl MacosBackend {
     pub(crate) fn apply_style_impl(&mut self, node: &MacosNode, style: &Rc<StyleRules>) {
         let view = node.as_view();
         apply_style_to_view(view, style);
+        animated::apply_static_opacity(view, style, &mut self.animated_states);
 
         // Image content-fit. `object_fit` maps to the image view's layer
         // `contentsGravity`; `None` ⇒ the framework default `Contain`. A no-op
@@ -4939,10 +4937,17 @@ impl MacosBackend {
         // we need to stash the returned state in the per-view cache —
         // the helper module returns the layer + per-stop sRGB cache
         // for later `set_animated_gradient_stop` writes.
-        if let Some(g) = &style.background_gradient {
-            if let Some(state) = gradient::install_gradient(view, g) {
-                let key = view as *const NSView as usize;
-                self.gradient_states.insert(key, state);
+        match &style.background_gradient {
+            Some(g) => {
+                if let Some(state) = gradient::install_gradient(view, g) {
+                    let key = view as *const NSView as usize;
+                    self.gradient_states.insert(key, state);
+                }
+            }
+            None => {
+                if self.gradient_states.remove(&(view as *const NSView as usize)).is_some() {
+                    gradient::remove_gradient(view);
+                }
             }
         }
 
@@ -5101,7 +5106,11 @@ impl MacosBackend {
         // pattern.
         match node {
             MacosNode::Label(_) => {
-                text_style::apply_text_style(view, style, true, &self.font_registry);
+                let color_animated = self
+                    .animated_states
+                    .get(&(view as *const NSView as usize))
+                    .is_some_and(|s| s.borrow().anim_text_color);
+                text_style::apply_text_style(view, style, true, color_animated, &self.font_registry);
                 // Styled-text labels: the paragraph style is the BASE the run
                 // deltas layer over, so a (re)style must rebuild the attributed
                 // string. Ordering matters: property writes first (above),
@@ -5203,7 +5212,7 @@ impl MacosBackend {
                 // onto the AppKit widget too — `apply_style_to_view` only does the
                 // CALayer-level props, so without this an NSTextField/NSTextView
                 // ignores `font_family`/`font_size` and renders in the system font.
-                text_style::apply_text_style(target, style, false, &self.font_registry);
+                text_style::apply_text_style(target, style, false, false, &self.font_registry);
                 // Author `padding_*` insets the text from the border (Taffy
                 // reserves the padding on the node, but AppKit paints the field's
                 // text flush at the cell origin). Push left/right into the
@@ -5262,6 +5271,21 @@ impl MacosBackend {
                 // scroll view with no `background` stays transparent and shows
                 // its parent, matching iOS's UIScrollView.
                 if is_scroll_view(view) {
+                    if style.background.is_none()
+                        && transitions::has_color(view, transitions::ColorProp::Background)
+                    {
+                        // A style dropped it: back to transparent over the parent,
+                        // and to the window's appearance for the scroller's knob.
+                        transitions::apply_color(
+                            view,
+                            transitions::ColorProp::Background,
+                            true,
+                            [0.0, 0.0, 0.0, 0.0],
+                            style.background_transition.as_ref(),
+                        );
+                        let inherit: *mut NSObject = std::ptr::null_mut();
+                        let _: () = unsafe { msg_send![view, setAppearance: inherit] };
+                    }
                     if let Some(bg) = &style.background {
                         let bg_val = bg.resolve();
                         // Animate the scroll + clip AppKit background over
@@ -5490,6 +5514,13 @@ impl MacosBackend {
         prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
+        if matches!(prop, runtime_shared::animation::AnimProp::ForegroundColor) {
+            self.animated_states
+                .entry(node.as_view() as *const NSView as usize)
+                .or_insert_with(|| std::cell::RefCell::new(animated::AnimatedState::new()))
+                .borrow_mut()
+                .anim_text_color = true;
+        }
         // Gradient stop writes need the per-view cache (layer +
         // sRGB stops), so they route here at the backend level
         // rather than into the standalone `animated::set_animated_color`
@@ -5516,10 +5547,21 @@ impl MacosBackend {
     pub(crate) fn apply_presence_impl(
         &mut self,
         node: &MacosNode,
-        state: runtime_shared::PresenceState,
+        mut state: runtime_shared::PresenceState,
         transition: Option<(u32, runtime_shared::Easing)>,
     ) {
-        presence::apply_presence(node.as_view(), state, transition);
+        // A state with no opacity lets go of the field: it rests on the static
+        // value, and a restyle may write it again.
+        let view = node.as_view();
+        let anim = self
+            .animated_states
+            .entry(view as *const NSView as usize)
+            .or_insert_with(|| std::cell::RefCell::new(animated::AnimatedState::new()));
+        let mut anim = anim.borrow_mut();
+        anim.presence_opacity = state.opacity.is_some();
+        state.opacity = state.opacity.or(anim.static_opacity);
+        drop(anim);
+        presence::apply_presence(view, state, transition);
     }
 
     // -----------------------------------------------------------------
