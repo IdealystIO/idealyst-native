@@ -298,6 +298,13 @@
             for (const { entry } of moved) {
                 this._placeInRowOrder(entry);
             }
+            // A known size can move under a surviving row. Measured rows
+            // own theirs: `_mountIndex`'s observer keeps it.
+            if (!this.cb.measureSizes) {
+                for (const [idx, entry] of this.mountedByIdx) {
+                    entry.size = this.cb.itemSize(idx);
+                }
+            }
             this.lastStart = -1;
             this.lastEnd = -1;
             this.update();
@@ -424,7 +431,14 @@
          * Place an entry at its (main, cross) position. Main offset
          * comes from its grid-row's prefix sum; cross offset + size
          * from its lane. In single-lane (list) mode the item fills the
-         * cross axis exactly as before.
+         * cross axis.
+         *
+         * A known-size row fills its slot on the main axis by pinning BOTH
+         * main edges, against the spacer: that stretches only a row whose
+         * main extent is `auto`, so a row that sets its own height keeps it,
+         * which is how a native row's layout root treats its slot. Not an
+         * inline `height`: inline beats the row's class, so it would override
+         * the author's. A measured row pins one edge: its content decides.
          */
         _positionEntry(idx, entry) {
             const L = this.lanes;
@@ -433,6 +447,14 @@
             const main = this.prefixRow[row] || 0;
             const crossOff = lane * (this.laneCross + this.crossSpacing);
             const node = entry.node;
+            if (!this.cb.measureSizes) {
+                const after = (this.totalSize - main - entry.size) + 'px';
+                if (this.horizontal) {
+                    node.style.right = after;
+                } else {
+                    node.style.bottom = after;
+                }
+            }
             if (this.horizontal) {
                 node.style.left = main + 'px';
                 if (L > 1) {

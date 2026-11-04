@@ -322,10 +322,8 @@ fn capabilities_suite() -> robot_e2e::Suite {
             flow("a flat_list row sits in its slot")
                 .poll(|p: &Page| {
                     let frame = p.get_by_test_id("cap-row").frame()?;
-                    // No taller than its slot: web leaves a row's root at its
-                    // content's height inside the slot, iOS and Android fill it.
-                    if frame.height > 32.5 {
-                        return Err(format!("the first row is {} tall, its slot is 32", frame.height));
+                    if (frame.height - 32.0).abs() > 0.5 {
+                        return Err(format!("the first row is {} tall, its size says 32", frame.height));
                     }
                     Ok(())
                 })

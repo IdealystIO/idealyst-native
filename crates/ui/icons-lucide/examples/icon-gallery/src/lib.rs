@@ -140,7 +140,6 @@ fn list_style() -> Rc<StyleSheet> {
 /// `CELL_H`); this just centers the glyph + caption inside it.
 fn cell_style() -> Rc<StyleSheet> {
     sheet(StyleRules {
-        height: Some(Length::pct(100.0).into()),
         flex_direction: Some(FlexDirection::Column),
         align_items: Some(AlignItems::Center),
         justify_content: Some(JustifyContent::Center),

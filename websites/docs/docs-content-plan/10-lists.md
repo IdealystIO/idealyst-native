@@ -55,7 +55,8 @@ Four pieces:
   Defaults to the index when omitted.
 - `size` — either `fixed_size(N)` for uniform-height rows, or a per-item
   closure for variable heights (see below). Defaults to
-  `fixed_size(48.0)`.
+  `fixed_size(48.0)`. A row's root fills its size along the scroll axis
+  unless it sets its own.
 - `render` — builds the subtree for one item. Called only when the item
   enters the mount window.
 

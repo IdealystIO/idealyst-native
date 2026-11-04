@@ -112,12 +112,17 @@ pub struct ItemDiff {
 /// at the typed layer; this is the type-erased form Virtualizer
 /// sees.
 pub enum ItemSize {
-    /// Author tells us the exact size. Backend never measures.
+    /// Author tells us the exact size. Backend never measures. The size
+    /// is the row's slot: a row root that leaves its main-axis size `auto`
+    /// fills it, and one that sets its own keeps that. The GPU engine mounts
+    /// every row into one flow, with no slots, so its rows take their
+    /// content's size.
     Known(Rc<dyn Fn(usize) -> f32>),
     /// Author provides an estimate; backend measures on mount and
     /// updates. Use this when items have data-driven content
     /// whose size you can't predict from data alone (e.g. wrapped
-    /// text where the wrap width depends on the container).
+    /// text where the wrap width depends on the container). The row root
+    /// stays at its content's size, which then becomes its slot.
     Measured(Rc<dyn Fn(usize) -> f32>),
 }
 

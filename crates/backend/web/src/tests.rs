@@ -3563,6 +3563,160 @@ async fn regression_web_virtual_rows_keep_row_order_after_scrolling_back() {
     list_el.remove();
 }
 
+/// A list whose rows are `row_css` around an 18-square content box, the shape
+/// the row-slot tests below measure. Returns the list and its current sizes,
+/// which a test can change and follow with `virtualizer_data_changed_impl`.
+async fn sized_rows_list(
+    backend: &mut WebBackend,
+    layout: runtime_shared::VirtualLayout,
+    measure_sizes: bool,
+    sizes: Vec<f32>,
+    row_css: &'static str,
+) -> (web_glue::dom::HtmlElement, std::rc::Rc<std::cell::RefCell<Vec<f32>>>) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let mount_doc = doc.clone();
+    let sizes = Rc::new(RefCell::new(sizes));
+    let (count, size) = (sizes.clone(), sizes.clone());
+    let callbacks = runtime_shared::VirtualizerCallbacks::<web_glue::dom::Node> {
+        item_count: Rc::new(move || count.borrow().len()),
+        item_key: Rc::new(|i| i as u64),
+        item_size: Rc::new(move |i| size.borrow()[i]),
+        measure_sizes,
+        mount_item: Rc::new(move |i| {
+            let row = mount_doc.create_element("div").unwrap();
+            let _ = row.set_attribute("data-row", &i.to_string());
+            let _ = row.set_attribute("style", row_css);
+            let content = mount_doc.create_element("div").unwrap();
+            let _ = content.set_attribute("style", "width: 18px; height: 18px;");
+            row.append_child(&content).unwrap();
+            (row.unchecked_into(), i as u64)
+        }),
+        release_item: Rc::new(|_| {}),
+        set_measured_size: Rc::new(|_, _| {}),
+        on_scroll: None,
+        item_changed: None,
+    };
+    let list = backend.create_virtualizer_impl(callbacks, 1.0, layout, &Default::default());
+    let list_el: web_glue::dom::HtmlElement = list.clone().unchecked_into();
+    let _ = list_el.set_attribute("style", "width: 300px; height: 200px;");
+    doc.body().unwrap().append_child(&list_el).unwrap();
+    sleep_ms(30).await;
+    (list_el, sizes)
+}
+
+/// `(main offset, main extent)` of mounted row `i`, from the rendered boxes.
+fn row_slot(list: &web_glue::dom::HtmlElement, i: usize, horizontal: bool) -> (f64, f64) {
+    let spacer = list.first_element_child().expect("the spacer");
+    let row = spacer
+        .query_selector(&format!("[data-row=\"{i}\"]"))
+        .unwrap()
+        .unwrap_or_else(|| panic!("row {i} is mounted"));
+    let (r, base) = (row.get_bounding_client_rect(), spacer.get_bounding_client_rect());
+    if horizontal {
+        (r.left() - base.left(), r.width())
+    } else {
+        (r.top() - base.top(), r.height())
+    }
+}
+
+/// REGRESSION TEST.
+///
+/// With `size = fixed_size(32.0)` a row's root stayed at its content's height
+/// (18) inside its 32 slot on web, where every native backend computes the
+/// row's root against the slot. So a row's background stopped short of the
+/// next row and `align_items: center` centered nothing. Offsets and gaps must
+/// still come from the sizes, and each row fills its own.
+#[wasm_bindgen_test]
+async fn regression_web_flat_list_row_stays_at_content_height_in_its_slot() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let layout = runtime_shared::VirtualLayout { main_spacing: 10.0, ..Default::default() };
+    let (list, _) = sized_rows_list(&mut backend, layout, false, vec![32.0, 50.0, 32.0], "").await;
+    assert_eq!(row_slot(&list, 0, false), (0.0, 32.0));
+    assert_eq!(row_slot(&list, 1, false), (42.0, 50.0));
+    assert_eq!(row_slot(&list, 2, false), (102.0, 32.0));
+    list.remove();
+}
+
+/// The same slot along a horizontal list's main axis, which is its width.
+#[wasm_bindgen_test]
+async fn regression_web_horizontal_flat_list_row_stays_at_content_width_in_its_slot() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let layout = runtime_shared::VirtualLayout {
+        axis: runtime_shared::primitives::virtualizer::Axis::Horizontal,
+        ..Default::default()
+    };
+    let (list, _) = sized_rows_list(&mut backend, layout, false, vec![80.0, 40.0], "").await;
+    assert_eq!(row_slot(&list, 0, true), (0.0, 80.0));
+    assert_eq!(row_slot(&list, 1, true), (80.0, 40.0));
+    list.remove();
+}
+
+/// A row follows its slot when the sizes change under it, and a row that
+/// stays mounted while the list grows keeps its own extent as the spacer moves.
+#[wasm_bindgen_test]
+async fn a_flat_list_row_follows_its_slot_when_the_sizes_change() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let layout = runtime_shared::VirtualLayout::default();
+    let (list, sizes) = sized_rows_list(&mut backend, layout, false, vec![32.0, 32.0], "").await;
+    *sizes.borrow_mut() = vec![60.0, 32.0, 32.0];
+    let node: web_glue::dom::Node = list.clone().unchecked_into();
+    backend.virtualizer_data_changed_impl(&node);
+    sleep_ms(30).await;
+    assert_eq!(row_slot(&list, 0, false), (0.0, 60.0));
+    assert_eq!(row_slot(&list, 1, false), (60.0, 32.0));
+    assert_eq!(row_slot(&list, 2, false), (92.0, 32.0));
+    list.remove();
+}
+
+/// A slot fills what the row left to it, the rule a native row's layout root
+/// follows: a row that sets its own height keeps it.
+#[wasm_bindgen_test]
+async fn a_flat_list_row_with_its_own_height_keeps_it_in_the_slot() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let layout = runtime_shared::VirtualLayout::default();
+    let (list, _) = sized_rows_list(&mut backend, layout, false, vec![32.0, 32.0], "height: 20px;").await;
+    assert_eq!(row_slot(&list, 0, false), (0.0, 20.0));
+    assert_eq!(row_slot(&list, 1, false), (32.0, 20.0));
+    list.remove();
+}
+
+/// Each lane's cell fills its own slot in a grid row.
+#[wasm_bindgen_test]
+async fn a_flat_list_grid_cell_fills_its_slot() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let layout = runtime_shared::VirtualLayout {
+        lanes: runtime_shared::Lanes::Fixed(2),
+        ..Default::default()
+    };
+    let (list, _) = sized_rows_list(&mut backend, layout, false, vec![32.0, 32.0, 40.0], "").await;
+    assert_eq!(row_slot(&list, 0, false), (0.0, 32.0));
+    assert_eq!(row_slot(&list, 1, false), (0.0, 32.0));
+    assert_eq!(row_slot(&list, 2, false), (32.0, 40.0));
+    list.remove();
+}
+
+/// A `Measured` list's size comes FROM the row, so the row must stay at its
+/// content's height: filling the estimate would make the estimate the
+/// measurement, and every row would report the guess back as its real size.
+#[wasm_bindgen_test]
+async fn a_measured_flat_list_row_keeps_its_content_height() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let layout = runtime_shared::VirtualLayout::default();
+    let (list, _) = sized_rows_list(&mut backend, layout, true, vec![60.0, 60.0], "").await;
+    let (_, height) = row_slot(&list, 0, false);
+    assert_eq!(height, 18.0, "a measured row is its content's height, not the estimate");
+    list.remove();
+}
+
 /// REGRESSION TEST — the 2-D twin of the row-order test above: virtual-grid
 /// cells sit in row-major DOM order, not the order they scrolled in.
 #[wasm_bindgen_test]
