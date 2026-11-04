@@ -33,6 +33,10 @@
 //!    `output{source: server}`, and NOT in the panel's default log view;
 //!    a panic in the server is an `error` from it naming `server.log`.
 //!
+//! A second test covers a first web build that fails: the API comes up, and
+//! the first good bundle restarts a server that decided at startup it had
+//! none to serve.
+//!
 //! `#[ignore]`d: it compiles the framework for wasm32 and for the host, and
 //! needs Chrome (or `IDEALYST_BROWSER`) and `wasm-bindgen` on `PATH`:
 //!
@@ -485,6 +489,107 @@ fn first_build(events: &[Value], target: &str) -> (u64, u64) {
 
 fn seq(e: &Value) -> u64 {
     e["seq"].as_u64().unwrap()
+}
+
+/// A server shaped like CrewForge's: it looks for `index.html` once, at
+/// startup, and without one stays API-only for as long as it runs.
+const SERVER_DECIDES_AT_STARTUP: &str = r#"
+#[tokio::main]
+async fn main() {
+    let port = std::env::var("PORT").expect("PORT");
+    let dist = std::path::PathBuf::from(std::env::var("WEB_DIST").expect("WEB_DIST"));
+    let index = std::fs::read_to_string(dist.join("index.html")).ok();
+    println!("fixture-server serving a bundle: {}", index.is_some());
+    let mut app = axum::Router::new()
+        .route("/api/hello", axum::routing::get(|| async { "api up" }));
+    if let Some(index) = index {
+        app = app.route("/", axum::routing::get(move || async move { axum::response::Html(index) }));
+    }
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+"#;
+
+/// The first web build fails, so a server that decides at startup comes up
+/// API-only. The first good bundle must restart it, once: without that `/`
+/// stays 404 for the rest of the session while the API keeps answering.
+#[test]
+#[ignore = "compiles the framework for wasm32 and the host; run with --ignored"]
+fn regression_a_failed_first_web_build_leaves_the_server_api_only() {
+    let repo = repo_root();
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dev_fullstack_broken_first_bundle");
+    materialize(&root, &repo);
+    write(&root.join("server/src/main.rs"), SERVER_DECIDES_AT_STARTUP);
+    let broken = format!("{APP_RS}\nfn the_fixture_does_not_compile( {{\n");
+    write(&root.join("app/src/app.rs"), &broken);
+    let project = root.join("app");
+    // A bundle staged by an earlier run would make the server's first start
+    // find one, which is the case this test is not about.
+    let _ = std::fs::remove_dir_all(project.join("target/idealyst/dev/dist/web"));
+    let scratch = tempfile::tempdir().unwrap();
+
+    let log = Arc::new(Mutex::new(String::new()));
+    let events_path = scratch.path().join("events.jsonl");
+    let mut session = Session { children: Vec::new(), log: log.clone(), events: events_path.clone() };
+    let port = free_port();
+    let mut dev = Command::new(env!("CARGO_BIN_EXE_idealyst"))
+        .current_dir(&project)
+        .env("IDEALYST_TEST_DRIVER", "1")
+        .env("IDEALYST_DEV_NO_RESUME", "1")
+        .env_remove("CARGO_TARGET_DIR")
+        .args(["dev", "--web", "--local", "--no-robot", "--no-headless-client"])
+        .args(["--port", &port.to_string()])
+        .arg("--events-file")
+        .arg(&events_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn idealyst dev");
+    pump(dev.stdout.take().unwrap(), log.clone());
+    pump(dev.stderr.take().unwrap(), log.clone());
+    session.children.push(dev);
+
+    // The broken bundle does not keep the API down.
+    let failed = session.wait_event(0, Duration::from_secs(1800), "the failed first web build", |e| {
+        e["type"] == "build_finished" && e["target"] == "web"
+    });
+    assert_eq!(failed["outcome"], "failed", "{failed}");
+    session.wait_event(0, Duration::from_secs(1800), "the API-only server", |e| {
+        e["type"] == "server_ready" && e["kind"] == "full_stack"
+    });
+    assert_eq!(http_get(port, "/api/hello").as_deref(), Some("api up"));
+    let page = http_get(port, "/").unwrap_or_default();
+    assert!(!page.contains("dev fullstack e2e"), "there is no bundle to serve yet: {page}");
+
+    // The fix: the first good bundle restarts the server, which now finds it.
+    let before = session.last_seq();
+    write(&root.join("app/src/app.rs"), APP_RS);
+    let built = session.wait_event(before, Duration::from_secs(1800), "the first good web build", |e| {
+        e["type"] == "build_finished" && e["target"] == "web" && e["outcome"] != "failed"
+    });
+    let restarted = session.wait_event(seq(&built), Duration::from_secs(60), "the server restarted onto the bundle", |e| {
+        e["type"] == "server_ready" && e["kind"] == "full_stack"
+    });
+    let page = http_get(port, "/").unwrap_or_default();
+    assert!(page.contains("dev fullstack e2e"), "the restarted server does not serve the bundle: {page:?}");
+    assert_eq!(http_get(port, "/api/hello").as_deref(), Some("api up"));
+
+    // Once: a later rebuild republishes files the server already serves.
+    let before = session.last_seq();
+    write(&root.join("app/src/app.rs"), &format!("{APP_RS}\npub const REVISION: u32 = 2;\n"));
+    session.wait_event(before, Duration::from_secs(900), "the next web build", |e| {
+        e["type"] == "build_finished" && e["target"] == "web" && e["outcome"] != "failed"
+    });
+    std::thread::sleep(Duration::from_secs(3));
+    let again: Vec<Value> = session
+        .events()
+        .into_iter()
+        .filter(|e| seq(e) > seq(&restarted) && e["type"] == "server_ready")
+        .collect();
+    assert!(again.is_empty(), "a later bundle restarted the server: {again:?}");
+
+    drop(session);
+    materialize(&root, &repo);
 }
 
 #[test]

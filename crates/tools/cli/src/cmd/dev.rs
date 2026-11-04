@@ -3139,7 +3139,13 @@ fn launch_web_with_backend(
     };
     let mut child: Option<ServerProc> = None;
     let mut route_reported = false;
+    // Whether the server now running found a bundle when it started
+    // (see `restart_for_first_bundle`). Read before the spawn: a bundle
+    // landing between the two costs one needless restart, never a server
+    // left without it.
+    let server_found_bundle = std::cell::Cell::new(false);
     let start_server = |child: &mut Option<ServerProc>, route_reported: &mut bool| -> Result<()> {
+        server_found_bundle.set(dist_web.join("index.html").is_file());
         *child = launch.start(&shared)?;
         if child.is_some() && !*route_reported {
             if let Some(stream) = &stream {
@@ -3283,6 +3289,24 @@ fn launch_web_with_backend(
             crate::dlog!("dev web", "bundle rebuilt → refresh the browser");
         }
 
+        let for_bundle = restart_for_first_bundle(
+            child.is_some(),
+            server_found_bundle.get(),
+            cur > 0,
+            dist_web.join("index.html").is_file(),
+        );
+        if for_bundle && !action.restart_server() {
+            dev_events::global().log(
+                "dev web",
+                "the first good web bundle is staged: restarting the server, which found none when it started",
+            );
+            if let Some(old) = child.take() {
+                stop_server(old);
+            }
+            start_server(&mut child, &mut route_reported)?;
+            continue;
+        }
+
         if action.restart_server() {
             // The watcher already BUILT this successfully and only bumps
             // when the binary actually relinked (or no server is running),
@@ -3327,9 +3351,30 @@ fn launch_web_with_backend(
 /// and there is a bundle for it to serve — the bundle is done, or one
 /// staged by an earlier session is there. Servers decide at startup
 /// whether they serve a bundle at all (CrewForge comes up API-only with no
-/// `index.html`), so on a first-ever run it waits for the bundle.
+/// `index.html`), so on a first-ever run it waits for the bundle. A bundle
+/// that finished by failing counts as done: the API comes up while the web
+/// side is broken, and [`restart_for_first_bundle`] recovers it.
 fn start_before_bundle(built: bool, bundle_done: bool, staged_index: bool) -> bool {
     built && (bundle_done || staged_index)
+}
+
+/// Whether the running server must restart to serve the session's first
+/// good bundle: it found no `index.html` when it started (the first web
+/// build failed), and one is staged now. A server may decide once, at
+/// startup, whether it serves a bundle at all, so without this `/` stays a
+/// 404 for the rest of the session while the API answers.
+///
+/// Read from the state rather than from the bundle's signal moving, so a
+/// bundle published between the server's start and the loop's first look at
+/// the signal is not missed. `bundle_published` keeps a half-staged
+/// `index.html` from counting. Holds once: the restart finds the bundle.
+fn restart_for_first_bundle(
+    server_running: bool,
+    server_found_bundle: bool,
+    bundle_published: bool,
+    staged_index: bool,
+) -> bool {
+    server_running && !server_found_bundle && bundle_published && staged_index
 }
 
 /// The page's dev stream, as bound for this session.
@@ -4011,7 +4056,8 @@ impl DevAction {
 /// Map the two watcher signals onto the action the loop takes.
 ///
 /// The load-bearing rule is that `bundle_moved` ALONE never restarts the
-/// server. A bundle rebuild republishes static files the running server
+/// server ([`restart_for_first_bundle`] is the one exception, and is not a
+/// rebuild). A bundle rebuild republishes static files the running server
 /// reads at request time; killing the process to publish them takes the
 /// port down for a compile and buys nothing — for the in-crate shape
 /// too, where it would cost a full `cargo run` compile on every UI-only
@@ -6144,6 +6190,17 @@ mod tests {
         assert!(start_before_bundle(true, true, false), "the bundle is done");
         assert!(!start_before_bundle(true, false, false), "first run: wait for the bundle");
         assert!(!start_before_bundle(false, true, true), "its build failed");
+    }
+
+    /// CrewForge: a first web build that failed left the server API-only for
+    /// the session, with `/` a 404 after the fix landed.
+    #[test]
+    fn regression_only_a_server_that_found_no_bundle_restarts_for_the_first_good_one() {
+        assert!(restart_for_first_bundle(true, false, true, true), "API-only, and the bundle is here");
+        assert!(!restart_for_first_bundle(true, true, true, true), "it already serves one: later bundles are files");
+        assert!(!restart_for_first_bundle(true, false, false, true), "still being staged, or a --no-build session");
+        assert!(!restart_for_first_bundle(true, false, true, false), "nothing to find yet");
+        assert!(!restart_for_first_bundle(false, false, true, true), "no server to restart");
     }
 
     /// The bundle and the server build at once unless they would share a
