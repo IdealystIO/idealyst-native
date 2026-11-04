@@ -597,6 +597,25 @@ fn an_appended_unused_pub_fn_patches_and_changes_nothing() {
     assert!(out.contains("probe=2\n") && out.contains("other=20\n"), "{out}");
 }
 
+/// A component ahead of a neighbour, as `#[component]` and `#[props]`
+/// expand under hot-reload: their impls in a const named after the
+/// component (`ui-lowering-parity`'s `symbol_stability` compiles the real
+/// macros and pins that), and a `#[derive]` no macro can scope. The derive
+/// lands at module level ahead of `impl Row`, renumbering it, in the save
+/// that also edits `Row::total`.
+#[test]
+#[ignore = "compiles two crates for wasm32 and runs them in node; run with --ignored"]
+fn a_component_added_ahead_of_a_neighbour_patches() {
+    let base = Base::build("additive-component-ahead");
+    let builder = base.seeded_builder();
+    let component = "#[derive(Default, Clone)]\npub struct GaugeProps {\n    pub level: u32,\n}\n\n#[allow(non_upper_case_globals)]\nconst __Gauge_scope: () = {\n    impl GaugeProps {\n        #[inline(never)]\n        pub fn level(&self) -> u32 {\n            self.level + 1\n        }\n    }\n};\n\n#[inline(never)]\npub fn Gauge(props: &GaugeProps) -> u32 {\n    props.level()\n}\n\nimpl Row {";
+    let source = LIB_RS.replace("impl Row {", component).replace("self.a + 1", "self.a + 50");
+    let patch = base.patch(&builder, &source, true).unwrap_or_else(|e| panic!("the patch did not build:\n{e:#}"));
+    assert!(verified(&patch));
+    let out = base.run(&patch);
+    assert!(out.contains("other=510\n") && out.contains("probe=2\n"), "{out}");
+}
+
 /// A new FILE: a `mod` line and a call in existing code, and everything
 /// else in a file the base never compiled. It has no neighbours to
 /// renumber, so nothing is paired, and the app's base code reaches it

@@ -53,7 +53,10 @@
 //! What source cannot see — whether the compiled crate's EXISTING
 //! symbols kept their names once the new items were expanded beside
 //! them — is checked after the patch's replay, against the base module
-//! (`build_web::hotpatch_additive`).
+//! (`build_web::hotpatch_additive`), which pairs a renumbered function
+//! with its old name. New state in a new body is checked there too, and
+//! refused here as well when source can tell ([`declares_new_state`]): a
+//! refusal here costs milliseconds, and the replay it saves costs seconds.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -833,10 +836,71 @@ fn check_attrs(attrs: &[syn::Attribute]) -> Result<bool, String> {
     Ok(framework)
 }
 
+/// Whether an added item's tokens declare a static that is certainly
+/// writable: `static mut`, `thread_local!`, or a `static` whose type is a
+/// standard interior-mutable one. Any other static may be read-only data,
+/// which a patch may hold; the post-replay check reads the segment it landed
+/// in and decides those.
+fn declares_new_state(tokens: proc_macro2::TokenStream) -> Option<String> {
+    use proc_macro2::TokenTree;
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    let ident = |i: usize| match tokens.get(i) {
+        Some(TokenTree::Ident(id)) => Some(id.to_string()),
+        _ => None,
+    };
+    for (i, tt) in tokens.iter().enumerate() {
+        match tt {
+            TokenTree::Group(g) => {
+                if let Some(found) = declares_new_state(g.stream()) {
+                    return Some(found);
+                }
+            }
+            TokenTree::Ident(id) if id == "thread_local" => {
+                if matches!(tokens.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == '!') {
+                    return Some("a `thread_local!`".into());
+                }
+            }
+            TokenTree::Ident(id) if id == "static" => {
+                let name = ident(i + 1)?;
+                if name == "mut" {
+                    return Some("a `static mut`".into());
+                }
+                // `static NAME: path::Type<…>`: the type's last segment,
+                // up to the `=`.
+                let ty = tokens[i + 2..]
+                    .iter()
+                    .take_while(|t| !matches!(t, TokenTree::Punct(p) if p.as_char() == '='))
+                    .take_while(|t| !matches!(t, TokenTree::Punct(p) if p.as_char() == '<'))
+                    .filter_map(|t| match t {
+                        TokenTree::Ident(id) => Some(id.to_string()),
+                        _ => None,
+                    })
+                    .last();
+                if ty.as_deref().is_some_and(is_interior_mutable) {
+                    return Some(format!("`static {name}`"));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The standard library's types whose statics are writable.
+fn is_interior_mutable(ty: &str) -> bool {
+    ty.starts_with("Atomic")
+        || matches!(ty, "Mutex" | "RwLock" | "Cell" | "RefCell" | "UnsafeCell" | "OnceLock" | "OnceCell" | "LazyLock" | "LazyCell" | "Once" | "Condvar")
+}
+
 /// The names an added item introduces, or why it is not additive.
 fn validate(item: &syn::Item, new_types: &BTreeSet<String>) -> Result<Vec<AddedName>, String> {
     let label = item_label(item);
     let refuse = |why: &str| Err(format!("`{label}` {why}"));
+    if !matches!(item, syn::Item::Static(_) | syn::Item::Macro(_)) {
+        if let Some(state) = declares_new_state(item.to_token_stream()) {
+            return Err(format!("`{label}` declares {state}, new storage every later patch would give a fresh copy"));
+        }
+    }
     let named = |ident: &syn::Ident, vis: &syn::Visibility, prefix: bool| AddedName {
         name: ident.to_string(),
         reach: reach_of(vis),
@@ -974,6 +1038,9 @@ fn validate_import(item: &syn::Item, leaf: &UseLeaf, in_new_module: bool) -> Res
 /// an associated type or a macro there is not something a type's
 /// existing users could be unaffected by.
 fn inherent_member(m: &syn::ImplItem) -> Result<(String, Reach), String> {
+    if let Some(state) = declares_new_state(m.to_token_stream()) {
+        return Err(format!("a new impl member declares {state}, new storage every later patch would give a fresh copy"));
+    }
     match m {
         syn::ImplItem::Fn(f) => {
             check_attrs(&f.attrs)?;
@@ -1257,6 +1324,42 @@ mod tests {
     #[test]
     fn a_static_is_refused() {
         assert!(refused(BASE, &format!("{BASE}\nstatic COUNT: u32 = 0;\n")).contains("storage"));
+    }
+
+    /// The state the replay would refuse anyway, refused before it: 25 s
+    /// on CrewForge. A static that may be read-only is left to the check
+    /// that reads its segment.
+    #[test]
+    fn regression_new_state_in_a_new_body_is_refused_before_the_replay() {
+        for body in [
+            "thread_local! { static SEEN: Cell<u8> = Cell::new(0); }",
+            "static mut HITS: u32 = 0;",
+            "static HITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);",
+            "static GUARD: Mutex<Vec<u8>> = Mutex::new(Vec::new());",
+            "let f = || { { thread_local! { static DEEP: u8 = 0; } } };",
+        ] {
+            let why = refused(BASE, &format!("{BASE}\nfn fresh() {{ {body} }}\n"));
+            assert!(why.contains("declares") && why.contains("fresh copy"), "{body}: {why}");
+        }
+        let why = refused(BASE, &format!("{BASE}\nimpl Row {{ fn fresh() {{ thread_local! {{ static S: u8 = 0; }} }} }}\n"));
+        assert!(why.contains("declares"), "{why}");
+        let grown = BASE.replace("pub fn total(&self) -> u32 { self.a }", "pub fn total(&self) -> u32 { self.a }\n fn fresh() { thread_local! { static S: u8 = 0; } }");
+        assert!(refused(BASE, &grown).contains("declares"));
+
+        assert_eq!(names(BASE, &format!("{BASE}\nfn fresh() {{ static NAME: &str = \"x\"; }}\n")), vec!["fresh"]);
+        assert_eq!(names(BASE, &format!("{BASE}\nfn fresh() -> &'static str {{ \"x\" }}\n")), vec!["fresh"]);
+        assert_eq!(names(BASE, &format!("{BASE}\nfn fresh<T: 'static>(t: T) {{}}\n")), vec!["fresh"]);
+    }
+
+    /// A plain impl and a derive go to the replay, which pairs what they
+    /// renumber: nothing here may refuse them.
+    #[test]
+    fn an_impl_or_derive_ahead_of_a_neighbour_is_still_additive() {
+        let ahead = BASE.replace(
+            "pub struct Row",
+            "#[derive(Default)]\npub struct Fresh;\nimpl Fresh { pub fn fresh(&self) -> u8 { 1 } }\npub struct Row",
+        );
+        assert_eq!(names(BASE, &ahead), vec!["Fresh"]);
     }
 
     #[test]
