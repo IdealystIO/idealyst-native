@@ -440,16 +440,14 @@ impl DescriptorSet {
     /// rescan — so a patch built from the save can be keyed by the
     /// sources it compiled.
     pub fn build_key_with(&self, changed: &BTreeMap<String, String>) -> String {
-        key_of(
-            self.split_version,
-            self.files.iter().map(|(path, digest)| {
-                let content = match changed.get(path) {
-                    Some(text) => self::digest(text.as_bytes()),
-                    None => digest.content.clone(),
-                };
-                (path.as_str(), content)
-            }),
-        )
+        // A changed path the archive lacks is a new file, which the crate
+        // now holds; `key_of` wants every path in order.
+        let mut files: BTreeMap<&str, String> =
+            self.files.iter().map(|(path, digest)| (path.as_str(), digest.content.clone())).collect();
+        for (path, text) in changed {
+            files.insert(path, self::digest(text.as_bytes()));
+        }
+        key_of(self.split_version, files.into_iter())
     }
 }
 

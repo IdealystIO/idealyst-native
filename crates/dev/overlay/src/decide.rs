@@ -85,7 +85,10 @@ pub enum Reason {
     /// `cargo clean`.
     NoArchive,
     /// A changed file is not in the archive: it is new, or it was not
-    /// scanned (a file outside `src/`).
+    /// scanned (a file outside `src/`). A session that takes additive
+    /// patches patches a new module, and ignores a file nothing declares;
+    /// this is what it is left with: a file that may be a new target, or
+    /// that a `#[path]` or `include!` the scan cannot see may read.
     UnknownFile { file: String },
     /// A changed file no longer parses. Mid-edit, almost always.
     DoesNotParse { file: String },
@@ -262,8 +265,12 @@ fn decide_core(
         return (decision, added);
     };
     for file in changed {
-        let recorded = archive.files.get(&file.path).map(|f| f.sheets.as_str());
-        if recorded != Some(crate::archive::sheets_digest(&file.text).as_str()) {
+        // A new file was compared with nothing: a stylesheet in it is new.
+        let recorded = match archive.files.get(&file.path) {
+            Some(f) => f.sheets.clone(),
+            None => crate::archive::sheets_digest(""),
+        };
+        if recorded != crate::archive::sheets_digest(&file.text) {
             return (Decision::Rebuild(Reason::PremintStylesheet { file: file.path.clone() }), Vec::new());
         }
     }
@@ -317,6 +324,9 @@ fn decide_in(
     let mut added: Vec<FileAddition> = Vec::new();
     for file in changed {
         let Some(recorded) = archive.files.get(&file.path) else {
+            if additive {
+                continue; // Decided by what declares it, below.
+            }
             return (Decision::Rebuild(Reason::UnknownFile { file: file.path.clone() }), Vec::new());
         };
         match decide_file(archive, &by_file, recorded, file, additive) {
@@ -328,6 +338,11 @@ fn decide_in(
                 added.extend(additions.into_iter().map(|addition| FileAddition { file: file.path.clone(), addition }));
             }
             FileOutcome::Rebuild(why) => return (Decision::Rebuild(why), Vec::new()),
+        }
+    }
+    if additive {
+        if let Some(why) = decide_new_files(archive, changed, &mut body_only, &mut added) {
+            return (Decision::Rebuild(why), Vec::new());
         }
     }
     if let Some(why) = added_name_in_use(archive, &added) {
@@ -348,6 +363,76 @@ fn decide_in(
     } else {
         (Decision::Patch(patches), Vec::new())
     }
+}
+
+/// The files an additive save's `mod name;` lines bring in, each checked
+/// as a module nothing existing can see: `additions` against an empty
+/// outline. Each joins `body_only` and `added`, so its items are checked
+/// and it is named as a file of the patch.
+///
+/// A file that was not declared is not compiled, so it needs nothing until
+/// a `mod` line brings it in; the save that adds the line reads it. The
+/// exceptions rebuild ([`Reason::UnknownFile`]): a file cargo may build by
+/// itself, and any crate with a `#[path]` or `include!` that could read it.
+fn decide_new_files(
+    archive: &DescriptorSet,
+    changed: &[ChangedFile],
+    body_only: &mut Vec<String>,
+    added: &mut Vec<FileAddition>,
+) -> Option<Reason> {
+    let mut declared: Vec<String> = Vec::new();
+    let mut at = 0;
+    while at < added.len() {
+        let parent = added[at].file.clone();
+        let decl = added[at].addition.declares.clone();
+        at += 1;
+        let Some(decl) = decl else { continue };
+        let candidates = module_file_candidates(&parent, &decl);
+        let Some(file) = changed.iter().find(|f| candidates.contains(&f.path)) else {
+            return Some(Reason::NotAdditive {
+                file: parent,
+                why: format!("`mod {};` names a file that does not exist ({})", decl.name, candidates[0]),
+            });
+        };
+        if declared.contains(&file.path) {
+            continue;
+        }
+        declared.push(file.path.clone());
+        match runtime_macros_parse::additions(&[], &file.text, &crate::archive::outline_digest) {
+            Ok(additions) => {
+                if !body_only.contains(&file.path) {
+                    body_only.push(file.path.clone());
+                }
+                added.extend(additions.into_iter().map(|addition| FileAddition { file: file.path.clone(), addition }));
+            }
+            Err(why) => return Some(Reason::NotAdditive { file: file.path.clone(), why }),
+        }
+    }
+    let unreadable_source = archive.files.values().any(|f| f.consts.opaque);
+    for file in changed {
+        if archive.files.contains_key(&file.path) || declared.contains(&file.path) {
+            continue;
+        }
+        let cargo_target = !file.path.starts_with("src/")
+            || file.path.starts_with("src/bin/")
+            || matches!(file.path.as_str(), "src/lib.rs" | "src/main.rs");
+        if cargo_target || unreadable_source {
+            return Some(Reason::UnknownFile { file: file.path.clone() });
+        }
+    }
+    None
+}
+
+/// Where rustc looks for `decl`, declared in the file `parent`: `name.rs`
+/// or `name/mod.rs`, in the directory the parent's module owns plus the
+/// inline modules around the line.
+pub(crate) fn module_file_candidates(parent: &str, decl: &runtime_macros_parse::ModDecl) -> [String; 2] {
+    let mut dir = module_dir(parent);
+    for segment in decl.scope.split("::").filter(|s| !s.is_empty()) {
+        dir.push_str(segment);
+        dir.push('/');
+    }
+    [format!("{dir}{}.rs", decl.name), format!("{dir}{}/mod.rs", decl.name)]
 }
 
 /// The first name an additive save introduces that a file it can reach
@@ -544,18 +629,24 @@ fn module_files(file: &str, other: &str) -> bool {
     if other == file {
         return true;
     }
+    other.starts_with(&module_dir(file))
+}
+
+/// The directory holding the files of the module `file` defines:
+/// `src/a/` for `src/a.rs`, and for `lib.rs`, `main.rs` and `mod.rs` the
+/// directory they sit in.
+fn module_dir(file: &str) -> String {
     let (dir, stem) = match file.rsplit_once('/') {
         Some((dir, name)) => (dir, name.strip_suffix(".rs").unwrap_or(name)),
         None => ("", file.strip_suffix(".rs").unwrap_or(file)),
     };
-    let module_dir = if matches!(stem, "lib" | "main" | "mod") {
+    if matches!(stem, "lib" | "main" | "mod") {
         if dir.is_empty() { String::new() } else { format!("{dir}/") }
     } else if dir.is_empty() {
         format!("{stem}/")
     } else {
         format!("{dir}/{stem}/")
-    };
-    other.starts_with(&module_dir)
+    }
 }
 
 /// The half of the hot-patch question the shape no longer answers: did
@@ -597,6 +688,8 @@ fn const_value_rebuild(
         .files
         .iter()
         .map(|(path, recorded)| now.get(path.as_str()).unwrap_or(&recorded.consts).uses())
+        // A new file can read the edited const too.
+        .chain(now.iter().filter(|(path, _)| !archive.files.contains_key(**path)).map(|(_, new)| new.uses()))
         .collect();
     let rebuild = |(file, label, _): &(&str, &str, &str)| Reason::ConstReadAtCompileTime {
         file: file.to_string(),
@@ -643,6 +736,14 @@ fn const_value_rebuild(
 /// ([`crate::scan_crate`]) after a hot patch lands, instead of calling
 /// this.
 pub fn advance_archive(archive: &mut DescriptorSet, changed: &[ChangedFile]) {
+    // A file the archive lacks is nothing the running build compiled; it
+    // says nothing about what this save did to the rest.
+    let changed: Vec<ChangedFile> = changed
+        .iter()
+        .filter(|f| archive.files.contains_key(&f.path))
+        .map(|f| ChangedFile { path: f.path.clone(), text: f.text.clone() })
+        .collect();
+    let changed = &changed[..];
     let rekey = match decide(Some(archive), changed) {
         Decision::HotPatch(_) => true,
         Decision::Patch(_) | Decision::Unchanged => false,
@@ -791,7 +892,7 @@ pub fn load_archive_from(dir: &Path) -> Option<DescriptorSet> {
 mod tests {
     use super::*;
 
-    const APP: &str = r#"
+    pub(super) const APP: &str = r#"
 use runtime_core::*;
 
 fn count() -> i32 {
@@ -813,7 +914,7 @@ fn Screen() -> Element {
     /// because the decision compares against what the PRODUCER wrote and
     /// a hand-built archive could agree with a decision that the real one
     /// would not.
-    fn archive_of(source: &str) -> (tempfile::TempDir, DescriptorSet) {
+    pub(super) fn archive_of(source: &str) -> (tempfile::TempDir, DescriptorSet) {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             dir.path().join("Cargo.toml"),
@@ -826,7 +927,7 @@ fn Screen() -> Element {
         (dir, set)
     }
 
-    fn changed(text: &str) -> Vec<ChangedFile> {
+    pub(super) fn changed(text: &str) -> Vec<ChangedFile> {
         vec![ChangedFile { path: "src/app.rs".into(), text: text.to_string() }]
     }
 
@@ -1976,7 +2077,151 @@ mod archive_tests {
 
 #[cfg(test)]
 mod additive_tests {
+    use super::tests::{archive_of, changed, APP};
     use super::*;
+
+    /// The save the report asks for: one-public-component-per-file, so a
+    /// new component is a `mod` line, a `use` line, a body edit and a file.
+    #[test]
+    fn regression_a_new_file_with_only_mod_and_use_lines_is_a_hot_patch() {
+        let (_d, archive) = archive_of(APP);
+        let parent = APP.replace("use runtime_core::*;", "use runtime_core::*;\nmod badge;\nuse badge::Badge;")
+            .replace(r#"text { "hello" }"#, r#"Badge()"#);
+        let badge = "use runtime_core::*;\n\n#[component]\npub fn Badge() -> Element {\n    ui! { text { \"b\" } }\n}\n";
+        let save = vec![
+            ChangedFile { path: "src/app.rs".into(), text: parent },
+            ChangedFile { path: "src/app/badge.rs".into(), text: badge.into() },
+        ];
+        let (decision, added) = decide_additive(Some(&archive), &save, false);
+        assert_eq!(decision, Decision::HotPatch(vec!["src/app.rs".into(), "src/app/badge.rs".into()]));
+        assert!(added.iter().any(|a| a.file == "src/app/badge.rs" && a.addition.label == "fn Badge"));
+    }
+
+    #[test]
+    fn a_mod_line_finds_its_file_where_rustc_does() {
+        let at = |parent: &str, scope: &str| {
+            module_file_candidates(parent, &runtime_macros_parse::ModDecl { scope: scope.into(), name: "x".into() })
+        };
+        assert_eq!(at("src/lib.rs", ""), ["src/x.rs".to_string(), "src/x/mod.rs".to_string()]);
+        assert_eq!(at("src/a.rs", ""), ["src/a/x.rs".to_string(), "src/a/x/mod.rs".to_string()]);
+        assert_eq!(at("src/a/mod.rs", ""), ["src/a/x.rs".to_string(), "src/a/x/mod.rs".to_string()]);
+        assert_eq!(at("src/a.rs", "in::deep"), ["src/a/in/deep/x.rs".to_string(), "src/a/in/deep/x/mod.rs".to_string()]);
+    }
+
+    #[test]
+    fn a_mod_line_with_no_file_rebuilds_and_says_so() {
+        let (_d, archive) = archive_of(APP);
+        let save = changed(&format!("{APP}\nmod missing;\n"));
+        let (decision, _) = decide_additive(Some(&archive), &save, false);
+        let Decision::Rebuild(why) = decision else { panic!("{decision:?}") };
+        assert!(why.to_string().contains("src/app/missing.rs"), "{why}");
+    }
+
+    /// Whatever would be refused in an existing file is refused in a new
+    /// one, and the name of a new module is as checked as any other.
+    #[test]
+    fn a_new_file_is_held_to_what_an_addition_may_be() {
+        let (_d, archive) = archive_of(APP);
+        let parent = format!("{APP}\nmod extra;\n");
+        let with = |extra: &str| {
+            vec![
+                ChangedFile { path: "src/app.rs".into(), text: parent.clone() },
+                ChangedFile { path: "src/app/extra.rs".into(), text: extra.into() },
+            ]
+        };
+        let refused = |extra: &str| {
+            let (decision, _) = decide_additive(Some(&archive), &with(extra), false);
+            match decision {
+                Decision::Rebuild(Reason::NotAdditive { file, .. }) => assert_eq!(file, "src/app/extra.rs"),
+                other => panic!("{extra}: {other:?}"),
+            }
+        };
+        refused("static COUNT: u32 = 0;\n");
+        refused("impl Default for Screen { fn default() -> Self { todo!() } }\n");
+        refused("fn broken( {");
+        assert!(matches!(decide_additive(Some(&archive), &with("pub fn fine() {}\n"), false).0, Decision::HotPatch(_)));
+
+        let (_d, archive) = archive_of(&format!("{APP}\nfn f() {{ let extra = 1; }}\n"));
+        let parent = format!("{APP}\nfn f() {{ let extra = 1; }}\nmod extra;\n");
+        let save = vec![
+            ChangedFile { path: "src/app.rs".into(), text: parent },
+            ChangedFile { path: "src/app/extra.rs".into(), text: "pub fn fine() {}\n".into() },
+        ];
+        assert!(matches!(
+            decide_additive(Some(&archive), &save, false).0,
+            Decision::Rebuild(Reason::AddedNameInUse { .. })
+        ));
+    }
+
+    /// A new file's own `mod` line brings in one more.
+    #[test]
+    fn a_new_file_can_declare_another() {
+        let (_d, archive) = archive_of(APP);
+        let save = vec![
+            ChangedFile { path: "src/app.rs".into(), text: format!("{APP}\nmod extra;\n") },
+            ChangedFile { path: "src/app/extra.rs".into(), text: "mod deeper;\n".into() },
+            ChangedFile { path: "src/app/extra/deeper.rs".into(), text: "pub fn fine() {}\n".into() },
+        ];
+        assert_eq!(
+            decide_additive(Some(&archive), &save, false).0,
+            Decision::HotPatch(vec!["src/app.rs".into(), "src/app/extra.rs".into(), "src/app/extra/deeper.rs".into()])
+        );
+    }
+
+    /// Nothing declares it, so it is not compiled: nothing to do until a
+    /// `mod` line brings it in. A session without additive patches rebuilds
+    /// as it always did (`a_file_the_build_never_saw_rebuilds`).
+    #[test]
+    fn a_new_file_nothing_declares_changes_nothing() {
+        let (_d, archive) = archive_of(APP);
+        let file = |path: &str| vec![ChangedFile { path: path.into(), text: APP.into() }];
+        assert_eq!(decide_additive(Some(&archive), &file("src/new.rs"), false).0, Decision::Unchanged);
+        for target in ["src/bin/tool.rs", "src/main.rs", "src/lib.rs", "tests/smoke.rs", "build.rs"] {
+            assert_eq!(
+                decide_additive(Some(&archive), &file(target), false).0,
+                Decision::Rebuild(Reason::UnknownFile { file: target.into() }),
+                "cargo may build {target} by itself"
+            );
+        }
+        let (_d, opaque) = archive_of(&format!("{APP}\ninclude!(\"generated.rs\");\n"));
+        assert_eq!(
+            decide_additive(Some(&opaque), &file("src/generated.rs"), false).0,
+            Decision::Rebuild(Reason::UnknownFile { file: "src/generated.rs".into() }),
+            "an `include!` the scan cannot read may read it"
+        );
+    }
+
+    /// A stylesheet in a new file generates class names premint never saw.
+    #[test]
+    fn a_new_file_with_a_stylesheet_rebuilds_under_premint() {
+        let (_d, archive) = archive_of(APP);
+        let save = |extra: &str| {
+            vec![
+                ChangedFile { path: "src/app.rs".into(), text: format!("{APP}\nmod extra;\n") },
+                ChangedFile { path: "src/app/extra.rs".into(), text: extra.into() },
+            ]
+        };
+        assert!(matches!(decide_additive(Some(&archive), &save("pub fn fine() {}\n"), true).0, Decision::HotPatch(_)));
+        assert!(matches!(
+            decide_additive(Some(&archive), &save("stylesheet! { pub Sheet<()> { base(_t) { padding: 8 } } }\n"), true).0,
+            Decision::Rebuild(Reason::PremintStylesheet { .. })
+        ));
+    }
+
+    /// An orphan beside an overlay edit must not keep the edit out of the
+    /// archive, or the next save re-sends it.
+    #[test]
+    fn advancing_the_archive_ignores_a_file_it_lacks() {
+        let (_d, mut archive) = archive_of(APP);
+        let edited = APP.replace(r#""hello""#, r#""goodbye""#);
+        let save = vec![
+            ChangedFile { path: "src/app.rs".into(), text: edited.clone() },
+            ChangedFile { path: "src/orphan.rs".into(), text: "fn x() {}\n".into() },
+        ];
+        advance_archive(&mut archive, &save);
+        assert_eq!(decide(Some(&archive), &changed(&edited)), Decision::Unchanged);
+        assert!(!archive.files.contains_key("src/orphan.rs"));
+    }
 
     /// A scan of `src/app.rs` holding `app` and `src/app/table.rs` holding
     /// `table`, the private child that sees `app`'s names through a glob.

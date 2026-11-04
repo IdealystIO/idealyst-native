@@ -37,6 +37,10 @@
 //!   which impl an existing call picks (autoref specialization, a
 //!   blanket impl's bound now holding) without any name changing. A
 //!   trait impl is accepted only for a type the same save adds.
+//! A new file is a `mod name;` line ([`Addition::declares`]) plus the
+//! file, whose items are additions to a module nothing existing can see.
+//! A `#[path]` is an unknown attribute, so such a line is refused.
+//!
 //! - **Through storage or opaque expansion.** A new `static` has no
 //!   storage a later patch could keep (each patch would give it a fresh
 //!   copy); a `const _`, an unknown item macro or an unknown attribute
@@ -160,6 +164,43 @@ pub struct Addition {
     /// name in another module comes before ([`local_items`]). A method
     /// has no entry: `x.name()` looks past every item.
     pub binds: BTreeMap<String, Binds>,
+    /// The file this item brings into the crate, when it is a `mod name;`.
+    /// The caller has to have that file, and check it as one more addition
+    /// ([`additions`] against an empty outline).
+    pub declares: Option<ModDecl>,
+}
+
+/// A `mod name;`, where it sits: `scope` the inline-module path around it,
+/// as in [`OutlineEntry::scope`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModDecl {
+    pub scope: String,
+    pub name: String,
+}
+
+/// The `mod name;` lines of `text` that `old`, its outline before the save
+/// (empty for a new file), does not have. What a caller reads before it
+/// decides, so a file the save did not touch but now brings in is decided
+/// too. Empty when the file does not parse.
+pub fn new_module_decls(old: &[OutlineEntry], text: &str) -> Vec<ModDecl> {
+    let Ok(file) = syn::parse_file(text) else { return Vec::new() };
+    entries(&file.items, "")
+        .iter()
+        .filter_map(|e| {
+            let label = e.label();
+            let decl = mod_decl(e)?;
+            (!old.iter().any(|o| o.label == label)).then_some(decl)
+        })
+        .collect()
+}
+
+fn mod_decl(entry: &Entry<'_>) -> Option<ModDecl> {
+    match entry.item {
+        syn::Item::Mod(m) if m.content.is_none() => {
+            Some(ModDecl { scope: entry.scope.clone(), name: m.ident.to_string() })
+        }
+        _ => None,
+    }
 }
 
 /// The namespaces a [`local_items`] entry binds: a bit of each.
@@ -426,7 +467,7 @@ pub fn additions(
         if in_new_module {
             names.clear();
         }
-        out.push(Addition { label: entry.label(), names, binds: binds_of(entry) });
+        out.push(Addition { label: entry.label(), names, binds: binds_of(entry), declares: mod_decl(entry) });
     }
     for (entry, members) in matched_new {
         let syn::Item::Impl(imp) = entry.item else { unreachable!() };
@@ -441,6 +482,7 @@ pub fn additions(
             label: format!("impl {} {{ {} }}", self_type_name(&imp.self_ty).unwrap_or_default(), labels.join(", ")),
             names,
             binds: BTreeMap::new(),
+            declares: None,
         });
     }
     Ok(out)
@@ -880,9 +922,6 @@ fn validate(item: &syn::Item, new_types: &BTreeSet<String>) -> Result<Vec<AddedN
         }
         syn::Item::Mod(m) => {
             framework(&m.attrs)?;
-            if m.content.is_none() {
-                return refuse("is a new file, which this build never scanned");
-            }
             Ok(vec![named(&m.ident, &m.vis, false)])
         }
         // Every `use` reaches the decision as its leaves (`validate_import`).
@@ -1252,8 +1291,42 @@ mod tests {
     }
 
     #[test]
-    fn a_new_file_module_is_refused() {
-        refused(BASE, &format!("{BASE}\nmod sibling;\n"));
+    fn a_new_file_module_declares_its_file() {
+        let a = added(BASE, &format!("{BASE}\nmod sibling;\n")).unwrap();
+        assert_eq!(a[0].names, vec![AddedName { name: "sibling".into(), reach: Reach::Module, prefix: false }]);
+        assert_eq!(a[0].declares, Some(ModDecl { scope: String::new(), name: "sibling".into() }));
+        let a = added(BASE, &BASE.replace("pub fn helper() -> u32 { 1 }", "pub fn helper() -> u32 { 1 }\n pub mod nested;")).unwrap();
+        assert_eq!(a[0].declares, Some(ModDecl { scope: "inner".into(), name: "nested".into() }));
+        assert!(refused(BASE, &format!("{BASE}\n#[path = \"elsewhere.rs\"]\nmod sibling;\n")).contains("path"));
+    }
+
+    #[test]
+    fn only_a_mod_line_the_outline_lacks_is_new() {
+        let before = "mod old;\nfn a() {}\n";
+        let o = outline(before, &d).unwrap();
+        assert_eq!(new_module_decls(&o, before), vec![]);
+        assert_eq!(
+            new_module_decls(&o, "mod old;\nmod fresh;\nmod inner { mod deep; }\nfn a() {}\n"),
+            vec![
+                ModDecl { scope: String::new(), name: "fresh".into() },
+                ModDecl { scope: "inner".into(), name: "deep".into() },
+            ]
+        );
+    }
+
+    /// A new file's items are checked as a new module's: their names reach
+    /// nothing that existed, but their kinds still have to be harmless.
+    #[test]
+    fn a_new_files_items_need_no_fresh_names_but_must_be_harmless() {
+        let names = added("", "use super::*;\npub fn total() -> u32 { 0 }\npub struct Fresh;\nimpl Clone for Fresh { fn clone(&self) -> Self { Fresh } }\n")
+            .unwrap()
+            .into_iter()
+            .flat_map(|a| a.names)
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec![]);
+        assert!(refused("", "static COUNT: u32 = 0;\n").contains("storage"));
+        assert!(refused("", "use super::*;\nimpl Default for Row { fn default() -> Self { todo!() } }\n").contains("did not add"));
+        assert!(refused("", "lazy_static! { static ref X: u8 = 0; }\n").contains("anything"));
     }
 
     #[test]

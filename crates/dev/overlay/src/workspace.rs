@@ -565,9 +565,46 @@ impl Workspace {
         }
     }
 
+    /// `saved`, plus each file a saved `mod name;` line newly brings in and
+    /// the save did not touch: decided, keyed and logged like the rest. In
+    /// the order a developer writes them the file comes first, in a save
+    /// of its own that changes nothing, and the `mod` line in the next.
+    fn with_new_modules(&self, saved: &[SavedFile]) -> Vec<SavedFile> {
+        let mut out = Vec::new();
+        let mut queue: Vec<(String, String, String)> =
+            saved.iter().map(|s| (s.package.clone(), s.file.path.clone(), s.file.text.clone())).collect();
+        let mut seen: BTreeSet<(String, String)> = queue.iter().map(|(k, p, _)| (k.clone(), p.clone())).collect();
+        while let Some((package, path, text)) = queue.pop() {
+            let Some(krate) = self.crates.get(&package) else { continue };
+            let old: Vec<runtime_macros_parse::OutlineEntry> = match krate.archive.as_ref().and_then(|a| a.files.get(&path)) {
+                Some(recorded) => match &recorded.outline {
+                    Some(outline) => outline.iter().map(Into::into).collect(),
+                    None => continue,
+                },
+                None => Vec::new(),
+            };
+            for decl in runtime_macros_parse::new_module_decls(&old, &text) {
+                for candidate in crate::decide::module_file_candidates(&path, &decl) {
+                    if seen.contains(&(package.clone(), candidate.clone())) {
+                        continue;
+                    }
+                    let Ok(found) = std::fs::read_to_string(krate.dir.join(&candidate)) else { continue };
+                    seen.insert((package.clone(), candidate.clone()));
+                    out.push(SavedFile {
+                        package: package.clone(),
+                        file: ChangedFile { path: candidate.clone(), text: found.clone() },
+                    });
+                    queue.push((package.clone(), candidate, found));
+                }
+            }
+        }
+        out
+    }
+
     fn decide_as(&self, saved: &[SavedFile], premint: bool, escalate: bool) -> WorkspaceDecision {
+        let brought_in = if self.additive { self.with_new_modules(saved) } else { Vec::new() };
         let mut by_package: BTreeMap<&str, Vec<&SavedFile>> = BTreeMap::new();
-        for s in saved {
+        for s in saved.iter().chain(&brought_in) {
             by_package.entry(s.package.as_str()).or_default().push(s);
         }
 
@@ -1141,6 +1178,10 @@ impl Workspace {
             Reason::PremintStylesheet { file } => Reason::PremintStylesheet { file: q(file) },
             Reason::ConstReadAtCompileTime { file, item } => {
                 Reason::ConstReadAtCompileTime { file: q(file), item }
+            }
+            Reason::NotAdditive { file, why } => Reason::NotAdditive { file: q(file), why },
+            Reason::AddedNameInUse { file, item, name, user } => {
+                Reason::AddedNameInUse { file: q(file), item, name, user: q(user) }
             }
             other => other,
         }
@@ -2067,6 +2108,58 @@ pub async fn ping() -> Result<String, ServerError> {
             f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
             WorkspaceDecision::HotPatch(_)
         ));
+    }
+
+    fn write(f: &Fixture, relative: &str, text: &str) {
+        let path = f.root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    /// The save that adds a `mod` line, with the file saved earlier: the
+    /// file is read, checked and keyed as part of the patch.
+    #[test]
+    fn regression_a_mod_line_brings_in_a_file_saved_earlier() {
+        let f = additive_fixture();
+        let extra = "pub fn fresh_in_file() -> u8 { 7 }\n";
+        write(&f, "lab-shared/src/extra.rs", extra);
+
+        // The file alone: nothing declares it, so nothing happens.
+        assert_eq!(
+            f.ws.decide(&saved(&f, "lab-shared/src/extra.rs", extra.to_string()), false),
+            WorkspaceDecision::Unchanged
+        );
+
+        let edit = format!("mod extra;\n{SHARED}");
+        let WorkspaceDecision::HotPatch(plan) = f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit.clone()), false) else {
+            panic!("a new module should patch");
+        };
+        assert!(plan.files.contains(&"lab-shared/src/extra.rs".to_string()), "{:?}", plan.files);
+        assert_eq!(plan.edited, vec!["lab-shared".to_string()]);
+        assert_eq!(added_names(&plan, "lab-shared"), vec!["extra"]);
+
+        // The patch's key covers the new file, so an edit to it alone is
+        // never served from objects compiled before it.
+        write(&f, "lab-shared/src/extra.rs", "pub fn fresh_in_file() -> u8 { 8 }\n");
+        let WorkspaceDecision::HotPatch(next) = f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false) else {
+            panic!("a new module should patch");
+        };
+        assert_ne!(plan.source_keys["lab-shared"], next.source_keys["lab-shared"]);
+    }
+
+    /// What a new file holds is refused like the same item in an old one.
+    #[test]
+    fn a_mod_line_whose_file_holds_a_refused_item_rebuilds_naming_it() {
+        let f = additive_fixture();
+        write(&f, "lab-shared/src/extra.rs", "pub static HITS: u8 = 0;\n");
+        let edit = format!("mod extra;\n{SHARED}");
+        match f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false) {
+            WorkspaceDecision::Rebuild(Reason::NotAdditive { file, why }) => {
+                assert_eq!(file, "lab-shared/src/extra.rs");
+                assert!(why.contains("storage"), "{why}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     /// A private name cannot reach the app, which mentions it: it patches.

@@ -56,8 +56,8 @@ Three things differ from `--local` on the same project:
 The SERVER watcher still runs. A `#[server]` fn's signature is a
 contract between two binaries, and no jump table spans them — a server
 edit that moves a signature or a type rebuilds and restarts the server.
-With `--experimental-build`, a body edit the server's own tier can carry
-is patched into the running server instead
+With `--experimental-build` or `--experimental-server-patch`, a body edit
+the server's own tier can carry is patched into the running server instead
 ([The server is patched in place](#the-server-is-patched-in-place)).
 
 ### `#[server]` calls come from the sidecar
@@ -270,13 +270,13 @@ The overlay tier never handles a const edit. A const's literal is not a
 ### Adding items
 
 EXPERIMENTAL, and off unless `idealyst dev --web --local` is started with
-`--experimental-build`. Without the flag every save below that moves a
-file's shape rebuilds.
+`--experimental-build` or `--experimental-web-additive`. Without one of them
+every save below that moves a file's shape rebuilds.
 
-With the flag, a save whose shape moved ONLY because
+With it, a save whose shape moved ONLY because
 it added items is a hot patch, not a rebuild: a new helper and the edit
 that first calls it, a new `#[component]`, a new type with its impls, a
-new `stylesheet!`. Nothing outside the edited crate can name the new
+new `stylesheet!`, a new file with its `mod` line. Nothing outside the edited crate can name the new
 items yet — no other crate's source changed — so every dependent's
 compiled code, and the base metadata a patch compiles it against, are
 still exact. The new code is just more code in the patch, which the
@@ -308,7 +308,16 @@ What the decision checks, from source (`runtime_macros_parse::additive`,
   (no storage a later patch could keep), a `const _` or an unknown item
   or attribute macro (they can expand to anything), a trait `impl` for an
   EXISTING type (it can change which impl existing code calls),
-  `#[server]` and `#[component(lazy)]`, a glob `use`, `mod name;`.
+  `#[server]` and `#[component(lazy)]`, a glob `use`, a `mod` with
+  `#[path]`.
+- **A new file is a `mod name;` line plus the file.** The file's items are
+  checked as an inline `mod`'s are: their names reach nothing that existed,
+  so they need not be fresh, but each must be a kind listed above. The
+  file may be saved with the line or before it: a file nothing declares is
+  not compiled, so its save changes nothing, and the save that adds the
+  line reads it. A new file with no `mod` line still rebuilds where it could
+  be compiled anyway: `src/main.rs`, `src/lib.rs`, `src/bin/*`, anything
+  outside `src/`, and any file in a crate with a `#[path]` or `include!`.
 - **Every name a new item introduces is fresh** where it can reach. A
   private name must not be mentioned in its own module — its file and
   its submodules' files; a `pub(crate)` one anywhere in the crate; a
@@ -2285,11 +2294,17 @@ finishes after the web side, so the page's reload still waits on it.
 19); `0` builds the server at the session's priority. On Windows any
 non-zero value means below-normal.
 
+A server patch's replays ([The server is patched in place](#the-server-is-patched-in-place))
+run at the same increment, for the same reason: the web hot patch beside
+them is the one on screen. The seeds' `nice` 19 is not used, because someone
+is waiting on this patch too.
+
 ### The server is patched in place
 
-Experimental: `idealyst dev --experimental-build` turns it on (it does
-not need `--local`). Without the flag every server save rebuilds and
-respawns the server.
+Experimental: `idealyst dev --experimental-server-patch` turns it on alone,
+and `--experimental-build` turns it on with additive web patches. Neither
+needs `--local`. Without one of them every server save rebuilds and respawns
+the server.
 
 A full-stack session's server is the app's own binary — an axum router,
 `#[server]` fns registered through `inventory`, middleware, background
@@ -2427,6 +2442,8 @@ is booted.
   full-stack session on arm64 macOS or Linux patches its running
   server in place
   ([The server is patched in place](#the-server-is-patched-in-place)).
+  `--experimental-web-additive` and `--experimental-server-patch` turn on
+  one of the two alone.
 - `IDEALYST_HOTPATCH_NO_SEED=1` skips the background replays that warm
   the replay cache after each base build; `IDEALYST_HOTPATCH_SEED_JOBS=<n>`
   sets how many run at once (see

@@ -597,6 +597,28 @@ fn an_appended_unused_pub_fn_patches_and_changes_nothing() {
     assert!(out.contains("probe=2\n") && out.contains("other=20\n"), "{out}");
 }
 
+/// A new FILE: a `mod` line and a call in existing code, and everything
+/// else in a file the base never compiled. It has no neighbours to
+/// renumber, so nothing is paired, and the app's base code reaches it
+/// through the edited function.
+#[test]
+#[ignore = "compiles two crates for wasm32 and runs them in node; run with --ignored"]
+fn a_new_file_module_called_from_an_existing_body_runs() {
+    let base = Base::build("additive-new-file");
+    let builder = base.seeded_builder();
+    std::fs::write(
+        base.dir.join("lib/src/extra.rs"),
+        "use super::*;\n\npub struct Fresh {\n    pub n: u64,\n}\n\nimpl Fresh {\n    #[inline(never)]\n    pub fn doubled(&self) -> u64 {\n        self.n * 2\n    }\n}\n\nimpl Clone for Fresh {\n    fn clone(&self) -> Self {\n        Fresh { n: self.n + lib_seed() }\n    }\n}\n",
+    )
+    .unwrap();
+    let source = format!("mod extra;\n{}\nfn lib_seed() -> u64 {{\n    10\n}}\n", LIB_RS.replace(BODY_MARK, "    extra::Fresh { n: 11 }.clone().doubled()"));
+    let patch = base.patch(&builder, &source, true).unwrap_or_else(|e| panic!("the patch did not build:\n{e:#}"));
+    assert!(verified(&patch));
+    let out = base.run(&patch);
+    assert!(out.contains("probe=42\n"), "the base did not reach the new file's code:\n{out}");
+    assert!(out.contains("other=20\n") && out.contains("held=1001\n"), "{out}");
+}
+
 /// New code nothing calls, in a codegen unit of its own: nothing the
 /// running program calls differs, so the patch redirects nothing — an
 /// empty jump table, not a failed pairing.
