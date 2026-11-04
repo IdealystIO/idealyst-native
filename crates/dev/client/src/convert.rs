@@ -40,6 +40,7 @@ pub fn wire_length(l: WireLength) -> Length {
         WireLength::Pct(v) => Length::Percent(v),
         WireLength::Auto => Length::Auto,
         WireLength::Full => Length::Full,
+        WireLength::FitContent => Length::FitContent,
     }
 }
 

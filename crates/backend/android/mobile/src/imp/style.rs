@@ -585,8 +585,8 @@ fn apply_transform(
                     pct_y = Some(*v);
                     style_writes_ty = true;
                 }
-                Transform::TranslateX(Length::Auto | Length::Full)
-                | Transform::TranslateY(Length::Auto | Length::Full) => {
+                Transform::TranslateX(Length::Auto | Length::Full | Length::FitContent)
+                | Transform::TranslateY(Length::Auto | Length::Full | Length::FitContent) => {
                     // Neither makes sense for translate — treat as 0.
                     // `Full` is a corner-radius idea, and iOS and macOS
                     // group it with `Auto` here for the same reason.

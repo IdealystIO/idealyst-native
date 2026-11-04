@@ -935,6 +935,7 @@ fn display_value(value: &TokenValue) -> String {
         TokenValue::Length(Length::Percent(v)) => format!("{v}%"),
         TokenValue::Length(Length::Auto) => "auto".to_string(),
         TokenValue::Length(Length::Full) => "full".to_string(),
+        TokenValue::Length(Length::FitContent) => "fit-content".to_string(),
         TokenValue::Number(n) => format!("{n}"),
     }
 }

@@ -96,6 +96,7 @@ pub fn format_length(l: Length) -> String {
         Length::Percent(v) => format!("{v}%"),
         Length::Auto => "auto".to_string(),
         Length::Full => "full".to_string(),
+        Length::FitContent => "fit-content".to_string(),
     }
 }
 
@@ -122,6 +123,9 @@ pub fn parse_length(text: &str) -> Result<Length, ParseError> {
     }
     if lower == "full" {
         return Ok(Length::Full);
+    }
+    if lower == "fit-content" {
+        return Ok(Length::FitContent);
     }
     if let Some(n) = lower.strip_suffix("px") {
         return n.trim().parse::<f32>().map(Length::Px).map_err(|_| ParseError::BadLength(t.into()));
@@ -194,6 +198,7 @@ pub fn rust_token_value(v: &TokenValue) -> String {
         }
         TokenValue::Length(Length::Auto) => "TokenValue::Length(Length::Auto)".to_string(),
         TokenValue::Length(Length::Full) => "TokenValue::Length(Length::Full)".to_string(),
+        TokenValue::Length(Length::FitContent) => "TokenValue::Length(Length::FitContent)".to_string(),
         TokenValue::Number(n) => format!("TokenValue::Number({})", rust_f32(*n)),
     }
 }

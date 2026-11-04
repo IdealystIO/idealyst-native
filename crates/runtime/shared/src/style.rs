@@ -99,6 +99,12 @@ pub enum Length {
     /// horizontally and 50% of the height vertically, which yields an
     /// ellipse on a non-square box — not a pill.
     Full,
+    /// Hug the content, up to the space available: CSS `fit-content`, on a
+    /// `width` or `height`. Unlike `Auto` it is a size of its own, so a flex
+    /// parent's default `align-items: stretch` doesn't grow the box, and the
+    /// parent's alignment still places it. An `align_self` would size it too,
+    /// but override that placement.
+    FitContent,
 }
 
 impl Length {
@@ -133,7 +139,7 @@ impl Length {
             Length::Percent(p) => (width.min(height) * p / 100.0).clamp(0.0, max),
             Length::Full => max,
             // A radius has no layout to defer to; `Auto` means "no radius".
-            Length::Auto => 0.0,
+            Length::Auto | Length::FitContent => 0.0,
         }
     }
 }
@@ -154,6 +160,7 @@ fn length_bits(l: Length) -> u64 {
         Length::Percent(v) => (2u64 << 32) | v.to_bits() as u64,
         Length::Auto => 3u64 << 32,
         Length::Full => 4u64 << 32,
+        Length::FitContent => 5u64 << 32,
     }
 }
 

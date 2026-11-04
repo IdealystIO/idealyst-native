@@ -147,6 +147,7 @@ fn length_to_wire(l: Length) -> WireLength {
         // `FULL_RADIUS_FALLBACK_PX` drew a 999px-radius rectangle on any
         // box taller than 1998px.
         Length::Full => WireLength::Full,
+        Length::FitContent => WireLength::FitContent,
     }
 }
 

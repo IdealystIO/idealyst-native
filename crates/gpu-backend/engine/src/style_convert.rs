@@ -321,7 +321,7 @@ impl RenderStyle {
                             // Neither `Length::Auto` nor `Length::Full` has
                             // meaning as a transform offset (`Full` describes
                             // a corner radius); treat both as zero.
-                            Length::Auto | Length::Full => TransformLength::default(),
+                            Length::Auto | Length::Full | Length::FitContent => TransformLength::default(),
                         };
                         // Sum existing + new on the same axis.
                         if entry.is_percent == self.static_translate[0].is_percent {
@@ -349,7 +349,7 @@ impl RenderStyle {
                             // Neither `Length::Auto` nor `Length::Full` has
                             // meaning as a transform offset (`Full` describes
                             // a corner radius); treat both as zero.
-                            Length::Auto | Length::Full => TransformLength::default(),
+                            Length::Auto | Length::Full | Length::FitContent => TransformLength::default(),
                         };
                         if entry.is_percent == self.static_translate[1].is_percent {
                             self.static_translate[1].value += entry.value;

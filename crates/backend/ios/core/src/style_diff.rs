@@ -160,7 +160,7 @@ pub fn requested_corner_radius_px(style: &StyleRules) -> f64 {
             // whole point of `Full` over a baked 999.
             Length::Full => f64::INFINITY,
             // Resolve at layout time; no useful value at this point.
-            Length::Percent(_) | Length::Auto => 0.0,
+            Length::Percent(_) | Length::Auto | Length::FitContent => 0.0,
         })
     })
     .fold(0.0_f64, f64::max)
@@ -200,6 +200,9 @@ pub fn layout_affecting_key(style: &StyleRules) -> String {
                 }
                 Some(Length::Full) => {
                     let _ = write!(s, "f");
+                }
+                Some(Length::FitContent) => {
+                    let _ = write!(s, "c");
                 }
                 None => {
                     let _ = write!(s, "_");

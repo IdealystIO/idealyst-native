@@ -18,7 +18,7 @@ pub(crate) fn resolve_length_against(l: &Length, basis: f32) -> f32 {
         Length::Percent(v) => basis * v / 100.0,
         // `Full` describes a corner radius, not a layout length — nothing to
         // resolve against a linear basis.
-        Length::Auto | Length::Full => 0.0,
+        Length::Auto | Length::Full | Length::FitContent => 0.0,
     }
 }
 

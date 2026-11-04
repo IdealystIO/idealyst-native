@@ -157,8 +157,8 @@ pub(crate) fn apply_static_transform(
                     // translate: `Auto` defers to layout, which a transform
                     // has no part in, and `Full` is the corner-radius pill.
                     // Both leave the identity translate.
-                    Transform::TranslateX(Length::Auto | Length::Full)
-                    | Transform::TranslateY(Length::Auto | Length::Full) => {}
+                    Transform::TranslateX(Length::Auto | Length::Full | Length::FitContent)
+                    | Transform::TranslateY(Length::Auto | Length::Full | Length::FitContent) => {}
                     Transform::Scale(v) => {
                         s.scale_x = *v;
                         s.scale_y = *v;

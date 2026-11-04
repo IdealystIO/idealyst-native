@@ -99,6 +99,7 @@ fn token_value(v: &TokenValue) -> String {
             // So 9999px *is* the pill here, not an approximation of one —
             // it stays a pill at any box size.
             Length::Full => "9999px".into(),
+            Length::FitContent => "fit-content".into(),
         },
         TokenValue::Number(n) => trim(*n),
     }

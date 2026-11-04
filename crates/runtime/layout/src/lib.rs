@@ -2256,7 +2256,7 @@ fn length_to_lp(l: FwLength) -> LengthPercentage {
         // `Full` is a corner-radius concept (see `Length::resolve_radius`);
         // it describes a shape, not a layout size, so it has no meaning to
         // Taffy. Treated as the same "not a layout length" as `Auto`.
-        FwLength::Auto | FwLength::Full => LengthPercentage::length(0.0),
+        FwLength::Auto | FwLength::Full | FwLength::FitContent => LengthPercentage::length(0.0),
     }
 }
 
@@ -2377,7 +2377,7 @@ fn length_to_lpa(l: Option<FwLength>) -> LengthPercentageAuto {
     match l {
         Some(FwLength::Px(v)) => LengthPercentageAuto::length(v),
         Some(FwLength::Percent(v)) => LengthPercentageAuto::percent(v / 100.0),
-        Some(FwLength::Auto) | Some(FwLength::Full) | None => LengthPercentageAuto::auto(),
+        Some(FwLength::Auto) | Some(FwLength::Full) | Some(FwLength::FitContent) | None => LengthPercentageAuto::auto(),
     }
 }
 
@@ -2386,6 +2386,7 @@ fn length_to_dim(l: FwLength) -> Dimension {
         FwLength::Px(v) => Dimension::length(v),
         FwLength::Percent(v) => Dimension::percent(v / 100.0),
         FwLength::Auto | FwLength::Full => Dimension::auto(),
+        FwLength::FitContent => Dimension::fit_content(),
     }
 }
 
@@ -3085,6 +3086,57 @@ mod tests {
             assert_eq!(f0.y, f1.y, "absolute wrappers pin to the same y");
             assert_eq!(f0.y, 0.0, "both at inset:0 origin — they overlap, no stacking");
         }
+    }
+
+    /// `Length::FitContent` on a stretching column's child: hugs its content,
+    /// isn't stretched, keeps to the start, and the parent's `align_items` still
+    /// places it. Taffy's own keyword, so every native backend agrees with the
+    /// CSS `fit-content` the web prints.
+    #[test]
+    fn fit_content_hugs_in_a_stretching_parent_and_follows_its_alignment() {
+        use runtime_shared::AlignItems as Fw;
+        for (align, x) in [(None, 0.0), (Some(Fw::FlexStart), 0.0), (Some(Fw::FlexEnd), 340.0), (Some(Fw::Center), 170.0)] {
+            let mut t = LayoutTree::new();
+            let column = t.new_node();
+            t.set_style(column, &StyleRules { align_items: align, ..Default::default() });
+            let child = t.new_node();
+            t.set_style(
+                child,
+                &StyleRules {
+                    width: Some(Tokenized::Literal(FwLength::FitContent)),
+                    height: Some(Tokenized::Literal(FwLength::FitContent)),
+                    ..Default::default()
+                },
+            );
+            let content = t.new_node();
+            t.set_style(content, &StyleRules { width: Some(px(60.0)), height: Some(px(20.0)), ..Default::default() });
+            t.add_child(child, content);
+            t.add_child(column, child);
+            t.compute(column, 400.0, 400.0);
+            let f = t.frame_of(child);
+            assert_eq!((f.width, f.height), (60.0, 20.0), "hugs at {align:?}");
+            assert_eq!(f.x, x, "the parent places it at {align:?}");
+        }
+    }
+
+    /// Fit-content caps at the available width, where `max-content` overflows.
+    #[test]
+    fn fit_content_caps_at_the_available_width() {
+        let mut t = LayoutTree::new();
+        let column = t.new_node();
+        let child = t.new_node();
+        t.set_style(child, &StyleRules { width: Some(Tokenized::Literal(FwLength::FitContent)), ..Default::default() });
+        let measure: MeasureFn = std::rc::Rc::new(|known: Size<Option<f32>>, available: Size<AvailableSpace>| {
+            let width = known.width.unwrap_or(match available.width {
+                AvailableSpace::Definite(w) => w.min(1000.0),
+                _ => 1000.0,
+            });
+            Size { width, height: 20.0 }
+        });
+        t.set_measure_fn(child, measure);
+        t.add_child(column, child);
+        t.compute(column, 400.0, 400.0);
+        assert_eq!(t.frame_of(child).width, 400.0);
     }
 
     fn px(v: f32) -> Tokenized<FwLength> {

@@ -958,6 +958,7 @@ pub fn length_css(l: runtime_shared::Length) -> String {
         // which is what `Length::Full` means — so the pill stays a pill at any
         // size, with no magic number on this side either.
         Length::Full => "calc(infinity * 1px)".to_string(),
+        Length::FitContent => "fit-content".to_string(),
     }
 }
 
@@ -1960,6 +1961,11 @@ fn collect_transitions(rules: &StyleRules) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fit_content_prints_the_css_keyword() {
+        assert_eq!(super::length_css(runtime_shared::Length::FitContent), "fit-content");
+    }
+
     /// Regression: the FOCUSED overlay lowered to `:focus`, which also
     /// matches a control focused by a mouse click, so every clicked
     /// `Button` / `Switch` / segment kept its themed focus ring as if it

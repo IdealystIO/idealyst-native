@@ -68,7 +68,7 @@ pub use payload_serde::{
 /// [`WireStyleRules`] carries every `StyleRules` property; the
 /// conversions on both ends are exhaustive destructures, so a new
 /// property cannot compile until it crosses (see `WireStyleRules`).
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 26;
 
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
@@ -1715,6 +1715,9 @@ pub enum WireLength {
     /// (a pill). Carried as-is so the CLIENT resolves it against the box
     /// it actually lays out, exactly as `--local` does.
     Full,
+    /// `Length::FitContent` — hug the content, up to the available space.
+    /// The client lays it out with its own layout engine.
+    FitContent,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

@@ -89,6 +89,8 @@ pub(crate) fn length(l: &Length) -> WireLength {
         // is named (no wildcard) so a new `Length` variant fails to
         // compile here; the test below keeps it loud in one place.
         Length::Full => WireLength::Px(Length::FULL_RADIUS_FALLBACK_PX),
+        // The client's own layout has no fit-content; auto hugs there.
+        Length::FitContent => WireLength::Auto,
     }
 }
 
@@ -102,7 +104,7 @@ fn length_px(l: &Length) -> f32 {
         // Only ever authored on a corner radius, and resolved here before the
         // box is known. See `Length::FULL_RADIUS_FALLBACK_PX`.
         Length::Full => Length::FULL_RADIUS_FALLBACK_PX,
-        Length::Percent(_) | Length::Auto => 0.0,
+        Length::Percent(_) | Length::Auto | Length::FitContent => 0.0,
     }
 }
 

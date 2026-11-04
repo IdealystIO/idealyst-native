@@ -527,7 +527,7 @@ fn resolve_length(length: &Length, basis: f32) -> f32 {
         Length::Px(v) => *v,
         Length::Percent(p) => basis * (p / 100.0),
         // `Full` is a corner-radius shape, not a linear length.
-        Length::Auto | Length::Full => 0.0,
+        Length::Auto | Length::Full | Length::FitContent => 0.0,
     }
 }
 

@@ -63,7 +63,7 @@ pub(crate) fn non_px_layout_param(length: &runtime_shared::Length) -> Option<i32
     match length {
         runtime_shared::Length::Px(_) => None,
         runtime_shared::Length::Percent(_) => Some(MATCH_PARENT),
-        runtime_shared::Length::Auto | runtime_shared::Length::Full => Some(WRAP_CONTENT),
+        runtime_shared::Length::Auto | runtime_shared::Length::Full | runtime_shared::Length::FitContent => Some(WRAP_CONTENT),
     }
 }
 
