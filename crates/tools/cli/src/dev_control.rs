@@ -147,10 +147,11 @@ pub fn claim_dir(
     isolated: Option<&str>,
 ) -> anyhow::Result<DirClaim> {
     if let Some(registry) = registry {
-        let others: Vec<SessionEntry> = sessions::read_all(registry)
+        // Deletes the entries of dead sessions on the way: a crash leaves its
+        // entry behind, and they pile up where nothing else reads them.
+        let others: Vec<SessionEntry> = mcp_server::live_dev_sessions_in(registry)
             .into_iter()
-            .map(|(_, e)| e)
-            .filter(|e| e.pid != std::process::id() && pid_is_live(e.pid))
+            .filter(|e| e.pid != std::process::id())
             .collect();
         if let Some(e) = sessions::in_dir_keyed(&others, dir, isolated) {
             let which = match isolated {
@@ -355,6 +356,37 @@ mod tests {
         };
         claim_dir(&other, &other.join("dev.lock"), Some(&registry), None).expect("a different project");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CrewForge: about 120 entries of dead processes had piled up in
+    /// `~/.idealyst/dev-sessions`, because only `idealyst mcp` ever removed
+    /// one. Starting a session removes the dead and leaves every live one,
+    /// and an entry of another format, alone.
+    #[cfg(unix)]
+    #[test]
+    fn regression_starting_a_session_prunes_dead_entries_and_keeps_live_ones() {
+        let root = tempfile::tempdir().unwrap();
+        let (app, registry) = (root.path().join("app"), root.path().join("registry"));
+        std::fs::create_dir_all(&app).unwrap();
+        let entry_of = |pid: u32| SessionEntry::new(pid, root.path().join("elsewhere").display().to_string(), "http://127.0.0.1:9", "t");
+
+        let mut gone = std::process::Command::new("true").spawn().unwrap();
+        gone.wait().unwrap();
+        let dead = sessions::write(&registry, &entry_of(gone.id())).unwrap();
+        let mut running = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let live = sessions::write(&registry, &entry_of(running.id())).unwrap();
+        let own = sessions::write(&registry, &entry_of(std::process::id())).unwrap();
+        let unreadable = registry.join("1.json");
+        std::fs::write(&unreadable, r#"{"version":99,"pid":999999}"#).unwrap();
+
+        let _claim = claim_dir(&app, &app.join("dev.lock"), Some(&registry), None).expect("nothing else runs here");
+
+        assert!(!dead.exists(), "the dead session's entry stayed");
+        assert!(live.exists(), "a live session's entry was removed");
+        assert!(own.exists(), "this process's own entry was removed");
+        assert!(unreadable.exists(), "another format's entry is not ours to judge");
+        running.kill().unwrap();
+        running.wait().unwrap();
     }
 
     /// CrewForge: a test runner's `dev --ios --port 3620` was refused while

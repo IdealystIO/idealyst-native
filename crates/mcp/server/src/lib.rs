@@ -25,6 +25,14 @@ mod watch;
 
 pub use app_discovery::{DiscoveredApp, DiscoveryTable};
 pub use dev_runner::{DevLaunch, DevRunner, DevSessionInfo};
+
+/// Every session registered in `registry` whose process is alive. An entry
+/// whose process is gone is deleted on the way, so `idealyst dev` starting
+/// prunes the registry by the same rule `list_dev_sessions` does.
+pub fn live_dev_sessions_in(registry: &std::path::Path) -> Vec<dev_events::sessions::SessionEntry> {
+    dev_sessions::live_in(registry).into_iter().map(|l| l.entry).collect()
+}
+
 pub use catalog_service::CatalogService;
 pub use lint::{run as lint_catalog, run_with as lint_catalog_with, LintFinding, LintOptions, Severity};
 pub use robot_bridge::{RobotBridge, DEFAULT_BRIDGE};
