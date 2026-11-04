@@ -948,9 +948,8 @@ impl FlippedView {
     }
 
     /// Map `StyleRules::pointer_events` onto this host. Called by
-    /// `apply_style`; `Some` overwrites, unset leaves the prior apply
-    /// (the same convention `cursor` uses). Consulted by the `hitTest:`
-    /// override above.
+    /// `apply_style` on every restyle, so a dropped value goes back to none.
+    /// Consulted by the `hitTest:` override above.
     pub(crate) fn set_pointer_events(&self, v: Option<runtime_shared::PointerEvents>) {
         self.ivars().pointer_events.set(v);
     }
@@ -1129,8 +1128,8 @@ impl FlippedView {
 
     /// Set (or clear, with `None`) the hover cursor and ask the window to
     /// rebuild this view's cursor rects so the change takes effect without
-    /// waiting for the next geometry pass. Called from `apply_style` when
-    /// `StyleRules::cursor` is present; `None` restores the OS default.
+    /// waiting for the next geometry pass. Called from `apply_style`; `None`
+    /// restores the OS default.
     pub(crate) fn set_cursor(&self, cursor: Option<Retained<NSCursor>>) {
         *self.ivars().cursor.borrow_mut() = cursor;
         // `invalidateCursorRectsForView:` is a no-op when the view isn't in a

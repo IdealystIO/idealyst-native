@@ -409,7 +409,7 @@ impl IdealystTouchView {
     }
 
     /// Map `StyleRules::pointer_events` onto this host. Called by
-    /// `apply_style`; `Some` overwrites, unset leaves the prior apply.
+    /// `apply_style` on every restyle, so a dropped value goes back to none.
     /// Consulted by the `hitTest:withEvent:` override above.
     pub(crate) fn set_pointer_events(&self, v: Option<runtime_shared::PointerEvents>) {
         self.ivars().pointer_events.set(v);
