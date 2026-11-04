@@ -70,6 +70,23 @@ mod item_position {
     }
 }
 
+/// Outside a bundle build an imported component's overrides are nothing: the
+/// trait's own `build_set` still runs, and the arguments never expand.
+#[derive(Default)]
+struct NoOverrides;
+
+impl BuildElement for NoOverrides {
+    fn build(self) -> Element {
+        runtime_scene::fragment(Vec::new())
+    }
+    runtime_vocabulary::__remote_build_set!("NoOverrides", ::core::compile_error!("must not expand"));
+}
+
+#[test]
+fn an_imported_components_overrides_are_nothing_outside_a_bundle() {
+    let _ = NoOverrides.build_set(&["label"]);
+}
+
 /// In a robot build the registration bracket is the real one: the props
 /// block becomes the closure `__inspect_component` calls. (The non-robot
 /// side — probes dropped unexpanded — is pinned in

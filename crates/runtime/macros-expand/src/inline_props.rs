@@ -263,7 +263,7 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr, import_ke
     }
 
     let build_set = match import_key {
-        Some(key) => crate::remote_component::build_set_override(key, &quote!(#props_ident)),
+        Some(_) => crate::remote_component::build_set_override(fn_name, &quote!(#props_ident)),
         None => quote!(),
     };
     let import_fields: Vec<TokenStream2> = fields

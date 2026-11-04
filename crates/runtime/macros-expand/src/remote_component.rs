@@ -292,26 +292,12 @@ pub(crate) fn import_key(
     Some(quote! { ::core::concat!(::core::module_path!(), "::", #name_str) })
 }
 
-/// The `BuildElement::build_set` a bundle build gives an imported app
-/// component: send only the fields the call site set (the app fills the
-/// rest from its own defaults).
-pub(crate) fn build_set_override(key: &TokenStream2, props: &TokenStream2) -> TokenStream2 {
-    quote! {
-        ::runtime_vocabulary::__remote_guest_split! {
-            bundle: {
-                fn build_set(self, __set: &'static [&'static str]) -> ::runtime_core::Element {
-                    ::runtime_vocabulary::__remote_import!(#key, #props, self, ::core::option::Option::Some(__set))
-                }
-                // A `ui!` call site: the same, leaving the record of which
-                // props of this component the bundle sets (`remote::site`).
-                fn __build_site<S: ::runtime_core::PropSet>(self) -> ::runtime_core::Element {
-                    ::runtime_vocabulary::__remote_component_site!(#key, #props, <S as ::runtime_core::PropSet>::JOINED);
-                    ::runtime_vocabulary::__remote_import!(#key, #props, self, ::core::option::Option::Some(<S as ::runtime_core::PropSet>::SET))
-                }
-            }
-            app: {}
-        }
-    }
+/// The `BuildElement` overrides a bundle build gives an imported app
+/// component (`__remote_build_set!`): send only the fields the call site set,
+/// and the app fills the rest from its own defaults.
+pub(crate) fn build_set_override(name: &syn::Ident, props: &TokenStream2) -> TokenStream2 {
+    let name = name.to_string();
+    quote! { ::runtime_vocabulary::__remote_build_set!(#name, #props); }
 }
 
 /// `fn Foo(props: FooProps)` / `fn Foo(props: &FooProps)`: the param, the

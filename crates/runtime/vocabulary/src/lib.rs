@@ -134,6 +134,46 @@ macro_rules! __remote_guest_split {
     (bundle: $b:tt app: { $($a:tt)* }) => { $($a)* };
 }
 
+/// In a remote bundle build, the `BuildElement` overrides of an imported app
+/// component: `build_set` sends only the fields its call site set, and
+/// `__build_site` also leaves the record of which ones (`remote::site`).
+/// Nothing in any other build. `$name` is the component's name; its import key
+/// is `module_path::name`, spelled here so the call site stays one line.
+#[cfg(idealyst_stream_guest)]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_build_set {
+    ($name:literal, $props:ty) => {
+        fn build_set(self, __set: &'static [&'static str]) -> $crate::glue::Element {
+            $crate::__remote_import!(
+                ::core::concat!(::core::module_path!(), "::", $name),
+                $props,
+                self,
+                ::core::option::Option::Some(__set)
+            )
+        }
+        fn __build_site<S: $crate::glue::PropSet>(self) -> $crate::glue::Element {
+            $crate::__remote_component_site!(
+                ::core::concat!(::core::module_path!(), "::", $name),
+                $props,
+                <S as $crate::glue::PropSet>::JOINED
+            );
+            $crate::__remote_import!(
+                ::core::concat!(::core::module_path!(), "::", $name),
+                $props,
+                self,
+                ::core::option::Option::Some(<S as $crate::glue::PropSet>::SET)
+            )
+        }
+    };
+}
+#[cfg(not(idealyst_stream_guest))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_build_set {
+    ($($t:tt)*) => {};
+}
+
 /// The props set at a `ui!` call of a component, as the second argument
 /// of [`glue::__site`]: `glue::__site(Props { .. }, __remote_site!([..]))`.
 /// Outside a remote bundle build that is the names as a slice
