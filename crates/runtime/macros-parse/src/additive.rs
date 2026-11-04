@@ -83,6 +83,16 @@ pub struct OutlineEntry {
     /// as a set: each one the file had must still be there, and the rest
     /// are additions.
     pub import: bool,
+    /// What a message calls the item: `fn display`, `inner::impl Row`.
+    pub label: String,
+    /// What a message calls each of `members`.
+    pub member_labels: Vec<String>,
+    /// The digest of `head` with the item's doc comments left out, which
+    /// tells a message that an item lost its doc comment from one that
+    /// changed.
+    pub undocumented: String,
+    /// Whether the item has a doc comment.
+    pub documented: bool,
 }
 
 /// How far a new name can reach: the code that has to be checked for
@@ -218,7 +228,11 @@ pub fn additions(
         let mut new_imports: Vec<&(&Entry<'_>, OutlineEntry)> = all_news.iter().filter(|(_, o)| o.import).collect();
         for old in all_olds.iter().filter(|o| o.import) {
             let Some(at) = new_imports.iter().position(|(_, now)| now.head == old.head) else {
-                return Err(format!("an import in `{}` was removed or changed", if scope.is_empty() { "the file" } else { scope }));
+                return Err(format!(
+                    "an import in `{}` was removed or changed: `{}`",
+                    if scope.is_empty() { "the file" } else { scope },
+                    old.label
+                ));
             };
             new_imports.remove(at);
         }
@@ -238,7 +252,8 @@ pub fn additions(
             }
             if before.open && now.open && before.head == now.head {
                 let grown = grown_members(&before.members, &now.members).ok_or_else(|| {
-                    format!("an existing member of `{}` changed or was removed", entry.label())
+                    let lost = first_lost_member(before, now).unwrap_or_default();
+                    format!("an existing member of `{}` changed or was removed: `{lost}`", entry.label())
                 })?;
                 let syn::Item::Impl(imp) = entry.item else { unreachable!("open entries are impls") };
                 matched_new.push((*entry, grown.into_iter().map(|i| &imp.items[i]).collect()));
@@ -248,8 +263,8 @@ pub fn additions(
             added.push(*entry);
         }
         if at != olds.len() {
-            let what = news.get(at).map(|p| p.0.label()).unwrap_or_else(|| "the end of the file".into());
-            return Err(format!("an existing item changed, moved or was removed (near {what})"));
+            let now: Vec<&OutlineEntry> = news.iter().map(|p| &p.1).collect();
+            return Err(format!("an existing item changed, moved or was removed: {}", item_diff(&olds[at..], &now, &olds)));
         }
     }
 
@@ -312,6 +327,65 @@ fn grown_members(before: &[String], now: &[String]) -> Option<Vec<usize>> {
     (at == before.len()).then_some(grown)
 }
 
+/// The first of `before`'s members missing, in order, from `now`.
+fn first_lost_member(before: &OutlineEntry, now: &OutlineEntry) -> Option<String> {
+    let mut rest = now.members.iter();
+    let lost = before.members.iter().position(|m| !rest.any(|n| n == m))?;
+    before.member_labels.get(lost).cloned()
+}
+
+/// How many items a message lists before saying how many more there are.
+const DIFF_LIMIT: usize = 4;
+
+/// What moved in a scope, item by item: `unmatched` the existing items
+/// from the first the new text does not account for, `now` the new text's
+/// items, `olds` all the existing ones. An unmatched item the new text
+/// holds unchanged is only out of step with the first, so only the first
+/// is called moved.
+fn item_diff(unmatched: &[&OutlineEntry], now: &[&OutlineEntry], olds: &[&OutlineEntry]) -> String {
+    let same = |a: &OutlineEntry, b: &OutlineEntry| a.head == b.head && a.members == b.members;
+    let added: Vec<&&OutlineEntry> = now.iter().filter(|n| !olds.iter().any(|o| same(o, n) || o.label == n.label)).collect();
+    let mut lost_doc = false;
+    let mut lines = Vec::new();
+    for (i, old) in unmatched.iter().enumerate() {
+        if now.iter().any(|n| same(old, n)) {
+            if i == 0 {
+                lines.push(format!("`{}` moved", old.label));
+            }
+            continue;
+        }
+        lines.push(match now.iter().find(|n| n.label == old.label) {
+            None => format!("`{}` was removed", old.label),
+            Some(n) if n.undocumented != old.undocumented || n.members != old.members => {
+                format!("`{}` changed outside its body", old.label)
+            }
+            Some(n) if old.documented && !n.documented => {
+                lost_doc = true;
+                format!("`{}` lost its doc comment", old.label)
+            }
+            Some(n) if !old.documented && n.documented => format!("`{}` gained a doc comment", old.label),
+            Some(_) => format!("`{}` has a different doc comment", old.label),
+        });
+    }
+    let mut out = list(&lines);
+    if !added.is_empty() {
+        let names: Vec<String> = added.iter().map(|n| format!("`{}`", n.label)).collect();
+        out.push_str(&format!("; new: {}", list(&names)));
+    }
+    if lost_doc && !added.is_empty() {
+        out.push_str(" (a doc comment belongs to the item right after it, so an item inserted below one takes it)");
+    }
+    out
+}
+
+fn list(lines: &[String]) -> String {
+    let mut out = lines.iter().take(DIFF_LIMIT).cloned().collect::<Vec<_>>().join(", ");
+    if lines.len() > DIFF_LIMIT {
+        out.push_str(&format!(" and {} more", lines.len() - DIFF_LIMIT));
+    }
+    out
+}
+
 /// One item, where it sits — or, for a `use`, one of its leaves.
 struct Entry<'a> {
     scope: String,
@@ -359,20 +433,34 @@ fn use_leaves(tree: &syn::UseTree, path: &mut Vec<String>, out: &mut Vec<UseLeaf
 
 impl Entry<'_> {
     fn outline(&self, digest: &dyn Fn(&str) -> String) -> OutlineEntry {
-        if let (Some(leaf), syn::Item::Use(u)) = (&self.import, self.item) {
+        let (head, members, member_labels, open, import) = self.digests(self.item, digest);
+        let mut bare = self.item.clone();
+        let documented = strip_docs(&mut bare);
+        let undocumented = if documented { self.digests(&bare, digest).0 } else { head.clone() };
+        OutlineEntry {
+            scope: self.scope.clone(),
+            head,
+            members,
+            open,
+            import,
+            label: self.label(),
+            member_labels,
+            undocumented,
+            documented,
+        }
+    }
+
+    /// `(head, members, member labels, open, import)` of `item`, which is
+    /// this entry's item or a copy of it.
+    fn digests(&self, item: &syn::Item, digest: &dyn Fn(&str) -> String) -> (String, Vec<String>, Vec<String>, bool, bool) {
+        if let (Some(leaf), syn::Item::Use(u)) = (&self.import, item) {
             // Attributes and visibility are part of each leaf: `pub use`
             // and `use` of one path are different imports.
             let (attrs, vis) = (&u.attrs, &u.vis);
             let text = format!("{} {}", quote::quote!(#(#attrs)* #vis use), leaf.text);
-            return OutlineEntry {
-                scope: self.scope.clone(),
-                head: digest(&text),
-                members: Vec::new(),
-                open: false,
-                import: true,
-            };
+            return (digest(&text), Vec::new(), Vec::new(), false, true);
         }
-        match self.item {
+        match item {
             syn::Item::Impl(imp) if imp.trait_.is_none() => {
                 let mut head = imp.clone();
                 head.items.clear();
@@ -385,37 +473,20 @@ impl Entry<'_> {
                         digest(&m.to_token_stream().to_string())
                     })
                     .collect();
-                OutlineEntry {
-                    scope: self.scope.clone(),
-                    head: digest(&head.to_token_stream().to_string()),
-                    members,
-                    open: true,
-                    import: false,
-                }
+                let labels = imp.items.iter().map(member_label).collect();
+                (digest(&head.to_token_stream().to_string()), members, labels, true, false)
             }
             syn::Item::Mod(m) if m.content.is_some() => {
                 let mut head = m.clone();
                 if let Some((_, items)) = &mut head.content {
                     items.clear();
                 }
-                OutlineEntry {
-                    scope: self.scope.clone(),
-                    head: digest(&head.to_token_stream().to_string()),
-                    members: Vec::new(),
-                    open: false,
-                    import: false,
-                }
+                (digest(&head.to_token_stream().to_string()), Vec::new(), Vec::new(), false, false)
             }
             item => {
                 let mut item = item.clone();
                 BlankBodies.visit_item_mut(&mut item);
-                OutlineEntry {
-                    scope: self.scope.clone(),
-                    head: digest(&item.to_token_stream().to_string()),
-                    members: Vec::new(),
-                    open: false,
-                    import: false,
-                }
+                (digest(&item.to_token_stream().to_string()), Vec::new(), Vec::new(), false, false)
             }
         }
     }
@@ -426,6 +497,40 @@ impl Entry<'_> {
             Some(leaf) => format!("{at}use {}", leaf.text),
             None => format!("{at}{}", item_label(self.item)),
         }
+    }
+}
+
+/// Remove `item`'s doc comments; whether it had any.
+fn strip_docs(item: &mut syn::Item) -> bool {
+    let attrs = match item {
+        syn::Item::Const(i) => &mut i.attrs,
+        syn::Item::Enum(i) => &mut i.attrs,
+        syn::Item::ExternCrate(i) => &mut i.attrs,
+        syn::Item::Fn(i) => &mut i.attrs,
+        syn::Item::ForeignMod(i) => &mut i.attrs,
+        syn::Item::Impl(i) => &mut i.attrs,
+        syn::Item::Macro(i) => &mut i.attrs,
+        syn::Item::Mod(i) => &mut i.attrs,
+        syn::Item::Static(i) => &mut i.attrs,
+        syn::Item::Struct(i) => &mut i.attrs,
+        syn::Item::Trait(i) => &mut i.attrs,
+        syn::Item::TraitAlias(i) => &mut i.attrs,
+        syn::Item::Type(i) => &mut i.attrs,
+        syn::Item::Union(i) => &mut i.attrs,
+        syn::Item::Use(i) => &mut i.attrs,
+        _ => return false,
+    };
+    let before = attrs.len();
+    attrs.retain(|a| !a.path().is_ident("doc"));
+    attrs.len() != before
+}
+
+fn member_label(m: &syn::ImplItem) -> String {
+    match m {
+        syn::ImplItem::Fn(f) => format!("fn {}", f.sig.ident),
+        syn::ImplItem::Const(c) => format!("const {}", c.ident),
+        syn::ImplItem::Type(t) => format!("type {}", t.ident),
+        _ => "item".to_string(),
     }
 }
 
@@ -888,6 +993,52 @@ mod tests {
         let after = format!("{BASE}\nuse std::collections::{{BTreeMap, HashMap as Map}};\n");
         assert_eq!(names(BASE, &after), vec!["BTreeMap", "Map"]);
         assert!(refused(BASE, &format!("{BASE}\nuse std::collections::*;\n")).contains("glob"));
+    }
+
+    // ── What the refusal says ───────────────────────────────────────
+
+    /// The report's edit: a new item between an existing item and its
+    /// doc comment. The doc comment now documents the new item, so the
+    /// existing one changed, and the message has to say that instead of
+    /// pointing at the new item.
+    #[test]
+    fn regression_a_lost_doc_comment_is_named_in_the_refusal() {
+        let before = "/// Shows it.\nfn display() {}\nfn other() {}\n";
+        let after = "/// Shows it.\nfn hotpatch_test_separator() {}\nfn display() {}\nfn other() {}\n";
+        let why = refused(before, after);
+        assert!(why.contains("`fn display` lost its doc comment"), "{why}");
+        assert!(why.contains("new: `fn hotpatch_test_separator`"), "{why}");
+        assert!(why.contains("belongs to the item right after it"), "{why}");
+        assert!(!why.contains("`fn other`"), "an item still there is not news: {why}");
+    }
+
+    #[test]
+    fn the_refusal_names_what_changed_item_by_item() {
+        let before = "fn one() {}\nfn two() {}\nfn three() {}\n";
+        assert!(refused(before, "fn one(n: u8) {}\nfn two() {}\nfn three() {}\n").contains("`fn one` changed outside its body"));
+        assert!(refused(before, "fn one() {}\nfn three() {}\n").contains("`fn two` was removed"));
+        assert!(refused(before, "fn two() {}\nfn one() {}\nfn three() {}\n").contains("`fn two` moved"));
+        let doc = refused("/// A.\nfn one() {}\n", "/// B.\nfn one() {}\n");
+        assert!(doc.contains("`fn one` has a different doc comment"), "{doc}");
+        let gained = refused("fn one() {}\n", "/// A.\nfn one() {}\n");
+        assert!(gained.contains("`fn one` gained a doc comment"), "{gained}");
+    }
+
+    #[test]
+    fn the_refusal_names_the_import_and_the_member() {
+        assert!(refused("use a::b;\nuse a::c;\n", "use a::c;\n").contains("`use a::b`"));
+        let member = refused(
+            "impl Row {\n fn one(&self) {}\n fn two(&self) {}\n}\n",
+            "impl Row {\n fn one(&self, n: u8) {}\n fn two(&self) {}\n}\n",
+        );
+        assert!(member.contains("`fn one`"), "{member}");
+    }
+
+    #[test]
+    fn a_long_diff_says_how_much_it_left_out() {
+        let before: String = (0..7).map(|i| format!("fn f{i}() {{}}\n")).collect();
+        let after: String = (0..7).map(|i| format!("fn f{i}(n: u8) {{}}\n")).collect();
+        assert!(refused(&before, &after).contains("and 3 more"));
     }
 
     // ── Not additive ────────────────────────────────────────────────

@@ -294,7 +294,11 @@ What the decision checks, from source (`runtime_macros_parse::additive`,
   had must still be there, and a name added to an import list
   (`use runtime_core::{component, ui}`) is an addition. A changed
   signature, a removed item or import, or a reordered item rebuilds
-  (`Reason::NotAdditive`).
+  (`Reason::NotAdditive`), and the message names each item: `fn display`
+  lost its doc comment (an item inserted below a `///` takes it), was
+  removed, moved, or changed outside its body. The comparison is with the
+  last build, not with git: after a fallback the archive is that rebuild's,
+  so undoing an edit and making it again is judged against the rebuild.
 - **Each new item is a kind that cannot change existing code.** Accepted:
   `fn`, `struct` / `enum` / `union` / `type`, a named `const`, a trait,
   an inline `mod`, a named `use`, a local `macro_rules!`, `stylesheet!`,
@@ -2086,7 +2090,9 @@ analyse). A record holds:
 - the tier the watcher chose and its reason (`rebuild — src/app.rs
   changed outside its function bodies`), and a hot patch that failed;
 - how it ended (overlay pushed, hot patch built, rebuilt and reloaded,
-  superseded, failed) and the time from detection to that end;
+  superseded, failed) and the time from detection to that end
+  (`total_ms`); under `--no-watch` that time starts at the rebuild request,
+  and the wait before it is `queued_ms`;
 - each build stage's time; for a hot patch each step's (`patch_step`),
   whether it was built, failed or superseded, and for a built one each
   re-emitted crate's replay time;

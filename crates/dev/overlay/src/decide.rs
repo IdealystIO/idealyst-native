@@ -153,10 +153,10 @@ impl std::fmt::Display for Reason {
             Reason::DoesNotParse { file } => write!(f, "{file} does not parse"),
             Reason::CodeChanged { file } => write!(f, "{file} changed outside its `ui!` bodies"),
             Reason::ShapeChanged { file } => {
-                write!(f, "{file} changed outside its function bodies")
+                write!(f, "{file} changed outside its function bodies {SINCE_LAST_BUILD}")
             }
             Reason::NotAdditive { file, why } => {
-                write!(f, "{file} changed outside its function bodies, and not only by adding items: {why}")
+                write!(f, "{file} changed outside its function bodies {SINCE_LAST_BUILD}, and not only by adding items: {why}")
             }
             Reason::AddedNameInUse { file, item, name, user } => write!(
                 f,
@@ -194,6 +194,11 @@ impl std::fmt::Display for Reason {
         }
     }
 }
+
+/// What a shape is compared against, for a message. After a fallback the
+/// archive is that rebuild's, so an edit undone and made again reads as
+/// moved against it, however the file compares with git.
+const SINCE_LAST_BUILD: &str = "since the last build (not since git's last commit)";
 
 /// Whether a `downstream_bodies` label names a const (`const N`,
 /// `impl T::const N`, `trait T::const N`) rather than a function.
@@ -1963,6 +1968,32 @@ mod archive_tests {
 #[cfg(test)]
 mod additive_tests {
     use super::*;
+
+    /// The message has to say what changed and what it was compared with:
+    /// the report's "an existing item changed … (near fn …)" gave neither,
+    /// and a revert-and-redo after a fallback read as a puzzle.
+    #[test]
+    fn regression_a_refusal_names_the_item_and_the_diff_base() {
+        let before = "/// Shows it.\nfn display() {}\n";
+        let (_d, archive) = {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"msg\"\nversion = \"0.1.0\"\n").unwrap();
+            std::fs::create_dir_all(dir.path().join("src")).unwrap();
+            std::fs::write(dir.path().join("src/app.rs"), before).unwrap();
+            let set = crate::archive::scan_crate(dir.path()).unwrap();
+            (dir, set)
+        };
+        let save = vec![ChangedFile {
+            path: "src/app.rs".into(),
+            text: "/// Shows it.\nfn separator() {}\nfn display() {}\n".into(),
+        }];
+        let (decision, _) = decide_additive(Some(&archive), &save, false);
+        let Decision::Rebuild(why) = decision else { panic!("{decision:?}") };
+        let text = why.to_string();
+        assert!(text.contains("`fn display` lost its doc comment"), "{text}");
+        assert!(text.contains("since the last build"), "{text}");
+        assert!(text.contains("src/app.rs changed outside its function bodies"), "{text}");
+    }
 
     #[test]
     fn a_private_item_is_visible_in_its_module_and_submodules_only() {

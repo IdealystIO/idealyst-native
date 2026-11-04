@@ -163,11 +163,29 @@ pub struct OutlineRecord {
     pub open: bool,
     #[serde(default)]
     pub import: bool,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub member_labels: Vec<String>,
+    #[serde(default)]
+    pub undocumented: String,
+    #[serde(default)]
+    pub documented: bool,
 }
 
 impl From<runtime_macros_parse::OutlineEntry> for OutlineRecord {
     fn from(e: runtime_macros_parse::OutlineEntry) -> Self {
-        Self { scope: e.scope, head: e.head, members: e.members, open: e.open, import: e.import }
+        Self {
+            scope: e.scope,
+            head: e.head,
+            members: e.members,
+            open: e.open,
+            import: e.import,
+            label: e.label,
+            member_labels: e.member_labels,
+            undocumented: e.undocumented,
+            documented: e.documented,
+        }
     }
 }
 
@@ -179,6 +197,10 @@ impl From<&OutlineRecord> for runtime_macros_parse::OutlineEntry {
             members: r.members.clone(),
             open: r.open,
             import: r.import,
+            label: r.label.clone(),
+            member_labels: r.member_labels.clone(),
+            undocumented: r.undocumented.clone(),
+            documented: r.documented,
         }
     }
 }
@@ -363,7 +385,10 @@ pub fn read_set(dir: &Path, sources: &CrateSources) -> Option<DescriptorSet> {
 /// decide an additive shape edit. A `6` document has neither, and its
 /// saves would only ever rebuild a shape change; rescanning is cheaper
 /// than carrying that difference around.
-pub const OVERLAY_VERSION: u32 = 7;
+///
+/// `8`: each [`OutlineRecord`] names its item, so a refusal can say what
+/// changed. A `7` document's refusals would name nothing.
+pub const OVERLAY_VERSION: u32 = 8;
 
 /// One `ui!` site as a build recorded it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
