@@ -8,6 +8,7 @@
 //! no explicit waits are needed.
 
 use robot_e2e::{expect, flow, run_suites, suite, test, ElementKind, Page};
+use runtime_shared::introspect::keys;
 
 /// Entry point scheduled from `app()` ~1s after mount.
 ///
@@ -357,6 +358,14 @@ fn capabilities_suite() -> robot_e2e::Suite {
                 .poll(|p: &Page| expect(&p.get_by_test_id("cap-opacity")).to_have_native_opacity(0.5))
                 .act(|p: &Page| p.get_by_test_id("cap-opacity-toggle").click())
                 .poll(|p: &Page| expect(&p.get_by_test_id("cap-opacity")).to_have_native_opacity(1.0))
+                .build(),
+            flow("a style that drops a radius and a border loses them")
+                .act(|p: &Page| p.get_by_test_id("cap-opacity-toggle").click())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-opacity")).to_have_native_length(keys::CORNER_RADIUS, 6.0))
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-opacity")).to_have_native_length(keys::BORDER_WIDTH, 2.0))
+                .act(|p: &Page| p.get_by_test_id("cap-opacity-toggle").click())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-opacity")).to_have_native_length(keys::CORNER_RADIUS, 0.0))
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-opacity")).to_have_native_length(keys::BORDER_WIDTH, 0.0))
                 .build(),
             flow("a spinner follows a live size")
                 .poll(|p: &Page| spinner_height(p, |h| h <= SPINNER_SMALL_MAX))

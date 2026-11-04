@@ -654,6 +654,36 @@ impl Expect {
         }
     }
 
+    /// A length the NATIVE widget reports under `key`
+    /// (`runtime_shared::introspect::keys`) is `expected`. A widget that has none
+    /// reports no key, which reads as `0`, since readers disagree on whether a
+    /// zero radius is worth a key. Skips and retries as
+    /// [`to_have_native_opacity`](Self::to_have_native_opacity) does.
+    pub fn to_have_native_length(self, key: &str, expected: f32) -> Result<(), String> {
+        use runtime_shared::introspect::NativeValue;
+        let desc = &self.loc.desc;
+        let el = self.loc.resolve()?;
+        let node = match Robot::new().introspect_native(&el) {
+            Ok(Some(node)) => node,
+            Ok(None) => return Err(format!("expect({desc}).toHaveNativeLength({key}, {expected}) — not laid out yet")),
+            Err(RobotError::ActionNotAvailable(_)) => {
+                return Err(skip(format!("expect({desc}).toHaveNativeLength(): no native readback on this platform")))
+            }
+            Err(e) => return Err(format!("expect({desc}).toHaveNativeLength(): {e:?}")),
+        };
+        let actual = match node.props.get(key) {
+            Some(NativeValue::Length(v)) => *v,
+            None => 0.0,
+            Some(other) => return Err(format!("expect({desc}).toHaveNativeLength({key}, {expected}) — the widget reports {other:?}")),
+        };
+        if (actual - expected).abs() < 0.5 {
+            log(format!("  ✓ expect({desc}).toHaveNativeLength({key}, {expected})"));
+            Ok(())
+        } else {
+            Err(format!("expect({desc}).toHaveNativeLength({key}, {expected}) — the widget reports {actual}"))
+        }
+    }
+
     /// `expect(locator).toHaveCount(n)` — number of matches.
     pub fn to_have_count(self, n: usize) -> Result<(), String> {
         let actual = self.loc.count();

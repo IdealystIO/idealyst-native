@@ -102,9 +102,9 @@ const SCROLL: Manual = Manual {
 const STYLE_DROP: Manual = Manual {
     id: "style-drop",
     title: "A style dropping a prop",
-    steps: "\"Toggle\" flips the box between a style with a half opacity and one that states none: \
-            with none it is fully opaque.",
-    tests: &["a style that drops opacity goes back to opaque"],
+    steps: "\"Toggle\" flips the box between a style with a half opacity, a radius and a border and one \
+            that states none of them: with none it is a fully opaque, square, unbordered bar.",
+    tests: &["a style that drops opacity goes back to opaque", "a style that drops a radius and a border loses them"],
 };
 const SPINNER: Manual = Manual {
     id: "spinner",
@@ -417,6 +417,18 @@ fn StyleDropFixture() -> Element {
         opacity: faded.get().then_some(0.5.into()),
         height: Some(Length::Px(24.0).into()),
         background: Some(Color("#2563eb".into()).into()),
+        border_top_left_radius: faded.get().then_some(Length::Px(6.0).into()),
+        border_top_right_radius: faded.get().then_some(Length::Px(6.0).into()),
+        border_bottom_left_radius: faded.get().then_some(Length::Px(6.0).into()),
+        border_bottom_right_radius: faded.get().then_some(Length::Px(6.0).into()),
+        border_top_width: faded.get().then_some(2.0.into()),
+        border_right_width: faded.get().then_some(2.0.into()),
+        border_bottom_width: faded.get().then_some(2.0.into()),
+        border_left_width: faded.get().then_some(2.0.into()),
+        border_top_color: faded.get().then(|| Color("#1e3a8a".into()).into()),
+        border_right_color: faded.get().then(|| Color("#1e3a8a".into()).into()),
+        border_bottom_color: faded.get().then(|| Color("#1e3a8a".into()).into()),
+        border_left_color: faded.get().then(|| Color("#1e3a8a".into()).into()),
         ..Default::default()
     };
     ui! {
