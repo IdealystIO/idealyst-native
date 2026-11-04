@@ -25,12 +25,14 @@ robot = [
     "runtime-vocabulary/robot",
     "idea-ui/robot",
     "dep:robot-e2e",
-    # The web host's robot surface: `newcore::start` installs the
-    # vocabulary Robot driver env (queries enter the world, actions
-    # settle via flush_sync) behind backend-web's `robot` feature —
-    # without it the in-app suite's actions stage writes that never
-    # commit.
+    # Each host's robot surface: `newcore::start` installs the vocabulary
+    # Robot driver env (queries enter the world, actions settle) behind the
+    # backend's `robot` feature. Without it the in-app suite's actions stage
+    # writes that have not committed when the next line reads them.
     "backend-web/robot",
+    "backend-ios-mobile/robot",
+    "backend-android-mobile/robot",
+    "backend-macos/robot",
 ]
 
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
