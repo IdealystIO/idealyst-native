@@ -584,7 +584,7 @@ reason = "robot scroll unsupported"
 
 [[allow]]
 method = "ScrollOps::observe_scroll_end"
-backends = ["android", "linux", "gpu"]
+backends = ["gpu"]
 status = "gap"
 reason = "on_end_reached never fires (infinite scroll)"
 

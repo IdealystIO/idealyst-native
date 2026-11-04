@@ -1290,6 +1290,22 @@ mod native {
             AndroidBackend::create_scroll_view_impl(self, axis, on_scroll, a11y)
         }
 
+        fn observe_scroll_end(
+            &mut self,
+            node: &Self::Node,
+            horizontal: bool,
+            threshold: f32,
+            on_end: Rc<dyn Fn()>,
+        ) {
+            // Same flush the other author callbacks get: the arrival
+            // handler loads a page, and its writes have to reach a commit.
+            let on_end: Rc<dyn Fn()> = Rc::new(move || {
+                on_end();
+                schedule_flush();
+            });
+            AndroidBackend::observe_scroll_end_impl(self, node, horizontal, threshold, on_end)
+        }
+
         fn make_scroll_view_handle(
             &self,
             node: &Self::Node,

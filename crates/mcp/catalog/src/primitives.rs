@@ -566,8 +566,8 @@ inventory::submit! {
             PropFieldSpec {
                 name: "on_end_reached",
                 type_str: "Fn()",
-                doc: "Called once when the reader arrives within `end_reached_threshold` of the end of the scroll axis — edge-triggered (not per event), re-armed when they leave, never for content that fits its viewport. The load-on-scroll / infinite-paging hook. Answered on iOS, web and macOS; a no-op on Android, Linux and Windows, where a list that only grows this way stops growing.",
-                constraint: "inline prop or builder method `.on_end_reached(..)`; backends: ios, web, macos",
+                doc: "Called once when the reader arrives within `end_reached_threshold` of the end of the scroll axis — edge-triggered (not per event), re-armed when they leave, never for content that fits its viewport. The load-on-scroll / infinite-paging hook. Answered on iOS, Android, web, macOS, Linux and Windows; a no-op on the GPU backend, where a list that only grows this way stops growing.",
+                constraint: "inline prop or builder method `.on_end_reached(..)`; backends: ios, android, web, macos, linux, windows",
             },
             PropFieldSpec {
                 name: "end_reached_threshold",
@@ -770,8 +770,8 @@ inventory::submit! {
             PropFieldSpec {
                 name: "on_end_reached",
                 type_str: "Fn()",
-                doc: "Called once when the reader arrives within `end_reached_threshold` of the last item — edge-triggered, re-armed on leaving, never for content that fits. The paging hook a virtualizer exists to serve: fetch the next page as they approach the end. Answered on iOS, web and macOS; a no-op on Android, Linux and Windows.",
-                constraint: "inline prop or builder method `.on_end_reached(..)`; backends: ios, web, macos",
+                doc: "Called once when the reader arrives within `end_reached_threshold` of the last item — edge-triggered, re-armed on leaving, never for content that fits. The paging hook a virtualizer exists to serve: fetch the next page as they approach the end. Answered on iOS, Android, web, macOS, Linux and Windows; a no-op on the GPU backend, where a list that only grows this way stops growing.",
+                constraint: "inline prop or builder method `.on_end_reached(..)`; backends: ios, android, web, macos, linux, windows",
             },
             PropFieldSpec {
                 name: "end_reached_threshold",

@@ -1072,6 +1072,32 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustVirtualGrid_nativeVie
     crate::imp::primitives::virtual_grid::drain_pending();
 }
 
+/// `RustEndReachListener`: a `RecyclerView` moved, or laid out. Looked up by
+/// node key, so a report for a list already torn down finds no watcher. The
+/// `Rc` is cloned out before the call: the watcher runs author code that may
+/// reach the backend.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustEndReachListener_nativeOnScrolled(
+    _env: JNIEnv,
+    _this: JObject,
+    key: jlong,
+    offset: jint,
+    viewport: jint,
+    content: jint,
+) {
+    run_void_callback("scroll", std::panic::AssertUnwindSafe(|| {
+        let weak = crate::imp::ANDROID_BACKEND_SELF.with(|s| s.borrow().clone());
+        let Some(rc) = weak.and_then(|w| w.upgrade()) else { return };
+        let watcher = match rc.try_borrow() {
+            Ok(b) => b.list_end_watchers.get(&(key as usize)).cloned(),
+            Err(_) => None,
+        };
+        if let Some(watcher) = watcher {
+            watcher(offset, viewport, content);
+        }
+    }));
+}
+
 /// Forward a `RecyclerView` scroll to the author's `on_scroll`.
 ///
 /// Note the class name: this export belongs to `RustScrollListener`,

@@ -442,6 +442,11 @@ pub struct AndroidBackend {
     /// the JNI dispatch fans out to both registries on every scroll
     /// event.
     pub(crate) scroll_observers: std::collections::HashMap<usize, Rc<dyn Fn(f32, f32)>>,
+    /// `on_end_reached` watchers on `RecyclerView`s, keyed like
+    /// `scroll_observers`, called with `(offset, viewport, content)` in
+    /// device px. A `scroll_view`'s watcher lives in `scroll_observers`;
+    /// see `primitives::scroll_view::observe_end`.
+    pub(crate) list_end_watchers: std::collections::HashMap<usize, Rc<dyn Fn(i32, i32, i32)>>,
     /// Centralized "Kotlin `RustStickyScrollListener` attached to
     /// this scroll view" map, refcounted across the sticky subsystem
     /// and `on_scroll`. Both call into [`sticky::ensure_scroll_listener`]
@@ -994,6 +999,7 @@ impl AndroidBackend {
             font_registry: font::FontRegistry::new(),
             sticky_registry: HashMap::new(),
             scroll_observers: HashMap::new(),
+            list_end_watchers: HashMap::new(),
             scroll_listeners: HashMap::new(),
             pending_sticky: HashMap::new(),
             virtual_grid_registry: HashMap::new(),
@@ -3223,6 +3229,16 @@ impl AndroidBackend {
         node
     }
 
+    pub(crate) fn observe_scroll_end_impl(
+        &mut self,
+        node: &GlobalRef,
+        horizontal: bool,
+        threshold: f32,
+        on_end: Rc<dyn Fn()>,
+    ) {
+        primitives::scroll_view::observe_end(self, node, horizontal, threshold, on_end)
+    }
+
     pub(crate) fn virtualizer_data_changed_impl(&mut self, node: &GlobalRef) {
         primitives::virtualizer::data_changed(node)
     }
@@ -4005,6 +4021,7 @@ impl AndroidBackend {
         // shared listener \u{2014} otherwise the listener slot stays
         // pinned by the on_scroll registry.
         self.scroll_observers.remove(&node_key);
+        self.list_end_watchers.remove(&node_key);
         primitives::image::forget(self, node);
         with_env(|env| {
             sticky::deregister(

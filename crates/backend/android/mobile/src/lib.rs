@@ -180,6 +180,10 @@ mod hosted_root_policy;
 /// `imp/primitives/scroll_view.rs`.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 mod scroll_axis_policy;
+/// The device-pixel arithmetic of `on_end_reached`; see the module. Un-gated
+/// so the regression tests run on the host.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod scroll_end_policy;
 
 /// `z_index` / sticky raise → `View.setTranslationZ` mapping shared by
 /// the static style apply and animated `AnimProp::ZIndex`. Un-gated like

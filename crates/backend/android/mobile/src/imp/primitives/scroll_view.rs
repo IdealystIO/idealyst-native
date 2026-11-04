@@ -149,6 +149,134 @@ pub(crate) fn forget_inner(b: &mut AndroidBackend, parent: &GlobalRef) {
     b.scroll_view_inner.remove(&AndroidBackend::node_key_of(parent));
 }
 
+/// `on_end_reached`: watch `node` for the reader arriving at its end.
+///
+/// A `scroll_view`'s watcher sits on the shared `OnScrollChangeListener`
+/// slot as a `scroll_observers` entry, wrapping any `on_scroll` already
+/// there so the two coexist: Android allows one listener per view, and a
+/// scroller with both callbacks is the ordinary case. The entry's existing
+/// lifecycle (dropped with the node, listener released with the last user)
+/// is then the watcher's too.
+///
+/// A `RecyclerView` reports through `RustEndReachListener` instead, with the
+/// three readings already taken. Any other node has no end to watch, and the
+/// callback stays silent.
+pub(crate) fn observe_end(
+    b: &mut AndroidBackend,
+    node: &GlobalRef,
+    horizontal: bool,
+    threshold: f32,
+    on_end: std::rc::Rc<dyn Fn()>,
+) {
+    let key = AndroidBackend::node_key_of(node);
+    let density = with_env(|env| crate::imp::density_of(env, &node.as_obj()).unwrap_or(1.0));
+    let density = if density <= 0.0 { 1.0 } else { density };
+    let mut watch = crate::scroll_end_policy::EndWatch::new(threshold, density);
+
+    let Some(inner) = inner_for(b, node) else {
+        let is_list = with_env(|env| {
+            let class = env.find_class("androidx/recyclerview/widget/RecyclerView");
+            match class {
+                Ok(class) => env.is_instance_of(node.as_obj(), &class).unwrap_or(false),
+                Err(_) => {
+                    let _ = env.exception_clear();
+                    false
+                }
+            }
+        });
+        if is_list {
+            let watcher = std::cell::RefCell::new(watch);
+            b.list_end_watchers.insert(
+                key,
+                std::rc::Rc::new(move |offset, viewport, content| {
+                    // Released before the callback: it loads a page, which
+                    // can re-enter this watcher through a relayout.
+                    let arrived = watcher.borrow_mut().observe(offset, viewport, content);
+                    if arrived {
+                        on_end();
+                    }
+                }),
+            );
+            install_list_end_listener(node, key, horizontal);
+        }
+        return;
+    };
+
+    let outer = node.clone();
+    let previous = b.scroll_observers.remove(&key);
+    let watcher = std::cell::RefCell::new(watch);
+    b.scroll_observers.insert(
+        key,
+        std::rc::Rc::new(move |x_px, y_px| {
+            if let Some(previous) = &previous {
+                previous(x_px, y_px);
+            }
+            let offset = if horizontal { x_px } else { y_px } as i32;
+            let (viewport, content) = with_env(|env| scroller_extents(env, &outer, &inner, horizontal));
+            let arrived = watcher.borrow_mut().observe(offset, viewport, content);
+            if arrived {
+                on_end();
+            }
+        }),
+    );
+    with_env(|env| {
+        crate::imp::sticky::ensure_scroll_listener(env, &mut b.scroll_listeners, node, key);
+    });
+}
+
+/// What a `scroll_view` can show and how far its content reaches, in device
+/// px on the watched axis: exactly the two numbers `ScrollView.scrollTo`
+/// clamps against, so its largest offset reads as zero distance from the
+/// end. The content's far edge rather than its height: a padded scroller
+/// offsets the inner by a margin.
+fn scroller_extents(
+    env: &mut JNIEnv,
+    outer: &GlobalRef,
+    inner: &GlobalRef,
+    horizontal: bool,
+) -> (i32, i32) {
+    let int = |env: &mut JNIEnv, view: &JObject, method: &str| -> i32 {
+        env.call_method(view, method, "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or_else(|_| {
+                let _ = env.exception_clear();
+                0
+            })
+    };
+    let (extent, lead, trail, edge) = if horizontal {
+        ("getWidth", "getPaddingLeft", "getPaddingRight", "getRight")
+    } else {
+        ("getHeight", "getPaddingTop", "getPaddingBottom", "getBottom")
+    };
+    let outer = outer.as_obj();
+    let viewport = int(env, &outer, extent) - int(env, &outer, lead) - int(env, &outer, trail);
+    (viewport, int(env, &inner.as_obj(), edge))
+}
+
+/// Hang `RustEndReachListener` on a `RecyclerView`. It looks its watcher up
+/// by `key`, so one that outlives the entry finds nothing and does nothing.
+fn install_list_end_listener(node: &GlobalRef, key: usize, horizontal: bool) {
+    with_env(|env| {
+        let class = env
+            .find_class("io/idealyst/runtime/RustEndReachListener")
+            .expect("RustEndReachListener class — staged with the Kotlin runtime");
+        let listener = env
+            .new_object(
+                &class,
+                "(JZ)V",
+                &[JValue::Long(key as jni::sys::jlong), JValue::Bool(horizontal as u8)],
+            )
+            .unwrap();
+        env.call_method(
+            node.as_obj(),
+            "addOnScrollListener",
+            "(Landroidx/recyclerview/widget/RecyclerView$OnScrollListener;)V",
+            &[JValue::Object(&listener)],
+        )
+        .unwrap();
+    });
+}
+
 /// The JNI classes of every scroller shape the backend creates
 /// ([`crate::scroll_axis_policy::SCROLL_CONTAINER_CLASSES`]), for
 /// [`is_scroll_container`]. A lookup that fails (it cannot for these

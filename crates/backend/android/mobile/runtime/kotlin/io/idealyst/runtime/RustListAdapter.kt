@@ -254,6 +254,49 @@ class RustScrollListener(private val nativePtr: Long) : RecyclerView.OnScrollLis
 }
 
 /**
+ * Reports a `RecyclerView`'s position to the backend's `on_end_reached`
+ * watcher, looked up by [scrollKey]. `onScrolled` also fires after a layout
+ * with `dx == dy == 0`, which is how a list that grew hears about it.
+ *
+ * `compute*ScrollOffset` / `Range` are estimates from the average height of
+ * the rows laid out right now, so with rows of different heights they need
+ * not add up at the very bottom. With the last row fully on screen the
+ * reader IS at the end, whatever the estimate says, and the offset is
+ * reported as such.
+ */
+class RustEndReachListener(
+    private val scrollKey: Long,
+    private val horizontal: Boolean,
+) : RecyclerView.OnScrollListener() {
+    override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+        val extent: Int
+        val range: Int
+        val offset: Int
+        if (horizontal) {
+            extent = recyclerView.computeHorizontalScrollExtent()
+            range = recyclerView.computeHorizontalScrollRange()
+            offset = recyclerView.computeHorizontalScrollOffset()
+        } else {
+            extent = recyclerView.computeVerticalScrollExtent()
+            range = recyclerView.computeVerticalScrollRange()
+            offset = recyclerView.computeVerticalScrollOffset()
+        }
+        val last = (recyclerView.adapter?.itemCount ?: 0) - 1
+        val lastRowShown = last >= 0 &&
+            (recyclerView.layoutManager as? LinearLayoutManager)
+                ?.findLastCompletelyVisibleItemPosition() == last
+        nativeOnScrolled(
+            scrollKey,
+            if (lastRowShown) maxOf(offset, range - extent) else offset,
+            extent,
+            range,
+        )
+    }
+
+    private external fun nativeOnScrolled(key: Long, offset: Int, viewport: Int, content: Int)
+}
+
+/**
  * `LinearLayoutManager` that pre-lays-out extra pixels off-screen so
  * scrolling has work to do before the next bind cycle. The framework
  * passes `overscan` as a fraction-of-viewport multiplier; we compute

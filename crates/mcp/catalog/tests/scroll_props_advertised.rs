@@ -75,9 +75,9 @@ fn on_end_reached_names_the_backends_that_answer() {
     for prim in ["scroll_view", "flat_list"] {
         let p = lookup_primitive(prim).unwrap();
         let f = p.props.iter().find(|f| f.name == "on_end_reached").unwrap();
-        for b in ["ios", "web", "macos"] {
+        for b in ["ios", "android", "web", "macos", "linux", "windows"] {
             assert!(f.constraint.contains(b), "{prim}: constraint should name `{b}`: {}", f.constraint);
         }
-        assert!(f.doc.contains("Android"), "{prim}: the doc should say Android is a no-op: {}", f.doc);
+        assert!(f.doc.contains("GPU"), "{prim}: the doc should say the GPU backend is a no-op: {}", f.doc);
     }
 }
