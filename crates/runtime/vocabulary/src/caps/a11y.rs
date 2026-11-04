@@ -120,13 +120,17 @@ pub trait IntrospectionOps: Host {
         None
     }
 
-    /// Whether [`introspect_native`](Self::introspect_native) works here.
+    /// Whether [`introspect_native`](Self::introspect_native) works here. The
+    /// robot registers the read only where it does, so a check of the native
+    /// widget skips on a backend without one and retries a `None` on a backend
+    /// with one.
     fn supports_native_introspection(&self) -> bool {
         false
     }
 
     /// Read the platform-native render tree rooted at `node` — values
-    /// from the live native object, never echoed from style structs.
+    /// from the live native object, never echoed from style structs. `None` =
+    /// not laid out yet.
     #[allow(unused_variables)]
     fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
         None

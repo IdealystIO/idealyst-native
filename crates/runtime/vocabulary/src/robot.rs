@@ -847,12 +847,16 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
         let n = node.clone();
         Rc::new(move || b.borrow().device_frame(&n)) as Rc<dyn Fn() -> Option<ViewportRect>>
     };
-    let introspect = {
+    // Absent where the backend has no read, so `Robot::introspect_native`
+    // tells "this backend can't" (`ActionNotAvailable`) from "not laid out yet"
+    // (`Ok(None)`). A check of the widget skips on the first and retries on the
+    // second: a backend that claims the read and stops answering fails.
+    let introspect = backend.borrow().supports_native_introspection().then(|| {
         let b = backend.clone();
         let n = node.clone();
         Rc::new(move || b.borrow().introspect_native(&n))
             as Rc<dyn Fn() -> Option<runtime_shared::introspect::NativeNode>>
-    };
+    });
     let shown = {
         let b = backend.clone();
         let n = node.clone();
@@ -936,7 +940,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
                 frame: Some(frame),
                 absolute_frame: Some(absolute_frame),
                 device_frame: Some(device_frame),
-                introspect: Some(introspect),
+                introspect,
                 touch: None,
                 slider_drag,
                 state,
@@ -2659,7 +2663,9 @@ impl Robot {
         self.geometry(element, |a| a.device_frame.clone(), "device_frame")
     }
 
-    /// The element's platform-native render tree (parity surface).
+    /// The element's platform-native render tree (parity surface). `Ok(None)`:
+    /// not laid out yet. [`RobotError::ActionNotAvailable`]: this backend has no
+    /// read ([`IntrospectionOps::supports_native_introspection`]).
     pub fn introspect_native(
         &self,
         element: &Element,
@@ -3326,10 +3332,13 @@ pub mod bridge {
             }
             "introspect_native" => {
                 let el = resolve_element(args)?;
-                match robot.introspect_native(&el).map_err(|e| e.to_string())? {
-                    Some(node) => serde_json::to_string(&node)
+                // A backend with no read answers `null`, as an element not laid
+                // out yet does: both mean "no data" to a parity capture.
+                match robot.introspect_native(&el) {
+                    Ok(Some(node)) => serde_json::to_string(&node)
                         .map_err(|e| format!("failed to serialize native tree: {e}")),
-                    None => Ok("null".into()),
+                    Ok(None) | Err(RobotError::ActionNotAvailable(_)) => Ok("null".into()),
+                    Err(e) => Err(e.to_string()),
                 }
             }
             "introspect_subtree" => {
@@ -3355,14 +3364,15 @@ pub mod bridge {
                     for child in robot.children_of(&current) {
                         stack.push(child);
                     }
-                    match robot.introspect_native(&current).map_err(|e| e.to_string())? {
-                        Some(node) => {
+                    match robot.introspect_native(&current) {
+                        Ok(Some(node)) => {
                             let json = serde_json::to_string(&node).map_err(|e| {
                                 format!("failed to serialize native tree: {e}")
                             })?;
                             out.push(format!("\"{}\":{}", current.id.0, json));
                         }
-                        None => continue,
+                        Ok(None) | Err(RobotError::ActionNotAvailable(_)) => continue,
+                        Err(e) => return Err(e.to_string()),
                     }
                 }
                 Ok(format!("{{{}}}", out.join(",")))

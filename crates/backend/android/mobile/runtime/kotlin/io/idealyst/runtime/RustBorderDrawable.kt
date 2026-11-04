@@ -109,6 +109,12 @@ class RustBorderDrawable : Drawable() {
     private val sidePaths = Array(4) { Path() }
     private val arcRect = RectF()
 
+    // The native readback (`imp/introspect.rs`) calls these over JNI. They answer
+    // for the top side, as every backend's reader does.
+    fun topWidthPx(): Int = topWidth
+    fun topColorArgb(): Int = topColor
+    fun borderStyleCode(): Int = borderStyle
+
     /**
      * Bulk setter for the per-side widths + colors. Widths in px,
      * colors as packed ARGB ints. Atomic update so the next draw

@@ -190,12 +190,7 @@ fn read_font(view: &Retained<NSView>, node: &mut NativeNode) {
     node.set(keys::FONT_WEIGHT, Some(NativeValue::Number(font_weight_css(font))));
 }
 
-/// Map the resolved font's Apple weight trait (`NSFontWeightTrait`, a float in
-/// roughly `[-1, 1]`) onto the CSS numeric weight axis (100–900) so it's
-/// directly comparable with the web backend's computed `font-weight`. The
-/// breakpoints follow Apple's documented system-weight constants
-/// (ultralight…black); approximate by design, hence a nearest-bucket map
-/// rather than a fabricated linear scale.
+/// The resolved font's CSS weight, from its Apple weight trait.
 fn font_weight_css(font: &objc2::runtime::AnyObject) -> f32 {
     let descriptor: *mut objc2::runtime::AnyObject = unsafe { msg_send![font, fontDescriptor] };
     if descriptor.is_null() {
@@ -216,23 +211,7 @@ fn font_weight_css(font: &objc2::runtime::AnyObject) -> f32 {
         return 400.0;
     }
     let w: CGFloat = unsafe { msg_send![weight_num, doubleValue] };
-    // Apple system-weight constants → CSS weights.
-    const TABLE: &[(f64, f32)] = &[
-        (-0.80, 100.0), // ultralight
-        (-0.60, 200.0), // thin
-        (-0.40, 300.0), // light
-        (0.00, 400.0),  // regular
-        (0.23, 500.0),  // medium
-        (0.30, 600.0),  // semibold
-        (0.40, 700.0),  // bold
-        (0.56, 800.0),  // heavy
-        (0.62, 900.0),  // black
-    ];
-    TABLE
-        .iter()
-        .min_by(|a, b| (a.0 - w).abs().partial_cmp(&(b.0 - w).abs()).unwrap())
-        .map(|(_, css)| *css)
-        .unwrap_or(400.0)
+    backend_apple_core::font::css_weight_from_trait(w)
 }
 
 /// A view's window-relative rect in logical px (top-left origin), matching

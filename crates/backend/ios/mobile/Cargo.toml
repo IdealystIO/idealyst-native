@@ -186,3 +186,7 @@ harness = false
 [[test]]
 name = "focus_within"
 harness = false
+
+[[test]]
+name = "native_readback"
+harness = false

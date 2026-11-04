@@ -1740,6 +1740,14 @@ mod native {
             crate::imp::text_focus::is_focused(node)
         }
 
+        fn supports_native_introspection(&self) -> bool {
+            true
+        }
+
+        fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
+            AndroidBackend::introspect_native_impl(self, node)
+        }
+
         fn native_pointer(
             &self,
             _node: &Self::Node,

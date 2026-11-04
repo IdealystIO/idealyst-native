@@ -595,7 +595,10 @@ impl Expect {
     /// [`to_have_value`](Self::to_have_value) reads the robot's own record of
     /// the field — which follows the bound value whether or not the widget
     /// did — this reads the widget, so it catches a backend that drops a
-    /// value written from code. Skips on a backend with no native readback.
+    /// value written from code. Skips on a backend with no native readback
+    /// (`supports_native_introspection`); an element that backend can't read
+    /// yet fails, so a poll retries it and a backend that stops answering is
+    /// a failure.
     pub fn to_show_native_text(self, expected: &str) -> Result<(), String> {
         use runtime_shared::introspect::{keys, NativeNode, NativeValue};
         fn first_text(n: &NativeNode) -> Option<&str> {
@@ -608,7 +611,8 @@ impl Expect {
         let el = self.loc.resolve()?;
         let node = match Robot::new().introspect_native(&el) {
             Ok(Some(node)) => node,
-            Ok(None) | Err(RobotError::ActionNotAvailable(_)) => {
+            Ok(None) => return Err(format!("expect({desc}).toShowNativeText({expected:?}) — not laid out yet")),
+            Err(RobotError::ActionNotAvailable(_)) => {
                 return Err(skip(format!("expect({desc}).toShowNativeText(): no native readback on this platform")))
             }
             Err(e) => return Err(format!("expect({desc}).toShowNativeText(): {e:?}")),
@@ -626,14 +630,16 @@ impl Expect {
     /// `expected`. Reads the widget, so it catches a backend that keeps a value its
     /// style has dropped, which the resolved style can't: on a native backend that
     /// is the rules the framework handed over. Skips on a backend with no native
-    /// readback.
+    /// readback; an element a backend with one can't read yet fails, as
+    /// [`to_show_native_text`](Self::to_show_native_text) does.
     pub fn to_have_native_opacity(self, expected: f32) -> Result<(), String> {
         use runtime_shared::introspect::{keys, NativeValue};
         let desc = &self.loc.desc;
         let el = self.loc.resolve()?;
         let node = match Robot::new().introspect_native(&el) {
             Ok(Some(node)) => node,
-            Ok(None) | Err(RobotError::ActionNotAvailable(_)) => {
+            Ok(None) => return Err(format!("expect({desc}).toHaveNativeOpacity({expected}) — not laid out yet")),
+            Err(RobotError::ActionNotAvailable(_)) => {
                 return Err(skip(format!("expect({desc}).toHaveNativeOpacity(): no native readback on this platform")))
             }
             Err(e) => return Err(format!("expect({desc}).toHaveNativeOpacity(): {e:?}")),
@@ -644,7 +650,7 @@ impl Expect {
                 Ok(())
             }
             Some(other) => Err(format!("expect({desc}).toHaveNativeOpacity({expected}) — the widget reports {other:?}")),
-            None => Err(skip(format!("expect({desc}).toHaveNativeOpacity(): this platform reads no opacity"))),
+            None => Err(format!("expect({desc}).toHaveNativeOpacity({expected}) — the native read has no opacity")),
         }
     }
 

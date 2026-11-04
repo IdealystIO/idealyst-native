@@ -33,6 +33,7 @@ mod style;
 // per-cdylib singleton). The rest of the JNI helpers — and the
 // render loop driver — live in `backend-android-core` and are
 // imported directly by their callers.
+pub(crate) mod introspect;
 pub(crate) mod view_rect;
 pub(crate) mod native_key;
 pub(crate) mod text_focus;

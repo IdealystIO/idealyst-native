@@ -356,3 +356,26 @@ fn weight_to_axis(w: FontWeight) -> f32 {
         FontWeight::Black => 900.0,
     }
 }
+
+/// The CSS numeric weight (100–900) nearest an Apple weight trait
+/// (`NSFontWeightTrait` / `UIFontWeightTrait`, roughly `-1..=1`), so a resolved
+/// font compares directly with the web's computed `font-weight`. The breakpoints
+/// are Apple's system-weight constants (ultralight…black): approximate by design,
+/// hence nearest-bucket and not a fabricated linear scale.
+pub fn css_weight_from_trait(weight: f64) -> f32 {
+    const TABLE: &[(f64, f32)] = &[
+        (-0.80, 100.0), // ultralight
+        (-0.60, 200.0), // thin
+        (-0.40, 300.0), // light
+        (0.00, 400.0),  // regular
+        (0.23, 500.0),  // medium
+        (0.30, 600.0),  // semibold
+        (0.40, 700.0),  // bold
+        (0.56, 800.0),  // heavy
+        (0.62, 900.0),  // black
+    ];
+    TABLE
+        .iter()
+        .min_by(|a, b| (a.0 - weight).abs().total_cmp(&(b.0 - weight).abs()))
+        .map_or(400.0, |(_, css)| *css)
+}

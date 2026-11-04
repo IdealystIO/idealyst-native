@@ -1699,6 +1699,14 @@ mod ios_impl {
             IosBackend::hit_contains_impl(self, node, x, y)
         }
 
+        fn supports_native_introspection(&self) -> bool {
+            true
+        }
+
+        fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
+            IosBackend::introspect_native_impl(self, node)
+        }
+
         fn supports_screenshot(&self) -> bool {
             IosBackend::supports_screenshot_impl(self)
         }

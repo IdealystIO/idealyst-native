@@ -212,7 +212,7 @@ Use `get_snapshot` / `introspect_native` for structured assertions. Errors if th
 
 ## introspect_native
 
-Reads an element's PLATFORM-NATIVE render state: the resolved geometry and visual properties as the backend itself reports them (a macOS `CALayer`'s backgroundColor/cornerRadius/borderWidth + the resolved NSFont; web's `getComputedStyle` + `getBoundingClientRect`), NOT the styles the author wrote.
+Reads an element's PLATFORM-NATIVE render state: the resolved geometry and visual properties as the backend itself reports them (a `CALayer`'s backgroundColor/cornerRadius/borderWidth + the resolved NSFont or UIFont; an Android `View`'s alpha, background drawable and typeface; web's `getComputedStyle` + `getBoundingClientRect`), NOT the styles the author wrote.
 
 Returns a `NativeNode` tree:
 
@@ -222,7 +222,7 @@ Returns a `NativeNode` tree:
 - `props`: canonical keys, each a typed `{ type, value }`: `background_color`, `opacity`, `corner_radius`, `border_width`, `border_color`, `text_color`, `font_family`, `font_size`, `font_weight`, `text`, `shadow_radius`, `shadow_color`, `hidden`. A key is ABSENT when the platform doesn't expose it (missing ≠ 0).
 - `children`: the native sub-objects composing THIS primitive, pruned at child framework elements.
 
-`null` means the element isn't laid out yet or the backend doesn't implement the read (web, macOS and Linux/GTK do; iOS/Android/terminal are stubs). Pair with `compare_native_parity`.
+`null` means the element isn't laid out yet or the backend has no read. Web, macOS, iOS, Android, Linux/GTK and Windows read it (Windows' painted nodes and the GPU renderer report what the painter draws from, having no separate toolkit to ask); terminal, SSR and CPU have no read. Android reports `font_family` only where the platform names it (a system face on API 34+) and `font_weight` from API 28. Pair with `compare_native_parity`.
 
 ## compare_native_parity
 

@@ -10,6 +10,7 @@ pub(crate) mod graphics;
 pub(crate) mod handles;
 pub(crate) mod icon;
 pub(crate) mod image;
+pub(crate) mod introspect;
 pub(crate) mod portal;
 pub(crate) mod press_state;
 pub(crate) mod phase_timer;
@@ -4192,10 +4193,9 @@ impl IosBackend {
             if hidden {
                 return false;
             }
+            // `alpha` alone: it IS the layer's `opacity`, so a product squares it.
             let a: f64 = unsafe { msg_send![cur, alpha] };
-            let layer: *mut objc2::runtime::AnyObject = unsafe { msg_send![cur, layer] };
-            let l: f32 = if layer.is_null() { 1.0 } else { unsafe { msg_send![layer, opacity] } };
-            alpha *= a * l as f64;
+            alpha *= a;
             cur = unsafe { msg_send![cur, superview] };
         }
         alpha > TRANSPARENT_ALPHA

@@ -190,10 +190,10 @@ For any component you touch, walk this list across web + at least one native bac
 - **Screenshots:** the `screenshot` robot verb captures the real surface (native) or a DOM
   capture (web) — use it to diff parity between backends.
 - **Native introspection / parity diffing:** `introspect_native` reads each primitive's
-  *platform-resolved* geometry and props from the live native object (CALayer /
-  getComputedStyle / a GTK allocation), not from author StyleRules. This is the strongest
-  tool for catching "two platforms disagree" — capture both and diff. Web, macOS and
-  Linux/GTK are full; iOS/Android/terminal are stubs.
+  *platform-resolved* geometry and props from the live native object (CALayer / an Android
+  View / getComputedStyle / a GTK allocation), not from author StyleRules. This is the
+  strongest tool for catching "two platforms disagree" — capture both and diff. Web, macOS,
+  iOS, Android, Linux/GTK and Windows read it; terminal has no read.
 - **Automated layout parity:** `idealyst test --parity web,linux <app>` builds and launches
   one app per platform, pins both to the same viewport, and runs the app's `tests/parity.rs`
   with each bridge address in the env. `websites/idea-ui-docs/tests/parity.rs` is the

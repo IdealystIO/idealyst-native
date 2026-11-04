@@ -250,6 +250,10 @@ pub struct Shared {
     pub a11y_updates: Cell<usize>,
     /// Frames served by `IntrospectionOps::{frame,absolute_frame,device_frame}`.
     pub frames: RefCell<BTreeMap<Node, ViewportRect>>,
+    /// What `supports_native_introspection` answers.
+    pub native_readback: Cell<bool>,
+    /// What `introspect_native` reads back per node; absent = not laid out yet.
+    pub native_trees: RefCell<BTreeMap<Node, runtime_shared::introspect::NativeNode>>,
     /// Nodes hidden (or faded to nothing) — set by a test as a toolkit
     /// would hide a view. `IntrospectionOps::is_shown` reports a node and
     /// everything inserted below it not shown, as a toolkit's own answer
@@ -353,6 +357,8 @@ impl Default for Shared {
             a11y: RefCell::new(BTreeMap::new()),
             a11y_updates: Cell::new(0),
             frames: RefCell::new(BTreeMap::new()),
+            native_readback: Cell::new(false),
+            native_trees: RefCell::new(BTreeMap::new()),
             hidden: RefCell::new(std::collections::BTreeSet::new()),
             clips: RefCell::new(BTreeMap::new()),
             scroll_ports: RefCell::new(BTreeMap::new()),
@@ -1667,6 +1673,14 @@ impl caps::AnimationOps for HostMock {
 }
 
 impl caps::IntrospectionOps for HostMock {
+    fn supports_native_introspection(&self) -> bool {
+        self.s.native_readback.get()
+    }
+
+    fn introspect_native(&self, node: &Node) -> Option<runtime_shared::introspect::NativeNode> {
+        self.s.native_trees.borrow().get(node).cloned()
+    }
+
     fn is_shown(&self, node: &Node) -> Option<bool> {
         let (hidden, parent) = (self.s.hidden.borrow(), self.s.parent.borrow());
         let mut cur = Some(*node);
