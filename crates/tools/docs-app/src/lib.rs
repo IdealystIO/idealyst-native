@@ -100,6 +100,7 @@ where
     H: runtime_vocabulary::style_attach::StyleServices
         + runtime_vocabulary::caps::TextOps
         + runtime_vocabulary::caps::InputOps
+        + runtime_vocabulary::caps::IntrospectionOps
         + 'static,
 {
     codeblock::register(registry);
