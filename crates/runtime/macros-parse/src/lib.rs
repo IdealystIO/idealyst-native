@@ -61,7 +61,7 @@ pub mod server_only;
 pub mod shape;
 pub mod split;
 
-pub use additive::{additions, idents, outline, AddedName, Addition, OutlineEntry, Reach};
+pub use additive::{additions, idents, local_items, outline, AddedName, Addition, Binds, OutlineEntry, Reach};
 pub use ast::{is_a11y_attr, MatchArm, Prop, Ui, UiNode};
 pub use consts::{compile_time_reach, const_facts, library_reach, ConstFacts, ConstValue};
 pub use describe::describe;

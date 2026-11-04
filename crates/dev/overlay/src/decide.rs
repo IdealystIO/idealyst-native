@@ -356,7 +356,8 @@ fn decide_in(
 /// resolved to before (a glob import shadowed, a prelude item shadowed),
 /// so the save rebuilds. A file the scan could not lex mentions
 /// everything. A private name reaches its own module only
-/// ([`module_files`]); any other, the whole crate.
+/// ([`module_files`]); any other, the whole crate. A file that defines the
+/// name itself is not in use (`runtime_macros_parse::local_items`).
 pub(crate) fn added_name_in_use(archive: &DescriptorSet, added: &[FileAddition]) -> Option<Reason> {
     for a in added {
         for name in &a.addition.names {
@@ -364,10 +365,17 @@ pub(crate) fn added_name_in_use(archive: &DescriptorSet, added: &[FileAddition])
                 if name.reach == runtime_macros_parse::Reach::Module && !module_files(&a.file, path) {
                     continue;
                 }
-                let hit = match &recorded.idents {
-                    None => true,
-                    Some(idents) => idents.iter().any(|i| name.collides_with(i)),
-                };
+                // An item the file defines itself comes before any glob, so
+                // its mentions of that name cannot resolve to this one.
+                let shadowed = !name.prefix
+                    && a.addition.binds.get(&name.name).is_some_and(|binds| {
+                        recorded.locals.get(&name.name).is_some_and(|local| binds.shadowed_by(*local, &name.name))
+                    });
+                let hit = !shadowed
+                    && match &recorded.idents {
+                        None => true,
+                        Some(idents) => idents.iter().any(|i| name.collides_with(i)),
+                    };
                 if hit {
                     return Some(Reason::AddedNameInUse {
                         file: a.file.clone(),
@@ -666,6 +674,7 @@ pub fn advance_archive(archive: &mut DescriptorSet, changed: &[ChangedFile]) {
                 client: crate::archive::client_digest(&file.text),
                 outline: crate::archive::outline_of(&file.text),
                 idents: crate::archive::idents_of(&file.text),
+                locals: runtime_macros_parse::local_items(&file.text),
             },
         );
         if rekey {
@@ -1969,6 +1978,98 @@ mod archive_tests {
 mod additive_tests {
     use super::*;
 
+    /// A scan of `src/app.rs` holding `app` and `src/app/table.rs` holding
+    /// `table`, the private child that sees `app`'s names through a glob.
+    fn parent_and_child(app: &str, table: &str) -> (tempfile::TempDir, DescriptorSet) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"glob\"\nversion = \"0.1.0\"\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("src/app")).unwrap();
+        std::fs::write(dir.path().join("src/app.rs"), app).unwrap();
+        std::fs::write(dir.path().join("src/app/table.rs"), table).unwrap();
+        let set = crate::archive::scan_crate(dir.path()).unwrap();
+        (dir, set)
+    }
+
+    const PARENT: &str = "mod table;\npub fn app() {}\n";
+
+    fn import_phone(archive: &DescriptorSet) -> Decision {
+        let save = vec![ChangedFile { path: "src/app.rs".into(), text: format!("use icons_lucide::PHONE;\n{PARENT}") }];
+        decide_additive(Some(archive), &save, false).0
+    }
+
+    /// The report's refusal: `use icons_lucide::PHONE` beside a child with
+    /// `const PHONE` and `use super::*`. A local item beats a glob, so the
+    /// child's mentions cannot resolve to the import.
+    #[test]
+    fn regression_a_name_a_child_defines_itself_is_not_in_use() {
+        let table = "use super::*;\nconst PHONE: u8 = 1;\npub fn cell() -> u8 { PHONE }\n";
+        let (_d, archive) = parent_and_child(PARENT, table);
+        assert_eq!(import_phone(&archive), Decision::HotPatch(vec!["src/app.rs".into()]));
+    }
+
+    #[test]
+    fn a_child_that_only_mentions_the_name_still_refuses() {
+        let (_d, archive) = parent_and_child(PARENT, "use super::*;\npub fn cell() -> u8 { PHONE }\n");
+        assert!(matches!(import_phone(&archive), Decision::Rebuild(Reason::AddedNameInUse { .. })));
+    }
+
+    /// Each shape a local definition does not protect.
+    #[test]
+    fn a_local_definition_that_cannot_shadow_still_refuses() {
+        for table in [
+            // Reached through a path, past the local item.
+            "const PHONE: u8 = 1;\npub fn cell() -> u8 { super::PHONE + PHONE }\n",
+            // A mention in the macro namespace.
+            "const PHONE: u8 = 1;\npub fn cell() -> u8 { PHONE!() + PHONE }\n",
+            // Not compiled in every build.
+            "use super::*;\n#[cfg(test)]\nconst PHONE: u8 = 1;\npub fn cell() -> u8 { PHONE }\n",
+            // An inline module's mention has a glob of its own.
+            "const PHONE: u8 = 1;\nmod deep { use super::super::*; pub fn cell() -> u8 { PHONE } }\npub fn f() -> u8 { PHONE }\n",
+        ] {
+            let (_d, archive) = parent_and_child(PARENT, table);
+            assert!(
+                matches!(import_phone(&archive), Decision::Rebuild(Reason::AddedNameInUse { .. })),
+                "{table}"
+            );
+        }
+    }
+
+    /// A value does not stand in front of a type of its name: `Vec` the
+    /// function leaves `Vec` the type to a new import.
+    #[test]
+    fn a_local_value_does_not_shadow_an_import_that_may_be_a_type() {
+        let (_d, archive) = parent_and_child(PARENT, "use super::*;\nfn Vec() {}\npub fn cell(v: Vec<u8>) { Vec() }\n");
+        let save = vec![ChangedFile { path: "src/app.rs".into(), text: format!("use elsewhere::Vec;\n{PARENT}") }];
+        assert!(matches!(
+            decide_additive(Some(&archive), &save, false).0,
+            Decision::Rebuild(Reason::AddedNameInUse { .. })
+        ));
+    }
+
+    /// A new `fn` binds a value only, and a local `fn` covers that; a
+    /// `#[component]` derives more names than the local item can cover.
+    #[test]
+    fn a_new_item_is_shadowed_only_in_the_namespace_it_binds() {
+        let table = "use super::*;\nfn helper() -> u8 { 1 }\npub fn cell() -> u8 { helper() }\n";
+        let (_d, archive) = parent_and_child(PARENT, table);
+        let save = |extra: &str| vec![ChangedFile { path: "src/app.rs".into(), text: format!("{PARENT}{extra}") }];
+        assert_eq!(
+            decide_additive(Some(&archive), &save("fn helper() {}\n"), false).0,
+            Decision::HotPatch(vec!["src/app.rs".into()])
+        );
+        assert!(matches!(
+            decide_additive(Some(&archive), &save("struct helper;\n"), false).0,
+            Decision::Rebuild(Reason::AddedNameInUse { .. })
+        ));
+
+        let table = "use super::*;\nfn Card() -> u8 { 1 }\npub fn cell() -> u8 { Card() }\n";
+        let (_d, archive) = parent_and_child(PARENT, table);
+        assert!(matches!(
+            decide_additive(Some(&archive), &save("#[component]\nfn Card() -> Element { todo!() }\n"), false).0,
+            Decision::Rebuild(Reason::AddedNameInUse { .. })
+        ));
+    }
+
     /// The message has to say what changed and what it was compared with:
     /// the report's "an existing item changed … (near fn …)" gave neither,
     /// and a revert-and-redo after a fallback read as a puzzle.
@@ -2019,7 +2120,7 @@ mod additive_tests {
         std::fs::write(dir.path().join("src/app.rs"), app).unwrap();
         std::fs::write(
             dir.path().join("src/components.rs"),
-            "use runtime_core::component;\n#[component]\nfn Card() -> Element { render_more() }\nfn render_more() -> Element { todo!() }\n",
+            "use runtime_core::component;\nuse crate::app::*;\n#[component]\nfn Card() -> Element { render_more() }\n",
         )
         .unwrap();
         let archive = crate::archive::scan_crate(dir.path()).unwrap();

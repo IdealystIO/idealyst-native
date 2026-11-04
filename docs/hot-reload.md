@@ -318,7 +318,14 @@ What the decision checks, from source (`runtime_macros_parse::additive`,
   before — `use other::*` beside a new `struct Bar`, a new `fn drop`
   shadowing the prelude's, a dependent's `use lib::*`. A `#[component]`'s
   or `stylesheet!`'s name counts as a prefix, since the macro derives
-  `<Name>Props`, `__<Name>_hot_impl`, `<name>_style` from it.
+  `<Name>Props`, `__<Name>_hot_impl`, `<name>_style` from it. A file that
+  defines the name itself does not count as mentioning it, because a local
+  item beats a glob: `const PHONE` beside `use super::*` is safe from a new
+  `use icons::PHONE` in the parent. This is a recorded list of each file's
+  root items, not name resolution, so it stays conservative: a file with
+  an inline `mod`, a `cfg`'d item, a mention through a path
+  (`super::PHONE`) or a local value against an import that could be a type
+  (`fn Vec` and `use elsewhere::Vec`) still rebuilds.
 - **No crate uses an item a patch added to another.** Once patched in,
   a library's new `pub fn` is still missing from the base build's
   metadata. A save that starts calling it from another crate — in a
@@ -1645,8 +1652,10 @@ or, under `--no-watch`, the next rebuild request — until a build
 succeeds. That build is the session's first bundle (generation 1, so a
 page left waiting reloads onto it) and a full build, since the hot tiers
 need a base to patch; the loop proper starts from it. A full-stack
-server beside it keeps running meanwhile, and its own failed first build
-already waited for the next good one the same way.
+server beside it keeps running meanwhile, so the API stays up. A server may
+decide at startup whether it serves a bundle at all, so one that started
+with no `index.html` restarts once when that first bundle lands. Its own
+failed first build already waited for the next good one the same way.
 
 ## Watching a session
 

@@ -156,6 +156,139 @@ pub struct Addition {
     pub label: String,
     /// The names it introduces, each of which must be fresh.
     pub names: Vec<AddedName>,
+    /// Of those, the ones bound at module level, which an item of the same
+    /// name in another module comes before ([`local_items`]). A method
+    /// has no entry: `x.name()` looks past every item.
+    pub binds: BTreeMap<String, Binds>,
+}
+
+/// The namespaces a [`local_items`] entry binds: a bit of each.
+const VALUE: u8 = 1;
+const TYPE: u8 = 2;
+
+/// Which namespaces a name an addition introduces binds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Binds {
+    /// These, as [`local_items`] spells them.
+    Known(u8),
+    /// Whatever the imported path holds, which source cannot say.
+    Import,
+}
+
+impl Binds {
+    /// Whether a mention of `name` in a file whose local item of that name
+    /// binds `local` cannot resolve to this name.
+    ///
+    /// An import may bind any namespace. A local item covering both is
+    /// enough; a value alone is enough only for an ALL_CAPS name, because
+    /// that is the one spelling the prelude has no type or module under.
+    /// Anything else a mention in the type namespace could have meant is
+    /// a closer binding (unaffected) or another glob (ambiguous, so a
+    /// compile error and a rebuild), whereas the prelude sits BEHIND a
+    /// glob and would be silently replaced: `fn Vec` beside
+    /// `use elsewhere::Vec` leaves `Vec<u8>` to the import.
+    pub fn shadowed_by(self, local: u8, name: &str) -> bool {
+        match self {
+            Binds::Known(bits) => bits & !local == 0,
+            Binds::Import => {
+                local & (VALUE | TYPE) == VALUE | TYPE
+                    || (local & VALUE != 0
+                        && name.chars().any(|c| c.is_ascii_uppercase())
+                        && !name.chars().any(|c| c.is_ascii_lowercase()))
+            }
+        }
+    }
+}
+
+/// The items `text` defines at its root that come before any glob
+/// import, with the namespaces each binds (`1` value, `2` type).
+///
+/// What a file defines for itself can shadow a name a save adds elsewhere:
+/// a local item beats a glob, so `const PHONE` beside `use super::*` is
+/// not what a new `use icons::PHONE` in the parent can change. This is not
+/// name resolution, and leaves out whatever it cannot vouch for:
+///
+/// - every item of a file with an inline `mod`, whose mentions see a glob
+///   of their own and not this root;
+/// - an item carrying a `cfg` or an attribute [`KNOWN_ATTRS`] does not
+///   list, which may not exist in the build or may be rewritten;
+/// - a name the file also mentions through a path (`super::PHONE`, which
+///   looks past the local item) or as a macro (`PHONE!`, a namespace no
+///   item here binds).
+///
+/// Empty when the file does not parse.
+pub fn local_items(text: &str) -> BTreeMap<String, u8> {
+    let mut out: BTreeMap<String, u8> = BTreeMap::new();
+    let Ok(file) = syn::parse_file(text) else { return out };
+    if file.items.iter().any(|i| matches!(i, syn::Item::Mod(m) if m.content.is_some())) {
+        return out;
+    }
+    for item in &file.items {
+        let Some((ident, attrs, bits)) = item_binding(item) else { continue };
+        let vouched = attrs.iter().all(|a| {
+            let last = a.path().segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+            last != "cfg" && KNOWN_ATTRS.contains(&last.as_str()) && !matches!(last.as_str(), "component" | "props" | "method")
+        });
+        if vouched {
+            *out.entry(ident.to_string()).or_default() |= bits;
+        }
+    }
+    let Ok(tokens) = text.parse::<proc_macro2::TokenStream>() else { return BTreeMap::new() };
+    let mut past_a_local = BTreeSet::new();
+    collect_path_or_macro_mentions(tokens, &mut past_a_local);
+    out.retain(|name, _| !past_a_local.contains(name));
+    out
+}
+
+/// An item's name, attributes and the namespaces it binds, for an item
+/// that binds its own name in the value or type namespace.
+fn item_binding(item: &syn::Item) -> Option<(&syn::Ident, &[syn::Attribute], u8)> {
+    Some(match item {
+        syn::Item::Fn(f) => (&f.sig.ident, &f.attrs[..], VALUE),
+        syn::Item::Const(c) if c.ident != "_" => (&c.ident, &c.attrs[..], VALUE),
+        syn::Item::Static(s) => (&s.ident, &s.attrs[..], VALUE),
+        syn::Item::Struct(s) => {
+            let bits = if matches!(s.fields, syn::Fields::Named(_)) { TYPE } else { TYPE | VALUE };
+            (&s.ident, &s.attrs[..], bits)
+        }
+        syn::Item::Enum(e) => (&e.ident, &e.attrs[..], TYPE),
+        syn::Item::Union(u) => (&u.ident, &u.attrs[..], TYPE),
+        syn::Item::Type(t) => (&t.ident, &t.attrs[..], TYPE),
+        syn::Item::Trait(t) => (&t.ident, &t.attrs[..], TYPE),
+        _ => return None,
+    })
+}
+
+/// Identifiers `tokens` mention right after a `::` or right before a `!`.
+fn collect_path_or_macro_mentions(tokens: proc_macro2::TokenStream, out: &mut BTreeSet<String>) {
+    use proc_macro2::TokenTree;
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    for (i, tt) in tokens.iter().enumerate() {
+        match tt {
+            TokenTree::Ident(id) => {
+                let after_path = i >= 2
+                    && matches!(&tokens[i - 1], TokenTree::Punct(p) if p.as_char() == ':')
+                    && matches!(&tokens[i - 2], TokenTree::Punct(p) if p.as_char() == ':');
+                let before_bang = matches!(tokens.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == '!');
+                if after_path || before_bang {
+                    let s = id.to_string();
+                    out.insert(s.strip_prefix("r#").map(str::to_string).unwrap_or(s));
+                }
+            }
+            TokenTree::Group(g) => collect_path_or_macro_mentions(g.stream(), out),
+            _ => {}
+        }
+    }
+}
+
+/// What a new item binds at module level, by name.
+fn binds_of(entry: &Entry<'_>) -> BTreeMap<String, Binds> {
+    if let Some(leaf) = &entry.import {
+        return leaf.name.iter().map(|n| (n.clone(), Binds::Import)).collect();
+    }
+    item_binding(entry.item)
+        .map(|(ident, _, bits)| BTreeMap::from([(ident.to_string(), Binds::Known(bits))]))
+        .unwrap_or_default()
 }
 
 /// The file's items, as digests. `None` when it does not parse.
@@ -293,7 +426,7 @@ pub fn additions(
         if in_new_module {
             names.clear();
         }
-        out.push(Addition { label: entry.label(), names });
+        out.push(Addition { label: entry.label(), names, binds: binds_of(entry) });
     }
     for (entry, members) in matched_new {
         let syn::Item::Impl(imp) = entry.item else { unreachable!() };
@@ -307,6 +440,7 @@ pub fn additions(
         out.push(Addition {
             label: format!("impl {} {{ {} }}", self_type_name(&imp.self_ty).unwrap_or_default(), labels.join(", ")),
             names,
+            binds: BTreeMap::new(),
         });
     }
     Ok(out)
@@ -1126,6 +1260,35 @@ mod tests {
     fn a_trait_names_its_methods() {
         let after = format!("{BASE}\npub trait Scored {{ fn score(&self) -> u32; }}\n");
         assert_eq!(names(BASE, &after), vec!["Scored", "score"]);
+    }
+
+    #[test]
+    fn local_items_are_what_a_file_defines_at_its_root() {
+        let items = local_items(
+            "const A: u8 = 1;\nstruct B;\nstruct C { x: u8 }\nenum D {}\nfn e() {}\n#[cfg(test)]\nconst F: u8 = 2;\n\
+             #[tracing::instrument]\nfn g() {}\nconst H: u8 = 3;\nconst I: u8 = 4;\nfn f() { super::H; I!(); }\n",
+        );
+        assert_eq!(items.get("A"), Some(&VALUE));
+        assert_eq!(items.get("B"), Some(&(VALUE | TYPE)));
+        assert_eq!(items.get("C"), Some(&TYPE));
+        assert_eq!(items.get("D"), Some(&TYPE));
+        assert_eq!(items.get("e"), Some(&VALUE));
+        for gone in ["F", "g", "H", "I"] {
+            assert!(!items.contains_key(gone), "{gone}: {items:?}");
+        }
+        assert!(local_items("const A: u8 = 1;\nmod inner {}\n").is_empty());
+        assert!(local_items("fn broken( {").is_empty());
+    }
+
+    #[test]
+    fn an_import_is_shadowed_only_by_what_covers_it() {
+        assert!(Binds::Import.shadowed_by(VALUE, "PHONE"));
+        assert!(Binds::Import.shadowed_by(VALUE | TYPE, "Row"));
+        assert!(!Binds::Import.shadowed_by(VALUE, "Vec"));
+        assert!(!Binds::Import.shadowed_by(VALUE, "serde"));
+        assert!(!Binds::Import.shadowed_by(TYPE, "PHONE"));
+        assert!(Binds::Known(VALUE).shadowed_by(VALUE, "helper"));
+        assert!(!Binds::Known(TYPE).shadowed_by(VALUE, "helper"));
     }
 
     #[test]

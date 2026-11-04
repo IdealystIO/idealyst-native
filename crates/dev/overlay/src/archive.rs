@@ -150,6 +150,13 @@ pub struct FileDigest {
     /// name is fresh against it.
     #[serde(default)]
     pub idents: Option<Vec<String>>,
+    /// The items the file defines at its root that shadow any glob,
+    /// with the namespaces they bind (`runtime_macros_parse::local_items`).
+    /// A file's mention of one cannot resolve to a name a save adds
+    /// elsewhere. Empty when the file did not parse, and an older
+    /// document's default: then nothing is shadowed.
+    #[serde(default)]
+    pub locals: BTreeMap<String, u8>,
 }
 
 /// [`runtime_macros_parse::OutlineEntry`], as the archive stores it.
@@ -388,7 +395,10 @@ pub fn read_set(dir: &Path, sources: &CrateSources) -> Option<DescriptorSet> {
 ///
 /// `8`: each [`OutlineRecord`] names its item, so a refusal can say what
 /// changed. A `7` document's refusals would name nothing.
-pub const OVERLAY_VERSION: u32 = 8;
+///
+/// `9` added [`FileDigest::locals`]. An `8` document would call a name
+/// in use that a file only defines for itself.
+pub const OVERLAY_VERSION: u32 = 9;
 
 /// One `ui!` site as a build recorded it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -620,6 +630,7 @@ pub fn scan_sources_reusing(
                         client: String::new(),
                         outline: None,
                         idents: None,
+                        locals: BTreeMap::new(),
                     },
                 );
                 continue;
@@ -643,9 +654,10 @@ pub fn scan_sources_reusing(
         let client = client_digest(text);
         let outline = outline_of(text);
         let idents = idents_of(text);
+        let locals = runtime_macros_parse::local_items(text);
         set.files.insert(
             relative.clone(),
-            FileDigest { content, skeleton, shape, sheets, downstream, consts, client, outline, idents },
+            FileDigest { content, skeleton, shape, sheets, downstream, consts, client, outline, idents, locals },
         );
         for (ordinal, mut site) in sites.into_iter().enumerate() {
             let key = site.id.key();

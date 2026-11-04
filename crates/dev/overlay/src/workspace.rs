@@ -2041,27 +2041,39 @@ pub async fn ping() -> Result<String, ServerError> {
         ));
     }
 
-    /// `app` defines `wrap_here`. A `pub fn wrap_here` in the library
+    /// `app` mentions `lab_shared`. A `pub fn lab_shared` in the library
     /// could take over `lab_shared::*` imports there — the name is not
     /// fresh in a dependent, so it rebuilds.
     #[test]
     fn a_pub_name_a_dependent_already_mentions_rebuilds() {
         let f = additive_fixture();
-        let edit = format!("{SHARED}\npub fn wrap_here() {{}}\n");
+        let edit = format!("{SHARED}\npub fn lab_shared() {{}}\n");
         match f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false) {
             WorkspaceDecision::Rebuild(Reason::AddedNameInUse { name, user, .. }) => {
-                assert_eq!(name, "wrap_here");
+                assert_eq!(name, "lab_shared");
                 assert_eq!(user, "src/lib.rs");
             }
             other => panic!("expected AddedNameInUse, got {other:?}"),
         }
     }
 
-    /// The same name kept private cannot reach the app: it patches.
+    /// `app` defines `wrap_here` itself, which comes before any
+    /// `lab_shared::*`: the same name in the library changes nothing there.
+    #[test]
+    fn a_pub_name_a_dependent_defines_for_itself_patches() {
+        let f = additive_fixture();
+        let edit = format!("{SHARED}\npub fn wrap_here() {{}}\n");
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+            WorkspaceDecision::HotPatch(_)
+        ));
+    }
+
+    /// A private name cannot reach the app, which mentions it: it patches.
     #[test]
     fn a_private_name_only_needs_to_be_fresh_in_its_own_crate() {
         let f = additive_fixture();
-        let edit = format!("{SHARED}\nfn wrap_here() {{}}\n");
+        let edit = format!("{SHARED}\nfn lab_shared() {{}}\n");
         assert!(matches!(
             f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
             WorkspaceDecision::HotPatch(_)
