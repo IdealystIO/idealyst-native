@@ -134,6 +134,14 @@ macro_rules! __remote_guest_split {
     (bundle: $b:tt app: { $($a:tt)* }) => { $($a)* };
 }
 
+/// One `stylesheet!` rule field, `field: __rule(value)`: `Some(value.into())`,
+/// spelled once here rather than at every rule of every sheet.
+#[doc(hidden)]
+#[inline(always)]
+pub fn __rule<T, U: ::core::convert::Into<T>>(value: U) -> ::core::option::Option<T> {
+    ::core::option::Option::Some(value.into())
+}
+
 /// In a remote bundle build, the `BuildElement` overrides of an imported app
 /// component: `build_set` sends only the fields its call site set, and
 /// `__build_site` also leaves the record of which ones (`remote::site`).

@@ -1133,7 +1133,7 @@ fn emit_rules_struct(rules: &RulesBlock) -> TokenStream2 {
     for (name, value) in &rules.fields {
         for (field_name, expr) in expand_field(name, value) {
             field_assignments.push(quote! {
-                #field_name: ::std::option::Option::Some(::std::convert::Into::into(#expr))
+                #field_name: ::runtime_vocabulary::__rule(#expr)
             });
         }
     }
@@ -1219,7 +1219,7 @@ fn emit_rules_struct_with_transitions(
     for (name, value) in &rules.fields {
         for (field_name, expr) in expand_field(name, value) {
             field_assignments.push(quote! {
-                #field_name: ::std::option::Option::Some(::std::convert::Into::into(#expr))
+                #field_name: ::runtime_vocabulary::__rule(#expr)
             });
         }
     }
