@@ -3107,9 +3107,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   window focus** (`backend-web`), so commit-on-blur fields save under MCP.
 - **GPU anchored overlays flip and clamp** (`render-wgpu` major:
   `Painter::paint_text_input` gains a parameter).
-- **`text_align` reaches a text input on Linux, Windows and the GPU sim skins**;
-  on Android an aligned input stays vertically centred (`backend-linux`,
-  `backend-windows`, `render-wgpu`, `backend-android-mobile`).
+- **`text_align` is the same on every backend** (`backend-macos`,
+  `backend-ios-mobile`, `backend-ios-core`, `backend-apple-core`,
+  `backend-android-mobile`, `backend-linux`, `backend-windows`, `render-wgpu`).
+  It reaches text inputs on Linux, Windows and the GPU sim skins, and text areas
+  on Linux and the GPU backend. A style that drops it, such as `Field` going back
+  to `FieldAlign::Natural`, restores natural alignment on iOS, macOS, Android,
+  the GPU backend and Windows `text`. On Apple Silicon Macs, `Right` and `Center`
+  no longer swap. On macOS, an aligned field no longer loses its edit on focus,
+  and styled text honours alignment. On Android an aligned input stays vertically
+  centred.
 - **Radio and Checkbox rows meet the 44pt phone tap target; Checkbox, Radio and
   Switch report checked state** (`idea-ui`).
 - **`docs-app` compiles again** (`docs-app`).
