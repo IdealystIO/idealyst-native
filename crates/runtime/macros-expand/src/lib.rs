@@ -77,6 +77,8 @@ mod jsx;
 mod lazy;
 mod lazy_component;
 mod component_golden;
+#[cfg(test)]
+mod expansion_size;
 #[cfg(feature = "catalog")]
 mod external_emit;
 /// The `#[component]` hot-reload split (outer dispatcher + inner
