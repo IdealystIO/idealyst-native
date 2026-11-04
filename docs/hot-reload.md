@@ -2456,9 +2456,10 @@ own functions are redirected. A save the decision below accepts:
    not enter cargo's fingerprint, so arming the tier costs no rebuild). A
    library's replay is cargo's own rustc invocation with the output directory
    moved, so it continues the build's incremental session rather than
-   compiling cold. On CrewForge's `api-server`, 171K lines, that is about 12 s
-   against about 62 s for the first replay of a session on arm64 Linux, and it
-   leaves its work there for the rebuild if the patch is refused;
+   compiling cold. On CrewForge's `api-server`, 171K lines, on arm64 Linux, that
+   is 8 s for an edit that moves no lines and 24 s for one that does, against
+   62 s for a replay with no session to continue. It also leaves its work there
+   for the rebuild if the patch is refused;
 2. binds the patch's statics and thread-locals to the server's storage
    and neutralizes constructors it already ran, exactly as for the
    sidecar ([Statics are the running program's](#statics-are-the-running-programs));

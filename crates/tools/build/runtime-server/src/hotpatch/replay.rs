@@ -225,8 +225,8 @@ fn run_rustc_emit_obj_at(
 /// its own. rustc discards a session whose tracked options differ, and `--emit`
 /// is tracked, so an `--emit=obj` replay needs its own directory ([`replay_args`]),
 /// and the first one after a session starts compiles the whole crate from cold:
-/// 61.8 s on CrewForge's `api-server` against 12.6 s warm (arm64 Linux, six
-/// cores). The web's replays have to pay that (a wasm patch adds
+/// 61.8 s on CrewForge's `api-server` against 8–24 s continuing a session (arm64
+/// Linux, six cores). The web's replays have to pay that (a wasm patch adds
 /// `-Crelocation-model=pic`) and warm theirs ahead of time; a server patch adds
 /// no flag, so it can use the session a build already left. And a refused patch
 /// then leaves its work in that session, so the rebuild after it reuses the
