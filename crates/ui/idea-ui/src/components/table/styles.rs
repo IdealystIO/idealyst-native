@@ -1148,8 +1148,7 @@ component_styles! {
         }
 
         /// The "+N more" control under the cells — opens the row's detail sheet.
-        /// A row, so the hugging button sits at the card's leading edge (a
-        /// non-block button centres itself on a column's cross axis).
+        /// A row, so the hugging button sits at the card's leading edge.
         slot card_more {
             base(_t) {
                 flex_direction: FlexDirection::Row,

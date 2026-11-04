@@ -818,8 +818,7 @@ mod tests {
         assert_eq!(more, 0);
     }
 
-    /// Regression: the "+N more" button floated mid-card — a non-block
-    /// Button centres itself on a column's cross axis. Its holder is a row,
+    /// Regression: the "+N more" button floated mid-card. Its holder is a row,
     /// so it sits at the card's leading edge.
     #[test]
     fn regression_more_control_sits_at_the_leading_edge() {

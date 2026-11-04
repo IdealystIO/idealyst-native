@@ -140,10 +140,12 @@ impl Default for TooltipProps {
 ///   and `Stack(align = Start)` could not pull it back.
 /// - `justify_content: Center`: in a row the parent's default stretch
 ///   makes the wrapper as tall as the line, and the trigger is the
-///   wrapper's (column) main axis. A hugging trigger (Button, Badge, Tag)
-///   centres itself on the row's cross axis when bare, so it is centred
-///   in the stretched wrapper too, not dropped to its top. In a column the
-///   wrapper is as tall as its content, so this is a no-op there.
+///   wrapper's (column) main axis. A pill that hugs with `align_self: Center`
+///   (Badge, Tag, IconButton) centres itself on the row's cross axis when
+///   bare, so it is centred in the stretched wrapper too, not dropped to its
+///   top. In a column the wrapper is as tall as its content, so this is a
+///   no-op there. A Button hugs by size and sits at the top of a stretching
+///   row when bare, so a Tooltip does move that one trigger, to the middle.
 pub(crate) fn trigger_wrapper_sheet() -> Rc<StyleSheet> {
     // `r#static` auto-premints by content, and the wrapper builds with the
     // TRIGGER (crawl-visible), not with the lazily-opened bubble — so the

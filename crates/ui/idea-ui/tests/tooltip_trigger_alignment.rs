@@ -10,9 +10,10 @@
 //! where it lands without one. Each case lays out the same parent twice —
 //! once with the trigger wrapped in a Tooltip, once bare — and compares
 //! the trigger's absolute frame. The cases cover both axes and the
-//! parent alignments that matter: a column (stretch, start, centre) and a
-//! row whose taller sibling stretches the line, where a hugging trigger
-//! (Button) must stay vertically centred as it does on its own.
+//! parent alignments that matter: a column (stretch, start, centre), a
+//! row whose taller sibling stretches the line, where a pill that hugs with
+//! `align_self: Center` must stay vertically centred as it does on its own,
+//! and a Button in a row the parent centres.
 //!
 //! The layout is real (`tests/common`: host-mock tree mirrored into
 //! Taffy). It fails with the wrapper at
@@ -23,7 +24,7 @@ mod common;
 use std::rc::Rc;
 
 use common::{find, lay_out};
-use idea_ui::{Button, Stack, StackAlign, StackAxis, Tooltip, Typography};
+use idea_ui::{Badge, Button, Stack, StackAlign, StackAxis, Tooltip, Typography};
 use runtime_core::{ui, Element};
 
 const PANE_WIDTH: f32 = 600.0;
@@ -97,14 +98,37 @@ fn tooltip_trigger_keeps_its_place_in_a_centred_column() {
     });
 }
 
-/// The case the wrapper's hug exists for: a row stretched by a taller
-/// sibling. A Button hugs and centres itself on the cross axis; wrapped,
-/// it must not drop to the top of a stretched wrapper.
+/// The case the wrapper's `justify_content` exists for: a row stretched by a
+/// taller sibling. A Badge centres itself on the cross axis; wrapped, it must
+/// not drop to the top of a stretched wrapper.
 #[test]
-fn tooltip_button_trigger_stays_centred_in_a_stretched_row() {
-    assert_tooltip_is_transparent("row, align stretch, Button", "pressable", |tooltip| {
+fn tooltip_badge_trigger_stays_centred_in_a_stretched_row() {
+    assert_tooltip_is_transparent("row, align stretch, Badge", "text \"New", |tooltip| {
         ui! {
             Stack(axis = StackAxis::Row) {
+                if tooltip {
+                    Tooltip(text = "Added today".to_string()) {
+                        Badge(label = "New".to_string())
+                    }
+                } else {
+                    Badge(label = "New".to_string())
+                }
+                Stack(gap = idea_ui::StackGap::Md) {
+                    Typography(content = LONG.to_string())
+                    Typography(content = LONG.to_string())
+                    Typography(content = LONG.to_string())
+                }
+            }
+        }
+    });
+}
+
+/// A Button trigger in a row the parent aligns: wrapped or bare, same frame.
+#[test]
+fn tooltip_button_trigger_keeps_its_place_in_a_centred_row() {
+    assert_tooltip_is_transparent("row, align center, Button", "pressable", |tooltip| {
+        ui! {
+            Stack(axis = StackAxis::Row, align = StackAlign::Center) {
                 if tooltip {
                     Tooltip(text = "Saves the draft".to_string()) {
                         Button(label = "Save".to_string(), on_click = Rc::new(|| {}) as Rc<dyn Fn()>)

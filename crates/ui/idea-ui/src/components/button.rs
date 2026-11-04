@@ -125,11 +125,12 @@ component_styles! {
                 }
             }
             // `block` fills the container; otherwise the button hugs its
-            // content — `Center`, not `Stretch`, so a flex parent's
-            // `align-items: stretch` can't grow it.
+            // content on both axes. Fit-content, not an `align_self`: it stops
+            // a flex parent's `align-items: stretch` growing the button and
+            // leaves the parent's alignment in charge of where it goes.
             variant block {
                 #[default]
-                off(_t) { align_self: AlignSelf::Center }
+                off(_t) { width: Length::FitContent, height: Length::FitContent }
                 on(_t) {
                     width: Length::Percent(100.0),
                     align_self: AlignSelf::Stretch,
@@ -952,32 +953,32 @@ mod tests {
             );
             assert_eq!(rules.align_self, Some(AlignSelf::Stretch));
 
-            // Default (non-block) leaves width unset → hugs content.
+            // Default (non-block) hugs content.
             let plain = ButtonProps::default();
             let (_, app) = pressable_parts(Button(&plain));
-            assert!(
-                resolve_style(&app).width.is_none(),
-                "a non-block button doesn't pin a width"
+            assert_eq!(
+                resolve_style(&app).width,
+                Some(Tokenized::Literal(Length::FitContent)),
+                "a non-block button hugs its label"
             );
     });
     }
 
-    // Regression: a non-block button must HUG its content — `align_self:
-    // Center` (NOT `Stretch`) — so a flex parent's default `align-items:
-    // stretch` can't grow it to the row's height (a button row) or the
-    // column's width. This is the "buttons flex to the parent height" bug;
-    // `Center` (vs `FlexStart`) also lets a centering preview card center it.
+    // Regression: a non-block button must HUG its content, so a flex parent's
+    // default `align-items: stretch` can't grow it to the row's height (a
+    // button row) or the column's width. This is the "buttons flex to the
+    // parent height" bug. It hugs by size and says nothing about `align_self`,
+    // which would override the parent's alignment (want_b06f208f).
     // `block` opts back into Stretch.
     #[test]
     fn regression_non_block_button_hugs_content_not_stretch() {
         with_test_world(|| {
             theme();
             let (_, app) = pressable_parts(Button(&ButtonProps::default()));
-            assert_eq!(
-                resolve_style(&app).align_self,
-                Some(AlignSelf::Center),
-                "a non-block button sizes to content (centered, not stretched to the parent cross axis)"
-            );
+            let rules = resolve_style(&app);
+            assert_eq!(rules.width, Some(Tokenized::Literal(Length::FitContent)), "hugs its width");
+            assert_eq!(rules.height, Some(Tokenized::Literal(Length::FitContent)), "hugs its height");
+            assert_eq!(rules.align_self, None, "the parent's alignment places a non-block button");
 
             let block = ButtonProps {
                 block: Reactive::Static(true),
