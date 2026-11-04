@@ -15,7 +15,11 @@
 //! `change_detected`, or by `build_started` for the initial and forced
 //! builds; closed by the event that ends the save's work) and appends one
 //! record per episode to two files beside the session log, kept across
-//! sessions so a slow rebuild can be compared with a fast one:
+//! sessions so a slow rebuild can be compared with a fast one. Under
+//! `--no-watch` a save waits in the queue until a rebuild request takes it:
+//! that wait is the record's `queued_ms`, and its `total_ms` starts at the
+//! request.
+//!
 //!
 //! - `build-metrics.md`: one section per save, for reading;
 //! - `build-metrics.jsonl`: the same records as JSON, one per line, for
@@ -75,6 +79,9 @@ pub struct Config {
     /// sessions of one project share the files, and this is what tells
     /// their records apart.
     pub session: u32,
+    /// `--no-watch`: a `change_detected` is a save joining the queue, until
+    /// a rebuild request takes the queue ([`Recorder::handle`]).
+    pub no_watch: bool,
 }
 
 impl Config {
@@ -123,6 +130,7 @@ fn wanted(event: &DevEvent) -> bool {
         event,
         DevEvent::SessionStarted { .. }
             | DevEvent::Watching { .. }
+            | DevEvent::RebuildTaken { .. }
             | DevEvent::ChangeDetected { .. }
             | DevEvent::Decided { .. }
             | DevEvent::OverlayPushed { .. }
@@ -168,7 +176,12 @@ pub struct Record {
     /// How the episode ended, in words.
     pub outcome: String,
     pub failed: bool,
-    /// From the episode's first event to the one that closed it.
+    /// How long its saves waited in the `--no-watch` queue before a rebuild
+    /// request took them: from the first of them to the request. `0` when
+    /// nothing waited.
+    pub queued_ms: u64,
+    /// The work: from the episode's first event, or from the rebuild request
+    /// when it queued, to the event that closed it. Excludes `queued_ms`.
     pub total_ms: u64,
     pub stages: Vec<Timing>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -253,6 +266,12 @@ pub struct FileDiff {
 #[derive(Debug, Default)]
 struct Episode {
     opened_at_ms: u64,
+    /// When a rebuild request took this episode's queued saves.
+    work_from_ms: Option<u64>,
+    /// A rebuild request took it, and the watcher has not started on it yet:
+    /// the next `change_detected` is that watcher reporting the saves it
+    /// took, not a save joining the queue.
+    awaiting_report: bool,
     started: String,
     trigger: String,
     folded: usize,
@@ -285,6 +304,10 @@ struct Recorder {
     config: Config,
     app: String,
     open: HashMap<String, Episode>,
+    /// `--no-watch`: the saves each target holds for the next rebuild
+    /// request. Apart from `open`, because one that lands while a request's
+    /// work runs is the next request's and interrupts nothing.
+    queued: HashMap<String, Episode>,
     /// Watched file contents, for `--metrics-diffs`. `None` values are
     /// files that are not diffable (binary, too large).
     baseline: Option<HashMap<PathBuf, Snapshot>>,
@@ -300,7 +323,7 @@ enum Snapshot {
 impl Recorder {
     fn new(config: Config) -> Self {
         let baseline = config.diffs.then(HashMap::new);
-        Self { config, app: String::new(), open: HashMap::new(), baseline }
+        Self { config, app: String::new(), open: HashMap::new(), queued: HashMap::new(), baseline }
     }
 
     fn handle(&mut self, envelope: &Envelope) {
@@ -309,6 +332,7 @@ impl Recorder {
             DevEvent::SessionStarted { app, targets, mode, hot_tier, .. } => {
                 self.app = app.clone();
                 self.open.clear();
+                self.queued.clear();
                 let tier = match hot_tier {
                     dev_events::HotTier::Armed => "armed".to_string(),
                     dev_events::HotTier::Off { reason } => format!("off ({reason})"),
@@ -328,20 +352,41 @@ impl Recorder {
                     }
                 }
             }
-            DevEvent::ChangeDetected { target, paths, crates, folded } => {
-                let merge = self.open.get(target).is_some_and(|e| !e.working && e.decision.is_none());
-                if !merge {
+            DevEvent::RebuildTaken { target, .. } => {
+                if let Some(mut ep) = self.queued.remove(target) {
                     if self.open.contains_key(target) {
-                        self.close(target, at, "interrupted by a newer save".into(), false);
+                        self.close(target, at, "interrupted by a rebuild request".into(), false);
                     }
-                    self.open.insert(target.clone(), self.episode(at, "save"));
+                    ep.work_from_ms = Some(at);
+                    ep.awaiting_report = true;
+                    self.open.insert(target.clone(), ep);
+                }
+            }
+            DevEvent::ChangeDetected { target, paths, crates, folded } => {
+                let held = self.config.no_watch && !self.open.get(target).is_some_and(|e| e.awaiting_report);
+                if held {
+                    if !self.queued.contains_key(target) {
+                        let ep = self.episode(at, "save");
+                        self.queued.insert(target.clone(), ep);
+                    }
+                } else {
+                    let merge = self.open.get(target).is_some_and(|e| !e.working && e.decision.is_none());
+                    if !merge {
+                        if self.open.contains_key(target) {
+                            self.close(target, at, "interrupted by a newer save".into(), false);
+                        }
+                        self.open.insert(target.clone(), self.episode(at, "save"));
+                    }
                 }
                 let changes: Vec<ChangedFile> = paths
                     .iter()
                     .map(|p| ChangedFile { path: self.display(p), kind: change_kind(Path::new(p)) })
                     .collect();
                 let diffs = self.diffs_for(paths);
-                let ep = self.open.get_mut(target).expect("opened above");
+                let ep = if held { &mut self.queued } else { &mut self.open }
+                    .get_mut(target)
+                    .expect("opened above");
+                ep.awaiting_report = false;
                 // Under `--no-watch` each report is the whole queue so far:
                 // the latest replaces the earlier ones.
                 ep.changes = changes;
@@ -351,6 +396,7 @@ impl Recorder {
             }
             DevEvent::Decided { target, decision } => {
                 let ep = self.open_or_new(target, at);
+                ep.awaiting_report = false;
                 ep.decision = Some(decision.clone());
                 if matches!(decision, Decision::Unchanged) {
                     self.close(target, at, "no change that reaches the program".into(), false);
@@ -389,9 +435,11 @@ impl Recorder {
                     BuildCause::Forced => ("forced", 0),
                     BuildCause::OneShot => ("one_shot", 0),
                 };
-                // A save's build continues its save; the others are
-                // episodes of their own.
-                let continues = trigger == "save" && self.open.contains_key(target);
+                // A save's build continues its save, and any build a
+                // rebuild request's queued saves came to continues them; the
+                // others are episodes of their own.
+                let continues =
+                    self.open.get(target).is_some_and(|e| trigger == "save" || e.awaiting_report);
                 if !continues {
                     if self.open.contains_key(target) {
                         self.close(target, at, "interrupted by another build".into(), false);
@@ -400,7 +448,9 @@ impl Recorder {
                     ep.folded = folded;
                     self.open.insert(target.clone(), ep);
                 }
-                self.open.get_mut(target).expect("present").working = true;
+                let ep = self.open.get_mut(target).expect("present");
+                ep.awaiting_report = false;
+                ep.working = true;
             }
             DevEvent::StageFinished { target, stage, ms } => {
                 if let Some(ep) = self.open.get_mut(target) {
@@ -625,7 +675,8 @@ fn finish(app: &str, session: u32, target: &str, ep: Episode, at: u64, outcome: 
         patch_failed: ep.patch_failed,
         outcome,
         failed,
-        total_ms: at.saturating_sub(ep.opened_at_ms),
+        queued_ms: ep.work_from_ms.map_or(0, |from| from.saturating_sub(ep.opened_at_ms)),
+        total_ms: at.saturating_sub(ep.work_from_ms.unwrap_or(ep.opened_at_ms)),
         stages: ep.stages,
         cargo,
         hot_patch: ep.hot_patch.or_else(|| {
@@ -679,6 +730,9 @@ pub fn markdown(r: &Record) -> String {
         facts.push(format!("**Hot patch failed:** {why}"));
     }
     facts.push(format!("**Outcome:** {}", r.outcome));
+    if r.queued_ms > 0 {
+        facts.push(format!("**Queued:** {} before the rebuild request (not in the time above)", fmt_ms(r.queued_ms)));
+    }
     if !r.stages.is_empty() {
         let stages: Vec<String> = r.stages.iter().map(|t| format!("{} {}", t.name, fmt_ms(t.ms))).collect();
         facts.push(format!("**Stages:** {}", stages.join(" · ")));
@@ -976,7 +1030,7 @@ mod tests {
     }
 
     fn recorder(dir: &Path, diffs: bool) -> Recorder {
-        Recorder::new(Config { project_dir: dir.to_path_buf(), out_dir: dir.join("out"), diffs, session: 7 })
+        Recorder::new(Config { project_dir: dir.to_path_buf(), out_dir: dir.join("out"), diffs, session: 7, no_watch: false })
     }
 
     fn records(dir: &Path) -> Vec<serde_json::Value> {
@@ -995,6 +1049,107 @@ mod tests {
 
     fn web() -> String {
         "web".into()
+    }
+
+    /// CrewForge: a 4.7 s patch was recorded as 13.5 s because its save sat
+    /// 8.8 s in the `--no-watch` queue, and benchmarks read `total_ms`.
+    #[test]
+    fn regression_no_watch_queue_time_is_not_counted_as_work() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("out")).unwrap();
+        let mut r = recorder(dir.path(), false);
+        r.config.no_watch = true;
+        let change = |paths: &[&str]| DevEvent::ChangeDetected {
+            target: web(),
+            paths: paths.iter().map(|p| p.to_string()).collect(),
+            crates: vec![],
+            folded: 0,
+        };
+        let patch = || DevEvent::Decided {
+            target: web(),
+            decision: Decision::HotPatch { crates: vec!["a".into()], files: vec![] },
+        };
+        let built = || DevEvent::PatchBuilt {
+            target: web(),
+            files: vec![],
+            crates: vec![],
+            redirected: 1,
+            steps: vec![],
+            skipped: vec![],
+            bytes: 1,
+            ms: 1,
+        };
+        feed(
+            &mut r,
+            vec![
+                (1_000, change(&["/w/a.rs"])),
+                (2_000, change(&["/w/a.rs", "/w/b.rs"])),
+                (9_800, DevEvent::RebuildRequested { request: 1, targets: vec![web()] }),
+                (9_800, DevEvent::RebuildTaken { target: web(), request: 1 }),
+                (9_801, change(&["/w/a.rs", "/w/b.rs"])),
+                (9_900, patch()),
+                // Queued while the patch runs: the next request's, and no
+                // interruption of this one.
+                (10_000, change(&["/w/c.rs"])),
+                (14_500, built()),
+                (20_000, DevEvent::RebuildTaken { target: web(), request: 2 }),
+                (20_001, change(&["/w/c.rs"])),
+                (20_100, patch()),
+                (21_000, built()),
+            ],
+        );
+        let recs = records(dir.path());
+        assert_eq!(recs.len(), 2, "{recs:#?}");
+        assert_eq!(recs[0]["queued_ms"], 8_800);
+        assert_eq!(recs[0]["total_ms"], 4_700);
+        assert_eq!(recs[0]["changes"].as_array().unwrap().len(), 2);
+        assert!(recs[0]["outcome"].as_str().unwrap().starts_with("hot patch"), "{}", recs[0]["outcome"]);
+        assert_eq!(recs[1]["queued_ms"], 10_000);
+        assert_eq!(recs[1]["total_ms"], 1_000);
+        assert_eq!(recs[1]["changes"][0]["path"], "/w/c.rs");
+        let md = std::fs::read_to_string(dir.path().join("out").join(MARKDOWN_FILE)).unwrap();
+        assert!(md.contains("**Queued:** 8.8 s before the rebuild request"), "{md}");
+    }
+
+    /// A build that applies a request but starts as anything other than a
+    /// save (a failed first build retried, released saves that name no
+    /// work) is still the queue's episode, not an interruption of it.
+    #[test]
+    fn a_no_watch_request_that_forces_a_build_continues_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("out")).unwrap();
+        let mut r = recorder(dir.path(), false);
+        r.config.no_watch = true;
+        feed(
+            &mut r,
+            vec![
+                (100, DevEvent::ChangeDetected { target: web(), paths: vec!["/w/a.rs".into()], crates: vec![], folded: 0 }),
+                (600, DevEvent::RebuildTaken { target: web(), request: 1 }),
+                (600, DevEvent::BuildStarted { target: web(), cause: BuildCause::Initial }),
+                (900, DevEvent::BuildFinished { target: web(), outcome: BuildOutcome::Ready { gen: 1 }, ms: 300 }),
+            ],
+        );
+        let recs = records(dir.path());
+        assert_eq!(recs.len(), 1, "{recs:#?}");
+        assert_eq!((recs[0]["queued_ms"].as_u64(), recs[0]["total_ms"].as_u64()), (Some(500), Some(300)));
+    }
+
+    /// Without `--no-watch` nothing waits: the clock is the save's, as ever.
+    #[test]
+    fn a_watching_session_records_no_queue_time() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("out")).unwrap();
+        let mut r = recorder(dir.path(), false);
+        feed(
+            &mut r,
+            vec![
+                (100, DevEvent::ChangeDetected { target: web(), paths: vec!["/w/a.rs".into()], crates: vec![], folded: 0 }),
+                (150, DevEvent::BuildStarted { target: web(), cause: BuildCause::Save { folded: 0 } }),
+                (900, DevEvent::BuildFinished { target: web(), outcome: BuildOutcome::Ready { gen: 2 }, ms: 750 }),
+            ],
+        );
+        let recs = records(dir.path());
+        assert_eq!((recs[0]["queued_ms"].as_u64(), recs[0]["total_ms"].as_u64()), (Some(0), Some(800)));
     }
 
     fn reason(kind: &str, detail: &str) -> DirtyReason {
@@ -1138,6 +1293,7 @@ mod tests {
             patch_failed: None,
             outcome: "ready (gen 1)".into(),
             failed: false,
+            queued_ms: 0,
             total_ms: 23_000,
             stages: vec![],
             cargo: Some(CargoRecord {
@@ -1372,7 +1528,7 @@ mod tests {
     fn the_sink_writes_through_its_worker() {
         let dir = tempfile::tempdir().unwrap();
         let reporter = Reporter::new();
-        let config = Config { project_dir: dir.path().into(), out_dir: dir.path().join("out"), diffs: false, session: 7 };
+        let config = Config { project_dir: dir.path().into(), out_dir: dir.path().join("out"), diffs: false, session: 7, no_watch: false };
         start(config, &reporter).unwrap();
         dev_events::process::set_explain_rebuilds(false);
         reporter.emit(DevEvent::BuildStarted { target: web(), cause: BuildCause::Initial });

@@ -867,6 +867,7 @@ pub fn run(args: Args) -> Result<()> {
             out_dir: log_path.parent().map(Path::to_path_buf).unwrap_or_else(|| dir.clone()),
             diffs: args.metrics_diffs,
             session: std::process::id(),
+            no_watch: args.no_watch,
         };
         let shown = config.markdown();
         match crate::dev_metrics::start(config, &session.reporter) {

@@ -224,6 +224,9 @@ fn summary(r: &Value) -> Value {
     if let Some(session) = r["session"].as_u64() {
         o.insert("session".into(), json!(session));
     }
+    if let Some(queued) = r["queued_ms"].as_u64().filter(|q| *q > 0) {
+        o.insert("queued_ms".into(), json!(queued));
+    }
     if let Some(tier) = r["decision"]["tier"].as_str() {
         o.insert("tier".into(), json!(tier));
     }
@@ -371,6 +374,17 @@ mod tests {
 
     /// A summary keeps what explains the time and drops the bulk: the
     /// full crate list and the diff text.
+    /// `total_ms` excludes a `--no-watch` save's wait, so a summary without
+    /// the wait would hide that it happened.
+    #[test]
+    fn a_summary_says_how_long_a_queued_save_waited() {
+        let mut queued = record("web", Some("hot_patch"), "save", 4_700);
+        queued["queued_ms"] = json!(8_800);
+        assert_eq!(summary(&queued)["queued_ms"], 8_800);
+        queued["queued_ms"] = json!(0);
+        assert!(summary(&queued).get("queued_ms").is_none(), "nothing waited: nothing to say");
+    }
+
     #[test]
     fn a_summary_keeps_the_causes_and_the_slowest_crates_and_drops_the_bulk() {
         let dir = tempfile::tempdir().unwrap();
