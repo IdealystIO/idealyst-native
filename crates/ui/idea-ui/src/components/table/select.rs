@@ -120,6 +120,7 @@ fn select_all_control(
         icon: Reactive::Dynamic(Rc::new(move || {
             (state.get() == SelectAllState::Some).then_some(MIXED_MARK)
         })),
+        indeterminate: Reactive::Dynamic(Rc::new(move || state.get() == SelectAllState::Some)),
         size: ControlSize::Sm.into(),
         disabled,
         label,

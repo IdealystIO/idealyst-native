@@ -30,7 +30,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    accessibility::Role, component, component_styles, derived, icon, resolve_style, tap, ui, AlignItems, Cursor,
+    accessibility::{AccessibilityTraits, Role}, component, component_styles, derived, icon, resolve_style, tap, ui, AlignItems, Cursor,
     Element, FlexDirection, FontWeight, IconData, IdealystSchema, IntoElement, JustifyContent, Reactive, Signal,
     SlotRestyle, SlotStyle, StyleRules, TapRecognizer, TextAlign,
 };
@@ -241,6 +241,11 @@ pub struct CheckboxProps {
     /// checkmark glyph (e.g. `icons_lucide::CHECK` or a task-specific mark).
     /// Inherits the checkmark's foreground color. `None` = the default ✓.
     pub icon: Option<IconData>,
+    /// Report the box as neither checked nor unchecked to assistive tech and
+    /// the robot (`aria-checked="mixed"`): a parent box over a partly selected
+    /// set. It says nothing about the drawing; pass the dash as `icon`. Default
+    /// `false`. Reactive.
+    pub indeterminate: bool,
     /// Optional robot/E2E test id, forwarded to the interactive box (the
     /// pressable that owns the press + focus). Inert outside a robot build.
     pub test_id: Option<&'static str>,
@@ -264,6 +269,7 @@ impl Default for CheckboxProps {
             size: Reactive::Static(CheckboxSize::default()),
             disabled: Reactive::Static(false),
             icon: Reactive::Static(None),
+            indeterminate: Reactive::Static(false),
             test_id: None,
             accessibility_label: None,
             styles: Default::default(),
@@ -340,7 +346,18 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
     let box_toggle = toggle.clone();
     let box_el = runtime_core::pressable(vec![glyph], move || (box_toggle)())
         .with_style(box_style)
-        .a11y_role(Role::Checkbox);
+        .a11y_role(Role::Checkbox)
+        // Live, so assistive tech and the robot read the state the box draws.
+        .a11y_state({
+            let indeterminate = props.indeterminate.clone();
+            move || {
+                if indeterminate.get() {
+                    AccessibilityTraits::MIXED
+                } else {
+                    AccessibilityTraits::checked_if(value.get())
+                }
+            }
+        });
     // Block the press through the pressable's own `disabled` binding (see
     // Switch): press block, host `set_disabled`, DISABLED state bit.
     // Attached only when the checkbox can be disabled — a `Static(false)`

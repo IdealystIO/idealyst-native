@@ -39,7 +39,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    accessibility::Role, component, component_styles, derived, tap, AlignItems, AxisValues, Cursor, Element,
+    accessibility::{AccessibilityTraits, Role}, component, component_styles, derived, tap, AlignItems, AxisValues, Cursor, Element,
     FlexDirection, FontWeight, IdealystSchema, IntoElement, JustifyContent, Length, Reactive, Signal, SlotRestyle,
     StyleRules, TapRecognizer, Tokenized,
 };
@@ -267,12 +267,17 @@ fn radio_indicator(
     // parity).
     let ring_style = RadioStyles::ring()
         .values(&values)
-        .set(derived(move || RadioChecked::from(is_selected())))
+        .set({
+            let is_selected = is_selected.clone();
+            derived(move || RadioChecked::from(is_selected()))
+        })
         .set(disabled.clone().map(RadioDimmed::from))
         .overridden(styles.ring.as_ref());
     let ring = runtime_core::pressable(vec![dot], move || (on_select)())
         .with_style(ring_style)
-        .a11y_role(Role::RadioButton);
+        .a11y_role(Role::RadioButton)
+        // Live, so assistive tech and the robot read the state the ring draws.
+        .a11y_state(move || AccessibilityTraits::checked_if(is_selected()));
     // Block the press through the pressable's own `disabled` binding (see
     // Switch): press block, host `set_disabled`, DISABLED state bit.
     // Attached only when the radio can be disabled — a `Static(false)`

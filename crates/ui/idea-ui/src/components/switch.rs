@@ -326,7 +326,11 @@ pub fn Switch(props: &SwitchProps) -> Element {
         .set(props.disabled.clone().map(SwitchDimmed::from))
         .overridden(styles.track.as_ref());
     let toggle = move || (on_change)(!value.get());
-    let track = runtime_core::pressable(vec![thumb], toggle).with_style(track_style);
+    let track = runtime_core::pressable(vec![thumb], toggle)
+        .with_style(track_style)
+        .a11y_role(runtime_core::accessibility::Role::Switch)
+        // Live, so assistive tech and the robot read the state the track draws.
+        .a11y_state(move || runtime_core::accessibility::AccessibilityTraits::checked_if(value.get()));
     // Block the press through the pressable's own `disabled` binding: the
     // mount handler wraps the callback in a press-block flag (mouse,
     // keyboard and programmatic activation alike), calls the host's

@@ -28,7 +28,7 @@ use idea_ui::date::CivilDate;
 use idea_ui::touch::MIN_TOUCH_TARGET_PX;
 use idea_ui::{
     install_idea_theme, light_theme, Adornment, Autocomplete, Calendar, Checkbox, ControlSize, Field, Pagination,
-    Radio, RadioGroup, RadioOption, SelectOption, TablePager,
+    Radio, RadioGroup, RadioOption, SelectOption, Switch, TablePager,
 };
 use runtime_core::{signal, ui, Element, Length, Signal, StyleRules, Tokenized};
 use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size};
@@ -441,4 +441,82 @@ fn regression_checkbox_rows_meet_the_phone_tap_target() {
     let tick = desktop.pressables()[0];
     let row = desktop.parent_of(tick);
     assert!(desktop.size(row).1 < MIN_TOUCH_TARGET_PX, "the floor is released at Lg");
+}
+
+/// CrewForge want_85401295: a Checkbox read as unchecked to assistive tech and
+/// Playwright whatever it drew. Checkbox, Radio and Switch report their state
+/// live, on the pressable, through a value change from outside and a press.
+#[test]
+fn regression_checkbox_radio_and_switch_report_their_checked_state() {
+    let values: Rc<RefCell<Option<[Signal<bool>; 3]>>> = Rc::default();
+    let out = values.clone();
+    let (h, _r) = mount(move || {
+        let (tick, dot, flip) = (signal(true), signal(false), signal(true));
+        *out.borrow_mut() = Some([tick, dot, flip]);
+        ui! {
+            view {
+                Checkbox(
+                    value = tick,
+                    on_change = Rc::new(move |v| tick.set(v)) as Rc<dyn Fn(bool)>,
+                    test_id = Some("tick"),
+                )
+                Radio(selected = dot, test_id = Some("dot"))
+                Switch(
+                    value = flip,
+                    on_change = Rc::new(move |v| flip.set(v)) as Rc<dyn Fn(bool)>,
+                    test_id = Some("flip"),
+                )
+            }
+        }
+    });
+    let [tick, dot, flip] = values.borrow().expect("built");
+    let robot = Robot::new();
+    let checked = |id: &str| {
+        let el = robot.find(Query::test_id(id)).expect("registered");
+        robot.state(&el).expect("live").expect("a pressable reports state").checked
+    };
+    assert_eq!(checked("tick"), Some(true));
+    assert_eq!(checked("dot"), Some(false), "an authored role with no CHECKED reads unchecked, not unknown");
+    assert_eq!(checked("flip"), Some(true));
+
+    tick.set(false);
+    dot.set(true);
+    flip.set(false);
+    h.flush();
+    assert_eq!(checked("tick"), Some(false));
+    assert_eq!(checked("dot"), Some(true));
+    assert_eq!(checked("flip"), Some(false));
+
+    let el = robot.find(Query::test_id("tick")).unwrap();
+    robot.click(&el).expect("the box presses");
+    h.flush();
+    assert_eq!(checked("tick"), Some(true), "a press updates it too");
+}
+
+/// A parent box over a partly selected set reads as mixed, not checked.
+#[test]
+fn indeterminate_checkbox_reports_neither_checked_nor_unchecked() {
+    let partly: Rc<RefCell<Option<Signal<bool>>>> = Rc::default();
+    let out = partly.clone();
+    let (h, _r) = mount(move || {
+        let mixed = signal(true);
+        *out.borrow_mut() = Some(mixed);
+        let on = signal(true);
+        ui! {
+            view {
+                Checkbox(
+                    value = on,
+                    indeterminate = mixed,
+                    accessibility_label = Some("All rows".to_string()),
+                )
+            }
+        }
+    });
+    let traits = |h: &host_mock::Harness| h.a11y_by_label("All rows").expect("named").traits;
+    assert!(traits(&h).contains(runtime_core::accessibility::AccessibilityTraits::MIXED));
+    partly.borrow().unwrap().set(false);
+    h.flush();
+    let now = traits(&h);
+    assert!(!now.contains(runtime_core::accessibility::AccessibilityTraits::MIXED));
+    assert!(now.contains(runtime_core::accessibility::AccessibilityTraits::CHECKED));
 }
