@@ -243,7 +243,7 @@ pub use components::collapsible::{
 };
 pub use components::divider::{Divider, DividerAxis, DividerProps};
 pub use components::field::{
-    Adornment, Field, FieldAdorned, FieldAppearance, FieldDimmed, FieldPlacement, FieldProps, FieldRestyle,
+    Adornment, Field, FieldAdorned, FieldAlign, FieldAppearance, FieldDimmed, FieldPlacement, FieldProps, FieldRestyle,
     FieldRing, FieldSize, FieldSlotStyles, FieldStyles, FieldTone,
 };
 pub use components::icon_button::{

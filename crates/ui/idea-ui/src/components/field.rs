@@ -52,7 +52,7 @@ use std::rc::Rc;
 use runtime_core::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_core::{
     component, component_styles, derived, pressable, recipe, ui, AlignItems, Color, Cursor, Element, FlexDirection,
-    FontWeight, IconData, IdealystSchema, IntoElement, JustifyContent, Length, Reactive, Signal, SlotRestyle, StyleRules, Tokenized, VariantEnum,
+    FontWeight, IconData, IdealystSchema, IntoElement, JustifyContent, Length, Reactive, Signal, SlotRestyle, StyleRules, TextAlign, Tokenized, VariantEnum,
 };
 
 use crate::components::icon::Icon;
@@ -290,6 +290,15 @@ component_styles! {
                 border_radius: t.radius.md(),
                 border_width: 1.0,
                 border_color: t.color.border(),
+            }
+            /// How the typed text sits in the input (`Field(text_align = …)`). The
+            /// default states nothing, so the platform's own natural alignment holds.
+            variant align {
+                #[default]
+                natural(_t) {}
+                left(_t) { text_align: TextAlign::Left }
+                center(_t) { text_align: TextAlign::Center }
+                right(_t) { text_align: TextAlign::Right }
             }
             variant size {
                 sm(t) {
@@ -642,6 +651,13 @@ pub struct FieldProps {
     /// and disables in place, without rebuilding the input.
     #[schema(constraint = "reactive: static bool or Signal/rx!")]
     pub disabled: bool,
+    /// How the typed text sits in the input: `FieldAlign::Right` for a figure
+    /// typed in place under a right-aligned table header, so it ends on the same
+    /// line as the read-only figures around it. Default `FieldAlign::Natural`.
+    /// Reactive.
+    // Left out of the docs controls for the same tuple limit as `label_hint`.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub text_align: FieldAlign,
     /// The input's accessible name — what screen readers announce and what
     /// the robot reports as the input's `label`. Defaults to `label`. Set
     /// it when the visible label is drawn OUTSIDE this component (a custom
@@ -681,6 +697,7 @@ impl Default for FieldProps {
             on_key_down: None,
             autofocus: false,
             disabled: Reactive::Static(false),
+            text_align: Reactive::Static(FieldAlign::default()),
             styles: Default::default(),
         }
     }
@@ -729,9 +746,11 @@ pub fn Field(props: &FieldProps) -> Element {
         let min_height = props.min_height.clone();
         let width = props.width.clone();
         let tone_key_for = tone_key_for.clone();
+        let text_align = props.text_align.clone();
         move |focused: Signal<bool>| -> runtime_core::SlotStyle<FieldStyles> {
             let mut style = FieldStyles::input()
                 .values(&values)
+                .set(text_align.clone())
                 .raw_with("tone", tone_key_for.clone())
                 .set(derived(move || FieldRing::from(focused.get())));
             let dims = |mh: Option<f32>, w: Option<f32>| StyleRules {
@@ -842,6 +861,7 @@ pub fn Field(props: &FieldProps) -> Element {
             .values(&values)
             .set(FieldAppearance::Bare)
             .set(FieldPlacement::Shell)
+            .set(props.text_align.clone())
             .overridden(styles.input.as_ref());
         let input_node = input.with_style(bare_style).into_element();
         // The shell: field chrome + tone border + row layout (`adorned`),
@@ -1393,6 +1413,30 @@ mod tests {
                     "adorned {size:?} shell must drop the size axis's bottom padding"
                 );
             }
+        });
+    }
+
+    /// CrewForge want_3931c9a5: a number typed in a table cell sat left-aligned
+    /// under a right-aligned header. The prop reaches the `text_input`, adorned
+    /// or not, and a field that names none states nothing.
+    #[test]
+    fn regression_field_text_align_reaches_the_input() {
+        with_test_world(|| {
+            theme();
+            let input_align = |props: FieldProps| nested_input_rules(Field(&props)).expect("has an input").text_align;
+            assert_eq!(input_align(FieldProps::default()), None);
+            assert_eq!(
+                input_align(FieldProps { text_align: Reactive::Static(FieldAlign::Right), ..Default::default() }),
+                Some(TextAlign::Right)
+            );
+            assert_eq!(
+                input_align(FieldProps {
+                    text_align: Reactive::Static(FieldAlign::Center),
+                    leading: Adornment::Icon(crate::components::icon::EMPTY_ICON),
+                    ..Default::default()
+                }),
+                Some(TextAlign::Center)
+            );
         });
     }
 
