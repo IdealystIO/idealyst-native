@@ -50,7 +50,19 @@ pub(crate) fn create(
         apply_default_layout_params(env, &local);
         env.new_global_ref(local).unwrap()
     });
-    let layout = b.layout_for_view(&node);
+    install_measure(b, &node, size);
+    node
+}
+
+/// A live `size`: the new measurer dirties the leaf, and the drawable scales to
+/// the frame the next pass gives it.
+pub(crate) fn update_size(b: &mut AndroidBackend, node: &GlobalRef, size: ActivityIndicatorSize) {
+    install_measure(b, node, size);
+    crate::imp::scheduler::schedule_layout_pass_retry(0);
+}
+
+fn install_measure(b: &mut AndroidBackend, node: &GlobalRef, size: ActivityIndicatorSize) {
+    let layout = b.layout_for_view(node);
     b.layout.set_measure_fn(
         layout,
         std::rc::Rc::new(move |known, _available| {
@@ -59,5 +71,4 @@ pub(crate) fn create(
             runtime_layout::Size { width, height }
         }),
     );
-    node
 }

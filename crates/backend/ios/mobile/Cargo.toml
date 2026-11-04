@@ -190,3 +190,7 @@ harness = false
 [[test]]
 name = "native_readback"
 harness = false
+
+[[test]]
+name = "activity_indicator_size"
+harness = false

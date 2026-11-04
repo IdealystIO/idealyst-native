@@ -1266,6 +1266,14 @@ mod native {
         ) -> Self::Node {
             AndroidBackend::create_activity_indicator_impl(self, size, color, a11y)
         }
+
+        fn update_activity_indicator_size(
+            &mut self,
+            node: &Self::Node,
+            size: primitives::activity_indicator::ActivityIndicatorSize,
+        ) {
+            AndroidBackend::update_activity_indicator_size_impl(self, node, size)
+        }
     }
 
     // -----------------------------------------------------------------------

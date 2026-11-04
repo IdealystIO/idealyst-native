@@ -907,15 +907,8 @@ impl caps::ActivityIndicatorOps for TerminalBackend {
             if let Some(c) = color {
                 d.fg = Some(parse_or(&c.0, Rgba::new(180, 180, 180, 255)));
             }
-            // Small = 1 cell tall, Large = 1 cell tall too — we
-            // can't actually grow a single braille glyph. Width: 3
-            // cells either way to give the spinner some space.
-            let w_cells = match size {
-                ActivityIndicatorSize::Small => 3.0,
-                ActivityIndicatorSize::Large => 5.0,
-            };
-            let (cw, ch) = self.cell_size;
-            self.layout.set_intrinsic_size(d.layout, w_cells * cw, 1.0 * ch);
+            let (w, h) = terminal_spinner_size(size, self.cell_size);
+            self.layout.set_intrinsic_size(d.layout, w, h);
         }
         // Nothing upstream drives a per-frame effect for this
         // primitive, so we install our own `raf_loop` to advance the phase.
@@ -932,6 +925,23 @@ impl caps::ActivityIndicatorOps for TerminalBackend {
         runtime_shared::on_cleanup(move || drop(task));
         node
     }
+
+    fn update_activity_indicator_size(&mut self, node: &Self::Node, size: ActivityIndicatorSize) {
+        let Some(layout) = self.nodes.get(&node.id).map(|d| d.layout) else { return };
+        let (w, h) = terminal_spinner_size(size, self.cell_size);
+        self.layout.set_intrinsic_size(layout, w, h);
+        self.layout.mark_dirty(layout);
+    }
+}
+
+/// One cell tall either way (a single braille glyph can't grow); the sizes differ
+/// in the cells kept clear around it, 3 or 5 wide.
+fn terminal_spinner_size(size: ActivityIndicatorSize, (cell_w, cell_h): (f32, f32)) -> (f32, f32) {
+    let cells = match size {
+        ActivityIndicatorSize::Small => 3.0,
+        ActivityIndicatorSize::Large => 5.0,
+    };
+    (cells * cell_w, cell_h)
 }
 
 // ---------------------------------------------------------------------------

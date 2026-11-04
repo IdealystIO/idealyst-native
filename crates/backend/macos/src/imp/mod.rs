@@ -478,6 +478,17 @@ pub(crate) fn layout_pass_is_queued() -> bool {
     LAYOUT_PASS_QUEUED.with(|q| q.get())
 }
 
+/// macOS's spinner has no explicit "large" variant, so `Large` is `Regular`.
+fn activity_indicator_control_size(
+    size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+) -> objc2_app_kit::NSControlSize {
+    use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
+    match size {
+        ActivityIndicatorSize::Small => objc2_app_kit::NSControlSize::Small,
+        ActivityIndicatorSize::Large => objc2_app_kit::NSControlSize::Regular,
+    }
+}
+
 pub fn schedule_layout_pass() {
     let should_post = LAYOUT_PASS_QUEUED
         .with(|q| crate::layout_policy::claim_coalesced_pass(q));
@@ -4435,13 +4446,7 @@ impl MacosBackend {
         // integer literal can't reintroduce the crash.
         unsafe { spinner.setStyle(objc2_app_kit::NSProgressIndicatorStyle::Spinning) };
         let _: () = unsafe { msg_send![&spinner, setIndeterminate: true] };
-        // Map ActivityIndicatorSize → NSControlSize. macOS's spinner has no
-        // explicit "large" variant, so ::Large maps to Regular.
-        let control_size = match size {
-            ActivityIndicatorSize::Small => objc2_app_kit::NSControlSize::Small,
-            ActivityIndicatorSize::Large => objc2_app_kit::NSControlSize::Regular,
-        };
-        unsafe { spinner.setControlSize(control_size) };
+        unsafe { spinner.setControlSize(activity_indicator_control_size(size)) };
         let _: () = unsafe { msg_send![&spinner, startAnimation: std::ptr::null::<NSObject>()] };
 
         let view: Retained<NSView> = unsafe {
@@ -4472,6 +4477,26 @@ impl MacosBackend {
             ),
         );
         node
+    }
+
+    /// The measurer reads `intrinsicContentSize`, which follows the control
+    /// size; it just has to run again.
+    pub(crate) fn update_activity_indicator_size_impl(
+        &mut self,
+        node: &MacosNode,
+        size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+    ) {
+        let view = node.as_view();
+        let is_spinner: bool = unsafe { msg_send![view, isKindOfClass: objc2::class!(NSProgressIndicator)] };
+        if !is_spinner {
+            return;
+        }
+        let spinner = view as *const NSView as *const objc2_app_kit::NSProgressIndicator;
+        unsafe { (*spinner).setControlSize(activity_indicator_control_size(size)) };
+        if let Some(layout) = self.layout_of(view) {
+            self.layout.mark_dirty(layout);
+            Self::schedule_layout_pass_impl();
+        }
     }
 
     pub(crate) fn insert_impl(&mut self, parent: &mut MacosNode, child: MacosNode) {

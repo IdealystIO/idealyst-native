@@ -3295,6 +3295,14 @@ impl AndroidBackend {
         node
     }
 
+    pub(crate) fn update_activity_indicator_size_impl(
+        &mut self,
+        node: &GlobalRef,
+        size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+    ) {
+        primitives::activity_indicator::update_size(self, node, size);
+    }
+
     pub(crate) fn create_graphics_impl(
         &mut self,
         on_ready: runtime_shared::primitives::graphics::OnReady,

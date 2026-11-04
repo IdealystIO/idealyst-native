@@ -2,11 +2,15 @@
 //!
 //! Passive widget — no state, no methods. Authors typically render
 //! it conditionally (`if loading.get() { ... }`) inside a `when()`.
+//! A reactive `size` resizes it in place on every backend that has a
+//! spinner, and the layout follows.
 //! Backends:
 //!   - Web: a `<span>` with a CSS keyframe rotation. The rule is
 //!     injected into the framework's stylesheet once on first use.
 //!   - iOS: `UIActivityIndicatorView` (`startAnimating()` on mount).
 //!   - Android: indeterminate `ProgressBar`, at iOS's diameters.
+//!   - Windows: a marquee progress bar (comctl32 has no spinner).
+//!   - CPU: none; the primitive is a placeholder there.
 
 use std::any::Any;
 use std::rc::Rc;

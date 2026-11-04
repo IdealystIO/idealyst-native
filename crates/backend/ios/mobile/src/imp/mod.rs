@@ -355,6 +355,13 @@ pub struct IosBackend {
 // IosNode
 // =========================================================================
 
+fn activity_indicator_style(size: ActivityIndicatorSize) -> UIActivityIndicatorViewStyle {
+    match size {
+        ActivityIndicatorSize::Small => UIActivityIndicatorViewStyle::Medium,
+        ActivityIndicatorSize::Large => UIActivityIndicatorViewStyle::Large,
+    }
+}
+
 #[derive(Clone)]
 pub enum IosNode {
     View(Retained<UIView>),
@@ -2478,14 +2485,10 @@ impl IosBackend {
         color: Option<&Color>,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> IosNode {
-        let style = match size {
-            ActivityIndicatorSize::Small => UIActivityIndicatorViewStyle::Medium,
-            ActivityIndicatorSize::Large => UIActivityIndicatorViewStyle::Large,
-        };
         let indicator = unsafe {
             UIActivityIndicatorView::initWithActivityIndicatorStyle(
                 self.mtm.alloc(),
-                style,
+                activity_indicator_style(size),
             )
         };
         if let Some(c) = color {
@@ -2527,6 +2530,17 @@ impl IosBackend {
             Some(runtime_shared::accessibility::Role::Spinner),
         );
         node
+    }
+
+    /// The measurer reads `intrinsicContentSize`, which follows the style; it
+    /// just has to run again.
+    pub(crate) fn update_activity_indicator_size_impl(&mut self, node: &IosNode, size: ActivityIndicatorSize) {
+        let IosNode::ActivityIndicator(indicator) = node else { return };
+        unsafe { indicator.setActivityIndicatorViewStyle(activity_indicator_style(size)) };
+        if let Some(layout) = self.layout_of(node.as_view()) {
+            self.layout.mark_dirty(layout);
+            schedule_layout_pass();
+        }
     }
 
     pub(crate) fn create_icon_impl(

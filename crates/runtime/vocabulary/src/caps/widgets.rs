@@ -151,7 +151,8 @@ pub trait SliderOps: ExternalOps {
 
 /// The `activity_indicator` primitive (loading spinner).
 pub trait ActivityIndicatorOps: ExternalOps {
-    /// Create a loading spinner (size/color static at construction).
+    /// Create a loading spinner. `color` is static; a live `size` reaches
+    /// [`update_activity_indicator_size`](Self::update_activity_indicator_size).
     #[allow(unused_variables)]
     fn create_activity_indicator(
         &mut self,
@@ -164,7 +165,9 @@ pub trait ActivityIndicatorOps: ExternalOps {
         )
     }
 
-    /// Re-apply a live `size` source in place (web only in practice).
+    /// Re-apply a live `size` source in place. The widget takes the new size
+    /// and the layout follows: a backend whose node has a measurer marks it
+    /// dirty and schedules a pass, as it does for changed text.
     #[allow(unused_variables)]
     fn update_activity_indicator_size(
         &mut self,

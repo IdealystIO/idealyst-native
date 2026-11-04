@@ -499,6 +499,16 @@ fn install_canvas_background(window: &gtk4::Window) -> gtk4::CssProvider {
     provider
 }
 
+/// The native control sizes macOS uses (`NSControlSize::Small` / `Regular`): 16
+/// and 32 px. GTK's spinner is 16 px natively; the size request raises the
+/// measured size for `Large`.
+fn activity_indicator_side(size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize) -> i32 {
+    match size {
+        runtime_shared::primitives::activity_indicator::ActivityIndicatorSize::Small => 16,
+        runtime_shared::primitives::activity_indicator::ActivityIndicatorSize::Large => 32,
+    }
+}
+
 impl LinuxBackend {
     /// Re-point the app canvas at the theme's host-surface colour.
     ///
@@ -3945,16 +3955,25 @@ impl LinuxBackend {
         _a11y: &AccessibilityProps,
     ) -> LinuxNode {
         let spinner = gtk4::Spinner::new();
-        // The native control sizes macOS uses (`NSControlSize::Small` /
-        // `Regular`): 16 and 32 px. GTK's spinner is 16 px natively; the
-        // request raises the measured size for `Large`.
-        let side = match size {
-            runtime_shared::primitives::activity_indicator::ActivityIndicatorSize::Small => 16,
-            runtime_shared::primitives::activity_indicator::ActivityIndicatorSize::Large => 32,
-        };
+        let side = activity_indicator_side(size);
         spinner.set_size_request(side, side);
         spinner.start();
         self.wrap_measured(spinner.upcast::<gtk4::Widget>(), NodeKind::Other)
+    }
+
+    /// The measurer asks the widget, so a new request is all it needs to see;
+    /// Taffy caches the old answer until the node is marked dirty.
+    fn update_activity_indicator_size(
+        &mut self,
+        node: &LinuxNode,
+        size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+    ) {
+        let side = activity_indicator_side(size);
+        node.widget.set_size_request(side, side);
+        if let Some(layout) = self.nodes.get(&node.id).map(|s| s.layout) {
+            self.layout.mark_dirty(layout);
+        }
+        node.widget.queue_resize();
     }
 
     fn create_virtualizer(

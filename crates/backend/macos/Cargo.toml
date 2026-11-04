@@ -155,6 +155,10 @@ harness = false
 name = "focus_attach"
 harness = false
 
+[[test]]
+name = "activity_indicator_size"
+harness = false
+
 # Real-AppKit test of the app-level keyboard source (`src/imp/keyboard.rs`):
 # the NSEvent monitor, focus-loss observers and teardown. Main-thread only, for
 # the same reason as `focus_attach`.

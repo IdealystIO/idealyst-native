@@ -1102,6 +1102,14 @@ impl caps::ActivityIndicatorOps for MacosBackend {
     ) -> Self::Node {
         MacosBackend::create_activity_indicator_impl(self, size, color, a11y)
     }
+
+    fn update_activity_indicator_size(
+        &mut self,
+        node: &Self::Node,
+        size: primitives::activity_indicator::ActivityIndicatorSize,
+    ) {
+        MacosBackend::update_activity_indicator_size_impl(self, node, size)
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -968,6 +968,14 @@ impl caps::ActivityIndicatorOps for WindowsBackend {
     ) -> Self::Node {
         WindowsBackend::create_activity_indicator(self, _size, _color, _a11y)
     }
+
+    fn update_activity_indicator_size(
+        &mut self,
+        node: &Self::Node,
+        size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+    ) {
+        WindowsBackend::update_activity_indicator_size(self, node, size)
+    }
 }
 
 // ---------------------------------------------------------------------------

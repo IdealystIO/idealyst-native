@@ -2034,6 +2034,45 @@ mod user_activity_tests {
 }
 
 #[cfg(test)]
+mod activity_indicator_tests {
+    use super::*;
+    use runtime_scene::Host;
+    use runtime_shared::accessibility::AccessibilityProps;
+    use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
+    use runtime_vocabulary::caps::{ActivityIndicatorOps, LifecycleOps, StyleOps, ViewOps};
+
+    /// `update_activity_indicator_size` was the trait default, so `size_dyn` was
+    /// ignored after creation: the spinner kept the cells it was created with.
+    #[test]
+    fn regression_terminal_activity_indicator_ignored_a_live_size() {
+        let mut be = TerminalBackend::new();
+        be.set_viewport(20, 5);
+        let a11y = AccessibilityProps::default();
+        let mut root = be.create_view(&a11y);
+        // The default stretches the child across the column, hiding its own width.
+        be.apply_style(
+            &root,
+            &std::rc::Rc::new(runtime_shared::StyleRules {
+                align_items: Some(runtime_shared::AlignItems::FlexStart),
+                ..Default::default()
+            }),
+        );
+        let spinner = be.create_activity_indicator(ActivityIndicatorSize::Small, None, &a11y);
+        be.insert(&mut root, spinner.clone());
+        be.finish(root);
+        let layout = be.nodes[&spinner.id].layout;
+        let width = |be: &mut TerminalBackend| {
+            be.compute_layout_for_log();
+            be.layout.frame_of(layout).width
+        };
+        let small = width(&mut be);
+        be.update_activity_indicator_size(&spinner, ActivityIndicatorSize::Large);
+        let large = width(&mut be);
+        assert!(large > small, "Small {small}, Large {large}");
+    }
+}
+
+#[cfg(test)]
 mod z_index_tests {
     use super::*;
     use runtime_shared::color::Rgba;

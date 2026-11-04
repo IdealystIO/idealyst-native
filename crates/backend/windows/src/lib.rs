@@ -1050,6 +1050,17 @@ impl RendererKind {
     }
 }
 
+/// comctl32 has no spinner: the indeterminate affordance is a marquee bar, so a
+/// spinner is a bar of the other backends' spinner heights (16 / 32).
+fn activity_indicator_size(
+    size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+) -> (i32, i32) {
+    match size {
+        runtime_shared::primitives::activity_indicator::ActivityIndicatorSize::Small => (160, 16),
+        runtime_shared::primitives::activity_indicator::ActivityIndicatorSize::Large => (160, 32),
+    }
+}
+
 impl WindowsBackend {
     /// Construct a backend rooted at `host_hwnd`. The host shell owns
     /// the window; the backend paints its client area and creates child
@@ -3396,7 +3407,7 @@ impl WindowsBackend {
 
     fn create_activity_indicator(
         &mut self,
-        _size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+        size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
         _color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> WindowsNode {
@@ -3408,8 +3419,19 @@ impl WindowsBackend {
             SendMessageW(hwnd, PBM_SETMARQUEE, Some(WPARAM(1)), Some(LPARAM(30)));
         }
         let node = self.add_node(NodeKind::Control { hwnd });
-        self.set_intrinsic(&node, 160, 16);
+        let (width, height) = activity_indicator_size(size);
+        self.set_intrinsic(&node, width, height);
         node
+    }
+
+    fn update_activity_indicator_size(
+        &mut self,
+        node: &WindowsNode,
+        size: runtime_shared::primitives::activity_indicator::ActivityIndicatorSize,
+    ) {
+        let (width, height) = activity_indicator_size(size);
+        self.set_intrinsic(node, width, height);
+        self.invalidate();
     }
 
     /// A painted scroll view holding only its window of rows — see
@@ -5047,6 +5069,27 @@ mod capability_tests {
         );
         let cid = b.nodes[&node.id].control_id.expect("control id");
         (node, cid)
+    }
+
+    /// `update_activity_indicator_size` was the trait default, and the create
+    /// path took no size at all: a spinner was one bar whatever `size` asked for.
+    #[test]
+    fn regression_windows_activity_indicator_ignored_its_size() {
+        use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
+        use runtime_vocabulary::caps::{ActivityIndicatorOps, ViewOps};
+
+        let mut b = WindowsBackend::new(host());
+        let a11y = AccessibilityProps::default();
+        let mut root = ViewOps::create_view(&mut b, &a11y);
+        let spinner = ActivityIndicatorOps::create_activity_indicator(&mut b, ActivityIndicatorSize::Large, None, &a11y);
+        b.insert(&mut root, spinner.clone());
+        b.finish(root);
+        b.relayout();
+        assert_eq!(b.node_abs_frame(spinner.id).expect("laid out").3, 32.0, "created Large");
+
+        ActivityIndicatorOps::update_activity_indicator_size(&mut b, &spinner, ActivityIndicatorSize::Small);
+        b.relayout();
+        assert_eq!(b.node_abs_frame(spinner.id).expect("laid out").3, 16.0, "the layout follows a live size");
     }
 
     /// `update_text_input_value` was the trait default, so a field bound to

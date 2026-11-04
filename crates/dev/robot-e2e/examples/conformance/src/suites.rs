@@ -270,6 +270,23 @@ fn media_suite() -> robot_e2e::Suite {
     )
 }
 
+// The sizes differ per backend's native control (16 / 20 small, 32 / 40 large):
+// the check is that the frame crosses between them.
+const SPINNER_SMALL_MAX: f32 = 24.0;
+const SPINNER_LARGE_MIN: f32 = 30.0;
+
+/// The spinner's laid-out height passes `ok`: the frame comes from layout, so
+/// this catches a measurer still answering the old size as well as a widget
+/// that ignored the new one.
+fn spinner_height(p: &Page, ok: impl Fn(f32) -> bool) -> Result<(), String> {
+    let height = p.get_by_test_id("cap-spinner").frame()?.height;
+    if ok(height) {
+        Ok(())
+    } else {
+        Err(format!("the spinner is {height} tall"))
+    }
+}
+
 /// The system check's automated half (`system_check.rs`): one test per
 /// backend capability whose trait default silently does nothing. Test
 /// names are what the screen's sections look results up by — rename both
@@ -340,6 +357,13 @@ fn capabilities_suite() -> robot_e2e::Suite {
                 .poll(|p: &Page| expect(&p.get_by_test_id("cap-opacity")).to_have_native_opacity(0.5))
                 .act(|p: &Page| p.get_by_test_id("cap-opacity-toggle").click())
                 .poll(|p: &Page| expect(&p.get_by_test_id("cap-opacity")).to_have_native_opacity(1.0))
+                .build(),
+            flow("a spinner follows a live size")
+                .poll(|p: &Page| spinner_height(p, |h| h <= SPINNER_SMALL_MAX))
+                .act(|p: &Page| p.get_by_test_id("cap-spinner-toggle").click())
+                .poll(|p: &Page| spinner_height(p, |h| h >= SPINNER_LARGE_MIN))
+                .act(|p: &Page| p.get_by_test_id("cap-spinner-toggle").click())
+                .poll(|p: &Page| spinner_height(p, |h| h <= SPINNER_SMALL_MAX))
                 .build(),
             test("external links have an opener", |_p: &Page| {
                 if runtime_shared::can_open_urls() {

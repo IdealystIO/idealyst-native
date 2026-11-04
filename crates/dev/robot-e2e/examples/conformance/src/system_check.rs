@@ -25,6 +25,7 @@ use runtime_macros::{component, ui};
 use runtime_shared::{Color, Cursor, Length, StyleRules, StyleSheet};
 use runtime_shared::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_vocabulary::builders::{pressable, text_area, text_input};
+use runtime_vocabulary::glue::primitives::activity_indicator::{activity_indicator, ActivityIndicatorSize};
 use runtime_vocabulary::glue::primitives::flat_list::{fixed_size, flat_list};
 use runtime_vocabulary::glue::primitives::presence::presence;
 use runtime_vocabulary::glue::primitives::scroll_view::scroll_view;
@@ -105,6 +106,13 @@ const STYLE_DROP: Manual = Manual {
             with none it is fully opaque.",
     tests: &["a style that drops opacity goes back to opaque"],
 };
+const SPINNER: Manual = Manual {
+    id: "spinner",
+    title: "Spinner size",
+    steps: "\"Toggle\" flips the spinner between its two sizes: it grows and shrinks in place, \
+            and the row around it follows.",
+    tests: &["a spinner follows a live size"],
+};
 const LINK: Manual = Manual {
     id: "link",
     title: "External link",
@@ -124,8 +132,8 @@ const KEYBOARD: Manual = Manual {
     tests: &[],
 };
 
-const MANUAL: [&Manual; 9] =
-    [&HOVER, &INPUT, &AREA, &LIST, &SCROLL, &STYLE_DROP, &LINK, &PRESENCE, &KEYBOARD];
+const MANUAL: [&Manual; 10] =
+    [&HOVER, &INPUT, &AREA, &LIST, &SCROLL, &STYLE_DROP, &SPINNER, &LINK, &PRESENCE, &KEYBOARD];
 
 /// Indexes into [`MANUAL`], so a section names its check with a plain
 /// (static, `Default`) prop.
@@ -135,9 +143,10 @@ const AREA_I: usize = 2;
 const LIST_I: usize = 3;
 const SCROLL_I: usize = 4;
 const STYLE_DROP_I: usize = 5;
-const LINK_I: usize = 6;
-const PRESENCE_I: usize = 7;
-const KEYBOARD_I: usize = 8;
+const SPINNER_I: usize = 6;
+const LINK_I: usize = 7;
+const PRESENCE_I: usize = 8;
+const KEYBOARD_I: usize = 9;
 
 /// The fixture's hover / press look. `cursor` is on the base so the hand
 /// shows whenever the pointer is over it.
@@ -195,6 +204,7 @@ pub(crate) fn system_check_page(results: Results, nav: NavCell) -> Element {
             CheckSection(index = LIST_I, automated = automated, manual = manual) { ListFixture() }
             CheckSection(index = SCROLL_I, automated = automated, manual = manual) { ScrollFixture() }
             CheckSection(index = STYLE_DROP_I, automated = automated, manual = manual) { StyleDropFixture() }
+            CheckSection(index = SPINNER_I, automated = automated, manual = manual) { SpinnerFixture() }
             CheckSection(index = LINK_I, automated = automated, manual = manual) { LinkFixture() }
             CheckSection(index = PRESENCE_I, automated = automated, manual = manual) { PresenceFixture() }
             CheckSection(index = KEYBOARD_I, automated = automated, manual = manual) { KeyboardFixture() }
@@ -413,6 +423,22 @@ fn StyleDropFixture() -> Element {
         view(style = section()) {
             view(test_id = "cap-opacity", style = faded_style)
             button(label = "Toggle", test_id = "cap-opacity-toggle", on_click = toggle)
+        }
+    }
+}
+
+#[component]
+fn SpinnerFixture() -> Element {
+    let large = signal(false);
+    let toggle = move || large.update(|l| !l);
+    let spinner = activity_indicator()
+        .test_id("cap-spinner")
+        .size_reactive(move || if large.get() { ActivityIndicatorSize::Large } else { ActivityIndicatorSize::Small })
+        .into_element();
+    ui! {
+        view(style = section()) {
+            spinner
+            button(label = "Toggle", test_id = "cap-spinner-toggle", on_click = toggle)
         }
     }
 }
