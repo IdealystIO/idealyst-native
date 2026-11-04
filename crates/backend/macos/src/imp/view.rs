@@ -34,8 +34,8 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_app_kit::{
-    NSColor, NSCursor, NSEvent, NSSecureTextField, NSSecureTextFieldCell, NSText, NSTextField,
-    NSTextFieldCell,
+    NSColor, NSCursor, NSEvent, NSSecureTextField, NSSecureTextFieldCell, NSText, NSTextAlignment,
+    NSTextField, NSTextFieldCell,
     NSTextView, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker, NSString};
@@ -1540,6 +1540,9 @@ impl IdealystLabel {
             let _: () = msg_send![&this, setBordered: false];
             let _: () = msg_send![&this, setBezeled: false];
             let _: () = msg_send![&this, setDrawsBackground: false];
+            // A hand-built cell starts at `Left`; `labelWithString:` and every
+            // other backend start at the text's own direction.
+            let _: () = msg_send![&this, setAlignment: NSTextAlignment::Natural.0];
         }
         // IdealystLabel IS-A NSTextField; expose it as the super type the rest
         // of the backend (measure_fn, MacosNode::Label) already speaks.
@@ -1860,12 +1863,16 @@ pub(crate) struct CellIvars {
     /// (borderless-input) layout. Distinct from `focus_setter` (the framework's
     /// internal `StateBits::FOCUSED` driver). Unused by `IdealystLabelCell`.
     author_focus: RefCell<Option<Rc<dyn Fn(bool)>>>,
+    /// `NSTextAlignment` waiting for the current edit to end. Set by
+    /// [`set_alignment_after_edit`]; unused by `IdealystLabelCell`.
+    alignment_after_edit: StdCell<Option<isize>>,
 }
 
 impl Default for CellIvars {
     fn default() -> Self {
         CellIvars {
             insets: StdCell::new(LabelInsets::default()),
+            alignment_after_edit: StdCell::new(None),
             focus_setter: RefCell::new(None),
             blur_handler: RefCell::new(None),
             author_focus: RefCell::new(None),
@@ -1956,6 +1963,21 @@ pub(crate) fn report_focus_within(view: &NSView, focused: bool) {
             }
         });
     });
+}
+
+/// Write the alignment a style asked for during the edit that just ended.
+fn cell_apply_alignment_after_edit<T: objc2::Message>(cell: &T, ivars: &CellIvars) {
+    if let Some(alignment) = ivars.alignment_after_edit.take() {
+        let _: () = unsafe { msg_send![cell, setAlignment: alignment] };
+    }
+}
+
+/// Have `field`'s cell take `alignment` when its current edit ends, or clear what
+/// was waiting with `None`. `setAlignment:` on the cell would abort the edit.
+pub(crate) fn set_alignment_after_edit(field: &NSView, alignment: Option<isize>) {
+    if let Some(ivars) = framework_cell_ivars(field) {
+        ivars.alignment_after_edit.set(alignment);
+    }
 }
 
 /// `endEditing:` hands the cell no view; its control view is the field.
@@ -2193,6 +2215,7 @@ declare_class!(
         #[method(endEditing:)]
         fn end_editing(&self, editor: &NSText) {
             let _: () = unsafe { msg_send![super(self), endEditing: editor] };
+            cell_apply_alignment_after_edit(self, self.ivars());
             cell_fire_focus(self.ivars(), false);
             cell_report_focus_left(self);
         }
@@ -2295,6 +2318,7 @@ declare_class!(
         #[method(endEditing:)]
         fn end_editing(&self, editor: &NSText) {
             let _: () = unsafe { msg_send![super(self), endEditing: editor] };
+            cell_apply_alignment_after_edit(self, self.ivars());
             cell_fire_focus(self.ivars(), false);
             cell_report_focus_left(self);
         }
@@ -2480,6 +2504,8 @@ pub(crate) fn vertically_center_secure_text_field(mtm: MainThreadMarker, field: 
 /// `field` must be a valid `NSTextField` (or subclass) and `cell` a valid cell.
 unsafe fn apply_framework_field_chrome<C: objc2::Message>(field: &NSTextField, cell: &C) {
     let _: () = msg_send![field, setCell: cell];
+    // A hand-built cell starts at `Left`; an input starts at the text's own direction.
+    let _: () = msg_send![field, setAlignment: NSTextAlignment::Natural.0];
     // Framework owns the chrome — drop AppKit's bezel (its inset is the
     // "extra padding" around the text) and let the style draw bg + border.
     let _: () = msg_send![field, setBordered: false];
@@ -2507,8 +2533,8 @@ unsafe fn apply_framework_field_chrome<C: objc2::Message>(field: &NSTextField, c
 /// across the toggle. (Recreating the field would strand that node.)
 ///
 /// The cell swap blanks the new cell, so the string value, placeholder,
-/// themed colors, and font are read off the field first and written back
-/// after. If the field is mid-edit (its window's first responder is the
+/// themed colors, font, and alignment are read off the field first and written
+/// back after. If the field is mid-edit (its window's first responder is the
 /// field editor), first-responder is re-established so the field editor is
 /// rebuilt in the right (secure / plain) mode and masking engages live.
 ///
@@ -2541,6 +2567,7 @@ pub(crate) fn set_text_field_secure(mtm: MainThreadMarker, field: &NSView, secur
         let bg_color: *mut AnyObject = msg_send![field, backgroundColor];
         let draws_bg: bool = msg_send![field, drawsBackground];
         let font: *mut AnyObject = msg_send![field, font];
+        let alignment: isize = msg_send![field, alignment];
 
         // The focus setter, blur handler, author on_focus, and author insets
         // live on the cell's ivars — the swap below blanks them, so carry them
@@ -2611,6 +2638,7 @@ pub(crate) fn set_text_field_secure(mtm: MainThreadMarker, field: &NSView, secur
         if !text_color.is_null() {
             let _: () = msg_send![field, setTextColor: text_color];
         }
+        let _: () = msg_send![field, setAlignment: alignment];
         let _: () = msg_send![field, setDrawsBackground: draws_bg];
         if !bg_color.is_null() {
             let _: () = msg_send![field, setBackgroundColor: bg_color];

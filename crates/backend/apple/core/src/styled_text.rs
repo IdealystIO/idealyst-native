@@ -12,7 +12,7 @@
 //! platform objects. `UIFont`/`NSFont` and `UIColor`/`NSColor` differ
 //! per toolkit, but they're all `NSObject`s to the attributed string,
 //! and the attribute KEYS share raw values across UIKit and AppKit
-//! ("NSFont", "NSColor", "NSBackgroundColor") — the same hard-coded
+//! ("NSFont", "NSColor", "NSBackgroundColor", "NSParagraphStyle") — the same hard-coded
 //! strings the codeblock SDK uses to avoid a linker dependency on the
 //! imported constants. The leaf backends own font/color construction
 //! and hand finished objects in via [`RunAttrs`].
@@ -40,6 +40,7 @@ const KEY_FOREGROUND: &str = "NSColor";
 const KEY_BACKGROUND: &str = "NSBackgroundColor";
 const KEY_UNDERLINE: &str = "NSUnderline";
 const KEY_UNDERLINE_COLOR: &str = "NSUnderlineColor";
+const KEY_PARAGRAPH_STYLE: &str = "NSParagraphStyle";
 
 /// `NSUnderlineStyleSingle` — the "draw one line" bit. The pattern bits
 /// below are OR'd on top; a bare `Single` is `NSUnderlineStylePatternSolid`
@@ -147,6 +148,22 @@ pub fn build_attributed(runs: &[(&str, RunAttrs)]) -> Retained<NSMutableAttribut
         let _: () = unsafe { msg_send![&*attributed, appendAttributedString: &*fragment] };
     }
     attributed
+}
+
+/// Align the whole of `attributed`. An `NSAttributedString` draws by its own
+/// paragraph style rather than the label's alignment, and the runs carry none.
+/// `alignment` is the toolkit's `NSTextAlignment` value: `Right` and `Center` swap
+/// between macOS on x86_64 and everything else, so the leaf backend supplies it.
+/// Only the paragraph style changes; per-range fonts and colours stay.
+pub fn set_paragraph_alignment(attributed: &NSMutableAttributedString, alignment: isize) {
+    let key = NSString::from_str(KEY_PARAGRAPH_STYLE);
+    unsafe {
+        let style: Retained<NSObject> = msg_send_id![objc2::class!(NSMutableParagraphStyle), new];
+        let _: () = msg_send![&*style, setAlignment: alignment];
+        let length: usize = msg_send![attributed, length];
+        let range = objc2_foundation::NSRange { location: 0, length };
+        let _: () = msg_send![attributed, addAttribute: &*key, value: &*style, range: range];
+    }
 }
 
 fn attrs_dict(attrs: &RunAttrs) -> Retained<NSMutableDictionary<NSString, NSObject>> {

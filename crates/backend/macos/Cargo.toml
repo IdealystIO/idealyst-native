@@ -127,6 +127,13 @@ objc2-app-kit = { version = "0.2", features = [
 ] }
 raw-window-handle = "0.6"
 
+# Real-AppKit test of `text_align` (`src/imp/text_style.rs`): where the glyphs of
+# text, styled text, inputs and text areas land in a rendered bitmap, and removal
+# back to natural. Main-thread only, for the same reason as `focus_attach`.
+[[test]]
+name = "text_align"
+harness = false
+
 # Real-AppKit test of the attach-safe `focus()` (`src/imp/pending_focus.rs`).
 # AppKit only builds windows on the MAIN thread, and libtest runs every case on
 # a worker thread (see `rect_is_window_relative_not_parent_relative`, which has

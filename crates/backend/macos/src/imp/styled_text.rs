@@ -30,7 +30,8 @@ use runtime_shared::{FontFamily, FontWeight, StyleRules, TextRun, TextRunStyle};
 
 use backend_apple_core::font::FontRegistry;
 use backend_apple_core::styled_text::{
-    build_attributed, parse_font_stack, run_font_size, run_needs_font, underline_mask,
+    build_attributed, parse_font_stack, run_font_size, run_needs_font, set_paragraph_alignment,
+    underline_mask,
     with_italic_trait, RunAttrs, StackEntry,
 };
 
@@ -125,6 +126,11 @@ pub(crate) fn realize(
         .collect();
 
     let attributed = build_attributed(&assembled);
+    // An attributed string draws by its own paragraph style, whatever the cell's
+    // alignment says. With no `text_align` it has none, which is natural.
+    if let Some(align) = para.and_then(|s| s.text_align) {
+        set_paragraph_alignment(&attributed, super::text_style::ns_text_alignment(Some(align)).0);
+    }
     let _: () = unsafe {
         msg_send![label, setAttributedStringValue: &*attributed as &NSAttributedString]
     };

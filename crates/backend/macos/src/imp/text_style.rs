@@ -6,17 +6,8 @@ use backend_apple_core::font::FontRegistry;
 use runtime_shared::{FontFamily, FontStyle, FontWeight, StyleRules};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
-use objc2_app_kit::NSView;
+use objc2_app_kit::{NSTextAlignment, NSView};
 use objc2_foundation::{CGFloat, CGSize, NSObject, NSString};
-
-/// AppKit's NSTextAlignment enum values. The `objc2-app-kit`
-/// generated bindings define them; we mirror raw values here so
-/// `msg_send!` can hand the right integer without pulling in a
-/// feature that drags more code into the build.
-const NS_TEXT_ALIGNMENT_LEFT: isize = 0;
-const NS_TEXT_ALIGNMENT_RIGHT: isize = 1;
-const NS_TEXT_ALIGNMENT_CENTER: isize = 2;
-const NS_TEXT_ALIGNMENT_JUSTIFIED: isize = 3;
 
 /// Apply text-related style props to an NSTextField (label) or
 /// NSTextView. Reads `style.color`, `style.font_*`, `style.text_align`.
@@ -80,16 +71,7 @@ pub(crate) fn apply_text_style(
         let _: () = unsafe { msg_send![view, setFont: &*font] };
     }
 
-    // Text alignment
-    if let Some(ta) = &style.text_align {
-        let align: isize = match ta {
-            runtime_shared::TextAlign::Left => NS_TEXT_ALIGNMENT_LEFT,
-            runtime_shared::TextAlign::Right => NS_TEXT_ALIGNMENT_RIGHT,
-            runtime_shared::TextAlign::Center => NS_TEXT_ALIGNMENT_CENTER,
-            runtime_shared::TextAlign::Justify => NS_TEXT_ALIGNMENT_JUSTIFIED,
-        };
-        let _: () = unsafe { msg_send![view, setAlignment: align] };
-    }
+    apply_text_alignment(view, style.text_align);
 
     apply_text_shadow(view, style);
 
@@ -98,6 +80,53 @@ pub(crate) fn apply_text_style(
     // `min_rows`/`max_rows`, and must never hide typed text behind an ellipsis.
     if is_label {
         apply_label_line_limit(view, style.max_lines);
+    }
+}
+
+/// The `NSTextAlignment` for a style's `text_align`. No alignment is
+/// `Natural`, which follows the text's own direction, so a style that drops
+/// `text_align` hands right-to-left text back to its right edge.
+///
+/// `Right` and `Center` swap raw values between arm64 and x86_64, so these come
+/// from the bindings' per-target constants rather than literals.
+pub(crate) fn ns_text_alignment(align: Option<runtime_shared::TextAlign>) -> NSTextAlignment {
+    use runtime_shared::TextAlign;
+    match align {
+        None => NSTextAlignment::Natural,
+        Some(TextAlign::Left) => NSTextAlignment::Left,
+        Some(TextAlign::Right) => NSTextAlignment::Right,
+        Some(TextAlign::Center) => NSTextAlignment::Center,
+        Some(TextAlign::Justify) => NSTextAlignment::Justified,
+    }
+}
+
+/// Give an `NSTextField` or `NSTextView` its `text_align`, writing only on a
+/// change.
+///
+/// `setAlignment:`, on the control and on its cell alike, aborts an edit in
+/// progress, and `apply_style` runs every time a field's focus ring flips, so an
+/// unconditional write would end the edit the moment a field takes focus. A real
+/// change during an edit shows in the field editor straight away and reaches the
+/// cell when the edit ends (`view::set_alignment_after_edit`).
+fn apply_text_alignment(view: &NSView, align: Option<runtime_shared::TextAlign>) {
+    let want = ns_text_alignment(align).0;
+    let is_control: bool =
+        unsafe { msg_send![view, respondsToSelector: objc2::sel!(currentEditor)] };
+    let editor: Option<Retained<NSObject>> =
+        if is_control { unsafe { msg_send_id![view, currentEditor] } } else { None };
+    let current: isize = unsafe { msg_send![view, alignment] };
+    match editor {
+        Some(editor) => {
+            let shown: isize = unsafe { msg_send![&editor, alignment] };
+            if shown != want {
+                let _: () = unsafe { msg_send![&editor, setAlignment: want] };
+            }
+            crate::imp::view::set_alignment_after_edit(view, (current != want).then_some(want));
+        }
+        None if current != want => {
+            let _: () = unsafe { msg_send![view, setAlignment: want] };
+        }
+        None => {}
     }
 }
 
