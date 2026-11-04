@@ -70,6 +70,7 @@ mod link;
 pub mod replay;
 pub mod statics;
 mod stub;
+mod upstream;
 
 pub use cache::HostBinCache;
 pub use replay::CapturedInvocation;

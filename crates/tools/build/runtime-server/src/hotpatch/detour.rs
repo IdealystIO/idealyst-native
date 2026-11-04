@@ -82,6 +82,7 @@ use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
 
 use super::cache::HostBinCache;
 use super::replay::{self, CapturedInvocation};
+use super::upstream::Rlibs;
 
 /// The agent's source, compiled by the session on its own
 /// (`rustc --crate-type cdylib --cfg idealyst_hot_agent`).
@@ -132,6 +133,9 @@ pub type OnStep<'a> = &'a (dyn Fn(&'static str, Duration) + Sync);
 pub struct ServerPatchBuilder {
     cache: HostBinCache,
     text: TextIndex,
+    /// When the binary was linked: the newest an rlib may be and still speak
+    /// for it ([`super::upstream`]).
+    linked: Option<std::time::SystemTime>,
     out_dir: PathBuf,
     seq: std::sync::atomic::AtomicU64,
     /// Niceness increment of a patch's replays ([`Self::with_replay_nice`]).
@@ -200,7 +204,8 @@ impl ServerPatchBuilder {
         let text = TextIndex::of(exe, &data)?;
         drop(data);
         std::fs::create_dir_all(&out_dir).with_context(|| format!("create {}", out_dir.display()))?;
-        Ok(Self { cache, text, out_dir, seq: std::sync::atomic::AtomicU64::new(0), replay_nice: 0 })
+        let linked = std::fs::metadata(exe).and_then(|m| m.modified()).ok();
+        Ok(Self { cache, text, linked, out_dir, seq: std::sync::atomic::AtomicU64::new(0), replay_nice: 0 })
     }
 
     /// Run each patch's replays at niceness increment `nice` (`0`, the
@@ -263,10 +268,12 @@ impl ServerPatchBuilder {
 
         // 2. Statics.
         let t = Instant::now();
+        let rlibs = Rlibs::new(self.linked);
+        let vouch = |key: &str| crates.iter().find_map(|c| rlibs.vouch(&crate_rlib(&c.capture)?, key));
         let (bound, bindings) = if self.cache.format == object::BinaryFormat::Elf {
-            super::elf::bind(&objects, &self.cache, &dir.join("bound"), slide)
+            super::elf::bind(&objects, &self.cache, &dir.join("bound"), slide, &vouch)
         } else {
-            super::bind::bind(&objects, &self.cache, &dir.join("bound"))
+            super::bind::bind_vouched(&objects, &self.cache, &dir.join("bound"), &vouch)
         }
         .context("binding the patch's statics to the running server's")?;
         on_step("bind", t.elapsed());
@@ -347,30 +354,64 @@ impl ServerPatchBuilder {
 /// defines besides (`main`, allocator shims) are entry points nothing
 /// should redirect.
 pub fn detour_candidate(symbol: &str, crates: &[&str]) -> bool {
+    plain_path(symbol).is_some_and(|path| crates.iter().any(|c| path.contains(&format!("{c}::"))))
+}
+
+/// The demangled path of a plain Rust function.
+fn plain_path(symbol: &str) -> Option<String> {
     // Mach-O prefixes every C name with `_` (`__R…`, `__ZN…`); ELF does
     // not (`_R…`, `_ZN…`).
     let bare = if symbol.starts_with("__") { &symbol[1..] } else { symbol };
     if !(bare.starts_with("_R") || bare.starts_with("_ZN")) {
-        return false;
+        return None;
     }
-    let Ok(demangled) = rustc_demangle::try_demangle(bare) else { return false };
+    let demangled = rustc_demangle::try_demangle(bare).ok()?;
     let path = format!("{demangled:#}");
     // `{closure#0}`, `{shim:vtable#0}`, `{constant#0}`, `{{closure}}`.
-    if path.contains('{') {
-        return false;
-    }
-    if path.contains("::<") {
-        return false;
+    if path.contains('{') || path.contains("::<") {
+        return None;
     }
     if let Some(rest) = path.strip_prefix('<') {
-        let Some(close) = matching_angle(rest) else { return false };
+        let close = matching_angle(rest)?;
         let header = &rest[..close];
         let self_ty = header.split(" as ").next().unwrap_or(header);
         if self_ty.contains('<') {
-            return false;
+            return None;
         }
     }
-    crates.iter().any(|c| path.contains(&format!("{c}::")))
+    Some(path)
+}
+
+/// The rlib a capture's compile writes: `<out-dir>/lib<crate><extra>.rlib`.
+fn crate_rlib(capture: &CapturedInvocation) -> Option<PathBuf> {
+    let value = |key: &str| {
+        let mut args = capture.args.iter();
+        while let Some(a) = args.next() {
+            if a == key {
+                return args.next().cloned();
+            }
+            if let Some(v) = a.strip_prefix(&format!("{key}=")) {
+                return Some(v.to_string());
+            }
+        }
+        None
+    };
+    let codegen = |prefix: &str| {
+        let mut args = capture.args.iter();
+        while let Some(a) = args.next() {
+            let flag = if a == "-C" { args.next().map(String::as_str) } else { a.strip_prefix("-C") };
+            if let Some(v) = flag.and_then(|f| f.strip_prefix(prefix)) {
+                return Some(v.to_string());
+            }
+        }
+        None
+    };
+    let rlib = PathBuf::from(value("--out-dir")?).join(format!(
+        "lib{}{}.rlib",
+        value("--crate-name")?,
+        codegen("extra-filename=").unwrap_or_default()
+    ));
+    rlib.is_file().then_some(rlib)
 }
 
 /// The index of the `>` closing the `<` already consumed.

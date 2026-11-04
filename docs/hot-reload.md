@@ -500,6 +500,10 @@ is `build_runtime_server::hotpatch::statics`, shared by both targets:
   another type. So statics are grouped by demangled path with every
   disambiguator and closure index erased, and a group whose members do
   not all pair by exact name refuses the patch: the dev loop rebuilds.
+  One exception on the server: a dead-stripped binary lacks statics nothing
+  live used, such as the unused branch of a `thread_local!`'s expansion. A
+  group the binary only holds part of still pairs if the crate's rlib, built
+  before the binary's link, compiled exactly the patch's members.
 - **Declarations are shape.** `shape_of` keeps every `static` and
   `thread_local!` a function body declares, so adding, removing or
   editing one rebuilds before a patch is built. The pairing above is what

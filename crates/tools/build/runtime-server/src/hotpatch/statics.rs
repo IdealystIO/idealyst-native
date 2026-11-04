@@ -149,6 +149,11 @@ impl ProgramStatics {
     pub fn has_key(&self, key: &str) -> bool {
         self.groups.contains_key(key)
     }
+
+    /// The program's statics under this [`static_key`].
+    pub fn group(&self, key: &str) -> Option<&HashSet<String>> {
+        self.groups.get(key)
+    }
 }
 
 /// Whether a [`static_key`] is one of `inventory::submit!`'s: the
@@ -186,6 +191,50 @@ pub fn pair_registrations_open<'a>(
         }
     }
     Ok(bound)
+}
+
+/// [`pair`], when a group's mismatch may be the linker's doing: a program
+/// linked with dead code stripped lacks the statics nothing live used, so a
+/// `thread_local!` (whose expansion declares a `__RUST_STD_INTERNAL_VAL` in
+/// each of two branches, one of them dead) has two statics in the patch and
+/// one in the program. Name alone cannot tell that from a sibling added ahead
+/// of the others, which is memory corruption if bound.
+///
+/// `base` can: it answers with the statics the program's crate compiled, before
+/// the link stripped any. A group whose patch members are exactly those, and
+/// whose program members are among them, has not moved. What the program has is
+/// bound; the rest were stripped, so nothing running can disagree with the
+/// patch's own copy. `base` answering `None`, or differently, refuses as
+/// [`pair`] does.
+pub fn pair_vouched<'a>(
+    patch: impl IntoIterator<Item = &'a str>,
+    program: &ProgramStatics,
+    base: &dyn Fn(&str) -> Option<HashSet<String>>,
+) -> Result<HashSet<String>, Ambiguous> {
+    let mut patch_groups: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for name in patch {
+        patch_groups.entry(static_key(name)).or_default().push(name);
+    }
+    let mut bind = HashSet::new();
+    for (key, mut members) in patch_groups {
+        members.sort_unstable();
+        members.dedup();
+        match pair(members.iter().copied(), program) {
+            Ok(bound) => bind.extend(bound),
+            Err(ambiguous) => {
+                let host = program.group(&key).expect("only a group the program has can mismatch");
+                let subset = host.iter().all(|h| members.contains(&h.as_str()));
+                let same = |compiled: HashSet<String>| {
+                    compiled.len() == members.len() && members.iter().all(|m| compiled.contains(*m))
+                };
+                if !subset || !base(&key).is_some_and(same) {
+                    return Err(ambiguous);
+                }
+                bind.extend(host.iter().cloned());
+            }
+        }
+    }
+    Ok(bind)
 }
 
 /// Decide which of the patch's statics are bound to the running
@@ -291,6 +340,32 @@ mod tests {
     fn an_unchanged_group_of_siblings_binds_whole() {
         let bound = pair([VISITS, VISITS_2], &ProgramStatics::new([VISITS_2, VISITS])).unwrap();
         assert_eq!(bound.len(), 2);
+    }
+
+    /// CrewForge's `tokio::task_local!`: the patch's crate compiled both
+    /// branches' statics, the linker kept the live one, and pairing refused
+    /// every patch of the crate after its whole replay.
+    #[test]
+    fn regression_a_static_the_linker_stripped_does_not_refuse() {
+        let program = ProgramStatics::new([IN_CLOSURE_0]);
+        let compiled = || Some(HashSet::from([IN_CLOSURE_0.to_string(), IN_CLOSURE_1.to_string()]));
+        let bound = pair_vouched([IN_CLOSURE_0, IN_CLOSURE_1], &program, &|_| compiled()).unwrap();
+        assert!(bound.contains(IN_CLOSURE_0));
+        assert!(!bound.contains(IN_CLOSURE_1), "stripped from the program: the patch's copy is the only one");
+    }
+
+    /// The other reading of the same names: the base compiled ONE static and
+    /// an edit added a sibling ahead of it, so the patch's second name is the
+    /// old static. Binding is memory corruption; only the base can tell.
+    #[test]
+    fn regression_a_vouched_pairing_still_refuses_a_grown_group() {
+        let program = ProgramStatics::new([VISITS_2]);
+        let compiled = || Some(HashSet::from([VISITS_2.to_string()]));
+        assert!(pair_vouched([VISITS, VISITS_2], &program, &|_| compiled()).is_err(), "the base compiled one");
+        assert!(pair_vouched([VISITS, VISITS_2], &program, &|_| None).is_err(), "nothing vouches");
+        let renamed = ProgramStatics::new(["_RNvNvCsfcO1eJHpGpx_5probe6visitss0_6VISITS"]);
+        let both = || Some(HashSet::from([VISITS.to_string(), VISITS_2.to_string()]));
+        assert!(pair_vouched([VISITS, VISITS_2], &renamed, &|_| both()).is_err(), "the program's is not among them");
     }
 
     #[test]

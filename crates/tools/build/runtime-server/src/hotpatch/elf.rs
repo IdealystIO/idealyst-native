@@ -51,9 +51,10 @@
 //! Relocation entries and instructions are rewritten in place. New
 //! undefined symbols are appended to the symbol table (globals close an
 //! ELF symbol table, so no existing index moves), and the symbol and
-//! string tables are written again at the end of the file with their
-//! section headers pointed at the copies. The edited object is written
-//! next to the replay's, never over it (see [`super::bind`]).
+//! string tables (and `SHT_SYMTAB_SHNDX`, in a file with one) are written
+//! again at the end of the file with their section headers pointed at the
+//! copies. The edited object is written next to the replay's, never over it
+//! (see [`super::bind`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -108,6 +109,12 @@ const SHDR_SIZE: usize = 64;
 const SYM_SIZE: usize = 24;
 const RELA_SIZE: usize = 24;
 
+/// What a symbol's section index holds when the real index is in
+/// `SHT_SYMTAB_SHNDX`.
+const SHN_XINDEX: u16 = 0xffff;
+/// `Sym::shndx` of a symbol in no section of the file: `SHN_ABS`, `SHN_COMMON`.
+const SHN_RESERVED: u32 = u32::MAX;
+
 struct Section {
     index: usize,
     header_at: usize,
@@ -124,7 +131,9 @@ struct Section {
 struct Sym {
     name: String,
     info: u8,
-    shndx: u16,
+    /// The section's real index: read through `SHT_SYMTAB_SHNDX` when the
+    /// 16-bit field cannot hold it, [`SHN_RESERVED`] for no section.
+    shndx: u32,
     value: u64,
     size: u64,
 }
@@ -134,10 +143,10 @@ impl Sym {
         self.info & 0xf
     }
     fn is_undefined(&self) -> bool {
-        self.shndx == elf::SHN_UNDEF
+        self.shndx == u32::from(elf::SHN_UNDEF)
     }
     fn is_defined(&self) -> bool {
-        self.shndx != elf::SHN_UNDEF && self.shndx < elf::SHN_LORESERVE
+        !self.is_undefined() && self.shndx != SHN_RESERVED
     }
     fn is_global(&self) -> bool {
         self.info >> 4 != elf::STB_LOCAL
@@ -147,7 +156,15 @@ impl Sym {
 struct Elf {
     sections: Vec<Section>,
     symtab: usize,
+    /// The `SHT_SYMTAB_SHNDX` section of a file with more sections than the
+    /// 16-bit fields can name.
+    symtab_shndx: Option<usize>,
     syms: Vec<Sym>,
+    /// Per section, its item symbols by address: what a reference to the
+    /// section's own symbol resolves through ([`Self::referent`]). A large
+    /// codegen unit has a million relocations and tens of thousands of
+    /// sections, and a scan of the symbol table per relocation took 20 s on one.
+    items: HashMap<u32, Vec<u32>>,
 }
 
 fn rd16(b: &[u8], at: usize) -> u16 {
@@ -187,10 +204,21 @@ impl Elf {
             bail!("not an arm64 object");
         }
         let shoff = rd64(b, 0x28) as usize;
-        let shnum = rd16(b, 0x3c) as usize;
-        let shstrndx = rd16(b, 0x3e) as usize;
         anyhow::ensure!(rd16(b, 0x3a) as usize == SHDR_SIZE, "unexpected section header size");
         let header = |i: usize| shoff + i * SHDR_SIZE;
+        // ELF's extended numbering: a file with 0xff00 sections or more (each
+        // function has a section of its own and most have a relocation section,
+        // so a codegen unit of 33,000 functions gets there) has 0 in `e_shnum`,
+        // and the count in section 0's `sh_size`. Likewise `e_shstrndx`, whose
+        // value then lives in section 0's `sh_link`.
+        let shnum = match rd16(b, 0x3c) as usize {
+            0 if shoff != 0 => rd64(b, header(0) + 32) as usize,
+            n => n,
+        };
+        let shstrndx = match rd16(b, 0x3e) {
+            SHN_XINDEX => rd32(b, header(0) + 40) as usize,
+            n => n as usize,
+        };
         let names_at = rd64(b, header(shstrndx) + 24) as usize;
         let mut sections = Vec::with_capacity(shnum);
         for i in 0..shnum {
@@ -208,6 +236,8 @@ impl Elf {
             });
         }
         let symtab = sections.iter().position(|s| s.sh_type == elf::SHT_SYMTAB).context("no symbol table")?;
+        let symtab_shndx =
+            sections.iter().position(|s| s.sh_type == elf::SHT_SYMTAB_SHNDX && s.link as usize == symtab);
         let strtab = &sections[sections[symtab].link as usize];
         let strings = strtab.offset as usize;
         let count = sections[symtab].size as usize / SYM_SIZE;
@@ -215,19 +245,36 @@ impl Elf {
         let syms = (0..count)
             .map(|i| {
                 let e = base + i * SYM_SIZE;
-                Sym {
+                let shndx = match rd16(b, e + 6) {
+                    SHN_XINDEX => {
+                        let table = symtab_shndx.context("a symbol's section index is in a table the file lacks")?;
+                        rd32(b, sections[table].offset as usize + i * 4)
+                    }
+                    n if n >= elf::SHN_LORESERVE => SHN_RESERVED,
+                    n => u32::from(n),
+                };
+                Ok(Sym {
                     name: cstr(b, strings + rd32(b, e) as usize),
                     info: b[e + 4],
-                    shndx: rd16(b, e + 6),
+                    shndx,
                     value: rd64(b, e + 8),
                     size: rd64(b, e + 16),
-                }
+                })
             })
-            .collect();
-        Ok(Self { sections, symtab, syms })
+            .collect::<Result<Vec<Sym>>>()?;
+        let mut items: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (i, n) in syms.iter().enumerate() {
+            if is_item(&n.name) && matches!(n.kind(), elf::STT_OBJECT | elf::STT_TLS | elf::STT_FUNC | elf::STT_NOTYPE) {
+                items.entry(n.shndx).or_default().push(i as u32);
+            }
+        }
+        for members in items.values_mut() {
+            members.sort_by_key(|&i| syms[i as usize].value);
+        }
+        Ok(Self { sections, symtab, symtab_shndx, syms, items })
     }
 
-    fn section(&self, index: u16) -> Option<&Section> {
+    fn section(&self, index: u32) -> Option<&Section> {
         self.sections.get(index as usize)
     }
 
@@ -248,11 +295,13 @@ impl Elf {
             return Some((s, addend));
         }
         let at = u64::try_from(addend).ok()?;
-        self.syms
+        let members = self.items.get(&s.shndx)?;
+        let upto = members.partition_point(|&i| self.syms[i as usize].value <= at);
+        members[..upto]
             .iter()
-            .filter(|n| n.shndx == s.shndx && is_item(&n.name) && matches!(n.kind(), elf::STT_OBJECT | elf::STT_TLS | elf::STT_FUNC | elf::STT_NOTYPE))
-            .filter(|n| n.value <= at && at < n.value + n.size.max(1))
-            .max_by_key(|n| n.value)
+            .rev()
+            .map(|&i| &self.syms[i as usize])
+            .find(|n| at < n.value + n.size.max(1))
             .map(|n| (n, (at - n.value) as i64))
     }
 }
@@ -298,6 +347,7 @@ pub fn bind(
     cache: &HostBinCache,
     out_dir: &Path,
     slide: u64,
+    base: &dyn Fn(&str) -> Option<HashSet<String>>,
 ) -> Result<(Vec<PathBuf>, Bindings)> {
     let mut parsed = Vec::with_capacity(tip_objs.len());
     for path in tip_objs {
@@ -317,7 +367,7 @@ pub fn bind(
             }
         }
     }
-    let bound = statics::pair(patch_state.iter().copied(), &cache.state_symbols).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let bound = statics::pair_vouched(patch_state.iter().copied(), &cache.state_symbols, base).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let mut bindings = Bindings::default();
     let mut out = Vec::with_capacity(parsed.len());
@@ -352,7 +402,7 @@ pub fn bind(
 
 /// Function bodies the patch never runs: constructors the binary already
 /// ran, which [`rewrite`] points at [`CTOR_RAN`]. `(section, start, end)`.
-fn dormant_code(bytes: &[u8], obj: &Elf, ran: &dyn Fn(&str) -> bool) -> Vec<(u16, u64, u64)> {
+fn dormant_code(bytes: &[u8], obj: &Elf, ran: &dyn Fn(&str) -> bool) -> Vec<(u32, u64, u64)> {
     let mut out = Vec::new();
     for rela in obj.sections.iter().filter(|s| s.sh_type == elf::SHT_RELA) {
         let Some(home) = obj.sections.get(rela.info as usize) else { continue };
@@ -568,6 +618,15 @@ fn append_undefined(data: &mut Vec<u8>, obj: &Elf, names: &[String]) -> Result<(
     wr64(data, symtab.header_at + 32, table.len() as u64);
     wr64(data, strtab.header_at + 24, strings_at);
     wr64(data, strtab.header_at + 32, strings.len() as u64);
+    // One word per symbol, or the linker rejects the table.
+    if let Some(table) = obj.symtab_shndx.map(|i| &obj.sections[i]) {
+        let mut words = data[table.offset as usize..(table.offset + table.size) as usize].to_vec();
+        words.resize(words.len() + names.len() * 4, 0);
+        let words_at = data.len() as u64;
+        data.extend_from_slice(&words);
+        wr64(data, table.header_at + 24, words_at);
+        wr64(data, table.header_at + 32, words.len() as u64);
+    }
     Ok(())
 }
 
@@ -579,7 +638,7 @@ fn append_undefined(data: &mut Vec<u8>, obj: &Elf, names: &[String]) -> Result<(
 /// reads the flag ([`ELFOSABI_GNU`]).
 pub fn retain_roots(bytes: &mut [u8], roots: &std::collections::BTreeSet<String>) -> Result<()> {
     let obj = Elf::parse(bytes)?;
-    let sections: HashSet<u16> =
+    let sections: HashSet<u32> =
         obj.syms.iter().filter(|s| s.is_defined() && roots.contains(&s.name)).map(|s| s.shndx).collect();
     if sections.is_empty() {
         return Ok(());
@@ -600,6 +659,140 @@ pub fn retain_roots(bytes: &mut [u8], roots: &std::collections::BTreeSet<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
+
+    /// An arm64 object with more sections than `e_shnum` can hold, as a large
+    /// codegen unit is: `func` (with an address of `STATE` materialized, the
+    /// way a patch's code reaches a static) and `.bss.STATE` both sit past
+    /// section 0xff00, so their symbols need `SHT_SYMTAB_SHNDX`.
+    fn object_past_16_bit_sections() -> Vec<u8> {
+        use object::write::{Object, Relocation, Symbol, SymbolSection};
+        use object::{RelocationFlags, SectionKind, SymbolFlags, SymbolKind, SymbolScope};
+        let mut obj = Object::new(object::BinaryFormat::Elf, object::Architecture::Aarch64, object::Endianness::Little);
+        for i in 0..0x1_0100 {
+            obj.add_section(Vec::new(), format!(".text.filler{i}").into_bytes(), SectionKind::Text);
+        }
+        let bss = obj.add_section(Vec::new(), b".bss.STATE".to_vec(), SectionKind::UninitializedData);
+        let offset = obj.append_section_bss(bss, 8, 8);
+        let state = obj.add_symbol(Symbol {
+            name: b"STATE".to_vec(),
+            value: offset,
+            size: 8,
+            kind: SymbolKind::Data,
+            scope: SymbolScope::Linkage,
+            weak: false,
+            section: SymbolSection::Section(bss),
+            flags: SymbolFlags::None,
+        });
+        let text = obj.add_section(Vec::new(), b".text.func".to_vec(), SectionKind::Text);
+        // adrp x8, STATE; add x8, x8, :lo12:STATE; ret
+        let code: Vec<u8> = [0x9000_0008u32, 0x9100_0108, 0xd65f_03c0].iter().flat_map(|w| w.to_le_bytes()).collect();
+        let at = obj.append_section_data(text, &code, 4);
+        obj.add_symbol(Symbol {
+            name: b"func".to_vec(),
+            value: at,
+            size: code.len() as u64,
+            kind: SymbolKind::Text,
+            scope: SymbolScope::Linkage,
+            weak: false,
+            section: SymbolSection::Section(text),
+            flags: SymbolFlags::None,
+        });
+        for (offset, r_type) in [(0, elf::R_AARCH64_ADR_PREL_PG_HI21), (4, elf::R_AARCH64_ADD_ABS_LO12_NC)] {
+            obj.add_relocation(
+                text,
+                Relocation { offset: at + offset, symbol: state, addend: 0, flags: RelocationFlags::Elf { r_type } },
+            )
+            .unwrap();
+        }
+        obj.write().unwrap()
+    }
+
+    /// CrewForge A17: `crewforge-api-server` compiles to a codegen unit of
+    /// 66,224 sections, and `e_shnum` is 0 in a file that size. The parser
+    /// read no sections at all, and every patch of the crate failed with "no
+    /// symbol table" after its whole replay.
+    #[test]
+    fn regression_an_object_with_more_sections_than_e_shnum_holds_parses() {
+        let bytes = object_past_16_bit_sections();
+        assert_eq!(rd16(&bytes, 0x3c), 0, "the fixture must need extended numbering");
+        let obj = Elf::parse(&bytes).expect("extended section numbering");
+        assert!(obj.sections.len() > 0xff00);
+        let state = obj.syms.iter().find(|s| s.name == "STATE").expect("STATE");
+        assert!(state.is_defined(), "a section index past 0xff00 is a definition, not a reserved value");
+        assert_eq!(obj.section(state.shndx).unwrap().name, ".bss.STATE");
+        let func = obj.syms.iter().find(|s| s.name == "func").expect("func");
+        assert_eq!(obj.section(func.shndx).unwrap().name, ".text.func");
+        // What a mis-read index would silently do: leave the patch its own
+        // copy of the static, so base code and patched code disagree.
+        assert!(obj.is_state(state), "a static past 0xff00 must be bound like any other");
+    }
+
+    /// Binding appends symbols to the table, and `SHT_SYMTAB_SHNDX` has a word
+    /// per symbol: left short, the linker rejects the edited object.
+    #[test]
+    fn regression_binding_past_16_bit_sections_keeps_the_object_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("big.rcgu.o");
+        std::fs::write(&input, object_past_16_bit_sections()).unwrap();
+        let mut cache = HostBinCache::default();
+        cache.format = object::BinaryFormat::Elf;
+        cache.symbols.insert(
+            "STATE".into(),
+            crate::hotpatch::cache::CachedSymbol { address: 0x4000, kind: object::SymbolKind::Data, size: 8, is_weak: false },
+        );
+        cache.state_symbols = statics::ProgramStatics::new(["STATE"]);
+        let (out, bindings) = bind(&[input], &cache, &dir.path().join("bound"), 0x1000, &|_| None).expect("bind");
+        assert_eq!(bindings.absolute.get(&statics::host_name("STATE", 0)), Some(&0x4000));
+
+        let bytes = std::fs::read(&out[0]).unwrap();
+        let read = object::File::parse(&*bytes).expect("the edited object still parses");
+        let cell = read.symbols().find(|s| s.name() == Ok("STATE$idealyst_host")).expect("the cell's symbol");
+        assert!(cell.is_undefined());
+        let func = read.symbols().find(|s| s.name() == Ok("func")).unwrap();
+        let section = read.section_by_index(func.section_index().unwrap()).unwrap();
+        assert_eq!(section.name(), Ok(".text.func"), "a symbol past 0xff00 kept its section");
+        let parsed = Elf::parse(&bytes).unwrap();
+        let table = &parsed.sections[parsed.symtab_shndx.expect("the table survives")];
+        assert_eq!(table.size as usize / 4, parsed.syms.len(), "one SYMTAB_SHNDX word per symbol");
+    }
+
+    /// A reference through a section's own symbol lands in the named symbol
+    /// covering the offset; the innermost when several start before it.
+    #[test]
+    fn a_section_symbols_reference_finds_the_item_at_its_offset() {
+        let sym = |name: &str, info: u8, value: u64, size: u64| Sym { name: name.into(), info, shndx: 7, value, size };
+        let syms = vec![
+            sym("", elf::STT_SECTION, 0, 0),
+            sym("$d", elf::STT_NOTYPE, 0, 0),
+            sym("outer", elf::STT_OBJECT, 0, 64),
+            sym("inner", elf::STT_OBJECT, 16, 8),
+            sym("later", elf::STT_OBJECT, 128, 8),
+        ];
+        let items = HashMap::from([(7, vec![2, 3, 4])]);
+        let obj = Elf { sections: Vec::new(), symtab: 0, symtab_shndx: None, syms, items };
+        let at = |addend| obj.referent(0, addend).map(|(n, inner)| (n.name.clone(), inner));
+        assert_eq!(at(4), Some(("outer".to_string(), 4)));
+        assert_eq!(at(20), Some(("inner".to_string(), 4)));
+        assert_eq!(at(32), Some(("outer".to_string(), 32)), "past the inner one, still in the outer");
+        assert_eq!(at(100), None);
+        assert_eq!(at(130), Some(("later".to_string(), 2)));
+    }
+
+    /// A function past section 0xff00 is a root like any other: unretained, the
+    /// linker drops the very code the patch exists to carry.
+    #[test]
+    fn regression_a_root_past_16_bit_sections_is_retained() {
+        let mut bytes = object_past_16_bit_sections();
+        retain_roots(&mut bytes, &std::collections::BTreeSet::from(["func".to_string()])).unwrap();
+        let read = object::File::parse(&*bytes).unwrap();
+        let func = read.symbols().find(|s| s.name() == Ok("func")).unwrap();
+        let section = read.section_by_index(func.section_index().unwrap()).unwrap();
+        match section.flags() {
+            object::SectionFlags::Elf { sh_flags } => assert_ne!(sh_flags & SHF_GNU_RETAIN, 0),
+            other => panic!("{other:?}"),
+        }
+    }
 
     /// The unwinder's personality word and arm64 mapping symbols sit in
     /// writable data on both sides; pairing either by name bound the patch

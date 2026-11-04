@@ -110,20 +110,7 @@ impl HostBinCache {
                 continue; // an arm64 mapping symbol (`$x`, `$d`)
             }
             if let Some(index) = sym.section_index() {
-                let is_state = *state_sections.entry(index).or_insert_with(|| {
-                    obj.section_by_index(index).is_ok_and(|s| match format {
-                        object::BinaryFormat::Elf => super::elf::is_state_section(s.name().unwrap_or("")),
-                        _ => {
-                            let segment = s.segment_name().ok().flatten().unwrap_or("");
-                            let flags = match s.flags() {
-                                object::SectionFlags::MachO { flags } => flags,
-                                _ => 0,
-                            };
-                            super::bind::is_state_section(segment, s.name().unwrap_or(""), flags)
-                        }
-                    })
-                });
-                if is_state {
+                if *state_sections.entry(index).or_insert_with(|| is_state(&obj, index)) {
                     state_symbols.push(name.to_string());
                 }
             }
@@ -226,6 +213,31 @@ impl HostBinCache {
         let sym = self.symbols.get(full)?;
         Some(((sym.address as i64 + slide) as u64, sym.clone()))
     }
+}
+
+/// Whether `index` is a section that holds state ([`HostBinCache::state_symbols`]).
+fn is_state(obj: &object::File<'_>, index: object::SectionIndex) -> bool {
+    obj.section_by_index(index).is_ok_and(|s| match obj.format() {
+        object::BinaryFormat::Elf => super::elf::is_state_section(s.name().unwrap_or("")),
+        _ => {
+            let segment = s.segment_name().ok().flatten().unwrap_or("");
+            let flags = match s.flags() {
+                object::SectionFlags::MachO { flags } => flags,
+                _ => 0,
+            };
+            super::bind::is_state_section(segment, s.name().unwrap_or(""), flags)
+        }
+    })
+}
+
+/// Every named symbol an object defines in a section that holds state.
+pub(super) fn state_names(obj: &object::File<'_>) -> Vec<String> {
+    let elf = obj.format() == object::BinaryFormat::Elf;
+    obj.symbols()
+        .filter(|s| s.section_index().is_some_and(|i| is_state(obj, i)))
+        .filter_map(|s| s.name().ok().map(str::to_string))
+        .filter(|n| !n.is_empty() && (!elf || super::elf::is_item(n)))
+        .collect()
 }
 
 /// Strip Rust's legacy mangling content-hash suffix (`17h<16hex>E`,

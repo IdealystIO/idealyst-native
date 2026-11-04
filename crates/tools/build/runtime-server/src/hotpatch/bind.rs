@@ -149,6 +149,17 @@ fn is_temporary(name: &str) -> bool {
 /// something changed, the originals elsewhere) and what the stub must
 /// define. An `Err` is a refusal: the dev loop rebuilds.
 pub fn bind(tip_objs: &[PathBuf], cache: &HostBinCache, out_dir: &Path) -> Result<(Vec<PathBuf>, Bindings)> {
+    bind_vouched(tip_objs, cache, out_dir, &|_| None)
+}
+
+/// [`bind`], with `base` answering what the program's crates compiled before
+/// the link stripped any of it ([`statics::pair_vouched`]).
+pub fn bind_vouched(
+    tip_objs: &[PathBuf],
+    cache: &HostBinCache,
+    out_dir: &Path,
+    base: &dyn Fn(&str) -> Option<HashSet<String>>,
+) -> Result<(Vec<PathBuf>, Bindings)> {
     let mut parsed = Vec::with_capacity(tip_objs.len());
     for path in tip_objs {
         let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
@@ -173,7 +184,7 @@ pub fn bind(tip_objs: &[PathBuf], cache: &HostBinCache, out_dir: &Path) -> Resul
             }
         }
     }
-    let bound = statics::pair(patch_state.iter().copied(), &cache.state_symbols)
+    let bound = statics::pair_vouched(patch_state.iter().copied(), &cache.state_symbols, base)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let mut bindings = Bindings::default();
