@@ -42,6 +42,7 @@ mod handles;
 mod host;
 pub mod image_load;
 mod image_pipeline;
+mod introspect;
 pub mod keyboard;
 mod native_skin;
 pub mod nav_anim;

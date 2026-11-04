@@ -1311,3 +1311,51 @@ fn on_touch_reaches_the_node_and_the_stored_handler_is_callable() {
     plain.stop();
     newcore::flush_sync();
 }
+
+// ===========================================================================
+// Native readback
+// ===========================================================================
+
+/// The GPU backend left `introspect_native` at its default, so a check of what
+/// it draws had nothing to read. A style that drops opacity must read back
+/// opaque: the painter's state, not the rules that went in.
+#[test]
+fn regression_gpu_no_native_readback() {
+    use runtime_shared::accessibility::AccessibilityProps;
+    use runtime_shared::introspect::{keys, NativeValue};
+    use runtime_vocabulary::caps::{IntrospectionOps, StyleOps, TextInputOps, TextOps, ViewOps};
+
+    let backend = make_backend();
+    let mut b = backend.borrow_mut();
+    let a11y = AccessibilityProps::default();
+    assert!(b.supports_native_introspection());
+
+    let root = b.create_view(&a11y);
+    let faded = StyleRules {
+        opacity: Some(0.5.into()),
+        background: Some(runtime_shared::Color("#336699".into()).into()),
+        border_top_width: Some(Tokenized::Literal(2.0)),
+        ..StyleRules::default()
+    };
+    b.apply_style(&root, &Rc::new(faded));
+    let n = b.introspect_native(&root).expect("a node reads");
+    assert_eq!(n.props.get(keys::OPACITY), Some(&NativeValue::Number(0.5)));
+    assert_eq!(n.props.get(keys::BORDER_WIDTH), Some(&NativeValue::Length(2.0)));
+    assert_eq!(n.props.get(keys::BORDER_STYLE), Some(&NativeValue::Text("solid".into())));
+    assert!(matches!(n.props.get(keys::BACKGROUND_COLOR), Some(NativeValue::Color(_))));
+
+    b.apply_style(&root, &Rc::new(StyleRules::default()));
+    let n = b.introspect_native(&root).unwrap();
+    assert_eq!(n.props.get(keys::OPACITY), Some(&NativeValue::Number(1.0)), "a dropped opacity reads opaque");
+    assert!(n.props.get(keys::BORDER_WIDTH).is_none(), "{:?}", n.props);
+
+    let label = b.create_text("Label", &a11y);
+    let n = b.introspect_native(&label).unwrap();
+    assert_eq!(n.props.get(keys::TEXT), Some(&NativeValue::Text("Label".into())));
+    assert_eq!(n.props.get(keys::FONT_WEIGHT), Some(&NativeValue::Number(400.0)));
+
+    let field = b.create_text_input("typed", None, Rc::new(|_| {}), None, None, false, &a11y);
+    assert_eq!(b.introspect_native(&field).unwrap().props.get(keys::TEXT), Some(&NativeValue::Text("typed".into())));
+    b.update_text_input_value(&field, "");
+    assert_eq!(b.introspect_native(&field).unwrap().props.get(keys::TEXT), Some(&NativeValue::Text(String::new())));
+}

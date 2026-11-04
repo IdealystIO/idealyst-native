@@ -830,10 +830,7 @@ impl WgpuBackend {
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> WgpuNode {
         let layout = self.layout.new_node();
-        let diameter = match size {
-            ActivityIndicatorSize::Small => ACTIVITY_INDICATOR_SMALL_SIZE,
-            ActivityIndicatorSize::Large => ACTIVITY_INDICATOR_LARGE_SIZE,
-        };
+        let diameter = activity_indicator_diameter(size);
         // Intrinsic square — author can still override via `width`
         // / `height` in styles, same convention as the other native
         // widgets.
@@ -850,6 +847,20 @@ impl WgpuBackend {
         self.roots.push(node.clone());
         request_redraw();
         node
+    }
+
+    pub(crate) fn update_activity_indicator_size_impl(&mut self, node: &WgpuNode, size: ActivityIndicatorSize) {
+        let layout = {
+            let mut data = node.borrow_mut();
+            if let NodeKind::ActivityIndicator { size: stored, .. } = &mut data.kind {
+                *stored = size;
+            }
+            data.layout
+        };
+        let diameter = activity_indicator_diameter(size);
+        self.layout.set_intrinsic_size(layout, diameter, diameter);
+        self.layout.mark_dirty(layout);
+        request_redraw();
     }
 
     pub(crate) fn create_scroll_view_impl(
@@ -2713,6 +2724,13 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 //    `drain_pending_announcements` returns in order, exactly once.
 // ---------------------------------------------------------------------------
 
+fn activity_indicator_diameter(size: ActivityIndicatorSize) -> f32 {
+    match size {
+        ActivityIndicatorSize::Small => ACTIVITY_INDICATOR_SMALL_SIZE,
+        ActivityIndicatorSize::Large => ACTIVITY_INDICATOR_LARGE_SIZE,
+    }
+}
+
 #[cfg(test)]
 mod a11y_tests {
     use super::*;
@@ -2854,6 +2872,30 @@ mod a11y_tests {
              screenshots render registered weights with a fallback font"
         );
     }
+
+    /// `size_dyn` was ignored after creation: the spinner kept its first
+    /// diameter in layout and in the `kind` the renderer paints from.
+    #[test]
+    fn regression_gpu_activity_indicator_ignored_a_live_size() {
+        let mut b = make_backend();
+        let root = b.create_view_impl(&Default::default());
+        let spinner = b.create_activity_indicator_impl(ActivityIndicatorSize::Small, None, &Default::default());
+        let root_layout = root.borrow().layout;
+        let mut parent = root.clone();
+        b.insert_impl(&mut parent, spinner.clone());
+
+        b.layout.compute(root_layout, 200.0, 100.0);
+        assert_eq!(b.layout.frame_of(spinner.borrow().layout).height, ACTIVITY_INDICATOR_SMALL_SIZE);
+
+        b.update_activity_indicator_size_impl(&spinner, ActivityIndicatorSize::Large);
+        b.layout.compute(root_layout, 200.0, 100.0);
+        assert_eq!(b.layout.frame_of(spinner.borrow().layout).height, ACTIVITY_INDICATOR_LARGE_SIZE);
+        assert!(matches!(
+            spinner.borrow().kind,
+            NodeKind::ActivityIndicator { size: ActivityIndicatorSize::Large, .. }
+        ));
+    }
+
 
     /// Build a small View(Text) tree directly through the Backend
     /// trait, populate Taffy intrinsic sizes so layout produces

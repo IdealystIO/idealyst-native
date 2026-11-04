@@ -1113,6 +1113,14 @@ impl caps::ActivityIndicatorOps for WgpuBackend {
     ) -> Self::Node {
         WgpuBackend::create_activity_indicator_impl(self, size, color, a11y)
     }
+
+    fn update_activity_indicator_size(
+        &mut self,
+        node: &Self::Node,
+        size: primitives::activity_indicator::ActivityIndicatorSize,
+    ) {
+        WgpuBackend::update_activity_indicator_size_impl(self, node, size)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1416,6 +1424,14 @@ impl caps::IntrospectionOps for WgpuBackend {
 
     fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
         WgpuBackend::absolute_frame_impl(self, node)
+    }
+
+    fn supports_native_introspection(&self) -> bool {
+        true
+    }
+
+    fn introspect_native(&self, node: &Self::Node) -> Option<runtime_shared::introspect::NativeNode> {
+        Some(WgpuBackend::introspect_native_impl(self, node))
     }
 }
 
