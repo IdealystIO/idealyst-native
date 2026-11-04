@@ -363,7 +363,9 @@ against the base module, before anything is linked
   would get a fresh copy in every later patch, losing its value each
   time. A `thread_local!` or `static` inside a new function's body is
   caught here. `inventory::submit!` nodes are exempt for the reason
-  above.
+  above. Source already refuses the certain ones before the replay: a
+  `thread_local!`, a `static mut`, or a `static` of a standard
+  interior-mutable type in a new body.
 
 A refusal from either half rebuilds, with the reason in the log, so a
 save that cannot be patched costs what it always did. A save whose new
@@ -2111,6 +2113,8 @@ analyse). A record holds:
   superseded, failed) and the time from detection to that end
   (`total_ms`); under `--no-watch` that time starts at the rebuild request,
   and the wait before it is `queued_ms`;
+- how much of that time another target of the session was building or hot
+  patching too (`concurrent_ms`);
 - each build stage's time; for a hot patch each step's (`patch_step`),
   whether it was built, failed or superseded, and for a built one each
   re-emitted crate's replay time;

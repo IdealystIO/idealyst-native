@@ -183,6 +183,10 @@ pub struct Record {
     /// The work: from the episode's first event, or from the rebuild request
     /// when it queued, to the event that closed it. Excludes `queued_ms`.
     pub total_ms: u64,
+    /// How much of `total_ms` another target of the session was building or
+    /// hot patching too (a full-stack save's other half, above all): the
+    /// time they competed for cores. Work outside the session does not count.
+    pub concurrent_ms: u64,
     pub stages: Vec<Timing>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cargo: Option<CargoRecord>,
@@ -272,6 +276,8 @@ struct Episode {
     /// the next `change_detected` is that watcher reporting the saves it
     /// took, not a save joining the queue.
     awaiting_report: bool,
+    /// See [`Record::concurrent_ms`].
+    concurrent_ms: u64,
     started: String,
     trigger: String,
     folded: usize,
@@ -291,6 +297,13 @@ struct Episode {
     diffs: Vec<FileDiff>,
 }
 
+impl Episode {
+    /// A build or a hot patch is running for it.
+    fn is_working(&self) -> bool {
+        self.working || matches!(self.decision, Some(Decision::HotPatch { .. }))
+    }
+}
+
 #[derive(Debug, Default)]
 struct UnitAcc {
     ms: Option<u64>,
@@ -308,6 +321,8 @@ struct Recorder {
     /// request. Apart from `open`, because one that lands while a request's
     /// work runs is the next request's and interrupts nothing.
     queued: HashMap<String, Episode>,
+    /// When [`Self::account_overlap`] last ran.
+    overlap_checked_ms: u64,
     /// Watched file contents, for `--metrics-diffs`. `None` values are
     /// files that are not diffable (binary, too large).
     baseline: Option<HashMap<PathBuf, Snapshot>>,
@@ -323,11 +338,12 @@ enum Snapshot {
 impl Recorder {
     fn new(config: Config) -> Self {
         let baseline = config.diffs.then(HashMap::new);
-        Self { config, app: String::new(), open: HashMap::new(), queued: HashMap::new(), baseline }
+        Self { config, app: String::new(), open: HashMap::new(), queued: HashMap::new(), overlap_checked_ms: 0, baseline }
     }
 
     fn handle(&mut self, envelope: &Envelope) {
         let at = envelope.at_ms;
+        self.account_overlap(at);
         match &envelope.event {
             DevEvent::SessionStarted { app, targets, mode, hot_tier, .. } => {
                 self.app = app.clone();
@@ -526,6 +542,20 @@ impl Recorder {
         }
     }
 
+    /// Credit the time since the last event to every episode that was
+    /// working beside another. An episode only starts or stops working on
+    /// an event this recorder sees, so the set was constant over that time.
+    fn account_overlap(&mut self, at: u64) {
+        let since = at.saturating_sub(self.overlap_checked_ms);
+        self.overlap_checked_ms = at;
+        if self.open.values().filter(|e| e.is_working()).count() < 2 {
+            return;
+        }
+        for ep in self.open.values_mut().filter(|e| e.is_working()) {
+            ep.concurrent_ms += since;
+        }
+    }
+
     fn episode(&self, at: u64, trigger: &str) -> Episode {
         Episode { opened_at_ms: at, started: now_local(), trigger: trigger.into(), ..Episode::default() }
     }
@@ -677,6 +707,7 @@ fn finish(app: &str, session: u32, target: &str, ep: Episode, at: u64, outcome: 
         failed,
         queued_ms: ep.work_from_ms.map_or(0, |from| from.saturating_sub(ep.opened_at_ms)),
         total_ms: at.saturating_sub(ep.work_from_ms.unwrap_or(ep.opened_at_ms)),
+        concurrent_ms: ep.concurrent_ms,
         stages: ep.stages,
         cargo,
         hot_patch: ep.hot_patch.or_else(|| {
@@ -730,6 +761,9 @@ pub fn markdown(r: &Record) -> String {
         facts.push(format!("**Hot patch failed:** {why}"));
     }
     facts.push(format!("**Outcome:** {}", r.outcome));
+    if r.concurrent_ms > 0 {
+        facts.push(format!("**Beside another target's work:** {}", fmt_ms(r.concurrent_ms)));
+    }
     if r.queued_ms > 0 {
         facts.push(format!("**Queued:** {} before the rebuild request (not in the time above)", fmt_ms(r.queued_ms)));
     }
@@ -1134,6 +1168,58 @@ mod tests {
         assert_eq!((recs[0]["queued_ms"].as_u64(), recs[0]["total_ms"].as_u64()), (Some(500), Some(300)));
     }
 
+    /// A9 asks how much a full rebuild loses to the server build started
+    /// in the same second, which needs the overlap on the record: the two
+    /// builds overlap 400..1000 here, and a third save's build runs alone.
+    #[test]
+    fn a_record_says_how_long_another_target_worked_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("out")).unwrap();
+        let mut r = recorder(dir.path(), false);
+        let server = || "server".to_string();
+        let started = |target: String| DevEvent::BuildStarted { target, cause: BuildCause::Save { folded: 0 } };
+        let finished = |target: String| DevEvent::BuildFinished {
+            target,
+            outcome: BuildOutcome::Ready { gen: 2 },
+            ms: 1,
+        };
+        feed(
+            &mut r,
+            vec![
+                (0, started(web())),
+                (400, started(server())),
+                (1_000, finished(web())),
+                (1_600, finished(server())),
+                (2_000, started(web())),
+                (2_500, finished(web())),
+            ],
+        );
+        let recs = records(dir.path());
+        let got: Vec<_> = recs.iter().map(|r| (r["target"].as_str().unwrap(), r["concurrent_ms"].as_u64().unwrap())).collect();
+        assert_eq!(got, vec![("web", 600), ("server", 600), ("web", 0)]);
+    }
+
+    /// A hot patch has no `build_started`, and is what a server replay
+    /// competes with.
+    #[test]
+    fn a_hot_patch_counts_as_work_beside_a_build() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("out")).unwrap();
+        let mut r = recorder(dir.path(), false);
+        feed(
+            &mut r,
+            vec![
+                (0, DevEvent::BuildStarted { target: "server".into(), cause: BuildCause::Save { folded: 0 } }),
+                (100, DevEvent::Decided {
+                    target: web(),
+                    decision: Decision::HotPatch { crates: vec!["a".into()], files: vec![] },
+                }),
+                (300, DevEvent::Superseded { target: web(), work: dev_events::SupersededWork::HotPatch, ms: 200 }),
+            ],
+        );
+        assert_eq!(records(dir.path())[0]["concurrent_ms"], 200);
+    }
+
     /// Without `--no-watch` nothing waits: the clock is the save's, as ever.
     #[test]
     fn a_watching_session_records_no_queue_time() {
@@ -1295,6 +1381,7 @@ mod tests {
             failed: false,
             queued_ms: 0,
             total_ms: 23_000,
+            concurrent_ms: 0,
             stages: vec![],
             cargo: Some(CargoRecord {
                 recompiled: vec![RecompiledPackage {
