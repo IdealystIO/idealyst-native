@@ -2788,6 +2788,7 @@ dependencies = [
  "idea-ui",
  "idealyst",
  "robot-e2e",
+ "runtime-core",
  "runtime-macros",
  "runtime-scene",
  "runtime-shared",
