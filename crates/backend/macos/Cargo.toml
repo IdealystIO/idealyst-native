@@ -141,6 +141,12 @@ harness = false
 name = "style_reset"
 harness = false
 
+# Real Core Animation pixels of `border_radius` and `overflow`: a rounded view
+# draws a child past its corner unless it states `overflow: Hidden`.
+[[test]]
+name = "rounded_clip"
+harness = false
+
 # Real-AppKit test of the attach-safe `focus()` (`src/imp/pending_focus.rs`).
 # AppKit only builds windows on the MAIN thread, and libtest runs every case on
 # a worker thread (see `rect_is_window_relative_not_parent_relative`, which has

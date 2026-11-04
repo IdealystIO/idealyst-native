@@ -1661,7 +1661,7 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
         match cap {
             Some(c) => {
                 let effective = radius.min(c);
-                let _: () = unsafe { msg_send![&layer, setCornerRadius: effective] };
+                set_corner_radius(view, &layer, effective);
             }
             None => {
                 // Without explicit px dimensions we can't know `min(W, H)/2`
@@ -1677,7 +1677,7 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
                 let bounds: CGRect = unsafe { msg_send![view, bounds] };
                 let min_half = (bounds.size.width.min(bounds.size.height) as f64) / 2.0;
                 let effective = if min_half > 0.0 { radius.min(min_half) } else { 0.0 };
-                let _: () = unsafe { msg_send![&layer, setCornerRadius: effective] };
+                set_corner_radius(view, &layer, effective);
             }
         }
         // NOTE: we deliberately do NOT force `masksToBounds = true` here.
@@ -1719,12 +1719,10 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     // `CAMetalLayer`; the view is already layer-backed (`setWantsLayer` above) and
     // the GPU surface keeps presenting, clipped to bounds.
     //
-    // AppKit's backing layer turns `masksToBounds` on itself whenever `cornerRadius`
-    // goes non-zero (read back on a plain `NSView`), so a rounded view with no
-    // `overflow` keeps that clip, and the radius branch above kept the value from
-    // before it, for when the radius goes.
+    // A control AppKit paints itself keeps the clip a radius gave it (`set_corner_radius`),
+    // and the radius branch above kept the value from before it, for when the radius goes.
     let clip = backend_apple_core::clip::clips_to_bounds(style);
-    if clip.is_some() || radius == 0.0 {
+    if clip.is_some() || radius == 0.0 || radius_leaves_clip(view) {
         backend_apple_core::style_reset::apply_clip(&layer, clip);
     }
     // `masksToBounds` clips the layer's WHOLE composite, and an outer drop
@@ -2341,7 +2339,36 @@ fn sync_corner_radius(view: &NSView) {
     let half_h = bounds.size.height / 2.0;
     let cap = half_w.min(half_h);
     let effective = requested.min(cap.max(0.0));
-    let _: () = unsafe { msg_send![layer, setCornerRadius: effective] };
+    set_corner_radius(view, layer, effective);
+}
+
+/// Write `view`'s `cornerRadius`, and have the sublayers that paint its box follow.
+///
+/// AppKit's backing layer turns `masksToBounds` on when `cornerRadius` goes non-zero
+/// (read back on a plain `NSView`), which clips children the way web and iOS only do
+/// for `overflow` (`backend_apple_core::clip`), and clips away the view's own shadow.
+/// The flag is put back straight after, and it stays: a later write of `false` holds.
+///
+/// Not on a control AppKit paints itself: `NSTextField` and `NSButton` draw a square
+/// fill no `cornerRadius` reaches, and they have no children to clip, so AppKit's mask
+/// is what rounds them.
+fn set_corner_radius(view: &NSView, layer: &NSObject, radius: f64) {
+    let before: bool = unsafe { msg_send![layer, masksToBounds] };
+    let _: () = unsafe { msg_send![layer, setCornerRadius: radius] };
+    if radius_leaves_clip(view) {
+        let after: bool = unsafe { msg_send![layer, masksToBounds] };
+        if after != before {
+            let _: () = unsafe { msg_send![layer, setMasksToBounds: before] };
+        }
+    }
+    backend_apple_core::sublayers::round_named_sublayers(layer, "idealyst_gradient", radius);
+}
+
+/// Whether a radius on `view` rounds its layer's paint alone: our flipped host (view,
+/// pressable, link, a text area's chrome) and a label, whose fill is the layer's.
+fn radius_leaves_clip(view: &NSView) -> bool {
+    let is_label: bool = unsafe { msg_send![view, isKindOfClass: view::IdealystLabel::class()] };
+    is_label || as_flipped_view(view).is_some()
 }
 
 fn length_to_px(len: &runtime_shared::Length) -> CGFloat {

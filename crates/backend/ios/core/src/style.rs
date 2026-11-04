@@ -292,6 +292,11 @@ fn build_gradient_layer(
     let _: () = unsafe { msg_send![&gradient_layer, setFrame: bounds] };
     let _: () = unsafe { msg_send![&gradient_layer, setNeedsDisplayOnBoundsChange: true] };
 
+    // A sublayer takes no shape from its parent without a mask, and web's gradient
+    // is the rounded box's own background.
+    let radius: CGFloat = unsafe { msg_send![layer, cornerRadius] };
+    let _: () = unsafe { msg_send![&gradient_layer, setCornerRadius: radius] };
+
     // Insert at index 0 — below any author-managed sublayers but
     // above the view's solid `backgroundColor` fill.
     let _: () =
@@ -380,6 +385,7 @@ pub fn sync_corner_radius(view: &UIView) {
         let cap = half_w.min(half_h);
         let effective = requested.min(cap.max(0.0));
         let _: () = msg_send![&layer, setCornerRadius: effective];
+        backend_apple_core::sublayers::round_named_sublayers(&layer, "idealyst_gradient", effective);
     }
 }
 

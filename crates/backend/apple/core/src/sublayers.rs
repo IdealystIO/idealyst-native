@@ -45,3 +45,27 @@ pub fn remove_named_sublayers(layer: &NSObject, name: &str) -> usize {
     }
     doomed.len()
 }
+
+/// Give every direct sublayer of `layer` named `name` the corner radius `radius`, with
+/// no implicit animation: a layer the backend inserted has no view delegate, and an
+/// unguarded write eases into the new shape. Safe on a layer with no sublayers.
+pub fn round_named_sublayers(layer: &NSObject, name: &str, radius: f64) {
+    let _guard = crate::implicit_animations::NoImplicitAnimations::begin();
+    unsafe {
+        let sublayers: *mut NSObject = msg_send![layer, sublayers];
+        if sublayers.is_null() {
+            return;
+        }
+        let count: usize = msg_send![sublayers, count];
+        for i in 0..count {
+            let sub: *mut NSObject = msg_send![sublayers, objectAtIndex: i];
+            if sub.is_null() {
+                continue;
+            }
+            let sub_name: *mut NSString = msg_send![sub, name];
+            if !sub_name.is_null() && (*sub_name).to_string() == name {
+                let _: () = msg_send![sub, setCornerRadius: radius];
+            }
+        }
+    }
+}

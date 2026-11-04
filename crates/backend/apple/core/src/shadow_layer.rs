@@ -354,9 +354,14 @@ pub fn sync_own_shadow_path(layer: &NSObject) {
     if !has_box_shadow(layer) {
         return;
     }
+    // `addSubview:` zeroes a backing layer's `shadowOpacity`, read back on AppKit: it
+    // syncs the view's own `shadow`, which is nil. A style lands before the view is
+    // inserted, so a shadow would not paint until its first restyle. The flag says a
+    // shadow is meant to paint: a fade-out clears it, and `write_shadow_props` always
+    // writes this same 1.0.
     let opacity: f32 = unsafe { msg_send![layer, shadowOpacity] };
     if opacity <= 0.0 {
-        return;
+        let _: () = unsafe { msg_send![layer, setShadowOpacity: 1.0f32] };
     }
     let bounds: CGRect = unsafe { msg_send![layer, bounds] };
     // A 0×0 view would get an empty path; the layout pass calls again once

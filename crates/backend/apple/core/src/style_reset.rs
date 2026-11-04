@@ -161,6 +161,7 @@ mod natural {
         let nil: *mut NSObject = std::ptr::null_mut();
         let _: () = unsafe { msg_send![layer, setValue: nil, forKey: &*key] };
         let _: () = unsafe { msg_send![layer, setCornerRadius: 0.0_f64] };
+        crate::sublayers::round_named_sublayers(layer, "idealyst_gradient", 0.0);
     }
 }
 

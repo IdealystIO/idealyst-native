@@ -15,7 +15,7 @@ use runtime_shared::Gradient;
 use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2_app_kit::NSView;
-use objc2_foundation::{CGPoint, CGRect, NSObject, NSString};
+use objc2_foundation::{CGFloat, CGPoint, CGRect, NSObject, NSString};
 
 use crate::imp::CGColorRef;
 
@@ -156,6 +156,10 @@ pub(crate) fn install_gradient(view: &NSView, gradient: &Gradient) -> Option<Gra
     // above the layer's solid `backgroundColor` fill (so a solid
     // background set by `apply_style_to_view` shows through where
     // the gradient is fully transparent).
+    // A sublayer takes no shape from its parent without a mask, and web's gradient is
+    // the rounded box's own background.
+    let radius: CGFloat = unsafe { msg_send![&layer, cornerRadius] };
+    let _: () = unsafe { msg_send![&gradient_layer, setCornerRadius: radius] };
     let _: () = unsafe {
         msg_send![&layer, insertSublayer: &*gradient_layer, atIndex: 0u32]
     };
