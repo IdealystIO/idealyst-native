@@ -245,7 +245,9 @@ mod browser_tests {
     #[wasm_bindgen_test]
     fn a_css_scroller_and_the_host_scroller_above_a_root() {
         let doc = web_glue::dom::window().unwrap().document().unwrap();
-        let outer = div(&doc.body().unwrap(), "height:100px;width:100px;overflow:auto");
+        // No scrollbar: a classic one takes its width out of the port, and
+        // whether the browser draws one is a host setting.
+        let outer = div(&doc.body().unwrap(), "height:100px;width:100px;overflow:auto;scrollbar-width:none");
         let root = div(&outer, "height:500px;width:50px");
         let inner = div(&root, "height:40px;width:50px;overflow-y:scroll");
         div(&inner, "height:240px;width:10px");
