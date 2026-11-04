@@ -23,7 +23,7 @@ mod common;
 use std::rc::Rc;
 
 use common::{find, lay_out};
-use idea_ui::{Badge, Button, IconButton, Stack, StackAlign, StackAxis, Tooltip, Typography};
+use idea_ui::{Badge, Button, Field, IconButton, Stack, StackAlign, StackAxis, StackGap, Tooltip, Typography};
 use runtime_core::{ui, Element};
 use runtime_layout::Frame;
 
@@ -167,6 +167,67 @@ fn tooltip_button_trigger_keeps_its_place_in_a_centred_row() {
                     Typography(content = LONG.to_string())
                     Typography(content = LONG.to_string())
                     Typography(content = LONG.to_string())
+                }
+            }
+        }
+    });
+}
+
+/// want_77d7d4a1's exact fail case: a name in a `Stack(align = Start)`, over a
+/// longer line. Reported: the name renders centred over that line. Filed with
+/// `ControlLabel`, since removed; a `Typography` label is the same hugging text.
+#[test]
+fn regression_want_77d7d4a1_control_label_stays_at_the_start_over_a_longer_line() {
+    let tree = lay_out(PANE_WIDTH, PANE_HEIGHT, || {
+        ui! {
+            Stack(gap = StackGap::Xs, align = StackAlign::Start) {
+                Tooltip(text = "Describes the name".to_string()) {
+                    Typography(content = "Short name".to_string())
+                }
+                Typography(content = "a much longer line than the name".to_string())
+            }
+        }
+    });
+    let name = find(&tree.h, tree.root, "text \"Short").expect("the name");
+    let line = find(&tree.h, tree.root, "text \"a much").expect("the line");
+    let (name, line) = (tree.frames[&name], tree.frames[&line]);
+    assert_eq!(name.x, line.x, "the name must start where the line starts: {name:?} over {line:?}");
+    assert!(name.width < line.width, "the name must hug, or it cannot have looked centred: {name:?} {line:?}");
+}
+
+/// Triggers that fill must keep filling: a hugging wrapper must not collapse them.
+#[test]
+fn tooltip_block_button_trigger_keeps_its_width() {
+    assert_tooltip_is_transparent("block Button", "pressable", |tooltip| {
+        ui! {
+            Stack {
+                if tooltip {
+                    Tooltip(text = "Saves".to_string()) {
+                        Button(label = "Save".to_string(), block = true, on_click = Rc::new(|| {}) as Rc<dyn Fn()>)
+                    }
+                } else {
+                    Button(label = "Save".to_string(), block = true, on_click = Rc::new(|| {}) as Rc<dyn Fn()>)
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn tooltip_field_trigger_keeps_its_width() {
+    let field = || {
+        let v = runtime_core::signal(String::new());
+        ui! { Field(value = v, label = Some("Name".to_string())) }
+    };
+    assert_tooltip_is_transparent("Field", "text_input", |tooltip| {
+        ui! {
+            Stack {
+                if tooltip {
+                    Tooltip(text = "Your name".to_string()) {
+                        { field() }
+                    }
+                } else {
+                    { field() }
                 }
             }
         }

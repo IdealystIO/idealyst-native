@@ -186,6 +186,8 @@ pub fn Tooltip(props: TooltipProps) -> Element {
     // anchors to it: a hugging trigger at the start of a default column has its
     // bubble centred on the line. `align = ElementAlign::Start` on the Tooltip, or
     // a parent with `Stack(align = Start)`, puts the bubble over the trigger.
+    // Not `width: FitContent` here: it collapses a trigger that fills, a `Field`
+    // or a block Button, to its content.
     let mut kids: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut kids);
