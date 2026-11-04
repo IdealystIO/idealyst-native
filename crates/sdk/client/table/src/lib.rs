@@ -221,6 +221,9 @@ mod split_head;
 
 use std::rc::Rc;
 
+use runtime_shared::primitives::scroll_view::ScrollViewHandle;
+use runtime_shared::Ref;
+
 use runtime_shared::{HoverHandler, TouchHandler};
 use runtime_scene::{item, Element, Host, MountCx, Registry};
 use runtime_vocabulary::caps::{InputOps, IntrospectionOps};
@@ -739,6 +742,7 @@ pub struct TableBound {
     on_edges: Option<Rc<dyn Fn(ScrollEdges)>>,
     on_viewport: Option<Rc<dyn Fn(f32)>>,
     head_corner: Option<StyleProp>,
+    scroller: Option<ScrollerBinding>,
 }
 table_wrapper_common!(TableBound);
 
@@ -772,6 +776,15 @@ impl TableBound {
         self.on_viewport = Some(Rc::new(f));
         self
     }
+
+    /// Hand out a scrolling table's scroller: `handle` is filled with it at
+    /// mount, and `on_scroll` hears its offset, which a scroll view has no
+    /// getter for. With a pinned head this is the rows' scroller. Ignored
+    /// without `scroll_x` or `scroll_y`, where nothing scrolls.
+    pub fn bind_scroller(mut self, handle: Ref<ScrollViewHandle>, on_scroll: impl Fn(f32, f32) + 'static) -> Self {
+        self.scroller = Some(ScrollerBinding { handle, on_scroll: Rc::new(on_scroll) });
+        self
+    }
 }
 
 impl IntoElement for TableBound {
@@ -787,7 +800,36 @@ impl IntoElement for TableBound {
             on_edges: self.on_edges,
             on_viewport: self.on_viewport,
             head_corner: self.head_corner,
+            scroller: self.scroller,
         })
+    }
+}
+
+/// [`TableBound::bind_scroller`]'s two halves.
+#[derive(Clone)]
+struct ScrollerBinding {
+    handle: Ref<ScrollViewHandle>,
+    on_scroll: Rc<dyn Fn(f32, f32)>,
+}
+
+impl ScrollerBinding {
+    /// `extra` and the binding's own listener, as one `on_scroll`.
+    fn listener(binding: Option<&Self>, extra: Option<Rc<dyn Fn(f32, f32)>>) -> Option<Rc<dyn Fn(f32, f32)>> {
+        match (binding.map(|b| b.on_scroll.clone()), extra) {
+            (Some(a), Some(b)) => Some(Rc::new(move |x, y| {
+                a(x, y);
+                b(x, y);
+            })),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Bind a scroller the table builds itself.
+    fn bind(binding: Option<&Self>, scroller: glue::primitives::scroll_view::GlueScrollView) -> glue::primitives::scroll_view::GlueScrollView {
+        match binding {
+            Some(b) => scroller.bind(b.handle),
+            None => scroller,
+        }
     }
 }
 
@@ -839,6 +881,7 @@ pub fn table(mut props: TableProps) -> TableBound {
         on_edges: None,
         on_viewport: None,
         head_corner: props.head_corner.take(),
+        scroller: None,
     }
 }
 
@@ -991,6 +1034,7 @@ struct TableParts {
     on_edges: Option<Rc<dyn Fn(ScrollEdges)>>,
     on_viewport: Option<Rc<dyn Fn(f32)>>,
     head_corner: Option<StyleProp>,
+    scroller: Option<ScrollerBinding>,
 }
 
 impl TableParts {
@@ -1671,6 +1715,7 @@ pub mod item_lowering {
             on_edges: None,
             on_viewport: None,
             head_corner: None,
+            scroller: None,
         })
     }
 
@@ -1693,6 +1738,7 @@ pub mod item_lowering {
             on_edges: None,
             on_viewport: None,
             head_corner: None,
+            scroller: None,
         })
     }
 
@@ -1704,7 +1750,7 @@ pub mod item_lowering {
         let grid = needs_grid(&specs);
         let wrapped = parts.wrapped();
         let TableParts {
-            mut rows, style, scroll_x, scroll_y, header_slot, footer_slot, on_edges, on_viewport, head_corner, ..
+            mut rows, style, scroll_x, scroll_y, header_slot, footer_slot, on_edges, on_viewport, head_corner, scroller, ..
         } = parts;
         apply_row_collapse(&mut rows, !grid);
         let watch = on_edges.filter(|_| scroll_x).map(EdgeWatch::new);
@@ -1722,6 +1768,7 @@ pub mod item_lowering {
                 watch,
                 probe,
                 head_corner,
+                scroller,
             );
         }
         // The `<table>` is the scrolled content, so its width is the
@@ -1773,6 +1820,7 @@ pub mod item_lowering {
         // default `flex-shrink: 1`, and a scroll container's automatic
         // minimum height is 0, so a `max_height` on the surface bounds it.
         let content = if scroll_x || scroll_y {
+            let binding = scroller;
             // The viewport probe, when one listens, is placed against the
             // scroller, so the scroller is its containing block.
             let scroller = match probe {
@@ -1781,7 +1829,12 @@ pub mod item_lowering {
                 ))),
                 None => glue::scroll_view(vec![table]),
             };
-            edge_watched_scroller(scroller, scroller_axis(scroll_x, scroll_y), watch, None)
+            edge_watched_scroller(
+                ScrollerBinding::bind(binding.as_ref(), scroller),
+                scroller_axis(scroll_x, scroll_y),
+                watch,
+                ScrollerBinding::listener(binding.as_ref(), None),
+            )
         } else {
             table
         };
@@ -1875,7 +1928,7 @@ fn build_cell(
 fn build_table(parts: TableParts) -> Element {
     let wrapped = parts.wrapped();
     let TableParts {
-        mut rows, style, scroll_x, scroll_y, header_slot, footer_slot, columns, on_edges, on_viewport, ..
+        mut rows, style, scroll_x, scroll_y, header_slot, footer_slot, columns, on_edges, on_viewport, scroller, ..
     } = parts;
     let watch = on_edges.filter(|_| scroll_x).map(EdgeWatch::new);
     let probe = viewport_probe(scroll_x, on_viewport);
@@ -1912,7 +1965,7 @@ fn build_table(parts: TableParts) -> Element {
         .max(columns_from_spans);
 
     if split {
-        let sync = split_head::HeadSync::new(columns);
+        let sync = split_head::HeadSync::with_body_ref(columns, scroller.as_ref().map(|b| b.handle));
         extracted.insert(
             0,
             split_head::native_sizer_row(columns, |i| sync.sizer_style(i, true), |i| sync.body_cell(i)),
@@ -1946,7 +1999,10 @@ fn build_table(parts: TableParts) -> Element {
                 ))),
             scroller_axis(scroll_x, true),
             watch,
-            Some(Rc::new(move |x, y| on_scroll.on_body_scroll(x, y))),
+            ScrollerBinding::listener(
+                scroller.as_ref(),
+                Some(Rc::new(move |x, y| on_scroll.on_body_scroll(x, y))),
+            ),
         );
         let frame = glue::view(vec![split_head::head_strip(&sync, head_grid), body_scroller])
             .with_style(StyleProp::Sheet(Box::new(StyleApplication::new(split_head::frame_sheet()))))
@@ -1973,6 +2029,7 @@ fn build_table(parts: TableParts) -> Element {
         // bounds it and the rows scroll — see `scroll_wrapper_rules`.
         // The content node is what scrolls, so its width is the content
         // width the edges are measured against.
+        let binding = scroller;
         let mut content = runtime_vocabulary::builders::view()
             .children(vec![inner])
             .style(StyleProp::Static(Rc::new(native_styles::scroll_content_rules(scroll_x))));
@@ -1990,7 +2047,12 @@ fn build_table(parts: TableParts) -> Element {
                 native_styles::scroll_wrapper_rules(scroll_x),
             ))),
         };
-        let scroller = edge_watched_scroller(scroller, scroller_axis(scroll_x, scroll_y), watch, None);
+        let scroller = edge_watched_scroller(
+            ScrollerBinding::bind(binding.as_ref(), scroller),
+            scroller_axis(scroll_x, scroll_y),
+            watch,
+            ScrollerBinding::listener(binding.as_ref(), None),
+        );
         surface_with_slots(scroller, style, header_slot, footer_slot)
     } else if wrapped {
         // Slots without scroll-x: surface > [header, grid holder,

@@ -19,6 +19,9 @@
 //! the theme's border between rows. `Field` and `Detail` columns live in the
 //! detail sheet, which a press on the row opens unless `on_row_click` claims it.
 //!
+//! `scroller` scrolls the list to a row ([`TableScroller`]); hand the same one
+//! to the wide form.
+//!
 //! With a `selection`, a pinned line above the rows selects them all (tri-state)
 //! and says how many are selected.
 //!
@@ -60,6 +63,7 @@ use runtime_core::{
     TapRecognizer,
 };
 
+use super::scroller::{detach_on_cleanup_cell, TableScroller};
 use super::select::{select_all_line, select_row_box};
 use super::{CardSlot, ColumnId, RowId, TableColumn};
 use crate::components::button::Button;
@@ -241,6 +245,10 @@ pub struct TableCardsProps {
     /// What an empty list says.
     #[prop(static)]
     pub empty: Option<String>,
+    /// Scrolls this list to a row: see [`TableScroller`]. Only rows it has been
+    /// given can be reached; an id past the last loaded page does nothing.
+    #[prop(static)]
+    pub scroller: Option<TableScroller>,
 }
 
 impl Default for TableCardsProps {
@@ -259,6 +267,7 @@ impl Default for TableCardsProps {
             selection: None,
             selection_label: None,
             empty: None,
+            scroller: None,
             styles: Default::default(),
         }
     }
@@ -385,6 +394,22 @@ pub fn TableCards(props: &TableCardsProps) -> Element {
     .gap(if hairline { 0.0 } else { CARD_GAP_PX })
     .end_reached_threshold(CARD_LOAD_AHEAD_PX)
     .with_style(TableStyles::cards_list().overridden(props.styles.cards_list.as_ref()));
+    let list = match props.scroller.clone() {
+        Some(scroller) => {
+            let attached = scroller.clone();
+            let token = std::rc::Rc::new(std::cell::Cell::new(None));
+            let filled = token.clone();
+            detach_on_cleanup_cell(scroller, token);
+            list.on_handle(move |h| {
+                filled.set(Some(attached.attach(Rc::new(move |id: &RowId| {
+                    if let Some(i) = items.with(|rows| rows.iter().position(|(row, _)| row == id)) {
+                        h.scroll_to_index(i);
+                    }
+                }))));
+            })
+        }
+        None => list,
+    };
     let list = match props.on_end_reached.clone() {
         Some(cb) => list.on_end_reached(move || cb()).into_element(),
         None => list.into_element(),

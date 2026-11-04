@@ -187,7 +187,8 @@
 //! cards laid out from the same column specs (title, opposite, labelled
 //! cells up to a cap, the rest behind "+N more"), with measured heights
 //! and load-on-scroll, or `CardPresentation::Hairline` for one line per
-//! record. See its module docs for the switch.
+//! record. See its module docs for the switch. One [`TableScroller`], handed
+//! to both forms, scrolls whichever is on screen to a row.
 //!
 //! # Per-cell columns: width, alignment, truncation
 //!
@@ -384,7 +385,8 @@
 //! HTML `<table>` on web) is generic and cross-platform; idea-ui
 //! supplies the opinionated visual that reads the active theme.
 
-use std::collections::BTreeSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use runtime_core::{
@@ -401,6 +403,7 @@ mod group;
 mod pager;
 mod reorder;
 mod rows;
+mod scroller;
 mod select;
 
 
@@ -415,6 +418,7 @@ pub use columns::{
 pub use group::{TableGroup, TableGroupProps};
 pub use pager::{page_window_text, pager_count_text, rows_picker_matters, TablePager, TablePagerProps};
 pub use reorder::{move_in_place, slide_offset, GRIP_COLUMN_WIDTH_PX};
+pub use scroller::TableScroller;
 pub use rows::RowId;
 pub use select::{select_all_state, toggle_select_all, SelectAllState, SELECT_COLUMN_WIDTH_PX};
 
@@ -686,6 +690,10 @@ pub struct TableProps {
     // STRUCTURAL — selects the SDK's scroller wrapper at build time.
     #[prop(static)]
     pub scroll_x: bool,
+    /// Scrolls this table to a row: see [`TableScroller`]. Needs `scroll_y`,
+    /// since the table can only move its own scroller, and rows with an `id`.
+    #[prop(static)]
+    pub scroller: Option<TableScroller>,
     /// Vertical-scroll mode: the rows scroll inside the table's own
     /// height under a header that stays put above them, with the
     /// scrollbar beside the rows only. Bound it with `max_height`, or let
@@ -896,6 +904,40 @@ pub fn Table(props: TableProps) -> Element {
             });
         }
     }
+
+    // `TableScroller`: every body row's surface, in row order. The first one
+    // anchors the arithmetic, id or not (a group's band has none).
+    let row_scroll = props.scroller.clone().filter(|_| props.scroll_y).map(|scroller| {
+        let surfaces: Rc<RefCell<BTreeMap<usize, (Option<RowId>, ViewHandle)>>> = Rc::default();
+        let mut row_i = 0usize;
+        for child in &children {
+            table::visit_rows(child, |row| {
+                let i = row_i;
+                row_i += 1;
+                if kinds[i] != RowKind::Body {
+                    return;
+                }
+                let id = metas[i].as_ref().and_then(|m| m.id.clone());
+                let surfaces = surfaces.clone();
+                table::bind_row(row, move |h| {
+                    surfaces.borrow_mut().insert(i, (id, h));
+                });
+            });
+        }
+        let body: Ref<runtime_core::ScrollViewHandle> = Ref::new();
+        let offset_x = Rc::new(Cell::new(0.0_f32));
+        let x = offset_x.clone();
+        let token = scroller.attach(Rc::new(move |id: &RowId| {
+            let surfaces = surfaces.borrow();
+            let rows: Vec<(Option<&RowId>, Option<runtime_core::primitives::portal::ViewportRect>)> =
+                surfaces.values().map(|(id, h)| (id.as_ref(), h.absolute_frame())).collect();
+            if let Some(y) = scroller::row_offset(&rows, id) {
+                body.with(|h| h.scroll_to(offset_x.get(), y));
+            }
+        }));
+        scroller::detach_on_cleanup(scroller, token);
+        (body, x)
+    });
 
     // Group drag: the groups whose band is draggable, in order, each with
     // its row count (band included).
@@ -1373,6 +1415,10 @@ pub fn Table(props: TableProps) -> Element {
     .with_style(style);
     let table = match band_viewport {
         Some(viewport) => table.on_viewport_width(move |w| viewport.set(Some(w))),
+        None => table,
+    };
+    let table = match row_scroll {
+        Some((body, x)) => table.bind_scroller(body, move |offset, _| x.set(offset)),
         None => table,
     };
     match edges {

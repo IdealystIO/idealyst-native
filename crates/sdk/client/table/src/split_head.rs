@@ -120,6 +120,12 @@ const OFFSET_SLACK: f32 = 0.5;
 
 impl HeadSync {
     pub(super) fn new(columns: usize) -> Rc<Self> {
+        Self::with_body_ref(columns, None)
+    }
+
+    /// [`new`](Self::new), the rows' scroller filling `body_ref` when given:
+    /// [`TableBound::bind_scroller`](super::TableBound::bind_scroller)'s handle.
+    pub(super) fn with_body_ref(columns: usize, body_ref: Option<Ref<ScrollViewHandle>>) -> Rc<Self> {
         let sync = Rc::new(Self {
             head: RefCell::new(vec![None; columns]),
             body: RefCell::new(vec![None; columns]),
@@ -131,7 +137,7 @@ impl HeadSync {
             outer_height: glue::signal(None),
             client_height: glue::signal(None),
             head_ref: Ref::new(),
-            body_ref: Ref::new(),
+            body_ref: body_ref.unwrap_or_else(Ref::new),
             body_x: Cell::new(0.0),
             body_y: Cell::new(0.0),
             head_x: Cell::new(0.0),
@@ -644,8 +650,9 @@ pub(super) fn web(
     watch: Option<Rc<EdgeWatch>>,
     viewport_probe: Option<Element>,
     head_corner: Option<StyleProp>,
+    scroller: Option<ScrollerBinding>,
 ) -> Element {
-    let sync = HeadSync::new(columns);
+    let sync = HeadSync::with_body_ref(columns, scroller.as_ref().map(|b| b.handle));
     let (mut head, mut body) = take_head(rows);
     set_roles(&mut head);
     set_roles(&mut body);
@@ -720,7 +727,7 @@ pub(super) fn web(
             .with_style(sync.body_scroller_style()),
         scroller_axis(scroll_x, true),
         watch,
-        Some(Rc::new(move |x, y| on_scroll.on_body_scroll(x, y))),
+        ScrollerBinding::listener(scroller.as_ref(), Some(Rc::new(move |x, y| on_scroll.on_body_scroll(x, y)))),
     );
     let frame = item(
         PrimCell::new(TableFramePrim {

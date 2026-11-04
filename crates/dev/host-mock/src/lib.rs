@@ -561,6 +561,12 @@ pub fn set_virtual_grid_scrollport(node: Node, port: primitives::virtual_grid::S
     }
 }
 
+impl primitives::virtualizer::VirtualizerOps for RecordingHandleOps {
+    fn scroll_to_index(&self, node: &dyn Any, index: usize) {
+        handle_rec(node, format!("scroll_to_index {index}"))
+    }
+}
+
 impl primitives::virtual_grid::VirtualGridOps for RecordingHandleOps {
     fn scroll_to_cell(&self, node: &dyn Any, col: usize, row: usize) {
         handle_rec(node, format!("scroll_to_cell {col} {row}"))
@@ -1303,6 +1309,10 @@ impl caps::GridOps for HostMock {
 }
 
 impl caps::VirtualizerOps for HostMock {
+    fn make_virtualizer_handle(&self, node: &Node) -> primitives::virtualizer::VirtualizerHandle {
+        primitives::virtualizer::VirtualizerHandle::new(Rc::new(*node), &RECORDING_HANDLE_OPS)
+    }
+
     fn create_virtualizer(
         &mut self,
         callbacks: VirtualizerCallbacks<Node>,

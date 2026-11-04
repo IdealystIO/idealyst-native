@@ -11,7 +11,9 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use host_mock::Harness;
-use idea_ui::{install_idea_theme, light_theme, CardPresentation, CardSlot, ColumnId, RowId, TableCards, TableColumn};
+use idea_ui::{
+    install_idea_theme, light_theme, CardPresentation, CardSlot, ColumnId, RowId, TableCards, TableColumn, TableScroller,
+};
 use runtime_core::{signal, ui, Element, Signal};
 
 fn cell() -> Rc<dyn Fn(usize, &ColumnId) -> Element> {
@@ -158,4 +160,70 @@ fn regression_cards_selection_has_a_select_all_line() {
     h.flush();
     assert!(picked.peek().is_empty(), "all selected: the press clears them");
     assert!(live(&h).contains("Select all"), "{}", live(&h));
+}
+
+/// want_40fc88e7: the list's scroller reaches a row by id, through the
+/// virtualizer's index scroll, so a row that isn't mounted is still reachable.
+#[test]
+fn regression_table_scroller_scrolls_the_cards_to_a_row() {
+    let h = Harness::new();
+    let scroller = TableScroller::new();
+    let held = scroller.clone();
+    let realized = mount(&h, move || {
+        let columns = vec![TableColumn::new("name").card(CardSlot::Title)];
+        let row_id: Rc<dyn Fn(usize) -> RowId> = Rc::new(|i| RowId::from(format!("row-{i}").as_str()));
+        ui! { TableCards(columns = columns, row_count = 30usize, row_id = row_id, cell = cell(), scroller = Some(held)) }
+    });
+    host_mock::take_handle_log();
+    scroller.scroll_to_row(&RowId::from("row-17"));
+    let log = host_mock::take_handle_log();
+    assert!(log.iter().any(|l| l.starts_with("scroll_to_index 17")), "{log:?}");
+
+    scroller.scroll_to_row(&RowId::from("not-a-row"));
+    assert!(host_mock::take_handle_log().is_empty(), "an unknown id does nothing");
+
+    drop(realized);
+    h.flush();
+    scroller.scroll_to_row(&RowId::from("row-3"));
+    assert!(host_mock::take_handle_log().is_empty(), "an unmounted list isn't reached");
+}
+
+/// The table SDK fills the scroller handle on every shape of scrolling table:
+/// plain, pinned head (split) and a two-axis one. Row frames are the backend's,
+/// which the recording host's handles don't report, so `T/scroller.rs` pins the
+/// arithmetic.
+#[test]
+fn table_sdk_binds_the_rows_scroller_for_every_scrolling_shape() {
+    for (scroll_x, scroll_y, head) in [(false, true, false), (false, true, true), (true, true, true), (true, false, false)] {
+        let h = Harness::new();
+        let handle: Rc<std::cell::Cell<Option<runtime_core::Ref<runtime_core::ScrollViewHandle>>>> = Rc::default();
+        let out = handle.clone();
+        let _r = mount(&h, move || {
+            let body: runtime_core::Ref<runtime_core::ScrollViewHandle> = runtime_core::Ref::new();
+            out.set(Some(body));
+            let cell = |content: &str, header: bool| {
+                let content = content.to_string();
+                let c = table::table_cell(table::TableCellProps {
+                    children: vec![ui! { text { content } }],
+                    header,
+                    ..Default::default()
+                });
+                runtime_core::IntoElement::into_element(c)
+            };
+            let row = |c: Element| runtime_core::IntoElement::into_element(table::table_row(table::TableRowProps { children: vec![c] }));
+            let mut children = vec![row(cell("Body", false))];
+            if head {
+                children.insert(0, row(cell("Head", true)));
+            }
+            runtime_core::IntoElement::into_element(
+                table::table(table::TableProps { children, scroll_x, scroll_y, ..Default::default() })
+                    .bind_scroller(body, |_, _| {}),
+            )
+        });
+        host_mock::take_handle_log();
+        let body = handle.get().expect("built");
+        assert!(body.with(|h| h.scroll_to(0.0, 120.0)).is_some(), "scroller filled for x={scroll_x} y={scroll_y} head={head}");
+        let log = host_mock::take_handle_log();
+        assert!(log.iter().any(|l| l.starts_with("scroll_to 0 120")), "{log:?}");
+    }
 }
