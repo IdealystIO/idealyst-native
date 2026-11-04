@@ -163,6 +163,14 @@ pub fn __plain_sheet_prop(
     }
 }
 
+/// The struct-update base of a `ui!` component call: `Props { .., ..__defaults() }`
+/// is `<Props as BuildElement>::defaults()` with the type inferred from the literal.
+#[doc(hidden)]
+#[inline(always)]
+pub fn __defaults<P: glue::BuildElement>() -> P {
+    P::defaults()
+}
+
 /// In a remote bundle build, the `BuildElement` overrides of an imported app
 /// component: `build_set` sends only the fields its call site set, and
 /// `__build_site` also leaves the record of which ones (`remote::site`).

@@ -159,7 +159,8 @@ them apart. The `#[component]` attribute does three jobs:
    carries any `default(...)` values). This is what lets `Counter(label =
    "Score")` work inside `ui!`: it lowers to a plain struct literal,
    `BuildElement::build(Counter { label: ("Score").into(),
-   ..<Counter as BuildElement>::defaults() })`. No per-component
+   ..__defaults() })`, where `__defaults()` is `BuildElement::defaults()`
+   with the type inferred from the literal. No per-component
    `macro_rules!` — dispatch resolves by ordinary paths (cross-crate
    without `#[macro_export]`/`#[macro_use]`), and the call site is a real
    struct literal so rust-analyzer gives field completion + go-to-def.
@@ -266,7 +267,7 @@ let __ui_s0; __ui_s0 = score;                    // the one dynamic slot
 BuildElement::build(Counter {                    // `Counter` is the tag alias
     label: ("Score").into(),                     // a literal: descriptor data
     value: (__ui_s0).into(),
-    ..<Counter as BuildElement>::defaults()      // defaults for omitted props
+    ..__defaults()                               // defaults for omitted props
 })
 
   ↓ the `#[component]`-generated `build` calls the fn

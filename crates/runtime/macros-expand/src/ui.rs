@@ -1595,7 +1595,7 @@ const OVERLAY_BUILDER_ONLY: &[(&str, &str)] = &[
 /// The `anchored_overlay` props lowered by name, in emission order.
 /// `target` is not here: it is positional (see `emit_anchored_overlay`).
 const ANCHORED_OVERLAY_BUILDER_PROPS: &[&str] =
-    &["side", "align", "offset", "backdrop", "backdrop_style", "on_dismiss", "trap_focus"];
+    &["side", "align", "offset", "collision_insets", "backdrop", "backdrop_style", "on_dismiss", "trap_focus"];
 
 /// `GlueAnchoredOverlay` setters not lowered by name — same reasons as
 /// [`OVERLAY_BUILDER_ONLY`].
@@ -1831,7 +1831,7 @@ fn emit_user(
         #props_ty {
             #(#field_assignments)*
             #children_field
-            ..<#props_ty as ::runtime_core::BuildElement>::defaults()
+            ..::runtime_vocabulary::__defaults()
         }
     };
     // The fields this call site set, by name: a remote bundle's import of
@@ -3500,7 +3500,7 @@ mod tests {
                 WebView(url = webview::url("https://x"))
             }));
             assert!(!out.contains("compile_error"), "{out}");
-            assert!(out.contains("BuildElement"), "{out}");
+            assert!(out.contains("::runtime_vocabulary::__defaults()"), "{out}");
         }
 
         /// `link(route = …)` emits the three-positional constructor call;
@@ -3787,9 +3787,9 @@ mod tests {
 
     #[test]
     fn user_component_uses_defaults_struct_update_base() {
-        // Omitted props come from `..<CounterProps as BuildElement>::defaults()`.
+        // Omitted props come from `..__defaults()`, typed by the literal.
         let out = parse_and_emit(quote! { Counter(value = score) });
-        assert!(out.contains("BuildElement > :: defaults ()"), "got: {out}");
+        assert!(out.contains(".. :: runtime_vocabulary :: __defaults ()"), "got: {out}");
     }
 
     #[test]

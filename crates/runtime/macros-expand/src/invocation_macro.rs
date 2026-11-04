@@ -5,7 +5,7 @@
 //!
 //! ```ignore
 //! ::runtime_core::BuildElement::build(
-//!     FooProps { label: ("x").into(), ..<FooProps as BuildElement>::defaults() }
+//!     FooProps { label: ("x").into(), ..::runtime_vocabulary::__defaults() }
 //! )
 //! ```
 //!

@@ -87,6 +87,29 @@ fn an_imported_components_overrides_are_nothing_outside_a_bundle() {
     let _ = NoOverrides.build_set(&["label"]);
 }
 
+/// The struct-update base takes its type from the literal, and a type's own
+/// `defaults()` wins over `Default`.
+#[derive(Default)]
+struct WithDefaults {
+    a: u8,
+    b: u8,
+}
+
+impl BuildElement for WithDefaults {
+    fn build(self) -> Element {
+        runtime_scene::fragment(Vec::new())
+    }
+    fn defaults() -> Self {
+        Self { a: 1, b: 2 }
+    }
+}
+
+#[test]
+fn a_call_sites_defaults_are_inferred_from_its_literal() {
+    let p = WithDefaults { a: 9, ..runtime_vocabulary::__defaults() };
+    assert_eq!((p.a, p.b), (9, 2));
+}
+
 /// A sheet with nothing to set is its class in a preminted build, without its
 /// rules ever being built, and the live sheet otherwise.
 #[test]

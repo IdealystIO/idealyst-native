@@ -730,7 +730,7 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[JsxNode]>) -> Toke
             #props_ty {
                 #(#field_assignments)*
                 #children_field
-                ..<#props_ty as ::runtime_core::BuildElement>::defaults()
+                ..::runtime_vocabulary::__defaults()
             },
             ::runtime_vocabulary::__remote_site!([#(#set),*]),
         )
