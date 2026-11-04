@@ -148,11 +148,15 @@ pub struct ServerPatchBuilder {
 /// the agent how much of a function it may overwrite, and whether a
 /// function too short for a long jump changed at all.
 struct TextIndex {
-    path: PathBuf,
     /// Every distinct function start in the text section, sorted.
     starts: Vec<u64>,
-    /// The text section: address, size, file offset.
-    section: (u64, u64, u64),
+    /// The text section: address, size.
+    section: (u64, u64),
+    /// The bytes of every function too short for a long jump. Kept, not read
+    /// back from the file later: a session check relinks the binary's path
+    /// while the server keeps running the build this index describes, and
+    /// those offsets then hold other code.
+    short: HashMap<u64, Vec<u8>>,
 }
 
 impl TextIndex {
@@ -170,7 +174,18 @@ impl TextIndex {
             .collect();
         starts.sort_unstable();
         starts.dedup();
-        Ok(TextIndex { path: path.to_path_buf(), starts, section: (section.address(), section.size(), offset) })
+        let (address, size) = (section.address(), section.size());
+        let mut short = HashMap::new();
+        for (i, &start) in starts.iter().enumerate() {
+            let end = starts.get(i + 1).copied().unwrap_or(address + size);
+            let len = end.saturating_sub(start);
+            if len < agent::arm64::LONG_JUMP {
+                let at = (start - address + offset) as usize;
+                let bytes = data.get(at..at + len as usize).context("a function outside its image")?;
+                short.insert(start, bytes.to_vec());
+            }
+        }
+        Ok(TextIndex { starts, section: (address, size), short })
     }
 
     /// Bytes from `addr` to the next function (or the section's end).
@@ -180,20 +195,9 @@ impl TextIndex {
         end.saturating_sub(addr)
     }
 
-    /// The bytes of the function at `addr`, from `data` (the image's
-    /// contents) when the caller has them, else read from the file.
-    fn bytes(&self, addr: u64, data: Option<&[u8]>) -> Result<Vec<u8>> {
-        let len = self.size(addr) as usize;
-        let at = (addr - self.section.0 + self.section.2) as usize;
-        if let Some(d) = data {
-            return d.get(at..at + len).map(<[u8]>::to_vec).context("a function outside its image");
-        }
-        use std::io::{Read, Seek};
-        let mut f = std::fs::File::open(&self.path).with_context(|| format!("open {}", self.path.display()))?;
-        f.seek(std::io::SeekFrom::Start(at as u64))?;
-        let mut out = vec![0u8; len];
-        f.read_exact(&mut out)?;
-        Ok(out)
+    /// The bytes of the function at `addr`, if it is too short for a long jump.
+    fn short_function(&self, addr: u64) -> Option<&[u8]> {
+        self.short.get(&addr).map(Vec::as_slice)
     }
 }
 
@@ -631,10 +635,9 @@ fn set_no_dead_strip(bytes: &mut [u8], roots: &BTreeSet<String>) -> Result<()> {
 /// linked patch, with how many bytes the binary's function has.
 ///
 /// A function shorter than the agent's long jump (16 bytes) is left out
-/// when its patch copy is the same size and byte for byte the same: it
-/// did not change, and its neighbour would be overwritten. One that
-/// differs stays in, and the agent then needs the patch within `b` reach
-/// of it, or refuses the patch.
+/// when its patch copy is byte for byte the same: it did not change, and its
+/// neighbour would be overwritten. One that differs stays in, and the agent
+/// then needs the patch within `b` reach of it, or refuses the patch.
 fn pair(dylib: &Path, cache: &HostBinCache, base: &TextIndex, roots: &BTreeSet<String>) -> Result<Pairs> {
     let data = std::fs::read(dylib).with_context(|| format!("read {}", dylib.display()))?;
     let patch_text = TextIndex::of(dylib, &data)?;
@@ -665,10 +668,8 @@ fn pair(dylib: &Path, cache: &HostBinCache, base: &TextIndex, roots: &BTreeSet<S
             format!("`{root}` was rooted but is not in the linked patch")
         })?;
         let size = base.size(base_addr);
-        if size < agent::arm64::LONG_JUMP
-            && patch_text.size(patch) == size
-            && base.bytes(base_addr, None)? == patch_text.bytes(patch, Some(&data))?
-        {
+        // Same size in both is what the comparison below can tell from.
+        if patch_text.short_function(patch).is_some() && base.short_function(base_addr) == patch_text.short_function(patch) {
             continue;
         }
         pairs.push(agent::proto::Pair { base: base_addr, size, patch });
@@ -725,6 +726,26 @@ mod tests {
     const CLOSURE: &str = "__RNCNvCs7YUasx9yL1O_12detour_probe4main0B3_";
     const STD_GENERIC_OVER_US: &str =
         "__RINvMNtCsgtPOCBgevO_4core6optionINtB3_6OptionNtNtCslJsSqIQKwiA_5alloc6string6StringE3mapjNCNvCs7YUasx9yL1O_12detour_probe4main0EB1t_";
+
+    /// A session check relinks the binary's path while the server keeps running
+    /// the build the index describes. Reading a short function's bytes back from
+    /// the file then compared the patch with whatever sits at those offsets now,
+    /// and a changed function that happened to match was left unredirected: the
+    /// session reported the edit applied, and the old body kept running.
+    #[test]
+    fn regression_a_short_functions_bytes_outlive_a_relink_of_the_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp.path().join("exe");
+        std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+        let data = std::fs::read(&exe).unwrap();
+        let index = TextIndex::of(&exe, &data).unwrap();
+        let (&addr, bytes) = index.short.iter().next().expect("a test binary has a function under 16 bytes");
+        let original = bytes.clone();
+        drop(data);
+        std::fs::write(&exe, vec![0u8; 4096]).unwrap();
+        assert_eq!(index.short_function(addr), Some(original.as_slice()));
+        assert_eq!(index.size(addr), original.len() as u64);
+    }
 
     #[test]
     fn a_plain_function_of_the_crate_is_redirected() {
