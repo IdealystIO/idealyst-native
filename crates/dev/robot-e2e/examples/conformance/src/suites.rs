@@ -319,6 +319,19 @@ fn capabilities_suite() -> robot_e2e::Suite {
                 .act(|p: &Page| p.get_by_test_id("cap-add-row").click())
                 .poll(|p: &Page| expect(&p.get_by_test_id("cap-row")).to_have_count(4))
                 .build(),
+            flow("a flat_list row sits in its slot")
+                .poll(|p: &Page| {
+                    let frame = p.get_by_test_id("cap-row").frame()?;
+                    if (frame.height - 32.0).abs() > 0.5 {
+                        return Err(format!("the first row is {} tall, its size says 32", frame.height));
+                    }
+                    Ok(())
+                })
+                .build(),
+            flow("reaching the end of a flat_list is reported")
+                .act(|p: &Page| p.get_by_test_id("cap-long-list").scroll_to(0.0, 100_000.0))
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-list-end")).to_have_text("list end reached: 1"))
+                .build(),
             flow("reaching the end of a scroll view is reported")
                 .act(|p: &Page| p.get_by_test_id("cap-scroll").scroll_to(0.0, 10_000.0))
                 .poll(|p: &Page| expect(&p.get_by_test_id("cap-scroll-end")).to_have_text("end reached: 1"))

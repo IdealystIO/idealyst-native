@@ -10,6 +10,7 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.SimpleItemAnimator
+import kotlin.math.roundToInt
 
 /**
  * RecyclerView adapter whose data lives on the Rust side. Every
@@ -34,6 +35,8 @@ class RustListAdapter(private val nativePtr: Long) :
         setHasStableIds(true)
     }
 
+    private var list: RecyclerView? = null
+
     /** Snapshot of item keys at the last `notifyDataSetChanged` /
      *  diff-driven update. Used as the "old list" input to DiffUtil
      *  on the next `dataChanged` call. */
@@ -53,6 +56,7 @@ class RustListAdapter(private val nativePtr: Long) :
      */
     override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
         super.onAttachedToRecyclerView(recyclerView)
+        list = recyclerView
         (recyclerView.itemAnimator as? SimpleItemAnimator)?.supportsChangeAnimations = false
     }
 
@@ -62,9 +66,7 @@ class RustListAdapter(private val nativePtr: Long) :
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RustViewHolder {
         val container = RustRowContainer(parent.context)
-        // RecyclerView wraps with its own LayoutParams; the container
-        // itself just needs MATCH_PARENT in the cross-axis so child
-        // views can fill the row/column.
+        // The main axis is set per item at bind.
         container.layoutParams = RecyclerView.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -74,7 +76,22 @@ class RustListAdapter(private val nativePtr: Long) :
 
     override fun onBindViewHolder(holder: RustViewHolder, position: Int) {
         releasePreviousChild(holder)
-        val mount = nativeMountItem(nativePtr, position)
+        val horizontal =
+            (list?.layoutManager as? LinearLayoutManager)?.orientation == RecyclerView.HORIZONTAL
+        // The row's slot: the author's size on the main axis (a measured
+        // list wraps its row instead, which the layout pass sizes to its
+        // content), the lane on the cross axis.
+        val main = nativeKnownItemSize(nativePtr, position)
+        val mainPx = if (main < 0f) {
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        } else {
+            (main * holder.container.resources.displayMetrics.density).roundToInt()
+        }
+        holder.container.layoutParams.apply {
+            width = if (horizontal) mainPx else ViewGroup.LayoutParams.MATCH_PARENT
+            height = if (horizontal) ViewGroup.LayoutParams.MATCH_PARENT else mainPx
+        }
+        val mount = nativeMountItem(nativePtr, position, horizontal)
         holder.scopeId = mount.scopeId
         holder.container.addView(mount.view)
         // The item root's Z was written while it was realized, before
@@ -93,10 +110,11 @@ class RustListAdapter(private val nativePtr: Long) :
             // horizontal lists tell the framework "this is the width"
             // via the orientation set on construction — framework
             // side picks the axis it cares about.
+            val density = v.resources.displayMetrics.density
             val size = (bottom - top).toFloat()
             val oldSize = (oldBottom - oldTop).toFloat()
             if (kotlin.math.abs(size - oldSize) > 0.5f) {
-                nativeSetMeasuredSize(nativePtr, holder.scopeId, size)
+                nativeSetMeasuredSize(nativePtr, holder.scopeId, size / density)
             }
         }
         holder.layoutListener = listener
@@ -161,7 +179,8 @@ class RustListAdapter(private val nativePtr: Long) :
     private external fun nativeItemCount(ptr: Long): Int
     private external fun nativeItemKey(ptr: Long, position: Int): Long
     private external fun nativeItemChanged(ptr: Long, position: Int): Boolean
-    private external fun nativeMountItem(ptr: Long, position: Int): MountResult
+    private external fun nativeKnownItemSize(ptr: Long, position: Int): Float
+    private external fun nativeMountItem(ptr: Long, position: Int, horizontal: Boolean): MountResult
     private external fun nativeReleaseItem(ptr: Long, scopeId: Long)
     private external fun nativeSetMeasuredSize(ptr: Long, scopeId: Long, size: Float)
 

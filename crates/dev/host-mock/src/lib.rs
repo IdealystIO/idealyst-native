@@ -562,6 +562,9 @@ pub fn set_virtual_grid_scrollport(node: Node, port: primitives::virtual_grid::S
 }
 
 impl primitives::virtualizer::VirtualizerOps for RecordingHandleOps {
+    fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
+        handle_rec(node, format!("scroll_to {x} {y}"))
+    }
     fn scroll_to_index(&self, node: &dyn Any, index: usize) {
         handle_rec(node, format!("scroll_to_index {index}"))
     }

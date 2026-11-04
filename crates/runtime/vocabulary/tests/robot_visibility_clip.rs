@@ -311,3 +311,22 @@ fn regression_tab_scrolled_out_of_a_strip_in_a_clipping_column_is_visible() {
     assert_eq!(robot.visibility(&last).unwrap().visible, false);
     robot.reset();
 }
+
+/// The robot could not scroll a list: `set_scroll` answered "not available",
+/// so no test could reach a `flat_list`'s far rows or its `on_end_reached`.
+/// It moves through the list's own handle.
+#[test]
+fn regression_robot_could_not_scroll_a_flat_list() {
+    let robot = Robot::new();
+    robot.reset();
+    let h = Harness::new();
+    let (_realized, _row) = list_fixture(&h);
+    let list = robot.find(Query::test_id("list")).expect("the list is an element");
+    host_mock::take_handle_log();
+    robot.set_scroll(&list, 0.0, 500.0).expect("a list scrolls");
+    assert!(
+        host_mock::take_handle_log().iter().any(|l| l.starts_with("scroll_to 0 500")),
+        "through the list's handle"
+    );
+    robot.reset();
+}

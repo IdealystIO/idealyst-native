@@ -169,6 +169,21 @@ pub(crate) fn root_pass(cell_box: Option<(f32, f32)>, viewport: (f32, f32)) -> R
     }
 }
 
+/// The box a mounted virtualizer row is computed against: its slot in the
+/// list. `cross` is the extent the list gave the row's container; the main
+/// extent is the author's size, or for a measured list the row's content
+/// (`natural`), read only then because a measure is a layout of the row.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn list_row_box(
+    horizontal: bool,
+    cross: f32,
+    known_main: Option<f32>,
+    natural: impl FnOnce() -> f32,
+) -> (f32, f32) {
+    let main = known_main.unwrap_or_else(natural);
+    if horizontal { (main, cross) } else { (cross, main) }
+}
+
 /// Does a virtualizer need the `RustGridSpacingDecoration` that applies its
 /// main/cross gaps?
 ///
@@ -412,5 +427,34 @@ mod activity_indicator_tests {
         assert_eq!(measure((None, None), ActivityIndicatorSize::Large), (37.0, 37.0));
         assert_eq!(measure((Some(64.0), None), ActivityIndicatorSize::Small), (64.0, 20.0));
         assert_eq!(measure((None, Some(8.0)), ActivityIndicatorSize::Large), (37.0, 8.0));
+    }
+}
+
+#[cfg(test)]
+mod list_row_box_tests {
+    use super::*;
+
+    /// A row's root is a layout root like a screen's, and was computed against
+    /// the viewport: the first pass after it mounted wrote it a screen tall,
+    /// its list stopped binding rows after the first, and a row added to a
+    /// short list never appeared. Run against the real tree: a text row
+    /// computed against this box is its slot, not the screen.
+    #[test]
+    fn regression_android_flat_list_row_stretched_to_the_viewport() {
+        let (w, h) = list_row_box(false, 411.0, Some(32.0), || panic!("a known size is not measured"));
+        assert_eq!((w, h), (411.0, 32.0));
+
+        let mut layout = runtime_layout::LayoutTree::new();
+        let row = layout.new_node();
+        layout.compute(row, w, h);
+        let frame = layout.frame_of(row);
+        assert_eq!((frame.width, frame.height), (411.0, 32.0));
+    }
+
+    #[test]
+    fn a_measured_row_takes_its_content_and_a_horizontal_row_swaps_the_axes() {
+        assert_eq!(list_row_box(false, 411.0, None, || 57.0), (411.0, 57.0));
+        assert_eq!(list_row_box(true, 200.0, Some(80.0), || 0.0), (80.0, 200.0));
+        assert_eq!(list_row_box(true, 200.0, None, || 96.0), (96.0, 200.0));
     }
 }

@@ -321,7 +321,28 @@ where
             prim.test_id,
             prim.a11y.label.clone(),
             None,
-            crate::robot::MountActions::default(),
+            crate::robot::MountActions {
+                // Through the handle, for the reason `scroll_view`'s goes
+                // through its own: a native scroll write can run author
+                // callbacks that re-borrow the backend.
+                set_scroll: Some({
+                    let handle = backend.borrow().make_virtualizer_handle(&node);
+                    Rc::new(move |x, y| handle.scroll_to(x, y))
+                }),
+                scroll_axis: Some(if prim.layout.axis.is_horizontal() {
+                    runtime_shared::ScrollAxis::Horizontal
+                } else {
+                    runtime_shared::ScrollAxis::Vertical
+                }),
+                state: Some({
+                    let handle = backend.borrow().make_virtualizer_handle(&node);
+                    Rc::new(move || {
+                        let (x, y) = handle.scroll_offset();
+                        crate::robot::ElementState { scroll: Some((x as f64, y as f64)), ..Default::default() }
+                    })
+                }),
+                ..Default::default()
+            },
         );
         row_parent.capture();
     }

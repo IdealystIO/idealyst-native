@@ -343,6 +343,8 @@ fn ListFixture() -> Element {
         r.push(r.len() as u64 + 1);
         r
     });
+    let long_rows: Signal<Vec<u64>> = signal((1..=60).collect());
+    let ends = signal(0);
     ui! {
         view {
             view(style = fixed_height(200.0)) {
@@ -354,6 +356,17 @@ fn ListFixture() -> Element {
                 )
             }
             button(label = "Add row", test_id = "cap-add-row", on_click = add)
+            view(style = fixed_height(120.0)) {
+                flat_list(
+                    test_id = "cap-long-list",
+                    data = long_rows,
+                    key = |_idx, r| *r,
+                    size = fixed_size(32.0),
+                    on_end_reached = move || ends.update(|n| n + 1),
+                    render = |_idx, r| ui! { text { format!("long row {r}") } },
+                )
+            }
+            text(test_id = "cap-list-end") { move || format!("list end reached: {}", ends.get()) }
         }
     }
 }

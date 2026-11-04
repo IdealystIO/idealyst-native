@@ -171,7 +171,7 @@ pub(crate) fn observe_end(
     let key = AndroidBackend::node_key_of(node);
     let density = with_env(|env| crate::imp::density_of(env, &node.as_obj()).unwrap_or(1.0));
     let density = if density <= 0.0 { 1.0 } else { density };
-    let mut watch = crate::scroll_end_policy::EndWatch::new(threshold, density);
+    let watch = crate::scroll_end_policy::EndWatch::new(threshold, density);
 
     let Some(inner) = inner_for(b, node) else {
         let is_list = with_env(|env| {

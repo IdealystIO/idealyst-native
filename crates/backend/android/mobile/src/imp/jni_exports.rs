@@ -958,6 +958,21 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustListAdapter_nativeIte
     changed as jni::sys::jboolean
 }
 
+/// The main-axis size of the item at `position` in dp, or `-1` when its list
+/// sizes rows to their content.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustListAdapter_nativeKnownItemSize(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+    position: jint,
+) -> jfloat {
+    with_callbacks(ptr, |cbs| {
+        if cbs.measure_sizes { -1.0 } else { (cbs.item_size)(position as usize) }
+    })
+    .unwrap_or(-1.0)
+}
+
 /// Build the item subtree and return a `MountResult(view, scopeId)`.
 /// Returning a custom Kotlin class from JNI is just a `new_object`
 /// against the cached class with the right constructor signature.
@@ -967,12 +982,16 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustListAdapter_nativeMou
     _this: JObject<'l>,
     ptr: jlong,
     position: jint,
+    horizontal: jni::sys::jboolean,
 ) -> jni::sys::jobject {
-    let Some((view, scope_id)) =
-        with_callbacks(ptr, |cbs| (cbs.mount_item)(position as usize))
-    else {
+    let Some((view, scope_id, known_main)) = with_callbacks(ptr, |cbs| {
+        let (view, scope_id) = (cbs.mount_item)(position as usize);
+        let known_main = (!cbs.measure_sizes).then(|| (cbs.item_size)(position as usize));
+        (view, scope_id, known_main)
+    }) else {
         return std::ptr::null_mut();
     };
+    crate::imp::primitives::virtualizer::note_row(&view, ptr, scope_id, horizontal != 0, known_main);
     // Build the MountResult fail-closed: `find_class`/`new_object` can
     // fail (missing class on a stale staged runtime, or a pending JVM
     // exception). Don't `.unwrap()` here — that panics across the JNI
@@ -1007,6 +1026,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustListAdapter_nativeRel
     ptr: jlong,
     scope_id: jlong,
 ) {
+    crate::imp::primitives::virtualizer::forget_row(ptr, scope_id as u64);
     let _ = with_callbacks(ptr, |cbs| (cbs.release_item)(scope_id as u64));
 }
 
@@ -1018,7 +1038,12 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustListAdapter_nativeSet
     scope_id: jlong,
     size: f32,
 ) {
-    let _ = with_callbacks(ptr, |cbs| (cbs.set_measured_size)(scope_id as u64, size));
+    let _ = with_callbacks(ptr, |cbs| {
+        // A known size is the author's; a report must not override it.
+        if cbs.measure_sizes {
+            (cbs.set_measured_size)(scope_id as u64, size)
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

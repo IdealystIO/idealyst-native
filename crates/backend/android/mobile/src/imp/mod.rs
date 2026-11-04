@@ -1510,6 +1510,19 @@ impl AndroidBackend {
         let mut hosted: Vec<(runtime_layout::LayoutNode, runtime_layout::LayoutNode)> = Vec::new();
         let _t = phase_timer::PhaseTimer::start("layout_taffy_compute");
         for (key, root_node) in &roots {
+            if let Some(row) = primitives::virtualizer::row(*key) {
+                if let Some(cross) = primitives::virtualizer::row_cross(&row) {
+                    let layout = &mut self.layout;
+                    let (w, h) = crate::layout_policy::list_row_box(
+                        row.horizontal,
+                        cross,
+                        row.known_main,
+                        || layout.measure_main(*root_node, row.horizontal, cross),
+                    );
+                    self.layout.compute(*root_node, w, h);
+                }
+                continue;
+            }
             if let Some(host) = hosted_root::host_of(*key)
                 .and_then(|h| self.view_to_layout.get(&h))
                 .map(|(_, n)| *n)

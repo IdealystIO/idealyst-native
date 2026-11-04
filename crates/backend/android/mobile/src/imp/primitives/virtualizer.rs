@@ -11,6 +11,82 @@ use crate::imp::{with_env, AndroidBackend};
 use runtime_shared::{Lanes, VirtualizerCallbacks, VirtualLayout};
 use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+// A mounted row is a Taffy root: it is built detached and hosted in a
+// `RustRowContainer`, outside the framework tree. The layout pass computes
+// every root against a box, and a row's box is its slot in the list, never
+// the viewport: computed against the viewport, the first pass after a row
+// mounted wrote the row a screen tall, so the list's first row filled it and
+// no later row was bound at all.
+
+/// What the layout pass needs about a mounted row.
+#[derive(Clone)]
+pub(crate) struct Row {
+    view: GlobalRef,
+    list: jlong,
+    scope_id: u64,
+    pub(crate) horizontal: bool,
+    /// The author's main-axis size, in dp. `None` in a measured list, whose
+    /// rows take their content's size.
+    pub(crate) known_main: Option<f32>,
+}
+
+thread_local! {
+    /// Mounted rows by their root view's key. An entry lives exactly as long
+    /// as the row is bound.
+    static ROWS: RefCell<HashMap<usize, Row>> = RefCell::new(HashMap::new());
+}
+
+/// Record a row just mounted, and ask for the layout pass that gives it its
+/// box: nothing else requests one when a row binds during a scroll.
+pub(crate) fn note_row(
+    view: &GlobalRef,
+    list: jlong,
+    scope_id: u64,
+    horizontal: bool,
+    known_main: Option<f32>,
+) {
+    let row = Row { view: view.clone(), list, scope_id, horizontal, known_main };
+    ROWS.with(|r| r.borrow_mut().insert(AndroidBackend::node_key_of(view), row));
+    crate::schedule_layout_pass();
+}
+
+/// Forget the row `scope_id` of `list`, which is being released.
+pub(crate) fn forget_row(list: jlong, scope_id: u64) {
+    ROWS.with(|r| r.borrow_mut().retain(|_, row| row.list != list || row.scope_id != scope_id));
+}
+
+/// The row whose root view has key `key`, if it is one.
+pub(crate) fn row(key: usize) -> Option<Row> {
+    ROWS.with(|r| r.borrow().get(&key).cloned())
+}
+
+/// The cross extent of `row`'s slot in dp: what the list gave its container.
+/// `None` until the list has laid that container out.
+pub(crate) fn row_cross(row: &Row) -> Option<f32> {
+    with_env(|env| {
+        let parent = env
+            .call_method(row.view.as_obj(), "getParent", "()Landroid/view/ViewParent;", &[])
+            .and_then(|v| v.l());
+        let Ok(parent) = parent else {
+            let _ = env.exception_clear();
+            return None;
+        };
+        if parent.is_null() {
+            return None;
+        }
+        let getter = if row.horizontal { "getHeight" } else { "getWidth" };
+        let px = env.call_method(&parent, getter, "()I", &[]).and_then(|v| v.i());
+        let Ok(px) = px else {
+            let _ = env.exception_clear();
+            return None;
+        };
+        let density = crate::imp::density_of(env, &parent).unwrap_or(1.0);
+        (px > 0).then(|| px as f32 / density)
+    })
+}
 
 pub(crate) fn create(
     b: &AndroidBackend,
