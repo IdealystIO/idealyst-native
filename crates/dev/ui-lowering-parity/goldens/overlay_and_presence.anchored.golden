@@ -18,22 +18,24 @@ create n7 pressable
 create n8 view
 insert n7 <- n8
 insert n6 <- n7
-create n9 view
-create n10 text "modal"
-insert n9 <- n10
-insert n6 <- n9
 insert n5 <- n6
-create n11 portal
-create n12 view
-create n13 text "tip"
+create n9 portal
+create n10 view
+create n11 text "modal"
+insert n10 <- n11
+insert n9 <- n10
+insert n5 <- n9
+create n12 portal
+create n13 view
+create n14 text "tip"
+insert n13 <- n14
 insert n12 <- n13
-insert n11 <- n12
-insert n5 <- n11
+insert n5 <- n12
 insert n1 <- n5
 
 -- toast=true --
-create n14 text "toast"
-insert n4 <- n14
+create n15 text "toast"
+insert n4 <- n15
 
 -- unmount --
 (none)
@@ -64,30 +66,45 @@ create n8 view
 apply_style n8 width=none
 install_touch_handler n8
 insert n7 <- n8
+apply_style n7 width=none
 insert n6 <- n7
-create n9 view
-create n10 text "modal"
-insert n9 <- n10
-insert n6 <- n9
+apply_style n6 width=none
 insert n5 <- n6
-create n11 portal
-create n12 view
-create n13 text "tip"
+create n9 portal
+create n10 view
+create n11 text "modal"
+insert n10 <- n11
+apply_style n10 width=none
+insert n9 <- n10
+apply_style n9 width=none
+insert n5 <- n9
+create n12 portal
+create n13 view
+create n14 text "tip"
+insert n13 <- n14
+apply_style n13 width=none
 insert n12 <- n13
-insert n11 <- n12
-insert n5 <- n11
+apply_style n12 width=none
+insert n5 <- n12
 insert n1 <- n5
 
 -- toast=true --
-create n14 text "toast"
-insert n4 <- n14
-apply_presence n14 op=Some(0.0) ty=None snap
-apply_presence n14 rest 100ms
+create n15 text "toast"
+insert n4 <- n15
+apply_presence n15 op=Some(0.0) ty=None snap
+apply_presence n15 rest 100ms
 
 -- unmount --
 on_node_unstyled n8
+on_node_unstyled n7
+on_node_unstyled n6
 release_portal n6
-release_portal n11
+on_node_unstyled n10
+on_node_unstyled n9
+release_portal n9
+on_node_unstyled n13
+on_node_unstyled n12
+release_portal n12
 
 === scene ===
 n0 view
@@ -96,12 +113,13 @@ n0 view
       n6 portal
         n7 pressable
           n8 view
-        n9 view
-          n10 text "modal"
-      n11 portal
-        n12 view
-          n13 text "tip"
+      n9 portal
+        n10 view
+          n11 text "modal"
+      n12 portal
+        n13 view
+          n14 text "tip"
   n3 presence_placeholder
     n4 anchor
-      n14 text "toast"
+      n15 text "toast"
 n2 view

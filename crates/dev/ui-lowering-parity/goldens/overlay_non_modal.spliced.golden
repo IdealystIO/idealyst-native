@@ -23,11 +23,15 @@ create n1 portal
 create n2 view
 create n3 text "passthrough"
 insert n2 <- n3
+apply_style n2 width=none
 insert n1 <- n2
+apply_style n1 width=none
 insert_at n0 <- n1 @ 0
 
 -- close --
 remove_child n0 -x n1
+on_node_unstyled n2
+on_node_unstyled n1
 release_portal n1
 release_subtree n1
 create n4 view
