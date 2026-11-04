@@ -27,7 +27,7 @@ use std::time::SystemTime;
 
 use anyhow::{bail, Context, Result};
 use object::read::archive::ArchiveFile;
-use object::{Object, ObjectSection, ObjectSymbol, ReadCache, SymbolKind};
+use object::{Object, ObjectSection, ObjectSymbol, ReadCache, SectionKind};
 
 use super::statics::ProgramStatics;
 
@@ -198,7 +198,9 @@ fn vet(bytes: &[u8]) -> Result<()> {
         }
     }
     for sym in file.symbols() {
-        if sym.is_undefined() || sym.kind() != SymbolKind::Text {
+        // By its section, not its kind: an assembler's symbol can be untyped.
+        let in_text = sym.section_index().and_then(|i| file.section_by_index(i).ok()).is_some_and(|s| s.kind() == SectionKind::Text);
+        if !in_text {
             continue;
         }
         let Ok(name) = sym.name() else { continue };
