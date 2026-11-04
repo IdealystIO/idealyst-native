@@ -50,11 +50,50 @@ use object::{
 use super::bind::Bindings;
 use super::cache::HostBinCache;
 
+/// What [`synthesize`] does about a Rust symbol the binary does not have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingRust {
+    /// Refuse the patch: its link keeps everything, so the symbol is needed.
+    Refuse,
+    /// Leave it undefined: the link's dead stripping decides whether anything
+    /// needs it, and the caller reads what is left
+    /// ([`undefined_rust_symbols`]).
+    AfterLink,
+}
+
+/// Whether `name` is a Rust-mangled symbol, in either object format's
+/// spelling (Mach-O prefixes a `_`) and either mangling. Parsed, not matched
+/// by prefix: `_Rf_x` on Mach-O and `_ZN3foo3barE` are C and C++ names.
+pub fn is_rust_symbol(name: &str) -> bool {
+    let bare = if name.starts_with("__") { &name[1..] } else { name };
+    rustc_demangle::try_demangle(bare).is_ok()
+}
+
+/// The Rust symbols a linked patch still imports: code its live functions
+/// reach, since the link stripped the rest. The loader finds none of them,
+/// as a binary exports no Rust symbols, so each would fail `dlopen`.
+pub fn undefined_rust_symbols(linked: &Path) -> Result<Vec<String>> {
+    let data = std::fs::read(linked).with_context(|| format!("read {}", linked.display()))?;
+    let file = object::File::parse(&*data).with_context(|| format!("parse {}", linked.display()))?;
+    // An ELF `.symtab` keeps names only stripped code referenced; the loader
+    // reads `.dynsym`. A Mach-O image lists its imports in its one table.
+    let names: Vec<String> = if file.format() == BinaryFormat::Elf {
+        file.dynamic_symbols().filter(|s| s.is_undefined()).filter_map(|s| s.name().ok().map(str::to_string)).collect()
+    } else {
+        file.symbols().filter(|s| s.is_undefined()).filter_map(|s| s.name().ok().map(str::to_string)).collect()
+    };
+    let mut out: Vec<String> = names.into_iter().filter(|n| is_rust_symbol(n)).collect();
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
+}
+
 pub fn synthesize(
     tip_objs: &[PathBuf],
     cache: &HostBinCache,
     bindings: &Bindings,
     runtime_main: u64,
+    missing: MissingRust,
     // Kept in the signature for compatibility with the prior
     // assembly-file path; ignored now that the object writer
     // emits Mach-O bytes directly. We still want a stable
@@ -109,17 +148,15 @@ pub fn synthesize(
     // 2. Resolve each against the host cache. Symbols we can pin to
     // the host get a trampoline so the patch dylib jumps to the
     // already-loaded host code. Anything we can't pin we leave as
-    // an undefined external — `link::link_dylib` passes
-    // `-Wl,-undefined,dynamic_lookup` so dyld resolves them at
-    // dlopen time. This covers anything in a system dylib
+    // an undefined external for the loader, which `dlopen`s with
+    // RTLD_NOW. This covers anything in a system library
     // (libsystem_m for `_sin`/`_cos`, libsystem_c for the dozens of
     // libc fns not enumerated in `is_system_symbol`, CoreFoundation,
     // etc.) without us needing a complete allow-list.
     //
     // Genuinely-missing symbols (not in host, not in any system
-    // dylib) still fail — but they fail later, at
-    // `apply_patch`-time dlopen, with a precise "Symbol not found"
-    // diagnostic. Better than aborting the patch up front and
+    // library) still fail — at load time, with a precise "symbol not
+    // found" diagnostic. Better than aborting the patch up front and
     // forcing the user to manually classify every new libc/libm
     // reference their app picks up.
     let slide: i64 = runtime_main as i64 - cache.main_addr as i64;
@@ -134,52 +171,20 @@ pub fn synthesize(
         }
     }
     if !deferred.is_empty() {
-        // Partition: system symbols can safely defer to dyld (libSystem
-        // etc.), but Rust-mangled symbols starting with `__ZN` are
-        // monomorphizations internal to the host bin. The host bin
-        // doesn't *export* them — they're private to its link unit —
-        // so dyld can't find them at patch-dlopen time. The dylib
-        // links cleanly (dyld_dynamic_lookup is permissive at link
-        // time) but the first call to that symbol in the patched code
-        // jumps to a null/garbage address → SIGSEGV → sidecar dies →
-        // the user sees "hot-update didn't apply changes" because the
-        // process died mid-rerender.
-        //
-        // This is the failure mode behind the welcome-example hot-
-        // patch crash: a constant change perturbed codegen enough to
-        // introduce a new `Rc<T>::deref` monomorphization that didn't
-        // exist in the host bin's monomorphization set. Hash-stripped
-        // fallback in `HostBinCache::resolve_runtime` covers
-        // suffix-mismatches for the *same* logical instance — but if
-        // the host bin never instantiated this specific type, there's
-        // nothing to strip to.
-        //
-        // Bail loudly with the offending names so the host's
-        // `try_hotpatch` → `respawn_sidecar` fallback ladder kicks in.
-        // Respawn is slow (1-2s vs. ~1s for a hot-patch) but correct;
-        // a silent SIGSEGV is the worst possible outcome.
-        let rust_internal: Vec<&String> = deferred
-            .iter()
-            .filter(|n| {
-                if elf {
-                    n.starts_with("_ZN") || n.starts_with("_R")
-                } else {
-                    n.starts_with("__ZN") || n.starts_with("_$LT")
-                }
-            })
-            .collect();
-        if !rust_internal.is_empty() {
+        // A Rust symbol the binary lacks: the first call to it would jump
+        // through nothing. Which ones are real depends on what the link
+        // keeps, so a server patch answers that after its link
+        // ([`undefined_rust_symbols`]): a replay re-emits whole crates, and
+        // code the binary dead-stripped names symbols the binary stripped
+        // too. The sidecar's link strips nothing, so every one is real there.
+        let rust_internal: Vec<&String> = deferred.iter().filter(|n| is_rust_symbol(n)).collect();
+        if !rust_internal.is_empty() && missing == MissingRust::Refuse {
             anyhow::bail!(
-                "hot-patch would defer {} Rust-internal monomorphization(s) to dyld \
-                 that the host bin doesn't export — patched code would SIGSEGV on \
-                 first call. Falling back to full sidecar respawn. Examples: {}{}",
+                "the patch needs {} Rust function(s) the running binary does not contain (a generic \
+                 instantiation it never linked, say), and the first call would crash, so this falls \
+                 back to a respawn. Examples: {}{}",
                 rust_internal.len(),
-                rust_internal
-                    .iter()
-                    .take(3)
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                rust_internal.iter().take(3).map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
                 if rust_internal.len() > 3 {
                     format!(", … +{} more", rust_internal.len() - 3)
                 } else {
@@ -190,7 +195,7 @@ pub fn synthesize(
         dev_events::global().log(
             "hotpatch",
             format!(
-                "{} undefined refs deferred to dyld (system / dynamic): {}{}",
+                "{} undefined refs left for the link and the loader: {}{}",
                 deferred.len(),
                 deferred.iter().take(8).cloned().collect::<Vec<_>>().join(", "),
                 if deferred.len() > 8 {
@@ -207,7 +212,7 @@ pub fn synthesize(
     // `apply_patch` can dlsym it as the ASLR anchor.
     let has_main_in_tip = scan_for_main(tip_objs)?;
 
-    // 3. Build the Mach-O object in memory. One section
+    // 3. Build the object in memory. One section
     // (`__TEXT,__text`), one symbol per trampoline.
     let mut obj = WriteObject::new(
         if elf { BinaryFormat::Elf } else { BinaryFormat::MachO },
@@ -473,7 +478,7 @@ mod tests {
         }
         let objs = vec![defines, calls];
         let stub = dir.join("stub.o");
-        synthesize(&objs, &cache, &Bindings::default(), 0x1_0000_0000, &dir.join("stub.s"), &stub).unwrap();
+        synthesize(&objs, &cache, &Bindings::default(), 0x1_0000_0000, MissingRust::Refuse, &dir.join("stub.s"), &stub).unwrap();
         let data = std::fs::read(&stub).unwrap();
         let file = object::File::parse(&*data).unwrap();
         assert!(

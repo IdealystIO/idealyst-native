@@ -40,10 +40,12 @@
 //!    anchor the agent finds the patch's load address by. The binary was
 //!    linked with dead code stripped, so a re-emitted crate holds code
 //!    the binary never kept, and that code references functions the
-//!    binary does not have. Stripped from the patch, it needs nothing;
-//!    a function the live code genuinely needs and the binary lacks
-//!    stays an undefined import, and the agent's `dlopen(RTLD_NOW)`
-//!    fails with dyld's message — the session then rebuilds.
+//!    binary does not have. Stripped from the patch, it needs nothing.
+//!    What the live code still imports is real: a Rust symbol the binary
+//!    lacks is a generic instantiation rustc shared from an upstream crate,
+//!    taken from that crate's rlib under [`super::upstream`]'s rules, with
+//!    steps 2 to 5 run again over the larger set of objects. One with no
+//!    safe copy refuses the patch before anything loads.
 //! 6. **Pair** each root's address in the binary with its address in the
 //!    patch, and write them for the agent ([`Pairs`]).
 //!
@@ -73,7 +75,7 @@
 //! arm64 only: Mach-O (macOS) and ELF (Linux) binaries, the object
 //! format read from the binary ([`HostBinCache::format`]).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -266,56 +268,85 @@ impl ServerPatchBuilder {
             return Err(replay::Cancelled.into());
         }
 
-        // 2. Statics.
-        let t = Instant::now();
-        let rlibs = Rlibs::new(self.linked);
-        let vouch = |key: &str| crates.iter().find_map(|c| rlibs.vouch(&crate_rlib(&c.capture)?, key));
-        let (bound, bindings) = if self.cache.format == object::BinaryFormat::Elf {
-            super::elf::bind(&objects, &self.cache, &dir.join("bound"), slide, &vouch)
-        } else {
-            super::bind::bind_vouched(&objects, &self.cache, &dir.join("bound"), &vouch)
-        }
-        .context("binding the patch's statics to the running server's")?;
-        on_step("bind", t.elapsed());
-
-        // 3. Roots, marked in copies of the objects.
-        let t = Instant::now();
+        // 2–5, repeated while the live code still imports a Rust symbol.
         let names: Vec<&str> = crates.iter().map(|c| c.crate_name.as_str()).collect();
-        let (linked, roots) = mark_roots(&bound, &self.cache, &names, &dir.join("marked"))?;
         let elf = self.cache.format == object::BinaryFormat::Elf;
-        if roots.is_empty() {
-            bail!(
-                "none of the replayed functions of {} is in the running server — its build of \
-                 the crate does not match the capture (another build of it ran without the \
-                 session's rustc wrapper)",
-                names.join(", ")
-            );
-        }
-        on_step("roots", t.elapsed());
-
-        // 4. Stub.
-        let t = Instant::now();
-        let stub = dir.join("stub.o");
-        super::stub::synthesize(
-            &linked,
-            &self.cache,
-            &bindings,
-            self.cache.main_addr.wrapping_add(slide),
-            &dir.join("stub.s"),
-            &stub,
-        )
-        .context("synthesizing the stub object")?;
-        on_step("stub", t.elapsed());
-
-        // 5. Link.
-        let t = Instant::now();
+        let rlibs = Rlibs::new(rlib_dirs(crates), self.linked);
+        let vouch = |key: &str| crates.iter().find_map(|c| rlibs.vouch(&crate_rlib(&c.capture)?, key));
         let dylib = dir.join(format!("libpatch-{seq}.{}", if elf { "so" } else { "dylib" }));
-        if elf {
-            super::link::link_patch_elf(&linked, &stub, &dylib, &dir).context("linking the patch")?;
-        } else {
-            super::link::link_patch(&linked, &stub, &dylib, &dir.join("link.args")).context("linking the patch")?;
+        let mut pulled: HashSet<(PathBuf, String)> = HashSet::new();
+        let mut steps = [Duration::ZERO; 5];
+        let mut timed = |i: usize, t: Instant| steps[i] += t.elapsed();
+        let roots = loop {
+            // 2. Statics.
+            let t = Instant::now();
+            let (bound, bindings) = if elf {
+                super::elf::bind(&objects, &self.cache, &dir.join("bound"), slide, &vouch)
+            } else {
+                super::bind::bind_vouched(&objects, &self.cache, &dir.join("bound"), &vouch)
+            }
+            .context("binding the patch's statics to the running server's")?;
+            timed(0, t);
+
+            // 3. Roots, marked in copies of the objects.
+            let t = Instant::now();
+            let (linked, roots) = mark_roots(&bound, &self.cache, &names, &dir.join("marked"))?;
+            if roots.is_empty() {
+                bail!(
+                    "none of the replayed functions of {} is in the running server — its build of \
+                     the crate does not match the capture (another build of it ran without the \
+                     session's rustc wrapper)",
+                    names.join(", ")
+                );
+            }
+            timed(1, t);
+
+            // 4. Stub.
+            let t = Instant::now();
+            let stub = dir.join("stub.o");
+            super::stub::synthesize(
+                &linked,
+                &self.cache,
+                &bindings,
+                self.cache.main_addr.wrapping_add(slide),
+                super::stub::MissingRust::AfterLink,
+                &dir.join("stub.s"),
+                &stub,
+            )
+            .context("synthesizing the stub object")?;
+            timed(2, t);
+
+            // 5. Link.
+            let t = Instant::now();
+            if elf {
+                super::link::link_patch_elf(&linked, &stub, &dylib, &dir).context("linking the patch")?;
+            } else {
+                super::link::link_patch(&linked, &stub, &dylib, &dir.join("link.args")).context("linking the patch")?;
+            }
+            let missing = super::stub::undefined_rust_symbols(&dylib)?;
+            timed(3, t);
+            if missing.is_empty() {
+                break roots;
+            }
+
+            let t = Instant::now();
+            let more = rlibs.pull(&missing, &mut pulled, &dir.join("upstream")).with_context(|| {
+                format!(
+                    "the patched code needs {} Rust function(s) the running server does not contain \
+                     (a generic instantiation its link stripped, say). Examples: {}",
+                    missing.len(),
+                    missing.iter().take(3).map(String::as_str).collect::<Vec<_>>().join(", "),
+                )
+            })?;
+            objects.extend(more.into_iter().map(|p| p.path));
+            timed(4, t);
+        };
+        for (name, took) in ["bind", "roots", "stub", "link"].into_iter().zip(steps) {
+            on_step(name, took);
         }
-        on_step("link", t.elapsed());
+        if !steps[4].is_zero() {
+            on_step("upstream", steps[4]);
+        }
 
         // 6. Pairs.
         let t = Instant::now();
@@ -357,6 +388,24 @@ pub fn detour_candidate(symbol: &str, crates: &[&str]) -> bool {
     plain_path(symbol).is_some_and(|path| crates.iter().any(|c| path.contains(&format!("{c}::"))))
 }
 
+/// Whether `symbol` is a function some patch of its crate could redirect, so
+/// its body can differ from the base's: a Rust function that is no closure,
+/// shim or generic instantiation.
+///
+/// Sharper than [`detour_candidate`], which only looks at crates a patch names
+/// and cannot err toward leaving a function out. Here the name decides whether
+/// a copy may be carried, and `<usize as SliceIndex<[f32]>>::get` reads as a
+/// plain method in its demangled path. Its symbol gives it away: v0 appends the
+/// instantiating crate to an instantiation, so the name does not end in the
+/// path's last segment.
+pub(super) fn plain_function(symbol: &str) -> bool {
+    let bare = if symbol.starts_with("__") { &symbol[1..] } else { symbol };
+    plain_path(symbol).is_some_and(|path| {
+        let last = path.rsplit("::").next().unwrap_or(&path);
+        !bare.starts_with("_R") || bare.ends_with(&format!("{}{last}", last.len()))
+    })
+}
+
 /// The demangled path of a plain Rust function.
 fn plain_path(symbol: &str) -> Option<String> {
     // Mach-O prefixes every C name with `_` (`__R…`, `__ZN…`); ELF does
@@ -380,6 +429,33 @@ fn plain_path(symbol: &str) -> Option<String> {
         }
     }
     Some(path)
+}
+
+/// Where the rlibs of the replayed crates' dependency graphs are: their
+/// `-L dependency=` directories, then the toolchain's own.
+fn rlib_dirs(crates: &[PatchCrate]) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for c in crates {
+        let mut args = c.capture.args.iter();
+        while let Some(a) = args.next() {
+            let value = if a == "-L" { args.next().map(String::as_str) } else { a.strip_prefix("-L") };
+            if let Some(dir) = value.and_then(|v| v.strip_prefix("dependency=")).map(PathBuf::from) {
+                if !dirs.contains(&dir) {
+                    dirs.push(dir);
+                }
+            }
+        }
+        // `<sysroot>/bin/rustc` → `<sysroot>/lib/rustlib/<triple>/lib`.
+        let Some(sysroot) = Path::new(&c.capture.rustc).parent().and_then(Path::parent) else { continue };
+        let Ok(triples) = std::fs::read_dir(sysroot.join("lib/rustlib")) else { continue };
+        for triple in triples.flatten() {
+            let lib = triple.path().join("lib");
+            if lib.is_dir() && !dirs.contains(&lib) {
+                dirs.push(lib);
+            }
+        }
+    }
+    dirs
 }
 
 /// The rlib a capture's compile writes: `<out-dir>/lib<crate><extra>.rlib`.
@@ -689,6 +765,22 @@ mod tests {
     fn a_foreign_generic_instantiated_in_the_crate_is_not_redirected() {
         let parse = "__RINvMNtCsgtPOCBgevO_4core3stre5parsejECs7YUasx9yL1O_12detour_probe";
         assert!(!detour_candidate(parse, &["detour_probe"]));
+    }
+
+    /// What may be copied into a patch from an upstream rlib: anything a patch
+    /// can never have redirected.
+    #[test]
+    fn a_shared_instantiation_is_not_plain_and_a_plain_function_is() {
+        assert!(plain_function(PLAIN_FN));
+        assert!(plain_function(&PLAIN_FN[1..]));
+        assert!(!plain_function(CLOSURE));
+        assert!(!plain_function(STD_GENERIC_OVER_US));
+        // `<usize as SliceIndex<[f32]>>::get`, instantiated in `up`.
+        let trait_generic = "_RNvXs0_NtNtCskxtBwYRO61I_4core5slice5indexjINtB5_10SliceIndexSfE3getCs7bn3dqLlFam_2up";
+        assert!(!plain_function(trait_generic));
+        // `<probe::Thing as From<u32>>::from`: no instantiating crate, editable.
+        let trait_impl = "_RNvXCs7YUasx9yL1O_12detour_probeNtB2_5ThingINtNtCskxtBwYRO61I_4core7convert4FrommE4from";
+        assert!(plain_function(trait_impl));
     }
 
     #[test]

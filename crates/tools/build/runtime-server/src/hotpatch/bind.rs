@@ -730,7 +730,7 @@ mod link_tests {
 
     fn link(dir: &Path, objs: &[PathBuf], cache: &HostBinCache, bindings: &Bindings) {
         let stub = dir.join("stub.o");
-        crate::hotpatch::stub::synthesize(objs, cache, bindings, 0x1_0000_0000, &dir.join("stub.s"), &stub).unwrap();
+        crate::hotpatch::stub::synthesize(objs, cache, bindings, 0x1_0000_0000, crate::hotpatch::stub::MissingRust::Refuse, &dir.join("stub.s"), &stub).unwrap();
         crate::hotpatch::link::link_dylib(objs, &stub, &dir.join("patch.dylib")).expect("ld accepts the rewritten object");
     }
 

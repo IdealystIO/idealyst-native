@@ -2462,9 +2462,15 @@ own functions are redirected. A save the decision below accepts:
    `cc -shared --gc-sections` on Linux), rooted at the functions to
    redirect. The binary was linked dead-stripped too, so a
    re-emitted crate holds code the binary never kept; stripped from the
-   patch, it needs nothing the binary lacks. Live code that needs a
-   function the binary does not contain stays an import, and loading the
-   patch fails on it — the save rebuilds;
+   patch, it needs nothing the binary lacks. Live code can still need a
+   Rust function the binary does not contain, typically a new use of a
+   generic instantiation rustc shared from an upstream crate and the
+   binary's link stripped. The patch takes that copy from the upstream
+   rlib when doing so runs the same code: the object holds only functions a
+   patch can never redirect, and no constructor, and the rlib is no newer
+   than the binary. Anything else refuses the patch before it loads, and the
+   save rebuilds. That rebuild's binary contains the function, so the next
+   save patches again;
 4. hands the library and the address pairs to the AGENT, a small
    library `idealyst run-linked` loads into the server at exec
    (`DYLD_INSERT_LIBRARIES` on macOS, `LD_PRELOAD` on Linux; it reports
@@ -2522,7 +2528,8 @@ each server build starts):
 - a save to a crate no server build has compiled since the tier was
   armed (no capture yet — that rebuild captures it);
 - anything that fails on the way: the patch link, the agent's `dlopen`,
-  a server that is not the last build yet.
+  a server that is not the last build yet, an edited function shorter than
+  the agent's 16-byte jump when the patch loads out of `b` reach;
 
 The decision is `decided` for target `server`; a patch is `patch_step`s
 and a `patch_built` naming the functions redirected (`build-metrics.jsonl`

@@ -215,6 +215,7 @@ impl HotPatchBuilder {
             &host_cache,
             &bindings,
             runtime_main_addr,
+            stub::MissingRust::Refuse,
             &stub_s,
             &stub_obj,
         )
