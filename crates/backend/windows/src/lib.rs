@@ -3868,9 +3868,9 @@ impl WindowsBackend {
                     if let Some(rgba) = resolve_color(&style.color) {
                         t.color = rgba;
                     }
-                    if let Some(a) = style.text_align {
-                        t.align = a;
-                    }
+                    // Assigned unconditionally, like `max_lines` below: a style
+                    // without an alignment goes back to the start.
+                    t.align = style.text_align.unwrap_or(runtime_shared::TextAlign::Left);
                     // Paint-only: alignment needs no re-measure. Font and
                     // line-height feed the wrap plan / line advance, so
                     // either changing rebuilds the measure fn.
@@ -3883,9 +3883,9 @@ impl WindowsBackend {
                         t.font_key = font_key.clone();
                         remeasure = true;
                     }
-                    // Assigned unconditionally (unlike the fields above):
-                    // a style WITHOUT `max_lines` must lift a limit an
-                    // earlier style set. The measure fn captures it.
+                    // Assigned unconditionally (unlike `line_height` and the
+                    // font above): a style WITHOUT `max_lines` must lift a limit
+                    // an earlier style set. The measure fn captures it.
                     let max_lines = style.max_lines.filter(|n| *n > 0);
                     if t.max_lines != max_lines {
                         t.max_lines = max_lines;
@@ -5317,6 +5317,57 @@ mod capability_tests {
         b.finish(root);
         let sized = b.nodes[&late_id].hwnd().expect("control");
         assert!(text_x(sized) > WIDTH / 2, "at the right once laid out, got {}", text_x(sized));
+    }
+
+    /// A painted `text` kept its last `text_align` when a style dropped it, the
+    /// bug `sync_edit_align` doesn't have: `Field` going back to
+    /// `FieldAlign::Natural`, or a variant without an alignment, stayed put.
+    #[test]
+    fn regression_text_kept_its_removed_text_align() {
+        use runtime_shared::TextAlign;
+        let mut b = WindowsBackend::new(host());
+        let node = runtime_vocabulary::caps::TextOps::create_text(&mut b, "12", &AccessibilityProps::default());
+        let align = |b: &WindowsBackend| match &b.nodes[&node.id].kind {
+            NodeKind::Text(t) => t.align,
+            _ => panic!("a text node"),
+        };
+        b.apply_style(&node, &Rc::new(StyleRules { text_align: Some(TextAlign::Right), ..Default::default() }));
+        assert!(matches!(align(&b), TextAlign::Right));
+        b.apply_style(&node, &Rc::new(StyleRules::default()));
+        assert!(matches!(align(&b), TextAlign::Left), "a dropped alignment goes back to the start");
+    }
+
+    /// A `text_area` is a multi-line EDIT, so it takes the same alignment bits, the
+    /// rebuilt control stays multi-line, and each line aligns.
+    #[test]
+    fn text_area_follows_text_align() {
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, GetWindowLongW, GWL_STYLE, SWP_NOMOVE};
+        use runtime_shared::TextAlign;
+        const EM_POSFROMCHAR: u32 = 0x00D6;
+        const EM_GETLINECOUNT: u32 = 0x00BA;
+        const WIDTH: i32 = 300;
+        let mut b = WindowsBackend::new(host());
+        let node = TextInputOps::create_text_area(&mut b, "", None, true, Some(2), Some(6), Rc::new(|_| {}), None, &AccessibilityProps::default());
+        TextInputOps::update_text_area_value(&mut b, &node, "ab\ncd");
+        unsafe { SetWindowPos(node.hwnd, None, 0, 0, WIDTH, 80, SWP_NOMOVE | SWP_NOZORDER).unwrap() };
+        let edit = |b: &WindowsBackend| b.nodes[&node.id].hwnd().expect("control");
+        let char_x = |h: HWND, at: usize| unsafe { SendMessageW(h, EM_POSFROMCHAR, Some(WPARAM(at)), Some(LPARAM(0))) }.0 as i16 as i32;
+        let styled = |align: Option<TextAlign>| Rc::new(StyleRules { text_align: align, ..Default::default() });
+        // "ab\r\ncd": the second line's first character is at index 4.
+        const SECOND_LINE: usize = 4;
+
+        b.apply_style(&node, &styled(Some(TextAlign::Right)));
+        let right = edit(&b);
+        assert!(char_x(right, 0) > WIDTH / 2, "the first line at the right, got {}", char_x(right, 0));
+        assert!(char_x(right, SECOND_LINE) > WIDTH / 2, "the second line too, got {}", char_x(right, SECOND_LINE));
+        assert_eq!(unsafe { SendMessageW(right, EM_GETLINECOUNT, None, None) }.0, 2, "still multi-line");
+        let style = unsafe { GetWindowLongW(right, GWL_STYLE) } as u32;
+        assert_ne!(style & ES_MULTILINE, 0, "the rebuilt control is multi-line");
+
+        b.apply_style(&node, &styled(None));
+        let back = edit(&b);
+        assert!(char_x(back, 0) < WIDTH / 4, "back at the left, got {}", char_x(back, 0));
+        assert!(char_x(back, SECOND_LINE) < WIDTH / 4, "both lines, got {}", char_x(back, SECOND_LINE));
     }
 
     /// `text_area` was painted, read-only text. It is a multi-line EDIT:
