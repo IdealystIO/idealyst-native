@@ -58,6 +58,46 @@ pub(crate) fn text_align_gravity(current: i32, align: runtime_shared::TextAlign)
     (current & VERTICAL_GRAVITY_MASK) | horizontal
 }
 
+/// `Gravity.RELATIVE_HORIZONTAL_GRAVITY_MASK`: the horizontal bits, `START`'s
+/// layout-direction flag included.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const HORIZONTAL_GRAVITY_MASK: i32 = 0x0080_0007;
+
+/// A `setGravity` for a change of `text_align`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) struct TextAlignUpdate {
+    pub(crate) gravity: i32,
+    /// What to keep in `NodeAnim::natural_horizontal_gravity`.
+    pub(crate) natural_horizontal: Option<i32>,
+}
+
+/// What a style's `text_align` does to a view at gravity `current`, or `None` when
+/// there's nothing to write. `natural_horizontal` is the horizontal gravity the view
+/// had before any alignment touched it.
+///
+/// With no alignment the view goes back to those bits rather than a fixed value:
+/// a label or input starts at `START`, which follows right-to-left text, and a
+/// `Button` starts centred.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn text_align_update(
+    current: i32,
+    natural_horizontal: Option<i32>,
+    align: Option<runtime_shared::TextAlign>,
+) -> Option<TextAlignUpdate> {
+    match (align, natural_horizontal) {
+        (Some(align), natural) => Some(TextAlignUpdate {
+            gravity: text_align_gravity(current, align),
+            natural_horizontal: natural.or(Some(current & HORIZONTAL_GRAVITY_MASK)),
+        }),
+        (None, Some(natural)) => Some(TextAlignUpdate {
+            gravity: (current & VERTICAL_GRAVITY_MASK) | natural,
+            natural_horizontal: None,
+        }),
+        (None, None) => None,
+    }
+}
+
 /// Android `ViewGroup.LayoutParams` sentinels. Named because `-1` and `-2`
 /// in a size field are the two magic numbers this file exists to keep honest.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -182,6 +222,52 @@ mod text_align_gravity_tests {
         assert_eq!(text_align_gravity(input, TextAlign::Center), CENTER_VERTICAL | 1);
         assert_eq!(text_align_gravity(input, TextAlign::Left), CENTER_VERTICAL | 3);
         assert_eq!(text_align_gravity(input, TextAlign::Justify), CENTER_VERTICAL | 3);
+    }
+
+    /// The horizontal bits of a label's or input's `START`.
+    const START_BITS: i32 = 0x0080_0003;
+
+    /// Regression: a `Field(text_align)` flipping from `Right` back to `Natural`,
+    /// or a stylesheet variant dropping `text_align`, kept `RIGHT` on the view:
+    /// the style path only wrote gravity when a style stated an alignment. It goes
+    /// back to the view's own start, which is what follows right-to-left text, and
+    /// the input's vertical centring stays.
+    #[test]
+    fn regression_android_removed_text_align_restores_natural_gravity() {
+        let input = START | CENTER_VERTICAL;
+        let aligned = text_align_update(input, None, Some(TextAlign::Right)).expect("a first alignment writes");
+        assert_eq!(aligned.gravity, CENTER_VERTICAL | 5);
+        assert_eq!(aligned.natural_horizontal, Some(START_BITS));
+
+        let removed = text_align_update(aligned.gravity, aligned.natural_horizontal, None).expect("removal writes");
+        assert_eq!(removed.gravity, input);
+        assert_eq!(removed.natural_horizontal, None, "nothing is left to restore");
+    }
+
+    /// `Button` is a `TextView` that starts centred, so its natural isn't `START`.
+    #[test]
+    fn removed_text_align_restores_what_the_view_started_with() {
+        const BUTTON: i32 = 0x11; // Gravity.CENTER
+        let aligned = text_align_update(BUTTON, None, Some(TextAlign::Left)).unwrap();
+        let removed = text_align_update(aligned.gravity, aligned.natural_horizontal, None).unwrap();
+        assert_eq!(removed.gravity, BUTTON);
+    }
+
+    /// A second alignment keeps what the view started with, not the first alignment.
+    #[test]
+    fn changing_text_align_keeps_the_natural_gravity() {
+        let input = START | CENTER_VERTICAL;
+        let right = text_align_update(input, None, Some(TextAlign::Right)).unwrap();
+        let center = text_align_update(right.gravity, right.natural_horizontal, Some(TextAlign::Center)).unwrap();
+        assert_eq!(center.gravity, CENTER_VERTICAL | 1);
+        let removed = text_align_update(center.gravity, center.natural_horizontal, None).unwrap();
+        assert_eq!(removed.gravity, input);
+    }
+
+    /// A view no alignment ever touched is left alone. The caller skips the JNI read.
+    #[test]
+    fn no_text_align_on_an_untouched_view_writes_nothing() {
+        assert_eq!(text_align_update(START | TOP, None, None), None);
     }
 
     #[test]

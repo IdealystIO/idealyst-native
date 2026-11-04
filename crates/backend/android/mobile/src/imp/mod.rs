@@ -251,6 +251,10 @@ pub(crate) struct NodeAnim {
     /// widget's own defaults: never limited, or the limit was removed).
     /// See `crate::text_truncation_policy`.
     pub(crate) last_max_lines: Option<u32>,
+    /// The `TextView`'s horizontal gravity from before `text_align` first moved
+    /// it, while an alignment is in force; `None` = no alignment to undo. See
+    /// `crate::layout_policy::text_align_update`.
+    pub(crate) natural_horizontal_gravity: Option<i32>,
     pub(crate) last_alpha: Option<f32>,
     /// `translationZ` (device px) the last style apply wrote for the
     /// node's stacking value; `None` = never written (still `0`). See

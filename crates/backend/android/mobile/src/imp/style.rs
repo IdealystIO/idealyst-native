@@ -277,19 +277,29 @@ pub(crate) fn apply_rules(
         // wrapped text lays out left-justified inside the (often
         // wider-than-the-line) text-box, which makes a `text_align:
         // Center` author intent silently no-op on Android. Horizontal
-        // axis only: see `text_align_gravity`.
-        if let Some(align) = rules.text_align {
+        // axis only, and a style that drops the alignment restores the
+        // view's own: see `text_align_update`. No JNI for a view with no
+        // alignment and none to undo.
+        if rules.text_align.is_some() || state.natural_horizontal_gravity.is_some() {
             let current = env
                 .call_method(&view, "getGravity", "()I", &[])
                 .and_then(|g| g.i())
                 .unwrap_or(0);
-            let gravity = crate::layout_policy::text_align_gravity(current, align);
-            let _ = env.call_method(
-                &view,
-                "setGravity",
-                "(I)V",
-                &[JValue::Int(gravity)],
-            );
+            if let Some(update) = crate::layout_policy::text_align_update(
+                current,
+                state.natural_horizontal_gravity,
+                rules.text_align,
+            ) {
+                state.natural_horizontal_gravity = update.natural_horizontal;
+                if update.gravity != current {
+                    let _ = env.call_method(
+                        &view,
+                        "setGravity",
+                        "(I)V",
+                        &[JValue::Int(update.gravity)],
+                    );
+                }
+            }
         }
         // max_lines → `setMaxLines(n)` + `setEllipsize(TruncateAt.END)`:
         // at most n lines, the last cut at the tail with "…" (n = 1 is one
