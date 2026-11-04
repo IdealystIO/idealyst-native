@@ -292,6 +292,24 @@ pub fn prepare(patch: &[u8], base: &BaseIndex) -> Result<Prepared> {
     Ok(Prepared { wasm, plan })
 }
 
+/// The signature of each function in `names` that `patch` defines, in
+/// [`BaseIndex::slot_sigs`]' alphabet, read from its `name` section.
+pub fn defined_signatures(
+    patch: &[u8],
+    names: &std::collections::BTreeSet<String>,
+) -> Result<HashMap<String, String>> {
+    let module = Module::read(patch)?;
+    let mut out = HashMap::new();
+    for (local, &type_index) in module.func_types.iter().enumerate() {
+        let Some(name) = module.names.get(&(module.func_imports + local as u32)) else { continue };
+        if names.contains(name) {
+            let ty = module.types.get(type_index as usize).context("bad type index")?;
+            out.insert(name.clone(), sig_string(ty));
+        }
+    }
+    Ok(out)
+}
+
 fn resolve_import(
     import: &Import,
     module: &Module,

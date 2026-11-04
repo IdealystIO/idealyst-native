@@ -57,6 +57,7 @@
 //! could not do, and the caller's answer is the rebuild-and-reload it
 //! would have done anyway.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -71,6 +72,7 @@ pub use build_runtime_server::hotpatch::replay::Cancelled;
 
 use crate::hotpatch_fndiff::{CrateFns, RedirectPlan};
 use crate::hotpatch_patch::BaseIndex;
+use crate::hotpatch_statics::Renames;
 use crate::hotpatch_wasm::{base_slots, build_jump_table_keeping, WasmJumpTable};
 
 /// One crate a patch re-emits.
@@ -537,7 +539,21 @@ pub struct WasmPatchBuilder {
     /// Crates already named in a "this patch redirects every function"
     /// line, so a session says it once per crate per base.
     untrimmed_said: std::cell::RefCell<std::collections::HashSet<String>>,
+    /// Per crate, the objects whose renumbered functions were paired with
+    /// the base's ([`crate::hotpatch_additive`]).
+    renamed: std::cell::RefCell<std::collections::HashMap<String, RenamedObjects>>,
     reporter: dev_events::Reporter,
+}
+
+/// One crate's replay with its pairs applied.
+struct RenamedObjects {
+    source_key: Option<String>,
+    /// The files the replay wrote.
+    replayed: Vec<PathBuf>,
+    /// The files a patch links instead.
+    renamed: Vec<PathBuf>,
+    /// The names the pairs gave functions, each of which the base has.
+    base_names: BTreeSet<String>,
 }
 
 type Baselines = std::collections::HashMap<String, (String, Arc<CrateFns>)>;
@@ -605,6 +621,7 @@ impl WasmPatchBuilder {
             base_names: Default::default(),
             base_keys: Default::default(),
             untrimmed_said: Default::default(),
+            renamed: Default::default(),
             reporter,
         })
     }
@@ -838,11 +855,10 @@ impl WasmPatchBuilder {
         let (in_build, skipped) = in_this_build(&self.captures_dir, crates)?;
         checkpoint()?;
         let replayed = collect_objects(&self.captures_dir, &self.objects, &in_build, cancel)?;
-        let mut objects = Vec::new();
         let mut carried = Vec::with_capacity(in_build.len());
         let mut per_crate = Vec::with_capacity(in_build.len());
         for (krate, (objs, took)) in in_build.iter().zip(replayed) {
-            objects.extend(objs.iter().cloned());
+            let objs = self.with_renames_applied(krate, objs, took.is_none());
             carried.push((krate.crate_name.clone(), took));
             per_crate.push((krate, objs));
         }
@@ -852,20 +868,34 @@ impl WasmPatchBuilder {
         // Which functions differ from the base, when every crate of the
         // patch has a baseline to tell (see `hotpatch_fndiff`).
         let started = Instant::now();
-        let plan = self.redirect_plan(&per_crate);
+        let mut plan = self.redirect_plan(&per_crate);
         timings.push("diff", started.elapsed());
         checkpoint()?;
 
         // A crate a patch added items to must still compile its existing
-        // items to the base's symbols, and declare no new state. After the
-        // plan, whose digests already list every function the patch
-        // defines.
+        // items to the base's symbols, or to ones that pair with them, and
+        // declare no new state. After the plan, whose digests already list
+        // every function the patch defines; a pairing renames functions in
+        // the crate's objects, so the plan is made again over the new ones.
         if in_build.iter().any(|k| k.additive) {
             let started = Instant::now();
-            self.verify_additive(&per_crate, plan.as_ref())?;
+            let renames = self.verify_additive(&per_crate, plan.as_ref())?;
+            if !renames.is_empty() {
+                for (i, pairs) in renames {
+                    let (krate, objs) = &mut per_crate[i];
+                    *objs = self.rename_objects(krate, objs, &pairs)?;
+                }
+                plan = self.redirect_plan(&per_crate);
+            }
             timings.push("verify-additive", started.elapsed());
             checkpoint()?;
         }
+        let objects: Vec<PathBuf> = per_crate.iter().flat_map(|(_, objs)| objs.iter().cloned()).collect();
+        let paired: BTreeSet<String> = per_crate
+            .iter()
+            .filter_map(|(k, _)| self.renamed.borrow().get(&k.crate_name).map(|r| r.base_names.clone()))
+            .flatten()
+            .collect();
 
         let serial = self.serial.get() + 1;
         self.serial.set(serial);
@@ -892,7 +922,7 @@ impl WasmPatchBuilder {
         // The trimmed patch first; the whole one whenever the trimmed one
         // cannot be shown to redirect everything it must.
         let trimmed = match &plan {
-            Some(plan) => match self.assemble(&objects, serial, Some(plan), &checkpoint, &mut timings) {
+            Some(plan) => match self.assemble(&objects, serial, Some(plan), &paired, &checkpoint, &mut timings) {
                 Ok(Some(done)) => Some(done),
                 Ok(None) => None,
                 Err(e) if e.is::<replay::Cancelled>() => return Err(e),
@@ -909,7 +939,7 @@ impl WasmPatchBuilder {
         let (resolved, jump_table) = match trimmed {
             Some(done) => done,
             None => self
-                .assemble(&objects, serial, None, &checkpoint, &mut timings)?
+                .assemble(&objects, serial, None, &paired, &checkpoint, &mut timings)?
                 .expect("an untrimmed patch always pairs or fails"),
         };
 
@@ -961,12 +991,18 @@ impl WasmPatchBuilder {
 
     /// [`crate::hotpatch_additive`]'s checks over every crate of the patch
     /// a patch of this base added items to. An `Err` refuses the patch,
-    /// and the dev loop rebuilds.
+    /// and the dev loop rebuilds. The rest is each crate's pairs, by its
+    /// index in `per_crate`: functions to rename before the patch is
+    /// planned and linked.
     ///
     /// The functions the patch defines come from `plan`'s digests when
     /// there is one (they cover every object), and from the objects'
     /// symbol tables otherwise.
-    fn verify_additive(&self, per_crate: &[(&PatchCrate, Vec<PathBuf>)], plan: Option<&Trim>) -> Result<()> {
+    fn verify_additive(
+        &self,
+        per_crate: &[(&PatchCrate, Vec<PathBuf>)],
+        plan: Option<&Trim>,
+    ) -> Result<Vec<(usize, Renames)>> {
         let read;
         let defined: Vec<&str> = match plan {
             Some(trim) => trim.crates.iter().flat_map(|c| c.fns.keys().map(String::as_str)).collect(),
@@ -977,6 +1013,7 @@ impl WasmPatchBuilder {
                 read.iter().map(String::as_str).collect()
             }
         };
+        let mut renames = Vec::new();
         for (i, (krate, objs)) in per_crate.iter().enumerate().filter(|(_, (k, _))| k.additive) {
             let refuse = |why: String| {
                 anyhow::anyhow!("the items added to `{}` cannot be patched in: {why}; rebuilding", krate.crate_name)
@@ -991,8 +1028,11 @@ impl WasmPatchBuilder {
                 .clone();
             let names = self.base_names.get_or_init(|| self.base_slots.keys().cloned().collect());
             let in_base = |name: &str| names.contains(name);
-            crate::hotpatch_additive::verify(&krate.crate_name, &base, &in_base, &self.aliases, defined.iter().copied())
+            let pairs = crate::hotpatch_additive::verify(&krate.crate_name, &base, &in_base, &self.aliases, defined.iter().copied())
                 .map_err(|r| refuse(r.to_string()))?;
+            if !pairs.is_empty() {
+                renames.push((i, pairs));
+            }
             // Only an object defining a data symbol the running program has
             // nothing under can declare new state; the plan's digests name
             // every object's symbols, so the rest are never parsed.
@@ -1017,7 +1057,55 @@ impl WasmPatchBuilder {
                 return Err(refuse(crate::hotpatch_additive::Refusal::NewState { statics: state }.to_string()));
             }
         }
-        Ok(())
+        Ok(renames)
+    }
+
+    /// `krate`'s objects with this replay's pairs applied, the original
+    /// files untouched: the object cache reuses those, and a later patch
+    /// may pair them differently.
+    fn rename_objects(&self, krate: &PatchCrate, objs: &[PathBuf], pairs: &Renames) -> Result<Vec<PathBuf>> {
+        let dir = self.out_dir.join("renamed").join(&krate.crate_name);
+        let _ = std::fs::remove_dir_all(&dir);
+        let renamed = crate::hotpatch_statics::rename_functions(objs, pairs, &dir)
+            .context("renaming the patch's renumbered functions to the base's names")?;
+        self.reporter.log(
+            "hotpatch",
+            format!("`{}`: {} renumbered function(s) paired with the base by path", krate.crate_name, pairs.len()),
+        );
+        self.renamed.borrow_mut().insert(
+            krate.crate_name.clone(),
+            RenamedObjects {
+                source_key: krate.source_key.clone(),
+                replayed: objs.to_vec(),
+                renamed: renamed.clone(),
+                base_names: pairs.values().cloned().collect(),
+            },
+        );
+        Ok(renamed)
+    }
+
+    /// `objs`, or their renamed copies when this crate's objects are the
+    /// very files an earlier patch renamed: its digests are then reused
+    /// instead of being taken twice per save. A replay wrote new files, so
+    /// its pairs are found afresh, and whatever this crate was paired with
+    /// no longer applies.
+    fn with_renames_applied(&self, krate: &PatchCrate, objs: Vec<PathBuf>, reused: bool) -> Vec<PathBuf> {
+        let mut renamed = self.renamed.borrow_mut();
+        match renamed.get(&krate.crate_name) {
+            Some(r)
+                if reused
+                    && krate.source_key.is_some()
+                    && r.source_key == krate.source_key
+                    && r.replayed == objs
+                    && r.renamed.iter().all(|o| o.is_file()) =>
+            {
+                r.renamed.clone()
+            }
+            _ => {
+                renamed.remove(&krate.crate_name);
+                objs
+            }
+        }
     }
 
     /// The plan for a patch of these crates and their objects: `None`
@@ -1130,6 +1218,7 @@ impl WasmPatchBuilder {
         objects: &[PathBuf],
         serial: u64,
         plan: Option<&Trim>,
+        paired: &BTreeSet<String>,
         checkpoint: &dyn Fn() -> Result<()>,
         steps: &mut Steps<'_>,
     ) -> Result<Option<(Vec<u8>, WasmJumpTable)>> {
@@ -1168,6 +1257,7 @@ impl WasmPatchBuilder {
         // Read, not rewritten: the page supplies each import as the plan
         // appended here says (see `hotpatch_prepare`).
         let resolved = crate::hotpatch_prepare::prepare(&raw, &self.base)?.wasm;
+        self.check_paired_signatures(&resolved, paired)?;
         steps.push("resolve", started.elapsed());
         checkpoint()?;
 
@@ -1205,6 +1295,27 @@ impl WasmPatchBuilder {
             );
         }
         Ok(Some((resolved, jump_table)))
+    }
+
+    /// A pair of two names promises nothing about the signature, as one
+    /// shared name would. A pair the base's slot disagrees with is refused:
+    /// the same save cannot have changed an existing item's signature, so
+    /// the two are not one function.
+    fn check_paired_signatures(&self, patch: &[u8], paired: &BTreeSet<String>) -> Result<()> {
+        if paired.is_empty() {
+            return Ok(());
+        }
+        for (name, sig) in crate::hotpatch_prepare::defined_signatures(patch, paired)? {
+            let have = self.base_slots.get(&name).and_then(|slot| self.base.slot_sigs.get(slot));
+            if have.is_some_and(|have| *have != sig) {
+                bail!(
+                    "the function paired with `{name}` has the signature ({sig}), the base's ({}): \
+                     they are not one function; rebuilding",
+                    have.map(String::as_str).unwrap_or_default()
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Link the patch's objects — and ONLY those — into a PIC side

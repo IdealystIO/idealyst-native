@@ -16,11 +16,21 @@
 //!   value — the everyday additive save;
 //! * [`a_fn_inserted_between_existing_items_patches`]: placement alone
 //!   does not refuse a patch; only a renamed symbol does;
-//! * [`regression_an_impl_inserted_ahead_of_another_is_refused`]: a new
-//!   `impl` ahead of an existing one renumbers it (`{impl#0}` →
-//!   `{impl#1}`). Unverified, that patch builds and the app's base code
-//!   keeps calling the OLD body of the method the same save edited — the
-//!   test shows the stale value, then that verification refuses it;
+//! * [`regression_an_impl_inserted_ahead_of_another_reaches_the_new_body_through_the_old_name`]:
+//!   a new `impl` ahead of an existing one renumbers it (`{impl#0}` →
+//!   `{impl#1}`). Left under the new name, the app's base code keeps
+//!   calling the OLD body of the method the same save edited — the test
+//!   shows the stale value, then that the verified patch pairs the two;
+//! * [`a_renumbered_method_nothing_edited_behaves_as_before`]: an item
+//!   that was only renumbered runs as it did;
+//! * [`a_renumbered_method_pairs_in_an_untrimmed_patch`]: the same pairing
+//!   with no baseline, where every function is redirected;
+//! * [`a_held_fn_pointer_reaches_the_edited_closure_of_a_renumbered_method`]:
+//!   a closure the page already holds a pointer to follows its method;
+//! * [`a_group_that_grew_is_refused`]: two functions of one path where the
+//!   base had one pair with nothing, so the patch is refused;
+//! * [`a_pair_with_another_signature_is_refused`]: what the signature
+//!   check is for;
 //! * [`regression_an_added_fn_with_a_static_is_refused`]: new writable
 //!   state would get a fresh copy in every later patch;
 //! * [`an_appended_unused_pub_fn_patches_and_changes_nothing`]: the
@@ -68,6 +78,33 @@ pub fn lib_value() -> u64 {
     // BODY
     2
 }
+
+#[inline(never)]
+pub fn scoped() -> u64 {
+    #[inline(never)]
+    fn local() -> u64 {
+        3
+    }
+    std::hint::black_box(local as fn() -> u64)()
+}
+
+/// In a codegen unit of its own, so its call to `total` crosses objects:
+/// the object that holds it names `total` by an import.
+pub mod far {
+    #[inline(never)]
+    pub fn total_of(row: &super::Row) -> u32 {
+        row.total()
+    }
+}
+
+pub struct Timer;
+
+impl Timer {
+    #[inline(never)]
+    pub fn callback() -> fn(u64) -> u64 {
+        |x| x + 1000
+    }
+}
 "#;
 
 const BODY_MARK: &str = "    // BODY\n    2";
@@ -99,6 +136,28 @@ pub extern "C" fn probe() -> u64 {
 pub extern "C" fn other() -> u64 {
     std::hint::black_box(__Other_hot_impl as fn() -> u64)()
 }
+
+static HELD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Keeps a fn pointer, as a mounted tree keeps a callback across a patch.
+#[no_mangle]
+pub extern "C" fn hold() {
+    let held = probe_lib::Timer::callback();
+    HELD.store(held as usize, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[no_mangle]
+pub extern "C" fn held() -> u64 {
+    let raw = HELD.load(std::sync::atomic::Ordering::SeqCst);
+    let held: fn(u64) -> u64 = unsafe { std::mem::transmute(raw) };
+    held(1)
+}
+
+/// Keeps `scoped` in the program without a caller the jump table reaches.
+#[no_mangle]
+pub extern "C" fn scoped() -> u64 {
+    probe_lib::scoped()
+}
 "#;
 
 /// The page's loader, as `wasm_patch_statics` runs it: memory and table
@@ -112,6 +171,7 @@ const [basePath, patchPath, jumps, ifuncCount] = process.argv.slice(2);
   const base = (await WebAssembly.instantiate(fs.readFileSync(basePath), {})).instance.exports;
   console.log('base-probe=' + base.probe());
   console.log('base-other=' + base.other());
+  base.hold();
   const module = new WebAssembly.Module(fs.readFileSync(patchPath));
   const plan = new DataView(WebAssembly.Module.customSections(module, 'idealyst.hotpatch')[0]);
   let at = 0;
@@ -156,6 +216,7 @@ const [basePath, patchPath, jumps, ifuncCount] = process.argv.slice(2);
   }
   console.log('probe=' + base.probe());
   console.log('other=' + base.other());
+  console.log('held=' + base.held());
 })().catch(e => { console.log('error=' + e.message); process.exit(1); });
 "#;
 
@@ -378,19 +439,24 @@ fn a_fn_inserted_between_existing_items_patches() {
     assert!(out.contains("probe=105\n"), "{out}");
 }
 
+/// A new type with an impl, ahead of `impl Row`: it renumbers `Row`'s.
+const IMPL_AHEAD: &str =
+    "pub struct Fresh;\n\nimpl Fresh {\n    #[inline(never)]\n    pub fn fresh(&self) -> u32 {\n        9\n    }\n}\n\nimpl Row {";
+
+/// The base's slot for the function whose symbol ends in `end`.
+fn slot_of(base: &Base, end: &str) -> u64 {
+    let slots = build_web::hotpatch_wasm::base_slots(&std::fs::read(&base.served).unwrap()).unwrap();
+    *slots.iter().find(|(k, _)| k.ends_with(end)).unwrap_or_else(|| panic!("no slot {end}")).1 as u64
+}
+
 #[test]
 #[ignore = "compiles two crates for wasm32 and runs them in node; run with --ignored"]
-fn regression_an_impl_inserted_ahead_of_another_is_refused() {
+fn regression_an_impl_inserted_ahead_of_another_reaches_the_new_body_through_the_old_name() {
     let base = Base::build("additive-impl-ahead");
     let builder = base.seeded_builder();
-    // A new type with an impl ahead of `impl Row`, and an edit to
-    // `Row::total` in the same save.
-    let source = LIB_RS
-        .replace(
-            "impl Row {",
-            "pub struct Fresh;\n\nimpl Fresh {\n    #[inline(never)]\n    pub fn fresh(&self) -> u32 {\n        9\n    }\n}\n\nimpl Row {",
-        )
-        .replace("self.a + 1", "self.a + 50");
+    // A new impl ahead of `impl Row`, and an edit to `Row::total` in the
+    // same save.
+    let source = LIB_RS.replace("impl Row {", IMPL_AHEAD).replace("self.a + 1", "self.a + 50");
 
     // Unverified, the patch builds — and is wrong. `total` compiled to a
     // new name, so the app's base code, which calls it directly by the
@@ -400,11 +466,102 @@ fn regression_an_impl_inserted_ahead_of_another_is_refused() {
     let out = base.run(&unverified);
     assert!(out.contains("other=20\n"), "expected the stale value the check exists to prevent:\n{out}");
 
+    let patch = base.patch(&builder, &source, true).unwrap_or_else(|e| panic!("the patch did not build:\n{e:#}"));
+    assert!(verified(&patch));
+    let out = base.run(&patch);
+    assert!(out.contains("other=510\n"), "the base did not reach the new body through the old name:\n{out}");
+    assert!(out.contains("probe=2\n"), "{out}");
+
+    // A later patch reuses the replay's objects, and pairs them as before.
+    let again = base.patch(&builder, &source, true).unwrap_or_else(|e| panic!("{e:#}"));
+    let out = base.run(&again);
+    assert!(out.contains("other=510\n"), "{out}");
+}
+
+/// The patch stays trimmed: `__Probe_hot_impl` reaches nothing that
+/// differs. (`total` itself may: a codegen unit that gained a function
+/// names its anonymous data differently, which is more redirected than
+/// the minimum, never less.)
+#[test]
+#[ignore = "compiles two crates for wasm32 and runs them in node; run with --ignored"]
+fn a_renumbered_method_nothing_edited_behaves_as_before() {
+    let base = Base::build("additive-renumbered-unedited");
+    let builder = base.seeded_builder();
+    let probe_slot = slot_of(&base, "5probe16___Probe_hot_impl");
+    let source = LIB_RS.replace("impl Row {", IMPL_AHEAD);
+    let patch = base.patch(&builder, &source, true).unwrap_or_else(|e| panic!("the patch did not build:\n{e:#}"));
+    assert!(!patch.jump_table.map.contains_key(&probe_slot), "{:?}", patch.jump_table.map);
+    let out = base.run(&patch);
+    assert!(out.contains("other=20\n") && out.contains("probe=2\n") && out.contains("held=1001\n"), "{out}");
+}
+
+#[test]
+#[ignore = "compiles two crates for wasm32 and runs them in node; run with --ignored"]
+fn a_renumbered_method_pairs_in_an_untrimmed_patch() {
+    let base = Base::build("additive-renumbered-untrimmed");
+    let builder = WasmPatchBuilder::new(
+        &base.served,
+        Some(&base.aliases),
+        Some(&base.data),
+        &base.captures,
+        "probe",
+        base.dir.join("patches"),
+    )
+    .unwrap();
+    let source = LIB_RS.replace("impl Row {", IMPL_AHEAD).replace("self.a + 1", "self.a + 50");
+    let patch = base.patch(&builder, &source, true).unwrap_or_else(|e| panic!("the patch did not build:\n{e:#}"));
+    let out = base.run(&patch);
+    assert!(out.contains("other=510\n") && out.contains("probe=2\n"), "{out}");
+}
+
+/// A closure coerced to a fn pointer is a `call_once` instantiation naming
+/// the closure: that instantiation's slot in the base is what the pointer
+/// holds, and both names moved with the impl.
+#[test]
+#[ignore = "compiles two crates for wasm32 and runs them in node; run with --ignored"]
+fn a_held_fn_pointer_reaches_the_edited_closure_of_a_renumbered_method() {
+    let base = Base::build("additive-held-closure");
+    let builder = base.seeded_builder();
+    let source = LIB_RS.replace("impl Timer {", "pub struct Fresh;\n\nimpl Fresh {\n    pub fn fresh(&self) -> u32 {\n        9\n    }\n}\n\nimpl Timer {").replace("x + 1000", "x + 2000");
+    let patch = base.patch(&builder, &source, true).unwrap_or_else(|e| panic!("the patch did not build:\n{e:#}"));
+    let out = base.run(&patch);
+    assert!(out.contains("held=2001\n"), "the held pointer kept the old closure:\n{out}");
+}
+
+/// `local` keeps its name, and a second function of its path appears:
+/// which of the two a base caller meant is nothing the path can say.
+#[test]
+#[ignore = "compiles two crates for wasm32 and runs them in node; run with --ignored"]
+fn a_group_that_grew_is_refused() {
+    let base = Base::build("additive-grown");
+    let builder = base.seeded_builder();
+    let source = LIB_RS.replace(
+        "std::hint::black_box(local as fn() -> u64)()",
+        "let second = {\n        #[inline(never)]\n        fn local() -> u64 {\n            4\n        }\n        std::hint::black_box(local as fn() -> u64)()\n    };\n    second + std::hint::black_box(local as fn() -> u64)()",
+    );
     let err = match base.patch(&builder, &source, true) {
-        Ok(p) => panic!("an impl ahead of `impl Row` renumbers it; the patch must be refused (built {:?})", p.path),
+        Ok(p) => panic!("a second function of one path must refuse the patch (built {:?})", p.path),
         Err(e) => format!("{e:#}"),
     };
-    assert!(err.contains("cannot be patched in") && err.contains("Row"), "{err}");
+    assert!(err.contains("cannot be patched in") && err.contains("local"), "{err}");
+}
+
+/// `local` stops being compiled, and a new function of its path takes one
+/// argument: they are one group of one on each side, and not one function.
+#[test]
+#[ignore = "compiles two crates for wasm32 and runs them in node; run with --ignored"]
+fn a_pair_with_another_signature_is_refused() {
+    let base = Base::build("additive-paired-signature");
+    let builder = base.seeded_builder();
+    let source = LIB_RS.replace(
+        "std::hint::black_box(local as fn() -> u64)()",
+        "#[allow(unused)]\n    {\n        #[inline(never)]\n        fn local(n: u64) -> u64 {\n            n\n        }\n        std::hint::black_box(local as fn(u64) -> u64)(4)\n    }",
+    );
+    let err = match base.patch(&builder, &source, true) {
+        Ok(p) => panic!("a pair whose signatures differ must refuse the patch (built {:?})", p.path),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(err.contains("signature"), "{err}");
 }
 
 #[test]

@@ -181,6 +181,139 @@ pub fn new_state_statics(objects: &[PathBuf], program: &ProgramStatics) -> Resul
     Ok(out)
 }
 
+/// Rename functions in `objects`, `from` to `to` by [`Renames`]: every
+/// symbol-table entry and import naming one, whether the object defines
+/// it or only calls it. Returns the objects to use, an edited copy under
+/// `out_dir` where something changed, the original elsewhere.
+///
+/// Only names change. Relocations address a symbol by its index and code
+/// holds no names, so nothing else in the object moves.
+pub fn rename_functions(objects: &[PathBuf], renames: &Renames, out_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::with_capacity(objects.len());
+    for path in objects {
+        let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        let object = Object::parse(&bytes).with_context(|| format!("parse {}", path.display()))?;
+        match rename_in(&bytes, &object, renames).with_context(|| format!("renaming functions in {}", path.display()))? {
+            None => out.push(path.clone()),
+            Some(edited) => {
+                std::fs::create_dir_all(out_dir).with_context(|| format!("create {}", out_dir.display()))?;
+                let file = out_dir.join(path.file_name().context("object path has no file name")?);
+                std::fs::write(&file, edited).with_context(|| format!("write {}", file.display()))?;
+                out.push(file);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// A function's name in a patch → the name it must carry instead.
+pub type Renames = BTreeMap<String, String>;
+
+/// [`rename_functions`] of one object. `None` when it names none of them.
+fn rename_in(bytes: &[u8], object: &Object, renames: &Renames) -> Result<Option<Vec<u8>>> {
+    let mut changed = false;
+
+    // A function an object calls but does not define is named by its
+    // import, unless its symbol carries an explicit name as well.
+    let mut imports = Vec::new();
+    if let Some(section) = object.sections.iter().find(|s| s.id == SECTION_IMPORT) {
+        let payload = &bytes[section.payload.clone()];
+        let mut r = Reader { b: payload, at: object.import_entries_at };
+        write_uleb(&mut imports, object.import_count as u64);
+        for _ in 0..object.import_count {
+            let module = r.name()?;
+            let field = r.name()?;
+            let start = r.at;
+            let func = match r.u8()? {
+                0x00 => {
+                    r.uleb()?;
+                    true
+                }
+                0x01 => {
+                    r.u8()?;
+                    r.limits()?;
+                    false
+                }
+                0x02 => {
+                    r.limits()?;
+                    false
+                }
+                0x03 => {
+                    r.u8()?;
+                    r.u8()?;
+                    false
+                }
+                0x04 => {
+                    r.u8()?;
+                    r.uleb()?;
+                    false
+                }
+                other => bail!("unknown import kind {other}"),
+            };
+            let to = renames.get(&field).filter(|_| func);
+            changed |= to.is_some();
+            write_name(&mut imports, &module);
+            write_name(&mut imports, to.unwrap_or(&field));
+            imports.extend_from_slice(&payload[start..r.at]);
+        }
+    }
+
+    let mut symtab = Vec::new();
+    write_uleb(&mut symtab, object.symbols.len() as u64);
+    for sym in &object.symbols {
+        let to = if sym.kind == SYMTAB_FUNCTION { renames.get(&sym.name) } else { None };
+        let Some(to) = to else {
+            symtab.extend_from_slice(&sym.raw);
+            continue;
+        };
+        changed = true;
+        let mut r = Reader { b: &sym.raw, at: 0 };
+        r.u8()?;
+        r.uleb()?;
+        let index = r.uleb()?;
+        symtab.push(SYMTAB_FUNCTION);
+        write_uleb(&mut symtab, sym.flags as u64);
+        write_uleb(&mut symtab, index);
+        write_name(&mut symtab, to);
+    }
+    if !changed {
+        return Ok(None);
+    }
+
+    let mut out = bytes[..8].to_vec();
+    for section in &object.sections {
+        let payload: Vec<u8> = if section.id == SECTION_IMPORT {
+            imports.clone()
+        } else if section.custom_name.as_deref() == Some("linking") {
+            encode_linking(object, &symtab)
+        } else {
+            out.push(section.id);
+            write_uleb(&mut out, section.raw.len() as u64);
+            out.extend_from_slice(&bytes[section.raw.clone()]);
+            continue;
+        };
+        out.push(section.id);
+        write_uleb(&mut out, payload.len() as u64);
+        out.extend_from_slice(&payload);
+    }
+    Ok(Some(out))
+}
+
+/// The `linking` section with `symtab` as its symbol table and every
+/// other subsection as the object had it.
+fn encode_linking(object: &Object, symtab: &[u8]) -> Vec<u8> {
+    let mut p = Vec::new();
+    write_name(&mut p, "linking");
+    write_uleb(&mut p, object.linking_version as u64);
+    for (ty, raw) in &object.linking_subsections {
+        p.push(*ty);
+        let body = if *ty == SUBSECTION_SYMBOL_TABLE { symtab } else { raw };
+        write_uleb(&mut p, body.len() as u64);
+        p.extend_from_slice(body);
+    }
+    p
+}
+
 fn rustc_demangle_ok(name: &str) -> bool {
     statics::static_key(name) != name
 }
@@ -299,16 +432,7 @@ fn rewrite(bytes: &[u8], object: &Object, bound: &HashSet<&str>) -> Result<Optio
             }
             p
         } else if section.custom_name.as_deref() == Some("linking") {
-            let mut p = Vec::new();
-            write_name(&mut p, "linking");
-            write_uleb(&mut p, object.linking_version as u64);
-            for (ty, raw) in &object.linking_subsections {
-                p.push(*ty);
-                let body = if *ty == SUBSECTION_SYMBOL_TABLE { &symtab } else { raw };
-                write_uleb(&mut p, body.len() as u64);
-                p.extend_from_slice(body);
-            }
-            p
+            encode_linking(object, &symtab)
         } else if let Some(reloc) = new_relocs.get(&index) {
             let mut p = Vec::new();
             write_name(&mut p, section.custom_name.as_deref().unwrap_or(""));

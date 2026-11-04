@@ -325,17 +325,20 @@ What only the compiled patch can show is checked after the replay,
 against the base module, before anything is linked
 (`build_web::hotpatch_additive`):
 
-- **No existing function was renumbered.** A symbol is a path whose
-  anonymous parts are numbered in source order (`{impl#3}`, a `const
-  _`). An item inserted ahead of them renumbers them: the patch then
-  compiles an unchanged item to a name the base does not have, and a
-  dependent's base code, which calls it by the old name, keeps the old
-  copy. Harmless while the bodies match; a silent stale edit when the
-  same save changed it. So a patch whose functions include a name the
-  base does not have, under a path the base does have, is refused.
-  Closures and generic instantiations are left out (body edits renumber
-  and drop them legitimately), and so are `inventory::submit!`
-  constructors (the page never runs a patch's constructors).
+- **A renumbered function pairs with its old name, or the patch is
+  refused.** A symbol is a path whose anonymous parts are numbered in
+  source order (`{impl#3}`, a `const _`). An item inserted ahead of them
+  renumbers them: the patch then compiles an unchanged item to a name the
+  base does not have, and a dependent's base code, which calls it by the
+  old name, would keep the old copy. Grouped by path with the numbers
+  erased, a group holding exactly one function in the base and one in the
+  patch is that item, renumbered: its objects are rewritten to define the
+  base's name before anything reads them, so the save patches and base
+  code reaches the new body through the old name. This covers what macros
+  cannot scope, derives and author impls included. Closures, shims and
+  generic instantiations that name it pair on their whole path. A group
+  that grew or holds several functions cannot be told apart and is
+  refused, as is a pair whose signature differs from the base's.
 - **No new writable state.** A writable `static` the base does not have
   would get a fresh copy in every later patch, losing its value each
   time. A `thread_local!` or `static` inside a new function's body is
