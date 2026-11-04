@@ -27,7 +27,8 @@
 //!
 //! arm64 macOS and Linux (the patch builder links Mach-O and ELF arm64);
 //! elsewhere the session never arms it and every server save rebuilds.
-//! Experimental: armed only under `idealyst dev --experimental-build`.
+//! Experimental: armed only under `idealyst dev --experimental-build` or
+//! `--experimental-server-patch`.
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Write};
@@ -252,7 +253,11 @@ impl ServerHot {
             .name("idealyst-server-base".into())
             .spawn(move || -> Result<Base> {
                 let stamp = FileStamp::of(&exe);
-                let builder = ServerPatchBuilder::new(&exe, patches)?;
+                // The server's build priority, not the normal one: a save
+                // that patches the server usually hot patches the web bundle
+                // in the same second, and that patch is the one on screen.
+                let nice = crate::build_priority::BuildPriority::server_build().nice();
+                let builder = ServerPatchBuilder::new(&exe, patches)?.with_replay_nice(nice);
                 Ok(Base { exe, stamp, builder, sources: Mutex::new(sources) })
             })
             .ok();

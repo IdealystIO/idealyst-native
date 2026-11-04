@@ -152,8 +152,11 @@ pub fn run_rustc_emit_obj_cancellable(
     extra: &[String],
     cancel: &(dyn Fn() -> bool + Sync),
 ) -> Result<Vec<PathBuf>> {
-    run_rustc_emit_obj_at(captured, extra, cancel, false)
+    run_rustc_emit_obj_at(captured, extra, cancel, 0)
 }
+
+/// The lowest scheduling priority unix offers.
+const BACKGROUND_NICE: i32 = 19;
 
 /// [`run_rustc_emit_obj_cancellable`], at the lowest scheduling priority
 /// (`nice` 19): for work nobody is waiting on, such as warming a crate's
@@ -169,14 +172,29 @@ pub fn run_rustc_emit_obj_background(
     extra: &[String],
     cancel: &(dyn Fn() -> bool + Sync),
 ) -> Result<Vec<PathBuf>> {
-    run_rustc_emit_obj_at(captured, extra, cancel, true)
+    run_rustc_emit_obj_at(captured, extra, cancel, BACKGROUND_NICE)
+}
+
+/// [`run_rustc_emit_obj_cancellable`] at niceness increment `nice` (`0`:
+/// this process's own priority), set the way
+/// [`run_rustc_emit_obj_background`] sets it: for a replay someone is
+/// waiting on that must still yield the cores to one they are waiting on
+/// more. Only unix can lower it; elsewhere the replay runs at this process's
+/// priority.
+pub fn run_rustc_emit_obj_niced(
+    captured: &CapturedInvocation,
+    extra: &[String],
+    cancel: &(dyn Fn() -> bool + Sync),
+    nice: i32,
+) -> Result<Vec<PathBuf>> {
+    run_rustc_emit_obj_at(captured, extra, cancel, nice)
 }
 
 fn run_rustc_emit_obj_at(
     captured: &CapturedInvocation,
     extra: &[String],
     cancel: &(dyn Fn() -> bool + Sync),
-    background: bool,
+    nice: i32,
 ) -> Result<Vec<PathBuf>> {
     if cancel() {
         return Err(Cancelled.into());
@@ -198,21 +216,21 @@ fn run_rustc_emit_obj_at(
         cmd.env(k, v);
     }
     #[cfg(unix)]
-    if background {
+    if nice > 0 {
         use std::os::unix::process::CommandExt as _;
         // SAFETY: runs in the forked child before `exec`; `nice` is a
         // single async-signal-safe syscall and touches no parent state.
         // A failure (it cannot fail to LOWER priority) is ignored: the
         // replay is still correct at normal priority.
         unsafe {
-            cmd.pre_exec(|| {
-                let _ = libc::nice(19);
+            cmd.pre_exec(move || {
+                let _ = libc::nice(nice);
                 Ok(())
             });
         }
     }
     #[cfg(not(unix))]
-    let _ = background;
+    let _ = nice;
 
     let mut child = cmd
         .stdin(std::process::Stdio::null())
@@ -485,10 +503,10 @@ mod tests {
 
     /// A seed replays at the lowest priority, set before exec so every
     /// thread rustc starts inherits it; a save's replay runs at normal
-    /// priority.
+    /// priority, or at the increment its caller asks for.
     #[cfg(unix)]
     #[test]
-    fn a_background_replay_runs_at_nice_19_and_a_save_does_not() {
+    fn a_replay_runs_at_the_niceness_it_asks_for() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let rustc = tmp.path().join("fake-rustc.sh");
@@ -505,13 +523,19 @@ mod tests {
             cwd: tmp.path().display().to_string(),
             env: vec![("PATH".into(), std::env::var("PATH").unwrap_or_default())],
         };
-        let nice = |background: bool| {
-            let _ = run_rustc_emit_obj_at(&captured, &[], &|| false, background);
-            std::fs::read_to_string(&report).unwrap().trim().parse::<i32>().unwrap()
+        let read = || std::fs::read_to_string(&report).unwrap().trim().parse::<i32>().unwrap();
+        let cancellable = || {
+            let _ = run_rustc_emit_obj_cancellable(&captured, &[], &|| false);
+            read()
         };
-        let base = nice(false);
-        assert_eq!(nice(true), 19.max(base));
-        assert_eq!(nice(false), base);
+        let base = cancellable();
+        let _ = run_rustc_emit_obj_background(&captured, &[], &|| false);
+        assert_eq!(read(), BACKGROUND_NICE.max(base));
+        let _ = run_rustc_emit_obj_niced(&captured, &[], &|| false, 7);
+        assert_eq!(read(), (base + 7).min(BACKGROUND_NICE));
+        let _ = run_rustc_emit_obj_niced(&captured, &[], &|| false, 0);
+        assert_eq!(read(), base);
+        assert_eq!(cancellable(), base);
     }
 
     fn cargo_argv() -> Vec<String> {

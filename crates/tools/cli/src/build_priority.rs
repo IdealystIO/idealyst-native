@@ -81,6 +81,16 @@ impl BuildPriority {
         }
     }
 
+    /// The niceness increment this priority asks for: `0` at
+    /// [`Normal`](Self::Normal). For work spawned outside this module (a
+    /// server patch's replays).
+    pub fn nice(self) -> i32 {
+        match self {
+            Self::Normal => 0,
+            Self::Lowered { nice } => nice,
+        }
+    }
+
     /// Make `cmd` spawn at this priority. Touches only the child: the
     /// calling process's own priority is unchanged.
     pub fn apply(self, cmd: &mut Command) {
@@ -129,6 +139,13 @@ mod tests {
     fn server_build_priority_zero_or_negative_disables() {
         assert_eq!(BuildPriority::server_build_from(Some("0")), BuildPriority::Normal);
         assert_eq!(BuildPriority::server_build_from(Some("-5")), BuildPriority::Normal);
+    }
+
+    #[test]
+    fn a_priority_names_its_niceness_increment() {
+        assert_eq!(BuildPriority::Normal.nice(), 0);
+        assert_eq!(BuildPriority::Lowered { nice: 7 }.nice(), 7);
+        assert_eq!(BuildPriority::server_build_from(Some("0")).nice(), 0);
     }
 
     #[test]

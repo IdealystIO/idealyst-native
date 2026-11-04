@@ -134,6 +134,8 @@ pub struct ServerPatchBuilder {
     text: TextIndex,
     out_dir: PathBuf,
     seq: std::sync::atomic::AtomicU64,
+    /// Niceness increment of a patch's replays ([`Self::with_replay_nice`]).
+    replay_nice: i32,
 }
 
 /// Where each function of a linked image ends, and its bytes: what tells
@@ -198,7 +200,18 @@ impl ServerPatchBuilder {
         let text = TextIndex::of(exe, &data)?;
         drop(data);
         std::fs::create_dir_all(&out_dir).with_context(|| format!("create {}", out_dir.display()))?;
-        Ok(Self { cache, text, out_dir, seq: std::sync::atomic::AtomicU64::new(0) })
+        Ok(Self { cache, text, out_dir, seq: std::sync::atomic::AtomicU64::new(0), replay_nice: 0 })
+    }
+
+    /// Run each patch's replays at niceness increment `nice` (`0`, the
+    /// default: this process's priority). A full-stack save starts a web
+    /// hot patch beside this replay, and the web patch is the one on the
+    /// developer's screen, so a session gives this the increment its server
+    /// build runs at. Not the seeds' 19: someone is waiting on this patch
+    /// too, and on a busy machine 19 would starve it.
+    pub fn with_replay_nice(mut self, nice: i32) -> Self {
+        self.replay_nice = nice;
+        self
     }
 
     /// Build a patch of `crates` for a server running at ASLR `slide`.
@@ -228,7 +241,7 @@ impl ServerPatchBuilder {
                 .map(|c| {
                     s.spawn(move || {
                         let t = Instant::now();
-                        let r = replay::run_rustc_emit_obj_cancellable(&c.capture, &[], cancel);
+                        let r = replay::run_rustc_emit_obj_niced(&c.capture, &[], cancel, self.replay_nice);
                         (c.crate_name.clone(), r, t.elapsed())
                     })
                 })
@@ -549,6 +562,45 @@ fn pair(dylib: &Path, cache: &HostBinCache, base: &TextIndex, roots: &BTreeSet<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CrewForge A4: the concurrent web hot patch slowed to 13.6–19.9 s
+    /// because a patch's replay ran at normal priority even though the
+    /// server's `cargo build` was niced. The whole path through a patch: a
+    /// fake rustc reports the niceness it was started at.
+    #[cfg(unix)]
+    #[test]
+    fn regression_a_server_patch_replays_at_the_builders_niceness() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let rustc = tmp.path().join("fake-rustc.sh");
+        let report = tmp.path().join("nice.txt");
+        std::fs::write(&rustc, format!("#!/bin/sh\nps -o nice= -p $$ | tr -d ' ' > {}\n", report.display())).unwrap();
+        std::fs::set_permissions(&rustc, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let patch_crate = || PatchCrate {
+            crate_name: "app".into(),
+            capture: CapturedInvocation {
+                rustc: rustc.display().to_string(),
+                args: vec![
+                    "--crate-name".into(),
+                    "app".into(),
+                    "--out-dir".into(),
+                    tmp.path().join("deps").display().to_string(),
+                ],
+                cwd: tmp.path().display().to_string(),
+                env: vec![("PATH".into(), std::env::var("PATH").unwrap_or_default())],
+            },
+        };
+        let exe = std::env::current_exe().unwrap();
+        let replayed_at = |builder: ServerPatchBuilder| {
+            // The fake compiles nothing, so the patch stops after its replay.
+            let err = builder.build(&[patch_crate()], 0, &|| false, &|_, _| {}).err().expect("no objects");
+            assert!(format!("{err:#}").contains("produced no objects"), "{err:#}");
+            std::fs::read_to_string(&report).unwrap().trim().parse::<i32>().unwrap()
+        };
+        let base = replayed_at(ServerPatchBuilder::new(&exe, tmp.path().join("patches")).unwrap());
+        let niced = ServerPatchBuilder::new(&exe, tmp.path().join("patches")).unwrap().with_replay_nice(7);
+        assert_eq!(replayed_at(niced), (base + 7).min(19));
+    }
 
     // Real v0 symbols (Mach-O spelling) from a probe crate named
     // `detour_probe`, as `nm` lists them.
