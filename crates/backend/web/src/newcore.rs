@@ -3530,6 +3530,89 @@ mod tests {
         drop(realized);
     }
 
+    /// want_9bbf5f4f: a `view` with `safe_area` kept the class it mounted with
+    /// while the same reactive style on a view without it switched. Both views
+    /// here read one signal; they must wear the same class at every value.
+    #[wasm_bindgen_test]
+    async fn regression_safe_area_view_follows_a_reactive_style_variant() {
+        use runtime_shared::{Length, SafeAreaSides, StyleApplication, StyleRules, StyleSheet};
+
+        let (backend, registry, world) = focus_harness();
+        let sheet = Rc::new(
+            StyleSheet::new(|_| StyleRules::default())
+                .variant("stand", "landscape", |_| StyleRules {
+                    width: Some(Length::Px(280.0).into()),
+                    ..Default::default()
+                })
+                .variant("stand", "portrait", |_| StyleRules {
+                    width: Some(Length::Px(0.0).into()),
+                    ..Default::default()
+                }),
+        );
+        let (portrait, realized) = world.enter(|| {
+            let portrait = signal(true);
+            let styled = move || {
+                let sheet = sheet.clone();
+                move || {
+                    let arm = if portrait.get() { "portrait" } else { "landscape" };
+                    StyleApplication::new(sheet.clone()).with("stand", arm)
+                }
+            };
+            let tree = view()
+                .child(
+                    runtime_vocabulary::builders::view()
+                        .safe_area(SafeAreaSides::ALL)
+                        .style(styled())
+                        .build(),
+                )
+                .child(runtime_vocabulary::builders::view().style(styled()).build())
+                .build();
+            (portrait, realize(&backend, &registry, tree))
+        });
+        let root = realized.collect_nodes().pop().expect("one root");
+        let mut parent: web_glue::dom::Node = setup_mount_child();
+        Host::insert(&mut *backend.borrow_mut(), &mut parent, root.clone());
+        settle().await;
+
+        let classes = || {
+            let root: web_glue::dom::Element = root.clone().unchecked_into();
+            let kids = root.children();
+            let class = |i| kids.item(i).expect("a child view").class_name();
+            (class(0), class(1))
+        };
+        let width = || {
+            let root: web_glue::dom::Element = root.clone().unchecked_into();
+            let kid = root.children().item(0).expect("the safe_area view");
+            web_glue::dom::window()
+                .unwrap()
+                .get_computed_style(&kid)
+                .unwrap()
+                .unwrap()
+                .get_property_value("width")
+                .unwrap()
+        };
+
+        // Mounted in portrait: the portrait rule applies from the first frame.
+        let (with_safe_area, without) = classes();
+        assert_eq!(with_safe_area, without, "same style, same class at mount");
+        assert_eq!(width(), "0px", "mounted in portrait: the portrait arm wins");
+
+        portrait.set(false);
+        world.flush();
+        settle().await;
+        let (with_safe_area_l, without_l) = classes();
+        assert_eq!(with_safe_area_l, without_l, "the safe_area view followed the flip");
+        assert_ne!(with_safe_area_l, with_safe_area, "the class actually changed");
+        assert_eq!(width(), "280px");
+
+        portrait.set(true);
+        world.flush();
+        settle().await;
+        assert_eq!(classes().0, with_safe_area, "and back");
+        assert_eq!(width(), "0px");
+        drop(realized);
+    }
+
     /// REGRESSION (robot-e2e demo under `idealyst test --web`): the robot's
     /// `focused` for a text input read FALSE after `focus`, though the input
     /// was `document.activeElement`. A page without OS window focus (the
