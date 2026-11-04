@@ -254,7 +254,7 @@ pub fn closure_facts(c: &Closure) -> Facts {
 /// Why: cargo writes the lock from a resolve with every feature of the
 /// WORKSPACE MEMBERS on, and a feature of a dependency only if a member
 /// turns it on. A dependency feature named on the command line — the
-/// `--features idealyst/hot-reload,runtime-core/dev` that `idealyst dev`
+/// `--features idealyst/hot-reload,idealyst/dev` that `idealyst dev`
 /// passes — is resolved for the build but never written, so every such
 /// build re-resolves its packages from the registry: CrewForge paid
 /// `Updating crates.io index`, about 1.7 s and a network round trip, on

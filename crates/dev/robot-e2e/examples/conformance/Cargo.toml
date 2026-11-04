@@ -43,9 +43,6 @@ sidecar = ["dep:dev-server"]
 [dependencies]
 # The platform surface `src/main.rs` boots through.
 idealyst = { workspace = true }
-# `idealyst dev --web` builds the app with `runtime-core/dev`, which needs the
-# dependency named here.
-runtime-core = { workspace = true }
 runtime-macros = { workspace = true }
 runtime-vocabulary = { workspace = true }
 runtime-scene = { workspace = true }

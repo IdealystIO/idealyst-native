@@ -315,7 +315,7 @@ sidecar = ["dep:dev-server"]
 # they pull in: cargo locks a dependency's feature only when a feature of
 # this crate names it, so without this every dev build re-resolves them
 # from the registry.
-dev-session = ["idealyst/hot-reload", "idealyst/hydrate", "idealyst/robot", "idealyst/runtime-server", "idealyst/ui-overlay", "runtime-core/dev"]
+dev-session = ["idealyst/dev", "idealyst/hot-reload", "idealyst/hydrate", "idealyst/robot", "idealyst/runtime-server", "idealyst/ui-overlay"]
 
 [dependencies]
 # The platform surface, used by `src/main.rs` only. It carries whatever

@@ -2515,7 +2515,7 @@ const FRAMEWORK_FEATURES: &[&str] =
 ///
 /// `aas` is the deprecated alias for `runtime-server` and normalizes to
 /// it, which is what the wrapper's `[features]` block did.
-fn feature_spec(name: &str) -> String {
+pub fn feature_spec(name: &str) -> String {
     match name {
         "aas" => "idealyst/runtime-server".to_string(),
         f if FRAMEWORK_FEATURES.contains(&f) => format!("idealyst/{f}"),
@@ -4223,7 +4223,9 @@ mod regression_tests {
         assert_eq!(feature_spec("my-feature"), "my-feature");
         assert_eq!(feature_spec("dev-hot-reload"), "dev-hot-reload");
         // An already-qualified spec is left alone.
-        assert_eq!(feature_spec("runtime-core/dev"), "runtime-core/dev");
+        assert_eq!(feature_spec("idealyst/dev"), "idealyst/dev");
+        // `dev` alone is the app's own feature, not the facade's.
+        assert_eq!(feature_spec("dev"), "dev");
     }
 
     /// `aas` is the deprecated alias and must normalize. `idealyst/aas`

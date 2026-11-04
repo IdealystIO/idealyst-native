@@ -2036,8 +2036,12 @@ pub(crate) fn web_dev_features_with(no_robot: bool, hot_patch: bool) -> Vec<Stri
 
 /// Cargo features every dev web bundle is built with.
 ///
-/// `runtime-core/dev` activates the Robot bridge auto-start + the MCP
-/// catalog inventory. `robot` resolves to `idealyst/robot`
+/// `idealyst/dev` activates the Robot bridge auto-start + the MCP catalog
+/// inventory, forwarded to `runtime-core/dev` by the facade because the app
+/// crate is the package cargo builds here and `idealyst` is the one framework
+/// package it is sure to name. Spelled out rather than listed in build-web's
+/// `FRAMEWORK_FEATURES`: `dev` is a likely name for a feature of the app's
+/// own, which `--features dev` must keep reaching. `robot` resolves to `idealyst/robot`
 /// (`feature_spec` in build-web) and is what compiles in the relay
 /// dial-out that `idealyst::boot::web` gates behind
 /// `#[cfg(feature = "robot")]` — without it the browser app cannot dial
@@ -2047,7 +2051,7 @@ pub(crate) fn web_dev_features_with(no_robot: bool, hot_patch: bool) -> Vec<Stri
 /// still registers its relay in `~/.idealyst/apps`, so discovery looks
 /// healthy while every verb fails with "no app connected".
 fn web_dev_features(no_robot: bool) -> Vec<String> {
-    let mut f = vec!["runtime-core/dev".to_string()];
+    let mut f = vec!["idealyst/dev".to_string()];
     if !no_robot {
         f.push("robot".to_string());
     }
@@ -2499,7 +2503,7 @@ fn launch_web(
             // is reported, and the next save builds again. Forget the
             // handle: it lives as long as the HTTP serve loop below.
             //
-            // `runtime-core/dev` is what activates the Robot
+            // `idealyst/dev` is what activates the Robot
             // bridge auto-start + the MCP catalog inventory. It's
             // part of the dev configuration — not an opt-in — so
             // the MCP server can attach without any user action.
@@ -2508,16 +2512,15 @@ fn launch_web(
                 signal.clone(),
                 dev_reload::BuildOptions {
                     source: source.clone(),
-                    // Unlike the native wrappers, the web wrapper declares
-                    // no `dev` feature of its own — it takes `runtime-core`
-                    // as a DIRECT dep so this cross-boundary activation
-                    // resolves. It needs no `runtime-shared/robot` either: a
-                    // browser app can't host the TCP bridge, it dials a relay
-                    // through the wrapper-local `robot` feature below.
+                    // The web build has no wrapper: cargo builds the app, so
+                    // the framework features go through the `idealyst` facade
+                    // (see `web_dev_features`). It needs no
+                    // `runtime-shared/robot`: a browser app can't host the TCP
+                    // bridge, it dials a relay through `idealyst/robot`.
                     //
-                    // Robot is on by default in dev → add the wrapper-local
-                    // `robot` feature (→ `backend-web/robot`) so the local web
-                    // bundle dials the relay run() hosts. --no-robot opts out.
+                    // Robot is on by default in dev → add `robot`
+                    // (→ `backend-web/robot`) so the local web bundle dials
+                    // the relay run() hosts. --no-robot opts out.
                     features: local_web_features(args),
                     bundle_out_dir: None,
                     // `dev-http` injects the relay URL at serve time on
@@ -6011,7 +6014,7 @@ mod tests {
             opts.features,
         );
         assert!(
-            opts.features.iter().any(|f| f == "runtime-core/dev"),
+            opts.features.iter().any(|f| f == "idealyst/dev"),
             "full-stack bundle must enable the dev bridge; got {:?}",
             opts.features,
         );
@@ -6059,7 +6062,7 @@ mod tests {
         assert_eq!(
             opts.features,
             vec![
-                "runtime-core/dev".to_string(),
+                "idealyst/dev".to_string(),
                 "ui-overlay".to_string(),
                 // `--local` without `--split`: the hot-patch tier is
                 // armed, and it needs its own feature compiled in.
@@ -6076,15 +6079,64 @@ mod tests {
         assert_eq!(
             web_dev_features(false),
             vec![
-                "runtime-core/dev".to_string(),
+                "idealyst/dev".to_string(),
                 "robot".to_string(),
                 "ui-overlay".to_string(),
             ],
         );
         assert_eq!(
             web_dev_features(true),
-            vec!["runtime-core/dev".to_string(), "ui-overlay".to_string()],
+            vec!["idealyst/dev".to_string(), "ui-overlay".to_string()],
         );
+    }
+
+    /// `idealyst dev --web` died before compiling anything for an app that
+    /// names `idealyst` and not `runtime-core`, with cargo's "the package
+    /// 'app' does not contain this feature: runtime-core/dev". Every spec a
+    /// dev web bundle passes has to resolve through the facade alone, and the
+    /// forward has to reach `runtime-core`, or the bundle builds with no Robot
+    /// registry and no MCP catalog. Resolved by cargo itself, because a list
+    /// of strings passes a string comparison either way.
+    #[test]
+    fn regression_dev_web_fails_for_an_app_that_only_names_idealyst() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).expect("workspace root");
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"only-idealyst\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+                 [workspace]\n\n\
+                 [dependencies]\nidealyst = {{ path = \"{}\" }}\n",
+                repo.join("crates/idealyst").display(),
+            ),
+        )
+        .unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "").unwrap();
+        // The framework's own lock, so this resolves nothing from the network.
+        std::fs::copy(repo.join("Cargo.lock"), dir.path().join("Cargo.lock")).unwrap();
+
+        let resolve = |features: Vec<String>| {
+            let specs: Vec<String> = features.iter().map(|f| build_web::feature_spec(f)).collect();
+            let out = std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+                .current_dir(dir.path())
+                .env("CARGO_REGISTRIES_IDEALYST_INDEX", "sparse+https://crates.idealyst.io/index/")
+                .args(["tree", "--target", "wasm32-unknown-unknown", "-e", "features", "-i", "runtime-core"])
+                .args(["--depth", "1", "--features", &specs.join(",")])
+                .output()
+                .expect("run cargo tree");
+            assert!(
+                out.status.success(),
+                "cargo rejected {specs:?}: {}",
+                String::from_utf8_lossy(&out.stderr),
+            );
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+
+        let local = resolve(web_dev_features_with(false, true));
+        assert!(local.contains("runtime-core feature \"dev\""), "the forward reaches runtime-core: {local}");
+        assert!(local.contains("runtime-core feature \"hot-reload\""), "{local}");
+        resolve(wire_web_features());
     }
 
     /// The overlay is a DEV capability, on BOTH sides. `idealyst build

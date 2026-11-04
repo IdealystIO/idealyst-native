@@ -39,6 +39,12 @@ terminal = ["dep:host-terminal"]
 runtime-server = ["dep:dev-client", "backend-web/runtime-server"]
 # Robot bridge — the MCP server's remote-control transport.
 robot = ["backend-web/robot"]
+# The dev-session surface of the app's framework: the Robot element registry
+# and the MCP catalog. `idealyst dev --web` passes `idealyst/dev` because the
+# app crate is what cargo builds there, and the facade is the one framework
+# package every app names: spelled `runtime-core/dev`, an app without that
+# dependency fails with "does not contain this feature".
+dev = ["runtime-core/dev"]
 # Both halves of the dev-time UI overlay, from one name: the emission
 # and the applier in `runtime-core`, and `backend-web`'s
 # `__idealyst_overlay_patch` — the entry point the livereload script
