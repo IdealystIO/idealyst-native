@@ -79,11 +79,12 @@ impl Portals {
     pub(crate) fn add(&mut self, id: u64, target: &PortalTarget, on_dismiss: Option<Rc<dyn Fn()>>) -> StyleRules {
         let (base, anchor) = match target {
             PortalTarget::Viewport(p) => (viewport_container_rules(*p), None),
-            PortalTarget::Anchor { target, side, align, offset } => (
+            PortalTarget::Anchor { target, side, align, offset, collision_insets } => (
                 anchored_container_rules(),
                 Some(Anchor {
                     target: target.clone(),
-                    placer: AnchoredPlacer::new(*side, *align, *offset, ANCHOR_EDGE_GAP),
+                    placer: AnchoredPlacer::new(*side, *align, *offset, ANCHOR_EDGE_GAP)
+                        .with_collision_insets(*collision_insets),
                     at: None,
                 }),
             ),

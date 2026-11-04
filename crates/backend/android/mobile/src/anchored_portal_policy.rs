@@ -109,6 +109,13 @@ impl AnchorTracker {
         Self { placer: AnchoredPlacer::new(side, align, offset, ANCHOR_EDGE_GAP), applied: None }
     }
 
+    /// Keep the content inside the viewport minus these insets (dp).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub(crate) fn with_collision_insets(mut self, insets: runtime_shared::EdgeInsets) -> Self {
+        self.placer = self.placer.with_collision_insets(insets);
+        self
+    }
+
     /// Resolve the content child's top-left `(x, y)` in viewport dp.
     ///
     /// `None` when there is nothing meaningful to place against yet: no

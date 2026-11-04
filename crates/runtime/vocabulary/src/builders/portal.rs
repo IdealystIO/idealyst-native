@@ -14,7 +14,7 @@ use runtime_shared::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, PortalHandle, PortalTarget, ViewportPlacement,
 };
 use runtime_shared::{
-    pointer_button, Length, PointerEvents, Position, StyleRules, TouchEvent,
+    pointer_button, EdgeInsets, Length, PointerEvents, Position, StyleRules, TouchEvent,
     TouchHandler, TouchPhase, TouchResponse,
 };
 use runtime_scene::{item, Element};
@@ -228,6 +228,7 @@ pub fn anchored_overlay(target: AnchorTarget) -> AnchoredOverlayBuilder {
         side: ElementSide::default(),
         align: ElementAlign::default(),
         offset: 0.0,
+        collision_insets: None,
         backdrop: BackdropMode::None,
         backdrop_style: None,
         on_dismiss: None,
@@ -247,12 +248,48 @@ pub struct AnchoredOverlayBuilder {
     side: ElementSide,
     align: ElementAlign,
     offset: f32,
+    collision_insets: Option<EdgeInsets>,
     backdrop: BackdropMode,
     backdrop_style: Option<StyleProp>,
     on_dismiss: Option<Rc<dyn Fn()>>,
     trap_focus: bool,
     content_style: Option<StyleProp>,
     ref_fill: Option<Box<dyn FnOnce(PortalHandle)>>,
+}
+
+/// The context entry behind [`provide_overlay_insets`].
+#[derive(Clone)]
+struct OverlayInsets(Rc<dyn Fn() -> EdgeInsets>);
+
+/// Every `anchored_overlay` built while the calling scope lives stays clear of
+/// these viewport edges, unless it sets its own
+/// [`collision_insets`](AnchoredOverlayBuilder::collision_insets). This is how
+/// a screen with a sticky bar keeps every dropdown inside it (Select, Menu,
+/// Autocomplete) without a prop at each one:
+///
+/// ```ignore
+/// provide_overlay_insets(move || EdgeInsets { bottom: bar_height.get(), ..EdgeInsets::ZERO });
+/// ```
+///
+/// The closure runs when an overlay mounts, untracked: an overlay open while
+/// the value changes keeps what it mounted with.
+///
+/// This is a `provide`, so the most recent live one in the world applies and
+/// tree position does not: the entry is retracted when its scope drops, and a
+/// screen pushed above one that provides it inherits it until it provides its
+/// own (`EdgeInsets::ZERO` to opt out).
+pub fn provide_overlay_insets(insets: impl Fn() -> EdgeInsets + 'static) {
+    runtime_world::provide(OverlayInsets(Rc::new(insets)));
+}
+
+/// The insets a `provide_overlay_insets` in scope asks for. Builders may run
+/// outside a world (a test building an element up front): no context, none.
+fn inherited_overlay_insets() -> EdgeInsets {
+    if !runtime_world::is_entered() {
+        return EdgeInsets::ZERO;
+    }
+    runtime_world::inject::<OverlayInsets>()
+        .map_or(EdgeInsets::ZERO, |OverlayInsets(f)| runtime_world::untrack(|| f()))
 }
 
 impl AnchoredOverlayBuilder {
@@ -278,6 +315,14 @@ impl AnchoredOverlayBuilder {
 
     pub fn offset(mut self, o: f32) -> Self {
         self.offset = o;
+        self
+    }
+
+    /// Viewport edges this overlay stays clear of: it flips and clamps inside
+    /// the viewport minus these insets. Overrides
+    /// [`provide_overlay_insets`]; `EdgeInsets::ZERO` opts out of it.
+    pub fn collision_insets(mut self, insets: EdgeInsets) -> Self {
+        self.collision_insets = Some(insets);
         self
     }
 
@@ -319,6 +364,7 @@ impl AnchoredOverlayBuilder {
                 side: self.side,
                 align: self.align,
                 offset: self.offset,
+                collision_insets: self.collision_insets.unwrap_or_else(inherited_overlay_insets),
             },
             self.children,
             self.backdrop,

@@ -1375,9 +1375,14 @@ impl caps::PortalOps for HostMock {
     ) -> Node {
         // Measure an anchor the way a real backend positions the portal —
         // recorded in the handle log (`take_handle_log`), not the main one.
-        if let PortalTarget::Anchor { target, side, align, offset } = &target {
+        if let PortalTarget::Anchor { target, side, align, offset, collision_insets } = &target {
             let rect = target.rect();
-            HANDLE_LOG.with(|l| l.borrow_mut().push(format!("anchor {side:?} {align:?} {offset} {rect:?}")));
+            let insets = if *collision_insets == runtime_shared::EdgeInsets::ZERO {
+                String::new()
+            } else {
+                format!(" insets {collision_insets:?}")
+            };
+            HANDLE_LOG.with(|l| l.borrow_mut().push(format!("anchor {side:?} {align:?} {offset} {rect:?}{insets}")));
         }
         self.s.portal_dismissals.borrow_mut().push(on_dismiss);
         self.mint("portal".into())

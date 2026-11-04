@@ -163,7 +163,8 @@ pub(crate) fn create(
             side,
             align,
             offset,
-        } => create_anchored_portal(b, target, side, align, offset, on_dismiss, trap_focus),
+            collision_insets,
+        } => create_anchored_portal(b, target, side, align, offset, collision_insets, on_dismiss, trap_focus),
         // Named slots: no backend mounting infrastructure yet.
         // Fall back to a viewport-centered overlay so authors don't
         // see a hard crash — same posture as the iOS skin's Named
@@ -377,6 +378,7 @@ fn create_anchored_portal(
     side: ElementSide,
     align: ElementAlign,
     offset: f32,
+    collision_insets: runtime_shared::EdgeInsets,
     on_dismiss: Option<Rc<dyn Fn()>>,
     trap_focus: bool,
 ) -> GlobalRef {
@@ -395,7 +397,7 @@ fn create_anchored_portal(
 
     let state = Rc::new(AnchorState {
         target,
-        tracker: RefCell::new(AnchorTracker::new(side, align, offset)),
+        tracker: RefCell::new(AnchorTracker::new(side, align, offset).with_collision_insets(collision_insets)),
         content: RefCell::new(None),
         content_size: Cell::new((0.0, 0.0)),
         viewport: Cell::new((0.0, 0.0)),

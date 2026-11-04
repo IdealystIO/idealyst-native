@@ -628,9 +628,13 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
         let target = match p.target {
             PortalTarget::Viewport(v) => WirePortalTarget::Viewport(v),
             PortalTarget::Named(n) => WirePortalTarget::Named(n.to_owned()),
-            PortalTarget::Anchor { target, side, align, offset } => {
-                WirePortalTarget::Anchor { rect: handler(move |_: &()| target.rect()), side, align, offset }
-            }
+            PortalTarget::Anchor { target, side, align, offset, collision_insets: i } => WirePortalTarget::Anchor {
+                rect: handler(move |_: &()| target.rect()),
+                side,
+                align,
+                offset,
+                collision_insets: [i.top, i.right, i.bottom, i.left],
+            },
         };
         return Node::Portal {
             target,

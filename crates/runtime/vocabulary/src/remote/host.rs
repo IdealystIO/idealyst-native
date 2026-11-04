@@ -617,13 +617,14 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     target: match target {
                         WirePortalTarget::Viewport(v) => PortalTarget::Viewport(v),
                         WirePortalTarget::Named(n) => PortalTarget::Named(intern(&n)),
-                        WirePortalTarget::Anchor { rect, side, align, offset } => {
+                        WirePortalTarget::Anchor { rect, side, align, offset, collision_insets: [top, right, bottom, left] } => {
                             let rect = handler::<(), Option<runtime_shared::primitives::portal::ViewportRect>>(conn, rect, || None);
                             PortalTarget::Anchor {
                                 target: runtime_shared::primitives::portal::AnchorTarget::from_fn(move || rect(&())),
                                 side,
                                 align,
                                 offset,
+                                collision_insets: runtime_shared::EdgeInsets { top, right, bottom, left },
                             }
                         }
                     },

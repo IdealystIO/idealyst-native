@@ -205,13 +205,14 @@ pub(crate) fn create(
         reposition_resize_handler,
         initial_measure_task,
         content_resize_watch,
-    ) = if let PortalTarget::Anchor { target: anchor_target, side, align, offset } = &target {
+    ) = if let PortalTarget::Anchor { target: anchor_target, side, align, offset, collision_insets } = &target {
             install_anchor_reposition(
                 &portal_root,
                 anchor_target.clone(),
                 *side,
                 *align,
                 *offset,
+                *collision_insets,
             )
         } else {
             (None, None, None, None)
@@ -298,7 +299,9 @@ impl PortalOps for WebPortalOps {}
 fn position_styles_for_target(target: &PortalTarget) -> String {
     match target {
         PortalTarget::Viewport(p) => viewport_placement_styles(*p).to_string(),
-        PortalTarget::Anchor { target: anchor_target, side, align, offset } => {
+        // The insets wait for the reposition: this style only has to hold
+        // until the first measured place.
+        PortalTarget::Anchor { target: anchor_target, side, align, offset, collision_insets: _ } => {
             // Initial mount only — `requestAnimationFrame` will
             // remeasure and re-place after children have laid out.
             let Some(rect) = anchor_target.rect() else {
@@ -463,6 +466,7 @@ fn install_anchor_reposition(
     side: ElementSide,
     align: ElementAlign,
     offset: f32,
+    collision_insets: runtime_shared::EdgeInsets,
 ) -> (
     Option<web_glue::dom::Listener>,
     Option<web_glue::dom::Listener>,
@@ -478,7 +482,9 @@ fn install_anchor_reposition(
     // settled on, so a content resize re-places on THAT side (a flipped
     // menu that shrinks keeps its bottom on the trigger) instead of
     // re-picking from the requested side and jumping across the trigger.
-    let placer = std::cell::Cell::new(AnchoredPlacer::new(side, align, offset, EDGE_GAP));
+    let placer = std::cell::Cell::new(
+        AnchoredPlacer::new(side, align, offset, EDGE_GAP).with_collision_insets(collision_insets),
+    );
 
     // Measure-based reposition: read the portal's *rendered* rect via
     // `getBoundingClientRect`, pick the side with enough room for it,
@@ -810,6 +816,7 @@ mod tests {
             ElementSide::Below,
             ElementAlign::Start,
             offset,
+            runtime_shared::EdgeInsets::ZERO,
         );
         resize_observations_delivered().await;
 
@@ -840,6 +847,48 @@ mod tests {
 
         drop(_pipeline);
         root.remove();
+    }
+
+    /// want_a400200b, in a real browser: a panel that fits below its trigger
+    /// in the bare viewport flips above a sticky bar's collision inset rather
+    /// than drawing across the bar.
+    #[wasm_bindgen_test]
+    async fn regression_anchored_panel_flips_above_a_sticky_bar_inset() {
+        crate::install_scheduler();
+        let (_, vh) = viewport_size();
+        let trigger = ViewportRect { x: 40.0, y: vh - 140.0, width: 120.0, height: 40.0 };
+        let placed = |insets: runtime_shared::EdgeInsets| {
+            let anchor: runtime_shared::Ref<FixedRect> = runtime_shared::Ref::new();
+            anchor.fill(FixedRect(trigger));
+            let doc = web_glue::dom::window().unwrap().document().unwrap();
+            let root = doc.create_element("div").unwrap();
+            root.set_attribute("style", PORTAL_ROOT_BASE_STYLE).unwrap();
+            let panel = doc.create_element("div").unwrap();
+            panel.set_attribute("style", "width: 200px; height: 78px;").unwrap();
+            root.append_child(&panel).unwrap();
+            doc.body().unwrap().append_child(&root).unwrap();
+            let pipeline = install_anchor_reposition(
+                &root,
+                AnchorTarget::from(anchor),
+                ElementSide::Below,
+                ElementAlign::Start,
+                0.0,
+                insets,
+            );
+            (root, pipeline)
+        };
+        let (bare, bare_pipeline) = placed(runtime_shared::EdgeInsets::ZERO);
+        let (inset, inset_pipeline) =
+            placed(runtime_shared::EdgeInsets { bottom: 57.0, ..runtime_shared::EdgeInsets::ZERO });
+        resize_observations_delivered().await;
+
+        let top = |el: &web_glue::dom::Element| el.get_bounding_client_rect().y() as f32;
+        assert!((top(&bare) - (trigger.y + trigger.height)).abs() < 0.5, "the bare viewport keeps it below");
+        assert!((top(&inset) - (trigger.y - 78.0)).abs() < 0.5, "the inset flips it above: top {}", top(&inset));
+
+        drop((bare_pipeline, inset_pipeline));
+        bare.remove();
+        inset.remove();
     }
 
     /// The measure parks the element to read it, so it must put `left`/`top`

@@ -86,7 +86,8 @@ pub mod wasm;
 ///   as a getter). `&'static str`, `ImageSource` and `KeyboardKind` cross
 ///   as props and plain data: a field of one of those types, which a
 ///   bundle used to send as nothing, now carries its value.
-/// - 10: [`Node::Pressable`] carries `a11y_state`.
+/// - 10: [`Node::Pressable`] carries `a11y_state`; [`WirePortalTarget::Anchor`]
+///   carries `collision_insets`.
 pub const CODEC_VERSION: u32 = 10;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
@@ -642,6 +643,8 @@ pub enum WirePortalTarget {
         side: runtime_shared::primitives::portal::ElementSide,
         align: runtime_shared::primitives::portal::ElementAlign,
         offset: f32,
+        /// `[top, right, bottom, left]`.
+        collision_insets: [f32; 4],
     },
 }
 

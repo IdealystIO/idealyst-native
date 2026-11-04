@@ -67,6 +67,7 @@
 //! is the source of truth; flipping it drops the surrounding scope
 //! and triggers `PortalOps::release_portal`.
 
+use crate::safe_area::EdgeInsets;
 use crate::Ref;
 use std::any::Any;
 use std::rc::Rc;
@@ -324,8 +325,9 @@ pub fn resolve_anchored_placement(
     offset: f32,
     edge_gap: f32,
 ) -> AnchorPlacement {
-    let side = pick_anchor_side(requested_side, trigger, content, viewport, offset);
-    place_on_side(trigger, content, viewport, side, align, offset, edge_gap)
+    let bounds = Bounds::new(viewport, EdgeInsets::ZERO);
+    let side = pick_anchor_side(requested_side, trigger, content, bounds, offset);
+    place_on_side(trigger, content, bounds, side, align, offset, edge_gap)
 }
 
 /// Gutter every backend keeps between an anchored overlay and the
@@ -366,12 +368,31 @@ pub struct AnchoredPlacer {
     align: ElementAlign,
     offset: f32,
     edge_gap: f32,
+    collision_insets: EdgeInsets,
     settled_side: Option<ElementSide>,
 }
 
 impl AnchoredPlacer {
     pub fn new(requested_side: ElementSide, align: ElementAlign, offset: f32, edge_gap: f32) -> Self {
-        Self { requested_side, align, offset, edge_gap, settled_side: None }
+        Self {
+            requested_side,
+            align,
+            offset,
+            edge_gap,
+            collision_insets: EdgeInsets::ZERO,
+            settled_side: None,
+        }
+    }
+
+    /// Keep the overlay inside the viewport minus these insets: a sticky
+    /// bottom bar's height, a pinned header's. The flip decides against this
+    /// smaller rect and the clamp holds the overlay inside it, `edge_gap`
+    /// included. An inset larger than the viewport leaves no room; the clamp
+    /// then pins the overlay to the rect's start, as an oversized overlay
+    /// pins to the viewport's.
+    pub fn with_collision_insets(mut self, insets: EdgeInsets) -> Self {
+        self.collision_insets = insets;
+        self
     }
 
     /// The side the last [`place`](Self::place) settled on, if any.
@@ -389,27 +410,50 @@ impl AnchoredPlacer {
         content: (f32, f32),
         viewport: (f32, f32),
     ) -> AnchorPlacement {
+        let bounds = Bounds::new(viewport, self.collision_insets);
         let side = match self.settled_side {
-            Some(settled) if side_fits(settled, trigger, content, viewport, self.offset) => settled,
-            Some(settled) => pick_anchor_side(settled, trigger, content, viewport, self.offset),
-            None => pick_anchor_side(self.requested_side, trigger, content, viewport, self.offset),
+            Some(settled) if side_fits(settled, trigger, content, bounds, self.offset) => settled,
+            Some(settled) => pick_anchor_side(settled, trigger, content, bounds, self.offset),
+            None => pick_anchor_side(self.requested_side, trigger, content, bounds, self.offset),
         };
         self.settled_side = Some(side);
-        place_on_side(trigger, content, viewport, side, self.align, self.offset, self.edge_gap)
+        place_on_side(trigger, content, bounds, side, self.align, self.offset, self.edge_gap)
+    }
+}
+
+/// The rect an anchored overlay stays inside: the viewport, less any
+/// collision insets. Its origin is not always `(0, 0)`, which is why the
+/// insets can't be expressed by passing a smaller viewport size.
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct Bounds {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+}
+
+impl Bounds {
+    fn new(viewport: (f32, f32), insets: EdgeInsets) -> Self {
+        Self {
+            left: insets.left,
+            top: insets.top,
+            right: viewport.0 - insets.right,
+            bottom: viewport.1 - insets.bottom,
+        }
     }
 }
 
 fn place_on_side(
     trigger: ViewportRect,
     content: (f32, f32),
-    viewport: (f32, f32),
+    bounds: Bounds,
     side: ElementSide,
     align: ElementAlign,
     offset: f32,
     edge_gap: f32,
 ) -> AnchorPlacement {
     let (y, x) = anchor_top_left(trigger, side, align, offset, content);
-    let (y, x) = clamp_into_viewport(y, x, content, viewport, edge_gap);
+    let (y, x) = clamp_into_bounds(y, x, content, bounds, edge_gap);
     AnchorPlacement { side, x, y }
 }
 
@@ -454,33 +498,36 @@ fn side_room(
     side: ElementSide,
     trigger: ViewportRect,
     content: (f32, f32),
-    viewport: (f32, f32),
+    bounds: Bounds,
     offset: f32,
 ) -> (f32, f32, f32, ElementSide) {
     let (ow, oh) = content;
-    let (vw, vh) = viewport;
     let needed = match side {
         ElementSide::Above | ElementSide::Below => oh + offset,
         ElementSide::Start | ElementSide::End => ow + offset,
     };
+    let below = bounds.bottom - (trigger.y + trigger.height);
+    let above = trigger.y - bounds.top;
+    let start = trigger.x - bounds.left;
+    let end = bounds.right - (trigger.x + trigger.width);
     let (have, opposite_have, opposite) = match side {
-        ElementSide::Below => (vh - (trigger.y + trigger.height), trigger.y, ElementSide::Above),
-        ElementSide::Above => (trigger.y, vh - (trigger.y + trigger.height), ElementSide::Below),
-        ElementSide::Start => (trigger.x, vw - (trigger.x + trigger.width), ElementSide::End),
-        ElementSide::End => (vw - (trigger.x + trigger.width), trigger.x, ElementSide::Start),
+        ElementSide::Below => (below, above, ElementSide::Above),
+        ElementSide::Above => (above, below, ElementSide::Below),
+        ElementSide::Start => (start, end, ElementSide::End),
+        ElementSide::End => (end, start, ElementSide::Start),
     };
     (needed, have, opposite_have, opposite)
 }
 
-/// Does the measured content fit on `side` without overflowing the viewport?
+/// Does the measured content fit on `side` without leaving the bounds?
 fn side_fits(
     side: ElementSide,
     trigger: ViewportRect,
     content: (f32, f32),
-    viewport: (f32, f32),
+    bounds: Bounds,
     offset: f32,
 ) -> bool {
-    let (needed, have, _, _) = side_room(side, trigger, content, viewport, offset);
+    let (needed, have, _, _) = side_room(side, trigger, content, bounds, offset);
     have >= needed
 }
 
@@ -492,11 +539,11 @@ fn pick_anchor_side(
     requested: ElementSide,
     trigger: ViewportRect,
     content: (f32, f32),
-    viewport: (f32, f32),
+    bounds: Bounds,
     offset: f32,
 ) -> ElementSide {
     let (needed, have, opposite_have, opposite) =
-        side_room(requested, trigger, content, viewport, offset);
+        side_room(requested, trigger, content, bounds, offset);
     if have < needed && opposite_have > have {
         opposite
     } else {
@@ -505,24 +552,113 @@ fn pick_anchor_side(
 }
 
 /// Clamp the overlay's `(top, left)` so its full content rect stays inside
-/// the viewport with an `edge_gap` gutter on every side.
-fn clamp_into_viewport(
+/// `bounds` with an `edge_gap` gutter on every side. Content too big to fit
+/// pins to the bounds' top-left.
+fn clamp_into_bounds(
     top: f32,
     left: f32,
     content: (f32, f32),
-    viewport: (f32, f32),
+    bounds: Bounds,
     edge_gap: f32,
 ) -> (f32, f32) {
     let (ow, oh) = content;
-    let (vw, vh) = viewport;
-    let max_left = (vw - edge_gap - ow).max(edge_gap);
-    let max_top = (vh - edge_gap - oh).max(edge_gap);
-    (crate::num::clamp_f32(top, edge_gap, max_top), crate::num::clamp_f32(left, edge_gap, max_left))
+    let (min_left, min_top) = (bounds.left + edge_gap, bounds.top + edge_gap);
+    let max_left = (bounds.right - edge_gap - ow).max(min_left);
+    let max_top = (bounds.bottom - edge_gap - oh).max(min_top);
+    (crate::num::clamp_f32(top, min_top, max_top), crate::num::clamp_f32(left, min_left, max_left))
 }
 
 #[cfg(test)]
 mod placement_tests {
     use super::*;
+
+    /// The report behind collision insets, in its own numbers: a 1440x900
+    /// window with a sticky bar from y 843, and a Select whose trigger ends at
+    /// y 800. Below the trigger the 2-row panel fits the VIEWPORT, so it drew
+    /// across the bar.
+    fn panel_over_a_sticky_bar(insets: EdgeInsets) -> AnchorPlacement {
+        let trigger = ViewportRect { x: 100.0, y: 760.0, width: 200.0, height: 40.0 };
+        AnchoredPlacer::new(ElementSide::Below, ElementAlign::Start, 5.0, GAP)
+            .with_collision_insets(insets)
+            .place(trigger, (200.0, 78.0), (1440.0, 900.0))
+    }
+
+    #[test]
+    fn regression_panel_flips_above_a_sticky_bottom_bar() {
+        let open = panel_over_a_sticky_bar(EdgeInsets::ZERO);
+        assert_eq!((open.side, open.y), (ElementSide::Below, 805.0), "no insets: over the bar");
+        let flipped = panel_over_a_sticky_bar(EdgeInsets { bottom: 57.0, ..EdgeInsets::ZERO });
+        assert_eq!(flipped.side, ElementSide::Above);
+        assert_eq!(flipped.y, 760.0 - 5.0 - 78.0);
+    }
+
+    #[test]
+    fn collision_top_inset_flips_below_a_pinned_header() {
+        let trigger = ViewportRect { x: 100.0, y: 90.0, width: 100.0, height: 30.0 };
+        let place = |top| {
+            AnchoredPlacer::new(ElementSide::Above, ElementAlign::Start, 0.0, GAP)
+                .with_collision_insets(EdgeInsets { top, ..EdgeInsets::ZERO })
+                .place(trigger, (100.0, 60.0), VP)
+        };
+        assert_eq!(place(0.0).side, ElementSide::Above, "fits above in the bare viewport");
+        let under_header = place(64.0);
+        assert_eq!(under_header.side, ElementSide::Below);
+        assert_eq!(under_header.y, 120.0);
+    }
+
+    /// Neither side fits: the clamp holds the panel inside the insets, with
+    /// the gutter, on both the near and the far edge.
+    #[test]
+    fn collision_clamp_holds_a_panel_inside_top_and_bottom_insets() {
+        let insets = EdgeInsets { top: 100.0, bottom: 100.0, ..EdgeInsets::ZERO };
+        let trigger = ViewportRect { x: 10.0, y: 390.0, width: 50.0, height: 20.0 };
+        let mut placer =
+            AnchoredPlacer::new(ElementSide::Below, ElementAlign::Start, 0.0, GAP).with_collision_insets(insets);
+
+        let p = placer.place(trigger, (100.0, 300.0), VP);
+        assert_eq!(p.side, ElementSide::Below);
+        assert_eq!(p.y, 800.0 - 100.0 - GAP - 300.0, "pushed up off the bottom bar");
+
+        let trigger_high = ViewportRect { y: 50.0, ..trigger };
+        let p = AnchoredPlacer::new(ElementSide::Above, ElementAlign::Start, 0.0, GAP)
+            .with_collision_insets(insets)
+            .place(trigger_high, (100.0, 30.0), VP);
+        assert_eq!(p.side, ElementSide::Below, "above has no room inside the header inset");
+        assert_eq!(p.y, 100.0 + GAP, "the trigger sits under the header: pushed down off it");
+    }
+
+    #[test]
+    fn collision_left_and_right_insets_clamp_the_cross_axis() {
+        let insets = EdgeInsets { left: 240.0, right: 300.0, ..EdgeInsets::ZERO };
+        let at = |x| {
+            AnchoredPlacer::new(ElementSide::Below, ElementAlign::Start, 0.0, GAP)
+                .with_collision_insets(insets)
+                .place(ViewportRect { x, y: 100.0, width: 50.0, height: 20.0 }, (200.0, 50.0), VP)
+                .x
+        };
+        assert_eq!(at(10.0), 240.0 + GAP, "out from under a sidebar");
+        assert_eq!(at(900.0), 1000.0 - 300.0 - GAP - 200.0, "out from under a right rail");
+    }
+
+    /// An inset wider than the viewport leaves no rect. The placer still
+    /// returns a position, rather than an inverted clamp's panic or NaN.
+    #[test]
+    fn collision_insets_bigger_than_the_viewport_pin_to_the_start() {
+        let p = AnchoredPlacer::new(ElementSide::Below, ElementAlign::Start, 0.0, GAP)
+            .with_collision_insets(EdgeInsets { top: 900.0, bottom: 900.0, ..EdgeInsets::ZERO })
+            .place(trigger(), (120.0, 60.0), VP);
+        assert_eq!(p.y, 900.0 + GAP);
+    }
+
+    /// The sticky side keeps deciding against the insets as content changes.
+    #[test]
+    fn collision_settled_side_reflips_when_growth_reaches_the_inset() {
+        let trigger = ViewportRect { x: 10.0, y: 400.0, width: 50.0, height: 20.0 };
+        let mut placer = AnchoredPlacer::new(ElementSide::Below, ElementAlign::Start, 0.0, GAP)
+            .with_collision_insets(EdgeInsets { bottom: 100.0, ..EdgeInsets::ZERO });
+        assert_eq!(placer.place(trigger, (50.0, 200.0), VP).side, ElementSide::Below);
+        assert_eq!(placer.place(trigger, (50.0, 300.0), VP).side, ElementSide::Above, "280 left below");
+    }
 
     const VP: (f32, f32) = (1000.0, 800.0);
     const GAP: f32 = 8.0;
@@ -692,6 +828,10 @@ pub enum PortalTarget {
         side: ElementSide,
         align: ElementAlign,
         offset: f32,
+        /// Viewport edges the overlay stays clear of, in the viewport's own
+        /// units: the flip and the clamp treat the viewport as this much
+        /// smaller on each side. See [`AnchoredPlacer::with_collision_insets`].
+        collision_insets: EdgeInsets,
     },
     /// Named slot (reserved for future use).
     Named(&'static str),

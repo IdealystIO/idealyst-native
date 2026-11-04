@@ -894,6 +894,44 @@ Why this primitive exists: rendering custom 2D/3D content is the
 one thing no composition of other primitives can express. The
 framework gets out of the way and hands you the drawable.
 
+### `anchored_overlay` — a panel attached to an element
+
+Popovers, dropdowns, tooltips. It opens on `side` with `align` and `offset`,
+flips to the opposite side when the content doesn't fit, and clamps inside the
+viewport.
+
+The viewport isn't always the room an app has. `collision_insets` makes the
+flip and the clamp treat it as smaller on each side:
+
+```rust
+ui! {
+    anchored_overlay(
+        target = target,
+        collision_insets = EdgeInsets { bottom: 57.0, ..EdgeInsets::ZERO },
+    ) { panel }
+}
+```
+
+A screen with a sticky bar should set this once rather than on every control.
+`provide_overlay_insets` applies to every `anchored_overlay` built while the
+calling scope lives, including the ones inside idea-ui's `Select`, `Menu` and
+`Autocomplete`:
+
+```rust
+#[component]
+fn FillScreen() -> Element {
+    let bar_height = signal(0.0_f32);
+    provide_overlay_insets(move || EdgeInsets { bottom: bar_height.get(), ..EdgeInsets::ZERO });
+    // … the sticky bar reports its height into `bar_height` from `on_layout`
+}
+```
+
+An overlay's own `collision_insets` wins, and `EdgeInsets::ZERO` opts out. The
+closure runs when an overlay mounts, so one already open keeps its insets.
+Because this is a `provide`, the most recent live call applies, wherever it sits
+in the tree: a modal or a pushed screen above the screen that provided it
+inherits it until it provides its own.
+
 ### Navigation — `swap` / `stack` + the outlet
 
 Navigation is two primitives, both registered by `register_builtins`

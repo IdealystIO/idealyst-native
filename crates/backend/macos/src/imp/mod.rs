@@ -2356,7 +2356,7 @@ fn length_to_px(len: &runtime_shared::Length) -> CGFloat {
         runtime_shared::Length::Full => {
             runtime_shared::Length::FULL_RADIUS_FALLBACK_PX as CGFloat
         }
-        runtime_shared::Length::Percent(_) | runtime_shared::Length::Auto => 0.0,
+        runtime_shared::Length::Percent(_) | runtime_shared::Length::Auto | runtime_shared::Length::FitContent => 0.0,
     }
 }
 
@@ -4596,6 +4596,7 @@ impl MacosBackend {
                     spec.side,
                     spec.align,
                     spec.offset,
+                    spec.collision_insets,
                 );
                 if let Some(e) = self.portal_instances.get_mut(&parent_key) {
                     e.tracker = Some(tracker);
@@ -5877,11 +5878,12 @@ impl MacosBackend {
         // container's top-left — the tooltip/popover "renders in the corner" bug.
         use runtime_shared::primitives::portal::PortalTarget;
         let anchor_spec = match &target {
-            PortalTarget::Anchor { target: t, side, align, offset } => Some(portal::AnchorSpec {
+            PortalTarget::Anchor { target: t, side, align, offset, collision_insets } => Some(portal::AnchorSpec {
                 target: t.clone(),
                 side: *side,
                 align: *align,
                 offset: *offset,
+                collision_insets: *collision_insets,
             }),
             _ => None,
         };

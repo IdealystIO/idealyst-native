@@ -3105,17 +3105,18 @@ impl IosBackend {
                         }
                     }
                 }
-                let (target, side, align, offset) = {
+                let (target, side, align, offset, collision_insets) = {
                     // Safe: `action` is non-Plain only when `anchor.is_some()`.
                     let entry = self.portal_instances.get(&parent_key).unwrap();
                     let anchor = entry.anchor.as_ref().unwrap();
-                    (anchor.target.clone(), anchor.side, anchor.align, anchor.offset)
+                    (anchor.target.clone(), anchor.side, anchor.align, anchor.offset, anchor.collision_insets)
                 };
                 let spec = portal::AnchorSpec {
                     target: target.clone(),
                     side,
                     align,
                     offset,
+                    collision_insets,
                 };
                 let child_rules = portal::child_style_for_anchor(&spec);
                 self.layout.set_style(c_layout, &child_rules);
@@ -3125,7 +3126,7 @@ impl IosBackend {
                         .expect("retain popover view")
                 };
                 let link = portal::start_anchor_tracker(
-                    self.mtm, popover, target, side, align, offset,
+                    self.mtm, popover, target, side, align, offset, collision_insets,
                 );
                 if let Some(entry_mut) = self.portal_instances.get_mut(&parent_key) {
                     entry_mut.anchor_link = Some(link);
@@ -4305,12 +4306,13 @@ impl IosBackend {
             PortalTarget::Viewport(placement) => {
                 (None, portal::container_style_for_placement(*placement))
             }
-            PortalTarget::Anchor { target, side, align, offset } => {
+            PortalTarget::Anchor { target, side, align, offset, collision_insets } => {
                 let spec = portal::AnchorSpec {
                     target: target.clone(),
                     side: *side,
                     align: *align,
                     offset: *offset,
+                    collision_insets: *collision_insets,
                 };
                 (Some(spec), portal::container_style_for_anchor())
             }

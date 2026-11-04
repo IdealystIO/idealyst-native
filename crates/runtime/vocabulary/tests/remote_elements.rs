@@ -1002,7 +1002,7 @@ mod refs {
     #[test]
     fn an_anchored_portal_measures_through_the_bundles_ref() {
         use runtime_shared::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, PortalTarget};
-        use runtime_shared::Ref;
+        use runtime_shared::{EdgeInsets, Ref};
         use runtime_vocabulary::builders::portal;
         fn anchored() -> Element {
             component_scope(|| {
@@ -1015,6 +1015,7 @@ mod refs {
                             side: ElementSide::Below,
                             align: ElementAlign::Start,
                             offset: 4.0,
+                            collision_insets: EdgeInsets { bottom: 57.0, ..EdgeInsets::ZERO },
                         })
                         .child(text().content("popover")),
                     )

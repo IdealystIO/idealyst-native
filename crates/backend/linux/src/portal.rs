@@ -94,10 +94,18 @@ pub(crate) struct AnchorSpec {
 }
 
 impl AnchorSpec {
-    pub(crate) fn new(target: AnchorTarget, side: ElementSide, align: ElementAlign, offset: f32) -> Self {
+    pub(crate) fn new(
+        target: AnchorTarget,
+        side: ElementSide,
+        align: ElementAlign,
+        offset: f32,
+        collision_insets: runtime_shared::EdgeInsets,
+    ) -> Self {
         Self {
             target,
-            placer: std::cell::Cell::new(AnchoredPlacer::new(side, align, offset, ANCHOR_EDGE_GAP)),
+            placer: std::cell::Cell::new(
+                AnchoredPlacer::new(side, align, offset, ANCHOR_EDGE_GAP).with_collision_insets(collision_insets),
+            ),
         }
     }
 }

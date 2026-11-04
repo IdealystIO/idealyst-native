@@ -48,7 +48,8 @@ pub use navigator::{
     StackNavigatorBuilder, SwapNavigatorBuilder,
 };
 pub use portal::{
-    anchored_overlay, overlay, portal, AnchoredOverlayBuilder, OverlayBuilder, PortalBuilder,
+    anchored_overlay, overlay, portal, provide_overlay_insets, AnchoredOverlayBuilder, OverlayBuilder,
+    PortalBuilder,
 };
 pub use presence::{presence, PresenceBuilder};
 pub use virtual_grid::{virtual_grid, VirtualGridBuilder};

@@ -4037,12 +4037,13 @@ impl LinuxBackend {
             side,
             align,
             offset,
+            collision_insets,
         } = &target
         {
 
             self.portal_anchors.insert(
                 node.id,
-                portal::AnchorSpec::new(target.clone(), *side, *align, *offset),
+                portal::AnchorSpec::new(target.clone(), *side, *align, *offset, *collision_insets),
             );
         }
         // Base placement flex from the target (author/composition style
@@ -5042,6 +5043,7 @@ mod layout_tests {
                 side: runtime_shared::primitives::portal::ElementSide::Below,
                 align: runtime_shared::primitives::portal::ElementAlign::Start,
                 offset: 4.0,
+                collision_insets: runtime_shared::EdgeInsets::ZERO,
             },
             None,
             false,

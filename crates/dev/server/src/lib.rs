@@ -2177,14 +2177,14 @@ impl WireRecordingBackend {
             primitives::portal::PortalTarget::Viewport(placement) => {
                 wire::WirePortalTarget::Viewport(wire_viewport_placement(placement))
             }
-            primitives::portal::PortalTarget::Anchor { target: _, side, align, offset } => {
+            primitives::portal::PortalTarget::Anchor { target: _, side, align, offset, collision_insets: _ } => {
                 // runtime-server can't track anchor rects on the device — the
                 // anchor node id isn't carried in framework's
                 // type-erased AnchorTarget. Best-effort: emit a
                 // viewport-centered portal with the side/align/offset
                 // info so the client can at least position something
-                // sensible. (Future: extend AnchorTarget to expose a
-                // NodeId for wire backends.)
+                // sensible. Collision insets stay behind: nothing on the
+                // client flips or clamps a centered portal.
                 wire::WirePortalTarget::Anchor {
                     node: id,
                     side: wire_element_side(side),
@@ -2403,6 +2403,7 @@ fn length_to_wire_token(l: runtime_shared::Length) -> wire::WireLength {
         // As in `convert_out::length_to_wire`: a `radius-pill` token
         // crosses as the pill and the client resolves it per box.
         runtime_shared::Length::Full => wire::WireLength::Full,
+        runtime_shared::Length::FitContent => wire::WireLength::FitContent,
     }
 }
 

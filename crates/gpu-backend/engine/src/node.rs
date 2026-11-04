@@ -434,6 +434,9 @@ pub enum NodeKind {
     Portal {
         target: runtime_shared::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
+        /// `Some` for an anchored portal: the shared flip / clamp placement,
+        /// held for the node's life so the side stays settled across frames.
+        placer: Option<std::cell::Cell<runtime_shared::primitives::portal::AnchoredPlacer>>,
     },
     /// Virtualizer container. The simulator mounts every item
     /// (no actual windowing) — fine for the moderate list sizes a

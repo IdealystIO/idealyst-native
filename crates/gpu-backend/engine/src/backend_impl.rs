@@ -1084,7 +1084,21 @@ impl WgpuBackend {
             unimplemented!("PortalTarget::Named is not supported by the wgpu backend");
         }
         let layout = self.layout.new_node();
-        let node = new_node(NodeKind::Portal { target, on_dismiss }, layout);
+        use runtime_shared::primitives::portal::{anchored_container_rules, AnchoredPlacer, PortalTarget, ANCHOR_EDGE_GAP};
+        let placer = match &target {
+            PortalTarget::Anchor { side, align, offset, collision_insets, .. } => {
+                // The pass in `render` sizes a portal root to the viewport:
+                // this neutral column is what lets its content keep its own
+                // size, which the placer needs to measure.
+                self.layout.set_style(layout, &anchored_container_rules());
+                Some(std::cell::Cell::new(
+                    AnchoredPlacer::new(*side, *align, *offset, ANCHOR_EDGE_GAP)
+                        .with_collision_insets(*collision_insets),
+                ))
+            }
+            _ => None,
+        };
+        let node = new_node(NodeKind::Portal { target, on_dismiss, placer }, layout);
         init_node_a11y(&node, a11y, PrimitiveKind::Portal);
         self.roots.push(node.clone());
         node

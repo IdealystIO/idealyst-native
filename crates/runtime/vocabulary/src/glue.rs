@@ -554,6 +554,7 @@ pub mod styled_text {
 }
 
 pub use crate::builders::IntoTextRuns;
+pub use crate::builders::provide_overlay_insets;
 
 /// What [`styled_text`] returns — the same wrapper as [`text`]:
 /// `.with_style(…)`, the `a11y_*` setters, then [`IntoElement`].
@@ -2406,6 +2407,14 @@ pub mod primitives {
 
             pub fn offset(mut self, o: f32) -> Self {
                 self.b = self.b.offset(o);
+                self
+            }
+
+            /// Viewport edges this overlay stays clear of: it flips and
+            /// clamps inside the viewport minus these insets. Overrides
+            /// [`provide_overlay_insets`](crate::builders::provide_overlay_insets).
+            pub fn collision_insets(mut self, insets: EdgeInsets) -> Self {
+                self.b = self.b.collision_insets(insets);
                 self
             }
 

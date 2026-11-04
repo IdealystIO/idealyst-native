@@ -55,6 +55,7 @@ pub(crate) struct AnchorSpec {
     pub(crate) side: ElementSide,
     pub(crate) align: ElementAlign,
     pub(crate) offset: f32,
+    pub(crate) collision_insets: runtime_shared::EdgeInsets,
 }
 
 pub(crate) type PortalInstances = std::collections::HashMap<usize, PortalEntry>;
@@ -176,6 +177,7 @@ pub(crate) fn start_anchor_tracker(
     side: ElementSide,
     align: ElementAlign,
     offset: f32,
+    collision_insets: runtime_shared::EdgeInsets,
 ) -> RafLoop {
     // Hide until the FIRST measured placement so the content never paints at
     // the unmeasured `child_style_for_anchor` fallback (which lacks the popover
@@ -199,7 +201,8 @@ pub(crate) fn start_anchor_tracker(
     // frame re-places it on the side it is already on — a flipped-above
     // menu that shrinks keeps its bottom on the trigger instead of jumping
     // below it.
-    let mut placer = AnchoredPlacer::new(side, align, offset, ANCHOR_EDGE_GAP);
+    let mut placer =
+        AnchoredPlacer::new(side, align, offset, ANCHOR_EDGE_GAP).with_collision_insets(collision_insets);
 
     runtime_shared::scheduling::raf_loop(move || {
         frames = frames.saturating_add(1);

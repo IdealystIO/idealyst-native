@@ -587,6 +587,10 @@ a Graphics canvas inside a shadow root is not found.
 enter/exit animation for a mounting/unmounting child;
 `create_portal` / `set_portal_hidden` / `release_portal` back
 `overlay` and `anchored_overlay`. Portals degrade to containers by default.
+An anchored portal places through one `AnchoredPlacer`, held for its life and
+built `with_collision_insets` from `PortalTarget::Anchor`, so flip, clamp and the
+settled side are the same everywhere. The runtime-server client is the exception:
+it has no anchor rect to track and shows a centered portal.
 
 The presence placeholder must be **layout-transparent** — the default is
 `Host::create_anchor` (`display: contents` on web, a `runtime_layout`

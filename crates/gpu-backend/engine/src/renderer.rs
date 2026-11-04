@@ -2762,7 +2762,7 @@ fn walk_overlay<'a>(
     // each frame (free because we render every frame); `Named`
     // shouldn't reach here — `create_portal` panics on construction.
     let (content_x, content_y) = match &data.kind {
-        NodeKind::Portal { target, .. } => match target {
+        NodeKind::Portal { target, placer, .. } => match target {
             runtime_shared::primitives::portal::PortalTarget::Viewport(placement) => place_overlay(
                 *placement,
                 frame.width,
@@ -2770,22 +2770,18 @@ fn walk_overlay<'a>(
                 viewport.0,
                 viewport.1,
             ),
-            runtime_shared::primitives::portal::PortalTarget::Anchor {
-                target,
-                side,
-                align,
-                offset,
-            } => match target.rect() {
-                Some(vr) => position_anchored(
-                    (vr.x, vr.y, vr.width, vr.height),
-                    frame.width,
-                    frame.height,
-                    *side,
-                    *align,
-                    *offset,
-                ),
-                None => (0.0, 0.0),
-            },
+            runtime_shared::primitives::portal::PortalTarget::Anchor { target, .. } => {
+                // The portal root is viewport-sized; what gets placed is its
+                // content, inserted last.
+                let content = data.children.last().map_or((frame.width, frame.height), |child| {
+                    let child = backend.layout.frame_of(child.borrow().layout);
+                    (child.width, child.height)
+                });
+                match (target.rect(), placer) {
+                    (Some(trigger), Some(placer)) => place_anchored(placer, trigger, content, viewport),
+                    _ => (0.0, 0.0),
+                }
+            }
             runtime_shared::primitives::portal::PortalTarget::Named(_) => (0.0, 0.0),
         },
         _ => (0.0, 0.0),
@@ -2892,39 +2888,18 @@ fn place_overlay(
     }
 }
 
-/// Resolve an anchored overlay's content origin given its
-/// trigger rect, the side/align placement, and the offset gap.
-/// Returns `(x, y)` in screen-logical coords.
-fn position_anchored(
-    trigger: (f32, f32, f32, f32),
-    content_w: f32,
-    content_h: f32,
-    side: runtime_shared::primitives::portal::ElementSide,
-    align: runtime_shared::primitives::portal::ElementAlign,
-    offset: f32,
+/// An anchored overlay's content origin: the shared flip / align / clamp
+/// every backend places through. `(x, y)` in screen-logical coords.
+fn place_anchored(
+    placer: &std::cell::Cell<runtime_shared::primitives::portal::AnchoredPlacer>,
+    trigger: runtime_shared::primitives::portal::ViewportRect,
+    content: (f32, f32),
+    viewport: (f32, f32),
 ) -> (f32, f32) {
-    use runtime_shared::primitives::portal::{ElementAlign, ElementSide};
-    let (tx, ty, tw, th) = trigger;
-    // `Above` / `Below` flow vertically (cross-axis = horizontal).
-    // `Start` / `End` flow horizontally (cross-axis = vertical).
-    let (cross_x, cross_y) = match (side, align) {
-        (ElementSide::Above | ElementSide::Below, ElementAlign::Start) => (tx, 0.0),
-        (ElementSide::Above | ElementSide::Below, ElementAlign::Center) => {
-            (tx + (tw - content_w) * 0.5, 0.0)
-        }
-        (ElementSide::Above | ElementSide::Below, ElementAlign::End) => (tx + tw - content_w, 0.0),
-        (ElementSide::Start | ElementSide::End, ElementAlign::Start) => (0.0, ty),
-        (ElementSide::Start | ElementSide::End, ElementAlign::Center) => {
-            (0.0, ty + (th - content_h) * 0.5)
-        }
-        (ElementSide::Start | ElementSide::End, ElementAlign::End) => (0.0, ty + th - content_h),
-    };
-    match side {
-        ElementSide::Above => (cross_x, ty - content_h - offset),
-        ElementSide::Below => (cross_x, ty + th + offset),
-        ElementSide::Start => (tx - content_w - offset, cross_y),
-        ElementSide::End => (tx + tw + offset, cross_y),
-    }
+    let mut settled = placer.get();
+    let placed = settled.place(trigger, content, viewport);
+    placer.set(settled);
+    (placed.x, placed.y)
 }
 
 // ---------------------------------------------------------------------------
@@ -3950,6 +3925,38 @@ fn upload_image(
         bind_group,
         size: (w, h),
         last_used: 0,
+    }
+}
+
+#[cfg(test)]
+mod place_anchored_tests {
+    use super::place_anchored;
+    use runtime_shared::primitives::portal::{
+        AnchoredPlacer, ElementAlign, ElementSide, ViewportRect, ANCHOR_EDGE_GAP,
+    };
+    use runtime_shared::EdgeInsets;
+    use std::cell::Cell;
+
+    /// Without the shared placer the GPU backend neither flipped nor clamped:
+    /// a dropdown low in the window ran off the bottom, and collision insets
+    /// had nothing to apply to.
+    #[test]
+    fn regression_gpu_anchored_overlay_flips_inside_collision_insets() {
+        let viewport = (800.0, 600.0);
+        let trigger = ViewportRect { x: 10.0, y: 500.0, width: 100.0, height: 20.0 };
+        let placer = |insets| {
+            Cell::new(
+                AnchoredPlacer::new(ElementSide::Below, ElementAlign::Start, 0.0, ANCHOR_EDGE_GAP)
+                    .with_collision_insets(insets),
+            )
+        };
+        let bare = place_anchored(&placer(EdgeInsets::ZERO), trigger, (100.0, 60.0), viewport);
+        assert_eq!(bare, (10.0, 520.0), "fits below the trigger in the bare window");
+        let bar = EdgeInsets { bottom: 57.0, ..EdgeInsets::ZERO };
+        let over = place_anchored(&placer(bar), trigger, (100.0, 60.0), viewport);
+        assert_eq!(over, (10.0, 440.0), "flips above a sticky bar");
+        let tall = place_anchored(&placer(EdgeInsets::ZERO), trigger, (100.0, 200.0), viewport);
+        assert_eq!(tall, (10.0, 300.0), "flips above the window edge too");
     }
 }
 
