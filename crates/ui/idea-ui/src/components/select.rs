@@ -28,6 +28,13 @@
 //! `SelectOption::new("pear", "Pear").with_description("Soft once ripe")`.
 //! It is drawn in the menu only; the trigger shows the label.
 //!
+//! Consecutive rows that name the same group sit under one heading —
+//! `SelectOption::new("m", "Meters").group("Drilling")`. A heading can't be
+//! picked or take the keyboard cursor, and a group with no rows left (a filter
+//! emptied it) draws no heading. Order the list so a group's rows are adjacent,
+//! and put ungrouped rows first: a row with no group after a grouped one reads
+//! as part of the group above it.
+//!
 //! `options` is reactive: pass a `Signal<Vec<SelectOption>>` (or `rx!`)
 //! and rows that arrive later — a fetch that lands after mount — appear in
 //! the trigger label and the menu, even while it is open. Pass the signal
@@ -200,6 +207,21 @@ component_styles! {
             transitions {
                 background: 150ms EaseOut,
                 color: 150ms EaseOut,
+            }
+        }
+
+        /// A group's heading above its rows ([`SelectOption::group`]): muted
+        /// and quiet, on the rows' text column. Not a row: it never presses
+        /// or takes the keyboard cursor.
+        slot option_group {
+            base(t) {
+                color: t.color.text_muted(),
+                font_size: t.typography.overline_size(),
+                font_weight: runtime_core::FontWeight::SemiBold,
+                letter_spacing: 0.8,
+                text_transform: runtime_core::TextTransform::Uppercase,
+                padding_vertical: t.spacing.xs(),
+                padding_horizontal: t.spacing.sm(),
             }
         }
 
@@ -387,6 +409,11 @@ pub struct SelectOption {
     /// [`SelectOption::new`]) draws the label alone. Static or live
     /// (signal/`rx!`). Set it with [`SelectOption::with_description`].
     pub description: Option<Reactive<String>>,
+    /// The heading this row sits under in the menu. Consecutive rows naming
+    /// the same group share one non-selectable heading; `None` (the default
+    /// from [`SelectOption::new`]) draws no heading. Set it with
+    /// [`SelectOption::group`].
+    pub group: Option<String>,
     /// Optional robot/E2E test id for this option's menu row (the
     /// pressable that picks it) — in `Select` and `Autocomplete` alike.
     /// Set it with [`SelectOption::test_id`]. Inert outside a robot build.
@@ -403,7 +430,7 @@ fn reactive_text_eq(a: &Reactive<String>, b: &Reactive<String>) -> bool {
     }
 }
 
-/// Equal when the ids match and the labels (and descriptions) are the same
+/// Equal when the ids and groups match and the labels (and descriptions) are the same
 /// text (both static) or the same live source (both reactive, one `Rc`).
 /// This is what lets a host keep its rows in a `Signal<Vec<SelectOption>>`
 /// (signals skip equal writes) and pass that signal as `options`.
@@ -411,6 +438,7 @@ impl PartialEq for SelectOption {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
             && self.test_id == other.test_id
+            && self.group == other.group
             && reactive_text_eq(&self.label, &other.label)
             && match (&self.description, &other.description) {
                 (None, None) => true,
@@ -423,12 +451,18 @@ impl PartialEq for SelectOption {
 impl SelectOption {
     /// A row with an id and a label, and no description.
     pub fn new(id: impl Into<String>, label: impl Into<Reactive<String>>) -> Self {
-        Self { id: id.into(), label: label.into(), description: None, test_id: None }
+        Self { id: id.into(), label: label.into(), description: None, group: None, test_id: None }
     }
 
     /// Give this option's menu row a robot/E2E test id.
     pub fn test_id(mut self, id: &'static str) -> Self {
         self.test_id = Some(id);
+        self
+    }
+
+    /// Draw this row under a group heading in the menu.
+    pub fn group(mut self, name: impl Into<String>) -> Self {
+        self.group = Some(name.into());
         self
     }
 
@@ -438,6 +472,48 @@ impl SelectOption {
         self.description = Some(description.into());
         self
     }
+}
+
+/// One entry of a menu's row list: a group heading, or the option at this
+/// index of the full list.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum MenuEntry {
+    /// A heading. `key` is unique within the menu: the same group name can
+    /// head two separate runs of rows.
+    Heading { name: String, key: String },
+    /// A row: an index into the options.
+    Row(usize),
+}
+
+/// The menu's entries for the `shown` option indices, in order: a heading
+/// wherever the group changes, so a group with no shown rows has none. Headings
+/// live only here. Keyboard navigation walks `shown`, so the cursor can't land
+/// on one. Pure so the grouping is unit-tested without a backend.
+pub(crate) fn menu_entries(options: &[SelectOption], shown: &[usize]) -> Vec<MenuEntry> {
+    let mut entries = Vec::with_capacity(shown.len());
+    let mut current: Option<&str> = None;
+    let mut runs: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for &i in shown {
+        let Some(option) = options.get(i) else { continue };
+        let group = option.group.as_deref();
+        if group != current {
+            if let Some(name) = group {
+                let run = runs.entry(name).or_insert(0);
+                entries.push(MenuEntry::Heading { name: name.to_string(), key: format!("__group/{run}/{name}") });
+                *run += 1;
+            }
+            current = group;
+        }
+        entries.push(MenuEntry::Row(i));
+    }
+    entries
+}
+
+/// A group's heading in a menu. Text, not a pressable: it can't be picked.
+pub(crate) fn option_group_heading(name: String, style_override: Option<&runtime_core::SlotOverride>) -> Element {
+    runtime_core::text(name)
+        .with_style(SelectStyles::option_group().overridden(style_override))
+        .into_element()
 }
 
 /// The text content of a menu row: the label alone, or — when the option
@@ -693,10 +769,20 @@ fn menu_build(
     let row_close = menu_close.clone();
     let row_styles = styles.clone();
     let rows = each_keyed(move || {
-        options
-            .get()
-            .iter()
-            .map(|option| {
+        let options = options.get();
+        let shown: Vec<usize> = (0..options.len()).collect();
+        menu_entries(&options, &shown)
+            .into_iter()
+            .map(|entry| {
+                let option = match entry {
+                    MenuEntry::Heading { name, key } => {
+                        let group_style = row_styles.option_group.clone();
+                        let build: EachRowBuild =
+                            Box::new(move || vec![option_group_heading(name, group_style.as_ref())]);
+                        return (EachKey::new(key), build);
+                    }
+                    MenuEntry::Row(i) => &options[i],
+                };
                 let opt_id = option.id.clone();
                 let opt_label = option.label.clone();
                 let opt_description = option.description.clone();
@@ -773,6 +859,69 @@ mod tests {
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::resolve_style;
+
+    fn grouped() -> Vec<SelectOption> {
+        vec![
+            SelectOption::new("total", "Total"),
+            SelectOption::new("meters", "Meters").group("Drilling"),
+            SelectOption::new("holes", "Holes").group("Drilling"),
+            SelectOption::new("hours", "Hours").group("Work hours"),
+        ]
+    }
+
+    fn shape(entries: &[MenuEntry]) -> Vec<String> {
+        entries
+            .iter()
+            .map(|e| match e {
+                MenuEntry::Heading { name, .. } => format!("# {name}"),
+                MenuEntry::Row(i) => i.to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn menu_entries_head_each_group_and_hide_an_emptied_one() {
+        with_test_world(|| {
+            let options = grouped();
+            assert_eq!(
+                shape(&menu_entries(&options, &[0, 1, 2, 3])),
+                ["0", "# Drilling", "1", "2", "# Work hours", "3"],
+            );
+            assert_eq!(shape(&menu_entries(&options, &[2, 3])), ["# Drilling", "2", "# Work hours", "3"]);
+            assert_eq!(shape(&menu_entries(&options, &[0, 3])), ["0", "# Work hours", "3"], "no empty heading");
+            assert!(menu_entries(&options, &[]).is_empty());
+        });
+    }
+
+    /// Each entry becomes an `each_keyed` row, whose keys must be unique: a
+    /// group name that heads two separate runs must not collide.
+    #[test]
+    fn menu_entries_keys_stay_unique_when_a_group_repeats() {
+        with_test_world(|| {
+            let options = vec![
+                SelectOption::new("a", "A").group("G"),
+                SelectOption::new("b", "B").group("H"),
+                SelectOption::new("c", "C").group("G"),
+            ];
+            let keys: std::collections::HashSet<String> = menu_entries(&options, &[0, 1, 2])
+                .into_iter()
+                .filter_map(|e| match e {
+                    MenuEntry::Heading { key, .. } => Some(key),
+                    MenuEntry::Row(_) => None,
+                })
+                .collect();
+            assert_eq!(keys.len(), 3);
+        });
+    }
+
+    #[test]
+    fn a_changed_group_makes_options_unequal() {
+        with_test_world(|| {
+            let plain = SelectOption::new("a", "A");
+            assert!(plain.clone().group("G") != plain, "a signal write of a regrouped row must not be skipped");
+            assert!(plain.clone().group("G") == plain.group("G"));
+        });
+    }
 
 
     /// Regression: the open menu's fullscreen catcher must NOT trap focus.

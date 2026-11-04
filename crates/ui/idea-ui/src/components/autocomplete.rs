@@ -1,8 +1,8 @@
 //! `Autocomplete` — a searchable combobox: a text input that filters a
 //! list of [`SelectOption`]s as you type, with an anchored dropdown of
 //! matches. The constrained-selection sibling of [`Select`](crate::Select)
-//! — the value committed to the bound signal is always one of the
-//! `options`' `id`s, never free text.
+//! — the value committed to the bound signal is one of the `options`' `id`s,
+//! unless `allow_free_text` opens it up.
 //!
 //! ```ignore
 //! ui! {
@@ -29,6 +29,26 @@
 //! }
 //! ```
 //!
+//! Remote rows: when the host fetches matches per keystroke, it owns the
+//! filtering. Pass the rows as a signal, `filter = false` so they draw as given,
+//! `on_query` to hear each typed text (debounce and drop stale answers there),
+//! and `loading` for an in-flight row. Focus and the typed text survive every
+//! list swap, and a committed value keeps its label when its row leaves the list.
+//!
+//! ```ignore
+//! ui! {
+//!     Autocomplete(
+//!         value = address,
+//!         on_change = on_change,
+//!         options = matches,               // Signal<Vec<SelectOption>>
+//!         filter = false,
+//!         on_query = Some(on_query),       // Rc<dyn Fn(String)>
+//!         loading = searching,             // Signal<bool>
+//!         allow_free_text = true,          // keep an address no row matches
+//!     )
+//! }
+//! ```
+//!
 //! Behaviour:
 //! - Focusing the input opens the menu (with the full option list when the
 //!   text equals the committed selection's label); losing focus — Tab away,
@@ -51,6 +71,13 @@
 //! - Dismissing the menu without choosing (blur / `Escape`) reverts the
 //!   typed text to the committed selection, so the input can never be left
 //!   showing a string that isn't a valid option.
+//! - With `allow_free_text`, `Enter` and blur instead commit the typed text
+//!   through `on_change`: the id of the row whose label it equals, else the
+//!   text itself. `Enter` picks a row only after an arrow key moved onto it, and
+//!   `Escape` still reverts.
+//! - Options naming a [`group`](SelectOption::group) draw under a heading, as in
+//!   `Select`. The filter matches the group name too, and the keyboard cursor
+//!   walks the rows only.
 //! - Optional `header` / `footer` slots render pinned above / below the
 //!   scrolling row area — they never scroll away with the rows. Each is a
 //!   builder invoked when the menu opens with an [`AutocompleteSlotCx`]
@@ -139,8 +166,8 @@ use crate::components::date_input::CLEAR_GLYPH;
 use crate::components::field::{adornment_icon_color, adornment_icon_px_for};
 use crate::components::icon::Icon;
 use crate::components::select::{
-    live_options, option_active, option_text, rotating_chevron, SelectActive, SelectOption, SelectSize,
-    SelectStyles, CHEVRON_DOWN,
+    live_options, menu_entries, option_active, option_group_heading, option_text, rotating_chevron, MenuEntry,
+    SelectActive, SelectOption, SelectSize, SelectStyles, CHEVRON_DOWN,
 };
 
 // Right padding the autocomplete input reserves, per size, so typed text
@@ -356,6 +383,9 @@ impl AutocompleteSlot {
 /// Default text shown in the menu when nothing matches the query.
 const DEFAULT_EMPTY_TEXT: &str = "No results";
 
+/// Default text of the row shown while `loading` is set.
+const DEFAULT_LOADING_TEXT: &str = "Loading…";
+
 // Reactive-by-default: `#[props]` rewrites each scalar-DATA field `T` →
 // `Reactive<T>`. AUTO-SKIPPED: `value` (a `Signal` reactive source) and
 // `on_change` (an `Rc` handler). `options` is a `Vec`, which the macro skips
@@ -373,12 +403,14 @@ pub struct AutocompleteProps {
     /// Controlled selected value — the `id` of the chosen [`SelectOption`].
     /// The host owns the signal; committing a row sets it via `on_change`.
     /// The input text always reflects the matching option's label (reverting
-    /// any unmatched typing on dismiss), so this stays one of `options`' ids.
+    /// any unmatched typing on dismiss), so this stays one of `options`' ids,
+    /// unless [`AutocompleteProps::allow_free_text`] is set.
     pub value: Signal<String>,
     /// Fires with the chosen option's `id` when the user commits a row.
     pub on_change: Rc<dyn Fn(String)>,
-    /// The rows to offer; the typed query filters this list by label and
-    /// by each row's optional [`SelectOption::description`].
+    /// The rows to offer; the typed query filters this list by label, by
+    /// each row's optional [`SelectOption::description`] and by its
+    /// [`SelectOption::group`] (see [`AutocompleteProps::filter`]).
     /// Reactive: pass a `Signal<Vec<SelectOption>>` (or `rx!`) and rows that
     /// change after mount show up — in the open menu too, and in the input's
     /// label once the committed id's option arrives. Pass the signal itself,
@@ -386,6 +418,29 @@ pub struct AutocompleteProps {
     #[prop(reactive)]
     #[schema(constraint = "reactive: static Vec<SelectOption> or Signal/rx!")]
     pub options: Vec<SelectOption>,
+    /// Filter `options` by the typed query. `false` draws the rows as given:
+    /// the host already filtered them, typically a server whose matches don't
+    /// literally contain the query. Default `true`.
+    #[prop(static)]
+    pub filter: bool,
+    /// Fires with the input's text on each keystroke (not when a commit or a
+    /// revert rewrites it). The host debounces and fetches here, then writes
+    /// its `options` signal; the input is never rebuilt, so focus and the typed
+    /// text survive. Multi-select too.
+    pub on_query: Option<Rc<dyn Fn(String)>>,
+    /// A fetch is in flight: the menu draws a loading row after the rows, in
+    /// place of the empty text when there are none. Default `false`.
+    #[schema(constraint = "reactive: static bool or Signal/rx!")]
+    pub loading: bool,
+    /// Text of the loading row. Defaults to "Loading…".
+    pub loading_text: Option<String>,
+    /// Let the value be text no row offers: `Enter` and blur commit the typed
+    /// text through `on_change` (the id of the row whose label it equals, else
+    /// the text itself) instead of reverting, and the input shows a `value` that
+    /// matches no row as is. `Escape` still reverts. Single-select only; ignored
+    /// with [`AutocompleteProps::selection`]. Default `false`.
+    #[prop(static)]
+    pub allow_free_text: bool,
     /// Input height/density. Default `Md`. Shared with [`Select`](crate::Select).
     pub size: SelectSize,
     /// Placeholder shown when the input is empty. `Reactive<Option<String>>`.
@@ -460,6 +515,11 @@ impl Default for AutocompleteProps {
             value: runtime_core::signal(String::new()),
             on_change: Rc::new(|_| {}),
             options: Reactive::Static(Vec::new()),
+            filter: true,
+            on_query: None,
+            loading: Reactive::Static(false),
+            loading_text: Reactive::Static(None),
+            allow_free_text: false,
             size: Reactive::Static(SelectSize::default()),
             placeholder: Reactive::Static(None),
             empty_text: Reactive::Static(None),
@@ -496,10 +556,11 @@ fn slot_cx(query: Signal<String>, open: Signal<bool>, revert: Rc<dyn Fn()>) -> A
 /// Indices into `labels` that match `query`, in original order.
 ///
 /// Filtering is a case-insensitive substring match on the (trimmed) query,
-/// against each option's label OR its description (`descriptions[i]`, the
+/// against each option's label, its description (`descriptions[i]`, the
 /// i-th option's description text; a missing entry or `None` is a row
-/// without one) — a row whose note says what picking it does is findable
-/// by that note.
+/// without one) or its group (`groups[i]`, likewise) — a row whose note says
+/// what picking it does is findable by that note, and a group's name finds
+/// the group's rows.
 /// An empty query matches everything. The one subtlety:
 /// `selected_label` — when the query *equals* the currently-committed
 /// option's label, the field is showing an untouched selection rather than a
@@ -511,6 +572,7 @@ fn slot_cx(query: Signal<String>, open: Signal<bool>, revert: Rc<dyn Fn()>) -> A
 pub(crate) fn filter_indices(
     labels: &[String],
     descriptions: &[Option<String>],
+    groups: &[Option<String>],
     query: &str,
     selected_label: Option<&str>,
 ) -> Vec<usize> {
@@ -529,6 +591,10 @@ pub(crate) fn filter_indices(
                     .get(*i)
                     .and_then(|d| d.as_deref())
                     .is_some_and(|d| d.to_lowercase().contains(&q))
+                || groups
+                    .get(*i)
+                    .and_then(|g| g.as_deref())
+                    .is_some_and(|g| g.to_lowercase().contains(&q))
         })
         .map(|(i, _)| i)
         .collect()
@@ -664,6 +730,15 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let multi = selection.is_some();
     let on_selection_change = props.on_selection_change.clone().map(super::anchor_to_component);
     let clearable = props.clearable;
+    let client_filter = props.filter;
+    let on_query = props.on_query.clone().map(super::anchor_to_component);
+    let loading = props.loading.clone();
+    // Single-select only: multi mode's input never holds a committed value.
+    let free_text = props.allow_free_text && !multi;
+    // Rows come and go with the query here, so a committed row leaving the list
+    // says nothing about the commit: its label is remembered (`known_label`).
+    // On a host-owned client-side list a row leaving means the option is gone.
+    let rows_are_transient = !client_filter || free_text || on_query.is_some();
 
     // --- internal state -----------------------------------------------------
     // `query` is the text in the input; it doubles as the filter. In single
@@ -671,22 +746,40 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // chosen label on first paint (external changes are synced via `on_defer`
     // below). In multi mode the input is a SEARCH BOX and starts empty — there
     // is no one label for a list of picks.
-    // The committed id's label in the CURRENT list ("" when it isn't there
-    // yet — rows still loading — or nothing is committed). Untracked: the
-    // callers are build-time seeding and event/effect bodies.
+    // The last `(id, label)` seen for a committed value, for when its row has
+    // left a transient list.
+    let known_label: Signal<(String, String)> = signal((String::new(), String::new()));
+    // The committed id's label in the CURRENT list. An id that isn't there: its
+    // remembered label on a transient list, the id itself when it is free text,
+    // else "" (rows still loading, or nothing committed). Untracked: the callers
+    // are build-time seeding and event/effect bodies.
     let label_of = move |id: &str| -> String {
-        options
-            .peek()
-            .iter()
-            .find(|o| o.id == id)
-            .map(|o| o.label.get())
-            .unwrap_or_default()
+        if let Some(o) = options.peek().iter().find(|o| o.id == id) {
+            return o.label.get();
+        }
+        if rows_are_transient {
+            let known = known_label.peek();
+            if known.0 == id {
+                return known.1.clone();
+            }
+        }
+        if free_text {
+            return id.to_string();
+        }
+        String::new()
     };
     let initial_query = if multi { String::new() } else { label_of(&value.peek()) };
+    if !multi && !initial_query.is_empty() {
+        known_label.set((value.peek().clone(), initial_query.clone()));
+    }
     let query: Signal<String> = signal(initial_query);
     let open: Signal<bool> = signal(false);
-    // Keyboard highlight as a position into the *current* filtered list.
+    // Keyboard highlight as a position into the *current* filtered list. Rows
+    // only: group headings aren't in that list, so the cursor can't land on one.
     let highlight: Signal<usize> = signal(0usize);
+    // With free text the cursor rests on no row until an arrow key moves onto
+    // one, so `Enter` keeps what was typed rather than taking the top match.
+    let cursor_engaged: Signal<bool> = signal(!free_text);
 
     let input_ref: Ref<TextInputHandle> = Ref::new();
     let wrapper_ref: Ref<ViewHandle> = Ref::new();
@@ -699,11 +792,15 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         memo(move || {
             let q = query.get();
             let options = options.get();
+            if !client_filter {
+                return (0..options.len()).collect::<Vec<usize>>();
+            }
             let labels: Vec<String> = options.iter().map(|o| o.label.get()).collect();
             let descriptions: Vec<Option<String>> = options
                 .iter()
                 .map(|o| o.description.as_ref().map(|d| d.get()))
                 .collect();
+            let groups: Vec<Option<String>> = options.iter().map(|o| o.group.clone()).collect();
             // The "query equals the committed label ⇒ list everything" trick
             // is single-mode only: in multi mode the input never holds a
             // label, so the query is always a genuine search.
@@ -711,9 +808,14 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                 None
             } else {
                 let sel_id = value.get();
-                options.iter().find(|o| o.id == sel_id).map(|o| o.label.get())
+                options
+                    .iter()
+                    .find(|o| o.id == sel_id)
+                    .map(|o| o.label.get())
+                    // A committed free text is the input's label for itself.
+                    .or_else(|| free_text.then_some(sel_id))
             };
-            filter_indices(&labels, &descriptions, &q, sel_label.as_deref())
+            filter_indices(&labels, &descriptions, &groups, &q, sel_label.as_deref())
         })
     };
 
@@ -730,6 +832,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
             let Some(o) = options.peek().iter().find(|o| o.id == id).cloned() else { return };
             let Some(sel) = selection else {
                 (on_change)(o.id.clone());
+                known_label.set((o.id.clone(), o.label.get()));
                 query.set(o.label.get());
                 open.set(false);
                 return;
@@ -741,6 +844,26 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
             if let Some(cb) = &on_selection_change {
                 (cb)(next);
             }
+        })
+    };
+
+    // Free text: commit what's in the input, unless it is what's already
+    // committed. Text equal to a row's label commits that row.
+    let commit_typed: Rc<dyn Fn()> = {
+        let on_change = on_change.clone();
+        Rc::new(move || {
+            let typed = query.peek().clone();
+            if typed == label_of(&value.peek()) {
+                return;
+            }
+            let id = options
+                .peek()
+                .iter()
+                .find(|o| o.label.get() == typed)
+                .map(|o| o.id.clone())
+                .unwrap_or_else(|| typed.clone());
+            known_label.set((id.clone(), typed));
+            (on_change)(id);
         })
     };
 
@@ -767,6 +890,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let open_menu: Rc<dyn Fn()> = {
         Rc::new(move || {
             open.set(true);
+            cursor_engaged.set(!free_text);
             // Multi mode seeds on the FIRST pick — there is no single
             // committed selection to land on, and the top row is the
             // fallback either way.
@@ -794,10 +918,18 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // mount (rows loaded by a fetch) seeded an empty input, and its label
     // must show once the row exists. Same skips as above.
     let _sync_options = on_defer(options, move |_, _| {
-        if multi || open.get() {
+        if multi {
             return;
         }
-        query.set(label_of(&value.peek()));
+        // Remembered even while the menu is open: the next list may drop it.
+        let committed = value.peek().clone();
+        let found = options.peek().iter().find(|o| o.id == committed).map(|o| o.label.get());
+        if let Some(label) = found {
+            known_label.set((committed.clone(), label));
+        }
+        if !open.get() {
+            query.set(label_of(&committed));
+        }
     });
 
     // The input is empty whenever the user isn't actively searching, so in
@@ -822,11 +954,17 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
 
     let key_commit = commit.clone();
     let key_revert = revert.clone();
+    let key_commit_typed = commit_typed.clone();
     let blur_revert = revert.clone();
+    let blur_commit_typed = commit_typed.clone();
     let input = text_input(query, move |v: String| {
-        query.set(v);
+        query.set(v.clone());
         open.set(true);
         highlight.set(0);
+        cursor_engaged.set(!free_text);
+        if let Some(cb) = &on_query {
+            (cb)(v);
+        }
     })
     .bind(input_ref)
     // `placeholder` is routed LIVE: a reactive source updates the native
@@ -850,7 +988,11 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                     (open_menu)();
                 } else {
                     open.set(false);
-                    (blur_revert)();
+                    if free_text {
+                        (blur_commit_typed)();
+                    } else {
+                        (blur_revert)();
+                    }
                 }
             }
         })
@@ -862,6 +1004,10 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                     // Opening keystroke: seed the cursor on the selection;
                     // the NEXT ArrowDown starts moving it.
                     (open_menu)();
+                } else if !cursor_engaged.get() {
+                    // Free text: the first arrow lands on the top row.
+                    cursor_engaged.set(true);
+                    highlight.set(0);
                 } else {
                     let len = filtered.get().len();
                     if len > 0 {
@@ -875,7 +1021,11 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                 KeyOutcome::PreventDefault
             }
             "Enter" => {
-                if open.get() {
+                if open.get() && !cursor_engaged.get() {
+                    open.set(false);
+                    (key_commit_typed)();
+                    KeyOutcome::PreventDefault
+                } else if open.get() {
                     let idxs = filtered.get();
                     if !idxs.is_empty() {
                         let pos = highlight.get().min(idxs.len() - 1);
@@ -965,6 +1115,9 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let menu_commit = commit.clone();
     // The id under the keyboard cursor, in the CURRENT filtered list.
     let cursor_id = move || -> Option<String> {
+        if !cursor_engaged.get() {
+            return None;
+        }
         let idxs = filtered.get();
         let opts = options.get();
         idxs.get(highlight.get()).and_then(|&i| opts.get(i)).map(|o| o.id.clone())
@@ -974,27 +1127,40 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let max_width = props.max_width;
     let footer_slot = props.footer.clone();
     let empty_style = styles.empty.clone();
+    let loading_text = props.loading_text.clone();
     let build_panel = move || {
         let snapshot_commit = menu_commit.clone();
         let empty_text = empty_text.clone();
         let empty_style = empty_style.clone();
+        let loading = loading.clone();
+        let loading_text = loading_text.clone();
         let rows = each_keyed(move || {
             let idxs = filtered.get();
-            if idxs.is_empty() {
-                let empty_text = empty_text.clone();
+            let note = |key: &str, content: String| -> (EachKey, EachRowBuild) {
                 let empty_style = empty_style.clone();
                 let build: EachRowBuild = Box::new(move || {
                     let style = AutocompleteStyles::empty().overridden(empty_style.as_ref());
-                    vec![text(empty_text).with_style(style).into_element()]
+                    vec![text(content).with_style(style).into_element()]
                 });
-                return vec![(EachKey::new("__empty".to_string()), build)];
+                (EachKey::new(key.to_string()), build)
+            };
+            let is_loading = loading.get();
+            if idxs.is_empty() && !is_loading {
+                return vec![note("__empty", empty_text.clone())];
             }
             // Tracks the list too: a new list with the same matching
             // POSITIONS still has to re-key (the ids changed).
             let opts = options.get();
-            idxs.iter()
-                .filter_map(|&oi| opts.get(oi).cloned())
-                .map(|o| {
+            let mut rows: Vec<(EachKey, EachRowBuild)> = menu_entries(&opts, &idxs)
+                .into_iter()
+                .map(|entry| {
+                    let o = match entry {
+                        MenuEntry::Heading { name, key } => {
+                            let build: EachRowBuild = Box::new(move || vec![option_group_heading(name, None)]);
+                            return (EachKey::new(key), build);
+                        }
+                        MenuEntry::Row(i) => opts[i].clone(),
+                    };
                     let key = EachKey::new(o.id.clone());
                     let commit_row = snapshot_commit.clone();
                     let build: EachRowBuild = Box::new(move || {
@@ -1002,7 +1168,11 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                     });
                     (key, build)
                 })
-                .collect()
+                .collect();
+            if is_loading {
+                rows.push(note("__loading", loading_text.get().unwrap_or_else(|| DEFAULT_LOADING_TEXT.to_string())));
+            }
+            rows
         });
         // Cap + scroll the filtered list so a long set of matches scrolls
         // within a bounded panel instead of running off the viewport. The
@@ -1117,9 +1287,9 @@ mod tests {
     fn empty_query_matches_everything() {
         with_test_world(|| {
             let ls = labels(&["Apple", "Pear", "Plum"]);
-            assert_eq!(filter_indices(&ls, &[], "", None), vec![0, 1, 2]);
+            assert_eq!(filter_indices(&ls, &[], &[], "", None), vec![0, 1, 2]);
             // Whitespace-only is also "empty" after trim.
-            assert_eq!(filter_indices(&ls, &[], "   ", None), vec![0, 1, 2]);
+            assert_eq!(filter_indices(&ls, &[], &[], "   ", None), vec![0, 1, 2]);
     });
     }
 
@@ -1128,9 +1298,9 @@ mod tests {
         with_test_world(|| {
             let ls = labels(&["Apple", "Pear", "Pineapple"]);
             // "ap" hits Apple + Pineapple, not Pear.
-            assert_eq!(filter_indices(&ls, &[], "ap", None), vec![0, 2]);
+            assert_eq!(filter_indices(&ls, &[], &[], "ap", None), vec![0, 2]);
             // Case folds both ways.
-            assert_eq!(filter_indices(&ls, &[], "PEAR", None), vec![1]);
+            assert_eq!(filter_indices(&ls, &[], &[], "PEAR", None), vec![1]);
     });
     }
 
@@ -1138,7 +1308,7 @@ mod tests {
     fn no_match_returns_empty() {
         with_test_world(|| {
             let ls = labels(&["Apple", "Pear"]);
-            assert!(filter_indices(&ls, &[], "zzz", None).is_empty());
+            assert!(filter_indices(&ls, &[], &[], "zzz", None).is_empty());
     });
     }
 
@@ -1150,7 +1320,7 @@ mod tests {
         with_test_world(|| {
             let ls = labels(&["Apple", "Pear", "Plum"]);
             assert_eq!(
-                filter_indices(&ls, &[], "Apple", Some("Apple")),
+                filter_indices(&ls, &[], &[], "Apple", Some("Apple")),
                 vec![0, 1, 2],
                 "reopening a combobox on its committed value should list every option"
             );
@@ -1163,7 +1333,7 @@ mod tests {
     fn editing_away_from_selection_filters_normally() {
         with_test_world(|| {
             let ls = labels(&["Apple", "Pear", "Plum"]);
-            assert_eq!(filter_indices(&ls, &[], "plu", Some("Apple")), vec![2]);
+            assert_eq!(filter_indices(&ls, &[], &[], "plu", Some("Apple")), vec![2]);
     });
     }
 
@@ -1175,11 +1345,13 @@ mod tests {
         with_test_world(|| {
             let ls = labels(&["Address", "Phone", "Email"]);
             let ds = vec![Some("as its one-line label".to_string()), None, Some("Work inbox".to_string())];
-            assert_eq!(filter_indices(&ls, &ds, "one-LINE", None), vec![0]);
-            assert_eq!(filter_indices(&ls, &ds, "inbox", None), vec![2]);
+            let gs = vec![None, Some("Drilling".to_string()), None];
+            assert_eq!(filter_indices(&ls, &[], &gs, "drill", None), vec![1], "a group's name finds its rows");
+            assert_eq!(filter_indices(&ls, &ds, &[], "one-LINE", None), vec![0]);
+            assert_eq!(filter_indices(&ls, &ds, &[], "inbox", None), vec![2]);
             // Labels still match, and a row matching on both counts once.
-            assert_eq!(filter_indices(&ls, &ds, "e", None), vec![0, 1, 2]);
-            assert!(filter_indices(&ls, &ds, "zzz", None).is_empty());
+            assert_eq!(filter_indices(&ls, &ds, &[], "e", None), vec![0, 1, 2]);
+            assert!(filter_indices(&ls, &ds, &[], "zzz", None).is_empty());
         });
     }
 
