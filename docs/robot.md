@@ -129,7 +129,7 @@ would see on screen — with no help from the app:
 | Field | Primitives | Meaning |
 |---|---|---|
 | `value` | `text_input`, `text_area` (string), `slider` (number) | The text the field shows; the slider's value, snapped to `step` |
-| `checked` | `toggle` | What the switch shows |
+| `checked` | `toggle`, a `pressable` with `a11y_state` or an authored checkable role | What the switch shows; for a pressable, what a screen reader is told (mixed reads as `false`) |
 | `disabled` | toggle, slider, text input/area, pressable, button | Whether it refuses input |
 | `focused` | `text_input`, `text_area` | Whether it holds keyboard focus, read from the toolkit at query time: web `document.activeElement`, iOS `isFirstResponder`, Android `View.isFocused()`, macOS the window's first responder (the field editor for a `text_input`), Linux the window's focus widget, Windows `GetFocus()`. A background or headless window, which gets no focus events, still reports it. A backend that can't read it falls back on the field's last focus/blur notification |
 | `scroll` | `scroll_view` | `{x, y}` content offset, read from the native scroller |
@@ -160,6 +160,10 @@ page can't read them) and on elements whose style has no state variants.
 - **A disabled control refuses.** The action fails with
   `action 'set_toggle' refused: the element is disabled`, and nothing
   reaches the author — so a test can assert that `disabled` blocks input.
+- **`focus`, `blur` and `key Tab` run the focus handlers in a background
+  page.** A browser page without OS window focus moves `activeElement` and
+  fires no event, so a robot build delivers `blur` / `focus` itself there, and a
+  field that commits on blur commits. A robot `key Enter` reaches `on_key_down`.
 - **The native widget moves first, then its own change callback reports
   it.** `set_toggle` flips the switch; `set_slider` clamps to the track,
   snaps to `step` and moves the thumb; `type_text` puts the text in the

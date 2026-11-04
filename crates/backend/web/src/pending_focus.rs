@@ -34,9 +34,9 @@ thread_local! {
 pub(crate) fn request_focus(el: &HtmlElement) {
     let req = PENDING.with(|p| p.borrow_mut().request(el.clone(), el.is_connected()));
     match req {
-        FocusRequest::Now(el) => {
+        FocusRequest::Now(el) => moving_focus(|| {
             let _ = el.focus();
-        }
+        }),
         // The common case — realize inserts the subtree later in the same
         // synchronous flush — is caught by this microtask without waiting
         // for an attach hook.
@@ -70,7 +70,71 @@ fn drain() {
     // Outside the borrow: `focus()` fires listeners synchronously, and an
     // author handler may request another focus.
     if let Some(el) = ready {
-        let _ = el.focus();
+        moving_focus(|| {
+            let _ = el.focus();
+        });
+    }
+}
+
+/// Run a programmatic focus move, then deliver the focus events the browser
+/// withheld.
+///
+/// A page without OS window focus (`document.hasFocus()` false) moves
+/// `activeElement` on `focus()` / `blur()` and fires no event. That is every
+/// page a robot drives in the background, and headless Chrome outside
+/// `idealyst test`'s focus emulation, so a field that commits on blur shows
+/// the typed value and never saves. A page with window focus got its native
+/// events and gets nothing extra.
+///
+/// Robot builds only: a person's browser delivers these itself when the
+/// window comes back, and a synthetic pair would run the handlers twice.
+#[cfg(feature = "robot")]
+pub(crate) fn moving_focus(move_focus: impl FnOnce()) {
+    let Some(doc) = web_glue::dom::window().and_then(|w| w.document()) else {
+        return move_focus();
+    };
+    let before = doc.active_element();
+    move_focus();
+    if doc.has_focus() {
+        return;
+    }
+    let after = doc.active_element();
+    let same = match (&before, &after) {
+        (Some(b), Some(a)) => b.is_same_node(Some(a.as_ref())),
+        (None, None) => true,
+        _ => false,
+    };
+    if same {
+        return;
+    }
+    // `activeElement` falls back to `<body>` when nothing holds focus; the
+    // body never received focus, so it gets no event.
+    let body = doc.body();
+    let real = |el: Option<web_glue::dom::Element>| {
+        el.filter(|e| !body.as_ref().is_some_and(|b| b.is_same_node(Some(e.as_ref()))))
+    };
+    if let Some(left) = real(before) {
+        dispatch_focus_event(&left, "blur", false);
+        dispatch_focus_event(&left, "focusout", true);
+    }
+    if let Some(entered) = real(after) {
+        dispatch_focus_event(&entered, "focus", false);
+        dispatch_focus_event(&entered, "focusin", true);
+    }
+}
+
+#[cfg(not(feature = "robot"))]
+#[inline]
+pub(crate) fn moving_focus(move_focus: impl FnOnce()) {
+    move_focus();
+}
+
+#[cfg(feature = "robot")]
+fn dispatch_focus_event(target: &web_glue::dom::Element, ty: &str, bubbles: bool) {
+    let init = web_glue::dom::EventInit::new();
+    init.set_bubbles(bubbles);
+    if let Ok(ev) = web_glue::dom::Event::new_with_event_init_dict(ty, &init) {
+        let _ = target.dispatch_event(&ev);
     }
 }
 

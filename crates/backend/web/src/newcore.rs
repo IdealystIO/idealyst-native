@@ -3664,6 +3664,113 @@ mod tests {
         drop(realized);
     }
 
+    /// want_2aeffd67: the robot commits a text box. `key Enter` reaches the
+    /// field's `on_key_down`, and `blur` (or focusing another field) runs its
+    /// `on_blur`, whether or not the page holds OS window focus. A browser
+    /// fires no `blur` event in a page without it, which is every page an MCP
+    /// session drives without `idealyst test`'s focus emulation, so a
+    /// commit-on-blur field looked typed and never saved.
+    #[cfg(feature = "robot")]
+    async fn robot_commits_a_text_box(steal_window_focus: bool) {
+        use runtime_shared::primitives::key::KeyOutcome;
+        use runtime_shared::primitives::text_input::BlurOutcome;
+        use runtime_vocabulary::builders::text_input;
+        use runtime_vocabulary::caps::KeyChord;
+        use runtime_vocabulary::robot::{Query, Robot};
+
+        let (backend, registry, world) = focus_harness();
+        let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let (on_key, on_blur) = (log.clone(), log.clone());
+        let reentrant = backend.clone();
+        let within = log.clone();
+        let realized = world.enter(|| {
+            let tree = runtime_vocabulary::builders::view()
+                .on_focus(move |entered| {
+                    if !entered {
+                        within.borrow_mut().push("left".into());
+                    }
+                })
+                .child(
+                    text_input()
+                        .value("")
+                        .test_id("commit-a")
+                        .on_key_down(move |e| {
+                            if e.key == "Enter" {
+                                on_key.borrow_mut().push("enter".into());
+                            }
+                            KeyOutcome::Default
+                        })
+                        .on_blur(move || {
+                            // An author handler may re-enter the backend (a
+                            // restyle): the robot must not hold a borrow here.
+                            let _not_borrowed = reentrant.borrow_mut();
+                            on_blur.borrow_mut().push("blur".into());
+                            BlurOutcome::Allow
+                        })
+                        .build(),
+                )
+                .child(text_input().value("").test_id("commit-b").build())
+                .build();
+            realize(&backend, &registry, tree)
+        });
+        let root = realized.collect_nodes().pop().expect("one root");
+        let mut parent: web_glue::dom::Node = setup_mount_child();
+        Host::insert(&mut *backend.borrow_mut(), &mut parent, root);
+        settle().await;
+        let js = |body: &str| {
+            web_glue::js::Function::new_no_args(body).call0(&web_glue::JsValue::UNDEFINED).unwrap();
+        };
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        if steal_window_focus {
+            js("window.__iyFocusThief = window.open('about:blank', '_blank');");
+            settle().await;
+            assert!(!doc.has_focus(), "the test page lost window focus");
+        }
+        let robot = Robot::new();
+        let a = robot.find(Query::test_id("commit-a")).expect("a");
+        let b = robot.find(Query::test_id("commit-b")).expect("b");
+
+        robot.focus(&a).unwrap();
+        settle().await;
+        robot.press_key(None, &KeyChord::parse("Enter").unwrap()).unwrap();
+        settle().await;
+        assert_eq!(*log.borrow(), ["enter"], "key Enter reaches on_key_down");
+
+        robot.blur(&a).unwrap();
+        settle().await;
+        // The focus-within listener hears the same event, each element once.
+        assert_eq!(log.borrow().iter().filter(|l| *l == "blur").count(), 1, "{:?}", log.borrow());
+        assert!(log.borrow().iter().any(|l| l == "enter"));
+        assert_eq!(robot.state(&a).unwrap().unwrap().focused, Some(false));
+
+        robot.focus(&a).unwrap();
+        settle().await;
+        robot.focus(&b).unwrap();
+        settle().await;
+        let blurs = || log.borrow().iter().filter(|l| *l == "blur").count();
+        assert_eq!(blurs(), 2, "focusing another field blurs this one: {:?}", log.borrow());
+
+        robot.blur(&b).unwrap();
+        settle().await;
+        assert_eq!(blurs(), 2, "a's handler stays quiet when b blurs");
+        if steal_window_focus {
+            js("window.__iyFocusThief.close(); window.focus();");
+        }
+        drop(realized);
+    }
+
+    #[cfg(feature = "robot")]
+    #[wasm_bindgen_test]
+    async fn regression_robot_commits_a_text_box_in_a_focused_page() {
+        robot_commits_a_text_box(false).await;
+    }
+
+    #[cfg(feature = "robot")]
+    #[wasm_bindgen_test]
+    async fn regression_robot_commits_a_text_box_without_window_focus() {
+        robot_commits_a_text_box(true).await;
+    }
+
     fn setup_mount_append(node: &web_glue::dom::Node) {
         let doc = web_glue::dom::window().unwrap().document().unwrap();
         doc.get_element_by_id("app").unwrap().append_child(node).unwrap();

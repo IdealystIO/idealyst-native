@@ -497,12 +497,22 @@ where
         let focus = {
             let b = backend.clone();
             let n = node.clone();
-            Rc::new(move || b.borrow().make_text_input_handle(&n).focus()) as Rc<dyn Fn()>
+            Rc::new(move || {
+                // The handle outlives the borrow: focus events run author
+                // handlers synchronously, and those may re-enter the backend.
+                let handle = b.borrow().make_text_input_handle(&n);
+                handle.focus();
+            }) as Rc<dyn Fn()>
         };
         let blur = {
             let b = backend.clone();
             let n = node.clone();
-            Rc::new(move || b.borrow().make_text_input_handle(&n).blur()) as Rc<dyn Fn()>
+            Rc::new(move || {
+                // The handle outlives the borrow: focus events run author
+                // handlers synchronously, and those may re-enter the backend.
+                let handle = b.borrow().make_text_input_handle(&n);
+                handle.blur();
+            }) as Rc<dyn Fn()>
         };
         let set_text: Rc<dyn Fn(String)> = {
             let b = backend.clone();
@@ -676,12 +686,22 @@ where
         let focus = {
             let b = backend.clone();
             let n = node.clone();
-            Rc::new(move || b.borrow().make_text_area_handle(&n).focus()) as Rc<dyn Fn()>
+            Rc::new(move || {
+                // The handle outlives the borrow: focus events run author
+                // handlers synchronously, and those may re-enter the backend.
+                let handle = b.borrow().make_text_area_handle(&n);
+                handle.focus();
+            }) as Rc<dyn Fn()>
         };
         let blur = {
             let b = backend.clone();
             let n = node.clone();
-            Rc::new(move || b.borrow().make_text_area_handle(&n).blur()) as Rc<dyn Fn()>
+            Rc::new(move || {
+                // The handle outlives the borrow: focus events run author
+                // handlers synchronously, and those may re-enter the backend.
+                let handle = b.borrow().make_text_area_handle(&n);
+                handle.blur();
+            }) as Rc<dyn Fn()>
         };
         let set_text: Rc<dyn Fn(String)> = {
             let b = backend.clone();

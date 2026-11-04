@@ -97,7 +97,9 @@ fn press_key(press: &KeyPress) -> Result<(), String> {
         match (&field, press.key.as_str()) {
             (Some(field), _) => field.apply(press),
             (None, "Tab") if !(press.ctrl || press.meta || press.alt) => {
-                unsafe { js_tab_move(press.shift as u32) };
+                crate::pending_focus::moving_focus(|| {
+                    unsafe { js_tab_move(press.shift as u32) };
+                });
             }
             (None, "Enter") if clicks_on_enter(&target) => clickable(&target).click(),
             (None, " ") => space_click = clicks_on_space(&target),
@@ -105,7 +107,9 @@ fn press_key(press: &KeyPress) -> Result<(), String> {
         }
         // Tab out of a field moves focus too.
         if field.is_some() && press.key == "Tab" && !(press.ctrl || press.meta || press.alt) {
-            unsafe { js_tab_move(press.shift as u32) };
+            crate::pending_focus::moving_focus(|| {
+                unsafe { js_tab_move(press.shift as u32) };
+            });
         }
     }
     // The release goes where the press went, even if focus moved since.

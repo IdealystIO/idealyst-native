@@ -229,7 +229,9 @@ impl TextInputOps for WebTextInputOps {
     fn blur(&self, node: &dyn Any) {
         if let Some(input) = node.downcast_ref::<web_glue::dom::HtmlInputElement>() {
             crate::pending_focus::cancel(input.as_ref());
-            let _ = input.blur();
+            crate::pending_focus::moving_focus(|| {
+                let _ = input.blur();
+            });
         }
     }
     fn select_all(&self, node: &dyn Any) {

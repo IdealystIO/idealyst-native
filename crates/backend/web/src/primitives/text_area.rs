@@ -449,7 +449,9 @@ impl TextAreaOps for WebTextAreaOps {
     fn blur(&self, node: &dyn Any) {
         if let Some(t) = node.downcast_ref::<web_glue::dom::HtmlTextAreaElement>() {
             crate::pending_focus::cancel(t.as_ref());
-            let _ = t.blur();
+            crate::pending_focus::moving_focus(|| {
+                let _ = t.blur();
+            });
         }
     }
     fn select_all(&self, node: &dyn Any) {
