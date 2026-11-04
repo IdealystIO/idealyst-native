@@ -276,17 +276,14 @@ pub(crate) fn apply_rules(
         // text-align → TextView.setGravity. Without this multi-line
         // wrapped text lays out left-justified inside the (often
         // wider-than-the-line) text-box, which makes a `text_align:
-        // Center` author intent silently no-op on Android. Gravity
-        // constants: LEFT=3, CENTER_HORIZONTAL=1, RIGHT=5. Default
-        // gravity is LEFT|TOP — we keep TOP and only override the
-        // horizontal axis.
+        // Center` author intent silently no-op on Android. Horizontal
+        // axis only: see `text_align_gravity`.
         if let Some(align) = rules.text_align {
-            let gravity = match align {
-                runtime_shared::TextAlign::Left => 3 | 48,           // LEFT | TOP
-                runtime_shared::TextAlign::Center => 1 | 48,         // CENTER_HORIZONTAL | TOP
-                runtime_shared::TextAlign::Right => 5 | 48,          // RIGHT | TOP
-                runtime_shared::TextAlign::Justify => 3 | 48,        // No JUSTIFY mode on TextView v1; fall back to LEFT
-            };
+            let current = env
+                .call_method(&view, "getGravity", "()I", &[])
+                .and_then(|g| g.i())
+                .unwrap_or(0);
+            let gravity = crate::layout_policy::text_align_gravity(current, align);
             let _ = env.call_method(
                 &view,
                 "setGravity",

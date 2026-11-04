@@ -36,6 +36,28 @@ pub(crate) fn insert_needs_layout_pass(
     is_portal_parent || parent_attached_to_window
 }
 
+/// `Gravity.VERTICAL_GRAVITY_MASK`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const VERTICAL_GRAVITY_MASK: i32 = 0x70;
+
+/// The gravity for `text_align` on a view whose gravity is `current`.
+///
+/// `setGravity` takes both axes at once, and `text_align` only speaks to the
+/// horizontal, so the view's own vertical gravity stays: a single-line `EditText`
+/// centres its text vertically and a label or text area sits at the top.
+/// `Gravity.LEFT`, `CENTER_HORIZONTAL` and `RIGHT`. No `TextView` justify mode, so
+/// `Justify` is left.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn text_align_gravity(current: i32, align: runtime_shared::TextAlign) -> i32 {
+    use runtime_shared::TextAlign;
+    let horizontal = match align {
+        TextAlign::Left | TextAlign::Justify => 3,
+        TextAlign::Center => 1,
+        TextAlign::Right => 5,
+    };
+    (current & VERTICAL_GRAVITY_MASK) | horizontal
+}
+
 /// Android `ViewGroup.LayoutParams` sentinels. Named because `-1` and `-2`
 /// in a size field are the two magic numbers this file exists to keep honest.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -137,6 +159,34 @@ mod root_pass_tests {
         let pass = root_pass(None, (411.0, 891.0));
         assert_eq!(pass.compute_against, (411.0, 891.0));
         assert!(!pass.engine_owns_frame);
+    }
+}
+
+#[cfg(test)]
+mod text_align_gravity_tests {
+    use super::*;
+    use runtime_shared::TextAlign;
+
+    const CENTER_VERTICAL: i32 = 0x10;
+    const TOP: i32 = 0x30;
+    /// `Gravity.START`, what a `TextView` starts with on its horizontal axis.
+    const START: i32 = 0x0080_0003;
+
+    /// Regression: `Field(text_align)` pinned `TOP` along with the horizontal
+    /// alignment, so an aligned single-line input lost its vertical centring and
+    /// its text sat high in the box.
+    #[test]
+    fn regression_text_align_keeps_an_input_vertically_centred() {
+        let input = START | CENTER_VERTICAL;
+        assert_eq!(text_align_gravity(input, TextAlign::Right), CENTER_VERTICAL | 5);
+        assert_eq!(text_align_gravity(input, TextAlign::Center), CENTER_VERTICAL | 1);
+        assert_eq!(text_align_gravity(input, TextAlign::Left), CENTER_VERTICAL | 3);
+        assert_eq!(text_align_gravity(input, TextAlign::Justify), CENTER_VERTICAL | 3);
+    }
+
+    #[test]
+    fn text_align_keeps_a_label_or_text_area_at_the_top() {
+        assert_eq!(text_align_gravity(START | TOP, TextAlign::Right), TOP | 5);
     }
 }
 
