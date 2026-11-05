@@ -1622,7 +1622,9 @@ is under that parent), the ordinal within that frame, and the value's
 **Preserved:**
 
 - signals created during the mount walk — the app root's own state, and
-  every `#[component]` body reached from it.
+  every `#[component]` body reached from it, including a region showing when
+  the walk runs (an `if` already true, the navigator's current screen). A
+  `text_input` bound to one comes back with its text in the DOM.
 - everything in a `static` or a `thread_local!`, in any crate: these are
   never moved, because patched code uses the running program's storage
   ([Statics are the running program's](#statics-are-the-running-programs)).
@@ -1642,6 +1644,11 @@ is under that parent), the ordinal within that frame, and the value's
   building the same component would compete for one ordinal. Handing one
   region another's state is a worse failure than resetting it, and it
   would be invisible.
+
+  So a screen you navigated to since the last mount loses its signals to the
+  next patch: a search box on it empties, while the page stays loaded and the
+  navigator stays on that screen. That patch's rebuild builds the screen in its
+  own walk, so the patches after it carry its state, until you navigate again.
 
 ## Why a shape change cannot be patched
 

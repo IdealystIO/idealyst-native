@@ -36,6 +36,9 @@
 //! `pub const` value edit in the library (read by the app) rebuilds and
 //! reloads, and a shape edit in the library rebuilds and reloads.
 //!
+//! `a_patch_keeps_text_from_the_mount_walk_and_resets_a_screen_opened_since`
+//! pins which `text_input`s keep their text across a patch.
+//!
 //! Both apps link no wasm-bindgen, so they build in own mode — the
 //! wasm-bindgen CLI never runs, and the test asserts it from the build's
 //! timing line.
@@ -560,6 +563,194 @@ fn regression_adding_a_component_or_a_new_file_patches_the_running_page() {
         &mut page,
     );
     assert_own_mode(&session.log());
+}
+
+const SEARCH_APP_RS: &str = r#"
+use runtime_core::{component, signal, ui, Element, Ref, Route, Screen};
+use swap_navigator::{SwapBuilder, SwapHandle, SwapNavigator};
+
+const HOME: Route<()> = Route::<()>::new("home", "/");
+const LIST: Route<()> = Route::<()>::new("list", "/list");
+
+#[component]
+fn ListScreen() -> Element {
+    let query = signal(String::new());
+    ui! {
+        view {
+            text_input(value = query, on_change = move |v: String| query.set(v))
+            text { move || format!("screen = [{}]", query.get()) }
+        }
+    }
+}
+
+#[component]
+fn Nav() -> Element {
+    let nav: Ref<SwapHandle> = Ref::new();
+    let builder = SwapNavigator::new(&HOME)
+        .screen(HOME, |_| {
+            let body: Element = ui! { view { text { "Home" } } };
+            Screen::new(body)
+        })
+        .screen(LIST, |_| {
+            let body: Element = ui! { ListScreen() };
+            Screen::new(body)
+        })
+        .layout(|nav| {
+            let go = nav.on_select.clone();
+            ui! {
+                view {
+                    nav.outlet
+                    button(label = "list", on_click = move || go("list"))
+                }
+            }
+        });
+    ui! { builder.bind(nav) }
+}
+
+fn logic_line() -> String {
+    "logic v1".to_string()
+}
+
+#[component]
+fn Search() -> Element {
+    let query = signal(String::new());
+    ui! {
+        view {
+            text_input(value = query, on_change = move |v: String| query.set(v))
+            text { move || format!("walk = [{}]", query.get()) }
+        }
+    }
+}
+
+#[component]
+fn Shown() -> Element {
+    let query = signal(String::new());
+    ui! {
+        view {
+            text_input(value = query, on_change = move |v: String| query.set(v))
+            text { move || format!("shown = [{}]", query.get()) }
+        }
+    }
+}
+
+#[component]
+fn Later() -> Element {
+    let query = signal(String::new());
+    ui! {
+        view {
+            text_input(value = query, on_change = move |v: String| query.set(v))
+            text { move || format!("later = [{}]", query.get()) }
+        }
+    }
+}
+
+#[component]
+fn Root() -> Element {
+    let shown = signal(true);
+    let later = signal(false);
+    ui! {
+        view {
+            Search()
+            text { move || logic_line() }
+            button(label = "open".to_string(), on_click = move || later.set(true))
+            if shown.get() {
+                Shown()
+            }
+            if later.get() {
+                Later()
+            }
+            Nav()
+        }
+    }
+}
+
+pub fn app() -> Element {
+    ui! { Root() }
+}
+"#;
+
+/// A trial report: "a screen's search text is cleared by a patch". What a patch
+/// keeps of a `text_input`'s text depends on when its signal was created. A
+/// signal created during the mount walk is carried, and the rebuilt DOM input
+/// shows it. One created since (a screen navigated to, an `if` turned on) is not
+/// recorded, so the first patch resets it; the rebuild then builds that screen in
+/// its walk, and later patches carry it. The limit `docs/hot-reload.md` states,
+/// pinned here so a change to it is seen.
+#[test]
+#[ignore = "compiles the framework for wasm32 and drives headless Chrome; run with --ignored"]
+fn a_patch_keeps_text_from_the_mount_walk_and_resets_a_screen_opened_since() {
+    let repo = repo_root();
+    let tmp = tempfile::tempdir().unwrap();
+    let project = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wasm_hot_patch_e2e");
+    materialize(&project, &repo);
+    let app_rs = project.join("src/app.rs");
+    std::fs::write(&app_rs, SEARCH_APP_RS).unwrap();
+    let manifest = std::fs::read_to_string(project.join("Cargo.toml")).unwrap();
+    let swap = repo.join("crates/sdk/client/navigators/swap");
+    std::fs::write(
+        project.join("Cargo.toml"),
+        manifest.replace("[package.metadata.idealyst.app]", &format!("swap-navigator = {{ path = \"{}\" }}\n\n[package.metadata.idealyst.app]", swap.display())),
+    )
+    .unwrap();
+
+    let (session, mut page) = start(&project, tmp.path());
+    assert!(page.wait_for_text("logic v1", Duration::from_secs(60)), "the app never rendered: {:?}", page.text());
+    let press = |page: &mut Page, label: &str| {
+        page.eval(&format!(
+            "[...document.querySelectorAll('button,[role=button]')].find(e => e.textContent.trim() === '{label}').click()"
+        ));
+    };
+    // Typed as a browser delivers it: the native setter, then an input event.
+    // The order on the page is walk, shown, later, screen.
+    let type_all = |page: &mut Page| {
+        page.eval(
+            "(() => { \
+                const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; \
+                const inputs = [...document.querySelectorAll('input')]; \
+                ['alpha', 'beta', 'gamma', 'delta'].forEach((v, i) => { \
+                    set.call(inputs[i], v); \
+                    inputs[i].dispatchEvent(new Event('input', { bubbles: true })); \
+                }); \
+            })()",
+        );
+    };
+    press(&mut page, "open");
+    assert!(page.wait_for_text("later = []", Duration::from_secs(5)), "{:?}", page.text());
+    press(&mut page, "list");
+    assert!(page.wait_for_text("screen = []", Duration::from_secs(5)), "{:?}", page.text());
+    type_all(&mut page);
+    page.eval("window.__e2e_marker = 'still-here'; 1");
+    assert!(page.wait_for_text("screen = [delta]", Duration::from_secs(5)), "{:?}", page.text());
+
+    let patch = |page: &mut Page, from: &str, to: &str| {
+        let source = std::fs::read_to_string(&app_rs).unwrap();
+        std::fs::write(&app_rs, source.replace(from, to)).unwrap();
+        assert!(
+            page.wait_for_text(to, Duration::from_secs(120)),
+            "the body edit never reached the page. Page: {:?}\nLog tail:\n{}",
+            page.text(),
+            tail(&session.log()),
+        );
+        assert_eq!(page.eval("window.__e2e_marker"), json!("still-here"), "the page reloaded");
+        let inputs = page.eval("[...document.querySelectorAll('input')].map(i => i.value)");
+        let text = page.text();
+        eprintln!("[e2e] after {to}: {text:?}, inputs {inputs}");
+        (text, inputs)
+    };
+
+    let (text, inputs) = patch(&mut page, "logic v1", "logic v2");
+    assert!(text.contains("walk = [alpha]"), "a mounted component's signal was not carried: {text:?}");
+    assert!(text.contains("shown = [beta]"), "a region shown at mount is built in the walk: {text:?}");
+    assert_eq!(inputs, json!(["alpha", "beta", "", ""]), "a carried signal's input must show it; {text:?}");
+    assert!(text.contains("later = []"), "{text:?}");
+    assert!(text.contains("screen = []"), "the navigator stays on the screen it was on, reset: {text:?}");
+
+    // The rebuild built the region and the screen in its walk: now they carry.
+    type_all(&mut page);
+    assert!(page.wait_for_text("screen = [delta]", Duration::from_secs(5)), "{:?}", page.text());
+    let (text, inputs) = patch(&mut page, "logic v2", "logic v3");
+    assert_eq!(inputs, json!(["alpha", "beta", "gamma", "delta"]), "{text:?}");
+    assert!(text.contains("later = [gamma]") && text.contains("screen = [delta]"), "{text:?}");
 }
 
 #[test]
