@@ -103,7 +103,12 @@ fn regression_under_no_watch_a_request_applies_a_save_the_watcher_has_not_report
         }),
     );
     std::thread::sleep(Duration::from_millis(500));
-    let next = || calls.recv_timeout(PATIENT).expect("the request reached the host");
+    // FSEvents can also name the fresh directory the test just created.
+    let next = || {
+        let mut got = calls.recv_timeout(PATIENT).expect("the request reached the host");
+        got.retain(|p| *p != src);
+        got
+    };
 
     std::fs::write(src.join("first.rs"), "1").unwrap();
     trigger.send(()).unwrap();
