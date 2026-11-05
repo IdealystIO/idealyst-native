@@ -30,7 +30,9 @@ releases.
 - **A known-size `flat_list` row fills its slot on web** (`backend-web`), as on
   native. A row that sets its own size keeps it, and measured rows are unchanged.
 
-- **Hugging components follow- **Hugging components follow their parent's alignment** (`idea-ui` major,
+- **TableCards with `selection` draws its own select-all line** (`idea-ui`). Remove
+  any hand-rolled select-all header above it, or a phone table shows two.
+- **Hugging components follow their parent's alignment** (`idea-ui` major,
   `runtime-shared` major: `Length::FitContent`, `runtime-layout`, wire protocol
   26). Button, Tag, Chip, Badge, IconButton, Avatar and Spinner no longer set
   `align_self: Center`, and SegmentedControl and Calendar no longer set
@@ -1240,7 +1242,7 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `to_have_native_opacity` and `to_have_native_length`.
 - **Robot `set_scroll` works on a `flat_list`** (`runtime-vocabulary`).
 
-- **idea-ui additions** (- **idea-ui additions** (`idea-ui` major, `table` major): `leading` on Tag and
+- **idea-ui additions** (`idea-ui` major, `table` major): `leading` on Tag and
   Chip; `group` headings on `SelectOption`, in Select and Autocomplete;
   Autocomplete remote mode (`filter`, `on_query`, `loading`, `loading_text`,
   `allow_free_text`); TableCards `CardPresentation::Hairline`,
@@ -3148,7 +3150,7 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 - **Going to another web build configuration and back no longer serves the other
   configuration's bundle** (`build-web`).
 
-- **A body edit reached only through a closure- **A body edit reached only through a closure reaches the page** (`build-web`).
+- **A body edit reached only through a closure reaches the page** (`build-web`).
   A patch redirected only changed functions and their direct callers, but its
   jump table is read only by a component's hot call. So an edit that runs in a
   closure a component only boxes (a reactive `text`, an `on_click`), or in a
