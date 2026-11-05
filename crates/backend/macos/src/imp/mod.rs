@@ -357,13 +357,14 @@ pub fn install_global_self(weak: std::rc::Weak<RefCell<MacosBackend>>) {
     MACOS_BACKEND_SELF.with(|s| {
         *s.borrow_mut() = Some(weak);
     });
-    // Flush any coalesced layout pass synchronously when a reactive mutation
-    // window closes — so views inserted by ANY reactive update (event, timer,
-    // live-update push, hot-reload) are laid out before the turn paints, not
-    // flashed at (0,0) and repositioned a frame later. The deferred
-    // `schedule_layout_pass` microtask remains the fallback for the rare
-    // change that isn't inside a reactive window. No-op when nothing's
-    // pending, so it's cheap on every update.
+    // Drain a queued layout pass before this turn's Core Animation commit, so
+    // views inserted by an update off a timer or a future are laid out in the
+    // commit that first shows them. See `backend_apple_core::pre_commit`, and
+    // `schedule_layout_pass` for the block that remains the guarantee of progress.
+    backend_apple_core::pre_commit::install_pre_commit_hook(drain_queued_layout_pass);
+    // Flush a coalesced layout pass when a reactive mutation window closes.
+    // A scene flush does not open one, so this covers only the mutations that
+    // do. No-op when nothing's pending, so it's cheap on every update.
     runtime_shared::install_reactive_idle_hook(std::rc::Rc::new(|| {
         if layout_trace_enabled() {
             IDLE_FIRE_COUNT.with(|c| c.set(c.get() + 1));
@@ -450,8 +451,8 @@ pub fn with_global_backend<F: FnOnce(&mut MacosBackend)>(f: F) {
 /// Coalesced via `LAYOUT_PASS_QUEUED`: a reactive batch touching N nodes (or
 /// inserting N rows) posts exactly one pass.
 ///
-/// Two drains, and the difference is the whole story for flicker-free dynamic
-/// updates:
+/// Three drains, and the first two are the whole story for flicker-free
+/// dynamic updates:
 ///
 /// 1. **[`flush_pending_layout_pass`] — synchronous, before paint.** The
 ///    macOS event dispatch (e.g. a Pressable mouse-up in `make_tap_handler`)
@@ -460,15 +461,19 @@ pub fn with_global_backend<F: FnOnce(&mut MacosBackend)>(f: F) {
 ///    BEFORE AppKit commits + displays. So freshly-inserted rows are sized
 ///    before they're ever painted. This is the path tree expand/collapse takes.
 ///
-/// 2. **`schedule_microtask` — deferred, next turn.** The fallback for updates
-///    NOT driven by a macOS event (timers, async, the inspector's own poll):
-///    nothing calls `flush_pending_layout_pass` for those, so this guarantees
-///    the pass still runs. `dispatch_async(main_queue)` fires next turn (one
-///    frame after paint), which is why event-driven updates use path 1 — the
-///    microtask alone would show the inserted rows at (0,0) for a frame.
+/// 2. **[`drain_queued_layout_pass`] — a run-loop observer, before the commit.**
+///    Updates NOT driven by a macOS event (timers, async, the inspector's own
+///    poll) have nothing to call path 1. The observer is ordered ahead of Core
+///    Animation's commit, so their views are sized in the commit that first
+///    shows them. Off the main queue, a block alone would race that commit: a
+///    run loop that has just drained the queue goes straight to `BeforeWaiting`.
 ///
-/// Both drain the same coalescing flag, so whichever runs first wins and the
-/// other no-ops — never a double pass. Deferring (vs. running inline here) is
+/// 3. **`schedule_microtask` — next turn.** The guarantee of progress: an
+///    observer fires only while the run loop turns, and a pass queued from
+///    inside the commit phase arrives after this turn's observer.
+///
+/// All three drain the same coalescing flag, so whichever runs first wins and
+/// the others no-op — never a double pass. Deferring (vs. running inline here) is
 /// also required because `with_global_backend`'s `try_borrow_mut` would bail
 /// while the framework still holds the backend mid-`apply_style`/`insert`.
 /// Whether a coalesced layout pass is armed and not yet run. For the
@@ -508,6 +513,23 @@ pub fn schedule_layout_pass() {
 /// runs outside any `apply_style`/`insert` borrow (the handler has returned).
 pub fn flush_pending_layout_pass() {
     run_pending_layout_pass("event-flush");
+}
+
+/// The pre-commit drain (see [`schedule_layout_pass`]). Fires on every run-loop
+/// turn, so it bails on the flag read. A nested run loop can turn while the
+/// backend is borrowed, and the pass could not take the borrow; the flag stays
+/// armed for the next turn rather than being spent on a pass that never ran.
+fn drain_queued_layout_pass() {
+    if !LAYOUT_PASS_QUEUED.with(|q| q.get()) {
+        return;
+    }
+    let backend_free = MACOS_BACKEND_SELF
+        .with(|s| s.borrow().clone())
+        .and_then(|weak| weak.upgrade())
+        .is_some_and(|rc| rc.try_borrow_mut().is_ok());
+    if backend_free {
+        run_pending_layout_pass("pre-commit");
+    }
 }
 
 /// RAII guard that coalesces every layout pass a navigator screen-swap would
@@ -1214,13 +1236,24 @@ impl MacosBackend {
             let _: () = msg_send![objc2::class!(CATransaction), begin];
             let _: () = msg_send![objc2::class!(CATransaction), setDisableActions: true];
         }
+        // A placed anchored panel keeps its origin: Taffy holds only the
+        // `child_style_for_anchor` fallback for it, and writing that would put
+        // the frame the commit shows wherever the fallback lands, on every pass.
+        let pinned: std::collections::HashSet<usize> =
+            self.portal_instances.values().filter_map(|e| e.pinned_content()).collect();
         for (key, layout_node) in snapshot {
             let frame = self.layout.frame_of(layout_node);
             let Some((view, _)) = self.view_to_layout.get(&key) else {
                 continue;
             };
+            let origin = if pinned.contains(&key) {
+                let live: CGRect = unsafe { msg_send![&**view, frame] };
+                live.origin
+            } else {
+                CGPoint { x: frame.x as f64, y: frame.y as f64 }
+            };
             let rect = CGRect {
-                origin: CGPoint { x: frame.x as f64, y: frame.y as f64 },
+                origin,
                 size: CGSize {
                     width: frame.width as f64,
                     height: frame.height as f64,
@@ -2789,6 +2822,19 @@ impl MacosBackend {
             let portal_keys: Vec<usize> = self.portal_roots.keys().copied().collect();
             for key in portal_keys {
                 self.layout_detached_root(key, portal_size);
+            }
+            // The main tree and the panels' sizes are final here, so a panel
+            // that moved or resized is on its trigger in this same commit.
+            // Implicit actions off, as for the frames above.
+            unsafe {
+                let _: () = msg_send![objc2::class!(CATransaction), begin];
+                let _: () = msg_send![objc2::class!(CATransaction), setDisableActions: true];
+            }
+            for pin in self.portal_instances.values().filter_map(|e| e.pin.as_ref()) {
+                pin.borrow_mut().place_after_layout();
+            }
+            unsafe {
+                let _: () = msg_send![objc2::class!(CATransaction), commit];
             }
         }
 
@@ -4630,6 +4676,7 @@ impl MacosBackend {
                 if matches!(action, AnchoredInsertAction::RetrackToLatest) {
                     if let Some(e) = self.portal_instances.get_mut(&parent_key) {
                         e.tracker = None;
+                        e.pin = None;
                     }
                 }
                 let spec = self.portal_instances.get(&parent_key).unwrap().anchor.clone();
@@ -4639,7 +4686,7 @@ impl MacosBackend {
                     Retained::retain(child_view as *const NSView as *mut NSView)
                         .expect("retain anchored portal content view")
                 };
-                let tracker = portal::start_anchor_tracker(
+                let (tracker, pin) = portal::start_anchor_tracker(
                     popover,
                     spec.target.clone(),
                     spec.side,
@@ -4649,6 +4696,7 @@ impl MacosBackend {
                 );
                 if let Some(e) = self.portal_instances.get_mut(&parent_key) {
                     e.tracker = Some(tracker);
+                    e.pin = Some(pin);
                 }
             }
         }
@@ -4659,8 +4707,8 @@ impl MacosBackend {
         // to the host in `finish`), so this no-ops then and the mount pass
         // handles it.
         //
-        // `schedule_layout_pass` now runs the pass from a run-loop observer
-        // BEFORE this turn's Core Animation commit (see its docs), so a burst
+        // `schedule_layout_pass`'s pass runs from a run-loop observer BEFORE
+        // this turn's Core Animation commit (see its docs), so a burst
         // of inserts in one batch produces exactly ONE pass that lands before
         // any paint: no per-insert O(N) re-layout (the lag), and no
         // paint-at-(0,0)-then-reposition (the flicker).
@@ -6019,7 +6067,7 @@ impl MacosBackend {
         // can position the content child against the trigger and `release_portal`
         // can stop the tracker. Viewport portals get no entry.
         if let Some(anchor) = anchor_spec {
-            self.portal_instances.insert(portal_key, portal::PortalEntry { anchor, tracker: None });
+            self.portal_instances.insert(portal_key, portal::PortalEntry { anchor, tracker: None, pin: None });
         }
 
         // Hold a strong ref so a future `release_portal` can

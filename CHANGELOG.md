@@ -3128,6 +3128,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **An open Menu or Popover no longer flickers on macOS when the window lays out**
+  (`backend-macos`). Each layout pass wrote the panel's unplaced fallback frame, and
+  its tracker moved it back a tick later, so the frame between was committed. A pass
+  now keeps a placed panel's origin and re-places it in the same pass when it resizes.
+- **A view inserted by a timer or async update is laid out before macOS first shows
+  it** (`backend-macos`). The only layout pass for such an update was a main-queue
+  block, which could run after Core Animation's commit, so a rebuilt row could blink
+  at zero size. The pass now also runs from a run-loop observer ahead of that commit,
+  as on iOS.
 - **A `--no-watch` rebuild request applies a save the watcher has not reported
   yet** (`dev-reload`, `dev-server`, `dev-events`: `disk_stamps`). A request sent
   right after a save forced a rebuild, and the next one answered "no change that

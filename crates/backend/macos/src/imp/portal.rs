@@ -12,7 +12,9 @@
 //! viewport rect: an initial inset style on `insert` (so the first
 //! paint lands near the anchor, not top-left), then a `raf_loop` that
 //! re-pins the child's frame origin every frame — tracking the anchor
-//! through scrolls / reactive relayouts / window resizes. This mirrors
+//! through scrolls / reactive relayouts / window resizes. A layout pass keeps
+//! a placed child's origin and re-places it itself, so a resize lands in one
+//! commit. This mirrors
 //! the iOS backend's `CADisplayLink` tracker (`backend-ios-mobile`);
 //! `raf_loop` is macOS's frame driver (it already drives the color
 //! transitions in `imp::transitions`).
@@ -20,6 +22,9 @@
 //! Before this existed, the macOS backend dropped the anchor metadata
 //! entirely and laid the content out at the container's top-left — the
 //! "tooltip / popover renders in the corner" bug.
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use objc2::msg_send;
 use objc2::rc::Retained;
@@ -47,6 +52,95 @@ pub(crate) struct PortalEntry {
     /// it stops the loop (see `RafLoop`), which is how `release_portal`
     /// and re-tracking tear the old loop down.
     pub(crate) tracker: Option<RafLoop>,
+    /// The placement the tracker and the layout pass share. Replaced with the
+    /// tracker.
+    pub(crate) pin: Option<Rc<RefCell<AnchorPin>>>,
+}
+
+impl PortalEntry {
+    /// The content view whose origin belongs to [`AnchorPin`], once it has
+    /// placed it. Before that the layout pass still writes the fallback: a
+    /// trigger that never measures reveals the content there.
+    pub(crate) fn pinned_content(&self) -> Option<usize> {
+        self.pin.as_ref().and_then(|p| {
+            let p = p.borrow();
+            p.placed.then(|| Retained::as_ptr(&p.popover) as usize)
+        })
+    }
+}
+
+/// An anchored panel's placement: the content view, its trigger, and the shared
+/// placer, which remembers the side it settled on.
+pub(crate) struct AnchorPin {
+    popover: Retained<NSView>,
+    target: AnchorTarget,
+    placer: AnchoredPlacer,
+    placed: bool,
+}
+
+/// What [`AnchorPin::place`] could do this time.
+enum Placement {
+    Placed,
+    /// The trigger or the panel has no size yet.
+    Unmeasured,
+    /// The container has no size yet.
+    NoViewport,
+}
+
+impl AnchorPin {
+    /// Re-resolve the placement against the current trigger rect and panel
+    /// size, and move the panel if it is not there already.
+    fn place(&mut self) -> Placement {
+        let trigger = self.target.rect().filter(|t| t.width > 0.0 || t.height > 0.0);
+        let pop_frame: CGRect = unsafe { msg_send![&*self.popover, frame] };
+        let pop_w = pop_frame.size.width as f32;
+        let pop_h = pop_frame.size.height as f32;
+
+        let Some(trigger) = trigger else {
+            return Placement::Unmeasured;
+        };
+        // Taffy hasn't sized the popover yet — `Above` / `Start` origin
+        // math depends on the popover size, so defer to a later frame.
+        if pop_w <= 0.0 || pop_h <= 0.0 {
+            return Placement::Unmeasured;
+        }
+
+        // The container spans the window from its origin, so its bounds
+        // ARE the viewport the placement clamps against. Not laid out yet
+        // → skip this frame: clamping against a zero viewport would pin the
+        // popover into the top-left corner.
+        let Some(viewport) = container_viewport(&self.popover) else {
+            return Placement::NoViewport;
+        };
+
+        // The shared placement (runtime_shared) — the same flip + clamp web,
+        // iOS and Linux run, re-resolved with the CURRENT popover size so a
+        // content resize re-places (CLAUDE.md §7).
+        let placed = self.placer.place(trigger, (pop_w, pop_h), viewport);
+        let (top, left) = (placed.y, placed.x);
+
+        // Compare against the LIVE frame: the trigger's rect or the panel's
+        // size may have moved it since the last write.
+        let cur_left = pop_frame.origin.x as f32;
+        let cur_top = pop_frame.origin.y as f32;
+        let in_place = (cur_top - top).abs() < ANCHOR_TRACKER_EPSILON
+            && (cur_left - left).abs() < ANCHOR_TRACKER_EPSILON;
+        if !in_place {
+            let new_frame = CGRect {
+                origin: CGPoint { x: left as f64, y: top as f64 },
+                size: pop_frame.size,
+            };
+            let _: () = unsafe { msg_send![&*self.popover, setFrame: new_frame] };
+        }
+        self.placed = true;
+        Placement::Placed
+    }
+
+    /// The layout pass's half: place the panel in the pass that sized it, so
+    /// the commit after a resize already has the panel on its trigger.
+    pub(crate) fn place_after_layout(&mut self) {
+        let _ = self.place();
+    }
 }
 
 #[derive(Clone)]
@@ -162,8 +256,9 @@ fn align_y_unmeasured(rect: &ViewportRect, align: ElementAlign) -> f32 {
 }
 
 /// Start a `raf_loop` that re-pins `popover` to the anchor every frame.
-/// Returns the loop handle; the caller stores it on the `PortalEntry` so
-/// `release_portal` (or a re-track) can drop it, which stops the loop.
+/// Returns the loop handle and the shared placement; the caller stores both on
+/// the `PortalEntry` so `release_portal` (or a re-track) can drop them, which
+/// stops the loop.
 ///
 /// `popover` is the content child's NSView. Its `frame` is in the
 /// container's coordinate space — and the container spans the window
@@ -178,7 +273,7 @@ pub(crate) fn start_anchor_tracker(
     align: ElementAlign,
     offset: f32,
     collision_insets: runtime_shared::EdgeInsets,
-) -> RafLoop {
+) -> (RafLoop, Rc<RefCell<AnchorPin>>) {
     // Hide until the FIRST measured placement so the content never paints at
     // the unmeasured `child_style_for_anchor` fallback (which lacks the popover
     // size, so Center/Above/End/Start land slightly off) and then visibly jumps.
@@ -198,83 +293,36 @@ pub(crate) fn start_anchor_tracker(
     // Shared placement (side flip + viewport clamp), held for the tracker's
     // life: it remembers the side it settled on, so when the popover's
     // CONTENT resizes (a menu's header search filtering its rows) the next
-    // frame re-places it on the side it is already on — a flipped-above
+    // placement keeps it on the side it is already on — a flipped-above
     // menu that shrinks keeps its bottom on the trigger instead of jumping
     // below it.
-    let mut placer =
+    let placer =
         AnchoredPlacer::new(side, align, offset, ANCHOR_EDGE_GAP).with_collision_insets(collision_insets);
+    let pin = Rc::new(RefCell::new(AnchorPin { popover, target, placer, placed: false }));
+    let shared = Rc::clone(&pin);
 
-    runtime_shared::scheduling::raf_loop(move || {
+    let tracker = runtime_shared::scheduling::raf_loop(move || {
         frames = frames.saturating_add(1);
-        let reveal = |p: &NSView| {
-            let _: () = unsafe { msg_send![p, setHidden: false] };
-        };
-
-        let trigger = target.rect().filter(|t| t.width > 0.0 || t.height > 0.0);
-        let pop_frame: CGRect = unsafe { msg_send![&*popover, frame] };
-        let pop_w = pop_frame.size.width as f32;
-        let pop_h = pop_frame.size.height as f32;
-
-        let Some(trigger) = trigger else {
-            // Trigger not measurable yet. Safety net: if it never resolves
-            // (an anchor handle type with no rect impl), reveal anyway after a
-            // short grace so the content can't stay invisible forever — it
-            // shows at the unadjusted `child_style_for_anchor` position
-            // rather than vanishing.
-            if !revealed && frames > ANCHOR_REVEAL_GRACE_FRAMES {
-                revealed = true;
-                reveal(&popover);
-            }
-            return;
-        };
-        // Taffy hasn't sized the popover yet — `Above` / `Start` origin
-        // math depends on the popover size, so defer to a later frame.
-        if pop_w <= 0.0 || pop_h <= 0.0 {
-            if !revealed && frames > ANCHOR_REVEAL_GRACE_FRAMES {
-                revealed = true;
-                reveal(&popover);
-            }
+        let placement = pin.borrow_mut().place();
+        if revealed {
             return;
         }
-
-        // The container spans the window from its origin, so its bounds
-        // ARE the viewport the placement clamps against. Not laid out yet
-        // → skip this frame: clamping against a zero viewport would pin the
-        // popover into the top-left corner.
-        let Some(viewport) = container_viewport(&popover) else {
-            return;
+        // Reveal on the first placement. Safety net: if the trigger never
+        // resolves (an anchor handle type with no rect impl), reveal anyway
+        // after a short grace so the content can't stay invisible forever —
+        // it shows at the unadjusted `child_style_for_anchor` position rather
+        // than vanishing.
+        let reveal = match placement {
+            Placement::Placed => true,
+            Placement::Unmeasured => frames > ANCHOR_REVEAL_GRACE_FRAMES,
+            Placement::NoViewport => false,
         };
-
-        // The shared placement (runtime_shared) — the same flip + clamp web,
-        // iOS and Linux run, re-resolved every frame with the CURRENT
-        // popover size so a content resize re-places (CLAUDE.md §7).
-        let placed = placer.place(trigger, (pop_w, pop_h), viewport);
-        let (top, left) = (placed.y, placed.x);
-
-        // Compare against the LIVE frame rather than a stored "last written"
-        // value: the layout pass writes `setFrame:` on every registered view
-        // between frames, so reading the current origin is what makes the
-        // tracker self-correct against it.
-        let cur_left = pop_frame.origin.x as f32;
-        let cur_top = pop_frame.origin.y as f32;
-        let in_place = (cur_top - top).abs() < ANCHOR_TRACKER_EPSILON
-            && (cur_left - left).abs() < ANCHOR_TRACKER_EPSILON;
-        if !in_place {
-            let new_frame = CGRect {
-                origin: CGPoint { x: left as f64, y: top as f64 },
-                size: pop_frame.size,
-            };
-            let _: () = unsafe { msg_send![&*popover, setFrame: new_frame] };
-        }
-        // First frame where trigger + size are known and the position is
-        // applied: reveal. (Reveal even when `in_place`, e.g. an exact
-        // `Below`/`Start` placement that needs no correction, so the content
-        // doesn't stay hidden.)
-        if !revealed {
+        if reveal {
             revealed = true;
-            reveal(&popover);
+            let _: () = unsafe { msg_send![&*pin.borrow().popover, setHidden: false] };
         }
-    })
+    });
+    (tracker, shared)
 }
 
 /// The anchored container's bounds size — the viewport the popover is

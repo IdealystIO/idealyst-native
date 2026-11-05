@@ -207,6 +207,12 @@ harness = false
 name = "portal_click_through"
 harness = false
 
+# Real run loop: what a Core Animation commit carries after an update no AppKit
+# event flushed, and an open anchored panel across a layout pass.
+[[test]]
+name = "layout_before_commit"
+harness = false
+
 # Real-AppKit test of a token-colored box shadow: a token swap + re-apply of
 # the same rules repaints the layer's `shadowColor` with the new token value.
 # Main-thread only, for the same reason as `focus_attach`.
