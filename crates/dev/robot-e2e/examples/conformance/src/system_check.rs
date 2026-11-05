@@ -132,8 +132,16 @@ const KEYBOARD: Manual = Manual {
     tests: &[],
 };
 
-const MANUAL: [&Manual; 10] =
-    [&HOVER, &INPUT, &AREA, &LIST, &SCROLL, &STYLE_DROP, &SPINNER, &LINK, &PRESENCE, &KEYBOARD];
+const ROW: Manual = Manual {
+    id: "row",
+    title: "Children joining a row",
+    steps: "\"Toggle\" shows and hides two boxes beside the two that are always there: all four stay on \
+            one line, and the first two do not move when the others come and go.",
+    tests: &["several ui! children join the parent's row"],
+};
+
+const MANUAL: [&Manual; 11] =
+    [&HOVER, &INPUT, &AREA, &LIST, &SCROLL, &STYLE_DROP, &SPINNER, &LINK, &PRESENCE, &KEYBOARD, &ROW];
 
 /// Indexes into [`MANUAL`], so a section names its check with a plain
 /// (static, `Default`) prop.
@@ -147,6 +155,7 @@ const SPINNER_I: usize = 6;
 const LINK_I: usize = 7;
 const PRESENCE_I: usize = 8;
 const KEYBOARD_I: usize = 9;
+const ROW_I: usize = 10;
 
 /// The fixture's hover / press look. `cursor` is on the base so the hand
 /// shows whenever the pointer is over it.
@@ -208,6 +217,7 @@ pub(crate) fn system_check_page(results: Results, nav: NavCell) -> Element {
             CheckSection(index = LINK_I, automated = automated, manual = manual) { LinkFixture() }
             CheckSection(index = PRESENCE_I, automated = automated, manual = manual) { PresenceFixture() }
             CheckSection(index = KEYBOARD_I, automated = automated, manual = manual) { KeyboardFixture() }
+            CheckSection(index = ROW_I, automated = automated, manual = manual) { RowFixture() }
         }
     }
 }
@@ -451,6 +461,48 @@ fn SpinnerFixture() -> Element {
         view(style = section()) {
             spinner
             button(label = "Toggle", test_id = "cap-spinner-toggle", on_click = toggle)
+        }
+    }
+}
+
+/// Two nodes from a helper's `ui!` body, for [`RowFixture`].
+fn row_pair() -> Element {
+    ui! {
+        view(style = row_box(), test_id = "cap-row-a")
+        view(style = row_box(), test_id = "cap-row-b")
+    }
+}
+
+fn row_box() -> StyleRules {
+    StyleRules {
+        width: Some(Length::Px(32.0).into()),
+        height: Some(Length::Px(24.0).into()),
+        background: Some(Color("#3478f6".into()).into()),
+        ..Default::default()
+    }
+}
+
+/// A row whose children come from a helper's multi-node `ui!` and a reactive
+/// multi-node branch: every one of them must be a child of the row.
+#[component]
+fn RowFixture() -> Element {
+    let open = signal(true);
+    let toggle = move || open.update(|o| !o);
+    let row = StyleRules {
+        flex_direction: Some(runtime_shared::FlexDirection::Row),
+        gap: Some(Length::Px(8.0).into()),
+        ..Default::default()
+    };
+    ui! {
+        view(style = section()) {
+            view(style = row) {
+                { row_pair() }
+                if open.get() {
+                    view(style = row_box(), test_id = "cap-row-c")
+                    view(style = row_box(), test_id = "cap-row-d")
+                }
+            }
+            button(label = "Toggle", test_id = "cap-row-toggle", on_click = toggle)
         }
     }
 }

@@ -122,7 +122,7 @@ fn checkbox_glyph_exists_only_while_checked_and_box_is_not_rebuilt() {
         ui! { Checkbox(value = on, on_change = Rc::new(move |b: bool| on.set(b)) as Rc<dyn Fn(bool)>) }
     });
     let on = value.get().unwrap();
-    assert_eq!(shape(&h), "pressable\n  anchor\n    view");
+    assert_eq!(shape(&h), "pressable\n  anchor");
     let box_node = node_of(&h, "pressable").unwrap();
 
     act(&h, || on.set(true));
@@ -130,7 +130,7 @@ fn checkbox_glyph_exists_only_while_checked_and_box_is_not_rebuilt() {
     assert_eq!(node_of(&h, "pressable").unwrap(), box_node, "the box must not remount");
 
     act(&h, || on.set(false));
-    assert_eq!(shape(&h), "pressable\n  anchor\n    view");
+    assert_eq!(shape(&h), "pressable\n  anchor");
     assert_eq!(node_of(&h, "pressable").unwrap(), box_node);
 }
 
@@ -144,13 +144,11 @@ fn radio_dot_swaps_with_selection_inside_a_stable_ring() {
     });
     let on = value.get().unwrap();
     let ring = node_of(&h, "pressable").unwrap();
-    assert_eq!(shape(&h), "pressable\n  anchor\n    view");
-    let slot_before = h.children_of(h.children_of(h.live_roots()[0])[0])[0];
+    assert_eq!(shape(&h), "pressable\n  anchor");
 
     act(&h, || on.set(true));
-    assert_eq!(shape(&h), "pressable\n  anchor\n    view");
+    assert_eq!(shape(&h), "pressable\n  anchor\n    view", "selection mounts the dot");
     let slot_after = h.children_of(h.children_of(h.live_roots()[0])[0])[0];
-    assert_ne!(slot_before, slot_after, "selection must swap the placeholder for the dot");
     assert_eq!(node_of(&h, "pressable").unwrap(), ring, "the ring must not remount");
 
     // Same value again: no swap (the branch is keyed on the boolean).
@@ -223,12 +221,12 @@ fn select_menu_exists_only_while_open() {
 fn tooltip_bubble_exists_only_while_hovered() {
     let (h, _r) = boot(|| ui! { Tooltip(text = "tip".to_string()) { text("trigger") } });
     let closed = shape(&h);
-    assert_eq!(closed, "view\n  text \"trigger\"\n--\nanchor\n  view");
+    assert_eq!(closed, "anchor\n  view\n    text \"trigger\"\n  anchor");
 
     hover(&h, 0, true);
     assert_eq!(
         shape(&h),
-        "view\n  text \"trigger\"\n--\nanchor\n  portal\n    view\n      view\n        text \"tip\""
+        "anchor\n  view\n    text \"trigger\"\n  anchor\n    portal\n      view\n        view\n          text \"tip\""
     );
 
     hover(&h, 0, false);

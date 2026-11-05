@@ -288,6 +288,21 @@ fn spinner_height(p: &Page, ok: impl Fn(f32) -> bool) -> Result<(), String> {
     }
 }
 
+/// The four boxes of `RowFixture` on one line, left to right, as children of
+/// the row. A `view` around any pair would stack that pair.
+fn row_is_flat(p: &Page) -> Result<(), String> {
+    let frames = ["cap-row-a", "cap-row-b", "cap-row-c", "cap-row-d"]
+        .iter()
+        .map(|id| p.get_by_test_id(id).frame())
+        .collect::<Result<Vec<_>, _>>()?;
+    for pair in frames.windows(2) {
+        if (pair[0].y - pair[1].y).abs() > 0.5 || pair[1].x < pair[0].x + pair[0].width {
+            return Err(format!("not on one line: {frames:?}"));
+        }
+    }
+    Ok(())
+}
+
 /// The system check's automated half (`system_check.rs`): one test per
 /// backend capability whose trait default silently does nothing. Test
 /// names are what the screen's sections look results up by — rename both
@@ -366,6 +381,13 @@ fn capabilities_suite() -> robot_e2e::Suite {
                 .act(|p: &Page| p.get_by_test_id("cap-opacity-toggle").click())
                 .poll(|p: &Page| expect(&p.get_by_test_id("cap-opacity")).to_have_native_length(keys::CORNER_RADIUS, 0.0))
                 .poll(|p: &Page| expect(&p.get_by_test_id("cap-opacity")).to_have_native_length(keys::BORDER_WIDTH, 0.0))
+                .build(),
+            flow("several ui! children join the parent's row")
+                .poll(row_is_flat)
+                .act(|p: &Page| p.get_by_test_id("cap-row-toggle").click())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-row-c")).not_to_be_visible())
+                .act(|p: &Page| p.get_by_test_id("cap-row-toggle").click())
+                .poll(row_is_flat)
                 .build(),
             flow("a spinner follows a live size")
                 .poll(|p: &Page| spinner_height(p, |h| h <= SPINNER_SMALL_MAX))

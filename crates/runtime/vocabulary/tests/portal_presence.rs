@@ -277,25 +277,29 @@ fn overlay_composition_backdrop_first_then_content_wrapper() {
     // its pressable fills it, carrying the secondary-press layer of a
     // wired `Dismiss` backdrop. Then the content's portal, whose wrapper
     // view hosts the caller's children. Every portal root is styled
-    // `pointer-events: none`, the pressable and the wrapper `auto`.
+    // `pointer-events: none`, the pressable and the wrapper `auto`. Two
+    // portals are a fragment, which at a mount root nests under an anchor.
     assert_eq!(
         h.take_log(),
         [
-            "create n0 portal",
-            "create n1 pressable",
-            "create n2 view",
+            "create n0 anchor",
+            "create n1 portal",
+            "create n2 pressable",
+            "create n3 view",
+            "apply_style n3",
+            "insert n2 <- n3",
             "apply_style n2",
             "insert n1 <- n2",
             "apply_style n1",
             "insert n0 <- n1",
-            "apply_style n0",
-            "create n3 portal",
-            "create n4 view",
-            "create n5 text \"body\"",
+            "create n4 portal",
+            "create n5 view",
+            "create n6 text \"body\"",
+            "insert n5 <- n6",
+            "apply_style n5",
             "insert n4 <- n5",
             "apply_style n4",
-            "insert n3 <- n4",
-            "apply_style n3",
+            "insert n0 <- n4",
         ]
     );
     let _ = dismissed;

@@ -92,9 +92,9 @@ enum JsxNode {
     },
     /// `<>children</>` — a group of siblings without a container element.
     /// Emits as `Vec<Element>`; the surrounding context's `ChildList`
-    /// impl flattens it (multi-child position) or it gets wrapped in
-    /// `view(...)` when a single `Element` is required (if/else branch,
-    /// top-level single-node).
+    /// impl flattens it (multi-child position) or it becomes a `fragment`
+    /// when a single `Element` is required (if/else branch, top-level
+    /// single-node).
     Fragment {
         children: Vec<JsxNode>,
     },
@@ -412,18 +412,15 @@ fn collect_from_nodes(nodes: &[JsxNode], out: &mut Vec<(String, u32)>) {
 /// during completion.
 pub fn emit(jsx: Jsx, input: &TokenStream2) -> TokenStream2 {
     let body = match jsx.elements.len() {
-        0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
-        // Single top-level node — but a fragment at this position has
-        // to be wrapped in a view, because the macro contract is to
-        // return a `Element`, not a `Vec<Element>`.
+        0 => quote! { ::runtime_core::fragment(::std::vec::Vec::new()) },
         1 => match &jsx.elements[0] {
-            JsxNode::Fragment { children } => emit_fragment_as_view(children),
+            JsxNode::Fragment { children } => emit_fragment(children),
             n => emit_node(n),
         },
         _ => {
             let kids = jsx.elements.iter().map(emit_node);
             quote! {
-                ::runtime_core::view({
+                ::runtime_core::fragment({
                     let mut __c: ::std::vec::Vec<::runtime_core::Element>
                         = ::std::vec::Vec::new();
                     #( ::runtime_core::ChildList::append_to(#kids, &mut __c); )*
@@ -439,10 +436,10 @@ pub fn emit(jsx: Jsx, input: &TokenStream2) -> TokenStream2 {
 /// single `Element` is required (top-level single-node, if/else branch).
 /// In multi-child positions this isn't needed — the bare `Vec<Element>`
 /// emission flows through `ChildList::append_to` and flattens inline.
-fn emit_fragment_as_view(children: &[JsxNode]) -> TokenStream2 {
+fn emit_fragment(children: &[JsxNode]) -> TokenStream2 {
     let parts = children.iter().map(emit_node);
     quote! {
-        ::runtime_core::view({
+        ::runtime_core::fragment({
             let mut __c: ::std::vec::Vec<::runtime_core::Element>
                 = ::std::vec::Vec::new();
             #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
@@ -681,12 +678,12 @@ fn emit_when(props: &[&Prop], _children: Option<&[JsxNode]>) -> TokenStream2 {
         .iter()
         .find(|p| p.name == "then")
         .map(|p| emit_attr_value_raw(&p.value))
-        .unwrap_or_else(|| quote! { || ::runtime_core::view(::std::vec::Vec::new()) });
+        .unwrap_or_else(|| quote! { || ::runtime_core::fragment(::std::vec::Vec::new()) });
     let other = props
         .iter()
         .find(|p| p.name == "otherwise")
         .map(|p| emit_attr_value_raw(&p.value))
-        .unwrap_or_else(|| quote! { || ::runtime_core::view(::std::vec::Vec::new()) });
+        .unwrap_or_else(|| quote! { || ::runtime_core::fragment(::std::vec::Vec::new()) });
     quote! { ::runtime_core::when(#cond, #then_e, #other) }
 }
 
@@ -741,7 +738,7 @@ fn emit_if(cond: &Expr, then_body: &[JsxNode], else_body: Option<&[JsxNode]>) ->
     let then_expr = emit_block_as_primitive(then_body);
     let else_expr = match else_body {
         Some(body) => emit_block_as_primitive(body),
-        None => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
+        None => quote! { ::runtime_core::fragment(::std::vec::Vec::new()) },
     };
 
     // Reactive when the condition can carry a signal read — a `.get()` anywhere,
@@ -822,17 +819,15 @@ fn emit_for(pat: &syn::Pat, iter: &Expr, key: Option<&Expr>, body: &[JsxNode]) -
 
 fn emit_block_as_primitive(nodes: &[JsxNode]) -> TokenStream2 {
     let body = match nodes.len() {
-        0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
-        // A single fragment in a branch position still needs a view
-        // wrapper — `when(...)`'s closures return `Element`, not Vec.
+        0 => quote! { ::runtime_core::fragment(::std::vec::Vec::new()) },
         1 => match &nodes[0] {
-            JsxNode::Fragment { children } => emit_fragment_as_view(children),
+            JsxNode::Fragment { children } => emit_fragment(children),
             n => emit_node(n),
         },
         _ => {
             let parts = nodes.iter().map(emit_node);
             quote! {
-                ::runtime_core::view({
+                ::runtime_core::fragment({
                     let mut __c: ::std::vec::Vec<::runtime_core::Element>
                         = ::std::vec::Vec::new();
                     #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
@@ -893,9 +888,9 @@ mod tests {
     }
 
     #[test]
-    fn empty_jsx_emits_empty_view() {
+    fn empty_jsx_emits_an_empty_fragment() {
         let out = parse_and_emit(quote! {});
-        assert!(out.contains("view"));
+        assert!(out.contains(":: runtime_core :: fragment"));
         assert!(out.contains("Vec :: new"));
     }
 
@@ -1057,12 +1052,13 @@ mod tests {
     }
 
     #[test]
-    fn multiple_top_level_elements_wrap_in_view() {
+    fn regression_multiple_top_level_elements_are_a_fragment_not_a_view() {
         let out = parse_and_emit(quote! {
             <text content="a" />
             <text content="b" />
         });
-        assert!(out.contains(":: runtime_core :: view"));
+        assert!(out.contains(":: runtime_core :: fragment"));
+        assert!(!out.contains(":: runtime_core :: view"));
         let count = out.matches(":: runtime_core :: text").count();
         assert_eq!(count, 2);
     }
@@ -1082,9 +1078,9 @@ mod tests {
     }
 
     #[test]
-    fn fragment_as_top_level_wraps_in_view() {
+    fn regression_fragment_as_top_level_adds_no_view() {
         // A bare fragment at the macro root has to become a Element,
-        // so it wraps in view(). The two text children flow through
+        // so it is a fragment. The two text children flow through
         // ChildList::append_to.
         let out = parse_and_emit(quote! {
             <>
@@ -1092,7 +1088,8 @@ mod tests {
                 <text content="b" />
             </>
         });
-        assert!(out.contains(":: runtime_core :: view"));
+        assert!(out.contains(":: runtime_core :: fragment"));
+        assert!(!out.contains(":: runtime_core :: view"));
         let count = out.matches(":: runtime_core :: text").count();
         assert_eq!(count, 2);
     }
@@ -1119,7 +1116,7 @@ mod tests {
     }
 
     #[test]
-    fn fragment_in_if_branch_wraps_in_view() {
+    fn regression_fragment_in_if_branch_adds_no_view() {
         // `when(...)`'s branch closures return `Element`, so a fragment
         // used as a branch body needs the view wrapper.
         let out = parse_and_emit(quote! {
@@ -1133,19 +1130,17 @@ mod tests {
             }
         });
         assert!(out.contains(":: runtime_core :: when"));
-        // Both branches should reach a view + text, but the key thing is
-        // the fragment branch gets wrapped — i.e. there's a view call
-        // for the fragment side, not just a bare Vec.
-        let view_count = out.matches(":: runtime_core :: view").count();
-        assert!(view_count >= 1, "expected at least one view from fragment wrap, got: {out}");
+        // A branch closure returns one `Element`, so the fragment side is a
+        // `fragment` call, not a bare Vec, and adds no view.
+        assert!(out.contains(":: runtime_core :: fragment"), "{out}");
+        assert!(!out.contains(":: runtime_core :: view"), "{out}");
     }
 
     #[test]
     fn empty_fragment_is_valid() {
-        // `<></>` — degenerate but should parse. Empty Vec, wraps to
-        // an empty view at top level.
+        // `<></>` — degenerate but should parse.
         let out = parse_and_emit(quote! { <></> });
-        assert!(out.contains(":: runtime_core :: view"));
+        assert!(out.contains(":: runtime_core :: fragment"));
     }
 
     #[test]

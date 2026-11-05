@@ -281,7 +281,7 @@ fn measured_size_cache_survives_release_and_keys_by_item() {
 /// A multi-root row is a usage error, reported loudly (same contract as
 /// `MountCx::realize_detached`).
 #[test]
-fn multi_root_row_panics_with_diagnostic() {
+fn regression_a_multi_root_row_gets_a_box_the_engine_can_measure() {
     let h = harness();
     let world = h.world.clone();
     let _realized = world.enter(|| {
@@ -303,18 +303,11 @@ fn multi_root_row_panics_with_diagnostic() {
         )
     });
     let cbs = h.virtualizer(0);
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        world.enter(|| (cbs.mount_item)(0))
-    }));
-    let err = result.expect_err("multi-root row must panic");
-    let msg = err
-        .downcast_ref::<String>()
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        msg.contains("single-root"),
-        "diagnostic names the contract: {msg}"
-    );
+    h.take_log();
+    world.enter(|| (cbs.mount_item)(0));
+    let log = h.take_log();
+    assert!(log.iter().any(|l| l.ends_with(" view")), "the row's two nodes share a view: {log:?}");
+    assert!(!log.iter().any(|l| l.ends_with(" anchor")), "an anchor has no size to measure: {log:?}");
 }
 
 /// **Hard-abort regression.** A live row must not survive into the

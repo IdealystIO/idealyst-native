@@ -269,7 +269,7 @@ fn teardown_unstyles_then_releases() {
 /// A multi-root cell is a programming error with a diagnostic, not a
 /// silent mis-render — same contract as the virtualizer's rows.
 #[test]
-fn multi_root_cell_panics_with_a_diagnostic() {
+fn regression_a_multi_root_cell_gets_a_box_the_engine_can_measure() {
     let h = harness();
     let _realized = h.world.enter(|| {
         realize(
@@ -290,18 +290,11 @@ fn multi_root_cell_panics_with_a_diagnostic() {
         )
     });
     let cbs = h.virtual_grid(0);
-    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        h.world.enter(|| (cbs.mount_cell)(0, 0));
-    }))
-    .unwrap_err();
-    let msg = err
-        .downcast_ref::<String>()
-        .cloned()
-        .unwrap_or_else(|| err.downcast_ref::<&str>().map(|s| s.to_string()).unwrap_or_default());
-    assert!(
-        msg.contains("single-root") && msg.contains("render_cell(0, 0)"),
-        "diagnostic must name the offending cell: {msg}"
-    );
+    h.take_log();
+    h.world.enter(|| (cbs.mount_cell)(0, 0));
+    let log = h.take_log();
+    assert!(log.iter().any(|l| l.ends_with(" view")), "the cell's two nodes share a view: {log:?}");
+    assert!(!log.iter().any(|l| l.ends_with(" anchor")), "an anchor has no size to measure: {log:?}");
 }
 
 /// `on_handle` fires at mount and every handle method reaches the

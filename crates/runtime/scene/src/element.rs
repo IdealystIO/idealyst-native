@@ -276,6 +276,33 @@ pub fn fragment(children: Vec<Element>) -> Element {
     Element::Fragment(children)
 }
 
+/// Give a fragment at the root of `element` the one node a parentless slot
+/// needs, through `wrap`; anything else is already one root. Looks through
+/// `Owned` so a component whose body is a fragment counts.
+pub fn single_root(element: Element, wrap: impl FnOnce(Vec<Element>) -> Element) -> Element {
+    match element {
+        Element::Fragment(mut children) if children.len() == 1 => {
+            single_root(children.pop().expect("len checked"), wrap)
+        }
+        Element::Fragment(children) => wrap(children),
+        Element::Owned { element, owned } => {
+            Element::Owned { element: Box::new(single_root(*element, wrap)), owned }
+        }
+        other => other,
+    }
+}
+
+/// A fragment as one hole that never changes: the hole contributes the host's
+/// layout-transparent anchor, so the children lay out as its parent's own.
+pub(crate) fn anchored_fragment(children: Vec<Element>) -> Element {
+    let children = RefCell::new(Some(children));
+    let first = std::cell::Cell::new(true);
+    dyn_guarded(
+        move || first.replace(false),
+        move || Element::Fragment(children.borrow_mut().take().unwrap_or_default()),
+    )
+}
+
 /// A multi-node primitive item (see [`Element::Many`]): the payload's
 /// `TypeId` dispatches to the handler registered via
 /// [`register_many`](crate::Registry::register_many).

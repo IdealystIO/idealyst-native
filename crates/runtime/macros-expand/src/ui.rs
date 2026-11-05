@@ -68,8 +68,8 @@ use syn::{Expr, Ident};
 ///   sole top-level element (coerced via `IntoElement`), or a
 ///   `when`/`switch` branch / virtualizer row built by
 ///   [`emit_block_as_primitive`]. Control-flow that would otherwise be a
-///   `Vec` (a `for`, a flattened `if`) is wrapped in a single `View`
-///   here.
+///   `Vec` (a `for`, a flattened `if`) becomes a `fragment` here, which
+///   adds no node, so the nodes still lay out as the parent's own.
 ///
 /// Primitives and bare expressions are a single value either way, so
 /// they ignore the context.
@@ -103,14 +103,15 @@ pub fn emit(mut ui: Ui, input: &TokenStream2) -> TokenStream2 {
 fn emit_root_scope(elements: &[UiNode]) -> TokenStream2 {
     let scope = ui_split::split(elements);
     let body = match scope.nodes.len() {
-        0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
+        0 => empty_view_primitive(),
         // Sole element: it is coerced to one `Element` below, so emit
         // it in single-slot context.
         1 => emit_node(&scope.nodes[0], Ctx::Single),
+        // Not a `view`: the nodes join whatever parent this `ui!` lands in.
         _ => {
             let kids = scope.nodes.iter().map(|n| emit_node(n, Ctx::Child));
             quote! {
-                ::runtime_core::view(::runtime_core::__children() #( .child(#kids) )* .done())
+                ::runtime_core::fragment(::runtime_core::__children() #( .child(#kids) )* .done())
             }
         }
     };
@@ -880,8 +881,8 @@ fn emit_keyboard_avoiding_view(props: &[Prop], children: Option<&[UiNode]>) -> T
 
 fn emit_when(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     let cond = props.iter().find(|p| p.name == "cond").map(|p| p.value.to_token_stream()).unwrap_or_else(|| quote! { || false });
-    let then_e = props.iter().find(|p| p.name == "then").map(|p| p.value.to_token_stream()).unwrap_or_else(|| quote! { || ::runtime_core::view(::std::vec::Vec::new()) });
-    let other = props.iter().find(|p| p.name == "otherwise").map(|p| p.value.to_token_stream()).unwrap_or_else(|| quote! { || ::runtime_core::view(::std::vec::Vec::new()) });
+    let then_e = props.iter().find(|p| p.name == "then").map(|p| p.value.to_token_stream()).unwrap_or_else(|| quote! { || ::runtime_core::fragment(::std::vec::Vec::new()) });
+    let other = props.iter().find(|p| p.name == "otherwise").map(|p| p.value.to_token_stream()).unwrap_or_else(|| quote! { || ::runtime_core::fragment(::std::vec::Vec::new()) });
     quote! { ::runtime_core::when(#cond, #then_e, #other) }
 }
 
@@ -1656,13 +1657,21 @@ fn emit_anchored_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenSt
 /// `Presence(present = ..., enter = ..., exit = ...) { child }`.
 /// Lowers to a `presence(move || <child primitive>)` call, chained
 /// with the optional `.present(...)`, `.enter(...)`, `.exit(...)`
-/// builder methods. The children block builds the child primitive —
-/// if it has multiple nodes they wrap in a View, exactly like
-/// `emit_block_as_primitive` does for `when` / `switch` branches.
+/// builder methods. The children block builds the child, which is one node:
+/// presence animates what it mounts as one thing, so several nodes are a
+/// compile error asking for the `view` that says what moves together.
 ///
 /// The child expression is captured by-move into the closure so its
 /// reactive scope subscribes correctly on each (re)mount.
 fn emit_presence(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
+    if children.is_some_and(|c| c.len() > 1) {
+        return quote! {
+            ::std::compile_error!(
+                "`presence` animates one child: wrap these in a `view` to say what enters and \
+                 exits together."
+            )
+        };
+    }
     let child_expr = emit_block_as_primitive(children.unwrap_or(&[]));
 
     let setters = builder_calls(props, PRESENCE_BUILDER_PROPS);
@@ -1858,7 +1867,7 @@ fn emit_user(
 /// real (When-swappable) node that contributes nothing to layout when the
 /// branch is absent, so a false `if` is truly weightless.
 pub(crate) fn empty_view_primitive() -> TokenStream2 {
-    quote! { ::runtime_vocabulary::glue::empty_absolute_view() }
+    quote! { ::runtime_core::fragment(::std::vec::Vec::new()) }
 }
 
 fn emit_if(
@@ -1978,7 +1987,7 @@ fn emit_if(
     //      - `Signal<bool>` (e.g. `memo(...)`) / `Derived<bool>` →
     //        `ReactiveCond` → one reactive `when`.
     //    Both return `Vec<Element>`, so the branch thunks emit flat node lists
-    //    (preserving no-wrapper flat-splat) and `ChildList`/`one_or_view`
+    //    (preserving no-wrapper flat-splat) and `ChildList`/`one_or_fragment`
     //    normalize per ctx.
     //
     // 5. EVERY OTHER (call-free) condition shape — a literal, `&&`/`||`/`!`, a
@@ -2013,10 +2022,10 @@ fn emit_if(
         // `ChildList::append_to` flattens it (static branch → flat siblings,
         // reactive branch → the single `when`).
         Ctx::Child => dispatch,
-        // Single-slot: must be one Element. `one_or_view` returns the sole
-        // element verbatim (a reactive `when`, or a single static node — NO
-        // wrapper) and only wraps a genuinely multi-node static branch.
-        Ctx::Single => quote! { ::runtime_core::one_or_view(#dispatch) },
+        // Single-slot: must be one Element. `one_or_fragment` returns the sole
+        // element verbatim (a reactive `when`, or a single static node) and
+        // makes a multi-node static branch a fragment.
+        Ctx::Single => quote! { ::runtime_core::one_or_fragment(#dispatch) },
     }
 }
 
@@ -2033,7 +2042,7 @@ fn emit_plain_if(
 ) -> TokenStream2 {
     match ctx {
         // Single-slot: must be one Element. Plain Rust `if`, both arms
-        // coerced to Element (missing `else` → empty View).
+        // coerced to Element (missing `else` → empty fragment).
         Ctx::Single => {
             let then_expr = emit_block_as_primitive(then_body);
             let else_expr =
@@ -2302,8 +2311,8 @@ fn emit_match_bindings(
             quote! { #scrutinee }
         };
 
-        // Reactive: each arm is a single subtree (`switch` rebuilds the
-        // active arm). Multi-node arms wrap by necessity.
+        // Reactive: `switch` rebuilds the active arm as one subtree. A
+        // multi-node arm is a fragment.
         let arm_tokens: Vec<TokenStream2> = arms
             .iter()
             .map(|arm| {
@@ -2410,13 +2419,13 @@ fn emit_for(
     // `switch` branch that is just a loop) the result must be ONE
     // `Element`: the Virtualizer / reactive-range `each` forms already
     // ARE one primitive (`is_single`), so they pass through; the `Vec`
-    // forms (Repeat, type-driven dispatch) are wrapped in a `View`.
+    // forms (Repeat, type-driven dispatch) become a fragment.
     let (child_form, is_single) = emit_for_children(pat, iter, key, body, chain);
     match ctx {
         Ctx::Child => child_form,
         Ctx::Single if is_single => child_form,
         Ctx::Single => quote! {
-            ::runtime_core::view(::runtime_core::__children().child(#child_form).done())
+            ::runtime_core::fragment(::runtime_core::__children().child(#child_form).done())
         },
     }
 }
@@ -2424,7 +2433,7 @@ fn emit_for(
 /// Returns `(tokens, is_single)` where `is_single` is true when the
 /// emitted form is already exactly one `Element` (Virtualizer /
 /// reactive-range `each`) and false when it's a `Vec<Element>`
-/// (Repeat / type-driven dispatch) that a single-slot caller must wrap.
+/// (Repeat / type-driven dispatch) that a single-slot caller must collapse.
 fn emit_for_children(
     pat: &syn::Pat,
     iter: &Expr,
@@ -2511,8 +2520,8 @@ fn emit_for_children(
     // the vocabulary's `repeat` multi-node handler: the one-FFI
     // `execute_batch_with_attach` fast path on batching backends (web),
     // per-row mounts + one `insert_many` elsewhere. Single-node bodies
-    // only: a repeat is one-node-per-index, so a multi-node body would
-    // need a wrapper view — refused, since children are a flat vector.
+    // only: a repeat is one-node-per-index, so a multi-node body takes the
+    // flat path below.
     // Multi-node / non-range loops fall through to the type-driven path
     // below.
     if body.len() == 1 {
@@ -2642,7 +2651,8 @@ fn try_emit_for_repeat(
 }
 
 /// Emit a block of UI nodes as a single `Element`-producing expression.
-/// Used for if/else/for branches where we need exactly one primitive value.
+/// Used for if/else/for branches where we need exactly one value. Several
+/// nodes are a `fragment`, never a `view`: a branch adds no node of its own.
 /// The result is coerced via `IntoElement` so the branch can produce
 /// either a `Bound<H>` (from a primitive constructor) or a `Element`
 /// (from a user component) and the surrounding `when()` / `if`
@@ -2652,15 +2662,14 @@ pub(crate) fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
     // see `emit_child_scope`.
     let scope = ui_split::split(nodes);
     let body = match scope.nodes.len() {
-        0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
+        0 => empty_view_primitive(),
         // Sole node must itself be one Element: single-slot context.
         1 => emit_node(&scope.nodes[0], Ctx::Single),
-        // Multiple nodes genuinely need a wrapper to collapse to one
-        // value; the wrapper's children are a list, so each is Child.
+        // The fragment's children are a list, so each is Child.
         _ => {
             let parts = scope.nodes.iter().map(|n| emit_node(n, Ctx::Child));
             quote! {
-                ::runtime_core::view(::runtime_core::__children() #( .child(#parts) )* .done())
+                ::runtime_core::fragment(::runtime_core::__children() #( .child(#parts) )* .done())
             }
         }
     };
@@ -3303,10 +3312,37 @@ mod tests {
     }
 
     #[test]
-    fn empty_ui_emits_empty_view() {
+    fn empty_ui_emits_an_empty_fragment() {
         let out = parse_and_emit(quote! {});
-        assert!(out.contains("view"));
+        assert!(out.contains("fragment"));
         assert!(out.contains("Vec :: new"));
+    }
+
+    /// REGRESSION (a macOS row of `A() B()` under an `if` stacked vertically):
+    /// several nodes that had to collapse to one `Element` became a `view`,
+    /// which ignored the parent's layout.
+    #[test]
+    fn regression_several_nodes_are_a_fragment_at_the_root_and_in_a_reactive_branch() {
+        let root = parse_and_emit(quote! { text { "a" } text { "b" } });
+        assert!(root.contains(":: fragment") && !root.contains(":: view"), "{root}");
+        let branch = parse_and_emit(quote! {
+            if sig.get() { text { "a" } text { "b" } }
+        });
+        assert!(branch.contains(":: fragment") && !branch.contains(":: view"), "{branch}");
+        let arm = parse_and_emit(quote! {
+            match sig.get() { 0 => { text { "a" } text { "b" } } _ => { text { "c" } } }
+        });
+        assert!(arm.contains(":: fragment") && !arm.contains(":: view"), "{arm}");
+    }
+
+    /// Presence animates what it mounts as one thing, so a fragment has no
+    /// honest meaning there; the author says what moves together.
+    #[test]
+    fn presence_with_several_children_is_a_compile_error() {
+        let many = parse_and_emit(quote! { presence(present = sig) { text { "a" } text { "b" } } });
+        assert!(many.contains("compile_error") && many.contains("animates one child"), "{many}");
+        let one = parse_and_emit(quote! { presence(present = sig) { text { "a" } } });
+        assert!(!one.contains("compile_error"), "{one}");
     }
 
     /// The lowering decisions made at emission sites. The path RETARGET
@@ -3688,14 +3724,14 @@ mod tests {
             assert!(out.contains("glue::fresh_signal(::std::vec::Vec::new())"), "{out}");
         }
 
-        /// The empty `if` branch stays layout-neutral via the glue
-        /// constructor (no inline StyleSheet construction).
+        /// The empty `if` branch adds no node at all.
         #[test]
-        fn empty_else_uses_glue_absolute_view() {
+        fn regression_an_empty_else_is_an_empty_fragment_not_a_placeholder_view() {
             let out = squash(parse_and_emit(quote! {
                 if sig.get() { text { "on" } }
             }));
-            assert!(out.contains("glue::empty_absolute_view()"), "{out}");
+            assert!(out.contains("fragment(::std::vec::Vec::new())"), "{out}");
+            assert!(!out.contains("empty_absolute_view"), "{out}");
             assert!(!out.contains("StyleSheet"), "{out}");
         }
 

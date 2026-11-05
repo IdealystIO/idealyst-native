@@ -89,7 +89,7 @@ fn regression_reactive_if_let_binding_moves_into_a_closure() {
     h.flush();
     // A closure child creates its text node empty, then writes it.
     let log = h.take_log();
-    assert!(log.iter().any(|l| l == "update_text n3 \"next=42\""), "{log:?}");
+    assert!(log.iter().any(|l| l == "update_text n2 \"next=42\""), "{log:?}");
 }
 
 /// A scrutinee whose type isn't `Clone` (reachable through the reactive-call
@@ -194,7 +194,7 @@ fn if_on_a_cloned_signal_stays_reactive() {
     assert!(texts(&h.take_log()).is_empty());
     h.world.enter(|| open.set(true));
     h.flush();
-    assert_eq!(texts(&h.take_log()), ["create n3 text \"open\""]);
+    assert_eq!(texts(&h.take_log()), ["create n2 text \"open\""]);
 }
 
 fn handler_for(n: Option<i32>) -> Callback {

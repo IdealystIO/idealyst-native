@@ -11,6 +11,21 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **Several nodes in `ui!` or `jsx!` add no `view`** (`runtime-macros-expand`,
+  `runtime-scene`, `runtime-vocabulary` major). A multi-node root (`ui! { A() B() }`),
+  a multi-node reactive `if` or `match` branch and a `jsx!` `<>` are now fragments: their
+  nodes join the parent, on every backend, where they used to share a `view` that stacked
+  vertically on native and was a block on web. A row of `if open.get() { A() B() }` is now
+  a row. Layout moves with no compile error wherever code relied on that column: add the
+  `view` it relied on, with its style. An empty branch and an empty `ui! {}` add no node
+  either. `glue::one_or_view` is gone; `one_or_fragment` replaces it.
+  - A multi-node root with no parent to join (an app root, a navigator screen) mounts under
+    the host's layout-transparent anchor, so its children lay out as that slot's own.
+  - A `flat_list` row or `virtual_grid` cell with several nodes still gets a real `view`:
+    the engine measures and positions one box. A bare `fragment` there used to panic.
+  - `presence` with several children is a compile error: it animates one child, so wrap
+    them in the `view` that says what enters and exits together.
+
 - **A style that drops a prop resets it on every native backend** (`render-wgpu`,
   `backend-macos`, `backend-ios-mobile`, `backend-ios-core` major: `apply_text_style`
   takes `color_animated` and `apply_style_to_view` no longer writes opacity,

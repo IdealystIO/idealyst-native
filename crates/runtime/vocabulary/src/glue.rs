@@ -47,7 +47,8 @@
 //! | `Comp(prop = v)` | `glue::BuildElement` struct literal |
 //! | `#[component]` body | wrapped in `component_scope(move ‖ …)` (run-once, untracked, collected `Owned`) |
 //! | `Reactive<T>` props | `glue::Reactive` (world-backed; `IntoValue` bridges to builders) |
-//! | empty `if` branch | [`empty_absolute_view`] |
+//! | empty `if` branch | an empty [`fragment`] |
+//! | several nodes where one `Element` is needed | [`fragment`] |
 //! | `overlay(...) { … }` | [`primitives::overlay`] → `builders::overlay` (PortalPrim composition) |
 //! | `anchored_overlay(target=…)` | `builders::anchored_overlay` |
 //! | `presence(present=…) { … }` | [`primitives::presence`] → `builders::presence` (Dyn retire hook) |
@@ -1450,22 +1451,10 @@ where
 }
 
 /// Collapse a flat node list to ONE element: the sole element verbatim,
-/// a `view` wrapper for a genuinely multi-node list, and — for an empty
-/// list — the layout-neutral
-/// absolutely-positioned empty view (the overlay-`if`-toggle rule: an
-/// absent branch must not occupy a flex slot).
-pub fn one_or_view(mut nodes: Vec<Element>) -> Element {
-    match nodes.len() {
-        0 => empty_absolute_view(),
-        1 => nodes.pop().expect("len checked"),
-        _ => view(nodes).into_element(),
-    }
-}
-
-/// One element per keyed ROW: sole node verbatim, multi-node rows are a
-/// [`fragment`] (flat siblings — the scene's keyed driver accounts a
-/// fragment row as its node vector).
-fn one_or_fragment(mut nodes: Vec<Element>) -> Element {
+/// anything else a [`fragment`], flat siblings with no node of its own. A
+/// branch or row never adds a node, so its children lay out as the parent's
+/// own and an empty one occupies nothing.
+pub fn one_or_fragment(mut nodes: Vec<Element>) -> Element {
     match nodes.len() {
         1 => nodes.pop().expect("len checked"),
         _ => fragment(nodes),
@@ -3113,7 +3102,7 @@ impl StaticCond for bool {
 
 /// The reactive arm: a `Signal<bool>` / `ReadSignal<bool>` /
 /// `Memo<bool>` / `Dynamic` [`Reactive<bool>`] condition becomes ONE
-/// guarded hole ([`when`]); branch thunks collapse via [`one_or_view`].
+/// guarded hole ([`when`]); branch thunks collapse via [`one_or_fragment`].
 pub trait ReactiveCond {
     fn __idealyst_if(
         self,
@@ -3130,7 +3119,7 @@ macro_rules! impl_reactive_cond {
                 then: impl Fn() -> Vec<Element> + 'static,
                 otherwise: impl Fn() -> Vec<Element> + 'static,
             ) -> Vec<Element> {
-                vec![when(move || self.get(), move || one_or_view(then()), move || one_or_view(otherwise()))]
+                vec![when(move || self.get(), move || one_or_fragment(then()), move || one_or_fragment(otherwise()))]
             }
         }
     )+};
@@ -3147,7 +3136,7 @@ impl ReactiveCond for Reactive<bool> {
         match self {
             Reactive::Static(b) => b.__idealyst_if(then, otherwise),
             Reactive::Dynamic(f) => {
-                vec![when(move || f(), move || one_or_view(then()), move || one_or_view(otherwise()))]
+                vec![when(move || f(), move || one_or_fragment(then()), move || one_or_fragment(otherwise()))]
             }
         }
     }
@@ -3951,13 +3940,16 @@ mod tests {
     }
 
     #[test]
-    fn one_or_view_empty_is_layout_neutral() {
-        // The empty branch must be an Item (a real view), not a bare
-        // fragment — it is a swappable placeholder that occupies no slot.
-        match one_or_view(vec![]) {
-            Element::Item { .. } => {}
-            _ => panic!("empty branch must be an absolutely-positioned view Item"),
+    fn regression_a_branch_collapses_to_a_fragment_never_a_view() {
+        match one_or_fragment(vec![]) {
+            Element::Fragment(nodes) => assert!(nodes.is_empty()),
+            _ => panic!("an empty branch must add no node"),
         }
+        match one_or_fragment(vec![view(vec![]).into_element(), view(vec![]).into_element()]) {
+            Element::Fragment(nodes) => assert_eq!(nodes.len(), 2),
+            _ => panic!("a multi-node branch must add no node of its own"),
+        }
+        assert!(matches!(one_or_fragment(vec![view(vec![]).into_element()]), Element::Item { .. }));
     }
 }
 

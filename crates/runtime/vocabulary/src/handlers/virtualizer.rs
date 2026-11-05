@@ -10,7 +10,9 @@ use std::rc::Rc;
 
 use runtime_shared::primitives::virtualizer::ItemKey;
 use runtime_shared::VirtualizerCallbacks;
-use runtime_scene::{realize, Element, MountCx, Realized, Registry};
+use runtime_scene::{realize, single_root, Element, MountCx, Realized, Registry};
+
+use crate::glue::IntoElement as _;
 use runtime_world::{collect_owned, effect, untrack, Owned};
 
 use crate::caps::{IntrospectionOps, ScrollOps, VirtualizerOps};
@@ -194,13 +196,16 @@ where
             let ((node, realized), extra) = row_parent.enter(|| {
                 collect_owned(|| {
                     let element = untrack(|| render(idx));
+                    // The engine measures and positions this one node, so a
+                    // several-node row needs a real box: an anchor has no size.
+                    let element = single_root(element, |nodes| crate::glue::view(nodes).into_element());
                     let realized = realize(&backend, &registry, element);
                     let mut nodes = realized.collect_nodes();
                     let node = match nodes.len() {
                         1 => nodes.pop().expect("len checked"),
                         n => panic!(
                             "virtualizer render_item({idx}) must produce a single-root element \
-                             (got {n} top-level nodes) — wrap fragment rows in an item"
+                             (got {n} top-level nodes)"
                         ),
                     };
                     (node, realized)

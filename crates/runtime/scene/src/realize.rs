@@ -29,7 +29,7 @@ use std::rc::Rc;
 
 use runtime_world::{collect_owned, effect, unanchored, untrack, Owned};
 
-use crate::element::{DynKind, DynSpec, Element, Key};
+use crate::element::{anchored_fragment, single_root, DynKind, DynSpec, Element, Key};
 use crate::host::Host;
 use crate::registry::Registry;
 
@@ -526,12 +526,13 @@ impl<'a, H: Host> MountCx<'a, H> {
             .expect("realized_children called outside a handler invocation")
     }
 
-    /// Realize a detached single-root tree (navigator screens, portal
-    /// content, virtualizer rows): returns the root node (not attached to
-    /// anything) and the `Realized` that owns the subtree. Panics if the
-    /// tree has zero or multiple top-level nodes — wrap fragment roots in
-    /// an item.
+    /// Realize a detached single-root tree (a navigator's layout): returns
+    /// the root node (not attached to anything) and the `Realized` that owns
+    /// the subtree. A fragment root nests under an anchor, so its children
+    /// lay out as the caller's parent's own. Panics on a root with no single
+    /// node of its own, which only an [`Element::Many`] is.
     pub fn realize_detached(&mut self, element: Element) -> (H::Node, Realized<H::Node>) {
+        let element = single_root(element, anchored_fragment);
         let realized = build_realized(
             self.backend,
             self.registry,
@@ -543,8 +544,7 @@ impl<'a, H: Host> MountCx<'a, H> {
         match nodes.len() {
             1 => (nodes.pop().expect("len checked"), realized),
             n => panic!(
-                "realize_detached requires a single-root element (got {n} top-level nodes) — \
-                 wrap fragment roots in an item"
+                "realize_detached requires a single-root element (got {n} top-level nodes)"
             ),
         }
     }
@@ -1017,11 +1017,16 @@ pub(crate) fn depth_for_test() -> usize {
 /// inside one of its effects). The walk runs UNTRACKED — a mount is a
 /// snapshot; reactive regions subscribe through their own driver effects
 /// (whose bodies re-enable tracking, per the kernel's nested-effect rule).
+///
+/// A fragment root has no parent to splice into, so it nests under an anchor:
+/// every caller attaches one node, and the children lay out as that node's
+/// parent's own.
 pub fn realize<H: Host>(
     backend: &Rc<RefCell<H>>,
     registry: &Rc<Registry<H>>,
     element: Element,
 ) -> Realized<H::Node> {
+    let element = single_root(element, anchored_fragment);
     build_realized(
         backend,
         registry,

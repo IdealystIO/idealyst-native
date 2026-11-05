@@ -53,7 +53,7 @@ mod registry;
 mod tests;
 
 pub use element::{
-    component_scope, dyn_element, dyn_guarded, dyn_keyed, payload_type_name, fragment, item, keyed, many, owned, with_realize_hook,
+    component_scope, dyn_element, dyn_guarded, dyn_keyed, payload_type_name, fragment, item, keyed, many, owned, single_root, with_realize_hook,
     DynKind, DynSpec, Element, Key, RealizeHook, RetireHook,
 };
 /// The overlay's node-origin surface — only under `ui-overlay`.
