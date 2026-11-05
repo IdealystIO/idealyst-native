@@ -175,6 +175,11 @@ pub fn spawn_change_loop_numbered(
             }
         }
         let mut queued: Vec<PathBuf> = Vec::new();
+        // What a request finds that no event has named yet.
+        let mut disk = dev_events::disk_stamps::DiskStamps::default();
+        if no_watch {
+            disk.follow(&watch_paths);
+        }
         for msg in rx {
             let reporter = dev_events::global();
             match msg {
@@ -184,8 +189,12 @@ pub fn spawn_change_loop_numbered(
                     // as a batch of only its temp file, with the file itself
                     // in the next; acted on, the temp batch rebuilt, and the
                     // real save then waited behind that rebuild.
-                    let paths: Vec<PathBuf> =
-                        ev.iter().map(|e| e.path.clone()).filter(|p| !is_scratch(p)).collect();
+                    // A late event for what a request already took is not a save.
+                    let paths: Vec<PathBuf> = ev
+                        .iter()
+                        .map(|e| e.path.clone())
+                        .filter(|p| !is_scratch(p) && !(no_watch && disk.covers(p)))
+                        .collect();
                     if paths.is_empty() {
                         continue;
                     }
@@ -230,6 +239,13 @@ pub fn spawn_change_loop_numbered(
                             target: crate::EVENTS_TARGET.into(),
                             request,
                         });
+                    }
+                    if no_watch {
+                        for p in disk.moved() {
+                            if !queued.contains(&p) {
+                                queued.push(p);
+                            }
+                        }
                     }
                     let paths = std::mem::take(&mut queued);
                     reporter.log(

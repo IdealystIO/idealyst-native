@@ -489,7 +489,8 @@ pub struct Args {
     /// as one save — through the same patch-or-rebuild decision a save
     /// takes. Request one with `r` in the panel, or from an agent through
     /// the session's control endpoint (`idealyst mcp`'s `rebuild_dev`).
-    /// A request with nothing queued forces a rebuild.
+    /// A request also applies a save the watcher has not reported yet, and
+    /// with nothing to apply it forces a rebuild.
     #[arg(long)]
     pub no_watch: bool,
 

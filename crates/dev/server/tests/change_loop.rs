@@ -85,6 +85,40 @@ fn without_no_watch_saves_apply_and_a_request_rebuilds() {
     assert!(forced.is_empty(), "{forced:?}");
 }
 
+/// A save and its request with no gap, twice. The first request found nothing
+/// queued and rebuilt; the second then applied the FIRST save, which that build
+/// had compiled ("no change"), and left the new edit queued behind it.
+#[test]
+fn regression_under_no_watch_a_request_applies_a_save_the_watcher_has_not_reported() {
+    let (_dir, src) = tree();
+    let (trigger, triggers) = mpsc::channel();
+    let (calls_tx, calls) = mpsc::channel::<Vec<PathBuf>>();
+    let _loop = spawn_change_loop_with(
+        vec![src.clone()],
+        Duration::from_millis(100),
+        true,
+        triggers,
+        Box::new(move |paths| {
+            let _ = calls_tx.send(paths.to_vec());
+        }),
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let next = || calls.recv_timeout(PATIENT).expect("the request reached the host");
+
+    std::fs::write(src.join("first.rs"), "1").unwrap();
+    trigger.send(()).unwrap();
+    assert_eq!(names(&next()), vec!["first.rs"]);
+
+    std::fs::write(src.join("second.rs"), "2").unwrap();
+    trigger.send(()).unwrap();
+    assert_eq!(names(&next()), vec!["second.rs"]);
+
+    // The late events are those saves: a request with nothing new applies nothing.
+    std::thread::sleep(QUIET);
+    trigger.send(()).unwrap();
+    assert_eq!(names(&next()), Vec::<String>::new(), "a save a request took was queued again");
+}
+
 #[test]
 fn regression_a_batch_of_only_scratch_files_is_not_a_save() {
     // `sed -i` on macOS writes `.!<pid>!<name>` and renames it over the

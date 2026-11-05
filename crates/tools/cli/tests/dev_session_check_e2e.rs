@@ -11,6 +11,10 @@
 //! - `a_hot_patch_after_a_check_reaches_the_running_program`: the check relinks
 //!   the server's binary and rewrites the rlibs, and a further body edit still
 //!   patches the running server and page, which the base must still describe.
+//! - `regression_a_save_with_no_gap_before_its_request_is_applied`: under
+//!   `--no-watch`, a request sent right after a save, before the watcher has
+//!   reported it, applies that save on the web and on the server, and leaves
+//!   nothing queued.
 //! - `a_test_harness_check_compiles_only_the_harness`: `--tests -p <crate>`
 //!   reuses the server's units, though the crate alone resolves a dependency
 //!   with fewer features.
@@ -812,6 +816,74 @@ fn a_hot_patch_after_a_check_reaches_the_running_program() {
     server_patch(before);
     wait_answer(&session, "api / greeting v3", Duration::from_secs(10));
     assert_eq!(session.pid(), first_pid, "the server was respawned, not patched");
+    drop(page);
+    drop(session);
+    materialize(&root, &repo, "");
+}
+
+/// A save and its `POST /rebuild` with no gap, twice, as an agent's edit and
+/// `rebuild_dev` do. The request reaches each watcher before the save does. A
+/// request answered from what the watcher has reported forces a build; the next
+/// releases that first save, which the build compiled, answers "no change that
+/// reaches the program", and leaves the new edit queued, never applied.
+#[test]
+#[ignore = "compiles the framework for wasm32 and the host and drives headless Chrome; run with --ignored"]
+fn regression_a_save_with_no_gap_before_its_request_is_applied() {
+    let repo = framework_root();
+    let root = fixture_root();
+    materialize(&root, &repo, "");
+    let scratch = tempfile::tempdir().unwrap();
+    let session = start(&root, scratch.path(), &["--local", "--no-robot", "--no-watch", "--experimental-server-patch"]);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !session.log.lock().unwrap().contains("hot-patch agent connected") {
+        assert!(Instant::now() < deadline, "the server's hot-patch agent never connected");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let mut page = Page::open(session.port, scratch.path());
+    page.wait_text("count = 0", Duration::from_secs(60));
+
+    let before = session.last_seq();
+    std::fs::write(root.join("shared/src/lib.rs"), shared("v2")).unwrap();
+    session.rebuild();
+    let server = session.wait_event(before, Duration::from_secs(300), "the server's answer", |e| {
+        e["target"] == "server" && matches!(e["type"].as_str(), Some("patch_built" | "patch_failed" | "build_started"))
+    });
+    assert_eq!(server["type"], "patch_built", "the request did not offer the save to the patch: {}", session.summary(before));
+    wait_answer(&session, "api / greeting v2", Duration::from_secs(30));
+    page.wait_text("page says greeting v2", Duration::from_secs(300));
+    session.wait_event(before, Duration::from_secs(300), "the web rebuild", |e| {
+        e["target"] == "web" && e["type"] == "build_finished"
+    });
+    page.make_state();
+
+    // Other files than the first request's: re-reading what the watcher
+    // reported cannot find these.
+    let before = session.last_seq();
+    std::fs::write(root.join("app/src/app.rs"), app_rs("t2")).unwrap();
+    std::fs::write(root.join("server/src/main.rs"), SERVER_MAIN.replace("api / {}", "api two / {}")).unwrap();
+    session.rebuild();
+    page.wait_text("tag t2", Duration::from_secs(300));
+    assert!(page.state_kept(), "the web save did not hot patch: {:?}", page.text());
+    wait_answer(&session, "api two / greeting v2", Duration::from_secs(300));
+    for target in ["web", "server"] {
+        let unchanged = session.events().into_iter().find(|e| {
+            seq(e) > before && e["target"] == target && e["type"] == "decided" && e["decision"]["tier"] == "unchanged"
+        });
+        assert_eq!(unchanged, None, "{target} answered no change: {}", session.summary(before));
+    }
+
+    // Each late event is a save a request already took: nothing is queued, so
+    // the status views have no row waiting on a request.
+    std::thread::sleep(Duration::from_secs(3));
+    let events = session.events();
+    let last_taken = events.iter().rposition(|e| e["type"] == "rebuild_taken").expect("the requests were taken");
+    for target in ["web", "server"] {
+        let reports = events[last_taken..]
+            .iter()
+            .filter(|e| e["type"] == "change_detected" && e["target"] == target)
+            .count();
+        assert!(reports <= 1, "{target} queued a save a request had taken: {}", session.summary(before));
+    }
     drop(page);
     drop(session);
     materialize(&root, &repo, "");

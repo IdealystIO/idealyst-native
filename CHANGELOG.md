@@ -3128,6 +3128,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A `--no-watch` rebuild request applies a save the watcher has not reported
+  yet** (`dev-reload`, `dev-server`, `dev-events`: `disk_stamps`). A request sent
+  right after a save forced a rebuild, and the next one answered "no change that
+  reaches the program" from the earlier save with the new edit still queued. A
+  request now also takes what moved on disk, on the web, server and runtime-server
+  watchers, so a save with no gap before its request patches like any other.
 - **Server patches reach more of a real app** (`build-runtime-server`, `dev-reload`,
   `idealyst-cli`; `--experimental-build` or `--experimental-server-patch`). Under
   `--no-watch`, a rebuild request that releases queued saves can patch the running

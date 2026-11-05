@@ -87,6 +87,7 @@ pub mod broadcast;
 pub mod cargo;
 pub mod check;
 pub mod child;
+pub mod disk_stamps;
 pub mod plain;
 pub mod page;
 pub mod process;

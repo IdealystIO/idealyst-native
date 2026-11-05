@@ -2174,9 +2174,19 @@ and queued (--no-watch); a rebuild request applies them`) and builds
 nothing. A rebuild request — the panel's `r`, or `rebuild_dev` from
 `idealyst mcp` (next section) — applies everything queued as one save,
 through the same decision a watched save takes, so a body edit still hot
-patches. With nothing queued, the request rebuilds. Every watcher of the
-session queues: the web `--local` loop, a full-stack server's watcher,
-the icon watcher, and in wire mode the runtime-server host, which takes
+patches. With nothing to apply, the request rebuilds.
+
+A request applies what is on disk when it arrives, whether or not the watcher
+has reported it yet: a watcher's report lags a save by its debounce and the OS,
+so the request also stats the watched files and takes any that moved since the
+last request (`dev_events::disk_stamps`). A save followed straight away by a
+request is decided like one queued long before, and its late event is dropped as
+a duplicate. So "no change" means the files on disk at that moment changed
+nothing that reaches the program.
+
+Every watcher of the session queues: the web `--local` loop, a full-stack
+server's watcher, the icon watcher, and in wire mode the runtime-server host,
+which takes
 its rebuild requests from the CLI as `rebuild` lines on its stdin, each
 after a `rebuild-request <n>` line naming the request (a host that
 predates numbering ignores that line and still rebuilds).
@@ -2545,9 +2555,9 @@ and a `patch_built` naming the functions redirected (`build-metrics.jsonl`
 records `hot patch: N function(s) redirected`), and a failed one a
 `patch_failed`, after which the watcher runs the usual `cargo build` and
 respawn. A rebuild request (`r`) rebuilds, unless `--no-watch` has saves
-queued: a request that releases them is those saves, and they are decided
-like any other, so `--no-watch` patches too. A request with nothing queued
-is a forced rebuild.
+to apply: a request that releases them is those saves, and they are decided
+like any other, so `--no-watch` patches too. A request with nothing queued and
+nothing moved on disk is a forced rebuild.
 
 **Staleness you can still meet.** A patch changes what runs from each
 function's next call. State computed when the server started — a router

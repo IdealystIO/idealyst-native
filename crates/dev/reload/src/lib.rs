@@ -29,7 +29,7 @@ pub use dev_overlay::decide as overlay_decide;
 /// The server's in-place patch decision (the CLI's `server_hot`).
 pub use dev_overlay::native;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1398,31 +1398,14 @@ const TARGET: &str = "web";
 /// For a caller that builds BEFORE it starts watching: a save made in
 /// between raises no event, so it is found by this instead.
 pub fn modified_since(roots: &[PathBuf], since: std::time::SystemTime) -> Vec<PathBuf> {
-    let mut out = BTreeSet::new();
-    let mut stack: Vec<PathBuf> = roots.to_vec();
-    while let Some(path) = stack.pop() {
-        let Ok(meta) = std::fs::metadata(&path) else { continue };
-        if meta.is_dir() {
-            let Ok(entries) = std::fs::read_dir(&path) else { continue };
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if name.starts_with('.') || name == "target" {
-                    continue;
-                }
-                stack.push(entry.path());
-            }
-            continue;
-        }
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        if dev_events::is_scratch_file(&name) {
-            continue;
-        }
+    let mut out = Vec::new();
+    dev_events::disk_stamps::for_each_watched_file(roots, |path, meta| {
         if meta.modified().is_ok_and(|m| m >= since) {
-            out.insert(path);
+            out.push(path);
         }
-    }
-    out.into_iter().collect()
+    });
+    out.sort();
+    out
 }
 
 pub fn watch_roots(manifest_path: &Path) -> Vec<PathBuf> {
@@ -1978,14 +1961,16 @@ fn watch_loop(
     let counted = saves.clone();
     // For the edits a resumed session finds made while none ran.
     let offline_tx = tx.clone();
-    let mut seen = SeenContent::default();
+    let seen = Arc::new(Mutex::new(SeenContent::default()));
     // `--no-watch`: saves wait here, never in the inbox — so one that lands
     // while a requested rebuild runs is held for the NEXT request rather
     // than folded into this one (see `release`).
-    let queued: Option<Queued> = opts.no_watch.then(Queued::default);
+    let queued: Option<Queued> = opts.no_watch.then(|| Queued::seeing(seen.clone()));
     let holds = queued.clone();
     let hold_reporter = reporter.clone();
     let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), move |r| {
+        // Held to the end of the batch: see `Queued::take`.
+        let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());
         match seen.classify(&r) {
             // Nothing moved since the watcher last looked: neither work
             // nor a supersession. See `SeenContent`.
@@ -2015,6 +2000,9 @@ fn watch_loop(
         {
             reporter.warn("dev-reload", format!("cannot watch {}: {e}", path.display()));
         }
+    }
+    if let Some(q) = &queued {
+        q.follow(&watch_paths);
     }
 
     reporter.emit(dev_events::DevEvent::Watching {
@@ -2463,6 +2451,9 @@ fn watch_loop(
                     }
                 }
                 watch_paths = fresh;
+                if let Some(q) = &queued {
+                    q.follow(&watch_paths);
+                }
                 reporter.emit(dev_events::DevEvent::Watching {
                     target: TARGET.into(),
                     roots: display_all(&watch_paths),
@@ -3124,7 +3115,7 @@ enum Batch {
 /// half-written file records the partial bytes; the write that completes
 /// it then differs and counts, as it must.
 #[derive(Default)]
-struct SeenContent(std::collections::HashMap<PathBuf, [u8; 32]>);
+struct SeenContent(HashMap<PathBuf, Option<[u8; 32]>>);
 
 impl SeenContent {
     fn classify(
@@ -3155,20 +3146,20 @@ impl SeenContent {
     }
 
     /// Whether `path`'s bytes differ from the last ones seen, recording
-    /// the new ones. A file that does not read (deleted, a directory)
-    /// always counts as moved and forgets its digest.
+    /// the new ones. A deleted file counts once, as bytes of its own: its
+    /// second report is a duplicate like any other. A path that exists but
+    /// does not read (a directory) always counts as moved.
     fn moved(&mut self, path: &Path) -> bool {
         use sha2::Digest as _;
-        match std::fs::read(path) {
-            Ok(bytes) => {
-                let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
-                self.0.insert(path.to_path_buf(), digest) != Some(digest)
-            }
-            Err(_) => {
+        let now = match std::fs::read(path) {
+            Ok(bytes) => Some(sha2::Sha256::digest(&bytes).into()),
+            Err(_) if path.exists() => {
                 self.0.remove(path);
-                true
+                return true;
             }
-        }
+            Err(_) => None,
+        };
+        self.0.insert(path.to_path_buf(), now) != Some(now)
     }
 }
 
@@ -3212,20 +3203,32 @@ impl SaveLog {
     }
 }
 
-/// Hand a watcher batch to its loop, and log it if it is a save.
-///
-/// Sent BEFORE it is logged. [`run_save`] snapshots the count before it
-/// drains the channel, so a count that moved past its snapshot always
-/// means a batch that is in the channel (or already drained): never a
-/// save the work in flight cannot see and yet is not superseded by.
-/// Logging first could let a save land between the drain and the send,
-/// after the snapshot, and its result would be applied without it.
 /// The saves a `--no-watch` session holds back ([`BuildOptions::no_watch`]):
 /// the paths every batch named, until a rebuild request takes them.
+///
+/// A request also takes what the disk holds that no batch has named yet
+/// ([`Self::take`]): see [`dev_events::disk_stamps`].
 #[derive(Clone, Default)]
-struct Queued(Arc<Mutex<Vec<PathBuf>>>);
+struct Queued {
+    held: Arc<Mutex<Vec<PathBuf>>>,
+    /// The watcher's own record. A save taken from the disk is recorded here,
+    /// so its late event is a duplicate rather than a queued save.
+    seen: Arc<Mutex<SeenContent>>,
+    disk: Arc<Mutex<dev_events::disk_stamps::DiskStamps>>,
+}
 
 impl Queued {
+    /// A queue for a watcher that filters its batches through `seen`.
+    fn seeing(seen: Arc<Mutex<SeenContent>>) -> Self {
+        Self { seen, ..Self::default() }
+    }
+
+    /// The roots [`Self::take`] looks under. Called once they are watched:
+    /// a save from here on is either reported by the watcher or found there.
+    fn follow(&self, roots: &[PathBuf]) {
+        self.disk.lock().unwrap_or_else(|p| p.into_inner()).follow(roots);
+    }
+
     /// Hold a batch back. Says so — `change_detected` opens the target's
     /// episode in every status view, and a log line says what to do — and
     /// returns `false` for a batch that names no work (only an editor's
@@ -3235,7 +3238,7 @@ impl Queued {
             return false;
         }
         let total = {
-            let mut q = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            let mut q = self.held.lock().unwrap_or_else(|p| p.into_inner());
             for p in paths {
                 if !q.contains(&p) {
                     q.push(p);
@@ -3259,16 +3262,30 @@ impl Queued {
         true
     }
 
-    /// Everything held back, emptying the queue.
+    /// Everything held back and everything the disk has moved to since the
+    /// last take, emptying the queue. A file whose bytes the watcher has
+    /// already seen is not new: it is held, or a request already took it.
+    ///
+    /// The watcher holds `seen` from classifying a batch until the batch is
+    /// held, so a file cannot be judged seen here while its batch is still on
+    /// its way into `held`.
     fn take(&self) -> Vec<PathBuf> {
-        std::mem::take(&mut *self.0.lock().unwrap_or_else(|p| p.into_inner()))
+        let mut seen = self.seen.lock().unwrap_or_else(|p| p.into_inner());
+        let moved = self.disk.lock().unwrap_or_else(|p| p.into_inner()).moved();
+        let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+        for path in moved {
+            if seen.moved(&path) && !held.contains(&path) {
+                held.push(path);
+            }
+        }
+        std::mem::take(&mut *held)
     }
 }
 
 /// What a `--no-watch` loop runs for a message that reached its inbox.
 /// Saves never do (the watcher holds them in `queued`); a rebuild request
-/// becomes the queued saves as ONE save, decided like any other — or,
-/// with nothing queued, stays a forced rebuild. Without `--no-watch`
+/// becomes the saves it finds ([`Queued::take`]) as ONE save, decided like
+/// any other — or, with none, stays a forced rebuild. Without `--no-watch`
 /// every message is its own.
 fn release(msg: WatchMsg, queued: Option<&Queued>) -> Vec<WatchMsg> {
     match (msg, queued) {
@@ -3284,6 +3301,14 @@ fn release(msg: WatchMsg, queued: Option<&Queued>) -> Vec<WatchMsg> {
     }
 }
 
+/// Hand a watcher batch to its loop, and log it if it is a save.
+///
+/// Sent BEFORE it is logged. [`run_save`] snapshots the count before it
+/// drains the channel, so a count that moved past its snapshot always
+/// means a batch that is in the channel (or already drained): never a
+/// save the work in flight cannot see and yet is not superseded by.
+/// Logging first could let a save land between the drain and the send,
+/// after the snapshot, and its result would be applied without it.
 fn notify_save<M>(tx: &mpsc::Sender<M>, saves: &SaveLog, save: bool, msg: M) {
     let _ = tx.send(msg);
     if save {
@@ -3496,11 +3521,13 @@ where
             // one naming only scratch files is no work below. Without them
             // a temp-then-rename save starts a full server build on the
             // temp file's batch, then another for the real save.
-            let mut seen = SeenContent::default();
-            let queued: Option<Queued> = no_watch.then(Queued::default);
+            let seen = Arc::new(Mutex::new(SeenContent::default()));
+            let queued: Option<Queued> = no_watch.then(|| Queued::seeing(seen.clone()));
             let holds = queued.clone();
             let hold_reporter = reporter.clone();
             let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), move |r| {
+                // Held to the end of the batch: see `Queued::take`.
+                let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner());
                 match seen.classify(&r) {
                     Batch::Unchanged => {}
                     _ if holds.is_some() => {
@@ -3535,6 +3562,9 @@ where
                     );
                 }
             }
+            if let Some(q) = &queued {
+                q.follow(&paths);
+            }
             reporter.emit(dev_events::DevEvent::Watching {
                 target: label.into(),
                 roots: display_all(&paths),
@@ -3558,13 +3588,15 @@ where
                 if first.iter().all(|m| matches!(m, WatchMsg::Fs(Err(_)))) {
                     continue;
                 }
+                // Saves a retried patch took from the `--no-watch` queue.
+                let mut retaken: Vec<PathBuf> = Vec::new();
                 run_save(&rx, &saves, first, Duration::from_millis(MAX_COALESCE_MS), |batches, token| {
                     deferred.note(batches);
                     let requests = request_ids(batches);
                     let mut forced = batches.iter().any(|m| matches!(m, WatchMsg::Rebuild(_)));
-                    let mut paths: Vec<PathBuf> = Vec::new();
-                    let mut any_ok = false;
-                    let mut fs_batches = 0usize;
+                    let mut paths: Vec<PathBuf> = retaken.clone();
+                    let mut any_ok = !retaken.is_empty();
+                    let mut fs_batches = usize::from(!retaken.is_empty());
                     for m in batches {
                         match m {
                             WatchMsg::Fs(r) => {
@@ -3609,7 +3641,22 @@ where
                     if fs_batches > 0 && !forced && !owed {
                         match patch(&saved_paths(&paths), token) {
                             Patched::Applied => return Attempt::Finished,
-                            Patched::Superseded => return Attempt::Superseded,
+                            // A patch gives up when a source moved under its
+                            // replay. Under `--no-watch` that save is in the
+                            // queue, not in these batches, so it must be taken
+                            // for the retry; one the disk cannot name (no file
+                            // moved since the last request) only a build
+                            // covers, and retrying would give up forever.
+                            Patched::Superseded => match &queued {
+                                None => return Attempt::Superseded,
+                                Some(q) => {
+                                    let more = q.take();
+                                    if !more.is_empty() {
+                                        retaken.extend(more);
+                                        return Attempt::Superseded;
+                                    }
+                                }
+                            },
                             Patched::Rebuild => {}
                         }
                     }
@@ -5071,6 +5118,191 @@ mod tests {
             e,
             dev_events::DevEvent::BuildStarted { cause: dev_events::BuildCause::Forced, .. }
         )));
+    }
+
+    /// A save and its rebuild request with no gap, twice. The first request
+    /// reached the loop before the watcher reported the save, so it forced a
+    /// build; the second then released the FIRST save, whose bytes that build
+    /// had compiled ("no change that reaches the program"), and left the new
+    /// edit queued behind it.
+    #[test]
+    fn regression_a_request_sent_before_the_watcher_saw_a_save_still_applies_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let (reporter, q) = capture();
+        let (built_tx, built_rx) = mpsc::channel();
+        let (offered_tx, offered_rx) = mpsc::channel::<Vec<(String, Option<String>)>>();
+        let (_watch, control) = start_watch_patching(
+            vec![src.clone()],
+            ReloadSignal::new(),
+            "server",
+            reporter,
+            true,
+            move |paths: &[PathBuf], _: &Supersede| {
+                let read = paths
+                    .iter()
+                    .map(|p| (p.file_name().unwrap().to_string_lossy().into_owned(), std::fs::read_to_string(p).ok()))
+                    .collect();
+                let _ = offered_tx.send(read);
+                Patched::Applied
+            },
+            move || {
+                let _ = built_tx.send(());
+                Ok(Rebuilt::Unchanged)
+            },
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !events(&q).iter().any(|e| matches!(e, dev_events::DevEvent::Watching { .. })) {
+            assert!(std::time::Instant::now() < deadline, "the watcher never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let quiet = Duration::from_millis(DEBOUNCE_MS * 4 + 500);
+        // What FSEvents says about the fresh directory is not a save of ours.
+        std::thread::sleep(quiet);
+        let offered = |file: &str, bytes: &str| {
+            let got = offered_rx.recv_timeout(Duration::from_secs(20)).expect("the save was not offered");
+            assert!(
+                got.iter().any(|(name, read)| name == file && read.as_deref() == Some(bytes)),
+                "{file} with {bytes:?} was not offered: {got:?}"
+            );
+        };
+
+        std::fs::write(src.join("first.rs"), "1").unwrap();
+        assert!(control.request_rebuild_numbered(1));
+        offered("first.rs", "1");
+        // A different file: the request cannot pick it up by re-reading the
+        // one the watcher reported.
+        std::fs::write(src.join("second.rs"), "2").unwrap();
+        assert!(control.request_rebuild_numbered(2));
+        offered("second.rs", "2");
+        // The same file again, and a deletion.
+        std::fs::write(src.join("second.rs"), "3").unwrap();
+        assert!(control.request_rebuild_numbered(3));
+        offered("second.rs", "3");
+        std::fs::remove_file(src.join("first.rs")).unwrap();
+        assert!(control.request_rebuild_numbered(4));
+        let got = offered_rx.recv_timeout(Duration::from_secs(20)).expect("the deletion was not offered");
+        assert!(got.iter().any(|(name, read)| name == "first.rs" && read.is_none()), "{got:?}");
+        assert!(built_rx.try_recv().is_err(), "a request that had a save behind it built instead of offering it");
+
+        // The late events are the saves already taken: nothing is left queued.
+        events(&q);
+        std::thread::sleep(quiet);
+        let queued: Vec<_> =
+            events(&q).into_iter().filter(|e| matches!(e, dev_events::DevEvent::ChangeDetected { .. })).collect();
+        assert!(queued.is_empty(), "a save a request took was queued again: {queued:?}");
+
+        // A request with nothing behind it is still a forced build.
+        assert!(control.request_rebuild_numbered(5));
+        built_rx.recv_timeout(Duration::from_secs(20)).expect("a request with nothing queued forces a build");
+    }
+
+    /// `ServerHot::try_patch` gives up when a source moved under its replay.
+    /// Under `--no-watch` that save never reaches the inbox, so the retry had
+    /// the same batch, gave up the same way, and spun until the next request.
+    #[test]
+    fn regression_under_no_watch_a_patch_that_gives_up_retries_with_the_save_that_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let (reporter, q) = capture();
+        let (offered_tx, offered_rx) = mpsc::channel::<Vec<PathBuf>>();
+        let moved = src.join("moved_under_the_replay.rs");
+        let mut calls = 0;
+        let (_watch, control) = start_watch_patching(
+            vec![src.clone()],
+            ReloadSignal::new(),
+            "server",
+            reporter,
+            true,
+            move |paths: &[PathBuf], _: &Supersede| {
+                calls += 1;
+                let _ = offered_tx.send(paths.to_vec());
+                match calls {
+                    1 => {
+                        std::fs::write(&moved, "pub fn m() {}\n").unwrap();
+                        Patched::Superseded
+                    }
+                    _ => Patched::Applied,
+                }
+            },
+            || Ok(Rebuilt::Unchanged),
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !events(&q).iter().any(|e| matches!(e, dev_events::DevEvent::Watching { .. })) {
+            assert!(std::time::Instant::now() < deadline, "the watcher never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::write(src.join("save.rs"), "pub fn s() {}\n").unwrap();
+        assert!(control.request_rebuild_numbered(1));
+        let first = offered_rx.recv_timeout(Duration::from_secs(20)).expect("the save was not offered");
+        assert!(first.iter().any(|p| p.ends_with("save.rs")), "{first:?}");
+        let retry = offered_rx.recv_timeout(Duration::from_secs(20)).expect("the patch was not retried");
+        assert!(
+            retry.iter().any(|p| p.ends_with("save.rs")) && retry.iter().any(|p| p.ends_with("moved_under_the_replay.rs")),
+            "the retry must be the union: {retry:?}"
+        );
+    }
+
+    /// A patch that gives up with no file to blame has nothing a retry could
+    /// change, so it builds instead of retrying forever.
+    #[test]
+    fn regression_under_no_watch_a_patch_that_gives_up_with_nothing_moved_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let (reporter, q) = capture();
+        let (built_tx, built_rx) = mpsc::channel();
+        let (_watch, control) = start_watch_patching(
+            vec![src.clone()],
+            ReloadSignal::new(),
+            "server",
+            reporter,
+            true,
+            |_: &[PathBuf], _: &Supersede| Patched::Superseded,
+            move || {
+                let _ = built_tx.send(());
+                Ok(Rebuilt::Unchanged)
+            },
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !events(&q).iter().any(|e| matches!(e, dev_events::DevEvent::Watching { .. })) {
+            assert!(std::time::Instant::now() < deadline, "the watcher never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::write(src.join("save.rs"), "pub fn s() {}\n").unwrap();
+        assert!(control.request_rebuild_numbered(1));
+        built_rx.recv_timeout(Duration::from_secs(20)).expect("the patch retried forever instead of building");
+    }
+
+    #[test]
+    fn a_request_takes_what_moved_on_disk_unless_the_watcher_saw_those_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let a = root.join("a.rs");
+        std::fs::write(&a, "a").unwrap();
+        let q = Queued::default();
+        q.follow(std::slice::from_ref(&root));
+        assert!(q.take().is_empty(), "files present when it started following are no saves");
+
+        std::fs::write(&a, "a2").unwrap();
+        assert_eq!(q.take(), [a.clone()]);
+        assert!(q.take().is_empty(), "taken once");
+        assert!(!q.seen.lock().unwrap().moved(&a), "the late event for it is a duplicate");
+
+        // Rewritten with bytes the watcher has seen: its batch is held, or
+        // already taken. Not a new save.
+        std::fs::write(&a, "a3").unwrap();
+        q.seen.lock().unwrap().moved(&a);
+        assert!(q.take().is_empty(), "bytes already seen are not new");
+
+        std::fs::remove_file(&a).unwrap();
+        assert_eq!(q.take(), [a.clone()]);
+        assert!(!q.seen.lock().unwrap().moved(&a), "the late event for a deletion is a duplicate");
     }
 
     #[test]
