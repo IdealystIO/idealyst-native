@@ -493,6 +493,11 @@ pub struct Args {
     #[arg(long)]
     pub no_watch: bool,
 
+    /// Do not open the default browser at the web URL. The session is
+    /// otherwise the same, and the URL is still logged.
+    #[arg(long)]
+    pub no_open: bool,
+
     /// Disable the Robot bridge in dev mode. By DEFAULT `idealyst dev` hosts a
     /// `robot-relay` and wires the launched app to dial it (web-local injects
     /// the URL; desktop-native apps inherit it), so the MCP server / inspector /
@@ -2459,7 +2464,7 @@ fn launch_web(
         // `open -a Simulator` UX. Spawned before `serve_static`
         // (which blocks forever) and TCP-polls until the bind lands
         // so we don't beat the server to the punch.
-        spawn_browser_opener(&args.host, web_port);
+        spawn_browser_opener(&args.host, web_port, args.no_open);
         // No livereload here — the sidecar applies every save and the
         // page is a wire client — but the page still gets the session's
         // build state for its status overlay, and the event stream, over
@@ -2650,7 +2655,7 @@ fn launch_web(
             kind: dev_events::ServerKind::Livereload,
             url: format!("http://{}:{}", args.host, web_port),
         });
-        spawn_browser_opener(&args.host, web_port);
+        spawn_browser_opener(&args.host, web_port, args.no_open);
         // Headless web client: with no display, nothing would ever load the
         // served page, so the app never dials the relay and the robot bridge
         // stays empty (MCP wait_for_app times out). Auto-launch a headless
@@ -3467,7 +3472,7 @@ fn launch_web_with_backend(
 
     // The server serves the UI same-origin, so its port is the only URL
     // the user needs. Open the browser once it's accepting connections.
-    spawn_browser_opener("127.0.0.1", port);
+    spawn_browser_opener("127.0.0.1", port, args.no_open);
     // Headless web client, same policy as the static path: a web app's
     // robot support is dial-out, so with no display nothing ever loads
     // the page and the relay stays empty however well the bundle is
@@ -5113,24 +5118,9 @@ fn spawn_headless_client(host: &str, port: u16, dir: &Path, children: Arc<Mutex<
 /// If `open` (macOS) / `xdg-open` (Linux) / `start` (Windows) isn't
 /// available, or the TCP poll times out, we exit silently — the URL
 /// is already logged above, so the user can click that.
-fn spawn_browser_opener(host: &str, port: u16) {
-    // Never hijack the user's browser when the CLI is DRIVING one.
-    //
-    // `idealyst test` (parity / robot) sets `IDEALYST_TEST_DRIVER=1` and
-    // launches its own headless client at a pinned viewport. Opening the
-    // default browser as well puts TWO clients on the relay, and the verbs are
-    // then answered by whichever dialled — in practice the visible window, at
-    // whatever size the user's display happens to be.
-    //
-    // The visible window lays the page out at the user's display size, not
-    // the pinned viewport, so every element of a parity run mismatches. It
-    // also steals focus mid-test.
-    if std::env::var_os("IDEALYST_TEST_DRIVER").is_some() {
-        crate::dlog!(
-            "dev web",
-            "IDEALYST_TEST_DRIVER set — not opening a browser (the test driver \
-             launches its own at a pinned viewport)"
-        );
+fn spawn_browser_opener(host: &str, port: u16, no_open: bool) {
+    if !opens_browser(no_open, std::env::var_os("IDEALYST_TEST_DRIVER").is_some()) {
+        crate::dlog!("dev web", "not opening a browser");
         return;
     }
     let connect_host = match host {
@@ -5159,6 +5149,18 @@ fn spawn_browser_opener(host: &str, port: u16) {
         }
         open_url_in_browser(&url);
     });
+}
+
+/// Whether the session opens the default browser at its URL.
+///
+/// Not with `--no-open`, and never when the CLI is DRIVING a browser:
+/// `idealyst test` (parity / robot) sets `IDEALYST_TEST_DRIVER=1` and launches
+/// its own headless client at a pinned viewport. A second client on the relay
+/// means the verbs are answered by whichever dialled, in practice the visible
+/// window, which lays the page out at the user's display size, so every element
+/// of a parity run mismatches. It also steals focus mid-test.
+fn opens_browser(no_open: bool, test_driver: bool) -> bool {
+    !no_open && !test_driver
 }
 
 pub(crate) fn open_url_in_browser(url: &str) {
@@ -5572,6 +5574,7 @@ impl Args {
             experimental_server_patch: self.experimental_server_patch,
             experimental_web_additive: self.experimental_web_additive,
             no_watch: self.no_watch,
+            no_open: self.no_open,
             no_config: self.no_config,
             debuginfo: self.debuginfo.clone(),
             dev_opt: self.dev_opt.clone(),
@@ -5804,6 +5807,7 @@ mod tests {
             &["--ios"],
             &["--port", "9000"],
             &["--no-watch"],
+            &["--no-open"],
             &["--metrics"],
             &["--interactive"],
             &["--experimental-build"],
@@ -5813,6 +5817,16 @@ mod tests {
             let mut args = parse_dev(&argv);
             assert_eq!(apply_project_config(&mut args, &config(table)).unwrap(), [], "{behaviour:?}");
         }
+    }
+
+    #[test]
+    fn no_open_keeps_the_browser_shut() {
+        assert!(!parse_dev(&["x", "dev"]).no_open, "a session opens the browser by default");
+        let args = parse_dev(&["x", "dev", "--no-open"]);
+        assert!(args.no_open);
+        assert!(opens_browser(false, false));
+        assert!(!opens_browser(args.no_open, false), "--no-open");
+        assert!(!opens_browser(false, true), "a test driver has its own browser");
     }
 
     /// `experimental_build` reads from the table, and is no cache setting.

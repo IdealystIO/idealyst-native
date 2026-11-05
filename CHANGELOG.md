@@ -1223,6 +1223,9 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`idealyst dev --no-open` leaves the default browser shut** (`idealyst-cli`). A
+  behaviour flag: the session, its cache and the configured-build warning are
+  unchanged.
 - **Checks through a dev session** (`idealyst-cli`, `dev-reload`, `dev-events`,
   `build-web`, `mcp-server`). `idealyst check --session [DIR]`, `rebuild_dev` with
   `apply: false` and `POST /check` run the session's own build and apply nothing:

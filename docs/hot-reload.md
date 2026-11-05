@@ -2283,8 +2283,8 @@ protection. In `Cargo.toml` rather than `dev.toml` because these choose the
 build and belong to the project, where `dev.toml` holds a machine's ports.
 
 Platform filters (`--web` selects from `targets`) and behaviour flags (ports,
-`--no-watch`, `--metrics`, `--interactive`, `--experimental-build`) stay flags
-and warn about nothing.
+`--no-watch`, `--no-open`, `--metrics`, `--interactive`, `--experimental-build`)
+stay flags and warn about nothing.
 
 A cache-affecting flag (`--features`, `--debuginfo`, `--dev-opt`, `--premint`,
 `--premint-only`, `--premint-report`, `--split`, `--no-robot`, `--local`) still
