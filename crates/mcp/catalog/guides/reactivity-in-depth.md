@@ -181,18 +181,17 @@ lost.**
   the key actually changes. **This is what `ui!`'s `match` lowers to** — write
   `match mode.get() { … }` inside the macro. (A `ui!` `match` / `if let` whose
   scrutinee isn't `PartialEq` still lowers: its arm rebuilds on every change.)
-- `fragment(children)` — a **layout-transparent** sibling group. Return it from
-  a `#[component]` that conceptually yields several siblings but must return one
-  `Element` — realize splices the children into the parent with no wrapper
-  view (so `flex: 1` / absolute overlays aren't broken by a box). Built once,
+- `fragment(children)` — a **layout-transparent** sibling group. It is what several
+  nodes in a `ui!` body or branch become, so `ui! { A() B() }` and
+  `if open.get() { A() B() }` add no node: the children join the parent, whatever
+  its layout. Where one box is wanted, write the `view`. Built once,
   **not** reconciled — for a reactive child set use `ui!` `if` / `match` / keyed `for`
   (`for item in items, key = item.id` — the SIGNAL itself in the header, never
   `items.get()`, which freezes a build-time snapshot; see the
   `keyed_list_add_remove` recipe).
 
 Author code writes the `ui!` form, not these calls: the macro decides static
-vs reactive per condition and gives a missing `else` an out-of-flow
-placeholder. A hand call is flagged by the `prefer-ui-control-flow` lint. The
+vs reactive per condition, and a missing `else` mounts nothing. A hand call is flagged by the `prefer-ui-control-flow` lint. The
 two shapes the macro can't express — a **static-prop fast path** (branching on
 a value derived from a `Reactive<T>` prop without a reactive hole when the
 prop is static) and a **keyed rebuild of one shape** (one subtree rebuilt when

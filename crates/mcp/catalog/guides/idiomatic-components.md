@@ -206,8 +206,8 @@ ui! { view(style = style) {} }
 **Structural branches** (Checkbox, Select) — when a prop change swaps
 *which* elements render (not just their style), write `if` / `match`
 **inside `ui!`**. A condition that reads `.get()` lowers to a reactive
-branch that rebuilds when the condition changes; a missing `else` gets an
-out-of-flow placeholder, so the toggle never shifts layout:
+branch that rebuilds when the condition changes; a missing `else` mounts
+nothing, and a branch's nodes join the parent directly, with no box of their own:
 
 ```rust
 let glyph = ui! {

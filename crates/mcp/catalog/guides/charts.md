@@ -367,8 +367,8 @@ occupy the same child slot in the parent. If the open branch is
 `Position::Absolute` and the closed one is a plain `view`, then in a flex
 parent with a `gap` the empty view contributes a gap slot and the absolute
 bubble does not — so the whole layout shifts by one gap every time the pointer
-enters or leaves the chart. An `if` with no `else` inside `ui!` already emits
-an out-of-flow placeholder; if you write an `else`, give it
+enters or leaves the chart. An `if` with no `else` inside `ui!` mounts nothing
+when closed, so it takes no slot; if you write an `else`, give it
 `position: absolute` too.
 
 `crates/sdk/client/charts/examples/charts-demo` implements all three placements on one callback, with
