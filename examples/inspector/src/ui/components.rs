@@ -460,10 +460,12 @@ fn NativeLine(
         None => runtime_core::fragment(Vec::new()),
     };
     ui! {
-        text(style = Caption()) { name }
-        view(style = RowStart()) {
-            chip
-            text(style = Mono()) { value }
+        view {
+            text(style = Caption()) { name }
+            view(style = RowStart()) {
+                chip
+                text(style = Mono()) { value }
+            }
         }
     }
 }
