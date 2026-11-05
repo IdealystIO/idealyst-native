@@ -884,9 +884,10 @@ TableFooter {
                     what is shown. `previous_label` / `next_label` name the ‹ › steppers \
                     (\"Previous page\" / \"Next page\" by default). \
                     `TableCards(columns, row_count, row_id, cell, max_cells, on_row_click, \
-                    on_end_reached, selection, empty)` — the narrow form: a virtualized list of \
-                    cards with measured heights, laid out from the same column specs, loading the \
-                    next page as the reader nears the end.".to_string())
+                    on_end_reached, selection, selection_header, empty)` — the narrow form: a virtualized \
+                    list of cards with measured heights, laid out from the same column specs, loading \
+                    the next page as the reader nears the end. A `selection` pins a select-all line \
+                    above the list; `selection_header = false` leaves it to the screen's own.".to_string())
             }
         },
     ])

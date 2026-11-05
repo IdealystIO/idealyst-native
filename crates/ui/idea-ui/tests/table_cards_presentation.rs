@@ -162,6 +162,35 @@ fn regression_cards_selection_has_a_select_all_line() {
     assert!(live(&h).contains("Select all"), "{}", live(&h));
 }
 
+/// A screen with its own select-all header turns the line off, or a phone shows
+/// two. The cards keep their boxes, so the selection still works.
+#[test]
+fn regression_selection_header_off_leaves_only_the_cards_boxes() {
+    let h = Harness::new();
+    let selection: Rc<std::cell::Cell<Option<Signal<BTreeSet<RowId>>>>> = Rc::default();
+    let sel_out = selection.clone();
+    let _r = mount(&h, move || {
+        let picked = signal(BTreeSet::<RowId>::new());
+        sel_out.set(Some(picked));
+        let columns = vec![TableColumn::new("name").card(CardSlot::Title)];
+        ui! {
+            TableCards(
+                columns = columns,
+                row_count = 2usize,
+                cell = cell(),
+                selection = Some(picked),
+                selection_header = false,
+            )
+        }
+    });
+    assert!(!live(&h).contains("Select all"), "{}", live(&h));
+    show_row(&h, 0);
+    h.press_handler(0)();
+    h.flush();
+    assert_eq!(selection.get().unwrap().peek().len(), 1, "the press took one row, not every row");
+    assert!(!live(&h).contains("1 selected"), "{}", live(&h));
+}
+
 /// want_40fc88e7: the list's scroller reaches a row by id, through the
 /// virtualizer's index scroll, so a row that isn't mounted is still reachable.
 #[test]

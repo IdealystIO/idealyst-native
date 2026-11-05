@@ -31,7 +31,8 @@ releases.
   native. A row that sets its own size keeps it, and measured rows are unchanged.
 
 - **TableCards with `selection` draws its own select-all line** (`idea-ui`). Remove
-  any hand-rolled select-all header above it, or a phone table shows two.
+  any hand-rolled select-all header above it, or pass `selection_header = false`
+  to keep yours; with both, a phone table shows two.
 - **Hugging components follow their parent's alignment** (`idea-ui` major,
   `runtime-shared` major: `Length::FitContent`, `runtime-layout`, wire protocol
   26). Button, Tag, Chip, Badge, IconButton, Avatar and Spinner no longer set

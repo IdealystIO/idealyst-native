@@ -23,7 +23,8 @@
 //! to the wide form.
 //!
 //! With a `selection`, a pinned line above the rows selects them all (tri-state)
-//! and says how many are selected.
+//! and says how many are selected. `selection_header = false` leaves it out, for
+//! a screen with its own.
 //!
 //! The list is virtualized with MEASURED heights: each card is laid out
 //! and measured as it mounts, so a card's height is whatever its content
@@ -242,6 +243,11 @@ pub struct TableCardsProps {
     /// The select-all line's text for a selected-row count. Defaults to "Select
     /// all" at zero and "N selected" otherwise.
     pub selection_label: Option<Rc<dyn Fn(usize) -> String>>,
+    /// Whether a `selection` draws the select-all line. Default `true`; turn it
+    /// off when the screen has its own select-all header, so a phone doesn't
+    /// show two. Each card keeps its box.
+    #[prop(static)]
+    pub selection_header: bool,
     /// What an empty list says.
     #[prop(static)]
     pub empty: Option<String>,
@@ -266,6 +272,7 @@ impl Default for TableCardsProps {
             on_end_reached: None,
             selection: None,
             selection_label: None,
+            selection_header: true,
             empty: None,
             scroller: None,
             styles: Default::default(),
@@ -365,7 +372,7 @@ pub fn TableCards(props: &TableCardsProps) -> Element {
             items.set((0..count.get()).map(|i| (row_id(i), g)).collect());
         });
     }
-    let header = props.selection.map(|selection| {
+    let header = props.selection.filter(|_| props.selection_header).map(|selection| {
         let (count, row_id) = (props.row_count.clone(), props.row_id.clone());
         let visible = memo(move || (0..count.get()).map(|i| row_id(i)).collect::<Vec<RowId>>());
         let name = props.selection_label.clone();
