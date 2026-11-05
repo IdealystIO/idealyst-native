@@ -3143,6 +3143,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A tap outside a text input closes the keyboard on Android** (`backend-android-mobile`).
+  The focused input kept focus and the keyboard stayed up, where iOS and macOS dismiss on an
+  outside tap and the web blurs. A tap now blurs it and still presses what it landed on; a
+  scroll, a tap on another input and a tap inside a `preserves_focus` region keep it, and
+  `preserves_focus` now means something on Android.
 - **An open Menu or Popover no longer flickers on macOS when the window lays out**
   (`backend-macos`). Each layout pass wrote the panel's unplaced fallback frame, and
   its tracker moved it back a tick later, so the frame between was committed. A pass

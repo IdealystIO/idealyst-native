@@ -61,7 +61,7 @@ object RustUserActivity {
         val w = RustGlobalPointerListener.findActivity(root.context)?.window ?: return
         if (wrapped?.get() === w) return
         val base = w.callback ?: return
-        w.callback = RustActivityWindowCallback(base)
+        w.callback = RustActivityWindowCallback(base, w)
         wrapped = WeakReference(w)
     }
 
@@ -92,15 +92,21 @@ object RustUserActivity {
 
 /**
  * Pass-through `Window.Callback` installed by [RustUserActivity.install]:
- * reports, then delegates to [base] and returns its answer untouched.
+ * reports, then delegates to [base] and returns its answer untouched. Touches
+ * also feed [RustKeyboardDismiss], which sits here for the same reason.
  */
 internal class RustActivityWindowCallback(
     val base: Window.Callback,
+    private val window: Window,
 ) : Window.Callback by base {
 
     override fun dispatchTouchEvent(event: MotionEvent?): Boolean {
-        if (event != null) RustUserActivity.onMotion(event)
-        return base.dispatchTouchEvent(event)
+        if (event == null) return base.dispatchTouchEvent(event)
+        RustUserActivity.onMotion(event)
+        RustKeyboardDismiss.beforeDispatch(window, event)
+        val handled = base.dispatchTouchEvent(event)
+        RustKeyboardDismiss.afterDispatch(event)
+        return handled
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent?): Boolean {

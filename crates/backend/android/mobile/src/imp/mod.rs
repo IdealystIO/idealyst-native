@@ -2788,6 +2788,26 @@ impl AndroidBackend {
         primitives::touch::install(self, node, handler)
     }
 
+    pub(crate) fn mark_preserves_focus_impl(&mut self, node: &GlobalRef) {
+        // Read back by the tap-outside dismiss, `RustKeyboardDismiss`.
+        with_env(|env| {
+            let class = match env.find_class("io/idealyst/runtime/RustKeyboardDismiss") {
+                Ok(c) => c,
+                Err(_) => {
+                    let _ = env.exception_clear();
+                    return;
+                }
+            };
+            let _ = env.call_static_method(
+                &class,
+                "markPreservesFocus",
+                "(Landroid/view/View;)V",
+                &[JValue::Object(node.as_obj())],
+            );
+            let _ = env.exception_clear();
+        });
+    }
+
     pub(crate) fn claim_touch_impl(
         &mut self,
         node: &GlobalRef,

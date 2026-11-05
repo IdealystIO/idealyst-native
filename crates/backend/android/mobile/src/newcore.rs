@@ -953,6 +953,10 @@ mod native {
             AndroidBackend::claim_touch_impl(self, node, touch_id)
         }
 
+        fn mark_preserves_focus(&mut self, node: &Self::Node) {
+            AndroidBackend::mark_preserves_focus_impl(self, node)
+        }
+
         fn install_focus_handler(&mut self, node: &Self::Node, handler: runtime_shared::FocusWithinHandler) {
             crate::imp::focus_within::install(node, flushing1(handler))
         }
