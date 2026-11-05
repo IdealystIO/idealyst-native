@@ -7,7 +7,7 @@
 //! mounts on `set_toggle` is visible to the assertion on the next line), so
 //! no explicit waits are needed.
 
-use robot_e2e::{expect, flow, run_suites, suite, test, ElementKind, Page};
+use robot_e2e::{expect, flow, run_suites, skip, suite, test, ElementKind, Page};
 use runtime_shared::introspect::keys;
 
 /// Entry point scheduled from `app()` ~1s after mount.
@@ -341,6 +341,16 @@ fn capabilities_suite() -> robot_e2e::Suite {
                 .poll(|p: &Page| expect(&p.get_by_test_id("cap-input-events")).to_contain_text("focus: 1"))
                 .act(|p: &Page| p.get_by_test_id("cap-input").blur())
                 .poll(|p: &Page| expect(&p.get_by_test_id("cap-input-events")).to_contain_text("blur: 1"))
+                .build(),
+            flow("a tap outside a text input blurs it")
+                // iOS dismisses through a UIKit tap recognizer, and the robot has no
+                // real pointer there: its `tap` calls the handler directly.
+                .act(|_p: &Page| if cfg!(target_os = "ios") { Err(skip("no real pointer to reach the recognizer")) } else { Ok(()) })
+                .act(|p: &Page| p.get_by_test_id("cap-input").focus())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-input")).to_be_focused())
+                // A plain view: a native button takes the press for itself on macOS.
+                .act(|p: &Page| p.get_by_test_id("cap-hover").tap())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-input")).not_to_be_focused())
                 .build(),
             flow("a text area is editable")
                 .act(|p: &Page| p.get_by_test_id("cap-area").fill("two\nlines"))

@@ -78,7 +78,7 @@ const INPUT: Manual = Manual {
     title: "Text input",
     steps: "The empty field shows \"Type here\"; \"Swap placeholder\" changes it to \"Something else\". \
             Type, then press Enter: the submit count goes up. \"Clear from code\" empties the field.",
-    tests: &["a value written from code reaches the field", "focus and blur reach the app"],
+    tests: &["a value written from code reaches the field", "focus and blur reach the app", "a tap outside a text input blurs it"],
 };
 const AREA: Manual = Manual {
     id: "text-area",
