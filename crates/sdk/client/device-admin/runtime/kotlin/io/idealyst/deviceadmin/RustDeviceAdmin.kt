@@ -240,6 +240,20 @@ object RustDeviceAdmin {
                     throw Failure("platform", "the status bar could not be changed")
                 }
             }
+            "set_permission_grant_state" -> {
+                requireApi(23, "setPermissionGrantState")
+                requireOwner(ctx)
+                val pkg = args.getString("package")
+                val permission = args.getString("permission")
+                val state = when (args.getString("state")) {
+                    "granted" -> android.app.admin.DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED
+                    "denied" -> android.app.admin.DevicePolicyManager.PERMISSION_GRANT_STATE_DENIED
+                    else -> android.app.admin.DevicePolicyManager.PERMISSION_GRANT_STATE_DEFAULT
+                }
+                if (!dpm.setPermissionGrantState(admin(ctx), pkg, permission, state)) {
+                    throw Failure("platform", "$permission could not be set for $pkg")
+                }
+            }
             "set_home_activity" -> {
                 requireOwner(ctx)
                 val pkg = args.getString("package")

@@ -324,6 +324,15 @@ impl InstallResult {
     }
 }
 
+/// Runtime permissions a kiosk commonly needs, for
+/// [`set_permission_grant_state`]. Any other manifest name works too.
+pub mod permission {
+    /// `android.permission.CAMERA`.
+    pub const CAMERA: &str = "android.permission.CAMERA";
+    /// `android.permission.RECORD_AUDIO`.
+    pub const RECORD_AUDIO: &str = "android.permission.RECORD_AUDIO";
+}
+
 /// `UserManager.DISALLOW_*` restrictions commonly set on a kiosk, for
 /// [`add_user_restriction`] / [`clear_user_restriction`]. Any other
 /// restriction key string works too.
@@ -413,6 +422,43 @@ pub fn set_keyguard_disabled(disabled: bool) -> Result<()> {
 /// Disable the status bar (no pull-down shade). Device owner; API 23.
 pub fn set_status_bar_disabled(disabled: bool) -> Result<()> {
     call("set_status_bar_disabled", json!({ "disabled": disabled })).map(drop)
+}
+
+/// What [`set_permission_grant_state`] leaves a runtime permission at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionGrantState {
+    /// Granted. The user cannot revoke it while this holds.
+    Granted,
+    /// Denied. The user cannot grant it while this holds.
+    Denied,
+    /// Back to the user's own choice, keeping the current answer.
+    Default,
+}
+
+/// Grant or deny a runtime permission for `package` without a prompt.
+///
+/// `permission` is the manifest name; [`permission`] has the usual ones. The
+/// app must declare it. A locked-down device needs this: the system's prompt
+/// is another app, which lock task does not let open, so an app asking for a
+/// permission there is refused without anyone seeing a question. From
+/// Android 12 a device provisioned with the sensors-grant opt-out refuses
+/// this for the sensor permissions (camera, microphone, location, body
+/// sensors). Device owner; API 23.
+pub fn set_permission_grant_state(
+    package: &str,
+    permission: &str,
+    state: PermissionGrantState,
+) -> Result<()> {
+    let state = match state {
+        PermissionGrantState::Granted => "granted",
+        PermissionGrantState::Denied => "denied",
+        PermissionGrantState::Default => "default",
+    };
+    call(
+        "set_permission_grant_state",
+        json!({ "package": package, "permission": permission, "state": state }),
+    )
+    .map(drop)
 }
 
 /// Make `package`'s `activity` the persistent home screen, so it relaunches

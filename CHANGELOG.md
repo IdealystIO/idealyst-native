@@ -3143,6 +3143,9 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A device owner can grant a runtime permission without a prompt** (`device-admin`):
+  `set_permission_grant_state`, with `permission::CAMERA` and `RECORD_AUDIO`. Android's prompt
+  is another app that lock task will not open, so a kiosk asking for one was refused unseen.
 - **A tap outside a text input closes the keyboard on Android** (`backend-android-mobile`).
   The focused input kept focus and the keyboard stayed up, where iOS and macOS dismiss on an
   outside tap and the web blurs. A tap now blurs it and still presses what it landed on; a

@@ -20,6 +20,11 @@ fn every_sync_call_is_unsupported_off_mobile() {
     unsupported(lock_task_state());
     unsupported(set_keyguard_disabled(true));
     unsupported(set_status_bar_disabled(true));
+    unsupported(set_permission_grant_state(
+        "com.example.kiosk",
+        permission::RECORD_AUDIO,
+        PermissionGrantState::Granted,
+    ));
     unsupported(set_home_activity("com.example.kiosk", ".MainActivity"));
     unsupported(clear_home_activity("com.example.kiosk"));
     unsupported(add_user_restriction(restriction::DISALLOW_SAFE_BOOT));

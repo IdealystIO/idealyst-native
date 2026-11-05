@@ -72,6 +72,7 @@ the same key.
 | `lock_task_state()` | `getLockTaskModeState` | 23 (21: locked/none) | `UIAccessibilityIsGuidedAccessEnabled` |
 | `set_keyguard_disabled(b)` | `setKeyguardDisabled` | 23 | `Unsupported` |
 | `set_status_bar_disabled(b)` | `setStatusBarDisabled` | 23 | `Unsupported` |
+| `set_permission_grant_state(pkg, perm, state)` | `setPermissionGrantState` | 23 | `Unsupported` |
 | `set_home_activity(pkg, activity)` / `clear_home_activity(pkg)` | `addPersistentPreferredActivity` (HOME) | 21 | `Unsupported` |
 | `add_user_restriction(r)` / `clear_user_restriction(r)` | `addUserRestriction` / `clearUserRestriction` | 21 | `Unsupported` |
 | `set_global_setting(key, value)` | `setGlobalSetting` (an allow-listed set of keys; not the animation scales) | 21 | `Unsupported` |
