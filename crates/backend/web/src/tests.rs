@@ -2322,6 +2322,69 @@ fn regression_web_pressable_swallows_ancestor_on_touch() {
 
 /// REGRESSION TEST.
 ///
+/// A text field, text area and slider activate without a recognizer, so nothing
+/// consumed their press: pressing an `Autocomplete` in a clickable table row also
+/// fired `on_row_click` and opened a modal over its menu.
+#[wasm_bindgen_test]
+fn regression_web_text_fields_and_slider_swallow_ancestor_on_touch() {
+    use runtime_shared::TouchResponse;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+
+    let row = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&row).unwrap();
+    let row_fired = Rc::new(Cell::new(false));
+    let rf = row_fired.clone();
+    backend.install_touch_handler_impl(
+        &row.clone().unchecked_into(),
+        Rc::new(move |_| {
+            rf.set(true);
+            TouchResponse::CONSUMED
+        }),
+    );
+
+    let input = backend.create_text_input_impl(
+        "",
+        None,
+        Rc::new(|_: String| {}),
+        None,
+        None,
+        false,
+        &Default::default(),
+    );
+    let area = backend.create_text_area_impl(
+        "",
+        None,
+        true,
+        None,
+        None,
+        Rc::new(|_: String| {}),
+        None,
+        &Default::default(),
+    );
+    let slider =
+        backend.create_slider_impl(0.5, 0.0, 1.0, None, Rc::new(|_: f32| {}), &Default::default());
+    for (name, node) in [("text_input", input), ("text_area", area), ("slider", slider)] {
+        row.append_child(&node).unwrap();
+        let el: web_glue::dom::Element = node.unchecked_into();
+
+        dispatch_bubbling_pointerdown(&el);
+        assert!(!row_fired.get(), "a press on a {name} must NOT reach the ancestor row's on_touch");
+
+        // The field keeps its own context menu (paste, spellcheck): nothing
+        // cancels it, and the row does not get a secondary press from it.
+        let menu = dispatch_bubbling_contextmenu(&el, false);
+        assert!(!menu.default_prevented(), "a {name} must keep its native context menu");
+        assert!(!row_fired.get(), "a right-click on a {name} must NOT reach the row");
+    }
+}
+
+/// REGRESSION TEST.
+///
 /// A `mark_preserves_focus` region (a combobox's anchored option menu) must
 /// cancel the `pointerdown` default for presses ANYWHERE inside it — the
 /// browser's focus move is `mousedown`'s default action, so the canceled

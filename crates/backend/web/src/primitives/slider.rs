@@ -45,6 +45,10 @@ pub(crate) fn create(
             on_change(v);
         }
     });
+    // Consume the press from ancestor `on_touch` recognizers, as `button` and
+    // `toggle` do: a slider in a clickable row must not also trigger the row,
+    // which is native's single-view delivery.
+    super::touch::swallow_ancestor_touch_keeping_menu(input.as_ref());
     input.unchecked_into::<Node>()
 }
 
