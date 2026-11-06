@@ -122,7 +122,17 @@ pub(crate) fn unregister(backend: &mut AndroidBackend, key: usize) {
 /// only take effect at the next traversal, so the view can sit at either
 /// position on any given frame. Returns `false` when there is nothing to
 /// animate (the Kotlin side then just commits at the end).
-pub(crate) fn begin_padding(backend: &mut AndroidBackend, key: usize, from_dp: f32, to_dp: f32) -> bool {
+///
+/// `before` is the avoider's [`padding_snapshot`], taken before the flush that
+/// commits `keyboard_inset()`. A view the flush mounted is not in it, so it
+/// appears where its layout puts it rather than flying in from the origin.
+pub(crate) fn begin_padding(
+    backend: &mut AndroidBackend,
+    key: usize,
+    from_dp: f32,
+    to_dp: f32,
+    before: &[(usize, f32)],
+) -> bool {
     let Some(node) = backend.keyboard_avoiders.get(&key).map(|a| a.node) else { return false };
     let (vw, vh) = backend.viewport_size();
     if vw <= 0.0 || vh <= 0.0 {
@@ -130,7 +140,6 @@ pub(crate) fn begin_padding(backend: &mut AndroidBackend, key: usize, from_dp: f
     }
     let plan = padding_plan(from_dp, to_dp, true);
     let subtree = subtree_views(backend, node);
-    let before = ys(backend, &subtree);
     let mode = match plan {
         PaddingPlan::Unchanged | PaddingPlan::Instant => return false,
         PaddingPlan::GrowNow => {
@@ -152,7 +161,7 @@ pub(crate) fn begin_padding(backend: &mut AndroidBackend, key: usize, from_dp: f
         backend.layout.set_keyboard_padding(node, from_dp);
         backend.compute_layout_roots(vw, vh);
     }
-    let moved = moved_views(&before, &after);
+    let moved = moved_views(before, &after);
     let Some(kotlin) = backend.keyboard_avoiders.get(&key).map(|a| a.kotlin.clone()) else { return false };
     let root = backend.root.clone();
     let views: Vec<GlobalRef> = moved
@@ -193,6 +202,12 @@ pub(crate) fn begin_padding(backend: &mut AndroidBackend, key: usize, from_dp: f
         let _ = env.exception_clear();
     });
     true
+}
+
+/// Where avoider `key`'s views stand now, for [`begin_padding`].
+pub(crate) fn padding_snapshot(backend: &AndroidBackend, key: usize) -> Vec<(usize, f32)> {
+    let Some(node) = backend.keyboard_avoiders.get(&key).map(|a| a.node) else { return Vec::new() };
+    ys(backend, &subtree_views(backend, node))
 }
 
 /// Apply `dp` of keyboard padding to avoider `key` and lay out now — an
