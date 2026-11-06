@@ -3181,14 +3181,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 ### Fixed
 
 - **Android camera frames convert in vectorized blocks, straight into the stream's frame buffer**
-  (`camera`, `media-stream` minor). A release build's `android_yuv` runs a block loop LLVM
-  vectorizes, with the same arithmetic, rotations and output as the scalar one, writing through
-  the new `FrameWriter::write_rgba8_with`: a 1080p frame on the host takes 1-2 ms against 4-7 ms.
-  A build with debug assertions on keeps the scalar loop, which is the faster of the two at
-  `opt-level` 0 (38 ms against 96-126 ms); `profile.dev.package.camera` with `opt-level = 3`
-  brings it to about 4 ms. A release sized with `opt-level = "z"` should set
-  `profile.release.package.camera` to `3`: the block loop does not vectorize there and takes
-  10-12 ms.
+  (`camera`, `media-stream` minor). `android_yuv` runs one block loop LLVM vectorizes, with the
+  same arithmetic, rotations and output as the scalar loop it replaces, writing through the new
+  `FrameWriter::write_rgba8_with`: a 1080p frame on a Mac takes 1-2 ms against 4-7 ms. The loop is
+  fast only when optimized, and only CPU frames (a photo, a QR scan) pay for it, not a native
+  preview. A dev build at `opt-level` 0 takes about 96-126 ms a frame;
+  `profile.dev.package.camera` with `opt-level = 3` brings it to 4-6 ms. A release sized with
+  `opt-level = "s"` or `"z"` should set `profile.release.package.camera` to `3`: the loop does not
+  vectorize there and takes 10-12 ms at `"z"`.
 - **A mounted screen can hear its own query change** (`runtime-vocabulary`): `ScreenNav` carries
   the query, read with `inject::<ScreenNav>()` and `active_query()`. `SwapNav` and `StackNav` are
   not provided yet when the first screen builds, so that screen could not follow a query-only

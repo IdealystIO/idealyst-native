@@ -174,6 +174,13 @@ displayed, both while a consumer also wants frames. The rules are in
 - **A slow consumer.** Conversion runs on its own thread and the reader's listener
   always takes the newest image, dropping one left waiting, so a heavy `subscribe`
   costs CPU frames rather than holding the preview to its pace.
+- **What a CPU frame costs.** The preview needs no conversion. A photo
+  (`screenshot`), a QR scan (`subscribe`) and a display on the CPU path do, in a
+  vectorized loop that is fast only when optimized. A 1080p frame on a Mac takes
+  1.1-2 ms at `opt-level = 3`. A release sized with `"s"` or `"z"` does not vectorize
+  it (10-12 ms at `"z"`), so set `profile.release.package.camera` to `3` in the app's
+  own manifest. A dev build at `opt-level` 0 takes about 96-126 ms a frame, and
+  `profile.dev.package.camera` at `3` brings that to 4-6 ms.
 
 > **Frames are borrowed.** In a `subscribe` callback `frame.data` points at a
 > reused buffer. Copy out what you need before returning; don't stash the
@@ -321,12 +328,7 @@ synthetic front and back camera.
 
   `src/android_yuv.rs` holds the Android conversion to the arithmetic of the
   Kotlin loop it replaced, on planar and semi-planar layouts at every rotation.
-  It has two loops with one output, and the tests run each: a block loop LLVM
-  vectorizes, which a build with debug assertions off runs, and a scalar loop on
-  raw pointers, which is the faster of the two unoptimized and which a build with
-  debug assertions on runs. `android_yuv::tests::time_one_1080p_frame` is an
-  `#[ignore]`d timing report on the scalar loop for a plain dev build, and
-  `android_yuv::tests::timing_1080p` one on the block loop; run that one
+  `android_yuv::tests::timing_1080p` is an `#[ignore]`d timing report; run it
   optimized, at the `opt-level` an Android release build uses (this workspace's
   own release profile optimizes for size):
 
