@@ -48,6 +48,9 @@ pub struct Draggable<T: Clone + 'static> {
     /// Offset captured at the start of the in-flight drag, so a missed drop
     /// springs back to exactly where the element rested before the grab.
     base: Rc<Cell<(f32, f32)>>,
+    /// How far scrolling has carried the source in the in-flight drag
+    /// ([`DragContext::scrolled_by`]), which the offset makes up for.
+    scrolled: Rc<Cell<(f32, f32)>>,
     snap_back: bool,
     /// Reactive "this specific source is being dragged right now". The wrapped
     /// component reads it to restyle itself (dim/hide while its ghost flies) —
@@ -78,6 +81,7 @@ impl<T: Clone + 'static> Draggable<T> {
             x: AnimatedValue::new(0.0),
             y: AnimatedValue::new(0.0),
             base: Rc::new(Cell::new((0.0, 0.0))),
+            scrolled: Rc::new(Cell::new((0.0, 0.0))),
             snap_back: true,
             is_dragging: signal(false),
             on_start: None,
@@ -208,6 +212,7 @@ impl<T: Clone + 'static> Draggable<T> {
         // In drag-layer mode `base` instead holds the grab offset (where in the
         // element the finger landed), so the ghost sits under the finger.
         let base = self.base.clone();
+        let scrolled = self.scrolled.clone();
         let snap_back = self.snap_back;
         let is_dragging = self.is_dragging;
         let on_start = self.on_start.clone();
@@ -232,6 +237,16 @@ impl<T: Clone + 'static> Draggable<T> {
                     x.cancel();
                     y.cancel();
                     base.set((x.get(), y.get()));
+                    // Beside `base`, not folded into it: a miss springs back to
+                    // the rest position, which a scroll does not change.
+                    scrolled.set((0.0, 0.0));
+                    let (fx, fy, shift) = (x.clone(), y.clone(), scrolled.clone());
+                    ctx.set_follow_scroll(Rc::new(move |dx, dy| {
+                        let (sx, sy) = shift.get();
+                        shift.set((sx + dx, sy + dy));
+                        fx.set(fx.get() + dx);
+                        fy.set(fy.get() + dy);
+                    }));
                 }
                 ctx.begin((payload)());
                 ctx.update(sample.window_position);
@@ -245,8 +260,9 @@ impl<T: Clone + 'static> Draggable<T> {
                     ctx.move_preview(sample.window_position.x - gx, sample.window_position.y - gy);
                 } else {
                     let (bx, by) = base.get();
-                    x.set(bx + sample.delta.x);
-                    y.set(by + sample.delta.y);
+                    let (sx, sy) = scrolled.get();
+                    x.set(bx + sample.delta.x + sx);
+                    y.set(by + sample.delta.y + sy);
                 }
                 ctx.update(sample.window_position);
             }

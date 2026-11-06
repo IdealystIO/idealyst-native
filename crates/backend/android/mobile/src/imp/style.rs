@@ -1003,6 +1003,9 @@ fn apply_drawable_path(
     let first_create = state.drawable.is_none();
     if first_create {
         remember_natural_background(env, &view, state);
+        // A plain-path colour animation still running would `setBackgroundColor`
+        // on its next tick, which replaces the drawable attached below.
+        cancel_animator(env, state.anim_bg.take());
         let class = env
             .find_class("android/graphics/drawable/GradientDrawable")
             .unwrap();
@@ -1067,7 +1070,12 @@ fn apply_drawable_path(
             crate::layout_policy::BACKGROUND_CLEAR,
         ) {
             let prev = state.last_bg;
-            let changed = prev != Some(packed) && !state.anim_background_owned;
+            let changed = crate::layout_policy::drawable_fill_needs_write(
+                first_create,
+                prev,
+                packed,
+                state.anim_background_owned,
+            );
             state.last_bg = Some(packed);
             if changed {
                 match (prev, rules.background_transition) {

@@ -79,7 +79,8 @@ use runtime_vocabulary::builders;
 use runtime_vocabulary::glue::{inject, ChildList, Element, IntoElement, Ref, Signal};
 use runtime_vocabulary::prims::{NavHandle, SwapNav};
 
-pub use runtime_vocabulary::glue::{Route, RouteParams};
+pub use runtime_vocabulary::glue::{Route, RouteParams, ScreenState};
+pub use runtime_vocabulary::prims::ScreenNav;
 pub use runtime_vocabulary::prims::{MountPolicy, Screen};
 /// The outlet, for a layout that styles it: `navigator_outlet().style(s)`
 /// where `{nav.outlet}` would go.
@@ -163,6 +164,20 @@ impl SwapHandle {
     /// Selecting the already-active screen is a no-op at the driver.
     pub fn select<P: RouteParams + Clone>(&self, route: &Route<P>, params: P) {
         self.inner.select(route, params);
+    }
+
+    /// Switch to `route` with `state` as its query. On the active route this
+    /// changes the query without rebuilding the screen, which reads it through
+    /// `inject::<ScreenNav>()`, and on web it adds a history entry, so browser
+    /// Back undoes it. See "A screen that owns a Back entry" in the
+    /// navigation guide.
+    pub fn select_with_state<P: RouteParams + Clone, S: ScreenState>(
+        &self,
+        route: &Route<P>,
+        params: P,
+        state: S,
+    ) {
+        self.inner.select_with_state(route, params, state);
     }
 
     /// Borrow the underlying kind-agnostic [`NavHandle`].

@@ -1427,7 +1427,8 @@ impl Drop for ScreenStateGuard {
 /// This is a SNAPSHOT taken at build time — the value used to seed a
 /// screen's signals. To react to later query changes (browser Back that
 /// only alters the query, or an in-place `replace_with_state`), read the
-/// `query` signal on the navigator context instead.
+/// live query instead: `inject::<ScreenNav>()` and its `active_query()` from
+/// the screen, or the `query` signal on `SwapNav` / `StackNav` from a layout.
 pub fn screen_query() -> QueryParams {
     SCREEN_STATE.with(|s| s.borrow().last().cloned().unwrap_or_default())
 }

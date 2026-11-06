@@ -148,6 +148,10 @@ pub(crate) fn create(
     if let Some(handler) = on_key_down {
         attach_key_listener_textarea(&textarea, id, b, handler);
     }
+    // Consume the press from ancestor `on_touch` recognizers, as `button` and
+    // `toggle` do: a field in a clickable row must not also trigger the row,
+    // which is native's single-view delivery.
+    super::touch::swallow_ancestor_touch_keeping_menu(textarea.as_ref());
     // Fit to the initial value. The element isn't in the document yet, so a
     // synchronous measure reads `scrollHeight == 0` AND `getComputedStyle`
     // returns nothing — so `line-height` resolves to 0 and the `min_rows`→px

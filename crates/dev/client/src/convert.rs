@@ -108,6 +108,7 @@ pub fn wire_keyboard_kind(
         wire::WireKeyboardKind::Phone => K::Phone,
         wire::WireKeyboardKind::Number => K::Number,
         wire::WireKeyboardKind::Decimal => K::Decimal,
+        wire::WireKeyboardKind::SignedDecimal => K::SignedDecimal,
         wire::WireKeyboardKind::Url => K::Url,
     }
 }

@@ -52,6 +52,7 @@ pub(crate) struct Traits {
 
 // UIKeyboardType.
 const KEYBOARD_DEFAULT: isize = 0;
+const KEYBOARD_NUMBERS_AND_PUNCTUATION: isize = 2;
 const KEYBOARD_URL: isize = 3;
 const KEYBOARD_NUMBER_PAD: isize = 4;
 const KEYBOARD_PHONE_PAD: isize = 5;
@@ -73,6 +74,9 @@ pub(crate) fn traits(kind: KeyboardKind) -> Traits {
         KeyboardKind::Number => (KEYBOARD_NUMBER_PAD, None, false),
         KeyboardKind::Decimal => (KEYBOARD_DECIMAL_PAD, None, false),
         KeyboardKind::Url => (KEYBOARD_URL, Some(ContentType::Url), true),
+        // UIKit has no number pad with a minus key. This layout has one, and
+        // can switch to letters, which must not be capitalized or "corrected".
+        KeyboardKind::SignedDecimal => (KEYBOARD_NUMBERS_AND_PUNCTUATION, None, true),
     };
     Traits {
         keyboard_type,
@@ -189,6 +193,9 @@ mod tests {
         assert_eq!((t.keyboard_type, t.content_type), (5, Some(ContentType::TelephoneNumber)));
         assert_eq!(traits(KeyboardKind::Number).keyboard_type, 4);
         assert_eq!(traits(KeyboardKind::Decimal).keyboard_type, 8);
+        let t = traits(KeyboardKind::SignedDecimal);
+        assert_eq!((t.keyboard_type, t.content_type), (2, None));
+        assert_eq!((t.autocapitalization, t.autocorrection, t.spell_checking), (0, 1, 1));
         // `Default` restores UITextField's own defaults, so a live kind
         // flipping back leaves no trait behind.
         assert_eq!(

@@ -22,6 +22,7 @@ fn regression_ssr_text_input_emits_inputmode_per_keyboard_kind() {
         (KeyboardKind::Phone, Some("tel"), Some("tel")),
         (KeyboardKind::Number, Some("numeric"), None),
         (KeyboardKind::Decimal, Some("decimal"), None),
+        (KeyboardKind::SignedDecimal, Some("numeric"), None),
         (KeyboardKind::Url, Some("url"), Some("url")),
         (KeyboardKind::Default, None, None),
     ];
@@ -36,7 +37,7 @@ fn regression_ssr_text_input_emits_inputmode_per_keyboard_kind() {
             Some(a) => assert!(out.contains(&format!(r#"autocomplete="{a}""#)), "{kind:?}: {out}"),
             None => assert!(!out.contains("autocomplete="), "{kind:?}: {out}"),
         }
-        let off = matches!(kind, KeyboardKind::Email | KeyboardKind::Url);
+        let off = matches!(kind, KeyboardKind::Email | KeyboardKind::Url | KeyboardKind::SignedDecimal);
         assert_eq!(out.contains(r#"autocapitalize="off""#), off, "{kind:?}: {out}");
         assert_eq!(out.contains(r#"spellcheck="false""#), off, "{kind:?}: {out}");
     }

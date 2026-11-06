@@ -25,7 +25,10 @@ import android.view.View
  *   layout listener re-places a target whenever its layout lands. Sizes
  *   switch where the keyboard hides it: mode 0 (content grows) is laid out
  *   at the start; mode 1 (content shrinks) via [nativeCommitPadding] at the
- *   end. See `soft_keyboard_policy.rs`.
+ *   end. See `soft_keyboard_policy.rs`. The tops are a prediction: once the
+ *   final layout has landed every view lets go of its offset, wherever that
+ *   layout put it ([settleAfterLayout]), so a view author code moved during the
+ *   animation is not held at the predicted top.
  *
  * Overlap is measured against the view's UNTRANSLATED bottom edge, so a
  * Translate lift never feeds back into its own measurement.
@@ -91,6 +94,7 @@ class RustKeyboardAvoider private constructor(
         } else if (dp != appliedDp) {
             if (nativeCommitPadding(key, dp)) {
                 appliedDp = dp
+                settleAfterLayout()
             } else {
                 // Backend busy (a flush is running): retry next frame.
                 view.post { applyStatic(imePx) }
@@ -142,6 +146,27 @@ class RustKeyboardAvoider private constructor(
             return
         }
         appliedDp = finalDp
+        settleAfterLayout()
+    }
+
+    /**
+     * Release every target that is still held, after the final layout. A
+     * `requestLayout` raises a sync barrier that holds back posted messages
+     * until the traversal has run, so this runs with that layout in effect. A
+     * newer move replaces [targets] and owns them from then on.
+     */
+    private fun settleAfterLayout() {
+        val settling = targets
+        view.post {
+            if (active || targets !== settling) return@post
+            for (i in settling.indices) {
+                settling[i].removeOnLayoutChangeListener(relayout)
+                settling[i].translationY = bases[i]
+            }
+            // Ours no longer: a later move must not overwrite what an animation
+            // has written to these views since.
+            targets = emptyArray()
+        }
     }
 
     /** From Rust ([nativeBeginPadding]): the views this move translates. */
@@ -151,7 +176,12 @@ class RustKeyboardAvoider private constructor(
         // current translation — except for a view still settling from an
         // interrupted move, which keeps the base it had.
         val previous = targets.indices.associate { targets[it] to bases[it] }
-        for (v in targets) v.removeOnLayoutChangeListener(relayout)
+        for (v in targets) {
+            v.removeOnLayoutChangeListener(relayout)
+            // Not moved by this one: nothing else would clear its offset, and a
+            // later move would take it for the author's translation.
+            if (v !in views) v.translationY = previous.getValue(v)
+        }
         targets = views
         oldTops = oldTopsPx
         newTops = newTopsPx

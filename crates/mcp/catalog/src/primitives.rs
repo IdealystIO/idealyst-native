@@ -392,7 +392,7 @@ inventory::submit! {
             PropFieldSpec {
                 name: "keyboard",
                 type_str: "impl Into<Reactive<KeyboardKind>>",
-                doc: "Soft-keyboard hint: KeyboardKind::{Default, Email, Phone, Number, Decimal, Url}. Picks the on-screen keyboard on iOS (UIKeyboardType + textContentType) and Android (InputType), and sets `inputmode`/`autocomplete` on web; Email/Url also turn off auto-capitalize and auto-correct. A hint, not validation — the field still accepts any text. Composes with `secure`. Desktop backends ignore it. A Signal/rx! source re-applies in place.",
+                doc: "Soft-keyboard hint: KeyboardKind::{Default, Email, Phone, Number, Decimal, Url, SignedDecimal}. Use SignedDecimal for a number that can go negative: Decimal has no minus key on iOS, and SignedDecimal's iOS keyboard can reach letters, so check the value. Picks the on-screen keyboard on iOS (UIKeyboardType + textContentType) and Android (InputType), and sets `inputmode`/`autocomplete` on web; Email/Url also turn off auto-capitalize and auto-correct. A hint, not validation — the field still accepts any text. Composes with `secure`. Desktop backends ignore it. A Signal/rx! source re-applies in place.",
                 constraint: "",
             },
             PropFieldSpec {

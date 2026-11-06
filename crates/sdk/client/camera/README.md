@@ -321,7 +321,12 @@ synthetic front and back camera.
 
   `src/android_yuv.rs` holds the Android conversion to the arithmetic of the
   Kotlin loop it replaced, on planar and semi-planar layouts at every rotation.
-  `android_yuv::tests::timing_1080p` is an `#[ignore]`d timing report; run it
+  It has two loops with one output, and the tests run each: a block loop LLVM
+  vectorizes, which a build with debug assertions off runs, and a scalar loop on
+  raw pointers, which is the faster of the two unoptimized and which a build with
+  debug assertions on runs. `android_yuv::tests::time_one_1080p_frame` is an
+  `#[ignore]`d timing report on the scalar loop for a plain dev build, and
+  `android_yuv::tests::timing_1080p` one on the block loop; run that one
   optimized, at the `opt-level` an Android release build uses (this workspace's
   own release profile optimizes for size):
 

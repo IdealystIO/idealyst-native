@@ -63,6 +63,15 @@
 //! }
 //! ```
 //!
+//! ## Scrolling during a drag
+//!
+//! Drop zones are measured at drag start, so a scroller that moves them must
+//! say so: call [`DragContext::scrolled_by`] from its `on_scroll`, or from your
+//! auto-scroll loop. That re-reads the zones, picks up any a virtualized list
+//! mounted, and keeps an in-place source under the pointer.
+//! [`DragContext::refresh_rects`] does the first two for targets that moved
+//! some other way.
+//!
 //! ## What it deliberately does not do
 //!
 //! Auto-scrolling a list while dragging near its edge, reorder animations, and

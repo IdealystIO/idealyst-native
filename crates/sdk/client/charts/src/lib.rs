@@ -103,7 +103,7 @@ pub use charts_core::{
     HitResult, Interpolation, LineStyle, MarkBounds, MarkContext, MarkOverride, PieLabels, PieSpec,
     PointShape,
     PointStyle, PolarOutput, Point, RadialBar, RadialSpec, Ring, Series, SeriesKind, Slice,
-    SliceContext, SliceHighlight, SliceOverride, SliceStyleFn, StepAt, StyleFn, Tick, TweenAt,
+    SliceContext, SliceHighlight, SliceOverride, SliceStyleFn, StepAt, StyleFn, Tick, TickFormat, TweenAt,
 };
 
 // `PointerFrame::plot` is a `ViewportRect`, so a caller placing a surface has

@@ -122,7 +122,7 @@ fn portal_visibility_tracks_screen_nav_active_route() {
         // active route.
         provide(ScreenNav {
             active_route: active.read_only(),
-            route: "home",
+            route: "home", query: signal(Default::default()).read_only(),
         });
         realize(
             &h.backend,
@@ -178,7 +178,7 @@ fn escape_stack_skips_hidden_portals_and_drops_released_ones() {
                             return text().content("closed").build();
                         }
                         // A screen's portal: hidden while "home" is not active.
-                        provide(ScreenNav { active_route: active.read_only(), route: "home" });
+                        provide(ScreenNav { active_route: active.read_only(), route: "home", query: signal(Default::default()).read_only() });
                         let sd = sd.clone();
                         portal(PortalTarget::Viewport(ViewportPlacement::Center))
                             .on_dismiss(move || sd.set(sd.get() + 1))
@@ -231,7 +231,7 @@ fn regression_portal_mounts_after_screen_nav_scope_is_torn_down() {
     let (active, nav_scope) = h.world.enter(|| {
         runtime_world::collect_owned(|| {
             let active = signal("home");
-            provide(ScreenNav { active_route: active.read_only(), route: "home" });
+            provide(ScreenNav { active_route: active.read_only(), route: "home", query: signal(Default::default()).read_only() });
             active
         })
     });

@@ -22,16 +22,34 @@
 //! sample, not `rows * row_stride`, because the last row of a real plane
 //! commonly stops short of a full stride.
 //!
-//! **Speed.** Everything runs on blocks of up to [`BLOCK`] pixels, gathered into
-//! fixed arrays so LLVM can vectorize the arithmetic: 16-bit lanes for the
-//! per-pixel work, which holds every intermediate value exactly. It does so for
-//! `aarch64-linux-android` (`ld2` chroma, `sqxtun` clamps, `st4` pixels) at
-//! `opt-level = 3`. An unoptimized build gets none of it: 50–90× slower on the
-//! host, level with a scalar loop at `opt-level = 0`. Rotation is chosen once per frame, never per pixel. A quarter turn writes each
-//! source row into a column of the output, which would touch one cache line per
-//! pixel, so those two convert a [`TILE_ROWS`] by [`TILE_COLS`] tile at a time
-//! and write it out line by line. No `unsafe`: the only `unsafe` in the frame
-//! path is the JNI view of the planes in `android.rs`.
+//! **Speed.** Two loops with one output, because what is fast optimized is slow
+//! unoptimized. [`YuvFrame::convert`] picks by `debug_assertions`, the nearest a
+//! crate can get at compile time to asking for the optimization level. 1080p on
+//! the host:
+//!
+//! | | `opt-level = 3` | `opt-level = "z"` | `opt-level = 0` |
+//! |---|---|---|---|
+//! | [`YuvFrame::convert_blocks`] | 1.1–2 ms | 10–12 ms | 96–126 ms |
+//! | [`YuvFrame::convert_scalar`] | 3.5–4.2 ms | 3.7–4.4 ms | 38 ms |
+//!
+//! Debug assertions and overflow checks take the vectorization away too, so a dev
+//! build with this crate at `opt-level = 3` is better off on the scalar loop. A
+//! release build sized with `"s"` or `"z"` pays for the block loop it cannot
+//! vectorize; `profile.release.package.camera` can set this crate to `3`.
+//!
+//! The block loop gathers up to [`BLOCK`] pixels into fixed arrays so LLVM can
+//! vectorize the arithmetic: 16-bit lanes for the per-pixel work, which holds
+//! every intermediate value exactly. It does so for `aarch64-linux-android`
+//! (`ld2` chroma, `sqxtun` clamps, `st4` pixels) at `opt-level = 3`. Rotation is
+//! chosen once per frame, never per pixel. A quarter turn writes each source row
+//! into a column of the output, which would touch one cache line per pixel, so
+//! those two convert a [`TILE_ROWS`] by [`TILE_COLS`] tile at a time and write it
+//! out line by line. It has no `unsafe`.
+//!
+//! The scalar loop is for a native dev build: raw pointers and plain `while`
+//! loops, because at `opt-level = 0` every slice index, `clamp` and iterator step
+//! is a real function call, several times the cost per pixel. Its `unsafe` and the
+//! JNI view of the planes in `android.rs` are the only `unsafe` in the frame path.
 
 /// Pixels converted per block. Even, so a block starts on a chroma sample.
 /// Larger blocks spend less on loop setup: on the host 128 → 256 pixels took a
@@ -145,6 +163,15 @@ impl<'a> YuvFrame<'a> {
     /// Convert into `out`, which must be exactly `width * height * 4` bytes.
     /// A wrong size writes nothing and answers `false`.
     pub(crate) fn convert(&self, rotation: Rotation, out: &mut [u8]) -> bool {
+        if cfg!(debug_assertions) {
+            self.convert_scalar(rotation, out)
+        } else {
+            self.convert_blocks(rotation, out)
+        }
+    }
+
+    /// [`Self::convert`] for an optimized build.
+    fn convert_blocks(&self, rotation: Rotation, out: &mut [u8]) -> bool {
         let (pixels, rest) = out.as_chunks_mut::<4>();
         if !rest.is_empty() || pixels.len() != self.width * self.height {
             return false;
@@ -164,6 +191,86 @@ impl<'a> YuvFrame<'a> {
             }
             Rotation::R90 => self.convert_quarter_turn::<true>(pixels, &mut block),
             Rotation::R270 => self.convert_quarter_turn::<false>(pixels, &mut block),
+        }
+        true
+    }
+
+    /// [`Self::convert`] for an unoptimized build, one pixel at a time with the
+    /// rotation baked into the destination index.
+    fn convert_scalar(&self, rotation: Rotation, out: &mut [u8]) -> bool {
+        let (width, height) = (self.width, self.height);
+        if out.len() != width * height * 4 {
+            return false;
+        }
+        let (out_width, _) = self.output_size(rotation);
+        let (w, h, stride) = (width as isize, height as isize, out_width as isize);
+        let (y_data, u_data, v_data) = (self.y.data.as_ptr(), self.u.data.as_ptr(), self.v.data.as_ptr());
+        let (y_step, u_step, v_step) = (self.y.pixel_stride, self.u.pixel_stride, self.v.pixel_stride);
+        let out = out.as_mut_ptr();
+        let mut row = 0;
+        while row < height {
+            let r = row as isize;
+            // The pixel a source row starts at, and how far apart its pixels land.
+            let (start, step) = match rotation {
+                Rotation::R0 => (r * stride, 1),
+                Rotation::R90 => (h - 1 - r, stride),
+                Rotation::R180 => ((h - 1 - r) * stride + w - 1, -1),
+                Rotation::R270 => ((w - 1) * stride + r, -stride),
+            };
+            let mut dst = start * 4;
+            let dst_step = step * 4;
+            let mut y_at = row * self.y.row_stride;
+            let mut u_at = (row / 2) * self.u.row_stride;
+            let mut v_at = (row / 2) * self.v.row_stride;
+            let mut col = 0;
+            while col < width {
+                // SAFETY: `new` proved the last sample of each plane in bounds and
+                // the loops stop at it. `out` holds `width * height` pixels, and each
+                // rotation maps a source pixel to a distinct one of them. The planes
+                // may overlap each other but are only read, and `out` is ours alone.
+                let (y, u, v, px) = unsafe {
+                    (
+                        *y_data.wrapping_add(y_at) as i32,
+                        *u_data.wrapping_add(u_at) as i32 - 128,
+                        *v_data.wrapping_add(v_at) as i32 - 128,
+                        out.wrapping_offset(dst),
+                    )
+                };
+                let mut red = y + ((1436 * v) >> 10);
+                let mut green = y - ((352 * u + 731 * v) >> 10);
+                let mut blue = y + ((1814 * u) >> 10);
+                if red < 0 {
+                    red = 0
+                } else if red > 255 {
+                    red = 255
+                }
+                if green < 0 {
+                    green = 0
+                } else if green > 255 {
+                    green = 255
+                }
+                if blue < 0 {
+                    blue = 0
+                } else if blue > 255 {
+                    blue = 255
+                }
+                // SAFETY: as above; `px` starts a pixel, so its four bytes are in `out`.
+                unsafe {
+                    *px = red as u8;
+                    *px.wrapping_add(1) = green as u8;
+                    *px.wrapping_add(2) = blue as u8;
+                    *px.wrapping_add(3) = 255;
+                }
+                dst += dst_step;
+                y_at += y_step;
+                // Chroma is subsampled: it moves on after every odd column.
+                if col & 1 == 1 {
+                    u_at += u_step;
+                    v_at += v_step;
+                }
+                col += 1;
+            }
+            row += 1;
         }
         true
     }
@@ -507,10 +614,19 @@ mod tests {
         }
     }
 
+    /// Through both loops, whichever one this build's `convert` takes, so every
+    /// test below holds each of them to its expectation and to the other.
     fn convert(planes: &Planes, rotation: Rotation) -> Vec<u8> {
-        let mut out = vec![0x11; planes.width * planes.height * 4];
-        assert!(planes.frame().convert(rotation, &mut out));
-        out
+        let frame = planes.frame();
+        let mut blocks = vec![0x11; planes.width * planes.height * 4];
+        assert!(frame.convert_blocks(rotation, &mut blocks));
+        let mut scalar = vec![0x11; planes.width * planes.height * 4];
+        assert!(frame.convert_scalar(rotation, &mut scalar));
+        assert!(blocks == scalar, "the two loops differ at {rotation:?}");
+        let mut built = vec![0x11; planes.width * planes.height * 4];
+        assert!(frame.convert(rotation, &mut built));
+        assert!(built == blocks, "convert differs from its loops at {rotation:?}");
+        blocks
     }
 
     const ROTATIONS: [(Rotation, i32); 4] = [
@@ -711,8 +827,11 @@ mod tests {
     fn a_wrong_output_size_writes_nothing() {
         let planes = ramp(Layout::Planar);
         for len in [0, 4, 23, 25, 28] {
+            let frame = planes.frame();
             let mut out = vec![0x11; len];
-            assert!(!planes.frame().convert(Rotation::R0, &mut out), "{len}");
+            assert!(!frame.convert(Rotation::R0, &mut out), "{len}");
+            assert!(!frame.convert_blocks(Rotation::R0, &mut out), "{len}");
+            assert!(!frame.convert_scalar(Rotation::R0, &mut out), "{len}");
             assert!(out.iter().all(|b| *b == 0x11), "{len}");
         }
     }
@@ -728,7 +847,114 @@ mod tests {
         }
     }
 
-    /// Host timing of a 1920×1080 frame. Numbers only mean something optimized:
+    /// A 2×2 frame in NV21's layout, as Android devices commonly deliver it:
+    /// V and U interleaved in one buffer, with row padding. Each luma differs,
+    /// so a rotation shows in the output.
+    fn convert_nv21_2x2(rotation: Rotation, lumas: [u8; 4]) -> Vec<u8> {
+        let y = [lumas[0], lumas[1], 0, 0, lumas[2], lumas[3], 0, 0];
+        let vu = [128u8, 128];
+        let frame = YuvFrame::new(
+            2,
+            2,
+            Plane { data: &y, row_stride: 4, pixel_stride: 1 },
+            Plane { data: &vu[1..], row_stride: 4, pixel_stride: 2 },
+            Plane { data: &vu, row_stride: 4, pixel_stride: 2 },
+        )
+        .expect("a well-formed frame");
+        converted(&frame, rotation)
+    }
+
+    /// Through both loops, as [`convert`] does, for a frame no [`Planes`] built.
+    fn converted(frame: &YuvFrame<'_>, rotation: Rotation) -> Vec<u8> {
+        let (width, height) = frame.output_size(rotation);
+        let mut blocks = vec![0; width * height * 4];
+        assert!(frame.convert_blocks(rotation, &mut blocks));
+        let mut scalar = vec![0; width * height * 4];
+        assert!(frame.convert_scalar(rotation, &mut scalar));
+        assert_eq!(blocks, scalar, "the two loops differ at {rotation:?}");
+        blocks
+    }
+
+    fn lumas_of(rgba: &[u8]) -> Vec<u8> {
+        rgba.chunks_exact(4).map(|px| px[0]).collect()
+    }
+
+    /// Clockwise: the top-left source pixel goes to the top-right at 90°, the
+    /// bottom-right at 180° and the bottom-left at 270°.
+    #[test]
+    fn each_rotation_is_clockwise() {
+        let source = [10, 20, 30, 40];
+        assert_eq!(lumas_of(&convert_nv21_2x2(Rotation::R0, source)), [10, 20, 30, 40]);
+        assert_eq!(lumas_of(&convert_nv21_2x2(Rotation::R90, source)), [30, 10, 40, 20]);
+        assert_eq!(lumas_of(&convert_nv21_2x2(Rotation::R180, source)), [40, 30, 20, 10]);
+        assert_eq!(lumas_of(&convert_nv21_2x2(Rotation::R270, source)), [20, 40, 10, 30]);
+    }
+
+    /// A non-square frame swaps its dimensions, which a wrong destination
+    /// stride only shows here.
+    #[test]
+    fn a_wide_frame_rotates_into_a_tall_one() {
+        let y = [1u8, 2, 3, 4, 5, 6];
+        let chroma = [128u8; 4];
+        let plane = |data| Plane { data, row_stride: 2, pixel_stride: 1 };
+        let frame = YuvFrame::new(
+            3,
+            2,
+            Plane { data: &y, row_stride: 3, pixel_stride: 1 },
+            plane(&chroma),
+            plane(&chroma),
+        )
+        .expect("a well-formed frame");
+        assert_eq!(frame.output_size(Rotation::R90), (2, 3));
+        assert_eq!(lumas_of(&converted(&frame, Rotation::R90)), [4, 1, 5, 2, 6, 3]);
+        assert_eq!(lumas_of(&converted(&frame, Rotation::R270)), [3, 6, 2, 5, 1, 4]);
+    }
+
+    /// The conversion's colours and opaque alpha, at known BT.601 points.
+    #[test]
+    fn colours_match_bt601_full_range() {
+        let pixel = |y: u8, u: u8, v: u8| {
+            let (ys, us, vs) = ([y], [u], [v]);
+            let plane = |data| Plane { data, row_stride: 1, pixel_stride: 1 };
+            let frame = YuvFrame::new(1, 1, plane(&ys), plane(&us), plane(&vs))
+                .expect("a well-formed frame");
+            converted(&frame, Rotation::R0)
+        };
+        assert_eq!(pixel(128, 128, 128), [128, 128, 128, 255], "grey");
+        assert_eq!(pixel(255, 128, 255), [255, 165, 255, 255], "clamps high");
+        assert_eq!(pixel(0, 128, 0), [0, 92, 0, 255], "clamps low");
+    }
+
+    /// `Image.Plane` buffers can stop at the last sample, short of a full row.
+    #[test]
+    fn a_last_row_short_of_its_stride_still_converts() {
+        let y = [1u8, 2, 0, 0, 3, 4];
+        let chroma = [128u8, 128];
+        let plane = |data| Plane { data, row_stride: 4, pixel_stride: 1 };
+        let frame = YuvFrame::new(2, 2, plane(&y), plane(&chroma), plane(&chroma))
+            .expect("a well-formed frame");
+        assert_eq!(lumas_of(&converted(&frame, Rotation::R0)), [1, 2, 3, 4]);
+    }
+
+    /// A frame the planes cannot hold is dropped rather than panicking in the
+    /// JNI callback, which aborts the app.
+    #[test]
+    fn a_short_plane_or_output_is_refused() {
+        let chroma = [128u8; 2];
+        let plane = |data, row_stride| Plane { data, row_stride, pixel_stride: 1 };
+        let y = [0u8; 3];
+        assert!(YuvFrame::new(2, 2, plane(&y, 2), plane(&chroma, 2), plane(&chroma, 2)).is_none());
+        let y = [0u8; 4];
+        let frame = YuvFrame::new(2, 2, plane(&y, 2), plane(&chroma, 2), plane(&chroma, 2))
+            .expect("a well-formed frame");
+        assert!(!frame.convert_blocks(Rotation::R0, &mut [0; 15]));
+        assert!(!frame.convert_scalar(Rotation::R0, &mut [0; 15]));
+        assert!(frame.convert_blocks(Rotation::R0, &mut [0; 16]));
+        assert!(frame.convert_scalar(Rotation::R0, &mut [0; 16]));
+    }
+
+    /// Host timing of the block loop on a 1920×1080 frame, which only means
+    /// something optimized:
     /// `cargo test -p camera --release android_yuv::tests::timing -- --ignored --nocapture`
     #[test]
     #[ignore = "a timing report, not an assertion"]
@@ -741,7 +967,7 @@ mod tests {
             for (rotation, degrees) in ROTATIONS {
                 let start = std::time::Instant::now();
                 for _ in 0..RUNS {
-                    assert!(planes.frame().convert(rotation, std::hint::black_box(&mut out)));
+                    assert!(planes.frame().convert_blocks(rotation, std::hint::black_box(&mut out)));
                 }
                 let rust = start.elapsed() / RUNS;
                 let start = std::time::Instant::now();
@@ -751,6 +977,31 @@ mod tests {
                 let reference = start.elapsed() / 4;
                 println!("{layout:?} {degrees:>3}°: {rust:>10.2?}  (per-pixel reference {reference:.2?})");
             }
+        }
+    }
+
+    /// Host timing of the scalar loop on a 1080p frame, in a dev build, which is
+    /// where it runs:
+    /// `cargo test -p camera android_yuv::tests::time_one -- --ignored --nocapture`
+    #[test]
+    #[ignore = "timing, not a check"]
+    fn time_one_1080p_frame() {
+        let (w, h) = (1920usize, 1080usize);
+        let y: Vec<u8> = (0..w * h).map(|i| i as u8).collect();
+        let vu: Vec<u8> = (0..w * h / 2).map(|i| (i * 7) as u8).collect();
+        let frame = YuvFrame::new(
+            w,
+            h,
+            Plane { data: &y, row_stride: w, pixel_stride: 1 },
+            Plane { data: &vu[1..], row_stride: w, pixel_stride: 2 },
+            Plane { data: &vu, row_stride: w, pixel_stride: 2 },
+        )
+        .expect("a well-formed frame");
+        let mut out = vec![0; w * h * 4];
+        for (rotation, degrees) in ROTATIONS {
+            let started = std::time::Instant::now();
+            assert!(frame.convert_scalar(rotation, &mut out));
+            println!("{degrees}°: {:?}", started.elapsed());
         }
     }
 }

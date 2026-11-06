@@ -144,6 +144,7 @@ pub enum P {
         /// The text area's accessible name (`a11y.label`).
         a11y_label: Option<String>,
         style: Option<TStyle>,
+        ref_fill: bool,
     },
     ScrollView {
         children: Vec<Element>,
@@ -336,6 +337,7 @@ mod imp {
                 autofocus: p.autofocus,
                 a11y_label: p.a11y.label,
                 style: style(p.style),
+                ref_fill: p.ref_fill.is_some(),
             };
         }
         if let Some(cell) = data.downcast_ref::<PrimCell<prims::ScrollViewPrim>>() {

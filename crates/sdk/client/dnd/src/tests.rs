@@ -1004,3 +1004,151 @@ fn drag_layer_stays_empty_for_an_in_place_drag() {
     assert!(!screen.contains("text"), "{screen}");
     });
 }
+
+// ---------------------------------------------------------------------------
+// Scrolling during a drag
+// ---------------------------------------------------------------------------
+
+/// A zone whose rect follows a shared cell, like a view inside a scroller.
+fn register_moving_zone(ctx: &DragContext<u64>, y: Rc<Cell<f32>>, on_drop: Rc<dyn Fn(u64)>) {
+    ctx.register(DroppableEntry {
+        id: DroppableId::next(),
+        rect: Rc::new(move || Some(rect(0.0, y.get(), 100.0, 100.0))),
+        accepts: Rc::new(|_| true),
+        is_over: signal(false),
+        on_enter: None,
+        on_leave: None,
+        on_drop: Some(on_drop),
+    });
+}
+
+/// A wheel during a drag moved the targets, but the hit-test kept reading the
+/// rects from drag start: a target now under the pointer took no drop.
+#[test]
+fn regression_scrolling_during_a_drag_moves_the_drop_targets() {
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let zone_y = Rc::new(Cell::new(500.0));
+        let dropped = Rc::new(Cell::new(0u64));
+        let sink = dropped.clone();
+        register_moving_zone(&ctx, zone_y.clone(), Rc::new(move |p| sink.set(p)));
+        let drag = Draggable::new(&ctx, || 7u64).activation(Activation::immediate());
+        let h = drag.handler();
+
+        h(&ev(TouchPhase::Began, 1, 50.0, 0.0, 0));
+        h(&ev(TouchPhase::Moved, 1, 50.0, 150.0, 16_000_000));
+        zone_y.set(100.0);
+        ctx.scrolled_by(0.0, 400.0);
+        h(&ev(TouchPhase::Ended, 1, 50.0, 150.0, 32_000_000));
+
+        assert_eq!(dropped.get(), 7, "the target the scroll brought under the pointer takes the drop");
+    });
+}
+
+/// Hover follows the scroll with no pointer move, on both edges.
+#[test]
+fn a_scroll_updates_hover_without_the_pointer_moving() {
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let is_over = signal(false);
+        let zone_y = Rc::new(Cell::new(500.0));
+        let y = zone_y.clone();
+        ctx.register(DroppableEntry {
+            id: DroppableId::next(),
+            rect: Rc::new(move || Some(rect(0.0, y.get(), 100.0, 100.0))),
+            accepts: Rc::new(|_| true),
+            is_over,
+            on_enter: None,
+            on_leave: None,
+            on_drop: None,
+        });
+        let drag = Draggable::new(&ctx, || 7u64).activation(Activation::immediate());
+        let h = drag.handler();
+        h(&ev(TouchPhase::Began, 1, 50.0, 0.0, 0));
+        h(&ev(TouchPhase::Moved, 1, 50.0, 150.0, 16_000_000));
+        assert!(!flushed(is_over));
+
+        zone_y.set(100.0);
+        ctx.scrolled_by(0.0, 400.0);
+        assert!(flushed(is_over), "scrolled under the pointer");
+
+        zone_y.set(-300.0);
+        ctx.scrolled_by(0.0, 400.0);
+        assert!(!flushed(is_over), "scrolled away again");
+        h(&ev(TouchPhase::Cancelled, 1, 50.0, 150.0, 32_000_000));
+    });
+}
+
+/// A droppable a virtualized list mounts mid-drag was never in the snapshot.
+#[test]
+fn regression_a_droppable_mounted_during_a_drag_can_take_the_drop() {
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let drag = Draggable::new(&ctx, || 7u64).activation(Activation::immediate());
+        let h = drag.handler();
+        h(&ev(TouchPhase::Began, 1, 50.0, 0.0, 0));
+        h(&ev(TouchPhase::Moved, 1, 50.0, 150.0, 16_000_000));
+
+        let dropped = Rc::new(Cell::new(0u64));
+        let sink = dropped.clone();
+        register_moving_zone(&ctx, Rc::new(Cell::new(100.0)), Rc::new(move |p| sink.set(p)));
+        ctx.refresh_rects();
+        h(&ev(TouchPhase::Ended, 1, 50.0, 150.0, 32_000_000));
+
+        assert_eq!(dropped.get(), 7);
+    });
+}
+
+/// The source sits inside the scroller, so a scroll carries it away from the
+/// pointer unless its offset makes up the difference, across later moves too.
+#[test]
+fn regression_an_in_place_source_stays_under_the_pointer_through_a_scroll() {
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let drag = Draggable::new(&ctx, || 7u64).activation(Activation::immediate());
+        let (_, y) = drag.offset();
+        let h = drag.handler();
+
+        h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        h(&ev(TouchPhase::Moved, 1, 0.0, 50.0, 16_000_000));
+        assert_eq!(y.get(), 50.0);
+        ctx.scrolled_by(0.0, 400.0);
+        assert_eq!(y.get(), 450.0, "made up at once, with the pointer still");
+        h(&ev(TouchPhase::Moved, 1, 0.0, 60.0, 32_000_000));
+        assert_eq!(y.get(), 460.0, "and kept by the next move");
+        h(&ev(TouchPhase::Cancelled, 1, 0.0, 60.0, 48_000_000));
+
+        // A scroll after the drag moves nothing, and a new drag starts clean.
+        let settled = y.get();
+        ctx.scrolled_by(0.0, 100.0);
+        assert_eq!(y.get(), settled);
+        h(&ev(TouchPhase::Began, 2, 0.0, 0.0, 64_000_000));
+        h(&ev(TouchPhase::Moved, 2, 0.0, 30.0, 80_000_000));
+        assert_eq!(y.get(), settled + 30.0);
+    });
+}
+
+/// No drag in flight: both entry points do nothing.
+#[test]
+fn scrolling_with_no_drag_in_flight_is_a_no_op() {
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let reads = Rc::new(Cell::new(0));
+        let count = reads.clone();
+        ctx.register(DroppableEntry {
+            id: DroppableId::next(),
+            rect: Rc::new(move || {
+                count.set(count.get() + 1);
+                None
+            }),
+            accepts: Rc::new(|_| true),
+            is_over: signal(false),
+            on_enter: None,
+            on_leave: None,
+            on_drop: None,
+        });
+        ctx.refresh_rects();
+        ctx.scrolled_by(0.0, 10.0);
+        assert_eq!(reads.get(), 0);
+    });
+}

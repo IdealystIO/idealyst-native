@@ -21,7 +21,7 @@ use runtime_shared::primitives::navigator::{
 };
 use runtime_scene::{realize, Realized};
 use runtime_vocabulary::builders::{navigator_outlet, stack_navigator, swap_navigator, text, view};
-use runtime_vocabulary::prims::{NavHandle, StackNav, StackRetention, SwapNav};
+use runtime_vocabulary::prims::{NavHandle, ScreenNav, StackNav, StackRetention, SwapNav};
 use runtime_world::inject;
 
 // ---------------------------------------------------------------------------
@@ -330,6 +330,61 @@ fn changing_only_the_query_updates_state_without_remounting() {
             Some(Filters { tab: "starred".into(), page: 2 }),
             "the reactive signal decodes to the same struct the builder would"
         );
+    });
+}
+
+/// The pattern for a screen that owns a Back entry: it reads the reactive query
+/// from inside its OWN build, and hears a query-only change without rebuilding.
+/// `SwapNav` is not provided yet when the first screen builds, so that screen had
+/// no way to read it.
+#[test]
+fn regression_a_mounted_swap_screen_hears_a_query_change_through_inject() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let handle_slot: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let heard: Rc<RefCell<Vec<Option<String>>>> = Rc::default();
+        let builds = Seen::default();
+        let element = {
+            let (handle_slot, heard, builds) = (handle_slot.clone(), heard.clone(), builds.clone());
+            swap_navigator(&INBOX)
+                .screen(INBOX, move |_| {
+                    builds.record();
+                    let nav = inject::<ScreenNav>().expect("a screen can read its navigator");
+                    let heard = heard.clone();
+                    runtime_world::effect(move || {
+                        heard.borrow_mut().push(nav.active_query().and_then(|q| q.get("tab").map(str::to_string)));
+                    });
+                    view().child(text().content("inbox")).build()
+                })
+                .on_handle(move |handle| *handle_slot.borrow_mut() = Some(handle))
+                .build()
+        };
+        let _realized = realize(&h.backend, &h.registry, element);
+        world.flush();
+        let handle = handle_slot.borrow().clone().expect("the handle filled");
+
+        handle.select_with_state(&INBOX, (), Filters { tab: "starred".into(), page: 1 });
+        world.flush();
+
+        assert_eq!(builds.builds(), 1, "no rebuild");
+        assert_eq!(heard.borrow().last().cloned().flatten().as_deref(), Some("starred"));
+    });
+}
+
+/// A kept-alive screen must not take a sibling's query for its own.
+#[test]
+fn active_query_is_none_while_another_screen_is_active() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let active = runtime_world::signal("inbox");
+        let query = runtime_world::signal(QueryParams::new().with("tab", "a"));
+        let nav = ScreenNav { active_route: active.read_only(), route: "inbox", query: query.read_only() };
+        assert_eq!(nav.active_query().as_ref().and_then(|q| q.get("tab")), Some("a"));
+        active.set("detail");
+        world.flush();
+        assert!(nav.active_query().is_none());
     });
 }
 

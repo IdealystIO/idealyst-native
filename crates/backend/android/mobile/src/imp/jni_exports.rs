@@ -665,6 +665,12 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustViewportResizeListene
 /// `RustKeyboardAvoider.nativeBeginPadding` — a `Padding` avoider starts
 /// moving with the IME animation; lays out once and hands Kotlin the views
 /// to translate. See `imp::soft_keyboard::begin_padding`.
+///
+/// Commits the `keyboard_inset()` push first, which otherwise waits for a later
+/// looper turn: what author code does about the keyboard (a footer leaving the
+/// flow, a counter-offset) must be in the layout this measures, or the views are
+/// translated to tops their real layout never reaches. The backend must be free
+/// for the flush, whose effects restyle through it.
 #[no_mangle]
 pub unsafe extern "system" fn Java_io_idealyst_runtime_RustKeyboardAvoider_nativeBeginPadding(
     _env: JNIEnv,
@@ -674,8 +680,15 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustKeyboardAvoider_nativ
     to_dp: jfloat,
 ) -> jboolean {
     run_returning_callback("keyboard-begin-padding", || {
+        let key = key as usize;
+        let Some(before) =
+            crate::imp::soft_keyboard::with_free_backend(|b| crate::imp::soft_keyboard::padding_snapshot(b, key))
+        else {
+            return false as jboolean;
+        };
+        crate::newcore::flush_sync();
         crate::imp::soft_keyboard::with_free_backend(|b| {
-            crate::imp::soft_keyboard::begin_padding(b, key as usize, from_dp, to_dp)
+            crate::imp::soft_keyboard::begin_padding(b, key, from_dp, to_dp, &before)
         })
         .unwrap_or(false) as jboolean
     })

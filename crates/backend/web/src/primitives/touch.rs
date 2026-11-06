@@ -740,10 +740,7 @@ pub(crate) fn window_net_stats() -> (usize, usize) {
 /// recognized. The control's OWN `click` is untouched — `stop_propagation`
 /// halts bubbling, not the browser's click synthesis.
 pub(crate) fn swallow_ancestor_touch(el: &web_glue::dom::Element) {
-    crate::glue_dom::listen_for_element_lifetime(&el, "pointerdown", Default::default(), move |ev| {
-        let ev: web_glue::dom::PointerEvent = web_glue::JsCast::unchecked_into(ev);
-        ev.stop_propagation();
-    });
+    swallow_ancestor_press(el);
 
     // The swallow must extend to `contextmenu`: an ancestor `on_touch`
     // element's contextmenu listener SYNTHESIZES a Secondary `Began` when no
@@ -757,6 +754,24 @@ pub(crate) fn swallow_ancestor_touch(el: &web_glue::dom::Element) {
     crate::glue_dom::listen_for_element_lifetime(&el, "contextmenu", Default::default(), move |ev| {
         let ev: web_glue::dom::MouseEvent = web_glue::JsCast::unchecked_into(ev);
         ev.prevent_default();
+        ev.stop_propagation();
+    });
+}
+
+/// [`swallow_ancestor_touch`] for a control whose native context menu is part of
+/// the control: a text field's paste and spellcheck, which a clickable row must
+/// not take away. The `contextmenu` stops here without `preventDefault`, so the
+/// ancestor neither synthesizes a secondary press nor suppresses the menu.
+pub(crate) fn swallow_ancestor_touch_keeping_menu(el: &web_glue::dom::Element) {
+    swallow_ancestor_press(el);
+    crate::glue_dom::listen_for_element_lifetime(&el, "contextmenu", Default::default(), move |ev| {
+        ev.stop_propagation();
+    });
+}
+
+fn swallow_ancestor_press(el: &web_glue::dom::Element) {
+    crate::glue_dom::listen_for_element_lifetime(&el, "pointerdown", Default::default(), move |ev| {
+        let ev: web_glue::dom::PointerEvent = web_glue::JsCast::unchecked_into(ev);
         ev.stop_propagation();
     });
 }

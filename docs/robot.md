@@ -134,7 +134,7 @@ would see on screen — with no help from the app:
 | `focused` | `text_input`, `text_area` | Whether it holds keyboard focus, read from the toolkit at query time: web `document.activeElement`, iOS `isFirstResponder`, Android `View.isFocused()`, macOS the window's first responder (the field editor for a `text_input`), Linux the window's focus widget, Windows `GetFocus()`. A background or headless window, which gets no focus events, still reports it. A backend that can't read it falls back on the field's last focus/blur notification |
 | `scroll` | `scroll_view` | `{x, y}` content offset, read from the native scroller |
 | `hovered`, `pressed` | any element whose style has `state hovered` / `state pressed` variants | Whether that style state is on, as the backend set it |
-| `keyboard` | `text_input` | The soft-keyboard kind the app asked for (`keyboard = KeyboardKind::…`): `"default"`, `"email"`, `"phone"`, `"number"`, `"decimal"`, `"url"` |
+| `keyboard` | `text_input` | The soft-keyboard kind the app asked for (`keyboard = KeyboardKind::…`): `"default"`, `"email"`, `"phone"`, `"number"`, `"decimal"`, `"url"`, `"signed_decimal"` |
 | `native_keyboard` | `text_input` | The kind the native widget holds, read back from it: web `inputmode`, iOS `keyboardType`, Android `inputType` (a masked type several kinds share reads as the first, the keyboard actually shown). Absent on desktop backends, which have no soft keyboard |
 
 It is the primitive's view, not the author's: an uncontrolled toggle reports

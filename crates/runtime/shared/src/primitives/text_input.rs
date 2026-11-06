@@ -90,12 +90,14 @@ pub fn measured_width(known_width: Option<f32>) -> f32 {
 /// | `Phone`   | `tel` / `tel`                      | `phonePad` (`telephoneNumber`)              | `PHONE`             |
 /// | `Number`  | `numeric` / —                      | `numberPad`                                 | `NUMBER`            |
 /// | `Decimal` | `decimal` / —                      | `decimalPad`                                | `NUMBER \| FLAG_DECIMAL` |
+/// | `SignedDecimal` | `numeric` / —                | `numbersAndPunctuation`                     | `NUMBER \| FLAG_DECIMAL \| FLAG_SIGNED` |
 /// | `Url`     | `url` / `url`                      | `URL` (`URL`)                               | `TEXT \| VARIATION_URI` |
 ///
-/// `Email` and `Url` also switch off auto-capitalization and auto-correction
+/// `Email`, `Url` and `SignedDecimal` also switch off auto-capitalization and auto-correction
 /// (iOS `autocapitalizationType` / `autocorrectionType`; web `autocapitalize`
 /// / `autocorrect` / `spellcheck`; Android's email/URI variations already
-/// imply it), since a capitalized or "corrected" address is a wrong address.
+/// imply it), since a capitalized or "corrected" address is a wrong address,
+/// and `SignedDecimal` is the one number kind whose keyboard can reach letters.
 ///
 /// Composes with `secure`: a masked field keeps its keyboard where the
 /// platform has a masked form of it (iOS keeps the layout under
@@ -117,22 +119,33 @@ pub enum KeyboardKind {
     Phone,
     /// A whole number (digits only).
     Number,
-    /// A number that may have a decimal separator.
+    /// A number that may have a decimal separator. Has no minus key on iOS,
+    /// so a field that can go negative wants [`SignedDecimal`](Self::SignedDecimal).
     Decimal,
     /// A web address.
     Url,
+    /// A number that may be negative and may have a decimal separator.
+    ///
+    /// The closest each platform offers, which is not the same keyboard:
+    /// iOS has no number pad with a minus key, so it gets
+    /// `numbersAndPunctuation`, which opens on digits and punctuation but can
+    /// switch to letters. On Android the layout belongs to the keyboard app,
+    /// which decides how it shows the signed flag. So check the value: this
+    /// one more than the others can produce text that is not a number.
+    SignedDecimal,
 }
 
 impl KeyboardKind {
     /// Every kind, in declaration order (for exhaustive backend tests and
     /// doc controls).
-    pub const ALL: [KeyboardKind; 6] = [
+    pub const ALL: [KeyboardKind; 7] = [
         KeyboardKind::Default,
         KeyboardKind::Email,
         KeyboardKind::Phone,
         KeyboardKind::Number,
         KeyboardKind::Decimal,
         KeyboardKind::Url,
+        KeyboardKind::SignedDecimal,
     ];
 }
 

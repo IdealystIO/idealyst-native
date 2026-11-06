@@ -83,6 +83,7 @@ pub use scene::{
     LineCap, LineJoin, Mark, Paint, Path, PathSeg, Point, PointInstance, Rect, Stroke, VAlign,
 };
 pub use spec::{
+    TickFormat,
     cell, datum, Annotation, AnnotationAt, AreaFill, AreaStyle, Axis, AxisKind, BarLayout,
     BarStyle, ChartSpec, ColorRamp, Datum, DatumRef, Domain, Emphasis, HeatmapStyle, Highlight,
     Interpolation, LineStyle, MarkContext, MarkOverride, PointShape, PointStyle, Ring, Series,

@@ -67,6 +67,10 @@ pub(crate) fn create(
             }
         });
     }
+    // Consume the press from ancestor `on_touch` recognizers, as `button` and
+    // `toggle` do: a field in a clickable row must not also trigger the row,
+    // which is native's single-view delivery.
+    super::touch::swallow_ancestor_touch_keeping_menu(input.as_ref());
     input.unchecked_into::<Node>()
 }
 
@@ -174,6 +178,15 @@ pub(crate) fn keyboard_attrs(kind: KeyboardKind) -> &'static [(&'static str, &'s
         KeyboardKind::Phone => &[("inputmode", "tel"), ("autocomplete", "tel")],
         KeyboardKind::Number => &[("inputmode", "numeric")],
         KeyboardKind::Decimal => &[("inputmode", "decimal")],
+        // `decimal` has no minus on iOS Safari. `numeric` gives a pad with minus
+        // and period on Chrome for Android. `autocorrect` tells it from `Number`
+        // when the robot reads the kind back (`introspect_reads`).
+        KeyboardKind::SignedDecimal => &[
+            ("inputmode", "numeric"),
+            ("autocapitalize", "off"),
+            ("autocorrect", "off"),
+            ("spellcheck", "false"),
+        ],
         KeyboardKind::Url => &[
             ("inputmode", "url"),
             ("autocomplete", "url"),

@@ -111,6 +111,23 @@ pub(crate) fn stated_or_rest<T: Copy>(stated: Option<T>, last: Option<T>, rest: 
     stated.or(last.map(|_| rest))
 }
 
+/// Whether a drawable-path apply writes the fill.
+///
+/// `setBackground` replaces whatever the view painted, so a drawable created
+/// over a view the plain path already coloured starts empty even when the colour
+/// did not change. `last_bg` describes the view it replaced, not the new drawable.
+///
+/// An animation that owns the background keeps it, new drawable or not.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn drawable_fill_needs_write(
+    first_create: bool,
+    prev: Option<i32>,
+    packed: i32,
+    animation_owns_background: bool,
+) -> bool {
+    (first_create || prev != Some(packed)) && !animation_owns_background
+}
+
 /// `alpha` with no style.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) const ALPHA_OPAQUE: f32 = 1.0;
@@ -514,6 +531,32 @@ mod style_reset_tests {
     #[test]
     fn regression_android_dropped_background_kept_its_old_value() {
         assert_eq!(stated_or_rest(None, Some(0x7f00_ff00_u32 as i32), BACKGROUND_CLEAR), Some(0));
+    }
+
+    /// A view with a colour and no radius takes the plain path; a later apply adds a
+    /// radius with the same colour. The new drawable replaced the painted colour, and
+    /// the fill was skipped because `last_bg` already held it: the view went
+    /// transparent. The JNI path cannot run off a device, so this pins its decision.
+    #[test]
+    fn regression_android_radius_arriving_after_background_loses_the_fill() {
+        let white = 0xffff_ffff_u32 as i32;
+        assert!(drawable_fill_needs_write(true, Some(white), white, false));
+    }
+
+    /// Once the drawable holds the colour, a re-apply of the same colour writes nothing.
+    #[test]
+    fn an_existing_drawable_is_only_filled_when_the_colour_moves() {
+        let (white, black) = (0xffff_ffff_u32 as i32, 0xff00_0000_u32 as i32);
+        assert!(!drawable_fill_needs_write(false, Some(white), white, false));
+        assert!(drawable_fill_needs_write(false, Some(white), black, false));
+    }
+
+    /// A running background animation keeps the fill, even on a new drawable.
+    #[test]
+    fn an_owned_background_is_never_filled_from_the_style() {
+        let white = 0xffff_ffff_u32 as i32;
+        assert!(!drawable_fill_needs_write(true, None, white, true));
+        assert!(!drawable_fill_needs_write(false, Some(0), white, true));
     }
 
     /// A prop no style stated is never written, whatever an animation put there.

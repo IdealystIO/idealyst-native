@@ -42,8 +42,10 @@
 //! shell instead (the `dimmed` axis) and disables its `Adornment::Button`s.
 //!
 //! `keyboard` (reactive) picks the on-screen keyboard on phones and tablets
-//! (`KeyboardKind::Email` / `Phone` / `Number` / `Decimal` / `Url`) through
-//! the `text_input` primitive's `keyboard`; desktop platforms ignore it.
+//! (`KeyboardKind::Email` / `Phone` / `Number` / `Decimal` / `SignedDecimal` /
+//! `Url`) through the `text_input` primitive's `keyboard`; desktop platforms
+//! ignore it. A field that can go negative wants `SignedDecimal`: `Decimal` has
+//! no minus key on iOS.
 //! `Textarea` has no `keyboard`: multi-line text is prose, and the
 //! email / phone / digit layouts are single-line ones.
 

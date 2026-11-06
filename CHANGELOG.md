@@ -1258,6 +1258,23 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`KeyboardKind::SignedDecimal`** (`runtime-shared`, the mobile and web backends, `backend-ssr`,
+  `wire`, `runtime-vocabulary`). A keyboard for a number that can go negative: `Number` and
+  `Decimal` have no minus key on iOS. The closest each platform offers, not one keyboard:
+  iOS's `numbersAndPunctuation` can switch to letters, so check the value. See
+  `docs/primitives.md`. Remote `CODEC_VERSION` is now 11, so remote bundles need rebuilding.
+- **`Textarea` takes `field_ref` and `on_focus_change`** (`idea-ui`), as `Field` does, to insert at
+  the caret and to save on blur.
+- **`Axis::tick_format`** (`charts-core`, `charts`) writes an axis's tick labels, for a whole number
+  or a percent that the default draws as `4000.0` or `100.0`.
+- **`[workspace.metadata.idealyst.dev]`** (`idealyst-cli`) sets every member's dev build, with a
+  member's own table over it key by key. See `docs/hot-reload.md`.
+- **`DragContext::scrolled_by` and `refresh_rects`** (`dnd`). Drop zones are measured at drag
+  start, so a scroller under a drag must say it moved: see "Scrolling during a drag" in the crate's
+  README. `Table(on_reorder)` does not call them yet.
+- **`SwapHandle::select_with_state`** (`swap-navigator`), and "A screen that owns a Back entry" in
+  the navigation guide.
+
 - **`idealyst dev --no-open` leaves the default browser shut** (`idealyst-cli`). A
   behaviour flag: the session, its cache and the configured-build warning are
   unchanged.
@@ -3163,13 +3180,33 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
-- **Android camera frames convert in Rust** (`camera`, `media-stream` minor). A per-pixel Kotlin
-  loop over `ByteBuffer.get`/`put` turned `YUV_420_888` into `RGBA8` and held a 1080p stream to
-  about 1 FPS on a kiosk tablet. The shim now hands the plane buffers of the open `Image` across
-  JNI and `android_yuv` converts them, with the same arithmetic, rotations and output, directly
-  into the stream's frame buffer through the new `FrameWriter::write_rgba8_with`. An unoptimized
-  Android build does not get the benefit of the vectorized loops; `profile.dev.package.camera`
-  sets its `opt-level`.
+- **Android camera frames convert in vectorized blocks, straight into the stream's frame buffer**
+  (`camera`, `media-stream` minor). A release build's `android_yuv` runs a block loop LLVM
+  vectorizes, with the same arithmetic, rotations and output as the scalar one, writing through
+  the new `FrameWriter::write_rgba8_with`: a 1080p frame on the host takes 1-2 ms against 4-7 ms.
+  A build with debug assertions on keeps the scalar loop, which is the faster of the two at
+  `opt-level` 0 (38 ms against 96-126 ms); `profile.dev.package.camera` with `opt-level = 3`
+  brings it to about 4 ms. A release sized with `opt-level = "z"` should set
+  `profile.release.package.camera` to `3`: the block loop does not vectorize there and takes
+  10-12 ms.
+- **A mounted screen can hear its own query change** (`runtime-vocabulary`): `ScreenNav` carries
+  the query, read with `inject::<ScreenNav>()` and `active_query()`. `SwapNav` and `StackNav` are
+  not provided yet when the first screen builds, so that screen could not follow a query-only
+  navigation, which does not rebuild it.
+- **Android: a radius arriving after a background keeps the background**
+  (`backend-android-mobile`). The new drawable replaced the painted colour and was left empty, so
+  the view went transparent.
+- **Android: the keyboard avoider lets go of the views it moves** (`backend-android-mobile`). What
+  author code does about `keyboard_inset()` is now in the layout it measures, and a view it
+  predicted wrongly or dropped no longer stays translated.
+- **A press on a text field or slider stays out of an ancestor `on_touch`** (`backend-web`), so a
+  field in a clickable table row no longer fires `on_row_click`. The field keeps its context menu.
+- **The save after a failed build always builds** (`dev-reload`). It could answer "no UI or code
+  change", or take a hot patch, with the failed save's other files never built.
+- **Android camera frames convert in Rust** (`camera`). The Kotlin per-pixel loop pinned the camera
+  thread: 2.9 FPS at 960x1280 on an emulator in a release build is now 10-13. An unoptimized dev
+  build is a little slower than before, about 2.5 FPS against 3.1.
+
 - **A device owner can grant a runtime permission without a prompt** (`device-admin`):
   `set_permission_grant_state`, with `permission::CAMERA` and `RECORD_AUDIO`. Android's prompt
   is another app that lock task will not open, so a kiosk asking for one was refused unseen.

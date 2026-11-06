@@ -79,9 +79,17 @@ struct Inner<T> {
     /// Reading a node's rect is a synchronous layout flush on web
     /// (`getBoundingClientRect`); doing it per pointermove — interleaved with
     /// the transform writes that move the dragged element — thrashes layout and
-    /// stutters the drag. Targets don't move during a drag, so one snapshot at
-    /// drag start is both correct and cheap. Empty when no drag is active.
+    /// stutters the drag. Only the app knows when its targets move, so it says
+    /// so ([`DragContext::scrolled_by`], [`DragContext::refresh_rects`]). Empty
+    /// when no drag is active.
     session_rects: Vec<(DroppableId, ViewportRect)>,
+    /// Where the pointer last was in this drag, so a refresh can re-test hover
+    /// without waiting for it to move.
+    last_pointer: Option<TouchPoint>,
+    /// Moves an in-place drag source by a scroll's delta, so it stays under the
+    /// pointer while its scroller carries it away. `None` for a drag-layer ghost,
+    /// which is positioned in window coordinates.
+    follow_scroll: Option<Rc<dyn Fn(f32, f32)>>,
     /// Which droppable the pointer is currently over (drives enter/leave edge
     /// detection), if any.
     over: Option<DroppableId>,
@@ -130,6 +138,8 @@ impl<T: Clone + 'static> DragContext<T> {
                 payload: None,
                 droppables: Vec::new(),
                 session_rects: Vec::new(),
+                last_pointer: None,
+                follow_scroll: None,
                 over: None,
                 ghost_x: AnimatedValue::new(0.0),
                 ghost_y: AnimatedValue::new(0.0),
@@ -180,14 +190,10 @@ impl<T: Clone + 'static> DragContext<T> {
             let mut inner = self.inner.borrow_mut();
             inner.payload = Some(payload);
             inner.over = None;
-            // Snapshot every drop zone's rect ONCE, here at drag start, so the
+            inner.last_pointer = None;
+            // Snapshot every drop zone's rect here at drag start, so the
             // per-move hit-test reads no geometry (see `session_rects`).
-            let rects: Vec<(DroppableId, ViewportRect)> = inner
-                .droppables
-                .iter()
-                .filter_map(|e| (e.rect)().map(|r| (e.id, r)))
-                .collect();
-            inner.session_rects = rects;
+            inner.session_rects = read_rects(&inner.droppables);
             inner.dragging
         };
         dragging.set(true);
@@ -197,6 +203,7 @@ impl<T: Clone + 'static> DragContext<T> {
     /// firing `on_enter` / `on_leave` and flipping `is_over` signals on the
     /// edge. No-op if no session is open.
     pub(crate) fn update(&self, window: TouchPoint) {
+        self.inner.borrow_mut().last_pointer = Some(window);
         // Resolve everything we need while holding the borrow, then run
         // callbacks after releasing it (callbacks may read the context).
         enum Edge<T> {
@@ -274,6 +281,8 @@ impl<T: Clone + 'static> DragContext<T> {
             let payload = inner.payload.take();
             let dragging = inner.dragging;
             let over = inner.over.take();
+            inner.last_pointer = None;
+            inner.follow_scroll = None;
             let Some(payload) = payload else {
                 inner.session_rects.clear();
                 dragging.set(false);
@@ -321,6 +330,8 @@ impl<T: Clone + 'static> DragContext<T> {
             let mut inner = self.inner.borrow_mut();
             inner.payload = None;
             inner.session_rects.clear();
+            inner.last_pointer = None;
+            inner.follow_scroll = None;
             let dragging = inner.dragging;
             let leave = inner.over.take().and_then(|id| {
                 inner
@@ -338,6 +349,43 @@ impl<T: Clone + 'static> DragContext<T> {
             }
         }
         dragging.set(false);
+    }
+
+    /// Re-read every drop zone's rect during a drag and re-test hover at the
+    /// pointer. Call it when targets moved, or new ones mounted (a virtualized
+    /// list scrolling them in): the hit-test only sees rects read at drag start
+    /// or here. No-op with no drag in flight. Costs one rect read per target, so
+    /// call it when something moved, not on every pointer move.
+    pub fn refresh_rects(&self) {
+        let pointer = {
+            let mut inner = self.inner.borrow_mut();
+            if inner.payload.is_none() {
+                return;
+            }
+            inner.session_rects = read_rects(&inner.droppables);
+            inner.last_pointer
+        };
+        if let Some(pointer) = pointer {
+            self.update(pointer);
+        }
+    }
+
+    /// A scroller under the drag moved its content by `(dx, dy)`, the change of
+    /// its scroll offset: refresh the drop zones ([`refresh_rects`](Self::refresh_rects))
+    /// and keep an in-place drag source under the pointer. Call it from the
+    /// scroller's `on_scroll`, or the loop that auto-scrolls near an edge. No-op
+    /// with no drag in flight.
+    pub fn scrolled_by(&self, dx: f32, dy: f32) {
+        let follow = self.inner.borrow().follow_scroll.clone();
+        if let Some(follow) = follow {
+            follow(dx, dy);
+        }
+        self.refresh_rects();
+    }
+
+    /// Set what [`scrolled_by`](Self::scrolled_by) moves for this drag.
+    pub(crate) fn set_follow_scroll(&self, follow: Rc<dyn Fn(f32, f32)>) {
+        self.inner.borrow_mut().follow_scroll = Some(follow);
     }
 
     // ---- drag-layer ghost (Model B) --------------------------------------
@@ -429,6 +477,11 @@ impl<T: Clone + 'static> DragContext<T> {
     }
 }
 
+/// Every drop zone's current rect. A target not laid out yet has none.
+fn read_rects<T>(droppables: &[DroppableEntry<T>]) -> Vec<(DroppableId, ViewportRect)> {
+    droppables.iter().filter_map(|e| (e.rect)().map(|r| (e.id, r))).collect()
+}
+
 /// True if `p` (window coords) lies within `rect`.
 fn rect_contains(rect: ViewportRect, p: TouchPoint) -> bool {
     p.x >= rect.x
@@ -439,7 +492,7 @@ fn rect_contains(rect: ViewportRect, p: TouchPoint) -> bool {
 
 /// Find the droppable under `window` that accepts `payload`, preferring the
 /// smallest-area (most specific / innermost) match when several overlap.
-/// Tests against the rects snapshotted at `begin` — never re-reads geometry.
+/// Tests against the rects in the session snapshot — never re-reads geometry.
 fn hit_test<T>(
     droppables: &[DroppableEntry<T>],
     rects: &[(DroppableId, ViewportRect)],

@@ -28,7 +28,7 @@ Arguments:
 - `bridge_port`: pin the Robot bridge to a fixed port instead of an ephemeral one.
 - `screenshot_dir`: where the relay saves screenshot PNGs.
 - `no_build` (web only): skip the initial build and just serve.
-- A project's `[package.metadata.idealyst.dev]` table supplies the build settings no flag names: see "Configuring the build" in `docs/hot-reload.md`. A `run_dev` flag that differs from it warns in the session log.
+- A project's `[package.metadata.idealyst.dev]` table, over its workspace's `[workspace.metadata.idealyst.dev]`, supplies the build settings no flag names: see "Configuring the build" in `docs/hot-reload.md`. A `run_dev` flag that differs from it warns in the session log.
 - `no_watch`: saves are queued, not applied; `rebuild_dev` applies the queue as one save (overlay patch, hot patch or rebuild, as the save would have been). See `rebuild_dev`.
 - `experimental_build`: arms both experimental tiers. On web `local`, a save that only ADDS items — a helper and its first call, a new component, a type and its impls — hot patches instead of rebuilding (see "Adding items" in the framework's `docs/hot-reload.md`). On a full-stack session on arm64 macOS or Linux, a body edit patches the running server in place.
 - `experimental_server_patch`: only the server half of `experimental_build`. `idealyst dev --experimental-web-additive` arms only the web half.

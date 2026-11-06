@@ -137,6 +137,9 @@ pub mod keys {
     pub const BACKGROUND_COLOR: &str = "background_color";
     /// Resolved opacity, `0.0..=1.0` (`NativeValue::Number`).
     pub const OPACITY: &str = "opacity";
+    /// Vertical translation in logical px (`NativeValue::Length`). Android only,
+    /// where the keyboard avoider moves views by it.
+    pub const TRANSLATION_Y: &str = "translation_y";
     /// Corner radius in logical px (`NativeValue::Length`).
     pub const CORNER_RADIUS: &str = "corner_radius";
     /// Border width in logical px (`NativeValue::Length`).

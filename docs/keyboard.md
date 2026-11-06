@@ -160,7 +160,13 @@ Per-frame work never enters Rust:
   `LayoutParams`, which only take effect at the next traversal. On any
   frame the view may still be at its old position or already at its new
   one, and assuming either made the close jump for two frames. A layout
-  listener re-places a view whenever its layout lands.
+  listener re-places a view whenever its layout lands, and once the final
+  layout is in effect every view drops its offset, wherever that layout
+  put it.
+
+  `keyboard_inset()` commits just before that one layout, so what author
+  code does about the keyboard (a footer leaving the flow, a
+  counter-offset) is part of what gets measured.
 
   A translation can move views but not resize them, so the size change
   happens where the keyboard hides it

@@ -1670,7 +1670,10 @@ patch or a rebuild the dev loop installs archives scanned from the
 sources as they were read just before that compile started (the scan
 itself runs alongside the compile), so a save made while it compiled is
 decided afterwards as the change it is; a failed rebuild leaves them
-alone, so the next save is still decided against the build on screen.
+alone, because the page still runs the build they describe. The save
+after a failed build builds rather than being decided: decided from its
+own files it could read as unchanged, or take a patch, with the failed
+save's other files never built.
 
 A failed FIRST build does not end the session either. The web loop
 reports it (`build_finished` with the error, on the page's overlay and in
@@ -2298,6 +2301,26 @@ would otherwise mean a different build with no word about it. With no table a
 session behaves as it always has: flags and defaults, no warnings, no
 protection. In `Cargo.toml` rather than `dev.toml` because these choose the
 build and belong to the project, where `dev.toml` holds a machine's ports.
+
+A workspace with several apps can state it once. Cargo has no inheritance for
+`package.metadata`, so the CLI reads the table from the workspace root as every
+member's default:
+
+```toml
+# <workspace root>/Cargo.toml
+[workspace.metadata.idealyst.dev]
+local = true
+features = ["beta"]
+
+# crates/app-main/Cargo.toml
+[package.metadata.idealyst.dev]
+features = ["kiosk"]    # replaces ["beta"]; `local` is still inherited
+```
+
+A member's key replaces the workspace's whole value, so `features` lists do not
+add up. The root is the one cargo uses: `package.workspace` if set, else the
+nearest ancestor with a `[workspace]` table. A package in the root's `exclude`
+inherits nothing.
 
 Platform filters (`--web` selects from `targets`) and behaviour flags (ports,
 `--no-watch`, `--no-open`, `--metrics`, `--interactive`, `--experimental-build`)

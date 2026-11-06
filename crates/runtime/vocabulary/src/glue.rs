@@ -1004,6 +1004,8 @@ pub use primitives::navigator::{Route, RouteParams, Screen};
 // builder calls to seed its signals, and it must resolve at the same
 // root path authors already import `Route` from.
 pub use primitives::navigator::{screen_query, screen_state, QueryParams, ScreenState};
+// The live side of the same state, for a mounted screen.
+pub use crate::prims::ScreenNav;
 pub use primitives::overlay::{anchored_overlay, overlay};
 pub use primitives::presence::presence;
 pub use primitives::scroll_view::scroll_view;

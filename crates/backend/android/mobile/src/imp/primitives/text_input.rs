@@ -199,6 +199,7 @@ const TYPE_TEXT_VARIATION_EMAIL_ADDRESS: i32 = 0x0000_0020;
 const TYPE_TEXT_VARIATION_PASSWORD: i32 = 0x0000_0080;
 const TYPE_NUMBER_VARIATION_PASSWORD: i32 = 0x0000_0010;
 const TYPE_NUMBER_FLAG_DECIMAL: i32 = 0x0000_2000;
+const TYPE_NUMBER_FLAG_SIGNED: i32 = 0x0000_1000;
 
 /// The single-line `EditText` input type for a keyboard kind + mask.
 ///
@@ -219,10 +220,17 @@ pub(crate) fn input_type(kind: runtime_shared::primitives::text_input::KeyboardK
         (K::Phone, false) => TYPE_CLASS_PHONE,
         (K::Number, false) => TYPE_CLASS_NUMBER,
         (K::Decimal, false) => TYPE_CLASS_NUMBER | TYPE_NUMBER_FLAG_DECIMAL,
+        (K::SignedDecimal, false) => TYPE_CLASS_NUMBER | TYPE_NUMBER_FLAG_DECIMAL | TYPE_NUMBER_FLAG_SIGNED,
         (K::Default | K::Email | K::Url, true) => TYPE_CLASS_TEXT | TYPE_TEXT_VARIATION_PASSWORD,
         (K::Phone | K::Number, true) => TYPE_CLASS_NUMBER | TYPE_NUMBER_VARIATION_PASSWORD,
         (K::Decimal, true) => {
             TYPE_CLASS_NUMBER | TYPE_NUMBER_FLAG_DECIMAL | TYPE_NUMBER_VARIATION_PASSWORD
+        }
+        (K::SignedDecimal, true) => {
+            TYPE_CLASS_NUMBER
+                | TYPE_NUMBER_FLAG_DECIMAL
+                | TYPE_NUMBER_FLAG_SIGNED
+                | TYPE_NUMBER_VARIATION_PASSWORD
         }
     }
 }
@@ -583,6 +591,8 @@ mod input_type_tests {
         assert_eq!(input_type(K::Number, true), 0x12);
         assert_eq!(input_type(K::Phone, true), 0x12);
         assert_eq!(input_type(K::Decimal, true), 0x2012);
+        assert_eq!(input_type(K::SignedDecimal, false), 0x3002);
+        assert_eq!(input_type(K::SignedDecimal, true), 0x3012);
         for k in K::ALL {
             for secure in [false, true] {
                 assert_eq!(

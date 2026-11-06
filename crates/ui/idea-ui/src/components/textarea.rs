@@ -36,6 +36,27 @@
 //! primitive's `disabled` makes the native view non-editable and drops it
 //! from keyboard focus, `on_change` never fires, and the shared input
 //! sheet's `state disabled` overlay dims it.
+//!
+//! `field_ref` binds the underlying `text_area`'s handle, for inserting at
+//! the caret with `insert_text` or moving focus from code. `on_focus_change`
+//! reports focus arriving and leaving, for saving on blur:
+//!
+//! ```ignore
+//! let body: Ref<TextAreaHandle> = Ref::new();
+//! ui! {
+//!     Textarea(
+//!         value = text,
+//!         on_change = move |v: String| text.set(v),
+//!         field_ref = Some(body),
+//!         on_focus_change = Some(Rc::new(move |focused: bool| if !focused { save() })),
+//!     )
+//!     Button(label = "Insert name", on_click = move || {
+//!         if let Some(h) = body.get() {
+//!             h.insert_text("{name}");
+//!         }
+//!     })
+//! }
+//! ```
 
 use std::rc::Rc;
 
@@ -116,6 +137,19 @@ pub struct TextareaProps {
     /// a `Modal`/portal (the focus waits for attach). Default `false`.
     #[prop(static)]
     pub autofocus: bool,
+    /// Bind the underlying `text_area` to a `Ref<TextAreaHandle>`, for
+    /// `insert_text` at the caret and imperative `focus()` / `blur()`. The
+    /// same prop as [`Field`](crate::components::field::Field)'s. `None`
+    /// (the default) binds nothing.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
+    pub field_ref: Option<runtime_core::Ref<runtime_core::primitives::text_area::TextAreaHandle>>,
+    /// Observe focus arriving (`true`) and leaving (`false`), e.g. to save
+    /// on blur. The same prop as
+    /// [`Field`](crate::components::field::Field)'s. `None` (the default)
+    /// observes nothing.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub on_focus_change: Option<Rc<dyn Fn(bool)>>,
     /// Make the text area read-only and inert. While `true` it is not
     /// editable and not keyboard-focusable (it drops focus if it held it),
     /// `on_change` never fires, `autofocus` is skipped, and it dims (the
@@ -157,6 +191,8 @@ impl Default for TextareaProps {
             min_height: Reactive::Static(None),
             width: Reactive::Static(None),
             autofocus: false,
+            field_ref: None,
+            on_focus_change: None,
             disabled: Reactive::Static(false),
             styles: Default::default(),
         }
@@ -271,6 +307,9 @@ pub fn Textarea(props: &TextareaProps) -> Element {
         input = input.a11y_label(name);
     }
     input = with_test_id!(input, props.test_id);
+    if let Some(field_ref) = props.field_ref {
+        input = input.bind(field_ref);
+    }
     // `disabled` rides the primitive (native inert + out of keyboard focus,
     // the `on_change` gate, the DISABLED state bit that resolves the sheet's
     // `state disabled` dim). Attached only when it can be disabled.
@@ -286,13 +325,23 @@ pub fn Textarea(props: &TextareaProps) -> Element {
     let group_style = FieldStyles::group().values(&values).overridden(styles.group.as_ref());
 
     // `label_node` / `help_node` are `Option<Element>` — an absent one
-    // splats to nothing.
-    ui! {
-        view(style = group_style) {
-            label_node
-            input_node
-            help_node
-        }
+    // splats to nothing. Focus is heard on the group, whose only focus target
+    // is the input: `view`'s focus-within already reports it on every backend.
+    match props.on_focus_change.clone() {
+        Some(on_focus) => ui! {
+            view(style = group_style, on_focus = move |focused: bool| on_focus(focused)) {
+                label_node
+                input_node
+                help_node
+            }
+        },
+        None => ui! {
+            view(style = group_style) {
+                label_node
+                input_node
+                help_node
+            }
+        },
     }
 }
 
@@ -359,6 +408,33 @@ mod tests {
             }
         }
         panic!("Textarea tree has no text_area node");
+    }
+
+    /// Without a handle or a focus callback, an app wanting to insert at the
+    /// caret or save on blur had to drop to the bare `text_area`.
+    #[test]
+    fn regression_field_ref_and_on_focus_change_reach_the_text_area() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let shape = |ta: Element| {
+                let P::View { children, on_focus, .. } = classify(ta) else { panic!("a view wrapper") };
+                let bound = children
+                    .into_iter()
+                    .find_map(|c| match classify(c) {
+                        P::TextArea { ref_fill, .. } => Some(ref_fill),
+                        _ => None,
+                    })
+                    .expect("a text_area node");
+                (bound, on_focus)
+            };
+            let wired = TextareaProps {
+                field_ref: Some(runtime_core::Ref::new()),
+                on_focus_change: Some(Rc::new(|_| {})),
+                ..Default::default()
+            };
+            assert_eq!(shape(Textarea(&wired)), (true, true));
+            assert_eq!(shape(Textarea(&TextareaProps::default())), (false, false), "bound only when given");
+        });
     }
 
     /// `autofocus` reaches the `text_area` primitive, and defaults off.

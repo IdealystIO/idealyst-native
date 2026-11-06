@@ -914,7 +914,7 @@ pub struct ElementState {
     pub pressed: Option<bool>,
     /// A text field's soft-keyboard kind as the app asked for it
     /// (`"default"`, `"email"`, `"phone"`, `"number"`, `"decimal"`,
-    /// `"url"`).
+    /// `"url"`, `"signed_decimal"`).
     pub keyboard: Option<String>,
     /// The kind the native widget holds (UIKit's `keyboardType`, Android's
     /// `inputType`, the web's `inputmode`). `None` where the platform has

@@ -152,6 +152,8 @@ fn read_view_in_frame(env: &mut JNIEnv, view: &JObject, frame: NativeRect) -> Na
     node.set(keys::OPACITY, alpha.map(NativeValue::Number));
 
     let density = density_of(env, view).unwrap_or(1.0);
+    let translation = call(env, view, "getTranslationY", "()F", &[]).and_then(|v| v.f().ok());
+    node.set(keys::TRANSLATION_Y, translation.map(|px| NativeValue::Length(px / density)));
     read_background(env, view, density, &mut node);
     read_border(env, view, density, &mut node);
     if is_instance(env, view, "android/widget/TextView") {

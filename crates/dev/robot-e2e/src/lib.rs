@@ -654,6 +654,31 @@ impl Expect {
         }
     }
 
+    /// A colour the NATIVE widget reports under `key`
+    /// (`runtime_shared::introspect::keys`) is `expected`, straight sRGB RGBA. A
+    /// widget with an empty background reports no key, which fails. Skips and
+    /// retries as [`to_have_native_opacity`](Self::to_have_native_opacity) does.
+    pub fn to_have_native_color(self, key: &str, expected: [f32; 4]) -> Result<(), String> {
+        use runtime_shared::introspect::NativeValue;
+        let desc = &self.loc.desc;
+        let el = self.loc.resolve()?;
+        let node = match Robot::new().introspect_native(&el) {
+            Ok(Some(node)) => node,
+            Ok(None) => return Err(format!("expect({desc}).toHaveNativeColor({key}, {expected:?}) — not laid out yet")),
+            Err(RobotError::ActionNotAvailable(_)) => {
+                return Err(skip(format!("expect({desc}).toHaveNativeColor(): no native readback on this platform")))
+            }
+            Err(e) => return Err(format!("expect({desc}).toHaveNativeColor(): {e:?}")),
+        };
+        match node.props.get(key) {
+            Some(NativeValue::Color(actual)) if actual.iter().zip(&expected).all(|(a, e)| (a - e).abs() < 0.01) => {
+                log(format!("  ✓ expect({desc}).toHaveNativeColor({key}, {expected:?})"));
+                Ok(())
+            }
+            other => Err(format!("expect({desc}).toHaveNativeColor({key}, {expected:?}) — the widget reports {other:?}")),
+        }
+    }
+
     /// A length the NATIVE widget reports under `key`
     /// (`runtime_shared::introspect::keys`) is `expected`. A widget that has none
     /// reports no key, which reads as `0`, since readers disagree on whether a

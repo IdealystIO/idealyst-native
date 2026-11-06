@@ -1683,11 +1683,11 @@ pub struct TableRowProps {
     ///
     /// The click surface spans the full row, but it sits on each cell's
     /// own node rather than a layer above the content, so an interactive
-    /// child (a `Button`, `Link`) inside a cell still receives its own
-    /// tap first: its recognizer consumes the event, which stops it from
-    /// reaching the row handler (the standard "buttons in a clickable row"
-    /// pattern). Taps on plain content or empty cell space fall through to
-    /// the row callback.
+    /// child (a `Button`, `Link`, `Toggle`, `Slider` or text field) inside a
+    /// cell still receives its own tap first: it consumes the event, which
+    /// stops it from reaching the row handler (the standard "buttons in a
+    /// clickable row" pattern). Taps on plain content or empty cell space
+    /// fall through to the row callback.
     pub on_row_click: Option<Rc<dyn Fn()>>,
     /// Whole-row tint — `Highlight`, `Warning` or `Danger`, or an app tone
     /// styled with [`TableRestyle::row_tone`]. Reactive: a
@@ -1829,7 +1829,7 @@ pub fn TableRow(props: TableRowProps) -> Element {
 ///
 /// Putting the handler on the cell itself — an *ancestor* of whatever the
 /// cell contains — is what makes buttons-in-a-clickable-row work: an
-/// interactive child (a `Button`, `Link`) recognizes its own tap first and
+/// interactive child (a `Button`, `Link`, text field) takes its own tap first and
 /// returns `consumed`, which stops the event before it reaches this row
 /// handler (bubbling + `stop_propagation` on web, the responder chain on
 /// native). Taps on plain content or empty space fall through to the row.
