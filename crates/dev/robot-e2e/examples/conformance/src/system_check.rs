@@ -22,14 +22,17 @@
 use std::collections::BTreeMap;
 
 use runtime_macros::{component, ui};
-use runtime_shared::{Color, Cursor, Length, StyleRules, StyleSheet};
+use runtime_shared::{Color, Cursor, Length, Position, StyleRules, StyleSheet};
 use runtime_shared::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_vocabulary::builders::{pressable, text_area, text_input};
 use runtime_vocabulary::glue::primitives::activity_indicator::{activity_indicator, ActivityIndicatorSize};
 use runtime_vocabulary::glue::primitives::flat_list::{fixed_size, flat_list};
+use runtime_vocabulary::glue::primitives::overlay::{overlay, ViewportPlacement};
 use runtime_vocabulary::glue::primitives::presence::presence;
 use runtime_vocabulary::glue::primitives::scroll_view::scroll_view;
-use runtime_vocabulary::glue::{button, signal, text, view, Element, IntoElement, Signal};
+use runtime_vocabulary::glue::{
+    button, keyboard_avoiding_view, keyboard_inset, signal, text, view, Element, IntoElement, Signal, WriteSignal,
+};
 
 use crate::screens::NavCell;
 
@@ -129,7 +132,7 @@ const KEYBOARD: Manual = Manual {
     id: "keyboard",
     title: "Keyboard focus",
     steps: "Click the first text field, then press Tab: focus moves to the next control.",
-    tests: &[],
+    tests: &["a view that leaves the flow for the keyboard is not held at a predicted top"],
 };
 
 const ROW: Manual = Manual {
@@ -441,10 +444,25 @@ fn StyleDropFixture() -> Element {
         border_left_color: faded.get().then(|| Color("#1e3a8a".into()).into()),
         ..Default::default()
     };
+    // Starts on the plain path: a colour and no radius. The radius arrives later,
+    // with the colour unchanged.
+    let rounded = signal(false);
+    let round = move || rounded.set(true);
+    let plate_style = move || StyleRules {
+        height: Some(Length::Px(24.0).into()),
+        background: Some(Color("#2563eb".into()).into()),
+        border_top_left_radius: rounded.get().then_some(Length::Px(6.0).into()),
+        border_top_right_radius: rounded.get().then_some(Length::Px(6.0).into()),
+        border_bottom_left_radius: rounded.get().then_some(Length::Px(6.0).into()),
+        border_bottom_right_radius: rounded.get().then_some(Length::Px(6.0).into()),
+        ..Default::default()
+    };
     ui! {
         view(style = section()) {
             view(test_id = "cap-opacity", style = faded_style)
             button(label = "Toggle", test_id = "cap-opacity-toggle", on_click = toggle)
+            view(test_id = "cap-plate", style = plate_style)
+            button(label = "Round", test_id = "cap-plate-round", on_click = round)
         }
     }
 }
@@ -535,10 +553,52 @@ fn PresenceFixture() -> Element {
 #[component]
 fn KeyboardFixture() -> Element {
     let field = text_input().build();
+    let (open, set_open) = signal(false).split();
+    let show = move || set_open.set(true);
     ui! {
         view {
             field
             button(label = "Next control", on_click = || {})
+            button(label = "Avoider", test_id = "cap-avoid-open", on_click = show)
+            if open.get() {
+                overlay(placement = ViewportPlacement::FullScreen) {
+                    AvoiderScreen(set_open = set_open)
+                }
+            }
+        }
+    }
+}
+
+/// A full-screen `Padding` avoider whose footer leaves the flow while the
+/// keyboard is up, to stay behind it while the content above ends at its top.
+#[component]
+fn AvoiderScreen(set_open: WriteSignal<bool>) -> Element {
+    let up = move || keyboard_inset().get().height > 0.0;
+    let state = move || if up() { "keyboard: up" } else { "keyboard: down" };
+    let screen = || StyleRules {
+        flex_grow: Some(1.0.into()),
+        background: Some(Color("#ffffff".into()).into()),
+        ..Default::default()
+    };
+    let grow = || StyleRules { flex_grow: Some(1.0.into()), ..Default::default() };
+    let footer = move || StyleRules {
+        height: Some(Length::Px(40.0).into()),
+        background: Some(Color("#2563eb".into()).into()),
+        position: up().then_some(Position::Absolute.into()),
+        bottom: up().then_some(Length::Px(0.0).into()),
+        left: up().then_some(Length::Px(0.0).into()),
+        right: up().then_some(Length::Px(0.0).into()),
+        ..Default::default()
+    };
+    let input = text_input().test_id("cap-avoid-input").build();
+    ui! {
+        keyboard_avoiding_view(style = screen) {
+            view(style = grow) {
+                text(test_id = "cap-avoid-keyboard") { state }
+                input
+                button(label = "Close", test_id = "cap-avoid-close", on_click = move || set_open.set(false))
+            }
+            view(test_id = "cap-avoid-footer", style = footer)
         }
     }
 }

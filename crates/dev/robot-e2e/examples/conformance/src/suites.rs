@@ -392,6 +392,25 @@ fn capabilities_suite() -> robot_e2e::Suite {
                 .poll(|p: &Page| expect(&p.get_by_test_id("cap-opacity")).to_have_native_length(keys::CORNER_RADIUS, 0.0))
                 .poll(|p: &Page| expect(&p.get_by_test_id("cap-opacity")).to_have_native_length(keys::BORDER_WIDTH, 0.0))
                 .build(),
+            flow("a radius arriving after a background keeps the background")
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-plate")).to_have_native_color(keys::BACKGROUND_COLOR, [0.145, 0.388, 0.922, 1.0]))
+                .act(|p: &Page| p.get_by_test_id("cap-plate-round").click())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-plate")).to_have_native_length(keys::CORNER_RADIUS, 6.0))
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-plate")).to_have_native_color(keys::BACKGROUND_COLOR, [0.145, 0.388, 0.922, 1.0]))
+                .build(),
+            flow("a view that leaves the flow for the keyboard is not held at a predicted top")
+                // The translation is how Android moves views with the keyboard's own
+                // animation; another backend reports none, which proves nothing.
+                .act(|_p: &Page| if cfg!(target_os = "android") { Ok(()) } else { Err(skip("no translated views to release")) })
+                .act(|p: &Page| p.get_by_test_id("cap-avoid-open").click())
+                .act(|p: &Page| p.get_by_test_id("cap-avoid-input").focus())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-avoid-keyboard")).to_have_text("keyboard: up"))
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-avoid-footer")).to_have_native_length(keys::TRANSLATION_Y, 0.0))
+                .act(|p: &Page| p.get_by_test_id("cap-avoid-input").blur())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-avoid-keyboard")).to_have_text("keyboard: down"))
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-avoid-footer")).to_have_native_length(keys::TRANSLATION_Y, 0.0))
+                .act(|p: &Page| p.get_by_test_id("cap-avoid-close").click())
+                .build(),
             flow("several ui! children join the parent's row")
                 .poll(row_is_flat)
                 .act(|p: &Page| p.get_by_test_id("cap-row-toggle").click())
