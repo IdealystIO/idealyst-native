@@ -112,12 +112,14 @@ pub(crate) fn set_scroll_offset(
 pub(crate) fn keyboard_kind(node: &web_glue::dom::Node) -> Option<KeyboardKind> {
     use web_glue::JsCast;
     let el = node.dyn_ref::<web_glue::dom::Element>()?;
-    Some(keyboard_from_inputmode(el.get_attribute("inputmode").as_deref()))
+    Some(keyboard_from_attrs(el.get_attribute("inputmode").as_deref(), el.get_attribute("autocorrect").as_deref()))
 }
 
-/// The keyboard kind an `inputmode` value asks for.
-fn keyboard_from_inputmode(mode: Option<&str>) -> KeyboardKind {
+/// The keyboard kind an `inputmode` value asks for. `Number` and
+/// `SignedDecimal` share `numeric`; only the signed kind turns off `autocorrect`.
+fn keyboard_from_attrs(mode: Option<&str>, autocorrect: Option<&str>) -> KeyboardKind {
     match mode.map(str::trim) {
+        Some("numeric") if autocorrect == Some("off") => KeyboardKind::SignedDecimal,
         Some("email") => KeyboardKind::Email,
         Some("tel") => KeyboardKind::Phone,
         Some("numeric") => KeyboardKind::Number,
@@ -176,12 +178,13 @@ mod tests {
     /// backend writes (`update_text_input_keyboard`'s table).
     #[test]
     fn every_inputmode_reads_back_as_its_keyboard_kind() {
-        assert_eq!(keyboard_from_inputmode(None), KeyboardKind::Default);
-        assert_eq!(keyboard_from_inputmode(Some("email")), KeyboardKind::Email);
-        assert_eq!(keyboard_from_inputmode(Some("tel")), KeyboardKind::Phone);
-        assert_eq!(keyboard_from_inputmode(Some("numeric")), KeyboardKind::Number);
-        assert_eq!(keyboard_from_inputmode(Some("decimal")), KeyboardKind::Decimal);
-        assert_eq!(keyboard_from_inputmode(Some("url")), KeyboardKind::Url);
+        assert_eq!(keyboard_from_attrs(None, None), KeyboardKind::Default);
+        assert_eq!(keyboard_from_attrs(Some("email"), None), KeyboardKind::Email);
+        assert_eq!(keyboard_from_attrs(Some("tel"), None), KeyboardKind::Phone);
+        assert_eq!(keyboard_from_attrs(Some("numeric"), None), KeyboardKind::Number);
+        assert_eq!(keyboard_from_attrs(Some("decimal"), None), KeyboardKind::Decimal);
+        assert_eq!(keyboard_from_attrs(Some("url"), None), KeyboardKind::Url);
+        assert_eq!(keyboard_from_attrs(Some("numeric"), Some("off")), KeyboardKind::SignedDecimal);
     }
 
     /// Computed CSS to the robot's style: the decoration line list, the

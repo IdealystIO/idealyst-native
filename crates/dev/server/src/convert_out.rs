@@ -54,6 +54,7 @@ pub fn keyboard_kind_to_wire(
         K::Phone => wire::WireKeyboardKind::Phone,
         K::Number => wire::WireKeyboardKind::Number,
         K::Decimal => wire::WireKeyboardKind::Decimal,
+        K::SignedDecimal => wire::WireKeyboardKind::SignedDecimal,
         K::Url => wire::WireKeyboardKind::Url,
     }
 }

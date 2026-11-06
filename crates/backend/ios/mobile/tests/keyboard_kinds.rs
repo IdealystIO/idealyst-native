@@ -81,13 +81,14 @@ mod imp {
 
     /// `(kind, UIKeyboardType, textContentType, autocapitalization)`:
     /// UIKit's raw values (`UIKeyboardType`, `UITextAutocapitalizationType`).
-    const KINDS: [(KeyboardKind, isize, Option<&str>, isize); 6] = [
+    const KINDS: [(KeyboardKind, isize, Option<&str>, isize); 7] = [
         (KeyboardKind::Default, 0, None, 2),
         (KeyboardKind::Email, 7, Some("email"), 0),
         (KeyboardKind::Phone, 5, Some("tel"), 2),
         (KeyboardKind::Number, 4, None, 2),
         (KeyboardKind::Decimal, 8, None, 2),
         (KeyboardKind::Url, 3, Some("url"), 0),
+        (KeyboardKind::SignedDecimal, 2, None, 0),
     ];
 
     fn every_kind_mounts_plain_and_secure(mtm: MainThreadMarker) {

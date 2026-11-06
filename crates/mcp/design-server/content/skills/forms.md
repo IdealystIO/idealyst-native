@@ -69,6 +69,9 @@ primary "Save", ghost "Cancel"; dismissing with unsaved changes asks first.
 
 - Use the right `keyboard` on `Field` (`KeyboardKind::Email`, numeric, …)
   and `secure = true` for passwords — phones show the right keyboard.
+- A number that can go negative takes `KeyboardKind::SignedDecimal`:
+  `Number` and `Decimal` have no minus key on iOS. Validate the value, since
+  that keyboard can reach letters on iOS.
 
 ## Submit
 

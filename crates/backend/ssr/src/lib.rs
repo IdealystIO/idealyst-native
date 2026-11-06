@@ -256,6 +256,12 @@ fn keyboard_attrs(
         K::Phone => &[("inputmode", "tel"), ("autocomplete", "tel")],
         K::Number => &[("inputmode", "numeric")],
         K::Decimal => &[("inputmode", "decimal")],
+        K::SignedDecimal => &[
+            ("inputmode", "numeric"),
+            ("autocapitalize", "off"),
+            ("autocorrect", "off"),
+            ("spellcheck", "false"),
+        ],
         K::Url => &[
             ("inputmode", "url"),
             ("autocomplete", "url"),

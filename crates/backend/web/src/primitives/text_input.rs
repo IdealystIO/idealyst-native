@@ -178,6 +178,15 @@ pub(crate) fn keyboard_attrs(kind: KeyboardKind) -> &'static [(&'static str, &'s
         KeyboardKind::Phone => &[("inputmode", "tel"), ("autocomplete", "tel")],
         KeyboardKind::Number => &[("inputmode", "numeric")],
         KeyboardKind::Decimal => &[("inputmode", "decimal")],
+        // `decimal` has no minus on iOS Safari. `numeric` gives a pad with minus
+        // and period on Chrome for Android. `autocorrect` tells it from `Number`
+        // when the robot reads the kind back (`introspect_reads`).
+        KeyboardKind::SignedDecimal => &[
+            ("inputmode", "numeric"),
+            ("autocapitalize", "off"),
+            ("autocorrect", "off"),
+            ("spellcheck", "false"),
+        ],
         KeyboardKind::Url => &[
             ("inputmode", "url"),
             ("autocomplete", "url"),

@@ -89,7 +89,9 @@ pub mod wasm;
 /// - 10: [`Node::Pressable`] carries `a11y_state`; [`WirePortalTarget::Anchor`]
 ///   carries `collision_insets`; a [`runtime_shared::style::Length`] can be
 ///   `FitContent`.
-pub const CODEC_VERSION: u32 = 10;
+/// - 11: a [`KeyboardKind`](runtime_shared::primitives::text_input::KeyboardKind)
+///   can be `SignedDecimal`.
+pub const CODEC_VERSION: u32 = 11;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.

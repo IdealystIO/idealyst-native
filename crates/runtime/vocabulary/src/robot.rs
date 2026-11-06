@@ -199,6 +199,7 @@ pub fn keyboard_name(kind: runtime_shared::primitives::text_input::KeyboardKind)
         K::Number => "number",
         K::Decimal => "decimal",
         K::Url => "url",
+        K::SignedDecimal => "signed_decimal",
     }
 }
 

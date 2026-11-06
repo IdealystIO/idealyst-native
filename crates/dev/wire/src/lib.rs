@@ -1578,6 +1578,7 @@ pub enum WireKeyboardKind {
     Number,
     Decimal,
     Url,
+    SignedDecimal,
     /// Also the catch-all: a peer that learns a new kind before this one
     /// does lands on the platform's general keyboard, which is what the
     /// field had before the hint existed. Must stay last —

@@ -552,12 +552,33 @@ ui! {
 | `Number` | `numberPad` | `TYPE_CLASS_NUMBER` | `inputmode="numeric"` |
 | `Decimal` | `decimalPad` | `NUMBER \| FLAG_DECIMAL` | `inputmode="decimal"` |
 | `Url` | `URL` keyboard, `URL` content type | `TEXT \| VARIATION_URI` | `inputmode="url"`, `autocomplete="url"` |
+| `SignedDecimal` | `numbersAndPunctuation` | `NUMBER \| FLAG_DECIMAL \| FLAG_SIGNED` | `inputmode="numeric"` |
 
-`Email` and `Url` also turn off auto-capitalization and auto-correction
-(on web: `autocapitalize="off"`, `autocorrect="off"`,
+`Email`, `Url` and `SignedDecimal` also turn off auto-capitalization and
+auto-correction (on web: `autocapitalize="off"`, `autocorrect="off"`,
 `spellcheck="false"`), because a capitalized or "corrected" address is a
-wrong address. The content type on iOS and `autocomplete` on web let the
+wrong address, and `SignedDecimal` is the one number kind that can reach
+letters. The content type on iOS and `autocomplete` on web let the
 keyboard offer the user's own email, phone number or URL.
+
+**Negative numbers.** Use `SignedDecimal` for a number that can go
+negative, such as a field with a negative minimum. `Number` and `Decimal`
+have no minus key on iOS. It is the closest each platform offers, and it
+isn't the same keyboard everywhere:
+
+- **iOS** has no number pad with a minus key. `numbersAndPunctuation` opens
+  on digits and punctuation, and the user can switch it to letters. A `±`
+  button above the pad would be the only closer match, and that's a control
+  for the app to add, because no other platform needs it.
+- **Android** sets the signed flag. The layout belongs to the keyboard app,
+  so how it shows the minus varies by keyboard.
+- **Web** sets `inputmode="numeric"`, because `decimal` has no minus on iOS
+  Safari. Chrome on Android shows a number pad with minus and period. The
+  browser and keyboard app choose the layout, so check it on the ones you
+  support.
+
+So validate the value on every platform: this kind more than any other can
+produce text that isn't a number.
 
 It only picks the keyboard. The field still takes any text (a paste, a
 hardware keyboard), and `on_change` reports it as typed. Web uses
@@ -569,7 +590,7 @@ validation).
 
 It works together with `secure`. iOS and web keep the chosen keyboard on a
 masked field. On Android the keyboard and the mask are one setting, so a
-masked `Number`, `Decimal` or `Phone` field gets the masked digit pad (a
+masked `Number`, `Decimal`, `SignedDecimal` or `Phone` field gets the masked digit pad (a
 PIN pad), and a masked text kind gets the text password keyboard.
 
 macOS, Windows, Linux and the drawn backends (wgpu, terminal, CPU) have no
