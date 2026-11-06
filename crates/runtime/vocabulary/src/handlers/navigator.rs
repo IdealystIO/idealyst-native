@@ -423,6 +423,7 @@ fn realize_screen<H: NavCaps + 'static>(
     screens: &Rc<HashMap<&'static str, NavScreenEntry>>,
     screen_path: &str,
     active_route: Signal<&'static str>,
+    active_query: Signal<QueryParams>,
     link_activator: &LinkActivator,
     name: &'static str,
     params: Box<dyn Any>,
@@ -454,6 +455,7 @@ fn realize_screen<H: NavCaps + 'static>(
         provide(crate::prims::ScreenNav {
             active_route: active_route.read_only(),
             route: name,
+            query: active_query.read_only(),
         });
         // The ambient route-link seam: a `link(route = …)` mounted in
         // THIS screen's subtree resolves to THIS navigator's dispatch —
@@ -1460,6 +1462,8 @@ struct SwapShared<H: NavCaps + 'static> {
     /// The route mirror, captured for `ScreenNav` provision at screen
     /// mount (the dispatch closure owns the write side).
     active_route: Signal<&'static str>,
+    /// The query mirror, captured the same way.
+    active_query: Signal<QueryParams>,
     /// The ambient route-link seam provided around every screen build
     /// (this navigator's `Select` dispatch). A cell because the
     /// activator closes over `dispatch`, which is built AFTER `shared`
@@ -1543,6 +1547,7 @@ impl<H: NavCaps + 'static> SwapShared<H> {
                 &self.screens,
                 &key,
                 self.active_route,
+                self.active_query,
                 &self.activator(),
                 name,
                 params,
@@ -1629,6 +1634,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         active: RefCell::new(None),
         mount_policy: prim.mount_policy,
         active_route,
+        active_query,
         link_activator: RefCell::new(None),
     });
 
@@ -1784,6 +1790,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         &shared.screens,
         &initial_path,
         active_route,
+        active_query,
         &link_activator,
         initial_route,
         initial_params,
@@ -2050,6 +2057,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
             &self.screens,
             path,
             self.active_route,
+            self.active_query,
             &self.activator(),
             name,
             params,

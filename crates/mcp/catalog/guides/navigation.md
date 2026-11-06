@@ -108,11 +108,43 @@ nav.push_with_state(&INBOX, (), Filters { tab: "starred".into(), page: 2 });
 
 Three rules worth knowing:
 
-- **Query params never change route identity.** `/inbox?tab=a` and `/inbox?tab=b` are the same screen: changing the query updates state *without remounting*, so a filter change doesn't reset scroll position or focus. To react to those changes, read the reactive `query` signal on the navigator context (`inject::<StackNav>().query` / `SwapNav::query`) rather than the build-time `screen_state()` snapshot.
+- **Query params never change route identity.** `/inbox?tab=a` and `/inbox?tab=b` are the same screen: changing the query updates state *without remounting*, so a filter change doesn't reset scroll position or focus. To react to those changes, read the live query rather than the build-time `screen_state()` snapshot: `inject::<ScreenNav>()` and its `active_query()` from inside the screen, or `inject::<StackNav>().query` / `SwapNav::query` from a layout.
 - **Use `replace_with_state` for filter changes**, not `push_with_state`. Replace rewrites the current entry, so Back leaves the screen instead of stepping through every intermediate filter value.
 - **A route pattern can carry defaults**: `Route::new("inbox", "/inbox?tab=unread")`. Explicit state overrides a pattern default key by key.
 
 On backends with no address bar (iOS, Android, desktop, terminal) there is nowhere durable to store the query, so the URL round-trip is a no-op there — but the in-memory path is identical, and a screen reads its state exactly the same way on every backend.
+
+### A screen that owns a Back entry
+
+A screen sometimes swaps an inner view, and Back should undo that swap instead of leaving the screen: pages of a tab beside a list that must not rebuild, say. Use query state on the screen's own route. `select_with_state` on the active route adds a history entry without rebuilding the screen, and the screen follows the query:
+
+```rust
+#[derive(Clone, Default)]
+struct BidPage { page: String }
+
+impl ScreenState for BidPage {
+    fn to_query(&self) -> QueryParams {
+        QueryParams::new().with("page", self.page.clone())
+    }
+    fn from_query(q: &QueryParams) -> Option<Self> {
+        Some(Self { page: q.get("page").unwrap_or("summary").to_string() })
+    }
+}
+
+// In the screen. `ScreenNav`, not `SwapNav`: it is there for the first screen
+// too, and it is this screen's navigator however deeply navigators nest.
+.screen(BIDS, |_| {
+    let nav = inject::<ScreenNav>().expect("inside a screen");
+    let page = rx!(nav.active_query().and_then(|q| BidPage::from_query(&q)).unwrap_or_default().page);
+    ui! { BidPages(page = page) }
+})
+
+// Moving to another page. Back returns to the one before.
+nav.select_with_state(&BIDS, (), BidPage { page: "scope".into() });
+```
+
+- **`active_query()` returns `None` while another screen of the navigator is showing**, so a kept-alive screen doesn't react to a sibling's query.
+- **The history entry is a web behaviour.** Backends with no address bar have no entry to return to: the state changes the same way, but system Back on Android doesn't step through it. A screen that needs that too adds its own `on_back` handler, moves to the previous page and returns `BackOutcome::Consume`.
 
 ## Building a swap (tab) navigator
 

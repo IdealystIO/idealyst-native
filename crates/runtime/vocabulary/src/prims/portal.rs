@@ -9,6 +9,7 @@
 use std::rc::Rc;
 
 use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::primitives::navigator::query::QueryParams;
 use runtime_shared::primitives::portal::{PortalHandle, PortalTarget};
 use runtime_world::ReadSignal;
 
@@ -39,10 +40,29 @@ pub struct PortalPrim {
 /// without this, a modal opened on screen A keeps floating over
 /// screen B).
 ///
+/// It is also how a mounted screen hears its own state change. `SwapNav` and
+/// `StackNav` are provided after the first screen builds, and a nested
+/// navigator would shadow them, so a screen reads `inject::<ScreenNav>()`:
+/// see [`active_query`](Self::active_query).
+///
 /// `active_route` is a [`ReadSignal`] (narrowest half — the portal only
 /// observes; the navigator keeps the writer).
 #[derive(Clone)]
 pub struct ScreenNav {
     pub active_route: ReadSignal<&'static str>,
     pub route: &'static str,
+    /// The navigator's active query, whichever screen that is: a kept-alive
+    /// screen that isn't showing sees the active screen's. Prefer
+    /// [`active_query`](Self::active_query).
+    pub query: ReadSignal<QueryParams>,
+}
+
+impl ScreenNav {
+    /// This screen's current query, or `None` while another screen of the
+    /// navigator is active. Reactive: read it in an effect or a reactive
+    /// region to follow a query-only navigation, which does not rebuild the
+    /// screen. `screen_query()` is the snapshot from when it was built.
+    pub fn active_query(&self) -> Option<QueryParams> {
+        (self.active_route.get() == self.route).then(|| self.query.get())
+    }
 }
