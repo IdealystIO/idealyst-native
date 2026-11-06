@@ -59,8 +59,8 @@ fetches it) or a live `Stream`. The *mechanism* differs per platform:
 | Target | URL mechanism | Live `Stream` mechanism |
 | --- | --- | --- |
 | Web (wasm32) | `<video>` element (`src`), built and driven through web-glue | `<video>.srcObject` ← the stream's native `MediaStream` (a `web_glue::dom::MediaStream`; zero-copy) |
-| iOS | `AVPlayer` + `AVPlayerLayer` in a `UIView` | — (GPU/compositing phase) |
-| Android | `android.widget.VideoView` (`setVideoURI`) | — (GPU/compositing phase) |
+| iOS | `AVPlayer` + `AVPlayerLayer` in a `UIView` | `AVSampleBufferDisplayLayer` ← each frame's `CMSampleBuffer`, or RGBA frames as a `CGImage` |
+| Android | `android.widget.VideoView` (`setVideoURI`) | a camera: a `TextureView` the capture fills directly, no CPU copy. Any other stream, or a device that refuses the preview: RGBA frames into an `ImageView` |
 | macOS | `AVPlayer` + `AVPlayerLayer` (an AVKit `AVPlayerView` when `controls`) | per-frame `CGImage` / `IOSurface` layer contents |
 | Linux | `gtk::Video` over GTK's GStreamer media backend | RGBA frames into a `gdk::MemoryTexture` paintable |
 | Windows | Media Foundation's Media Engine (frame server) → a composition swapchain on a graphics node, sized and fit per `object_fit`; software decode where the adapter has no video decode. `controls` paints a play/pause + seek + time bar with Direct2D. Plays what Windows has codecs for (MP4/H.264/HEVC, WebM/VP9, …); no HLS/DASH | RGBA frames drawn into the same swapchain with Direct2D |
@@ -68,6 +68,10 @@ fetches it) or a live `Stream`. The *mechanism* differs per platform:
 
 ### Backend caveats
 
+- **Android live preview is one display at a time.** Two `Video`s showing one camera
+  stream: the first gets the `TextureView`, the second shows CPU frames (which turns
+  the camera's per-frame conversion on) and takes over the moment the first lets go.
+  A later surface rebuilds the capture session, a pause of a few frames.
 - **Android `controls` and `loop_playback`** are not yet wired — a
   `MediaController` and an `OnCompletionListener` need Kotlin/Java shim
   classes. This matches the framework's prior built-in Android video
@@ -102,14 +106,14 @@ verification is mostly interactive (register the renderer at bootstrap, then
 exercise a `Video` in a running app).
 
 **Automated**
-- [ ] `cargo test -p video` — portable logic (`source` builders, prop defaults)
+- [ ] `cargo test -p video` — portable logic (`source` builders, prop defaults), and the Android preview's transform (`src/android_preview.rs`: every sensor mounting × facing × display rotation × view shape × fit, held to the same picture as a CPU frame)
 - [ ] `cargo build -p video --target wasm32-unknown-unknown` — web target
 - [x] `cargo test -p video --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_video.rs`: construction props (autoplay forces the muted property, controls, object-fit), the handle ops through the host node, a stream's native `web_glue::dom::MediaStream` as `srcObject` (any other native-source type is ignored), and the reactive source switching stream → URL → none
 
 **Behavior**
 - [ ] **Web** — a `url(..)` source plays in a `<video>`; a `stream(..)` source binds the live `MediaStream` via `.srcObject` (zero-copy); reactive `source` swaps the clip; `autoplay`/`controls`/`loop_playback` and imperative `play`/`pause`/`seek` work.
 - [ ] **iOS** — ⚠️ not yet device-confirmed: a `url(..)` source plays via `AVPlayer`/`AVPlayerLayer`; reactive `src` swap, `controls`, `loop_playback`, and imperative `play`/`pause`/`seek` work; live `stream` source is the GPU/compositing phase (unwired).
-- [ ] **Android** — ⚠️ not yet device-confirmed: a `url(..)` source plays via `VideoView`; reactive `src`, `play`/`pause`/`seek` work. Note `controls` and `loop_playback` are **not yet wired** (need a `MediaController`/`OnCompletionListener` shim); live `stream` source is the GPU/compositing phase (unwired).
+- [ ] **Android** — ⚠️ not yet device-confirmed: a `url(..)` source plays via `VideoView`; reactive `src`, `play`/`pause`/`seek` work. Note `controls` and `loop_playback` are **not yet wired** (need a `MediaController`/`OnCompletionListener` shim). A camera `stream` shows through a `TextureView` (upright and unmirrored in all four display rotations, cover and contain, clipped by a rounded parent, no CPU frames made); any other stream through an `ImageView`.
 - [x] **Windows** — `tests/windows_video.rs` on a Windows 11 VM (the Media Engine opens the URL: duration reaches the handle, `seek` moves `position`), and by hand in `examples/sdk-gallery`: plays, letterboxes, painted controls play/pause/seek, `play`/`pause`/`seek`/`position` ops.
 - [ ] **Other (SSR / wgpu desktop / terminal)** — renders the frozen External "not supported" placeholder.
 

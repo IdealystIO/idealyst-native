@@ -15,7 +15,9 @@
 //!   sublayer for the URL path, and per-frame `CGImage` / `IOSurface`
 //!   `contents` for the live `MediaStream` path.
 //! - **Android** — a `FrameLayout` host that the Kotlin shim fills with
-//!   a `VideoView` (URL) or an `ImageView` fed RGBA frames (stream).
+//!   a `VideoView` (URL), a `TextureView` the capture fills with no CPU copy (a
+//!   stream with a preview source, as a camera's), or an `ImageView` fed RGBA
+//!   frames (any other stream).
 //! - **Linux** — `gtk::Video` (GStreamer); live frames as a paintable.
 //! - **Windows** — Media Foundation's Media Engine into a composition
 //!   swapchain on a graphics node, painted controls (see `windows.rs`).
@@ -65,6 +67,11 @@ pub(crate) mod web_util;
 
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 mod android;
+
+// The math that places an Android camera preview in its view. Host-tested: the
+// `TextureView` it drives needs a device.
+#[cfg(any(test, all(target_os = "android", not(target_arch = "wasm32"))))]
+mod android_preview;
 
 // Shared CoreGraphics RGBA→CGImage bridge for the Apple backends. The
 // stream-display path is byte-identical on iOS and macOS (pure

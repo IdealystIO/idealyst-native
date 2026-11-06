@@ -35,8 +35,14 @@ Both expose the same two access paths over one source:
    recent one. Lowest-common-denominator, works everywhere.
 2. **Native source** — `native_source()` returns the platform's own
    zero-copy/native handle (a web `MediaStream`, an Apple `CVPixelBuffer`
-   pool, an Android `SurfaceTexture`) for a same-platform consumer to bind
-   without copying. Authors rarely touch it directly.
+   pool, an Android preview a display hands its `Surface` to) for a same-platform
+   consumer to bind without copying. Authors rarely touch it directly.
+
+A producer that can display natively makes CPU frames only on demand: while
+something `subscribe`s, and for two seconds after a `latest`. So for one still use
+`screenshot().await`, which waits for a new frame, rather than a lone `latest`, and
+don't hold a do-nothing `subscribe` to feed one: on Android it puts a per-frame
+conversion back under the preview.
 
 Every frame and audio chunk is stamped with a microsecond timestamp on one
 process-wide monotonic clock (`media_stream::clock`), so two **independent**

@@ -15,7 +15,8 @@ license.workspace = true
 #   the URL path, per-frame CGImage/IOSurface `contents` for the live
 #   `MediaStream` path.
 # - Android: `FrameLayout` host filled by the Kotlin shim with a
-#   `VideoView` (URL) or an `ImageView` fed RGBA frames (stream).
+#   `VideoView` (URL), a `TextureView` a camera fills directly (a stream with a
+#   preview source), or an `ImageView` fed RGBA frames (any other stream).
 # - Other targets (SSR, wgpu desktop, terminal, …): the framework's
 #   External placeholder.
 #
@@ -71,8 +72,8 @@ backend-android-mobile = { workspace = true }
 backend-android-core = { workspace = true }
 jni = "0.21"
 
-# The Kotlin shim that hosts the VideoView (URL) / ImageView (live stream)
-# children and converts RGBA frames to a Bitmap. `idealyst run android`
+# The Kotlin shim that hosts the VideoView (URL) / TextureView (camera preview) /
+# ImageView (live stream) children and converts RGBA frames to a Bitmap. `idealyst run android`
 # discovers + compiles it from here.
 [package.metadata.idealyst.android]
 runtime_kotlin = ["runtime/kotlin/io/idealyst/video/RustVideoFrameSink.kt"]

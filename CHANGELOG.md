@@ -11,6 +11,26 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **An Android camera displays through a native surface, and makes CPU frames only on demand**
+  (`camera`, `media-stream`, `video`, `video-compose` minor). `Video` showing a camera stream is
+  now a `TextureView` Camera2 fills with no copy into the process, and the `ImageReader` is a
+  target of the repeating request only while something wants CPU frames. So a stream only being
+  displayed costs no conversion, on any device, and the preview no longer runs at the pace of the
+  CPU path.
+  - **Check any code that reads frames.** `subscribe` works as before. A lone `latest` with
+    nobody subscribed now answers `None` and starts the frames (a pull is demand for two seconds,
+    on every platform), so a one-off read wants `MediaStream::screenshot().await`, which waits for
+    a new frame. A frame from before an idle spell is never returned as current.
+  - **Drop any do-nothing `subscribe` held to feed `latest`.** It still works, and it puts a
+    conversion back on every frame.
+  - `FrameWriter::on_cpu_demand_change` tells a producer with no frame to poll from;
+    `FrameWriter::end_of_stream` lets a pending `screenshot` resolve `None` when the device goes
+    away (Android does this on a disconnect); `MediaStream::has_importable_source` says whether a
+    native source holds frames a GPU layer can import, which is what `video-compose` now asks.
+  - A device that refuses the preview, or shows nothing for four seconds, falls back to the CPU
+    path. Two `Video`s on one camera: the first gets the surface, the second shows CPU frames and
+    takes over when the first lets go.
+
 - **Several nodes in `ui!` or `jsx!` add no `view`** (`runtime-macros-expand`,
   `runtime-scene`, `runtime-vocabulary` major). A multi-node root (`ui! { A() B() }`),
   a multi-node reactive `if` or `match` branch and a `jsx!` `<>` are now fragments: their
@@ -3149,7 +3169,7 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   JNI and `android_yuv` converts them, with the same arithmetic, rotations and output, directly
   into the stream's frame buffer through the new `FrameWriter::write_rgba8_with`. An unoptimized
   Android build does not get the benefit of the vectorized loops; `profile.dev.package.camera`
-  sets its `opt-level`. The conversion still runs for every frame, wanted or not.
+  sets its `opt-level`.
 - **A device owner can grant a runtime permission without a prompt** (`device-admin`):
   `set_permission_grant_state`, with `permission::CAMERA` and `RECORD_AUDIO`. Android's prompt
   is another app that lock task will not open, so a kiosk asking for one was refused unseen.

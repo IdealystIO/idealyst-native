@@ -329,7 +329,7 @@ pub(crate) fn build_layers(
     // camera fast path). A CPU-only input (no native surface: a synthetic stream,
     // a non-IOSurface source, tests) is uploaded as an image each frame instead,
     // its `generation` tracking the input so the compositor re-uploads new frames.
-    let mut base = if input.native_source().is_some() {
+    let mut base = if input.has_importable_source() {
         let input_for_base = input.clone();
         TextureLayer::new(Rc::new(move || Some(input_for_base.clone())), base_rect).fit(base_fit)
     } else {
