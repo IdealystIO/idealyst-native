@@ -3143,6 +3143,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Android camera frames convert in Rust** (`camera`, `media-stream` minor). A per-pixel Kotlin
+  loop over `ByteBuffer.get`/`put` turned `YUV_420_888` into `RGBA8` and held a 1080p stream to
+  about 1 FPS on a kiosk tablet. The shim now hands the plane buffers of the open `Image` across
+  JNI and `android_yuv` converts them, with the same arithmetic, rotations and output, directly
+  into the stream's frame buffer through the new `FrameWriter::write_rgba8_with`. An unoptimized
+  Android build does not get the benefit of the vectorized loops; `profile.dev.package.camera`
+  sets its `opt-level`. The conversion still runs for every frame, wanted or not.
 - **A device owner can grant a runtime permission without a prompt** (`device-admin`):
   `set_permission_grant_state`, with `permission::CAMERA` and `RECORD_AUDIO`. Android's prompt
   is another app that lock task will not open, so a kiosk asking for one was refused unseen.

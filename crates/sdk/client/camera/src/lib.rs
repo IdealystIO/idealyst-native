@@ -106,6 +106,11 @@ mod orientation;
 #[cfg(any(test, all(target_os = "android", not(target_arch = "wasm32"))))]
 mod android_rotation;
 
+// YUV_420_888 → RGBA8: the pure conversion the Android backend runs over the
+// planes of each camera image. Host-tested like the above.
+#[cfg(any(test, all(target_os = "android", not(target_arch = "wasm32"))))]
+mod android_yuv;
+
 pub use config::{CameraConfig, CameraDevice, CameraFacing, DeviceFacing};
 pub use error::CameraError;
 

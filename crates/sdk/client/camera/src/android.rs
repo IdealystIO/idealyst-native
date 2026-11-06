@@ -11,15 +11,25 @@
 //! `ImageReader.OnImageAvailableListener`, and the open must be issued on a
 //! looper thread. Subclassing abstract Java callbacks purely from JNI isn't
 //! feasible, so that machinery lives in a tiny Kotlin shim. The shim opens
-//! the camera, converts each `YUV_420_888` image to tightly-packed `RGBA8`,
-//! and trampolines frames + lifecycle back through the JNI exports below.
+//! the camera and trampolines each `YUV_420_888` image's planes + lifecycle
+//! back through the JNI exports below.
+//!
+//! ## Frames
+//!
+//! The shim passes the plane buffers of an open `Image` to [`nativeFrameYuv`],
+//! which views them as slices for that one call and converts them to `RGBA8`
+//! straight into the stream's reused frame buffer ([`crate::android_yuv`]). A
+//! per-pixel loop over `ByteBuffer.get`/`put` in Kotlin held a 1080p stream to
+//! about 1 FPS on a kiosk tablet, a full core on the capture thread.
+//!
+//! [`nativeFrameYuv`]: Java_io_idealyst_camera_RustCamera2Helper_nativeFrameYuv
 //!
 //! ## Async bridge
 //!
 //! [`open`] mints a `u64` token, parks the frame callback in a process-global
 //! registry keyed by that token, parks a oneshot for the open result, and
 //! hands the token to the shim. `nativeOpened`/`nativeError` resolve the
-//! open future; `nativeFrame` looks the callback up by token and delivers
+//! open future; `nativeFrameYuv` looks the writer up by token and delivers
 //! the frame. Dropping the [`StreamHandle`] calls the shim's `close(token)`
 //! and unregisters the callback.
 //!
@@ -43,6 +53,7 @@ use jni::objects::{JByteBuffer, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jboolean, jint, jlong, JNI_FALSE};
 use jni::{JNIEnv, JavaVM};
 
+use crate::android_yuv::{Plane, Rotation, YuvFrame};
 use crate::{CameraConfig, CameraDevice, CameraError, CameraFacing, NativeSource};
 use media_stream::FrameWriter;
 
@@ -295,33 +306,64 @@ pub extern "system" fn Java_io_idealyst_camera_RustCamera2Helper_nativeError(
     }
 }
 
-/// `RustCamera2Helper.nativeFrameDirect` — one converted frame in a
-/// REUSED direct `ByteBuffer`. `buffer` holds tightly-packed top-down
-/// `RGBA8` of `width * height * 4` bytes in off-heap memory the Kotlin
-/// side reuses across frames; we read it ZERO-COPY via
-/// `GetDirectBufferAddress` — no `byte[]` marshal across JNI and no
-/// per-frame Rust `Vec` allocation (each would cost ~8 MB/frame at
-/// 1080p). Delivered on the shim's
-/// ImageReader handler thread.
+/// View a plane's direct `ByteBuffer` as a [`Plane`], or `None` to refuse the
+/// frame: not a direct buffer, a null address, or a negative stride. The slice
+/// spans the buffer's whole capacity; [`YuvFrame::new`] checks it against the
+/// frame.
 ///
 /// # Safety
-/// Called by the JVM with a valid `env`/`class`; `buffer` is a direct
-/// `java.nio.ByteBuffer` that stays alive and unmodified for the
-/// duration of this synchronous call (the Kotlin side only reuses it
-/// after `nativeFrameDirect` returns).
+/// `buffer` must be a direct buffer whose memory stays valid and unwritten for
+/// `'a`. A plane of an open `Image` qualifies; closing the `Image` frees it.
+unsafe fn plane<'a>(
+    env: &JNIEnv,
+    buffer: &'a JByteBuffer,
+    row_stride: jint,
+    pixel_stride: jint,
+) -> Option<Plane<'a>> {
+    let row_stride = usize::try_from(row_stride).ok()?;
+    let pixel_stride = usize::try_from(pixel_stride).ok()?;
+    let address = env.get_direct_buffer_address(buffer).ok()?;
+    let capacity = env.get_direct_buffer_capacity(buffer).ok()?;
+    if address.is_null() {
+        return None;
+    }
+    // SAFETY: a direct buffer's address and capacity describe one live
+    // allocation, and the caller keeps it alive and unwritten for `'a`.
+    let data = unsafe { std::slice::from_raw_parts(address as *const u8, capacity) };
+    Some(Plane { data, row_stride, pixel_stride })
+}
+
+/// `RustCamera2Helper.nativeFrameYuv` — one `YUV_420_888` image, as its three
+/// plane buffers and their strides, plus the clockwise `rotation` to bake in.
+/// Converted to tightly-packed top-down `RGBA8` in the stream's reused frame
+/// buffer: no copy across JNI and no per-frame allocation. A frame that cannot
+/// be converted is dropped. Delivered on the shim's ImageReader handler thread.
+///
+/// The U and V buffers may overlap (semi-planar layouts); they are only read.
+///
+/// # Safety
+/// Called by the JVM with a valid `env`/`class`. The buffers are the direct
+/// plane buffers of an `Image` the shim closes only after this call returns, so
+/// the slices never outlive their memory, and no slice survives this call.
 #[no_mangle]
-pub extern "system" fn Java_io_idealyst_camera_RustCamera2Helper_nativeFrameDirect(
+pub extern "system" fn Java_io_idealyst_camera_RustCamera2Helper_nativeFrameYuv(
     env: JNIEnv,
     _class: JClass,
     token: jlong,
-    buffer: JByteBuffer,
+    y: JByteBuffer,
+    y_row_stride: jint,
+    y_pixel_stride: jint,
+    u: JByteBuffer,
+    u_row_stride: jint,
+    u_pixel_stride: jint,
+    v: JByteBuffer,
+    v_row_stride: jint,
+    v_pixel_stride: jint,
     width: jint,
     height: jint,
+    rotation: jint,
 ) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if width <= 0 || height <= 0 {
-            return;
-        }
         // Clone the frame writer out from under the registry lock, then push
         // into it without holding the global lock across the channel fan-out
         // (a subscriber may itself touch the stream, e.g. drop it).
@@ -329,34 +371,44 @@ pub extern "system" fn Java_io_idealyst_camera_RustCamera2Helper_nativeFrameDire
         let Some(writer) = writer else {
             return;
         };
-
-        let needed = (width as usize) * (height as usize) * 4;
-        let addr = match env.get_direct_buffer_address(&buffer) {
-            Ok(p) if !p.is_null() => p,
-            _ => return,
-        };
-        // Guard the read against a short buffer (a malformed frame); the
-        // capacity query is cheap and keeps the `from_raw_parts` in bounds.
-        if env.get_direct_buffer_capacity(&buffer).unwrap_or(0) < needed {
+        let (Ok(width), Ok(height)) = (usize::try_from(width), usize::try_from(height)) else {
             return;
-        }
-        // SAFETY: `addr` points at the off-heap region of a live direct
-        // ByteBuffer whose capacity we just checked is >= `needed`; we read
-        // exactly `needed` bytes during this synchronous call, before the
-        // Kotlin side reuses the buffer for the next frame.
-        let bytes = unsafe { std::slice::from_raw_parts(addr, needed) };
-        // The shim's YUV→RGBA converter is the authority on packing; a
-        // mismatch means a malformed frame `write_rgba8` will reject anyway.
-        writer.write_rgba8(width as u32, height as u32, bytes);
+        };
+        let Some(rotation) = Rotation::from_degrees(rotation) else {
+            return;
+        };
+        // SAFETY: the shim keeps the `Image` open until this function returns
+        // (see above), and everything here is done by then.
+        let planes = unsafe {
+            (
+                plane(&env, &y, y_row_stride, y_pixel_stride),
+                plane(&env, &u, u_row_stride, u_pixel_stride),
+                plane(&env, &v, v_row_stride, v_pixel_stride),
+            )
+        };
+        let (Some(y), Some(u), Some(v)) = planes else {
+            return;
+        };
+        // Refused here, before the writer is touched, so a bad frame publishes
+        // nothing rather than a blank one.
+        let Some(frame) = YuvFrame::new(width, height, y, u, v) else {
+            return;
+        };
+        let (out_width, out_height) = frame.output_size(rotation);
+        // `write_rgba8_with` sizes `out` from these same dimensions, so the
+        // conversion's own size check cannot fail.
+        writer.write_rgba8_with(out_width as u32, out_height as u32, |out| {
+            frame.convert(rotation, out);
+        });
     }));
     if result.is_err() {
-        eprintln!("camera: panic in nativeFrameDirect trampoline; aborting");
+        eprintln!("camera: panic in nativeFrameYuv trampoline; aborting");
         std::process::abort();
     }
 }
 
-/// `RustCamera2Helper.nativeFrameRotation` — the clockwise angle the shim
-/// rotates each frame by, from the sensor mounting, the display's
+/// `RustCamera2Helper.nativeFrameRotation` — the clockwise angle each frame is
+/// rotated by, from the sensor mounting, the display's
 /// `Surface.ROTATION_*` and the lens facing. The math is the host-tested
 /// [`crate::android_rotation::frame_rotation`]; it lives in Rust so it can be
 /// unit-tested (there is no JVM test harness). Called on open and again on
@@ -386,8 +438,23 @@ static KEEP_NATIVE_OPENED: extern "system" fn(JNIEnv, JClass, jlong) =
 static KEEP_NATIVE_ERROR: extern "system" fn(JNIEnv, JClass, jlong, jint, JString) =
     Java_io_idealyst_camera_RustCamera2Helper_nativeError;
 #[used]
-static KEEP_NATIVE_FRAME: extern "system" fn(JNIEnv, JClass, jlong, JByteBuffer, jint, jint) =
-    Java_io_idealyst_camera_RustCamera2Helper_nativeFrameDirect;
+static KEEP_NATIVE_FRAME: extern "system" fn(
+    JNIEnv,
+    JClass,
+    jlong,
+    JByteBuffer,
+    jint,
+    jint,
+    JByteBuffer,
+    jint,
+    jint,
+    JByteBuffer,
+    jint,
+    jint,
+    jint,
+    jint,
+    jint,
+) = Java_io_idealyst_camera_RustCamera2Helper_nativeFrameYuv;
 #[used]
 static KEEP_NATIVE_FRAME_ROTATION: extern "system" fn(JNIEnv, JClass, jint, jint, jboolean) -> jint =
     Java_io_idealyst_camera_RustCamera2Helper_nativeFrameRotation;

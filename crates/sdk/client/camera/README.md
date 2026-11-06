@@ -48,7 +48,7 @@ everywhere:
 | --- | --- | --- |
 | iOS device / macOS | `AVCaptureSession` + `AVCaptureVideoDataOutput` | `BGRA` → `RGBA8` |
 | **iOS Simulator** | **synthetic test-pattern stream** (no camera hardware exists) | `RGBA8` |
-| Android | `Camera2` + `ImageReader` (via a Kotlin shim) | `YUV_420_888` → `RGBA8` |
+| Android | `Camera2` + `ImageReader` (via a Kotlin shim; conversion in Rust) | `YUV_420_888` → `RGBA8` |
 | Web (wasm32) | `getUserMedia` + a `<video>`/`<canvas>` frame pump | canvas `RGBA8` |
 | desktop Linux | GStreamer **V4L2** (`v4l2src ! videoconvert ! appsink`) | device layout → `RGBA8` |
 | desktop Windows | Media Foundation: `MFEnumDeviceSources` + an `IMFSourceReader` with video processing, on a capture thread | `RGB32` (BGRX, row order per stride) → `RGBA8` |
@@ -109,7 +109,7 @@ has an orientation to follow:
 - **macOS / desktop Linux** — a fixed webcam is landscape-natural and its
   frames are already upright; there's no interface orientation to follow.
 - **iOS Simulator** — the synthetic stream is generated upright.
-- **Android** — the shim rotates each frame by the sensor mounting
+- **Android** — each frame is rotated by the sensor mounting
   (`SENSOR_ORIENTATION`) combined with the **display rotation**, using the
   standard Camera2 formula for an unmirrored image: back
   `(sensor − display + 360) % 360`, front `(sensor + display) % 360`. A
@@ -118,7 +118,8 @@ has an orientation to follow:
   web and iOS, it follows what the user sees as "up", so a rotation-locked
   app stays upright for its locked orientation, and the front camera is
   unmirrored. The math is `src/android_rotation.rs` (host-tested), called
-  from Kotlin through the `nativeFrameRotation` JNI export.
+  from Kotlin through the `nativeFrameRotation` JNI export; the rotation is
+  baked into the YUV→RGBA conversion, `src/android_yuv.rs` (host-tested too).
 
 > Up to 1.6.0 the iOS backend pinned Portrait once at open and the Android
 > shim rotated by the sensor mounting alone, so on a tablet (or phone) in
@@ -278,6 +279,17 @@ synthetic front and back camera.
   compile-checked for `aarch64-linux-android` but, like the `biometrics`
   SDK's Android path, is **not yet device-verified**.
 
+  `src/android_yuv.rs` holds the Android conversion to the arithmetic of the
+  Kotlin loop it replaced, on planar and semi-planar layouts at every rotation.
+  `android_yuv::tests::timing_1080p` is an `#[ignore]`d timing report; run it
+  optimized, at the `opt-level` an Android release build uses (this workspace's
+  own release profile optimizes for size):
+
+  ```text
+  cargo test -p camera --lib --release --config profile.release.opt-level=3 \
+    android_yuv::tests::timing -- --ignored --nocapture
+  ```
+
   **Desktop Linux (GStreamer V4L2):** enumeration (`GstDeviceMonitor`,
   `Video/Source`) and the appsink map/deliver path are **synthetic-frame
   verified** headless — the `videotestsrc_delivers_mapped_rgba_frame` unit
@@ -302,7 +314,7 @@ compiles for that target but isn't confirmed on real hardware yet (see the
 verification note above). Tick each item as you exercise it.
 
 **Automated**
-- [x] `cargo test -p camera` — portable logic (frame-size math + config builders) the iOS orientation mapping (`src/orientation.rs`: all four interface orientations × front/back, mirroring, sensor calibration) and the Android frame rotation (`src/android_rotation.rs`: all four display rotations × front/back)
+- [x] `cargo test -p camera` — portable logic (frame-size math + config builders) the iOS orientation mapping (`src/orientation.rs`: all four interface orientations × front/back, mirroring, sensor calibration), the Android frame rotation (`src/android_rotation.rs`: all four display rotations × front/back) and the Android YUV→RGBA conversion (`src/android_yuv.rs`: layouts, rotations, strides, refused frames)
 - [ ] `cargo test -p camera --test host_capture -- --ignored --nocapture` — opens the host camera, asserts a well-formed RGBA8 frame
 - [ ] `cargo build -p camera --target wasm32-unknown-unknown` — web target
 - [x] `cargo test -p camera --target wasm32-unknown-unknown` (headless Chrome through the workspace runner; `webdriver.json` gives it a fake camera) — `tests/web_camera.rs`: the published `native_source` IS the capture stream (stopping the camera ends a consumer's tracks — the old web-sys `stream.clone()` published a copy), and a subscriber receives RGBA8 frames off the canvas pump
