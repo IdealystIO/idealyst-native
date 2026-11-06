@@ -2223,7 +2223,7 @@ dependencies = [
 
 [[package]]
 name = "camera"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "async-channel",
  "futures-channel",
@@ -7733,7 +7733,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.37.0"
+version = "1.38.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7860,7 +7860,7 @@ dependencies = [
 
 [[package]]
 name = "media-stream"
-version = "1.8.1"
+version = "1.9.0"
 dependencies = [
  "futures-channel",
  "runtime-tls",
@@ -14224,7 +14224,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -14257,7 +14257,7 @@ dependencies = [
 
 [[package]]
 name = "video-compose"
-version = "9.0.0"
+version = "9.1.0"
 dependencies = [
  "canvas-core",
  "canvas-vello",

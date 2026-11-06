@@ -530,7 +530,7 @@ dev-hot = { path = "crates/dev/hot", version = "1.7.1", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "4.0.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "2.0.0", registry = "idealyst" }
 runtime-macros-expand = { path = "crates/runtime/macros-expand", version = "4.0.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "1.37.0", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "1.38.0", registry = "idealyst" }
 catalog-scan = { path = "crates/mcp/catalog-scan", version = "4.0.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server", version = "5.3.0", registry = "idealyst" }
 mcp-design-server = { path = "crates/mcp/design-server", version = "1.2.0", registry = "idealyst" }
@@ -646,7 +646,7 @@ maps-ios = { path = "crates/sdk/client/maps/ios", version = "8.0.0", registry = 
 codeblock = { path = "crates/sdk/client/codeblock", version = "9.0.0", registry = "idealyst" }
 markdown = { path = "crates/sdk/client/markdown", version = "8.0.0", registry = "idealyst" }
 webview = { path = "crates/sdk/client/webview", version = "8.0.0", registry = "idealyst" }
-video = { path = "crates/sdk/client/video", version = "8.0.0", registry = "idealyst" }
+video = { path = "crates/sdk/client/video", version = "8.1.0", registry = "idealyst" }
 svg = { path = "crates/sdk/client/svg", version = "9.0.0", registry = "idealyst" }
 canvas = { path = "crates/sdk/client/canvas", version = "7.0.0", registry = "idealyst" }
 canvas-core = { path = "crates/sdk/client/canvas/core", version = "7.0.0", registry = "idealyst" }
@@ -670,12 +670,12 @@ storage = { path = "crates/sdk/client/storage", version = "7.0.0", registry = "i
 sync = { path = "crates/sdk/client/sync", version = "8.0.0", registry = "idealyst" }
 graphql = { path = "crates/sdk/client/graphql", version = "7.0.0", registry = "idealyst" }
 microphone = { path = "crates/sdk/client/microphone", version = "8.0.0", registry = "idealyst" }
-camera = { path = "crates/sdk/client/camera", version = "8.0.0", registry = "idealyst" }
-media-stream = { path = "crates/sdk/client/media-stream", version = "1.8.1", registry = "idealyst" }
+camera = { path = "crates/sdk/client/camera", version = "8.1.0", registry = "idealyst" }
+media-stream = { path = "crates/sdk/client/media-stream", version = "1.9.0", registry = "idealyst" }
 qr = { path = "crates/sdk/client/qr", version = "6.0.0", registry = "idealyst" }
 random = { path = "crates/sdk/client/random", version = "5.0.0", registry = "idealyst" }
 media-writer = { path = "crates/sdk/client/media-writer", version = "1.8.1", registry = "idealyst" }
-video-compose = { path = "crates/sdk/client/video-compose", version = "9.0.0", registry = "idealyst" }
+video-compose = { path = "crates/sdk/client/video-compose", version = "9.1.0", registry = "idealyst" }
 denoise = { path = "crates/sdk/client/denoise", version = "1.5.2", registry = "idealyst" }
 video-decode = { path = "crates/sdk/client/video-decode", version = "5.0.0", registry = "idealyst" }
 file-export = { path = "crates/sdk/client/file-export", version = "5.0.0", registry = "idealyst" }
