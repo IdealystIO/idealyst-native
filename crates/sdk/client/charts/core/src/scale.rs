@@ -314,5 +314,13 @@ pub fn resolve_with_ticks(
         Some(t) => t.to_vec(),
         None => ticks_for(min, max),
     };
+    // Over forced ticks too: a transition's labels are the destination's values.
+    let ticks = match &axis.tick_format {
+        Some(format) => ticks
+            .into_iter()
+            .map(|t| Tick { label: format.label(t.value), value: t.value })
+            .collect(),
+        None => ticks,
+    };
     ResolvedAxis { min, max, ticks, categories: None, transform }
 }

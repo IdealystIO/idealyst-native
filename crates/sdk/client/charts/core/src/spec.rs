@@ -967,6 +967,32 @@ pub enum AxisKind {
     Category(Vec<String>),
 }
 
+/// Turns a tick's value into its label. See [`Axis::tick_format`].
+///
+/// Equal only to a clone of itself, as closures have no structural equality:
+/// an axis rebuilt with a new closure reads as a changed spec.
+#[derive(Clone)]
+pub struct TickFormat(Rc<dyn Fn(f64) -> String>);
+
+impl TickFormat {
+    /// The label for a tick at `value`.
+    pub fn label(&self, value: f64) -> String {
+        (self.0)(value)
+    }
+}
+
+impl PartialEq for TickFormat {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for TickFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TickFormat(..)")
+    }
+}
+
 /// Axis configuration.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Axis {
@@ -990,6 +1016,9 @@ pub struct Axis {
     /// Include zero when auto-fitting. Bars are misleading without it;
     /// line charts of a narrow range usually want it off.
     pub include_zero: bool,
+    /// Writes the tick labels in place of the default. See
+    /// [`Axis::tick_format`].
+    pub tick_format: Option<TickFormat>,
 }
 
 impl Default for Axis {
@@ -1002,6 +1031,7 @@ impl Default for Axis {
             labels: true,
             tick_count: 5,
             include_zero: false,
+            tick_format: None,
         }
     }
 }
@@ -1053,6 +1083,30 @@ impl Axis {
 
     pub fn domain(mut self, d: Domain) -> Self {
         self.domain = d;
+        self
+    }
+
+    /// Write this axis's tick labels. The default keeps at least one decimal,
+    /// so a whole-number quantity draws as `4000.0`:
+    ///
+    /// ```
+    /// use charts_core::Axis;
+    /// let percent = Axis::linear().tick_format(|v| format!("{v:.0}%"));
+    /// let count = Axis::linear().tick_format(|v| format!("{v:.0}"));
+    /// let (_, _) = (percent, count);
+    /// ```
+    ///
+    /// It gets the tick's value, in the axis's own units: milliseconds since
+    /// the Unix epoch on [`Axis::time`]. It changes the labels only: the ticks
+    /// stay where the axis put them, so a format that rounds can print the
+    /// same label twice (`{v:.0}` over ticks at `0.5` steps), and the gutter
+    /// grows to fit what it returns. [`Axis::category`] ignores it, because its
+    /// labels are the categories.
+    ///
+    /// Build it once and keep the axis if the spec is compared between renders:
+    /// each new closure reads as a change ([`TickFormat`]).
+    pub fn tick_format(mut self, format: impl Fn(f64) -> String + 'static) -> Self {
+        self.tick_format = Some(TickFormat(Rc::new(format)));
         self
     }
 

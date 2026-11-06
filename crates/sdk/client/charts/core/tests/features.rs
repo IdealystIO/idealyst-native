@@ -806,3 +806,82 @@ fn a_pie_hit_carries_its_wedge() {
     assert_eq!(r0, 0.0, "a pie has no hole");
     assert!(r1 > 0.0 && sweep > 0.0, "the wedge has a real extent");
 }
+
+// ---------------------------------------------------------------------------
+// tick_format
+// ---------------------------------------------------------------------------
+
+fn labels(out: &ChartOutput, role: LabelRole) -> Vec<String> {
+    out.scene.labels.iter().filter(|l| l.role == role).map(|l| l.text.clone()).collect()
+}
+
+fn percent_spec(y: Axis) -> ChartSpec {
+    let mut spec = ChartSpec::new(vec![Series::new(
+        "a",
+        SeriesKind::line(),
+        BLUE,
+        vec![datum(0.0, 0.0), datum(1.0, 100.0)],
+    )]);
+    spec.y = y;
+    spec
+}
+
+/// The default keeps a decimal, so a percent axis drew `100.0` with no way
+/// to say otherwise.
+#[test]
+fn regression_tick_format_writes_the_axis_labels() {
+    let draw = |spec: &ChartSpec| render_with(spec, surface(), &Gutters::Measured(&ApproxMetrics));
+    let plain = labels(&draw(&percent_spec(Axis::linear())), LabelRole::AxisY);
+    assert!(plain.iter().any(|l| l == "100.0"), "the default this exists to replace: {plain:?}");
+
+    let spec = percent_spec(Axis::linear().tick_format(|v| format!("{v:.0}%")));
+    let formatted = labels(&draw(&spec), LabelRole::AxisY);
+    assert!(formatted.iter().any(|l| l == "100%"), "{formatted:?}");
+    assert!(formatted.iter().all(|l| l.ends_with('%')), "{formatted:?}");
+}
+
+/// It changes what the labels say, not where the ticks are.
+#[test]
+fn tick_format_keeps_the_tick_positions() {
+    let at = |axis: Axis| {
+        let ticks = charts_core::scale::resolve(&axis, [0.0, 100.0].into_iter()).ticks;
+        ticks.iter().map(|t| t.value).collect::<Vec<_>>()
+    };
+    assert_eq!(at(Axis::linear()), at(Axis::linear().tick_format(|v| format!("{v:.0}%"))));
+}
+
+/// Labels that follow a forced (transition) tick set are formatted too.
+#[test]
+fn tick_format_applies_to_forced_ticks() {
+    let forced = [Tick { value: 50.0, label: "50.0".into() }];
+    let axis = Axis::linear().tick_format(|v| format!("{v:.0}%"));
+    let resolved = charts_core::scale::resolve_with_ticks(&axis, [0.0, 100.0].into_iter(), Some(&forced));
+    assert_eq!(resolved.ticks[0].label, "50%");
+}
+
+/// A category axis's labels are its categories.
+#[test]
+fn tick_format_leaves_a_category_axis_alone() {
+    let axis = Axis::category(["a", "b"]).tick_format(|_| "x".to_string());
+    let resolved = charts_core::scale::resolve(&axis, std::iter::empty());
+    assert_eq!(resolved.ticks[0].label, "a");
+}
+
+/// The gutter is measured from the formatted labels, so a long one fits.
+#[test]
+fn the_gutter_fits_formatted_labels() {
+    // A y label is right-aligned against the plot, so its anchor is the gutter.
+    let inset = |y: Axis| {
+        let out = render_with(&percent_spec(y), surface(), &Gutters::Measured(&ApproxMetrics));
+        out.scene.labels.iter().find(|l| l.role == LabelRole::AxisY).expect("a y label").anchor.x
+    };
+    assert!(inset(Axis::linear().tick_format(|v| format!("{v:.0} long unit name"))) > inset(Axis::linear()));
+}
+
+/// Equal to a clone of itself, unequal to another closure.
+#[test]
+fn tick_format_compares_by_identity() {
+    let a = Axis::linear().tick_format(|v| v.to_string());
+    assert_eq!(a, a.clone());
+    assert_ne!(a, Axis::linear().tick_format(|v| v.to_string()));
+}
