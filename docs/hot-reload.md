@@ -1670,7 +1670,10 @@ patch or a rebuild the dev loop installs archives scanned from the
 sources as they were read just before that compile started (the scan
 itself runs alongside the compile), so a save made while it compiled is
 decided afterwards as the change it is; a failed rebuild leaves them
-alone, so the next save is still decided against the build on screen.
+alone, because the page still runs the build they describe. The save
+after a failed build builds rather than being decided: decided from its
+own files it could read as unchanged, or take a patch, with the failed
+save's other files never built.
 
 A failed FIRST build does not end the session either. The web loop
 reports it (`build_finished` with the error, on the page's overlay and in

@@ -2139,6 +2139,8 @@ fn watch_loop(
     // from here they are taken, the held ones first.
     reporter.emit(dev_events::DevEvent::WatcherReady { target: TARGET.into() });
 
+    // Outlives the save: see `owed_rebuild`.
+    let mut last_build_failed = false;
     while let Ok(first) = rx.recv() {
         let first = release(first, queued.as_ref());
         let mut deferred = Deferred::default();
@@ -2232,26 +2234,10 @@ fn watch_loop(
             let stale_hit = changed_paths.iter().any(|p| stale_after_build.contains(p));
             let cause = if forced {
                 dev_events::BuildCause::Forced
-            } else if stale_hit {
+            } else if let Some(reason) = owed_rebuild(stale_hit, reload_owed, last_build_failed) {
                 reporter.emit(dev_events::DevEvent::Decided {
                     target: TARGET.into(),
-                    decision: dev_events::Decision::Rebuild {
-                        reason: Some(
-                            "saved while the first build ran, so the served bundle may not have it".into(),
-                        ),
-                    },
-                });
-                dev_events::BuildCause::Save { folded }
-            } else if reload_owed {
-                reporter.emit(dev_events::DevEvent::Decided {
-                    target: TARGET.into(),
-                    decision: dev_events::Decision::Rebuild {
-                        reason: Some(
-                            "a newer save superseded the rebuild in flight, whose bundle no page \
-                             has loaded yet"
-                                .into(),
-                        ),
-                    },
+                    decision: dev_events::Decision::Rebuild { reason: Some(reason.into()) },
                 });
                 dev_events::BuildCause::Save { folded }
             } else {
@@ -2389,6 +2375,7 @@ fn watch_loop(
                     }
                 })
             });
+            last_build_failed = !rebuilt_ok;
             // A failed rebuild left this base in place: its seeds go on.
             // (A successful one replaced the builder, and its seeds with it.)
             if !rebuilt_ok {
@@ -2815,6 +2802,26 @@ fn handle_save(
             decided(dev_events::Decision::Rebuild { reason: Some(why.to_string()) });
             Handled::Rebuild
         }
+    }
+}
+
+/// Why this save must build whatever its files say, if it must.
+///
+/// `last_build_failed`: a save is decided from its OWN files against the
+/// archives, and a failed build leaves the archives alone and names none of
+/// the files it failed on anywhere else. So a save that only restores a file
+/// to its built text, or only moves server code, reads as "unchanged" while
+/// the failed save's other files have never been built, and the page runs
+/// the old code with no error showing.
+fn owed_rebuild(stale_hit: bool, reload_owed: bool, last_build_failed: bool) -> Option<&'static str> {
+    if last_build_failed {
+        Some("the last build failed, so the page does not have the sources it was building")
+    } else if stale_hit {
+        Some("saved while the first build ran, so the served bundle may not have it")
+    } else if reload_owed {
+        Some("a newer save superseded the rebuild in flight, whose bundle no page has loaded yet")
+    } else {
+        None
     }
 }
 
@@ -3576,6 +3583,9 @@ where
             // disk without waking anyone; the run that finally finishes the
             // save must wake consumers even if it changes nothing more.
             let mut owed = false;
+            // A patch covers its own save; the failed build's other files
+            // need a build (see `owed_rebuild`).
+            let mut last_build_failed = false;
             while let Ok(msg) = rx.recv() {
                 let mut first = release(msg, queued.as_ref());
                 first.extend(drain(&rx));
@@ -3638,7 +3648,7 @@ where
                             folded,
                         });
                     }
-                    if fs_batches > 0 && !forced && !owed {
+                    if fs_batches > 0 && !forced && !owed && !last_build_failed {
                         match patch(&saved_paths(&paths), token) {
                             Patched::Applied => return Attempt::Finished,
                             // A patch gives up when a source moved under its
@@ -3674,6 +3684,7 @@ where
                     // in place. It finishes; a superseded result just never
                     // wakes anyone.
                     let result = on_change();
+                    last_build_failed = result.is_err();
                     if token.is_superseded() {
                         owed |= matches!(result, Ok(Rebuilt::Changed));
                         reporter.emit(dev_events::DevEvent::Superseded {
@@ -5247,6 +5258,53 @@ mod tests {
         );
     }
 
+    /// A patch covers its own save. After a failed build the other files of
+    /// the failed save still need one, so the next save builds.
+    #[test]
+    fn regression_a_save_after_a_failed_build_is_not_offered_to_the_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let (reporter, q) = capture();
+        let (offered_tx, offered_rx) = mpsc::channel();
+        let (built_tx, built_rx) = mpsc::channel();
+        let mut builds = 0;
+        let (_watch, control) = start_watch_patching(
+            vec![src.clone()],
+            ReloadSignal::new(),
+            "server",
+            reporter,
+            true,
+            move |paths: &[PathBuf], _: &Supersede| {
+                let _ = offered_tx.send(paths.to_vec());
+                Patched::Rebuild
+            },
+            move || {
+                builds += 1;
+                let _ = built_tx.send(());
+                if builds == 1 {
+                    anyhow::bail!("E0560")
+                }
+                Ok(Rebuilt::Unchanged)
+            },
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !events(&q).iter().any(|e| matches!(e, dev_events::DevEvent::Watching { .. })) {
+            assert!(std::time::Instant::now() < deadline, "the watcher never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::write(src.join("broken.rs"), "pub fn b() {}\n").unwrap();
+        assert!(control.request_rebuild_numbered(1));
+        offered_rx.recv_timeout(Duration::from_secs(20)).expect("the first save was not offered");
+        built_rx.recv_timeout(Duration::from_secs(20)).expect("the first save did not build");
+
+        std::fs::write(src.join("fix.rs"), "pub fn f() {}\n").unwrap();
+        assert!(control.request_rebuild_numbered(2));
+        built_rx.recv_timeout(Duration::from_secs(20)).expect("the save after the failure did not build");
+        assert!(offered_rx.try_recv().is_err(), "the save after the failure went to the patch");
+    }
+
     /// A patch that gives up with no file to blame has nothing a retry could
     /// change, so it builds instead of retrying forever.
     #[test]
@@ -5427,6 +5485,40 @@ mod tests {
         std::fs::write(&file, "pub fn v(n: u32) -> u32 { n + 3 }\n").unwrap();
         let saved = read_saved(&ws, &[file]);
         assert!(matches!(ws.decide(&saved, false), dev_overlay::WorkspaceDecision::HotPatch(_)));
+    }
+
+    /// Regression (CrewForge): a batch failed to build, and a fix restored
+    /// one of its files to the built text. Decided alone that file is
+    /// unchanged, so the answer was "no UI or code change" with the batch's
+    /// other file never built and the page on the old code, until a restart.
+    /// The web loop needs a real bundle build to run, so this covers the
+    /// decision it takes; the watcher loop's half has its own test below.
+    #[test]
+    fn regression_a_save_after_a_failed_rebuild_is_not_answered_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut ws = two_crate_workspace(&root);
+        let app = root.join("src/lib.rs");
+        let built_text = std::fs::read_to_string(&app).unwrap();
+        // The batch: a shape edit in the library, a broken call in the app.
+        std::fs::write(root.join("lab-shared/src/lib.rs"), "pub fn v(n: u32) -> u32 { n }\n").unwrap();
+        std::fs::write(&app, "pub fn app() -> u32 { lab_shared::w() }\n").unwrap();
+        let memo = Arc::new(dev_overlay::ScanMemo::default());
+        let reporter = dev_events::Reporter::new();
+        let scan = RebuildScan::start(&ws, &root, &memo, None);
+        let built: Result<()> =
+            rebuild_with_snapshot(&mut ws, scan, &reporter, || anyhow::bail!("E0560"), |b| b);
+        assert!(built.is_err());
+
+        // The fix restores the app's file. The library is still unbuilt.
+        std::fs::write(&app, built_text).unwrap();
+        let saved = read_saved(&ws, &[app]);
+        assert!(
+            matches!(ws.decide(&saved, false), dev_overlay::WorkspaceDecision::Unchanged),
+            "decided from its own files, the save looks like nothing"
+        );
+        assert!(owed_rebuild(false, false, true).is_some(), "so a failed build must owe one");
+        assert!(owed_rebuild(false, false, false).is_none(), "and a good one owes nothing");
     }
 
     /// Regression: a rebuild-tier save on CrewForge reloaded the page
