@@ -4,15 +4,17 @@
 //! video (`camera`, `screen-recorder`) and the layers that *consume* it
 //! (a display component, a GPU compositor). A developer wires `camera ->
 //! video` and never names a platform type — the per-platform transport
-//! (a web `MediaStream`, an Apple `CVPixelBuffer`, an Android
-//! `SurfaceTexture`) is hidden.
+//! (a web `MediaStream`, an Apple `CVPixelBuffer`, an Android preview
+//! `Surface`) is hidden.
 //!
 //! A stream exposes two access paths over one source:
 //!
 //! - **CPU frame tap** — [`MediaStream::subscribe`] delivers normalized
 //!   `RGBA8` [`VideoFrame`]s on a callback (analysis, a
 //!   lowest-common-denominator display, a fallback), and
-//!   [`MediaStream::latest`] polls the most recent frame.
+//!   [`MediaStream::latest`] polls the most recent frame. A producer that can
+//!   display without them makes these frames only on demand: see
+//!   [`FrameWriter::wants_cpu_frames`].
 //! - **Native source** — [`MediaStream::native_source`] returns an opaque
 //!   `Rc<dyn Any>` that a *same-platform* display or GPU layer downcasts to
 //!   the platform's zero-copy frame source. Authors never touch it.
@@ -43,7 +45,7 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub mod clock;
@@ -65,6 +67,17 @@ pub mod clock;
 pub mod apple_surface;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use apple_surface::{surface_channel, NativeTap, SurfaceSource, SurfaceWriter};
+
+/// Zero-copy Android display: Camera2 pushes frames into consumer `Surface`s,
+/// so this native source is a control object a display hands its `Surface` to,
+/// not a frame handle. Compiled for tests on every host, like the camera's pure
+/// Android modules, because its claim rules need no device.
+#[cfg(any(test, target_os = "android"))]
+pub mod android_preview;
+#[cfg(any(test, target_os = "android"))]
+pub use android_preview::{
+    preview_channel, PreviewClaim, PreviewDriver, PreviewGeometry, PreviewProducer, PreviewSource,
+};
 
 /// Zero-copy Linux frame source: a **dma-buf** handle (a GPU buffer exported from
 /// the canvas render target via `EGL_MESA_image_dma_buf_export`) shared between a
@@ -183,6 +196,23 @@ struct OwnedFrame {
     pts_micros: u64,
 }
 
+/// How long one [`MediaStream::latest`] keeps CPU frames coming, in
+/// microseconds. Long enough to cover a producer waking its CPU path (a Camera2
+/// repeating request takes several frames to change) and a caller polling
+/// slower than the display; short enough that a one-off pull does not leave the
+/// conversion running.
+const PULL_LEASE_MICROS: u64 = 2_000_000;
+
+/// Fires when CPU demand changes. See [`FrameWriter::on_cpu_demand_change`].
+type DemandCallback = Box<dyn Fn(bool) + Send + 'static>;
+
+/// What the producer's demand callback was last told.
+#[derive(Default)]
+struct DemandWatch {
+    reported: bool,
+    callback: Option<DemandCallback>,
+}
+
 #[derive(Default)]
 struct FrameChannel {
     /// Most recent frame, for pull consumers (a GPU blit samples this).
@@ -198,6 +228,16 @@ struct FrameChannel {
     /// swizzle) when nobody is tapping CPU frames — pure native-source display
     /// reads the zero-copy handle instead and never needs the RGBA channel.
     subscriber_count: AtomicUsize,
+    /// [`clock::now_micros`] deadline of the last pull: until then a
+    /// [`MediaStream::latest`] caller counts as wanting CPU frames. 0 = no pull
+    /// yet, which the clock has already passed.
+    pull_until: AtomicU64,
+    /// Producer-side demand notification. Absent for a producer that writes
+    /// regardless of demand or polls [`FrameWriter::wants_cpu_frames`].
+    demand: Mutex<DemandWatch>,
+    /// The producer declared it will write no more
+    /// ([`FrameWriter::end_of_stream`]). Later subscribers are dropped at once.
+    ended: AtomicBool,
 }
 
 impl FrameChannel {
@@ -241,20 +281,75 @@ impl FrameChannel {
             pts_micros,
         });
         self.generation.fetch_add(1, Ordering::Release);
+        // A pull's lease lapses silently, so the frames themselves are what
+        // notice: the first one written after the deadline turns demand off.
+        self.sync_demand();
     }
 
     fn add_subscriber(&self, cb: BoxedCallback) -> u64 {
         let id = self.next_sub_id.fetch_add(1, Ordering::Relaxed);
-        let mut subs = self.subscribers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        subs.push((id, cb));
-        self.subscriber_count.store(subs.len(), Ordering::Release);
+        if self.ended.load(Ordering::Acquire) {
+            // Dropping `cb` releases whatever waits on it, as `end_of_stream`
+            // does for the subscribers it finds.
+            return id;
+        }
+        {
+            let mut subs = self.subscribers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            subs.push((id, cb));
+            self.subscriber_count.store(subs.len(), Ordering::Release);
+        }
+        self.sync_demand();
         id
     }
 
     fn remove_subscriber(&self, id: u64) {
-        let mut subs = self.subscribers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        subs.retain(|(i, _)| *i != id);
-        self.subscriber_count.store(subs.len(), Ordering::Release);
+        {
+            let mut subs = self.subscribers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            subs.retain(|(i, _)| *i != id);
+            self.subscriber_count.store(subs.len(), Ordering::Release);
+        }
+        self.sync_demand();
+    }
+
+    fn wants_cpu(&self) -> bool {
+        self.subscriber_count.load(Ordering::Acquire) > 0
+            || clock::now_micros() < self.pull_until.load(Ordering::Acquire)
+    }
+
+    /// Tell the producer's callback about a change in demand, in order. The
+    /// retained frame goes on either edge: a producer gated on demand writes
+    /// nothing while idle, so that frame shows a moment long gone, and a pull must
+    /// wait for a new one rather than read it as current. Falling, this also gives
+    /// a frame's worth of memory back while only a native display is running.
+    fn sync_demand(&self) {
+        let wants = self.wants_cpu();
+        let mut watch = self.demand.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if watch.reported == wants {
+            return;
+        }
+        watch.reported = wants;
+        let Some(callback) = &watch.callback else {
+            return;
+        };
+        self.latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        callback(wants);
+    }
+
+    /// A pull: extend the lease, and say whether the retained frame may be read.
+    /// A producer gated on demand holds nothing current unless demand was
+    /// already up; every other producer's last write is its current frame.
+    fn pull(&self) -> bool {
+        let was_wanted = self.wants_cpu();
+        self.pull_until
+            .store(clock::now_micros() + PULL_LEASE_MICROS, Ordering::Release);
+        self.sync_demand();
+        let gated = self
+            .demand
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .callback
+            .is_some();
+        was_wanted || !gated
     }
 }
 
@@ -359,15 +454,64 @@ impl FrameWriter {
         }
     }
 
-    /// Whether any consumer is currently tapping CPU frames (has an active
-    /// [`MediaStream::subscribe`]). A producer that can also publish a
-    /// zero-copy native source (the Apple [`SurfaceWriter`]) uses this to skip
-    /// per-frame CPU normalization — e.g. the screen-recorder's full-frame
-    /// BGRA→RGBA swizzle — when only a native-source display is attached.
-    /// Pull consumers (`latest`) that need CPU frames should `subscribe` so the
-    /// channel knows to keep producing them.
+    /// Whether any consumer currently wants CPU frames: an active
+    /// [`MediaStream::subscribe`], or a [`MediaStream::latest`] in the last two
+    /// seconds. A producer that can also publish a zero-copy native source (the
+    /// Apple `SurfaceWriter`, the Android preview) uses this to skip per-frame
+    /// CPU normalization — e.g. the screen-recorder's full-frame BGRA→RGBA
+    /// swizzle — when only a native-source display is attached.
+    ///
+    /// A poll, for a producer that wakes per frame anyway. A producer with no
+    /// frame callback to poll from uses [`on_cpu_demand_change`](Self::on_cpu_demand_change).
     pub fn wants_cpu_frames(&self) -> bool {
-        self.channel.subscriber_count.load(Ordering::Acquire) > 0
+        self.channel.wants_cpu()
+    }
+
+    /// Be told when [`wants_cpu_frames`](Self::wants_cpu_frames) changes, for a
+    /// producer whose CPU path has to be switched on and off: Camera2 delivers
+    /// no frame to poll from while its `ImageReader` is not a target of the
+    /// repeating request. `callback` runs with the new value on whichever thread
+    /// changed it (a subscriber's, a puller's, or the capture thread when a pull
+    /// lapses), in order. It must return quickly and must not touch this stream.
+    /// If demand is already up it fires once now.
+    ///
+    /// Registering also declares this producer writes only on demand, so a
+    /// retained frame is never read as current after an idle spell: it is dropped
+    /// when demand changes, and [`MediaStream::latest`] returns `None` until a new
+    /// frame arrives.
+    pub fn on_cpu_demand_change(&self, callback: impl Fn(bool) + Send + 'static) {
+        let wants = self.channel.wants_cpu();
+        let mut watch = self
+            .channel
+            .demand
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if wants {
+            callback(true);
+        }
+        watch.reported = wants;
+        watch.callback = Some(Box::new(callback));
+    }
+
+    /// Declare that this writer will write no more frames: the device is gone,
+    /// not merely idle. Every subscriber is dropped, and with it anything waiting
+    /// on one, so a pending [`MediaStream::screenshot`] resolves `None` instead
+    /// of never. The stream's [`latest`](MediaStream::latest) still reads whatever
+    /// was retained.
+    pub fn end_of_stream(&self) {
+        self.channel.ended.store(true, Ordering::Release);
+        let dropped = {
+            let mut subs = self
+                .channel
+                .subscribers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.channel.subscriber_count.store(0, Ordering::Release);
+            std::mem::take(&mut *subs)
+        };
+        // Outside the lock: a subscriber's captures may run code on drop.
+        drop(dropped);
+        self.channel.sync_demand();
     }
 
     /// Push a tightly-packed top-down `RGBA8` frame, stamped with the current
@@ -615,6 +759,21 @@ impl MediaStream {
         self.inner.native.borrow().clone()
     }
 
+    /// Whether [`native_source`](Self::native_source) holds frames a GPU layer can
+    /// import as textures. False for no source, and for the Android
+    /// `PreviewSource`, which routes frames into a display's `Surface` and holds
+    /// none of its own: a compositor takes the CPU path for that stream.
+    pub fn has_importable_source(&self) -> bool {
+        #[cfg(any(test, target_os = "android"))]
+        {
+            self.native_source().is_some_and(|source| !source.is::<PreviewSource>())
+        }
+        #[cfg(not(any(test, target_os = "android")))]
+        {
+            self.native_source().is_some()
+        }
+    }
+
     /// Attach the capture teardown closure, run when the last clone drops.
     /// Replaces any previously attached stopper.
     pub fn attach_stopper(&self, stop: impl FnOnce() + 'static) {
@@ -637,7 +796,17 @@ impl MediaStream {
     /// dimensions, or `None` if no frame has arrived. Pair with
     /// [`generation`](Self::generation) to skip re-reading an unchanged
     /// frame — the shape a GPU blit consumes.
+    ///
+    /// A pull counts as demand. With nobody subscribed, a producer that makes CPU
+    /// frames only on demand (the camera behind a native preview) has none, so
+    /// this first answers `None` and starts it; a caller polling at least every
+    /// two seconds then gets frames, the first within a few frames' time. It
+    /// answers from a one-off call only if demand was already up, so a single
+    /// press of a shutter wants [`screenshot`](Self::screenshot), which waits.
     pub fn latest(&self, buf: &mut Vec<u8>) -> Option<(u32, u32)> {
+        if !self.inner.channel.pull() {
+            return None;
+        }
         let slot = self.inner.channel.latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let frame = slot.as_ref()?;
         buf.clear();
@@ -674,15 +843,18 @@ impl MediaStream {
     ///   canvas (the capture stream taps the live surface — unlike `toBlob`, which
     ///   reads the cleared post-present buffer). Self-contained: the stream is
     ///   already live, so no repaint is needed.
-    /// - **Native:** `subscribe`s for one CPU frame. The GPU renderer reads back
-    ///   GPU→CPU only when a consumer `wants_cpu_frames` (which `subscribe` flips
-    ///   on) AND it renders. The renderer is repaint-on-demand, so **the caller
-    ///   must trigger a repaint** after calling this (e.g. `CoreCanvas::snapshot_png`
-    ///   bumps the canvas's repaint nonce) or the future won't resolve. The
-    ///   subscribe happens on first poll, before the caller's deferred repaint
-    ///   renders, so ordering is safe.
+    /// - **Native:** `subscribe`s for one CPU frame. A camera turns its CPU path on
+    ///   for that frame (on Android its `ImageReader` joins the repeating request,
+    ///   so the frame is a new one, a few frames' time later) and off again after.
+    ///   The GPU renderer reads back GPU→CPU only when a consumer `wants_cpu_frames`
+    ///   (which `subscribe` flips on) AND it renders. The renderer is
+    ///   repaint-on-demand, so **the caller must trigger a repaint** after calling
+    ///   this (e.g. `CoreCanvas::snapshot_png` bumps the canvas's repaint nonce) or
+    ///   the future won't resolve. The subscribe happens on first poll, before the
+    ///   caller's deferred repaint renders, so ordering is safe.
     ///
-    /// `None` if no source is attached or the frame can't be read.
+    /// `None` if no source is attached, the frame can't be read, or the producer
+    /// ended ([`FrameWriter::end_of_stream`]) before one came.
     pub async fn screenshot(&self) -> Option<Screenshot> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -811,6 +983,7 @@ impl Drop for Subscription {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use std::future::Future;
 
     // 2x1 RGBA frame.
     const W: u32 = 2;
@@ -937,6 +1110,153 @@ mod tests {
         writer.write_rgba8_with(0, 4, |_| panic!("no frame to fill"));
         writer.write_rgba8_with(4, 0, |_| panic!("no frame to fill"));
         assert_eq!(stream.generation(), 0);
+    }
+
+    /// Records what a demand-gated producer is told, in order.
+    fn demand_log(writer: &FrameWriter) -> Arc<Mutex<Vec<bool>>> {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let sink = log.clone();
+        writer.on_cpu_demand_change(move |wants| sink.lock().unwrap().push(wants));
+        log
+    }
+
+    /// The whole point on a slow tablet: a stream only being displayed through
+    /// its native source makes no CPU frames, and nothing has told the producer
+    /// otherwise.
+    #[test]
+    fn regression_preview_only_stream_reports_no_cpu_demand() {
+        let (_stream, writer) = MediaStream::new();
+        let log = demand_log(&writer);
+        assert!(!writer.wants_cpu_frames());
+        assert!(log.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn demand_callback_follows_subscribers_edge_by_edge() {
+        let (stream, writer) = MediaStream::new();
+        let log = demand_log(&writer);
+        let first = stream.subscribe(|_: &VideoFrame| {});
+        let second = stream.subscribe(|_: &VideoFrame| {});
+        assert_eq!(*log.lock().unwrap(), vec![true], "only the first subscriber is an edge");
+        drop(first);
+        assert_eq!(*log.lock().unwrap(), vec![true], "one subscriber is still demand");
+        drop(second);
+        assert_eq!(*log.lock().unwrap(), vec![true, false]);
+        assert!(!writer.wants_cpu_frames());
+    }
+
+    #[test]
+    fn registering_with_demand_already_up_fires_once() {
+        let (stream, writer) = MediaStream::new();
+        let _sub = stream.subscribe(|_: &VideoFrame| {});
+        let log = demand_log(&writer);
+        assert_eq!(*log.lock().unwrap(), vec![true]);
+        writer.write_rgba8(W, H, &[0; 8]);
+        assert_eq!(*log.lock().unwrap(), vec![true], "a frame is not an edge");
+    }
+
+    #[test]
+    fn a_pull_with_nobody_subscribed_raises_demand_and_serves_the_next_frame() {
+        let (stream, writer) = MediaStream::new();
+        let log = demand_log(&writer);
+        let mut buf = Vec::new();
+        assert_eq!(stream.latest(&mut buf), None, "nothing to give yet");
+        assert_eq!(*log.lock().unwrap(), vec![true], "the pull is the demand");
+        assert!(writer.wants_cpu_frames());
+        writer.write_rgba8(W, H, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(stream.latest(&mut buf), Some((W, H)));
+        assert_eq!(buf, [1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    /// The first frame after the deadline is what notices: there is no timer.
+    #[test]
+    fn an_expired_pull_lease_turns_demand_off_on_the_next_frame() {
+        let (stream, writer) = MediaStream::new();
+        let log = demand_log(&writer);
+        let mut buf = Vec::new();
+        stream.latest(&mut buf);
+        stream.inner.channel.pull_until.store(0, Ordering::Release);
+        assert_eq!(*log.lock().unwrap(), vec![true], "nothing has noticed yet");
+        assert!(!writer.wants_cpu_frames(), "the poll sees the deadline at once");
+        writer.write_rgba8(W, H, &[0; 8]);
+        assert_eq!(*log.lock().unwrap(), vec![true, false]);
+    }
+
+    /// A shutter pressed long after the last tap ended must not get that tap's
+    /// last frame back as if it were now.
+    #[test]
+    fn regression_gated_producer_never_serves_a_frame_from_before_the_idle_spell() {
+        let (stream, writer) = MediaStream::new();
+        let _log = demand_log(&writer);
+        let tap = stream.subscribe(|_: &VideoFrame| {});
+        writer.write_rgba8(W, H, &[9; 8]);
+        drop(tap);
+        let mut buf = Vec::new();
+        assert_eq!(stream.latest(&mut buf), None, "idle, so what is retained is old");
+        assert_eq!(stream.latest(&mut buf), None, "and still old until a frame comes");
+        writer.write_rgba8(W, H, &[1; 8]);
+        assert_eq!(stream.latest(&mut buf), Some((W, H)));
+        assert_eq!(buf, [1; 8]);
+    }
+
+    /// A subscription that lands while nothing was wanted makes the same
+    /// promise: nothing it sees through `latest` predates it.
+    #[test]
+    fn rising_demand_discards_the_retained_frame_of_a_gated_producer() {
+        let (stream, writer) = MediaStream::new();
+        let _log = demand_log(&writer);
+        writer.write_rgba8(W, H, &[9; 8]);
+        let _tap = stream.subscribe(|_: &VideoFrame| {});
+        let mut buf = Vec::new();
+        assert_eq!(stream.latest(&mut buf), None);
+    }
+
+    /// A producer that writes whether or not anyone wants it (a test, a
+    /// synthetic stream) has no idle spell: its last write IS the current frame.
+    #[test]
+    fn ungated_producer_serves_a_pull_from_its_last_write() {
+        let (stream, writer) = MediaStream::new();
+        writer.write_rgba8(W, H, &[3; 8]);
+        let mut buf = Vec::new();
+        assert_eq!(stream.latest(&mut buf), Some((W, H)));
+        assert!(writer.wants_cpu_frames(), "the pull still reads as demand to a poller");
+    }
+
+    /// The demand edge is what wakes a Camera2 `ImageReader`; `screenshot` has to
+    /// raise it and let it fall by itself.
+    #[test]
+    fn screenshot_raises_demand_gets_a_frame_and_lowers_it() {
+        let (stream, writer) = MediaStream::new();
+        let log = demand_log(&writer);
+        let mut future = Box::pin(stream.screenshot());
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        assert!(future.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(*log.lock().unwrap(), vec![true]);
+        writer.write_rgba8(W, H, &[7; 8]);
+        let shot = match future.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(shot) => shot.expect("a frame"),
+            std::task::Poll::Pending => panic!("the frame was written"),
+        };
+        assert_eq!((shot.width, shot.height), (W, H));
+        assert_eq!(*log.lock().unwrap(), vec![true, false]);
+    }
+
+    /// Without `end_of_stream`, a shutter awaiting a frame from a camera that
+    /// was unplugged or taken by another app would never come back.
+    #[test]
+    fn regression_screenshot_resolves_none_when_the_producer_ends() {
+        let (stream, writer) = MediaStream::new();
+        let mut future = Box::pin(stream.screenshot());
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        assert!(future.as_mut().poll(&mut cx).is_pending());
+        writer.end_of_stream();
+        assert!(matches!(future.as_mut().poll(&mut cx), std::task::Poll::Ready(None)));
+        assert!(!writer.wants_cpu_frames());
+        // A subscriber arriving after the end is released at once, too.
+        let mut late = Box::pin(stream.screenshot());
+        assert!(matches!(late.as_mut().poll(&mut cx), std::task::Poll::Ready(None)));
     }
 
     #[test]

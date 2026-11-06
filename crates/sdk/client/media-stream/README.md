@@ -5,8 +5,8 @@ The common currency between capture SDKs that **produce** media (`camera`,
 produces synthesized audio) and the layers that **consume** it (a display
 component, a GPU compositor, a file writer, a denoiser). A developer wires
 `camera -> video` and never names a platform type — the per-platform transport
-(a web `MediaStream`, an Apple `CVPixelBuffer`/`IOSurface`, an Android
-`SurfaceTexture`) is hidden behind one handle.
+(a web `MediaStream`, an Apple `CVPixelBuffer`/`IOSurface`, an Android preview
+`Surface`) is hidden behind one handle.
 
 The crate is deliberately **thin and GPU-free**: a real-time GPU compositor is
 a layer on top that consumes a stream, not part of this crate.
@@ -22,10 +22,15 @@ Two peer abstractions with the same shape — a `!Send` consumer handle plus a
     (tightly-packed top-down `RGBA8`).
   - `latest(&mut buf) -> Option<(w, h)>` / `latest_pts()` / `generation()` —
     pull the most recent frame (a GPU blit samples this; compare `generation`
-    to skip unchanged frames).
+    to skip unchanged frames). A pull counts as CPU demand for two seconds; on a
+    producer that makes frames only on demand it answers `None` until they flow, so
+    keep polling, or use `screenshot`.
   - `native_source() -> Option<Rc<dyn Any>>` / `set_native_source(..)` — the
     opaque zero-copy frame source a same-platform display downcasts.
+  - `has_importable_source()` — whether that source holds frames a GPU layer can
+    import. False for the Android preview, which routes frames into a `Surface`.
   - `screenshot().await -> Option<Screenshot>` — one-shot still as CPU `RGBA8`.
+    Raises demand for one new frame; `None` if the producer ends first.
   - `attach_stopper(f)` — teardown run when the last clone drops.
 - **`FrameWriter`** (the `Send` producer side, handed to the capture thread):
   - `write_rgba8(w, h, data)` / `write_bgra8(w, h, data)` — push a frame
@@ -34,7 +39,14 @@ Two peer abstractions with the same shape — a `!Send` consumer handle plus a
   - `write_rgba8_with(w, h, |out| ..)` — convert straight into the channel's
     reused buffer instead of copying a finished frame in.
   - `wants_cpu_frames()` — gate per-frame CPU normalization when only a
-    native-source display is attached.
+    native-source display is attached: true while anyone subscribes, and for two
+    seconds after a `latest`.
+  - `on_cpu_demand_change(cb)` — the same, as a callback, for a producer with no
+    frame to poll from while its CPU path is off (Camera2's `ImageReader`).
+    Registering declares the producer writes only on demand, so a retained frame is
+    dropped when demand changes rather than read as current.
+  - `end_of_stream()` — the device is gone: subscribers drop, and a pending
+    `screenshot` resolves `None`.
 - **`AudioStream`** / **`AudioWriter`** — the audio peer (same `new` / `subscribe`
   / `latest` / `native_source` / `attach_stopper` shape). `AudioWriter::write_pcm_f32(sample_rate, channels, samples)`
   pushes interleaved, normalized `f32` PCM; PTS is **sample-derived** (a running
@@ -101,7 +113,7 @@ fast-path) differs:
 | --- | --- | --- |
 | macOS | `IOSurface` (`SurfaceSource`), set as `CALayer.contents` | `Instant`, monotonic |
 | iOS | `CMSampleBuffer`, enqueued into `AVSampleBufferDisplayLayer` | `Instant`, monotonic |
-| Android | a `SurfaceTexture` published by the producer | `Instant`, monotonic |
+| Android | a `PreviewSource`: a control object a display claims and hands its `Surface` to, so Camera2 fills it directly. One display at a time; another gets `None` from `try_claim` and shows CPU frames. Holds no frames, so `has_importable_source()` is false | `Instant`, monotonic |
 | web (wasm32) | a `web_glue::dom::MediaStream` (e.g. `getUserMedia`, canvas `captureStream()`) | `Date.now()`-rebased (ordering hint only) |
 
 On macOS, `MediaStream::with_surface_capture()` wires the IOSurface
@@ -124,12 +136,12 @@ coverage is automated; the per-backend items only exercise the opaque
 `native_source` zero-copy slot.
 
 **Automated**
-- [ ] `cargo test -p media-stream` — producer/consumer channel: a producer feeds frames and `subscribe`/`latest` deliver them in order; PTS stays monotonic; the shared `clock::now_micros()` timeline is consistent across producers
+- [ ] `cargo test -p media-stream` — producer/consumer channel: a producer feeds frames and `subscribe`/`latest` deliver them in order; PTS stays monotonic; the shared `clock::now_micros()` timeline is consistent across producers; CPU demand edges, pull leases and stale frames; `end_of_stream` releasing a `screenshot`; the Android `PreviewSource` claim rules (`src/android_preview.rs`, compiled for tests on every host)
 - [ ] `cargo build -p media-stream --target wasm32-unknown-unknown` — web target
 - [x] `cargo test -p media-stream --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_media_stream.rs`: `screenshot()` reads a frame off a `web_glue::dom::MediaStream` native source (and is `None` for any other type); a synthetic `AudioStream`'s WebAudio bridge publishes a glue `MediaStream` with one audio track, cached, whose track carries the written PCM
 
 **Behavior**
 - [ ] **Web** — the `web_glue::dom::MediaStream` `native_source` round-trips: `set_native_source` → `native_source()` downcast yields the same handle for a zero-copy display.
 - [ ] **iOS** — ⚠️ not yet device-confirmed: a `CMSampleBuffer` `native_source` round-trips for `AVSampleBufferDisplayLayer` enqueue.
-- [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: a `SurfaceTexture` `native_source` round-trips.
+- [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: a `PreviewSource` `native_source` attaches a `TextureView`'s `Surface` to the camera and frames appear with no CPU tap.
 - [ ] **macOS** — the `IOSurface` (`SurfaceSource`) `native_source` round-trips and can be set as `CALayer.contents`; `with_surface_capture()` wires the self-capture path.

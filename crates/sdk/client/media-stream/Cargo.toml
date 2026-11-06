@@ -12,8 +12,8 @@ license.workspace = true
 # tap (normalized RGBA8, for analysis / a lowest-common-denominator display
 # / a fallback) and (b) an opaque, type-erased "native source" handle — the
 # platform's zero-copy frame source (a web `MediaStream`, an Apple
-# `CVPixelBuffer` pool, an Android `SurfaceTexture`) that a same-platform
-# display or GPU-compositing layer downcasts. The native pipe never leaks
+# `CVPixelBuffer` pool, an Android preview a display hands its `Surface` to) that
+# a same-platform display or GPU-compositing layer downcasts. The native pipe never leaks
 # into author code: a developer wires `camera -> video` and never names a
 # platform type.
 #
