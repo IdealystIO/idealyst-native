@@ -28,6 +28,9 @@ use serde::Deserialize;
 /// dev_opt = "optimized"
 /// experimental_build = false
 /// ```
+///
+/// A workspace's `[workspace.metadata.idealyst.dev]` is the default for every
+/// member, and a member's own table overrides it key by key (see [`Self::load`]).
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectBuildConfig {
@@ -46,24 +49,76 @@ pub struct ProjectBuildConfig {
 }
 
 impl ProjectBuildConfig {
-    /// The table in `<dir>/Cargo.toml`. `None` when there is no such table or
-    /// no manifest to read (the commands that need one report that themselves).
+    /// The build `<dir>` declares: `[workspace.metadata.idealyst.dev]` from its
+    /// workspace root, with `<dir>/Cargo.toml`'s `[package.metadata.idealyst.dev]`
+    /// over it key by key. A key the member sets replaces the workspace's whole
+    /// value, so `features` does not add up. `None` when neither table exists or
+    /// there is no manifest to read (the commands that need one report that
+    /// themselves).
     pub fn load(dir: &Path) -> Result<Option<Self>> {
         let Ok(text) = std::fs::read_to_string(dir.join("Cargo.toml")) else { return Ok(None) };
-        Self::parse(&text)
+        let own = Self::table_in(&text, "package")?;
+        let shared = match workspace_manifest(dir, &text) {
+            Some(root) => Self::table_in(&root, "workspace")?,
+            None => None,
+        };
+        let merged = match (shared, own) {
+            (None, None) => return Ok(None),
+            (Some(table), None) | (None, Some(table)) => table,
+            (Some(mut shared), Some(own)) => {
+                shared.extend(own);
+                shared
+            }
+        };
+        // Both sides passed `table_in`, so this cannot name a key neither has.
+        Ok(Some(toml::Value::Table(merged).try_into()?))
     }
 
-    fn parse(manifest: &str) -> Result<Option<Self>> {
-        // A manifest that does not parse is cargo's to report, in its words.
+    /// `[<section>.metadata.idealyst.dev]`, checked: an unknown key is an error
+    /// that names the table it is in. `None` for no table. A manifest that does
+    /// not parse is cargo's to report, in its words.
+    fn table_in(manifest: &str, section: &str) -> Result<Option<toml::Table>> {
         let Ok(value) = toml::from_str::<toml::Value>(manifest) else { return Ok(None) };
-        let table = value.get("package").and_then(|p| p.get("metadata")).and_then(|m| m.get("idealyst")).and_then(|i| i.get("dev"));
+        let table = value.get(section).and_then(|p| p.get("metadata")).and_then(|m| m.get("idealyst")).and_then(|i| i.get("dev"));
         let Some(table) = table else { return Ok(None) };
-        let config = table
+        table
             .clone()
             .try_into::<Self>()
-            .map_err(|e| anyhow::anyhow!("[package.metadata.idealyst.dev]: {e}"))?;
-        Ok(Some(config))
+            .map_err(|e| anyhow::anyhow!("[{section}.metadata.idealyst.dev]: {e}"))?;
+        Ok(table.as_table().cloned())
     }
+
+    #[cfg(test)]
+    fn parse(manifest: &str) -> Result<Option<Self>> {
+        Ok(Self::table_in(manifest, "package")?.map(|t| toml::Value::Table(t).try_into()).transpose()?)
+    }
+}
+
+/// The text of the manifest of the workspace `dir` belongs to, found as cargo
+/// finds it: `package.workspace` if the manifest names one, else the nearest
+/// ancestor with a `[workspace]` table, which may be `dir` itself. `None` for
+/// a package outside any workspace, or one the root lists in `exclude`.
+fn workspace_manifest(dir: &Path, manifest: &str) -> Option<String> {
+    let value: toml::Value = toml::from_str(manifest).ok()?;
+    if value.get("workspace").is_some() {
+        return Some(manifest.to_string());
+    }
+    let dir = std::fs::canonicalize(dir).ok()?;
+    if let Some(path) = value.get("package").and_then(|p| p.get("workspace")).and_then(|w| w.as_str()) {
+        return std::fs::read_to_string(dir.join(path).join("Cargo.toml")).ok();
+    }
+    for root in dir.ancestors().skip(1) {
+        let Ok(text) = std::fs::read_to_string(root.join("Cargo.toml")) else { continue };
+        let Ok(parsed) = toml::from_str::<toml::Value>(&text) else { continue };
+        let Some(workspace) = parsed.get("workspace") else { continue };
+        let relative = dir.strip_prefix(root).ok()?;
+        let excluded = workspace
+            .get("exclude")
+            .and_then(|e| e.as_array())
+            .is_some_and(|list| list.iter().filter_map(|e| e.as_str()).any(|e| relative.starts_with(e)));
+        return (!excluded).then_some(text);
+    }
+    None
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -296,6 +351,67 @@ mod tests {
             assert!(e.contains("[package.metadata.idealyst.dev]"), "{e}");
         }
         assert_eq!(ProjectBuildConfig::parse("not toml [[").unwrap(), None, "cargo reports that");
+    }
+
+    /// Cargo has no inheritance for `package.metadata`, so a workspace with
+    /// several apps repeated the table in each.
+    #[test]
+    fn regression_a_workspace_table_is_every_members_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let write = |path: &str, text: &str| {
+            let file = root.join(path).join("Cargo.toml");
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        };
+        write(
+            "",
+            "[workspace]\nmembers = [\"apps/*\"]\nexclude = [\"apps/out\"]\n\
+             [workspace.metadata.idealyst.dev]\nlocal = true\nfeatures = [\"beta\"]\npremint = true\n",
+        );
+        write("apps/plain", "[package]\nname = \"plain\"\n");
+        write(
+            "apps/own",
+            "[package]\nname = \"own\"\n[package.metadata.idealyst.dev]\nfeatures = [\"mine\"]\npremint = false\n",
+        );
+        write("apps/out", "[package]\nname = \"out\"\n");
+
+        let load = |path: &str| ProjectBuildConfig::load(&root.join(path)).unwrap();
+        let plain = load("apps/plain").expect("inherits the workspace's table");
+        assert_eq!(plain.local, Some(true));
+        assert_eq!(plain.features.as_deref(), Some(&["beta".to_string()][..]));
+
+        let own = load("apps/own").unwrap();
+        assert_eq!(own.local, Some(true), "a key it does not set is inherited");
+        assert_eq!(own.premint, Some(false), "a key it sets wins");
+        assert_eq!(own.features.as_deref(), Some(&["mine".to_string()][..]), "replaced, not added to");
+
+        assert_eq!(load("apps/out"), None, "an excluded package is not a member");
+        assert_eq!(load("").unwrap().local, Some(true), "a root package is its own workspace");
+    }
+
+    /// A package that names its workspace uses that one, wherever it sits.
+    #[test]
+    fn a_package_workspace_key_picks_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("ws")).unwrap();
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(root.join("ws/Cargo.toml"), "[workspace]\n[workspace.metadata.idealyst.dev]\nsplit = true\n").unwrap();
+        std::fs::write(root.join("app/Cargo.toml"), "[package]\nname = \"a\"\nworkspace = \"../ws\"\n").unwrap();
+        assert_eq!(ProjectBuildConfig::load(&root.join("app")).unwrap().unwrap().split, Some(true));
+    }
+
+    /// A typo in the shared table is an error naming that table.
+    #[test]
+    fn a_typo_in_the_workspace_table_names_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n[workspace.metadata.idealyst.dev]\nloca = true\n").unwrap();
+        std::fs::write(root.join("app/Cargo.toml"), "[package]\nname = \"a\"\n").unwrap();
+        let e = ProjectBuildConfig::load(&root.join("app")).unwrap_err().to_string();
+        assert!(e.contains("[workspace.metadata.idealyst.dev]"), "{e}");
     }
 
     /// `idealyst.toml`'s `[cache]` overlays into DevConfig with its named

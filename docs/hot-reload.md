@@ -2302,6 +2302,26 @@ session behaves as it always has: flags and defaults, no warnings, no
 protection. In `Cargo.toml` rather than `dev.toml` because these choose the
 build and belong to the project, where `dev.toml` holds a machine's ports.
 
+A workspace with several apps can state it once. Cargo has no inheritance for
+`package.metadata`, so the CLI reads the table from the workspace root as every
+member's default:
+
+```toml
+# <workspace root>/Cargo.toml
+[workspace.metadata.idealyst.dev]
+local = true
+features = ["beta"]
+
+# crates/app-main/Cargo.toml
+[package.metadata.idealyst.dev]
+features = ["kiosk"]    # replaces ["beta"]; `local` is still inherited
+```
+
+A member's key replaces the workspace's whole value, so `features` lists do not
+add up. The root is the one cargo uses: `package.workspace` if set, else the
+nearest ancestor with a `[workspace]` table. A package in the root's `exclude`
+inherits nothing.
+
 Platform filters (`--web` selects from `targets`) and behaviour flags (ports,
 `--no-watch`, `--no-open`, `--metrics`, `--interactive`, `--experimental-build`)
 stay flags and warn about nothing.
