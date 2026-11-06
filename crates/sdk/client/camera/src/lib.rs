@@ -62,7 +62,10 @@
 //!   [`native_source`](MediaStream::native_source) for zero-copy display /
 //!   GPU / recording consumers.
 //! - **iOS / macOS** — `AVCaptureSession` + `AVCaptureVideoDataOutput`.
-//! - **Android** — `Camera2` + `ImageReader` via a Kotlin shim.
+//! - **Android** — `Camera2` via a Kotlin shim, into a display's `Surface` (the
+//!   stream's [`native_source`](MediaStream::native_source), a
+//!   [`PreviewSource`](media_stream::PreviewSource)) with no CPU copy, and into an
+//!   `ImageReader` only while a consumer wants CPU frames.
 //! - **desktop Linux** — GStreamer **V4L2** (`v4l2src ! videoconvert !
 //!   appsink`), pushing CPU `RGBA8` frames. The PipeWire/xdg-desktop-portal
 //!   path (`pipewiresrc`) is a documented follow-on (needs
@@ -110,6 +113,12 @@ mod android_rotation;
 // planes of each camera image. Host-tested like the above.
 #[cfg(any(test, all(target_os = "android", not(target_arch = "wasm32"))))]
 mod android_yuv;
+
+// Which outputs a Camera2 repeating request targets and which size the preview
+// output takes: the decisions the Android shim asks for over JNI. Host-tested
+// like the above.
+#[cfg(any(test, all(target_os = "android", not(target_arch = "wasm32"))))]
+mod android_preview;
 
 pub use config::{CameraConfig, CameraDevice, CameraFacing, DeviceFacing};
 pub use error::CameraError;

@@ -15,7 +15,8 @@ license.workspace = true
 #
 #   - web (wasm32):     getUserMedia + a <video>/<canvas> frame pump
 #   - iOS / macOS:      AVCaptureSession + AVCaptureVideoDataOutput
-#   - Android:          Camera2 + ImageReader via JNI on a worker thread
+#   - Android:          Camera2 into a display's Surface, and an ImageReader on
+#                       demand, via JNI on a worker thread
 #   - desktop Linux:    GStreamer V4L2 (v4l2src ! videoconvert ! appsink)
 #   - desktop Windows:  Media Foundation IMFSourceReader on a capture thread
 #
@@ -88,7 +89,7 @@ web-glue = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 
-# Android target: Camera2 + ImageReader, driven by a Kotlin shim that
+# Android target: Camera2 (a preview Surface + ImageReader), driven by a Kotlin shim that
 # trampolines frames back through JNI. `ndk-context` exposes the host
 # JavaVM + Activity (for the runtime permission request), mirroring the
 # `microphone`/`biometrics` SDKs.

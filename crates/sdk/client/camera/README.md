@@ -48,7 +48,7 @@ everywhere:
 | --- | --- | --- |
 | iOS device / macOS | `AVCaptureSession` + `AVCaptureVideoDataOutput` | `BGRA` → `RGBA8` |
 | **iOS Simulator** | **synthetic test-pattern stream** (no camera hardware exists) | `RGBA8` |
-| Android | `Camera2` + `ImageReader` (via a Kotlin shim; conversion in Rust) | `YUV_420_888` → `RGBA8` |
+| Android | `Camera2` into a display's `Surface` with no CPU copy, and an `ImageReader` on demand (via a Kotlin shim; conversion in Rust) | `YUV_420_888` → `RGBA8` |
 | Web (wasm32) | `getUserMedia` + a `<video>`/`<canvas>` frame pump | canvas `RGBA8` |
 | desktop Linux | GStreamer **V4L2** (`v4l2src ! videoconvert ! appsink`) | device layout → `RGBA8` |
 | desktop Windows | Media Foundation: `MFEnumDeviceSources` + an `IMFSourceReader` with video processing, on a capture thread | `RGB32` (BGRX, row order per stride) → `RGBA8` |
@@ -120,6 +120,9 @@ has an orientation to follow:
   unmirrored. The math is `src/android_rotation.rs` (host-tested), called
   from Kotlin through the `nativeFrameRotation` JNI export; the rotation is
   baked into the YUV→RGBA conversion, `src/android_yuv.rs` (host-tested too).
+  A native preview in `video` shows the same picture: Camera2 mirrors a front
+  camera on its way to a `TextureView`, and `video` undoes that and applies the
+  same rotation, so what the person lines up is what a captured frame holds.
 
 > Up to 1.6.0 the iOS backend pinned Portrait once at open and the Android
 > shim rotated by the sensor mounting alone, so on a tablet (or phone) in
@@ -132,8 +135,45 @@ A **live source you tap**, on purpose. `subscribe` fires from the capture
 thread with each frame; `latest` polls the most recent. The stream stays
 unopinionated about display/encoding so a `video` consumer or GPU compositor
 can layer on top — and so the platform transport (a web `MediaStream`, an
-Apple `CVPixelBuffer`, an Android `SurfaceTexture`) never leaks into your
+Apple `CVPixelBuffer`, an Android preview `Surface`) never leaks into your
 code.
+
+**CPU frames are made on demand.** A stream only being displayed runs no
+per-frame conversion on web, Apple or Android: `video` shows the platform's
+native source. Frames are made while something `subscribe`s, and for two seconds
+after a `latest`. So:
+
+- For one still, **`screenshot().await`** — it raises demand, gets a new frame
+  (a few frames' time on Android, where the `ImageReader` has to join the request)
+  and lowers it. It resolves `None` if the camera goes away first.
+- `latest` on an otherwise idle stream answers `None` and starts the frames; a
+  caller polling at least every two seconds then gets them. A frame from before an
+  idle spell is never handed back as current.
+- To keep frames coming, hold a `subscribe`. Don't hold one just so `latest` has
+  something to read: on Android that puts the conversion back on every frame.
+
+### Android: the preview and the reader
+
+One capture session holds a display's `Surface` and a `YUV_420_888` `ImageReader`,
+at one size and aspect ratio, so the two show the same crop of the sensor. The
+repeating request moves on demand: reader alone with nothing attached (frames
+discarded, so exposure has settled for a first pull), preview alone while only
+displayed, both while a consumer also wants frames. The rules are in
+`src/android_preview.rs` (host-tested).
+
+- **A surface arriving.** A session's outputs are fixed at creation and a view's
+  surface only exists after its first layout. On API 26+ the first session declares
+  a deferred preview output, and the surface fills it with the session running, so
+  nothing pauses. A deferred output fills once: a later surface, or any surface below
+  API 26 or on a LEGACY device, rebuilds the session, a pause of a few frames.
+- **A device saying no.** `PRIV PREVIEW + YUV PREVIEW` is guaranteed on every
+  hardware level, up to the smaller of the display and 1080p. A session that fails
+  anyway, a deferred output refused, or a preview that accepted a surface and showed
+  nothing for four seconds all fall back to the CPU path, not a black box. The log
+  says which (tags `idealyst-camera` and `idealyst-video`).
+- **A slow consumer.** Conversion runs on its own thread and the reader's listener
+  always takes the newest image, dropping one left waiting, so a heavy `subscribe`
+  costs CPU frames rather than holding the preview to its pace.
 
 > **Frames are borrowed.** In a `subscribe` callback `frame.data` points at a
 > reused buffer. Copy out what you need before returning; don't stash the
@@ -314,7 +354,7 @@ compiles for that target but isn't confirmed on real hardware yet (see the
 verification note above). Tick each item as you exercise it.
 
 **Automated**
-- [x] `cargo test -p camera` — portable logic (frame-size math + config builders) the iOS orientation mapping (`src/orientation.rs`: all four interface orientations × front/back, mirroring, sensor calibration), the Android frame rotation (`src/android_rotation.rs`: all four display rotations × front/back) and the Android YUV→RGBA conversion (`src/android_yuv.rs`: layouts, rotations, strides, refused frames)
+- [x] `cargo test -p camera` — portable logic (frame-size math + config builders) the iOS orientation mapping (`src/orientation.rs`: all four interface orientations × front/back, mirroring, sensor calibration), the Android frame rotation (`src/android_rotation.rs`: all four display rotations × front/back), the Android YUV→RGBA conversion (`src/android_yuv.rs`: layouts, rotations, strides, refused frames) and the Android preview's repeating targets and size (`src/android_preview.rs`)
 - [ ] `cargo test -p camera --test host_capture -- --ignored --nocapture` — opens the host camera, asserts a well-formed RGBA8 frame
 - [ ] `cargo build -p camera --target wasm32-unknown-unknown` — web target
 - [x] `cargo test -p camera --target wasm32-unknown-unknown` (headless Chrome through the workspace runner; `webdriver.json` gives it a fake camera) — `tests/web_camera.rs`: the published `native_source` IS the capture stream (stopping the camera ends a consumer's tracks — the old web-sys `stream.clone()` published a copy), and a subscriber receives RGBA8 frames off the canvas pump
@@ -322,7 +362,7 @@ verification note above). Tick each item as you exercise it.
 **Behavior**
 - [ ] **Web** — `getUserMedia` prompt appears (secure context only); `subscribe` delivers live RGBA8 frames at the requested resolution; deny → `PermissionDenied`, no crash.
 - [ ] **iOS** — on a **device**, permission prompt with the app's reason; preview shows live frames at the requested resolution; preview AND `latest()` RGBA frames are upright in all four interface orientations on an iPhone and an iPad, and re-orient on rotation; the front camera is unmirrored (matches web); front/back switch works; deny → `PermissionDenied`. On the **Simulator** the synthetic gradient/bouncing-ball stream renders (no hardware). ⚠️ device path not yet re-confirmed since permission moved to the `permissions` SDK — verify the prompt still appears.
-- [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: permission prompt fires (delegated to `permissions`) and `open()` resumes on Allow; `open()` yields RGBA8 frames after grant; frames are upright in all four display rotations (front and back, unmirrored) and re-orient on rotation, including 180° flips; deny → `PermissionDenied`.
+- [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: permission prompt fires (delegated to `permissions`) and `open()` resumes on Allow; `open()` yields RGBA8 frames after grant; frames are upright in all four display rotations (front and back, unmirrored) and re-orient on rotation, including 180° flips; deny → `PermissionDenied`; with `video` displaying and nothing subscribed, the capture thread is idle and the reader is not a target; `screenshot()` returns a frame matching the preview; a device that refuses the preview shows CPU frames.
 - [ ] **macOS** — hardware-verified against the built-in camera (`host_capture`); confirm the prompt still appears now that the grant routes through the `permissions` SDK.
 - [ ] **Device selection** — `devices()` lists every attached camera with a non-empty id and label, and each opens by id; an unknown id is `NoCamera`. macOS hardware-verified (`every_listed_camera_opens_by_id`: built-in + a monitor's camera); Linux verified in a camera-less container (empty list, unknown id); web covered by `web_lists_cameras_and_opens_each_by_id`; iOS, Android and Windows compile-checked only.
 - [ ] **desktop Linux** — synthetic-frame verified headless (`videotestsrc_delivers_mapped_rgba_frame`); on a host with a webcam run `cargo test -p camera imp::tests::live_v4l2 -- --ignored --nocapture` (needs read access to `/dev/videoN`) and confirm real RGBA8 frames arrive.
