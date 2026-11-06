@@ -108,6 +108,15 @@ this SDK).
 
 See `crates/sdk/client/dnd/examples/dnd-demo` for a working screen.
 
+## Scrolling during a drag
+
+Drop zones are measured at drag start, so a scroller that moves them must say
+so: call `DragContext::scrolled_by(dx, dy)` from its `on_scroll`, or from your
+auto-scroll loop. That re-reads the zones, picks up any a virtualized list
+mounted, and keeps an in-place source under the pointer.
+`DragContext::refresh_rects()` does the first two for targets that moved some
+other way.
+
 ## What it deliberately leaves to you
 
 Auto-scrolling a list while dragging near its edge, reorder animations, and
