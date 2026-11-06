@@ -21,9 +21,9 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Bridges Android **Camera2** + **ImageReader** to Rust for the `camera`
  * SDK. Rust calls [open] with a `token` identifying the awaiting native
- * stream; the shim opens the camera, streams `YUV_420_888` frames, converts
- * each to tightly-packed top-down `RGBA8`, and trampolines them back through
- * [nativeFrameDirect]. Lifecycle (success / failure) goes through [nativeOpened] /
+ * stream; the shim opens the camera, streams `YUV_420_888` frames, and hands
+ * each image's planes to Rust through [nativeFrameYuv], which converts them to
+ * tightly-packed top-down `RGBA8`. Lifecycle (success / failure) goes through [nativeOpened] /
  * [nativeError]. [close] tears the session down.
  *
  * Camera2 is callback-driven and the open must be issued on a looper thread,
@@ -66,14 +66,6 @@ object RustCamera2Helper {
         // cleanup().
         var displayManager: DisplayManager? = null
         var displayListener: DisplayManager.DisplayListener? = null
-        // Reused direct RGBA output buffer, allocated once per session
-        // (re-sized only if the frame dimensions change). Converting into
-        // it and handing it to `nativeFrameDirect` means each frame neither
-        // allocates a Java `ByteArray` nor copies across the JNI boundary —
-        // Rust reads the off-heap region zero-copy via
-        // `GetDirectBufferAddress`. At 1080p30 this drops ~480 MB/s of
-        // per-frame heap allocation (Java byte[] + Rust Vec) to zero.
-        var directBuf: java.nio.ByteBuffer? = null
     }
 
     private val sessions = ConcurrentHashMap<Long, Session>()
@@ -177,24 +169,25 @@ object RustCamera2Helper {
         reader.setOnImageAvailableListener({ r ->
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
+                // Conversion runs in Rust: a per-pixel `ByteBuffer` loop here
+                // pins this thread at about one frame a second at 1080p.
+                val (y, u, v) = image.planes
                 // One read per frame: a rotation landing mid-frame applies
                 // from the next frame, never half-way through this one.
-                val rot = session.rotation
-                // 90°/270° rotation swaps the frame's width and height.
-                val swap = rot == 90 || rot == 270
-                val outW = if (swap) image.height else image.width
-                val outH = if (swap) image.width else image.height
-                val needed = outW * outH * 4
-                // Reuse (or first-allocate / resize) the direct output
-                // buffer, then convert straight into its off-heap memory.
-                var buf = session.directBuf
-                if (buf == null || buf.capacity() != needed) {
-                    buf = java.nio.ByteBuffer.allocateDirect(needed)
-                    session.directBuf = buf
-                }
-                buf.clear()
-                yuv420ToRgba(image, rot, buf)
-                nativeFrameDirect(token, buf, outW, outH)
+                nativeFrameYuv(
+                    token,
+                    y.buffer,
+                    u.buffer,
+                    v.buffer,
+                    intArrayOf(
+                        y.rowStride, y.pixelStride,
+                        u.rowStride, u.pixelStride,
+                        v.rowStride, v.pixelStride,
+                    ),
+                    image.width,
+                    image.height,
+                    session.rotation,
+                )
             } catch (_: Throwable) {
                 // Drop the frame; never throw into the listener.
             } finally {
@@ -356,7 +349,7 @@ object RustCamera2Helper {
         } catch (_: Throwable) {
         }
         // Stop the capture thread and WAIT for it to drain BEFORE closing the
-        // ImageReader. A frame may be mid-`yuv420ToRgba` on that thread reading
+        // ImageReader. A frame may be mid-`nativeFrameYuv` on that thread reading
         // the reader's native Image buffers; `reader.close()` frees them, and
         // reading freed native memory is a use-after-free SIGSEGV (the "camera
         // crashes the app a while after starting" bug — only fires when the
@@ -373,82 +366,6 @@ object RustCamera2Helper {
         try {
             session.reader?.close()
         } catch (_: Throwable) {
-        }
-    }
-
-    /**
-     * Convert a `YUV_420_888` [image] to tightly-packed top-down `RGBA8`
-     * (BT.601 full-range), rotating the output by [rotation] degrees clockwise
-     * ([Session.rotation]: sensor mounting + display rotation) so frames are
-     * upright on the current display. The rotation is baked into the destination index —
-     * no extra copy pass. O(width*height); a future GPU/RenderScript path can
-     * replace this without touching the Rust side.
-     *
-     * For 90°/270° the output is `height × width` (dimensions swapped); the
-     * caller emits the swapped size to [nativeFrameDirect]. Never mirrors —
-     * the front camera comes out unmirrored, matching the web and iOS backends.
-     */
-    // Converts `image` (YUV_420_888) to tightly-packed top-down RGBA8,
-    // rotated by `rotation`, writing directly into `out` (a cleared direct
-    // ByteBuffer of `outW * outH * 4` bytes). Indexed `put`s mirror the
-    // indexed `get`s already used to read the YUV planes (which are
-    // themselves direct buffers), so there's no new access-cost class.
-    private fun yuv420ToRgba(image: Image, rotation: Int, out: java.nio.ByteBuffer) {
-        val width = image.width
-        val height = image.height
-        // Output row stride (in pixels): swapped for 90°/270°.
-        val outW = if (rotation == 90 || rotation == 270) height else width
-
-        val yPlane = image.planes[0]
-        val uPlane = image.planes[1]
-        val vPlane = image.planes[2]
-
-        val yBuf = yPlane.buffer
-        val uBuf = uPlane.buffer
-        val vBuf = vPlane.buffer
-
-        val yRowStride = yPlane.rowStride
-        val yPixelStride = yPlane.pixelStride
-        val uRowStride = uPlane.rowStride
-        val uPixelStride = uPlane.pixelStride
-        val vRowStride = vPlane.rowStride
-        val vPixelStride = vPlane.pixelStride
-
-        for (row in 0 until height) {
-            val yRow = row * yRowStride
-            val uvRow = (row shr 1)
-            for (col in 0 until width) {
-                val y = (yBuf.get(yRow + col * yPixelStride).toInt() and 0xFF)
-                val uIndex = uvRow * uRowStride + (col shr 1) * uPixelStride
-                val vIndex = uvRow * vRowStride + (col shr 1) * vPixelStride
-                val u = (uBuf.get(uIndex).toInt() and 0xFF) - 128
-                val v = (vBuf.get(vIndex).toInt() and 0xFF) - 128
-
-                var r = y + ((1436 * v) shr 10)
-                var g = y - ((352 * u + 731 * v) shr 10)
-                var b = y + ((1814 * u) shr 10)
-
-                if (r < 0) r = 0 else if (r > 255) r = 255
-                if (g < 0) g = 0 else if (g > 255) g = 255
-                if (b < 0) b = 0 else if (b > 255) b = 255
-
-                // Destination pixel in the rotated frame. Clockwise by
-                // `rotation`; 90°/270° map into the height×width output.
-                val dRow: Int
-                val dCol: Int
-                when (rotation) {
-                    90 -> { dRow = col; dCol = height - 1 - row }
-                    180 -> { dRow = height - 1 - row; dCol = width - 1 - col }
-                    270 -> { dRow = width - 1 - col; dCol = row }
-                    else -> { dRow = row; dCol = col }
-                }
-                val dst = (dRow * outW + dCol) * 4
-
-                out.put(dst, r.toByte())
-                out.put(dst + 1, g.toByte())
-                out.put(dst + 2, b.toByte())
-                out.put(dst + 3, 255.toByte())
-            }
         }
     }
 
@@ -470,11 +387,20 @@ object RustCamera2Helper {
         front: Boolean,
     ): Int
 
+    /**
+     * One image's planes, valid for this call; [strides] holds each plane's row
+     * then pixel stride, in Y, U, V order. Rust converts them to upright `RGBA8`,
+     * rotated [rotation] degrees clockwise ([Session.rotation]).
+     */
     @JvmStatic
-    private external fun nativeFrameDirect(
+    private external fun nativeFrameYuv(
         token: Long,
-        buffer: java.nio.ByteBuffer,
+        y: java.nio.ByteBuffer,
+        u: java.nio.ByteBuffer,
+        v: java.nio.ByteBuffer,
+        strides: IntArray,
         width: Int,
         height: Int,
+        rotation: Int,
     )
 }

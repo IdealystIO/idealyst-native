@@ -106,6 +106,10 @@ mod orientation;
 #[cfg(any(test, all(target_os = "android", not(target_arch = "wasm32"))))]
 mod android_rotation;
 
+// The YUV→RGBA conversion the Android backend runs per frame. Host-tested too.
+#[cfg(any(test, all(target_os = "android", not(target_arch = "wasm32"))))]
+mod android_yuv;
+
 pub use config::{CameraConfig, CameraDevice, CameraFacing, DeviceFacing};
 pub use error::CameraError;
 

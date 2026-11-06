@@ -4,9 +4,9 @@
 //! The pure half of the Android backend's orientation handling. The Kotlin
 //! shim (`RustCamera2Helper.kt`) reads `SENSOR_ORIENTATION`, `LENS_FACING`
 //! and the display's `Surface.ROTATION_*`, asks this function (through the
-//! `nativeFrameRotation` JNI export in `android.rs`) for the angle, and bakes
-//! that rotation into its YUV→RGBA conversion. It asks again whenever the
-//! display rotates. The math lives here, in Rust, so it is unit-tested on the
+//! `nativeFrameRotation` JNI export in `android.rs`) for the angle, and passes
+//! it with each frame to the YUV→RGBA conversion (`android_yuv.rs`). It asks
+//! again whenever the display rotates. The math lives here, in Rust, so it is unit-tested on the
 //! host; there is no JVM test setup in this repo.
 //!
 //! **The formula** is the standard Camera2 one for an UNMIRRORED image (the
