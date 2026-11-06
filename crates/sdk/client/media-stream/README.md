@@ -31,6 +31,8 @@ Two peer abstractions with the same shape — a `!Send` consumer handle plus a
   - `write_rgba8(w, h, data)` / `write_bgra8(w, h, data)` — push a frame
     (BGRA is swizzled to RGBA), stamped with `clock::now_micros()`.
   - `*_at(.., pts_micros)` variants for a real hardware capture timestamp.
+  - `write_rgba8_with(w, h, |out| ..)` — convert straight into the channel's
+    reused buffer instead of copying a finished frame in.
   - `wants_cpu_frames()` — gate per-frame CPU normalization when only a
     native-source display is attached.
 - **`AudioStream`** / **`AudioWriter`** — the audio peer (same `new` / `subscribe`

@@ -204,7 +204,8 @@ impl FrameChannel {
     // Single-producer: frames arrive from one capture source. We take the
     // previous frame's buffer out to reuse its allocation, fill it, fan out
     // to push subscribers WITHOUT holding the `latest` lock (so a subscriber
-    // may safely call `latest()`), then store it back as the new latest.
+    // may safely call `latest()`), then store it back as the new latest. `fill`
+    // gets the buffer as the last frame left it and must replace its contents.
     fn write(&self, width: u32, height: u32, pts_micros: u64, fill: impl FnOnce(&mut Vec<u8>)) {
         if width == 0 || height == 0 {
             return;
@@ -216,7 +217,6 @@ impl FrameChannel {
             .take()
             .map(|f| f.rgba)
             .unwrap_or_default();
-        buf.clear();
         fill(&mut buf);
 
         // Fan out (no `latest` lock held).
@@ -388,7 +388,27 @@ impl FrameWriter {
             None => return,
         };
         self.channel.write(width, height, pts_micros, |buf| {
+            buf.clear();
             buf.extend_from_slice(&data[..need]);
+        });
+    }
+
+    /// Push a frame by writing it directly into the channel's reused buffer,
+    /// stamped with the current [`clock::now_micros`]. `fill` gets exactly
+    /// `width * height * 4` bytes, holding whatever the previous frame left, and
+    /// must write every one as tightly-packed top-down `RGBA8`. A zero dimension
+    /// is ignored and `fill` is not called.
+    ///
+    /// For a producer that converts pixels anyway: converting into this buffer
+    /// costs one pass, where [`write_rgba8`](Self::write_rgba8) would copy the
+    /// finished frame a second time. Decide whether the source frame is good
+    /// before calling; the frame is published when `fill` returns.
+    pub fn write_rgba8_with(&self, width: u32, height: u32, fill: impl FnOnce(&mut [u8])) {
+        let need = width as usize * height as usize * 4;
+        self.channel.write(width, height, clock::now_micros(), |buf| {
+            // Not `clear` first: that would zero the whole frame just to overwrite it.
+            buf.resize(need, 0);
+            fill(buf);
         });
     }
 
@@ -407,6 +427,7 @@ impl FrameWriter {
             None => return,
         };
         self.channel.write(width, height, pts_micros, |buf| {
+            buf.clear();
             buf.reserve(need);
             for px in data[..need].chunks_exact(4) {
                 buf.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
@@ -854,6 +875,68 @@ mod tests {
         writer.write_bgra8(1, 1, &[10, 20, 30, 40]);
         let p2 = stream.inner.channel.latest.lock().unwrap().as_ref().unwrap().pts_micros;
         assert!(p2 >= p1);
+    }
+
+    #[test]
+    fn write_rgba8_with_fills_in_place_and_publishes() {
+        let (stream, writer) = MediaStream::new();
+        let seen = Arc::new(Mutex::new(Vec::<(u32, u32, Vec<u8>)>::new()));
+        let _sub = {
+            let seen = seen.clone();
+            stream.subscribe(move |f: &VideoFrame| {
+                seen.lock().unwrap().push((f.width, f.height, f.data.to_vec()));
+            })
+        };
+        writer.write_rgba8_with(W, H, |out| {
+            assert_eq!(out.len(), 8);
+            out.copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        });
+        assert_eq!(stream.generation(), 1);
+        assert_eq!(*seen.lock().unwrap(), vec![(W, H, vec![1, 2, 3, 4, 5, 6, 7, 8])]);
+        let mut pulled = Vec::new();
+        assert_eq!(stream.latest(&mut pulled), Some((W, H)));
+        assert_eq!(pulled, [1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    /// The point of the in-place write: a steady stream keeps one allocation,
+    /// and the buffer arrives unzeroed, so `fill` pays for its own writes only.
+    #[test]
+    fn write_rgba8_with_reuses_the_last_frame_buffer() {
+        let (stream, writer) = MediaStream::new();
+        let mut first = std::ptr::null();
+        writer.write_rgba8_with(W, H, |out| {
+            first = out.as_ptr();
+            out.fill(9);
+        });
+        writer.write_rgba8_with(W, H, |out| {
+            assert_eq!(out.as_ptr(), first, "same allocation");
+            assert_eq!(out, [9; 8], "not zeroed between frames");
+        });
+        assert_eq!(stream.generation(), 2);
+    }
+
+    /// A quarter turn swaps width and height at the same byte length; a real
+    /// size change has to shrink or grow to exactly the new frame.
+    #[test]
+    fn write_rgba8_with_sizes_the_buffer_to_each_frame() {
+        let (stream, writer) = MediaStream::new();
+        for (w, h) in [(2, 1), (1, 2), (3, 3), (1, 1)] {
+            writer.write_rgba8_with(w, h, |out| {
+                assert_eq!(out.len(), (w * h * 4) as usize);
+                out.fill(7);
+            });
+            let mut pulled = Vec::new();
+            assert_eq!(stream.latest(&mut pulled), Some((w, h)));
+            assert_eq!(pulled, vec![7; (w * h * 4) as usize]);
+        }
+    }
+
+    #[test]
+    fn write_rgba8_with_ignores_an_empty_frame() {
+        let (stream, writer) = MediaStream::new();
+        writer.write_rgba8_with(0, 4, |_| panic!("no frame to fill"));
+        writer.write_rgba8_with(4, 0, |_| panic!("no frame to fill"));
+        assert_eq!(stream.generation(), 0);
     }
 
     #[test]
