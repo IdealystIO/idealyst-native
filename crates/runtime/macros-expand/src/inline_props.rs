@@ -228,7 +228,12 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr, import_ke
         match &f.default {
             // `.into()` pinned by the field type — the same coercion
             // `#[component(default(...))]` and the `ui!` call site apply.
-            Some(expr) => quote! { #name: (#expr).into(), },
+            // An unsuffixed float literal picks its suffix from the field
+            // type instead (`float_lit`).
+            Some(expr) => {
+                let value = crate::float_lit::coerce_prop_value(expr);
+                quote! { #name: #value, }
+            }
             // `runtime_world`'s signal handles have no `Default` (and one
             // can't be added to a foreign type). A signal-typed prop's
             // struct-update base mints a fresh default-valued signal in

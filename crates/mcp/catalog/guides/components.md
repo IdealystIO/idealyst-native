@@ -122,6 +122,8 @@ ui! {
 
 Writing `.into()` yourself (`kind = typography_kind::H1.into()`) is a compile error — it double-converts (`(H1.into()).into()`), which is ambiguous. Pass the value bare.
 
+An unsuffixed float literal needs no suffix either: `Card(inset = 16.0)` lands in an `f32`, `f64`, `Option<f32>` or `Reactive<f32>` field as written. The macro picks `f64` when the field takes it and `f32` otherwise, so the literal never relies on rustc's `float_literal_f32_fallback` (a future hard error). This also holds for `#[prop(default = 2.5)]` and `#[component(default(gap = 4.5))]`.
+
 ### Reactive props — live text with `Reactive<T>` and `rx!`
 
 A prop typed `Reactive<T>` can carry either a static value or a live one, decided by the value's TYPE (no `.get()` scanning):

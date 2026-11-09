@@ -61,6 +61,7 @@
 extern crate proc_macro;
 
 mod component_attr;
+mod float_lit;
 // Always compiled (so its unit tests run on a default `cargo test`), but
 // its helpers are only *called* under `strict-docs` — suppress dead-code
 // when the feature is off.

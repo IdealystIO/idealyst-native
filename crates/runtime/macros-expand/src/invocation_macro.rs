@@ -85,8 +85,8 @@ pub(crate) fn generate_build_impl(
     } else {
         let fills = attr.defaults.iter().map(|d| {
             let name = &d.name;
-            let expr = &d.expr;
-            quote! { #name: (#expr).into(), }
+            let value = crate::float_lit::coerce_prop_value(&d.expr);
+            quote! { #name: #value, }
         });
         quote! {
             fn defaults() -> Self {

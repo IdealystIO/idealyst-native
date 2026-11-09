@@ -478,8 +478,8 @@ fn emit_fragment_as_vec(children: &[JsxNode]) -> TokenStream2 {
 }
 
 /// Returns the tokens for a prop value verbatim (no `.into()`). The
-/// caller adds coercion where needed — `emit_user` wraps each field as
-/// `(value).into()` in the props struct literal; primitives coerce in
+/// caller adds coercion where needed — `emit_user` coerces each field
+/// through `float_lit::coerce_prop_value`; primitives coerce in
 /// their own emitters.
 fn emit_attr_value_raw(value: &PropValue) -> TokenStream2 {
     match value {
@@ -697,8 +697,14 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[JsxNode]>) -> Toke
 
     let field_assignments = props.iter().map(|p| {
         let n = &p.name;
-        let v = emit_attr_value_raw(&p.value);
-        quote! { #n: (#v).into(), }
+        let v = match &p.value {
+            PropValue::Expr(e) => crate::float_lit::coerce_prop_value(e),
+            PropValue::Str(_) => {
+                let v = emit_attr_value_raw(&p.value);
+                quote! { (#v).into() }
+            }
+        };
+        quote! { #n: #v, }
     });
 
     let children_field = children.map(|kids| {

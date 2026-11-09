@@ -1819,11 +1819,12 @@ fn emit_user(
     // Each provided prop becomes a struct field, coerced via `.into()`.
     // The field's declared type pins the `.into()` target, so this is
     // a uniform coercion — `"x"` → `String`/`Reactive<String>`, identity
-    // for matching types.
+    // for matching types. An unsuffixed float literal is the exception:
+    // `float_lit` picks its suffix from the field type instead.
     let field_assignments = props.iter().map(|p| {
         let n = &p.name;
-        let v = &p.value;
-        quote! { #n: (#v).into(), }
+        let v = crate::float_lit::coerce_prop_value(&p.value);
+        quote! { #n: #v, }
     });
 
     // Children (from a `{ … }` block) flow into a `children` field as a
