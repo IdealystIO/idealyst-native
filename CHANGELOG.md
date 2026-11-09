@@ -3207,6 +3207,25 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **An Android `text` is a lightweight label that draws its own text** (`backend-android-mobile`).
+  A `text` was a `TextView`, Android's whole text widget (editing, selection, autofill, autosize),
+  whose constructor resolves the theme's text style for every label: 45–100 µs a label on an
+  emulator, most of the cost of mounting a list. It is now `RustLabel`, a `View` that lays out
+  and draws its paragraph itself (`BoringLayout` / `StaticLayout`) and caches the layout per
+  width, so creating one costs about a tenth as much and the layout engine's measure probes are
+  direct calls.
+  - It renders as the `TextView` did: theme defaults are copied from a real `TextView` (one per
+    theme and font scale), and measuring, line limits, ellipsis, alignment, spans, shadows and
+    padding follow `TextView`'s rules. `tests/label-parity/run.sh` checks 22 cases on a device,
+    content-sized and at a fixed width, for identical size and pixels.
+  - Accessibility reads it as before: its text, the class name `android.widget.TextView`, and a
+    text-changed event on every update (a `live_region` label is still announced).
+  - On a 24-row roster mount (emulator medians), the build went from 21 ms to 8–10 ms, label
+    creation from about 9 ms to 1 ms, and measuring labels in the layout pass from 2.9 to 1.9 ms.
+  - Code that called `TextView` methods on a `text` node by JNI should use `RustLabel`: it keeps
+    `TextView`'s names for `setText`, `getText`, `setTextColor`, `getCurrentTextColor`,
+    `setTextSize`, `getTextSize`, `setTypeface`, `getTypeface`, `setGravity`, `getGravity`,
+    `setMaxLines`, `setEllipsize`, `setShadowLayer`, `getPaint` and `getLayout`.
 - **Styling and inserting views on Android is about twice as fast again** (`backend-android-mobile`).
   The style and insert paths called each View setter by name, which looks the method up on every
   call (1.5–7 µs on an emulator, against 0.1–0.2 µs through a cached method id). They now go through

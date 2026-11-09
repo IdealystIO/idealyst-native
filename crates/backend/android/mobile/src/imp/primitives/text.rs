@@ -1,13 +1,12 @@
-//! `TextPrim` — `android.widget.TextView`.
+//! `TextPrim` — `io.idealyst.runtime.RustLabel`, a `View` that lays out and
+//! draws its own text and renders as the `TextView` it replaced (see
+//! `RustLabel.kt` for why a `TextView` is too costly to build per label).
 
-use backend_android_core::helpers::set_text;
 use crate::imp::{with_env, AndroidBackend};
 use jni::objects::{GlobalRef, JValue};
 
 pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
-    // Built and configured JVM-side in one call: see `RustViewFactory.text`
-    // for the font-padding, line-spacing, min-height and gravity settings
-    // that make a TextView measure and sit like iOS's UILabel.
+    // Built JVM-side in one call (`RustViewFactory.text`).
     let view = with_env(|env| {
         let content = env.new_string(content).expect("new_string(text content)");
         let local = TEXT_FACTORY
@@ -17,7 +16,7 @@ pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
                     slot,
                     "io/idealyst/runtime/RustViewFactory",
                     "text",
-                    "(Landroid/content/Context;Ljava/lang/String;)Landroid/widget/TextView;",
+                    "(Landroid/content/Context;Ljava/lang/String;)Lio/idealyst/runtime/RustLabel;",
                 )?;
                 // SAFETY: the arguments match the signature above.
                 unsafe {
@@ -31,7 +30,7 @@ pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
         env.new_global_ref(local).unwrap()
     });
     // Install a Taffy measure function so flex layout can ask the
-    // TextView how tall it needs to be for a given available width.
+    // label how tall it needs to be for a given available width.
     // Without this, the framework's `Text` collapses to 0×0 and
     // every flex sibling around it gets a 0-height row — the welcome
     // screen's "Welcome to Idealyst" headline was the user-visible
@@ -55,10 +54,10 @@ pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
 }
 
 // =============================================================================
-// Styled runs — one TextView whose text is a SpannableString with one
+// Styled runs — one label whose text is a SpannableString with one
 // span-set per styled run. Android's text engine wraps the mixed-style
-// paragraph as a single unit, and — unlike AppKit — TextView merges its
-// own font/color properties into unspanned ranges, so only the DELTAS
+// paragraph as a single unit, and — unlike AppKit — the label's paint
+// carries its own font/color properties into unspanned ranges, so only the DELTAS
 // need spans and `apply_style`'s property writes never disturb them
 // (spans live in the CharSequence, not on the view). Theme swaps
 // re-realize through `caps::TextOps::update_styled_text` so
@@ -78,7 +77,7 @@ pub(crate) fn create_styled(b: &mut AndroidBackend, runs: &[runtime_shared::Text
     view
 }
 
-/// Build the `SpannableString` and hand it to `TextView.setText`.
+/// Build the `SpannableString` and hand it to `RustLabel.setText`.
 pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_shared::TextRun]) {
     with_env(|env| {
         let plain = runtime_shared::styled_text::plain_text_of(runs);
@@ -215,7 +214,7 @@ pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_shared::TextRun]) {
                         // stand in for "follow the text").
                         let span = env.new_object(
                             &cls,
-                            "(Landroid/widget/TextView;II)V",
+                            "(Lio/idealyst/runtime/RustLabel;II)V",
                             &[
                                 JValue::Object(view.as_obj()),
                                 JValue::Int(packed.unwrap_or(0)),
@@ -255,16 +254,18 @@ pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_shared::TextRun]) {
             start = end;
         }
 
-        let _ = env.call_method(
+        let _ = jcall!(
+            env,
             view.as_obj(),
+            "io/idealyst/runtime/RustLabel",
             "setText",
             "(Ljava/lang/CharSequence;)V",
-            &[JValue::Object(&sp)],
+            [JValue::Object(&sp)]
         );
     });
 }
 
-/// The TextView's min-content width in dp — its widest word, from the
+/// The label's min-content width in dp — its widest word, from the
 /// Kotlin `RustTextMeasure.minContentWidth`. A single-line view answers 0:
 /// the `AT_MOST 0` probe, which truncates a one-line label to its
 /// ellipsis. Asked once per view per layout pass (`MIN_CONTENT_MEMO`).
@@ -283,9 +284,9 @@ fn min_content_width(view: &GlobalRef) -> f32 {
                         slot,
                         "io/idealyst/runtime/RustTextMeasure",
                         "minContentWidth",
-                        "(Landroid/widget/TextView;)I",
+                        "(Lio/idealyst/runtime/RustLabel;)I",
                     )?;
-                    // SAFETY: the argument matches `(Landroid/widget/TextView;)I`.
+                    // SAFETY: the argument matches `(Lio/idealyst/runtime/RustLabel;)I`.
                     Some(unsafe { method.call_int(env, &[JValue::Object(&view_obj).as_jni()]) })
                 })
                 .unwrap_or(0);
@@ -306,7 +307,7 @@ runtime_tls::thread_local! {
         std::cell::RefCell::new(None);
 }
 
-/// Ask the TextView how big it wants to be for a given `available_width`:
+/// Ask the label how big it wants to be for a given `available_width`:
 /// `View.measure` at `AT_MOST width` (or `UNSPECIFIED` when unbounded), with
 /// no height bound, through [`super::super::probe_measure`], in dp.
 fn measure_textview(
@@ -319,19 +320,18 @@ fn measure_textview(
         let view_obj = view.as_obj();
         let density = super::super::cached_density(env, &view_obj);
         let width_spec = at_most_or_unspecified(avail_w_dp, density);
-        // No height constraint: UNSPECIFIED → TextView picks its
+        // No height constraint: UNSPECIFIED → the label picks its
         // natural height for the given width. A `max_lines` limit
         // (`setMaxLines` + `setEllipsize(END)`, `imp/style.rs`) is
-        // honoured here by TextView's own `onMeasure`: the height is
+        // honoured here by the label's own `onMeasure`: the height is
         // capped at that many lines and a 1-line limit measures one
         // ellipsized line, so no limit-specific code (or cache key) is
         // needed — the node is re-dirtied on every style apply.
-        let (measured_w_px, measured_h_px) =
-            super::super::probe_measure(env, &view_obj, width_spec, UNSPECIFIED);
+        let (measured_w_px, measured_h_px) = label_measure(env, &view_obj, width_spec, UNSPECIFIED);
         // `View.measure()` returns `text + padding` (Android includes
         // setPadding in the measured size). We do NOT subtract that
         // back out here, because the framework's `apply_style` already
-        // strips `padding_*` from the Taffy leaf style for TextView
+        // strips `padding_*` from the Taffy leaf style for text
         // nodes (see `imp::mod.rs::apply_style` text-view branch).
         // Taffy's outer-node size equals what `measure_fn` returns, so
         // returning measured (text + setPadding) yields outer = text +
@@ -347,6 +347,43 @@ fn measure_textview(
     })
 }
 
+/// `RustLabel.measureSize`: the size the label's `onMeasure` gives for
+/// these specs, in px, asked once per spec per layout pass (`MEASURE_MEMO`,
+/// shared with `probe_measure`). A direct call rather than `View.measure`
+/// through `probe_measure`: the label computes the answer without touching
+/// its own state, so there is no probe to undo.
+fn label_measure(env: &mut jni::JNIEnv, view: &jni::objects::JObject, width_spec: i32, height_spec: i32) -> (i32, i32) {
+    super::super::memoized_measure(view, width_spec, height_spec, || {
+        let packed = jcall!(
+            env,
+            view,
+            "io/idealyst/runtime/RustLabel",
+            "measureSize",
+            "(II)J",
+            [JValue::Int(width_spec), JValue::Int(height_spec)]
+        )
+        .and_then(|v| v.j())
+        .unwrap_or_else(|_| {
+            let _ = env.exception_clear();
+            0
+        });
+        ((packed >> 32) as i32, packed as i32)
+    })
+}
+
 pub(crate) fn update_text(node: &GlobalRef, content: &str) {
-    with_env(|env| set_text(env, &node.as_obj(), content));
+    with_env(|env| {
+        let Ok(content) = env.new_string(content) else {
+            let _ = env.exception_clear();
+            return;
+        };
+        let _ = jcall!(
+            env,
+            node.as_obj(),
+            "io/idealyst/runtime/RustLabel",
+            "setText",
+            "(Ljava/lang/CharSequence;)V",
+            [JValue::Object(&content)]
+        );
+    });
 }

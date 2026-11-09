@@ -394,7 +394,7 @@ more native property writes, every frame the value handle ticks."
 | --- | --- | --- |
 | `backend-web` | All props | Modern CSS individual transform properties (`translate`, `scale`, `rotate`) — composed pair state for `translate` and `scale`, single scalar for `rotate` and `opacity`. |
 | `backend-ios-mobile` | All props | Per-view `AnimatedTransformState` composes a `CGAffineTransform` (`T(tx,ty) * R(θ) * S(sx,sy)`) and writes via `setTransform:` on any transform-component update. Opacity → `setAlpha:`, colors → `setBackgroundColor:` / `setTintColor:`. |
-| `backend-android-mobile` | All scalar + `BackgroundColor`; `ForegroundColor` best-effort | Android `View` exposes separate native properties (`translationX/Y`, `scaleX/Y`, `rotation`, `alpha`) so each `AnimProp` is a direct setter — no composition state needed. `ForegroundColor` maps to `setTextColor` which works on TextView subclasses and silently fails elsewhere. |
+| `backend-android-mobile` | All scalar + `BackgroundColor`; `ForegroundColor` best-effort | Android `View` exposes separate native properties (`translationX/Y`, `scaleX/Y`, `rotation`, `alpha`) so each `AnimProp` is a direct setter — no composition state needed. `ForegroundColor` maps to `setTextColor`, which a `text` (its `RustLabel`) and TextView subclasses take; elsewhere it does nothing. |
 
 #### Static-style interaction
 

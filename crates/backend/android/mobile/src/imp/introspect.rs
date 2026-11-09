@@ -156,7 +156,12 @@ fn read_view_in_frame(env: &mut JNIEnv, view: &JObject, frame: NativeRect) -> Na
     node.set(keys::TRANSLATION_Y, translation.map(|px| NativeValue::Length(px / density)));
     read_background(env, view, density, &mut node);
     read_border(env, view, density, &mut node);
-    if is_instance(env, view, "android/widget/TextView") {
+    // A `text` node is a `RustLabel`, which answers the same getters
+    // `read_text` calls on a `TextView` (`getText`, `getCurrentTextColor`,
+    // `getTextSize`, `getTypeface`).
+    if is_instance(env, view, "io/idealyst/runtime/RustLabel")
+        || is_instance(env, view, "android/widget/TextView")
+    {
         node.role = Some("text".to_string());
         read_text(env, view, density, &mut node);
     }

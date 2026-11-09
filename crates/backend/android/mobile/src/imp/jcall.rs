@@ -119,3 +119,17 @@ macro_rules! jcall {
         })
     }};
 }
+
+/// [`jcall!`] for a method `RustLabel` shares with `TextView` (same name and
+/// signature): on `RustLabel` when `$is_label`, else on `TextView`. The text
+/// branch of style application serves both — a `text` node is a
+/// `RustLabel`, a `button` / `text_input` a `TextView`.
+macro_rules! text_call {
+    ($env:expr, $obj:expr, $is_label:expr, $name:literal, $sig:literal, [$($arg:expr),* $(,)?]) => {{
+        if $is_label {
+            jcall!($env, $obj, "io/idealyst/runtime/RustLabel", $name, $sig, [$($arg),*])
+        } else {
+            jcall!($env, $obj, "android/widget/TextView", $name, $sig, [$($arg),*])
+        }
+    }};
+}

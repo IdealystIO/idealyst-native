@@ -1204,7 +1204,7 @@ Each backend converges on the output through its own mechanism
 | --- | --- | --- |
 | Web / SSR | `box-shadow` | `text-shadow` |
 | iOS / macOS | CALayer shadow | CALayer shadow on the label (layer content is the glyphs) |
-| Android | Elevation shadow from the outline (`setElevation` + outline shadow colors, API 28+) | `TextView.setShadowLayer` |
+| Android | Elevation shadow from the outline (`setElevation` + outline shadow colors, API 28+) | `setShadowLayer` on the text's paint (`RustLabel`, as `TextView`) |
 
 `text-shadow` and `box-shadow` share the exact `<x> <y> <blur> <color>`
 grammar (neither takes a spread), so the mapping is lossless. The `y`

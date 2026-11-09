@@ -7,11 +7,9 @@
 //! resolved width. Many of those questions reach Android as the SAME
 //! `MeasureSpec` pair, because Taffy's known-width and definite-available
 //! cases both become `AT_MOST width`. Taffy's own cache is keyed on its
-//! inputs, not on the spec, so it misses them. A freshly mounted
-//! `TextView` cannot answer from Android's measure cache either: `setText`
-//! requested a layout, and the request stands until the view is laid out.
-//! Each probe was therefore a full text layout, about 8 per text leaf in a
-//! mounted list.
+//! inputs, not on the spec, so it misses them, and each probe that reaches
+//! the view lays its text out again: about 8 per text leaf in a mounted
+//! list without this memo.
 //!
 //! [`PassMemo`] answers a repeated question from the first answer. It is
 //! only valid while a pass runs: nothing that changes a view's content runs

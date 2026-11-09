@@ -526,7 +526,7 @@ impl TextHandle {
 pub trait TextOps {
     /// Write a color animation property onto the text node — almost
     /// always `AnimProp::ForegroundColor`, which maps to
-    /// `UILabel.textColor` on iOS, `TextView.setTextColor` on Android,
+    /// `UILabel.textColor` on iOS, the label's `setTextColor` on Android,
     /// and inline `style.color` on web. Bound from author code via
     /// [`AnimatedValue::bind_text_color`](crate::animation::AnimatedValue::bind_text_color).
     /// Default is a silent no-op.

@@ -105,7 +105,7 @@ mod transform_transition_policy;
 /// on the host; the JNI exports live in `imp/jni_exports.rs`.
 mod border_dash_policy;
 
-/// `max_lines` → `TextView.setMaxLines` / `setEllipsize` mapping and its
+/// `max_lines` → `setMaxLines` / `setEllipsize` mapping and its
 /// skip-if-unchanged decision. Un-gated like `sticky_compute` so the
 /// tests run on the host; the JNI calls live in `imp/style.rs`.
 mod text_truncation_policy;

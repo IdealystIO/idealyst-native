@@ -624,6 +624,10 @@ runtime_tls::thread_local! {
     static VIEW_MEASURE_PROBE: std::cell::RefCell<Option<StaticMethod>> =
         std::cell::RefCell::new(None);
 
+    /// `io.idealyst.runtime.RustLabel`, for [`is_label`].
+    static LABEL_CLASS: std::cell::RefCell<Option<GlobalRef>> =
+        std::cell::RefCell::new(None);
+
     /// `android.view.ViewGroup`, for `is_view_group` (the sticky and
     /// teardown walks ask it of every view they visit).
     static VIEW_GROUP_CLASS: std::cell::RefCell<Option<GlobalRef>> =
@@ -910,32 +914,45 @@ pub(crate) fn probe_measure(
     width_spec: i32,
     height_spec: i32,
 ) -> (i32, i32) {
+    memoized_measure(view, width_spec, height_spec, || {
+        let packed = VIEW_MEASURE_PROBE.with(|slot| {
+            let method = StaticMethod::cached(
+                env,
+                slot,
+                "io/idealyst/runtime/RustViewMeasure",
+                "probe",
+                "(Landroid/view/View;II)J",
+            )?;
+            // SAFETY: the arguments match `(Landroid/view/View;II)J`.
+            Some(unsafe {
+                method.call_long(
+                    env,
+                    &[
+                        JValue::Object(view).as_jni(),
+                        JValue::Int(width_spec).as_jni(),
+                        JValue::Int(height_spec).as_jni(),
+                    ],
+                )
+            })
+        });
+        packed.map_or((0, 0), |p| ((p >> 32) as i32, p as i32))
+    })
+}
+
+/// This pass's answer for `(view, width_spec, height_spec)`, or `measure`'s,
+/// recorded for the rest of the pass (`MEASURE_MEMO`).
+pub(crate) fn memoized_measure(
+    view: &JObject,
+    width_spec: i32,
+    height_spec: i32,
+    measure: impl FnOnce() -> (i32, i32),
+) -> (i32, i32) {
     let key = (view.as_raw() as usize, width_spec, height_spec);
     if let Some(hit) = MEASURE_MEMO.with(|m| m.borrow().get(&key)) {
         return hit;
     }
     let _t = phase_timer::PhaseTimer::start("measure_probe");
-    let packed = VIEW_MEASURE_PROBE.with(|slot| {
-        let method = StaticMethod::cached(
-            env,
-            slot,
-            "io/idealyst/runtime/RustViewMeasure",
-            "probe",
-            "(Landroid/view/View;II)J",
-        )?;
-        // SAFETY: the arguments match `(Landroid/view/View;II)J`.
-        Some(unsafe {
-            method.call_long(
-                env,
-                &[
-                    JValue::Object(view).as_jni(),
-                    JValue::Int(width_spec).as_jni(),
-                    JValue::Int(height_spec).as_jni(),
-                ],
-            )
-        })
-    });
-    let answer = packed.map_or((0, 0), |p| ((p >> 32) as i32, p as i32));
+    let answer = measure();
     MEASURE_MEMO.with(|m| m.borrow_mut().put(key, answer));
     answer
 }
@@ -1011,6 +1028,17 @@ pub(crate) fn is_text_view(env: &mut JNIEnv, view: &JObject) -> bool {
         };
         env.is_instance_of(view, class).unwrap_or(false)
     })
+}
+
+/// `true` when `view` is a `RustLabel` — the `text` primitive. It is not a
+/// `TextView`, so code that styles or reads text asks [`is_text_view`] OR
+/// this, and calls the shared setters through `text_call!`.
+pub(crate) fn is_label(env: &mut JNIEnv, view: &JObject) -> bool {
+    let Some(class) = LABEL_CLASS.with(|slot| cached_class(env, slot, "io/idealyst/runtime/RustLabel")) else {
+        return false;
+    };
+    env.is_instance_of(view, <&jni::objects::JClass>::from(class.as_obj()))
+        .unwrap_or(false)
 }
 
 /// `true` when `view` is an `EditText` (or subclass). Used by
@@ -2746,7 +2774,7 @@ impl AndroidBackend {
     }
 
     /// Record that `node` was just created with zero padding (a
-    /// `FrameLayout`, or a label `RustViewFactory.text` zeroes), so its
+    /// `FrameLayout`, or a `text`'s `RustLabel`), so its
     /// first style apply doesn't write `setPadding(0, 0, 0, 0)` — on a
     /// container that is every apply, since its padding is Taffy's.
     fn note_zero_padding(&mut self, node: &GlobalRef) {
@@ -3898,7 +3926,8 @@ impl AndroidBackend {
         // honor it natively in a way that's portable. Authors wrap a
         // Text in a styled View when they want spacing around it.
         // Mirror logic in iOS backend for IosNode::Label.
-        let is_text_view = with_env(|env| is_text_view(env, &node.as_obj()));
+        let is_text_view =
+            with_env(|env| is_text_view(env, &node.as_obj()) || is_label(env, &node.as_obj()));
         // External scrollers strip for the same double-count reason: their
         // padding is realized as the view's own `setPadding` (see
         // `apply_rules`), and the generic `View.measure` measure_fn already
@@ -4187,7 +4216,8 @@ impl AndroidBackend {
                 // and its subclasses (Button, EditText) accept; on
                 // other Views the call throws which we silently swallow.
                 with_env(|env| {
-                    let _ = jcall!(env, node.as_obj(), "android/widget/TextView", "setTextColor", "(I)V", [jni::objects::JValue::Int(argb_i32)]);
+                    let is_label = is_label(env, &node.as_obj());
+                    let _ = text_call!(env, node.as_obj(), is_label, "setTextColor", "(I)V", [jni::objects::JValue::Int(argb_i32)]);
                 });
             }
             P::GradientStopColor(idx) => {

@@ -42,11 +42,12 @@ pub(crate) fn apply_rules(
     // `setPadding` on top would double-shift, so we explicitly write
     // zero to clear any prior values.
     //
-    // **Text views**: padding goes to `TextView.setPadding(L, T, R,
-    // B)` instead. TextView is a Taffy leaf — there are no children
-    // to shift. The mobile backend's `apply_style` (in `imp::mod.rs`)
-    // already strips `padding_*` from the Taffy style it hands to
-    // `LayoutTree::set_style` for TextView nodes, so Taffy's outer
+    // **Text nodes** (a `text`'s `RustLabel`, a `TextView`): padding
+    // goes to the view's own `setPadding(L, T, R, B)` instead. A text
+    // node is a Taffy leaf — there are no children to shift. The mobile
+    // backend's `apply_style` (in `imp::mod.rs`) already strips
+    // `padding_*` from the Taffy style it hands to
+    // `LayoutTree::set_style` for text nodes, so Taffy's outer
     // size is just what `measure_textview` returns — which is the
     // widget's full measured size including its own setPadding.
     // `setPadding` then insets the glyphs visually within that frame.
@@ -56,7 +57,10 @@ pub(crate) fn apply_rules(
     //
     // Net result: authors can write `padding_*` on a text style and
     // it just works — no `XStyle + XText` split required.
-    let is_text_view = super::is_text_view(env, &view);
+    // A `text` node is a `RustLabel`, which shares `TextView`'s text setters
+    // without being one; `text_call!` picks the class per node.
+    let is_label = super::is_label(env, &view);
+    let is_text_view = is_label || super::is_text_view(env, &view);
     let want_padding = if is_text_view || force_view_padding {
         [
             dp_to_px(env, &view, px_or(rules.padding_left.as_ref(), 0.0)),
@@ -237,7 +241,7 @@ pub(crate) fn apply_rules(
                                 start_argb_animator(env, node, "textColor", from, packed, t);
                         }
                         _ => {
-                            let _ = jcall!(env, &view, "android/widget/TextView", "setTextColor", "(I)V", [JValue::Int(packed)]);
+                            let _ = text_call!(env, &view, is_label, "setTextColor", "(I)V", [JValue::Int(packed)]);
                         }
                     }
                 }
@@ -253,9 +257,9 @@ pub(crate) fn apply_rules(
                     .ok();
             }
             // font-size isn't animatable in v1; snap.
-            let _ = jcall!(env, &view, "android/widget/TextView", "setTextSize", "(IF)V", [JValue::Int(COMPLEX_UNIT_DIP), JValue::Float(size)]);
+            let _ = text_call!(env, &view, is_label, "setTextSize", "(IF)V", [JValue::Int(COMPLEX_UNIT_DIP), JValue::Float(size)]);
         } else if let Some(natural) = state.natural_text_size_px.take() {
-            let _ = jcall!(env, &view, "android/widget/TextView", "setTextSize", "(IF)V", [JValue::Int(COMPLEX_UNIT_PX), JValue::Float(natural)]);
+            let _ = text_call!(env, &view, is_label, "setTextSize", "(IF)V", [JValue::Int(COMPLEX_UNIT_PX), JValue::Float(natural)]);
         }
         // Font family / weight / style — route through the registry
         // so a `font_family: &INTER` style targets the right
@@ -327,7 +331,7 @@ pub(crate) fn apply_rules(
             ) {
                 state.natural_horizontal_gravity = update.natural_horizontal;
                 if update.gravity != current {
-                    let _ = jcall!(env, &view, "android/widget/TextView", "setGravity", "(I)V", [JValue::Int(update.gravity)]);
+                    let _ = text_call!(env, &view, is_label, "setGravity", "(I)V", [JValue::Int(update.gravity)]);
                 }
             }
         }
@@ -400,7 +404,7 @@ pub(crate) fn apply_rules(
             Some(sh) => {
                 state.text_shadow = true;
                 let packed = parse_color(&sh.color.resolve().0).unwrap_or(0);
-                let _ = jcall!(env, &view, "android/widget/TextView", "setShadowLayer", "(FFFI)V", [JValue::Float(sh.blur),
+                let _ = text_call!(env, &view, is_label, "setShadowLayer", "(FFFI)V", [JValue::Float(sh.blur),
                         JValue::Float(sh.x),
                         JValue::Float(sh.y),
                         JValue::Int(packed),]);
@@ -408,7 +412,7 @@ pub(crate) fn apply_rules(
             // A label that never had a shadow has nothing to clear.
             None if state.text_shadow => {
                 state.text_shadow = false;
-                let _ = jcall!(env, &view, "android/widget/TextView", "setShadowLayer", "(FFFI)V", [JValue::Float(0.0),
+                let _ = text_call!(env, &view, is_label, "setShadowLayer", "(FFFI)V", [JValue::Float(0.0),
                         JValue::Float(0.0),
                         JValue::Float(0.0),
                         JValue::Int(0),]);

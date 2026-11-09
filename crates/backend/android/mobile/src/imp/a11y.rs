@@ -83,9 +83,8 @@ pub(crate) fn apply(node: &GlobalRef, props: &AccessibilityProps, inferred_role:
 /// a role that forces nothing), see `crate::a11y_policy`.
 ///
 /// Only for views whose construction leaves `View`'s accessibility
-/// defaults in place: a `FrameLayout`, and the text view
-/// `RustViewFactory.text` makes (which resets the importance `TextView`'s
-/// constructor raises). A `RecyclerView` or a bare `EditText` raises its
+/// defaults in place: a `FrameLayout`, and a `text`'s `RustLabel` (a plain
+/// `View`, not a `TextView`). A `RecyclerView` or a bare `EditText` raises its
 /// own importance, so its create path goes through [`apply`] to keep the
 /// importance this module decides.
 pub(crate) fn apply_new(node: &GlobalRef, props: &AccessibilityProps, inferred_role: Option<Role>) {
@@ -205,8 +204,8 @@ pub(crate) fn announce(
 
 /// `setContentDescription(CharSequence)` — pass `null` to clear so a
 /// reactive a11y prop that drops the label actually reverts TalkBack
-/// to the View's natural announcement (visible text on a TextView,
-/// "Button" for Button, etc.).
+/// to the View's natural announcement (the visible text of a `text` or a
+/// TextView, "Button" for Button, etc.).
 fn set_content_description(env: &mut JNIEnv, view: &JObject, value: Option<&str>) {
     let arg: JObject = match value {
         Some(v) => match env.new_string(v) {

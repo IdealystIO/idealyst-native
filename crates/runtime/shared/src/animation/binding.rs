@@ -138,7 +138,7 @@ impl AnimatedValue<(f32, f32, f32, f32)> {
     /// Subscribe a color animation property to a `Ref<TextHandle>`.
     /// Routes through `TextOps::set_animated_color`, which on each
     /// backend hits the text-bearing widget's own color setter
-    /// (`UILabel.textColor` on iOS, `TextView.setTextColor` on
+    /// (`UILabel.textColor` on iOS, the label's `setTextColor` on
     /// Android, inline `style.color` on web) — the text element's
     /// color doesn't piggyback on the parent view's animated
     /// color, so the framework dispatches through the text-handle

@@ -268,7 +268,8 @@ calls `Typeface.createFromFile(path)`. The resulting Android
 `Typeface` is stored as a `GlobalRef` keyed by `AssetId`.
 
 At style-apply, the face picker chooses the closest registered face,
-and the backend calls `TextView.setTypeface(typeface, int style)`.
+and the backend calls `setTypeface(typeface, int style)` on the text node
+(a `text`'s `RustLabel`, which follows `TextView`'s rules for it).
 **Here Android needs careful handling**:
 
 - `Typeface.createFromFile` always returns a typeface whose

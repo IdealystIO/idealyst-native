@@ -2,7 +2,6 @@ package io.idealyst.runtime
 
 import android.text.Layout
 import android.text.TextPaint
-import android.widget.TextView
 import kotlin.math.ceil
 
 /**
@@ -25,9 +24,9 @@ object RustTextMeasure {
      * `AT_MOST 0` probe already gives.
      */
     @JvmStatic
-    fun minContentWidth(view: TextView): Int {
-        if (view.maxLines == 1) return 0
-        val text: CharSequence = view.text ?: return 0
+    fun minContentWidth(view: RustLabel): Int {
+        if (view.getMaxLines() == 1) return 0
+        val text: CharSequence = view.getText()
         val paint: TextPaint = view.paint
         var widest = 0f
         var start = -1
@@ -42,6 +41,6 @@ object RustTextMeasure {
                 start = i
             }
         }
-        return ceil(widest).toInt() + view.compoundPaddingLeft + view.compoundPaddingRight
+        return ceil(widest).toInt() + view.paddingLeft + view.paddingRight
     }
 }

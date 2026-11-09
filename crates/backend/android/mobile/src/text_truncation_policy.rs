@@ -1,5 +1,7 @@
-//! `max_lines` → `TextView.setMaxLines` + `setEllipsize` mapping, and the
-//! decision of when the JNI calls must run.
+//! `max_lines` → `setMaxLines` + `setEllipsize` on a text node (a `text`'s
+//! `RustLabel`, which keeps `TextView`'s names and defaults, or a
+//! `TextView` such as a `Button`), and the decision of when the JNI calls
+//! must run.
 //!
 //! Un-gated (compiles on any host) so the tests run from any platform,
 //! same pattern as `border_dash_policy` / `transform_transition_policy`.
@@ -10,7 +12,7 @@
 //! The per-node cache (`NodeAnim::last_max_lines`) starts at `None`, which
 //! means "the widget still has its own defaults" — and that is also what
 //! "no limit" resets to (`maxLines = Integer.MAX_VALUE`, `ellipsize =
-//! null`, TextView's constructor values). So a text that never sets
+//! null`, the view's initial values). So a text that never sets
 //! `max_lines` costs no JNI call at all, and widgets that are TextView
 //! subclasses with their own defaults (a `Button` title) are never
 //! touched unless the author asked for a limit.
@@ -18,9 +20,10 @@
 //! ## Measurement
 //!
 //! Nothing here feeds Taffy: the text leaf's measure_fn
-//! (`primitives::text::measure_textview`) drives `TextView.measure`, and
-//! TextView's own `onMeasure` already caps the height at `maxLines` lines
-//! and builds the ellipsized layout at the given width. The only thing
+//! (`primitives::text::measure_textview`) asks the label
+//! (`RustLabel.measureSize`), which caps the height at `maxLines` lines and
+//! builds the ellipsized layout at the given width, as `TextView.onMeasure`
+//! does. The only thing
 //! measurement needs is for the leaf to be re-measured after a change,
 //! which `LayoutTree::set_style` guarantees: Taffy's `set_style` marks
 //! the node dirty unconditionally, and `apply_style_impl` calls it right
