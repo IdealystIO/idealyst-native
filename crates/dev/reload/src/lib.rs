@@ -841,7 +841,9 @@ pub struct BuildOptions {
     /// or an agent through the session's control endpoint — applies the
     /// queue as ONE save, through the same decision a save takes (overlay
     /// patch, hot patch or rebuild). A request with nothing queued forces
-    /// a rebuild, as it does without the flag.
+    /// a rebuild, as it does without the flag. Edits a resumed session
+    /// finds made while no session ran are not queued: they predate the
+    /// session and are decided at startup (`hand_off_offline_edits`).
     pub no_watch: bool,
     /// Premint static styles on every rebuild (`idealyst dev … --premint`).
     /// Each build runs the native style dump and refreshes
@@ -1324,6 +1326,40 @@ fn resume_snapshot(
         },
         reach: base.artifact.local_packages.as_ref().map(Into::into),
     })
+}
+
+/// Hand the edits a resumed session found — workspace `.rs` files that
+/// moved while no session ran ([`resume::moved_sources`]) — to the loop
+/// as a save, straight into its inbox.
+///
+/// Never into the `--no-watch` queue (`queued`), which holds saves made
+/// DURING the session. These predate it: a cold start compiles them into
+/// its base, and a full-stack server half — always built cold — runs them.
+/// Held until a rebuild request, the resumed page ran the code from before
+/// them while the server ran them, and the log read as a clean resume.
+fn hand_off_offline_edits(
+    moved: Vec<PathBuf>,
+    queued: Option<&Queued>,
+    tx: &mpsc::Sender<WatchMsg>,
+    saves: &SaveLog,
+    reporter: &dev_events::Reporter,
+) {
+    if moved.is_empty() {
+        return;
+    }
+    let not_queued = if queued.is_some() {
+        " (not queued by --no-watch: they predate this session)"
+    } else {
+        ""
+    };
+    reporter.log(
+        "dev-reload",
+        format!(
+            "{} source file(s) changed since the last session: deciding them as a save{not_queued}",
+            moved.len()
+        ),
+    );
+    notify_save(tx, saves, true, WatchMsg::Paths(moved));
 }
 
 /// Every workspace crate's directory.
@@ -2103,18 +2139,7 @@ fn watch_loop(
                 .map(|(p, c)| (p.clone(), c.dir.clone(), dev_overlay::archive::read_crate(&c.dir).ok()))
                 .collect();
             let moved = resume::moved_sources(&state.archives, &read);
-            if !moved.is_empty() {
-                reporter.log(
-                    "dev-reload",
-                    format!("{} source file(s) changed since the last session: deciding them as a save", moved.len()),
-                );
-                match &queued {
-                    Some(q) => {
-                        q.hold(moved, true, TARGET, &reporter);
-                    }
-                    None => notify_save(&offline_tx, &saves, true, WatchMsg::Paths(moved)),
-                }
-            }
+            hand_off_offline_edits(moved, queued.as_ref(), &offline_tx, &saves, &reporter);
             ws
         }
     };
@@ -4323,6 +4348,40 @@ mod tests {
         let released = release(WatchMsg::Rebuild(Some(4)), Some(&queued));
         assert_eq!(request_ids(&released), [4], "numbered by the rebuild series alone");
         assert!(matches!(&released[0], WatchMsg::Paths(p) if p.len() == 1), "the request still applies them");
+    }
+
+    /// Regression (CrewForge want_6b0f5002): `idealyst dev --no-watch`
+    /// started after workspace crates were edited resumed the last base
+    /// ("nothing it was built from has moved, so cargo did not run") and
+    /// HELD the edits in the `--no-watch` queue, so the page ran the old
+    /// code until a rebuild request while the server half, built cold, ran
+    /// the new. Edits made while no session ran predate the session — a cold
+    /// start would have compiled them into its base — so they reach the
+    /// loop's inbox as a save even under `--no-watch`, and nothing is queued.
+    #[test]
+    fn regression_no_watch_resume_applies_edits_made_while_no_session_ran() {
+        let (tx, rx) = mpsc::channel();
+        let queued = Queued::default();
+        let saves = SaveLog::default();
+        let (reporter, _q) = capture();
+        let edited = PathBuf::from("/w/crates/shared/src/lib.rs");
+        hand_off_offline_edits(vec![edited.clone()], Some(&queued), &tx, &saves, &reporter);
+        let msg = rx.try_recv().expect("the offline edit never reached the loop's inbox");
+        // What the `--no-watch` loop runs for it: the save itself.
+        let released = release(msg, Some(&queued));
+        assert!(
+            matches!(&released[..], [WatchMsg::Paths(p)] if p == &vec![edited.clone()]),
+            "the loop does not decide the offline edit as a save"
+        );
+        assert_eq!(saves.count(), 1, "counted as a save, so newer saves supersede its work");
+        assert!(queued.take().is_empty(), "the offline edit was queued for a rebuild request");
+
+        // Without `--no-watch` the same save, and no edits is no save.
+        hand_off_offline_edits(vec![edited.clone()], None, &tx, &saves, &reporter);
+        assert!(matches!(rx.try_recv(), Ok(WatchMsg::Paths(p)) if p == vec![edited]));
+        hand_off_offline_edits(Vec::new(), Some(&queued), &tx, &saves, &reporter);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(saves.count(), 2);
     }
 
     /// A batch drained into a save still hands over its checks, however many

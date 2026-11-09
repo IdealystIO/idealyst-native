@@ -1469,7 +1469,10 @@ session's base cannot be resumed (…)` line naming what moved. Workspace
 ones edited while no session ran are handed to the resumed loop as a
 save, so they are decided like any save — an overlay patch, a hot patch,
 or the rebuild a shape edit needs (the page shows the resumed state until
-that rebuild reloads it, as it would during a session).
+that rebuild reloads it, as it would during a session). Under `--no-watch`
+too: those edits predate the session, so they are decided at startup,
+never held for a rebuild request — a cold start would have built them, and
+a full-stack server half always does.
 
 A base is only recorded when every one of those inputs is older than
 its build's start (and, for a session's first base, whose archives are
@@ -2184,7 +2187,10 @@ and queued (--no-watch); a rebuild request applies them`) and builds
 nothing. A rebuild request — the panel's `r`, or `rebuild_dev` from
 `idealyst mcp` (next section) — applies everything queued as one save,
 through the same decision a watched save takes, so a body edit still hot
-patches. With nothing to apply, the request rebuilds.
+patches. With nothing to apply, the request rebuilds. Only saves made
+during the session queue: edits a resumed session finds made while no
+session ran are applied at startup (see
+[A restart resumes the patched base](#a-restart-resumes-the-patched-base)).
 
 A request applies what is on disk when it arrives, whether or not the watcher
 has reported it yet: a watcher's report lags a save by its debounce and the OS,

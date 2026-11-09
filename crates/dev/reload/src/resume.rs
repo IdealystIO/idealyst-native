@@ -40,7 +40,9 @@
 //! Anything else is a cold start, as before. Workspace `.rs` files that
 //! moved since the last patch — edits made while no session ran — are
 //! handed to the loop as a save, and decided like any save: an overlay
-//! patch, a hot patch, or the rebuild a shape change needs.
+//! patch, a hot patch, or the rebuild a shape change needs. Under
+//! `--no-watch` too, at startup: they predate the session, so its queue
+//! (which holds saves made during it) does not hold them.
 //!
 //! A state is only recorded for a base whose inputs were all older than
 //! its build's start: a file written during the build may or may not be
