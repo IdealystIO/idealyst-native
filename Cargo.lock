@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "8.0.0"
+version = "8.0.1"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -6435,7 +6435,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "20.0.0"
+version = "20.0.1"
 dependencies = [
  "backend-ssr",
  "dnd",

@@ -590,7 +590,7 @@ backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "8.0.0", re
 backend-ios-rs-shell = { path = "crates/backend/ios/rs-shell", version = "8.0.0", registry = "idealyst" }
 backend-ios-tv = { path = "crates/backend/ios/tv", version = "8.0.0", registry = "idealyst" }
 backend-android-core = { path = "crates/backend/android/core", version = "5.0.0", registry = "idealyst" }
-backend-android-mobile = { path = "crates/backend/android/mobile", version = "8.0.0", registry = "idealyst" }
+backend-android-mobile = { path = "crates/backend/android/mobile", version = "8.0.1", registry = "idealyst" }
 backend-android-tv = { path = "crates/backend/android/tv", version = "8.0.0", registry = "idealyst" }
 backend-roku = { path = "crates/backend/roku", version = "7.0.0", registry = "idealyst" }
 backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", registry = "idealyst" }
@@ -630,7 +630,7 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme", version = "10.0.0", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "17.0.0", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "20.0.0", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "20.0.1", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "7.0.0", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "17.0.0", registry = "idealyst" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive", version = "1.5.3", registry = "idealyst" }
