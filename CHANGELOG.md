@@ -3207,6 +3207,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Mounting a list of labels on Android no longer stalls the layout pass**
+  (`backend-android-mobile`). Taffy asks a text leaf for its size about eight times while it
+  resolves a flex layout, and each question was a fresh `TextView.measure` costing about eight JNI
+  calls. A 24-row roster spent 55–120 ms in the layout pass after it mounted, almost all of it
+  measuring text. Within a layout pass a repeated `MeasureSpec` is now answered from the pass's
+  first measurement, and a measurement is one call into the JVM (`RustViewMeasure.probe`). The
+  same mount's layout pass takes 1–4 ms. External views measured through `View.measure` share the
+  path.
 - **Content in a navigator screen slides with the Android keyboard** (`backend-android-mobile`). A
   `keyboard_avoiding_view` (`Padding`, animated) slides the views the keyboard moves, found by
   walking up the layout tree to the avoider. A stack screen is its own layout root, laid out against

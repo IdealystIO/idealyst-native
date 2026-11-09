@@ -147,6 +147,13 @@ mod window_fill_policy;
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 mod subtree_release_policy;
 
+/// Native measure probes asked once per layout pass: the memo a text
+/// leaf's and an external view's measure_fn go through. Un-gated like
+/// `sticky_compute` so the regression tests run on the host; the JNI half
+/// is `imp::probe_measure`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod measure_memo_policy;
+
 /// A style `shadow` as an elevation shadow: elevation and the outline
 /// shadow color. Un-gated like `sticky_compute` so the tests run on the
 /// host; the JNI half is `style::apply_box_shadow`.

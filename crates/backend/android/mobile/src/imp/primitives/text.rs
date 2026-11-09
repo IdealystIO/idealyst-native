@@ -307,70 +307,56 @@ pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_shared::TextRun]) {
 }
 
 /// The TextView's min-content width in dp — its widest word, from the
-/// Kotlin `RustTextMeasure.minContentWidth`. A single-line view, or a
-/// runtime without the class (a stale staged Kotlin runtime), answers 0:
+/// Kotlin `RustTextMeasure.minContentWidth`. A single-line view answers 0:
 /// the `AT_MOST 0` probe, which truncates a one-line label to its
-/// ellipsis.
+/// ellipsis. Asked once per view per layout pass (`MIN_CONTENT_MEMO`).
 fn min_content_width(view: &GlobalRef) -> f32 {
     with_env(|env| {
         let view_obj = view.as_obj();
-        let density = super::super::density_of(env, &view_obj).unwrap_or(1.0);
-        let class = match env.find_class("io/idealyst/runtime/RustTextMeasure") {
-            Ok(c) => c,
-            Err(_) => {
-                let _ = env.exception_clear();
-                return 0.0;
-            }
-        };
-        let px = env
-            .call_static_method(
-                &class,
-                "minContentWidth",
-                "(Landroid/widget/TextView;)I",
-                &[JValue::Object(&view_obj)],
-            )
-            .and_then(|v| v.i())
-            .unwrap_or_else(|_| {
-                let _ = env.exception_clear();
-                0
-            });
+        let density = super::super::cached_density(env, &view_obj);
+        let key = view_obj.as_raw() as usize;
+        let cached = super::super::MIN_CONTENT_MEMO.with(|m| m.borrow().get(&key));
+        let px = cached.unwrap_or_else(|| {
+            let _t = crate::phase_timer::PhaseTimer::start("min_content_probe");
+            let px = MIN_CONTENT_WIDTH
+                .with(|slot| {
+                    let method = super::super::StaticMethod::cached(
+                        env,
+                        slot,
+                        "io/idealyst/runtime/RustTextMeasure",
+                        "minContentWidth",
+                        "(Landroid/widget/TextView;)I",
+                    )?;
+                    // SAFETY: the argument matches `(Landroid/widget/TextView;)I`.
+                    Some(unsafe { method.call_int(env, &[JValue::Object(&view_obj).as_jni()]) })
+                })
+                .unwrap_or(0);
+            super::super::MIN_CONTENT_MEMO.with(|m| m.borrow_mut().put(key, px));
+            px
+        });
         px as f32 / density
     })
 }
 
-/// Ask the TextView (via JNI) how big it wants to be for a given
-/// `available_width`. Goes through `View.measure(widthSpec,
-/// heightSpec)` with AT_MOST/UNSPECIFIED specs depending on what
-/// the known-dimensions slot the caller supplied, then reads back
-/// `getMeasuredWidth()`/`getMeasuredHeight()` in dp.
+runtime_tls::thread_local! {
+    /// `RustTextMeasure.minContentWidth`, resolved once.
+    static MIN_CONTENT_WIDTH: std::cell::RefCell<Option<super::super::StaticMethod>> =
+        std::cell::RefCell::new(None);
+}
+
+/// Ask the TextView how big it wants to be for a given `available_width`:
+/// `View.measure` at `AT_MOST width` (or `UNSPECIFIED` when unbounded), with
+/// no height bound, through [`super::super::probe_measure`], in dp.
 fn measure_textview(
     view: &GlobalRef,
     avail_w_dp: f32,
     known_dimensions: runtime_layout::Size<Option<f32>>,
 ) -> runtime_layout::Size<f32> {
+    use crate::measure_memo_policy::{at_most_or_unspecified, UNSPECIFIED};
     with_env(|env| {
         let view_obj = view.as_obj();
-        // dp → px for the MeasureSpec.
-        let density = super::super::density_of(env, &view_obj).unwrap_or(1.0);
-        let avail_w_px = if avail_w_dp.is_finite() {
-            (avail_w_dp * density).round() as i32
-        } else {
-            // No upper bound — use UNSPECIFIED. `0 | UNSPECIFIED`
-            // is the spec value (UNSPECIFIED = 0).
-            0
-        };
-        // MeasureSpec mode constants:
-        //   UNSPECIFIED = 0 << 30 = 0
-        //   EXACTLY     = 1 << 30 = 0x40000000
-        //   AT_MOST     = 2 << 30 = 0x80000000 (as i32: -2147483648)
-        let at_most: i32 = -2_147_483_648; // 2 << 30
-        let unspec: i32 = 0;
-        let width_spec = if avail_w_dp.is_finite() {
-            // AT_MOST | avail_w_px (lower 30 bits)
-            at_most | (avail_w_px & 0x3fff_ffff)
-        } else {
-            unspec
-        };
+        let density = super::super::cached_density(env, &view_obj);
+        let width_spec = at_most_or_unspecified(avail_w_dp, density);
         // No height constraint: UNSPECIFIED → TextView picks its
         // natural height for the given width. A `max_lines` limit
         // (`setMaxLines` + `setEllipsize(END)`, `imp/style.rs`) is
@@ -378,21 +364,8 @@ fn measure_textview(
         // capped at that many lines and a 1-line limit measures one
         // ellipsized line, so no limit-specific code (or cache key) is
         // needed — the node is re-dirtied on every style apply.
-        let height_spec = unspec;
-        let _ = env.call_method(
-            &view_obj,
-            "measure",
-            "(II)V",
-            &[JValue::Int(width_spec), JValue::Int(height_spec)],
-        );
-        let measured_w_px: i32 = env
-            .call_method(&view_obj, "getMeasuredWidth", "()I", &[])
-            .and_then(|v| v.i())
-            .unwrap_or(0);
-        let measured_h_px: i32 = env
-            .call_method(&view_obj, "getMeasuredHeight", "()I", &[])
-            .and_then(|v| v.i())
-            .unwrap_or(0);
+        let (measured_w_px, measured_h_px) =
+            super::super::probe_measure(env, &view_obj, width_spec, UNSPECIFIED);
         // `View.measure()` returns `text + padding` (Android includes
         // setPadding in the measured size). We do NOT subtract that
         // back out here, because the framework's `apply_style` already
@@ -405,7 +378,6 @@ fn measure_textview(
         // frame too small for the glyphs to render in.
         let w_dp = measured_w_px as f32 / density;
         let h_dp = measured_h_px as f32 / density;
-        super::super::restore_after_probe(env, &view_obj);
         runtime_layout::Size {
             width: known_dimensions.width.unwrap_or(w_dp.ceil()),
             height: known_dimensions.height.unwrap_or(h_dp.ceil()),

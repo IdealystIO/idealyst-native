@@ -610,6 +610,23 @@ runtime_tls::thread_local! {
     static LAYOUT_APPLY_CLASS: std::cell::RefCell<Option<GlobalRef>> =
         std::cell::RefCell::new(None);
 
+    /// `RustViewMeasure.probe`, the one-call size probe every measure_fn
+    /// goes through ([`probe_measure`]).
+    static VIEW_MEASURE_PROBE: std::cell::RefCell<Option<StaticMethod>> =
+        std::cell::RefCell::new(None);
+
+    /// This layout pass's answers to `View.measure` probes, keyed by view
+    /// and `(widthSpec, heightSpec)`. Open only while a pass runs
+    /// ([`MeasurePass`]); see `crate::measure_memo_policy`.
+    static MEASURE_MEMO: std::cell::RefCell<
+        crate::measure_memo_policy::PassMemo<(usize, i32, i32), (i32, i32)>,
+    > = std::cell::RefCell::new(crate::measure_memo_policy::PassMemo::new());
+
+    /// This layout pass's text min-content widths in px, keyed by view.
+    pub(crate) static MIN_CONTENT_MEMO: std::cell::RefCell<
+        crate::measure_memo_policy::PassMemo<usize, i32>,
+    > = std::cell::RefCell::new(crate::measure_memo_policy::PassMemo::new());
+
     /// Display density (dp → px scaling), constant for the lifetime of
     /// the Activity. Cached after the first successful read; reused on
     /// every dp-to-px conversion in the per-view layout path. The 5
@@ -678,14 +695,11 @@ fn measure_external_view(
     known_dimensions: runtime_layout::Size<Option<f32>>,
     available_space: runtime_layout::Size<runtime_layout::AvailableSpace>,
 ) -> runtime_layout::Size<f32> {
+    use crate::measure_memo_policy::{at_most_or_unspecified, exactly, UNSPECIFIED};
     use runtime_layout::AvailableSpace;
     with_env(|env| {
         let view_obj = view.as_obj();
         let density = cached_density(env, &view_obj);
-        // MeasureSpec mode bits (Android API constants):
-        const UNSPECIFIED: i32 = 0; // 0 << 30
-        const EXACTLY: i32 = 0x4000_0000; // 1 << 30
-        const AT_MOST: i32 = -0x8000_0000; // 2 << 30, i32 high bit
         let make_spec = |known: Option<f32>, avail: AvailableSpace| -> i32 {
             // Only honor a positive known dimension as EXACTLY — a
             // known=Some(0.0) is Taffy's MinContent intrinsic-size
@@ -697,35 +711,17 @@ fn measure_external_view(
             // text primitive's measure_fn uses.
             if let Some(dp) = known {
                 if dp > 0.0 {
-                    let px = (dp * density).round() as i32;
-                    return EXACTLY | (px & 0x3fff_ffff);
+                    return exactly((dp * density).round() as i32);
                 }
             }
             match avail {
-                AvailableSpace::Definite(dp) if dp > 0.0 => {
-                    let px = (dp * density).round() as i32;
-                    AT_MOST | (px & 0x3fff_ffff)
-                }
+                AvailableSpace::Definite(dp) if dp > 0.0 => at_most_or_unspecified(dp, density),
                 _ => UNSPECIFIED,
             }
         };
         let w_spec = make_spec(known_dimensions.width, available_space.width);
         let h_spec = make_spec(known_dimensions.height, available_space.height);
-        let _ = env.call_method(
-            &view_obj,
-            "measure",
-            "(II)V",
-            &[JValue::Int(w_spec), JValue::Int(h_spec)],
-        );
-        let w_px = env
-            .call_method(&view_obj, "getMeasuredWidth", "()I", &[])
-            .and_then(|v| v.i())
-            .unwrap_or(0);
-        let h_px = env
-            .call_method(&view_obj, "getMeasuredHeight", "()I", &[])
-            .and_then(|v| v.i())
-            .unwrap_or(0);
-        restore_after_probe(env, &view_obj);
+        let (w_px, h_px) = probe_measure(env, &view_obj, w_spec, h_spec);
         runtime_layout::Size {
             width: w_px as f32 / density,
             height: h_px as f32 / density,
@@ -733,38 +729,131 @@ fn measure_external_view(
     })
 }
 
-/// Put a view back at its laid-out frame after a Taffy probe measured it.
-///
-/// A probe is a real `View.measure`, so a `TextView` rebuilds its text
-/// layout at the probe's width — `AT_MOST 0` for min-content wraps a
-/// label to a character a line. Nothing guarantees a later measure at
-/// the real frame: when the relayout leaves the frame unchanged (the
-/// soft keyboard closing), Android's measure cache can answer
-/// `EXACTLY(frame)` without calling `onMeasure`, and the label draws the
-/// probe's layout in its full-size frame, cut to its first word. So the
-/// probe is undone here: `forceLayout` bypasses the cache and the
-/// measure rebuilds the layout at the frame the view is drawn in. A view
-/// not yet laid out has no frame to restore, and its first layout
-/// measures it fresh.
-pub(crate) fn restore_after_probe(env: &mut JNIEnv, view: &JObject) {
-    const EXACTLY: i32 = 0x4000_0000; // 1 << 30
-    let size = |env: &mut JNIEnv, m: &str| {
-        env.call_method(view, m, "()I", &[]).and_then(|v| v.i()).unwrap_or(0)
-    };
-    let (w, h) = (size(env, "getWidth"), size(env, "getHeight"));
-    if w <= 0 || h <= 0 {
-        return;
+/// A Kotlin runtime static method, resolved once: the class pinned by a
+/// global reference (which keeps the method id valid) and the method id.
+/// `find_class` and a by-name call each probe the classloader / method
+/// table, which on a measure path run hundreds of times a pass.
+pub(crate) struct StaticMethod {
+    class: GlobalRef,
+    id: jni::objects::JStaticMethodID,
+}
+
+impl StaticMethod {
+    /// Resolve `class.name(sig)`, caching it in `slot`. `None` (a pending
+    /// exception cleared) when the runtime lacks it.
+    pub(crate) fn cached<'s>(
+        env: &mut JNIEnv,
+        slot: &'s std::cell::RefCell<Option<StaticMethod>>,
+        class: &str,
+        name: &str,
+        sig: &str,
+    ) -> Option<std::cell::Ref<'s, StaticMethod>> {
+        if slot.borrow().is_none() {
+            let resolved = (|| -> jni::errors::Result<StaticMethod> {
+                let local = env.find_class(class)?;
+                let id = env.get_static_method_id(&local, name, sig)?;
+                Ok(StaticMethod { class: env.new_global_ref(&local)?, id })
+            })();
+            match resolved {
+                Ok(m) => *slot.borrow_mut() = Some(m),
+                Err(_) => {
+                    let _ = env.exception_clear();
+                    return None;
+                }
+            }
+        }
+        std::cell::Ref::filter_map(slot.borrow(), Option::as_ref).ok()
     }
-    let _ = env.call_method(view, "forceLayout", "()V", &[]);
-    let _ = env.call_method(
-        view,
-        "measure",
-        "(II)V",
-        &[
-            JValue::Int(EXACTLY | (w & 0x3fff_ffff)),
-            JValue::Int(EXACTLY | (h & 0x3fff_ffff)),
-        ],
-    );
+
+    /// Call the method, returning `long`. 0 on a Java exception (cleared).
+    ///
+    /// # Safety
+    /// `args` must match the signature the method was resolved with, and
+    /// that signature must return `J`.
+    pub(crate) unsafe fn call_long(&self, env: &mut JNIEnv, args: &[jni::sys::jvalue]) -> i64 {
+        let class = <&jni::objects::JClass>::from(self.class.as_obj());
+        let ret = jni::signature::ReturnType::Primitive(jni::signature::Primitive::Long);
+        env.call_static_method_unchecked(class, self.id, ret, args)
+            .and_then(|v| v.j())
+            .unwrap_or_else(|_| {
+                let _ = env.exception_clear();
+                0
+            })
+    }
+
+    /// [`Self::call_long`] for a method returning `int`.
+    ///
+    /// # Safety
+    /// As [`Self::call_long`], for a signature returning `I`.
+    pub(crate) unsafe fn call_int(&self, env: &mut JNIEnv, args: &[jni::sys::jvalue]) -> i32 {
+        let class = <&jni::objects::JClass>::from(self.class.as_obj());
+        let ret = jni::signature::ReturnType::Primitive(jni::signature::Primitive::Int);
+        env.call_static_method_unchecked(class, self.id, ret, args)
+            .and_then(|v| v.i())
+            .unwrap_or_else(|_| {
+                let _ = env.exception_clear();
+                0
+            })
+    }
+}
+
+/// Opens this thread's measure memos for one layout pass and closes them
+/// on drop, so no answer outlives the pass it was measured in.
+pub(crate) struct MeasurePass(());
+
+impl MeasurePass {
+    pub(crate) fn begin() -> Self {
+        MEASURE_MEMO.with(|m| m.borrow_mut().begin());
+        MIN_CONTENT_MEMO.with(|m| m.borrow_mut().begin());
+        MeasurePass(())
+    }
+}
+
+impl Drop for MeasurePass {
+    fn drop(&mut self) {
+        MEASURE_MEMO.with(|m| m.borrow_mut().end());
+        MIN_CONTENT_MEMO.with(|m| m.borrow_mut().end());
+    }
+}
+
+/// `view.measure(width_spec, height_spec)`'s measured size in px, through
+/// `RustViewMeasure.probe` (which also puts the view back at its laid-out
+/// frame). Within a layout pass a repeated spec is answered from the pass's
+/// memo instead of re-running the measure: see `crate::measure_memo_policy`.
+pub(crate) fn probe_measure(
+    env: &mut JNIEnv,
+    view: &JObject,
+    width_spec: i32,
+    height_spec: i32,
+) -> (i32, i32) {
+    let key = (view.as_raw() as usize, width_spec, height_spec);
+    if let Some(hit) = MEASURE_MEMO.with(|m| m.borrow().get(&key)) {
+        return hit;
+    }
+    let _t = phase_timer::PhaseTimer::start("measure_probe");
+    let packed = VIEW_MEASURE_PROBE.with(|slot| {
+        let method = StaticMethod::cached(
+            env,
+            slot,
+            "io/idealyst/runtime/RustViewMeasure",
+            "probe",
+            "(Landroid/view/View;II)J",
+        )?;
+        // SAFETY: the arguments match `(Landroid/view/View;II)J`.
+        Some(unsafe {
+            method.call_long(
+                env,
+                &[
+                    JValue::Object(view).as_jni(),
+                    JValue::Int(width_spec).as_jni(),
+                    JValue::Int(height_spec).as_jni(),
+                ],
+            )
+        })
+    });
+    let answer = packed.map_or((0, 0), |p| ((p >> 32) as i32, p as i32));
+    MEASURE_MEMO.with(|m| m.borrow_mut().put(key, answer));
+    answer
 }
 
 /// Install a `text_area`-specific measure_fn: measure the EditText's content
@@ -1533,6 +1622,7 @@ impl AndroidBackend {
     /// also uses it alone to measure where views WILL be (see
     /// `soft_keyboard::begin_padding`).
     pub(crate) fn compute_layout_roots(&mut self, vw: f32, vh: f32) {
+        let _measure_pass = MeasurePass::begin();
         // Carries the view key as well as the node: a root that is a
         // mounted `virtual_grid` cell is computed against its own box
         // rather than the viewport. A cell is a root only because it
