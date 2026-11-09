@@ -86,7 +86,41 @@ let viewer = pdf::PdfReactive(move || doc.get(), /*page*/ 0, /*w*/ 520.0, /*h*/ 
 // from a file picker: doc.set(Some(Rc::new(file_bytes)));
 ```
 
-The page is fit (aspect-preserved, centered) into the fixed `width × height` box.
+The page is fit (aspect-preserved, centered) into the `width × height` box.
+
+### Zooming and knowing when the page is painted
+
+`width` and `height` take a plain `f32` or a live source (`Signal<f32>`,
+`rx!(…)`). Zoom by changing that signal, not by rebuilding the element:
+
+```rust
+let zoom: Signal<f32> = signal(1.0);
+let viewer = pdf::PdfReactive(
+    move || doc.get(),
+    0,
+    rx!(520.0 * zoom.get()),
+    rx!(680.0 * zoom.get()),
+)
+.on_painted(|p: pdf::PdfPainted| log::info!("painted at {}×{} ({}x)", p.width, p.height, p.scale));
+```
+
+The same canvas resizes in place: the page is not re-interpreted, and every
+canvas renderer keeps showing its last frame across the resize until the page
+is painted at the new size, so there is no blank frame. A rebuilt element is a
+new canvas, which shows nothing until its drawing surface comes up and the
+document has been parsed again (tens of milliseconds on a GPU canvas).
+
+The painter fits the page into the canvas's laid-out size, so `.with_style(…)`
+(which replaces the `width × height` sizing) still fits the page to whatever
+box layout gives it.
+
+`.on_painted(…)` is called after each paint into a new box: once when a
+document first draws, after a document change, and after each resize — never
+for a repaint at an unchanged size, and never for a document that fails to
+load. It receives the box size and the points-to-pixels scale, and runs from
+the scheduler just after the renderer has the new scene, so it may write
+signals. (On a GPU canvas's very first paint the drawing surface may still be
+coming up when it runs.)
 [`examples/pdf-demo`](./examples/pdf-demo/) wires this to the
 [`file-picker`](../file-picker/) SDK — **Open PDF…** loads a file from disk and
 renders it on the GPU, or on the CPU renderer where the GPU can't run vello. The
@@ -118,8 +152,9 @@ Tick each item as you exercise it.
 A multi-page PDF should render with correct text (embedded sfnt → GPU glyph runs;
 standard-14/Type1 → outlined fills), vector fills/strokes, images, clips,
 transforms, shadings/gradients, blend modes, and soft masks; the page fits
-(aspect-preserved, centered) into the fixed `width × height` box; `PdfReactive`
-swaps the document when its signal changes with no remount.
+(aspect-preserved, centered) into the `width × height` box; `PdfReactive`
+swaps the document when its signal changes with no remount, and resizes in
+place (no blank frame) when its size signals change.
 
 - [ ] **macOS** — verified on Metal (GPU/vello): open a real multi-page PDF via the
   `pdf-demo` + file-picker, confirm text/vectors/images render and pages swap.

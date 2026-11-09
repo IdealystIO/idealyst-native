@@ -1268,6 +1268,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   before the caller sees it, so an app can react to any "not signed in" in one place. Cancelled
   calls are not reported. See `docs/server-functions.md` §6.
 
+- **`Video` says when the first frame is on screen** (`video` minor). `VideoProps::on_first_frame`
+  fires once per source, after its first frame is displayed — `loadeddata` on web, the first
+  enqueued sample or `isReadyForDisplay` on iOS and macOS, the preview's first update or
+  `MEDIA_INFO_VIDEO_RENDERING_START` on Android, the first texture on Linux and Windows — and again
+  after the source changes. It runs from the scheduler, so it may write signals. On iOS the sample
+  layer stays hidden until a frame of the current stream has arrived, so the empty layer no longer
+  covers what is underneath. A `VideoProps` literal needs `..Default::default()` or the new field.
+- **`PdfReactive` zooms in place and reports its paints** (`pdf` minor). `width` and `height` take
+  any `Into<Reactive<f32>>`, and a change restyles the same canvas, which redraws its last scene at
+  the new size, so a zoom shows no blank frame and the page is not parsed again.
+  `.on_painted(|p| …)` fires once per document and size with the painted `width`, `height` and
+  `scale`. It returns `PdfReactiveBound` (`.with_style`, `.on_painted`, `.into_element()`).
+
 - **`HoverCard` takes `disabled`** (`idea-ui` minor). While it is `true` nothing opens the
   card, and turning it on closes an open one. Bind it to state that would make the card stale:
   `disabled = dragging` keeps a row's card from showing the row where it was during a drag.
@@ -3194,6 +3207,9 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`MediaStream::screenshot()` gets a frame on iPhone Safari** (`media-stream`). The detached
+  `<video>` it reads from lacked `playsinline` and `muted`, without which iOS Safari may never
+  decode a frame for it.
 - **A float literal in an `f32` prop no longer trips `float_literal_f32_fallback`**
   (`runtime-macros-expand`). `ui! { Comp(inset = 16.0) }` coerced the literal with `.into()`,
   leaving its type to inference; rustc 1.97 warns about the `f32` fallback that settles it, and the

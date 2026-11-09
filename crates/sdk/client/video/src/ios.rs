@@ -188,10 +188,13 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode
     let sbdl_gravity = NSString::from_str(av_layer_gravity(props.object_fit));
     let _: () = unsafe { msg_send![&display_layer, setVideoGravity: &*sbdl_gravity] };
     let _: () = unsafe { msg_send![&view_layer, addSublayer: &*display_layer] };
-    // The stream layer is the TOP sublayer (over the AVPlayerLayer). An empty
-    // AVSampleBufferDisplayLayer is opaque, so it must start hidden — otherwise it
-    // covers the player layer and a URL (recorded-file) preview renders blank. The
-    // per-frame raf below unhides it only for `Stream` sources.
+    // The stream layer is the TOP sublayer (over the AVPlayerLayer and the root
+    // layer's CPU-frame `contents`). An empty AVSampleBufferDisplayLayer is
+    // opaque black, so it starts hidden and the per-frame raf below shows it
+    // only once a sample of the current stream has been enqueued. Shown any
+    // earlier it covers whatever is underneath: the player layer (a URL preview
+    // renders blank), the CPU fallback's frames, and the views behind the
+    // `Video` (a placeholder the app shows until the first frame).
     let _: () = unsafe { msg_send![&display_layer, setHidden: true] };
 
     // Honor the explicit `muted` flag (NOT tied to autoplay — iOS plays
@@ -296,20 +299,26 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode
         let view_for_stream = view.clone();
         let display_layer_for_stream = display_layer.clone();
         let props_for_stream = props.clone();
+        let first = crate::FirstFrame::new(props);
         let mut last_gen: u64 = u64::MAX;
         let mut last_native_gen: u64 = u64::MAX;
+        // Whether the display layer holds a sample of the CURRENT stream — the
+        // one condition it may be shown under (see its construction above).
+        let mut layer_has_frame = false;
         let mut scratch: Vec<u8> = Vec::new();
         runtime_vocabulary::scoped_scheduling::raf_loop_scoped(move || {
             let source = props_for_stream.source.resolve();
+            if first.track(&source) {
+                // A new source: its first sample has not been enqueued yet, so
+                // the layer goes back to hidden until it is.
+                layer_has_frame = false;
+            }
             let is_stream = matches!(source, MediaContent::Stream(_));
-            // Size both sublayers to the host view's bounds EVERY frame, and show
-            // the stream layer ONLY for `Stream` sources. The two layers don't
-            // auto-track the host UIView's bounds (a freshly-added sublayer stays
-            // at its 0×0 construction frame and is INVISIBLE), so we sync per
-            // frame. The stream layer is opaque and sits OVER the AVPlayerLayer, so
-            // for a URL source it must be hidden or it blanks the video. Both fixes
-            // are why the recorded-file preview rendered dark before. CATransaction
-            // with actions disabled so the resize doesn't implicitly animate.
+            // Size both sublayers to the host view's bounds EVERY frame. The two
+            // layers don't auto-track the host UIView's bounds (a freshly-added
+            // sublayer stays at its 0×0 construction frame and is INVISIBLE), so
+            // we sync per frame. CATransaction with actions disabled so the
+            // resize and the show/hide don't implicitly animate.
             unsafe {
                 let bounds: CGRect = msg_send![&*view_for_stream, bounds];
                 let txn = objc2::class!(CATransaction);
@@ -317,12 +326,27 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode
                 let _: () = msg_send![txn, setDisableActions: true];
                 let _: () = msg_send![&*player_layer_for_raf, setFrame: bounds];
                 let _: () = msg_send![&*display_layer_for_stream, setFrame: bounds];
-                let _: () = msg_send![&*display_layer_for_stream, setHidden: !is_stream];
+                let _: () = msg_send![
+                    &*display_layer_for_stream,
+                    setHidden: !(is_stream && layer_has_frame)
+                ];
                 let _: () = msg_send![txn, commit];
             }
 
-            let MediaContent::Stream(stream) = source else {
-                return;
+            let stream = match source {
+                MediaContent::Stream(stream) => stream,
+                MediaContent::Url(_) => {
+                    // The player layer has content from its first decoded frame on.
+                    if !first.painted() {
+                        let ready: bool =
+                            unsafe { msg_send![&*player_layer_for_raf, isReadyForDisplay] };
+                        if ready {
+                            first.frame_painted();
+                        }
+                    }
+                    return;
+                }
+                _ => return,
             };
 
             // Zero-copy fast-path. If the producer published a native handle (a
@@ -386,6 +410,17 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode
                         ];
                         // The layer retains the buffer; drop our acquire-retain.
                         surf.release(sbuf);
+                        if !layer_has_frame {
+                            // Show it with this sample in it, without the
+                            // implicit fade a sublayer's `hidden` change gets.
+                            layer_has_frame = true;
+                            let txn = objc2::class!(CATransaction);
+                            let _: () = msg_send![txn, begin];
+                            let _: () = msg_send![txn, setDisableActions: true];
+                            let _: () = msg_send![&*display_layer_for_stream, setHidden: false];
+                            let _: () = msg_send![txn, commit];
+                        }
+                        first.frame_painted();
                     }
                     return;
                 }
@@ -412,6 +447,7 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut IosBackend) -> IosNode
                 let _: () = msg_send![&layer, setContents: image as *const AnyObject];
                 CGImageRelease(image); // the layer holds its own reference
             }
+            first.frame_painted();
         });
     }
 

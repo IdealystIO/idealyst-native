@@ -733,6 +733,7 @@ pub fn PreviewScreen(props: &PreviewScreenProps) -> Element {
         // the viewport-derived aspect can be ~1px off, which Contain would show
         // as a hairline bar). The crop is sub-pixel given the matched aspect.
         object_fit: video::ObjectFit::Cover,
+        on_first_frame: None,
     })
     .with_style(video_fill)
     .into_element();

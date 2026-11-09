@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.hardware.display.DisplayManager
+import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -191,6 +192,9 @@ object RustVideoFrameSink {
                 sawFrame = true
                 main.removeCallbacks(firstFrameCheck)
                 Log.i(TAG, "preview: first frame")
+                // `removed`: a view on its way off the host no longer speaks for
+                // the display (its id is already gone on the Rust side too).
+                if (!removed) nativePreviewFirstFrame(id)
             }
         }
 
@@ -304,13 +308,21 @@ object RustVideoFrameSink {
 
     /** Get (creating if needed) the host's URL VideoView child. `fill` →
      *  object-fit: cover (stretch to fill the box, no black letterbox); else
-     *  the stock aspect-fit (Contain) behavior. */
+     *  the stock aspect-fit (Contain) behavior. The view reports each clip's
+     *  first rendered frame to Rust under [id]; VideoView hands the listener to
+     *  every MediaPlayer it opens, so a new URI reports again. */
     @JvmStatic
-    fun ensureVideoView(host: FrameLayout, fill: Boolean): VideoView {
+    fun ensureVideoView(host: FrameLayout, fill: Boolean, id: Long): VideoView {
         var video = host.findViewWithTag<View>(VIDEO_TAG) as? FillVideoView
         if (video == null) {
             video = FillVideoView(host.context)
             video.tag = VIDEO_TAG
+            video.setOnInfoListener { _, what, _ ->
+                if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
+                    nativeVideoRenderingStart(id)
+                }
+                false
+            }
             host.addView(video, matchParent())
         }
         if (video.fillMode != fill) {
@@ -332,6 +344,14 @@ object RustVideoFrameSink {
     /** The preview's surface is going away: stop the capture naming it. */
     @JvmStatic
     private external fun nativePreviewSurfaceDestroyed(id: Long)
+
+    /** The preview's [TextureView] drew its first frame. */
+    @JvmStatic
+    private external fun nativePreviewFirstFrame(id: Long)
+
+    /** The URL [VideoView] of the display registered under [id] rendered its first frame. */
+    @JvmStatic
+    private external fun nativeVideoRenderingStart(id: Long)
 
     /** The preview was on screen and no frame came: give up on the native path. */
     @JvmStatic

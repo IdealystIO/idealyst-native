@@ -9375,10 +9375,14 @@ dependencies = [
  "canvas-core",
  "hayro-interpret",
  "hayro-syntax",
+ "host-mock",
  "kurbo 0.13.1",
  "log",
  "runtime-core",
+ "runtime-scene",
  "runtime-shared",
+ "runtime-vocabulary",
+ "runtime-world",
  "serde_json",
 ]
 

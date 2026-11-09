@@ -32,7 +32,7 @@
 //! node's stable per-node id. See [`node_id`] for how that id is
 //! recovered and the graceful-degradation contract.
 
-use crate::{MediaContent, VideoOps, VideoProps};
+use crate::{FirstFrame, MediaContent, VideoOps, VideoProps};
 use backend_linux::{LinuxBackend, LinuxNode};
 use gtk4::{gdk, gio, glib};
 use gtk4::prelude::*;
@@ -191,12 +191,23 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut LinuxBackend) -> Linux
     // or the node unmounts, so a hidden/gone Picture stops polling.
     let tick: Rc<RefCell<Option<gtk4::TickCallbackId>>> = Rc::new(RefCell::new(None));
 
+    // `on_first_frame` for a stream `gtk::Video` plays (a URL's `MediaFile`, or a
+    // producer's native `gtk::MediaStream`): a `GtkMediaStream` is the paintable
+    // the video draws, and it emits `invalidate-contents` for each new frame. The
+    // handler is disconnected when the source changes or the node unmounts, so a
+    // producer's stream that outlives this view stops reporting to it.
+    let first = FirstFrame::new(props);
+    let paint_watch: Rc<RefCell<Option<(gtk4::MediaStream, glib::SignalHandlerId)>>> =
+        Rc::new(RefCell::new(None));
+
     // One reactive populate effect. Owned by the mount's active scope, so it
     // re-fires when a signal the source reads changes.
     let video_for_effect = video.clone();
     let picture_for_effect = picture.clone();
     let paintable_for_effect = frame_paintable.clone();
     let tick_for_effect = tick.clone();
+    let watch_for_effect = paint_watch.clone();
+    let first_for_effect = first.clone();
     let props_for_effect = props.clone();
     let muted = props.muted;
     let autoplay = props.autoplay;
@@ -207,7 +218,10 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut LinuxBackend) -> Linux
         if let Some(id) = tick_for_effect.borrow_mut().take() {
             id.remove();
         }
-        match props_for_effect.source.resolve() {
+        unwatch_paint(&watch_for_effect);
+        let content = props_for_effect.source.resolve();
+        first_for_effect.track(&content);
+        match content {
             MediaContent::Url(u) if !u.is_empty() => {
                 picture_for_effect.set_visible(false);
                 let media = if is_uri(&u) {
@@ -218,6 +232,7 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut LinuxBackend) -> Linux
                 media.set_muted(muted);
                 media.set_loop(loop_playback);
                 video_for_effect.set_media_stream(Some(&media));
+                watch_paint(&watch_for_effect, media.upcast_ref(), &first_for_effect);
                 if autoplay {
                     media.play();
                 }
@@ -233,6 +248,7 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut LinuxBackend) -> Linux
                     stream.set_muted(muted);
                     stream.set_loop(loop_playback);
                     video_for_effect.set_media_stream(Some(&stream));
+                    watch_paint(&watch_for_effect, &stream, &first_for_effect);
                     if autoplay {
                         stream.play();
                     }
@@ -241,8 +257,12 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut LinuxBackend) -> Linux
                     // Picture's paintable from `latest()` on the frame clock.
                     video_for_effect.set_media_stream(gtk4::MediaStream::NONE);
                     picture_for_effect.set_visible(true);
-                    *tick_for_effect.borrow_mut() =
-                        Some(spawn_frame_pump(&picture_for_effect, &paintable_for_effect, s));
+                    *tick_for_effect.borrow_mut() = Some(spawn_frame_pump(
+                        &picture_for_effect,
+                        &paintable_for_effect,
+                        s,
+                        first_for_effect.clone(),
+                    ));
                 }
             }
             // Empty URL or no source → clear both surfaces.
@@ -265,6 +285,7 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut LinuxBackend) -> Linux
         if let Some(id) = tick_for_cleanup.borrow_mut().take() {
             id.remove();
         }
+        unwatch_paint(&paint_watch);
         if let Some(v) = VIDEOS.with(|m| m.borrow_mut().remove(&id)) {
             if let Some(s) = v.media_stream() {
                 s.pause();
@@ -288,6 +309,7 @@ fn spawn_frame_pump(
     driver: &gtk4::Picture,
     paintable: &FramePaintable,
     stream: media_stream::MediaStream,
+    first: Rc<FirstFrame>,
 ) -> gtk4::TickCallbackId {
     let paintable = paintable.clone();
     // `add_tick_callback` wants `Fn`, so per-frame mutable state lives behind a
@@ -313,11 +335,29 @@ fn spawn_frame_pump(
                         (w * 4) as usize,
                     );
                     paintable.set_texture(tex);
+                    first.frame_painted();
                 }
             }
         }
         glib::ControlFlow::Continue
     })
+}
+
+/// Report `stream`'s frames to `first` until [`unwatch_paint`].
+fn watch_paint(
+    watch: &RefCell<Option<(gtk4::MediaStream, glib::SignalHandlerId)>>,
+    stream: &gtk4::MediaStream,
+    first: &Rc<FirstFrame>,
+) {
+    let first = first.clone();
+    let id = stream.connect_invalidate_contents(move |_| first.frame_painted());
+    *watch.borrow_mut() = Some((stream.clone(), id));
+}
+
+fn unwatch_paint(watch: &RefCell<Option<(gtk4::MediaStream, glib::SignalHandlerId)>>) {
+    if let Some((stream, id)) = watch.borrow_mut().take() {
+        stream.disconnect(id);
+    }
 }
 
 /// True when `s` carries a URI scheme (`scheme://…` or `data:`), meaning it
@@ -470,14 +510,14 @@ mod tests {
 
 #[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
 mod linux_registration_tests {
-    /// Regression: the whiteboard's recording preview / any `Video` didn't
-    /// play on Linux because `video/linux.rs` had a real `gtk::Video`
-    /// backend but no `inventory::submit!`, so it never self-registered and
-    /// `Video` fell to the framework's External placeholder. This asserts the
-    /// submit exists (drained by `LinuxBackend::new`).
+    /// Regression: a `Video` didn't play on Linux because the real `gtk::Video`
+    /// handler was never installed, so `Video` fell to the External
+    /// placeholder. `register` must install a handler on a
+    /// `Registry<LinuxBackend>` (its type dispatch picks `mount_video_linux`).
     #[test]
-    fn video_handler_auto_registers_on_linux() {
-        let count = inventory::iter::<backend_linux::LinuxExternalRegistrar>().count();
-        assert!(count >= 1, "video must submit a LinuxExternalRegistrar so Video lowers to gtk::Video");
+    fn register_installs_the_video_handler_on_linux() {
+        let mut registry = runtime_scene::Registry::<backend_linux::LinuxBackend>::new();
+        crate::register(&mut registry);
+        assert!(registry.has::<crate::VideoPrim>(), "video must register on the Linux registry");
     }
 }

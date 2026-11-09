@@ -28,7 +28,7 @@ mod shading;
 mod view;
 
 pub use device::{SceneDevice, Warnings, GLYPH_UPEM};
-pub use view::{Pdf, PdfReactive, PdfView};
+pub use view::{Pdf, PdfPainted, PdfReactive, PdfReactiveBound, PdfView};
 
 use canvas_core::Scene;
 use hayro_interpret::hayro_syntax::Pdf;

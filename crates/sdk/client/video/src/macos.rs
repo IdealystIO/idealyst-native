@@ -132,8 +132,10 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> Macos
     // ---- URL / AVPlayer path -------------------------------------------------
     // Build an AVPlayer + AVPlayerLayer and add the layer as a sublayer of the
     // view's root layer. A Stream source resolves to no URL, so the player just
-    // stays idle (and the layer empty) for the camera case.
-    {
+    // stays idle (and the layer empty) for the camera case. Evaluates to the
+    // object that reports `readyForDisplay` for the URL path (the AVPlayerView
+    // or the AVPlayerLayer — both have it).
+    let ready_probe: Retained<AnyObject> = {
         let initial_src = resolved_url(props).unwrap_or_default();
         let player = build_player(&initial_src);
 
@@ -150,8 +152,10 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> Macos
         // the host's bounds every frame (the host frame is Taffy-driven; neither
         // child auto-tracks it — an Effect reading `bounds` would fire once at
         // 0×0 and leave the video invisible, so the raf loop owns sizing).
+        let ready_probe: Retained<AnyObject>;
         let player_layer: Option<Retained<AnyObject>> = if props.controls {
             let player_view = build_player_view(&player, props.object_fit);
+            ready_probe = player_view.clone();
             let _: () = unsafe { msg_send![&view, addSubview: &*player_view] };
             let player_view_for_size = player_view.clone();
             let view_for_size = view.clone();
@@ -162,6 +166,7 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> Macos
             None
         } else {
             let player_layer = build_player_layer(&player, props.object_fit);
+            ready_probe = player_layer.clone();
             let view_layer: Retained<AnyObject> = unsafe { msg_send_id![&view, layer] };
             let _: () = unsafe { msg_send![&view_layer, addSublayer: &*player_layer] };
             // CATransaction disables the implicit frame-change animation.
@@ -255,9 +260,10 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> Macos
                 }
             }
         });
-    }
+        ready_probe
+    };
 
-    // ---- Live MediaStream display path (unchanged) ---------------------------
+    // ---- Live MediaStream display path + first-frame watch -------------------
     {
         let view_layer: Retained<AnyObject> = unsafe { msg_send_id![&view, layer] };
         // Aspect-preserving fill, never the default stretch. `resizeAspect`
@@ -270,12 +276,27 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> Macos
 
         let view_for_stream = view.clone();
         let props_for_stream = props.clone();
+        let first = crate::FirstFrame::new(props);
         let mut last_gen: u64 = u64::MAX;
         let mut last_native_gen: u64 = u64::MAX;
         let mut scratch: Vec<u8> = Vec::new();
         runtime_vocabulary::scoped_scheduling::raf_loop_scoped(move || {
-            let MediaContent::Stream(stream) = props_for_stream.source.resolve() else {
-                return;
+            let source = props_for_stream.source.resolve();
+            first.track(&source);
+            let stream = match source {
+                MediaContent::Stream(stream) => stream,
+                MediaContent::Url(_) => {
+                    // The player view/layer has content from its first
+                    // decoded frame on.
+                    if !first.painted() {
+                        let ready: bool = unsafe { msg_send![&*ready_probe, isReadyForDisplay] };
+                        if ready {
+                            first.frame_painted();
+                        }
+                    }
+                    return;
+                }
+                _ => return,
             };
 
             // Zero-copy fast-path. If the producer published a native IOSurface
@@ -306,6 +327,7 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> Macos
                             msg_send![&layer, setContents: surface as *const AnyObject];
                         surf.release(surface);
                     }
+                    first.frame_painted();
                     return;
                 }
             }
@@ -331,6 +353,7 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut MacosBackend) -> Macos
                 let _: () = msg_send![&layer, setContents: image as *const AnyObject];
                 CGImageRelease(image); // the layer holds its own reference
             }
+            first.frame_painted();
         });
     }
 

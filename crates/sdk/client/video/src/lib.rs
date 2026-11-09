@@ -28,13 +28,13 @@
 //!
 //! # Author callbacks and the flush discipline
 //!
-//! The web handler installs NO DOM event listeners and invokes NO
-//! author callbacks, so the "External glue must call `schedule_flush`
-//! after author callbacks" rule (named in each backend's `newcore.rs`
-//! module docs) has no call site here. If a future port adds media
-//! event listeners that reach author code (`on_ended` etc.), those
-//! invocations MUST be followed by the backend's
-//! `newcore::schedule_flush()`.
+//! The one author callback, [`VideoProps::on_first_frame`], never runs
+//! inside the platform callback that noticed the frame: every backend hands
+//! the event to the shared `FirstFrame` state, which defers the call to a
+//! 0 ms scheduler timer. Every backend flushes after a scheduler callback,
+//! so signal writes the author makes there commit without a per-backend
+//! `newcore::schedule_flush()` call. A future media event that reaches
+//! author code (`on_ended` etc.) should go the same way.
 //!
 //! # Usage
 //!
@@ -64,6 +64,10 @@
 // Shared wasm32 helpers (pure DOM media plumbing, no framework types).
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod web_util;
+
+// `on_first_frame` bookkeeping shared by every real player.
+mod first_frame;
+pub(crate) use first_frame::FirstFrame;
 
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 mod android;
@@ -143,6 +147,23 @@ pub struct VideoProps {
     /// inside the box (letterboxed); [`ObjectFit::Cover`] fills the box,
     /// cropping the overflow — what a self-view camera widget wants.
     pub object_fit: ObjectFit,
+    /// Called once the first frame of the current source is on screen — and
+    /// again after each source change (a new URL, or a different stream), once
+    /// that source's first frame is up. Use it to keep a placeholder or
+    /// spinner over the view until there is a picture. `None` (the default)
+    /// reports nothing.
+    ///
+    /// Runs from the scheduler shortly after the frame is shown, never inside
+    /// a platform callback, so it may write signals. Skipped once the `Video`
+    /// unmounts. What "on screen" means per backend: web — the element's
+    /// `loadeddata` (its first frame is decoded and displayed); iOS/macOS — the
+    /// first sample enqueued or surface/image set on the layer, or the player
+    /// layer turning `readyForDisplay`; Android — the camera preview's first
+    /// `TextureView` update, the first stream bitmap, or the `VideoView`'s
+    /// rendering start; Linux — the first live texture, or the media stream's
+    /// first `invalidate-contents`; Windows — the first presented frame. The
+    /// placeholder host (SSR, terminal, …) shows no video and never calls it.
+    pub on_first_frame: Option<Rc<dyn Fn()>>,
 }
 
 impl Default for VideoProps {
@@ -154,6 +175,7 @@ impl Default for VideoProps {
             controls: false,
             loop_playback: false,
             object_fit: ObjectFit::Contain,
+            on_first_frame: None,
         }
     }
 }
@@ -808,23 +830,46 @@ mod web_leg {
             fit,
         );
 
+        // `on_first_frame`: `loadeddata` fires once per load, when the
+        // element has decoded the frame at the current position and shows
+        // it — for a URL and for a `srcObject` stream alike. A new `src` /
+        // `srcObject` restarts the load and drops the old load's queued
+        // events, so the event always belongs to the source last applied.
+        // The listener detaches at unmount (before its closure drops).
+        let first = crate::FirstFrame::new(&prim.props);
+        if prim.props.on_first_frame.is_some() {
+            let first = first.clone();
+            let listener = web_glue::dom::Listener::new(
+                video.clone().into(),
+                "loadeddata",
+                web_glue::dom::ListenerOptions::default(),
+                move |_| first.frame_painted(),
+            );
+            on_teardown(move || drop(listener));
+        }
+
         // One reactive populate effect: resolve the source each run, then
         // set `src` (URL) or `srcObject` (stream) / clear. World effect:
         // created during realize (world entered), so it is collected into
         // the enclosing subtree and dies at unmount; runs once immediately
-        // and re-fires on signal reads inside `resolve()`. The body
-        // only pokes the browser (no author
-        // callbacks, no signal writes), so no `schedule_flush` is needed
+        // and re-fires on signal reads inside `resolve()`. The body only
+        // pokes the browser and re-arms `first`; no author callback runs
         // here — see the module docs.
         let video_for_effect = video.clone();
         let props_for_effect = prim.props.clone();
         runtime_world::effect(move || {
-            match props_for_effect.source.resolve() {
+            let content = props_for_effect.source.resolve();
+            // Re-apply only a changed source: re-setting the same `src` /
+            // `srcObject` restarts the load and blanks the element.
+            if !first.track(&content) {
+                return;
+            }
+            match content {
                 MediaContent::Url(u) => web_util::apply_url(&video_for_effect, &u),
                 MediaContent::Stream(s) => {
                     web_util::apply_stream(&video_for_effect, &s, props_for_effect.autoplay)
                 }
-                MediaContent::None => web_util::apply_none(&video_for_effect),
+                _ => web_util::apply_none(&video_for_effect),
             }
         });
 

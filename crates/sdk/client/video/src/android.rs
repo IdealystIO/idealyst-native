@@ -34,7 +34,7 @@
 //! ([`crate::android_preview`]).
 
 use crate::android_preview::{preview_transform, PreviewPlacement};
-use crate::{MediaContent, VideoOps, VideoProps};
+use crate::{FirstFrame, MediaContent, VideoOps, VideoProps};
 // `backend-android-mobile`'s `[lib].name` is `backend_android`
 // (preserved historically so `System.loadLibrary("backend_android")`
 // keeps working).
@@ -48,7 +48,7 @@ use runtime_world::effect;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 const SINK: &str = "io/idealyst/video/RustVideoFrameSink";
 
@@ -60,6 +60,24 @@ runtime_tls::thread_local! {
     /// callback for a preview that has been replaced finds nothing. Main thread.
     static CLAIMS: RefCell<HashMap<u64, PreviewClaim>> = RefCell::new(HashMap::new());
     static NEXT_PREVIEW: Cell<u64> = const { Cell::new(1) };
+    /// Id → the `Video`'s first-frame state, for the shim's first-frame callbacks:
+    /// preview ids (a `TextureView`'s first update) and display ids (a `VideoView`'s
+    /// rendering start) share the one counter above, so they never collide. Weak:
+    /// the `Video` owns its state. Main thread.
+    static FIRST_FRAMES: RefCell<HashMap<u64, Weak<FirstFrame>>> = RefCell::new(HashMap::new());
+}
+
+/// A fresh id from the shared preview/display counter.
+fn next_id() -> u64 {
+    NEXT_PREVIEW.with(|next| next.replace(next.get() + 1))
+}
+
+/// A shim callback: the view registered under `id` put its first frame on screen.
+fn first_frame_shown(id: u64) {
+    let first = FIRST_FRAMES.with(|m| m.borrow().get(&id).and_then(Weak::upgrade));
+    if let Some(first) = first {
+        first.frame_painted();
+    }
 }
 
 /// What this `Video` is doing about its live stream.
@@ -84,11 +102,19 @@ struct StreamDisplay {
     showing: Showing,
     last_gen: u64,
     scratch: Vec<u8>,
+    first: Rc<FirstFrame>,
 }
 
 impl StreamDisplay {
-    fn new(host: GlobalRef, cover: bool) -> Self {
-        Self { host, cover, showing: Showing::Nothing, last_gen: u64::MAX, scratch: Vec::new() }
+    fn new(host: GlobalRef, cover: bool, first: Rc<FirstFrame>) -> Self {
+        Self {
+            host,
+            cover,
+            showing: Showing::Nothing,
+            last_gen: u64::MAX,
+            scratch: Vec::new(),
+            first,
+        }
     }
 
     fn tick(&mut self, stream: Option<&MediaStream>) {
@@ -149,8 +175,9 @@ impl StreamDisplay {
     fn show_preview(&mut self, source: &PreviewSource, claim: PreviewClaim) {
         // Nothing reads CPU frames here now, so a frame's worth of memory goes.
         self.scratch = Vec::new();
-        let id = NEXT_PREVIEW.with(|next| next.replace(next.get() + 1));
+        let id = next_id();
         CLAIMS.with(|claims| claims.borrow_mut().insert(id, claim));
+        FIRST_FRAMES.with(|m| m.borrow_mut().insert(id, Rc::downgrade(&self.first)));
         let geometry = source.geometry();
         let host = &self.host;
         let cover = self.cover;
@@ -198,7 +225,9 @@ impl StreamDisplay {
         }
         self.last_gen = generation;
         if let Some((w, h)) = stream.latest(&mut self.scratch) {
-            show_frame(&self.host, &self.scratch, w, h, self.cover);
+            if show_frame(&self.host, &self.scratch, w, h, self.cover) {
+                self.first.frame_painted();
+            }
         }
     }
 
@@ -207,6 +236,7 @@ impl StreamDisplay {
     /// stays up, as it always has between streams.
     fn clear(&mut self) {
         if let Showing::Preview { id, .. } = &self.showing {
+            FIRST_FRAMES.with(|m| m.borrow_mut().remove(id));
             let claim = CLAIMS.with(|claims| claims.borrow_mut().remove(id));
             drop(claim);
             let host = &self.host;
@@ -247,6 +277,12 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> Glo
         env.new_global_ref(local).expect("new_global_ref")
     });
 
+    // `on_first_frame`: one state per `Video`, reached from the shim's callbacks
+    // by id — this display id for the `VideoView`, a preview id per `TextureView`.
+    let first = FirstFrame::new(props);
+    let display_id = next_id();
+    FIRST_FRAMES.with(|m| m.borrow_mut().insert(display_id, Rc::downgrade(&first)));
+
     // URL path — reactive Effect (efficient; fires only on change).
     let autoplay = props.autoplay;
     // object-fit: Cover → fill the box (no black letterbox); Contain → aspect-fit.
@@ -257,9 +293,9 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> Glo
     effect(move || {
         let url = match props_for_url.source.resolve() {
             MediaContent::Url(u) => u,
-            MediaContent::Stream(_) | MediaContent::None => return,
+            _ => return,
         };
-        set_video_uri(&host_for_url, &url, url_fill);
+        set_video_uri(&host_for_url, &url, url_fill, display_id);
         if first_run.replace(false) && autoplay {
             start(&host_for_url);
         }
@@ -268,21 +304,26 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut AndroidBackend) -> Glo
     // Stream path, on the UI looper. Only a stream on the CPU path does any work per
     // frame. object-fit: Cover → fill and crop, Contain → letterbox. Static.
     let cover = matches!(props.object_fit, crate::ObjectFit::Cover);
-    let display = Rc::new(RefCell::new(StreamDisplay::new(host.clone(), cover)));
+    let display = Rc::new(RefCell::new(StreamDisplay::new(host.clone(), cover, first.clone())));
     let props_for_stream = props.clone();
     let display_for_frames = display.clone();
     runtime_vocabulary::scoped_scheduling::raf_loop_scoped(move || {
         let content = props_for_stream.source.resolve();
+        // Before `tick`, so a frame shown for a new source counts as its first.
+        first.track(&content);
         let stream = match &content {
             MediaContent::Stream(stream) => Some(stream),
-            MediaContent::Url(_) | MediaContent::None => None,
+            _ => None,
         };
         display_for_frames.borrow_mut().tick(stream);
     });
     // The loop is gone with the scope, so the unmount has to let the source go itself:
     // another display may be waiting for it, and the capture must stop naming a surface
     // that is about to be released.
-    on_teardown(move || display.borrow_mut().clear());
+    on_teardown(move || {
+        display.borrow_mut().clear();
+        FIRST_FRAMES.with(|m| m.borrow_mut().remove(&display_id));
+    });
 
     host
 }
@@ -354,6 +395,34 @@ pub extern "system" fn Java_io_idealyst_video_RustVideoFrameSink_nativePreviewSt
     });
 }
 
+/// `RustVideoFrameSink.nativePreviewFirstFrame` — the preview's `TextureView` drew its
+/// first camera frame.
+///
+/// # Safety
+/// Called by the JVM on the main thread.
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_video_RustVideoFrameSink_nativePreviewFirstFrame(
+    _env: JNIEnv,
+    _class: JClass,
+    id: jlong,
+) {
+    trampoline("nativePreviewFirstFrame", || first_frame_shown(id as u64));
+}
+
+/// `RustVideoFrameSink.nativeVideoRenderingStart` — the `VideoView` of the display
+/// registered under `id` rendered its first frame (`MEDIA_INFO_VIDEO_RENDERING_START`).
+///
+/// # Safety
+/// Called by the JVM on the main thread.
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_video_RustVideoFrameSink_nativeVideoRenderingStart(
+    _env: JNIEnv,
+    _class: JClass,
+    id: jlong,
+) {
+    trampoline("nativeVideoRenderingStart", || first_frame_shown(id as u64));
+}
+
 /// `RustVideoFrameSink.nativePreviewTransform` — `[scale_x, scale_y, rotation_degrees]`
 /// for a preview, from the host-tested [`preview_transform`]. Called on each change of
 /// view size or display rotation, never per frame. Null if the array can't be made.
@@ -415,6 +484,12 @@ static KEEP_SURFACE_DESTROYED: extern "system" fn(JNIEnv, JClass, jlong) =
 static KEEP_STALLED: extern "system" fn(JNIEnv, JClass, jlong) =
     Java_io_idealyst_video_RustVideoFrameSink_nativePreviewStalled;
 #[used]
+static KEEP_PREVIEW_FIRST_FRAME: extern "system" fn(JNIEnv, JClass, jlong) =
+    Java_io_idealyst_video_RustVideoFrameSink_nativePreviewFirstFrame;
+#[used]
+static KEEP_VIDEO_RENDERING_START: extern "system" fn(JNIEnv, JClass, jlong) =
+    Java_io_idealyst_video_RustVideoFrameSink_nativeVideoRenderingStart;
+#[used]
 static KEEP_TRANSFORM: extern "system" fn(
     JNIEnv,
     JClass,
@@ -429,11 +504,13 @@ static KEEP_TRANSFORM: extern "system" fn(
 ) -> jfloatArray = Java_io_idealyst_video_RustVideoFrameSink_nativePreviewTransform;
 
 /// Push one RGBA8 frame to the host's stream ImageView (Kotlin makes the
-/// Bitmap + setImageBitmap). Called on the UI thread from the frame loop.
-fn show_frame(host: &GlobalRef, rgba: &[u8], width: u32, height: u32, cover: bool) {
+/// Bitmap + setImageBitmap). Called on the UI thread from the frame loop. `true`
+/// when the shim took the frame.
+fn show_frame(host: &GlobalRef, rgba: &[u8], width: u32, height: u32, cover: bool) -> bool {
+    let mut shown = false;
     with_jni_env(|env| {
         let needed = (width as usize) * (height as usize) * 4;
-        if rgba.len() < needed {
+        if width == 0 || height == 0 || rgba.len() < needed {
             return;
         }
         // Hand Kotlin a direct ByteBuffer that VIEWS our RGBA slice — no
@@ -449,26 +526,33 @@ fn show_frame(host: &GlobalRef, rgba: &[u8], width: u32, height: u32, cover: boo
             Ok(b) => b,
             Err(_) => return,
         };
-        let _ = env.call_static_method(
-            SINK,
-            "showFrame",
-            "(Landroid/widget/FrameLayout;Ljava/nio/ByteBuffer;IIZ)V",
-            &[
-                JValue::Object(host.as_obj()),
-                JValue::Object(&buf),
-                JValue::Int(width as i32),
-                JValue::Int(height as i32),
-                JValue::Bool(cover as u8),
-            ],
-        );
+        shown = env
+            .call_static_method(
+                SINK,
+                "showFrame",
+                "(Landroid/widget/FrameLayout;Ljava/nio/ByteBuffer;IIZ)V",
+                &[
+                    JValue::Object(host.as_obj()),
+                    JValue::Object(&buf),
+                    JValue::Int(width as i32),
+                    JValue::Int(height as i32),
+                    JValue::Bool(cover as u8),
+                ],
+            )
+            .is_ok();
+        if !shown {
+            let _ = env.exception_clear();
+        }
     });
+    shown
 }
 
 /// Ensure the host has a VideoView child and point it at `src`. `fill` selects
-/// object-fit cover (stretch to fill) vs the stock aspect-fit (Contain).
-fn set_video_uri(host: &GlobalRef, src: &str, fill: bool) {
+/// object-fit cover (stretch to fill) vs the stock aspect-fit (Contain); the view
+/// reports its rendering start under `display_id`.
+fn set_video_uri(host: &GlobalRef, src: &str, fill: bool, display_id: u64) {
     with_jni_env(|env| {
-        let Some(video_view) = ensure_video_view(env, host, fill) else {
+        let Some(video_view) = ensure_video_view(env, host, fill, display_id) else {
             return;
         };
         let Ok(uri_class) = env.find_class("android/net/Uri") else {
@@ -495,18 +579,23 @@ fn set_video_uri(host: &GlobalRef, src: &str, fill: bool) {
     });
 }
 
-/// `RustVideoFrameSink.ensureVideoView(host)` → the (created-if-needed)
-/// VideoView child.
+/// `RustVideoFrameSink.ensureVideoView(host, fill, id)` → the (created-if-needed)
+/// VideoView child, reporting its rendering start under `display_id`.
 fn ensure_video_view<'a>(
     env: &mut jni::JNIEnv<'a>,
     host: &GlobalRef,
     fill: bool,
+    display_id: u64,
 ) -> Option<JObject<'a>> {
     env.call_static_method(
         SINK,
         "ensureVideoView",
-        "(Landroid/widget/FrameLayout;Z)Landroid/widget/VideoView;",
-        &[JValue::Object(host.as_obj()), JValue::Bool(fill as u8)],
+        "(Landroid/widget/FrameLayout;ZJ)Landroid/widget/VideoView;",
+        &[
+            JValue::Object(host.as_obj()),
+            JValue::Bool(fill as u8),
+            JValue::Long(display_id as jlong),
+        ],
     )
     .ok()?
     .l()

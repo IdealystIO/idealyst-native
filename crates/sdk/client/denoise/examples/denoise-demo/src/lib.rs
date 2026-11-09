@@ -611,6 +611,7 @@ pub fn app() -> Element {
             controls: false,
             loop_playback: true,
             object_fit: video::ObjectFit::Contain,
+            on_first_frame: None,
         })
         .bind(r)
         .with_style(style)

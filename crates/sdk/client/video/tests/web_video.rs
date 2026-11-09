@@ -168,3 +168,68 @@ async fn stream_source_ignores_a_foreign_native_source() {
     assert!(prop(&v, "srcObject").is_null(), "a foreign native source is not attached");
     backend_web::newcore::stop();
 }
+
+/// A canvas repainted every 16 ms and its `captureStream()` — a live web
+/// `MediaStream` that keeps producing frames.
+fn painted_canvas_stream() -> web_glue::dom::MediaStream {
+    use web_glue::JsCast;
+    let f = web_glue::js::Function::new_no_args(
+        "const c = document.createElement('canvas'); c.width = 32; c.height = 16; \
+         const x = c.getContext('2d'); \
+         const paint = () => { x.fillStyle = 'rgb(20, 160, 90)'; x.fillRect(0, 0, 32, 16); }; \
+         paint(); const s = c.captureStream(); setInterval(paint, 16); return s;",
+    );
+    f.call0(&JsValue::UNDEFINED).expect("fixture").dyn_into().expect("a MediaStream")
+}
+
+/// Wait (bounded) until `cond` holds, polling every 30 ms.
+async fn wait_until(mut cond: impl FnMut() -> bool) -> bool {
+    for _ in 0..100 {
+        if cond() {
+            return true;
+        }
+        next_frames().await;
+    }
+    cond()
+}
+
+/// `on_first_frame` fires once the live stream's first frame is up, once
+/// only while frames keep coming, and again after the source swaps to a
+/// different stream.
+#[wasm_bindgen_test]
+async fn on_first_frame_reports_once_per_stream() {
+    let _host = fresh_host();
+    let streams: Vec<media_stream::MediaStream> = (0..2)
+        .map(|_| {
+            let (ms, _writer) = media_stream::MediaStream::new();
+            ms.set_native_source(Rc::new(painted_canvas_stream()));
+            ms
+        })
+        .collect();
+
+    let calls = Rc::new(std::cell::Cell::new(0u32));
+    let which = Rc::new(std::cell::Cell::new(None));
+    let (calls_app, which_app, streams_app) = (calls.clone(), which.clone(), streams.clone());
+    backend_web::newcore::start_in("#app", video::register, move || {
+        let pick = signal(0usize);
+        which_app.set(Some(pick));
+        let streams = streams_app.clone();
+        let calls = calls_app.clone();
+        Video(VideoProps {
+            source: video::stream(move || Some(streams[pick.get()].clone())),
+            autoplay: true,
+            on_first_frame: Some(Rc::new(move || calls.set(calls.get() + 1))),
+            ..Default::default()
+        })
+        .into_element()
+    });
+
+    assert!(wait_until(|| calls.get() == 1).await, "first frame of the first stream");
+    next_frames().await;
+    assert_eq!(calls.get(), 1, "later frames of the same stream don't report");
+
+    which.get().expect("signal created").set(1);
+    backend_web::newcore::flush_sync();
+    assert!(wait_until(|| calls.get() == 2).await, "a different stream reports its first frame");
+    backend_web::newcore::stop();
+}

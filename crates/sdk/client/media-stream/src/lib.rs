@@ -900,13 +900,22 @@ mod web_screenshot {
     const HAVE_CURRENT_DATA: u32 = 2;
 
     web_glue::import! {
-        // A detached, muted `<video>` playing `s` — the readable surface.
-        // `play()`'s rejection (autoplay policy) is observed here; the wait
-        // below simply times out if nothing ever decodes.
+        // A detached `<video>` — the readable surface, never inserted into the
+        // DOM. Muted and inline, each as both property and attribute: iOS
+        // Safari only autoplays a muted video, and a video that is not inline
+        // waits for fullscreen playback, so it never decodes a frame and
+        // `screenshot()` times out empty. WebKit has read the attributes or the
+        // properties depending on version, so both are set.
+        fn js_detached_video() -> u32 =
+            "() => { const v = document.createElement('video'); \
+               v.muted = true; v.setAttribute('muted', ''); \
+               v.playsInline = true; v.setAttribute('playsinline', ''); return G.add(v); }";
+        // Play stream `s` in `v`. `play()`'s rejection (autoplay policy) is
+        // observed here; the wait below simply times out if nothing decodes.
         #[catch]
-        fn js_video_for(s: u32) -> u32 =
-            "(s) => { const v = document.createElement('video'); v.muted = true; \
-               v.srcObject = G.get(s); const p = v.play(); if (p) p.catch(() => {}); return G.add(v); }";
+        fn js_play_stream(v: u32, s: u32) -> u32 =
+            "(v, s) => { const e = G.get(v); e.srcObject = G.get(s); \
+               const p = e.play(); if (p) p.catch(() => {}); return 1; }";
         // A Promise resolving on the next animation frame.
         fn js_next_frame() -> u32 = "() => G.add(new Promise((r) => requestAnimationFrame(r)))";
         fn js_ready_state(v: u32) -> u32 = "(v) => G.get(v).readyState >>> 0";
@@ -922,9 +931,16 @@ mod web_screenshot {
         fn js_release(v: u32) = "(v) => { const e = G.get(v); e.pause(); e.srcObject = null; }";
     }
 
+    /// The configured, not-yet-playing `<video>` [`grab`] reads frames from.
+    pub(crate) fn detached_video() -> JsValue {
+        // SAFETY: a fresh element handle.
+        unsafe { JsValue::from_raw(js_detached_video()) }
+    }
+
     pub(crate) async fn grab(stream: &web_glue::dom::MediaStream) -> Option<Screenshot> {
-        // SAFETY: a live stream handle; the result is a fresh element handle.
-        let video = unsafe { JsValue::from_raw(js_video_for(stream.as_js().raw()).ok()?) };
+        let video = detached_video();
+        // SAFETY: live element and stream handles.
+        unsafe { js_play_stream(video.raw(), stream.as_js().raw()) }.ok()?;
 
         // Wait (a few animation frames) for the first decoded frame to land.
         for _ in 0..MAX_WAIT_FRAMES {
@@ -950,6 +966,39 @@ mod web_screenshot {
         // SAFETY: live element handle.
         unsafe { js_release(video.raw()) };
         result
+    }
+}
+
+/// The screenshot `<video>`'s configuration, in a real browser. The element is
+/// internal (built inside `screenshot()`), so this lives in the crate rather
+/// than `tests/web_media_stream.rs`. Desktop engines decode a non-inline video
+/// anyway, so the end-to-end screenshot test cannot catch a missing
+/// `playsinline`; asserting the element's state is the closest reachable check.
+#[cfg(all(test, target_arch = "wasm32"))]
+mod web_screenshot_tests {
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+    use web_glue::js::Function;
+    use web_glue::JsValue;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    fn eval_on(video: &JsValue, body: &str) -> JsValue {
+        Function::new_with_args("v", body).call1(&JsValue::UNDEFINED, video).expect("probe")
+    }
+
+    /// The bug: the element was created without `playsinline`, so on iPhone
+    /// Safari it never produced a frame and `screenshot()` returned `None`.
+    #[wasm_bindgen_test]
+    fn regression_screenshot_video_is_inline_and_muted_on_ios_safari() {
+        let video = super::web_screenshot::detached_video();
+        for probe in [
+            "return v.playsInline === true",
+            "return v.hasAttribute('playsinline')",
+            "return v.muted === true",
+            "return v.hasAttribute('muted')",
+        ] {
+            assert_eq!(eval_on(&video, probe).as_bool(), Some(true), "{probe}");
+        }
     }
 }
 

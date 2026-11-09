@@ -97,6 +97,42 @@ Imperative ops go through the bound `Ref<VideoHandle>`: `play()`,
 `pause()`, `seek(seconds)`. Bind a handle with `.bind(my_ref.clone())`
 on the value `Video(..)` returns.
 
+## Knowing when there is a picture
+
+`on_first_frame: Some(Rc::new(|| …))` is called once the first frame of the
+current source is on screen, and again after each source change (a new URL or
+a different stream) once that source's first frame is up. Keep a placeholder
+or spinner over the view until it fires:
+
+```rust
+let ready = signal(false);
+Video(VideoProps {
+    source: video::stream(move || camera.get()),
+    autoplay: true,
+    on_first_frame: Some(Rc::new(move || ready.set(true))),
+    ..Default::default()
+})
+```
+
+It runs from the scheduler right after the frame is shown, never inside a
+platform callback, so it may write signals; it is skipped once the `Video`
+unmounts. Each backend reports what it already knows:
+
+| Target | First frame of a URL | First frame of a live stream |
+| --- | --- | --- |
+| Web | `<video>` `loadeddata` | `<video>` `loadeddata` |
+| iOS | `AVPlayerLayer.readyForDisplay` | first `CMSampleBuffer` enqueued on the `AVSampleBufferDisplayLayer`, or first `CGImage` set |
+| macOS | `readyForDisplay` on the `AVPlayerLayer` / `AVPlayerView` | first `IOSurface` or `CGImage` set as layer contents |
+| Android | `VideoView` `MEDIA_INFO_VIDEO_RENDERING_START` | camera preview: the `TextureView`'s first update; otherwise the first bitmap shown |
+| Linux | the `GtkMediaStream`'s first `invalidate-contents` | first texture on the live paintable |
+| Windows | first presented frame | first presented frame |
+
+The placeholder host (SSR, terminal, …) shows no video and never calls it.
+
+On iOS the stream's `AVSampleBufferDisplayLayer` stays hidden until its first
+sample is enqueued: an empty one is opaque black and would cover the views
+behind the `Video` (and its own CPU-frame fallback) until then.
+
 ## Testing checklist
 
 Manual verification per backend — an unchecked **native** box means the code

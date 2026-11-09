@@ -105,6 +105,9 @@ runtime_tls::thread_local! {
 /// One mounted video.
 struct Player {
     props: Rc<VideoProps>,
+    /// `on_first_frame` state: re-armed by [`set_content`], told by [`frame`]
+    /// each time a video frame reaches the screen.
+    first: Rc<crate::FirstFrame>,
     content: Content,
     gpu: Option<Gpu>,
     surface: Option<Surface>,
@@ -148,6 +151,7 @@ pub(crate) fn build(props: &Rc<VideoProps>, backend: &Rc<RefCell<WindowsBackend>
     let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
     let player = Rc::new(RefCell::new(Player {
         props: props.clone(),
+        first: crate::FirstFrame::new(props),
         content: Content::None,
         gpu: None,
         surface: None,
@@ -252,6 +256,7 @@ fn ready(player: &Rc<RefCell<Player>>, ev: OnReadyEvent) {
 
 fn set_content(player: &Rc<RefCell<Player>>, content: MediaContent) {
     let mut p = player.borrow_mut();
+    p.first.track(&content);
     if let Content::Url { engine, .. } = std::mem::replace(&mut p.content, Content::None) {
         let _ = unsafe { engine.Shutdown() };
     }
@@ -315,14 +320,20 @@ fn frame(player: &Rc<RefCell<Player>>) {
         return;
     }
     p.dirty = false;
-    if let Err(e) = present(&mut p) {
-        eprintln!("[video] frame failed: {e}");
-        p.surface = None;
+    match present(&mut p) {
+        Ok(true) => p.first.frame_painted(),
+        Ok(false) => {}
+        Err(e) => {
+            eprintln!("[video] frame failed: {e}");
+            p.surface = None;
+        }
     }
 }
 
-fn present(p: &mut Player) -> Result<()> {
-    let Some(binding) = &p.binding else { return Ok(()) };
+/// Draw the current frame (and controls) and present it. `Ok(true)` when the
+/// presented image holds a video frame.
+fn present(p: &mut Player) -> Result<bool> {
+    let Some(binding) = &p.binding else { return Ok(false) };
     let size = (binding.size.0.max(1), binding.size.1.max(1));
     let scale = binding.scale;
     if p.gpu.is_none() {
@@ -350,6 +361,7 @@ fn present(p: &mut Player) -> Result<()> {
         drew?;
 
         let fit_mode = p.props.object_fit;
+        let mut drew_video = false;
         match &p.content {
             // Transferring before the first frame is decoded fails (E_FAIL):
             // a redraw for the controls can come first.
@@ -361,6 +373,7 @@ fn present(p: &mut Player) -> Result<()> {
                     let border = MFARGB { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbAlpha: 0 };
                     let dst = RECT { left: dst.0 as i32, top: dst.1 as i32, right: dst.2 as i32, bottom: dst.3 as i32 };
                     engine.TransferVideoFrame(&back, Some(&src), &dst, Some(&border))?;
+                    drew_video = true;
                 }
             }
             Content::Stream { frame, size: (fw, fh), .. } if *fw > 0 && *fh > 0 && frame.len() >= (*fw * *fh * 4) as usize => {
@@ -393,6 +406,7 @@ fn present(p: &mut Player) -> Result<()> {
                     None,
                 );
                 gpu.ctx.EndDraw(None, None)?;
+                drew_video = true;
             }
             _ => {}
         }
@@ -406,8 +420,8 @@ fn present(p: &mut Player) -> Result<()> {
         }
         gpu.ctx.SetTarget(None);
         surface.swap.Present(1, DXGI_PRESENT(0)).ok()?;
+        Ok(drew_video)
     }
-    Ok(())
 }
 
 /// The source rect (normalized) and destination rect (pixels) that fit a
