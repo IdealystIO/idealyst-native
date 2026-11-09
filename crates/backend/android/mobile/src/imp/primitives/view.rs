@@ -38,7 +38,7 @@ pub(crate) fn create(b: &AndroidBackend) -> GlobalRef {
 pub(crate) fn remove_child(b: &mut AndroidBackend, parent: &GlobalRef, child: &GlobalRef) {
     // Symmetric with `insert` / `insert_at`'s portal + detached-root skips.
     // A portal content holder is parented elsewhere (a viewport overlay was
-    // added to the Activity `root`; a popup owns its own content view) and a
+    // added to the decor view; a popup owns its own content view) and a
     // detached window root lives in its own `WindowManager` window — neither
     // is a child of `parent`. `removeView` on a non-child is a silent no-op,
     // but `layout.remove_child(parent, portal)` asks Taffy to remove a node
@@ -124,7 +124,7 @@ pub(crate) fn insert_at(
 ///   container) — see [`super::scroll_view`] for the rationale.
 /// - If `child` is a registered portal content holder, the insert
 ///   is **skipped**. The portal's content holder is already parented
-///   (a viewport overlay was added to the Activity `root`; a popup
+///   (a viewport overlay was added to the decor view; a popup
 ///   owns its own content view); attempting
 ///   `parent.addView(portal_child)` would throw
 ///   `IllegalStateException("The specified child already has a parent")`.

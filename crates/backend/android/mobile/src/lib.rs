@@ -134,6 +134,13 @@ mod image_policy;
 /// `imp/primitives/overlay.rs`.
 mod anchored_portal_policy;
 
+/// How a portal overlay reaches the whole window past the system bars, and
+/// `overflow` → `clipChildren`. Un-gated like `sticky_compute` so the
+/// regression tests run on the host; the JNI half lives in
+/// `imp/primitives/overlay.rs` and `imp/style.rs`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod window_fill_policy;
+
 /// Android `KeyEvent` → Web `key` / `code` / modifiers, and the app-level
 /// `AppKeyEvent` built from them. Un-gated like `sticky_compute` so the
 /// key tables' tests run on the host; the JNI trampolines that consume it

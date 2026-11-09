@@ -287,6 +287,10 @@ pub(crate) struct NodeAnim {
     /// stacking Z casts no elevation shadow (API 28+). Set by
     /// `style::suppress_z_shadow`.
     pub(crate) z_shadow_suppressed: bool,
+    /// `true` while a stated `overflow` has `clipChildren` overridden, so a
+    /// style that drops it restores the default clip. Set by
+    /// `style::apply_overflow`.
+    pub(crate) clip_children_overridden: bool,
     pub(crate) last_padding: [Option<i32>; 4], // L, T, R, B
     pub(crate) last_radii: [Option<f32>; 4],   // tl, tr, br, bl (px)
     pub(crate) last_stroke_w: Option<i32>,
@@ -1689,6 +1693,9 @@ impl AndroidBackend {
         // Anchored portals: move each content child from its in-flow spot
         // to the anchor, using the size Taffy just computed.
         primitives::overlay::place_anchored_contents(self, (vw, vh), &mut frames);
+        // Portal overlays fill the window on their own, and a scrim inside
+        // one takes a window frame instead of Taffy's viewport frame.
+        let window_layout = primitives::overlay::window_layout(self, (vw, vh));
         with_env(|env| {
             // Build the batch: a parallel `View[]` + packed px quads,
             // skipping zero-size views and detached window roots. The
@@ -1716,7 +1723,15 @@ impl AndroidBackend {
                 if self.detached_window_roots.contains_key(&Self::node_key(view)) {
                     continue;
                 }
+                let key = Self::node_key(view);
+                if window_layout.hosts.contains(&key) {
+                    continue;
+                }
                 batch_views.push(view);
+                if let Some(px) = window_layout.fills.get(&key) {
+                    packed.extend_from_slice(px);
+                    continue;
+                }
                 packed.push((frame.x * density).round() as i32);
                 packed.push((frame.y * density).round() as i32);
                 packed.push((frame.width * density).round() as i32);
@@ -1810,7 +1825,7 @@ impl AndroidBackend {
         // positions its content, else it paints one unlaid-out frame at
         // the 0,0 origin on mount (children not yet centered) — a
         // visible snap. `setVisibility` on an overlay that was since
-        // detached from `root` is a harmless no-op, so no guard is
+        // detached from the window is a harmless no-op, so no guard is
         // needed beyond not panicking. INVISIBLE (not GONE) keeps the
         // overlay in the layout pass; only its painting is suppressed.
         if !self.pending_reveal.is_empty() {

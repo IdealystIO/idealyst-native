@@ -3180,6 +3180,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A modal's card slides in whole on Android** (`backend-android-mobile`, `idea-ui`). Android
+  clips a view to its bounds by default, and the wrappers around the card are exactly its size, so
+  the card's bottom edge held still while its contents slid up inside it. Android now honours an
+  explicit `overflow` as `clipChildren` (`Visible` turns it off, `Hidden` on; unstated leaves the
+  default), and `Modal` states `overflow: visible` on its placement container and keyboard avoider.
+  The clip is one level off from CSS: a parent's flag clips each child to that child's own bounds,
+  so every wrapper above a moving view has to state it.
+- **A scrim covers the whole screen on Android, system bars included** (`backend-android-mobile`).
+  Portal overlays were children of the host root, which sits between the status and navigation
+  bars, so a modal's scrim left both undimmed (and a one-pixel column at the right edge, from dp
+  rounding at a fractional density). Overlays now live on the decor view, fill the window, and are
+  padded by the root's offset, so their content keeps viewport coordinates as before. An
+  absolutely-positioned child covering a `FullScreen` portal — a scrim — takes the window's frame,
+  as it already does on iOS and web.
 - **Android camera frames convert in vectorized blocks, straight into the stream's frame buffer**
   (`camera`, `media-stream` minor). `android_yuv` runs one block loop LLVM vectorizes, with the
   same arithmetic, rotations and output as the scalar loop it replaces, writing through the new

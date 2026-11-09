@@ -636,6 +636,29 @@ pub(crate) fn apply_rules(
     //     last style owned to identity. This is the hot path for pan / drag
     //     interactions.
     apply_transform(env, &view, state, rules);
+
+    apply_overflow(env, &view, state, rules);
+}
+
+/// `overflow` → `ViewGroup.setClipChildren`. See
+/// `window_fill_policy::clip_children_for_overflow` for how Android's clip
+/// differs from CSS. Views with no `ViewGroup` surface have no children to
+/// clip, and calling the setter on one would leave a pending exception.
+fn apply_overflow(env: &mut JNIEnv, view: &JObject, state: &mut NodeAnim, rules: &StyleRules) {
+    let Some(clip) = crate::window_fill_policy::clip_children_for_overflow(
+        rules.overflow,
+        state.clip_children_overridden,
+    ) else {
+        return;
+    };
+    let is_group = env.is_instance_of(view, "android/view/ViewGroup").unwrap_or(false);
+    clear_pending_exception(env);
+    if !is_group {
+        return;
+    }
+    state.clip_children_overridden = rules.overflow.is_some();
+    let _ = env.call_method(view, "setClipChildren", "(Z)V", &[JValue::Bool(clip as u8)]);
+    let _ = env.call_method(view, "invalidate", "()V", &[]);
 }
 
 fn apply_transform(

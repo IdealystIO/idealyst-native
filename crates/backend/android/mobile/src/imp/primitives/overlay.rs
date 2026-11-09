@@ -1,4 +1,4 @@
-//! `PortalPrim` — a view overlay added to the Activity root, for both
+//! `PortalPrim` — a view overlay added to the window's decor view, for both
 //! viewport-anchored and element-anchored portals.
 //!
 //! # Two flavors, one Node shape
@@ -13,15 +13,19 @@
 //!
 //! `PortalTarget::Viewport(Center | Top | Bottom | Left | Right |
 //! FullScreen)`. The portal is a plain `FrameLayout` overlay added on
-//! top of the app content in the SAME window — `root.addView(overlay)`,
-//! where `root` is the Activity-provided container the app tree already
-//! appends into. A later child of a `FrameLayout` paints above earlier
-//! ones, so the overlay sits over the app. This mirrors web (a DOM node
-//! high in the tree) and iOS (a subview on the window).
+//! top of the app content in the SAME window — `decor.addView(overlay)`.
+//! A later child of a `FrameLayout` paints above earlier ones, so the
+//! overlay sits over the app and over the opaque system-bar backgrounds
+//! the decor view also holds. This mirrors web (a DOM node high in the
+//! tree) and iOS (a subview on the window).
 //!
-//! The overlay always fills the viewport (`MATCH_PARENT` ×
-//! `MATCH_PARENT`) and is registered as a Taffy ROOT sized to the
-//! viewport, laid out in the NORMAL `run_layout_pass`. There is no
+//! The overlay fills the window (`MATCH_PARENT` × `MATCH_PARENT`) and is
+//! registered as a Taffy ROOT sized to the viewport, laid out in the NORMAL
+//! `run_layout_pass`. Its padding is the host root's distance from each
+//! window edge, so its content keeps viewport coordinates and stays between
+//! the system bars ([`window_layout`], `crate::window_fill_policy`). A child
+//! pinned to all four edges of a `FullScreen` portal fills the window, which
+//! is how a scrim covers the bars. There is no
 //! per-placement window gravity or `WRAP_CONTENT` sizing — the
 //! *content* positions itself (the idea-ui `Modal` centers its card via
 //! a flex-center wrapper + an absolutely-positioned backdrop child).
@@ -49,7 +53,7 @@
 //!     overlay `FrameLayout` is left non-clickable and non-focusable. A
 //!     plain `FrameLayout` whose children don't consume a touch returns
 //!     `false` from `dispatchTouchEvent`, so the touch falls through to
-//!     the sibling app content beneath it in `root`. No `NOT_TOUCHABLE`
+//!     the sibling app content beneath it in the window. No `NOT_TOUCHABLE`
 //!     window flag is needed (there is no separate window) — and the
 //!     "hamburger dead" regression can't recur, because a view overlay
 //!     never steals touches it doesn't have an interactive child for.
@@ -103,21 +107,22 @@ use crate::anchored_portal_policy::{anchored_container_rules, AnchorTracker};
 use runtime_shared::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, PortalTarget, ViewportPlacement,
 };
-use jni::objects::{GlobalRef, JValue};
+use jni::objects::{GlobalRef, JObject, JValue};
 use jni::sys::jlong;
+use jni::JNIEnv;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// Per-portal backend state. Discriminates between the two portal kinds
 /// so `release_portal` / the layout pass know which bookkeeping applies.
-/// Both render into the same kind of host: a full-bleed `FrameLayout`
-/// overlay in the Activity `root`.
+/// Both render into the same kind of host: a window-filling `FrameLayout`
+/// overlay on the decor view.
 pub(crate) enum PortalHost {
     /// Viewport-anchored: the overlay is a full-viewport flex column whose
     /// justify/align (from `placement`, the mapping every native backend
     /// shares) put the content where web does. `release_portal`
-    /// `removeView`s it from `root` and drops its Taffy node.
+    /// `removeView`s it from its parent and drops its Taffy node.
     ViewOverlay { overlay: GlobalRef, placement: ViewportPlacement },
     /// Element-anchored: the content child is placed against the anchor by
     /// [`AnchorState`]'s placer on every layout pass and every frame.
@@ -237,9 +242,9 @@ fn create_overlay_portal(
     overlay
 }
 
-/// Build the full-bleed overlay `FrameLayout` both portal flavors render
-/// into, add it on top of the app content in the Activity `root` (same
-/// window), and leave it `INVISIBLE` until its first layout pass (the
+/// Build the window-filling overlay `FrameLayout` both portal flavors render
+/// into, add it on top of the app content on the decor view (same window),
+/// and leave it `INVISIBLE` until its first layout pass (the
 /// caller queues it in `pending_reveal`). See the module docs for the
 /// touch-modality / back-key posture `trap_focus` selects.
 fn make_overlay_view(
@@ -271,11 +276,11 @@ fn make_overlay_view(
                 .unwrap()
         };
 
-        // MATCH_PARENT × MATCH_PARENT so the overlay fills the Activity
-        // root regardless of the root's own layout. Use FrameLayout.
-        // LayoutParams (root is a FrameLayout) so the child is laid out
-        // full-bleed by the parent — its own children are then placed by
-        // Taffy frames in viewport space.
+        // MATCH_PARENT × MATCH_PARENT so the overlay fills the window. Use
+        // FrameLayout.LayoutParams (the decor view is a FrameLayout) so the
+        // child is laid out full-bleed by the parent — its own children are
+        // then placed by Taffy frames in viewport space, offset by the
+        // overlay's padding (`window_layout`).
         const MATCH_PARENT: i32 = -1;
         let lp_class = env
             .find_class("android/widget/FrameLayout$LayoutParams")
@@ -304,7 +309,7 @@ fn make_overlay_view(
         // A NON-MODAL overlay stays non-focusable + non-clickable; a
         // FrameLayout with no consuming child returns false from
         // dispatchTouchEvent and the touch falls through to the app
-        // content beneath it in `root` — so a toast host can't make the
+        // content beneath it in the window — so a toast host can't make the
         // app untappable (the "hamburger dead" hazard). Back also falls
         // through to the app/navigator for non-modal overlays, which is
         // the desired behavior (a toast shouldn't swallow back).
@@ -318,13 +323,21 @@ fn make_overlay_view(
             );
         }
 
+        // A scrim child overhangs the overlay's padding box, so neither the
+        // overlay nor its padding may clip what it holds.
+        for setter in ["setClipChildren", "setClipToPadding"] {
+            let _ = env.call_method(&overlay, setter, "(Z)V", &[JValue::Bool(0)]);
+        }
+
         // Add the overlay on top of the app content in the SAME window.
         // FrameLayout paints children in add order, so this later child
-        // paints above the app tree's root — which `finish` inserts at
-        // index 0, so that also holds for an overlay mounted during the
-        // first build, before `finish` runs.
+        // paints above everything the decor view already holds: the content
+        // frame with the app tree's root, and the system-bar backgrounds.
+        // The root is the fallback for a host context with no window.
+        let parent = window_decor_view(env, b.context.as_obj())
+            .unwrap_or_else(|| env.new_local_ref(b.root.as_obj()).unwrap());
         let _ = env.call_method(
-            &b.root.as_obj(),
+            &parent,
             "addView",
             "(Landroid/view/View;)V",
             &[JValue::Object(&overlay)],
@@ -348,6 +361,138 @@ fn make_overlay_view(
 
         env.new_global_ref(overlay).unwrap()
     })
+}
+
+/// The Activity window's decor view, or `None` when `context` has no window.
+fn window_decor_view<'a>(env: &mut JNIEnv<'a>, context: &JObject) -> Option<JObject<'a>> {
+    let window = env
+        .call_method(context, "getWindow", "()Landroid/view/Window;", &[])
+        .and_then(|v| v.l());
+    let _ = env.exception_clear();
+    let window = window.ok().filter(|w| !w.is_null())?;
+    let decor = env
+        .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])
+        .and_then(|v| v.l());
+    let _ = env.exception_clear();
+    decor.ok().filter(|d| !d.is_null())
+}
+
+/// What the layout pass does differently for portals: see
+/// [`window_layout`].
+#[derive(Default)]
+pub(crate) struct WindowLayout {
+    /// Overlays, keyed like `portal_instances`. They fill the window through
+    /// `MATCH_PARENT`, so a viewport-sized Taffy frame must not overwrite
+    /// their `LayoutParams`.
+    pub(crate) hosts: HashSet<usize>,
+    /// Scrim children and the px frame `[x, y, width, height]` that fills
+    /// the window, in place of Taffy's viewport frame.
+    pub(crate) fills: HashMap<usize, [i32; 4]>,
+}
+
+/// `getLocationInWindow`, or `None` when the JNI call fails.
+fn location_in_window(env: &mut JNIEnv, view: &JObject) -> Option<(i32, i32)> {
+    let out = env.new_int_array(2).ok()?;
+    env.call_method(view, "getLocationInWindow", "([I)V", &[JValue::Object(&out)]).ok()?;
+    let mut xy = [0; 2];
+    env.get_int_array_region(&out, 0, &mut xy).ok()?;
+    Some((xy[0], xy[1]))
+}
+
+fn view_size(env: &mut JNIEnv, view: &JObject) -> Option<(i32, i32)> {
+    let w = env.call_method(view, "getWidth", "()I", &[]).and_then(|v| v.i()).ok()?;
+    let h = env.call_method(view, "getHeight", "()I", &[]).and_then(|v| v.i()).ok()?;
+    Some((w, h))
+}
+
+/// For this layout pass: pad each overlay by the host root's distance from
+/// the window's edges, so its content keeps viewport coordinates, and find
+/// the scrims. A scrim is an absolutely-positioned child covering a
+/// `FullScreen` portal, directly or inside a wrapper at the portal's origin.
+/// In-flow children never count, however large: a placement container has
+/// to stay in viewport space, or the content it positions would move under
+/// the bars. A scrim gets the same padding, so its own children (the tap
+/// catcher) stay in viewport coordinates too.
+///
+/// The root's position is read here rather than cached because the bars come
+/// and go (fullscreen, pinning, rotation); each of those resizes the root,
+/// which runs a new pass.
+pub(crate) fn window_layout(b: &AndroidBackend, viewport: (f32, f32)) -> WindowLayout {
+    use crate::window_fill_policy::{covers_viewport, root_bleed_px, window_fill_frame_px};
+    let mut out = WindowLayout::default();
+    if b.portal_instances.is_empty() {
+        return out;
+    }
+    let covers = |node| {
+        let f = b.layout.frame_of(node);
+        covers_viewport((f.x, f.y), (f.width, f.height), viewport)
+    };
+    with_env(|env| {
+        for instance in b.portal_instances.values() {
+            let (overlay, fullscreen) = match &instance.host {
+                PortalHost::ViewOverlay { overlay, placement } => {
+                    (overlay, *placement == ViewportPlacement::FullScreen)
+                }
+                PortalHost::Anchored { overlay, .. } => (overlay, false),
+            };
+            let key = AndroidBackend::node_key_of(overlay);
+            out.hosts.insert(key);
+            let Ok(parent) = env
+                .call_method(overlay.as_obj(), "getParent", "()Landroid/view/ViewParent;", &[])
+                .and_then(|v| v.l())
+            else {
+                let _ = env.exception_clear();
+                continue;
+            };
+            if parent.is_null() {
+                continue;
+            }
+            let root = b.root.as_obj();
+            let (Some(root_at), Some(parent_at), Some(root_size), Some(parent_size)) = (
+                location_in_window(env, root),
+                location_in_window(env, &parent),
+                view_size(env, root),
+                view_size(env, &parent),
+            ) else {
+                let _ = env.exception_clear();
+                continue;
+            };
+            let bleed = root_bleed_px(
+                (root_at.0 - parent_at.0, root_at.1 - parent_at.1),
+                root_size,
+                parent_size,
+            );
+            let set_padding = |env: &mut JNIEnv, view: &JObject| {
+                let [l, t, r, b] = bleed.map(JValue::Int);
+                let _ = env.call_method(view, "setPadding", "(IIII)V", &[l, t, r, b]);
+            };
+            set_padding(env, overlay.as_obj());
+            if !fullscreen {
+                continue;
+            }
+            let Some((_, overlay_node)) = b.view_to_layout.get(&key) else { continue };
+            let mut candidates = Vec::new();
+            for child in b.layout.children_of(*overlay_node) {
+                candidates.push(child);
+                if covers(child) {
+                    candidates.extend(b.layout.children_of(child));
+                }
+            }
+            for node in candidates {
+                if !b.layout.is_absolute(node) || !covers(node) {
+                    continue;
+                }
+                let Some((fill_key, (view, _))) =
+                    b.view_to_layout.iter().find(|(_, (_, n))| *n == node)
+                else {
+                    continue;
+                };
+                set_padding(env, view.as_obj());
+                out.fills.insert(*fill_key, window_fill_frame_px(bleed, parent_size));
+            }
+        }
+    });
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -535,7 +680,7 @@ pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
         }
     }
 
-    // Step 2: tear down the host — both kinds are an overlay in `root`:
+    // Step 2: tear down the host — both kinds are an overlay on the decor view:
     // remove it (so it stops painting + receiving input) and drop its
     // Taffy node + view-table entry so the next layout pass doesn't lay
     // out a detached subtree. Dropping an anchored instance also drops its
@@ -544,12 +689,20 @@ pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
         PortalHost::ViewOverlay { overlay, .. } | PortalHost::Anchored { overlay, .. } => overlay.clone(),
     };
     with_env(|env| {
-        let _ = env.call_method(
-            &b.root.as_obj(),
-            "removeView",
-            "(Landroid/view/View;)V",
-            &[JValue::Object(&overlay.as_obj())],
-        );
+        let parent = env
+            .call_method(overlay.as_obj(), "getParent", "()Landroid/view/ViewParent;", &[])
+            .and_then(|v| v.l())
+            .ok()
+            .filter(|p| !p.is_null());
+        if let Some(parent) = parent {
+            let _ = env.call_method(
+                &parent,
+                "removeView",
+                "(Landroid/view/View;)V",
+                &[JValue::Object(&overlay.as_obj())],
+            );
+        }
+        let _ = env.exception_clear();
     });
     let layout_node = b.layout_for_view(&overlay);
     b.layout.remove_node(layout_node);
@@ -569,8 +722,8 @@ pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
 
 /// True if `node` is a registered portal's content holder. Used by
 /// `view::insert` to skip the `addView` call — portal content holders
-/// are already parented (the view overlay was added to the Activity
-/// `root`), and realize's
+/// are already parented (the view overlay was added to the decor view),
+/// and realize's
 /// parent-side insert would throw
 /// `IllegalStateException("specified child already has a parent")`.
 pub(crate) fn is_portal_node(b: &AndroidBackend, node: &GlobalRef) -> bool {

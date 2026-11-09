@@ -53,6 +53,11 @@
 //! stuttered. `presence` holds the portal mounted through the exit, then
 //! unmounts it.
 //!
+//! The wrappers around the moving card state `overflow: visible`. Their
+//! default is the same on web and Apple, but Android clips by default, and
+//! the wrappers are exactly the card's size: left clipping, they would hold
+//! the card's edge still while its contents slid.
+//!
 //! ## Backdrop press is a handler, not a hardcoded close
 //! [`ModalProps::on_backdrop_press`] fires when the backdrop is tapped.
 //! Unset → falls back to [`ModalProps::on_dismiss`] *if* `dismissable`, and
@@ -627,6 +632,7 @@ stylesheet! {
             justify_content: JustifyContent::FlexStart,
             width: Length::pct(100.0),
             height: Length::pct(100.0),
+            overflow: Overflow::Visible,
         }
     }
 }
@@ -647,6 +653,7 @@ stylesheet! {
             justify_content: JustifyContent::FlexEnd,
             width: Length::pct(100.0),
             height: Length::pct(100.0),
+            overflow: Overflow::Visible,
         }
     }
 }
@@ -760,6 +767,20 @@ stylesheet! {
     }
 }
 
+/// The keyboard avoider around the card. Its only job in the look is not to
+/// clip the card's slide; see the module docs.
+fn card_avoider_sheet() -> Rc<StyleSheet> {
+    ModalCardAvoiderSheet::sheet()
+}
+
+stylesheet! {
+    ModalCardAvoiderSheet<()> {
+        base(_t) {
+            overflow: Overflow::Visible,
+        }
+    }
+}
+
 /// Fullscreen flex container that centers the card over the backdrop.
 fn center_container_sheet() -> Rc<StyleSheet> {
     ModalCenterSheet::sheet()
@@ -773,6 +794,7 @@ stylesheet! {
             justify_content: JustifyContent::Center,
             width: Length::pct(100.0),
             height: Length::pct(100.0),
+            overflow: Overflow::Visible,
         }
     }
 }
@@ -1220,6 +1242,7 @@ fn assemble_overlay(
     // and the dimming backdrop stays put.
     let card = runtime_core::keyboard_avoiding_view(vec![card])
         .behavior(runtime_core::KeyboardAvoidBehavior::Translate)
+        .with_style(StyleApplication::new(card_avoider_sheet()))
         .into_element();
 
     // One fullscreen portal: backdrop (behind) + card as siblings in a
@@ -1240,6 +1263,8 @@ fn assemble_overlay(
         // dimming backdrop is `position: absolute; inset: 0`, which resolves
         // against the container's PADDING box — so it still fills the whole
         // window (verified in runtime-layout); only the card is constrained.
+        // On Android that same pinned-to-every-edge shape is what makes the
+        // backend extend it past the system bars.
         // Reactive: orientation flips / sheet adaptations re-fire
         // `safe_area_insets()`. Insets are ZERO where no observer is wired
         // (web today), degrading to the previous full-window centering.
@@ -1712,6 +1737,27 @@ mod tests {
     /// `ModalStyle` caps `max_width: 560` and the surface only set an
     /// inline `width`, so a max-width that beats width in every layout
     /// engine silently clamped `width = 1200` back to 560.
+    /// Android clips a view to its bounds unless its parent says otherwise,
+    /// and these wrappers are the card's size, so a clipping one holds the
+    /// card's edge still through its slide (the contents appear to move
+    /// inside a fixed frame). The clip itself is in the Android backend;
+    /// this pins the wrappers' half of the contract.
+    #[test]
+    fn regression_modal_card_slide_wrappers_do_not_clip() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            for sheet in [
+                center_container_sheet(),
+                top_container_sheet(),
+                sheet_container_sheet(),
+                card_avoider_sheet(),
+            ] {
+                let rules = resolve_style(&StyleApplication::new(sheet));
+                assert_eq!(rules.overflow, Some(Overflow::Visible));
+            }
+        });
+    }
+
     #[test]
     fn regression_modal_width_above_560_is_honored() {
         with_test_world(|| {

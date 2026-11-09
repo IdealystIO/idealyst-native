@@ -7,8 +7,8 @@
 //!
 //! # The model (mirrors iOS / macOS / web)
 //!
-//! The anchored portal is a full-bleed overlay `FrameLayout` in the Activity
-//! root — the same in-window mechanism the viewport portal uses (no second
+//! The anchored portal is a window-filling overlay `FrameLayout` on the decor
+//! view — the same in-window mechanism the viewport portal uses (no second
 //! window, unlike a `PopupWindow`/`Dialog`). Its Taffy root is
 //! laid out in viewport space with [`anchored_container_rules`] so the
 //! content child sizes to its content. Every layout pass, and every frame
@@ -55,7 +55,8 @@ pub(crate) fn anchored_container_rules(base: &StyleRules) -> StyleRules {
 
 /// Convert a view's on-screen rect (`getLocationOnScreen` + size, physical
 /// px) into the viewport's coordinate space: dp, origin at the top-left of
-/// the Activity root the app tree (and every portal overlay) is mounted in.
+/// the Activity root the app tree is mounted in, which every portal overlay's
+/// padding lines its content up with.
 /// This is the `ViewportRect` contract every backend's `rect()` honors —
 /// the anchored placer compares it against the overlay's dp frame and the
 /// root's dp size, so all three must share one space.
