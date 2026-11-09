@@ -388,6 +388,7 @@ pub fn hover_card() -> Element {
                     Prop { name: "offset",         ty: "f32",                   desc: "Gap in px between the trigger and the card. Default: 6 (HOVER_CARD_DEFAULT_OFFSET)." },
                     Prop { name: "open_delay_ms",  ty: "u32",                   desc: "How long the pointer rests on the trigger before the card opens. Default: 400 (HOVER_CARD_OPEN_DELAY_MS). Long-press opens at once." },
                     Prop { name: "close_delay_ms", ty: "u32",                   desc: "How long after the pointer leaves both trigger and card before it closes. Default: 200 (HOVER_CARD_CLOSE_DELAY_MS)." },
+                    Prop { name: "disabled",       ty: "bool",                  desc: "While true nothing opens the card, and turning it on closes an open one. Reactive: disabled = dragging suppresses the card during a drag. Default: false." },
                     Prop { name: "test_id",        ty: "Option<&'static str>",  desc: "Robot test id on the trigger wrapper (the view that takes the hover and the long-press)." },
                     Prop { name: "card_test_id",   ty: "Option<&'static str>",  desc: "Robot test id on the card surface, present while the card is open." },
                     Prop { name: "styles",         ty: "HoverCardSlotStyles",   desc: "Per-call-site override of the card slot (background, padding, radius, border)." },

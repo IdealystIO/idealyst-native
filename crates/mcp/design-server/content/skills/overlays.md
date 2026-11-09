@@ -43,11 +43,14 @@ tags = ["overlays", "modal", "sheet", "dialog", "menu", "popover", "hover-card",
   like `Tooltip`, with any content in the card. It opens after the pointer
   rests (`open_delay_ms`), stays open while the pointer moves into the
   card, and closes after it leaves both (`close_delay_ms`).
+- Bind `disabled` to state that would make the card stale (`disabled =
+  dragging` while its row is dragged): turning it on closes the card and
+  nothing opens it until it turns off.
 - Never drive a `Popover` from hover: its click-away layer covers the
   trigger and the popover flickers shut. Clickable content that opens on
   click is a `Popover`.
-- Touch opens it on long-press and keyboard focus does not open it, so
-  the card repeats or summarises what is already on screen; it is never
+- Touch opens it on long-press and keyboard focus opens it too, but
+  neither is as discoverable as hover, so the card repeats or summarises what is already on screen; it is never
   the only way to reach a fact or an action.
 
 ## Destructive actions

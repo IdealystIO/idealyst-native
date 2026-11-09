@@ -1258,6 +1258,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`#[server]` calls can time out, and one hook sees every failure** (`server` minor).
+  `ClientConfig::with_timeout(Duration)` fails a call whose HTTP exchange outlasts the deadline
+  with `ServerError::Network("timeout")`, on every target (calls coalesced by `server::batch`
+  share one deadline; streams are not bounded). There is still no default: without it a call waits
+  as long as the platform transport does, which on a link that drops packets can be forever.
+  `ClientConfig::with_reply_observer` (or `reply_observer_from_fn`) is told the path and error of
+  every call that ends in `Err` — a domain `Failed`, a non-2xx status, a timeout, a decode failure —
+  before the caller sees it, so an app can react to any "not signed in" in one place. Cancelled
+  calls are not reported. See `docs/server-functions.md` §6.
+
+- **`HoverCard` takes `disabled`** (`idea-ui` major: a new field on `HoverCardProps`, so a struct
+  literal without `..Default::default()` stops compiling). While it is `true` nothing opens the
+  card, and turning it on closes an open one. Bind it to state that would make the card stale:
+  `disabled = dragging` keeps a row's card from showing the row where it was during a drag.
+
 - **`KeyboardKind::SignedDecimal`** (`runtime-shared`, the mobile and web backends, `backend-ssr`,
   `wire`, `runtime-vocabulary`). A keyboard for a number that can go negative: `Number` and
   `Decimal` have no minus key on iOS. The closest each platform offers, not one keyboard:
@@ -3179,6 +3194,41 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A float literal in an `f32` prop no longer trips `float_literal_f32_fallback`**
+  (`runtime-macros-expand`). `ui! { Comp(inset = 16.0) }` coerced the literal with `.into()`,
+  leaving its type to inference; rustc 1.97 warns about the `f32` fallback that settles it, and the
+  lint is slated to become a hard error. `ui!`, `jsx!`, inline `#[prop(default = …)]` and
+  `#[component(default(…))]` now give an unsuffixed float literal the suffix the field takes
+  (`f64` when it accepts one, else `f32`), so no value changes.
+- **`#[server]` accepts `mut` and pattern arguments** (`server-macros`). `fn f(mut input: String)`
+  failed with "expected expression, found keyword `mut`", because the client stub reused each
+  parameter pattern as an expression. The stub now binds plain names; the server fn keeps the
+  author's pattern. Same for `#[channel]`, `#[subscription]` and `#[sse]`.
+- **A resumed `idealyst dev --no-watch` applies edits made while no session ran** (`dev-reload`).
+  They were held in the queue for saves made during the session, so the page ran the old code
+  until a rebuild request while the server half, always built from scratch, ran the new code.
+
+- **Escape closes only the topmost overlay on web** (`backend-web`). Every dismissable portal had
+  its own window `keydown` listener, so with an `overlay(…, on_dismiss)` open above a dismissable
+  `Modal` one Escape ran both handlers and closed the Modal too. One listener now calls the
+  most recently mounted portal's `on_dismiss`, as macOS, iOS and Android's system Back do.
+
+- **Android frees the views a rebuild throws away** (`backend-android-mobile`). The backend never
+  implemented `Host::release_subtree`, so every view it created kept its registration (a JNI global
+  reference and a layout node) after a reactive branch, keyed row, popped screen or closed modal
+  removed it. The JVM could never collect those views, and every layout pass wrote a frame to each
+  one: a kiosk rebuilding one list a minute held 16,000 views after 2.6 days, with p95 frames of
+  93 ms. Discarded subtrees and a released portal's content are now freed at the next layout pass.
+- **Android no longer keeps every scheduled callback alive** (`backend-android-mobile`). A
+  microtask (one per signal flush), each raf-loop tick and each layout-pass retry held its
+  `RustScheduledRunnable` through a JNI global reference that was never released. Posts nothing can
+  cancel now hold no reference; the looper's queue owns the runnable until it runs.
+- **`shadow` draws on Android** (`backend-android-mobile`). It was ignored, so menus, selects,
+  popovers and raised surfaces drew flat. It is now an elevation shadow following the view's
+  outline, its alpha corrected for the theme's shadow multiplier so it matches the opacity web and
+  iOS show. Android lights shadows from above, so `x` has no effect and the shadow always falls
+  downward. A stacking `z_index` still casts none.
 
 - **A modal's card slides in whole on Android** (`backend-android-mobile`, `idea-ui`). Android
   clips a view to its bounds by default, and the wrappers around the card are exactly its size, so

@@ -5,7 +5,7 @@
 //! the order a browser sends them: `keydown`, `keypress` (keys that type
 //! something, and Enter), `keyup`. Every listener the app has sees them as
 //! it sees a user's: a field's `on_key_down`, the app-level key source on
-//! `document`, a portal's Escape listener on `window`.
+//! `document`, the portals' Escape listener on `window`.
 //!
 //! Script-dispatched events are untrusted, and the browser performs no
 //! default action for them — a synthetic `keydown` types nothing and moves

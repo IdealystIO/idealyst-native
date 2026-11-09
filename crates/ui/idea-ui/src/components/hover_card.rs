@@ -43,6 +43,11 @@
 //! - **Escape** closes it (the anchored portal's `on_dismiss`). While focus
 //!   stays on the trigger it stays closed; focusing the trigger again
 //!   reopens it.
+//! - **`disabled`** — while it is `true` nothing opens the card, and turning
+//!   it on closes an open card at once. Bind it to app state the card would
+//!   misdescribe, e.g. `disabled = dragging` while a row is dragged:
+//!   the card would keep showing the row where it was. Turning it off opens
+//!   nothing by itself; the next hover, focus or long-press does.
 //!
 //! ## No backdrop on hover
 //!
@@ -174,6 +179,12 @@ pub struct HoverCardProps {
     /// How long after the pointer leaves both the trigger and the card
     /// before it closes, in ms. Default [`HOVER_CARD_CLOSE_DELAY_MS`].
     pub close_delay_ms: u32,
+    /// When `true`, the card does not open (hover, focus or long-press), and
+    /// a card already open closes. Default `false`. Reactive: pass a
+    /// `Signal<bool>` (`disabled = dragging`) to suppress the card
+    /// while app state would make it stale, such as during a drag.
+    #[schema(constraint = "reactive: static bool or Signal/rx!")]
+    pub disabled: bool,
     /// Optional robot/E2E test id on the trigger wrapper — the view that
     /// takes the hover and the long-press. Inert outside a robot build.
     #[cfg_attr(feature = "docs", doc_control(skip))]
@@ -198,6 +209,7 @@ impl Default for HoverCardProps {
             offset: Reactive::Static(HOVER_CARD_DEFAULT_OFFSET),
             open_delay_ms: Reactive::Static(HOVER_CARD_OPEN_DELAY_MS),
             close_delay_ms: Reactive::Static(HOVER_CARD_CLOSE_DELAY_MS),
+            disabled: Reactive::Static(false),
             test_id: None,
             card_test_id: None,
             children: Vec::new(),
@@ -231,10 +243,55 @@ struct HoverIntent {
     generation: Cell<u64>,
     open_delay_ms: Reactive<u32>,
     close_delay_ms: Reactive<u32>,
+    /// [`HoverCardProps::disabled`]: read untracked by the open paths; its
+    /// changes reach [`HoverIntent::set_disabled`] through a scope-owned
+    /// binding ([`HoverIntent::bind_disabled`]).
+    disabled: Reactive<bool>,
     alive: ScopeAlive,
 }
 
 impl HoverIntent {
+    /// A closed card's state machine. Must run in the component body: the
+    /// signals and the `alive` token belong to its scope.
+    fn new(open_delay_ms: Reactive<u32>, close_delay_ms: Reactive<u32>, disabled: Reactive<bool>) -> Rc<Self> {
+        Rc::new(HoverIntent {
+            open: signal(false),
+            touch_open: signal(false),
+            shown: Cell::new(false),
+            over_trigger: Cell::new(false),
+            over_card: Cell::new(false),
+            focus_trigger: Cell::new(false),
+            focus_card: Cell::new(false),
+            generation: Cell::new(0),
+            open_delay_ms,
+            close_delay_ms,
+            disabled,
+            alive: ScopeAlive::current(),
+        })
+    }
+
+    /// Follow `disabled` for the component's life: a static `false` costs
+    /// nothing, a live one closes the card each time it turns `true`.
+    fn bind_disabled(self: &Rc<Self>) {
+        let me = self.clone();
+        self.disabled.clone().bind(move |disabled| me.set_disabled(disabled));
+    }
+
+    fn is_disabled(&self) -> bool {
+        self.disabled.get_untracked()
+    }
+
+    /// `disabled` turned on: close an open card and stale any pending open
+    /// timer. Turning it off opens nothing (module docs).
+    fn set_disabled(&self, disabled: bool) {
+        if disabled {
+            self.bump();
+            if self.shown.get() {
+                self.set_shown(false, false);
+            }
+        }
+    }
+
     fn hover_trigger(self: &Rc<Self>, entering: bool) {
         self.over_trigger.set(entering);
         self.settle();
@@ -250,6 +307,9 @@ impl HoverIntent {
     /// inside the close delay keeps it open.
     fn focus_trigger(self: &Rc<Self>, focused: bool) {
         self.focus_trigger.set(focused);
+        if focused && self.is_disabled() {
+            return;
+        }
         if focused {
             self.bump();
             if !self.shown.get() {
@@ -275,10 +335,11 @@ impl HoverIntent {
     /// pointer is over either box, close after the close delay when it is
     /// over neither. Any pending timer goes stale.
     fn settle(self: &Rc<Self>) {
-        let want = self.over_trigger.get()
-            || self.over_card.get()
-            || self.focus_trigger.get()
-            || self.focus_card.get();
+        let want = !self.is_disabled()
+            && (self.over_trigger.get()
+                || self.over_card.get()
+                || self.focus_trigger.get()
+                || self.focus_card.get());
         let generation = self.bump();
         if want == self.shown.get() {
             return;
@@ -290,7 +351,9 @@ impl HoverIntent {
         };
         let me = self.clone();
         after_ms_detached(delay.min(i32::MAX as u32) as i32, move || {
-            if me.alive.get() && me.generation.get() == generation {
+            // `disabled` turning on bumps the generation; the re-check
+            // covers a `Dynamic` source whose signal has not yet flushed.
+            if me.alive.get() && me.generation.get() == generation && !(want && me.is_disabled()) {
                 me.set_shown(want, false);
             }
         });
@@ -298,6 +361,9 @@ impl HoverIntent {
 
     /// Long-press: open now, with the click-away catcher.
     fn open_by_touch(&self) {
+        if self.is_disabled() {
+            return;
+        }
         self.bump();
         self.set_shown(true, true);
     }
@@ -356,22 +422,10 @@ fn touch_catcher(touch_open: Signal<bool>, dismiss: Rc<dyn Fn()>) -> Element {
 /// open, a card anchored to it. See the module docs.
 #[component(children)]
 pub fn HoverCard(props: HoverCardProps) -> Element {
-    let open = signal(false);
-    let touch_open = signal(false);
     let anchor_ref: Ref<ViewHandle> = Ref::new();
-    let intent = Rc::new(HoverIntent {
-        open,
-        touch_open,
-        shown: Cell::new(false),
-        over_trigger: Cell::new(false),
-        over_card: Cell::new(false),
-        focus_trigger: Cell::new(false),
-        focus_card: Cell::new(false),
-        generation: Cell::new(0),
-        open_delay_ms: props.open_delay_ms,
-        close_delay_ms: props.close_delay_ms,
-        alive: ScopeAlive::current(),
-    });
+    let intent = HoverIntent::new(props.open_delay_ms, props.close_delay_ms, props.disabled);
+    intent.bind_disabled();
+    let (open, touch_open) = (intent.open, intent.touch_open);
 
     let lp_handler = {
         let intent = intent.clone();
@@ -450,7 +504,58 @@ pub fn HoverCard(props: HoverCardProps) -> Element {
 mod tests {
     use super::*;
     use crate::test_support::{classify, P};
-    use idea_theme::testing::with_test_world;
+    use idea_theme::testing::{commit, with_test_world};
+
+    /// want_def82398: a card open over a row that starts dragging kept
+    /// showing the row at its old place — its `open` state was private, so
+    /// nothing outside could close or suppress it. A live `disabled` closes
+    /// an open card, and while it is on no path (long-press, keyboard focus,
+    /// hover) opens one.
+    #[test]
+    fn regression_disabled_closes_an_open_hover_card_and_keeps_it_closed() {
+        with_test_world(|| {
+            let dragging = signal(false);
+            let intent = HoverIntent::new(Reactive::Static(0), Reactive::Static(0), dragging.into());
+            intent.bind_disabled();
+
+            intent.open_by_touch();
+            commit();
+            assert!(intent.open.get(), "enabled: a long-press opens the card");
+
+            dragging.set(true);
+            commit();
+            assert!(!intent.open.get(), "turning `disabled` on closes the open card");
+
+            intent.open_by_touch();
+            intent.focus_trigger(true);
+            intent.hover_trigger(true);
+            commit();
+            assert!(!intent.open.get(), "while disabled nothing reopens it");
+            assert!(!intent.shown.get(), "and no open is pending");
+
+            dragging.set(false);
+            commit();
+            assert!(!intent.open.get(), "re-enabling opens nothing by itself");
+            intent.open_by_touch();
+            commit();
+            assert!(intent.open.get(), "the next long-press opens it again");
+        });
+    }
+
+    /// A static `disabled = true` card never opens, and `false` is the
+    /// default.
+    #[test]
+    fn a_statically_disabled_hover_card_never_opens() {
+        with_test_world(|| {
+            assert!(!HoverCardProps::default().disabled.get_untracked(), "enabled by default");
+            let intent = HoverIntent::new(Reactive::Static(0), Reactive::Static(0), Reactive::Static(true));
+            intent.bind_disabled();
+            intent.open_by_touch();
+            intent.focus_trigger(true);
+            commit();
+            assert!(!intent.open.get());
+        });
+    }
 
     /// The trigger wrapper carries the hover handler (pointer open/close),
     /// the focus handler (keyboard open/close) and the touch handler

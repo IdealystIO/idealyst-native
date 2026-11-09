@@ -1,7 +1,7 @@
 //! `HoverCard` mounted on the recording host: the pointer path (open and
 //! close delays, bridging trigger → card), the keyboard path (focus on the
 //! trigger opens at once, focus into the card keeps it open), the touch
-//! path (long-press, click-away), Escape, and the test ids.
+//! path (long-press, click-away), Escape, `disabled`, and the test ids.
 //!
 //! Timers run through host-mock's pumped scheduler, which queues every
 //! `after_ms` and fires the queue on `pump_timers()` with the delays
@@ -19,7 +19,7 @@ use idea_ui::{
     install_idea_theme, light_theme, HoverCard, HoverCardProps, HOVER_CARD_CLOSE_DELAY_MS,
     HOVER_CARD_DEFAULT_OFFSET, HOVER_CARD_OPEN_DELAY_MS,
 };
-use runtime_core::{ui, Element, Reactive};
+use runtime_core::{signal, ui, Element, Reactive, Signal};
 use runtime_shared::{TouchEvent, TouchId, TouchPhase, TouchPoint};
 use runtime_vocabulary::robot::{Query, Robot};
 
@@ -33,12 +33,17 @@ struct Mounted {
 
 impl Mounted {
     fn new() -> Mounted {
+        Mounted::mount(hover_card)
+    }
+
+    /// Mount the tree `build` returns (run inside the harness's world).
+    fn mount(build: impl FnOnce() -> Element) -> Mounted {
         host_mock::pump::install_scheduler();
         Robot::new().reset();
         let h = host_mock::Harness::new();
         let tree = h.world.enter(|| {
             install_idea_theme(light_theme());
-            hover_card()
+            build()
         });
         let realized = h.mount(tree);
         h.flush();
@@ -181,6 +186,73 @@ fn hover_card() -> Element {
     }
 }
 
+/// The same card, suppressed while `dragging` is `true`.
+fn hover_card_disabled_while(dragging: Signal<bool>) -> Element {
+    ui! {
+        view {
+            HoverCard(
+                content = || ui! { text { "Drilling 64%" } },
+                disabled = dragging,
+                test_id = Some(TRIGGER),
+                card_test_id = Some(CARD),
+            ) {
+                text { "52%" }
+            }
+        }
+    }
+}
+
+/// want_def82398: a card open over a row kept showing when the row started
+/// dragging — nothing outside could close it. A live `disabled` closes the
+/// open card, cancels an open still waiting on its delay, and keeps hover,
+/// focus and long-press from opening one until it turns off.
+#[test]
+fn regression_disabled_closes_the_card_and_suppresses_reopening() {
+    let mut dragging = None;
+    let m = Mounted::mount(|| {
+        let d = signal(false);
+        dragging = Some(d);
+        hover_card_disabled_while(d)
+    });
+    let dragging = dragging.unwrap();
+    let set_dragging = |on: bool| {
+        m.h.world.enter(|| dragging.set(on));
+        m.h.flush();
+    };
+
+    m.hover_trigger(true);
+    m.elapse();
+    assert!(m.card_open(), "enabled: hover opens the card");
+
+    set_dragging(true);
+    assert!(!m.card_open(), "the drag starting closes the open card:\n{}", m.screen());
+
+    m.hover_trigger(false);
+    m.hover_trigger(true);
+    m.focus_trigger(true);
+    m.long_press_trigger();
+    m.elapse();
+    assert!(!m.card_open(), "nothing reopens it mid-drag:\n{}", m.screen());
+    assert_eq!(m.live("portal"), 0, "no catcher either:\n{}", m.screen());
+
+    set_dragging(false);
+    m.focus_trigger(false);
+    m.hover_trigger(false);
+    m.elapse();
+    m.hover_trigger(true);
+    m.elapse();
+    assert!(m.card_open(), "after the drag a hover opens it again");
+
+    // An open still waiting on its delay when the drag starts never lands.
+    m.hover_trigger(false);
+    m.elapse();
+    assert!(!m.card_open());
+    m.hover_trigger(true);
+    set_dragging(true);
+    m.elapse();
+    assert!(!m.card_open(), "the pending open is cancelled");
+}
+
 #[test]
 fn defaults_are_the_named_constants() {
     let p = HoverCardProps::default();
@@ -188,6 +260,7 @@ fn defaults_are_the_named_constants() {
     assert_eq!(get(&p.open_delay_ms), HOVER_CARD_OPEN_DELAY_MS);
     assert_eq!(get(&p.close_delay_ms), HOVER_CARD_CLOSE_DELAY_MS);
     assert_eq!(p.offset.get(), HOVER_CARD_DEFAULT_OFFSET);
+    assert!(!p.disabled.get(), "enabled by default");
     assert!((300..=500).contains(&HOVER_CARD_OPEN_DELAY_MS));
     assert!((150..=300).contains(&HOVER_CARD_CLOSE_DELAY_MS));
 }

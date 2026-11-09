@@ -661,6 +661,9 @@ pub struct WebBackend {
     /// Monotonic id counter for portals, stamped as `data-portal-id`
     /// on the portal root.
     pub(crate) next_portal_id: u32,
+    /// Escape → the topmost dismissable portal only: the portals'
+    /// `on_dismiss` stack and the one window listener that reads it.
+    pub(crate) portal_escape: primitives::portal::PortalEscape,
     /// Asset id → resolved URL. Filled by `register_asset`; queried
     /// by `register_typeface` (for the `@font-face` `src: url(...)`).
     pub(crate) asset_urls: FxHashMap<AssetId, String>,
@@ -1323,6 +1326,7 @@ impl WebBackend {
             scrollbar_rule_indices: Vec::new(),
             portal_instances: FxHashMap::default(),
             next_portal_id: 0,
+            portal_escape: Default::default(),
             asset_urls: FxHashMap::default(),
             blob_asset_urls: FxHashSet::default(),
             font_face_rule_indices: runtime_shared::collections::SmallIdMap::new(),

@@ -4,7 +4,8 @@
 //!
 //! Every backend's user-facing behavior is the same — an Escape that
 //! nothing consumed calls the `on_dismiss` of the topmost shown portal, and
-//! only that one. Web (the portal's window `keydown` listener), macOS
+//! only that one. Web (one window `keydown` listener over the backend's
+//! own portal stack, `primitives::portal::EscapeStack`), macOS
 //! (`field_keys`), Windows, Android (`RustModalOverlay`) and Linux (a key
 //! controller on the portal container) get there through their toolkit's
 //! own key routing. Two paths have no such routing and ask this registry

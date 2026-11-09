@@ -54,11 +54,11 @@ pub(crate) struct PortalInstance {
     /// the instance map).
     #[allow(dead_code)]
     portal_root: web_glue::dom::Element,
-    /// Escape-key handler attached to the window. Removed in
-    /// `release_portal`. Only populated when the portal has an
-    /// `on_dismiss` callback.
+    /// This portal's place on the backend's [`EscapeStack`]. Dropping it
+    /// (in `release_portal`) takes the portal off the stack. Only
+    /// populated when the portal has an `on_dismiss` callback.
     #[allow(dead_code)]
-    escape_handler: Option<web_glue::dom::Listener>,
+    escape_entry: Option<EscapeEntry>,
     /// Scroll + resize handlers that re-measure the anchor target
     /// and rewrite the content's inline `top`/`left` so the portal
     /// keeps tracking the trigger as the page scrolls or the
@@ -164,29 +164,17 @@ pub(crate) fn create(
         let _ = body.append_child(&portal_root);
     }
 
-    // ---- Escape-key handler on window (platform dismissal) ----
+    // ---- Escape (platform dismissal) ----
     //
     // For viewport-rooted portals this is the canonical "user wants
     // out" signal. Anchor portals (popovers, dropdowns) also honor
     // Escape — the caller flips their open-state signal in response.
-    let escape_handler = on_dismiss.as_ref().and_then(|dismiss| {
-        // Only install if dismissal is wanted; Named portals have no
-        // window mounted, so skip them too.
-        if matches!(target, PortalTarget::Named(_)) {
-            return None;
-        }
-        let window = web_glue::dom::window()?;
-        let dismiss = dismiss.clone();
-        Some(crate::glue_dom::listen(&window, "keydown", Default::default(), move |ev| {
-            let ev: web_glue::dom::KeyboardEvent = web_glue::JsCast::unchecked_into(ev);
-            // A focused field whose `on_key_down` prevented Escape keeps
-            // the overlay open (it may be closing its own dropdown) — the
-            // same rule iOS, Android and macOS dispatch by.
-            if ev.key() == "Escape" && !ev.default_prevented() {
-                (dismiss)();
-            }
-        }))
-    });
+    // Only the topmost dismissable portal hears it ([`PortalEscape`]).
+    // Named portals have no window mounted, so they never register.
+    let escape_entry = match (&on_dismiss, &target) {
+        (Some(_), PortalTarget::Named(_)) | (None, _) => None,
+        (Some(dismiss), _) => Some(b.portal_escape.register(dismiss.clone())),
+    };
 
     // ---- Scroll / resize reposition for anchored portals ----
     //
@@ -236,7 +224,7 @@ pub(crate) fn create(
         id,
         PortalInstance {
             portal_root: portal_root.clone(),
-            escape_handler,
+            escape_entry,
             reposition_scroll_handler,
             reposition_resize_handler,
             initial_measure_task,
@@ -248,9 +236,103 @@ pub(crate) fn create(
     portal_root.unchecked_into::<Node>()
 }
 
+// ---------------------------------------------------------------------------
+// Escape → the topmost portal
+// ---------------------------------------------------------------------------
+
+/// The open portals that have an `on_dismiss`, in mount order. The last
+/// one is the topmost: an overlay opened from inside another (an
+/// `overlay(…, on_dismiss)` above a dismissable `Modal`) mounts after it.
+///
+/// Escape calls the topmost's `on_dismiss` and no other — the rule
+/// `runtime_vocabulary::escape_dismiss`, macOS's `field_keys` and Android's
+/// system Back follow. Not one listener per portal dismissing its own: every
+/// open overlay would hear the same Escape and close together.
+///
+/// The backend keeps its own stack rather than reading
+/// `runtime_vocabulary::escape_dismiss`: the dev client mounts portals by
+/// calling `create_portal` directly, without the vocabulary's portal
+/// handler that fills that registry.
+#[derive(Default)]
+pub(crate) struct EscapeStack {
+    next_id: u64,
+    entries: Vec<(u64, Rc<dyn Fn()>)>,
+}
+
+impl EscapeStack {
+    /// Put a portal on top; returns its id for [`EscapeStack::remove`].
+    pub(crate) fn push(&mut self, dismiss: Rc<dyn Fn()>) -> u64 {
+        self.next_id += 1;
+        self.entries.push((self.next_id, dismiss));
+        self.next_id
+    }
+
+    pub(crate) fn remove(&mut self, id: u64) {
+        self.entries.retain(|(e, _)| *e != id);
+    }
+
+    /// The `on_dismiss` an unconsumed Escape runs: the topmost portal's.
+    pub(crate) fn topmost(&self) -> Option<Rc<dyn Fn()>> {
+        self.entries.last().map(|(_, d)| d.clone())
+    }
+}
+
+/// A portal's place on the [`EscapeStack`]; dropping it removes the portal.
+pub(crate) struct EscapeEntry {
+    stack: std::rc::Weak<RefCell<EscapeStack>>,
+    id: u64,
+}
+
+impl Drop for EscapeEntry {
+    fn drop(&mut self) {
+        if let Some(stack) = self.stack.upgrade() {
+            stack.borrow_mut().remove(self.id);
+        }
+    }
+}
+
+/// The backend's Escape dispatch: the stack plus the ONE window `keydown`
+/// listener that reads it, installed with the first dismissable portal and
+/// kept for the backend's life. It is never dropped from inside its own
+/// callback, which a per-portal listener released by its own dismissal
+/// would risk.
+#[derive(Default)]
+pub(crate) struct PortalEscape {
+    stack: Rc<RefCell<EscapeStack>>,
+    listener: Option<web_glue::dom::Listener>,
+}
+
+impl PortalEscape {
+    fn register(&mut self, dismiss: Rc<dyn Fn()>) -> EscapeEntry {
+        if self.listener.is_none() {
+            if let Some(window) = web_glue::dom::window() {
+                let stack = self.stack.clone();
+                self.listener = Some(crate::glue_dom::listen(&window, "keydown", Default::default(), move |ev| {
+                    let ev: web_glue::dom::KeyboardEvent = web_glue::JsCast::unchecked_into(ev);
+                    // A focused field whose `on_key_down` prevented Escape
+                    // keeps the overlay open (it may be closing its own
+                    // dropdown) — the same rule iOS, Android and macOS
+                    // dispatch by.
+                    if ev.key() != "Escape" || ev.default_prevented() {
+                        return;
+                    }
+                    // The borrow ends with the statement: the handler closes
+                    // the portal, and its release unregisters it.
+                    let top = stack.borrow().topmost();
+                    if let Some(dismiss) = top {
+                        dismiss();
+                    }
+                }));
+            }
+        }
+        let id = self.stack.borrow_mut().push(dismiss);
+        EscapeEntry { stack: Rc::downgrade(&self.stack), id }
+    }
+}
+
 /// Tear down a portal. Removes it from `<body>`, drops the
-/// closures (Escape, focus trap, scroll/resize reposition), and
-/// removes the instance entry.
+/// closures (focus trap, scroll/resize reposition), takes it off the
+/// Escape stack, and removes the instance entry.
 pub(crate) fn release(b: &mut WebBackend, node: &Node) {
     let portal_root = match node.dyn_ref::<web_glue::dom::Element>() {
         Some(el) => el,
@@ -692,6 +774,82 @@ mod tests {
     use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);
+
+    fn counter() -> (Rc<std::cell::Cell<u32>>, Rc<dyn Fn()>) {
+        let n = Rc::new(std::cell::Cell::new(0));
+        let n2 = n.clone();
+        (n, Rc::new(move || n2.set(n2.get() + 1)))
+    }
+
+    /// The Escape policy: the most recently mounted dismissable portal is
+    /// the one Escape closes; removing it exposes the one beneath, and
+    /// removing one below leaves the top alone.
+    #[test]
+    fn escape_stack_picks_the_most_recently_mounted_portal() {
+        let mut stack = EscapeStack::default();
+        assert!(stack.topmost().is_none(), "nothing open, nothing to dismiss");
+        let (modal_n, modal) = counter();
+        let (overlay_n, overlay) = counter();
+        let (menu_n, menu) = counter();
+        let modal_id = stack.push(modal);
+        let overlay_id = stack.push(overlay);
+        stack.topmost().unwrap()();
+        assert_eq!((modal_n.get(), overlay_n.get()), (0, 1), "the overlay above the modal");
+
+        let menu_id = stack.push(menu);
+        stack.remove(overlay_id);
+        stack.topmost().unwrap()();
+        assert_eq!((modal_n.get(), menu_n.get()), (0, 1), "removing a lower portal keeps the top");
+
+        stack.remove(menu_id);
+        stack.topmost().unwrap()();
+        assert_eq!(modal_n.get(), 1, "with the others gone the modal is topmost");
+        stack.remove(modal_id);
+        assert!(stack.topmost().is_none());
+    }
+
+    fn press_escape_on_window() {
+        let init = web_glue::dom::KeyboardEventInit::new();
+        init.set_key("Escape");
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        let ev = web_glue::dom::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        let window = web_glue::dom::window().unwrap();
+        let target: &web_glue::dom::EventTarget = window.as_ref();
+        target.dispatch_event(&ev).unwrap();
+    }
+
+    /// Regression (want_00fb4b9b): with a dismissable Modal open and an
+    /// `overlay(…, on_dismiss)` above it, one Escape ran BOTH dismissers —
+    /// every portal had its own window listener — so the Modal underneath
+    /// closed with the overlay. Only the topmost may hear it, as with
+    /// Android's system Back.
+    #[wasm_bindgen_test]
+    fn regression_escape_dismisses_only_the_topmost_portal() {
+        crate::tests::install_mount();
+        let mut b = WebBackend::new("#app");
+        let (modal_n, modal) = counter();
+        let (overlay_n, overlay) = counter();
+        let modal_node = create(&mut b, PortalTarget::Viewport(ViewportPlacement::Center), Some(modal), false);
+        let overlay_node =
+            create(&mut b, PortalTarget::Viewport(ViewportPlacement::Center), Some(overlay), false);
+        // A portal without `on_dismiss` never takes Escape from the others.
+        let plain_node = create(&mut b, PortalTarget::Viewport(ViewportPlacement::Top), None, false);
+
+        press_escape_on_window();
+        assert_eq!(overlay_n.get(), 1, "the overlay on top is dismissed");
+        assert_eq!(modal_n.get(), 0, "the modal underneath stays open");
+
+        release(&mut b, &overlay_node);
+        press_escape_on_window();
+        assert_eq!(modal_n.get(), 1, "once the overlay is gone the modal is topmost");
+        assert_eq!(overlay_n.get(), 1, "a released portal hears nothing");
+
+        release(&mut b, &modal_node);
+        release(&mut b, &plain_node);
+        press_escape_on_window();
+        assert_eq!((modal_n.get(), overlay_n.get()), (1, 1), "no portal open, nothing runs");
+    }
 
     /// Build a portal-shaped element — `position: fixed`, no width, so it
     /// shrink-to-fits — holding wrappable text under the same 260px cap the
