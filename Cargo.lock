@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "8.0.1"
+version = "8.1.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1603,7 +1603,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "9.0.0"
+version = "9.0.1"
 dependencies = [
  "css",
  "dev-client",
@@ -3594,7 +3594,7 @@ dependencies = [
 
 [[package]]
 name = "dev-reload"
-version = "9.0.1"
+version = "9.0.2"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -6435,7 +6435,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "20.0.1"
+version = "20.1.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6455,7 +6455,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "21.0.0"
+version = "21.0.1"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6563,7 +6563,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.31.0"
+version = "1.31.1"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7733,7 +7733,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.38.0"
+version = "1.39.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7776,7 +7776,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-design-server"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "mcp-server",
@@ -7860,7 +7860,7 @@ dependencies = [
 
 [[package]]
 name = "media-stream"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "futures-channel",
  "runtime-tls",
@@ -9370,7 +9370,7 @@ dependencies = [
 
 [[package]]
 name = "pdf"
-version = "7.0.0"
+version = "7.1.0"
 dependencies = [
  "canvas-core",
  "hayro-interpret",
@@ -10906,7 +10906,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros-expand"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -11625,7 +11625,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "axum",
  "futures-channel",
@@ -11697,7 +11697,7 @@ dependencies = [
 
 [[package]]
 name = "server-macros"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -14228,7 +14228,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
