@@ -15,6 +15,7 @@
 use crate::imp::{density_of, with_env, AndroidBackend};
 use crate::soft_keyboard_policy::{moved_views, padding_plan, PaddingPlan};
 use jni::objects::{GlobalRef, JObject, JValue};
+use std::collections::HashMap;
 
 /// A registered `keyboard_avoiding_view`.
 pub(crate) struct Avoider {
@@ -237,28 +238,32 @@ pub(crate) fn with_free_backend<R>(f: impl FnOnce(&mut AndroidBackend) -> R) -> 
     Some(f(&mut b))
 }
 
-/// View keys whose layout node lies strictly inside `root`'s subtree.
+/// View keys whose layout node lies strictly inside `root`'s subtree,
+/// including the views of stack screens hosted inside it
+/// (`soft_keyboard_policy::inside_avoider`).
 fn subtree_views(backend: &AndroidBackend, root: runtime_layout::LayoutNode) -> Vec<usize> {
+    // A hosted screen's root node → its host's node.
+    let hosts: HashMap<runtime_layout::LayoutNode, runtime_layout::LayoutNode> = backend
+        .view_to_layout
+        .iter()
+        .filter_map(|(k, (_, n))| {
+            let host = super::hosted_root::host_of(*k)?;
+            Some((*n, backend.view_to_layout.get(&host)?.1))
+        })
+        .collect();
     backend
         .view_to_layout
         .iter()
-        .filter(|(_, (_, n))| *n != root && is_descendant(backend, *n, root))
+        .filter(|(_, (_, n))| {
+            crate::soft_keyboard_policy::inside_avoider(
+                *n,
+                root,
+                |n| backend.layout.parent_of(n),
+                |n| hosts.get(&n).copied(),
+            )
+        })
         .map(|(k, _)| *k)
         .collect()
-}
-
-fn is_descendant(
-    backend: &AndroidBackend,
-    mut node: runtime_layout::LayoutNode,
-    ancestor: runtime_layout::LayoutNode,
-) -> bool {
-    while let Some(p) = backend.layout.parent_of(node) {
-        if p == ancestor {
-            return true;
-        }
-        node = p;
-    }
-    false
 }
 
 /// Each view's current parent-relative y (dp) from the layout tree.

@@ -3207,6 +3207,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Content in a navigator screen slides with the Android keyboard** (`backend-android-mobile`). A
+  `keyboard_avoiding_view` (`Padding`, animated) slides the views the keyboard moves, found by
+  walking up the layout tree to the avoider. A stack screen is its own layout root, laid out against
+  its outlet, so that walk stopped at the screen: everything inside one held still while the
+  keyboard animated, then jumped to its final place in one frame. The walk now steps from a screen
+  to the view hosting it.
 - **`MediaStream::screenshot()` gets a frame on iPhone Safari** (`media-stream`). The detached
   `<video>` it reads from lacked `playsinline` and `muted`, without which iOS Safari may never
   decode a frame for it.

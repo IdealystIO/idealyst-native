@@ -83,6 +83,30 @@ pub(crate) fn tops_px(new_y: f32, dy: f32, density: f32) -> (i32, i32) {
     (px(new_y - dy), px(new_y))
 }
 
+/// Whether `node` lies strictly inside `ancestor` for a keyboard avoider:
+/// up the layout tree (`parent_of`), and from a hosted root (a stack
+/// presenter's screen) to the view hosting it (`host_of`).
+///
+/// A screen is its own layout root, laid out against its outlet, so the
+/// layout tree alone ends at the screen. Without the host step every view
+/// in a navigator screen fell outside the app root's avoider: the keyboard
+/// slid over still content, then the deferred layout moved it in one frame
+/// (CrewForge kiosk, a centred form inside a stack screen).
+pub(crate) fn inside_avoider<N: Copy + PartialEq>(
+    mut node: N,
+    ancestor: N,
+    parent_of: impl Fn(N) -> Option<N>,
+    host_of: impl Fn(N) -> Option<N>,
+) -> bool {
+    while let Some(p) = parent_of(node).or_else(|| host_of(node)) {
+        if p == ancestor {
+            return true;
+        }
+        node = p;
+    }
+    false
+}
+
 /// Moves smaller than this (dp) are rounding noise, not motion.
 const SUB_PIXEL: f32 = 0.5;
 
@@ -142,6 +166,24 @@ mod tests {
         // Opening (moving up): old is the larger top.
         let (old, new) = tops_px(424.3, -336.3, density);
         assert!(old > new);
+    }
+
+    /// The kiosk tree: avoider ▸ outlet, and a stack screen hosted in the
+    /// outlet (its own layout root) ▸ scroll ▸ column.
+    #[test]
+    fn regression_views_in_a_hosted_screen_are_inside_the_root_avoider() {
+        let parent = |n: &str| match n {
+            "outlet" => Some("avoider"),
+            "scroll" => Some("screen"),
+            "column" => Some("scroll"),
+            _ => None,
+        };
+        let host = |n: &str| (n == "screen").then_some("outlet");
+        assert!(inside_avoider("column", "avoider", parent, host));
+        assert!(inside_avoider("screen", "avoider", parent, host));
+        assert!(!inside_avoider("avoider", "avoider", parent, host), "strictly inside");
+        let unhosted = |_: &str| None;
+        assert!(!inside_avoider("column", "avoider", parent, unhosted), "an unhosted root is outside");
     }
 
     #[test]
