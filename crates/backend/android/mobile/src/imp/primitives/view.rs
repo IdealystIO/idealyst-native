@@ -9,23 +9,33 @@
 //! (e.g. the welcome example's dark wash + sun-glare + content
 //! layers all stacked over the page).
 
-use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
 use jni::objects::{GlobalRef, JValue};
 
 pub(crate) fn create(b: &AndroidBackend) -> GlobalRef {
     with_env(|env| {
-        let class = env.find_class("android/widget/FrameLayout").unwrap();
-        let local = env
-            .new_object(
-                &class,
-                "(Landroid/content/Context;)V",
-                &[JValue::Object(&b.context.as_obj())],
-            )
-            .unwrap();
-        apply_default_layout_params(env, &local);
+        let local = VIEW_FACTORY
+            .with(|slot| {
+                let method = crate::imp::StaticMethod::cached(
+                    env,
+                    slot,
+                    "io/idealyst/runtime/RustViewFactory",
+                    "view",
+                    "(Landroid/content/Context;)Landroid/widget/FrameLayout;",
+                )?;
+                // SAFETY: the argument matches the signature above.
+                unsafe { method.call_object(env, &[JValue::Object(b.context.as_obj()).as_jni()]) }
+            })
+            .expect("RustViewFactory.view failed — bundle the kotlin runtime");
         env.new_global_ref(local).unwrap()
     })
+}
+
+runtime_tls::thread_local! {
+    /// `RustViewFactory.view`, resolved once: a mounted list creates views
+    /// by the hundred.
+    static VIEW_FACTORY: std::cell::RefCell<Option<crate::imp::StaticMethod>> =
+        std::cell::RefCell::new(None);
 }
 
 /// Remove a SPECIFIC child from `parent` (`Host::remove_child`).

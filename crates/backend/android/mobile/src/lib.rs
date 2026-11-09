@@ -154,6 +154,12 @@ mod subtree_release_policy;
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 mod measure_memo_policy;
 
+/// What `AccessibilityProps` write to a View, and whether a view being
+/// created needs any of it. Un-gated like `sticky_compute` so the tests
+/// run on the host; the JNI half is `imp::a11y`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod a11y_policy;
+
 /// A style `shadow` as an elevation shadow: elevation and the outline
 /// shadow color. Un-gated like `sticky_compute` so the tests run on the
 /// host; the JNI half is `style::apply_box_shadow`.

@@ -3207,6 +3207,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Mounting views on Android costs about a third of what it did** (`backend-android-mobile`).
+  Building a 24-row roster (about 160 views) took a median 87 ms on the main thread before its
+  layout pass, now 30 ms, on an emulator. Most of it was JNI calls looked up by name:
+  - A `view` or `text` is built and configured in one call (`RustViewFactory`), not about ten.
+  - A view or label with no accessibility props skips the seven accessibility setters on
+    create, which only restated a new view's defaults. Updates still write every value.
+  - Style application reads the cached display density, looks its classes up once, writes the
+    three scroll-surface setters in one call (`RustViewStyle`), and stops clearing a text
+    shadow the label never had.
+  - An insert no longer walks the inserted subtree's Java views when no sticky view is pending.
+
+  Behaviour is unchanged. With `debug-stats`, the new `scheduled_task` and `host_*` phases
+  break the build down by `Host` call.
 - **Mounting a list of labels on Android no longer stalls the layout pass**
   (`backend-android-mobile`). Taffy asks a text leaf for its size about eight times while it
   resolves a flex layout, and each question was a fresh `TextView.measure` costing about eight JNI

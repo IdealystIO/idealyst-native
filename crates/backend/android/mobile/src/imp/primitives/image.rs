@@ -126,6 +126,10 @@ impl ImageState {
 }
 
 runtime_tls::thread_local! {
+    /// `android.widget.ImageView`, for [`is_image_view`].
+    static IMAGE_VIEW_CLASS: std::cell::RefCell<Option<jni::objects::GlobalRef>> =
+        std::cell::RefCell::new(None);
+
     /// Image views whose natural size changed since the last layout pass.
     /// `run_layout_pass` drains it and `mark_dirty`s their Taffy nodes —
     /// Taffy caches leaf measurements, so without the dirty mark an image
@@ -827,9 +831,13 @@ fn scale_type_field(fit: ObjectFit) -> &'static str {
 /// Return `true` if `view` is an `android.widget.ImageView` — lets the
 /// generic `apply_style` path apply `object_fit` only to images.
 pub(crate) fn is_image_view(env: &mut JNIEnv, view: &JObject) -> bool {
-    env.find_class("android/widget/ImageView")
-        .ok()
-        .and_then(|c| env.is_instance_of(view, &c).ok())
+    // Every style apply asks, so the class is looked up once.
+    let Some(class) = IMAGE_VIEW_CLASS.with(|slot| {
+        crate::imp::cached_class(env, slot, "android/widget/ImageView")
+    }) else {
+        return false;
+    };
+    env.is_instance_of(view, <&jni::objects::JClass>::from(class.as_obj()))
         .unwrap_or(false)
 }
 

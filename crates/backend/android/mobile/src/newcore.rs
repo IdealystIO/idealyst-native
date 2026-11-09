@@ -828,10 +828,12 @@ mod native {
         type Node = GlobalRef;
 
         fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
+            let _t = crate::phase_timer::PhaseTimer::start("host_insert");
             AndroidBackend::insert_impl(self, parent, child)
         }
 
         fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
+            let _t = crate::phase_timer::PhaseTimer::start("host_insert");
             AndroidBackend::insert_at_impl(self, parent, child, index)
         }
 
@@ -848,6 +850,7 @@ mod native {
         }
 
         fn create_anchor(&mut self) -> Self::Node {
+            let _t = crate::phase_timer::PhaseTimer::start("host_create_anchor");
             // A layout-transparent `FrameLayout` over a `display:
             // contents` layout node — this backend's `display: contents`.
             // A plain view here is a flex item the author never wrote;
@@ -931,6 +934,7 @@ mod native {
 
     impl caps::ViewOps for AndroidBackend {
         fn create_view(&mut self, a11y: &AccessibilityProps) -> Self::Node {
+            let _t = crate::phase_timer::PhaseTimer::start("host_create_view");
             AndroidBackend::create_view_impl(self, a11y)
         }
 
@@ -986,6 +990,7 @@ mod native {
 
     impl caps::TextOps for AndroidBackend {
         fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
+            let _t = crate::phase_timer::PhaseTimer::start("host_create_text");
             AndroidBackend::create_text_impl(self, content, a11y)
         }
 
@@ -1627,6 +1632,7 @@ mod native {
 
     impl caps::StyleOps for AndroidBackend {
         fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
+            let _t = crate::phase_timer::PhaseTimer::start("host_apply_style");
             AndroidBackend::apply_style_impl(self, node, style)
         }
 
@@ -1635,6 +1641,7 @@ mod native {
         }
 
         fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
+            let _t = crate::phase_timer::PhaseTimer::start("host_attach_states");
             // Dispatch-site glue: hover/press/focus state flips arrive
             // via `RustStateListener` and can stage writes when the
             // style path routes states through signals (the

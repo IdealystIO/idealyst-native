@@ -10,7 +10,7 @@
 use super::animation::*;
 use backend_android_core::helpers::*;
 use super::font::{apply_resolved_font_to_textview, FontRegistry};
-use super::NodeAnim;
+use super::{cached_class, dp_to_px, NodeAnim};
 use runtime_shared::StyleRules;
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::JNIEnv;
@@ -417,6 +417,7 @@ pub(crate) fn apply_rules(
         // only paints when radius > 0).
         match &rules.text_shadow {
             Some(sh) => {
+                state.text_shadow = true;
                 let packed = parse_color(&sh.color.resolve().0).unwrap_or(0);
                 let _ = env.call_method(
                     &view,
@@ -430,7 +431,9 @@ pub(crate) fn apply_rules(
                     ],
                 );
             }
-            None => {
+            // A label that never had a shadow has nothing to clear.
+            None if state.text_shadow => {
+                state.text_shadow = false;
                 let _ = env.call_method(
                     &view,
                     "setShadowLayer",
@@ -443,6 +446,7 @@ pub(crate) fn apply_rules(
                     ],
                 );
             }
+            None => {}
         }
         // Caret color → `setTextCursorDrawable` with a GradientDrawable
         // fill. API 29+ only; on older Android we silently drop back to
@@ -1080,10 +1084,11 @@ fn apply_drawable_path(
         // A plain-path colour animation still running would `setBackgroundColor`
         // on its next tick, which replaces the drawable attached below.
         cancel_animator(env, state.anim_bg.take());
-        let class = env
-            .find_class("android/graphics/drawable/GradientDrawable")
-            .unwrap();
-        let drawable_local = env.new_object(&class, "()V", &[]).unwrap();
+        let class = GRADIENT_DRAWABLE_CLASS
+            .with(|slot| cached_class(env, slot, "android/graphics/drawable/GradientDrawable"))
+            .expect("GradientDrawable class");
+        let class = <&jni::objects::JClass>::from(class.as_obj());
+        let drawable_local = env.new_object(class, "()V", &[]).unwrap();
         let _ = env.call_method(
             &view,
             "setBackground",
@@ -1312,19 +1317,14 @@ fn apply_drawable_path(
             let drawable_ref = match state.border_drawable.clone() {
                 Some(d) => d,
                 None => {
-                    let class = match env.find_class("io/idealyst/runtime/RustBorderDrawable") {
-                        Ok(c) => c,
-                        Err(e) => {
-                            log::error!(
-                                "RustBorderDrawable class missing — make sure the CLI was \
-                                 reinstalled after adding the runtime registry entry. \
-                                 Underlying: {:?}",
-                                e
-                            );
-                            return;
-                        }
+                    let Some(class) = BORDER_DRAWABLE_CLASS.with(|slot| {
+                        cached_class(env, slot, "io/idealyst/runtime/RustBorderDrawable")
+                    }) else {
+                        log::error!("RustBorderDrawable class missing — bundle the kotlin runtime");
+                        return;
                     };
-                    let Ok(local) = env.new_object(&class, "()V", &[]) else {
+                    let class = <&jni::objects::JClass>::from(class.as_obj());
+                    let Ok(local) = env.new_object(class, "()V", &[]) else {
                         log::error!("new RustBorderDrawable failed");
                         return;
                     };
@@ -2059,4 +2059,16 @@ pub(crate) fn set_animated_gradient_stop(
     let colors_copy = state.gradient_stops.clone();
     let offsets_copy = state.gradient_offsets.clone();
     push_gradient_colors_to_drawable(env, drawable.as_obj(), &colors_copy, &offsets_copy);
+}
+
+runtime_tls::thread_local! {
+    /// `android.graphics.drawable.GradientDrawable`, the background of every
+    /// rounded or bordered view.
+    static GRADIENT_DRAWABLE_CLASS: std::cell::RefCell<Option<GlobalRef>> =
+        std::cell::RefCell::new(None);
+
+    /// `io.idealyst.runtime.RustBorderDrawable`, the foreground that paints
+    /// per-side borders.
+    static BORDER_DRAWABLE_CLASS: std::cell::RefCell<Option<GlobalRef>> =
+        std::cell::RefCell::new(None);
 }

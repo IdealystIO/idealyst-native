@@ -290,6 +290,9 @@ pub(crate) struct NodeAnim {
     /// `true` while the style states a visible `shadow`, drawn as an
     /// elevation shadow. Set by `style::apply_box_shadow`.
     pub(crate) box_shadow: bool,
+    /// `true` while the TextView carries a `text_shadow` shadow layer, so
+    /// a style without one clears it once instead of on every apply.
+    pub(crate) text_shadow: bool,
     /// `true` while a stated `overflow` has `clipChildren` overridden, so a
     /// style that drops it restores the default clip. Set by
     /// `style::apply_overflow`.
@@ -615,6 +618,15 @@ runtime_tls::thread_local! {
     static VIEW_MEASURE_PROBE: std::cell::RefCell<Option<StaticMethod>> =
         std::cell::RefCell::new(None);
 
+    /// `android.view.ViewGroup`, for `is_view_group` (the sticky and
+    /// teardown walks ask it of every view they visit).
+    static VIEW_GROUP_CLASS: std::cell::RefCell<Option<GlobalRef>> =
+        std::cell::RefCell::new(None);
+
+    /// `RustViewStyle.scrollSurface`, written on every style pass.
+    static SCROLL_SURFACE: std::cell::RefCell<Option<StaticMethod>> =
+        std::cell::RefCell::new(None);
+
     /// This layout pass's answers to `View.measure` probes, keyed by view
     /// and `(widthSpec, heightSpec)`. Open only while a pass runs
     /// ([`MeasurePass`]); see `crate::measure_memo_policy`.
@@ -658,6 +670,35 @@ fn cached_density(env: &mut JNIEnv, view: &JObject) -> f32 {
     let d = density_of(env, view).unwrap_or(1.0);
     CACHED_DENSITY.with(|c| c.set(Some(d)));
     d
+}
+
+/// `dp` in device px at the display's density, rounded: the conversion
+/// every style write uses. Reads the cached density
+/// ([`cached_density`]) rather than `backend_android_core`'s
+/// `dp_to_px`, which reads it through three JNI calls each time and runs
+/// for every padding side, border width and radius a style applies.
+pub(crate) fn dp_to_px(env: &mut JNIEnv, view: &JObject, dp: f32) -> i32 {
+    (dp * cached_density(env, view)).round() as i32
+}
+
+/// A class pinned by a global reference, looked up once into `slot` (a
+/// thread-local's cell). `find_class` is a classloader probe, and a mount
+/// creates drawables by the dozen.
+pub(crate) fn cached_class(
+    env: &mut JNIEnv,
+    slot: &std::cell::RefCell<Option<GlobalRef>>,
+    name: &str,
+) -> Option<GlobalRef> {
+    if slot.borrow().is_none() {
+        match env.find_class(name).and_then(|c| env.new_global_ref(&c)) {
+            Ok(g) => *slot.borrow_mut() = Some(g),
+            Err(_) => {
+                let _ = env.exception_clear();
+                return None;
+            }
+        }
+    }
+    slot.borrow().clone()
 }
 
 /// Install a generic `View.measure(...)`-based Taffy measure_fn on
@@ -779,6 +820,43 @@ impl StaticMethod {
                 let _ = env.exception_clear();
                 0
             })
+    }
+
+    /// [`Self::call_long`] for a method returning an object. `None` on a
+    /// Java exception (cleared) or a null result.
+    ///
+    /// # Safety
+    /// As [`Self::call_long`], for a signature returning an object.
+    pub(crate) unsafe fn call_object<'local>(
+        &self,
+        env: &mut JNIEnv<'local>,
+        args: &[jni::sys::jvalue],
+    ) -> Option<JObject<'local>> {
+        let class = <&jni::objects::JClass>::from(self.class.as_obj());
+        match env
+            .call_static_method_unchecked(class, self.id, jni::signature::ReturnType::Object, args)
+            .and_then(|v| v.l())
+        {
+            Ok(o) if !o.is_null() => Some(o),
+            Ok(_) => None,
+            Err(_) => {
+                let _ = env.exception_clear();
+                None
+            }
+        }
+    }
+
+    /// [`Self::call_long`] for a method returning `void`. A Java exception
+    /// is cleared.
+    ///
+    /// # Safety
+    /// As [`Self::call_long`], for a signature returning `V`.
+    pub(crate) unsafe fn call_void(&self, env: &mut JNIEnv, args: &[jni::sys::jvalue]) {
+        let class = <&jni::objects::JClass>::from(self.class.as_obj());
+        let ret = jni::signature::ReturnType::Primitive(jni::signature::Primitive::Void);
+        if env.call_static_method_unchecked(class, self.id, ret, args).is_err() {
+            let _ = env.exception_clear();
+        }
     }
 
     /// [`Self::call_long`] for a method returning `int`.
@@ -2375,10 +2453,11 @@ fn promote_pending_sticky_recursive(
 /// JNI pending-exception path. Returns `false` (don't recurse) on
 /// class-lookup failure to stay safe.
 fn is_view_group(env: &mut JNIEnv, view: &JObject) -> bool {
-    let Ok(class) = env.find_class("android/view/ViewGroup") else {
+    let Some(class) = VIEW_GROUP_CLASS.with(|slot| cached_class(env, slot, "android/view/ViewGroup")) else {
         return false;
     };
-    env.is_instance_of(view, &class).unwrap_or(false)
+    env.is_instance_of(view, <&jni::objects::JClass>::from(class.as_obj()))
+        .unwrap_or(false)
 }
 
 /// Recursive cleanup helper used by `clear_children`. For each
@@ -2662,7 +2741,7 @@ impl AndroidBackend {
 
     pub(crate) fn create_view_impl(&mut self, a11y: &runtime_shared::accessibility::AccessibilityProps) -> GlobalRef {
         let node = primitives::view::create(self);
-        a11y::apply(&node, a11y, None);
+        a11y::apply_new(&node, a11y, None);
         node
     }
 
@@ -2752,7 +2831,7 @@ impl AndroidBackend {
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> GlobalRef {
         let node = primitives::link::create(self, on_click);
-        a11y::apply(&node, a11y, None);
+        a11y::apply_new(&node, a11y, None);
         node
     }
 
@@ -2792,7 +2871,7 @@ impl AndroidBackend {
 
     pub(crate) fn create_text_impl(&mut self, content: &str, a11y: &runtime_shared::accessibility::AccessibilityProps) -> GlobalRef {
         let node = primitives::text::create(self, content);
-        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Text));
+        a11y::apply_new(&node, a11y, Some(runtime_shared::accessibility::Role::Text));
         node
     }
 
@@ -2802,7 +2881,7 @@ impl AndroidBackend {
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> GlobalRef {
         let node = primitives::text::create_styled(self, runs);
-        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Text));
+        a11y::apply_new(&node, a11y, Some(runtime_shared::accessibility::Role::Text));
         node
     }
 
@@ -2849,20 +2928,27 @@ impl AndroidBackend {
         // ancestor. Entries that still can't — genuinely no
         // scroll-view ancestor — stay in the pending map until the
         // view is removed. Mirrors iOS's `promote_pending_sticky_recursive`.
-        let mut to_remove = Vec::new();
-        with_env(|env| {
-            promote_pending_sticky_recursive(
-                env,
-                &child_for_sticky,
-                &mut self.pending_sticky,
-                &mut self.sticky_registry,
-                &mut self.scroll_listeners,
-                &self.scroll_observers,
-                &mut to_remove,
-            );
-        });
-        for k in to_remove {
-            self.pending_sticky.remove(&k);
+        //
+        // The walk is a JNI call per view in the subtree, and a subtree is
+        // walked again by every ancestor's insert as a mount assembles
+        // bottom-up; with nothing pending it can promote nothing, so
+        // skip it.
+        if !self.pending_sticky.is_empty() {
+            let mut to_remove = Vec::new();
+            with_env(|env| {
+                promote_pending_sticky_recursive(
+                    env,
+                    &child_for_sticky,
+                    &mut self.pending_sticky,
+                    &mut self.sticky_registry,
+                    &mut self.scroll_listeners,
+                    &self.scroll_observers,
+                    &mut to_remove,
+                );
+            });
+            for k in to_remove {
+                self.pending_sticky.remove(&k);
+            }
         }
 
         // A dynamically-mounted subtree needs a layout pass that the initial
@@ -3806,12 +3892,7 @@ impl AndroidBackend {
         // honor it natively in a way that's portable. Authors wrap a
         // Text in a styled View when they want spacing around it.
         // Mirror logic in iOS backend for IosNode::Label.
-        let is_text_view = with_env(|env| {
-            env.find_class("android/widget/TextView")
-                .ok()
-                .and_then(|c| env.is_instance_of(&node.as_obj(), &c).ok())
-                .unwrap_or(false)
-        });
+        let is_text_view = with_env(|env| is_text_view(env, &node.as_obj()));
         // External scrollers strip for the same double-count reason: their
         // padding is realized as the view's own `setPadding` (see
         // `apply_rules`), and the generic `View.measure` measure_fn already
@@ -3836,6 +3917,52 @@ impl AndroidBackend {
                 .set_style(inner_layout, &crate::scroll_axis_policy::inner_forwarded_rules(style));
         }
 
+        // `overscroll_behavior` → `View.setOverScrollMode` and `scrollbar`
+        // → `setHorizontal/VerticalScrollBarEnabled` (both axes: the
+        // property names the surface, not a direction). Scroll-surface
+        // properties, written on every pass so a reactive flip back to
+        // `Auto` restores the default (`OVER_SCROLL_ALWAYS`, bars shown); a
+        // view that does not scroll ignores them. A plain `ScrollView`
+        // doesn't participate in nested scrolling, so there is no chaining
+        // to suppress and `Contain` coincides with `Auto`; only `None` is
+        // observable, removing the edge glow / stretch. One JNI call for
+        // the three setters (`RustViewStyle.scrollSurface`).
+        {
+            // View.OVER_SCROLL_NEVER = 2, OVER_SCROLL_ALWAYS = 0.
+            let mode: i32 = match style.overscroll_behavior {
+                Some(runtime_shared::OverscrollBehavior::None) => 2,
+                _ => 0,
+            };
+            let shows = !matches!(
+                style.scrollbar,
+                Some(runtime_shared::ScrollbarVisibility::Hidden)
+            );
+            with_env(|env| {
+                SCROLL_SURFACE.with(|slot| {
+                    let Some(method) = StaticMethod::cached(
+                        env,
+                        slot,
+                        "io/idealyst/runtime/RustViewStyle",
+                        "scrollSurface",
+                        "(Landroid/view/View;IZ)V",
+                    ) else {
+                        return;
+                    };
+                    // SAFETY: the arguments match `(Landroid/view/View;IZ)V`.
+                    unsafe {
+                        method.call_void(
+                            env,
+                            &[
+                                JValue::Object(node.as_obj()).as_jni(),
+                                JValue::Int(mode).as_jni(),
+                                JValue::Bool(shows as u8).as_jni(),
+                            ],
+                        )
+                    }
+                })
+            });
+        }
+
         // Position::Sticky → register against the enclosing
         // ScrollView so the per-scroll-event sticky listener pins
         // this view when scrolled past the threshold. Any other
@@ -3854,59 +3981,6 @@ impl AndroidBackend {
         // in `pending_sticky` for the first-mount case. `insert`
         // consults `pending_sticky` after attaching the subtree
         // and promotes any entries it can now resolve.
-        // `overscroll-behavior` → `View.setOverScrollMode`. A plain
-        // `ScrollView` doesn't participate in nested scrolling, so
-        // there is no chaining to suppress and `Contain` coincides
-        // with `Auto`; only `None` is observable, removing the edge
-        // glow / stretch. Applied on every style pass so a reactive
-        // flip back to `Auto` restores the effect.
-        //
-        // View.OVER_SCROLL_ALWAYS = 0, OVER_SCROLL_NEVER = 2.
-        {
-            let mode: i32 = match style.overscroll_behavior {
-                Some(runtime_shared::OverscrollBehavior::None) => 2,
-                _ => 0,
-            };
-            with_env(|env| {
-                let _ = env.call_method(
-                    node.as_obj(),
-                    "setOverScrollMode",
-                    "(I)V",
-                    &[JValue::Int(mode)],
-                );
-                // A non-scrolling View also accepts this call, so no
-                // class check is needed — but a pending exception from
-                // an exotic subclass must not leak into the next JNI
-                // call.
-                let _ = env.exception_clear();
-            });
-        }
-
-        // `scrollbar: Hidden` → `View.setHorizontalScrollBarEnabled` /
-        // `setVerticalScrollBarEnabled`. Same shape as the overscroll
-        // block above: applied on every style pass so a reactive flip
-        // back to `Auto` restores the bars, and both axes because the
-        // property names the surface rather than a direction.
-        {
-            let shows = !matches!(
-                style.scrollbar,
-                Some(runtime_shared::ScrollbarVisibility::Hidden)
-            );
-            with_env(|env| {
-                for setter in
-                    ["setHorizontalScrollBarEnabled", "setVerticalScrollBarEnabled"]
-                {
-                    let _ = env.call_method(
-                        node.as_obj(),
-                        setter,
-                        "(Z)V",
-                        &[JValue::Bool(shows as u8)],
-                    );
-                    let _ = env.exception_clear();
-                }
-            });
-        }
-
         match style.position {
             Some(runtime_shared::Position::Sticky) => {
                 // Per-axis thresholds (`top` → vertical off
@@ -4046,7 +4120,7 @@ impl AndroidBackend {
                 // Translates land in device px (so the visual offset
                 // matches what `style.transform: translate(<dp>px)`
                 // would have produced on web).
-                backend_android_core::helpers::dp_to_px(env, node.as_obj(), value)
+                dp_to_px(env, &node.as_obj(), value)
                     as f32
             } else {
                 value
@@ -4198,8 +4272,8 @@ impl AndroidBackend {
         with_env(|env| {
             let obj = node.as_obj();
             // dp → device px for the two translate axes.
-            let tx_px = backend_android_core::helpers::dp_to_px(env, obj, tx_dp) as f32;
-            let ty_px = backend_android_core::helpers::dp_to_px(env, obj, ty_dp) as f32;
+            let tx_px = dp_to_px(env, obj, tx_dp) as f32;
+            let ty_px = dp_to_px(env, obj, ty_dp) as f32;
 
             match transition {
                 None => {

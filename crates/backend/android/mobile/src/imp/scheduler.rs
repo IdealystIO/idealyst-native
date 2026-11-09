@@ -522,6 +522,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustScheduledRunnable_nat
 ) {
     let cb = CALLBACKS.with(|m| m.borrow_mut().remove(&(id as i64)));
     if let Some(f) = cb {
+        let _t = crate::phase_timer::PhaseTimer::start("scheduled_task");
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f()));
         if let Err(payload) = result {
             // Log first so the message hits logcat, then abort. JNI

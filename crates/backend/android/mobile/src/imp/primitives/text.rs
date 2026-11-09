@@ -1,75 +1,33 @@
 //! `TextPrim` — `android.widget.TextView`.
 
-use backend_android_core::helpers::{apply_default_layout_params, set_text};
+use backend_android_core::helpers::set_text;
 use crate::imp::{with_env, AndroidBackend};
 use jni::objects::{GlobalRef, JValue};
 
 pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
+    // Built and configured JVM-side in one call: see `RustViewFactory.text`
+    // for the font-padding, line-spacing, min-height and gravity settings
+    // that make a TextView measure and sit like iOS's UILabel.
     let view = with_env(|env| {
-        let class = env.find_class("android/widget/TextView").unwrap();
-        let local = env
-            .new_object(
-                &class,
-                "(Landroid/content/Context;)V",
-                &[JValue::Object(&b.context.as_obj())],
-            )
-            .unwrap();
-        set_text(env, &local, content);
-        // Strip the legacy `fontPadding` insets Android adds above the
-        // ascent and below the descent for inter-line breathing room.
-        // The Idealyst style system already gives authors explicit
-        // padding / line_height controls, and on iOS the equivalent
-        // (UILabel) measures text without these extras — so matching
-        // iOS's layout requires turning Android's off too. Without
-        // this, sidebar nav links and other tight text rows look
-        // noticeably taller on Android than on iOS for the same
-        // styles.
-        let _ = env.call_method(
-            &local,
-            "setIncludeFontPadding",
-            "(Z)V",
-            &[JValue::Bool(0)],
-        );
-        // Pin line spacing to 1.0× (no extra) so multi-line text and
-        // single-line rows match iOS UILabel's metrics. Android's
-        // default `lineSpacingMultiplier` varies by API level and can
-        // add visible slack between lines for what should be a tight
-        // row. The framework exposes its own `line_height` style for
-        // authors who want to override.
-        let _ = env.call_method(
-            &local,
-            "setLineSpacing",
-            "(FF)V",
-            &[JValue::Float(0.0), JValue::Float(1.0)],
-        );
-        // Strip the default `minHeight` that Android's TextView
-        // inherits from its style (theme defaults set it to ~48dp
-        // on some API levels for touch-target hygiene). iOS UILabel
-        // has no equivalent; we want the framework's intrinsic-size
-        // measurer to report the true text-metric height so flex
-        // siblings pack tightly.
-        let _ = env.call_method(&local, "setMinHeight", "(I)V", &[JValue::Int(0)]);
-        let _ = env.call_method(&local, "setMinimumHeight", "(I)V", &[JValue::Int(0)]);
-        // Match iOS UILabel's default vertical alignment (single-line
-        // text is centered vertically in the label's frame). Android
-        // TextView defaults to gravity=top|start, which leaves the
-        // text glyphs flush against the frame's top edge — visible
-        // as a vertical offset versus iOS for any styled control with
-        // padding_vertical (NavLink items are the canonical case).
-        // Multi-line wrapped text fills the frame tightly so the
-        // CENTER_VERTICAL choice is invisible there; only single-line
-        // labels with frame > line_height show the difference.
-        // Gravity flag: Gravity.CENTER_VERTICAL | Gravity.START = 0x10 | 0x00800003.
-        // Use the literal int (the resolved Gravity.CENTER_VERTICAL=16
-        // |Gravity.START=8388611). Putting the value as a plain int
-        // avoids needing to look up Gravity.* fields via JNI.
-        let _ = env.call_method(
-            &local,
-            "setGravity",
-            "(I)V",
-            &[JValue::Int(16 | 8388611)],
-        );
-        apply_default_layout_params(env, &local);
+        let content = env.new_string(content).expect("new_string(text content)");
+        let local = TEXT_FACTORY
+            .with(|slot| {
+                let method = super::super::StaticMethod::cached(
+                    env,
+                    slot,
+                    "io/idealyst/runtime/RustViewFactory",
+                    "text",
+                    "(Landroid/content/Context;Ljava/lang/String;)Landroid/widget/TextView;",
+                )?;
+                // SAFETY: the arguments match the signature above.
+                unsafe {
+                    method.call_object(
+                        env,
+                        &[JValue::Object(b.context.as_obj()).as_jni(), JValue::Object(&content).as_jni()],
+                    )
+                }
+            })
+            .expect("RustViewFactory.text failed — bundle the kotlin runtime");
         env.new_global_ref(local).unwrap()
     });
     // Install a Taffy measure function so flex layout can ask the
@@ -339,6 +297,10 @@ fn min_content_width(view: &GlobalRef) -> f32 {
 }
 
 runtime_tls::thread_local! {
+    /// `RustViewFactory.text`, resolved once.
+    static TEXT_FACTORY: std::cell::RefCell<Option<super::super::StaticMethod>> =
+        std::cell::RefCell::new(None);
+
     /// `RustTextMeasure.minContentWidth`, resolved once.
     static MIN_CONTENT_WIDTH: std::cell::RefCell<Option<super::super::StaticMethod>> =
         std::cell::RefCell::new(None);
