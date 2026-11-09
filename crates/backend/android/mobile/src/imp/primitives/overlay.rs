@@ -705,6 +705,12 @@ pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
         let _ = env.exception_clear();
     });
     let layout_node = b.layout_for_view(&overlay);
+    // The content realize inserted into the overlay is registered like any
+    // other subtree. Queue it before `remove_node` orphans it, or every
+    // open/close of a Modal would keep the whole card's views alive.
+    let content = b.layout.logical_children_of(layout_node);
+    b.released_subtrees.extend(content);
+    crate::imp::scheduler::schedule_layout_pass_retry(0);
     b.layout.remove_node(layout_node);
     b.view_to_layout.remove(&AndroidBackend::node_key_of(&overlay));
     drop(instance.host);

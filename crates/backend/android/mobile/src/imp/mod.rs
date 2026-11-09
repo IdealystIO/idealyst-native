@@ -287,6 +287,9 @@ pub(crate) struct NodeAnim {
     /// stacking Z casts no elevation shadow (API 28+). Set by
     /// `style::suppress_z_shadow`.
     pub(crate) z_shadow_suppressed: bool,
+    /// `true` while the style states a visible `shadow`, drawn as an
+    /// elevation shadow. Set by `style::apply_box_shadow`.
+    pub(crate) box_shadow: bool,
     /// `true` while a stated `overflow` has `clipChildren` overridden, so a
     /// style that drops it restores the default clip. Set by
     /// `style::apply_overflow`.
@@ -548,6 +551,12 @@ pub struct AndroidBackend {
     /// from the Activity's dispatcher at `newcore::stop`. See
     /// `imp::system_back`.
     pub(crate) system_back: Option<GlobalRef>,
+    /// Taffy nodes heading subtrees the scene discarded
+    /// (`Host::release_subtree`) and the content of released portals,
+    /// awaiting [`AndroidBackend::drain_released_subtrees`] at the start of
+    /// the next layout pass. Batched there so freeing N removed rows costs
+    /// one reverse index, not N.
+    pub(crate) released_subtrees: Vec<runtime_layout::LayoutNode>,
 }
 
 /// Read the device's `density` (screen-pixels-per-dp) from the
@@ -1035,6 +1044,7 @@ impl AndroidBackend {
             app_key: None,
             app_pointer: None,
             system_back: None,
+            released_subtrees: Vec::new(),
         };
         cookies::install(&backend);
         backend.install_viewport_resize_listener();
@@ -1403,6 +1413,11 @@ impl AndroidBackend {
             }
         });
         let layout_node = self.layout_for_view(node);
+        // Its content is registered like any subtree; queue it before
+        // `remove_node` orphans it (see `drain_released_subtrees`).
+        let content = self.layout.logical_children_of(layout_node);
+        self.released_subtrees.extend(content);
+        crate::imp::scheduler::schedule_layout_pass_retry(0);
         self.layout.remove_node(layout_node);
         self.view_to_layout.remove(&key);
         soft_keyboard::unregister(self, key);
@@ -1657,6 +1672,9 @@ impl AndroidBackend {
     /// iterate every registered view and write its frame onto the
     /// view's `FrameLayout.LayoutParams`.
     pub(crate) fn run_layout_pass(&mut self) {
+        // Before the viewport check: freeing a discarded subtree doesn't
+        // need a measured host, and must not wait for one.
+        self.drain_released_subtrees();
         let (vw, vh) = self.viewport_size();
         if vw <= 0.0 || vh <= 0.0 {
             return;
@@ -3528,6 +3546,63 @@ impl AndroidBackend {
             Rc::new(node.clone()),
             &ANDROID_VIRTUALIZER_OPS,
         )
+    }
+
+    /// `Host::release_subtree`: the subtree under `node` is discarded for
+    /// good. Queues it for [`Self::drain_released_subtrees`], which frees
+    /// every view's `view_to_layout` entry (the `GlobalRef` that keeps the
+    /// Java view alive) and Taffy node. Without this, every rebuild of a
+    /// reactive branch left its whole old subtree registered: uncollectable,
+    /// and laid out again on every pass.
+    pub(crate) fn release_subtree_impl(&mut self, node: &GlobalRef) {
+        let Some((_, layout_node)) = self.view_to_layout.get(&Self::node_key(node)) else {
+            return;
+        };
+        self.released_subtrees.push(*layout_node);
+        crate::imp::scheduler::schedule_layout_pass_retry(0);
+    }
+
+    /// Free everything under the queued [`Self::released_subtrees`] roots.
+    ///
+    /// Runs at the start of a layout pass, after the scene has finished
+    /// detaching (a discarded subtree's own links are untouched until here,
+    /// so the walk still finds every descendant). The plan is
+    /// `subtree_release_policy::release_plan`; a portal or detached window
+    /// root is left to its own ordered release.
+    pub(crate) fn drain_released_subtrees(&mut self) {
+        if self.released_subtrees.is_empty() {
+            return;
+        }
+        let roots = std::mem::take(&mut self.released_subtrees);
+        let key_of: HashMap<runtime_layout::LayoutNode, usize> =
+            self.view_to_layout.iter().map(|(k, (_, n))| (*n, *k)).collect();
+        let plan = crate::subtree_release_policy::release_plan(&self.layout, &roots, &key_of, |k| {
+            self.portal_instances.contains_key(&k) || self.detached_window_roots.contains_key(&k)
+        });
+        for key in plan {
+            if let Some((_view, layout_node)) = self.view_to_layout.remove(&key) {
+                self.layout.remove_node(layout_node);
+            }
+            self.forget_view_key(key);
+        }
+    }
+
+    /// Drop the side-table entries keyed by a released view that hold a
+    /// Java reference or outlive styling. The style-side tables
+    /// (`anim_state`, sticky, scroll observers) are cleared by
+    /// `on_node_unstyled_impl` when the node's style scope ends; these are
+    /// the ones an unstyled view would otherwise keep: the scroll view's
+    /// inner `GlobalRef`, an image's `ImageState` (which holds the view), a
+    /// keyboard avoider's Kotlin listener. Clearing them also keeps a later
+    /// view whose global reference lands at the same address from
+    /// inheriting a dead view's entry.
+    fn forget_view_key(&mut self, key: usize) {
+        self.scroll_view_inner.remove(&key);
+        self.image_states.remove(&key);
+        self.external_scrollers.remove(&key);
+        self.text_input_modes.remove(&key);
+        self.pending_sticky.remove(&key);
+        soft_keyboard::unregister(self, key);
     }
 
     pub(crate) fn clear_children_impl(&mut self, node: &GlobalRef) {

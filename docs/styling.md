@@ -1204,13 +1204,20 @@ Each backend converges on the output through its own mechanism
 | --- | --- | --- |
 | Web / SSR | `box-shadow` | `text-shadow` |
 | iOS / macOS | CALayer shadow | CALayer shadow on the label (layer content is the glyphs) |
-| Android | *(elevation, n/a in v1)* | `TextView.setShadowLayer` |
+| Android | Elevation shadow from the outline (`setElevation` + outline shadow colors, API 28+) | `TextView.setShadowLayer` |
 
 `text-shadow` and `box-shadow` share the exact `<x> <y> <blur> <color>`
 grammar (neither takes a spread), so the mapping is lossless. The `y`
 offset is positive-**down** on every backend — the coordinate flips
 (AppKit's y-up layer, UIKit's y-down) are absorbed by the backend so a
 `shadow { y: 2 }` lands below the glyphs everywhere.
+
+Android's box shadow is the one approximation. The platform lights
+elevation shadows from above the screen, so the shadow always falls
+downward and `x` has no effect; the elevation is half the blur (at least
+`|y|`), and the color's alpha is divided by the theme's 0.19 spot-shadow
+multiplier so the shadow lands near the opacity written. A stacking
+`z_index` still casts no shadow (`crates/backend/android/mobile/src/box_shadow_policy.rs`).
 
 ### Theme-driven shadow colors
 
@@ -1235,7 +1242,8 @@ nothing. Like CSS, the first paint never animates.
 | Web / SSR | `transition: box-shadow` |
 | iOS / macOS | `CABasicAnimation` on `shadowColor` / `shadowRadius` / `shadowOffset`, or a `shadowOpacity` fade when the shadow appears or goes (`backend_apple_core::shadow_layer::apply_own_shadow`). A shadow on the clipped-view sibling layer (below) snaps. |
 | GPU (wgpu) | A color tween; offset and blur snap |
-| Android / Windows / Linux | No box shadow is rendered, so nothing to animate |
+| Android | The shadow snaps to its new elevation and color |
+| Windows / Linux | No box shadow is rendered, so nothing to animate |
 
 ### `shadow` together with `overflow: hidden`
 

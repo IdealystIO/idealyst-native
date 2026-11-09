@@ -843,6 +843,10 @@ mod native {
             AndroidBackend::clear_children_impl(self, node)
         }
 
+        fn release_subtree(&mut self, node: &Self::Node) {
+            AndroidBackend::release_subtree_impl(self, node)
+        }
+
         fn create_anchor(&mut self) -> Self::Node {
             // A layout-transparent `FrameLayout` over a `display:
             // contents` layout node — this backend's `display: contents`.

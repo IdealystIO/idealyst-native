@@ -638,6 +638,57 @@ pub(crate) fn apply_rules(
     apply_transform(env, &view, state, rules);
 
     apply_overflow(env, &view, state, rules);
+
+    apply_box_shadow(env, &view, state, rules);
+}
+
+/// `shadow` → `setElevation` plus the outline shadow colors (API 28+);
+/// see `crate::box_shadow_policy` for the mapping and why the color's
+/// alpha is rescaled. Removing the shadow drops the elevation and clears
+/// the colors, which is also what a stacking `z_index` wants
+/// ([`suppress_z_shadow`]). The shadow follows the view's outline: the
+/// background drawable's rounded rect, or the view's bounds when it has no
+/// background.
+fn apply_box_shadow(env: &mut JNIEnv, view: &JObject, state: &mut NodeAnim, rules: &StyleRules) {
+    let shadow = rules.shadow.as_ref().and_then(|sh| {
+        let argb = parse_color(&sh.color.resolve().0)? as u32;
+        let elevation = crate::box_shadow_policy::elevation_dp(sh.x, sh.y, sh.blur);
+        (elevation > 0.0 && argb >> 24 != 0).then_some((elevation, argb))
+    });
+    if shadow.is_none() && !state.box_shadow {
+        return;
+    }
+    state.box_shadow = shadow.is_some();
+    let (elevation_dp, argb) = shadow.unwrap_or((0.0, 0));
+    let elevation_px = dp_to_px(env, view, elevation_dp) as f32;
+    let _ = env.call_method(view, "setElevation", "(F)V", &[JValue::Float(elevation_px)]);
+    if state.box_shadow && rules.background.is_none() && rules.background_gradient.is_none() {
+        // No background drawable means no outline to cast from.
+        if let Ok(bounds) = env.get_static_field(
+            "android/view/ViewOutlineProvider",
+            "BOUNDS",
+            "Landroid/view/ViewOutlineProvider;",
+        ) {
+            if let Ok(provider) = bounds.l() {
+                let _ = env.call_method(
+                    view,
+                    "setOutlineProvider",
+                    "(Landroid/view/ViewOutlineProvider;)V",
+                    &[JValue::Object(&provider)],
+                );
+            }
+        }
+        clear_pending_exception(env);
+    }
+    if android_sdk_int(env) >= 28 {
+        let color = crate::box_shadow_policy::outline_shadow_color(argb) as i32;
+        for setter in ["setOutlineAmbientShadowColor", "setOutlineSpotShadowColor"] {
+            let _ = env.call_method(view, setter, "(I)V", &[JValue::Int(color)]);
+        }
+    }
+    // The colors now say what the shadow wants; a later stacking Z must
+    // re-check rather than trust a stale "already suppressed".
+    state.z_shadow_suppressed = !state.box_shadow;
 }
 
 /// `overflow` → `ViewGroup.setClipChildren`. See
@@ -1904,12 +1955,13 @@ pub(crate) fn set_translation_z(env: &mut JNIEnv, view: &JObject, state: &mut No
 /// Clear the view's outline shadow colors (API 28+) so a stacking Z
 /// never draws a material elevation shadow: Z on Android is both the
 /// sibling order AND the shadow depth, and the framework's `z_index`
-/// is only the former. Safe because nothing else in this backend uses
-/// elevation shadows. Once per view — the colors persist. On API
-/// 21–27 there is no setter; `z_index_policy`'s tiny step keeps the
-/// shadow imperceptible for ordinary values there.
+/// is only the former. A view whose style states a `shadow` keeps the
+/// colors [`apply_box_shadow`] set — its shadow is meant to show, and
+/// sits at elevation + translationZ. Once per view — the colors
+/// persist. On API 21–27 there is no setter; `z_index_policy`'s tiny
+/// step keeps the shadow imperceptible for ordinary values there.
 fn suppress_z_shadow(env: &mut JNIEnv, view: &JObject, state: &mut NodeAnim) {
-    if state.z_shadow_suppressed {
+    if state.z_shadow_suppressed || state.box_shadow {
         return;
     }
     state.z_shadow_suppressed = true;

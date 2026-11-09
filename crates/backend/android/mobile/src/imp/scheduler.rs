@@ -87,14 +87,9 @@ unsafe impl Sync for AndroidScheduler {}
 
 impl Scheduler for AndroidScheduler {
     fn schedule_microtask(&self, f: Box<dyn FnOnce() + 'static>) {
-        // Microtasks are fire-and-forget — the caller has no handle
-        // to keep alive. `ScheduledHandle::Drop` cancels (it removes
-        // the runnable from the looper and drops the closure), so
-        // we must leak the handle so the underlying `Handler.post`
-        // actually fires. The closure's entry in `CALLBACKS` is
-        // removed by the JVM-side invoke when it runs, so the only
-        // leaked storage is the empty handle shell.
-        std::mem::forget(schedule_runnable(0, f));
+        // Microtasks are fire-and-forget: the caller has no handle to
+        // keep alive, so nothing could ever cancel this post.
+        post_runnable(0, f);
     }
 
     fn after_animation_frame(
@@ -255,10 +250,7 @@ pub(crate) fn schedule_layout_pass_retry(retry_count: u32) {
         // up. `Handler.postDelayed` is correct here (we WANT a delay, and
         // there is no paint to beat — nothing is laid out yet).
         let delay = 16i32 << retry_count.min(3);
-        // `ScheduledHandle::Drop` cancels the runnable (and removes the
-        // closure from CALLBACKS), so we must leak the handle for the
-        // post to actually fire.
-        std::mem::forget(schedule_runnable(delay, Box::new(run_pass)));
+        post_runnable(delay, Box::new(run_pass));
     }
 }
 
@@ -405,7 +397,9 @@ fn schedule_next_tick(running: std::rc::Rc<Cell<bool>>, cb: std::rc::Rc<RefCell<
     }
     let running_for_closure = running.clone();
     let cb_for_closure = cb.clone();
-    let handle = schedule_runnable(16, Box::new(move || {
+    // Uncancellable: cancelling the loop flips `running`, which the
+    // tick reads before doing anything.
+    post_runnable(16, Box::new(move || {
         if !running_for_closure.get() {
             return;
         }
@@ -414,15 +408,6 @@ fn schedule_next_tick(running: std::rc::Rc<Cell<bool>>, cb: std::rc::Rc<RefCell<
         // Re-arm.
         schedule_next_tick(running_for_closure, cb_for_closure);
     }));
-    // `ScheduledHandle::Drop` calls `cancel()` which removes the
-    // runnable from the main looper AND drops the closure from
-    // `CALLBACKS`. We need the runnable to *fire* (one-shot), so we
-    // mustn't drop the handle here. Leak it — the closure removes
-    // itself from `CALLBACKS` when the JVM invoke consumes it, so
-    // the underlying memory still cleans up after fire. The leaked
-    // shell is just an empty `ScheduledHandle { id, runnable: None }`-
-    // worth of bytes per tick, freed by process exit.
-    std::mem::forget(handle);
 }
 
 struct RafLoopHandle {
@@ -441,50 +426,77 @@ impl Drop for RafLoopHandle {
     }
 }
 
-/// Post a one-shot runnable and leak its handle so it actually fires
-/// (dropping the handle cancels the post). Use when the caller has no
-/// reason to cancel. Keeps `ScheduledHandle` private to this module.
+/// Post a one-shot runnable nothing can cancel: microtasks, raf-loop
+/// ticks, layout-pass retries.
 ///
-/// Currently has no callers; kept as generic fire-and-forget
-/// scheduling infra.
-#[allow(dead_code)]
+/// Holds no global reference. The looper's queued message is the only
+/// thing keeping the `RustScheduledRunnable` alive, so it is collectable
+/// once it has run. Not `mem::forget(schedule_runnable(..))`: dropping a
+/// [`ScheduledHandle`] cancels the post, and forgetting one leaks its
+/// `GlobalRef`, one per microtask (every flush) and per raf tick — the
+/// thousands of `RustScheduledRunnable` JNI roots a long-running kiosk
+/// accumulated.
 pub(crate) fn post_runnable(delay_ms: i32, f: Box<dyn FnOnce() + 'static>) {
-    std::mem::forget(schedule_runnable(delay_ms, f));
+    let id = register_callback(f);
+    with_env(|env| {
+        let runnable = new_scheduled_runnable(env, id);
+        post_delayed(env, &runnable, delay_ms);
+        // A local reference made outside a JNI call frame (a post from a
+        // Rust-driven loop) is never freed by a frame pop; delete it now.
+        let _ = env.delete_local_ref(runnable);
+    });
 }
 
+/// Post a one-shot runnable the caller may cancel through the returned
+/// handle; dropping the handle cancels it.
 fn schedule_runnable(
     delay_ms: i32,
     f: Box<dyn FnOnce() + 'static>,
 ) -> ScheduledHandle {
-    let id = NEXT_ID.with(|c| {
-        let v = c.get();
-        c.set(v + 1);
-        v
-    });
-    CALLBACKS.with(|m| m.borrow_mut().insert(id, f));
-    let mh = main_handler();
+    let id = register_callback(f);
     let runnable = with_env(|env| {
-        let class = env
-            .find_class("io/idealyst/runtime/RustScheduledRunnable")
-            .expect("RustScheduledRunnable class missing — bundle the kotlin runtime");
-        let local = env
-            .new_object(&class, "(J)V", &[JValue::Long(id as jlong)])
-            .expect("new RustScheduledRunnable failed");
+        let local = new_scheduled_runnable(env, id);
         let global = env
-            .new_global_ref(local)
+            .new_global_ref(&local)
             .expect("new_global_ref(RustScheduledRunnable)");
-        let _ = env.call_method(
-            mh.handler.as_obj(),
-            "postDelayed",
-            "(Ljava/lang/Runnable;J)Z",
-            &[JValue::Object(global.as_obj()), JValue::Long(delay_ms as i64)],
-        );
+        let _ = env.delete_local_ref(local);
+        post_delayed(env, global.as_obj(), delay_ms);
         global
     });
     ScheduledHandle {
         id,
         runnable: Some(runnable),
     }
+}
+
+fn register_callback(f: Box<dyn FnOnce() + 'static>) -> i64 {
+    let id = NEXT_ID.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    });
+    CALLBACKS.with(|m| m.borrow_mut().insert(id, f));
+    id
+}
+
+fn new_scheduled_runnable<'local>(env: &mut JNIEnv<'local>, id: i64) -> JObject<'local> {
+    let class = env
+        .find_class("io/idealyst/runtime/RustScheduledRunnable")
+        .expect("RustScheduledRunnable class missing — bundle the kotlin runtime");
+    let runnable = env
+        .new_object(&class, "(J)V", &[JValue::Long(id as jlong)])
+        .expect("new RustScheduledRunnable failed");
+    let _ = env.delete_local_ref(class);
+    runnable
+}
+
+fn post_delayed(env: &mut JNIEnv, runnable: &JObject, delay_ms: i32) {
+    let _ = env.call_method(
+        main_handler().handler.as_obj(),
+        "postDelayed",
+        "(Ljava/lang/Runnable;J)Z",
+        &[JValue::Object(runnable), JValue::Long(delay_ms as i64)],
+    );
 }
 
 // ---------------------------------------------------------------------------

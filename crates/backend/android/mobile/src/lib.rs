@@ -141,6 +141,18 @@ mod anchored_portal_policy;
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 mod window_fill_policy;
 
+/// Which registered views a discarded subtree frees (`Host::release_subtree`,
+/// a portal's release). Un-gated like `sticky_compute` so the regression
+/// tests run on the host; the JNI half lives in `imp/mod.rs`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod subtree_release_policy;
+
+/// A style `shadow` as an elevation shadow: elevation and the outline
+/// shadow color. Un-gated like `sticky_compute` so the tests run on the
+/// host; the JNI half is `style::apply_box_shadow`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod box_shadow_policy;
+
 /// Android `KeyEvent` → Web `key` / `code` / modifiers, and the app-level
 /// `AppKeyEvent` built from them. Un-gated like `sticky_compute` so the
 /// key tables' tests run on the host; the JNI trampolines that consume it

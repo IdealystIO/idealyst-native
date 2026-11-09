@@ -347,9 +347,10 @@ theme swap.
 shadow: Shadow { x: 0.0, y: 0.0, blur: 12.0, color: t.effect.glow_primary() },
 ```
 
-Box shadows render on web, iOS, macOS and the GPU backends; Android, Windows
-and Linux draw none, so a glow there is simply absent while every color still
-re-themes.
+Box shadows render on web, iOS, macOS, Android and the GPU backends. Android
+draws an elevation shadow, which always falls downward, so a centered glow
+there reads as a soft drop shadow. Windows and Linux draw none, so a glow
+there is simply absent while every color still re-themes.
 
 ## Custom tones
 
