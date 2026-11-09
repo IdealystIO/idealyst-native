@@ -278,6 +278,16 @@ pub(crate) fn activity_indicator_measure(
     (known.0.unwrap_or(diameter), known.1.unwrap_or(diameter))
 }
 
+/// Whether a style apply writes `setPadding`. `last` is the padding the
+/// backend last wrote (`None` before its first apply); `zero_at_create`
+/// says the view was created with zero padding, which a first apply can
+/// compare against instead of writing a zero padding the view already
+/// has (every container's padding is zero: Taffy owns it).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn padding_needs_write(last: [Option<i32>; 4], zero_at_create: bool, want: [i32; 4]) -> bool {
+    (0..4).any(|i| last[i].or(zero_at_create.then_some(0)) != Some(want[i]))
+}
+
 #[cfg(test)]
 mod root_pass_tests {
     use super::*;
@@ -579,5 +589,22 @@ mod style_reset_tests {
     #[test]
     fn a_style_owning_no_axes_writes_none() {
         assert_eq!(transform_axes_to_write(0, 0), 0);
+    }
+
+    #[test]
+    fn regression_android_a_new_container_is_not_given_the_zero_padding_it_has() {
+        // Every container's first style apply wrote setPadding(0, 0, 0, 0)
+        // (its padding is Taffy's), one JNI call per mounted view.
+        assert!(!padding_needs_write([None; 4], true, [0; 4]));
+    }
+
+    #[test]
+    fn padding_is_written_when_it_differs_or_the_starting_padding_is_unknown() {
+        assert!(padding_needs_write([None; 4], true, [8, 0, 0, 0]));
+        // A view not known to start at zero (an EditText, an external view)
+        // keeps the unconditional first write.
+        assert!(padding_needs_write([None; 4], false, [0; 4]));
+        assert!(!padding_needs_write([Some(8); 4], false, [8; 4]));
+        assert!(padding_needs_write([Some(8); 4], true, [0; 4]));
     }
 }

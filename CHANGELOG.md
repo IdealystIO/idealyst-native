@@ -3207,6 +3207,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Styling and inserting views on Android is about twice as fast again** (`backend-android-mobile`).
+  The style and insert paths called each View setter by name, which looks the method up on every
+  call (1.5–7 µs on an emulator, against 0.1–0.2 µs through a cached method id). They now go through
+  a per-call-site cached id (`jcall!`). A new view or label no longer has its zero padding written
+  back to it. On a 24-row roster mount (emulator medians), style application went from 13.4 to
+  5.8 ms, inserts from 4.8 to 2.0 ms, and the whole build from 29.5 to 21.2 ms. Behaviour is
+  unchanged: a call on a receiver that lacks the method fails as a by-name call would.
 - **Mounting views on Android costs about a third of what it did** (`backend-android-mobile`).
   Building a 24-row roster (about 160 views) took a median 87 ms on the main thread before its
   layout pass, now 30 ms, on an emulator. Most of it was JNI calls looked up by name:

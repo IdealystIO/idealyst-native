@@ -55,6 +55,9 @@ object RustViewFactory {
         // decides importance itself, and AUTO is its value for an
         // unlabelled label, so put the View default back.
         v.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+        // Zero, whatever the theme's text style says: the backend records a
+        // new label's padding as zero and skips writing a zero padding.
+        v.setPadding(0, 0, 0, 0)
         v.layoutParams = defaultLayoutParams()
         return v
     }

@@ -73,23 +73,29 @@ pub(crate) fn apply_rules(
         rules.padding_right_transition,
         rules.padding_bottom_transition,
     ];
-    let any_padding_changed = (0..4).any(|i| state.last_padding[i] != Some(want_padding[i]));
+    // Only the write decision knows about the create-time zero: the
+    // transition logic below still sees no previous value, so a first
+    // apply snaps.
+    let any_padding_changed = crate::layout_policy::padding_needs_write(
+        state.last_padding,
+        state.zero_padding_at_create,
+        want_padding,
+    );
+    if !any_padding_changed {
+        // Nothing to write; record the values as the write would have.
+        for i in 0..4 {
+            state.last_padding[i] = Some(want_padding[i]);
+        }
+    }
     if any_padding_changed {
         // Snap: any side without a transition just gets its new value
         // applied immediately via setPadding. We do this in one
         // setPadding call covering all four sides — animated sides
         // will overwrite their own value on each tick.
-        env.call_method(
-            &view,
-            "setPadding",
-            "(IIII)V",
-            &[
-                JValue::Int(want_padding[0]),
+        jcall!(env, &view, "android/view/View", "setPadding", "(IIII)V", [JValue::Int(want_padding[0]),
                 JValue::Int(want_padding[1]),
                 JValue::Int(want_padding[2]),
-                JValue::Int(want_padding[3]),
-            ],
-        )
+                JValue::Int(want_padding[3]),])
         .unwrap();
         // For sides with a transition, start an animator from the
         // PREVIOUS value to the new value. This intentionally runs
@@ -174,12 +180,7 @@ pub(crate) fn apply_rules(
         if let Some(h) = h_lp {
             let _ = env.set_field(&lp, "height", "I", JValue::Int(h));
         }
-        let _ = env.call_method(
-            &view,
-            "setLayoutParams",
-            "(Landroid/view/ViewGroup$LayoutParams;)V",
-            &[JValue::Object(&lp)],
-        );
+        let _ = jcall!(env, &view, "android/view/View", "setLayoutParams", "(Landroid/view/ViewGroup$LayoutParams;)V", [JValue::Object(&lp)]);
     }
 
     // --- Text color + font size (no-op for views that aren't TextView).
@@ -236,12 +237,7 @@ pub(crate) fn apply_rules(
                                 start_argb_animator(env, node, "textColor", from, packed, t);
                         }
                         _ => {
-                            let _ = env.call_method(
-                                &view,
-                                "setTextColor",
-                                "(I)V",
-                                &[JValue::Int(packed)],
-                            );
+                            let _ = jcall!(env, &view, "android/widget/TextView", "setTextColor", "(I)V", [JValue::Int(packed)]);
                         }
                     }
                 }
@@ -257,19 +253,9 @@ pub(crate) fn apply_rules(
                     .ok();
             }
             // font-size isn't animatable in v1; snap.
-            let _ = env.call_method(
-                &view,
-                "setTextSize",
-                "(IF)V",
-                &[JValue::Int(COMPLEX_UNIT_DIP), JValue::Float(size)],
-            );
+            let _ = jcall!(env, &view, "android/widget/TextView", "setTextSize", "(IF)V", [JValue::Int(COMPLEX_UNIT_DIP), JValue::Float(size)]);
         } else if let Some(natural) = state.natural_text_size_px.take() {
-            let _ = env.call_method(
-                &view,
-                "setTextSize",
-                "(IF)V",
-                &[JValue::Int(COMPLEX_UNIT_PX), JValue::Float(natural)],
-            );
+            let _ = jcall!(env, &view, "android/widget/TextView", "setTextSize", "(IF)V", [JValue::Int(COMPLEX_UNIT_PX), JValue::Float(natural)]);
         }
         // Font family / weight / style — route through the registry
         // so a `font_family: &INTER` style targets the right
@@ -341,12 +327,7 @@ pub(crate) fn apply_rules(
             ) {
                 state.natural_horizontal_gravity = update.natural_horizontal;
                 if update.gravity != current {
-                    let _ = env.call_method(
-                        &view,
-                        "setGravity",
-                        "(I)V",
-                        &[JValue::Int(update.gravity)],
-                    );
+                    let _ = jcall!(env, &view, "android/widget/TextView", "setGravity", "(I)V", [JValue::Int(update.gravity)]);
                 }
             }
         }
@@ -419,32 +400,18 @@ pub(crate) fn apply_rules(
             Some(sh) => {
                 state.text_shadow = true;
                 let packed = parse_color(&sh.color.resolve().0).unwrap_or(0);
-                let _ = env.call_method(
-                    &view,
-                    "setShadowLayer",
-                    "(FFFI)V",
-                    &[
-                        JValue::Float(sh.blur),
+                let _ = jcall!(env, &view, "android/widget/TextView", "setShadowLayer", "(FFFI)V", [JValue::Float(sh.blur),
                         JValue::Float(sh.x),
                         JValue::Float(sh.y),
-                        JValue::Int(packed),
-                    ],
-                );
+                        JValue::Int(packed),]);
             }
             // A label that never had a shadow has nothing to clear.
             None if state.text_shadow => {
                 state.text_shadow = false;
-                let _ = env.call_method(
-                    &view,
-                    "setShadowLayer",
-                    "(FFFI)V",
-                    &[
+                let _ = jcall!(env, &view, "android/widget/TextView", "setShadowLayer", "(FFFI)V", [JValue::Float(0.0),
                         JValue::Float(0.0),
                         JValue::Float(0.0),
-                        JValue::Float(0.0),
-                        JValue::Int(0),
-                    ],
-                );
+                        JValue::Int(0),]);
             }
             None => {}
         }
@@ -488,12 +455,7 @@ pub(crate) fn apply_rules(
                         let gd_class = env
                             .find_class("android/graphics/drawable/GradientDrawable")?;
                         let drawable = env.new_object(&gd_class, "()V", &[])?;
-                        env.call_method(
-                            &drawable,
-                            "setColor",
-                            "(I)V",
-                            &[JValue::Int(packed)],
-                        )?;
+                        jcall!(env, &drawable, "android/graphics/drawable/GradientDrawable", "setColor", "(I)V", [JValue::Int(packed)])?;
                         // Intrinsic width = 2 px (matches the system
                         // default caret thickness). Height is ignored:
                         // TextView always passes its own line-height
@@ -539,7 +501,7 @@ pub(crate) fn apply_rules(
                     state.anim_alpha = start_float_animator(env, node, "alpha", from, o, t);
                 }
                 _ => {
-                    let _ = env.call_method(&view, "setAlpha", "(F)V", &[JValue::Float(o)]);
+                    let _ = jcall!(env, &view, "android/view/View", "setAlpha", "(F)V", [JValue::Float(o)]);
                 }
             }
         }
@@ -617,12 +579,7 @@ pub(crate) fn apply_rules(
                         );
                     }
                     _ => {
-                        let _ = env.call_method(
-                            &view,
-                            "setBackgroundColor",
-                            "(I)V",
-                            &[JValue::Int(packed)],
-                        );
+                        let _ = jcall!(env, &view, "android/view/View", "setBackgroundColor", "(I)V", [JValue::Int(packed)]);
                     }
                 }
             }
@@ -665,7 +622,7 @@ fn apply_box_shadow(env: &mut JNIEnv, view: &JObject, state: &mut NodeAnim, rule
     state.box_shadow = shadow.is_some();
     let (elevation_dp, argb) = shadow.unwrap_or((0.0, 0));
     let elevation_px = dp_to_px(env, view, elevation_dp) as f32;
-    let _ = env.call_method(view, "setElevation", "(F)V", &[JValue::Float(elevation_px)]);
+    let _ = jcall!(env, view, "android/view/View", "setElevation", "(F)V", [JValue::Float(elevation_px)]);
     if state.box_shadow && rules.background.is_none() && rules.background_gradient.is_none() {
         // No background drawable means no outline to cast from.
         if let Ok(bounds) = env.get_static_field(
@@ -713,7 +670,7 @@ fn apply_overflow(env: &mut JNIEnv, view: &JObject, state: &mut NodeAnim, rules:
     }
     state.clip_children_overridden = rules.overflow.is_some();
     let _ = env.call_method(view, "setClipChildren", "(Z)V", &[JValue::Bool(clip as u8)]);
-    let _ = env.call_method(view, "invalidate", "()V", &[]);
+    let _ = jcall!(env, view, "android/view/View", "invalidate", "()V", []);
 }
 
 fn apply_transform(
@@ -1089,12 +1046,7 @@ fn apply_drawable_path(
             .expect("GradientDrawable class");
         let class = <&jni::objects::JClass>::from(class.as_obj());
         let drawable_local = env.new_object(class, "()V", &[]).unwrap();
-        let _ = env.call_method(
-            &view,
-            "setBackground",
-            "(Landroid/graphics/drawable/Drawable;)V",
-            &[JValue::Object(&drawable_local)],
-        );
+        let _ = jcall!(env, &view, "android/view/View", "setBackground", "(Landroid/graphics/drawable/Drawable;)V", [JValue::Object(&drawable_local)]);
         state.drawable = Some(env.new_global_ref(&drawable_local).unwrap());
     }
     let drawable = state.drawable.as_ref().unwrap().clone();
@@ -1115,23 +1067,13 @@ fn apply_drawable_path(
         // `GradientDrawable.LINEAR_GRADIENT = 0`. `setColor` is what lets go of
         // the stops: the type alone keeps painting them, and the fill below only
         // writes when the colour changes.
-        let _ = env.call_method(
-            &drawable_obj,
-            "setGradientType",
-            "(I)V",
-            &[JValue::Int(0)],
-        );
+        let _ = jcall!(env, &drawable_obj, "android/graphics/drawable/GradientDrawable", "setGradientType", "(I)V", [JValue::Int(0)]);
         if !state.gradient_stops.is_empty() {
             state.gradient_stops.clear();
             state.gradient_offsets.clear();
             state.gradient_radial_extent = None;
             state.gradient_radial_radius_factor = None;
-            let _ = env.call_method(
-                &drawable_obj,
-                "setColor",
-                "(I)V",
-                &[JValue::Int(state.last_bg.unwrap_or(crate::layout_policy::BACKGROUND_CLEAR))],
-            );
+            let _ = jcall!(env, &drawable_obj, "android/graphics/drawable/GradientDrawable", "setColor", "(I)V", [JValue::Int(state.last_bg.unwrap_or(crate::layout_policy::BACKGROUND_CLEAR))]);
         }
     }
 
@@ -1164,12 +1106,7 @@ fn apply_drawable_path(
                             start_drawable_argb_animator(env, &drawable, "color", from, packed, t);
                     }
                     _ => {
-                        let _ = env.call_method(
-                            &drawable_obj,
-                            "setColor",
-                            "(I)V",
-                            &[JValue::Int(packed)],
-                        );
+                        let _ = jcall!(env, &drawable_obj, "android/graphics/drawable/GradientDrawable", "setColor", "(I)V", [JValue::Int(packed)]);
                     }
                 }
             }
@@ -1203,12 +1140,7 @@ fn apply_drawable_path(
     // the per-side bottom border PLUS a uniform 1px stroke from the
     // drawable underneath.
     if state.last_stroke_w.is_some() {
-        let _ = env.call_method(
-            &drawable_obj,
-            "setStroke",
-            "(II)V",
-            &[JValue::Int(0), JValue::Int(0)],
-        );
+        let _ = jcall!(env, &drawable_obj, "android/graphics/drawable/GradientDrawable", "setStroke", "(II)V", [JValue::Int(0), JValue::Int(0)]);
         state.last_stroke_w = None;
         state.last_stroke_color = None;
         cancel_animator(env, state.anim_stroke_w.take());
@@ -1331,12 +1263,7 @@ fn apply_drawable_path(
                     let Ok(g) = env.new_global_ref(local) else {
                         return;
                     };
-                    let _ = env.call_method(
-                        &view,
-                        "setForeground",
-                        "(Landroid/graphics/drawable/Drawable;)V",
-                        &[JValue::Object(&g.as_obj())],
-                    );
+                    let _ = jcall!(env, &view, "android/view/View", "setForeground", "(Landroid/graphics/drawable/Drawable;)V", [JValue::Object(&g.as_obj())]);
                     state.border_drawable = Some(g.clone());
                     // A fresh drawable starts solid; force the style
                     // push below even if the rule did not change.
@@ -1375,21 +1302,14 @@ fn apply_drawable_path(
                 );
             } else {
                 cancel_animator(env, state.anim_border.take());
-                let _ = env.call_method(
-                    drawable_ref.as_obj(),
-                    "update",
-                    "(IIIIIIII)V",
-                    &[
-                        JValue::Int(widths_px[0]),
+                let _ = jcall!(env, drawable_ref.as_obj(), "io/idealyst/runtime/RustBorderDrawable", "update", "(IIIIIIII)V", [JValue::Int(widths_px[0]),
                         JValue::Int(colors_argb[0]),
                         JValue::Int(widths_px[1]),
                         JValue::Int(colors_argb[1]),
                         JValue::Int(widths_px[2]),
                         JValue::Int(colors_argb[2]),
                         JValue::Int(widths_px[3]),
-                        JValue::Int(colors_argb[3]),
-                    ],
-                );
+                        JValue::Int(colors_argb[3]),]);
             }
         } else if let Some(_) = state.border_drawable.take() {
             // All four sides cleared and we previously had borders —
@@ -1399,12 +1319,7 @@ fn apply_drawable_path(
             // drawable and a fresh style push.
             cancel_animator(env, state.anim_border.take());
             state.last_border_style = None;
-            let _ = env.call_method(
-                &view,
-                "setForeground",
-                "(Landroid/graphics/drawable/Drawable;)V",
-                &[JValue::Object(&JObject::null())],
-            );
+            let _ = jcall!(env, &view, "android/view/View", "setForeground", "(Landroid/graphics/drawable/Drawable;)V", [JValue::Object(&JObject::null())]);
         }
     }
 
@@ -1420,12 +1335,7 @@ fn apply_drawable_path(
         let want = rules.border_style.unwrap_or_default();
         if state.last_border_style != Some(want) {
             state.last_border_style = Some(want);
-            let _ = env.call_method(
-                border_drawable.as_obj(),
-                "setBorderStyle",
-                "(I)V",
-                &[JValue::Int(crate::border_dash_policy::style_code(Some(want)))],
-            );
+            let _ = jcall!(env, border_drawable.as_obj(), "io/idealyst/runtime/RustBorderDrawable", "setBorderStyle", "(I)V", [JValue::Int(crate::border_dash_policy::style_code(Some(want)))]);
         }
     }
 
@@ -1490,19 +1400,9 @@ fn apply_drawable_path(
     // overflow content on unrounded views.
     let has_any_radius = want_radii.iter().any(|r| *r > 0.0);
     if has_any_radius {
-        let _ = env.call_method(
-            &view,
-            "setClipToOutline",
-            "(Z)V",
-            &[JValue::Bool(1)],
-        );
+        let _ = jcall!(env, &view, "android/view/View", "setClipToOutline", "(Z)V", [JValue::Bool(1)]);
     } else if radii_changed {
-        let _ = env.call_method(
-            &view,
-            "setClipToOutline",
-            "(Z)V",
-            &[JValue::Bool(0)],
-        );
+        let _ = jcall!(env, &view, "android/view/View", "setClipToOutline", "(Z)V", [JValue::Bool(0)]);
     }
     // Mirror corner radii onto the per-side border drawable (if
     // installed) so its `drawRoundRect`/edge-clipping path respects
@@ -1510,17 +1410,10 @@ fn apply_drawable_path(
     // Without this, border foregrounds would paint square corners
     // overlapping the rounded background.
     if let Some(border_drawable) = state.border_drawable.clone() {
-        let _ = env.call_method(
-            border_drawable.as_obj(),
-            "setCornerRadii",
-            "(FFFF)V",
-            &[
-                JValue::Float(want_radii[0]),
+        let _ = jcall!(env, border_drawable.as_obj(), "io/idealyst/runtime/RustBorderDrawable", "setCornerRadii", "(FFFF)V", [JValue::Float(want_radii[0]),
                 JValue::Float(want_radii[1]),
                 JValue::Float(want_radii[2]),
-                JValue::Float(want_radii[3]),
-            ],
-        );
+                JValue::Float(want_radii[3]),]);
     }
 
     // Repaint after mutating the persistent drawable in place.
@@ -1546,7 +1439,7 @@ fn apply_drawable_path(
     // their own per-tick invalidation, so a one-shot invalidate here
     // is correct for them too (paints the first frame immediately).
     if !first_create {
-        let _ = env.call_method(&view, "invalidate", "()V", &[]);
+        let _ = jcall!(env, &view, "android/view/View", "invalidate", "()V", []);
     }
 }
 
@@ -1629,12 +1522,7 @@ fn restore_natural_background(env: &mut JNIEnv, node: &GlobalRef, state: &mut No
     let null = JObject::null();
     let natural = natural_background_drawable(state);
     let background = natural.as_ref().map(|d| d.as_obj()).unwrap_or(&null);
-    let _ = env.call_method(
-        &view,
-        "setBackground",
-        "(Landroid/graphics/drawable/Drawable;)V",
-        &[JValue::Object(background)],
-    );
+    let _ = jcall!(env, &view, "android/view/View", "setBackground", "(Landroid/graphics/drawable/Drawable;)V", [JValue::Object(background)]);
     let padding = state.last_padding.map(|p| JValue::Int(p.unwrap_or(0)));
     let _ = env.call_method(&view, "setPadding", "(IIII)V", &padding);
 }
@@ -1648,7 +1536,7 @@ fn drop_background_drawable(env: &mut JNIEnv, node: &GlobalRef, state: &mut Node
     state.gradient_offsets.clear();
     state.gradient_radial_extent = None;
     state.gradient_radial_radius_factor = None;
-    let _ = env.call_method(node.as_obj(), "setClipToOutline", "(Z)V", &[JValue::Bool(0)]);
+    let _ = jcall!(env, node.as_obj(), "android/view/View", "setClipToOutline", "(Z)V", [JValue::Bool(0)]);
     for anim in std::mem::take(&mut state.anim_radii) {
         cancel_animator(env, anim);
     }
@@ -1662,12 +1550,7 @@ fn set_corner_radii(env: &mut JNIEnv, drawable: &JObject, r: [f32; 4]) {
     let radii = [r[0], r[0], r[1], r[1], r[2], r[2], r[3], r[3]];
     let arr = env.new_float_array(radii.len() as i32).unwrap();
     env.set_float_array_region(&arr, 0, &radii).unwrap();
-    let _ = env.call_method(
-        drawable,
-        "setCornerRadii",
-        "([F)V",
-        &[JValue::Object(&JObject::from(arr))],
-    );
+    let _ = jcall!(env, drawable, "android/graphics/drawable/GradientDrawable", "setCornerRadii", "([F)V", [JValue::Object(&JObject::from(arr))]);
 }
 
 /// Mirror a [`runtime_shared::Gradient`] onto an existing
@@ -1713,12 +1596,7 @@ fn apply_gradient_to_drawable(
     match g.kind {
         runtime_shared::GradientKind::Linear { angle_deg } => {
             // LINEAR_GRADIENT = 0
-            let _ = env.call_method(
-                drawable,
-                "setGradientType",
-                "(I)V",
-                &[JValue::Int(0)],
-            );
+            let _ = jcall!(env, drawable, "android/graphics/drawable/GradientDrawable", "setGradientType", "(I)V", [JValue::Int(0)]);
             // GradientDrawable.Orientation is an enum: snap the angle
             // to the nearest of the 8 supported directions and look
             // up its constant inline. Keeping the lookup local avoids
@@ -1754,12 +1632,7 @@ fn apply_gradient_to_drawable(
         }
         runtime_shared::GradientKind::Radial { center: _, radius, extent } => {
             // RADIAL_GRADIENT = 1
-            let _ = env.call_method(
-                drawable,
-                "setGradientType",
-                "(I)V",
-                &[JValue::Int(1)],
-            );
+            let _ = jcall!(env, drawable, "android/graphics/drawable/GradientDrawable", "setGradientType", "(I)V", [JValue::Int(1)]);
             // Stash extent + radius factor so the layout pass can
             // recompute the real px radius once the view has been
             // laid out. `getMeasuredWidth/Height` here are usually
@@ -1945,7 +1818,7 @@ pub(crate) fn set_translation_z(env: &mut JNIEnv, view: &JObject, state: &mut No
         // A runtime staged without the class still orders the view
         // among its own siblings.
         let _ = env.exception_clear();
-        let _ = env.call_method(view, "setTranslationZ", "(F)V", &[JValue::Float(z_px)]);
+        let _ = jcall!(env, view, "android/view/View", "setTranslationZ", "(F)V", [JValue::Float(z_px)]);
     }
     if z_px > 0.0 {
         suppress_z_shadow(env, view, state);

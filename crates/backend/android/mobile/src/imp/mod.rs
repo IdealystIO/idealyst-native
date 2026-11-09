@@ -4,6 +4,9 @@
 //! helper. The `Backend` impl at the bottom delegates each method to
 //! the matching submodule.
 
+// First: `jcall!` is textually scoped, so it must precede its users.
+#[macro_use]
+pub(crate) mod jcall;
 mod a11y;
 mod animation;
 pub(crate) mod app_state;
@@ -298,6 +301,9 @@ pub(crate) struct NodeAnim {
     /// `style::apply_overflow`.
     pub(crate) clip_children_overridden: bool,
     pub(crate) last_padding: [Option<i32>; 4], // L, T, R, B
+    /// The view was created with zero padding (`note_zero_padding`), so
+    /// a first apply that wants zero has nothing to write.
+    pub(crate) zero_padding_at_create: bool,
     pub(crate) last_radii: [Option<f32>; 4],   // tl, tr, br, bl (px)
     pub(crate) last_stroke_w: Option<i32>,
     pub(crate) last_stroke_color: Option<i32>,
@@ -2739,8 +2745,17 @@ impl AndroidBackend {
         })
     }
 
+    /// Record that `node` was just created with zero padding (a
+    /// `FrameLayout`, or a label `RustViewFactory.text` zeroes), so its
+    /// first style apply doesn't write `setPadding(0, 0, 0, 0)` — on a
+    /// container that is every apply, since its padding is Taffy's.
+    fn note_zero_padding(&mut self, node: &GlobalRef) {
+        self.anim_state.entry(Self::node_key(node)).or_default().zero_padding_at_create = true;
+    }
+
     pub(crate) fn create_view_impl(&mut self, a11y: &runtime_shared::accessibility::AccessibilityProps) -> GlobalRef {
         let node = primitives::view::create(self);
+        self.note_zero_padding(&node);
         a11y::apply_new(&node, a11y, None);
         node
     }
@@ -2806,7 +2821,7 @@ impl AndroidBackend {
         // pass or the new views render at default 0×0.
         let is_portal_parent = self.portal_instances.contains_key(&Self::node_key_of(parent));
         let parent_attached = with_env(|env| {
-            env.call_method(parent.as_obj(), "isAttachedToWindow", "()Z", &[])
+            jcall!(env, parent.as_obj(), "android/view/View", "isAttachedToWindow", "()Z", [])
                 .and_then(|v| v.z())
                 .unwrap_or(false)
         });
@@ -2831,6 +2846,7 @@ impl AndroidBackend {
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> GlobalRef {
         let node = primitives::link::create(self, on_click);
+        self.note_zero_padding(&node);
         a11y::apply_new(&node, a11y, None);
         node
     }
@@ -2871,6 +2887,7 @@ impl AndroidBackend {
 
     pub(crate) fn create_text_impl(&mut self, content: &str, a11y: &runtime_shared::accessibility::AccessibilityProps) -> GlobalRef {
         let node = primitives::text::create(self, content);
+        self.note_zero_padding(&node);
         a11y::apply_new(&node, a11y, Some(runtime_shared::accessibility::Role::Text));
         node
     }
@@ -2881,6 +2898,7 @@ impl AndroidBackend {
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> GlobalRef {
         let node = primitives::text::create_styled(self, runs);
+        self.note_zero_padding(&node);
         a11y::apply_new(&node, a11y, Some(runtime_shared::accessibility::Role::Text));
         node
     }
@@ -2980,7 +2998,7 @@ impl AndroidBackend {
         // already ran and this is a later dynamic mount. A floating parent
         // still being built returns false (defer to `finish()`).
         let parent_attached = with_env(|env| {
-            env.call_method(parent.as_obj(), "isAttachedToWindow", "()Z", &[])
+            jcall!(env, parent.as_obj(), "android/view/View", "isAttachedToWindow", "()Z", [])
                 .and_then(|v| v.z())
                 .unwrap_or(false)
         });
@@ -3304,12 +3322,7 @@ impl AndroidBackend {
                         .and_then(|v| v.l().ok())
                 });
             if let Some(decor) = decor {
-                let _ = env.call_method(
-                    &decor,
-                    "setBackgroundColor",
-                    "(I)V",
-                    &[JValue::Int(packed)],
-                );
+                let _ = jcall!(env, &decor, "android/view/View", "setBackgroundColor", "(I)V", [JValue::Int(packed)]);
             }
         });
     }
@@ -3378,17 +3391,10 @@ impl AndroidBackend {
         with_env(|env| {
             let view_obj = node.as_obj();
             let density = density_of(env, &view_obj).unwrap_or(1.0);
-            let _ = env.call_method(
-                &view_obj,
-                "setPadding",
-                "(IIII)V",
-                &[
-                    jni::objects::JValue::Int((left * density).round() as i32),
+            let _ = jcall!(env, &view_obj, "android/view/View", "setPadding", "(IIII)V", [jni::objects::JValue::Int((left * density).round() as i32),
                     jni::objects::JValue::Int((top * density).round() as i32),
                     jni::objects::JValue::Int((right * density).round() as i32),
-                    jni::objects::JValue::Int((bottom * density).round() as i32),
-                ],
-            );
+                    jni::objects::JValue::Int((bottom * density).round() as i32),]);
             // Children that scroll past the padded edge should still
             // render — matches iOS `UIScrollView`'s behavior with
             // `contentInsetAdjustmentBehavior = .always`. Without
@@ -4037,7 +4043,7 @@ impl AndroidBackend {
         // (LAYOUT_PASS_QUEUED) collapses the per-node `apply_style` storm of a
         // theme switch into a single pass.
         let attached = with_env(|env| {
-            env.call_method(node.as_obj(), "isAttachedToWindow", "()Z", &[])
+            jcall!(env, node.as_obj(), "android/view/View", "isAttachedToWindow", "()Z", [])
                 .and_then(|v| v.z())
                 .unwrap_or(false)
         });
@@ -4169,12 +4175,7 @@ impl AndroidBackend {
         match prop {
             P::BackgroundColor => {
                 with_env(|env| {
-                    let _ = env.call_method(
-                        node.as_obj(),
-                        "setBackgroundColor",
-                        "(I)V",
-                        &[jni::objects::JValue::Int(argb_i32)],
-                    );
+                    let _ = jcall!(env, node.as_obj(), "android/view/View", "setBackgroundColor", "(I)V", [jni::objects::JValue::Int(argb_i32)]);
                 });
             }
             P::ForegroundColor => {
@@ -4186,12 +4187,7 @@ impl AndroidBackend {
                 // and its subclasses (Button, EditText) accept; on
                 // other Views the call throws which we silently swallow.
                 with_env(|env| {
-                    let _ = env.call_method(
-                        node.as_obj(),
-                        "setTextColor",
-                        "(I)V",
-                        &[jni::objects::JValue::Int(argb_i32)],
-                    );
+                    let _ = jcall!(env, node.as_obj(), "android/widget/TextView", "setTextColor", "(I)V", [jni::objects::JValue::Int(argb_i32)]);
                 });
             }
             P::GradientStopColor(idx) => {
@@ -4619,12 +4615,7 @@ impl AndroidBackend {
             // appending the root put it on top, and an opaque root hid
             // every one of them (laid out and VISIBLE, just painted under
             // the app).
-            if let Err(e) = env.call_method(
-                host,
-                "addView",
-                "(Landroid/view/View;I)V",
-                &[JValue::Object(child), JValue::Int(0)],
-            ) {
+            if let Err(e) = jcall!(env, host, "android/view/ViewGroup", "addView", "(Landroid/view/View;I)V", [JValue::Object(child), JValue::Int(0)]) {
                 log::error!("[backend-android] finish(): addView failed: {e:?}");
                 if env.exception_check().unwrap_or(false) {
                     let _ = env.exception_describe();

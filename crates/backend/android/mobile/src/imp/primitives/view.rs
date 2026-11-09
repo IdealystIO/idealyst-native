@@ -70,12 +70,7 @@ pub(crate) fn remove_child(b: &mut AndroidBackend, parent: &GlobalRef, child: &G
     }
     let target = super::scroll_view::inner_for(b, parent).unwrap_or_else(|| parent.clone());
     with_env(|env| {
-        env.call_method(
-            target.as_obj(),
-            "removeView",
-            "(Landroid/view/View;)V",
-            &[JValue::Object(&child.as_obj())],
-        )
+        jcall!(env, target.as_obj(), "android/view/ViewGroup", "removeView", "(Landroid/view/View;)V", [JValue::Object(&child.as_obj())])
         .ok();
     });
     let parent_layout = b.layout_for_view(&target);
@@ -112,12 +107,7 @@ pub(crate) fn insert_at(
     });
     let idx = (index as i32).min(child_count);
     with_env(|env| {
-        env.call_method(
-            target.as_obj(),
-            "addView",
-            "(Landroid/view/View;I)V",
-            &[JValue::Object(&child.as_obj()), JValue::Int(idx)],
-        )
+        jcall!(env, target.as_obj(), "android/view/ViewGroup", "addView", "(Landroid/view/View;I)V", [JValue::Object(&child.as_obj()), JValue::Int(idx)])
         .unwrap();
     });
     let parent_layout = b.layout_for_view(&target);
@@ -157,12 +147,7 @@ pub(crate) fn insert(b: &mut AndroidBackend, parent: &mut GlobalRef, child: Glob
     }
     let target = super::scroll_view::inner_for(b, parent).unwrap_or_else(|| parent.clone());
     with_env(|env| {
-        env.call_method(
-            target.as_obj(),
-            "addView",
-            "(Landroid/view/View;)V",
-            &[JValue::Object(&child.as_obj())],
-        )
+        jcall!(env, target.as_obj(), "android/view/ViewGroup", "addView", "(Landroid/view/View;)V", [JValue::Object(&child.as_obj())])
         .unwrap();
     });
     // Mirror the parent-child link into the Taffy tree so the
