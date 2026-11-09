@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "8.1.2"
+version = "8.1.3"
 dependencies = [
  "android_logger",
  "backend-android-core",
