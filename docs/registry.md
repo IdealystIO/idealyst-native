@@ -195,6 +195,12 @@ An unrecognised subject earns a patch rather than nothing — a commit that
 changed a crate's files still changed it, and skipping it would publish a
 registry that disagrees with the source.
 
+The subject is only the classifier's evidence. The rule it approximates:
+anything that adds functionality without breaking or fundamentally changing
+the API is a **minor** (new items, methods, props, opt-in options); a
+**patch** is a trivial non-breaking change; a **major** is a real break. When
+a `fix:` lands new surface, raise it with `--bump <crate>=minor`.
+
 **One commit is skipped: a release's own version bump.** A release is cut from
 a clean tree, so the tool records HEAD *before* writing the new versions, and
 the bumps are committed afterwards — the recorded commit therefore always
@@ -285,13 +291,14 @@ rules (`crates/tools/registry/src/api.rs`):
 
 - a field added to an exported `pub struct` whose fields are all `pub` and
   which is not `#[non_exhaustive]`. Another crate can build such a struct by
-  literal, and a literal names every field — `table` 3.1.0 added
-  `pub column` to `TableCellProps` as a minor and broke an app's literal.
-  `#[non_exhaustive]` is not the fix for props: it forbids literals from
-  other crates even with `..Default::default()`, and `ui!` builds props by
-  literal. So a new prop is a major, on an explicit `FooProps` struct or as a
-  new parameter of an inline-props `#[component] fn Foo(..)` (whose
-  generated `FooProps` the check models);
+  literal, and a literal names every field. Props structs are the exception:
+  a `#[props]` struct, the `FooProps` an inline-props `#[component]`
+  generates, or the struct a legacy `#[component]` takes as
+  `props: &FooProps`. `ui!` fills the props a call site leaves out with
+  `..__defaults()`, so a new prop breaks no call site — it is a new feature,
+  a minor. A hand-written literal naming every field of a props struct does
+  break, and that trade is accepted. A removed or retyped prop is still a
+  major;
 - a variant added to an exported enum without `#[non_exhaustive]` (every
   exhaustive `match` in a dependent's published version stops compiling),
   or `#[non_exhaustive]` added;

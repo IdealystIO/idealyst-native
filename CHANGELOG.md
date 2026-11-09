@@ -1268,8 +1268,7 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   before the caller sees it, so an app can react to any "not signed in" in one place. Cancelled
   calls are not reported. See `docs/server-functions.md` §6.
 
-- **`HoverCard` takes `disabled`** (`idea-ui` major: a new field on `HoverCardProps`, so a struct
-  literal without `..Default::default()` stops compiling). While it is `true` nothing opens the
+- **`HoverCard` takes `disabled`** (`idea-ui` minor). While it is `true` nothing opens the
   card, and turning it on closes an open one. Bind it to state that would make the card stale:
   `disabled = dragging` keeps a row's card from showing the row where it was during a drag.
 

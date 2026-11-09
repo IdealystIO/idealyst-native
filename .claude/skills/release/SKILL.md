@@ -137,10 +137,15 @@ subject?
 - **`--bump <CRATE>=<LEVEL>`** raises a bump level the subjects under-called.
   The classifier reads the commit SUBJECT, so a branch that lands new public
   API under a free-form subject ("scroll_view can say when the reader has
-  reached the end") cuts as a patch. **The standing rule (set 2026-09-10 on
-  a0265630): additive public API is a minor** — new items, new methods. A new
-  field on an all-pub struct is NOT additive; it is a major (next bullet).
-  Check every planned crate:
+  reached the end") cuts as a patch. **The standing rule (set 2026-09-10,
+  restated by the user 2026-11-09): anything that adds functionality without
+  breaking or fundamentally changing the library or API is a MINOR** — new
+  items, new methods, new props, a new option or behaviour a caller opts
+  into. **A patch is only for trivial non-breaking changes** (a bug fix, a
+  doc or perf change with no new surface). **A major is only for a real
+  break** — the API check below, or a behaviour change existing callers must
+  adapt to. Don't let the version climb on additions: "we will quickly be in
+  version 10000" is the failure to avoid. Check every planned crate:
   `git diff <last-release>..HEAD -- <crate> | grep -E '^\+\s*pub (fn|struct|enum|type|[a-z_]+:)'`
   A new `pub` item → `--bump <crate>=minor`. A private rename (`enum PanState`
   fields, say) is neither. Raise-only, and refuses a crate that is not
@@ -155,13 +160,13 @@ subject?
   counts:
   - **a field added to an exported `pub struct` whose fields are all `pub`
     and which is not `#[non_exhaustive]`** — a struct literal in another
-    crate must name every field. Rule set 2026-10-20 after `table` 3.1.0
-    added `pub column` to `TableCellProps` as a minor and broke a downstream
-    literal. `#[non_exhaustive]` is no way out for props (it forbids
-    literals even with `..Default::default()`, and `ui!` builds props by
-    literal), so a new prop on an explicit `FooProps` struct, or a new
-    parameter on an inline-props `#[component] fn Foo(..)` (its generated
-    `FooProps`), is a major;
+    crate must name every field. **Props structs are exempt** (`#[props]`,
+    the `FooProps` an inline-props `#[component]` generates, or the struct a
+    legacy `#[component]` takes as `props: &FooProps`): `ui!` fills unnamed
+    props with `..__defaults()`, so a new prop breaks no call site and is a
+    minor (user rule, 2026-11-09). Only a hand-written exhaustive literal of
+    a props struct breaks, and that is accepted. Removing or retyping a prop
+    is still a major;
   - a variant added to an exported enum without `#[non_exhaustive]` (see the
     next bullet), or `#[non_exhaustive]` added to an enum or all-pub struct;
   - anything exported removed or made non-`pub`: items, `pub` fields,
