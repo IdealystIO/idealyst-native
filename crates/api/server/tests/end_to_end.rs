@@ -320,6 +320,58 @@ pub async fn strict_echo(x: i32) -> Result<i32, ServerError> {
     Ok(x)
 }
 
+// -----------------------------------------------------------------------------
+// Parameter-pattern fixtures: a wire param that is not a bare ident.
+// -----------------------------------------------------------------------------
+
+/// `mut`, a tuple destructure and `_` as wire params. The client stub once
+/// reused each pattern as an expression in its args tuple, so `mut input`
+/// failed with "expected expression, found keyword `mut`" (and `_` likewise).
+/// `deny(unused_mut)` is copied onto the client stub with the fn's other
+/// attributes: it pins that the stub does not keep the body's `mut`.
+#[deny(unused_mut)]
+#[server]
+pub async fn shout(mut input: String, (a, b): (i32, i32), _: u8) -> Result<String, ServerError> {
+    input.push('!');
+    Ok(format!("{input} {}", a + b))
+}
+
+/// The stream macros share the stub emission; these must compile in both
+/// modes with a `mut` open arg.
+#[allow(dead_code)]
+mod stream_param_patterns {
+    #[server::channel]
+    async fn tagged(
+        mut ch: server::Socket<String, String>,
+        mut tag: String,
+    ) -> Result<(), server::ServerError> {
+        tag.push(':');
+        while let Some(Ok(m)) = ch.recv().await {
+            let _ = ch.send(format!("{tag}{m}")).await;
+        }
+        Ok(())
+    }
+
+    #[server::subscription]
+    async fn from(mut start: u32) -> impl futures_util::Stream<Item = u32> {
+        start += 1;
+        futures_util::stream::iter([start])
+    }
+
+    #[server::sse]
+    async fn ticks(mut start: u32, _: bool) -> impl futures_util::Stream<Item = u32> {
+        start += 1;
+        futures_util::stream::iter([start])
+    }
+
+    /// Client-shaped call sites: the stubs take the wire args by value.
+    fn client_call_sites() {
+        let _: server::UseSocket<String, String> = tagged("t".to_string());
+        let _: server::UseSocket<u32, ()> = from(1);
+        let _: String = ticks(1, true);
+    }
+}
+
 // =============================================================================
 // Server-mode tests: macro emitted real bodies + inventory entries.
 // =============================================================================
@@ -353,6 +405,20 @@ mod server_side {
             .unwrap();
         let result: Result<i32, ServerError> = response.json().await.unwrap();
         assert_eq!(result, Ok(5));
+    }
+
+    #[tokio::test]
+    async fn regression_mut_and_destructured_params_decode_on_the_server() {
+        let addr = boot().await;
+        let client = net::Client::new();
+        let response = client
+            .post(format!("http://{addr}/_srv/shout"))
+            .body(net::Json(&("hi".to_string(), (2i32, 3i32), 7u8)))
+            .send()
+            .await
+            .unwrap();
+        let result: Result<String, ServerError> = response.json().await.unwrap();
+        assert_eq!(result, Ok("hi! 5".to_string()));
     }
 
     #[tokio::test]
@@ -1205,6 +1271,25 @@ mod client_side {
     }
 
     #[tokio::test]
+    async fn regression_stub_forwards_mut_and_destructured_params() {
+        let mock = mock_server(Arc::new(|_call| {
+            let body = serde_json::to_vec(&Result::<String, ServerError>::Ok("ok".into())).unwrap();
+            (StatusCode::OK, body)
+        }))
+        .await;
+        let _guard = configure_for(mock.addr).await;
+
+        assert_eq!(shout("hi".to_string(), (2, 3), 7).await, Ok("ok".to_string()));
+
+        let call = &mock.calls()[0];
+        assert_eq!(call.path, "shout");
+        // The stub sends the values, not the body's `mut`: a tuple of the
+        // three args in declaration order.
+        let decoded: (String, (i32, i32), u8) = serde_json::from_slice(&call.body).unwrap();
+        assert_eq!(decoded, ("hi".to_string(), (2, 3), 7));
+    }
+
+    #[tokio::test]
     async fn regression_stub_decodes_user_err_into_result() {
         let mock = mock_server(Arc::new(|_call| {
             let body = serde_json::to_vec(
@@ -1813,5 +1898,218 @@ mod client_side {
 
         let call = &mock.calls()[0];
         assert_eq!(call.header("authorization"), Some("Bearer xyz"));
+    }
+
+    /// A server that accepts the connection and never answers — what a
+    /// link dropping packets looks like to the client. Holds every
+    /// accepted socket open so the client sees silence, not a reset.
+    async fn silent_server() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        addr
+    }
+
+    /// Guard on the tests below: without a working deadline the call
+    /// would hang forever, so the test fails here instead.
+    const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// want_818c4c97: a `#[server]` call against a server that never
+    /// answers hung for as long as the transport did — `ClientConfig` had
+    /// no timeout. With `with_timeout` it fails with `Network("timeout")`.
+    #[tokio::test]
+    async fn regression_server_call_times_out_when_server_never_answers() {
+        let addr = silent_server().await;
+        let config = server::ClientConfig::new(format!("http://{addr}"))
+            .with_timeout(std::time::Duration::from_millis(200));
+        let _guard = configure_with(config).await;
+
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(HANG_GUARD, add(1, 2))
+            .await
+            .expect("the configured timeout must end the call");
+        assert_eq!(result, Err(ServerError::Network("timeout".into())));
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(200),
+            "the call must not fail before its deadline, elapsed = {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Calls coalesced by `server::batch` share one request, and that
+    /// request carries the deadline too: every slot times out.
+    #[tokio::test]
+    async fn regression_batched_server_calls_time_out_together() {
+        let addr = silent_server().await;
+        let config = server::ClientConfig::new(format!("http://{addr}"))
+            .with_timeout(std::time::Duration::from_millis(200));
+        let _guard = configure_with(config).await;
+
+        let (a, b) = tokio::time::timeout(
+            HANG_GUARD,
+            server::batch(async { tokio::join!(add(1, 2), add(3, 4)) }),
+        )
+        .await
+        .expect("the configured timeout must end the batched calls");
+        assert_eq!(a, Err(ServerError::Network("timeout".into())));
+        assert_eq!(b, Err(ServerError::Network("timeout".into())));
+    }
+
+    /// A configured timeout does not cut short a server that answers
+    /// within it.
+    #[tokio::test]
+    async fn server_call_within_timeout_succeeds() {
+        let mock = mock_server(Arc::new(|_call| {
+            let body = serde_json::to_vec(&Result::<i32, ServerError>::Ok(3)).unwrap();
+            (StatusCode::OK, body)
+        }))
+        .await;
+        let config = server::ClientConfig::new(format!("http://{}", mock.addr))
+            .with_timeout(std::time::Duration::from_secs(5));
+        let _guard = configure_with(config).await;
+
+        assert_eq!(add(1, 2).await, Ok(3));
+    }
+
+    type Seen = Arc<Mutex<Vec<(String, ServerError)>>>;
+
+    fn recording_config(addr: std::net::SocketAddr) -> (server::ClientConfig, Seen) {
+        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let config = server::ClientConfig::new(format!("http://{addr}")).with_reply_observer(
+            server::reply_observer_from_fn(move |path, error| {
+                sink.lock().unwrap().push((path.to_string(), error.clone()));
+            }),
+        );
+        (config, seen)
+    }
+
+    /// want_3c9d7377: there was no hook on replies, so an app could not
+    /// observe failed calls in one place. The reply observer sees a domain
+    /// refusal, a non-2xx status and a typed domain error, and is not told
+    /// about successes.
+    #[tokio::test]
+    async fn regression_reply_observer_sees_every_failed_call() {
+        let mock = mock_server(Arc::new(|call| match call.path.as_str() {
+            "add" => (
+                StatusCode::OK,
+                serde_json::to_vec(&Result::<i32, ServerError>::Err(ServerError::failed(
+                    "Not signed in",
+                )))
+                .unwrap(),
+            ),
+            "divide" => (StatusCode::UNAUTHORIZED, b"no session".to_vec()),
+            "reserve_stock" => (
+                StatusCode::OK,
+                serde_json::to_vec(&Result::<u32, ServerError<StockError>>::Err(
+                    ServerError::Failed(StockError::OutOfStock {
+                        requested: 9,
+                        available: 5,
+                    }),
+                ))
+                .unwrap(),
+            ),
+            _ => (
+                StatusCode::OK,
+                serde_json::to_vec(&Result::<String, ServerError>::Ok("pong".into())).unwrap(),
+            ),
+        }))
+        .await;
+        let (config, seen) = recording_config(mock.addr);
+        let _guard = configure_with(config).await;
+
+        // The caller still gets its own typed result.
+        assert_eq!(add(1, 2).await, Err(ServerError::failed("Not signed in")));
+        assert!(matches!(
+            divide(1.0, 2.0).await,
+            Err(ServerError::Server { status: 401, .. })
+        ));
+        assert_eq!(
+            reserve_stock(9).await,
+            Err(ServerError::Failed(StockError::OutOfStock {
+                requested: 9,
+                available: 5,
+            }))
+        );
+        assert_eq!(ping().await, Ok("pong".into()));
+
+        let mut seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 3, "one report per failed call, none for the success: {seen:?}");
+        // A typed `Failed(E)` arrives as `E`'s JSON.
+        let (path, typed) = seen.pop().unwrap();
+        assert_eq!(path, "reserve_stock");
+        let ServerError::Failed(json) = typed else {
+            panic!("expected Failed, got {typed:?}");
+        };
+        let decoded: StockError = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            decoded,
+            StockError::OutOfStock {
+                requested: 9,
+                available: 5,
+            }
+        );
+        assert_eq!(
+            seen,
+            vec![
+                ("add".to_string(), ServerError::failed("Not signed in")),
+                (
+                    "divide".to_string(),
+                    ServerError::Server {
+                        status: 401,
+                        message: "no session".into()
+                    }
+                ),
+            ]
+        );
+    }
+
+    /// Timeouts and coalesced calls reach the observer too: each call in a
+    /// failed batch is reported under its own path.
+    #[tokio::test]
+    async fn reply_observer_sees_timeouts_per_batched_call() {
+        let addr = silent_server().await;
+        let (config, seen) = recording_config(addr);
+        let config = config.with_timeout(std::time::Duration::from_millis(200));
+        let _guard = configure_with(config).await;
+
+        let _ = tokio::time::timeout(
+            HANG_GUARD,
+            server::batch(async { tokio::join!(add(1, 2), ping()) }),
+        )
+        .await
+        .expect("the configured timeout must end the batched calls");
+
+        let mut seen = seen.lock().unwrap().clone();
+        seen.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            seen,
+            vec![
+                ("add".to_string(), ServerError::Network("timeout".into())),
+                ("v1/ping".to_string(), ServerError::Network("timeout".into())),
+            ]
+        );
+    }
+
+    /// A call the app cancelled got no reply; it is not a failure the
+    /// observer should hear about.
+    #[tokio::test]
+    async fn reply_observer_ignores_cancelled_calls() {
+        let addr = silent_server().await;
+        let (config, seen) = recording_config(addr);
+        let _guard = configure_with(config).await;
+
+        let (handle, token) = net::cancel_token();
+        handle.cancel();
+        assert_eq!(
+            server::with_cancel_token(token, add(1, 2)).await,
+            Err(ServerError::Cancelled)
+        );
+        assert!(seen.lock().unwrap().is_empty());
     }
 }

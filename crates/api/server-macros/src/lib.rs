@@ -208,6 +208,34 @@ fn is_reserved_extractor(ty: &Type) -> bool {
     false
 }
 
+/// A wire param as the client stub declares it, plus the ident the stub's
+/// args tuple reads it back through.
+///
+/// The stub only forwards the value, so it binds a plain name: `mut` and
+/// `ref` belong to the body, and `(mut input,)` in the args tuple is not
+/// an expression ("expected expression, found keyword `mut`"). An ident
+/// pattern keeps its name (rustdoc and rust-analyzer show the author's
+/// parameter names); any other irrefutable pattern (`_`, a tuple or struct
+/// destructure) binds a fresh `__arg{index}`. The server side keeps the
+/// author's pattern untouched (`server_inputs`).
+fn client_wire_param(pt: &PatType, index: usize) -> (FnArg, Ident) {
+    let ident = match &*pt.pat {
+        Pat::Ident(pi) => pi.ident.clone(),
+        _ => format_ident!("__arg{}", index),
+    };
+    let FnArg::Typed(mut stub) = without_ctx_attr(pt) else {
+        unreachable!("without_ctx_attr builds a typed arg")
+    };
+    stub.pat = Box::new(Pat::Ident(syn::PatIdent {
+        attrs: Vec::new(),
+        by_ref: None,
+        mutability: None,
+        ident: ident.clone(),
+        subpat: None,
+    }));
+    (FnArg::Typed(stub), ident)
+}
+
 /// Strip the `#[ctx]` helper from a parameter's attributes (it isn't a
 /// real attribute and must not survive into the emitted function).
 fn without_ctx_attr(pt: &PatType) -> FnArg {
@@ -249,16 +277,16 @@ fn expand(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
     //
     // - `server_inputs`: every param (ctx attr stripped) → the server fn
     //   signature, which keeps all params since the body uses them.
-    // - `wire_inputs` / `wire_pats` / `wire_tys` / `wire_binds`: wire
-    //   params only → the client stub signature, the args tuple, and the
-    //   server-side decode.
+    // - `wire_inputs` / `wire_args` / `wire_tys` / `wire_binds`: wire
+    //   params only → the client stub signature (`client_wire_param`), the
+    //   args tuple, and the server-side decode.
     // - `ctx_tys` / `ctx_binds`: extractor params → server-side
     //   `FromContext` resolution.
     // - `call_exprs`: every param's binding ident in declaration order →
     //   the positional call into the real fn.
     let mut server_inputs: Vec<FnArg> = Vec::new();
     let mut wire_inputs: Vec<FnArg> = Vec::new();
-    let mut wire_pats: Vec<Pat> = Vec::new();
+    let mut wire_args: Vec<Ident> = Vec::new();
     let mut wire_tys: Vec<Type> = Vec::new();
     let mut wire_binds: Vec<Ident> = Vec::new();
     let mut ctx_tys: Vec<Type> = Vec::new();
@@ -286,8 +314,9 @@ fn expand(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
             call_exprs.push(bind);
         } else {
             let bind = format_ident!("__w{}", wire_binds.len());
-            wire_inputs.push(without_ctx_attr(pt));
-            wire_pats.push((*pt.pat).clone());
+            let (stub_param, arg) = client_wire_param(pt, wire_binds.len());
+            wire_inputs.push(stub_param);
+            wire_args.push(arg);
             wire_tys.push((*pt.ty).clone());
             wire_binds.push(bind.clone());
             call_exprs.push(bind);
@@ -439,7 +468,7 @@ fn expand(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
         #[cfg(not(feature = "server"))]
         #(#attrs)*
         #vis async fn #ident(#(#wire_inputs),*) #output {
-            let __args: ( #( #wire_tys, )* ) = ( #( #wire_pats, )* );
+            let __args: ( #( #wire_tys, )* ) = ( #( #wire_args, )* );
             ::server::__private::call::<( #( #wire_tys, )* ), #ret_ty>(
                 #wire_path,
                 #schema_hash,
@@ -557,8 +586,9 @@ struct StreamParams {
     server_inputs: Vec<FnArg>,
     /// Wire-arg params for the client stub signature.
     wire_inputs: Vec<FnArg>,
-    /// Wire-arg patterns (the args tuple the client encodes).
-    wire_pats: Vec<Pat>,
+    /// Wire-arg idents the client stub binds (the args tuple it encodes);
+    /// see `client_wire_param`.
+    wire_args: Vec<Ident>,
     wire_tys: Vec<Type>,
     /// Server-side decode bindings for the wire args (`__w0`, …).
     wire_binds: Vec<Ident>,
@@ -591,8 +621,9 @@ fn classify_stream_params<'a>(
         } else {
             // An open (wire) arg: sent in the connect URL, decoded server-side.
             let bind = format_ident!("__w{}", s.wire_binds.len());
-            s.wire_inputs.push(without_ctx_attr(pt));
-            s.wire_pats.push((*pt.pat).clone());
+            let (stub_param, arg) = client_wire_param(pt, s.wire_binds.len());
+            s.wire_inputs.push(stub_param);
+            s.wire_args.push(arg);
             s.wire_tys.push((*pt.ty).clone());
             s.wire_binds.push(bind.clone());
             s.call_exprs.push(quote!(#bind));
@@ -632,7 +663,7 @@ fn expand_channel(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
     server_inputs.extend(p.server_inputs.iter().cloned());
     let StreamParams {
         wire_inputs,
-        wire_pats,
+        wire_args,
         wire_tys,
         wire_binds,
         ctx_tys,
@@ -704,7 +735,7 @@ fn expand_channel(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
         #[allow(dead_code)]
         #(#attrs)*
         #vis fn #ident(#(#wire_inputs),*) -> ::server::UseSocket<#out_ty, #in_ty> {
-            let __args: ( #( #wire_tys, )* ) = ( #( #wire_pats, )* );
+            let __args: ( #( #wire_tys, )* ) = ( #( #wire_args, )* );
             let __hex = ::server::__private::encode_ws_args(&__args);
             ::server::use_socket::<#out_ty, #in_ty>(
                 ::server::__private::ws_url_args(#wire_path, &__hex),
@@ -807,7 +838,7 @@ fn expand_subscription(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStrea
     let StreamParams {
         server_inputs,
         wire_inputs,
-        wire_pats,
+        wire_args,
         wire_tys,
         wire_binds,
         ctx_tys,
@@ -884,7 +915,7 @@ fn expand_subscription(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStrea
         #[allow(dead_code)]
         #(#attrs)*
         #vis fn #ident(#(#wire_inputs),*) -> ::server::UseSocket<#item_ty, ()> {
-            let __args: ( #( #wire_tys, )* ) = ( #( #wire_pats, )* );
+            let __args: ( #( #wire_tys, )* ) = ( #( #wire_args, )* );
             let __hex = ::server::__private::encode_ws_args(&__args);
             ::server::use_socket::<#item_ty, ()>(
                 ::server::__private::ws_url_args(#wire_path, &__hex),
@@ -951,7 +982,7 @@ fn expand_sse(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
     let StreamParams {
         server_inputs,
         wire_inputs,
-        wire_pats,
+        wire_args,
         wire_tys,
         wire_binds,
         ctx_tys,
@@ -1018,7 +1049,7 @@ fn expand_sse(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
         #[allow(dead_code)]
         #(#attrs)*
         #vis fn #ident(#(#wire_inputs),*) -> ::std::string::String {
-            let __args: ( #( #wire_tys, )* ) = ( #( #wire_pats, )* );
+            let __args: ( #( #wire_tys, )* ) = ( #( #wire_args, )* );
             let __hex = ::server::__private::encode_ws_args(&__args);
             ::server::__private::sse_url_args(#wire_path, &__hex)
         }

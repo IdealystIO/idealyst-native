@@ -5,6 +5,7 @@
 //! client surface in `lib.rs`: gating it made the feature non-additive).
 
 use std::sync::{Arc, OnceLock, RwLock};
+use std::time::Duration;
 
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -12,6 +13,10 @@ use crate::error::{ServerError, ServerFnReturn, TransportError};
 
 /// Author-supplied configuration for the client side of server
 /// functions. Install once at app start via [`configure`].
+///
+/// Built with [`ClientConfig::new`] plus the `with_*` methods; the
+/// optional parts are private fields, so new options arrive as new
+/// builder methods.
 #[derive(Clone)]
 pub struct ClientConfig {
     /// Base URL of the server (no trailing `/_srv/`; e.g.
@@ -22,20 +27,58 @@ pub struct ClientConfig {
     /// outgoing server-fn request (e.g. a bearer token). `None` means
     /// no credentials are injected (cookie-based auth, or unauthenticated).
     pub(crate) credentials: Option<Arc<dyn CredentialProvider>>,
+    /// Deadline on each `#[server]` HTTP exchange. `None` leaves the
+    /// platform transport's own behaviour in place.
+    pub(crate) timeout: Option<Duration>,
+    /// Told about every failed `#[server]` call. `None` means nobody is.
+    pub(crate) reply_observer: Option<Arc<dyn ReplyObserver>>,
 }
 
 impl ClientConfig {
-    /// Config pointing at `base_url`, with no credentials.
+    /// Config pointing at `base_url`, with no credentials, no timeout and
+    /// no reply observer.
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
             credentials: None,
+            timeout: None,
+            reply_observer: None,
         }
     }
 
     /// Attach a credential source (see [`bearer`], [`credentials_from_fn`]).
     pub fn with_credentials(mut self, provider: impl CredentialProvider) -> Self {
         self.credentials = Some(Arc::new(provider));
+        self
+    }
+
+    /// Fail any `#[server]` call whose HTTP exchange takes longer than
+    /// `timeout` with `ServerError::Network("timeout")`.
+    ///
+    /// The deadline covers the whole exchange (connect, request,
+    /// response head and body) and is enforced by `net` on every
+    /// target: reqwest on desktop, `setTimeout` + `AbortController` on
+    /// web, NSURLSession's resource timeout on Apple, a watchdog on
+    /// Android. Calls coalesced by [`batch`](crate::batch) share one
+    /// request, so they share one deadline. `#[channel]`,
+    /// `#[subscription]` and `#[sse]` streams are long-lived and are not
+    /// bounded by it.
+    ///
+    /// Without this there is no deadline: a call waits as long as the
+    /// platform transport does, which on a link that drops packets can
+    /// be minutes (Apple's 60 s idle timeout) or indefinitely (desktop,
+    /// Android).
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    /// Attach an observer told about every failed `#[server]` call (see
+    /// [`ReplyObserver`], [`reply_observer_from_fn`]) — one place to react
+    /// to, say, any "not signed in" refusal without checking each call
+    /// site.
+    pub fn with_reply_observer(mut self, observer: impl ReplyObserver) -> Self {
+        self.reply_observer = Some(Arc::new(observer));
         self
     }
 }
@@ -120,6 +163,59 @@ where
 {
     fn headers(&self) -> Vec<(String, String)> {
         (self.0)()
+    }
+}
+
+/// Observes the outcome of `#[server]` calls: told about every call that
+/// ends in an error, before the caller sees it. The response-side
+/// counterpart of [`CredentialProvider`].
+///
+/// A failure is any call whose result is `Err`: a domain error the server
+/// fn returned (`ServerError::Failed`), a non-2xx status (`Server`), a
+/// transport failure or timeout (`Network`), a decode failure (`Codec`)
+/// or schema drift (`IncompatibleVersion`). A call cancelled through
+/// [`with_cancel`](crate::with_cancel) got no reply and is not reported.
+///
+/// The error arrives as a plain [`ServerError`] whatever the fn's domain
+/// error type: a typed `Failed(E)` is reported as `Failed` carrying `E`'s
+/// JSON, or the string itself when `E` serializes as a JSON string (so
+/// `ServerError::failed("Not signed in")` arrives as
+/// `Failed("Not signed in")`).
+pub trait ReplyObserver: Send + Sync + 'static {
+    /// Called once per failed call, on the task that made it, with the
+    /// fn's path (`"add"`, or the `#[server(path = ...)]` override).
+    fn on_failure(&self, path: &str, error: &ServerError);
+}
+
+/// Adapt a closure into a [`ReplyObserver`].
+///
+/// ```ignore
+/// server::configure(
+///     server::ClientConfig::new(base).with_reply_observer(server::reply_observer_from_fn(
+///         |path, error| {
+///             if matches!(error, server::ServerError::Server { status: 401, .. }) {
+///                 log::warn!("{path}: signed out");
+///             }
+///         },
+///     )),
+/// );
+/// ```
+pub fn reply_observer_from_fn<F>(f: F) -> FnReplyObserver<F>
+where
+    F: Fn(&str, &ServerError) + Send + Sync + 'static,
+{
+    FnReplyObserver(f)
+}
+
+/// Reply observer from [`reply_observer_from_fn`].
+pub struct FnReplyObserver<F>(F);
+
+impl<F> ReplyObserver for FnReplyObserver<F>
+where
+    F: Fn(&str, &ServerError) + Send + Sync + 'static,
+{
+    fn on_failure(&self, path: &str, error: &ServerError) {
+        (self.0)(path, error)
     }
 }
 
@@ -244,6 +340,10 @@ fn to_hex(bytes: &[u8]) -> String {
 
 /// Lazily-constructed shared [`net::Client`]. One per process — the
 /// inner reqwest pool reuses connections across calls.
+///
+/// Carries no default timeout: [`ClientConfig::with_timeout`] is applied
+/// per request from the config snapshot, so a later [`configure`] call
+/// changes it without rebuilding this client.
 static NET_CLIENT: OnceLock<net::Client> = OnceLock::new();
 
 pub(crate) fn net_client() -> &'static net::Client {
@@ -281,27 +381,82 @@ where
     } else {
         crate::batch::send_direct(path, schema, args_value).await
     };
+    let observer = snapshot_config()
+        .ok()
+        .and_then(|c| c.reply_observer.clone());
     let (response_value, server_schema) = match outcome {
         Ok(x) => x,
         // Transport-layer failure (incl. a 426 IncompatibleVersion from a
         // strict / drifted server); fold into the caller's `Ret::Error`.
-        Err(e) => return Ret::from_server_error(e.into_domain()),
+        Err(e) => {
+            if let Some(observer) = &observer {
+                if !matches!(e, TransportError::Cancelled) {
+                    observer.on_failure(path, &e.clone().into_domain());
+                }
+            }
+            return Ret::from_server_error(e.into_domain());
+        }
     };
 
+    // Read the failure off the raw reply before the typed decode consumes
+    // it: `Ret` is opaque here, so this is the one place a domain error
+    // can be seen without knowing `E`.
+    let reply_failure = observer
+        .as_ref()
+        .and_then(|_| failure_in_reply(&response_value));
+
     match serde_json::from_value::<Ret>(response_value) {
-        Ok(r) => r,
+        Ok(r) => {
+            if let (Some(observer), Some(failure)) = (&observer, reply_failure) {
+                observer.on_failure(path, &failure);
+            }
+            r
+        }
         // The response didn't decode into `Ret`. If the server advertised
         // a different return schema, this is version drift — report it
         // precisely; otherwise it's a genuine same-version codec bug.
-        Err(e) => match server_schema {
-            Some(s) if s != schema => Ret::from_server_error(ServerError::IncompatibleVersion {
-                path: path.to_string(),
-                client_schema: schema,
-                server_schema: s,
-            }),
-            _ => Ret::from_server_error(ServerError::Codec(e.to_string())),
-        },
+        Err(e) => {
+            let error: TransportError = match server_schema {
+                Some(s) if s != schema => ServerError::IncompatibleVersion {
+                    path: path.to_string(),
+                    client_schema: schema,
+                    server_schema: s,
+                },
+                _ => ServerError::Codec(e.to_string()),
+            };
+            if let Some(observer) = &observer {
+                observer.on_failure(path, &error.clone().into_domain());
+            }
+            Ret::from_server_error(error.into_domain())
+        }
     }
+}
+
+/// The error a reply carries, if it is an `{"Err": …}` result, as the
+/// domain-free [`ServerError`] a [`ReplyObserver`] receives. A typed
+/// `Failed(E)` becomes `Failed` of `E`'s JSON (the bare string when `E` is
+/// a JSON string). `None` for a success, or for a reply that is not
+/// `Result`-shaped (a custom [`ServerFnReturn`] type).
+fn failure_in_reply(reply: &serde_json::Value) -> Option<ServerError> {
+    let err = reply.as_object().filter(|o| o.len() == 1)?.get("Err")?;
+    let error = serde_json::from_value::<ServerError<serde_json::Value>>(err.clone()).ok()?;
+    Some(match error {
+        ServerError::Failed(serde_json::Value::String(s)) => ServerError::Failed(s),
+        ServerError::Failed(other) => ServerError::Failed(other.to_string()),
+        ServerError::Network(s) => ServerError::Network(s),
+        ServerError::Codec(s) => ServerError::Codec(s),
+        ServerError::Server { status, message } => ServerError::Server { status, message },
+        ServerError::Cancelled => ServerError::Cancelled,
+        ServerError::IncompatibleVersion {
+            path,
+            client_schema,
+            server_schema,
+        } => ServerError::IncompatibleVersion {
+            path,
+            client_schema,
+            server_schema,
+        },
+    })
 }
 
 pub(crate) fn map_net_error(e: net::Error) -> TransportError {

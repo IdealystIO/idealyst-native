@@ -22,9 +22,10 @@
 //! // ----- client binary -----
 //! // cargo build  (default features)
 //! fn init() {
-//!     server::configure(server::ClientConfig {
-//!         base_url: "http://localhost:3000".into(),
-//!     });
+//!     server::configure(
+//!         server::ClientConfig::new("http://localhost:3000")
+//!             .with_timeout(std::time::Duration::from_secs(15)),
+//!     );
 //! }
 //!
 //! async fn demo() {
@@ -103,8 +104,9 @@ mod client;
 pub use batch::{batch, BatchScope};
 pub use cancel::{with_cancel, with_cancel_token, WithCancel};
 pub use client::{
-    base_url, bearer, configure, credentials_from_fn, dev_base_url, BearerCredentials, ClientConfig,
-    CredentialProvider, FnCredentials,
+    base_url, bearer, configure, credentials_from_fn, dev_base_url, reply_observer_from_fn,
+    BearerCredentials, ClientConfig, CredentialProvider, FnCredentials, FnReplyObserver,
+    ReplyObserver,
 };
 
 // =============================================================================

@@ -846,9 +846,41 @@ server::configure(
     server::ClientConfig::new("https://api.example.com")
         // optional: headers attached to every call — read per request,
         // so a rotated token is picked up automatically
-        .with_credentials(server::bearer(|| creds.get("token").ok().flatten())),
+        .with_credentials(server::bearer(|| creds.get("token").ok().flatten()))
+        // optional: fail a call whose HTTP exchange takes longer than this
+        .with_timeout(std::time::Duration::from_secs(15))
+        // optional: told about every failed call, in one place
+        .with_reply_observer(server::reply_observer_from_fn(|path, error| {
+            if matches!(error, server::ServerError::Server { status: 401, .. }) {
+                show_sign_in();
+            }
+        })),
 );
 ```
+
+**Timeout.** There is no default: without `with_timeout` a call waits as
+long as the platform transport does — on a link that drops packets that is
+Apple's 60 s idle timeout, or no limit at all on desktop and Android. With
+it, a call whose exchange (connect, request, response head and body) runs
+past the deadline fails with `ServerError::Network("timeout")`. `net`
+enforces it on every target, web included. Calls coalesced by
+`server::batch` share one request and so one deadline; `#[channel]`,
+`#[subscription]` and `#[sse]` streams are long-lived and are not bounded
+by it. Pick a value longer than your slowest legitimate call (uploads,
+report generation); a per-call deadline is still available through
+`server::with_cancel_token` and a timer.
+
+**Reply observer.** The response-side counterpart of the credential
+provider: a `ReplyObserver` (or a closure through `reply_observer_from_fn`)
+is called with the fn's path and the error for every call that ends in
+`Err` — a domain error the body returned, a non-2xx status, a timeout or
+other transport failure, a decode failure or schema drift — on the calling
+task, before the caller sees the result. A call cancelled through a cancel
+token got no reply and is not reported. The error is always a plain
+`ServerError` (`String` domain): a typed `Failed(E)` arrives as `Failed`
+of `E`'s JSON, or the bare string when `E` serializes as one, so
+`ServerError::failed("Not signed in")` is observed as
+`Failed("Not signed in")`.
 
 On web, point at the page origin so calls are same-origin (that's what makes
 the browser send the httpOnly cookie).

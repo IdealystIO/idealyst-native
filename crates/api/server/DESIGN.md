@@ -597,7 +597,11 @@ client→server direction (chat/presence/collab) is genuinely needed.
   one `/_srv/_batch`; out-of-scope → N direct requests. (item 8)
 - **Auth primitives. ◑ PARTIAL.** ✅ Client credential source
   (`ClientConfig::with_credentials` + `bearer` / `credentials_from_fn`), attached
-  to every request (single + batch), tested. ✅ **Response cookies**:
+  to every request (single + batch), tested. Its response-side counterpart,
+  `ClientConfig::with_reply_observer` (`ReplyObserver` / `reply_observer_from_fn`),
+  is told about every failed call with a domain-free `ServerError`; and
+  `ClientConfig::with_timeout` puts a `net` deadline on every request (single +
+  batch), failing with `Network("timeout")`. Both tested. ✅ **Response cookies**:
   `server::set_cookie(Cookie)` / `Cookie::clearing()` / `clear_cookie(name)` — handlers attach a
   `Set-Cookie` (httpOnly/Secure/SameSite=Lax by default) via a per-request cookie
   jar the dispatcher drains (single + batch paths); e2e-tested. This is the server

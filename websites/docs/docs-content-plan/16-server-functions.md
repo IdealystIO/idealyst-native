@@ -572,6 +572,46 @@ server::configure(
 `server::credentials_from_fn(|| vec![...])` covers any other header
 scheme. Cookie auth needs no provider.
 
+## Timeouts
+
+A server-fn call has no deadline unless you set one. Without it a call
+waits as long as the platform transport does, which on a link that drops
+packets can be minutes, or forever. `with_timeout` fails any call whose
+HTTP exchange runs past the deadline with
+`ServerError::Network("timeout")`, on every platform:
+
+```rust
+server::configure(
+    ClientConfig::new(base)
+        .with_timeout(std::time::Duration::from_secs(15)),
+);
+```
+
+Calls grouped by `server::batch` share one request and one deadline.
+Streams (`#[channel]`, `#[subscription]`, `#[sse]`) are not bounded by it.
+
+## Watching failed calls
+
+A reply observer is told about every call that fails: a domain error, a
+non-2xx status, a timeout, a decode failure. It gets the fn's path and the
+error, before the caller does, so one place can react to, say, any "not
+signed in" refusal:
+
+```rust
+server::configure(
+    ClientConfig::new(base).with_reply_observer(server::reply_observer_from_fn(
+        |path, error| {
+            if matches!(error, ServerError::Failed(m) if m == "Not signed in") {
+                show_sign_in();
+            }
+        },
+    )),
+);
+```
+
+The error is always a plain `ServerError`. A typed domain error arrives as
+`Failed` holding its JSON. Cancelled calls are not reported.
+
 ## Limits
 
 - **Wire format is JSON.** There is no binary format option.

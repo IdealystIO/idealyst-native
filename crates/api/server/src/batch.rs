@@ -372,8 +372,9 @@ async fn send_single(
 
     // Advertise our wire schema hash so the server can run its drift
     // diagnostic (and `strict_version` gate), then attach any configured
-    // credential headers (bearer token, etc.). Conditional `.cancel_on`
-    // avoids allocating a token slot for non-cancellable solo calls.
+    // credential headers (bearer token, etc.) and the configured deadline.
+    // Conditional `.cancel_on` avoids allocating a token slot for
+    // non-cancellable solo calls.
     let mut request = net_client()
         .post(url)
         .set_header(SCHEMA_HEADER, format!("{schema:x}"));
@@ -383,6 +384,9 @@ async fn send_single(
         }
     }
     request = request.body(net::Json(args));
+    if let Some(timeout) = config.timeout {
+        request = request.timeout(timeout);
+    }
     if let Some(token) = cancel {
         request = request.cancel_on(token);
     }
@@ -465,6 +469,10 @@ async fn send_batch(
         for (name, value) in creds.headers() {
             request = request.set_header(name, value);
         }
+    }
+    // One request carries every coalesced call, so they share one deadline.
+    if let Some(timeout) = config.timeout {
+        request = request.timeout(timeout);
     }
     let response = request
         .body(net::Json(&body))

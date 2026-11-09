@@ -566,6 +566,46 @@ docs! {
           " covers any other header scheme. Cookie auth needs no provider."),
     },
 
+    section(heading = "Timeouts") {
+        p("A server-fn call has no deadline unless you set one. Without it a \
+           call waits as long as the platform transport does, which on a link \
+           that drops packets can be minutes, or forever. ",
+          code("with_timeout"),
+          " fails any call whose HTTP exchange runs past the deadline with ",
+          code("ServerError::Network(\"timeout\")"), ", on every platform:"),
+        code(rust, r##"
+            server::configure(
+                ClientConfig::new(base)
+                    .with_timeout(std::time::Duration::from_secs(15)),
+            );
+        "##),
+        p("Calls grouped by ", code("server::batch"),
+          " share one request and one deadline. Streams (",
+          code("#[channel]"), ", ", code("#[subscription]"), ", ",
+          code("#[sse]"), ") are not bounded by it."),
+    },
+
+    section(heading = "Watching failed calls") {
+        p("A reply observer is told about every call that fails: a domain \
+           error, a non-2xx status, a timeout, a decode failure. It gets the \
+           fn's path and the error, before the caller does, so one place can \
+           react to, say, any \"not signed in\" refusal:"),
+        code(rust, r##"
+            server::configure(
+                ClientConfig::new(base).with_reply_observer(server::reply_observer_from_fn(
+                    |path, error| {
+                        if matches!(error, ServerError::Failed(m) if m == "Not signed in") {
+                            show_sign_in();
+                        }
+                    },
+                )),
+            );
+        "##),
+        p("The error is always a plain ", code("ServerError"),
+          ". A typed domain error arrives as ", code("Failed"),
+          " holding its JSON. Cancelled calls are not reported."),
+    },
+
     section(heading = "Limits") {
         list(
             ["Wire format is JSON. There is no binary format option."],
