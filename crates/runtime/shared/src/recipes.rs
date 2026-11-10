@@ -34,9 +34,6 @@ macro_rules! core_recipe {
                 docs: $docs,
                 source: include_str!(concat!("../recipes/", $file)),
                 uses: &[$($use_),*],
-                // Core-primitive recipes are source-only: no exported
-                // render fn (see `runtime_vocabulary::previews`).
-                preview: "",
             }
         }
     };

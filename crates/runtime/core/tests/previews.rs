@@ -286,17 +286,23 @@ fn signal_prop_gets_a_fresh_signal_holding_the_edited_value() {
 }
 
 #[test]
-fn catalog_entry_records_the_exported_preview_symbol() {
-    let entry = runtime_core::__mcp::entries()
-        .find(|e| e.name == "Badge" && e.module_path == module_path!())
-        .expect("Badge is in the catalog");
+fn catalog_registers_the_exported_preview_symbol() {
+    use runtime_core::__mcp::PreviewKind;
+    let symbol_of = |name: &str| {
+        runtime_core::__mcp::previews()
+            .find(|p| p.kind == PreviewKind::Component && p.name == name && p.module_path == module_path!())
+            .map(|p| p.symbol)
+    };
     assert!(
-        entry.preview.starts_with("__idealyst_preview__previews__Badge__"),
-        "symbol names crate and component: {}",
-        entry.preview
+        runtime_core::__mcp::entries().any(|e| e.name == "Badge" && e.module_path == module_path!()),
+        "Badge is in the catalog"
     );
-    let panel = runtime_core::__mcp::entries().find(|e| e.name == "Panel").unwrap();
-    assert_ne!(entry.preview, panel.preview);
+    let badge = symbol_of("Badge").expect("Badge's preview is registered");
+    assert!(
+        badge.starts_with("__idealyst_preview__previews__Badge__"),
+        "symbol names crate and component: {badge}"
+    );
+    assert_ne!(Some(badge), symbol_of("Panel"));
 }
 
 /// Regression: the props probe's `BuildElement` fallback once sat at the

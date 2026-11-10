@@ -140,7 +140,7 @@ impl ComponentEntry {
                 Value::Object(obj)
             })
             .collect();
-        let mut out = json!({
+        json!({
             "name": self.name,
             "module_path": self.module_path,
             "file": self.file,
@@ -148,13 +148,7 @@ impl ComponentEntry {
             "docs": self.docs,
             "composes": composes,
             "params": params,
-        });
-        // Only a `previews` build has one; leaving the key out otherwise
-        // keeps every other catalog's JSON unchanged.
-        if !self.preview.is_empty() {
-            out["preview"] = self.preview.into();
-        }
-        out
+        })
     }
 }
 
@@ -532,7 +526,7 @@ impl CatalogSlice for RecipeEntry {
     }
 
     fn to_json(&self) -> Value {
-        let mut out = json!({
+        json!({
             "name": self.name,
             "target": self.target,
             "module_path": self.module_path,
@@ -542,12 +536,7 @@ impl CatalogSlice for RecipeEntry {
             "docs": self.docs,
             "source": self.source,
             "uses": self.uses,
-        });
-        // As for components: present only in a `previews` build.
-        if !self.preview.is_empty() {
-            out["preview"] = self.preview.into();
-        }
-        out
+        })
     }
 }
 

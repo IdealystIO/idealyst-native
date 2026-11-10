@@ -9,8 +9,9 @@
 //!   autoref probe in `runtime_vocabulary::previews::__probe`, plus the
 //!   `#[prop(example = …)]` starting values.
 //! - [`component_symbol`] — the exported `#[no_mangle]` fn returning the
-//!   component's `Preview`, and the symbol name the catalog entry records.
+//!   component's `Preview`, and its symbol name.
 //! - [`recipe_symbol`] — the same for a zero-argument `recipe!`.
+//! - [`registration`] — the catalog `PreviewEntry` recording a symbol.
 //!
 //! The docs app reaches each preview through an `extern "Rust"` block
 //! generated from the catalog's recorded symbol names, so the symbol is
@@ -120,6 +121,34 @@ fn is_element_vec(ty: &Type) -> bool {
     )
 }
 
+/// The catalog registration of an exported preview `symbol`: a
+/// `PreviewEntry` keyed to the component or recipe `name` in this module.
+/// Empty when `symbol` is (no preview emitted, which is every build
+/// without the feature).
+///
+/// Its own `inventory::submit!`, never a field on `ComponentEntry` /
+/// `RecipeEntry`: those are struct literals in this output, and a field
+/// there ties every macro-crate version to one catalog version — older
+/// macros stop compiling against a newer catalog and the reverse. This
+/// names `PreviewEntry` only when `previews` is on, which only a
+/// runtime-core that ships the type can turn on.
+pub(crate) fn registration(kind: &str, name: &str, symbol: &str) -> TokenStream2 {
+    if symbol.is_empty() {
+        return TokenStream2::new();
+    }
+    let kind = Ident::new(kind, proc_macro2::Span::call_site());
+    quote! {
+        ::runtime_core::__mcp::inventory::submit! {
+            ::runtime_core::__mcp::PreviewEntry {
+                kind: ::runtime_core::__mcp::PreviewKind::#kind,
+                module_path: module_path!(),
+                name: #name,
+                symbol: #symbol,
+            }
+        }
+    }
+}
+
 /// The exported symbol for an item named `name` declared at `ident`.
 ///
 /// Crate name + item name + the declaring ident's line and column: unique
@@ -134,8 +163,8 @@ fn symbol_name(kind: &str, ident: &Ident) -> String {
 }
 
 /// A component's preview export: `(fn tokens, symbol)`. The symbol is
-/// empty when no preview is emitted (feature off), which is also what the
-/// catalog entry records then.
+/// empty when no preview is emitted (feature off), and then nothing is
+/// registered ([`registration`]).
 ///
 /// `tag` names the component's `BuildElement` type: the tag alias / no-arg
 /// marker struct `#[component]` declares under the fn's own name.

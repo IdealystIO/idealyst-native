@@ -15,11 +15,11 @@
 
 use serde_json::Value;
 
-use crate::resolve::{leak_entry_from_json, slice_vec as read, BuildFromJsonError};
+use crate::resolve::{leak_entry_from_json, previews_from_json, slice_vec as read, BuildFromJsonError};
 use crate::slice::CatalogSlice;
 use crate::{
-    AnimationEntry, ComponentEntry, GuideEntry, IconSetEntry, MacroEntry, MethodEntry,
-    PrimitiveEntry, PropFieldSpec, PropsSchemaEntry, RecipeEntry, ScopeEntry, SdkEntry, StateEntry,
+    AnimationEntry, ComponentEntry, GuideEntry, IconSetEntry, MacroEntry, MethodEntry, PreviewEntry,
+    PreviewKind, PrimitiveEntry, PropFieldSpec, PropsSchemaEntry, RecipeEntry, ScopeEntry, SdkEntry, StateEntry,
     StyleTokenEntry, ToolEntry, TypeEntry, TypeShape, UtilityEntry, ValueEntry,
 };
 
@@ -47,6 +47,10 @@ pub struct CatalogParts {
     pub scopes: Vec<&'static ScopeEntry>,
     pub sdks: Vec<&'static SdkEntry>,
     pub icon_sets: Vec<&'static IconSetEntry>,
+    /// Docs-preview symbols (a `previews` build only). Not a slice of the
+    /// document: each is written as its component's or recipe's
+    /// `"preview"` key, and read back from there.
+    pub previews: Vec<&'static PreviewEntry>,
 }
 
 impl CatalogParts {
@@ -71,6 +75,7 @@ impl CatalogParts {
             scopes: ScopeEntry::registered(),
             sdks: SdkEntry::registered(),
             icon_sets: IconSetEntry::registered(),
+            previews: crate::previews().collect(),
         }
     }
 
@@ -129,7 +134,9 @@ impl CatalogParts {
                 })));
             }
         }
+        let previews = previews_from_json(value);
         Ok(Self {
+            previews,
             components,
             props_schemas,
             primitives: read(value),
@@ -172,6 +179,7 @@ impl CatalogParts {
             scopes,
             sdks,
             icon_sets,
+            previews,
         } = other;
         self.components.extend(components);
         self.props_schemas.extend(props_schemas);
@@ -190,6 +198,7 @@ impl CatalogParts {
         self.scopes.extend(scopes);
         self.sdks.extend(sdks);
         self.icon_sets.extend(icon_sets);
+        self.previews.extend(previews);
     }
 
     /// [`extend`](Self::extend), but `other` wins: an entry of `self`
@@ -217,6 +226,7 @@ impl CatalogParts {
         drop_same(&mut self.tools, &other.tools, |e| (e.module_path, e.name));
         drop_same(&mut self.recipes, &other.recipes, |e| (e.module_path, e.name));
         drop_same(&mut self.scopes, &other.scopes, |e| e.slug);
+        drop_same(&mut self.previews, &other.previews, |e| (e.kind, e.module_path, e.name));
         self.extend(other);
     }
 
@@ -231,15 +241,21 @@ impl CatalogParts {
         let components: Vec<Value> = components
             .iter()
             .map(|c| {
-                c.to_json_with(&|short_name| {
+                let mut out = c.to_json_with(&|short_name| {
                     crate::nearest_by_module(
                         self.props_schemas.iter().copied().filter(|s| s.short_name == short_name),
                         |s| s.module_path,
                         c.module_path,
                     )
-                })
+                });
+                self.join_preview(&mut out, PreviewKind::Component, c.module_path, c.name);
+                out
             })
             .collect();
+        let mut recipes = write(&self.recipes);
+        for (r, out) in sorted(&self.recipes).iter().zip(recipes.as_array_mut().into_iter().flatten()) {
+            self.join_preview(out, PreviewKind::Recipe, r.module_path, r.name);
+        }
         serde_json::json!({
             "catalog_version": 2,
             "components": components,
@@ -254,7 +270,7 @@ impl CatalogParts {
             "types": write(&self.types),
             "values": write(&self.values),
             "tools": write(&self.tools),
-            "recipes": write(&self.recipes),
+            "recipes": recipes,
             "scopes": write(&self.scopes),
             "sdks": write(&self.sdks),
             "icon_sets": write(&self.icon_sets),
@@ -280,9 +296,27 @@ fn leak_fields(fields: &[Value]) -> &'static [PropFieldSpec] {
 
 /// One slice of the document, sorted and serialized.
 fn write<S: CatalogSlice>(entries: &[&'static S]) -> Value {
+    Value::Array(sorted(entries).iter().map(|e| e.to_json()).collect())
+}
+
+/// `entries` in the slice's document order.
+fn sorted<S: CatalogSlice>(entries: &[&'static S]) -> Vec<&'static S> {
     let mut sorted = entries.to_vec();
     S::sort(&mut sorted);
-    Value::Array(sorted.iter().map(|e| e.to_json()).collect())
+    sorted
+}
+
+impl CatalogParts {
+    /// Write the preview registered for `(kind, module_path, name)`, if
+    /// any, as `out`'s `"preview"` key. Absent otherwise, so a catalog from
+    /// a build without previews is unchanged.
+    fn join_preview(&self, out: &mut Value, kind: PreviewKind, module_path: &str, name: &str) {
+        if let Some(p) =
+            self.previews.iter().find(|p| p.kind == kind && p.module_path == module_path && p.name == name)
+        {
+            out["preview"] = p.symbol.into();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -301,7 +335,6 @@ mod tests {
         docs: "A divider.",
         composes: &[],
         params: &EMPTY_PARAMS,
-        preview: "",
     };
     static EMPTY_SCHEMA: PropsSchemaEntry = PropsSchemaEntry { short_name: "SeparatorProps", module_path: "lib::menu", fields: &[] };
 
@@ -315,7 +348,6 @@ mod tests {
         docs: "",
         composes: &BADGE_EDGES,
         params: &BADGE_PARAMS,
-        preview: "",
     };
     static BADGE_TYPE: TypeEntry = TypeEntry {
         short_name: "BadgeProps",
@@ -323,6 +355,73 @@ mod tests {
         docs: "",
         shape: TypeShape::Struct { fields: &FIELDS },
     };
+
+    static BADGE_RECIPE: RecipeEntry = RecipeEntry {
+        name: "badge_basic",
+        target: "Badge",
+        module_path: "app::badge",
+        file: "/w/app/src/badge.rs",
+        line: 20,
+        docs: "",
+        source: "fn badge_basic() {}",
+        uses: &["Badge"],
+    };
+    static BADGE_PREVIEW: PreviewEntry = PreviewEntry {
+        kind: PreviewKind::Component,
+        module_path: "app::badge",
+        name: "Badge",
+        symbol: "__idealyst_preview__app__Badge__7_8",
+    };
+    static RECIPE_PREVIEW: PreviewEntry = PreviewEntry {
+        kind: PreviewKind::Recipe,
+        module_path: "app::badge",
+        name: "badge_basic",
+        symbol: "__idealyst_recipe__app__badge_basic__20_4",
+    };
+
+    /// A preview is its own registration, written as its entry's
+    /// `"preview"` key (the shape `idealyst docs`' codegen reads) and read
+    /// back from there, by both `from_json` and `build_from_json`. The
+    /// entry structs carry no preview field: macro output builds them by
+    /// literal, so one there would tie every macro version to one catalog
+    /// version.
+    #[test]
+    fn previews_join_their_entries_in_the_document_and_round_trip() {
+        let parts = CatalogParts {
+            components: vec![&BADGE, &SEPARATOR],
+            recipes: vec![&BADGE_RECIPE],
+            previews: vec![&BADGE_PREVIEW, &RECIPE_PREVIEW],
+            ..Default::default()
+        };
+        let doc = parts.to_json();
+        let component = |doc: &Value, name: &str| {
+            doc["components"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap().clone()
+        };
+        assert_eq!(component(&doc, "Badge")["preview"], BADGE_PREVIEW.symbol);
+        assert!(component(&doc, "Separator").get("preview").is_none(), "no preview, no key");
+        assert_eq!(doc["recipes"][0]["preview"], RECIPE_PREVIEW.symbol);
+        assert!(doc.get("previews").is_none(), "previews are not a slice of their own");
+
+        assert_eq!(CatalogParts::from_json(&doc).unwrap().to_json(), doc);
+
+        let cat = crate::ResolvedCatalog::build_from_json(&doc.to_string()).unwrap();
+        let badge = cat.entries().iter().find(|e| e.name == "Badge").unwrap();
+        assert_eq!(cat.component_preview(badge), Some(BADGE_PREVIEW.symbol));
+        let separator = cat.entries().iter().find(|e| e.name == "Separator").unwrap();
+        assert_eq!(cat.component_preview(separator), None);
+        let recipe = cat.recipes_for("Badge")[0];
+        assert_eq!(cat.recipe_preview(recipe), Some(RECIPE_PREVIEW.symbol));
+    }
+
+    /// A document from a build without previews is byte-for-byte what it
+    /// was before previews existed: no `"preview"` key anywhere.
+    #[test]
+    fn a_catalog_without_previews_writes_no_preview_key() {
+        let parts = CatalogParts { components: vec![&BADGE], recipes: vec![&BADGE_RECIPE], ..Default::default() };
+        let doc = parts.to_json();
+        assert!(doc["components"][0].get("preview").is_none());
+        assert!(doc["recipes"][0].get("preview").is_none());
+    }
 
     /// Regression: a named props struct with NO fields
     /// (`struct SeparatorProps {}`, idea-ui's `MenuSeparatorProps`) joins
@@ -379,7 +478,6 @@ mod tests {
             docs: "fresh",
             composes: &[],
             params: &[],
-            preview: "",
         };
         let mut compiled = CatalogParts { components: vec![&BADGE, &SEPARATOR], scopes: vec![&CORE], ..Default::default() };
         compiled.extend_replacing(CatalogParts { components: vec![&BADGE_AGAIN], ..Default::default() });
@@ -408,7 +506,6 @@ mod tests {
             docs: "",
             composes: &[],
             params: &PARAMS,
-            preview: "",
         };
         for schemas in [vec![&SHARED, &LOCAL], vec![&LOCAL, &SHARED]] {
             let doc = CatalogParts { components: vec![&ROW], props_schemas: schemas, ..Default::default() }.to_json();

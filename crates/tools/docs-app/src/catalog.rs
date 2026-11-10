@@ -271,7 +271,7 @@ fn build_recipes(cat: &ResolvedCatalog, name: &str) -> Vec<Recipe> {
         .map(|r| Recipe {
             name: r.name.to_string(),
             module_path: r.module_path.to_string(),
-            preview: r.preview.to_string(),
+            preview: cat.recipe_preview(r).unwrap_or_default().to_string(),
             docs: r.docs.to_string(),
             source: r.source.to_string(),
             primary: r.target == name,
@@ -473,7 +473,7 @@ impl CatalogModel {
                 scope: scope_link(cat, c.module_path),
                 members: Vec::new(),
                 icon_set: None,
-                preview: c.preview.to_string(),
+                preview: cat.component_preview(c).unwrap_or_default().to_string(),
                 source: sources.get(&format!("{}::{}", c.module_path, c.name)).cloned().unwrap_or_default(),
             });
         }

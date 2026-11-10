@@ -640,7 +640,7 @@ fn emit_component_fn(
     // The walks read `authored`: `import_split` above has replaced this
     // body with a build-kind macro they can't see into.
     // `previews`: an exported fn returning the component's docs preview,
-    // named by the symbol the catalog entry records. Only when `invocation`
+    // named by the symbol its catalog `PreviewEntry` registers. Only when `invocation`
     // declared the tag type the preview builds (`#fn_name` in the type
     // namespace) — a generic or otherwise unsupported signature gets no
     // dispatch glue, so no preview either.

@@ -29,8 +29,9 @@
 //! - `#[props]` and inline-props `#[component]` implement [`PreviewProps`]
 //!   for the props struct: one [`PreviewField`] per controllable field.
 //! - `#[component]` exports one `#[no_mangle]` function per component
-//!   returning its [`Preview`], and records the symbol in the catalog
-//!   entry. The docs app declares those symbols in an `extern` block
+//!   returning its [`Preview`], and registers the symbol with the catalog
+//!   (a `PreviewEntry`, written as the component's `"preview"` key in the
+//!   catalog document). The docs app declares those symbols in an `extern` block
 //!   generated from the catalog. That is what gets a callable for every
 //!   component into the wasm bundle: inventory registrations are pruned
 //!   there, and a path to a component in a private module can't be named

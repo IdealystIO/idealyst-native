@@ -222,7 +222,6 @@ mod tests {
             docs,
             composes,
             params: &[],
-            preview: "",
         }))
         // params: &[] — lint cares about composes + docs, not props.
     }

@@ -132,6 +132,7 @@ pub struct ResolvedCatalog {
     sdks: Vec<&'static crate::SdkEntry>,
     icon_sets: Vec<&'static crate::IconSetEntry>,
     values: Vec<&'static crate::ValueEntry>,
+    previews: Vec<&'static crate::PreviewEntry>,
 }
 
 impl ResolvedCatalog {
@@ -154,6 +155,7 @@ impl ResolvedCatalog {
         cat.sdks = crate::sdks().collect();
         cat.icon_sets = crate::icon_sets().collect();
         cat.values = crate::values().collect();
+        cat.previews = crate::previews().collect();
         cat
     }
 
@@ -205,7 +207,27 @@ impl ResolvedCatalog {
         cat.sdks = slice_vec::<SdkEntry>(&value);
         cat.icon_sets = slice_vec::<IconSetEntry>(&value);
         cat.values = slice_vec::<ValueEntry>(&value);
+        cat.previews = previews_from_json(&value);
         Ok(cat)
+    }
+
+    /// The exported symbol of `entry`'s docs preview, in a catalog from a
+    /// `previews` build (`idealyst docs`); `None` otherwise.
+    pub fn component_preview(&self, entry: &ComponentEntry) -> Option<&'static str> {
+        self.preview_of(crate::PreviewKind::Component, entry.module_path, entry.name)
+    }
+
+    /// The exported symbol rendering `recipe` (a zero-argument recipe in a
+    /// `previews` build); `None` otherwise.
+    pub fn recipe_preview(&self, recipe: &crate::RecipeEntry) -> Option<&'static str> {
+        self.preview_of(crate::PreviewKind::Recipe, recipe.module_path, recipe.name)
+    }
+
+    fn preview_of(&self, kind: crate::PreviewKind, module_path: &str, name: &str) -> Option<&'static str> {
+        self.previews
+            .iter()
+            .find(|p| p.kind == kind && p.module_path == module_path && p.name == name)
+            .map(|p| p.symbol)
     }
 
     pub fn primitives(&self) -> &[&'static crate::PrimitiveEntry] {
@@ -570,7 +592,6 @@ pub(crate) fn leak_entry_from_json(c: &serde_json::Value) -> Result<&'static Com
         docs: leak_str(c["docs"].as_str().unwrap_or("").to_string()),
         composes: composes_leaked,
         params: params_leaked,
-        preview: leak_str(c["preview"].as_str().unwrap_or("").to_string()),
     };
     Ok(Box::leak(Box::new(entry)))
 }
@@ -822,7 +843,6 @@ fn leak_recipe_from_json(v: &serde_json::Value) -> Option<&'static RecipeEntry> 
         docs: leak_str(docs),
         source: leak_str(source),
         uses: Box::leak(uses.into_boxed_slice()),
-        preview: leak_str(v["preview"].as_str().unwrap_or("").to_string()),
     })))
 }
 
@@ -978,6 +998,37 @@ fn leak_icon_set_from_json(v: &serde_json::Value) -> Option<&'static IconSetEntr
 
 /// `value[S::KEY]` as a Vec of leaked entries, or empty when the key is
 /// absent / not an array. The generic reader half of `build_from_json`.
+/// The [`crate::PreviewEntry`]s a catalog document carries: each
+/// component's and recipe's `"preview"` key (written by
+/// [`crate::CatalogParts::to_json`]). Memoized like every other entry, so
+/// a rebuild leaks nothing new for a preview it has seen.
+pub(crate) fn previews_from_json(value: &serde_json::Value) -> Vec<&'static crate::PreviewEntry> {
+    use crate::{PreviewEntry, PreviewKind};
+    let mut out = Vec::new();
+    for (key, kind) in [("components", PreviewKind::Component), ("recipes", PreviewKind::Recipe)] {
+        for v in value[key].as_array().into_iter().flatten() {
+            let (Some(name), Some(symbol)) = (v["name"].as_str(), v["preview"].as_str()) else { continue };
+            if symbol.is_empty() {
+                continue;
+            }
+            let module_path = v["module_path"].as_str().unwrap_or("");
+            let id = serde_json::json!([kind.as_str(), module_path, name, symbol]);
+            let entry = memoized::<PreviewEntry, ()>(&id, |_| {
+                Ok(&*Box::leak(Box::new(PreviewEntry {
+                    kind,
+                    module_path: leak_str(module_path.to_string()),
+                    name: leak_str(name.to_string()),
+                    symbol: leak_str(symbol.to_string()),
+                })))
+            });
+            if let Ok(entry) = entry {
+                out.push(entry);
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn slice_vec<S: LeakFromJson + Send + Sync>(value: &serde_json::Value) -> Vec<&'static S> {
     value[S::KEY]
         .as_array()
@@ -1130,7 +1181,6 @@ mod tests {
             docs: "",
             composes,
             params: &[],
-            preview: "",
         }))
     }
 

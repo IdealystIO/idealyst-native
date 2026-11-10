@@ -78,6 +78,8 @@ pub(crate) fn emit(input: TokenStream2) -> TokenStream2 {
     let use_lits = uses.iter().map(|u| quote! { #u });
     // `previews`: an exported render fn for the docs' live recipe preview.
     let (preview_export, preview_symbol) = crate::preview_emit::recipe_symbol(&func);
+    let preview_registration =
+        crate::preview_emit::registration("Recipe", &func.sig.ident.to_string(), &preview_symbol);
 
     quote! {
         // The recipe fn — compiled + type-checked against the live
@@ -96,8 +98,8 @@ pub(crate) fn emit(input: TokenStream2) -> TokenStream2 {
                 docs: #docs,
                 source: #source,
                 uses: &[ #(#use_lits),* ],
-                preview: #preview_symbol,
             }
         }
+        #preview_registration
     }
 }

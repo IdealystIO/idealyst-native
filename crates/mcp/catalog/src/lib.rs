@@ -147,11 +147,48 @@ pub struct ComponentEntry {
     /// Function parameters in declaration order. Empty for zero-arg
     /// components. See [`ParamSpec`].
     pub params: &'static [ParamSpec],
-    /// The exported symbol of the component's docs preview — a
-    /// `fn() -> runtime_core::previews::Preview` — when the build had the
-    /// `previews` feature on; empty otherwise. `idealyst docs` links each
-    /// preview by this name.
-    pub preview: &'static str,
+}
+
+/// What a [`PreviewEntry`] renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PreviewKind {
+    /// A `#[component]`: the symbol is a
+    /// `fn() -> runtime_core::previews::Preview`.
+    Component,
+    /// A zero-argument `recipe!`: the symbol is a `fn() -> Element`.
+    Recipe,
+}
+
+impl PreviewKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PreviewKind::Component => "component",
+            PreviewKind::Recipe => "recipe",
+        }
+    }
+}
+
+/// The exported symbol of a docs preview, registered by `#[component]` /
+/// `recipe!` only in a build with `runtime-core/previews` (`idealyst
+/// docs`). Keyed to its [`ComponentEntry`] or [`RecipeEntry`] by
+/// `(module_path, name)`; the catalog document writes it as that entry's
+/// `"preview"` key ([`CatalogParts::to_json`]), and
+/// [`ResolvedCatalog::component_preview`] / [`ResolvedCatalog::recipe_preview`]
+/// look it up.
+///
+/// A registration of its own, not a field on the entries: the entries are
+/// built by struct literal in macro output, so a field there would break
+/// every macro crate older or newer than the catalog.
+#[derive(Debug)]
+pub struct PreviewEntry {
+    pub kind: PreviewKind,
+    /// `module_path!()` of the component or recipe.
+    pub module_path: &'static str,
+    /// The component's or recipe's name, as its entry records it.
+    pub name: &'static str,
+    /// The exported (`#[no_mangle]`) symbol `idealyst docs` links.
+    pub symbol: &'static str,
 }
 
 /// A `#[component]` the author tagged `external` — i.e. it should be
@@ -195,6 +232,7 @@ inventory::collect!(AnimationEntry);
 inventory::collect!(TypeEntry);
 inventory::collect!(ValueEntry);
 inventory::collect!(RecipeEntry);
+inventory::collect!(PreviewEntry);
 inventory::collect!(ScopeEntry);
 inventory::collect!(SdkEntry);
 inventory::collect!(IconSetEntry);
@@ -652,10 +690,6 @@ pub struct RecipeEntry {
     /// composes walk). Lets `describe_component` surface recipes that
     /// merely *use* a component, not just the primary one.
     pub uses: &'static [&'static str],
-    /// The exported symbol of a `fn() -> Element` rendering this recipe,
-    /// for a zero-argument recipe built with the `previews` feature on;
-    /// empty otherwise. `idealyst docs` renders the recipe live through it.
-    pub preview: &'static str,
 }
 
 /// A documentation **scope** — a flat label that groups documentable
@@ -1147,6 +1181,11 @@ pub fn methods() -> impl Iterator<Item = &'static MethodEntry> {
 /// bodies.
 pub fn animations() -> impl Iterator<Item = &'static AnimationEntry> {
     inventory::iter::<AnimationEntry>()
+}
+
+/// Iterate every [`PreviewEntry`] — empty outside a `previews` build.
+pub fn previews() -> impl Iterator<Item = &'static PreviewEntry> {
+    inventory::iter::<PreviewEntry>()
 }
 
 /// Iterate every [`RecipeEntry`] captured by `recipe!(...)`.

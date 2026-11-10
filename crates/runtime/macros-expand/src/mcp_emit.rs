@@ -33,7 +33,8 @@ use syn::ItemFn;
 /// `AnimationEntry` records.
 ///
 /// `preview` is the exported preview symbol (`preview_emit`), empty when
-/// the build emits none.
+/// the build emits none; a non-empty one is registered beside the entry
+/// (`preview_emit::registration`).
 ///
 /// `body` is the body as the author wrote it (the component's own may have
 /// been rewritten into macros the walks can't see into); the signature
@@ -45,6 +46,7 @@ pub(crate) fn emit(
     preview: &str,
 ) -> TokenStream2 {
     let name_str = item_fn.sig.ident.to_string();
+    let preview_registration = crate::preview_emit::registration("Component", &name_str, preview);
     let docs = collect_doc_comments(&item_fn.attrs);
     let composes = collect_composes(body);
     let params = collect_params(&item_fn.sig);
@@ -130,9 +132,9 @@ pub(crate) fn emit(
                 docs: #docs,
                 composes: &[ #(#edges),* ],
                 params: &[ #(#param_entries),* ],
-                preview: #preview,
             }
         }
+        #preview_registration
         #(#method_submissions)*
         #(#animation_submissions)*
     }

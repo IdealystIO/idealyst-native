@@ -181,7 +181,7 @@ builds:
   `previews::PreviewProps` for the props struct, picking each field's
   control from its type at compile time.
 - `#[component]` exports a function returning the component's `Preview`,
-  and the catalog entry records its symbol name. A zero-argument
+  and registers its symbol name with the catalog. A zero-argument
   `recipe!` exports a render function the same way.
 - The docs site links those functions by symbol. This reaches components
   in private modules and survives the web build's dead-code pass.

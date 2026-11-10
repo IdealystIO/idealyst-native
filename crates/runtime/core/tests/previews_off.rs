@@ -6,7 +6,7 @@
 //!   builds, so it compiles only because the attribute dropped the impl;
 //! - `#[prop(example = …)]` is accepted and changes nothing;
 //! - with `catalog` on but `previews` off (what `idealyst dev` builds), a
-//!   component's catalog entry records no preview symbol.
+//!   the catalog registers no preview symbol.
 //!
 //!   cargo test -p runtime-core --test previews_off
 //!   cargo test -p runtime-core --features catalog --test previews_off
@@ -71,8 +71,9 @@ fn example_is_inert_and_prop_control_impls_vanish() {
 #[cfg(feature = "catalog")]
 #[test]
 fn catalog_without_previews_records_no_symbol() {
-    let entry = runtime_core::__mcp::entries()
-        .find(|e| e.name == "Labeled" && e.module_path == module_path!())
-        .expect("Labeled is in the catalog");
-    assert_eq!(entry.preview, "");
+    assert!(
+        runtime_core::__mcp::entries().any(|e| e.name == "Labeled" && e.module_path == module_path!()),
+        "Labeled is in the catalog"
+    );
+    assert_eq!(runtime_core::__mcp::previews().count(), 0, "no preview is registered without `previews`");
 }
