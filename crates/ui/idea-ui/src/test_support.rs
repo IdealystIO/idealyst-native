@@ -169,6 +169,12 @@ pub enum P {
     Fragment {
         children: Vec<Element>,
     },
+    /// A `presence` hole. `child` is the per-mount builder (call it to get
+    /// the subtree a mount would build NOW); `exit_ms` is the exit hold.
+    Presence {
+        child: Box<dyn Fn() -> Element>,
+        exit_ms: Option<u32>,
+    },
     /// Anything the mirror doesn't model (reactive holes, keyed lists,
     /// external, …) — carries a diagnostic kind name.
     Other(&'static str),
@@ -356,6 +362,10 @@ mod imp {
                 trap_focus: p.trap_focus,
                 style: style(p.style),
             };
+        }
+        if let Some(cell) = data.downcast_ref::<PrimCell<prims::PresencePrim>>() {
+            let p = cell.take();
+            return P::Presence { child: p.child, exit_ms: p.exit.map(|a| a.duration_ms) };
         }
         P::Other("unmodeled-item")
     }

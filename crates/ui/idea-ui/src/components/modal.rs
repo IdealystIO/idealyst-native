@@ -70,8 +70,10 @@
 //! it is capped to the viewport width (minus a margin) reactively so the
 //! surface never overflows a phone. For a centered or top-anchored card it
 //! REPLACES the theme sheet's `max_width` (560) — any width, including one
-//! above 560, is honored up to the viewport cap. A sheet fills its
-//! container up to the theme's `max_width`. The surface height is likewise
+//! above 560, is honored up to the viewport cap. A sheet takes the
+//! viewport's width up to the theme's `max_width`, centered: full width on a
+//! phone, a phone-width sheet on a tablet, with the scrim taking taps on
+//! either side of it. The surface height is likewise
 //! capped to the safe viewport height (a centered card keeps a margin top
 //! and bottom; a top-anchored card keeps its offset above and a margin
 //! below) — a `max-height`, not a fixed height, so a short modal stays
@@ -111,7 +113,7 @@ use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
     component, component_styles, effect, presence, EdgeInsets, safe_area_insets, stylesheet, viewport_size, AlignItems, Color,
     Easing, Element, FlexDirection, IdealystSchema, IntoElement, JustifyContent, Length, Overflow,
-    Position, PresenceAnim, PresenceState, Reactive, Ref, StyleApplication, StyleRules, StyleSheet,
+    PointerEvents, Position, PresenceAnim, PresenceState, Reactive, Ref, StyleApplication, StyleRules, StyleSheet,
     Tokenized, ViewHandle
 };
 
@@ -308,7 +310,8 @@ pub enum ModalPresentation {
     /// offset (minus a margin), then scrolls, like a centered card. It
     /// drops into place from a few DIPs above and fades out the same way.
     Top,
-    /// A full-width surface pinned to the BOTTOM edge — rounded top corners,
+    /// A surface pinned to the BOTTOM edge — the viewport's width up to the
+    /// `surface` slot's `max_width` (560 by default), centered; rounded top corners,
     /// capped at [`SHEET_MAX_HEIGHT_FRACTION`] of the safe height — that
     /// rises from below.
     ///
@@ -359,7 +362,9 @@ pub struct ModalProps {
     pub footer: ModalSection,
     /// Centered card (default), top-anchored card, or bottom sheet — see
     /// [`ModalPresentation`]. Everything else about the modal is unchanged
-    /// by this choice.
+    /// by this choice. Read when the modal OPENS: a signal or `rx!` (a
+    /// presentation picked by breakpoint) takes effect on the next open,
+    /// and a change while open waits for it to close.
     pub presentation: ModalPresentation,
     /// Distance in DIPs from the top of the safe rect to the card's top
     /// edge, for [`ModalPresentation::Top`]. `None` (the default) uses
@@ -384,13 +389,16 @@ pub struct ModalProps {
     /// Escape/back are swallowed without reaching `on_dismiss` (Android's
     /// back key does not fall through to the screen under the modal), and
     /// the backdrop does nothing unless `on_backdrop_press` is set. Close a non-dismissable modal
-    /// from its own content (flip `open`).
+    /// from its own content (flip `open`). Read when the modal opens, like
+    /// `presentation`.
     pub dismissable: bool,
     /// Desired surface width on a roomy viewport, in DIPs (default 520).
     /// Capped to the viewport width reactively so it never overflows a
     /// phone; otherwise honored as given — it overrides the theme sheet's
     /// 560 `max_width`. Applies to `Centered` and `Top`; ignored by
-    /// `ModalPresentation::Sheet`, which spans its container.
+    /// `ModalPresentation::Sheet`, which is capped by the `surface` slot's
+    /// `max_width` instead. Read when the
+    /// modal opens, like `presentation`.
     pub width: f32,
     /// The sheet's translate-Y animator, handed in by the app so it can drive
     /// the surface itself — drag-to-dismiss, a snap point, a peek state.
@@ -560,6 +568,16 @@ fn enter_slide_px(presentation: ModalPresentation) -> f32 {
     }
 }
 
+/// How long `presence` keeps the portal mounted after `open` goes false:
+/// the length of that presentation's exit. A sheet's slide takes
+/// [`SHEET_EXIT_MS`]; a card's fade takes `EXIT_MS`.
+fn exit_hold_ms(presentation: ModalPresentation) -> u64 {
+    match presentation {
+        ModalPresentation::Sheet => SHEET_EXIT_MS,
+        ModalPresentation::Centered | ModalPresentation::Top => EXIT_MS,
+    }
+}
+
 /// The placement container's style: which sheet lays the card out, plus
 /// the safe-area padding (and, for `Top`, the offset) on the INLINE layer.
 ///
@@ -567,8 +585,8 @@ fn enter_slide_px(presentation: ModalPresentation) -> f32 {
 /// - `Top`: `justify_content: FlexStart`, padded by every inset, with the
 ///   resolved top offset added to the top padding. The card's top edge is
 ///   therefore `insets.top + offset` regardless of its height.
-/// - `Sheet`: pinned to the bottom edge and full-bleed, so only the TOP
-///   inset constrains it (it must not grow under the notch); the surface
+/// - `Sheet`: pinned to the bottom edge with no side padding (it may run to
+///   the screen's edges on a phone), so only the TOP inset constrains it (it must not grow under the notch); the surface
 ///   itself carries the bottom inset as frame padding so its background
 ///   reaches the screen edge.
 ///
@@ -633,7 +651,8 @@ stylesheet! {
 }
 
 /// Fullscreen flex container that pins the sheet to the BOTTOM edge and
-/// stretches it to the full width. The sheet counterpart of
+/// stretches its wrappers to the full width (the surface is capped and
+/// centered inside them). The sheet counterpart of
 /// [`center_container_sheet`].
 fn sheet_container_sheet() -> Rc<StyleSheet> {
     ModalSheetContainerSheet::sheet()
@@ -643,7 +662,9 @@ stylesheet! {
     ModalSheetContainerSheet<()> {
         base(_t) {
             flex_direction: FlexDirection::Column,
-            // Stretch, not Center: a sheet is full-bleed horizontally.
+            // Stretch, not Center: the sheet's `width: 100%` needs a
+            // definite width to resolve against, and a centered wrapper
+            // would hug its content instead.
             align_items: AlignItems::Stretch,
             justify_content: JustifyContent::FlexEnd,
             width: Length::pct(100.0),
@@ -675,6 +696,11 @@ stylesheet! {
     ModalCardAnimSheet<()> {
         base(_t) {
             flex_direction: FlexDirection::Column,
+            // Centers a SHEET in the stretched wrappers once its width cap
+            // (the surface slot's `max_width`) is narrower than the
+            // viewport. A card's wrappers hug its px width, so it is a
+            // no-op there.
+            align_items: AlignItems::Center,
             opacity: 0.0,
         }
     }
@@ -772,6 +798,13 @@ stylesheet! {
     ModalCardAvoiderSheet<()> {
         base(_t) {
             overflow: Overflow::Visible,
+            // The wrappers around the surface span the viewport under a
+            // sheet, so they must not take taps: a tap beside a sheet
+            // narrower than the screen reaches the scrim. The surface opts
+            // back in (`pointer_events: Auto`, CSS inheritance on every
+            // backend; on Android a non-clickable view passes the tap on
+            // anyway).
+            pointer_events: PointerEvents::None,
         }
     }
 }
@@ -806,24 +839,31 @@ pub fn Modal(props: ModalProps) -> Element {
     let footer = props.footer;
     let on_dismiss = props.on_dismiss;
     let on_backdrop_press = props.on_backdrop_press;
-    // TODO(reactive-sweep): route `dismissable`/`width` reactively into the
-    // overlay structure. Both thread through `build_overlay` →
-    // `assemble_overlay` as plain `bool`/`f32` and drive STRUCTURE: `width`
-    // feeds the viewport-cap closure that sizes the surface (already reactive
-    // on viewport, but the *desired* width is captured by value), and
-    // `dismissable` selects the backdrop handler. A live signal would need the
-    // surface width closure and the backdrop-handler wiring rebuilt on change.
-    // Snapshot here (presence rebuilds `build` per open, so a value change
-    // between opens is still picked up).
-    let dismissable = props.dismissable.get();
-    let desired = props.width.get();
-    // Snapshotted for the same reason as `dismissable`/`width`: it drives
-    // STRUCTURE (container, surface geometry, animation distance),
-    // so a live change would need the whole overlay rebuilt. `presence`
-    // rebuilds `build` per open, so a change between opens is picked up.
-    let presentation = props.presentation.get();
+    // `dismissable`, `width` and `presentation` drive STRUCTURE (the
+    // backdrop handler, the surface geometry, the container and the
+    // animation distance), so each is read ONCE PER OPEN, inside `build`,
+    // and holds until that open's exit finishes. Not once per Modal: a
+    // Modal is usually built with its screen while closed, and a value that
+    // depends on the viewport (a breakpoint-chosen presentation) is still
+    // the pre-measure seed there on a cold Android boot (the viewport is 0
+    // until the first layout pass), so a read at build would pin a tablet's
+    // `Top` card as a phone `Sheet`. Not live either: a change while open
+    // would rebuild the overlay and drop the content's state.
+    let dismissable = props.dismissable;
+    let width = props.width;
+    let presentation = props.presentation;
+    // `presence`'s exit hold is fixed when the Modal is built, so it can't
+    // follow a per-open presentation. A fixed presentation gets its own
+    // hold; one that can change gets the longest (a card's portal then
+    // stays mounted, invisible, `SHEET_EXIT_MS - EXIT_MS` after its fade —
+    // unmounting a sheet at a card's hold would cut its slide off halfway
+    // down).
+    let exit_hold_ms = match &presentation {
+        Reactive::Static(p) => exit_hold_ms(*p),
+        Reactive::Dynamic(_) => SHEET_EXIT_MS.max(EXIT_MS),
+    };
     // Read LIVE (inside the container/surface style closures), unlike the
-    // snapshots above: it moves the card but changes no structure.
+    // per-open reads above: it moves the card but changes no structure.
     let top_offset = props.top_offset;
     let sheet_slide = props.sheet_slide;
     let styles = props.styles;
@@ -840,14 +880,16 @@ pub fn Modal(props: ModalProps) -> Element {
     // bidirectionally via an effect that reads `open`.
     let build = {
         let open = open.clone();
+        // `presence` builds its child untracked, so these reads take the
+        // values current at this open without subscribing anything.
         move || build_overlay(
             ModalParts { header: header.build(), content: (content.0)(), footer: footer.build() },
             open.clone(),
             on_dismiss.clone(),
             on_backdrop_press.clone(),
-            dismissable,
-            desired,
-            presentation,
+            dismissable.get(),
+            width.get(),
+            presentation.get(),
             top_offset.clone(),
             styles.clone(),
             sheet_slide.clone(),
@@ -856,21 +898,11 @@ pub fn Modal(props: ModalProps) -> Element {
 
     presence(build)
         .present(move || open.get())
-        // Timing-only exit: hold the portal mounted EXIT_MS so the
-        // animate-out (driven inside `build`) can play, then unmount. The
-        // PresenceState is a no-op on the portal child; the visual lives on
-        // the inner views.
-        // Per presentation: a sheet's slide takes `SHEET_EXIT_MS`, and
-        // unmounting at the card's 150ms would cut it off halfway down —
-        // which looks exactly like the vanishing this replaced.
-        .exit(PresenceAnim::new(
-            PresenceState::default(),
-            match presentation {
-                ModalPresentation::Sheet => SHEET_EXIT_MS as u32,
-                ModalPresentation::Centered | ModalPresentation::Top => EXIT_MS as u32,
-            },
-            Easing::EaseIn,
-        ))
+        // Timing-only exit: hold the portal mounted so the animate-out
+        // (driven inside `build`) can play, then unmount. The PresenceState
+        // is a no-op on the portal child; the visual lives on the inner
+        // views.
+        .exit(PresenceAnim::new(PresenceState::default(), exit_hold_ms as u32, Easing::EaseIn))
         .into_element()
 }
 
@@ -1151,8 +1183,9 @@ fn assemble_overlay(
                 vp.height - insets.top - insets.bottom,
                 top_offset_for_surface.get(),
             );
-            // A card is width-capped and centered; a sheet is full-bleed and
-            // takes the whole width its stretching container gives it.
+            // A card is width-capped and centered; a sheet takes the
+            // viewport's width up to the surface slot's `max_width`, centered
+            // by the animation wrapper (`card_anim_sheet`).
             let width = match presentation {
                 ModalPresentation::Centered | ModalPresentation::Top => Length::Px(effective_modal_width(
                     desired,
@@ -1176,8 +1209,8 @@ fn assemble_overlay(
             // `ModalProps::width = 1200` was silently a no-op (#109). For a
             // card the author's width, already viewport-capped by
             // `effective_modal_width`, IS the cap: pin `max_width` to it.
-            // A sheet keeps the sheet's cap (it fills its container up to
-            // it, which is what keeps a sheet phone-shaped on a tablet).
+            // A sheet keeps the slot's cap: full width on a phone, a
+            // phone-width sheet centered at the bottom of a tablet.
             let max_width = match presentation {
                 ModalPresentation::Centered | ModalPresentation::Top => Some(Tokenized::Literal(width.clone())),
                 ModalPresentation::Sheet => None,
@@ -1191,6 +1224,8 @@ fn assemble_overlay(
                 padding_bottom: (pad_bottom > 0.0).then(|| Tokenized::Literal(Length::Px(pad_bottom))),
                 border_bottom_left_radius: bottom_radius.clone(),
                 border_bottom_right_radius: bottom_radius,
+                // Re-enables hits under the avoider's `none`.
+                pointer_events: Some(PointerEvents::Auto),
                 ..Default::default()
             }
         })
@@ -1199,7 +1234,21 @@ fn assemble_overlay(
         .overridden(styles.surface.as_ref());
     let surface_children: Vec<Element> =
         header.into_iter().chain(Some(scroller)).chain(footer).collect();
-    let surface = runtime_core::view(surface_children).with_style(surface_style).into_element();
+    // The surface is a `pressable` (no-op handler), NOT a plain `view`, so
+    // a tap that lands on the card is CONSUMED here and does not fall
+    // through to the backdrop beneath. On iOS/web the topmost view at a
+    // point wins hit-testing anyway, but on Android a non-clickable
+    // `ViewGroup` returns `false` from `onTouchEvent` and `FrameLayout`
+    // keeps dispatching to the earlier (lower) backdrop child, whose
+    // pressable consumes the tap and dismisses the modal. Children-first
+    // dispatch still delivers taps on the card's own interactive
+    // descendants (buttons, inputs) to them; only the card's empty regions
+    // are swallowed here.
+    //
+    // It is the SURFACE, not a wrapper, because the wrappers span the
+    // viewport under a sheet: the consuming box must be exactly the visible
+    // one, or the scrim beside a centered sheet goes dead.
+    let surface = runtime_core::pressable(surface_children, || {}).with_style(surface_style).into_element();
 
     // Animation wrapper: the fade + translateY slide live on this real
     // `view` (`ViewHandle`), driven by `card_opacity`/`card_slide` (bound +
@@ -1211,22 +1260,9 @@ fn assemble_overlay(
         .into_element();
 
     // Positioned wrapper so the card stacks above the absolute backdrop on
-    // web (see `card_layer_sheet`).
-    //
-    // It's a `pressable` (no-op handler), NOT a plain `view`, so a tap that
-    // lands on the card itself is CONSUMED here and does not fall through to
-    // the backdrop sibling beneath. On iOS/web the topmost view at a point
-    // already wins hit-testing, so the card never leaked taps to the
-    // backdrop — but on Android a non-clickable `ViewGroup` returns `false`
-    // from `onTouchEvent`, and `FrameLayout` then keeps dispatching to the
-    // earlier (lower) backdrop child, whose pressable consumes the tap and
-    // dismisses the modal. Marking the card-layer pressable makes it
-    // touch-consuming on Android (matching iOS/web), so tapping the card no
-    // longer dismisses. Children-first dispatch still delivers taps on the
-    // card's own interactive descendants (buttons, inputs) to them; only the
-    // empty regions of the card are swallowed here — exactly what a modal
-    // surface should do.
-    let card = runtime_core::pressable(vec![anim_view], || {})
+    // web (see `card_layer_sheet`). It takes no taps (it inherits the
+    // avoider's `none`); the surface does.
+    let card = runtime_core::view(vec![anim_view])
         .with_style(StyleApplication::new(card_layer_sheet()))
         .into_element();
     // Keep the card clear of the soft keyboard (a form in a modal). A portal
@@ -1397,7 +1433,7 @@ mod tests {
         assert_eq!(hits.get(), 2);
     }
 
-    /// Regression: the Modal's card layer must be a touch-CONSUMING
+    /// Regression: the Modal's surface must be a touch-CONSUMING
     /// `pressable`, not a plain `view`.
     ///
     /// The Android portal is a single-window view overlay whose children
@@ -1406,13 +1442,14 @@ mod tests {
     /// so `FrameLayout` falls through to the lower backdrop child, whose
     /// pressable consumes the tap and dismisses the modal — tapping the
     /// card *closed* it. iOS/web don't fall through (topmost view at a
-    /// point wins hit-testing). A `pressable` card layer (no-op handler)
+    /// point wins hit-testing). A `pressable` surface (no-op handler)
     /// consumes taps on every backend.
     ///
-    /// We assert the structure the fix relies on: the portal's second
-    /// child (the card, painted above the first-child backdrop) is a
-    /// `Pressable`. If a refactor reverts it to a plain `view`, the
-    /// Android tap-through regression returns and this test fails.
+    /// We assert the structure the fix relies on: the surface inside the
+    /// portal's second child (the card, painted above the first-child
+    /// backdrop) is a `Pressable`. If a refactor reverts it to a plain
+    /// `view`, the Android tap-through regression returns and this test
+    /// fails.
     #[test]
     fn regression_modal_card_layer_consumes_touches() {
         with_test_world(|| {
@@ -1456,11 +1493,11 @@ mod tests {
                 "center container should hold [backdrop, card] as siblings"
             );
             // layer 0 = backdrop (a view wrapping the hit pressable),
-            // layer 1 = card layer (must be a Pressable so card taps don't
-            // fall through to the backdrop).
+            // layer 1 = the card, whose surface must be a Pressable so card
+            // taps don't fall through to the backdrop.
             assert!(
-                matches!(card_layer(layers.remove(1)), P::Pressable { .. }),
-                "card layer must be a touch-consuming Pressable so a tap on \
+                matches!(surface_in_card(layers.remove(1)), P::Pressable { .. }),
+                "the surface must be a touch-consuming Pressable so a tap on \
                  the card doesn't fall through to the backdrop and dismiss \
                  the modal (Android FrameLayout fall-through)"
             );
@@ -1468,8 +1505,8 @@ mod tests {
     }
 
     /// The card layer: a `Translate` keyboard avoider (a portal's content is
-    /// outside any app-level avoider) wrapping the touch-consuming card
-    /// `Pressable`. Returns the classified inner layer.
+    /// outside any app-level avoider) wrapping the card. Returns the
+    /// classified inner layer.
     fn card_layer(layer: Element) -> P {
         match classify(layer) {
             P::View { keyboard_avoid: Some(avoid), mut children, .. } => {
@@ -1486,6 +1523,22 @@ mod tests {
                  or a modal form sits under the soft keyboard"
             ),
         }
+    }
+
+    /// Walk `avoider → card layer → anim view → surface` and return the
+    /// classified surface. The two wrappers between must be plain views:
+    /// under a sheet they span the viewport, so a touch-consuming wrapper
+    /// would kill the scrim beside the sheet.
+    fn surface_in_card(card: Element) -> P {
+        let mut layer = match card_layer(card) {
+            P::View { children, .. } => children,
+            _ => panic!("the card layer is a plain view; the surface takes the taps"),
+        };
+        let mut anim = match classify(layer.remove(0)) {
+            P::View { children, .. } => children,
+            _ => panic!("card layer wraps the animation view"),
+        };
+        classify(anim.remove(0))
     }
 
     /// Find the body view — the first `View` with a direct `Text` child (the
@@ -1699,17 +1752,9 @@ mod tests {
             P::View { children, .. } => children,
             _ => panic!("portal child should be the placement container"),
         };
-        let mut card = match card_layer(layers.remove(1)) {
-            P::Pressable { children, .. } => children,
-            _ => panic!("card layer should be a Pressable"),
-        };
-        let mut anim = match classify(card.remove(0)) {
-            P::View { children, .. } => children,
-            _ => panic!("card layer wraps the animation view"),
-        };
-        match classify(anim.remove(0)) {
-            P::View { style: Some(style), .. } => style.resolve(),
-            _ => panic!("animation view wraps a styled surface"),
+        match surface_in_card(layers.remove(1)) {
+            P::Pressable { style: Some(style), .. } => style.resolve(),
+            _ => panic!("animation view wraps a styled, pressable surface"),
         }
     }
 
@@ -1820,7 +1865,7 @@ mod tests {
     /// that decision is being taken back.
     ///
     /// This also pins the Android fall-through fix for the sheet arm — the
-    /// card layer must stay a `Pressable` in both presentations, or a tap on
+    /// surface must stay a `Pressable` in every presentation, or a tap on
     /// a sheet dismisses it on Android (see
     /// `regression_modal_card_layer_consumes_touches`).
     #[test]
@@ -1847,21 +1892,13 @@ mod tests {
                     _ => panic!("portal child should be the placement container"),
                 };
                 assert_eq!(layers.len(), 2, "container holds [backdrop, card]");
-                let mut card = match card_layer(layers.remove(1)) {
-                    P::Pressable { children, .. } => children,
+                match surface_in_card(layers.remove(1)) {
+                    P::Pressable { children, .. } => children.len(),
                     _ => panic!(
-                        "the card layer must stay a touch-consuming Pressable in \
-                         BOTH presentations, or a tap on the surface falls \
-                         through to the backdrop on Android"
+                        "the surface must stay a touch-consuming Pressable in \
+                         every presentation, or a tap on it falls through to \
+                         the backdrop on Android"
                     ),
-                };
-                let mut anim = match classify(card.remove(0)) {
-                    P::View { children, .. } => children,
-                    _ => panic!("card layer wraps the animation view"),
-                };
-                match classify(anim.remove(0)) {
-                    P::View { children, .. } => children.len(),
-                    _ => panic!("animation view wraps the surface"),
                 }
             };
 
@@ -1896,17 +1933,9 @@ mod tests {
             P::View { children, .. } => children,
             _ => panic!("portal child should be the placement container"),
         };
-        let mut card = match card_layer(layers.remove(1)) {
+        match surface_in_card(layers.remove(1)) {
             P::Pressable { children, .. } => children,
-            _ => panic!("card layer should be a Pressable"),
-        };
-        let mut anim = match classify(card.remove(0)) {
-            P::View { children, .. } => children,
-            _ => panic!("card layer wraps the animation view"),
-        };
-        match classify(anim.remove(0)) {
-            P::View { children, .. } => children,
-            _ => panic!("animation view wraps the surface"),
+            _ => panic!("animation view wraps the pressable surface"),
         }
     }
 
@@ -2148,6 +2177,267 @@ mod tests {
                 rules.padding_bottom.as_ref().map(|t| t.resolve()),
                 Some(Length::Px(34.0))
             );
+        });
+    }
+
+    /// One laid-out node of a mirrored modal tree: its kind, its
+    /// window-space frame `(x, y, width, height)` and its resolved style.
+    struct Laid {
+        pressable: bool,
+        frame: (f32, f32, f32, f32),
+        rules: Option<Rc<StyleRules>>,
+    }
+
+    /// Lay `assemble_overlay(presentation)` out at `vw × vh` with the Taffy
+    /// wrapper the native backends use, the portal root carrying the shared
+    /// `FullScreen` container rules. Returns every node depth-first.
+    fn lay_out_modal(presentation: ModalPresentation, vw: f32, vh: f32) -> Vec<Laid> {
+        use runtime_layout::{LayoutNode, LayoutTree};
+        runtime_core::viewport_size().set(runtime_core::ViewportSize { width: vw, height: vh });
+        idea_theme::testing::commit();
+        let portal = assemble_overlay(
+            ModalParts::body(runtime_core::text("hi").into_element()),
+            Ref::new(),
+            Ref::new(),
+            None,
+            DEFAULT_MODAL_WIDTH,
+            presentation,
+            Reactive::Static(None),
+            None,
+            &ModalSlotStyles::default(),
+        );
+        fn mirror(
+            p: P,
+            layout: &mut LayoutTree,
+            parent: Option<LayoutNode>,
+            out: &mut Vec<(LayoutNode, Option<LayoutNode>, bool, Option<Rc<StyleRules>>)>,
+        ) -> LayoutNode {
+            let node = layout.new_node();
+            if let Some(parent) = parent {
+                layout.add_child(parent, node);
+            }
+            let (children, style, pressable) = match p {
+                P::Portal { children, .. } => {
+                    layout.set_style(
+                        node,
+                        &runtime_shared::primitives::portal::viewport_container_rules(
+                            ViewportPlacement::FullScreen,
+                        ),
+                    );
+                    (children, None, false)
+                }
+                P::View { children, style, .. } => (children, style, false),
+                P::Pressable { children, style, .. } => (children, style, true),
+                P::ScrollView { children, style } => {
+                    layout.set_overflow_scroll(node, false);
+                    (children, style, false)
+                }
+                P::Text { .. } => {
+                    layout.set_intrinsic_size(node, 100.0, 20.0);
+                    (Vec::new(), None, false)
+                }
+                _ => panic!("unexpected node in the modal tree"),
+            };
+            let rules = style.map(|s| s.resolve());
+            if let Some(r) = &rules {
+                layout.set_style(node, r);
+            }
+            out.push((node, parent, pressable, rules));
+            for child in children {
+                mirror(classify(child), layout, Some(node), out);
+            }
+            node
+        }
+        let mut layout = LayoutTree::new();
+        let mut nodes = Vec::new();
+        let root = mirror(classify(portal), &mut layout, None, &mut nodes);
+        layout.compute(root, vw, vh);
+        let parents: std::collections::HashMap<LayoutNode, Option<LayoutNode>> =
+            nodes.iter().map(|(n, p, ..)| (*n, *p)).collect();
+        let absolute = |mut n: LayoutNode| {
+            let own = layout.frame_of(n);
+            let (mut x, mut y) = (0.0, 0.0);
+            loop {
+                let f = layout.frame_of(n);
+                x += f.x;
+                y += f.y;
+                match parents[&n] {
+                    Some(p) => n = p,
+                    None => break,
+                }
+            }
+            (x, y, own.width, own.height)
+        };
+        nodes
+            .into_iter()
+            .map(|(n, _, pressable, rules)| Laid { pressable, frame: absolute(n), rules })
+            .collect()
+    }
+
+    /// The touch-consuming boxes in a laid-out modal: `[backdrop hit, surface]`.
+    fn pressables(nodes: &[Laid]) -> Vec<(f32, f32, f32, f32)> {
+        nodes.iter().filter(|n| n.pressable).map(|n| n.frame).collect()
+    }
+
+    /// Regression (CrewForge kiosk report, Android tablet): a sheet on a
+    /// viewport wider than its 560 cap sat flush LEFT, and the card's
+    /// touch-consuming layer spanned the whole width, so taps on the scrim
+    /// beside it did nothing. The surface must be centered and be the only
+    /// touch-consuming box over the scrim; the wrappers around it pass taps
+    /// through.
+    #[test]
+    fn regression_wide_sheet_is_centered_and_the_scrim_beside_it_takes_taps() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let (vw, vh) = (1280.0, 800.0);
+            let nodes = lay_out_modal(ModalPresentation::Sheet, vw, vh);
+            let boxes = pressables(&nodes);
+            assert_eq!(boxes.len(), 2, "only the backdrop hit and the surface consume taps");
+            assert_eq!(boxes[0], (0.0, 0.0, vw, vh), "the backdrop hit covers the viewport");
+            let (x, y, w, h) = boxes[1];
+            assert_eq!(w, 560.0, "the sheet keeps the surface slot's cap");
+            assert_eq!(x, (vw - 560.0) / 2.0, "the sheet is centered");
+            assert_eq!(y + h, vh, "the sheet meets the bottom edge");
+            // The wrappers that span the viewport must not take hits.
+            let wide_wrapper_pe: Vec<_> = nodes
+                .iter()
+                .filter(|n| {
+                    !n.pressable && n.frame.2 == vw && n.frame.1 > 0.0 && n.frame.1 + n.frame.3 == vh
+                })
+                .map(|n| n.rules.as_ref().and_then(|r| r.pointer_events))
+                .collect();
+            assert!(!wide_wrapper_pe.is_empty(), "a sheet's wrappers stretch across the viewport");
+            assert_eq!(
+                wide_wrapper_pe[0],
+                Some(PointerEvents::None),
+                "the outermost card wrapper passes taps through to the scrim"
+            );
+            let surface = nodes.iter().filter(|n| n.pressable).nth(1).unwrap();
+            assert_eq!(
+                surface.rules.as_ref().and_then(|r| r.pointer_events),
+                Some(PointerEvents::Auto),
+                "the surface opts back in under the wrapper's `none`"
+            );
+        });
+    }
+
+    /// On a phone the sheet still runs edge to edge.
+    #[test]
+    fn narrow_sheet_spans_the_viewport() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let (vw, vh) = (390.0, 844.0);
+            let boxes = pressables(&lay_out_modal(ModalPresentation::Sheet, vw, vh));
+            let (x, y, w, h) = boxes[1];
+            assert_eq!((x, w), (0.0, vw));
+            assert_eq!(y + h, vh);
+        });
+    }
+
+    /// A centered card is unchanged by the sheet's restructure: centered on
+    /// both axes at its own width, the surface the touch-consuming box.
+    #[test]
+    fn centered_card_still_lays_out_centered() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let (vw, vh) = (1280.0, 800.0);
+            let boxes = pressables(&lay_out_modal(ModalPresentation::Centered, vw, vh));
+            let (x, y, w, h) = boxes[1];
+            assert_eq!(w, DEFAULT_MODAL_WIDTH);
+            assert_eq!(x, (vw - w) / 2.0);
+            assert_eq!(y, (vh - h) / 2.0);
+        });
+    }
+
+    /// The placement container a `Modal`'s presence would mount right now:
+    /// build the per-open subtree and resolve the content wrapper's style.
+    fn mounted_container_rules(child: &dyn Fn() -> Element) -> Rc<StyleRules> {
+        let mut portal_children = match classify(child()) {
+            P::Portal { children, .. } => children,
+            other => panic!("the presence child should be the overlay Portal, got {}", kind(&other)),
+        };
+        match classify(portal_children.remove(0)) {
+            P::View { style: Some(style), .. } => style.resolve(),
+            _ => panic!("portal child should be the styled placement container"),
+        }
+    }
+
+    fn kind(p: &P) -> &'static str {
+        match p {
+            P::Other(k) => k,
+            _ => "a modeled prim",
+        }
+    }
+
+    /// Regression (CrewForge kiosk, idea-ui 20.1.0, Android tablet): a
+    /// `Top` modal drew flush left and running off the bottom of the
+    /// screen, and taps on the scrim in the middle did nothing. Its
+    /// presentation was `rx!(breakpoint-dependent)`, and `Modal` read it
+    /// once, when built. On a cold Android boot the viewport is 0 until the
+    /// first layout pass, so the screen (and its closed Modal) is built at
+    /// `Xs` and the modal was a `Sheet` for life: a 560dp bottom sheet in a
+    /// stretching container (left-aligned, full-width touch layer).
+    /// The presentation must be read when the modal opens.
+    #[test]
+    fn regression_modal_presentation_read_when_opened_not_when_built() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let wide = runtime_core::signal(false);
+            let props = ModalProps {
+                presentation: Reactive::derive(move || {
+                    if wide.get() { ModalPresentation::Top } else { ModalPresentation::Sheet }
+                }),
+                ..Default::default()
+            };
+            let (child, exit_ms) = match classify(Modal(props)) {
+                P::Presence { child, exit_ms } => (child, exit_ms),
+                other => panic!("Modal should be a presence, got {}", kind(&other)),
+            };
+            // The presentation can change, so the exit hold covers the
+            // longest exit (a sheet's slide).
+            assert_eq!(exit_ms, Some(SHEET_EXIT_MS as u32));
+
+            // The viewport is measured after the Modal was built.
+            wide.set(true);
+            idea_theme::testing::commit();
+            let rules = mounted_container_rules(&*child);
+            assert_eq!(
+                rules.align_items,
+                Some(AlignItems::Center),
+                "opened on a wide viewport, the card must be centered (Top), not \
+                 a stretched sheet"
+            );
+            assert_eq!(rules.justify_content, Some(JustifyContent::FlexStart));
+
+            // And the next open follows the presentation back.
+            wide.set(false);
+            idea_theme::testing::commit();
+            let rules = mounted_container_rules(&*child);
+            assert_eq!(rules.align_items, Some(AlignItems::Stretch));
+            assert_eq!(rules.justify_content, Some(JustifyContent::FlexEnd));
+        });
+    }
+
+    /// A fixed presentation keeps its own exit hold: a card unmounts when
+    /// its fade ends, a sheet when its slide does.
+    #[test]
+    fn static_presentation_keeps_its_own_exit_hold() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            for (presentation, hold) in [
+                (ModalPresentation::Centered, EXIT_MS),
+                (ModalPresentation::Top, EXIT_MS),
+                (ModalPresentation::Sheet, SHEET_EXIT_MS),
+            ] {
+                let props =
+                    ModalProps { presentation: Reactive::Static(presentation), ..Default::default() };
+                match classify(Modal(props)) {
+                    P::Presence { exit_ms, .. } => {
+                        assert_eq!(exit_ms, Some(hold as u32), "{presentation:?}")
+                    }
+                    other => panic!("Modal should be a presence, got {}", kind(&other)),
+                }
+            }
         });
     }
 
