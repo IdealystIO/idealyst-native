@@ -53,6 +53,7 @@ pub fn text() -> TextBuilder {
             style: None,
             a11y: AccessibilityProps::default(),
             ref_fill: None,
+            selectable: false,
         },
     }
 }
@@ -107,6 +108,13 @@ impl TextBuilder {
 
     pub fn on_handle(mut self, fill: impl FnOnce(TextHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
+        self
+    }
+
+    /// Let the reader select and copy the text, with the platform's own
+    /// selection (`create_selectable_text`). Read when the text mounts.
+    pub fn selectable(mut self, selectable: bool) -> Self {
+        self.prim.selectable = selectable;
         self
     }
 

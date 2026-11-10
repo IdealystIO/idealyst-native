@@ -991,11 +991,21 @@ mod native {
     impl caps::TextOps for AndroidBackend {
         fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
             let _t = crate::phase_timer::PhaseTimer::start("host_create_text");
-            AndroidBackend::create_text_impl(self, content, a11y)
+            AndroidBackend::create_text_impl(self, content, a11y, false)
         }
 
         fn create_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
-            AndroidBackend::create_styled_text_impl(self, runs, a11y)
+            AndroidBackend::create_styled_text_impl(self, runs, a11y, false)
+        }
+
+        // A `TextView` with `setTextIsSelectable(true)` instead of the
+        // self-drawing label: see `primitives::text`.
+        fn create_selectable_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
+            AndroidBackend::create_text_impl(self, content, a11y, true)
+        }
+
+        fn create_selectable_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
+            AndroidBackend::create_styled_text_impl(self, runs, a11y, true)
         }
 
         fn update_styled_text(&mut self, node: &Self::Node, runs: &[TextRun]) {

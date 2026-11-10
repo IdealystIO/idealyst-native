@@ -1030,6 +1030,20 @@ impl caps::TextOps for WebBackend {
         WebBackend::create_styled_text_impl(self, runs, a11y)
     }
 
+    // Web text is selectable by default; the inline `user-select: text`
+    // keeps it selectable inside a `user-select: none` ancestor too.
+    fn create_selectable_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
+        let node = WebBackend::create_text_impl(self, content, a11y);
+        crate::primitives::text::mark_selectable(&node);
+        node
+    }
+
+    fn create_selectable_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
+        let node = WebBackend::create_styled_text_impl(self, runs, a11y);
+        crate::primitives::text::mark_selectable(&node);
+        node
+    }
+
     fn update_styled_text(&mut self, node: &Self::Node, runs: &[TextRun]) {
         WebBackend::update_styled_text_impl(self, node, runs)
     }

@@ -365,7 +365,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 build_all(conn, children)?,
             )
         }
-        Node::Text { common, content } => {
+        Node::Text { common, content, selectable } => {
             let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(TextPrim {
@@ -377,6 +377,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     style,
                     a11y,
                     ref_fill: fill_handle(conn, fill, Held::Text),
+                    selectable,
                 }),
                 Vec::new(),
             )

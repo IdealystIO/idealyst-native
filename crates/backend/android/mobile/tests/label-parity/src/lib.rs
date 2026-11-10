@@ -12,9 +12,15 @@
 //!   and reads it through accessibility, which is where TalkBack and
 //!   `uiautomator` find a label's text.
 //! - "Plain label" is a static `text`, which must still report the class
-//!   name `android.widget.TextView` to accessibility.
+//!   name `android.widget.TextView` to accessibility, and shows no
+//!   selection menu when long-pressed.
+//! - "Selectable label" is `text(selectable = true)`: a long-press must
+//!   open Android's text selection (its Copy action). Bug it guards: no
+//!   text on Android could be selected.
+//! - "Styled selectable" is selectable styled runs with a dotted underline
+//!   (`RustUnderlineSpan` on the selectable `TextView`).
 
-use runtime_core::{signal, ui, Element};
+use runtime_core::{signal, styled_text, ui, Element, TextRun, TextRunStyle};
 
 fn log(msg: String) {
     runtime_core::logging::log(runtime_core::logging::LogLevel::Info, &format!("[label-parity] {msg}"));
@@ -35,12 +41,28 @@ fn run_parity() -> i32 {
     failed.unwrap_or(-1)
 }
 
+/// "Styled selectable": a bold run and a dotted underline.
+fn styled_runs() -> Vec<TextRun> {
+    use runtime_shared::styled_text::{RunUnderline, UnderlineStyle};
+    let mut bold = TextRunStyle::default();
+    bold.font_weight = Some(runtime_core::FontWeight::Bold);
+    let mut dotted = TextRunStyle::default();
+    dotted.underline = Some(RunUnderline { style: UnderlineStyle::Dotted, color: None });
+    vec![
+        TextRun::styled("Styled", bold),
+        TextRun::plain(" "),
+        TextRun::styled("selectable", dotted),
+    ]
+}
+
 pub fn app() -> Element {
     let runs = signal(0u32);
     let failed = signal(0i32);
     ui! {
         view {
             text { "Plain label" }
+            text(selectable = true) { "Selectable label" }
+            styled_text(styled_runs()).selectable(true)
             button(label = "Run".to_string(), on_click = move || {
                 failed.set(run_parity());
                 runs.set(runs.get() + 1);

@@ -414,6 +414,10 @@ impl caps::TextOps for WireRecordingBackend {
         WireRecordingBackend::create_text(self, content, a11y)
     }
 
+    fn create_selectable_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
+        WireRecordingBackend::create_selectable_text(self, content, a11y)
+    }
+
 
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {

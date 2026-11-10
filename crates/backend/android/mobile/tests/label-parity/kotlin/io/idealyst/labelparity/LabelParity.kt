@@ -27,7 +27,11 @@ import io.idealyst.runtime.RustViewFactory
  * `TextView` set up as the backend's text factory did, the label from the
  * factory now, both driven through the setters the style code calls. Each
  * pair must measure to the same size and draw the same pixels, content-sized
- * (`AT_MOST`) and at an exact width. Logs `[label-parity]` lines for `run.sh`.
+ * (`AT_MOST`) and at an exact width. A selectable text (`text(selectable =
+ * true)`, `RustViewFactory.selectableText`) is held to a `TextView` set up
+ * the same way with selection on (Android lays some selectable text out
+ * differently from plain text: a single ellipsized line). Logs
+ * `[label-parity]` lines for `run.sh`.
  */
 object LabelParity {
     private interface Target {
@@ -140,16 +144,22 @@ object LabelParity {
         val column = (320 * d).toInt()
         var failures = 0
         for ((name, apply) in cases) {
-            for ((mode, wSpec) in listOf(
-                "content" to spec(column, View.MeasureSpec.AT_MOST),
-                "exact" to spec(column, View.MeasureSpec.EXACTLY),
+            for ((mode, wSpec, selectable) in listOf(
+                Triple("content", spec(column, View.MeasureSpec.AT_MOST), false),
+                Triple("exact", spec(column, View.MeasureSpec.EXACTLY), false),
+                Triple("content, selectable", spec(column, View.MeasureSpec.AT_MOST), true),
+                Triple("exact, selectable", spec(column, View.MeasureSpec.EXACTLY), true),
             )) {
                 val tv = textView(context, "Person 0-0 Lastname")
-                val rl = RustViewFactory.text(context, "Person 0-0 Lastname")
+                if (selectable) tv.setTextIsSelectable(true)
                 apply(Tv(tv), d)
-                apply(Rl(rl), d)
+                val made: View = if (selectable) {
+                    RustViewFactory.selectableText(context, "Person 0-0 Lastname").also { apply(Tv(it), d) }
+                } else {
+                    RustViewFactory.text(context, "Person 0-0 Lastname").also { apply(Rl(it), d) }
+                }
                 val (tvSize, tvPx) = render(tv, wSpec)
-                val (rlSize, rlPx) = render(rl, wSpec)
+                val (rlSize, rlPx) = render(made, wSpec)
                 val differing = if (tvPx != null && rlPx != null && tvPx.size == rlPx.size) {
                     tvPx.indices.count { tvPx[it] != rlPx[it] }
                 } else if (tvPx == null && rlPx == null) 0 else -1
@@ -163,7 +173,7 @@ object LabelParity {
                 )
             }
         }
-        Log.i("idealyst", "[label-parity] DONE ${cases.size * 2} checks, $failures failed")
+        Log.i("idealyst", "[label-parity] DONE ${cases.size * 4} checks, $failures failed")
         return failures
     }
 }

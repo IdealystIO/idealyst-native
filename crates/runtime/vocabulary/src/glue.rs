@@ -1761,6 +1761,15 @@ pub struct GlueText {
     a11y: AccessibilityProps,
 }
 
+impl GlueText {
+    /// `text(selectable = true)`: the reader can select and copy the
+    /// text, with the platform's own selection. Read when the text mounts.
+    pub fn selectable(mut self, selectable: bool) -> Self {
+        self.b = self.b.selectable(selectable);
+        self
+    }
+}
+
 glue_wrapper_common!(GlueText);
 
 // ---------------------------------------------------------------------------

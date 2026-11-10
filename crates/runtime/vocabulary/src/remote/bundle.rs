@@ -478,7 +478,11 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             TextSourceProp::JsBinding(b) => TextContent::Value(getter(b.compute_fallback)),
             TextSourceProp::Runs(runs) => TextContent::Runs(val(runs)),
         };
-        return Node::Text { common: common(p.test_id, p.style, p.a11y).with_fill(fill), content };
+        return Node::Text {
+            common: common(p.test_id, p.style, p.a11y).with_fill(fill),
+            content,
+            selectable: p.selectable,
+        };
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<ButtonPrim>>() {
         let p = cell.take();

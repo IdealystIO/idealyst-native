@@ -83,6 +83,20 @@ pub(crate) fn update_text(node: &Node, content: &str) {
 // ride the CSS cascade — no JS/wasm work per swap.
 // =============================================================================
 
+/// `text(selectable = true)`: inline `user-select: text` (and Safari's
+/// prefixed spelling). Text is selectable by default on the web, so this
+/// only matters under a `user-select: none` ancestor, which it overrides,
+/// matching the platforms where text is unselectable by default. An inline
+/// property, not a class: style application here writes classes and a
+/// per-property inline layer, neither of which clears it.
+pub(crate) fn mark_selectable(node: &Node) {
+    if let Some(el) = node.dyn_ref::<web_glue::dom::HtmlElement>() {
+        let style = el.style();
+        let _ = style.set_property("-webkit-user-select", "text");
+        let _ = style.set_property("user-select", "text");
+    }
+}
+
 pub(crate) fn create_styled(b: &mut WebBackend, runs: &[runtime_shared::TextRun]) -> Node {
     if let Some(span) = b.hydrate_next_skip_subtree("span") {
         // SSR rendered the identical run structure (same author tree,

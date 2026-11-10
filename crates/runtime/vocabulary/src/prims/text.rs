@@ -74,6 +74,11 @@ pub struct TextPrim {
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub ref_fill: Option<Box<dyn FnOnce(TextHandle)>>,
+    /// The reader can select and copy the text (`selectable = true`).
+    /// Fixed at mount: a backend may realize a selectable text as a
+    /// different native widget (Android: a `TextView` rather than its
+    /// self-drawing label), chosen when the node is created.
+    pub selectable: bool,
 }
 
 /// The `button` primitive. A `Dyn` label creates

@@ -134,6 +134,7 @@ fn marker_scene(text: &str) -> Vec<Command> {
             id: txt,
             content: text.to_string(),
             a11y: Default::default(),
+            selectable: false,
         },
         Command::Insert {
             parent: root,
@@ -393,6 +394,7 @@ fn large_initial_render_does_not_drop_client_on_wouldblock() {
                 i
             ),
             a11y: Default::default(),
+            selectable: false,
         });
         cmds.push(Command::Insert {
             parent: root,

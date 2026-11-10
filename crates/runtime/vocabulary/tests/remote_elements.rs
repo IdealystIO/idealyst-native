@@ -1506,3 +1506,34 @@ mod control_disabled {
         );
     }
 }
+
+/// `text(selectable = true)` crosses (CODEC_VERSION 12): a crossed
+/// selectable text reaches `create_selectable_text` like the native one.
+mod text_selectable {
+    use super::*;
+
+    fn creates(remote: bool) -> Vec<String> {
+        let h = Harness::new();
+        h.record_all();
+        let tree = h.world.enter(|| {
+            view()
+                .child(text().content("copy me").selectable(true))
+                .child(text().content("plain"))
+                .build()
+        });
+        let tree = if remote { cross(tree) } else { tree };
+        let realized = h.mount(tree);
+        let log: Vec<String> = h.take_log().into_iter().filter(|l| l.contains("text \"")).collect();
+        drop(realized);
+        log
+    }
+
+    #[test]
+    fn regression_a_crossed_selectable_text_is_created_selectable() {
+        let native = creates(false);
+        let remote = creates(true);
+        assert_eq!(remote, native, "the crossed texts mount like the native ones");
+        assert!(native.iter().any(|l| l.contains("selectable_text \"copy me\"")), "{native:?}");
+        assert!(native.iter().any(|l| l.contains("create n2 text \"plain\"") || l.ends_with("text \"plain\"")), "{native:?}");
+    }
+}

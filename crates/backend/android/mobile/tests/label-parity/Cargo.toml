@@ -20,6 +20,7 @@ idealyst = { path = "../../../../../idealyst" }
 runtime-core = { path = "../../../../../runtime/core" }
 runtime-vocabulary = { path = "../../../../../runtime/vocabulary" }
 runtime-scene = { path = "../../../../../runtime/scene" }
+runtime-shared = { path = "../../../../../runtime/shared" }
 jni = "0.21"
 ndk-context = "0.1"
 

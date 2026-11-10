@@ -260,6 +260,7 @@ fn marker_scene(text: &str) -> Vec<Command> {
             id: txt,
             content: text.to_string(),
             a11y: Default::default(),
+            selectable: false,
         },
         Command::Insert {
             parent: root,

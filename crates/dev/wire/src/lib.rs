@@ -475,6 +475,11 @@ pub enum Command {
         content: String,
         #[serde(default)]
         a11y: WireAccessibilityProps,
+        /// `text(selectable = true)`: the device creates it through
+        /// `TextOps::create_selectable_text`. Defaults to `false` for
+        /// recordings made before the field existed.
+        #[serde(default)]
+        selectable: bool,
     },
     CreateButton {
         id: NodeId,

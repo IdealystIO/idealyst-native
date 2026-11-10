@@ -495,6 +495,24 @@ impl caps::TextOps for SsrBackend {
         nref(node)
     }
 
+    // The web backend's `mark_selectable`, so a hydrated selectable text
+    // already carries it.
+    fn create_selectable_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
+        let node = self.create_text(content, a11y);
+        crate::mark_selectable(&node);
+        node
+    }
+
+    fn create_selectable_styled_text(
+        &mut self,
+        runs: &[runtime_shared::TextRun],
+        a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        let node = self.create_styled_text(runs, a11y);
+        crate::mark_selectable(&node);
+        node
+    }
+
     fn create_styled_text(
         &mut self,
         runs: &[runtime_shared::TextRun],
@@ -1309,6 +1327,24 @@ mod tests {
         let plain = attrs(None, AccessibilityTraits::empty());
         assert_eq!(get(&plain, "role").as_deref(), Some("button"));
         assert_eq!(get(&plain, "aria-checked"), None);
+    }
+
+    /// `text(selectable = true)` renders the `user-select: text` the live
+    /// web backend sets, so a hydrated selectable text keeps it; plain text
+    /// carries none.
+    #[test]
+    fn selectable_text_renders_user_select_text() {
+        use runtime_shared::TextRun;
+        let mut b = SsrBackend::new();
+        let a11y = AccessibilityProps::default();
+        let style = |n: NodeRef| n.borrow().style.clone().unwrap_or_default();
+        let plain = <SsrBackend as caps::TextOps>::create_text(&mut b, "x", &a11y);
+        assert!(!style(plain).contains("user-select"));
+        let sel = <SsrBackend as caps::TextOps>::create_selectable_text(&mut b, "x", &a11y);
+        assert!(style(sel).contains("user-select:text"));
+        let runs = [TextRun::plain("a")];
+        let sel_runs = <SsrBackend as caps::TextOps>::create_selectable_styled_text(&mut b, &runs, &a11y);
+        assert!(style(sel_runs).contains("user-select:text"));
     }
 
     /// REGRESSION: SSR's `Host::supports_splice` must be `false`. An

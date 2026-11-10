@@ -3207,6 +3207,22 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`text(selectable = true)` lets the reader select and copy text** (`runtime-vocabulary`,
+  `runtime-macros-expand`, `backend-android-mobile`, `backend-web`, `backend-ssr`, `wire`,
+  `dev-server`, `dev-client` minor). No text could be selected on Android. The new prop asks for
+  the platform's own selection:
+  - Android builds a selectable text as a `TextView` with `setTextIsSelectable(true)` (long-press,
+    handles, the copy menu), rendered as a label is. Other text stays on the fast self-drawing
+    label, so only selectable text costs a `TextView`.
+  - Web and SSR add `user-select: text`, which also overrides a `user-select: none` ancestor (web
+    text is selectable by default otherwise).
+  - macOS and iOS don't select yet: their labels stay unselectable. On macOS, display labels
+    decline hit-testing, so `user_select: Text` can't select there either.
+  - The prop is read when the text mounts, because Android has to choose the widget then. A
+    backend opts in through the new `TextOps::create_selectable_text` /
+    `create_selectable_styled_text`, which default to the ordinary creates. The runtime-server
+    wire's `CreateText` carries the flag (`selectable`, defaulting to `false` for older
+    recordings).
 - **An Android `text` is a lightweight label that draws its own text** (`backend-android-mobile`).
   A `text` was a `TextView`, Android's whole text widget (editing, selection, autofill, autosize),
   whose constructor resolves the theme's text style for every label: 45–100 µs a label on an

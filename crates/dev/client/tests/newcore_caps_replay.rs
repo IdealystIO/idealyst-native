@@ -30,6 +30,8 @@ use wire::{Command, NodeId, StyleId, WireAccessibilityProps, WireStyleRules};
 enum Kind {
     View,
     Text(String),
+    /// `TextOps::create_selectable_text` (`CreateText { selectable: true }`).
+    SelectableText(String),
     Button(String),
     Anchor,
 }
@@ -98,8 +100,17 @@ impl caps::TextOps for CapsOnly {
         self.alloc(Kind::Text(content.to_string()))
     }
 
+    fn create_selectable_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> usize {
+        self.alloc(Kind::SelectableText(content.to_string()))
+    }
+
     fn update_text(&mut self, node: &usize, content: &str) {
-        self.store.borrow_mut().kinds[*node] = Kind::Text(content.to_string());
+        let mut store = self.store.borrow_mut();
+        let kind = &mut store.kinds[*node];
+        *kind = match kind {
+            Kind::SelectableText(_) => Kind::SelectableText(content.to_string()),
+            _ => Kind::Text(content.to_string()),
+        };
     }
 }
 
@@ -173,7 +184,7 @@ fn caps_only_backend_replays_wire_commands() {
         .apply_batch(vec![
             Command::RegisterStyle { id: StyleId(1), rules: WireStyleRules::default() },
             Command::CreateView { id: NodeId(1), a11y: a11y() },
-            Command::CreateText { id: NodeId(2), content: "hello".into(), a11y: a11y() },
+            Command::CreateText { id: NodeId(2), content: "hello".into(), a11y: a11y(), selectable: false },
             Command::CreateButton {
                 id: NodeId(3),
                 label: "Go".into(),
@@ -201,4 +212,33 @@ fn caps_only_backend_replays_wire_commands() {
     assert_eq!(s.children[0], vec![1, 2], "Insert order preserved through Host::insert");
     assert_eq!(s.styled, vec![0], "ApplyStyle reached caps::StyleOps::apply_style");
     assert_eq!(s.finished_root, Some(0), "Finish reached caps::LifecycleOps::finish");
+}
+
+#[test]
+fn regression_a_selectable_text_replays_as_a_selectable_text() {
+    // `CreateText` carried no selectable flag, so a `text(selectable =
+    // true)` mounted over the runtime-server wire was created unselectable
+    // on the device.
+    let backend = CapsOnly::default();
+    let store = backend.store.clone();
+    let mut client = WireBackend::new(backend, OutboundSender::new());
+    let a11y = WireAccessibilityProps::default;
+    client
+        .apply_batch(vec![
+            Command::CreateText { id: NodeId(1), content: "copy me".into(), a11y: a11y(), selectable: true },
+            Command::CreateText { id: NodeId(2), content: "plain".into(), a11y: a11y(), selectable: false },
+            Command::UpdateText { node: NodeId(1), content: "copy me too".into() },
+        ])
+        .expect("replay");
+    let s = store.borrow();
+    assert_eq!(s.kinds[0], Kind::SelectableText("copy me too".into()));
+    assert_eq!(s.kinds[1], Kind::Text("plain".into()));
+}
+
+#[test]
+fn a_create_text_without_the_selectable_field_reads_as_unselectable() {
+    // Recordings from before the field existed still deserialize.
+    let json = r#"{"CreateText":{"id":1,"content":"old"}}"#;
+    let cmd: Command = serde_json::from_str(json).expect("old CreateText deserializes");
+    assert!(matches!(cmd, Command::CreateText { selectable: false, .. }), "{cmd:?}");
 }

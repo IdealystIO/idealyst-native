@@ -525,7 +525,7 @@ where
                     self.nodes.insert(id, node);
                 }
             }
-            Command::CreateText { id, content, a11y } => {
+            Command::CreateText { id, content, a11y, selectable } => {
                 if let Some(existing) = self.nodes.get(&id).cloned() {
                     // Same node id, same content → no-op. Same id,
                     // different content → update_text.
@@ -537,7 +537,11 @@ where
                     let _ = a11y;
                 } else {
                     let a11y = self.a11y_props(a11y);
-                    let node = self.backend.borrow_mut().create_text(&content, &a11y);
+                    let node = if selectable {
+                        self.backend.borrow_mut().create_selectable_text(&content, &a11y)
+                    } else {
+                        self.backend.borrow_mut().create_text(&content, &a11y)
+                    };
                     self.nodes.insert(id, node);
                     self.text_content.insert(id, content);
                 }

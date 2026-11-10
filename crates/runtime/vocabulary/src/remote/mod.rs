@@ -91,7 +91,8 @@ pub mod wasm;
 ///   `FitContent`.
 /// - 11: a [`KeyboardKind`](runtime_shared::primitives::text_input::KeyboardKind)
 ///   can be `SignedDecimal`.
-pub const CODEC_VERSION: u32 = 11;
+/// - 12: [`Node::Text`] carries `selectable` (`text(selectable = true)`).
+pub const CODEC_VERSION: u32 = 12;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.
@@ -163,6 +164,8 @@ pub enum Node {
     Text {
         common: Common,
         content: TextContent,
+        /// `text(selectable = true)` (CODEC_VERSION 12).
+        selectable: bool,
     },
     Button {
         common: Common,

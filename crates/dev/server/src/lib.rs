@@ -1335,6 +1335,24 @@ impl WireRecordingBackend {
         content: &str,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> NodeId {
+        self.emit_create_text(content, a11y, false)
+    }
+
+    /// `create_text` for `text(selectable = true)`.
+    pub fn create_selectable_text(
+        &mut self,
+        content: &str,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
+        self.emit_create_text(content, a11y, true)
+    }
+
+    fn emit_create_text(
+        &mut self,
+        content: &str,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+        selectable: bool,
+    ) -> NodeId {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);
@@ -1342,6 +1360,7 @@ impl WireRecordingBackend {
             id,
             content: content.to_string(),
             a11y: wire_a11y,
+            selectable,
         });
         id
     }

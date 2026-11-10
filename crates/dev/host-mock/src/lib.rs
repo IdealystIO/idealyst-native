@@ -228,6 +228,9 @@ pub struct Shared {
     pub hydrating: Cell<bool>,
     /// `StyleOps::supports_preminted_styles`.
     pub preminted: Cell<bool>,
+    /// `TextOps::create_text_with_id` answers `Some` (the batched-id text
+    /// path web takes), logging `text_with_id`.
+    pub batched_text_ids: Cell<bool>,
     /// `StyleOps::handles_states_natively`.
     pub handles_states_natively: Cell<bool>,
     /// `IntrospectionOps::supports_screenshot`.
@@ -348,6 +351,7 @@ impl Default for Shared {
             renders_lazy_chunks: Cell::new(true),
             hydrating: Cell::new(false),
             preminted: Cell::new(false),
+            batched_text_ids: Cell::new(false),
             handles_states_natively: Cell::new(false),
             screenshot: Cell::new(false),
             platform: RefCell::new(Platform::Custom("host-mock")),
@@ -890,6 +894,31 @@ impl caps::TextOps for HostMock {
         self.s.live_runs.borrow_mut().insert(node, runs.to_vec());
         node
     }
+
+    fn create_selectable_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Node {
+        self.mint(format!("selectable_text {content:?}"))
+    }
+
+    fn create_selectable_styled_text(&mut self, runs: &[TextRun], _a11y: &AccessibilityProps) -> Node {
+        let texts: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();
+        let node = self.mint(format!("selectable_styled_text {texts:?}"));
+        self.s.live_runs.borrow_mut().insert(node, runs.to_vec());
+        node
+    }
+
+    fn create_text_with_id(&mut self, content: &str, _a11y: &AccessibilityProps) -> Option<(Node, u32)> {
+        if !self.s.batched_text_ids.get() {
+            return None;
+        }
+        let node = self.mint(format!("text_with_id {content:?}"));
+        Some((node, node))
+    }
+
+    fn update_text_by_id(&mut self, id: u32, content: String) {
+        self.s.rec("update_text", format!("update_text_by_id {id} {content:?}"));
+    }
+
+    fn release_text_id(&mut self, _id: u32) {}
 
     fn update_styled_text(&mut self, node: &Node, runs: &[TextRun]) {
         let texts: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();

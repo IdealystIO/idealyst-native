@@ -6,6 +6,8 @@ import android.graphics.Paint
 import android.text.Layout
 import android.text.Spanned
 import android.text.style.LineBackgroundSpan
+import android.view.View
+import android.widget.TextView
 import kotlin.math.max
 import kotlin.math.min
 
@@ -34,7 +36,8 @@ import kotlin.math.min
  * correct across soft wraps: a span covering three wrapped lines gets
  * three draw calls and we underline each line's slice of it.
  *
- * Horizontal extents come from the host [RustLabel]'s [Layout], not from
+ * Horizontal extents come from the host view's [Layout] (a [RustLabel], or
+ * the `TextView` of a selectable text), not from
  * `Paint.measureText`: `measureText` uses the base paint and drifts
  * wherever another span changes the advance widths (a larger
  * `AbsoluteSizeSpan`, a bold `StyleSpan`). The `Layout` measured the
@@ -51,12 +54,12 @@ import kotlin.math.min
  * every `setText`) silently draws with stale offsets whenever a layout
  * pass happens that Rust did not trigger.
  *
- * @param label the view this span is drawn into.
+ * @param host the view this span is drawn into: a [RustLabel] or a `TextView`.
  * @param color ARGB line colour, or [INHERIT_COLOR] to follow the text.
  * @param pattern one of [PATTERN_SOLID], [PATTERN_DOTTED], [PATTERN_DASHED].
  */
 class RustUnderlineSpan(
-    private val label: RustLabel,
+    private val host: View,
     private val color: Int,
     private val pattern: Int,
 ) : LineBackgroundSpan {
@@ -90,7 +93,7 @@ class RustUnderlineSpan(
         val to = min(spanEnd, lineEnd)
         if (from >= to) return
 
-        val l = label.getLayout()
+        val l = (host as? RustLabel)?.getLayout() ?: (host as? TextView)?.layout
         val startX: Float
         val endX: Float
         if (l != null) {

@@ -2515,3 +2515,59 @@ mod p6_glue {
         );
     }
 }
+
+// ===========================================================================
+// Selectable text (`text(selectable = true)`)
+// ===========================================================================
+
+/// The first `create` line in the log.
+fn first_create(log: &[String]) -> String {
+    log.iter().find(|l| l.starts_with("create ")).cloned().unwrap_or_default()
+}
+
+#[test]
+fn regression_selectable_text_is_created_selectable_for_every_content_shape() {
+    // Bug: a backend had no way to know a text should be selectable when
+    // it created it (Android realizes one as a different widget). Each
+    // content shape must reach `create_selectable_text` /
+    // `create_selectable_styled_text`.
+    use runtime_vocabulary::glue::TextRun;
+    let h = harness();
+    let world = &h.world;
+    let mount = |el: runtime_scene::Element| {
+        let _r = world.enter(|| realize(&h.backend, &h.registry, el));
+        first_create(&h.take_log())
+    };
+    assert_eq!(mount(text().content("fixed").selectable(true).build()), "create n0 selectable_text \"fixed\"");
+    let n = world.enter(|| signal(1u32));
+    let dynamic = mount(text().content(move || format!("n={}", n.get())).selectable(true).build());
+    assert!(dynamic.contains("selectable_text \"\""), "{dynamic}");
+    let runs = mount(text().runs(vec![TextRun::plain("a"), TextRun::plain("b")]).selectable(true).build());
+    assert!(runs.contains("selectable_styled_text [\"a\", \"b\"]"), "{runs}");
+    // Unselectable text keeps the ordinary creates.
+    assert!(mount(text().content("plain").build()).contains("text \"plain\""));
+}
+
+#[test]
+fn selectable_reactive_text_skips_the_batched_id_path_and_still_updates() {
+    // A backend with batched text ids (web) creates plain text through
+    // them; a selectable text must not take that path, and its content
+    // still updates through `update_text`.
+    let h = harness();
+    h.shared.batched_text_ids.set(true);
+    let n = h.world.enter(|| signal(1u32));
+    let el = text().content(move || format!("n={}", n.get())).selectable(true).build();
+    let _r = h.world.enter(|| realize(&h.backend, &h.registry, el));
+    let log = h.take_log();
+    assert!(first_create(&log).contains("selectable_text"), "{log:?}");
+    assert!(log.iter().any(|l| l.contains("update_text n0 \"n=1\"")), "{log:?}");
+    h.world.enter(|| n.set(2));
+    h.world.flush();
+    let log = h.take_log();
+    assert!(log.iter().any(|l| l.contains("update_text n0 \"n=2\"")), "{log:?}");
+    // The same text unselectable does take the batched path.
+    let m = h.world.enter(|| signal(1u32));
+    let el = text().content(move || format!("m={}", m.get())).build();
+    let _r2 = h.world.enter(|| realize(&h.backend, &h.registry, el));
+    assert!(first_create(&h.take_log()).contains("text_with_id"));
+}

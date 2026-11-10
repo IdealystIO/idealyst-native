@@ -25,6 +25,23 @@ pub trait TextOps: Host {
         self.create_text(&plain_text_of(runs), a11y)
     }
 
+    /// A text node the reader can select and copy (`text(selectable =
+    /// true)`), with the platform's own selection. Default: an ordinary
+    /// [`create_text`](Self::create_text) — a backend without selectable
+    /// text renders it unselectable. A separate create rather than a
+    /// setter because a backend may need a different native widget for
+    /// selectable text (Android: a `TextView`, not its self-drawing
+    /// label), which only creation can choose.
+    fn create_selectable_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
+        self.create_text(content, a11y)
+    }
+
+    /// [`create_styled_text`](Self::create_styled_text), selectable. See
+    /// [`create_selectable_text`](Self::create_selectable_text).
+    fn create_selectable_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
+        self.create_styled_text(runs, a11y)
+    }
+
     /// Re-realize a styled text node's runs (theme/token swap).
     /// Default mirrors `create_styled_text`: plain-concat via
     /// [`update_text`](Self::update_text).

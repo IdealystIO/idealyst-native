@@ -53,7 +53,7 @@ where
             {
                 robot_label = Some(content.clone());
             }
-            backend.borrow_mut().create_text(&content, &prim.a11y)
+            create_plain(&mut *backend.borrow_mut(), &content, &prim.a11y, prim.selectable)
         }
         TextSourceProp::Value(Value::Dyn(compute)) => {
             // Box → Rc so the robot's label recompute can share the
@@ -70,7 +70,13 @@ where
                 robot_label_fn =
                     Some(std::rc::Rc::new(move || Some(runtime_world::untrack(|| c()))));
             }
-            let batched = backend.borrow_mut().create_text_with_id("", &prim.a11y);
+            // Selectable text takes no batched-id fast path: the id
+            // creates are plain text only.
+            let batched = if prim.selectable {
+                None
+            } else {
+                backend.borrow_mut().create_text_with_id("", &prim.a11y)
+            };
             match batched {
                 Some((node, id)) => {
                     // Release the backend's id slot when the subtree
@@ -92,7 +98,7 @@ where
                     node
                 }
                 None => {
-                    let node = backend.borrow_mut().create_text("", &prim.a11y);
+                    let node = create_plain(&mut *backend.borrow_mut(), "", &prim.a11y, prim.selectable);
                     let b = backend.clone();
                     let n = node.clone();
                     let _binding = effect(move || {
@@ -114,7 +120,13 @@ where
                 robot_label_fn =
                     Some(std::rc::Rc::new(move || Some(runtime_world::untrack(|| c()))));
             }
-            let batched = backend.borrow_mut().create_text_with_id("", &prim.a11y);
+            // Selectable text lowers to the effect fallback below: the
+            // id-backed fast paths create plain text only.
+            let batched = if prim.selectable {
+                None
+            } else {
+                backend.borrow_mut().create_text_with_id("", &prim.a11y)
+            };
             let supports_js = backend.borrow().supports_js_text_bindings();
             match (batched, supports_js) {
                 (Some((node, text_id)), true) => {
@@ -191,7 +203,8 @@ where
                             node
                         }
                         None => {
-                            let node = backend.borrow_mut().create_text("", &prim.a11y);
+                            let node =
+                                create_plain(&mut *backend.borrow_mut(), "", &prim.a11y, prim.selectable);
                             let b = backend.clone();
                             let n = node.clone();
                             let _binding = effect(move || {
@@ -211,7 +224,7 @@ where
                     {
                         robot_label = Some(runtime_shared::styled_text::plain_text_of(&runs));
                     }
-                    let node = backend.borrow_mut().create_styled_text(&runs, &prim.a11y);
+                    let node = create_styled(&mut *backend.borrow_mut(), &runs, &prim.a11y, prim.selectable);
                     (node, Rc::new(RefCell::new(Rc::new(runs))))
                 }
                 Value::Dyn(compute) => {
@@ -232,7 +245,7 @@ where
                     {
                         robot_label = Some(runtime_shared::styled_text::plain_text_of(&initial));
                     }
-                    let node = backend.borrow_mut().create_styled_text(&initial, &prim.a11y);
+                    let node = create_styled(&mut *backend.borrow_mut(), &initial, &prim.a11y, prim.selectable);
                     let current = Rc::new(RefCell::new(Rc::new(initial)));
                     let b = backend.clone();
                     let n = node.clone();
@@ -290,6 +303,34 @@ where
         fill(handle);
     }
     node
+}
+
+/// A plain text node, selectable or not (`TextPrim::selectable`).
+fn create_plain<H: TextOps>(
+    backend: &mut H,
+    content: &str,
+    a11y: &runtime_shared::accessibility::AccessibilityProps,
+    selectable: bool,
+) -> H::Node {
+    if selectable {
+        backend.create_selectable_text(content, a11y)
+    } else {
+        backend.create_text(content, a11y)
+    }
+}
+
+/// A styled-runs text node, selectable or not.
+fn create_styled<H: TextOps>(
+    backend: &mut H,
+    runs: &[TextRun],
+    a11y: &runtime_shared::accessibility::AccessibilityProps,
+    selectable: bool,
+) -> H::Node {
+    if selectable {
+        backend.create_selectable_styled_text(runs, a11y)
+    } else {
+        backend.create_styled_text(runs, a11y)
+    }
 }
 
 /// Mount a `button`.

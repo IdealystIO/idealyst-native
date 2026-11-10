@@ -359,6 +359,13 @@ fn add_inline_style(node: &NodeRef, prop: &str, value: &str) {
     }
 }
 
+/// `text(selectable = true)`: the inline `user-select: text` the web
+/// backend's `mark_selectable` sets live.
+pub(crate) fn mark_selectable(node: &NodeRef) {
+    add_inline_style(node, "-webkit-user-select", "text");
+    add_inline_style(node, "user-select", "text");
+}
+
 fn serialize(node: &NodeRef, out: &mut String) {
     let n = node.borrow();
     out.push('<');

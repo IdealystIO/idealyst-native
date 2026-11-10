@@ -1120,7 +1120,7 @@ const VIEW_BUILDER_ONLY: &[(&str, &str)] = &[(
 /// `keyboard_avoiding_view`'s inline setters on `GlueKeyboardAvoidingView`.
 const KEYBOARD_AVOIDING_VIEW_BUILDER_PROPS: &[&str] = &["behavior", "animated", "safe_area", "bind"];
 
-const TEXT_BUILDER_PROPS: &[&str] = &["bind"];
+const TEXT_BUILDER_PROPS: &[&str] = &["bind", "selectable"];
 
 const BUTTON_BUILDER_PROPS: &[&str] = &["leading_icon", "trailing_icon", "bind"];
 

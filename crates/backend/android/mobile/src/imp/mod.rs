@@ -2913,8 +2913,13 @@ impl AndroidBackend {
         node
     }
 
-    pub(crate) fn create_text_impl(&mut self, content: &str, a11y: &runtime_shared::accessibility::AccessibilityProps) -> GlobalRef {
-        let node = primitives::text::create(self, content);
+    pub(crate) fn create_text_impl(
+        &mut self,
+        content: &str,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+        selectable: bool,
+    ) -> GlobalRef {
+        let node = primitives::text::create(self, content, selectable);
         self.note_zero_padding(&node);
         a11y::apply_new(&node, a11y, Some(runtime_shared::accessibility::Role::Text));
         node
@@ -2924,8 +2929,9 @@ impl AndroidBackend {
         &mut self,
         runs: &[runtime_shared::TextRun],
         a11y: &runtime_shared::accessibility::AccessibilityProps,
+        selectable: bool,
     ) -> GlobalRef {
-        let node = primitives::text::create_styled(self, runs);
+        let node = primitives::text::create_styled(self, runs, selectable);
         self.note_zero_padding(&node);
         a11y::apply_new(&node, a11y, Some(runtime_shared::accessibility::Role::Text));
         node

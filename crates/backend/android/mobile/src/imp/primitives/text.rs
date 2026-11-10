@@ -1,22 +1,41 @@
 //! `TextPrim` — `io.idealyst.runtime.RustLabel`, a `View` that lays out and
 //! draws its own text and renders as the `TextView` it replaced (see
 //! `RustLabel.kt` for why a `TextView` is too costly to build per label).
+//! A selectable text (`text(selectable = true)`) is a `TextView` with
+//! `setTextIsSelectable(true)` instead (`RustViewFactory.selectableText`):
+//! the platform's selection, which a self-drawing label can't offer. The
+//! choice is made at creation, so the functions here take or detect which
+//! of the two a node is.
 
 use crate::imp::{with_env, AndroidBackend};
 use jni::objects::{GlobalRef, JValue};
 
-pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
-    // Built JVM-side in one call (`RustViewFactory.text`).
+pub(crate) fn create(b: &mut AndroidBackend, content: &str, selectable: bool) -> GlobalRef {
+    // Built JVM-side in one call (`RustViewFactory.text` /
+    // `.selectableText`).
     let view = with_env(|env| {
         let content = env.new_string(content).expect("new_string(text content)");
-        let local = TEXT_FACTORY
+        let (slot, name, sig) = if selectable {
+            (
+                &SELECTABLE_TEXT_FACTORY,
+                "selectableText",
+                "(Landroid/content/Context;Ljava/lang/String;)Landroid/widget/TextView;",
+            )
+        } else {
+            (
+                &TEXT_FACTORY,
+                "text",
+                "(Landroid/content/Context;Ljava/lang/String;)Lio/idealyst/runtime/RustLabel;",
+            )
+        };
+        let local = slot
             .with(|slot| {
                 let method = super::super::StaticMethod::cached(
                     env,
                     slot,
                     "io/idealyst/runtime/RustViewFactory",
-                    "text",
-                    "(Landroid/content/Context;Ljava/lang/String;)Lio/idealyst/runtime/RustLabel;",
+                    name,
+                    sig,
                 )?;
                 // SAFETY: the arguments match the signature above.
                 unsafe {
@@ -26,7 +45,7 @@ pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
                     )
                 }
             })
-            .expect("RustViewFactory.text failed — bundle the kotlin runtime");
+            .expect("RustViewFactory text factory failed — bundle the kotlin runtime");
         env.new_global_ref(local).unwrap()
     });
     // Install a Taffy measure function so flex layout can ask the
@@ -45,9 +64,11 @@ pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
                 .unwrap_or(match available_space.width {
                     runtime_layout::AvailableSpace::Definite(w) => w,
                     runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
-                    runtime_layout::AvailableSpace::MinContent => min_content_width(&view_for_measure),
+                    runtime_layout::AvailableSpace::MinContent => {
+                        min_content_width(&view_for_measure, selectable)
+                    }
                 });
-            measure_textview(&view_for_measure, avail_w, known_dimensions)
+            measure_textview(&view_for_measure, avail_w, known_dimensions, selectable)
         }),
     );
     view
@@ -68,11 +89,15 @@ pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
 /// the boundaries is not styled" flag.
 const SPAN_EXCLUSIVE_EXCLUSIVE: i32 = 33;
 
-pub(crate) fn create_styled(b: &mut AndroidBackend, runs: &[runtime_shared::TextRun]) -> GlobalRef {
+pub(crate) fn create_styled(
+    b: &mut AndroidBackend,
+    runs: &[runtime_shared::TextRun],
+    selectable: bool,
+) -> GlobalRef {
     // Reuse the full plain-text path (font-padding strip, gravity,
     // measure_fn — `View.measure` reflects the spannable once set),
     // then swap the plain string for the spanned realization.
-    let view = create(b, "");
+    let view = create(b, "", selectable);
     set_styled(&view, runs);
     view
 }
@@ -214,7 +239,7 @@ pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_shared::TextRun]) {
                         // stand in for "follow the text").
                         let span = env.new_object(
                             &cls,
-                            "(Lio/idealyst/runtime/RustLabel;II)V",
+                            "(Landroid/view/View;II)V",
                             &[
                                 JValue::Object(view.as_obj()),
                                 JValue::Int(packed.unwrap_or(0)),
@@ -254,10 +279,11 @@ pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_shared::TextRun]) {
             start = end;
         }
 
-        let _ = jcall!(
+        let is_label = super::super::is_label(env, &view.as_obj());
+        let _ = text_call!(
             env,
             view.as_obj(),
-            "io/idealyst/runtime/RustLabel",
+            is_label,
             "setText",
             "(Ljava/lang/CharSequence;)V",
             [JValue::Object(&sp)]
@@ -269,7 +295,7 @@ pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_shared::TextRun]) {
 /// Kotlin `RustTextMeasure.minContentWidth`. A single-line view answers 0:
 /// the `AT_MOST 0` probe, which truncates a one-line label to its
 /// ellipsis. Asked once per view per layout pass (`MIN_CONTENT_MEMO`).
-fn min_content_width(view: &GlobalRef) -> f32 {
+fn min_content_width(view: &GlobalRef, selectable: bool) -> f32 {
     with_env(|env| {
         let view_obj = view.as_obj();
         let density = super::super::cached_density(env, &view_obj);
@@ -277,16 +303,21 @@ fn min_content_width(view: &GlobalRef) -> f32 {
         let cached = super::super::MIN_CONTENT_MEMO.with(|m| m.borrow().get(&key));
         let px = cached.unwrap_or_else(|| {
             let _t = crate::phase_timer::PhaseTimer::start("min_content_probe");
-            let px = MIN_CONTENT_WIDTH
+            let (slot, sig) = if selectable {
+                (&MIN_CONTENT_WIDTH_TEXT_VIEW, "(Landroid/widget/TextView;)I")
+            } else {
+                (&MIN_CONTENT_WIDTH, "(Lio/idealyst/runtime/RustLabel;)I")
+            };
+            let px = slot
                 .with(|slot| {
                     let method = super::super::StaticMethod::cached(
                         env,
                         slot,
                         "io/idealyst/runtime/RustTextMeasure",
                         "minContentWidth",
-                        "(Lio/idealyst/runtime/RustLabel;)I",
+                        sig,
                     )?;
-                    // SAFETY: the argument matches `(Lio/idealyst/runtime/RustLabel;)I`.
+                    // SAFETY: the argument is the view `sig` names.
                     Some(unsafe { method.call_int(env, &[JValue::Object(&view_obj).as_jni()]) })
                 })
                 .unwrap_or(0);
@@ -302,8 +333,16 @@ runtime_tls::thread_local! {
     static TEXT_FACTORY: std::cell::RefCell<Option<super::super::StaticMethod>> =
         std::cell::RefCell::new(None);
 
-    /// `RustTextMeasure.minContentWidth`, resolved once.
+    /// `RustViewFactory.selectableText`, resolved once.
+    static SELECTABLE_TEXT_FACTORY: std::cell::RefCell<Option<super::super::StaticMethod>> =
+        std::cell::RefCell::new(None);
+
+    /// `RustTextMeasure.minContentWidth(RustLabel)`, resolved once.
     static MIN_CONTENT_WIDTH: std::cell::RefCell<Option<super::super::StaticMethod>> =
+        std::cell::RefCell::new(None);
+
+    /// `RustTextMeasure.minContentWidth(TextView)`, for selectable text.
+    static MIN_CONTENT_WIDTH_TEXT_VIEW: std::cell::RefCell<Option<super::super::StaticMethod>> =
         std::cell::RefCell::new(None);
 }
 
@@ -314,6 +353,7 @@ fn measure_textview(
     view: &GlobalRef,
     avail_w_dp: f32,
     known_dimensions: runtime_layout::Size<Option<f32>>,
+    selectable: bool,
 ) -> runtime_layout::Size<f32> {
     use crate::measure_memo_policy::{at_most_or_unspecified, UNSPECIFIED};
     with_env(|env| {
@@ -327,7 +367,13 @@ fn measure_textview(
         // capped at that many lines and a 1-line limit measures one
         // ellipsized line, so no limit-specific code (or cache key) is
         // needed — the node is re-dirtied on every style apply.
-        let (measured_w_px, measured_h_px) = label_measure(env, &view_obj, width_spec, UNSPECIFIED);
+        // A label answers directly; a selectable text's TextView is probed
+        // through `View.measure` and put back at its frame (`probe_measure`).
+        let (measured_w_px, measured_h_px) = if selectable {
+            super::super::probe_measure(env, &view_obj, width_spec, UNSPECIFIED)
+        } else {
+            label_measure(env, &view_obj, width_spec, UNSPECIFIED)
+        };
         // `View.measure()` returns `text + padding` (Android includes
         // setPadding in the measured size). We do NOT subtract that
         // back out here, because the framework's `apply_style` already
@@ -377,10 +423,11 @@ pub(crate) fn update_text(node: &GlobalRef, content: &str) {
             let _ = env.exception_clear();
             return;
         };
-        let _ = jcall!(
+        let is_label = super::super::is_label(env, &node.as_obj());
+        let _ = text_call!(
             env,
             node.as_obj(),
-            "io/idealyst/runtime/RustLabel",
+            is_label,
             "setText",
             "(Ljava/lang/CharSequence;)V",
             [JValue::Object(&content)]
