@@ -169,6 +169,17 @@ reach ports that are forwarded, so where that stream lives matters:
 With neither, the stream is on a random loopback port and the session
 warns that a devcontainer will not forward it.
 
+### When the dev session is killed
+
+A memory-tight container's OOM killer can SIGKILL `idealyst dev`, which
+then runs none of its teardown. The panel cannot restore the terminal,
+so the shell echoes mouse escape codes (`^[[<35;49;20M`) until you run
+`reset`. The project server does not keep the app's port: a server on
+`server::router()` exits when the dev process is gone, and the next
+`idealyst dev` stops any other server the killed session left running
+(see `docs/server-functions.md`). Give the container more memory, or
+build with fewer jobs, if the kills recur.
+
 ## The Robot relay
 
 `idealyst dev` hosts a Robot relay that a web app dials (over a WebSocket)

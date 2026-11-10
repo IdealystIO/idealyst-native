@@ -83,6 +83,10 @@
 //! `dev` spawns its web server from a target worker thread; a thread
 //! that returns while the session runs would take the server with it.
 //! Not worth trading a rare orphan for a live session dying.
+//! The project server has its own two covers instead: a server on the
+//! framework's router exits when the dev process's end of its stdin pipe
+//! closes (`server::dev_parent`), and the next session stops any server
+//! the dead one recorded in `server.pid` (`dev::reap_leftover_server`).
 //!
 //! ## Override
 //!

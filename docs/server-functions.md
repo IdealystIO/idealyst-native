@@ -257,6 +257,16 @@ Two properties are load-bearing:
   is a WebSocket spliced byte for byte to the session's relay, so the
   page's robot bridge connects on its own origin too. See
   `docs/devcontainer.md`, "The Robot relay".
+- **The server does not outlive its dev session.** `idealyst dev` kills
+  its server on every restart and at teardown, and two covers handle a
+  dev process that dies without its teardown (SIGKILLed, by the OOM
+  killer for one). A server on `server::router()` exits by itself: dev
+  sets `IDEALYST_DEV_PARENT=stdin` and gives it a stdin pipe it never
+  writes to, and the server exits when that pipe closes. Any server is
+  recorded in `target/idealyst/<package>/server.pid` (pid and start
+  time), and the next session stops one still running before it binds
+  the port. Without the variable stdin means nothing, so a production
+  server with a closed stdin is unaffected.
 
 The dev server also builds into its own target directory rather than the
 workspace's `target/`. Cargo locks a build directory exclusively for the

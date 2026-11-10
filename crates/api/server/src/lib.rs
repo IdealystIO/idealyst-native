@@ -114,6 +114,8 @@ pub use client::{
 // =============================================================================
 
 #[cfg(feature = "server")]
+pub mod dev_parent;
+#[cfg(feature = "server")]
 pub mod dev_stream;
 #[cfg(feature = "server")]
 mod cookie;

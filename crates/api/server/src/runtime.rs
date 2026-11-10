@@ -127,6 +127,9 @@ pub fn router() -> Router {
     }
 
     let app = app.route("/_srv/*path", post(dispatch));
+    // Under `idealyst dev`, exit with the dev session even when it dies
+    // without killing us (`dev_parent`).
+    crate::dev_parent::watch_from_env();
     // Under `idealyst dev`, the page's dev stream same-origin (livereload,
     // overlay and hot patches, the build badge). Only when the dev loop
     // started this server and named the stream; otherwise no route.

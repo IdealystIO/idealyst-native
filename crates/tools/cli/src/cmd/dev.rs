@@ -1423,6 +1423,7 @@ pub fn run(mut args: Args) -> Result<()> {
                     false
                 }
             };
+        reap_leftover_server(&server_record_path(&server_log), backend_port);
         match spawn_backend(
             &dir,
             &manifest,
@@ -3460,7 +3461,7 @@ fn launch_web_with_backend(
         if let Err(e) = result {
             // The session ends; the server must not outlive it.
             if let Some(c) = child.take() {
-                stop_server(c);
+                stop_server(c, &server_log);
             }
             return Err(e);
         }
@@ -3542,7 +3543,7 @@ fn launch_web_with_backend(
                 "the first good web bundle is staged: restarting the server, which found none when it started",
             );
             if let Some(old) = child.take() {
-                stop_server(old);
+                stop_server(old, &server_log);
             }
             start_server(&mut child, &mut route_reported)?;
             continue;
@@ -3554,7 +3555,7 @@ fn launch_web_with_backend(
             // so the downtime here is a kill plus a rebind — not a compile.
             crate::dlog!("dev web", "server rebuilt → restarting on port {port}");
             if let Some(old) = child.take() {
-                stop_server(old);
+                stop_server(old, &server_log);
             }
             start_server(&mut child, &mut route_reported)?;
             continue;
@@ -3879,6 +3880,8 @@ const DEV_STREAM_PROBE_PATH: &str = "/__idealyst/stream";
 const DEV_STREAM_HEADER: &str = "x-idealyst-dev-stream";
 /// `server::dev_stream::RELAY_ENV`, restated for the same reason.
 const DEV_RELAY_ENV: &str = "IDEALYST_DEV_RELAY";
+/// `server::dev_parent::ENV`, restated for the same reason.
+const DEV_PARENT_ENV: &str = "IDEALYST_DEV_PARENT";
 
 /// The relay's WebSocket listener, from the `ws://127.0.0.1:<port>` this
 /// session exported as `IDEALYST_ROBOT_RELAY_URL` — what the static web
@@ -3921,6 +3924,7 @@ impl ServerLaunch<'_> {
     /// was taken, or it exited before answering — reported as
     /// `server_down` on its row, with the reason.
     fn start(&self, shared: &ServerBuildShared) -> Result<Option<ServerProc>> {
+        reap_leftover_server(&server_record_path(self.log), self.port);
         // Something else on the port would answer `wait_listening` in our
         // server's place: the row went to "running" on a stale server's
         // word, then flipped to a bare "exited" when ours lost the bind.
@@ -4037,6 +4041,76 @@ fn lsof_holder(out: &str) -> Option<String> {
         }
     }
     pid.map(|p| format!("pid {p}"))
+}
+
+/// Where a session records the server it started (`server.pid`, beside
+/// `server.log`), so the next session can take down one this session
+/// left running.
+///
+/// A dev process that dies without its teardown — SIGKILLed by the OOM
+/// killer is the usual way — leaves its server re-parented to init and
+/// holding the app's port. A server on the framework's router exits by
+/// itself then (`server::dev_parent`); this covers every other server.
+fn server_record_path(log: &Path) -> PathBuf {
+    log.with_file_name("server.pid")
+}
+
+/// Record `pid` as this session's server: its pid and its start time,
+/// which together name the process even after the pid is reused.
+/// Nothing is recorded when the start time cannot be read (no `ps`):
+/// a bare pid could name an unrelated process by the next session.
+fn write_server_record(path: &Path, pid: u32) {
+    if let Some(started) = process_started(pid) {
+        let _ = std::fs::write(path, format_server_record(pid, &started));
+    }
+}
+
+fn format_server_record(pid: u32, started: &str) -> String {
+    format!("{pid}\n{started}\n")
+}
+
+fn parse_server_record(text: &str) -> Option<(u32, &str)> {
+    let mut lines = text.lines();
+    let pid = lines.next()?.trim().parse().ok()?;
+    let started = lines.next()?.trim();
+    (!started.is_empty()).then_some((pid, started))
+}
+
+/// Take down the server an earlier session recorded at `path`, if it is
+/// still running, and wait (up to [`PORT_FREE_GRACE`]) for it to let go
+/// of `port`. Returns its pid when there was one to stop.
+///
+/// Safe to kill without asking: the session holds the project's
+/// `dev.lock`, so no other live session of this project owns that
+/// server, and the start-time match means the pid was not reused.
+fn reap_leftover_server(path: &Path, port: u16) -> Option<u32> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let _ = std::fs::remove_file(path);
+    let (pid, started) = parse_server_record(&text)?;
+    if process_started(pid).as_deref() != Some(started) {
+        return None;
+    }
+    crate::memory_limit::kill_tree(pid);
+    wait_port_free(port, PORT_FREE_GRACE);
+    crate::dlog!(
+        "dev",
+        "stopped the server (pid {pid}) an earlier session left running on port {port}",
+    );
+    Some(pid)
+}
+
+/// When `pid` started, as `ps -o lstart=` prints it — the same text for
+/// the same process for its whole life (an `exec`, such as `cargo run`
+/// becoming the server, keeps it). `None` when the process is gone or
+/// there is no `ps`.
+fn process_started(pid: u32) -> Option<String> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let started = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !started.is_empty()).then_some(started)
 }
 
 /// A running server: the process, and its output as read so far.
@@ -4176,12 +4250,13 @@ fn wait_listening(port: u16, child: &mut Child) -> bool {
 /// `cargo run`, and the server is ITS child. Killing only cargo leaves the
 /// server holding the port the restart is about to rebind, re-parented to
 /// init.
-fn stop_server(server: ServerProc) {
+fn stop_server(server: ServerProc, log: &Path) {
     let mut child = server.child;
     crate::memory_limit::unwatch_pid(child.id());
     crate::memory_limit::kill_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
+    let _ = std::fs::remove_file(server_record_path(log));
 }
 
 /// The server's first build, on its own thread (beside the bundle's, or
@@ -4878,10 +4953,18 @@ fn spawn_backend(
     // Each line is an `output{source: server}` event — tagged `[server]`
     // on a plain terminal, kept out of the panel's default log view,
     // written to server.log.
-    cmd.stdin(std::process::Stdio::null())
+    //
+    // stdin is a pipe this process holds the write end of (inside the
+    // `Child`, never taken) and never writes to: a server on the
+    // framework's router exits when it reads EOF there
+    // (`server::dev_parent`), which is the OS closing the pipe when this
+    // process dies — a SIGKILL included, which runs none of our teardown.
+    cmd.env(DEV_PARENT_ENV, "stdin")
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().context("spawn server (`cargo run`)")?;
+    write_server_record(&server_record_path(log), child.id());
     let recompile = prebuilt.then(|| build_ios::target_gc::rounded_mtime_cause(target_dir));
     let output = forward_server_output(&mut child, log, recompile);
     Ok(ServerProc { child, output })
@@ -6546,6 +6629,67 @@ mod tests {
     /// does not link the server crate); a drift would silently read every
     /// proxying server as one that does not proxy.
     #[test]
+    fn a_server_record_round_trips() {
+        let text = format_server_record(4821, "Tue Nov 10 14:19:02 2026");
+        assert_eq!(parse_server_record(&text), Some((4821, "Tue Nov 10 14:19:02 2026")));
+        assert_eq!(parse_server_record("4821\n"), None);
+        assert_eq!(parse_server_record("not a pid\nTue"), None);
+    }
+
+    /// A free loopback port, for a reap that has no listener to wait on.
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    }
+
+    /// Regression: a dev session SIGKILLed by the OOM killer left its
+    /// server running, re-parented to init, holding the app's port; the
+    /// next session could not start its own. The next session now takes
+    /// down the server the dead one recorded.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn regression_next_session_stops_the_server_a_killed_session_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("server.log");
+        let mut leftover = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        write_server_record(&server_record_path(&log), leftover.id());
+        assert!(server_record_path(&log).is_file(), "the server was recorded");
+
+        assert_eq!(reap_leftover_server(&server_record_path(&log), free_port()), Some(leftover.id()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut gone = false;
+        while std::time::Instant::now() < deadline {
+            if leftover.try_wait().unwrap().is_some() {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if !gone {
+            let _ = leftover.kill();
+        }
+        assert!(gone, "the leftover server is still running");
+        assert!(!server_record_path(&log).exists(), "the record is consumed");
+    }
+
+    /// A recorded pid now naming some other process (pid reuse) is left
+    /// alone: the start time does not match.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_reused_pid_is_not_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = server_record_path(&dir.path().join("server.log"));
+        let mut other = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        std::fs::write(&record, format_server_record(other.id(), "Thu Jan  1 00:00:00 1970")).unwrap();
+
+        assert_eq!(reap_leftover_server(&record, free_port()), None);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let alive = other.try_wait().unwrap().is_none();
+        let _ = other.kill();
+        let _ = other.wait();
+        assert!(alive, "an unrelated process with the recorded pid was killed");
+    }
+
+    #[test]
     fn the_probe_matches_the_server_crates_route() {
         let Some(root) = Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
@@ -6557,6 +6701,8 @@ mod tests {
         assert!(src.contains(&format!("pub const PROBE_PATH: &str = \"{DEV_STREAM_PROBE_PATH}\";")));
         assert!(src.contains(&format!("pub const HEADER: &str = \"{DEV_STREAM_HEADER}\";")));
         assert!(src.contains(&format!("pub const RELAY_ENV: &str = \"{DEV_RELAY_ENV}\";")));
+        let parent = std::fs::read_to_string(root.join("crates/api/server/src/dev_parent.rs")).unwrap();
+        assert!(parent.contains(&format!("pub const ENV: &str = \"{DEV_PARENT_ENV}\";")));
         assert!(stream_probe_answered(
             "HTTP/1.1 204 No Content\r\nx-idealyst-dev-stream: 1\r\ndate: now\r\n"
         ));

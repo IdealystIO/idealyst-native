@@ -3207,6 +3207,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A killed `idealyst dev` no longer leaves its server holding the app's port** (`server`,
+  `idealyst-cli` minor). A dev process SIGKILLed by a container's OOM killer left the project
+  server running under init, so the next session could not bind the port and the browser talked
+  to a stale server. A server on `server::router()` now exits when the dev process is gone: dev
+  sets `IDEALYST_DEV_PARENT=stdin` and gives it a stdin pipe it never writes to, so the pipe
+  closes when dev dies (`server::dev_parent`). Every server dev starts is also recorded in
+  `target/idealyst/<package>/server.pid`, and the next session stops one still running (matched
+  by pid and start time) before it binds the port.
 - **`text(selectable = true)` selects on iOS** (`backend-ios-mobile`, `backend-ios-core`). It
   rendered an ordinary `UILabel`, which has no selection. A selectable text is now a read-only
   `UITextView` (`IdealystSelectableText`) with UIKit's own selection (long-press, handles, the edit
