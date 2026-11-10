@@ -491,12 +491,12 @@ license = "MIT OR Apache-2.0"
 # `idealyst::entry!(<lib>)` in `src/main.rs`, and builds with plain
 # cargo — there is no CLI-generated web wrapper crate any more.
 idealyst = { path = "crates/idealyst", version = "8.0.0", registry = "idealyst" }
-runtime-core = { path = "crates/runtime/core", version = "7.1.0", registry = "idealyst" }
+runtime-core = { path = "crates/runtime/core", version = "7.2.0", registry = "idealyst" }
 runtime-shared = { path = "crates/runtime/shared", version = "5.0.0", registry = "idealyst" }
 runtime-world = { path = "crates/runtime/world", version = "1.9.0", registry = "idealyst" }
 runtime-tls = { path = "crates/runtime/tls", version = "0.1.1", registry = "idealyst" }
 runtime-scene = { path = "crates/runtime/scene", version = "2.0.0", registry = "idealyst" }
-runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "8.2.0", registry = "idealyst" }
+runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "8.3.0", registry = "idealyst" }
 runtime-template = { path = "crates/runtime/template", version = "1.5.1", registry = "idealyst" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
@@ -526,10 +526,10 @@ premint-dump = { path = "crates/tools/premint-dump" }
 # the dump run never renders.
 linkme = "0.3"
 dev-hot = { path = "crates/dev/hot", version = "1.7.1", registry = "idealyst" }
-runtime-macros = { path = "crates/runtime/macros", version = "4.1.0", registry = "idealyst" }
+runtime-macros = { path = "crates/runtime/macros", version = "4.2.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "2.0.0", registry = "idealyst" }
-runtime-macros-expand = { path = "crates/runtime/macros-expand", version = "4.2.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "1.41.0", registry = "idealyst" }
+runtime-macros-expand = { path = "crates/runtime/macros-expand", version = "4.3.0", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "1.42.0", registry = "idealyst" }
 catalog-scan = { path = "crates/mcp/catalog-scan", version = "4.0.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server", version = "5.3.0", registry = "idealyst" }
 mcp-design-server = { path = "crates/mcp/design-server", version = "1.2.1", registry = "idealyst" }
@@ -627,9 +627,9 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # One core: these crates carry no core-selector feature any more, so the
 # workspace specs are plain — a `{ workspace = true }` consumer gets each
 # crate's own defaults.
-idea-theme = { path = "crates/ui/idea-theme", version = "11.0.0", registry = "idealyst" }
+idea-theme = { path = "crates/ui/idea-theme", version = "11.1.0", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "18.0.0", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "21.0.0", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "21.1.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "7.0.0", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "18.0.0", registry = "idealyst" }
 icons-lucide = { path = "crates/ui/icons-lucide", version = "7.0.0", registry = "idealyst" }
@@ -788,7 +788,7 @@ swap-demo = { path = "crates/sdk/client/navigators/swap/examples/swap-demo", ver
 todo-sync-demo = { path = "crates/sdk/client/sync/examples/todo-sync-demo", version = "1.5.2", registry = "idealyst" }
 toolbar-demo = { path = "crates/sdk/client/toolbar/examples/toolbar-demo", version = "1.5.2", registry = "idealyst" }
 video-compose-demo = { path = "crates/sdk/client/video-compose/examples/video-compose-demo", version = "1.5.2", registry = "idealyst" }
-idealyst-cli = { path = "crates/tools/cli", version = "1.32.0", registry = "idealyst" }
+idealyst-cli = { path = "crates/tools/cli", version = "1.33.0", registry = "idealyst" }
 ota-publish = { path = "crates/ota/publish", version = "0.1.0", registry = "idealyst" }
 
 # Dev profile: `opt-level = "z"` works around a wasm OOB seen at

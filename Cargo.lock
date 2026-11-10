@@ -6418,7 +6418,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "11.0.0"
+version = "11.1.0"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6439,7 +6439,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "21.0.0"
+version = "21.1.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6558,7 +6558,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.32.0"
+version = "1.33.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7728,7 +7728,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.41.0"
+version = "1.42.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -10877,7 +10877,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-core"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "runtime-macros",
  "runtime-shared",
@@ -10894,14 +10894,14 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "runtime-macros-expand",
 ]
 
 [[package]]
 name = "runtime-macros-expand"
-version = "4.2.0"
+version = "4.3.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10980,7 +10980,7 @@ version = "0.1.1"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "8.2.0"
+version = "8.3.0"
 dependencies = [
  "dev-hot",
  "host-mock",
