@@ -3207,6 +3207,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **The catalog builds when the project's lock conflicts with the catalog's dependencies**
+  (`idealyst-cli` patch). The catalog wrapper starts from the project's `Cargo.lock`, which was
+  resolved with `catalog` off; the wrapper turns `catalog` on, and those edges can need newer
+  versions than the project pinned (idea-ui 20.1.0's needs mcp-catalog ^1.39 where icons-lucide
+  had pinned 1.38). Cargo won't move a pin both ends have locked, so every catalog build failed
+  and every catalog tool came back empty (CrewForge). After a failed build the CLI now checks the
+  resolve, unlocks just the package cargo names (`cargo update -p`, every other pin kept), and
+  retries; if that doesn't settle it, it resolves fresh. The wrapper's lock is also re-seeded when
+  the project's lock content changes, not when its file looks newer: in a devcontainer the two are
+  written under different clocks.
+
 - **idea-ui's `docs` feature, `DocControls` and `RefBuiltins` are gone; `idealyst docs` previews
   replace them** (`idea-ui`, `idea-ui-nav`, `idea-theme` major; `idea-ui-docs-derive` removed).
   The `DocControls` derive had no caller left. Drop `features = ["docs"]` from an `idea-ui` or

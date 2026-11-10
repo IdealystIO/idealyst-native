@@ -745,8 +745,22 @@ pub fn build_extractor(wrapper_dir: &Path, bin: &str) -> Result<PathBuf> {
         variant: build_ios::target_gc::variant_key(&wrapper_dir.display().to_string()),
         record_ttl: Some(EXTRACTOR_RECORD_TTL),
     };
-    let (units, _report) = build_ios::target_gc::build_and_prune(&mut cmd, &spec)
-        .with_context(|| format!("build the `{bin}` extractor in {}", wrapper_dir.display()))?;
+    let built = match build_ios::target_gc::build_and_prune(&mut cmd, &spec) {
+        // A lock the wrapper can't resolve fails every catalog build until
+        // something changes it; see `recover_wrapper_lock`. One retry.
+        Err(first) if recover_wrapper_lock(wrapper_dir) => {
+            let mut retry = std::process::Command::new("cargo");
+            retry
+                .args(["build", "-q", "--bin", bin])
+                .current_dir(wrapper_dir)
+                .env("CARGO_TARGET_DIR", &sidecar)
+                .stdin(std::process::Stdio::null());
+            build_ios::target_gc::build_and_prune(&mut retry, &spec).map_err(|e| e.context(first))
+        }
+        other => other,
+    };
+    let (units, _report) =
+        built.with_context(|| format!("build the `{bin}` extractor in {}", wrapper_dir.display()))?;
     units
         .executable
         .with_context(|| format!("cargo built `{bin}` but reported no executable"))
@@ -829,13 +843,19 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 /// framework the project no longer builds against — no values, no
 /// snippets, no new components, and nothing says why.
 ///
-/// So the project's lockfile is copied in whenever it is newer than
-/// the wrapper's. Cargo then adds the wrapper's own entries on the
-/// next build (which makes the wrapper lock the newer of the two, so
-/// this is a no-op until the project's lock changes again), and every
-/// shared dependency is pinned to the version the project actually
-/// compiles. Members of a workspace share the root lock; walking up
-/// from the anchor project finds it either way.
+/// So the project's lockfile is copied in whenever its CONTENT differs
+/// from the copy last seeded ([`SEEDED_LOCK`]). Cargo then adds the
+/// wrapper's own entries on the next build; every shared dependency is
+/// pinned to the version the project actually compiles. Members of a
+/// workspace share the root lock; walking up from the anchor project
+/// finds it either way.
+///
+/// Content, not mtimes: in a devcontainer the project's lock is often
+/// written from the host while cargo writes the wrapper's inside the
+/// container, and a wrapper lock that merely LOOKED newer kept a stale
+/// pin past the project's own update. A project lock that is current can
+/// still fail to resolve the wrapper's (catalog-enabled) dependencies;
+/// [`build_extractor`] recovers from that ([`recover_wrapper_lock`]).
 fn seed_lockfile(wrapper_dir: &Path, anchor_root: &Path) -> Result<()> {
     let Some(project_lock) = anchor_root
         .ancestors()
@@ -844,25 +864,126 @@ fn seed_lockfile(wrapper_dir: &Path, anchor_root: &Path) -> Result<()> {
     else {
         return Ok(());
     };
-    let wrapper_lock = wrapper_dir.join("Cargo.lock");
-    let newer = match (fs::metadata(&project_lock), fs::metadata(&wrapper_lock)) {
-        (Ok(p), Ok(w)) => match (p.modified(), w.modified()) {
-            (Ok(p), Ok(w)) => p > w,
-            _ => true,
-        },
-        (Ok(_), Err(_)) => true,
-        (Err(_), _) => false,
-    };
-    if !newer {
+    let state = wrapper_dir.join(LOCK_STATE_DIR);
+    fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
+    let project = fs::read(&project_lock).with_context(|| format!("read {}", project_lock.display()))?;
+    let seeded = fs::read(state.join(SEEDED_LOCK)).ok();
+    if seeded.as_deref() == Some(project.as_slice()) && wrapper_dir.join("Cargo.lock").is_file() {
         return Ok(());
     }
-    fs::copy(&project_lock, &wrapper_lock).with_context(|| {
-        format!(
-            "seed the catalog wrapper's Cargo.lock from {}",
-            project_lock.display()
-        )
-    })?;
+    copy_project_lock(wrapper_dir, &project)
+}
+
+/// The wrapper's lock bookkeeping, inside the wrapper dir.
+const LOCK_STATE_DIR: &str = ".idealyst";
+/// The project's lock as last copied into the wrapper.
+const SEEDED_LOCK: &str = "seeded.lock";
+
+fn copy_project_lock(wrapper_dir: &Path, project: &[u8]) -> Result<()> {
+    fs::write(wrapper_dir.join("Cargo.lock"), project)
+        .with_context(|| format!("seed {}", wrapper_dir.join("Cargo.lock").display()))?;
+    fs::write(wrapper_dir.join(LOCK_STATE_DIR).join(SEEDED_LOCK), project)
+        .with_context(|| "record the seeded lock")?;
     Ok(())
+}
+
+/// The package a version-selection conflict names — cargo's
+/// "failed to select a version for `X`" — or `None` when `stderr` is not
+/// one (a missing registry, a network error, a compile error: none of
+/// which a different lock fixes).
+fn conflicting_package(stderr: &str) -> Option<&str> {
+    let rest = stderr.split("failed to select a version for `").nth(1)?;
+    rest.split('`').next().filter(|name| !name.is_empty())
+}
+
+/// Run only cargo's resolve in the wrapper (`cargo metadata`, which
+/// writes the lock as a build would) and return its stderr on failure.
+fn resolve_wrapper(wrapper_dir: &Path) -> std::result::Result<(), String> {
+    run_cargo_quiet(wrapper_dir, &["metadata", "-q", "--format-version", "1"])
+}
+
+/// `cargo update -p <package>` in the wrapper: re-resolve that one
+/// package, keeping every other pin.
+fn unlock_in_wrapper(wrapper_dir: &Path, package: &str) -> std::result::Result<(), String> {
+    run_cargo_quiet(wrapper_dir, &["update", "-q", "-p", package])
+}
+
+fn run_cargo_quiet(dir: &Path, args: &[&str]) -> std::result::Result<(), String> {
+    let out = std::process::Command::new("cargo")
+        .args(args)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("spawn cargo: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+}
+
+/// How many packages [`recover_wrapper_lock`] unlocks one at a time
+/// before giving up on the project's pins.
+const MAX_UNLOCKS: usize = 8;
+
+/// After a failed build: if the wrapper's lock is what fails, make one
+/// that resolves.
+///
+/// The usual cause is not a stale copy but the feature set: the project's
+/// lock was resolved with `catalog` off, the wrapper turns it on, and the
+/// catalog edges it adds require newer versions than the project pinned
+/// (idea-ui 20.1.0's catalog edge needs mcp-catalog ^1.39 where
+/// icons-lucide had pinned 1.38). Cargo won't move a pin on its own when
+/// both ends are already locked, so every catalog build failed.
+///
+/// So each package cargo names in a conflict is unlocked alone
+/// (`cargo update -p`), keeping every other pin — the versions the
+/// project builds — up to [`MAX_UNLOCKS`] times; past that, or if cargo
+/// can't unlock one, the lock goes and cargo resolves fresh (the catalog
+/// may then name newer patch versions than the project builds, which is
+/// said on stderr). Returns whether the lock changed, i.e. whether a
+/// rebuild is worth trying.
+fn recover_wrapper_lock(wrapper_dir: &Path) -> bool {
+    recover_wrapper_lock_with(wrapper_dir, resolve_wrapper, unlock_in_wrapper)
+}
+
+/// [`recover_wrapper_lock`] over injectable cargo calls (tests can't
+/// reach a registry to produce a real version conflict).
+fn recover_wrapper_lock_with(
+    wrapper_dir: &Path,
+    resolve: impl Fn(&Path) -> std::result::Result<(), String>,
+    unlock: impl Fn(&Path, &str) -> std::result::Result<(), String>,
+) -> bool {
+    let mut unlocked: Vec<String> = Vec::new();
+    loop {
+        let stderr = match resolve(wrapper_dir) {
+            Ok(()) if unlocked.is_empty() => return false,
+            Ok(()) => {
+                eprintln!(
+                    "[catalog] the project's Cargo.lock conflicts with the catalog's dependencies; \
+                     re-resolved {} for the catalog only",
+                    unlocked.join(", ")
+                );
+                return true;
+            }
+            Err(stderr) => stderr,
+        };
+        let Some(package) = conflicting_package(&stderr) else {
+            return !unlocked.is_empty();
+        };
+        if unlocked.len() >= MAX_UNLOCKS || unlocked.iter().any(|p| p == package) || unlock(wrapper_dir, package).is_err() {
+            break;
+        }
+        unlocked.push(package.to_string());
+    }
+    let _ = fs::remove_file(wrapper_dir.join("Cargo.lock"));
+    eprintln!(
+        "[catalog] the project's Cargo.lock does not resolve the catalog's dependencies; \
+         resolving them fresh (the catalog may describe newer patch versions than the project builds — \
+         a `cargo update` in the project brings them back in line)"
+    );
+    true
 }
 
 /// A dependency crate the wrapper force-links so its component
@@ -1601,6 +1722,114 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&project);
+    }
+
+    /// REGRESSION (CrewForge, devcontainer): the project's lock changed but
+    /// its mtime was OLDER than the wrapper's (written from the host while
+    /// cargo wrote the wrapper's inside the container), so the mtime check
+    /// kept a stale wrapper lock that pinned mcp-catalog 1.38 under a
+    /// manifest needing ^1.39, and every catalog build failed to resolve.
+    /// Seeding compares content.
+    #[test]
+    fn regression_wrapper_lock_reseeds_when_the_project_lock_looks_older() {
+        let project = fake_project("lockskew");
+        let project_lock = project.join("Cargo.lock");
+        fs::write(&project_lock, "# version = 3\n[[package]]\nname = \"a\"\nversion = \"1.0.0\"\n").unwrap();
+        let wrapper = generate(&project).expect("generate");
+        let wrapper_lock = wrapper.join("Cargo.lock");
+
+        // The project moves on, but its file carries an older timestamp.
+        fs::write(&project_lock, "# version = 3\n[[package]]\nname = \"a\"\nversion = \"2.0.0\"\n").unwrap();
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fs::File::options().write(true).open(&project_lock).unwrap().set_modified(past).unwrap();
+
+        generate(&project).expect("regenerate");
+        assert!(
+            fs::read_to_string(&wrapper_lock).unwrap().contains("2.0.0"),
+            "a changed project lock re-seeds the wrapper whatever its mtime"
+        );
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    /// The text CrewForge's catalog build failed with names its package;
+    /// a build or network failure names none.
+    #[test]
+    fn resolve_conflicts_name_their_package() {
+        let crewforge = "error: failed to select a version for `mcp-catalog`.\n    ... required by package \
+            `idea-ui v20.1.0 (registry `idealyst`)`\nall possible versions conflict with previously selected packages";
+        assert_eq!(conflicting_package(crewforge), Some("mcp-catalog"));
+        assert_eq!(conflicting_package("error: could not compile `app` (lib) due to 2 previous errors"), None);
+        assert_eq!(conflicting_package("error: failed to get `idea-ui` as a dependency ... network failure"), None);
+    }
+
+    /// REGRESSION (CrewForge): the project's lock, resolved with `catalog`
+    /// off, pinned mcp-catalog 1.38; the wrapper turns `catalog` on, whose
+    /// edges need ^1.39, and cargo refused to move a pin both ends had
+    /// locked — every catalog build failed. Recovery unlocks just the
+    /// named package and keeps the rest of the project's pins.
+    /// (Reproduced against the live registry with `cargo metadata` /
+    /// `cargo update -p mcp-catalog`; the cargo calls are injected here.)
+    #[test]
+    fn regression_a_catalog_only_conflict_unlocks_just_the_named_package() {
+        use std::cell::RefCell;
+        let project = fake_project("lockrecover");
+        fs::write(project.join("Cargo.lock"), "mcp-catalog 1.38\nother 1.0\n").unwrap();
+        let wrapper = generate(&project).expect("generate");
+        let wrapper_lock = wrapper.join("Cargo.lock");
+        let conflict = |pkg: &str| Err(format!("error: failed to select a version for `{pkg}`."));
+
+        let unlocked = RefCell::new(Vec::new());
+        let resolve = |dir: &Path| {
+            let lock = fs::read_to_string(dir.join("Cargo.lock")).unwrap_or_default();
+            if lock.contains("mcp-catalog 1.38") { conflict("mcp-catalog") } else { Ok(()) }
+        };
+        let unlock = |dir: &Path, pkg: &str| {
+            unlocked.borrow_mut().push(pkg.to_string());
+            let lock = fs::read_to_string(dir.join("Cargo.lock")).unwrap();
+            fs::write(dir.join("Cargo.lock"), lock.replace("mcp-catalog 1.38", "mcp-catalog 1.41")).unwrap();
+            Ok(())
+        };
+        assert!(recover_wrapper_lock_with(&wrapper, resolve, unlock));
+        assert_eq!(*unlocked.borrow(), ["mcp-catalog"]);
+        assert_eq!(fs::read_to_string(&wrapper_lock).unwrap(), "mcp-catalog 1.41\nother 1.0\n", "other pins kept");
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    /// When unlocking doesn't settle it (the same package conflicts again,
+    /// or cargo can't unlock it), the lock goes and cargo resolves fresh.
+    /// A failure that isn't a conflict leaves the lock alone, and a lock
+    /// that resolves isn't touched.
+    #[test]
+    fn an_unrecoverable_conflict_falls_back_to_a_fresh_resolve() {
+        let project = fake_project("lockfresh");
+        fs::write(project.join("Cargo.lock"), "# pins\n").unwrap();
+        let wrapper = generate(&project).expect("generate");
+        let wrapper_lock = wrapper.join("Cargo.lock");
+        let always = |_: &Path| Err("error: failed to select a version for `a`.".to_string());
+
+        assert!(recover_wrapper_lock_with(&wrapper, always, |_: &Path, _: &str| Ok(())));
+        assert!(!wrapper_lock.exists(), "a fresh resolve starts from no lock");
+
+        fs::write(&wrapper_lock, "# kept\n").unwrap();
+        assert!(!recover_wrapper_lock_with(&wrapper, |_: &Path| Err("error: could not compile".into()), |_: &Path, _: &str| Ok(())));
+        assert!(!recover_wrapper_lock_with(&wrapper, |_: &Path| Ok(()), |_: &Path, _: &str| panic!("no unlock")));
+        assert_eq!(fs::read_to_string(&wrapper_lock).unwrap(), "# kept\n");
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    /// The real recovery against a real conflict: point
+    /// `IDEALYST_LOCK_CONFLICT_DIR` at a cargo package whose lock pins a
+    /// version its manifest's features can't use (the CrewForge shape:
+    /// `icons-lucide` + `idea-ui` with `catalog`, mcp-catalog pinned 1.38).
+    /// Needs the registry, so ignored by default.
+    #[test]
+    #[ignore = "needs the registry and a prepared conflict dir"]
+    fn live_conflict_recovers_through_cargo() {
+        let dir = PathBuf::from(std::env::var("IDEALYST_LOCK_CONFLICT_DIR").expect("set IDEALYST_LOCK_CONFLICT_DIR"));
+        assert!(resolve_wrapper(&dir).is_err(), "the prepared dir conflicts");
+        assert!(recover_wrapper_lock(&dir));
+        assert!(resolve_wrapper(&dir).is_ok(), "and resolves after recovery");
+        assert!(dir.join("Cargo.lock").exists(), "by unlocking, not by dropping the lock");
     }
 
     /// A registry-sourced cargo workspace: a root package `ws-app` plus a
