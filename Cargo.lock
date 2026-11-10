@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "8.2.0"
+version = "8.3.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1577,7 +1577,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ssr"
-version = "7.0.0"
+version = "7.1.0"
 dependencies = [
  "css",
  "parity-goldens",
@@ -1603,7 +1603,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "9.0.1"
+version = "9.1.0"
 dependencies = [
  "css",
  "dev-client",
@@ -3531,7 +3531,7 @@ dependencies = [
 
 [[package]]
 name = "dev-client"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "host-mock",
  "mock-backend",
@@ -3613,7 +3613,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "10.0.0"
+version = "10.1.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -5882,7 +5882,7 @@ dependencies = [
 
 [[package]]
 name = "host-mock"
-version = "7.0.0"
+version = "7.1.0"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
@@ -7733,7 +7733,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.39.0"
+version = "1.40.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -10906,7 +10906,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros-expand"
-version = "4.0.1"
+version = "4.1.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10985,7 +10985,7 @@ version = "0.1.1"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -15743,7 +15743,7 @@ dependencies = [
 
 [[package]]
 name = "wire"
-version = "5.0.0"
+version = "5.1.0"
 dependencies = [
  "dev-client",
  "dev-server",
