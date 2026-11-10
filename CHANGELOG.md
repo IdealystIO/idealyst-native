@@ -1258,6 +1258,26 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`idealyst docs` previews are fuller, and the sidebar shows one library at a time**
+  (`runtime-macros` / `runtime-macros-expand` / `runtime-core` / `runtime-vocabulary` /
+  `mcp-catalog` / `idealyst-cli` minor). `#[prop(example = …)]` now also works on a prop with
+  no control (a `Vec` of rows, `options`, `items`) and on `children`, and the Usage snippet
+  spells it as written, with its imports. `#[derive(PropControl)]` gives a unit-only enum a
+  picker (nothing in non-docs builds); `ElementSide` / `ElementAlign` get one too. Recipe and
+  example source is captured as the author wrote it — comments and `ui!` layout kept — where it
+  used to be reflowed by `prettyplease` into one paragraph per `ui!` body. In the docs site: a
+  library switcher (the project crate, the crates it depends on, the framework) with a searchable
+  popover, opening on the crate `idealyst docs` ran against; Tooltip, HoverCard and IconButton get
+  live playgrounds; the props panel scrolls beside the canvas; imports and usage are two copyable
+  blocks at the foot of the playground. A library's docs list only the components it exports.
+  See `component-previews` guide.
+
+- **idea-ui ships preview examples and 20 more recipes** (`idea-ui` minor). Accordion,
+  Breadcrumbs, RadioGroup, SegmentedControl, Tabs, Select, Autocomplete, Stack, Grid, List, Card,
+  Table, Tooltip, HoverCard, IconButton and others start their docs playgrounds on realistic data;
+  new recipes compare variants, tones, sizes and states, and cover ListItem, TableFooter,
+  TableGroup, TablePager, DateTimeInput, DateTimePicker and SubMenu.
+
 - **`#[server]` calls can time out, and one hook sees every failure** (`server` minor).
   `ClientConfig::with_timeout(Duration)` fails a call whose HTTP exchange outlasts the deadline
   with `ServerError::Network("timeout")`, on every target (calls coalesced by `server::batch`
@@ -3206,6 +3226,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **`Progress` renders inside a centering parent** (`idea-ui` patch). Its track sat in a bare
+  wrapper view with no width, so in `Center`, an `align = Center` stack, or any shrink-to-content
+  parent the wrapper — and the bar — collapsed to zero width. The track is now the root.
+
+- **`idealyst docs` imports name public paths** (`idealyst-cli` via docs-app). Imports were read
+  from the crate root's `pub use` items only, so an item re-exported in two hops (`TableGroup`,
+  `TablePager`, `TableCards`) was imported from a private module and didn't compile. Imports now
+  resolve each item's shortest public path through the module tree.
 
 - **The catalog builds when the project's lock conflicts with the catalog's dependencies**
   (`idealyst-cli` patch). The catalog wrapper starts from the project's `Cargo.lock`, which was
