@@ -164,14 +164,18 @@ impl ResolvedCatalog {
     /// it back, and this call leaks-and-builds the owned entries
     /// into a new catalog.
     ///
-    /// **Allocation model**: each parsed string is `Box::leak`ed
-    /// into `&'static str`, and each `composes` / `params` slice
-    /// into `&'static [_]`. The bytes persist for the server's
-    /// lifetime. For dev workflows reloading a handful of times
-    /// per minute the leak is on the order of KB per reload —
-    /// acceptable. A long-running deployment that reloads
-    /// thousands of times should batch reloads or graduate to a
-    /// per-reload arena.
+    /// **Allocation model**: entries are `&'static` (the same types
+    /// inventory registers), so each is built once and leaked — and
+    /// memoized by its JSON text ([`memoized`]). A rebuild from a
+    /// document that differs in a few entries allocates only those;
+    /// one identical to an earlier build allocates nothing. What the
+    /// process keeps is bounded by the distinct entries it has seen,
+    /// not by how often it rebuilds.
+    ///
+    /// The MCP server rebuilds on every catalog query to a running
+    /// app and on every batch of source saves, so an unmemoized
+    /// build — every string leaked again each time — grew an
+    /// `idealyst mcp` serving a large app by gigabytes over a day.
     pub fn build_from_json(json: &str) -> Result<Self, BuildFromJsonError> {
         let value: serde_json::Value = serde_json::from_str(json)
             .map_err(BuildFromJsonError::Parse)?;
@@ -180,7 +184,7 @@ impl ResolvedCatalog {
             .ok_or(BuildFromJsonError::MissingComponents)?;
         let mut entries: Vec<&'static ComponentEntry> = Vec::with_capacity(components.len());
         for c in components {
-            entries.push(leak_entry_from_json(c)?);
+            entries.push(memoized(c, leak_entry_from_json)?);
         }
         let mut cat = Self::build_from(entries);
         // v2 slices — all optional, each rebuilt through its
@@ -972,11 +976,43 @@ fn leak_icon_set_from_json(v: &serde_json::Value) -> Option<&'static IconSetEntr
 
 /// `value[S::KEY]` as a Vec of leaked entries, or empty when the key is
 /// absent / not an array. The generic reader half of `build_from_json`.
-pub(crate) fn slice_vec<S: LeakFromJson>(value: &serde_json::Value) -> Vec<&'static S> {
+pub(crate) fn slice_vec<S: LeakFromJson + Send + Sync>(value: &serde_json::Value) -> Vec<&'static S> {
     value[S::KEY]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| S::from_json(v)).collect())
+        .map(|a| a.iter().filter_map(|v| memoized(v, |v| S::from_json(v).ok_or(())).ok()).collect())
         .unwrap_or_default()
+}
+
+/// The entry `build` makes from `v`, built (and leaked) only the first
+/// time this process sees `v`'s exact JSON as a `T`; afterwards the same
+/// `&'static T` again. Failed builds are not remembered.
+///
+/// Keyed by the serialized text rather than a hash: an entry that a
+/// collision answered with the wrong component would be a silent lie in
+/// every tool, and the key costs one copy per distinct entry — bounded
+/// the same way the entries are.
+fn memoized<T, E>(
+    v: &serde_json::Value,
+    build: impl FnOnce(&serde_json::Value) -> Result<&'static T, E>,
+) -> Result<&'static T, E>
+where
+    T: std::any::Any + Send + Sync,
+{
+    use std::any::{Any, TypeId};
+    type Built = HashMap<TypeId, HashMap<Box<str>, &'static (dyn Any + Send + Sync)>>;
+    static BUILT: std::sync::OnceLock<std::sync::Mutex<Built>> = std::sync::OnceLock::new();
+
+    let key = v.to_string();
+    // Held across `build`: two threads rebuilding at once then share one
+    // entry instead of each leaking its own. `build` takes no lock.
+    let mut built = BUILT.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    let of_type = built.entry(TypeId::of::<T>()).or_default();
+    if let Some(entry) = of_type.get(key.as_str()) {
+        return Ok(entry.downcast_ref::<T>().expect("keyed by TypeId::of::<T>()"));
+    }
+    let entry = build(v)?;
+    of_type.insert(key.into_boxed_str(), entry);
+    Ok(entry)
 }
 
 // `LeakFromJson` impls — the reader side of each lenient v2 slice. Each
@@ -1097,6 +1133,53 @@ mod tests {
 
     fn leak_edges(edges: Vec<EdgeRef>) -> &'static [EdgeRef] {
         Box::leak(edges.into_boxed_slice())
+    }
+
+    /// A catalog document with two components and one guide. `docs` and
+    /// `body` carry `tag` so each test's entries are its own: the memo is
+    /// process-wide, and tests share the process.
+    fn memo_doc(tag: &str, second_docs: &str) -> String {
+        serde_json::json!({
+            "components": [
+                { "name": "MemoA", "module_path": "memo::a", "file": "a.rs", "line": 1,
+                  "docs": format!("{tag} first"), "composes": [{ "name": "MemoB", "line": 2 }],
+                  "params": [{ "name": "label", "type": "String", "type_short_name": "String" }] },
+                { "name": "MemoB", "module_path": "memo::b", "file": "b.rs", "line": 1,
+                  "docs": format!("{tag} {second_docs}"), "composes": [], "params": [] },
+            ],
+            "guides": [{ "slug": format!("memo-{tag}"), "title": "Memo", "body": format!("{tag} body") }],
+        })
+        .to_string()
+    }
+
+    /// Regression: `build_from_json` leaked a fresh copy of every entry
+    /// on each call. `idealyst mcp` rebuilds on every catalog query to a
+    /// running app and on every batch of saves, and one serving CrewForge
+    /// held ~2.9 GB of live catalog copies after a day.
+    #[test]
+    fn regression_rebuilding_an_unchanged_catalog_allocates_no_entries() {
+        let first = ResolvedCatalog::build_from_json(&memo_doc("unchanged", "second")).unwrap();
+        let again = ResolvedCatalog::build_from_json(&memo_doc("unchanged", "second")).unwrap();
+        assert_eq!(first.entries().len(), 2);
+        for (a, b) in first.entries().iter().zip(again.entries()) {
+            assert!(std::ptr::eq(*a, *b), "{} was built again", a.name);
+        }
+        assert!(std::ptr::eq(first.guides()[0], again.guides()[0]), "the guide was built again");
+    }
+
+    /// Only the entry whose JSON changed is built anew, and it carries
+    /// the new content.
+    #[test]
+    fn a_rebuild_builds_only_the_entries_that_changed() {
+        let before = ResolvedCatalog::build_from_json(&memo_doc("edited", "second")).unwrap();
+        let after = ResolvedCatalog::build_from_json(&memo_doc("edited", "second, edited")).unwrap();
+        let find = |cat: &ResolvedCatalog, name: &str| *cat.entries().iter().find(|e| e.name == name).unwrap();
+        assert!(std::ptr::eq(find(&before, "MemoA"), find(&after, "MemoA")));
+        assert!(!std::ptr::eq(find(&before, "MemoB"), find(&after, "MemoB")));
+        assert_eq!(find(&after, "MemoB").docs, "edited second, edited");
+        assert_eq!(find(&before, "MemoB").docs, "edited second");
+        // The edited entry still resolves its edges.
+        assert_eq!(find(&after, "MemoA").composes[0].name, "MemoB");
     }
 
     #[test]

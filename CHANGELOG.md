@@ -3207,6 +3207,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`idealyst mcp` no longer grows by a catalog copy on every query** (`mcp-catalog` patch).
+  `ResolvedCatalog::build_from_json` leaked every entry it parsed, and the MCP server rebuilds
+  the catalog on each catalog query to a running app and on every batch of source saves: one
+  serving CrewForge held ~2.9 GB of catalog copies after a day, pushing its container into swap
+  and the OOM killer. Entries are now memoized by their JSON text, so a rebuild allocates only
+  the entries that changed. 300 rebuilds of the framework's own catalog grew the process by
+  175 MB before and 0.5 MB after.
 - **A killed `idealyst dev` no longer leaves its server holding the app's port** (`server`,
   `idealyst-cli` minor). A dev process SIGKILLed by a container's OOM killer left the project
   server running under init, so the next session could not bind the port and the browser talked
