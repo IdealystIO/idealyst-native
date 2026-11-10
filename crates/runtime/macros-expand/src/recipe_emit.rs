@@ -76,12 +76,15 @@ pub(crate) fn emit(input: TokenStream2) -> TokenStream2 {
     uses.sort();
     uses.dedup();
     let use_lits = uses.iter().map(|u| quote! { #u });
+    // `previews`: an exported render fn for the docs' live recipe preview.
+    let (preview_export, preview_symbol) = crate::preview_emit::recipe_symbol(&func);
 
     quote! {
         // The recipe fn — compiled + type-checked against the live
         // component props. May be uncalled (docs-only), hence the allow.
         #[allow(dead_code)]
         #func
+        #preview_export
 
         ::runtime_core::__mcp::inventory::submit! {
             ::runtime_core::__mcp::RecipeEntry {
@@ -93,6 +96,7 @@ pub(crate) fn emit(input: TokenStream2) -> TokenStream2 {
                 docs: #docs,
                 source: #source,
                 uses: &[ #(#use_lits),* ],
+                preview: #preview_symbol,
             }
         }
     }

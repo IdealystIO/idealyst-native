@@ -28,7 +28,12 @@
 //! Per-field `#[prop(static)]` forces a bare `T` (a genuinely build-time
 //! value, or a non-`Clone` type), and `#[prop(reactive)]` forces the wrap
 //! (correcting a heuristic miss, e.g. a type alias hiding a data type).
-//! Both attributes are stripped before the struct is re-emitted.
+//! `#[prop(example = expr)]` sets the value an `idealyst docs` preview
+//! starts the field at (read only under the `previews` feature). The
+//! arguments combine (`#[prop(static, example = 3)]`) and are parsed like
+//! the inline-props form's, except `default`, which a struct takes from
+//! its `Default` impl. Every `#[prop]` is stripped before the struct is
+//! re-emitted.
 //!
 //! `#[props]` must sit ABOVE the derives so it rewrites the field types
 //! before `#[derive(IdealystSchema)]` / `Default` see them.
@@ -154,25 +159,39 @@ pub(crate) fn emit(item: TokenStream2) -> TokenStream2 {
         }
     };
 
+    // `#[prop(example = …)]` per field, for the docs preview.
+    let mut examples: Vec<(syn::Ident, syn::Expr)> = Vec::new();
     for field in named.into_iter().flat_map(|f| f.named.iter_mut()) {
-        // Read + strip the `#[prop(static|reactive)]` override.
-        let mut forced: Option<bool> = None;
+        // Read + strip `#[prop(...)]` — the same arguments the inline-props
+        // form takes, minus `default` (a struct's defaults are its
+        // `Default` impl).
+        let mut prop = crate::inline_props::PropArgAttr::default();
+        let mut err: Option<syn::Error> = None;
         field.attrs.retain(|a| {
-            if a.path().is_ident("prop") {
-                if let Ok(list) = a.meta.require_list() {
-                    match list.tokens.to_string().trim() {
-                        "static" => forced = Some(false),
-                        "reactive" => forced = Some(true),
-                        _ => {}
-                    }
-                }
-                false // strip — `prop` isn't a real attribute
-            } else {
-                true
+            if !a.path().is_ident("prop") {
+                return true;
             }
+            if let Err(e) = prop.absorb(a) {
+                err.get_or_insert(e);
+            }
+            false // strip — `prop` isn't a real attribute
         });
+        if let Some(e) = err {
+            return e.to_compile_error();
+        }
+        if let Some(default) = &prop.default {
+            return syn::Error::new_spanned(
+                default,
+                "`#[prop(default = …)]` is for inline-props components; a `#[props]` struct's \
+                 defaults come from its `Default` impl (or `#[component(default(field = …))]`)",
+            )
+            .to_compile_error();
+        }
+        if let (Some(example), Some(ident)) = (prop.example, &field.ident) {
+            examples.push((ident.clone(), example));
+        }
 
-        let wrap = forced.unwrap_or_else(|| should_wrap(&field.ty));
+        let wrap = prop.forced_wrap.unwrap_or_else(|| should_wrap(&field.ty));
         if wrap {
             let ty = &field.ty;
             field.ty = parse2(quote! { ::runtime_core::Reactive<#ty> })
@@ -181,6 +200,18 @@ pub(crate) fn emit(item: TokenStream2) -> TokenStream2 {
     }
 
     let fields = collect_fields(&input);
+    let preview = crate::preview_emit::props_impl(
+        &input.ident,
+        !input.generics.params.is_empty(),
+        &fields
+            .iter()
+            .map(|(name, ty)| crate::preview_emit::FieldIn {
+                name,
+                ty,
+                example: examples.iter().find(|(n, _)| n == name).map(|(_, e)| e),
+            })
+            .collect::<Vec<_>>(),
+    );
     let literals = apply_literal_impl(&input.ident, &fields, false);
     // What the explicit-props `#[component]` form's Props table reads.
     let inspect = crate::inspect_emit::inspect_props_impl(&input, &fields);
@@ -201,6 +232,7 @@ pub(crate) fn emit(item: TokenStream2) -> TokenStream2 {
             #literals
             #inspect
             #import
+            #preview
         },
     );
     quote! {
@@ -737,6 +769,31 @@ mod tests {
         emit(input).to_string().chars().filter(|c| !c.is_whitespace()).collect()
     }
 
+    /// Just the re-emitted struct declaration — the field types — without
+    /// the impls after it (the `previews` impl names `ViaReactiveVariant`,
+    /// which a "no `Reactive` anywhere" check would trip on).
+    fn declared(out: &str) -> &str {
+        &out[..out.find('}').map_or(out.len(), |i| i + 1)]
+    }
+
+    /// `#[prop(...)]` on a struct field takes the inline form's arguments.
+    /// The old string match ignored anything but a lone `static` /
+    /// `reactive`, so `#[prop(static, example = …)]` silently lost its
+    /// `static`; `default` is rejected because a struct's defaults are its
+    /// `Default` impl.
+    #[test]
+    fn struct_field_prop_args_combine_and_reject_default() {
+        let out = rendered(quote! {
+            pub struct P { #[prop(static, example = "x")] pub title: String }
+        });
+        assert!(out.contains("pubtitle:String"), "static honoured next to example: {out}");
+        assert!(!out.contains("compile_error"), "{out}");
+
+        let out = rendered(quote! { pub struct P { #[prop(default = 1)] pub n: i32 } });
+        assert!(out.contains("compile_error"), "{out}");
+        assert!(out.contains("comefromits`Default`impl"), "{out}");
+    }
+
     #[test]
     fn regression_a_unit_struct_is_props_with_no_fields() {
         let out = emit(quote! { #[derive(Default)] pub struct SpacerProps; }).to_string();
@@ -776,7 +833,8 @@ mod tests {
         assert!(out.contains("children:Vec<Element>"), "{out}");
         assert!(out.contains("handle:Ref<H>"), "{out}");
         assert!(out.contains("live:Signal<i32>"), "{out}");
-        assert!(!out.contains("Reactive"), "no data field to wrap: {out}");
+        let declared_out = declared(&out);
+        assert!(!declared_out.contains("Reactive"), "no data field to wrap: {declared_out}");
     }
 
     /// `styles = FooStyles` adds the generated override set as a static
@@ -814,7 +872,8 @@ mod tests {
         });
         assert!(out.contains("items:ReadSignal<Vec<Row>>"), "{out}");
         assert!(out.contains("report:WriteSignal<f32>"), "{out}");
-        assert!(!out.contains("Reactive"), "halves must stay unwrapped: {out}");
+        let declared_out = declared(&out);
+        assert!(!declared_out.contains("Reactive"), "halves must stay unwrapped: {declared_out}");
     }
 
     #[test]
@@ -831,7 +890,8 @@ mod tests {
             struct P { #[prop(static)] size: FieldSize }
         });
         assert!(out.contains("size:FieldSize"), "{out}");
-        assert!(!out.contains("Reactive"), "static override must not wrap: {out}");
+        let declared_out = declared(&out);
+        assert!(!declared_out.contains("Reactive"), "static override must not wrap: {declared_out}");
         // `#[prop(...)]`, not the substring "prop" — the generated
         // `__apply_literal` mentions "prop name" in its docs.
         assert!(!out.contains("#[prop"), "the #[prop] attr must be stripped: {out}");

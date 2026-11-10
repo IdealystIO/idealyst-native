@@ -143,7 +143,6 @@ marker_into_axis!(CardVariant {
 // bare. `styles` (from `styles = CardStyles`) is the per-instance override.
 #[runtime_core::props(styles = CardStyles)]
 #[derive(IdealystSchema)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct CardProps {
     /// Surface skeleton: `Regular` (page surface + border), `Outline`
     /// (border only), `Flat` (secondary fill, no border), `Elevated`

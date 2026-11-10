@@ -40,6 +40,12 @@ catalog = ["runtime-vocabulary/catalog", "runtime-macros/catalog"]
 # Back-compat alias — the catalog feature was originally named after
 # its first consumer.
 mcp = ["catalog"]
+# Component previews in generated docs: each `#[component]` exports a
+# preview with live prop controls (`runtime_core::previews`), and
+# `#[prop_control]` impls compile. Only the `idealyst docs` build turns it
+# on — `dev` deliberately does not, so dev and release builds never
+# compile a preview or a `PropControl` impl.
+previews = ["catalog", "runtime-vocabulary/previews", "runtime-macros/previews"]
 # What a dev-session wrapper turns on: the automation registry AND the
 # MCP catalog. NOTE: `runtime-vocabulary/robot` does not forward
 # `runtime-shared/robot`, so a native dev wrapper that also needs the

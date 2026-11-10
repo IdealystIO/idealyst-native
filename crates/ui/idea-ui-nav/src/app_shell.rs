@@ -85,7 +85,6 @@ pub fn sidebar_pinned(pin_at: Breakpoint) -> bool {
 /// Props for [`AppShell`]. `children` is the main content (put `{nav.outlet}`
 /// here); `sidebar` is the panel content, built exactly once.
 #[runtime_core::props]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct AppShellProps {
     /// The sidebar content — nav links, header, footer. Built ONCE; the same

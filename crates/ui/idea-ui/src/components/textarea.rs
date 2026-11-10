@@ -79,18 +79,17 @@ use crate::components::field::field_tone_key;
 // multi-line Field), so its per-instance overrides are Field's too, and a
 // `FieldStyles` restyle reaches it.
 #[runtime_core::props(styles = FieldStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct TextareaProps {
     /// Optional label above the input.
     #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
+    #[prop(example = "Message")]
     pub label: Reactive<Option<String>>,
     /// A short muted note beside the label — "Optional", "Required",
     /// "Max 20". `Reactive<Option<String>>` — static or live. Default
     /// `None`.
     // Left out of the docs controls: the derive compares its controls as
     // one tuple, and std implements `PartialEq` for tuples of at most 12.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
     pub label_hint: Option<String>,
     /// Controlled text value. The host owns the signal.
@@ -99,6 +98,7 @@ pub struct TextareaProps {
     pub on_change: Rc<dyn Fn(String)>,
     /// Placeholder shown when the value is empty. `Reactive<Option<String>>`.
     #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
+    #[prop(example = Some(String::from("Write something…")))]
     pub placeholder: Option<String>,
     /// Helper text below the input.
     #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
@@ -141,14 +141,12 @@ pub struct TextareaProps {
     /// `insert_text` at the caret and imperative `focus()` / `blur()`. The
     /// same prop as [`Field`](crate::components::field::Field)'s. `None`
     /// (the default) binds nothing.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub field_ref: Option<runtime_core::Ref<runtime_core::primitives::text_area::TextAreaHandle>>,
     /// Observe focus arriving (`true`) and leaving (`false`), e.g. to save
     /// on blur. The same prop as
     /// [`Field`](crate::components::field::Field)'s. `None` (the default)
     /// observes nothing.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub on_focus_change: Option<Rc<dyn Fn(bool)>>,
     /// Make the text area read-only and inert. While `true` it is not
     /// editable and not keyboard-focusable (it drops focus if it held it),

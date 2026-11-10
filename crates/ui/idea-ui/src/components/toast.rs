@@ -474,11 +474,9 @@ fn remove_toast(id: u64) {
 // the global queue inside `ToastCard`, not via prop reactivity.
 #[runtime_core::props(styles = ToastStyles)]
 #[derive(IdealystSchema)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ToastCardProps {
     /// The queued toast this card renders. Supplied by [`ToastHost`]'s
     /// reactive list, not authored directly.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub entry: ToastEntry,
 }
@@ -620,7 +618,6 @@ fn edge_gap_rules(gap: f32) -> StyleRules {
 // enum, `edge_gap`) → `Reactive<…>`.
 #[runtime_core::props(styles = ToastStyles)]
 #[derive(IdealystSchema)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ToastHostProps {
     /// Which of the nine viewport regions the toast stack anchors to.
     /// Default [`BottomLeft`](ToastPlacement::BottomLeft).

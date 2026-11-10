@@ -329,7 +329,6 @@ pub enum ModalPresentation {
 // element-builder newtype (`#[prop(static)]`); the `Rc<dyn Fn>` handlers and
 // the per-slot `styles` overrides are auto-skipped.
 #[runtime_core::props(styles = ModalStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct ModalProps {
     /// Open state. `Reactive<bool>` — pass your open-state `Signal<bool>`
@@ -344,7 +343,6 @@ pub struct ModalProps {
     /// rebuilds the content on each open — so it must be reconstructable.
     /// Author it as `content = move || ui! { … }` (a `move` closure; multiple
     /// nodes → a `Vec<Element>`). State inside is rebuilt fresh on each open.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub content: ModalContent,
     /// Builds a fixed section ABOVE the scrolling body — a title and close
@@ -352,13 +350,11 @@ pub struct ModalProps {
     /// surface's cap, only `content` scrolls and this stays in view. Unset
     /// (the default) renders nothing there. Same closure form as `content`:
     /// `header = move || ui! { … }`. Its look is the `header` slot.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub header: ModalSection,
     /// Builds a fixed section BELOW the scrolling body — the Save / Cancel
     /// actions. Like `header`, it never scrolls out of view. Unset (the
     /// default) renders nothing there. Its look is the `footer` slot.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub footer: ModalSection,
     /// Centered card (default), top-anchored card, or bottom sheet — see
@@ -421,7 +417,6 @@ pub struct ModalProps {
     /// // your threshold on release, `open.set(false)`.
     /// Modal(presentation = ModalPresentation::Sheet, sheet_slide = Some(slide))
     /// ```
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub sheet_slide: Option<AnimatedValue<f32>>,
 }

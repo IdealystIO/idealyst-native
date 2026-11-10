@@ -63,6 +63,14 @@ style-dump = ["runtime-shared/style-dump"]
 # whichever wrapper/app wants capture (see runtime-core/catalog).
 catalog = ["dep:mcp-catalog", "runtime-shared/catalog"]
 
+# Component previews for generated docs: the `previews` module
+# (`PropControl`, `Preview`, the field dispatch) the `#[component]` /
+# `#[props]` / `#[prop_control]` emissions reference under
+# `runtime-macros/previews`. Only the `idealyst docs` build enables it
+# (through `runtime-core/previews`); dev and release builds compile none
+# of it.
+previews = ["catalog"]
+
 # `hot-reload`: the subsecond dispatch anchor for the `#[component]`
 # split. Links `dev-hot` (with its own `hot` feature, i.e. the real
 # subsecond substrate) and re-exports it at `glue::__hot`, where the

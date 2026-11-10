@@ -11,6 +11,22 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **idea-ui's `docs` feature, `DocControls` and `RefBuiltins` are gone; `idealyst docs` previews
+  replace them** (`idea-ui`, `idea-ui-nav`, `idea-theme` major; `idea-ui-docs-derive` removed).
+  The `DocControls` derive had no caller left. Drop `features = ["docs"]` from an `idea-ui` or
+  `idea-ui-nav` dependency. An app type that implemented `RefBuiltins` for a picker implements
+  `runtime_core::previews::PropControl` inside `#[prop_control]` instead (see the "Generated docs
+  and live component previews" guide).
+  - **`#[prop(...)]` on a `#[props]` struct field is parsed like the inline-props form**
+    (`runtime-macros` minor). Arguments combine (`#[prop(static, example = 3)]`); before, anything
+    but a lone `static` / `reactive` was silently ignored, so `#[prop(static, …)]` lost its
+    `static`. `default = …` on a struct field is now a compile error: a struct's defaults are its
+    `Default` impl.
+  - **A growing `Surface` can shrink below its content in a column** (`idea-ui`). `grow` zeroed
+    only `min-width`, so in a column (`AppShell`'s sidebar panel) the surface kept its content
+    height and a scroll view inside it never scrolled; it now zeroes `min-height` too, as its docs
+    said.
+
 - **An Android camera displays through a native surface, and makes CPU frames only on demand**
   (`camera`, `media-stream`, `video`, `video-compose` minor). `Video` showing a camera stream is
   now a `TextureView` Camera2 fills with no copy into the process, and the `ImageReader` is a
@@ -1257,6 +1273,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **`idealyst docs` shows every component live, with a control per prop** (`runtime-core`,
+  `runtime-vocabulary`, `runtime-macros`, `mcp-catalog` minor; `idea-ui`, `idea-theme`; `docs-app`,
+  `idealyst-cli`). Each component page stacks a Playground (the component on a canvas at full or
+  phone width, a props panel, Reset, and a Usage snippet: the `ui!` call the controls make, ready
+  to copy), its Props and its Recipes, with "View source" showing the component as written. A
+  prop gets a control from its type — text, switches, numbers, axis-enum and tone pickers, images,
+  icons, optional values, attachable callbacks, element slots — and `#[prop(example = …)]` sets
+  what a preview starts at. A type of your own implements `runtime_core::previews::PropControl`
+  inside `#[prop_control]`. All of it is behind the new `runtime-core/previews` feature, which
+  only the docs build turns on: dev and release builds compile no preview and no `PropControl`
+  impl. Each component exports its preview under a symbol the catalog records, which is how the
+  docs site reaches components in private modules and past the web build's dead-code pass; a
+  project's own zero-argument recipes now render live too. See the "Generated docs and live
+  component previews" guide.
 
 - **`#[server]` calls can time out, and one hook sees every failure** (`server` minor).
   `ClientConfig::with_timeout(Duration)` fails a call whose HTTP exchange outlasts the deadline

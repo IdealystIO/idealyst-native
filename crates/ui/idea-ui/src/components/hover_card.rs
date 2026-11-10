@@ -153,20 +153,16 @@ impl Default for HoverCardContent {
 // `&'static str` handles (`#[prop(static)]`), and `children` is a
 // `Vec<Element>` (auto-skipped).
 #[runtime_core::props(styles = HoverCardStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct HoverCardProps {
     /// Builds the card body, laid out in a column inside the card surface.
     /// Author it as `content = move || ui! { … }`; it is rebuilt on each
     /// open, so state inside it starts fresh every time.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub content: HoverCardContent,
     /// Which side of the trigger the card sits on. Default `Below`.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub side: ElementSide,
     /// Alignment along the anchor edge. Default `Start`.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub align: ElementAlign,
     /// Gap in px between the trigger and the card. Default
     /// [`HOVER_CARD_DEFAULT_OFFSET`].
@@ -187,16 +183,13 @@ pub struct HoverCardProps {
     pub disabled: bool,
     /// Optional robot/E2E test id on the trigger wrapper — the view that
     /// takes the hover and the long-press. Inert outside a robot build.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub test_id: Option<&'static str>,
     /// Optional robot/E2E test id on the card surface, present while the
     /// card is open. Inert outside a robot build.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub card_test_id: Option<&'static str>,
     /// The trigger the card wraps and anchors to.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub children: Vec<Element>,
 }
 

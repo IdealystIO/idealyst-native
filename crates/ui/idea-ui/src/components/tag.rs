@@ -140,10 +140,10 @@ marker_into_axis!(TagVariant {
 // auto-skipped. Bare markers (`tone = tone::Primary`, `variant =
 // variant::Soft`) coerce.
 #[runtime_core::props(styles = TagStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct TagProps {
     /// Tag text. `Reactive<String>` — static or live (signal/`rx!`).
+    #[prop(example = "Beta")]
     pub label: Reactive<String>,
     /// Semantic color palette. Default Neutral.
     pub tone: ToneRef,

@@ -30,6 +30,13 @@
 //! - `catalog.rs` — pure catalog → `CatalogModel` view-model mapping (unit-tested).
 //! - `routes.rs` — the single catalog root route + URL-encoded entry routing.
 //! - `shell.rs` — sidebar + detail-page components (`entry_page`, `FieldsTable`, `CodePanel`, …).
+//! - `previews.rs` — the component playground (live component, prop
+//!   controls, Usage snippet) and the recipe renders, reached by the
+//!   symbols the catalog records.
+//! - `preview_codegen.rs` — run by `build.rs`: the `extern` block and
+//!   symbol lookups `previews.rs` includes.
+//! - `source_extract.rs` — run by `build.rs`: each component's source, for
+//!   the page's "View source".
 //! - `styles.rs` — local chrome stylesheets (lifted from idea-ui-docs).
 
 use std::cell::RefCell;
@@ -42,7 +49,12 @@ use swap_navigator::{MountPolicy, SwapBuilder, SwapHandle, SwapNavigator};
 
 mod catalog;
 mod icons;
+#[cfg(test)]
+mod preview_codegen;
+mod previews;
 mod routes;
+#[cfg(test)]
+mod source_extract;
 mod shell;
 mod styles;
 mod theme;
@@ -140,6 +152,8 @@ pub fn app() -> Element {
     // window: signal creation outside `World::enter` panics, and the
     // sidebar's toggle only writes the signal from its handler.
     theme::init();
+    // The icons an icon prop's preview control offers.
+    previews::register_icon_choices();
     // Pin the framework's `Lg` breakpoint at 960 px so `AppShell(pin_at =
     // Lg)` and the mobile hamburger flip at the same width. First-install
     // wins — must run before any breakpoint-keyed sheet resolves.

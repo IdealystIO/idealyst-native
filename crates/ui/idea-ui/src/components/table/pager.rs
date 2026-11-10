@@ -68,6 +68,7 @@ pub struct TablePagerProps {
     /// Rows per page. Reactive.
     pub page_size: usize,
     /// Rows across every page. Reactive.
+    #[prop(example = 120)]
     pub total: usize,
     /// What a row is, plural — "projects".
     #[prop(static)]

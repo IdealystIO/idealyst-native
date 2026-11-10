@@ -11,14 +11,6 @@ crate-type = ["rlib"]
 [features]
 default = ["table"]
 
-# Off by default. When on, every component's `*Props` gets a
-# `DocControls` impl + supporting types that the idea-ui-docs app
-# uses to auto-generate live control panels. Production apps that
-# don't need reflective tooling leave this off — the derive
-# expansion is dead code without it but a few hundred kilobytes of
-# generated impls aren't free.
-docs = ["dep:idea-ui-docs-derive"]
-
 # Off by default. Only turns on `runtime-core/robot` (the robot registry
 # itself). Components forward their `test_id` prop in EVERY build — the
 # primitives' `.test_id` slot is inert unless the runtime's `robot` feature
@@ -81,7 +73,6 @@ mcp-catalog = { workspace = true, optional = true }
 # direct dependency, not only a transitive one.
 runtime-vocabulary = { workspace = true }
 idea-theme = { workspace = true }
-idea-ui-docs-derive = { workspace = true, optional = true }
 # Themed `Table` component layers on the cross-platform `table` SDK
 # (real HTML `<table>` on web, shared-track CSS-grid on native). idea-ui
 # wraps it the same way it wraps `activity_indicator` (as `Spinner`)
@@ -98,6 +89,10 @@ dnd = { workspace = true, optional = true }
 # every capability trait over a recording op log — it exists for exactly
 # this. Used by `collapsible_direct_mount.rs`.
 host-mock = { path = "../../dev/host-mock" }
+# Lays out a resolved style with the engine the framework uses, for a
+# Surface regression that is about the layout, not the rules
+# (`regression_surface_grow_in_a_column_shrinks_below_its_content`).
+taffy = { version = "0.15.1", default-features = false, features = ["std", "flexbox", "taffy_tree"] }
 # The CSS-emission half of the design-sync converter
 # (`examples/design_sync.rs`). Turns the PREMINT_SHEETS registry
 # this crate's `stylesheet!` blocks register into (under

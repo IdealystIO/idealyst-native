@@ -208,12 +208,12 @@ fn travel_for(size: SwitchSize) -> f32 {
 // distance + icon px feed the animation/layout), read once at build — only
 // the track *style* re-resolves on a live tone/variant; see the body TODO.
 #[runtime_core::props(styles = SwitchStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct SwitchProps {
     /// Optional inline label rendered to the left of the track.
     /// `Reactive<Option<String>>` — static (`None`/`Some`) or live.
     #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
+    #[prop(example = "Notifications")]
     pub label: Reactive<Option<String>>,
     /// Controlled bool state. The host owns the signal.
     pub value: Signal<bool>,

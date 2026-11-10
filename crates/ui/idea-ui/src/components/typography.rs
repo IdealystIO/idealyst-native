@@ -332,7 +332,6 @@ fn spans_to_runs(spans: &[TextSpan]) -> Vec<TextRun> {
 // `Static` snapshot (the no-flicker fast path); a `Signal`/`rx!` re-styles in
 // place.
 #[runtime_core::props(styles = TypographyStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct TypographyProps {
     /// Text content. `Reactive<String>` so it can carry live text: a
@@ -340,6 +339,7 @@ pub struct TypographyProps {
     /// `rx!(…)` re-renders the text in place when its signals change —
     /// no parent rebuild. The `ui!`/`jsx!` dispatch coerces all of these
     /// via `.into()`, so call sites are unchanged for the static case.
+    #[prop(example = "The quick brown fox jumps over the lazy dog.")]
     pub content: Reactive<String>,
     /// Text in several styles, flowing as ONE paragraph: each
     /// [`TextSpan`] carries its own weight / tone / muted / italic /
@@ -348,7 +348,6 @@ pub struct TypographyProps {
     /// onto its line instead of sitting beside a two-line block. When
     /// non-empty it replaces `content`. A `Signal` / `rx!(…)` re-renders
     /// the spans in place. `lines` truncates the whole paragraph.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub spans: Reactive<Vec<TextSpan>>,
     /// Typographic role (font size/weight/line-height): `Display`,
     /// `H1`…`H6`, `BodyXl`/`BodyLg`/`Body`/`BodySm`, `Caption`,
@@ -367,11 +366,6 @@ pub struct TypographyProps {
     /// face, or a `FontFamily::System("Courier New, monospace".into())`
     /// to name a platform/system family. The framework registers a
     /// `Typeface` with the backend on first use.
-    ///
-    /// Skipped from DocControls — `FontFamily` isn't a doc-control
-    /// input type (no enumerable variants / text field), so the panel
-    /// omits it.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub font: Option<FontFamily>,
     /// Optional per-instance font-weight override. `None` inherits the
     /// weight baked into `kind` (e.g. Body → Normal, H2 → SemiBold). Set a
@@ -380,22 +374,14 @@ pub struct TypographyProps {
     /// at a body size that needs Medium/SemiBold emphasis (nav links,
     /// labels) without inventing a bespoke `kind`. Layered over the sheet
     /// base, so it wins over the kind's weight.
-    ///
-    /// Skipped from DocControls — `FontWeight` is a framework enum the
-    /// docs-derive heuristic doesn't enumerate as a VariantEnum.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub weight: Option<FontWeight>,
-    /// Skipped from DocControls — `TextAlign` is a framework enum
-    /// without `VariantEnum`, and the docs-derive heuristic flags any
-    /// `*Align` field as a VariantEnum by convention.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
+    /// Horizontal alignment of the text within its box. Default `Left`.
     pub align: TextAlign,
     /// Show at most this many lines, ending the last with "…" where it is
     /// cut (`Some(1)`: one line, truncated). The text can then shrink in a
     /// row so a neighbour keeps its room — a name next to a number in a
     /// table cell. `None` (default): no limit. See the framework's
     /// `StyleRules::max_lines`.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub lines: Option<u32>,
     /// Accessibility role override. Default `None` = AUTO: a heading `kind`
     /// (`display`, `h1`…`h6`) gets `Role::Header` so screen readers, locators, and platform a11y
@@ -404,7 +390,6 @@ pub struct TypographyProps {
     /// force a specific role, including `Some(Role::Text)` to opt a heading
     /// kind OUT of the heading role (e.g. large text that isn't a section
     /// title).
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub a11y_role: Option<Role>,
 }
 

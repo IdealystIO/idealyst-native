@@ -9,7 +9,6 @@ of the box rather than reimplementing them.
 | Crate | Path | Role |
 | --- | --- | --- |
 | `idea-ui` | [`idea-ui/`](./idea-ui) | The library itself. Heading, Body, Card, Stack, Btn, Caption, theme tokens, breakpoints. Pure composition over Runtime primitives. |
-| `idea-ui-docs-derive` | [`idea-ui-docs-derive/`](./idea-ui-docs-derive) | Derive macro that emits documentation metadata for `idea-ui` components. Used by the docs site to auto-generate prop tables. |
 | `icons-lucide` | [`icons-lucide/`](./icons-lucide) | Lucide icon set wrapped as an `IconRegistry`. Consumed by the `Icon` primitive. |
 
 ## Relationship to the framework

@@ -7,7 +7,6 @@ targets:
   - crates/ui/idea-ui-mail
   - crates/ui/idea-theme
   - crates/ui/idea-theme-editor
-  - crates/ui/idea-ui-docs-derive
   - crates/ui/icons-lucide
 severity: medium
 ---

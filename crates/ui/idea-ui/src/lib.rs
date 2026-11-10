@@ -56,8 +56,6 @@
 //!
 //! - `table` (default) — the themed [`Table`] component and its `table`
 //!   SDK dependency. The one feature here that still removes linked code.
-//! - `docs` — a `DocControls` impl on every `*Props` for reflective
-//!   control panels (what the idea-ui-docs app renders).
 //! - `robot` — turns on `runtime-core/robot` and nothing else. Every
 //!   component forwards its `test_id` prop to its interactive primitive in
 //!   every build (inert unless the runtime's robot is on), so test ids
@@ -91,13 +89,6 @@
 //! Autocomplete = text-input + portal, Toast / ToastHost = icon +
 //! activity + portal + presence.
 
-// Self-alias so derive macros (like `DocControls`) that expand to
-// `::idea_ui::...` paths resolve correctly when compiling idea-ui
-// itself — without this, `idea_ui` looks like an unknown external
-// crate from inside its own source.
-#[cfg(feature = "docs")]
-extern crate self as idea_ui;
-
 pub mod breakpoint;
 pub mod components;
 /// Civil date/time values + token formatting for the date components
@@ -106,8 +97,6 @@ pub mod date;
 /// Smart-typing mask for the typed date/time inputs — auto-inserted
 /// delimiters + segment auto-advance, derived from the format tokens.
 pub(crate) mod date_mask;
-#[cfg(feature = "docs")]
-pub mod doc_controls;
 pub mod intent;
 pub mod modifiers;
 // Compile-checked usage examples for idea-ui components. `recipe!`

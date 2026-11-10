@@ -71,7 +71,6 @@ impl From<StackGap> for Reactive<GridGap> {
 // so a live column count re-lays-out in place — no rebuild. `children` is the
 // children category and stays bare.
 #[runtime_core::props(styles = GridStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct GridProps {
     /// Number of columns (>= 1). Default 2.

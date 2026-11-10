@@ -239,12 +239,12 @@ fn norm_pos(v: f32, min: f32, max: f32) -> f32 {
 // so a live `disabled` blocks and unblocks in place.
 #[runtime_core::props(styles = SliderStyles)]
 #[derive(IdealystSchema)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct SliderProps {
     /// The current value. `Reactive<f32>` — a `Signal<f32>` the host owns, a
     /// static literal, or a model-derived `rx!(...)` getter (so the Slider works
     /// when the value lives in a document/model, read through a closure, not just
     /// a standalone signal). The host applies edits in `on_change`.
+    #[prop(example = 0.4)]
     pub value: Reactive<f32>,
     /// Fires with the new value while the user drags.
     pub on_change: Rc<dyn Fn(f32)>,

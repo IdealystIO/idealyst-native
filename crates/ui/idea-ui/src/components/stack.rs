@@ -79,7 +79,6 @@ component_styles! {
 // path); a `Signal`/`rx!` re-styles in place.
 #[runtime_core::props(styles = StackStyles)]
 #[derive(Default, IdealystSchema)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct StackProps {
     /// Token-driven spacing between children. Tracks the theme's spacing
     /// scale. Default Md.

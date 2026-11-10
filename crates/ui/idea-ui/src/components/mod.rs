@@ -209,8 +209,9 @@ impl ControlSize {
     }
 }
 
-// `VariantEnum` lets the docs-app `DocControls` derive render a size
-// picker; the inherent `as_variant_str` above is what components call.
+// `VariantEnum` gives `idealyst docs` previews a size picker (the
+// `runtime_core::previews` fallback for axis enums); the inherent
+// `as_variant_str` above is what components call.
 impl runtime_core::VariantEnum for ControlSize {
     fn as_variant_str(self) -> &'static str {
         match self {

@@ -54,7 +54,6 @@ impl VariantEnum for SpinnerSize {
 // a `Static` size uses the one-shot `.size()` setter.
 #[runtime_core::props(styles = SpinnerStyles)]
 #[derive(Default)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct SpinnerProps {
     /// Spinner scale (`Small`/`Large`). Default `Small`.

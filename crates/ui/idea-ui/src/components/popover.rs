@@ -179,7 +179,6 @@ pub(crate) fn dismiss_catcher(on_dismiss: Option<Rc<dyn Fn()>>) -> Element {
 // (`#[prop(static)]`, ref-like — like `Ref`), `on_dismiss` is an `Rc` handler
 // (auto-skipped), and `children` is a `Vec<Element>` (auto-skipped).
 #[runtime_core::props(styles = PopoverStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct PopoverProps {
     /// The element to anchor against. Construct via
@@ -189,10 +188,8 @@ pub struct PopoverProps {
     pub target: Option<AnchorTarget>,
     /// Which side of the target the popover sits on. Default:
     /// `ElementSide::Below`.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub side: ElementSide,
     /// Alignment along the anchor's edge. Default: `ElementAlign::Start`.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub align: ElementAlign,
     /// Gap in pixels between the anchor and the popover. Default 4.
     #[schema(constraint = "pixels, >= 0")]

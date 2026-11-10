@@ -29,6 +29,7 @@ hot-reload = ["runtime-macros-expand/hot-reload"]
 catalog = ["runtime-macros-expand/catalog"]
 # Backward-compatible alias for `catalog`.
 mcp = ["catalog"]
+previews = ["runtime-macros-expand/previews"]
 strict-docs = ["runtime-macros-expand/strict-docs"]
 strict-naming = ["runtime-macros-expand/strict-naming"]
 

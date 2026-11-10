@@ -171,20 +171,54 @@ impl Default for AlertClose {
     }
 }
 
+/// `idealyst docs` previews edit `close` as "attach a handler": on is the
+/// standard `×` with a no-op handler, off is no close affordance.
+/// (`Custom` takes an element the preview can't make up.) Compiled only in
+/// a docs build (`#[prop_control]`).
+#[runtime_core::prop_control]
+impl runtime_core::previews::PropControl for AlertClose {
+    fn control() -> runtime_core::previews::Control {
+        runtime_core::previews::Control::Optional {
+            inner: Box::new(runtime_core::previews::Control::Handler),
+            example: Some(Box::new(runtime_core::previews::ControlValue::Handler)),
+        }
+    }
+    fn to_value(&self) -> runtime_core::previews::ControlValue {
+        let attached = !matches!(self, AlertClose::None);
+        runtime_core::previews::ControlValue::Optional(
+            attached.then(|| Box::new(runtime_core::previews::ControlValue::Handler)),
+        )
+    }
+    fn from_value(value: &runtime_core::previews::ControlValue) -> Option<Self> {
+        match value {
+            runtime_core::previews::ControlValue::Optional(None) => Some(AlertClose::None),
+            runtime_core::previews::ControlValue::Optional(Some(_)) => Some(AlertClose::Button(Rc::new(|| {}))),
+            _ => None,
+        }
+    }
+    fn code(&self) -> Option<String> {
+        Some(match self {
+            AlertClose::None => "AlertClose::None".to_string(),
+            _ => "AlertClose::Button(Rc::new(|| {}))".to_string(),
+        })
+    }
+}
+
 // Reactive-by-default: `#[props]` wraps the scalar data props (`tone`/`variant`)
 // → `Reactive<…>`; `title`/`body` are already `Reactive`. `action` (an
 // `Option<Element>`) is skipped (Element isn't wrapped), and `close`
 // (`AlertClose`, a custom element-builder enum) is `#[prop(static)]`.
 #[runtime_core::props(styles = AlertStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct AlertProps {
     /// Alert title. `Reactive<String>` — static or live (signal/`rx!`).
     #[schema(constraint = "reactive: static String or Signal/rx!")]
+    #[prop(example = "Changes saved")]
     pub title: Reactive<String>,
     /// Optional second-line detail text, beneath the title.
     /// `Reactive<Option<String>>` — static or live.
     #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
+    #[prop(example = "Your profile is up to date.")]
     pub body: Reactive<Option<String>>,
     /// Semantic color palette (Info, Danger, Warning, Success, …).
     /// Default Info.

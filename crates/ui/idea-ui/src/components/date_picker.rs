@@ -174,6 +174,7 @@ pub struct DatePickerProps {
     /// Fires with `Some(day)` on pick, `None` on an explicit clear.
     pub on_change: Rc<dyn Fn(Option<CivilDate>)>,
     /// Trigger text when no value is set.
+    #[prop(example = Some(String::from("Pick a date")))]
     pub placeholder: Option<String>,
     /// Token format for the trigger's value text. Default `YYYY-MM-DD`.
     /// Name tokens (`MMMM`, `MMM`, `dddd`, `ddd`) take their names from `labels`,
@@ -306,6 +307,7 @@ pub struct DateTimePickerProps {
     /// clear.
     pub on_change: Rc<dyn Fn(Option<CivilDateTime>)>,
     /// Trigger text when no value is set.
+    #[prop(example = Some(String::from("Pick a date and time")))]
     pub placeholder: Option<String>,
     /// Token format for the trigger. Default `YYYY-MM-DD HH:mm`.
     pub display_format: String,
@@ -487,6 +489,7 @@ pub struct DateRangePickerProps {
     /// on clear.
     pub on_change: Rc<dyn Fn(Option<(CivilDate, CivilDate)>)>,
     /// Trigger text when no range is set.
+    #[prop(example = Some(String::from("Pick a range")))]
     pub placeholder: Option<String>,
     /// Token format for EACH endpoint in the trigger text. Default
     /// `YYYY-MM-DD` (rendered `start – end`).

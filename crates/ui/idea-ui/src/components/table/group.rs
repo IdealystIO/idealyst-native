@@ -88,6 +88,7 @@ pub struct TableGroupProps {
     #[prop(static)]
     pub id: Option<RowId>,
     /// The band's title, and the group's accessible name.
+    #[prop(example = String::from("Group"))]
     pub title: String,
     /// Band content in place of the title text — an icon beside the name,
     /// a count. The title still names the group for assistive tech.

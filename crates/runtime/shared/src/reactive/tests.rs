@@ -72,9 +72,8 @@ fn effect_fires_on_change() {
 
 /// `Effect::persist` outside any reactive scope must keep the effect
 /// reacting. A bare handle dropped at end-of-statement (no scope to
-/// adopt it) would cancel; `persist` pins it instead. This is the
-/// behaviour `doc_controls.rs` relies on when its controls are built
-/// ad-hoc / in tests outside a render scope.
+/// adopt it) would cancel; `persist` pins it instead — what an effect
+/// built ad-hoc or in a test outside a render scope relies on.
 #[test]
 fn persist_keeps_effect_alive_outside_scope() {
     use std::cell::Cell;

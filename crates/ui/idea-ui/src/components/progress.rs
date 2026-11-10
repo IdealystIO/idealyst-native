@@ -190,12 +190,12 @@ pub enum ProgressMode {
 // Static keeps the direct build.
 #[runtime_core::props(styles = ProgressStyles)]
 #[derive(IdealystSchema)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ProgressProps {
     /// Completion in `0.0..=1.0`. Read in [`ProgressMode::Value`];
     /// ignored by the other modes. `Reactive<f32>` — a literal or a
     /// live `Signal<f32>` / `rx!`.
     #[schema(constraint = "0.0..=1.0 (clamped)")]
+    #[prop(example = 0.6)]
     pub value: Reactive<f32>,
     /// Behavior: value-driven (default), endless indeterminate sweep,
     /// or simulated loading creep.

@@ -301,6 +301,7 @@ mod tests {
         docs: "A divider.",
         composes: &[],
         params: &EMPTY_PARAMS,
+        preview: "",
     };
     static EMPTY_SCHEMA: PropsSchemaEntry = PropsSchemaEntry { short_name: "SeparatorProps", module_path: "lib::menu", fields: &[] };
 
@@ -314,6 +315,7 @@ mod tests {
         docs: "",
         composes: &BADGE_EDGES,
         params: &BADGE_PARAMS,
+        preview: "",
     };
     static BADGE_TYPE: TypeEntry = TypeEntry {
         short_name: "BadgeProps",
@@ -377,6 +379,7 @@ mod tests {
             docs: "fresh",
             composes: &[],
             params: &[],
+            preview: "",
         };
         let mut compiled = CatalogParts { components: vec![&BADGE, &SEPARATOR], scopes: vec![&CORE], ..Default::default() };
         compiled.extend_replacing(CatalogParts { components: vec![&BADGE_AGAIN], ..Default::default() });
@@ -405,6 +408,7 @@ mod tests {
             docs: "",
             composes: &[],
             params: &PARAMS,
+            preview: "",
         };
         for schemas in [vec![&SHARED, &LOCAL], vec![&LOCAL, &SHARED]] {
             let doc = CatalogParts { components: vec![&ROW], props_schemas: schemas, ..Default::default() }.to_json();

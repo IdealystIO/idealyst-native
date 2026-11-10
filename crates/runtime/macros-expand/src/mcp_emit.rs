@@ -32,6 +32,9 @@ use syn::ItemFn;
 /// captured by [`collect_animations`] and submitted as
 /// `AnimationEntry` records.
 ///
+/// `preview` is the exported preview symbol (`preview_emit`), empty when
+/// the build emits none.
+///
 /// `body` is the body as the author wrote it (the component's own may have
 /// been rewritten into macros the walks can't see into); the signature
 /// and docs come from `item_fn`.
@@ -39,6 +42,7 @@ pub(crate) fn emit(
     item_fn: &ItemFn,
     body: &syn::Block,
     methods: &[crate::methods_block::MethodInfo],
+    preview: &str,
 ) -> TokenStream2 {
     let name_str = item_fn.sig.ident.to_string();
     let docs = collect_doc_comments(&item_fn.attrs);
@@ -126,6 +130,7 @@ pub(crate) fn emit(
                 docs: #docs,
                 composes: &[ #(#edges),* ],
                 params: &[ #(#param_entries),* ],
+                preview: #preview,
             }
         }
         #(#method_submissions)*

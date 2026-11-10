@@ -57,7 +57,6 @@ component_styles! {
 // Reactive-by-default: only field is `children` (a LIST, auto-skipped);
 // `#[props]` is a no-op here but kept for uniformity with the family.
 #[runtime_core::props(styles = ListStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct ListProps {
     /// The rows (typically [`ListItem`]s); hairline dividers are
@@ -138,18 +137,16 @@ component_styles! {
 // (routes to the row style sink below). `label` is already reactive; the
 // `on_press` handler and `leading`/`trailing` element slots auto-skip.
 #[runtime_core::props(styles = ListItemStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct ListItemProps {
     /// Row label. `Reactive<String>` — static or live.
+    #[prop(example = "Inbox")]
     pub label: Reactive<String>,
     /// When `Some`, the row is clickable (hover highlight + handler).
     pub on_press: Option<Rc<dyn Fn()>>,
     /// Optional leading element (icon, avatar).
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub leading: Option<Element>,
     /// Optional trailing element (badge, chevron), pushed to the right.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub trailing: Option<Element>,
     /// Render the row in its highlighted/selected state. `Reactive<bool>` —
     /// static or live (signal/`rx!`); the row re-styles in place.

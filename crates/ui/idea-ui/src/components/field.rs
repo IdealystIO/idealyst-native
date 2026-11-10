@@ -534,19 +534,18 @@ pub(crate) fn field_tone_key(tone: Option<ToneRef>, has_error: bool) -> &'static
 // `Reactive<Adornment>` can't even route: `switch` needs `PartialEq` and an
 // element-builder isn't comparable — so a bare `Adornment` is the right type.
 #[runtime_core::props(styles = FieldStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct FieldProps {
     /// Optional field label. `Reactive<Option<String>>` — static
     /// (`None`/`Some`) or live (signal/`rx!`).
     #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
+    #[prop(example = "Email")]
     pub label: Reactive<Option<String>>,
     /// A short muted note beside the label — "Optional", "Required",
     /// "Max 20". `Reactive<Option<String>>` — static or live. Default
     /// `None`.
     // Left out of the docs controls: the derive compares its controls as
     // one tuple, and std implements `PartialEq` for tuples of at most 12.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
     pub label_hint: Option<String>,
     /// The input's current text. The host owns this signal; the Field
@@ -555,6 +554,7 @@ pub struct FieldProps {
     /// Fires with the new text on each edit.
     pub on_change: Rc<dyn Fn(String)>,
     /// Placeholder shown when the input is empty.
+    #[prop(example = Some(String::from("you@example.com")))]
     pub placeholder: Option<String>,
     /// Helper text below the input. `Reactive<Option<String>>` — static
     /// or live (signal/`rx!`).
@@ -658,7 +658,6 @@ pub struct FieldProps {
     /// line as the read-only figures around it. Default `FieldAlign::Natural`.
     /// Reactive.
     // Left out of the docs controls for the same tuple limit as `label_hint`.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub text_align: FieldAlign,
     /// The input's accessible name — what screen readers announce and what
     /// the robot reports as the input's `label`. Defaults to `label`. Set

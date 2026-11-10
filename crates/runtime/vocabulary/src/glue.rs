@@ -231,6 +231,12 @@ pub use runtime_shared::debug;
 #[doc(hidden)]
 pub use ::mcp_catalog as __mcp;
 
+// Preview anchor: the `previews`-gated emissions spell
+// `::runtime_core::previews::…`, retargeted to here; authors reach it as
+// `runtime_core::previews` for their `#[prop_control]` impls.
+#[cfg(feature = "previews")]
+pub use crate::previews;
+
 // Hot-reload dispatch anchor, the `__mcp` of the subsecond split. The
 // `#[component]` hot-reload emission spells
 // `::runtime_core::__hot::call(inner_fn_ptr, args)`, which the retarget

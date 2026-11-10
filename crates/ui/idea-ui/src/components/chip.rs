@@ -201,11 +201,11 @@ impl From<ControlSize> for Reactive<ChipSize> {
 // sinks, read `.get()` INSIDE so the apply-style Effect subscribes to
 // whichever are live.
 #[runtime_core::props(styles = ChipStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct ChipProps {
     /// Chip text. `Reactive<String>` — static or live (signal/`rx!`).
     #[schema(constraint = "reactive: static String or Signal/rx!")]
+    #[prop(example = "Design")]
     pub label: Reactive<String>,
     /// Whether this chip is currently selected. Controlled by the host —
     /// the chip never owns it. Drives the lit/muted appearance.

@@ -101,8 +101,9 @@ pub struct SurfaceProps {
     pub background: SurfaceColor,
     /// `flex-grow` weight. `0.0` (default) sizes to content; give siblings
     /// e.g. `2.0` and `3.0` for a proportional split. When `> 0`, the
-    /// surface also gets `flex-basis: 0` + `min-width: 0` so the ratio
-    /// holds and it can shrink below content width.
+    /// surface also gets `flex-basis: 0` and a zero minimum on both axes, so
+    /// the ratio holds and it can shrink below its content in a row or a
+    /// column — a scrolling child then gets a bounded box to scroll in.
     pub grow: f32,
     /// Token-driven inner padding — Surface's own axis; a `StackPadding`
     /// converts. Default `None`.
@@ -121,10 +122,16 @@ pub fn Surface(props: SurfaceProps) -> Element {
         if grow > 0.0 {
             StyleRules {
                 flex_grow: Some(Tokenized::Literal(grow)),
-                // `flex-basis: 0` + `min-width: 0` so the ratio holds and
-                // the surface can shrink below content width.
+                // `flex-basis: 0` so the ratio holds. Both minimums zero:
+                // a flex item's default minimum is its content size on the
+                // MAIN axis, which is the width in a row but the height in
+                // a column — zeroing only `min-width` let a growing surface
+                // in a column (`AppShell`'s sidebar panel) expand to its
+                // whole content, so the scroll view inside never scrolled
+                // and the page grew instead.
                 flex_basis: Some(Tokenized::Literal(Length::Px(0.0))),
                 min_width: Some(Tokenized::Literal(Length::Px(0.0))),
+                min_height: Some(Tokenized::Literal(Length::Px(0.0))),
                 ..Default::default()
             }
         } else {
@@ -207,8 +214,60 @@ mod tests {
             );
             assert_eq!(rules.flex_basis, Some(Tokenized::Literal(Length::Px(0.0))));
             assert_eq!(rules.min_width, Some(Tokenized::Literal(Length::Px(0.0))));
+            assert_eq!(rules.min_height, Some(Tokenized::Literal(Length::Px(0.0))));
             assert!(rules.background.is_some(), "bg arm supplies the token");
             assert!(rules.padding_top.is_some(), "pad arm supplies the spacing token");
+        });
+    }
+
+    /// Regression: a growing surface in a COLUMN kept its content height
+    /// as its floor (only `min-width` was zeroed), so `AppShell`'s sidebar
+    /// panel — a `Surface(grow = 1.0)` in a column — grew to the whole
+    /// sidebar and the sidebar's scroll view never scrolled; the page did.
+    /// Laid out with Taffy: a 100px column holding a growing surface with
+    /// 1000px of content must keep the surface at 100px.
+    #[test]
+    fn regression_surface_grow_in_a_column_shrinks_below_its_content() {
+        use runtime_core::resolve_style;
+        use taffy::prelude::*;
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let rules = resolve_style(&app_for(SurfaceColor::Surface, 1.0, StackPadding::None));
+            let px = |t: &Option<Tokenized<Length>>| match t {
+                Some(Tokenized::Literal(Length::Px(v))) => Some(*v),
+                _ => None,
+            };
+            let mut tree: TaffyTree<()> = TaffyTree::new();
+            let content = tree
+                .new_leaf(Style { size: Size { width: length(10.0), height: length(1000.0) }, ..Default::default() })
+                .unwrap();
+            let surface = tree
+                .new_with_children(
+                    Style {
+                        flex_direction: FlexDirection::Column,
+                        flex_grow: 1.0,
+                        flex_basis: length(px(&rules.flex_basis).expect("basis")),
+                        min_size: Size {
+                            width: px(&rules.min_width).map_or(auto(), length),
+                            height: px(&rules.min_height).map_or(auto(), length),
+                        },
+                        ..Default::default()
+                    },
+                    &[content],
+                )
+                .unwrap();
+            let column = tree
+                .new_with_children(
+                    Style {
+                        flex_direction: FlexDirection::Column,
+                        size: Size { width: length(100.0), height: length(100.0) },
+                        ..Default::default()
+                    },
+                    &[surface],
+                )
+                .unwrap();
+            tree.compute_layout(column, Size::MAX_CONTENT).unwrap();
+            assert_eq!(tree.layout(surface).unwrap().size.height, 100.0);
         });
     }
 }

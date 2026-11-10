@@ -35,6 +35,9 @@
 //!   Fn()>`) or, better, the `Option<Rc<dyn Fn()>>` shape.
 //! - `static` / `reactive` — force the wrap decision, same as on
 //!   `#[props]` struct fields.
+//! - `example = expr` — the value an `idealyst docs` preview starts the
+//!   prop at (coerced like `default`). Read only under the `previews`
+//!   feature; otherwise accepted and dropped.
 //! - `optional` / `into` — accepted no-ops for Leptos parity: every
 //!   idealyst prop is already optional (the `..defaults()` struct-update
 //!   base), and every `ui!` prop value is already coerced via `.into()`.
@@ -68,6 +71,8 @@ struct Field {
     ty: Type,
     docs: Vec<Attribute>,
     default: Option<Expr>,
+    /// `#[prop(example = …)]` — the docs preview's starting value.
+    example: Option<Expr>,
 }
 
 /// Detects the inline-props shape and, when it applies, rewrites the fn
@@ -165,6 +170,7 @@ pub(crate) fn try_expand(
             ty: (*pt.ty).clone(),
             docs,
             default: prop.default,
+            example: prop.example,
         });
     }
 
@@ -297,11 +303,21 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr, import_ke
 
     let (build_mut, overlay_prologue) = crate::props_attr::overlay_build_prologue(fn_name);
 
+    let preview = crate::preview_emit::props_impl(
+        &props_ident,
+        false,
+        &fields
+            .iter()
+            .map(|f| crate::preview_emit::FieldIn { name: &f.name, ty: &f.ty, example: f.example.as_ref() })
+            .collect::<Vec<_>>(),
+    );
+
     let impls = crate::symbol_scope::scoped(
         crate::symbol_scope::Owner::Component,
         fn_name,
         quote! {
             #apply_literal
+            #preview
 
             #[automatically_derived]
             impl ::core::default::Default for #props_ident {
@@ -356,16 +372,19 @@ fn is_signal_handle_type(ty: &Type) -> bool {
         .is_some_and(|seg| matches!(seg.ident.to_string().as_str(), "Signal" | "ReadSignal" | "WriteSignal"))
 }
 
-/// Accumulated `#[prop(...)]` overrides for one parameter. Multiple
-/// `#[prop]` attrs merge.
+/// Accumulated `#[prop(...)]` overrides for one parameter or `#[props]`
+/// struct field. Multiple `#[prop]` attrs merge.
 #[derive(Default)]
-struct PropArgAttr {
-    default: Option<Expr>,
-    forced_wrap: Option<bool>,
+pub(crate) struct PropArgAttr {
+    pub(crate) default: Option<Expr>,
+    pub(crate) forced_wrap: Option<bool>,
+    /// `example = expr`: the value a generated docs preview starts this
+    /// prop at. Only the `previews` emission reads it.
+    pub(crate) example: Option<Expr>,
 }
 
 impl PropArgAttr {
-    fn absorb(&mut self, attr: &Attribute) -> syn::Result<()> {
+    pub(crate) fn absorb(&mut self, attr: &Attribute) -> syn::Result<()> {
         let list = attr.meta.require_list()?;
         let parsed: PropArgList = syn::parse2(list.tokens.clone())?;
         for entry in parsed.entries {
@@ -375,6 +394,12 @@ impl PropArgAttr {
                         return Err(syn::Error::new(span, "duplicate `default` on this prop"));
                     }
                     self.default = Some(expr);
+                }
+                PropArgEntry::Example(span, expr) => {
+                    if self.example.is_some() {
+                        return Err(syn::Error::new(span, "duplicate `example` on this prop"));
+                    }
+                    self.example = Some(expr);
                 }
                 PropArgEntry::Static => self.forced_wrap = Some(false),
                 PropArgEntry::Reactive => self.forced_wrap = Some(true),
@@ -387,6 +412,7 @@ impl PropArgAttr {
 
 enum PropArgEntry {
     Default(proc_macro2::Span, Expr),
+    Example(proc_macro2::Span, Expr),
     Static,
     Reactive,
     /// `optional` / `into` — Leptos-parity spellings whose semantics are
@@ -409,6 +435,10 @@ impl Parse for PropArgList {
                     let _: Token![=] = input.parse()?;
                     PropArgEntry::Default(ident.span(), input.parse()?)
                 }
+                "example" => {
+                    let _: Token![=] = input.parse()?;
+                    PropArgEntry::Example(ident.span(), input.parse()?)
+                }
                 "static" => PropArgEntry::Static,
                 "reactive" => PropArgEntry::Reactive,
                 "optional" | "into" => PropArgEntry::Noop,
@@ -416,8 +446,8 @@ impl Parse for PropArgList {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unknown prop argument `{other}`; supported: \
-                             `default = expr`, `static`, `reactive`, `optional`, `into`"
+                            "unknown prop argument `{other}`; supported: `default = expr`, \
+                             `example = expr`, `static`, `reactive`, `optional`, `into`"
                         ),
                     ));
                 }

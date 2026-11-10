@@ -145,7 +145,6 @@ fn panel_sheet(width: f32, side: DrawerSide) -> Rc<StyleSheet> {
 /// Props for [`Drawer`]. `children` is the main content (the navigator outlet);
 /// `sidebar` is the panel content.
 #[runtime_core::props]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct DrawerProps {
     /// The panel content — nav links, header, etc. Wired by the author; a link

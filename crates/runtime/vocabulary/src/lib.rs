@@ -103,6 +103,10 @@ pub mod handlers;
 /// remote components.
 pub mod host_types;
 pub mod prims;
+/// Component previews with prop controls for generated docs — the
+/// `previews` feature only (see the module docs).
+#[cfg(feature = "previews")]
+pub mod previews;
 #[cfg(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
 pub mod remote;
 

@@ -76,6 +76,16 @@ pub fn idealyst_tool(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand::idealyst_tool(attr.into(), item.into()).into()
 }
 
+/// `#[prop_control]` on an `impl runtime_core::previews::PropControl for
+/// T` block — how `idealyst docs` previews edit a prop of type `T`. The
+/// impl compiles only under the `previews` feature (only the docs build
+/// turns it on); otherwise the attribute removes it, so dev and release
+/// builds never compile it and the trait never needs to exist there.
+#[proc_macro_attribute]
+pub fn prop_control(attr: TokenStream, item: TokenStream) -> TokenStream {
+    expand::prop_control(attr.into(), item.into()).into()
+}
+
 /// `recipe!(Component, fn name() -> Element { … })` — declare a
 /// compile-checked usage example ("recipe") for `Component`.
 ///

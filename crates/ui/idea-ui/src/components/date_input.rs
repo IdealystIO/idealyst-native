@@ -105,6 +105,7 @@ pub struct DateInputProps {
     /// tokens (`MMMM`, `MMM`, `dddd`, `ddd`) read `labels`; see [`crate::date`].
     pub format: String,
     /// Optional field label (see [`Field`]).
+    #[prop(example = Some(String::from("Start date")))]
     pub label: Option<String>,
     /// Helper text below the input.
     pub help: Option<String>,
@@ -296,6 +297,7 @@ pub struct DateTimeInputProps {
     /// Time used when the popup picks a day before any time is set.
     pub default_time: CivilTime,
     /// Optional field label.
+    #[prop(example = Some(String::from("Starts")))]
     pub label: Option<String>,
     /// Helper text below the input.
     pub help: Option<String>,

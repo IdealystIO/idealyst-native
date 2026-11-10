@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 const NOT_AUTHOR_FACING: &[&str] = &[
     "offload-macro",
     "server-macros",
-    "idea-ui-docs-derive",
     "android-navigator-helpers",
     "ios-navigator-helpers",
 ];

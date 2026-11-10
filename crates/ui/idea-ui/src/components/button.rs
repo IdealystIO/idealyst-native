@@ -261,12 +261,12 @@ runtime_core::axis_values! {
 // auto-skipped (not reactive data). `styles` (from `styles = ButtonStyles`) is
 // the per-instance override for the root, label and icon slots.
 #[runtime_core::props(styles = ButtonStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct ButtonProps {
     /// Button text. `Reactive<String>` — static for a literal/`String`,
     /// live for a `Signal<String>` or `rx!(…)`.
     #[schema(constraint = "reactive: static String or Signal/rx!")]
+    #[prop(example = "Save changes")]
     pub label: Reactive<String>,
     /// Fires on press/click.
     pub on_click: Rc<dyn Fn()>,

@@ -61,12 +61,8 @@ anyhow = { workspace = true }
 # The platform surface, used by `src/main.rs` only — it carries whatever
 # the target needs so this manifest names no backend directly.
 idealyst = { workspace = true }
-# `docs` powers the auto-generated live control panels: the DocControls
-# derive emits the free `::runtime_core::signal(…)` and the doc-controls
-# runtime satisfies the world kernel's `T: PartialEq` signal bound
-# (`RefBuiltins: PartialEq`, pointer-identity impls in idea-theme).
 # `table` (a default) powers PropsTable on every component page.
-idea-ui = { workspace = true, features = ["docs"] }
+idea-ui = { workspace = true }
 # The tone registry and the recipe trait, for the docs site's boot
 # restyles (`src/restyles.rs`).
 idea-theme = { workspace = true }

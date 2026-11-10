@@ -678,7 +678,6 @@ impl From<Element> for TableEmpty {
 /// children.
 #[runtime_core::props(styles = TableStyles)]
 #[derive(Default, IdealystSchema)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableProps {
     /// Table rows. Pass `TableRow`s (a header row plus body rows), and
     /// optionally a `TableFooter`.
@@ -714,7 +713,6 @@ pub struct TableProps {
     /// page margin that steps with the breakpoint re-pads the edge cells
     /// in place ([`TableInset::by_breakpoint`]) — the table never
     /// rebuilds for it.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub inset_x: TableInset,
     /// The outer padding of every row's FIRST cell only (and the frame
     /// slots' leading edge), overriding `inset_x` on that side —
@@ -722,12 +720,10 @@ pub struct TableProps {
     /// the page margin and leaves the trailing edge (an actions column)
     /// at its own padding. `TableInset::None` (the default) follows
     /// `inset_x`. Reactive, like `inset_x`.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub inset_left: TableInset,
     /// The outer padding of every row's LAST cell only (and the frame
     /// slots' trailing edge), overriding `inset_x` on that side. See
     /// `inset_left`.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub inset_right: TableInset,
     /// Row padding for every cell — `Compact`, `Standard` or
     /// `Comfortable`.
@@ -746,13 +742,11 @@ pub struct TableProps {
     /// outside the horizontal scroller — it keeps still while a
     /// `scroll_x` table's columns scroll, and shares the table's border.
     /// Gets the cells' padding and a divider beneath it.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub header_slot: Option<Element>,
     /// Content drawn inside the frame BELOW the rows, outside the
     /// scroller — a pager ([`TablePager`]), an "Add entry" action. Pinned
     /// under the rows of a `scroll_y` table.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub footer_slot: Option<Element>,
     /// The column model: column `i` describes the `i`-th column the
@@ -761,7 +755,6 @@ pub struct TableProps {
     /// column — width, floor, cap, fill, resize handle, frozen edge,
     /// alignment, truncation, padding — so the cells carry none of it.
     /// Empty (the default): each cell's own props size its column.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub columns: Vec<TableColumn>,
     /// The table's live column widths, by column id. A resize drag writes
@@ -770,19 +763,16 @@ pub struct TableProps {
     /// inside whatever rebuilds the table) and seed it with a saved
     /// layout, so a resized column keeps its width across rebuilds. When
     /// `None` the table keeps its own (lost on a rebuild).
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub column_widths: Option<Signal<ColumnWidths>>,
     /// Fired when a resize drag is released, with the column and its new
     /// width (whole px) — save it — and with `None` when a double-click
     /// resets the column to its spec width.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub on_column_resize: Option<Rc<dyn Fn(ColumnId, Option<f32>)>>,
     /// Adds a leading selection column: a tri-state header box that
     /// selects every visible row, and a box per row with an `id` that is
     /// `selectable`. The set is the screen's; the table only reads and
     /// writes it. Frozen with the first column when that one is pinned.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub selection: Option<Signal<BTreeSet<RowId>>>,
     /// Makes body rows draggable: adds a leading grip column (frozen with
@@ -790,14 +780,12 @@ pub struct TableProps {
     /// above its neighbours while the others slide to open the gap, and
     /// calls this with `(from, to)` — ordinals over the draggable body
     /// rows — on drop. See [`move_in_place`].
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub on_reorder: Option<Rc<dyn Fn(usize, usize)>>,
     /// Makes [`TableGroup`]s draggable as a whole: each draggable group's
     /// band gets a grip (the grip column is added if `on_reorder` has not
     /// already), dragging it moves the band with its rows while the other
     /// groups slide aside, and this is called with `(from, to)` — ordinals
     /// over the draggable groups — on drop. Rows outside a group stay put.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub on_group_reorder: Option<Rc<dyn Fn(usize, usize)>>,
     /// Show each row's drag grip only while the row is hovered (and while
     /// it is dragged). Where the primary pointer cannot hover (a touch
@@ -808,7 +796,6 @@ pub struct TableProps {
     /// spanning every column (past the selection and grip columns).
     /// `Some("No crew yet".into())`, or any element. Decided from the
     /// rows the table is built with.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub empty: Option<TableEmpty>,
 }
@@ -1666,7 +1653,6 @@ fn pin_edge(app: StyleApplication, edges: Signal<table::ScrollEdges>) -> StyleAp
 /// [`make_row_cell_interactive`]).
 #[runtime_core::props]
 #[derive(IdealystSchema)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableRowProps {
     /// Cells in this row. Pass `TableCell`s.
     pub children: Vec<Element>,
@@ -1706,7 +1692,6 @@ pub struct TableRowProps {
     pub test_id: Option<&'static str>,
     /// The row's identity: what `Table(selection = …)` holds for it. A row
     /// without one has no selection box.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub id: Option<RowId>,
     /// Whether the row takes part in `Table(selection = …)` — `false`
@@ -1720,12 +1705,10 @@ pub struct TableRowProps {
     pub draggable: bool,
     /// The group a draggable row reorders within: a row lands only among
     /// rows with the same group. `None` (the default) is one group.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub reorder_group: Option<RowId>,
     /// This row's padding, over the table's `density` — a denser band, a
     /// roomier summary row. `None` (the default) follows the table.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub density: Option<TableDensity>,
 }
@@ -1907,7 +1890,6 @@ fn make_row_cell_interactive(
 /// Props for [`TableFooter`].
 #[runtime_core::props]
 #[derive(Default, IdealystSchema)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableFooterProps {
     /// The footer rows — `TableRow`s, typically one totals row.
     pub children: Vec<Element>,
@@ -1967,7 +1949,6 @@ pub fn TableFooter(props: TableFooterProps) -> Element {
 // arm on several nodes at build time (see each field).
 #[runtime_core::props(styles = TableStyles)]
 #[derive(IdealystSchema)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableCellProps {
     /// When `true`, render as `<th>` (and use the `color-table-header`
     /// band + uppercase muted text style). When `false`, render as
@@ -1985,6 +1966,7 @@ pub struct TableCellProps {
     ///
     /// Pass `children` instead when the cell needs richer content
     /// (multiple inline pieces, links, badges, …).
+    #[prop(example = "Cell")]
     pub text: Reactive<Option<String>>,
     /// Fully custom cell contents. When set, the `text` prop is
     /// ignored and these children render inside the `<td>` / `<th>`
@@ -2042,7 +2024,6 @@ pub struct TableCellProps {
     /// How many columns this cell covers: `ColSpan::Columns(n)`, or
     /// `ColSpan::Rest` for every column to the end of the row.
     // STRUCTURAL — a `colspan` attribute / grid placement fixed at build.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub span: ColSpan,
     /// Horizontal padding — `Icon` is the compact padding of a column of
@@ -2060,11 +2041,9 @@ pub struct TableCellProps {
     /// for the one that is. The cell draws the direction beside its label
     /// and a press calls `on_sort`. Reactive, so the arrow follows the
     /// app's sort without a rebuild. Header cells only.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub sort: Option<SortState>,
     /// Called with the sort a press asks for — [`SortState::next`] of the
     /// current one. The sorting itself is the app's.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub on_sort: Option<Rc<dyn Fn(SortState)>>,
 }
 

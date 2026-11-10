@@ -576,6 +576,7 @@ pub struct SelectProps {
     pub size: SelectSize,
     /// Text shown on the trigger when no option matches `value`.
     /// `Reactive<Option<String>>`.
+    #[prop(example = Some(String::from("Choose a plan")))]
     pub placeholder: Option<String>,
     /// Trailing affordance icon, rotated 180° while the menu is open.
     /// Defaults to a chevron when `None`; pass `Some(icons_lucide::…)` to

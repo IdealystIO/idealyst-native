@@ -1353,8 +1353,8 @@ fn emit_variant_enum(decl: &StyleSheetDecl, axis: &VariantAxisDecl) -> TokenStre
         quote! { Self::#v => #s }
     });
     // all_variants(): every variant in declaration order, as a
-    // 'static slice. Used by reflective tooling (notably the docs
-    // app's `DocControls` derive) to enumerate variant pickers.
+    // 'static slice. Used by reflective tooling (notably the
+    // `idealyst docs` previews) to enumerate variant pickers.
     let all_variants_items = axis.arms.iter().map(|arm| {
         let v = format_ident!("{}", pascal(&arm.name));
         quote! { Self::#v }

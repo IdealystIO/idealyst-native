@@ -213,11 +213,11 @@ fn checkmark_icon(data: IconData, style: SlotStyle<CheckboxStyles>, again: SlotS
 // `Signal` stays bare (a reactive *source*), `on_change` is a handler, and
 // `label` is already `Reactive`.
 #[runtime_core::props(styles = CheckboxStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct CheckboxProps {
     /// Optional label rendered to the right of the box.
     /// `Reactive<Option<String>>` — static or live.
+    #[prop(example = "Remember me")]
     pub label: Reactive<Option<String>>,
     /// Controlled checked state. The host owns the signal.
     pub value: Signal<bool>,

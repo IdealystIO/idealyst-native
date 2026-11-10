@@ -91,17 +91,14 @@ pub const TOOLTIP_DISMISS_MS: u32 = 1800;
 // (routes to the `text()` sink, untouched); `children` is a `Vec<Element>`
 // (auto-skipped).
 #[runtime_core::props(styles = TooltipStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct TooltipProps {
     /// Bubble text. `Reactive<String>` — static or live.
     #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub text: Reactive<String>,
     /// Which side of the trigger the bubble sits on. Default `Above`.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub side: ElementSide,
     /// Alignment along the anchor edge. Default `Center`.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub align: ElementAlign,
     /// Gap in px between the trigger and the bubble. Default 6.
     pub offset: f32,
@@ -110,7 +107,6 @@ pub struct TooltipProps {
     /// [`TOOLTIP_DISMISS_MS`].
     pub dismiss_ms: u32,
     /// The trigger the tooltip wraps and anchors to.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub children: Vec<Element>,
 }
 

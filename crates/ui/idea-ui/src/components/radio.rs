@@ -353,11 +353,11 @@ fn radio_row(
 // stays bare (a reactive *source*), `on_select` is a handler, `label` is
 // already `Reactive`.
 #[runtime_core::props(styles = RadioStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct RadioProps {
     /// Optional label rendered to the right of the radio.
     #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
+    #[prop(example = "Monthly")]
     pub label: Reactive<Option<String>>,
     /// Whether this radio is currently selected.
     pub selected: Signal<bool>,
@@ -467,7 +467,6 @@ impl RadioOption {
 // `axis` drives STRUCTURE (it selects the Stack layout branch) and so isn't
 // routed reactively here — see the body TODO.
 #[runtime_core::props(styles = RadioStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct RadioGroupProps {
     /// The selected option's id. The host owns the signal.
@@ -475,7 +474,6 @@ pub struct RadioGroupProps {
     /// Fires with the picked id when the user selects an option.
     pub on_change: Rc<dyn Fn(String)>,
     /// Options in render order.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub options: Vec<RadioOption>,
     /// Layout direction. Default Column.
     pub axis: RadioAxis,

@@ -11,8 +11,8 @@
 use std::rc::Rc;
 
 use idea_ui::{
-    tone, typography_kind, variant, Card, Divider, Field, Modal, Spacer, Stack, StackGap, Table,
-    TableCell, Tag, TableRow, Typography,
+    size, tone, typography_kind, variant, Breadcrumbs, Button, Card, ControlSize, Crumb, Divider, Field, Modal, SegmentOption,
+    SegmentedControl, Spacer, Stack, StackGap, Table, TableCell, TableRow, Tag, Typography,
 };
 use markdown::{Markdown, MdTheme};
 // `fixed_size` / `flat_list` are only exposed at
@@ -25,13 +25,14 @@ use runtime_core::{
 };
 
 use crate::catalog::{CatalogModel, Entry, Kind};
+use crate::previews::{bare_type, component_preview, CopyButton, Playground};
 use crate::routes::{EntryParams, ENTRY_ROUTE, OVERVIEW_ROUTE};
 use crate::styles::{
     Callout as CalloutBox, Chip, ChipActive, ChipRow, ChipText, ChipTextActive,
     CodePanel as CodePanelBox, CodeText, LinkText, MemberRow, PageColumn, PagePad, PreviewBox, PreviewSlot,
     ResultHead, ResultNamespace, ResultsScroll, ScreenScroll, SearchBox, SearchBoxText,
-    SearchResultsBody, SidebarBody, SidebarHeader, SidebarScroll, SidebarSection, ThemeToggleBox,
-    ThemeToggleText,
+    SearchResultsBody, SidebarBody, SidebarFrame, SidebarScroll, SidebarSearchBar, ModulePath, ModulePathRow, SearchKbd, SidebarCount, SidebarFooter, SidebarGroupHead,
+    SidebarGroupTitle, TitleGroup, TitleRow, ToolbarSpacer,
 };
 
 // =============================================================================
@@ -111,19 +112,32 @@ fn hamburger(drawer_open: runtime_core::Signal<bool>) -> Element {
 // grouping entries by kind. Survives screen swaps.
 // =============================================================================
 
-/// A search trigger that *looks* like a text input (bordered, rounded,
-/// muted placeholder) but is a `pressable` that opens the search modal.
-#[derive(Default)]
-pub struct SearchTriggerProps {
-    pub on_press: Option<Rc<dyn Fn()>>,
-}
-
+/// A search trigger that *looks* like a text input (magnifier, muted
+/// placeholder naming the entry count, a `/` key hint) but is a
+/// `pressable` that opens the search modal. `/` opens it from anywhere,
+/// unless a text field has focus (app key listeners hear typed keys too).
 #[component]
-pub fn SearchTrigger(props: SearchTriggerProps) -> Element {
-    let on_press = props.on_press.clone();
+pub fn SearchTrigger(#[prop(static)] on_press: Option<Rc<dyn Fn()>>, #[prop(static)] total: usize) -> Element {
+    if let Some(open) = on_press.clone() {
+        runtime_core::on_key(move |e| {
+            let down = e.phase == runtime_core::KeyPhase::Down;
+            if down && e.key == "/" && !(e.ctrl || e.meta || e.alt) && !crate::previews::editing() {
+                open();
+                runtime_core::KeyOutcome::PreventDefault
+            } else {
+                runtime_core::KeyOutcome::Default
+            }
+        });
+    }
+    let glyph = runtime_core::icon(icons_lucide::SEARCH)
+        .color(idea_ui::idea_color(|c| c.text_muted.clone()))
+        .into_element();
     let inner = ui! {
         view(style = SearchBox()) {
-            text(style = SearchBoxText()) { "Search the catalog…".to_string() }
+            glyph
+            text(style = SearchBoxText()) { format!("Search {total} entries") }
+            view(style = ToolbarSpacer())
+            text(style = SearchKbd()) { "/" }
         }
     };
     runtime_core::pressable(vec![inner], move || {
@@ -134,25 +148,20 @@ pub fn SearchTrigger(props: SearchTriggerProps) -> Element {
     .into_element()
 }
 
-/// Light/dark theme toggle. The label is a reactive `text` node bound to
-/// the global dark-mode signal, so it updates in place when the mode
-/// flips (the node's own effect survives the sidebar's scope, unlike a
-/// free `Effect`). Pressing it swaps the live theme via `toggle_theme`.
+/// The Light / Dark switch at the foot of the sidebar, bound to the
+/// global dark-mode signal.
 #[component]
-pub fn ThemeToggle() -> Element {
-    let label = runtime_core::text(|| {
-        if crate::theme::dark_mode().get() {
-            "\u{2600} Light".to_string()
-        } else {
-            "\u{263e} Dark".to_string()
+pub fn ThemeSwitch() -> Element {
+    let value = runtime_core::memo(|| if crate::theme::dark_mode().get() { "dark".to_string() } else { "light".to_string() });
+    let on_change: Rc<dyn Fn(String)> = Rc::new(|id: String| {
+        if (id == "dark") != crate::theme::dark_mode().get() {
+            crate::theme::toggle_theme();
         }
-    })
-    .with_style(ThemeToggleText())
-    .into_element();
-    let inner = ui! {
-        view(style = ThemeToggleBox()) { label }
-    };
-    runtime_core::pressable(vec![inner], || crate::theme::toggle_theme()).into_element()
+    });
+    let options = vec![SegmentOption::new("light", "Light"), SegmentOption::new("dark", "Dark")];
+    ui! {
+        SegmentedControl(value = value, on_change = on_change, options = options, size = ControlSize::Sm)
+    }
 }
 
 /// Build the sidebar. Called once from the swap layout in `lib.rs` (it
@@ -171,24 +180,21 @@ pub fn sidebar(active_path: runtime_core::Signal<String>, model: Rc<CatalogModel
     let model_for_results = model.clone();
     let total = model.total();
 
-    // The sidebar owns its scroll: the AppShell panel is a plain
-    // fixed-height surface — without this wrapper the catalog's hundreds
-    // of entries would overflow the panel unscrollably. The wrapper
-    // carries `color-surface` (see `SidebarScroll`) so SidebarBody's
-    // missing `min_height` doesn't leave a transparent gap (the iOS
-    // hit-test constraint documented on `SidebarBody` still applies).
+    // The search box stays put above the list; the list owns its scroll:
+    // the AppShell panel is a plain fixed-height surface — without the
+    // scroll view the catalog's hundreds of entries would overflow the
+    // panel unscrollably. The scroll view carries the sidebar's background
+    // (see `SidebarScroll`) so SidebarBody's missing `min_height` doesn't
+    // leave a transparent gap (the iOS hit-test constraint documented on
+    // `SidebarBody` still applies).
     ui! {
-        scroll_view(style = SidebarScroll()) {
-        view(style = SidebarBody()) {
-            view(style = SidebarHeader()) {
-                Typography(content = "Idealyst Catalog".to_string(), kind = typography_kind::H3)
-                Typography(
-                    content = format!("{} entries, generated from the live catalog.", total),
-                    muted = true,
-                )
+        view(style = SidebarFrame()) {
+            view(style = SidebarSearchBar()) {
+                SearchTrigger(on_press = Some(open_search.clone()), total = total)
             }
-            SearchTrigger(on_press = Some(open_search.clone()))
-            ThemeToggle()
+            .safe_area(SafeAreaSides::TOP)
+            scroll_view(style = SidebarScroll()) {
+        view(style = SidebarBody()) {
             // Overview link.
             sidebar_overview_link(active_path)
             for kind in model.populated_kinds() {
@@ -200,13 +206,19 @@ pub fn sidebar(active_path: runtime_core::Signal<String>, model: Rc<CatalogModel
                         sidebar_scope_heading(entry, active_path)
                     }
                 } else {
-                    text(style = SidebarSection()) { kind.title().to_string() }
+                    view(style = SidebarGroupHead()) {
+                        text(style = SidebarGroupTitle()) { kind.title().to_string() }
+                        text(style = SidebarCount()) { model.of_kind(kind).len().to_string() }
+                    }
                     for entry in model.of_kind(kind) {
                         sidebar_entry_link(entry, active_path)
                     }
                 }
             }
             Spacer()
+            view(style = SidebarFooter()) {
+                ThemeSwitch()
+            }
             Modal(
                 open = open,
                 on_dismiss = Some(close_search.clone()),
@@ -217,6 +229,7 @@ pub fn sidebar(active_path: runtime_core::Signal<String>, model: Rc<CatalogModel
                         value = query,
                         on_change = on_query.clone(),
                         placeholder = Some("Component, type, utility…".to_string()),
+                        on_focus_change = Some(crate::previews::editing_tracker()),
                     )
                     search_results(
                         model_for_results.clone(),
@@ -227,7 +240,8 @@ pub fn sidebar(active_path: runtime_core::Signal<String>, model: Rc<CatalogModel
                 },
             )
         }
-        .safe_area(SafeAreaSides::VERTICAL)
+        .safe_area(SafeAreaSides::BOTTOM)
+            }
         }
     }
 }
@@ -388,15 +402,32 @@ fn sidebar_overview_link(active_path: runtime_core::Signal<String>) -> Element {
     }
 }
 
-/// A scope rendered as a pressable primary heading — the same uppercase
-/// `SidebarSection` look as a kind header, but wrapped in a link so it
-/// navigates to the scope's screen.
-fn sidebar_scope_heading(entry: &Entry, _active_path: runtime_core::Signal<String>) -> Element {
+/// A scope as a sidebar row with a chevron: it navigates to the scope's
+/// page, which lists its members.
+fn sidebar_scope_heading(entry: &Entry, active_path: runtime_core::Signal<String>) -> Element {
+    use crate::styles::{NavLink, NavLinkActive, NavLinkText, NavLinkTextActive};
+    use runtime_core::derived;
     let params = EntryParams::new(entry.kind, entry.slug.clone());
+    let url = params.url();
+    let url_for_text = url.clone();
+    let container = NavLink().active(derived(move || {
+        if active_path.get() == url { NavLinkActive::On } else { NavLinkActive::Off }
+    }));
+    let text_style = NavLinkText().active(derived(move || {
+        if active_path.get() == url_for_text { NavLinkTextActive::On } else { NavLinkTextActive::Off }
+    }));
     let label = entry.name.clone();
+    let chevron = runtime_core::icon(icons_lucide::CHEVRON_RIGHT)
+        .color(idea_ui::idea_color(|c| c.text_muted.clone()))
+        .into_element();
     ui! {
         link(route = &ENTRY_ROUTE, params = params) {
-            text(style = SidebarSection()) { label }
+            view(style = container) {
+                view(style = crate::styles::NavRow()) {
+                    text(style = text_style) { label }
+                    chevron
+                }
+            }
         }
     }
 }
@@ -634,7 +665,9 @@ pub fn FieldsTable(props: FieldsTableProps) -> Element {
 /// own catalog page when the type resolved to one.
 fn field_row(f: crate::catalog::Field) -> Element {
     let name = f.name.clone();
-    let ty = tidy_type(&f.ty);
+    // Paths dropped, as the playground's labels show them
+    // (`::runtime_vocabulary::glue::Reactive<ToneRef>` → `Reactive<ToneRef>`).
+    let ty = bare_type(&f.ty);
     // Fold the constraint hint into the description column so the table
     // stays three columns wide on narrow screens.
     let desc = if f.constraint.is_empty() {
@@ -743,6 +776,119 @@ fn kind_blurb(kind: Kind) -> &'static str {
 /// kind-specific sections (composes/methods/animations for components,
 /// variants for enum types, return type for utilities, markdown body for
 /// guides) while sharing the header + fields table.
+/// The width the "View source" dialog opens at.
+const SOURCE_DIALOG_WIDTH_PX: f32 = 760.0;
+
+/// A component's page: breadcrumbs, title and module path, the docs, then
+/// its sections stacked — the Playground (when the component has a live
+/// preview), its Props (table, composition, methods, animations) and its
+/// Recipes.
+#[component]
+fn ComponentPage(#[prop(static)] entry: Option<Entry>) -> Element {
+    let Some(entry) = entry else { return ui! { view() } };
+    let entry = Rc::new(entry);
+    let has_playground = component_preview(&entry.preview).is_some();
+    let has_recipes = !entry.recipes.is_empty();
+    let has_docs = !entry.docs.is_empty();
+    let has_source = !entry.source.is_empty();
+
+    let source_open = signal(false);
+    let open_source: Rc<dyn Fn()> = Rc::new(move || source_open.set(true));
+    let close_source: Rc<dyn Fn()> = Rc::new(move || source_open.set(false));
+
+    let kind_badge = {
+        let noun = entry.kind.noun();
+        let mut chars = noun.chars();
+        chars.next().map(|c| c.to_uppercase().chain(chars).collect::<String>()).unwrap_or_default()
+    };
+    let crumb = entry.scope.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| entry.kind.title().to_string());
+    let crumbs = vec![Crumb::new(crumb), Crumb::new(entry.name.clone())];
+    let name = entry.name.clone();
+    let module = entry.module_path.clone();
+    let module_for_copy = module.clone();
+    let copy_module: Rc<dyn Fn() -> String> = Rc::new(move || module_for_copy.clone());
+    let docs = entry.docs.clone();
+    let source = entry.source.clone();
+    let preview_symbol = entry.preview.clone();
+    let playground_name = entry.name.clone();
+    let props_entry = entry.clone();
+
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Breadcrumbs(items = crumbs)
+            view(style = TitleRow()) {
+                view(style = TitleGroup()) {
+                    Typography(content = name.clone(), kind = typography_kind::H1)
+                    Tag(label = kind_badge, tone = tone::Neutral, variant = variant::Soft)
+                }
+                if has_source {
+                    Button(
+                        label = "View source",
+                        on_click = open_source.clone(),
+                        variant = variant::Outlined,
+                        size = size::Sm,
+                        leading_icon = Some(icons_lucide::CODE),
+                    )
+                }
+            }
+            view(style = ModulePathRow()) {
+                text(style = ModulePath()) { module }
+                CopyButton(text = copy_module)
+            }
+            if has_docs {
+                render_markdown(&docs)
+            }
+            if has_playground {
+                Section(title = "Playground".to_string()) {
+                    Playground(symbol = preview_symbol, name = playground_name)
+                }
+            }
+            PropsSection(entry = Some(props_entry))
+            if has_recipes {
+                recipes_section(&entry)
+            }
+            if has_source {
+                Modal(
+                    open = source_open,
+                    on_dismiss = Some(close_source.clone()),
+                    width = SOURCE_DIALOG_WIDTH_PX,
+                    content = move || ui! {
+                        Typography(content = format!("{name} source"), kind = typography_kind::H3)
+                        CodePanel(src = source.clone())
+                    },
+                )
+            }
+        }
+    }
+}
+
+/// A component's props: the table, then its composition, methods and
+/// animations.
+#[component]
+fn PropsSection(#[prop(static)] entry: Option<Rc<Entry>>) -> Element {
+    let Some(entry) = entry else { return ui! { view() } };
+    // A reference: the `if` branches below lower to `move` closures, and a
+    // `&Entry` is `Copy`.
+    let entry: &Entry = &entry;
+    let has_composes = !entry.composes.is_empty();
+    let has_methods = !entry.methods.is_empty();
+    let has_animations = !entry.animations.is_empty();
+    ui! {
+        Stack(gap = StackGap::Lg) {
+            fields_section(entry)
+            if has_composes {
+                composes_section(entry)
+            }
+            if has_methods {
+                methods_section(entry)
+            }
+            if has_animations {
+                animations_section(entry)
+            }
+        }
+    }
+}
+
 pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
     let pad = PagePad();
     let Some(entry) = model.find(kind, slug) else {
@@ -772,6 +918,16 @@ pub fn entry_page(model: &CatalogModel, kind: Kind, slug: &str) -> Element {
     // `flat_list` can bound and virtualize ~1600 icons.
     if entry.kind == Kind::IconSet {
         return icon_set_page(entry);
+    }
+
+    // Components get the tabbed page: playground, props, recipes.
+    if entry.kind == Kind::Component {
+        let entry = entry.clone();
+        return layout(ui! {
+            view(style = pad) {
+                ComponentPage(entry = Some(entry))
+            }
+        });
     }
 
     // Scopes list the entities assigned to them by module proximity,
@@ -1277,15 +1433,6 @@ fn recipes_section(entry: &Entry) -> Element {
     }
 }
 
-// The build-time `recipe_renderer(module_path, name) -> Option<fn() ->
-// Element>` map. Generated by `build.rs` from the catalog's recipes:
-// one arm per zero-arg `idea_ui` recipe (the renderable ones), keyed by
-// the recipe's `module_path!()` + fn name. Lets us turn a recipe into a
-// LIVE component preview instead of only showing its source. This is the
-// only DCE-proof path on wasm — the runtime inventory thunks are pruned,
-// but a statically-linked fn reference survives.
-include!(concat!(env!("OUT_DIR"), "/recipe_renderers.rs"));
-
 fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
     // Pretty-print the recipe fn name (`button_basic` → "Button basic")
     // for the card heading; primary recipes get a tag so authors can
@@ -1296,10 +1443,11 @@ fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
     // Hoisted for static `if` lowering (borrowed capture; see result_card).
     let has_docs = !docs.is_empty();
     let source = strip_leading_doc(&recipe.source);
-    // A live preview, when this recipe is a zero-arg renderable one the
-    // build-time map could address. Props-defining recipes (those whose
-    // wrapper fn takes args) aren't in the map → no preview, source only.
-    let preview = recipe_renderer(&recipe.module_path, &recipe.name).map(|render| render());
+    // A live render when the recipe has one: a zero-argument recipe
+    // exports a render fn under the `previews` feature, recorded in the
+    // catalog (see `crate::previews`). Recipes with parameters, and ones
+    // that build an overlay, show their source only.
+    let preview = crate::previews::recipe_renderer(&recipe.preview).map(|render| render());
     ui! {
         Card {
             Stack(gap = StackGap::Sm) {

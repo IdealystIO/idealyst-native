@@ -62,6 +62,7 @@ pub struct TimeInputProps {
     /// Token format for parsing AND display. Default `HH:mm`.
     pub format: String,
     /// Optional field label (see [`Field`]).
+    #[prop(example = Some(String::from("Start time")))]
     pub label: Option<String>,
     /// Helper text below the input.
     pub help: Option<String>,

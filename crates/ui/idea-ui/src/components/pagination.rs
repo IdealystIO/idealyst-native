@@ -126,13 +126,13 @@ const WINDOW_FULL: usize = 7;
 // drives the windowed cell STRUCTURE (built imperatively in `build_row`); it's
 // snapshotted at build — see the TODO in the body.
 #[runtime_core::props(styles = PaginationStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct PaginationProps {
     /// Current page, 1-based. The host owns the signal.
     pub page: Signal<usize>,
     /// Total number of pages (>= 1).
     #[schema(constraint = ">= 1 (clamped)")]
+    #[prop(example = 10)]
     pub total: usize,
     /// Fires with the requested page when the user navigates.
     pub on_change: Rc<dyn Fn(usize)>,

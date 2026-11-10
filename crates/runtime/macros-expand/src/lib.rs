@@ -101,6 +101,9 @@ mod recipe_emit;
 #[cfg(feature = "catalog")]
 mod scope_emit;
 mod methods_block;
+// Component previews for generated docs; every fn is empty without the
+// `previews` feature, so the call sites stay unconditional.
+mod preview_emit;
 // The catalog's token-to-text, rustc's printer inside rustc and an exact
 // emulation of it outside (the catalog scanner).
 #[cfg_attr(not(feature = "catalog"), allow(dead_code))]
@@ -225,6 +228,34 @@ pub fn idealyst_tool(_attr: TokenStream, item: TokenStream) -> TokenStream {
             #item_fn
             #registration
         }
+    }
+}
+
+/// `#[prop_control]`: the wrapped `impl PropControl for T` under
+/// `previews`, nothing otherwise — the impl is never compiled outside a
+/// docs build. Only an `impl` of the trait is accepted, so the attribute
+/// can't silently delete unrelated code from a normal build.
+pub fn prop_control(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return syn::Error::new_spanned(attr, "`#[prop_control]` takes no arguments").to_compile_error();
+    }
+    let item_impl = parse_or_return!(item => syn::ItemImpl);
+    let names_trait = item_impl
+        .trait_
+        .as_ref()
+        .and_then(|(_, path, _)| path.segments.last())
+        .is_some_and(|seg| seg.ident == "PropControl");
+    if !names_trait {
+        return syn::Error::new_spanned(
+            &item_impl.self_ty,
+            "`#[prop_control]` goes on an `impl runtime_core::previews::PropControl for T` block",
+        )
+        .to_compile_error();
+    }
+    if cfg!(feature = "previews") {
+        quote! { #item_impl }
+    } else {
+        TokenStream::new()
     }
 }
 
@@ -608,8 +639,22 @@ fn emit_component_fn(
     // this expands to an empty token stream — zero overhead.
     // The walks read `authored`: `import_split` above has replaced this
     // body with a build-kind macro they can't see into.
+    // `previews`: an exported fn returning the component's docs preview,
+    // named by the symbol the catalog entry records. Only when `invocation`
+    // declared the tag type the preview builds (`#fn_name` in the type
+    // namespace) — a generic or otherwise unsupported signature gets no
+    // dispatch glue, so no preview either.
+    let (preview_export, preview_symbol) =
+        if invocation.is_empty() || !item_fn.sig.generics.params.is_empty() {
+            (proc_macro2::TokenStream::new(), String::new())
+        } else {
+            preview_emit::component_symbol(&item_fn.sig.ident)
+        };
+    #[cfg(not(feature = "catalog"))]
+    let _ = &preview_symbol;
+
     #[cfg(feature = "catalog")]
-    let mcp_registration = mcp_emit::emit(&item_fn, &authored, &method_infos);
+    let mcp_registration = mcp_emit::emit(&item_fn, &authored, &method_infos, &preview_symbol);
     #[cfg(not(feature = "catalog"))]
     let mcp_registration = {
         let _ = &method_infos;
@@ -666,6 +711,7 @@ fn emit_component_fn(
         #methods_extra
         #item_fn
         #invocation
+        #preview_export
         #mcp_registration
         #external_registration
         #import_registration

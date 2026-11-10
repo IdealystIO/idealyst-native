@@ -444,6 +444,7 @@ pub struct AutocompleteProps {
     /// Input height/density. Default `Md`. Shared with [`Select`](crate::Select).
     pub size: SelectSize,
     /// Placeholder shown when the input is empty. `Reactive<Option<String>>`.
+    #[prop(example = Some(String::from("Search fruit…")))]
     pub placeholder: Option<String>,
     /// Text shown in the menu when no option matches the query. Defaults to
     /// "No results".

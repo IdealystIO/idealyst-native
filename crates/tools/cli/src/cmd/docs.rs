@@ -24,11 +24,18 @@
 //!    project's extracted catalog instead of the framework's.
 //! 4. **Serve** the staged bundle on a local port.
 //!
-//! Known v1 limitation: a *user* project's own recipes render source-only
-//! and its custom icon packs render names-only (no live preview / glyph
-//! grid) — those need the renderer to link the project's `pub` recipe fns
-//! + icon registries, which the JSON-injection path doesn't. Framework
-//! recipes/icons (which `docs-app` links) still render live.
+//! Live previews: the extraction wrapper is the docs flavour
+//! ([`catalog_wrapper::generate_for_docs`]), built with
+//! `runtime-core/previews`, so every `#[component]` and zero-argument
+//! recipe in the project and its component libraries exports a preview
+//! fn and the catalog records its symbol. The generated docs crate links
+//! that wrapper's lib — the same crates, same features — and `docs-app`'s
+//! build script declares the recorded symbols in an `extern` block, so
+//! each component page renders the live component with its prop controls.
+//!
+//! A project's custom icon packs still render names-only (no glyph grid):
+//! the gallery reads glyph geometry from a registry `docs-app` links
+//! itself, which only covers the framework's packs.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -37,6 +44,7 @@ use anyhow::{Context, Result};
 use build_ios::FrameworkSource;
 use dev_http::serve_static;
 
+use crate::cmd::catalog_wrapper;
 use crate::framework_source;
 
 #[derive(clap::Args, Debug)]
@@ -92,10 +100,13 @@ pub fn run(args: Args) -> Result<()> {
     //    effort: if the project is a bare workspace or extraction fails,
     //    we warn and fall back to the framework catalog (no injection).
     let catalog_json = docs_root.join("catalog.json");
-    let injected = extract_catalog(&project, &catalog_json);
+    let link = extract_catalog(&project, &catalog_json);
+    let injected = link.is_some();
 
-    // 2. Generate the ephemeral docs-app project crate.
-    let app_dir = generate_docs_app(&docs_root, &source, &stage_name)?;
+    // 2. Generate the ephemeral docs-app project crate, linking the
+    //    extraction wrapper's lib so every symbol the catalog records is
+    //    in the bundle.
+    let app_dir = generate_docs_app(&docs_root, &source, &stage_name, link.as_ref())?;
 
     // 3. Build the web bundle, embedding the extracted catalog. Setting the
     //    env var on this process propagates to the wasm-pack/cargo children
@@ -170,32 +181,33 @@ pub fn run(args: Args) -> Result<()> {
     serve_static(&args.host, args.port, &serve_dir, None, None, None, None, None, None, false)
 }
 
-/// Build + run the ephemeral `catalog` bin for `project` and write its
-/// JSON stdout to `dest`. Returns `true` on success. Best effort: any
-/// failure logs to stderr and returns `false` so the caller falls back to
-/// the framework catalog rather than aborting.
-fn extract_catalog(project: &Path, dest: &Path) -> bool {
-    let wrapper_dir = match crate::cmd::catalog_wrapper::generate(project) {
-        Ok(dir) => dir,
+/// Build + run the docs flavour of the `catalog` extractor for `project`
+/// and write its JSON stdout to `dest`. Returns the wrapper on success —
+/// the docs crate links its lib. Best effort: any failure logs to stderr
+/// and returns `None` so the caller falls back to the framework catalog
+/// rather than aborting.
+fn extract_catalog(project: &Path, dest: &Path) -> Option<catalog_wrapper::DocsWrapper> {
+    let wrapper = match catalog_wrapper::generate_for_docs(project) {
+        Ok(w) => w,
         Err(e) => {
             eprintln!(
                 "[idealyst docs] could not prepare catalog extraction for {} ({e:#}); \
                  documenting the framework catalog instead",
                 project.display(),
             );
-            return false;
+            return None;
         }
     };
 
-    // Same build `idealyst mcp` runs to reload a project's catalog.
-    let exe = match crate::cmd::catalog_wrapper::build_extractor(&wrapper_dir, "catalog") {
+    // The same extractor build `idealyst mcp` runs, on the docs flavour.
+    let exe = match catalog_wrapper::build_extractor(&wrapper.dir, "catalog") {
         Ok(exe) => exe,
         Err(e) => {
             eprintln!(
                 "[idealyst docs] catalog extraction failed ({e:#}); documenting the framework \
                  catalog instead"
             );
-            return false;
+            return None;
         }
     };
     let output = match Command::new(&exe).output() {
@@ -203,7 +215,7 @@ fn extract_catalog(project: &Path, dest: &Path) -> bool {
         Err(e) => {
             eprintln!("[idealyst docs] failed to launch the catalog extractor ({e}); \
                  documenting the framework catalog instead");
-            return false;
+            return None;
         }
     };
     if !output.status.success() {
@@ -212,7 +224,7 @@ fn extract_catalog(project: &Path, dest: &Path) -> bool {
              instead:\n{}",
             String::from_utf8_lossy(&output.stderr).trim(),
         );
-        return false;
+        return None;
     }
 
     // Validate it's the catalog JSON shape before embedding — a parse or
@@ -225,16 +237,16 @@ fn extract_catalog(project: &Path, dest: &Path) -> bool {
                 "[idealyst docs] catalog extractor produced unexpected output; documenting \
                  the framework catalog instead",
             );
-            return false;
+            return None;
         }
     }
 
     if let Err(e) = std::fs::write(dest, json.as_bytes()) {
         eprintln!("[idealyst docs] could not write {} ({e}); documenting the framework \
              catalog instead", dest.display());
-        return false;
+        return None;
     }
-    true
+    Some(wrapper)
 }
 
 /// Materialize the ephemeral docs-app project crate at `docs_root/app`,
@@ -244,7 +256,12 @@ fn extract_catalog(project: &Path, dest: &Path) -> bool {
 /// `src/main.rs` is refused as having nothing to build. Idempotent — files are only rewritten
 /// when their contents change, so repeated `idealyst docs` runs don't
 /// invalidate cargo fingerprints.
-fn generate_docs_app(docs_root: &Path, source: &FrameworkSource, stage_name: &str) -> Result<PathBuf> {
+fn generate_docs_app(
+    docs_root: &Path,
+    source: &FrameworkSource,
+    stage_name: &str,
+    link: Option<&catalog_wrapper::DocsWrapper>,
+) -> Result<PathBuf> {
     let app_dir = docs_root.join("app");
     std::fs::create_dir_all(app_dir.join("src"))
         .with_context(|| format!("create {}", app_dir.join("src").display()))?;
@@ -256,13 +273,32 @@ fn generate_docs_app(docs_root: &Path, source: &FrameworkSource, stage_name: &st
     let idealyst_dep = source.dep("crates/idealyst", &[]);
     let pkg_name = format!("{stage_name}-docs");
 
+    // The extraction wrapper's lib: it links the project and its component
+    // libraries with `runtime-core/previews`, which is what puts every
+    // preview symbol the injected catalog records into this bundle.
+    let (link_dep, link_extern) = match link {
+        Some(w) => (
+            format!("{} = {{ path = \"{}\" }}\n", w.package, w.dir.display()),
+            format!("extern crate {} as _;\n", w.lib),
+        ),
+        None => (String::new(), String::new()),
+    };
+    // This crate is the workspace root the web build compiles, so it has
+    // to carry the framework redirect itself: a project pinning the
+    // framework by git or registry would otherwise bring a second
+    // `runtime_core`, and its exported `Preview` would not be the type
+    // docs-app's `extern` block declares. Empty in git mode.
+    let patch_block = source.patch_block();
+
     let cargo_toml = format!(
         r#"# GENERATED by `idealyst docs`. Do not edit — rewritten on demand.
 #
 # Ephemeral docs-site project. Re-exports the `docs-app` renderer's entry
 # points so `idealyst`'s web build can treat it as an ordinary project.
 # The catalog it renders is injected at build time via the
-# `IDEALYST_DOCS_CATALOG` env var (read by docs-app's build script).
+# `IDEALYST_DOCS_CATALOG` env var (read by docs-app's build script); the
+# `*-catalog-docs-wrapper` dependency links the crates that catalog
+# documents, with their live previews.
 #
 # Empty `[workspace]` declares this standalone even though it lives under
 # the framework workspace's `target/idealyst/...`.
@@ -277,20 +313,23 @@ publish = false
 [dependencies]
 docs-app = {docs_app_dep}
 idealyst = {idealyst_dep}
-
+{link_dep}
 [package.metadata.idealyst.app]
 name      = "Idealyst Docs"
 bundle_id = "io.idealyst.docs_site"
 version   = "0.0.1"
 targets   = ["web"]
-"#,
+{patch_block}"#,
     );
 
     // Must match `docs-app`'s real exports: `idealyst::entry!` calls
     // `{lib}::app()` and `{lib}::register_scene_extensions`.
-    let lib_rs = "//! GENERATED by `idealyst docs` — re-exports the docs-app renderer so the\n\
+    let lib_rs = format!(
+        "//! GENERATED by `idealyst docs` — re-exports the docs-app renderer so the\n\
          //! web build mounts it as the project's `app()`. Do not edit.\n\
-         pub use docs_app::{app, register_scene_extensions, scene_app};\n";
+         {link_extern}\
+         pub use docs_app::{{app, register_scene_extensions, scene_app}};\n"
+    );
 
     let main_rs = format!(
         "//! GENERATED by `idealyst docs` — the docs site's entry point. Do not edit.\n\
@@ -299,8 +338,16 @@ targets   = ["web"]
     );
 
     write_if_changed(&app_dir.join("Cargo.toml"), &cargo_toml)?;
-    write_if_changed(&app_dir.join("src/lib.rs"), lib_rs)?;
+    write_if_changed(&app_dir.join("src/lib.rs"), &lib_rs)?;
     write_if_changed(&app_dir.join("src/main.rs"), &main_rs)?;
+    // A `[patch]` naming the idealyst registry is a hard error unless the
+    // registry is defined; define it here rather than relying on an
+    // ancestor config (same as the catalog wrapper).
+    if !patch_block.is_empty() {
+        std::fs::create_dir_all(app_dir.join(".cargo"))
+            .with_context(|| format!("create {}", app_dir.join(".cargo").display()))?;
+        write_if_changed(&app_dir.join(".cargo/config.toml"), &build_ios::registry_config_block())?;
+    }
     Ok(app_dir)
 }
 
@@ -386,7 +433,7 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         let source = FrameworkSource::Workspace { root: PathBuf::from("/ws") };
 
-        let app_dir = generate_docs_app(&tmp, &source, "demo").expect("generate");
+        let app_dir = generate_docs_app(&tmp, &source, "demo", None).expect("generate");
         assert!(app_dir.ends_with("app"));
 
         let cargo = std::fs::read_to_string(app_dir.join("Cargo.toml")).unwrap();
@@ -411,9 +458,40 @@ mod tests {
 
         // Idempotent: a second identical generate must not rewrite files.
         let mtime1 = std::fs::metadata(app_dir.join("src/lib.rs")).unwrap().modified().unwrap();
-        generate_docs_app(&tmp, &source, "demo").expect("regenerate");
+        generate_docs_app(&tmp, &source, "demo", None).expect("regenerate");
         let mtime2 = std::fs::metadata(app_dir.join("src/lib.rs")).unwrap().modified().unwrap();
         assert_eq!(mtime1, mtime2, "idempotent regenerate must not rewrite files");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The docs crate links the extraction wrapper's lib (every crate the
+    /// injected catalog records a preview symbol for) and carries the
+    /// framework patch in workspace mode — without it an out-of-tree
+    /// project brings a second `runtime_core`, and its `Preview` is not
+    /// the type docs-app's `extern` block declares.
+    #[test]
+    fn generate_docs_app_links_the_docs_wrapper_and_patches_the_framework() {
+        let tmp = std::env::temp_dir().join(format!("idealyst-docs-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let source = FrameworkSource::Workspace { root: PathBuf::from("/ws") };
+        let wrapper = catalog_wrapper::DocsWrapper {
+            dir: PathBuf::from("/t/idealyst/demo/catalog-docs"),
+            package: "demo-catalog-docs-wrapper".into(),
+            lib: "demo_catalog_docs_wrapper".into(),
+        };
+
+        let app_dir = generate_docs_app(&tmp, &source, "demo", Some(&wrapper)).expect("generate");
+        let cargo = std::fs::read_to_string(app_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            cargo.contains("demo-catalog-docs-wrapper = { path = \"/t/idealyst/demo/catalog-docs\" }"),
+            "cargo: {cargo}"
+        );
+        assert!(cargo.contains("[patch."), "workspace mode patches the framework: {cargo}");
+        let lib = std::fs::read_to_string(app_dir.join("src/lib.rs")).unwrap();
+        assert!(lib.contains("extern crate demo_catalog_docs_wrapper as _;"), "lib: {lib}");
+        assert!(app_dir.join(".cargo/config.toml").is_file());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

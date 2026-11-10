@@ -94,6 +94,7 @@ pub fn add_submission(expr: &syn::Expr, site: &Site, parts: &mut CatalogParts) -
             docs: f.str("docs")?,
             composes: f.list("composes", |mut e| Ok(EdgeRef { name: e.str("name")?, line: e.int("line")? }))?,
             params: f.list("params", param)?,
+            preview: f.str("preview")?,
         })),
         "MethodEntry" => parts.methods.push(leak(MethodEntry {
             parent_module_path: f.str("parent_module_path")?,
@@ -159,6 +160,7 @@ pub fn add_submission(expr: &syn::Expr, site: &Site, parts: &mut CatalogParts) -
             docs: f.str("docs")?,
             source: f.str("source")?,
             uses: f.str_list("uses")?,
+            preview: f.str("preview")?,
         })),
         "ScopeEntry" => parts.scopes.push(leak(ScopeEntry {
             slug: f.str("slug")?,

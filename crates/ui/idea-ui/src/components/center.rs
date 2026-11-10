@@ -28,7 +28,6 @@ component_styles! {
 // siblings and ready for future data props.
 #[runtime_core::props(styles = CenterStyles)]
 #[derive(Default)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct CenterProps {
     /// Children to center on both axes. Incoming fragments are flattened

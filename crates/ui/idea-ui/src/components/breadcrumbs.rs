@@ -105,12 +105,10 @@ impl Crumb {
 // are snapshotted at build (they drive the imperative separator structure — see
 // the TODO in the body).
 #[runtime_core::props(styles = BreadcrumbsStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct BreadcrumbsProps {
     /// The trail, root-first. The last item renders as the current page
     /// (emphasized, not clickable).
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub items: Vec<Crumb>,
     /// Separator glyph between crumbs. Default `/`. Ignored when
     /// [`separator_icon`](Self::separator_icon) is `Some`.

@@ -208,7 +208,6 @@ marker_into_axis!(IconButtonVariant {
 // child sink. A bare value stays a zero-cost `Static` snapshot (the
 // no-flicker fast path); a `Signal`/`rx!` re-styles in place.
 #[runtime_core::props(styles = IconButtonStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct IconButtonProps {
     /// The single glyph/character rendered inside the square (e.g. `"×"`).

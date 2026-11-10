@@ -71,11 +71,11 @@ marker_into_axis!(BadgeVariant {
 // `label` is already reactive. Bare markers (`tone = tone::Success`,
 // `variant = variant::Soft`) coerce.
 #[runtime_core::props(styles = BadgeStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct BadgeProps {
     /// Badge text. `Reactive<String>` — static or live (signal/`rx!`).
     #[schema(constraint = "reactive: static String or Signal/rx!")]
+    #[prop(example = "New")]
     pub label: Reactive<String>,
     /// Semantic color palette (Neutral, Success, Danger, Warning, …, a
     /// palette hue, or a registered app tone). Default Neutral.

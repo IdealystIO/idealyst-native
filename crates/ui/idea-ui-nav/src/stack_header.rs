@@ -59,7 +59,6 @@ stylesheet! {
 
 /// Props for [`StackHeader`].
 #[runtime_core::props]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct StackHeaderProps {
     /// The active screen's header slots. Feed

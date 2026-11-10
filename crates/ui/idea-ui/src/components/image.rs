@@ -50,7 +50,6 @@ component_styles! {
 // is set once. A bare value stays a zero-cost `Static` snapshot.
 #[runtime_core::props(styles = ImageStyles)]
 #[derive(IdealystSchema)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ImageProps {
     /// What to show: a URL (`https://…`, `data:…`, or a root-relative
     /// `/path` resolved against the server base) or a bundled
@@ -58,12 +57,16 @@ pub struct ImageProps {
     /// `embed_asset!`. Static or live (`Signal`/`rx!` URL).
     #[schema(constraint = "ImageSource — URL string or bundled Asset")]
     #[prop(static)]
+    #[prop(example = runtime_core::previews::SAMPLE_IMAGE_URL)]
     pub src: ImageSource,
     /// Accessible description. Maps to `alt` on web.
+    #[prop(example = Some(String::from("A sample image")))]
     pub alt: Option<String>,
     /// Explicit width in px. `None` = natural / flex-sized.
+    #[prop(example = Some(160.0_f32))]
     pub width: Option<f32>,
     /// Explicit height in px.
+    #[prop(example = Some(160.0_f32))]
     pub height: Option<f32>,
     /// Clip to a circle (pill radius).
     pub rounded: bool,

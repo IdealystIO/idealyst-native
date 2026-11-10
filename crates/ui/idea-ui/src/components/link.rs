@@ -89,15 +89,16 @@ component_styles! {
 // routes to the `external_link` reactive `.url()` setter so the href swaps in
 // place (a `Static` url is set once at construction, no effect).
 #[runtime_core::props(styles = LinkStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct LinkProps {
     /// Link text. `Reactive<String>` — static or live.
     #[schema(constraint = "reactive: static String or Signal/rx!")]
+    #[prop(example = "Read the docs")]
     pub label: Reactive<String>,
     /// Destination URL (`https:`, `mailto:`, `tel:`, …). Ignored when
     /// `on_press` is set.
     #[schema(constraint = "reactive: static String or Signal/rx!")]
+    #[prop(example = "https://example.com")]
     pub url: Reactive<String>,
     /// Makes the link an in-app action: pressing it (click, tap, Enter /
     /// Space) runs this instead of opening a URL. It renders as a button

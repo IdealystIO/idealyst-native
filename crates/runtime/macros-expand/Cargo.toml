@@ -87,6 +87,17 @@ catalog = ["dep:prettyplease", "runtime-macros-parse/catalog"]
 # still works and just turns on `catalog`.
 mcp = ["catalog"]
 
+# Component previews for generated docs (`idealyst docs`). When on:
+# `#[props]` / inline-props `#[component]` implement
+# `previews::PreviewProps` for the props struct, `#[component]` exports a
+# `#[no_mangle]` preview fn and records its symbol in the catalog entry,
+# `recipe!` exports one for each zero-argument recipe, and
+# `#[prop_control]` keeps the impl it wraps. When off, all of that expands
+# to nothing — `#[prop(example = …)]` is accepted and dropped, and a
+# `#[prop_control]` impl disappears. Implies `catalog` (the symbols live
+# in catalog entries).
+previews = ["catalog"]
+
 # Compile-time documentation enforcement. When on, `#[component]` errors
 # if the component fn has no `///` doc comment, and
 # `#[derive(IdealystSchema)]` errors on any undocumented prop field / enum

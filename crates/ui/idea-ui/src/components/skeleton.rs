@@ -56,7 +56,6 @@ pub enum SkeletonWidth {
 // `Static` snapshot (the no-flicker fast path), a `Signal`/`rx!` re-styles
 // the block in place.
 #[runtime_core::props(styles = SkeletonStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct SkeletonProps {
     /// Width preset (Full/Half/ThreeQuarter) or exact pixels. Default Full.

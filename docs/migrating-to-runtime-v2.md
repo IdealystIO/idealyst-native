@@ -207,15 +207,12 @@ Two feature notes:
 
 - The `table` feature pulls the table SDK (real `<table>` DOM on web,
   CSS-grid on native, generic handlers reused by SSR).
-- The `docs` feature (the `DocControls` derive + doc-controls runtime)
-  works because the derive emits the free `::runtime_core::signal(…)`
-  and the control helpers satisfy the world kernel's `T: PartialEq`
-  signal bound — `RefBuiltins` has a `PartialEq` supertrait with
-  pointer-identity impls on the `*Ref` handle types
-  (`crates/ui/idea-theme/src/extensible/mod.rs`; identity, not key
-  equality, so the guarded `set` can never swallow a change between two
-  distinct modifiers sharing a key). An app-defined `*Ref` implementing
-  `RefBuiltins` must add the same shape of `PartialEq` impl.
+- The `docs` feature and its `DocControls` derive are removed, along
+  with idea-theme's `RefBuiltins`. Drop `features = ["docs"]` from an
+  `idea-ui` dependency. Live prop controls now come from `idealyst docs`
+  previews for every `#[component]` (`runtime_core::previews`); an
+  app-defined `*Ref` that wants a picker implements `PropControl` inside
+  `#[prop_control]` instead.
 
 ### `prim-*` primitive-family gating is gone
 

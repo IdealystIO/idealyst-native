@@ -405,7 +405,6 @@ fn tab_label_base_sheet() -> Rc<StyleSheet> {
 /// `on_change` match on (an *id*, not a position, so a tab keeps its identity
 /// as the list grows, shrinks, or reorders).
 #[derive(Clone, Default)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema, runtime_core::Remote)]
 pub struct Tab {
     /// Stable, unique identity: the keyed-list reconciliation key and the value
@@ -418,7 +417,6 @@ pub struct Tab {
     pub label: Reactive<String>,
     /// Optional robot/E2E test id for this tab's pressable. Set it with
     /// [`Tab::test_id`]. Inert outside a robot build.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub test_id: Option<&'static str>,
 }
 
@@ -457,7 +455,6 @@ impl PartialEq for Tab {
 // reactive `Signal` LIST, `active` is already `Reactive`, and `on_change` is a
 // handler — all auto-skipped.
 #[runtime_core::props(styles = TabsStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct TabsProps {
     /// The tabs, left-to-right. `Signal<Vec<Tab>>` — a **reactive list**: tabs

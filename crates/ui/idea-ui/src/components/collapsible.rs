@@ -310,22 +310,20 @@ pub enum CollapsibleChevronSide {
 // style sink, so they're snapshotted at build with flagged TODOs below.
 /// Props for [`Collapsible`].
 #[runtime_core::props(styles = CollapsibleStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct CollapsibleProps {
     /// Header text shown when both open and closed. `Reactive<String>` —
     /// a literal, a `Signal<String>`, or `rx!(...)` all work.
     #[schema(constraint = "reactive: static String or Signal/rx!")]
+    #[prop(example = "Shipping details")]
     pub title: Reactive<String>,
     /// Custom header content, in place of `title` — an icon, a name over a
     /// count. Inside the toggle: pressing it opens and closes the body.
     /// `None` renders `title`.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub header: Option<Element>,
     /// An element at the end of the header row, OUTSIDE the toggle, so its
     /// own presses don't open or close the body — an "open in new tab"
     /// `IconButton`, a menu trigger.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub trailing: Option<Element>,
     /// Which end of the header the chevron sits at. Default `End`.
     #[prop(static)]

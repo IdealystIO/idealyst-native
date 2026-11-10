@@ -1,0 +1,251 @@
+//! Component-preview emission for generated docs (`previews` feature).
+//!
+//! Three pieces, each empty with the feature off so dev and release builds
+//! compile none of it:
+//!
+//! - [`props_impl`] — `impl previews::PreviewProps for <Props>`, shared by
+//!   `#[props]` and the inline-props `#[component]` form: one
+//!   `PreviewField` per field whose type has a control, picked by the
+//!   autoref probe in `runtime_vocabulary::previews::__probe`, plus the
+//!   `#[prop(example = …)]` starting values.
+//! - [`component_symbol`] — the exported `#[no_mangle]` fn returning the
+//!   component's `Preview`, and the symbol name the catalog entry records.
+//! - [`recipe_symbol`] — the same for a zero-argument `recipe!`.
+//!
+//! The docs app reaches each preview through an `extern "Rust"` block
+//! generated from the catalog's recorded symbol names, so the symbol is
+//! the contract between this emission and `crates/tools/docs-app/build.rs`.
+
+use proc_macro2::TokenStream as TokenStream2;
+use quote::quote;
+use syn::{Expr, Ident, Type};
+
+/// One props-struct field as the preview emission sees it.
+pub(crate) struct FieldIn<'a> {
+    pub(crate) name: &'a Ident,
+    /// Post-wrap type (what the struct declares).
+    pub(crate) ty: &'a Type,
+    pub(crate) example: Option<&'a Expr>,
+}
+
+/// The text a component's children preview starts with.
+const CHILDREN_PLACEHOLDER: &str = "Child content";
+
+/// `impl PreviewProps for #props`. Empty for a generic props struct (no
+/// single type to preview) and with the feature off.
+pub(crate) fn props_impl(props: &Ident, generic: bool, fields: &[FieldIn<'_>]) -> TokenStream2 {
+    if !cfg!(feature = "previews") || generic {
+        return TokenStream2::new();
+    }
+    let pushes = fields.iter().map(|f| {
+        let name = f.name;
+        let name_str = name.to_string();
+        let ty = f.ty;
+        if is_element_vec(ty) {
+            return quote! {
+                fields.push(::runtime_core::previews::PreviewField::children(
+                    #name_str,
+                    |p: &mut Self| &mut p.#name,
+                    #CHILDREN_PLACEHOLDER,
+                ));
+            };
+        }
+        let ty_str = crate::token_text::token_text(&quote!(#ty));
+        quote! {
+            if let ::core::option::Option::Some(adapter) =
+                (&&&&::runtime_core::previews::__probe::Probe::<#ty>::new()).__adapter()
+            {
+                fields.push(::runtime_core::previews::PreviewField::new(
+                    #name_str,
+                    #ty_str,
+                    adapter,
+                    // Annotated: a closure body is checked before the
+                    // push unifies `P`, and `p.field` needs the type.
+                    |p: &mut Self| &mut p.#name,
+                    |p: &Self| &p.#name,
+                ));
+            }
+        }
+    });
+    let examples: Vec<TokenStream2> = fields
+        .iter()
+        .filter_map(|f| {
+            let example = f.example?;
+            let name = f.name;
+            let value = crate::float_lit::coerce_prop_value(example);
+            Some(quote! { props.#name = #value; })
+        })
+        .collect();
+    let base = if examples.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn preview_base() -> Self {
+                let mut props = <Self as ::runtime_core::BuildElement>::defaults();
+                #(#examples)*
+                props
+            }
+        }
+    };
+    quote! {
+        #[automatically_derived]
+        impl ::runtime_core::previews::PreviewProps for #props {
+            fn preview_fields() -> ::std::vec::Vec<::runtime_core::previews::PreviewField<Self>> {
+                #[allow(unused_imports)]
+                use ::runtime_core::previews::__probe::{
+                    ViaNone as _, ViaPropControl as _, ViaReactiveVariant as _, ViaVariant as _,
+                };
+                #[allow(unused_mut)]
+                let mut fields = ::std::vec::Vec::new();
+                #(#pushes)*
+                fields
+            }
+            #base
+        }
+    }
+}
+
+/// `Vec<Element>` — a children slot, previewed as editable text.
+fn is_element_vec(ty: &Type) -> bool {
+    let Type::Path(tp) = ty else { return false };
+    let Some(seg) = tp.path.segments.last() else { return false };
+    if seg.ident != "Vec" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else { return false };
+    matches!(
+        args.args.first(),
+        Some(syn::GenericArgument::Type(Type::Path(inner)))
+            if inner.path.segments.last().is_some_and(|s| s.ident == "Element")
+    )
+}
+
+/// The exported symbol for an item named `name` declared at `ident`.
+///
+/// Crate name + item name + the declaring ident's line and column: unique
+/// within a link (two same-named components in one crate sit at different
+/// positions), stable between the catalog extraction and the docs build
+/// (both compile the same source), and a valid identifier. A collision is
+/// a duplicate-symbol link error, never a wrong preview.
+fn symbol_name(kind: &str, ident: &Ident) -> String {
+    let krate = std::env::var("CARGO_CRATE_NAME").unwrap_or_default();
+    let start = ident.span().start();
+    format!("__idealyst_{kind}__{krate}__{ident}__{}_{}", start.line, start.column)
+}
+
+/// A component's preview export: `(fn tokens, symbol)`. The symbol is
+/// empty when no preview is emitted (feature off), which is also what the
+/// catalog entry records then.
+///
+/// `tag` names the component's `BuildElement` type: the tag alias / no-arg
+/// marker struct `#[component]` declares under the fn's own name.
+pub(crate) fn component_symbol(tag: &Ident) -> (TokenStream2, String) {
+    if !cfg!(feature = "previews") {
+        return (TokenStream2::new(), String::new());
+    }
+    let symbol = symbol_name("preview", tag);
+    let fn_ident = Ident::new(&symbol, tag.span());
+    let tokens = quote! {
+        #[doc(hidden)]
+        #[unsafe(no_mangle)]
+        #[allow(non_snake_case)]
+        pub fn #fn_ident() -> ::runtime_core::previews::Preview {
+            #[allow(unused_imports)]
+            use ::runtime_core::previews::__probe::{ViaBuildElement as _, ViaPreviewProps as _};
+            (&&::runtime_core::previews::__probe::PropsProbe::<#tag>::new()).__preview()
+        }
+    };
+    (tokens, symbol)
+}
+
+/// A zero-argument recipe's export: `(fn tokens, symbol)`, empty as for
+/// [`component_symbol`]. A recipe with parameters defines props rather
+/// than rendering on its own, so it gets none.
+pub(crate) fn recipe_symbol(item_fn: &syn::ItemFn) -> (TokenStream2, String) {
+    if !cfg!(feature = "previews") || !item_fn.sig.inputs.is_empty() || !item_fn.sig.generics.params.is_empty() {
+        return (TokenStream2::new(), String::new());
+    }
+    let name = &item_fn.sig.ident;
+    let symbol = symbol_name("recipe", name);
+    let fn_ident = Ident::new(&symbol, name.span());
+    let tokens = quote! {
+        #[doc(hidden)]
+        #[unsafe(no_mangle)]
+        #[allow(non_snake_case)]
+        pub fn #fn_ident() -> ::runtime_core::Element {
+            ::runtime_core::IntoElement::into_element(#name())
+        }
+    };
+    (tokens, symbol)
+}
+
+#[cfg(all(test, feature = "previews"))]
+mod tests {
+    use super::*;
+
+    fn squash(t: TokenStream2) -> String {
+        t.to_string().chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    #[test]
+    fn props_impl_probes_each_field_and_treats_element_vecs_as_children() {
+        let label: Ident = syn::parse_quote!(label);
+        let label_ty: Type = syn::parse_quote!(::runtime_core::Reactive<String>);
+        let example: Expr = syn::parse_quote!("Click me");
+        let children: Ident = syn::parse_quote!(children);
+        let children_ty: Type = syn::parse_quote!(Vec<Element>);
+        let props: Ident = syn::parse_quote!(CardProps);
+        let out = squash(props_impl(
+            &props,
+            false,
+            &[
+                FieldIn { name: &label, ty: &label_ty, example: Some(&example) },
+                FieldIn { name: &children, ty: &children_ty, example: None },
+            ],
+        ));
+        assert!(out.contains("impl::runtime_core::previews::PreviewPropsforCardProps"), "{out}");
+        assert!(
+            out.contains("(&&&&::runtime_core::previews::__probe::Probe::<::runtime_core::Reactive<String>>::new()).__adapter()"),
+            "label goes through the probe: {out}"
+        );
+        assert!(out.contains("PreviewField::children(\"children\""), "{out}");
+        assert!(out.contains("fnpreview_base()"), "an example overrides the base: {out}");
+        assert!(out.contains("props.label=(\"Clickme\").into();"), "{out}");
+    }
+
+    #[test]
+    fn props_impl_without_examples_keeps_the_trait_default_base() {
+        let props: Ident = syn::parse_quote!(EmptyProps);
+        let out = squash(props_impl(&props, false, &[]));
+        assert!(!out.contains("preview_base"), "{out}");
+    }
+
+    #[test]
+    fn generic_props_get_no_preview_impl() {
+        let props: Ident = syn::parse_quote!(ListProps);
+        assert!(props_impl(&props, true, &[]).is_empty());
+    }
+
+    #[test]
+    fn component_symbol_is_exported_and_named_after_the_tag() {
+        let tag: Ident = syn::parse_quote!(Button);
+        let (tokens, symbol) = component_symbol(&tag);
+        assert!(symbol.starts_with("__idealyst_preview__"), "{symbol}");
+        assert!(symbol.contains("__Button__"), "{symbol}");
+        let out = squash(tokens);
+        assert!(out.contains("#[unsafe(no_mangle)]"), "{out}");
+        assert!(out.contains(&format!("pubfn{symbol}()->::runtime_core::previews::Preview")), "{out}");
+        assert!(out.contains("(&&::runtime_core::previews::__probe::PropsProbe::<Button>::new()).__preview()"), "{out}");
+    }
+
+    #[test]
+    fn only_zero_argument_recipes_export_a_symbol() {
+        let plain: syn::ItemFn = syn::parse_quote!(fn button_basic() -> Element { todo!() });
+        let (tokens, symbol) = recipe_symbol(&plain);
+        assert!(symbol.contains("__button_basic__"), "{symbol}");
+        assert!(squash(tokens).contains("into_element(button_basic())"));
+        let with_args: syn::ItemFn = syn::parse_quote!(fn custom(label: String) -> Element { todo!() });
+        let (tokens, symbol) = recipe_symbol(&with_args);
+        assert!(tokens.is_empty() && symbol.is_empty());
+    }
+}

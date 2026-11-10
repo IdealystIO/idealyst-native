@@ -83,8 +83,13 @@ It **skips** shapes that aren't reactive data:
   value or a non-`Clone` type.
 - `#[prop(reactive)]` forces the wrap when the heuristic misses (e.g. a
   type alias hiding a data type, or a `Vec` you deliberately want live).
+- `#[prop(example = expr)]` is the value an `idealyst docs` preview starts
+  the prop at; it has no effect outside a docs build. See the
+  "Generated docs and live component previews" guide.
 
-Both attributes are stripped before the struct is re-emitted.
+They combine (`#[prop(static, example = 4)]`) and are stripped before the
+struct is re-emitted. `default` is for inline props only; a struct's
+defaults are its `Default` impl.
 
 ```rust
 #[runtime_core::props]

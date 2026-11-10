@@ -373,7 +373,6 @@ impl SegmentOption {
 // `styles` (from `styles = SegmentedControlStyles`) is the per-instance
 // override for every slot.
 #[runtime_core::props(styles = SegmentedControlStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct SegmentedControlProps {
     /// Controlled selected value — the `id` of the chosen [`SegmentOption`].

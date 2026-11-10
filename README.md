@@ -600,7 +600,6 @@ crates/
     idea-ui-nav/        # Navigation chrome (TabBar, Drawer, StackHeader)
     idea-ui-mail/       # Email-safe component set for backend-email
     icons-lucide/       # Lucide icon pack; tree-shakeable
-    idea-ui-docs-derive/# #[derive(DocControls)] proc macro powering the docs site
 
   sdk/                  # Third-party-style extensions: a payload type + a registered handler
     client/             # maps, webview, canvas, svg, video, markdown, table, codeblock, form,

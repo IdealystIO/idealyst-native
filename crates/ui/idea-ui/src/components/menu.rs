@@ -288,7 +288,6 @@ fn slotted_panel(
 // sink. They're held bare via `#[prop(static)]`; routing them reactively is a
 // separate structural change (TODO below), not a style-prop sweep.
 #[runtime_core::props]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct MenuProps {
     /// Element to anchor against — `AnchorTarget::from(some_ref)`.
@@ -306,12 +305,10 @@ pub struct MenuProps {
     // TODO(reactive-sweep): route `side` to anchored_overlay `.side()`
     // (structural positioning, not a style sink). Kept bare for now.
     #[prop(static)]
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub side: ElementSide,
     /// Alignment along the anchor's edge. Default `Start`.
     // TODO(reactive-sweep): route `align` to anchored_overlay `.align()`.
     #[prop(static)]
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub align: ElementAlign,
     /// Gap in pixels between the anchor and the panel. Default 4.
     // TODO(reactive-sweep): route `offset` to anchored_overlay `.offset()`.
@@ -330,12 +327,10 @@ pub struct MenuProps {
     ///
     /// A menu with either slot set preserves focus across row presses, so a
     /// focusable header keeps its caret when a row is clicked.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub header: Option<Element>,
     /// Optional element pinned BELOW the scrolling row area — see
     /// [`MenuProps::header`]. Typically a "Clear" / "Add ‹what you typed›"
     /// action that must stay reachable without scrolling to the end.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub footer: Option<Element>,
     /// Caps the panel's width, in pixels. Rows longer than the cap end in
     /// "…" on one line. `None` (the default) sizes the panel to its longest
@@ -413,19 +408,17 @@ pub fn Menu(props: MenuProps) -> Element {
 // (routes to the row style sink below). `label` is already reactive; the
 // handler (`on_select`) and element slots (`leading`/`trailing`) auto-skip.
 #[runtime_core::props(styles = MenuStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct MenuItemProps {
     /// Row label. `Reactive<String>` — static or live.
     #[schema(constraint = "reactive: static String or Signal/rx!")]
+    #[prop(example = "Rename")]
     pub label: Reactive<String>,
     /// Fires when the row is chosen. Typically also closes the menu.
     pub on_select: Rc<dyn Fn()>,
     /// Optional leading element (icon, avatar).
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub leading: Option<Element>,
     /// Optional trailing element (shortcut hint, badge), pushed right.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub trailing: Option<Element>,
     /// Renders the row in its highlighted/active state. `Reactive<bool>` —
     /// static or live (signal/`rx!`); the row re-styles in place.
@@ -494,7 +487,6 @@ pub fn MenuItem(props: MenuItemProps) -> Element {
 // Reactive-by-default: only data field (`text`) is already `Reactive`;
 // `#[props]` is a no-op here but kept for uniformity with the family.
 #[runtime_core::props(styles = MenuStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct MenuLabelProps {
     /// Section-heading text. `Reactive<String>` — static or live.
@@ -515,7 +507,6 @@ pub fn MenuLabel(props: MenuLabelProps) -> Element {
 }
 
 #[runtime_core::props(styles = MenuStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct MenuSeparatorProps {}
 impl Default for MenuSeparatorProps {
@@ -795,7 +786,6 @@ impl HoverLatch {
 // are ELEMENT-BUILDERS (the *children* category, reactive internally via the
 // slot cx), `#[prop(static)]` for the same reason as `Autocomplete`'s.
 #[runtime_core::props(styles = MenuStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct SubMenuProps {
     /// Trigger row label.
@@ -812,14 +802,12 @@ pub struct SubMenuProps {
     /// and leaves the panel — and the caret in the field — untouched. A
     /// `Vec` rebuilt by the caller's own scope instead would remount the
     /// whole menu on every character.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     #[schema(constraint = "reactive: static Vec<MenuEntry> or rx!")]
     pub items: Reactive<Vec<MenuEntry>>,
     /// Which side the flyout opens toward. Default `End` (right in LTR).
     // TODO(reactive-sweep): route `side` to anchored_overlay `.side()`
     // (structural positioning, not a style sink). Kept bare for now.
     #[prop(static)]
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub side: ElementSide,
     /// Optional slot pinned ABOVE the flyout's scrolling row area — it stays
     /// put while the rows scroll under it. A search field narrowing a long
@@ -831,13 +819,11 @@ pub struct SubMenuProps {
     /// slot set also LATCHES once the pointer has been inside it, so hover
     /// cannot collapse it under a typing user — see [`SubMenu`].
     #[prop(static)]
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub header: Option<SubMenuSlot>,
     /// Optional slot pinned BELOW the scrolling row area — see
     /// [`SubMenuProps::header`]. Typically a "Clear" / "Add ‹what you typed›"
     /// action that must stay reachable without scrolling to the end.
     #[prop(static)]
-    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub footer: Option<SubMenuSlot>,
     /// Caps the flyout's width, in pixels. Entry labels longer than the cap
     /// end in "…" on one line. `None` (the default) sizes the flyout to its

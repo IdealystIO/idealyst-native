@@ -570,6 +570,7 @@ pub(crate) fn leak_entry_from_json(c: &serde_json::Value) -> Result<&'static Com
         docs: leak_str(c["docs"].as_str().unwrap_or("").to_string()),
         composes: composes_leaked,
         params: params_leaked,
+        preview: leak_str(c["preview"].as_str().unwrap_or("").to_string()),
     };
     Ok(Box::leak(Box::new(entry)))
 }
@@ -821,6 +822,7 @@ fn leak_recipe_from_json(v: &serde_json::Value) -> Option<&'static RecipeEntry> 
         docs: leak_str(docs),
         source: leak_str(source),
         uses: Box::leak(uses.into_boxed_slice()),
+        preview: leak_str(v["preview"].as_str().unwrap_or("").to_string()),
     })))
 }
 
@@ -1128,6 +1130,7 @@ mod tests {
             docs: "",
             composes,
             params: &[],
+            preview: "",
         }))
     }
 

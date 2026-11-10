@@ -137,9 +137,11 @@ pub struct Recipe {
     /// The recipe fn's name, e.g. `button_basic`.
     pub name: String,
     /// The `module_path!()` at the recipe site (e.g. `idea_ui::recipes`).
-    /// Paired with `name`, it keys the build-time `recipe_renderer` map
-    /// that turns a renderable recipe into a live component preview.
     pub module_path: String,
+    /// The exported symbol rendering this recipe (the catalog's
+    /// `preview`), the key of the build-time `recipe_renderer` lookup.
+    /// Empty for a recipe with no live render.
+    pub preview: String,
     /// Prose docs on the recipe fn. May be empty.
     pub docs: String,
     /// The recipe's formatted, copy-pasteable source code.
@@ -214,6 +216,14 @@ pub struct Entry {
     /// For `Kind::IconSet` entries only: pack metadata for the icon
     /// gallery page. `None` for every other kind.
     pub icon_set: Option<IconSetMeta>,
+    /// Components only: the exported symbol of the component's live
+    /// preview (the catalog's `preview`), the key of the build-time
+    /// `component_preview` lookup. Empty when the catalog has none.
+    pub preview: String,
+    /// Components only: the component fn as written (docs, attributes,
+    /// body), extracted at build time for "View source". Empty when its
+    /// file couldn't be read.
+    pub source: String,
 }
 
 /// The whole catalog, grouped and slugged for navigation.
@@ -261,6 +271,7 @@ fn build_recipes(cat: &ResolvedCatalog, name: &str) -> Vec<Recipe> {
         .map(|r| Recipe {
             name: r.name.to_string(),
             module_path: r.module_path.to_string(),
+            preview: r.preview.to_string(),
             docs: r.docs.to_string(),
             source: r.source.to_string(),
             primary: r.target == name,
@@ -326,6 +337,10 @@ fn link_for_type(type_str: &str, type_index: &[(String, String)]) -> Option<Entr
 /// survives), so the docs never depend on it. Identical on every target.
 const EMBEDDED_CATALOG_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/catalog.json"));
 
+/// `module_path::Name` → component source, extracted by `build.rs`
+/// (`src/source_extract.rs`) for "View source".
+const EMBEDDED_SOURCES_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/sources.json"));
+
 impl CatalogModel {
     /// Build the model. Prefers the build-time-embedded catalog (complete
     /// on every target); falls back to the live in-process inventory only
@@ -345,6 +360,8 @@ impl CatalogModel {
     /// app path goes through [`CatalogModel::build`].
     pub fn from_resolved(cat: &ResolvedCatalog) -> Self {
         let mut entries: Vec<Entry> = Vec::new();
+        let sources: std::collections::HashMap<String, String> =
+            serde_json::from_str(EMBEDDED_SOURCES_JSON).unwrap_or_default();
 
         // --- Components ----------------------------------------------------
         // Pre-compute component slugs by (module_path, name) so composes
@@ -456,6 +473,8 @@ impl CatalogModel {
                 scope: scope_link(cat, c.module_path),
                 members: Vec::new(),
                 icon_set: None,
+                preview: c.preview.to_string(),
+                source: sources.get(&format!("{}::{}", c.module_path, c.name)).cloned().unwrap_or_default(),
             });
         }
 
@@ -492,6 +511,8 @@ impl CatalogModel {
                 scope: None,
                 members: Vec::new(),
                 icon_set: None,
+                preview: String::new(),
+                source: String::new(),
             });
         }
 
@@ -525,6 +546,8 @@ impl CatalogModel {
                 scope: scope_link(cat, u.module_path),
                 members: Vec::new(),
                 icon_set: None,
+                preview: String::new(),
+                source: String::new(),
             });
         }
 
@@ -569,6 +592,8 @@ impl CatalogModel {
                 scope: scope_link(cat, t.module_path),
                 members: Vec::new(),
                 icon_set: None,
+                preview: String::new(),
+                source: String::new(),
             });
         }
 
@@ -591,6 +616,8 @@ impl CatalogModel {
                 scope: None,
                 members: Vec::new(),
                 icon_set: None,
+                preview: String::new(),
+                source: String::new(),
             });
         }
 
@@ -622,6 +649,8 @@ impl CatalogModel {
                     homepage: s.homepage.to_string(),
                     count: s.icons.len(),
                 }),
+                preview: String::new(),
+                source: String::new(),
             });
         }
 
@@ -654,6 +683,8 @@ impl CatalogModel {
                 scope: None,
                 members,
                 icon_set: None,
+                preview: String::new(),
+                source: String::new(),
             });
         }
 

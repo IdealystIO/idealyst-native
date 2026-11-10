@@ -23,8 +23,25 @@ stylesheet! {
             flex_grow: 1.0,
             flex_shrink: 1.0,
             flex_basis: 0.0,
-            background: Tokenized::token("color-background", Color("#f7f8fb".into())),
+            // The content is the primary surface — the raised card the
+            // sidebar's secondary surface frames. Full-bleed on a phone
+            // (the sidebar is a drawer there, nothing to frame against).
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
             color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+        }
+        // From `lg` the sidebar is pinned beside the content (`app()` pins
+        // the `AppShell` at `Breakpoint::Lg`): the content becomes a card,
+        // bordered, rounded and lifted off the frame.
+        breakpoint lg(_t) {
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            shadow: runtime_core::Shadow {
+                x: 0.0,
+                y: 1.0,
+                blur: 3.0,
+                color: Tokenized::token("effect-shadow", Color("rgba(15, 17, 21, 0.10)".into())),
+            },
         }
         transitions {
             background: 250ms EaseInOut,
@@ -42,7 +59,16 @@ stylesheet! {
             flex_direction: FlexDirection::Column,
             width: Length::pct(100.0),
             height: Length::pct(100.0),
+            // The secondary surface, shared with the sidebar: the frame
+            // around the content card.
             background: Tokenized::token("color-background", Color("#f7f8fb".into())),
+        }
+        // Inset the card from the frame's top, right and bottom; on the
+        // left the sidebar's own padding is the gap.
+        breakpoint lg(_t) {
+            padding_top: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_right: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_bottom: Tokenized::token("spacing-sm", Length::Px(8.0)),
         }
         transitions {
             background: 250ms EaseInOut,
@@ -50,7 +76,7 @@ stylesheet! {
     }
 }
 
-// Centered, padded reading column for each page.
+// The padded page body: the full width of the content card.
 stylesheet! {
     pub PagePad<()> {
         // Mobile-first: 16pt padding + 20pt gap on phones so the
@@ -61,8 +87,6 @@ stylesheet! {
         // `runtime_core::breakpoint::Breakpoints::DEFAULT`.
         base(_t) {
             flex_direction: FlexDirection::Column,
-            max_width: 880.0,
-            align_self: runtime_core::AlignSelf::Center,
             width: Length::pct(100.0),
             padding: 16.0,
             gap: 20.0,
@@ -117,17 +141,23 @@ stylesheet! {
 
 // ---- Sidebar ---------------------------------------------------------------
 
-// The sidebar's own scroll surface: the AppShell panel is a plain
-// fixed-height surface, so the sidebar provides its own. Carries
-// `color-surface`, so SidebarBody's
+// The sidebar list's scroll surface, under the pinned search box: the
+// AppShell panel is a plain fixed-height surface, so the sidebar provides
+// its own. Carries the
+// secondary surface (`color-background`, the frame around the content
+// card), so SidebarBody's
 // deliberate lack of `min_height: 100%` (see the note there) doesn't
 // leave a transparent gap below short content.
 stylesheet! {
     pub SidebarScroll<()> {
         base(_t) {
-            height: Length::pct(100.0),
+            // The frame's remaining height. A zero minimum, or the list's
+            // content height becomes its floor and nothing scrolls.
+            flex_grow: 1.0,
+            flex_basis: 0.0,
+            min_height: 0.0,
             flex_direction: FlexDirection::Column,
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            background: Tokenized::token("color-background", Color("#f7f8fb".into())),
         }
         transitions {
             background: 250ms EaseInOut,
@@ -138,9 +168,9 @@ stylesheet! {
 stylesheet! {
     pub SidebarBody<()> {
         base(_t) {
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
-            border_right_width: 1.0,
-            border_right_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            // The secondary surface; no divider — the content card's own
+            // edge separates the two.
+            background: Tokenized::token("color-background", Color("#f7f8fb".into())),
             padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
             gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             flex_direction: FlexDirection::Column,
@@ -155,43 +185,40 @@ stylesheet! {
             // hit-testing won't descend into children outside the
             // parent's frame — taps on the bottom half fall through.
             // Either omit min_height (done here; the scroll_view wrapper
-            // carries the same `color-surface` background so there's no
+            // carries the same `color-background` so there's no
             // transparent gap) or pair it with `flex_shrink: 0` (the
             // website's SidebarBody; pinned by runtime-layout's
             // `regression_min_height_pct_scroll_body_keeps_content_height_with_shrink_zero`).
         }
         transitions {
             background: 250ms EaseInOut,
-            border_right_color: 250ms EaseInOut,
         }
     }
 }
 
+// The sidebar: the search box pinned at the top, the scrolling list
+// filling the rest.
 stylesheet! {
-    pub SidebarHeader<()> {
+    pub SidebarFrame<()> {
         base(_t) {
-            padding_bottom: Tokenized::token("spacing-md", Length::Px(12.0)),
-            border_bottom_width: 1.0,
-            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
-            margin_bottom: Tokenized::token("spacing-sm", Length::Px(8.0)),
-            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             flex_direction: FlexDirection::Column,
+            height: Length::pct(100.0),
+            background: Tokenized::token("color-background", Color("#f7f8fb".into())),
+        }
+        transitions {
+            background: 250ms EaseInOut,
         }
     }
 }
 
 stylesheet! {
-    pub SidebarSection<()> {
+    pub SidebarSearchBar<()> {
         base(_t) {
-            padding_top: Tokenized::token("spacing-md", Length::Px(12.0)),
+            flex_shrink: 0.0,
+            padding_left: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            padding_right: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            padding_top: Tokenized::token("spacing-lg", Length::Px(16.0)),
             padding_bottom: Tokenized::token("spacing-xs", Length::Px(4.0)),
-            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
-            color: Tokenized::token("color-text-muted", Color("#8a8270".into())),
-            font_size: 11.0,
-            font_weight: runtime_core::FontWeight::SemiBold,
-            letter_spacing: 0.8,
-            text_transform: runtime_core::TextTransform::Uppercase,
-            text_align: TextAlign::Left,
         }
     }
 }
@@ -433,7 +460,8 @@ stylesheet! {
             border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             border_width: 1.0,
             border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
-            background: Tokenized::token("color-background", Color("#f7f8fb".into())),
+            // The primary surface: a field on the sidebar's secondary one.
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
         }
         state hovered(_t) {
             border_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
@@ -450,43 +478,6 @@ stylesheet! {
             color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
             font_size: 14.0,
             text_align: TextAlign::Left,
-        }
-    }
-}
-
-// ---- Theme toggle (light/dark) --------------------------------------------
-// A compact pill in the sidebar. All colors are theme tokens, so the
-// toggle itself recolors when the theme switches.
-stylesheet! {
-    pub ThemeToggleBox<()> {
-        base(_t) {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            gap: 8.0,
-            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
-            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
-            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
-            border_width: 1.0,
-            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
-        }
-        state hovered(_t) {
-            border_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
-        }
-        transitions {
-            border_color: 160ms EaseOut,
-            background: 250ms EaseInOut,
-        }
-    }
-}
-
-stylesheet! {
-    pub ThemeToggleText<()> {
-        base(_t) {
-            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
-            font_size: 14.0,
-            text_align: TextAlign::Center,
         }
     }
 }
@@ -626,6 +617,330 @@ stylesheet! {
             color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
             font_size: 12.0,
             text_align: TextAlign::Left,
+        }
+    }
+}
+
+// ---- Component playground (src/previews.rs) -------------------------------
+//
+// One bordered card: a canvas column (toolbar over the canvas) beside the
+// props panel, with the Usage bar and snippet underneath.
+
+/// A phone's CSS viewport width — what the playground's "Phone" width
+/// frames the component at (the common 390 pt iPhone width).
+pub const PHONE_WIDTH_PX: f32 = 390.0;
+/// The props panel's width beside the canvas.
+pub const PROPS_PANEL_WIDTH_PX: f32 = 300.0;
+/// The canvas's height floor, so a small component still sits in a
+/// generous stage.
+pub const CANVAS_MIN_HEIGHT_PX: f32 = 420.0;
+
+stylesheet! {
+    pub PlaygroundCard<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            width: Length::pct(100.0),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            overflow: Overflow::Hidden,
+        }
+    }
+}
+
+stylesheet! {
+    pub PlaygroundBody<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            flex_wrap: FlexWrap::Wrap,
+            align_items: AlignItems::Stretch,
+            width: Length::pct(100.0),
+        }
+    }
+}
+
+stylesheet! {
+    pub CanvasColumn<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            flex_basis: 0.0,
+            min_width: 320.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub CanvasToolbar<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_left: Tokenized::token("spacing-md", Length::Px(12.0)),
+            padding_right: Tokenized::token("spacing-md", Length::Px(12.0)),
+            padding_top: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_bottom: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_bottom_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub ToolbarSpacer<()> {
+        base(_t) {
+            flex_grow: 1.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub Canvas<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            flex_grow: 1.0,
+            min_height: CANVAS_MIN_HEIGHT_PX,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            padding: Tokenized::token("spacing-xl", Length::Px(24.0)),
+            background: Tokenized::token("color-surface-alt", Color("#f6f7f9".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub FillFrame<()> {
+        base(_t) {
+            width: Length::pct(100.0),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+        }
+    }
+}
+
+stylesheet! {
+    pub PhoneFrame<()> {
+        base(_t) {
+            width: PHONE_WIDTH_PX,
+            max_width: Length::pct(100.0),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub PropsPanel<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            width: PROPS_PANEL_WIDTH_PX,
+            flex_shrink: 0.0,
+            max_width: Length::pct(100.0),
+            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
+            padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            border_left_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub PanelCaption<()> {
+        base(_t) {
+            font_size: 13.0,
+            color: Tokenized::token("color-text-muted", Color("#5b6275".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub PropRow<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+        }
+    }
+}
+
+stylesheet! {
+    pub PropRowHead<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+        }
+    }
+}
+
+stylesheet! {
+    pub PropName<()> {
+        base(_t) {
+            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            font_size: 13.0,
+            font_weight: runtime_core::FontWeight::SemiBold,
+            color: Tokenized::token("color-text", Color("#1f2328".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub PropType<()> {
+        base(_t) {
+            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            font_size: 12.0,
+            color: Tokenized::token("color-text-muted", Color("#5b6275".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub UsageBar<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_left: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            padding_right: Tokenized::token("spacing-md", Length::Px(12.0)),
+            padding_top: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_bottom: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_top_width: 1.0,
+            border_bottom_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub UsageTitle<()> {
+        base(_t) {
+            font_size: 14.0,
+            font_weight: runtime_core::FontWeight::SemiBold,
+            color: Tokenized::token("color-text", Color("#1f2328".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub UsageHint<()> {
+        base(_t) {
+            font_size: 13.0,
+            color: Tokenized::token("color-text-muted", Color("#5b6275".into())),
+        }
+    }
+}
+
+// ---- Entry page header (src/shell.rs) --------------------------------------
+
+stylesheet! {
+    pub TitleRow<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            flex_wrap: FlexWrap::Wrap,
+            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
+        }
+    }
+}
+
+stylesheet! {
+    pub TitleGroup<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+        }
+    }
+}
+
+stylesheet! {
+    pub ModulePathRow<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            flex_wrap: FlexWrap::Wrap,
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+        }
+    }
+}
+
+stylesheet! {
+    pub ModulePath<()> {
+        base(_t) {
+            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            font_size: 13.0,
+            color: Tokenized::token("color-text", Color("#1f2328".into())),
+        }
+    }
+}
+
+// ---- Sidebar additions -----------------------------------------------------
+
+stylesheet! {
+    pub SidebarGroupHead<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            justify_content: JustifyContent::SpaceBetween,
+            align_items: AlignItems::Center,
+            padding_left: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_right: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_top: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            padding_bottom: Tokenized::token("spacing-xs", Length::Px(4.0)),
+        }
+    }
+}
+
+stylesheet! {
+    pub SidebarGroupTitle<()> {
+        base(_t) {
+            font_size: 13.0,
+            font_weight: runtime_core::FontWeight::SemiBold,
+            color: Tokenized::token("color-text", Color("#1f2328".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub SidebarCount<()> {
+        base(_t) {
+            font_size: 12.0,
+            color: Tokenized::token("color-text-muted", Color("#5b6275".into())),
+        }
+    }
+}
+
+stylesheet! {
+    pub SearchKbd<()> {
+        base(_t) {
+            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            font_size: 12.0,
+            color: Tokenized::token("color-text-muted", Color("#5b6275".into())),
+            border_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
+            padding_left: 6.0,
+            padding_right: 6.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub NavRow<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            width: Length::pct(100.0),
         }
     }
 }

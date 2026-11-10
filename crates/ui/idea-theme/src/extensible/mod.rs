@@ -135,10 +135,8 @@ impl Default for ToneRef {
 }
 
 impl ToneRef {
-    /// All built-in tones as `(key, ref)` pairs. Used by docs-tooling
-    /// to render an interactive picker over the seven canonical
-    /// intents. Apps that ship custom tones can extend their docs
-    /// surface with their own enumeration helper.
+    /// All built-in tones as `(key, ref)` pairs — the choices a tone
+    /// prop's `idealyst docs` preview control offers.
     pub fn builtins() -> Vec<(&'static str, ToneRef)> {
         vec![
             ("primary", ToneRef(Rc::new(tone::Primary))),
@@ -203,36 +201,41 @@ pub trait Variant: 'static {
 /// would silently swallow a real change. Pointer identity can only
 /// produce false NEGATIVES (a redundant notify when a fresh
 /// `builtins()` Rc carries the same modifier), which is exactly
-/// `set_always` behavior — safe. This impl exists so `Signal<ToneRef>`
-/// satisfies the kernel's `T: PartialEq` signal bound (doc-controls
-/// state signals); it is not a semantic "same modifier" test.
+/// `set_always` behavior — safe. This impl exists so a `Signal<ToneRef>`
+/// satisfies the kernel's `T: PartialEq` signal bound; it is not a
+/// semantic "same modifier" test.
 impl PartialEq for ToneRef {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
 }
 
-/// A picker-able handle for docs tooling: the built-in values and the
-/// current one's key. Implemented for [`ToneRef`]; a component's own
-/// axis types (`ButtonVariant`, …) are pickers through `VariantEnum`.
-///
-/// `PartialEq` is a supertrait because doc-controls holds the picked
-/// value in a `Signal<T>`, and the world kernel's signal surface
-/// requires `T: PartialEq` (guarded-set contract).
-pub trait RefBuiltins: Clone + PartialEq + 'static {
-    /// Built-in (key, instance) pairs the picker enumerates.
-    fn builtins_list() -> Vec<(&'static str, Self)>;
-    /// The stable key of the current selection — used to drive the
-    /// picker's active highlight.
-    fn current_key(&self) -> &'static str;
-}
-
-impl RefBuiltins for ToneRef {
-    fn builtins_list() -> Vec<(&'static str, Self)> {
-        ToneRef::builtins()
+/// `idealyst docs` previews edit a tone prop as a choice over the
+/// built-in tones, keyed like [`ToneRef::key`]. Compiled only in a docs
+/// build (`#[prop_control]`).
+#[runtime_core::prop_control]
+impl runtime_core::previews::PropControl for ToneRef {
+    fn control() -> runtime_core::previews::Control {
+        runtime_core::previews::Control::Choice(
+            ToneRef::builtins().into_iter().map(|(key, _)| key.to_string()).collect(),
+        )
     }
-    fn current_key(&self) -> &'static str {
-        self.key()
+    fn to_value(&self) -> runtime_core::previews::ControlValue {
+        runtime_core::previews::ControlValue::Choice(self.key().to_string())
+    }
+    fn from_value(value: &runtime_core::previews::ControlValue) -> Option<Self> {
+        let runtime_core::previews::ControlValue::Choice(key) = value else { return None };
+        ToneRef::builtins().into_iter().find(|(k, _)| k == key).map(|(_, tone)| tone)
+    }
+    /// `tone::Danger` — the built-in marker, PascalCase of the key. An
+    /// app's own tone has no marker the preview knows.
+    fn code(&self) -> Option<String> {
+        let key = self.key();
+        ToneRef::builtins().iter().any(|(k, _)| *k == key).then(|| {
+            let mut chars = key.chars();
+            let first = chars.next().map(|c| c.to_ascii_uppercase()).unwrap_or_default();
+            format!("tone::{first}{}", chars.as_str())
+        })
     }
 }
 

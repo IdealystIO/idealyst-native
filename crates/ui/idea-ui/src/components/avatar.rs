@@ -126,7 +126,6 @@ marker_into_axis!(AvatarVariant {
 // renders (image vs initials) — a structural branch.
 #[runtime_core::props(styles = AvatarStyles)]
 #[derive(IdealystSchema)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct AvatarProps {
     /// Optional image source — a URL **or** a bundled
     /// [`Asset`](runtime_core::assets::Asset), via
@@ -137,6 +136,7 @@ pub struct AvatarProps {
     pub src: Option<ImageSource>,
     /// Fallback text rendered when `src` is `None`.
     /// `Reactive<String>` — static or live (signal/`rx!`).
+    #[prop(example = "AB")]
     pub initials: Reactive<String>,
     /// Disc color. A palette hue (`tone::Blue`, `tone::Violet`, … or
     /// `tone::palette_from_seed(id)` for a stable per-user hue) or a

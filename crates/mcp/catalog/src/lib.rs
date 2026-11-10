@@ -147,6 +147,11 @@ pub struct ComponentEntry {
     /// Function parameters in declaration order. Empty for zero-arg
     /// components. See [`ParamSpec`].
     pub params: &'static [ParamSpec],
+    /// The exported symbol of the component's docs preview — a
+    /// `fn() -> runtime_core::previews::Preview` — when the build had the
+    /// `previews` feature on; empty otherwise. `idealyst docs` links each
+    /// preview by this name.
+    pub preview: &'static str,
 }
 
 /// A `#[component]` the author tagged `external` — i.e. it should be
@@ -647,6 +652,10 @@ pub struct RecipeEntry {
     /// composes walk). Lets `describe_component` surface recipes that
     /// merely *use* a component, not just the primary one.
     pub uses: &'static [&'static str],
+    /// The exported symbol of a `fn() -> Element` rendering this recipe,
+    /// for a zero-argument recipe built with the `previews` feature on;
+    /// empty otherwise. `idealyst docs` renders the recipe live through it.
+    pub preview: &'static str,
 }
 
 /// A documentation **scope** — a flat label that groups documentable

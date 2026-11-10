@@ -46,7 +46,6 @@ component_styles! {
 // Effect subscribes when it's live; a bare value stays the static fast path.
 #[runtime_core::props(styles = DividerStyles)]
 #[derive(Default, IdealystSchema)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct DividerProps {
     /// Orientation of the separator line. Horizontal spans the parent's
     /// width (1px tall); Vertical spans its height (1px wide).

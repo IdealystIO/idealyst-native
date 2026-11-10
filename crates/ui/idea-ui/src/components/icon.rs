@@ -47,12 +47,12 @@ pub const ICON_DEFAULT_PX: f32 = 20.0;
 // setter (`data` is fixed at construction, `.size(f32)` applies a static
 // sheet) — see the TODO in the body.
 #[runtime_core::props(styles = IconStyles)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct IconProps {
     /// The vector icon to render. Pass an `IconData` constant from an
     /// icon pack (e.g. `icons_lucide::SEARCH`). Only the constants you
     /// reference end up in the binary.
+    #[prop(example = <runtime_core::IconData as runtime_core::previews::PropControl>::example().unwrap_or(EMPTY_ICON))]
     pub data: IconData,
     /// Rendered square size in points. Default [`ICON_DEFAULT_PX`].
     pub size: f32,

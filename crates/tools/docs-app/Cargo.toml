@@ -8,11 +8,13 @@ description = "Catalog-driven documentation app — renders an Idealyst project'
 # (tooling, demo, smoke test, or benchmark). Consumers never name it.
 publish = false
 
-# `cdylib` for the wasm target; `rlib` so CLI-generated native wrappers
-# under `target/idealyst/<platform>/` can depend on this crate as a
-# library (mirrors websites/idea-ui-docs).
+# `rlib` only: the app's entry point is `src/main.rs`, and `idealyst docs`
+# links this crate as a library into a generated project. Not a `cdylib`:
+# under `idealyst docs` the `extern` block `build.rs` generates names the
+# documented project's preview symbols, which only that generated project
+# links, so a standalone link of this crate cannot resolve them.
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [features]
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
@@ -36,7 +38,11 @@ idealyst = { workspace = true }
 # there too), pulling `mcp-catalog` in transitively. That is what makes
 # every `#[component]` expansion across the dep graph — idea-ui's, the
 # shell's, the SDKs' — register a catalog entry the app can read back.
-runtime-core = { workspace = true, features = ["catalog"] }
+#
+# `previews` makes every `#[component]` / zero-argument `recipe!` across
+# the graph export its live preview under a symbol the catalog records;
+# `build.rs` declares those symbols in an `extern` block (src/previews.rs).
+runtime-core = { workspace = true, features = ["catalog", "previews"] }
 # The `ui!` / `#[component]` emission spells absolute
 # `::runtime_vocabulary::glue::…` paths, and `app()` names the
 # vocabulary's nav prims directly.
@@ -51,10 +57,8 @@ mcp-catalog = { workspace = true }
 # docs chrome is built from. Depending on it (and referencing its
 # components in `app()`) links its rlib, which brings its
 # `inventory::submit!` catalog ctors into the build — so idea-ui's
-# components show up in the runtime catalog. `docs` parity with
-# idea-ui-docs (DocControls impls); not strictly required here but
-# keeps the feature graph identical.
-idea-ui = { workspace = true, features = ["docs"] }
+# components show up in the runtime catalog.
+idea-ui = { workspace = true }
 # Outlet-model navigation: the swap navigator swaps the active screen into
 # the layout's `{nav.outlet}`; idea-ui-nav's `AppShell` packages the
 # pinned-sidebar ⇄ off-canvas-drawer chrome around it.
@@ -67,6 +71,10 @@ codeblock = { workspace = true }
 # styled-text node per backend. Recipe code samples stay on `codeblock`.
 # `markdown::register` at boot is its scene-registry seam.
 markdown = { workspace = true }
+# The playground's and header's Copy buttons.
+clipboard = { workspace = true }
+# Reads the build-time `sources.json` ("View source").
+serde_json = { workspace = true }
 # Real HTML <table> on web; shared-track CSS-grid on native. Powers the
 # auto-generated props/fields tables. `table::register_handlers` at boot
 # is its scene-registry seam.
@@ -96,9 +104,11 @@ dev-server = { workspace = true, optional = true }
 # the emission gate on within the build-dep feature graph so every
 # `#[component]` / `#[derive(IdealystSchema)]` in these crates emits.
 [build-dependencies]
-runtime-core = { workspace = true, features = ["catalog"] }
+# Same features as the runtime dep: the catalog this extracts must record
+# the preview symbols that the wasm build of the same crates exports.
+runtime-core = { workspace = true, features = ["catalog", "previews"] }
 mcp-catalog = { workspace = true }
-idea-ui = { workspace = true, features = ["docs"] }
+idea-ui = { workspace = true }
 swap-navigator = { workspace = true }
 idea-ui-nav = { workspace = true }
 table = { workspace = true }
@@ -109,8 +119,14 @@ codeblock = { workspace = true }
 # wasm runtime dep above, which only needs `registry`.)
 icons-lucide = { workspace = true, features = ["catalog"] }
 serde_json = { workspace = true }
+# `src/source_extract.rs`: parse each component's file to cut out its fn
+# for "View source". `span-locations` gives the line numbers it slices by.
+syn = { version = "2", features = ["full", "parsing"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
 
 [dev-dependencies]
+syn = { version = "2", features = ["full", "parsing"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
 # The unit tests build the catalog and exercise the view-model mapping.
 serde_json = { workspace = true }
 

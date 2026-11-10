@@ -3819,6 +3819,7 @@ dependencies = [
 name = "docs-app"
 version = "1.5.2"
 dependencies = [
+ "clipboard",
  "codeblock",
  "dev-server",
  "icons-lucide",
@@ -3827,11 +3828,13 @@ dependencies = [
  "idealyst",
  "markdown",
  "mcp-catalog",
+ "proc-macro2",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
  "serde_json",
  "swap-navigator",
+ "syn 2.0.117",
  "table",
 ]
 
@@ -6441,7 +6444,6 @@ dependencies = [
  "dnd",
  "host-mock",
  "idea-theme",
- "idea-ui-docs-derive",
  "mcp-catalog",
  "premint-dump",
  "runtime-core",
@@ -6451,6 +6453,7 @@ dependencies = [
  "runtime-tls",
  "runtime-vocabulary",
  "table",
+ "taffy",
 ]
 
 [[package]]
@@ -6493,15 +6496,6 @@ dependencies = [
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
-]
-
-[[package]]
-name = "idea-ui-docs-derive"
-version = "1.5.3"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
