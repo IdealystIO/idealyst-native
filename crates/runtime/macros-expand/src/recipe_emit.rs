@@ -6,7 +6,7 @@
 //!    type-checked against the component's *live* props. If a prop
 //!    changes shape and the recipe isn't updated, this is a compile
 //!    error. That's the whole point: self-verifying examples.
-//! 2. Captures the fn's formatted source (via `prettyplease`), its
+//! 2. Captures the fn's source as written (see `source_text`), its
 //!    `///` docs, and the set of components its `ui!`/`jsx!` body
 //!    references (the composes walk), and registers a
 //!    `mcp_catalog::RecipeEntry` so the catalog / MCP / docs can surface
@@ -41,6 +41,31 @@ impl Parse for RecipeInput {
     }
 }
 
+fn recipe_source(func: &syn::ItemFn) -> String {
+    use quote::ToTokens;
+    let mut body = TokenStream2::new();
+    func.vis.to_tokens(&mut body);
+    func.sig.to_tokens(&mut body);
+    func.block.to_tokens(&mut body);
+    let Some(code) = crate::source_text::verbatim(&body) else {
+        let file = syn::File { shebang: None, attrs: Vec::new(), items: vec![syn::Item::Fn(func.clone())] };
+        return prettyplease::unparse(&file);
+    };
+    let mut out = String::new();
+    for attr in &func.attrs {
+        if let syn::Meta::NameValue(nv) = &attr.meta {
+            if let (true, syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. })) =
+                (attr.path().is_ident("doc"), &nv.value)
+            {
+                out.push_str(&format!("///{}\n", s.value()));
+            }
+        }
+    }
+    out.push_str(&code);
+    out.push('\n');
+    out
+}
+
 pub(crate) fn emit(input: TokenStream2) -> TokenStream2 {
     let RecipeInput { target, func } = match syn::parse2::<RecipeInput>(input) {
         Ok(p) => p,
@@ -56,16 +81,13 @@ pub(crate) fn emit(input: TokenStream2) -> TokenStream2 {
     // Prose description (LLM context + docs) — the `///` on the fn.
     let docs = crate::mcp_emit::collect_doc_comments(&func.attrs);
 
-    // Formatted, exact source of the recipe fn for display/LLM. We
-    // unparse the fn as a one-item file so `prettyplease` produces clean,
-    // copy-pasteable Rust. Computed from the fn as written (the
-    // `#[allow(dead_code)]` we add below for compilation is NOT shown).
-    let file = syn::File {
-        shebang: None,
-        attrs: Vec::new(),
-        items: vec![syn::Item::Fn(func.clone())],
-    };
-    let source = prettyplease::unparse(&file);
+    // The recipe fn's source for display: its `///` docs, then the fn as
+    // the author wrote it (`source_text::verbatim` — `prettyplease` can't
+    // lay out a `ui!` body, which is most of a recipe). Generated tokens
+    // have no source, so a recipe built by another macro is unparsed by
+    // `prettyplease` instead. Either way it is the fn as written, without
+    // the `#[allow(dead_code)]` added below for compilation.
+    let source = recipe_source(&func);
 
     // Components the recipe's `ui!`/`jsx!` body references — reuse the
     // `#[component]` composes walker. Dedup + sort for a stable list.

@@ -8,6 +8,9 @@
 use runtime_core::{component, component_styles, ui, AlignItems, ChildList, Element, FlexDirection, IdealystSchema, JustifyContent, Length};
 
 use crate::theme::IdeaThemeRef;
+// Named by `#[prop(example = …)]` values, which compile only in docs builds.
+#[allow(unused_imports)]
+use crate::{Card, CardPadding, Typography};
 
 component_styles! {
     /// The styled sections of [`Stack`].
@@ -101,6 +104,11 @@ pub struct StackProps {
     /// of pushing the page wider than the screen.
     pub wrap: bool,
     /// The stacked children.
+    #[prop(example = ui! {
+        Card(padding = CardPadding::Sm) { Typography(content = "First") }
+        Card(padding = CardPadding::Sm) { Typography(content = "Second") }
+        Card(padding = CardPadding::Sm) { Typography(content = "Third") }
+    })]
     pub children: Vec<Element>,
 }
 

@@ -415,6 +415,13 @@ pub struct AutocompleteProps {
     /// change after mount show up — in the open menu too, and in the input's
     /// label once the committed id's option arrives. Pass the signal itself,
     /// not `opts.get()` (read once, like any prop).
+    #[prop(example = vec![
+        SelectOption::new("apple", "Apple"),
+        SelectOption::new("apricot", "Apricot"),
+        SelectOption::new("banana", "Banana"),
+        SelectOption::new("cherry", "Cherry"),
+        SelectOption::new("grape", "Grape"),
+    ])]
     #[prop(reactive)]
     #[schema(constraint = "reactive: static Vec<SelectOption> or Signal/rx!")]
     pub options: Vec<SelectOption>,

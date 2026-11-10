@@ -170,6 +170,48 @@ pub struct IconSetMeta {
     pub count: usize,
 }
 
+/// The library holding the framework's own entries: primitives, macros,
+/// framework utilities and the bundled guides.
+pub const FRAMEWORK_LIBRARY: &str = "idealyst";
+
+/// The crate `idealyst docs` was run against (its underscored name), set by
+/// `build.rs` from `IDEALYST_DOCS_PROJECT`; empty for a build of the
+/// framework's own catalog.
+pub const PROJECT_LIBRARY: &str = env!("DOCS_PROJECT_LIBRARY");
+
+/// The library of an item defined under `path`: its crate, or the
+/// framework's for the `runtime_*` crates (and an item with no path).
+fn library_of(path: &str) -> String {
+    let root = path.split("::").next().unwrap_or("").trim();
+    if root.is_empty() || root.starts_with("runtime_") || root == "mcp_catalog" {
+        FRAMEWORK_LIBRARY.to_string()
+    } else {
+        root.to_string()
+    }
+}
+
+/// Where a library sits relative to the docs' project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LibraryRole {
+    /// The crate `idealyst docs` was run against.
+    Project,
+    /// A crate it depends on (a component library like idea-ui).
+    Dependency,
+    /// The framework itself.
+    Framework,
+}
+
+/// One library in the sidebar's switcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Library {
+    /// The crate name ([`Entry::library`]).
+    pub id: String,
+    pub title: String,
+    pub role: LibraryRole,
+    /// What it holds, by kind: "68 components · 98 types".
+    pub summary: String,
+}
+
 /// One catalog entry, normalized across kinds. Not every field applies
 /// to every kind (a guide has only `docs` as markdown `body`; a utility
 /// has `return_type` but no `composes`), but a single struct keeps the
@@ -183,6 +225,10 @@ pub struct Entry {
     pub slug: String,
     /// Module path or FQN, shown as a subtitle. Empty for guides.
     pub module_path: String,
+    /// The library the entry belongs to — its crate, or
+    /// [`FRAMEWORK_LIBRARY`] for the framework's own primitives, macros,
+    /// utilities and guides. The sidebar shows one library at a time.
+    pub library: String,
     /// Docs / markdown body.
     pub docs: String,
     /// Props (components/primitives), params (utilities), fields
@@ -461,6 +507,7 @@ impl CatalogModel {
                 name: c.name.to_string(),
                 slug,
                 module_path: c.module_path.to_string(),
+                library: library_of(c.module_path),
                 docs: c.docs.to_string(),
                 fields,
                 fields_documented,
@@ -498,6 +545,7 @@ impl CatalogModel {
                 name: p.name.to_string(),
                 slug: slugify(p.name, ""),
                 module_path: format!("primitive · {}", p.category.as_str()),
+                library: FRAMEWORK_LIBRARY.to_string(),
                 docs: p.docs.to_string(),
                 fields,
                 fields_documented,
@@ -534,6 +582,7 @@ impl CatalogModel {
                 name: u.name.to_string(),
                 slug: slugify(u.name, u.module_path),
                 module_path: format!("{}::{}", u.module_path, u.name),
+                library: library_of(u.module_path),
                 docs: u.docs.to_string(),
                 fields,
                 fields_documented: false,
@@ -580,6 +629,7 @@ impl CatalogModel {
                 name: t.short_name.to_string(),
                 slug: slugify(t.short_name, t.module_path),
                 module_path: format!("{}::{}", t.module_path, t.short_name),
+                library: library_of(t.module_path),
                 docs: t.docs.to_string(),
                 fields,
                 fields_documented,
@@ -604,6 +654,7 @@ impl CatalogModel {
                 name: g.title.to_string(),
                 slug: slugify(g.slug, ""),
                 module_path: String::new(),
+                library: FRAMEWORK_LIBRARY.to_string(),
                 docs: g.body.to_string(),
                 fields: Vec::new(),
                 fields_documented: false,
@@ -631,6 +682,7 @@ impl CatalogModel {
                 name: s.title.to_string(),
                 slug: slugify(s.name, ""),
                 module_path: s.import_path.to_string(),
+                library: library_of(s.import_path),
                 docs: s.docs.to_string(),
                 fields: Vec::new(),
                 fields_documented: false,
@@ -671,6 +723,7 @@ impl CatalogModel {
                 name: s.title.to_string(),
                 slug,
                 module_path: String::new(),
+                library: library_of(s.module_path),
                 docs: s.docs.to_string(),
                 fields: Vec::new(),
                 fields_documented: false,
@@ -739,6 +792,70 @@ impl CatalogModel {
         ORDER
             .into_iter()
             .filter(|k| self.entries.iter().any(|e| e.kind == *k))
+            .collect()
+    }
+
+    /// The libraries the entries come from: the project first, then its
+    /// dependencies by name, then the framework.
+    pub fn libraries(&self) -> Vec<Library> {
+        let mut ids: Vec<&str> = self.entries.iter().map(|e| e.library.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut libraries: Vec<Library> = ids
+            .into_iter()
+            .map(|id| {
+                let role = if id == FRAMEWORK_LIBRARY {
+                    LibraryRole::Framework
+                } else if id == PROJECT_LIBRARY {
+                    LibraryRole::Project
+                } else {
+                    LibraryRole::Dependency
+                };
+                let summary = self
+                    .populated_kinds_in(id)
+                    .into_iter()
+                    .filter(|k| *k != Kind::Scope)
+                    .map(|k| {
+                        let n = self.of_kind_in(k, id).len();
+                        format!("{n} {}", if n == 1 { k.noun().to_string() } else { k.title().to_lowercase() })
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let title = if role == LibraryRole::Framework { "Idealyst framework".to_string() } else { id.to_string() };
+                Library { id: id.to_string(), title, role, summary }
+            })
+            .collect();
+        libraries.sort_by(|a, b| (a.role, &a.id).cmp(&(b.role, &b.id)));
+        libraries
+    }
+
+    /// The library the sidebar opens on: the project, else the first
+    /// dependency with components, else the first library there is.
+    pub fn default_library(&self) -> String {
+        let libraries = self.libraries();
+        libraries
+            .iter()
+            .find(|l| l.role == LibraryRole::Project)
+            .or_else(|| {
+                libraries.iter().find(|l| {
+                    l.role == LibraryRole::Dependency && !self.of_kind_in(Kind::Component, &l.id).is_empty()
+                })
+            })
+            .or(libraries.first())
+            .map(|l| l.id.clone())
+            .unwrap_or_else(|| FRAMEWORK_LIBRARY.to_string())
+    }
+
+    /// Entries of one kind in one library, in sorted order.
+    pub fn of_kind_in(&self, kind: Kind, library: &str) -> Vec<&Entry> {
+        self.entries.iter().filter(|e| e.kind == kind && e.library == library).collect()
+    }
+
+    /// The kinds with at least one entry in `library`, in display order.
+    pub fn populated_kinds_in(&self, library: &str) -> Vec<Kind> {
+        self.populated_kinds()
+            .into_iter()
+            .filter(|k| self.entries.iter().any(|e| e.kind == *k && e.library == library))
             .collect()
     }
 
@@ -1167,5 +1284,51 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// An item's library is its crate; the `runtime_*` crates and items
+    /// with no path (guides) are the framework's.
+    #[test]
+    fn library_of_is_the_crate_or_the_framework() {
+        assert_eq!(library_of("idea_ui::components::alert"), "idea_ui");
+        assert_eq!(library_of("my_app"), "my_app");
+        assert_eq!(library_of("runtime_core::time"), FRAMEWORK_LIBRARY);
+        assert_eq!(library_of("runtime_vocabulary::glue"), FRAMEWORK_LIBRARY);
+        assert_eq!(library_of(""), FRAMEWORK_LIBRARY);
+    }
+
+    /// On the framework's own catalog (no project crate): idea-ui is a
+    /// dependency holding its components, primitives and guides are the
+    /// framework's, the framework sorts last, and the sidebar opens on the
+    /// first dependency with components.
+    #[test]
+    fn libraries_split_the_catalog_by_crate() {
+        let model = CatalogModel::build();
+        let libraries = model.libraries();
+        let ids: Vec<&str> = libraries.iter().map(|l| l.id.as_str()).collect();
+        assert!(ids.contains(&"idea_ui"), "{ids:?}");
+        assert_eq!(ids.last(), Some(&FRAMEWORK_LIBRARY), "the framework sorts last: {ids:?}");
+        let idea_ui = libraries.iter().find(|l| l.id == "idea_ui").unwrap();
+        assert_eq!(idea_ui.role, LibraryRole::Dependency);
+        assert!(idea_ui.summary.contains(" components"), "{}", idea_ui.summary);
+
+        assert!(model.of_kind_in(Kind::Component, "idea_ui").iter().any(|e| e.name == "Button"));
+        assert!(model.of_kind_in(Kind::Component, FRAMEWORK_LIBRARY).iter().all(|e| e.name != "Button"));
+        assert!(!model.of_kind_in(Kind::Primitive, FRAMEWORK_LIBRARY).is_empty());
+        assert!(model.of_kind_in(Kind::Primitive, "idea_ui").is_empty(), "primitives are the framework's");
+        assert!(model.populated_kinds_in("idea_ui").contains(&Kind::Component));
+        assert!(!model.populated_kinds_in("idea_ui").contains(&Kind::Guide));
+        let per_library: usize = libraries
+            .iter()
+            .flat_map(|l| model.populated_kinds_in(&l.id).into_iter().map(move |k| (k, l.id.clone())))
+            .map(|(k, id)| model.of_kind_in(k, &id).len())
+            .sum();
+        assert_eq!(per_library, model.total(), "every entry is in exactly one library");
+
+        assert_eq!(PROJECT_LIBRARY, "", "the framework build names no project");
+        assert_eq!(
+            model.default_library(),
+            libraries.iter().find(|l| l.role == LibraryRole::Dependency && !model.of_kind_in(Kind::Component, &l.id).is_empty()).unwrap().id
+        );
     }
 }

@@ -491,6 +491,7 @@ pub fn MenuItem(props: MenuItemProps) -> Element {
 pub struct MenuLabelProps {
     /// Section-heading text. `Reactive<String>` — static or live.
     #[schema(constraint = "reactive: static String or Signal/rx!")]
+    #[prop(example = "Actions")]
     pub text: Reactive<String>,
 }
 impl Default for MenuLabelProps {

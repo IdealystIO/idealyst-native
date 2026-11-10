@@ -14,14 +14,33 @@ sections:
 
 - **Playground** — the live component on a canvas (full width, or framed at
   a phone's width), a panel with a control for each prop, "Reset props",
-  and a **Usage** snippet: the `ui!` call the current controls make, with
-  props still at their default left out, ready to copy.
+  then two code blocks, each with its own Copy button: the imports (the `use` lines the snippet
+  needs, by the shortest public path the component crate offers — `use
+  idea_ui::{Alert, tone};`) and the usage (the `ui!` call the current
+  controls make, props still at their default left out). Each row whose
+  default isn't simply empty says what it is ("Default: Soft"), so a
+  prop missing from Usage is never a mystery. The canvas is a near-white
+  neutral outside the theme's palette under a dot grid: borders read as
+  they do on a page, and any filled box hides the dots, so a component's
+  surface shows even where its color matches the canvas.
 - **Props** — the full props table, then composition, methods and
   animations.
-- **Recipes** — each recipe's source, rendered live when it takes no
-  arguments.
+- **Recipes** — each recipe's source as written, rendered live when it
+  takes no arguments.
 
 "View source" opens the component's own code, as written.
+
+The sidebar shows one library at a time: the crate the docs were built
+for, each crate it depends on (a component library like idea-ui), and the
+framework's own primitives, utilities and guides. It opens on the project;
+the card at its top switches libraries, with a search for crates by name.
+Opening an entry from another library (from search, or a link on a page)
+moves the sidebar to that library.
+
+A component library lists only the components it exports: a `#[component]`
+a caller can't name (a private helper, say a table's row toggle) has no
+page. A crate that exports no component at all (an app) lists all of its
+own.
 
 ```sh
 idealyst docs                 # the project in the current directory
@@ -40,7 +59,8 @@ Nothing has to be registered. A component gets a preview because it is a
 | integers, `f32`, `f64` | number field (8- and 16-bit integers are bounded by their type) |
 | `Option<T>` | a "Some" checkbox plus `T`'s control |
 | an axis enum (`ButtonVariant`, a `stylesheet!` variant, any `VariantEnum`) | a picker over its built-in values |
-| `TextAlign`, `TextTransform`, `FontWeight` | a picker over the variants |
+| a unit-only enum with `#[derive(PropControl)]` | a picker over its variants |
+| `TextAlign`, `TextTransform`, `FontWeight`, `ElementSide`, `ElementAlign` | a picker over the variants |
 | `ToneRef` | a picker over the built-in tones |
 | `ImageSource` | a URL field; switching an optional image on starts at a sample image |
 | `IconData` | a picker over the icons the docs site registers (a set of common Lucide glyphs) |
@@ -51,8 +71,9 @@ Nothing has to be registered. A component gets a preview because it is a
 | a type that implements `PropControl` | the control it describes |
 
 A required callback (`Rc<dyn Fn()>`) has no row: it is always attached.
-A prop whose type has none of these (a `Ref`, your own struct) has no control and keeps the value the props default to. That is
-never an error. A component whose props struct is hand-written (no
+A prop whose type has none of these (a `Ref`, your own struct, a
+`Vec` of rows) has no control and keeps the value the props default to,
+or its `#[prop(example = …)]` (below). That is never an error. A component whose props struct is hand-written (no
 `#[props]`, not inline props) previews with its defaults and no controls.
 
 ## Starting values: `#[prop(example = …)]`
@@ -86,7 +107,66 @@ can also offer a representative value of its own (see `example()` below);
 that one is used when a preview needs a value out of nothing, such as an
 optional prop switched on.
 
+### Data and children
+
+An example also works on a prop with no control, and that is where it
+matters most: a component built from data (`items`, `options`, `tabs`)
+previews as nothing without some. The preview shows the example, and the
+Usage snippet spells it exactly as written, comments and layout included:
+
+```rust
+#[props]
+pub struct BreadcrumbsProps {
+    #[prop(example = vec![
+        Crumb::linked("Home", Rc::new(|| {})),
+        Crumb::new("Settings"),
+    ])]
+    pub items: Vec<Crumb>,
+    // …
+}
+```
+
+On a children slot, an example replaces the editable text with real
+children, given as a `ui!` block (or a `Vec<Element>`); Usage shows it as
+the call's child block. Give containers a few children, so their layout
+props (`gap`, `axis`, `align`) visibly do something:
+
+```rust
+#[component]
+fn Toolbar(
+    #[prop(example = ui! {
+        Button(label = "Save")
+        Button(label = "Cancel")
+    })]
+    children: Vec<Element>,
+) -> Element { /* … */ }
+```
+
+Write examples against your crate's public names (`Crumb`, not
+`crate::breadcrumbs::Crumb`): the Imports block finds the names an example
+mentions among the crate's public items, plus `signal` and `Rc`. It never
+lists `ui!`: the snippet is written inside one.
+Names an example uses only in docs builds need importing in the component's
+module; mark that `use` `#[allow(unused_imports)]`, since other builds
+don't compile the example.
+
 ## Controls for your own types: `PropControl`
+
+For a unit-only enum, derive it:
+
+```rust
+#[derive(Clone, Copy, Default, PartialEq, runtime_core::PropControl)]
+pub enum Expand {
+    #[default]
+    Single,
+    Multi,
+}
+```
+
+The derive gives a picker over the variants, spelled `Expand::Multi` in
+Usage and imported from the enum's module. Like `#[prop_control]`, it
+expands to nothing outside `idealyst docs` builds. An enum whose variants
+carry data needs a hand-written impl.
 
 Implement `runtime_core::previews::PropControl` for a type to give it a
 control. Write the impl inside `#[prop_control]`, which removes it from
@@ -145,7 +225,11 @@ These methods are optional:
   (`ButtonVariant::Ghost`), a string inside an `Option` as
   `Some(String::from("…"))`. Override `value_code(&ControlValue)` instead
   when a built value can't say what it was made from (an element slot
-  spells the text it was edited to). Your own `PropControl` impl wins over the
+  spells the text it was edited to).
+- `fn imports(value: &ControlValue) -> Vec<String>` (default empty): the
+  paths that spelling needs in scope, at their defining paths
+  (`"std::rc::Rc"`, `concat!(module_path!(), "::MyType")`). The docs page
+  rewrites each to the component crate's root re-export when it has one. Your own `PropControl` impl wins over the
 built-in picker an axis enum would otherwise get.
 
 ## Icons
@@ -160,16 +244,23 @@ shows as no selection.
 ## What has no live preview
 
 - **Components that open an overlay.** `Modal`, `Menu`, `SubMenu`,
-  `Popover`, `Tooltip`, `HoverCard`, `ToastHost`, anything built on the
-  `overlay` / `anchored_overlay` primitives, and anything that composes
-  one of those — directly or through other components. A portal escapes
-  the preview box, and an open one covers the page with a backdrop nothing
-  on the page can dismiss. Their pages show props, composition and recipe
-  source.
+  `Popover`, `ToastHost`, anything built on the `overlay` /
+  `anchored_overlay` primitives, and anything that composes one of those —
+  directly or through other components. A portal escapes the preview box,
+  and an open one covers the page with a backdrop nothing on the page can
+  dismiss. Their pages show props, composition and recipe source.
+  `Tooltip` and `HoverCard` are the exception: they open only while the
+  pointer rests on the trigger they wrap, so they — and components built
+  on them, like `IconButton` — keep a live preview.
 - **Generic components** (`fn List<T>(…)`): there is no single props type
   to build.
 - **Recipes with parameters.** A zero-argument `recipe!` renders live next
   to its source; one that takes arguments shows source only.
+
+Handlers in the playground are no-ops, so clicking a controlled component
+there (a radio, a tab) doesn't move its value; edit it in the props panel.
+A recipe owns its signals, so its live render responds like the real
+thing — that is the place to show behavior.
 
 ## How it works
 

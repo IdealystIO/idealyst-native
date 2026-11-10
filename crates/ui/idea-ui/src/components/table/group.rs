@@ -82,6 +82,16 @@ const COLLAPSED_MARK: runtime_core::IconData = runtime_core::IconData {
 #[derive(IdealystSchema)]
 pub struct TableGroupProps {
     /// The group's rows — `TableRow`s.
+    #[prop(example = ui! {
+        TableRow {
+            TableCell(text = Some("Drill 4".to_string()))
+            TableCell(text = Some("Running".to_string()))
+        }
+        TableRow {
+            TableCell(text = Some("Drill 7".to_string()))
+            TableCell(text = Some("Idle".to_string()))
+        }
+    })]
     pub children: Vec<Element>,
     /// The group's identity: the `reorder_group` of its rows. `None`
     /// scopes the rows to the group all the same.

@@ -77,3 +77,18 @@ fn catalog_without_previews_records_no_symbol() {
     );
     assert_eq!(runtime_core::__mcp::previews().count(), 0, "no preview is registered without `previews`");
 }
+
+/// `#[derive(PropControl)]` expands to nothing here: the trait it would
+/// implement does not exist in this build.
+#[derive(Clone, Copy, Debug, Default, PartialEq, runtime_core::PropControl)]
+pub enum Expand {
+    #[default]
+    Single,
+    Multi,
+}
+
+#[test]
+fn derived_prop_control_vanishes() {
+    assert_eq!(Expand::default(), Expand::Single);
+    assert_ne!(Expand::Multi, Expand::Single);
+}

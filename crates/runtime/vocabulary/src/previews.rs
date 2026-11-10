@@ -158,6 +158,15 @@ pub trait PropControl: Sized {
     fn value_code(value: &ControlValue) -> Option<String> {
         Self::from_value(value)?.code()
     }
+    /// The paths a [`value_code`](Self::value_code) spelling of `value`
+    /// needs in scope (`"std::rc::Rc"`, `"idea_theme::extensible::tone"`),
+    /// each the item's defining path — the docs page rewrites a path to a
+    /// shorter re-export where the component's crate has one. Empty
+    /// (default) when the code is fully qualified or names nothing.
+    fn imports(value: &ControlValue) -> Vec<String> {
+        let _ = value;
+        Vec::new()
+    }
 }
 
 impl PropControl for String {
@@ -237,8 +246,11 @@ macro_rules! float_controls {
             fn control() -> Control {
                 Control::Number { min: None, max: None, step: 0.1, integer: false }
             }
+            /// Through the shortest decimal that reads back as this value,
+            /// not a widening cast: `0.6f32 as f64` is `0.6000000238418579`,
+            /// which is what the number field would show.
             fn to_value(&self) -> ControlValue {
-                ControlValue::Number(*self as f64)
+                ControlValue::Number(self.to_string().parse().unwrap_or(*self as f64))
             }
             fn from_value(value: &ControlValue) -> Option<Self> {
                 match value {
@@ -289,6 +301,12 @@ impl<T: PropControl> PropControl for Option<T> {
             _ => None,
         }
     }
+    fn imports(value: &ControlValue) -> Vec<String> {
+        match value {
+            ControlValue::Optional(Some(inner)) => T::imports(inner),
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// `Some(inner)`, with a string literal spelled `String::from("…")`.
@@ -321,6 +339,9 @@ impl<T: PropControl + Clone + 'static> PropControl for Reactive<T> {
     fn value_code(value: &ControlValue) -> Option<String> {
         T::value_code(value)
     }
+    fn imports(value: &ControlValue) -> Vec<String> {
+        T::imports(value)
+    }
 }
 
 /// A two-way signal prop gets a fresh signal holding the edited value, in
@@ -344,6 +365,11 @@ impl<T: PropControl + Clone + PartialEq + 'static> PropControl for Signal<T> {
     fn code(&self) -> Option<String> {
         Some(format!("signal({})", untrack(|| self.get()).code()?))
     }
+    fn imports(value: &ControlValue) -> Vec<String> {
+        let mut paths = T::imports(value);
+        paths.push("runtime_core::signal".to_string());
+        paths
+    }
 }
 
 impl<T: PropControl + Clone + PartialEq + 'static> PropControl for ReadSignal<T> {
@@ -361,6 +387,11 @@ impl<T: PropControl + Clone + PartialEq + 'static> PropControl for ReadSignal<T>
     }
     fn code(&self) -> Option<String> {
         Some(format!("signal({}).read_only()", untrack(|| self.get()).code()?))
+    }
+    fn imports(value: &ControlValue) -> Vec<String> {
+        let mut paths = T::imports(value);
+        paths.push("runtime_core::signal".to_string());
+        paths
     }
 }
 
@@ -388,6 +419,9 @@ macro_rules! handler_controls {
             }
             fn code(&self) -> Option<String> {
                 Some($code.to_string())
+            }
+            fn imports(_: &ControlValue) -> Vec<String> {
+                vec!["std::rc::Rc".to_string()]
             }
         }
     )*};
@@ -430,6 +464,9 @@ impl PropControl for Element {
             ControlValue::Text(s) => Some(format!("ui! {{ text {{ {s:?} }} }}")),
             _ => None,
         }
+    }
+    fn imports(_: &ControlValue) -> Vec<String> {
+        vec!["runtime_core::ui".to_string()]
     }
 }
 
@@ -517,36 +554,53 @@ impl PropControl for runtime_shared::IconData {
 
 /// The framework's own unit enums that appear as props: a choice over
 /// every variant, keyed by its name.
+/// A choice per variant for the framework's own unit enums: each entry
+/// is the enum's defining path, then where an author imports it from.
 macro_rules! unit_enum_controls {
-    ($($ty:ident { $($variant:ident),* $(,)? }),* $(,)?) => {$(
-        impl PropControl for runtime_shared::$ty {
+    ($($path:path => $import:literal { $($variant:ident),* $(,)? }),* $(,)?) => {$(
+        impl PropControl for $path {
             fn control() -> Control {
                 Control::Choice(vec![$(stringify!($variant).to_string()),*])
             }
             fn to_value(&self) -> ControlValue {
                 ControlValue::Choice(match self {
-                    $(runtime_shared::$ty::$variant => stringify!($variant),)*
+                    $(Self::$variant => stringify!($variant),)*
                 }.to_string())
             }
             fn from_value(value: &ControlValue) -> Option<Self> {
                 let ControlValue::Choice(key) = value else { return None };
                 match key.as_str() {
-                    $(stringify!($variant) => Some(runtime_shared::$ty::$variant),)*
+                    $(stringify!($variant) => Some(Self::$variant),)*
                     _ => None,
                 }
             }
+            /// The import's last segment is the name the code spells.
             fn code(&self) -> Option<String> {
+                let name = $import.rsplit("::").next().unwrap_or($import);
                 Some(match self {
-                    $(runtime_shared::$ty::$variant => concat!(stringify!($ty), "::", stringify!($variant)),)*
-                }.to_string())
+                    $(Self::$variant => format!("{name}::{}", stringify!($variant)),)*
+                })
+            }
+            fn imports(_: &ControlValue) -> Vec<String> {
+                vec![$import.to_string()]
             }
         }
     )*};
 }
 unit_enum_controls!(
-    TextAlign { Left, Right, Center, Justify },
-    TextTransform { None, Uppercase, Lowercase, Capitalize },
-    FontWeight { Thin, ExtraLight, Light, Normal, Medium, SemiBold, Bold, ExtraBold, Black },
+    runtime_shared::TextAlign => "runtime_core::TextAlign" { Left, Right, Center, Justify },
+    runtime_shared::TextTransform => "runtime_core::TextTransform" { None, Uppercase, Lowercase, Capitalize },
+    runtime_shared::FontWeight => "runtime_core::FontWeight" {
+        Thin, ExtraLight, Light, Normal, Medium, SemiBold, Bold, ExtraBold, Black,
+    },
+    // Where an anchored overlay (Tooltip, Popover, HoverCard) sits against
+    // its trigger.
+    runtime_shared::primitives::portal::ElementSide => "runtime_core::primitives::portal::ElementSide" {
+        Above, Below, Start, End,
+    },
+    runtime_shared::primitives::portal::ElementAlign => "runtime_core::primitives::portal::ElementAlign" {
+        Start, Center, End,
+    },
 );
 
 /// The [`Control::Choice`] a [`VariantEnum`] gets when it has no
@@ -581,6 +635,13 @@ fn variant_code<E: VariantEnum>(value: &E) -> Option<String> {
     Some(format!("{ty}::{konst}"))
 }
 
+/// An axis value's type, by its defining path — what [`variant_code`]'s
+/// `Type::Const` spelling needs in scope.
+fn variant_imports<E: VariantEnum>(_: &ControlValue) -> Vec<String> {
+    let full = std::any::type_name::<E>();
+    vec![full.split('<').next().unwrap_or(full).to_string()]
+}
+
 fn variant_from_value<E: VariantEnum>(value: &ControlValue) -> Option<E> {
     let ControlValue::Choice(key) = value else { return None };
     E::all_variants().iter().copied().find(|v| v.as_variant_str() == key)
@@ -605,6 +666,7 @@ pub struct PreviewField<P> {
     get: Box<dyn Fn(&P) -> ControlValue>,
     set: Box<dyn Fn(&mut P, &ControlValue)>,
     code: Box<dyn Fn(&ControlValue) -> Option<String>>,
+    imports: fn(&ControlValue) -> Vec<String>,
 }
 
 impl<P: 'static> PreviewField<P> {
@@ -630,7 +692,16 @@ impl<P: 'static> PreviewField<P> {
                 }
             }),
             code: Box::new(code),
+            imports: |_| Vec::new(),
         }
+    }
+
+    /// What [`Preview::imports`] reports for this field — the macros pass
+    /// the field type's [`PropControl::imports`], picked by the same
+    /// dispatch as its adapter.
+    pub fn with_imports(mut self, imports: fn(&ControlValue) -> Vec<String>) -> Self {
+        self.imports = imports;
+        self
     }
 
     /// A component's children, edited as the text of one `text` child.
@@ -650,7 +721,39 @@ impl<P: 'static> PreviewField<P> {
                 ControlValue::Text(s) => Some(format!("text {{ {s:?} }}")),
                 _ => None,
             }),
+            imports: |_| Vec::new(),
         }
+    }
+}
+
+/// A `#[prop(example = …)]` as written: the field it sets and its source.
+/// For a field with no control, this is how the Usage snippet spells the
+/// value the preview shows (see [`Preview::fixed`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreviewExample {
+    pub name: &'static str,
+    /// The example expression, formatted.
+    pub code: &'static str,
+    /// Whether the field is the children slot.
+    pub children: bool,
+}
+
+/// A children slot's example: one element (a `ui!` block, fragments
+/// included) or the list itself. What the emission converts a children
+/// `#[prop(example = …)]` through.
+pub trait IntoPreviewChildren {
+    fn into_preview_children(self) -> Vec<Element>;
+}
+
+impl IntoPreviewChildren for Element {
+    fn into_preview_children(self) -> Vec<Element> {
+        vec![self]
+    }
+}
+
+impl IntoPreviewChildren for Vec<Element> {
+    fn into_preview_children(self) -> Vec<Element> {
+        self
     }
 }
 
@@ -663,6 +766,10 @@ pub trait PreviewProps: BuildElement + 'static {
     /// every `#[prop(example = …)]` applied.
     fn preview_base() -> Self {
         Self::defaults()
+    }
+    /// Every `#[prop(example = …)]`, in declaration order.
+    fn preview_examples() -> &'static [PreviewExample] {
+        &[]
     }
 }
 
@@ -687,8 +794,12 @@ pub struct FieldSpec {
 #[derive(Clone)]
 pub struct Preview {
     pub fields: Vec<FieldSpec>,
+    /// The examples set on fields without a control: shown as given, so
+    /// the Usage snippet spells them as written.
+    pub fixed: Vec<PreviewExample>,
     render: Rc<dyn Fn(&[ControlValue]) -> Element>,
     code: Rc<dyn Fn(usize, &ControlValue) -> Option<String>>,
+    imports: Rc<dyn Fn(usize, &ControlValue) -> Vec<String>>,
 }
 
 impl Preview {
@@ -709,11 +820,18 @@ impl Preview {
                 default: (f.get)(&defaults),
                 children: f.children,
             })
-            .collect();
+            .collect::<Vec<FieldSpec>>();
         drop((base, defaults));
+        let fixed = P::preview_examples()
+            .iter()
+            .filter(|e| !specs.iter().any(|f| f.name == e.name))
+            .copied()
+            .collect();
         let render_fields = fields.clone();
+        let import_fields = fields.clone();
         Preview {
             fields: specs,
+            fixed,
             render: Rc::new(move |values| {
                 let mut props = P::preview_base();
                 for (field, value) in render_fields.iter().zip(values) {
@@ -722,13 +840,20 @@ impl Preview {
                 props.build()
             }),
             code: Rc::new(move |index, value| fields.get(index).and_then(|f| (f.code)(value))),
+            imports: Rc::new(move |index, value| import_fields.get(index).map_or_else(Vec::new, |f| (f.imports)(value))),
         }
     }
 
     /// The preview of a component without [`PreviewProps`] (a hand-written
     /// props struct): no controls, rendered from its defaults.
     pub fn uncontrolled<P: BuildElement + 'static>() -> Self {
-        Preview { fields: Vec::new(), render: Rc::new(|_| P::defaults().build()), code: Rc::new(|_, _| None) }
+        Preview {
+            fields: Vec::new(),
+            fixed: Vec::new(),
+            render: Rc::new(|_| P::defaults().build()),
+            code: Rc::new(|_, _| None),
+            imports: Rc::new(|_, _| Vec::new()),
+        }
     }
 
     /// The initial value of every control, in order.
@@ -747,6 +872,12 @@ impl Preview {
     /// or `None` when its type can't spell it.
     pub fn code(&self, index: usize, value: &ControlValue) -> Option<String> {
         (self.code)(index, value)
+    }
+
+    /// The paths [`code`](Self::code)'s spelling of `value` for field
+    /// `index` needs in scope (see [`PropControl::imports`]).
+    pub fn imports(&self, index: usize, value: &ControlValue) -> Vec<String> {
+        (self.imports)(index, value)
     }
 }
 
@@ -795,15 +926,26 @@ pub mod __probe {
 
     pub trait ViaPropControl<T> {
         fn __adapter(&self) -> Option<Adapter<T>>;
+        /// The field type's imports ([`PropControl::imports`]); resolved
+        /// by the same autoref levels as `__adapter`.
+        fn __imports(&self) -> fn(&ControlValue) -> Vec<String> {
+            |_| Vec::new()
+        }
     }
     impl<T: PropControl> ViaPropControl<T> for &&&Probe<T> {
         fn __adapter(&self) -> Option<Adapter<T>> {
             Some(Adapter { control: T::control, to_value: T::to_value, from_value: T::from_value, code: T::value_code })
         }
+        fn __imports(&self) -> fn(&ControlValue) -> Vec<String> {
+            T::imports
+        }
     }
 
     pub trait ViaReactiveVariant<T> {
         fn __adapter(&self) -> Option<Adapter<T>>;
+        fn __imports(&self) -> fn(&ControlValue) -> Vec<String> {
+            |_| Vec::new()
+        }
     }
     impl<E: VariantEnum> ViaReactiveVariant<Reactive<E>> for &&Probe<Reactive<E>> {
         fn __adapter(&self) -> Option<Adapter<Reactive<E>>> {
@@ -814,10 +956,16 @@ pub mod __probe {
                 code: |v| variant_code(&variant_from_value::<E>(v)?),
             })
         }
+        fn __imports(&self) -> fn(&ControlValue) -> Vec<String> {
+            variant_imports::<E>
+        }
     }
 
     pub trait ViaVariant<T> {
         fn __adapter(&self) -> Option<Adapter<T>>;
+        fn __imports(&self) -> fn(&ControlValue) -> Vec<String> {
+            |_| Vec::new()
+        }
     }
     impl<E: VariantEnum> ViaVariant<E> for &Probe<E> {
         fn __adapter(&self) -> Option<Adapter<E>> {
@@ -828,10 +976,16 @@ pub mod __probe {
                 code: |v| variant_code(&variant_from_value::<E>(v)?),
             })
         }
+        fn __imports(&self) -> fn(&ControlValue) -> Vec<String> {
+            variant_imports::<E>
+        }
     }
 
     pub trait ViaNone<T> {
         fn __adapter(&self) -> Option<Adapter<T>>;
+        fn __imports(&self) -> fn(&ControlValue) -> Vec<String> {
+            |_| Vec::new()
+        }
     }
     impl<T> ViaNone<T> for Probe<T> {
         fn __adapter(&self) -> Option<Adapter<T>> {

@@ -11,8 +11,8 @@
 use std::rc::Rc;
 
 use idea_ui::{
-    size, tone, typography_kind, variant, Breadcrumbs, Button, Card, ControlSize, Crumb, Divider, Field, Modal, SegmentOption,
-    SegmentedControl, Spacer, Stack, StackGap, Table, TableCell, TableRow, Tag, Typography,
+    size, tone, typography_kind, variant, AnchorTarget, Breadcrumbs, Button, Card, ControlSize, Crumb, Divider, Field, Icon,
+    Modal, Popover, SegmentOption, SegmentedControl, Spacer, Stack, StackGap, Table, TableCell, TableRow, Tag, Typography,
 };
 use markdown::{Markdown, MdTheme};
 // `fixed_size` / `flat_list` are only exposed at
@@ -20,19 +20,20 @@ use markdown::{Markdown, MdTheme};
 // root name.
 use runtime_core::primitives::flat_list::{fixed_size, flat_list};
 use runtime_core::{
-    component, effect, rx, signal, switch, ui, Color, Element, IntoElement, SafeAreaSides,
+    component, effect, rx, signal, switch, ui, Color, Element, IntoElement, Reactive, SafeAreaSides,
     StyleApplication, Tokenized,
 };
 
 use crate::catalog::{CatalogModel, Entry, Kind};
-use crate::previews::{bare_type, component_preview, CopyButton, Playground};
+use crate::previews::{bare_type, component_preview, CanvasDots, CopyButton, Playground};
 use crate::routes::{EntryParams, ENTRY_ROUTE, OVERVIEW_ROUTE};
 use crate::styles::{
     Callout as CalloutBox, Chip, ChipActive, ChipRow, ChipText, ChipTextActive,
-    CodePanel as CodePanelBox, CodeText, LinkText, MemberRow, PageColumn, PagePad, PreviewBox, PreviewSlot,
+    CodePanel as CodePanelBox, CodeText, LinkText, MemberRow, PageColumn, PagePad, PreviewBox, PreviewBoxMode, PreviewSlot,
     ResultHead, ResultNamespace, ResultsScroll, ScreenScroll, SearchBox, SearchBoxText,
     SearchResultsBody, SidebarBody, SidebarFrame, SidebarScroll, SidebarSearchBar, ModulePath, ModulePathRow, SearchKbd, SidebarCount, SidebarFooter, SidebarGroupHead,
-    SidebarGroupTitle, TitleGroup, TitleRow, ToolbarSpacer,
+    SidebarGroupTitle, TitleGroup, TitleRow, ToolbarSpacer, LibraryCardText, LibraryPopoverBody, LibraryRow, LibraryRowActive,
+    LibraryRowHead, LibraryRowList, SidebarNavGroup,
 };
 
 // =============================================================================
@@ -178,18 +179,43 @@ pub fn sidebar(active_path: runtime_core::Signal<String>, model: Rc<CatalogModel
     let open_search: Rc<dyn Fn()> = Rc::new(move || open.set(true));
     let close_search: Rc<dyn Fn()> = Rc::new(move || open.set(false));
     let model_for_results = model.clone();
+    let model_for_nav = model.clone();
     let total = model.total();
 
-    // The search box stays put above the list; the list owns its scroll:
-    // the AppShell panel is a plain fixed-height surface — without the
-    // scroll view the catalog's hundreds of entries would overflow the
-    // panel unscrollably. The scroll view carries the sidebar's background
-    // (see `SidebarScroll`) so SidebarBody's missing `min_height` doesn't
-    // leave a transparent gap (the iOS hit-test constraint documented on
-    // `SidebarBody` still applies).
+    // The library the list shows: the project's by default. Opening an
+    // entry of another library — from search, or a link on a page — moves
+    // the list to that library, so the sidebar always holds the page.
+    let library = signal(model.default_library());
+    let library_of_url: std::collections::HashMap<String, String> = model
+        .all()
+        .iter()
+        .map(|e| (EntryParams::new(e.kind, e.slug.clone()).url(), e.library.clone()))
+        .collect();
+    runtime_core::effect!({
+        let path = active_path.get();
+        // Navigating closes the search: a result card's link takes the
+        // press, so the card's own close never hears it.
+        if runtime_core::untrack(|| open.get()) {
+            open.set(false);
+        }
+        if let Some(lib) = library_of_url.get(&path) {
+            if runtime_core::untrack(|| library.get()) != *lib {
+                library.set(lib.clone());
+            }
+        }
+    });
+
+    // The switcher and search box stay put above the list; the list owns
+    // its scroll: the AppShell panel is a plain fixed-height surface —
+    // without the scroll view the catalog's hundreds of entries would
+    // overflow the panel unscrollably. The scroll view carries the
+    // sidebar's background (see `SidebarScroll`) so SidebarBody's missing
+    // `min_height` doesn't leave a transparent gap (the iOS hit-test
+    // constraint documented on `SidebarBody` still applies).
     ui! {
         view(style = SidebarFrame()) {
             view(style = SidebarSearchBar()) {
+                LibrarySwitcher(model = model.clone(), library = library)
                 SearchTrigger(on_press = Some(open_search.clone()), total = total)
             }
             .safe_area(SafeAreaSides::TOP)
@@ -197,24 +223,8 @@ pub fn sidebar(active_path: runtime_core::Signal<String>, model: Rc<CatalogModel
         view(style = SidebarBody()) {
             // Overview link.
             sidebar_overview_link(active_path)
-            for kind in model.populated_kinds() {
-                if kind == Kind::Scope {
-                    // Scopes ARE the primary headings (same look as a kind
-                    // section header) — pressable, each navigating to its
-                    // scope screen. No generic "Scopes" group header.
-                    for entry in model.of_kind(kind) {
-                        sidebar_scope_heading(entry, active_path)
-                    }
-                } else {
-                    view(style = SidebarGroupHead()) {
-                        text(style = SidebarGroupTitle()) { kind.title().to_string() }
-                        text(style = SidebarCount()) { model.of_kind(kind).len().to_string() }
-                    }
-                    for entry in model.of_kind(kind) {
-                        sidebar_entry_link(entry, active_path)
-                    }
-                }
-            }
+            // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the selected library's entries
+            {switch(move || library.get(), move |lib: &String| library_nav(&model_for_nav, lib, active_path))}
             Spacer()
             view(style = SidebarFooter()) {
                 ThemeSwitch()
@@ -244,6 +254,178 @@ pub fn sidebar(active_path: runtime_core::Signal<String>, model: Rc<CatalogModel
             }
         }
     }
+}
+
+/// One library's entries, grouped by kind.
+fn library_nav(model: &CatalogModel, library: &str, active_path: runtime_core::Signal<String>) -> Element {
+    let kinds = model.populated_kinds_in(library);
+    ui! {
+        view(style = SidebarNavGroup()) {
+            for kind in kinds {
+                if kind == Kind::Scope {
+                    // Scopes ARE the primary headings (same look as a kind
+                    // section header) — pressable, each navigating to its
+                    // scope screen. No generic "Scopes" group header.
+                    for entry in model.of_kind_in(kind, library) {
+                        sidebar_scope_heading(entry, active_path)
+                    }
+                } else {
+                    view(style = SidebarGroupHead()) {
+                        text(style = SidebarGroupTitle()) { kind.title().to_string() }
+                        text(style = SidebarCount()) { model.of_kind_in(kind, library).len().to_string() }
+                    }
+                    for entry in model.of_kind_in(kind, library) {
+                        sidebar_entry_link(entry, active_path)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The library switcher at the top of the sidebar: a card naming the
+/// library the list shows, opening a popover to search the libraries and
+/// pick another — the project's own crate, the crates it depends on, and
+/// the framework.
+#[component]
+pub fn LibrarySwitcher(#[prop(static)] model: Option<Rc<CatalogModel>>, #[prop(static)] library: Option<runtime_core::Signal<String>>) -> Element {
+    let (Some(model), Some(library)) = (model, library) else { return ui! { view() } };
+    let libraries = Rc::new(model.libraries());
+    let trigger: runtime_core::Ref<runtime_core::PressableHandle> = runtime_core::Ref::new();
+    let open = signal(false);
+    let query = signal(String::new());
+    let on_query: Rc<dyn Fn(String)> = Rc::new(move |s| query.set(s));
+    let close: Rc<dyn Fn()> = Rc::new(move || {
+        open.set(false);
+        query.set(String::new());
+    });
+
+    let current = {
+        let libraries = libraries.clone();
+        move || {
+            let id = library.get();
+            libraries.iter().find(|l| l.id == id).cloned()
+        }
+    };
+    let title: Reactive<String> = {
+        let current = current.clone();
+        Reactive::derive(move || current().map(|l| l.title).unwrap_or_default())
+    };
+    let summary: Reactive<String> = Reactive::derive(move || current().map(|l| l.summary).unwrap_or_default());
+    let glyph = runtime_core::icon(icons_lucide::CHEVRONS_UP_DOWN)
+        .color(idea_ui::idea_color(|c| c.text_muted.clone()))
+        .into_element();
+    let card = ui! {
+        view(style = SearchBox()) {
+            view(style = LibraryCardText()) {
+                Typography(content = title, weight = Some(runtime_core::FontWeight::SemiBold), lines = Some(1u32))
+                Typography(content = summary, kind = typography_kind::Caption, muted = true, lines = Some(1u32))
+            }
+            glyph
+        }
+    };
+    let card = runtime_core::pressable(vec![card], move || open.set(true)).bind(trigger).into_element();
+
+    ui! {
+        view {
+            card
+            if open.get() {
+                Popover(
+                    target = Some(AnchorTarget::from(trigger)),
+                    on_dismiss = Some(close.clone()),
+                    min_width = LIBRARY_POPOVER_WIDTH_PX,
+                ) {
+                    view(style = LibraryPopoverBody()) {
+                        Field(
+                            value = query,
+                            on_change = on_query.clone(),
+                            placeholder = Some("Find a library…".to_string()),
+                            on_focus_change = Some(crate::previews::editing_tracker()),
+                            autofocus = true,
+                        )
+                        view {
+                            // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the libraries matching the query
+                            {switch(move || query.get(), {
+                                let libraries = libraries.clone();
+                                let close = close.clone();
+                                move |q: &String| library_rows(&libraries, q, library, close.clone())
+                            })}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The popover width — the sidebar card's, so the list reads as dropping
+/// out of it.
+const LIBRARY_POPOVER_WIDTH_PX: f32 = 268.0;
+
+/// The libraries whose name contains `query` (case-insensitive), as rows
+/// that switch the sidebar to the one pressed.
+fn library_rows(
+    libraries: &[crate::catalog::Library],
+    query: &str,
+    library: runtime_core::Signal<String>,
+    close: Rc<dyn Fn()>,
+) -> Element {
+    let q = query.trim().to_lowercase();
+    let matches: Vec<crate::catalog::Library> = libraries
+        .iter()
+        .filter(|l| q.is_empty() || l.id.to_lowercase().contains(&q) || l.title.to_lowercase().contains(&q))
+        .cloned()
+        .collect();
+    let none = matches.is_empty();
+    ui! {
+        view(style = LibraryRowList()) {
+            if none {
+                Typography(content = "No library matches.".to_string(), muted = true)
+            }
+            for l in matches {
+                library_row(l, library, close.clone())
+            }
+        }
+    }
+}
+
+/// One library in the switcher: its name, a role tag (the project, the
+/// framework), what it holds, and a check on the one shown.
+fn library_row(l: crate::catalog::Library, library: runtime_core::Signal<String>, close: Rc<dyn Fn()>) -> Element {
+    use crate::catalog::LibraryRole;
+    // Built each time the popover opens, and the popover closes on a pick,
+    // so the shown library can't change under a row: read it once.
+    let selected = runtime_core::untrack(|| library.get()) == l.id;
+    let id = l.id.clone();
+    let row_style = LibraryRow().active(if selected { LibraryRowActive::On } else { LibraryRowActive::Off });
+    let role = match l.role {
+        LibraryRole::Project => Some("Project"),
+        LibraryRole::Framework => Some("Framework"),
+        LibraryRole::Dependency => None,
+    };
+    let has_role = role.is_some();
+    let role = role.unwrap_or_default().to_string();
+    let inner = ui! {
+        view(style = row_style) {
+            view(style = LibraryCardText()) {
+                view(style = LibraryRowHead()) {
+                    Typography(content = l.title, weight = Some(runtime_core::FontWeight::Medium))
+                    if has_role {
+                        Tag(label = role, tone = tone::Neutral, variant = variant::Soft)
+                    }
+                }
+                Typography(content = l.summary, kind = typography_kind::Caption, muted = true)
+            }
+            if selected {
+                Icon(data = icons_lucide::CHECK, size = 16.0, tone = tone::Primary)
+            }
+        }
+    };
+    runtime_core::pressable(vec![inner], move || {
+        library.set(id.clone());
+        (close)();
+    })
+    .into_element()
 }
 
 /// Reactive search results — rebuilds the result list as the query
@@ -349,8 +531,9 @@ fn filter_chip(
 }
 
 /// One search result, as a card linking to the entry: a blue title, the
-/// kind, and a short doc summary. Wrapped in a `pressable` that closes the
-/// modal on press (the inner `link` handles navigation).
+/// kind, and a short doc summary. The wrapping `pressable` closes the modal
+/// where a press reaches it; on web the inner `link` takes the press, and
+/// the sidebar's navigation effect closes the modal instead.
 fn result_card(h: crate::catalog::SearchHit, close: Rc<dyn Fn()>) -> Element {
     let params = EntryParams::new(h.kind, h.slug.clone());
     let name = h.name.clone();
@@ -468,6 +651,11 @@ pub struct CodePanelProps {
     pub src: String,
 }
 
+#[derive(Default)]
+pub struct CodeBlockProps {
+    pub src: String,
+}
+
 #[derive(Copy, Clone)]
 struct Palette {
     ink: &'static str,
@@ -570,9 +758,17 @@ fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
     out
 }
 
+/// Highlighted Rust source in the code surface's own frame.
 #[component]
 pub fn CodePanel(props: &CodePanelProps) -> Element {
-    let panel_style = CodePanelBox();
+    let src = props.src.clone();
+    ui! { view(style = CodePanelBox()) { CodeBlock(src = src) } }
+}
+
+/// Highlighted Rust source with no frame, for a surface that draws its own
+/// (the playground's code card holds two).
+#[component]
+pub fn CodeBlock(props: &CodeBlockProps) -> Element {
     let src = props.src.clone();
     // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the code block per palette
     let dynamic = switch(theme_is_dark, move |&is_dark| {
@@ -581,7 +777,7 @@ pub fn CodePanel(props: &CodePanelProps) -> Element {
         let code_style = move || StyleApplication::new(CodeText::sheet());
         codeblock::code_block(spans).with_style(code_style).into_element()
     });
-    ui! { view(style = panel_style) { dynamic } }
+    ui! { view { dynamic } }
 }
 
 // =============================================================================
@@ -811,6 +1007,7 @@ fn ComponentPage(#[prop(static)] entry: Option<Entry>) -> Element {
     let source = entry.source.clone();
     let preview_symbol = entry.preview.clone();
     let playground_name = entry.name.clone();
+    let playground_module = entry.module_path.clone();
     let props_entry = entry.clone();
 
     ui! {
@@ -840,7 +1037,7 @@ fn ComponentPage(#[prop(static)] entry: Option<Entry>) -> Element {
             }
             if has_playground {
                 Section(title = "Playground".to_string()) {
-                    Playground(symbol = preview_symbol, name = playground_name)
+                    Playground(symbol = preview_symbol, name = playground_name, module_path = playground_module)
                 }
             }
             PropsSection(entry = Some(props_entry))
@@ -1456,7 +1653,10 @@ fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
                     render_markdown(&docs)
                 }
                 if let Some(preview) = preview {
-                    view(style = PreviewBox()) {
+                    view(style = PreviewBox().mode(runtime_core::derived(|| {
+                        if crate::theme::dark_mode().get() { PreviewBoxMode::Dark } else { PreviewBoxMode::Light }
+                    }))) {
+                        CanvasDots()
                         view(style = PreviewSlot()) { preview }
                     }
                 }

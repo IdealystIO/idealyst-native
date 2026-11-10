@@ -291,7 +291,7 @@ const TOP_OFFSET_FRACTION: f32 = 0.15;
 /// and not a second component: a sheet that drifted apart from the modal
 /// would be a second place to fix the next Android hit-testing or safe-area
 /// bug.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote, runtime_core::PropControl)]
 pub enum ModalPresentation {
     /// A centered, width-capped card that fades and settles into place.
     /// The default, and what every existing call site gets.

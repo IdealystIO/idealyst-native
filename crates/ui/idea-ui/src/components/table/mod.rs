@@ -681,6 +681,23 @@ impl From<Element> for TableEmpty {
 pub struct TableProps {
     /// Table rows. Pass `TableRow`s (a header row plus body rows), and
     /// optionally a `TableFooter`.
+    #[prop(example = ui! {
+        TableRow {
+            TableCell(header = true, text = Some("Name".to_string()))
+            TableCell(header = true, text = Some("Role".to_string()))
+            TableCell(header = true, text = Some("Status".to_string()))
+        }
+        TableRow {
+            TableCell(text = Some("Ada Lovelace".to_string()))
+            TableCell(text = Some("Engineer".to_string()))
+            TableCell(text = Some("Active".to_string()))
+        }
+        TableRow {
+            TableCell(text = Some("Grace Hopper".to_string()))
+            TableCell(text = Some("Admiral".to_string()))
+            TableCell(text = Some("Away".to_string()))
+        }
+    })]
     pub children: Vec<Element>,
     /// Horizontal-scroll mode: columns lay out at natural width and
     /// overflow sideways inside a horizontal scroller instead of
@@ -1655,6 +1672,10 @@ fn pin_edge(app: StyleApplication, edges: Signal<table::ScrollEdges>) -> StyleAp
 #[derive(IdealystSchema)]
 pub struct TableRowProps {
     /// Cells in this row. Pass `TableCell`s.
+    #[prop(example = ui! {
+        TableCell(text = Some("Ada Lovelace".to_string()))
+        TableCell(text = Some("Engineer".to_string()))
+    })]
     pub children: Vec<Element>,
     /// Optional row-click handler. When `Some`, the whole row becomes
     /// interactive: every cell shows a pointer cursor, hovering any cell

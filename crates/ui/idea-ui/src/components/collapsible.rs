@@ -56,6 +56,9 @@ use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use std::time::Duration;
 
 use crate::theme::IdeaThemeRef;
+// Named by `#[prop(example = …)]` values, which compile only in docs builds.
+#[allow(unused_imports)]
+use crate::Typography;
 
 // =============================================================================
 // CollapsibleTransition + tunables
@@ -270,7 +273,7 @@ impl From<CollapsibleChevronSide> for CollapsibleChevron {
 /// Adding new transition flavors lands here as new enum variants
 /// — components select stylesheets + animation strategies per
 /// variant inside, no per-app CSS knowledge required.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote, runtime_core::PropControl)]
 pub enum CollapsibleTransition {
     /// No animation. State changes apply in one frame. Cheap and
     /// predictable; matches the `prefers-reduced-motion` user
@@ -288,7 +291,7 @@ pub enum CollapsibleTransition {
 }
 
 /// Which end of a [`Collapsible`]'s header the disclosure chevron sits at.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote, runtime_core::PropControl)]
 pub enum CollapsibleChevronSide {
     /// Chevron first, then the header content — the tree / disclosure
     /// list convention.
@@ -711,7 +714,7 @@ component_styles! {
 }
 
 /// Expansion policy for an [`Accordion`].
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, IdealystSchema, runtime_core::Remote)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, IdealystSchema, runtime_core::Remote, runtime_core::PropControl)]
 pub enum AccordionExpand {
     /// Only one item open at a time. Opening item `i` closes any
     /// previously-open one; clicking the already-open item closes
@@ -745,6 +748,20 @@ pub struct AccordionItem {
 #[derive(IdealystSchema)]
 pub struct AccordionProps {
     /// Items rendered in order.
+    #[prop(example = vec![
+        AccordionItem {
+            title: "Shipping".into(),
+            body: ui! { Typography(content = "Orders ship within 2 business days.") },
+        },
+        AccordionItem {
+            title: "Returns".into(),
+            body: ui! { Typography(content = "Free returns within 30 days of delivery.") },
+        },
+        AccordionItem {
+            title: "Support".into(),
+            body: ui! { Typography(content = "Chat with us any time, day or night.") },
+        },
+    ])]
     pub items: Vec<AccordionItem>,
     /// Per-item open state, parallel to `items` (`open.get()[i]` is
     /// `true` ⇔ item `i` is expanded). Default: empty vec (the

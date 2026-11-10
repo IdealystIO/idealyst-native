@@ -108,6 +108,7 @@ mod preview_emit;
 // emulation of it outside (the catalog scanner).
 #[cfg_attr(not(feature = "catalog"), allow(dead_code))]
 mod token_text;
+mod source_text;
 mod new_core;
 mod path_analysis;
 // The `ui!` front end — parser, split pass, numbering, recovery — lives
@@ -256,6 +257,67 @@ pub fn prop_control(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! { #item_impl }
     } else {
         TokenStream::new()
+    }
+}
+
+/// `#[derive(PropControl)]` on a unit-only enum: a choice control with
+/// one key per variant (its name), spelled `Enum::Variant` in a Usage
+/// snippet and imported from the enum's own module. Expands to nothing
+/// without `previews`, like [`prop_control`].
+pub fn derive_prop_control(input: TokenStream) -> TokenStream {
+    let input = parse_or_return!(input => syn::DeriveInput);
+    let syn::Data::Enum(data) = &input.data else {
+        return syn::Error::new_spanned(&input.ident, "`#[derive(PropControl)]` takes a unit-only enum")
+            .to_compile_error();
+    };
+    if !input.generics.params.is_empty() {
+        return syn::Error::new_spanned(&input.generics, "`#[derive(PropControl)]` takes an enum without generics")
+            .to_compile_error();
+    }
+    if let Some(v) = data.variants.iter().find(|v| !matches!(v.fields, syn::Fields::Unit)) {
+        return syn::Error::new_spanned(
+            &v.ident,
+            "`#[derive(PropControl)]` takes a unit-only enum; write a `#[prop_control]` impl for one with data",
+        )
+        .to_compile_error();
+    }
+    if !cfg!(feature = "previews") {
+        return TokenStream::new();
+    }
+    let ty = &input.ident;
+    let ty_str = ty.to_string();
+    let idents: Vec<&syn::Ident> = data.variants.iter().map(|v| &v.ident).collect();
+    let keys: Vec<String> = idents.iter().map(|i| i.to_string()).collect();
+    let codes: Vec<String> = keys.iter().map(|k| format!("{ty_str}::{k}")).collect();
+    quote! {
+        #[automatically_derived]
+        impl ::runtime_core::previews::PropControl for #ty {
+            fn control() -> ::runtime_core::previews::Control {
+                ::runtime_core::previews::Control::Choice(::std::vec![#(::std::string::String::from(#keys)),*])
+            }
+            fn to_value(&self) -> ::runtime_core::previews::ControlValue {
+                ::runtime_core::previews::ControlValue::Choice(::std::string::String::from(match self {
+                    #(Self::#idents => #keys,)*
+                }))
+            }
+            fn from_value(value: &::runtime_core::previews::ControlValue) -> ::core::option::Option<Self> {
+                let ::runtime_core::previews::ControlValue::Choice(key) = value else {
+                    return ::core::option::Option::None;
+                };
+                match key.as_str() {
+                    #(#keys => ::core::option::Option::Some(Self::#idents),)*
+                    _ => ::core::option::Option::None,
+                }
+            }
+            fn code(&self) -> ::core::option::Option<::std::string::String> {
+                ::core::option::Option::Some(::std::string::String::from(match self {
+                    #(Self::#idents => #codes,)*
+                }))
+            }
+            fn imports(_: &::runtime_core::previews::ControlValue) -> ::std::vec::Vec<::std::string::String> {
+                ::std::vec![::std::string::String::from(::core::concat!(::core::module_path!(), "::", #ty_str))]
+            }
+        }
     }
 }
 

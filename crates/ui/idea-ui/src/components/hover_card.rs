@@ -87,6 +87,9 @@ use runtime_core::{
 
 use crate::components::popover::dismiss_catcher;
 use crate::theme::IdeaThemeRef;
+// Named by `#[prop(example = …)]` values, which compile only in docs builds.
+#[allow(unused_imports)]
+use crate::{typography_kind, Stack, StackGap, Tag, Typography};
 
 component_styles! {
     /// The styled sections of [`HoverCard`]: the card surface.
@@ -158,7 +161,12 @@ pub struct HoverCardProps {
     /// Builds the card body, laid out in a column inside the card surface.
     /// Author it as `content = move || ui! { … }`; it is rebuilt on each
     /// open, so state inside it starts fresh every time.
-    #[prop(static)]
+    #[prop(static, example = || ui! {
+        Stack(gap = StackGap::Xs) {
+            Typography(content = "Ada Lovelace", kind = typography_kind::H3)
+            Typography(content = "Wrote the first published program, 1843.", muted = true)
+        }
+    })]
     pub content: HoverCardContent,
     /// Which side of the trigger the card sits on. Default `Below`.
     pub side: ElementSide,
@@ -190,6 +198,7 @@ pub struct HoverCardProps {
     #[prop(static)]
     pub card_test_id: Option<&'static str>,
     /// The trigger the card wraps and anchors to.
+    #[prop(example = ui! { Tag(label = "@ada") })]
     pub children: Vec<Element>,
 }
 

@@ -166,7 +166,7 @@ const SIM_JITTER_SEED: u32 = 0x9E37_79B9;
 /// How the bar behaves. Selects the whole fill subtree, so a live
 /// change is structural (`switch`) — the outgoing mode's scope-owned
 /// animations and timers are freed atomically on the flip.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote, runtime_core::PropControl)]
 pub enum ProgressMode {
     /// Position follows the `value` prop; every change animates to the
     /// new width via the fill sheet's width transition.
@@ -461,10 +461,12 @@ pub fn Progress(props: &ProgressProps) -> Element {
         runtime_core::switch(move || mode.get(), move |&m| build_for(m))
     };
 
-    // Track thickness follows `size`, caps follow `cap`.
+    // Track thickness follows `size`, caps follow `cap`. The track is the
+    // root: its `width: 100%` is what sizes the bar, so nothing may wrap it —
+    // a wrapper without a width shrinks to its content in a centering parent
+    // (`Center`, an `align = Center` stack), and the bar with it, to zero.
     let track_style = ProgressStyles::track().values(&values).set(props.size.clone()).overridden(styles.track.as_ref());
-    let track = runtime_core::view(vec![fill]).with_style(track_style).into_element();
-    ui! { view { track } }
+    ui! { view(style = track_style) { fill } }
 }
 
 #[cfg(test)]
@@ -493,6 +495,23 @@ mod tests {
             late_step_max < first,
             "steps shrink as the bar approaches the ceiling"
         );
+    }
+
+    /// Regression: Progress wrapped its track in a bare view with no width,
+    /// so in a centering parent (`Center`, an `align = Center` stack, the
+    /// docs playground) the wrapper shrank to its content and the bar to
+    /// zero width — the component rendered nothing. The root must be the
+    /// track, which fills its parent.
+    #[test]
+    fn regression_progress_root_fills_its_parent() {
+        use crate::{install_idea_theme, light_theme};
+        use runtime_core::ui;
+        idea_theme::testing::with_test_world(|| {
+            install_idea_theme(light_theme());
+            let root = crate::test_support::classify(ui! { Progress(value = 0.5f32) });
+            let rules = root.style().expect("the root is the styled track").resolve();
+            assert_eq!(rules.width, Some(Tokenized::Literal(Length::pct(100.0))));
+        });
     }
 
     /// xorshift32 mapped through the top-24-bit divide stays in [0, 1).

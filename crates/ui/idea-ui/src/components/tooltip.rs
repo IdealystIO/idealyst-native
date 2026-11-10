@@ -38,6 +38,9 @@ use runtime_core::{
 };
 
 use crate::theme::IdeaThemeRef;
+// Named by `#[prop(example = …)]` values, which compile only in docs builds.
+#[allow(unused_imports)]
+use crate::Button;
 
 component_styles! {
     /// The styled sections of [`Tooltip`].
@@ -95,6 +98,7 @@ pub const TOOLTIP_DISMISS_MS: u32 = 1800;
 pub struct TooltipProps {
     /// Bubble text. `Reactive<String>` — static or live.
     #[schema(constraint = "reactive: static String or Signal/rx!")]
+    #[prop(example = "Saves your changes")]
     pub text: Reactive<String>,
     /// Which side of the trigger the bubble sits on. Default `Above`.
     pub side: ElementSide,
@@ -107,6 +111,7 @@ pub struct TooltipProps {
     /// [`TOOLTIP_DISMISS_MS`].
     pub dismiss_ms: u32,
     /// The trigger the tooltip wraps and anchors to.
+    #[prop(example = ui! { Button(label = "Hover me") })]
     pub children: Vec<Element>,
 }
 

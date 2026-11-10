@@ -1137,9 +1137,11 @@ recipe!(
     /// trigger (`open_delay_ms`), stays open while the pointer moves into
     /// it, and closes after it leaves both (`close_delay_ms`). Long-press
     /// opens it on touch. `content` is a closure rebuilt on each open; the
-    /// `{ }` block is the trigger.
+    /// `{ }` block is the trigger. The trigger wrapper is as wide as its
+    /// content, so give the trigger its own size — a full-width child (a
+    /// `Progress`) would shrink to nothing inside it.
     pub fn hover_card_breakdown() -> ::runtime_core::Element {
-        use crate::{HoverCard, Progress, Stack, StackAxis, StackGap, StackJustify, Typography};
+        use crate::{tone, HoverCard, Stack, StackAxis, StackGap, StackJustify, Tag, Typography};
         use ::runtime_core::ui;
 
         ui! {
@@ -1157,7 +1159,7 @@ recipe!(
                     }
                 },
             ) {
-                Progress(value = 0.52f32)
+                Tag(label = "52% complete", tone = tone::Primary)
             }
         }
     }
@@ -1427,3 +1429,496 @@ recipe!(
     }
 );
 
+
+// ---------------------------------------------------------------------------
+// Side-by-side comparisons and states. The docs playground shows one prop
+// combination at a time; these show the set together, so a reader can pick
+// one by eye.
+// ---------------------------------------------------------------------------
+
+recipe!(
+    Button,
+    /// The four surface treatments side by side. `variant` picks how the
+    /// `tone` is painted: `Filled` for the primary action, `Soft` and
+    /// `Outlined` for secondary ones, `Ghost` for low-emphasis actions in
+    /// toolbars and table rows.
+    pub fn button_variants() -> ::runtime_core::Element {
+        use crate::{variant, Button, Stack, StackAxis, StackGap};
+        use ::runtime_core::ui;
+
+        ui! {
+            Stack(axis = StackAxis::Row, gap = StackGap::Sm, wrap = true) {
+                Button(label = "Filled", variant = variant::Filled)
+                Button(label = "Soft", variant = variant::Soft)
+                Button(label = "Outlined", variant = variant::Outlined)
+                Button(label = "Ghost", variant = variant::Ghost)
+            }
+        }
+    }
+);
+
+recipe!(
+    Button,
+    /// A destructive pair and a busy save. `tone` carries the intent —
+    /// `Danger` for delete, `Neutral` for cancel — and `loading = true`
+    /// swaps the label for a spinner and blocks presses while a request is
+    /// in flight. `disabled = true` dims the button and blocks presses.
+    pub fn button_tones_and_states() -> ::runtime_core::Element {
+        use crate::{tone, variant, Button, Stack, StackAxis, StackGap};
+        use ::runtime_core::ui;
+
+        ui! {
+            Stack(axis = StackAxis::Row, gap = StackGap::Sm, wrap = true) {
+                Button(label = "Cancel", tone = tone::Neutral, variant = variant::Soft)
+                Button(label = "Delete", tone = tone::Danger)
+                Button(label = "Saving", loading = true)
+                Button(label = "Unavailable", disabled = true)
+            }
+        }
+    }
+);
+
+recipe!(
+    Button,
+    /// The three sizes, and the corner shapes. `size` matches Field,
+    /// Select and SegmentedControl at the same step, so a button lines up
+    /// beside them in a toolbar; `shape = shape::Pill` rounds the ends fully.
+    pub fn button_sizes_and_shapes() -> ::runtime_core::Element {
+        use crate::{shape, size, Button, Stack, StackAlign, StackAxis, StackGap};
+        use ::runtime_core::ui;
+
+        ui! {
+            Stack(axis = StackAxis::Row, gap = StackGap::Sm, align = StackAlign::Center, wrap = true) {
+                Button(label = "Small", size = size::Sm)
+                Button(label = "Medium", size = size::Md)
+                Button(label = "Large", size = size::Lg)
+                Button(label = "Pill", shape = shape::Pill)
+            }
+        }
+    }
+);
+
+recipe!(
+    Badge,
+    /// One badge per tone. Pair the tone with the meaning (`Success` for
+    /// done, `Warning` for attention, `Danger` for failure) so status reads
+    /// the same everywhere; `Filled` raises the emphasis of the one that
+    /// matters most.
+    pub fn badge_tones() -> ::runtime_core::Element {
+        use crate::{tone, variant, Badge, Stack, StackAxis, StackGap};
+        use ::runtime_core::ui;
+
+        ui! {
+            Stack(axis = StackAxis::Row, gap = StackGap::Sm, wrap = true) {
+                Badge(label = "Draft", tone = tone::Neutral)
+                Badge(label = "Info", tone = tone::Info)
+                Badge(label = "Active", tone = tone::Success)
+                Badge(label = "Due soon", tone = tone::Warning)
+                Badge(label = "Failed", tone = tone::Danger)
+                Badge(label = "3 new", tone = tone::Primary, variant = variant::Filled)
+            }
+        }
+    }
+);
+
+recipe!(
+    Alert,
+    /// The four status tones, each with a title and a body line. `Soft` (the
+    /// default) suits inline messages; `variant::Filled` is the loud form
+    /// for the one banner a page must not miss.
+    pub fn alert_tones() -> ::runtime_core::Element {
+        use crate::{tone, variant, Alert, Stack, StackGap};
+        use ::runtime_core::ui;
+
+        ui! {
+            Stack(gap = StackGap::Sm) {
+                Alert(title = "Heads up", body = Some("Maintenance is scheduled for Sunday.".to_string()), tone = tone::Info)
+                Alert(title = "Saved", body = Some("Your changes are live.".to_string()), tone = tone::Success)
+                Alert(title = "Storage almost full", body = Some("You have used 92% of your plan.".to_string()), tone = tone::Warning)
+                Alert(title = "Payment failed", body = Some("Update your card to keep your plan.".to_string()), tone = tone::Danger, variant = variant::Filled)
+            }
+        }
+    }
+);
+
+recipe!(
+    Avatar,
+    /// Every size, from a 24px list chip to an 80px profile header, with
+    /// colors from `tone::palette_from_seed` — the same person always gets
+    /// the same color.
+    pub fn avatar_sizes() -> ::runtime_core::Element {
+        use crate::{tone, Avatar, AvatarSize, Stack, StackAlign, StackAxis, StackGap};
+        use ::runtime_core::ui;
+
+        ui! {
+            Stack(axis = StackAxis::Row, gap = StackGap::Sm, align = StackAlign::Center) {
+                Avatar(initials = "XS", size = AvatarSize::Xs, tone = tone::palette_from_seed("xs"))
+                Avatar(initials = "SM", size = AvatarSize::Sm, tone = tone::palette_from_seed("sm"))
+                Avatar(initials = "MD", size = AvatarSize::Md, tone = tone::palette_from_seed("md"))
+                Avatar(initials = "LG", size = AvatarSize::Lg, tone = tone::palette_from_seed("lg"))
+                Avatar(initials = "XL", size = AvatarSize::Xl, tone = tone::palette_from_seed("xl"))
+            }
+        }
+    }
+);
+
+recipe!(
+    Typography,
+    /// The type scale, largest to smallest. Use the heading kinds for
+    /// structure (one `H1` per screen), `Body` for running text and
+    /// `Caption` / `muted = true` for secondary detail.
+    pub fn typography_scale() -> ::runtime_core::Element {
+        use crate::{typography_kind, Stack, StackGap, Typography};
+        use ::runtime_core::ui;
+
+        ui! {
+            Stack(gap = StackGap::Xs) {
+                Typography(content = "Display", kind = typography_kind::Display)
+                Typography(content = "Heading 1", kind = typography_kind::H1)
+                Typography(content = "Heading 2", kind = typography_kind::H2)
+                Typography(content = "Heading 3", kind = typography_kind::H3)
+                Typography(content = "Body text for paragraphs and descriptions.", kind = typography_kind::Body)
+                Typography(content = "Small body text", kind = typography_kind::BodySm)
+                Typography(content = "Caption, muted", kind = typography_kind::Caption, muted = true)
+                Typography(content = "Overline", kind = typography_kind::Overline)
+            }
+        }
+    }
+);
+
+recipe!(
+    Card,
+    /// The four card treatments. `Regular` (the default) frames content on
+    /// the page surface, `Outline` draws only the border, `Elevated` lifts
+    /// it with a shadow, and `Flat` is a borderless tinted panel for
+    /// grouping inside another surface.
+    pub fn card_variants() -> ::runtime_core::Element {
+        use crate::components::card::variant;
+        use crate::{Card, CardPadding, Grid, StackGap, Typography};
+        use ::runtime_core::ui;
+
+        ui! {
+            Grid(columns = 2u32, gap = StackGap::Md) {
+                Card(variant = variant::Regular, padding = CardPadding::Md) { Typography(content = "Regular") }
+                Card(variant = variant::Outline, padding = CardPadding::Md) { Typography(content = "Outline") }
+                Card(variant = variant::Elevated, padding = CardPadding::Md) { Typography(content = "Elevated") }
+                Card(variant = variant::Flat, padding = CardPadding::Md) { Typography(content = "Flat") }
+            }
+        }
+    }
+);
+
+recipe!(
+    Field,
+    /// A sign-up form's fields in their three states: valid with a hint,
+    /// rejected with an `error` (which tints the input Danger and replaces
+    /// the hint), and `disabled` for a value the user can't change.
+    pub fn field_states() -> ::runtime_core::Element {
+        use crate::{Field, Stack, StackGap};
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let name = signal("Ada Lovelace".to_string());
+        let email = signal("ada@".to_string());
+        let team = signal("Analytical Engines".to_string());
+        let on_name: Rc<dyn Fn(String)> = Rc::new(move |v| name.set(v));
+        let on_email: Rc<dyn Fn(String)> = Rc::new(move |v| email.set(v));
+        ui! {
+            Stack(gap = StackGap::Md) {
+                Field(label = Some("Name".to_string()), value = name, on_change = on_name, help = Some("As it appears on your ID.".to_string()))
+                Field(label = Some("Email".to_string()), value = email, on_change = on_email, error = Some("Enter a full email address.".to_string()))
+                Field(label = Some("Team".to_string()), value = team, disabled = true)
+            }
+        }
+    }
+);
+
+recipe!(
+    Checkbox,
+    /// The states side by side. A partly-selected parent ("select all" over
+    /// some rows) is a CHECKED box with a dash `icon` and `indeterminate =
+    /// true`: `indeterminate` only tells assistive tech and the robot the
+    /// box is mixed, the icon is what draws the dash. `disabled` dims the
+    /// box and blocks toggling.
+    pub fn checkbox_states() -> ::runtime_core::Element {
+        use crate::{Checkbox, Stack, StackGap};
+        use ::runtime_core::{signal, ui, FillRule, IconData};
+
+        // In real code this is a pack constant, e.g. `icons_lucide::MINUS`.
+        const DASH: IconData = IconData {
+            view_box: (24, 24),
+            paths: &["M5 12h14"],
+            fill_rule: FillRule::NonZero,
+            filled: false,
+        };
+        ui! {
+            Stack(gap = StackGap::Sm) {
+                Checkbox(label = Some("Unchecked".to_string()), value = signal(false))
+                Checkbox(label = Some("Checked".to_string()), value = signal(true))
+                Checkbox(
+                    label = Some("Some channels".to_string()),
+                    value = signal(true),
+                    icon = Some(DASH),
+                    indeterminate = true,
+                )
+                Checkbox(label = Some("Disabled".to_string()), value = signal(true), disabled = true)
+            }
+        }
+    }
+);
+
+recipe!(
+    Progress,
+    /// The three thicknesses with rounded caps, in different tones — e.g.
+    /// a thin bar under a header, a medium one in a card, a thick one for
+    /// an upload.
+    pub fn progress_sizes() -> ::runtime_core::Element {
+        use crate::{tone, Progress, ProgressCap, ProgressSize, Stack, StackGap};
+        use ::runtime_core::ui;
+
+        ui! {
+            Stack(gap = StackGap::Md) {
+                Progress(value = 0.3f32, size = ProgressSize::Sm, cap = ProgressCap::Rounded)
+                Progress(value = 0.6f32, size = ProgressSize::Md, cap = ProgressCap::Rounded, tone = tone::Success)
+                Progress(value = 0.9f32, size = ProgressSize::Lg, cap = ProgressCap::Rounded, tone = tone::Warning)
+            }
+        }
+    }
+);
+
+recipe!(
+    Tabs,
+    /// The compact `TabIndicator::Dot` switcher, for a strip inside a card
+    /// or toolbar where an underline would be too heavy.
+    pub fn tabs_dot_indicator() -> ::runtime_core::Element {
+        use crate::{Tab, TabIndicator, Tabs};
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let active = signal("day".to_string());
+        let tabs = signal(vec![Tab::new("day", "Day"), Tab::new("week", "Week"), Tab::new("month", "Month")]);
+        let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| active.set(id));
+        ui! {
+            Tabs(tabs = tabs, active = active, on_change = on_change, indicator = TabIndicator::Dot)
+        }
+    }
+);
+
+// ---------------------------------------------------------------------------
+// Rows and table pieces, shown in the container they belong to.
+// ---------------------------------------------------------------------------
+
+recipe!(
+    ListItem,
+    /// Settings rows with both slots filled: an avatar `leading`, a badge
+    /// `trailing` (pushed to the right edge), and `active = true` marking the
+    /// current row. `on_press` makes a row clickable.
+    pub fn list_item_slots() -> ::runtime_core::Element {
+        use crate::{tone, Avatar, AvatarSize, Badge, List, ListItem};
+        use ::runtime_core::ui;
+        use ::std::rc::Rc;
+
+        let open: Rc<dyn Fn()> = Rc::new(|| { /* open the conversation */ });
+        ui! {
+            List {
+                ListItem(
+                    label = "Ada Lovelace",
+                    leading = Some(ui! { Avatar(initials = "AL", size = AvatarSize::Sm) }),
+                    trailing = Some(ui! { Badge(label = "2", tone = tone::Primary) }),
+                    on_press = Some(open.clone()),
+                    active = true,
+                )
+                ListItem(
+                    label = "Grace Hopper",
+                    leading = Some(ui! { Avatar(initials = "GH", size = AvatarSize::Sm, tone = tone::Teal) }),
+                    on_press = Some(open),
+                )
+            }
+        }
+    }
+);
+
+#[cfg(feature = "table")]
+recipe!(
+    TableFooter,
+    /// A totals row. `TableFooter` holds `TableRow`s that stay pinned below
+    /// the body — the place for sums and counts over the rows above.
+    pub fn table_footer_totals() -> ::runtime_core::Element {
+        use crate::{Table, TableCell, TableFooter, TableRow};
+        use ::runtime_core::ui;
+
+        ui! {
+            Table {
+                TableRow {
+                    TableCell(header = true, text = Some("Item".to_string()))
+                    TableCell(header = true, text = Some("Hours".to_string()))
+                }
+                TableRow {
+                    TableCell(text = Some("Drilling".to_string()))
+                    TableCell(text = Some("6.5".to_string()))
+                }
+                TableRow {
+                    TableCell(text = Some("Bolting".to_string()))
+                    TableCell(text = Some("3.0".to_string()))
+                }
+                TableFooter {
+                    TableRow {
+                        TableCell(text = Some("Total".to_string()))
+                        TableCell(text = Some("9.5".to_string()))
+                    }
+                }
+            }
+        }
+    }
+);
+
+#[cfg(feature = "table")]
+recipe!(
+    TableGroup,
+    /// Rows banded under a titled, collapsible group header. Each
+    /// `TableGroup` takes its rows as children; its header row spans the
+    /// table and toggles the band.
+    pub fn table_grouped_rows() -> ::runtime_core::Element {
+        use crate::{Table, TableCell, TableGroup, TableRow};
+        use ::runtime_core::ui;
+
+        ui! {
+            Table {
+                TableRow {
+                    TableCell(header = true, text = Some("Machine".to_string()))
+                    TableCell(header = true, text = Some("Status".to_string()))
+                }
+                TableGroup(title = "Shaft A".to_string()) {
+                    TableRow {
+                        TableCell(text = Some("Drill 4".to_string()))
+                        TableCell(text = Some("Running".to_string()))
+                    }
+                    TableRow {
+                        TableCell(text = Some("Drill 7".to_string()))
+                        TableCell(text = Some("Idle".to_string()))
+                    }
+                }
+                TableGroup(title = "Shaft B".to_string()) {
+                    TableRow {
+                        TableCell(text = Some("Loader 2".to_string()))
+                        TableCell(text = Some("Running".to_string()))
+                    }
+                }
+            }
+        }
+    }
+);
+
+#[cfg(feature = "table")]
+recipe!(
+    TablePager,
+    /// Paging under a table. The host owns the offset (the first row on the
+    /// page) and the page size; `on_offset` / `on_page_size` write them
+    /// back, and the host renders that window of rows. Passing
+    /// `page_sizes` adds the "Rows" picker.
+    pub fn table_pager_controlled() -> ::runtime_core::Element {
+        use crate::TablePager;
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let offset = signal(0_usize);
+        let page_size = signal(25_usize);
+        let on_offset: Rc<dyn Fn(usize)> = Rc::new(move |o| offset.set(o));
+        let on_page_size: Rc<dyn Fn(usize)> = Rc::new(move |s| {
+            page_size.set(s);
+            offset.set(0);
+        });
+        ui! {
+            TablePager(
+                offset = offset,
+                page_size = page_size,
+                total = 240_usize,
+                noun = "shifts".to_string(),
+                on_offset = on_offset,
+                page_sizes = vec![25, 50, 100],
+                on_page_size = Some(on_page_size),
+            )
+        }
+    }
+);
+
+// ---------------------------------------------------------------------------
+// Date + time.
+// ---------------------------------------------------------------------------
+
+recipe!(
+    DateTimeInput,
+    /// A typed date-and-time field: the mask parses as the user types and
+    /// normalizes on blur, and `picker = true` adds the calendar button.
+    /// The host owns the `Option<CivilDateTime>` signal.
+    pub fn date_time_input_start() -> ::runtime_core::Element {
+        use crate::{CivilDate, CivilDateTime, CivilTime, DateTimeInput};
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let start = signal(
+            CivilDate::new(2026, 3, 14).zip(CivilTime::new(9, 30, 0)).map(|(d, t)| CivilDateTime::new(d, t)),
+        );
+        let on_change: Rc<dyn Fn(Option<CivilDateTime>)> = Rc::new(move |v| start.set(v));
+        ui! {
+            DateTimeInput(value = start, on_change = on_change, label = Some("Starts".to_string()), picker = true)
+        }
+    }
+);
+
+recipe!(
+    DateTimePicker,
+    /// A button-style picker for a date and a time: the calendar commits
+    /// the day, the time row the hour and minute. `clearable` adds a Clear
+    /// action that sends `None`.
+    pub fn date_time_picker_meeting() -> ::runtime_core::Element {
+        use crate::{CivilDateTime, DateTimePicker};
+        use ::runtime_core::{signal, ui, Signal};
+        use ::std::rc::Rc;
+
+        let at: Signal<Option<CivilDateTime>> = signal(None);
+        let on_change: Rc<dyn Fn(Option<CivilDateTime>)> = Rc::new(move |v| at.set(v));
+        ui! {
+            DateTimePicker(value = at, on_change = on_change, placeholder = "Schedule a meeting".to_string(), clearable = true)
+        }
+    }
+);
+
+// ---------------------------------------------------------------------------
+// Menus.
+// ---------------------------------------------------------------------------
+
+recipe!(
+    SubMenu,
+    /// A nested menu: a `SubMenu` row inside a `Menu` opens its `items` to
+    /// the side (hover on desktop, tap on touch). Each `MenuEntry::new(label,
+    /// on_select)` is one row.
+    pub fn submenu_move_to() -> ::runtime_core::Element {
+        use crate::{AnchorTarget, Button, Menu, MenuEntry, MenuItem, SubMenu};
+        use ::runtime_core::{signal, ui, PressableHandle, Ref};
+        use ::std::rc::Rc;
+
+        let trigger: Ref<PressableHandle> = Ref::new();
+        let open = signal(false);
+        let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
+        let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+        ui! {
+            view {
+                Button(label = "File", on_click = on_open, bind_to = Some(trigger))
+                if open.get() {
+                    Menu(target = Some(AnchorTarget::from(trigger)), on_dismiss = Some(close.clone())) {
+                        MenuItem(label = "Rename", on_select = close.clone())
+                        SubMenu(
+                            label = "Move to",
+                            items = vec![
+                                MenuEntry::new("Inbox", close.clone()),
+                                MenuEntry::new("Archive", close.clone()),
+                                MenuEntry::new("Trash", close.clone()),
+                            ],
+                        )
+                    }
+                }
+            }
+        }
+    }
+);

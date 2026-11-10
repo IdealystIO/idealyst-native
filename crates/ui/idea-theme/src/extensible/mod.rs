@@ -237,6 +237,10 @@ impl runtime_core::previews::PropControl for ToneRef {
             format!("tone::{first}{}", chars.as_str())
         })
     }
+    /// The `tone` module the code names, at its defining path.
+    fn imports(_: &runtime_core::previews::ControlValue) -> Vec<String> {
+        vec![concat!(module_path!(), "::tone").to_string()]
+    }
 }
 
 // =============================================================================

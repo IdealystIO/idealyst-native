@@ -219,6 +219,7 @@ pub struct IconButtonProps {
     /// for a Lucide close button. Tinted to the button's tone × variant
     /// foreground, stamped on the icon's own node — native backends have
     /// no cascade to inherit it from. Override with `color`.
+    #[prop(example = <IconData as runtime_core::previews::PropControl>::example())]
     pub icon: Option<IconData>,
     /// Fires on press/click.
     pub on_click: Rc<dyn Fn()>,
@@ -268,7 +269,7 @@ pub struct IconButtonProps {
     /// accessible name when `label` is `None`. A Tooltip wrapped around an
     /// IconButton from outside can't name it: the button is built before
     /// the Tooltip runs. Default `None` (no tooltip).
-    #[prop(static)]
+    #[prop(static, example = Some(String::from("Add to favorites")))]
     pub tooltip: Option<String>,
     /// Optional robot/E2E test id, forwarded to the pressable (not the
     /// `tooltip` wrapper around it). Inert outside a robot build.

@@ -470,10 +470,16 @@ impl RadioOption {
 #[derive(IdealystSchema)]
 pub struct RadioGroupProps {
     /// The selected option's id. The host owns the signal.
+    #[prop(example = runtime_core::signal(String::from("yearly")))]
     pub value: Signal<String>,
     /// Fires with the picked id when the user selects an option.
     pub on_change: Rc<dyn Fn(String)>,
     /// Options in render order.
+    #[prop(example = vec![
+        RadioOption::new("monthly", "Monthly"),
+        RadioOption::new("yearly", "Yearly"),
+        RadioOption::new("lifetime", "Lifetime"),
+    ])]
     pub options: Vec<RadioOption>,
     /// Layout direction. Default Column.
     pub axis: RadioAxis,

@@ -41,6 +41,9 @@ use runtime_core::{
 
 use idea_theme::extensible::ToneRef;
 use idea_theme::theme::IdeaThemeRef;
+// Named by `#[prop(example = …)]` values, which compile only in docs builds.
+#[allow(unused_imports)]
+use crate::{typography_kind, Typography};
 
 use crate::modifiers::marker_into_axis;
 
@@ -160,6 +163,10 @@ pub struct CardProps {
     pub tone: Option<ToneRef>,
     /// Card contents. Incoming fragments are flattened via
     /// `ChildList::append_to` before rendering inside the surface.
+    #[prop(example = ui! {
+        Typography(content = "Monthly report", kind = typography_kind::H3)
+        Typography(content = "Revenue is up 12% on last month.", muted = true)
+    })]
     pub children: Vec<Element>,
 }
 

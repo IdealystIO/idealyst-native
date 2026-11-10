@@ -120,6 +120,13 @@ pub fn run(args: Args) -> Result<()> {
     } else {
         std::env::remove_var("IDEALYST_DOCS_CATALOG");
     }
+    // The crate the docs are for: the sidebar opens on its library, with
+    // its dependencies and the framework one switch away. Same threading
+    // note as above.
+    match project_crate_name(&project) {
+        Some(name) => std::env::set_var("IDEALYST_DOCS_PROJECT", name),
+        None => std::env::remove_var("IDEALYST_DOCS_PROJECT"),
+    }
 
     let bundle_out = project.join("dist/docs");
     println!(
@@ -396,6 +403,16 @@ fn open_browser(url: &str) {
     let _ = Command::new(cmd).args(args).status();
 }
 
+
+/// The project's crate name as code spells it (`idea-ui` → `idea_ui`):
+/// the `[package]` name in its `Cargo.toml`. `None` for a bare workspace.
+fn project_crate_name(project: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(project.join("Cargo.toml")).ok()?;
+    let table = text.parse::<toml::Table>().ok()?;
+    let name = table.get("package")?.get("name")?.as_str()?;
+    Some(name.replace('-', "_"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,5 +511,16 @@ mod tests {
         assert!(app_dir.join(".cargo/config.toml").is_file());
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn project_crate_name_is_the_packages_name_as_code_spells_it() {
+        let dir = std::env::temp_dir().join(format!("idealyst-docs-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"idea-ui\"\nversion = \"0.1.0\"\n").unwrap();
+        assert_eq!(project_crate_name(&dir).as_deref(), Some("idea_ui"));
+        std::fs::write(dir.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+        assert_eq!(project_crate_name(&dir), None, "a bare workspace has no project crate");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

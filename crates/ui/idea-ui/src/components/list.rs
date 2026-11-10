@@ -61,6 +61,11 @@ component_styles! {
 pub struct ListProps {
     /// The rows (typically [`ListItem`]s); hairline dividers are
     /// inserted between consecutive rows.
+    #[prop(example = ui! {
+        ListItem(label = "Inbox")
+        ListItem(label = "Starred")
+        ListItem(label = "Archive")
+    })]
     pub children: Vec<Element>,
 }
 

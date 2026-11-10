@@ -123,10 +123,13 @@ serde_json = { workspace = true }
 # for "View source". `span-locations` gives the line numbers it slices by.
 syn = { version = "2", features = ["full", "parsing"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
+# `RootExports` (src/source_extract.rs) is written to exports.json.
+serde = { workspace = true }
 
 [dev-dependencies]
 syn = { version = "2", features = ["full", "parsing"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
+serde = { workspace = true }
 # The unit tests build the catalog and exercise the view-model mapping.
 serde_json = { workspace = true }
 

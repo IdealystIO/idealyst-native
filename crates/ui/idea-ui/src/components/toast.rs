@@ -542,7 +542,7 @@ pub fn ToastCard(props: &ToastCardProps) -> Element {
 /// Where the toast stack anchors on the viewport — any of the nine
 /// regions of a 3×3 grid (the three vertical bands × the three
 /// horizontal bands). Default [`BottomLeft`](ToastPlacement::BottomLeft).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote, runtime_core::PropControl)]
 pub enum ToastPlacement {
     /// Top edge, hugging the leading (left) side.
     TopLeft,

@@ -569,6 +569,11 @@ pub struct SelectProps {
     /// The rows to offer in the dropdown menu. Reactive: pass a
     /// `Signal<Vec<SelectOption>>` (or `rx!`) for rows that change after
     /// mount; a plain `vec![…]` is a fixed list.
+    #[prop(example = vec![
+        SelectOption::new("free", "Free"),
+        SelectOption::new("pro", "Pro").with_description("For growing teams"),
+        SelectOption::new("enterprise", "Enterprise").with_description("SSO and audit logs"),
+    ])]
     #[prop(reactive)]
     #[schema(constraint = "reactive: static Vec<SelectOption> or Signal/rx!")]
     pub options: Vec<SelectOption>,

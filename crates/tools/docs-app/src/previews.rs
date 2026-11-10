@@ -21,16 +21,16 @@ use std::rc::Rc;
 
 use idea_ui::{
     size, typography_kind, variant, Button, Checkbox, ControlSize, Field, SegmentOption, SegmentedControl, Select, SelectOption,
-    Stack, StackGap, Switch, Typography,
+    Icon, Stack, StackGap, Switch, Typography,
 };
+use idea_ui::{tone, ToneRef};
 use runtime_core::previews::{Control, ControlValue, FieldSpec, IconChoice, Preview};
-use runtime_core::{component, signal, switch, ui, Element, WriteSignal};
+use runtime_core::{component, derived, signal, switch, ui, Element, IconData, Reactive, WriteSignal};
 
-use crate::shell::CodePanel;
+use crate::shell::CodeBlock;
 use crate::styles::{
-    Canvas, CanvasColumn, CanvasToolbar, FillFrame, PanelCaption, PhoneFrame, PlaygroundBody, PlaygroundCard,
-    PropName, PropRow, PropRowHead, PropType, PropsPanel, ToolbarSpacer, UsageBar, UsageHint,
-    UsageTitle,
+    Canvas, CanvasContent, CanvasDotLayer, CANVAS_DOTS_DARK, CANVAS_DOTS_LIGHT, DOT_TILE_COLUMNS, DOT_TILE_PX, DOT_TILE_ROWS, CanvasColumn, CanvasMode, PropDefault, CanvasToolbar, FillFrame, PanelCaption, PhoneFrame, PlaygroundBody, PlaygroundCard,
+    CodeSection, CodeSectionBlock, CodeSectionBlockDivided, CodeSectionCopy, PropName, PropRow, PropRowHead, PropType, PropsColumn, PropsPanel, PropsScroll, ToolbarSpacer,
 };
 
 include!(concat!(env!("OUT_DIR"), "/previews.rs"));
@@ -164,6 +164,15 @@ fn has_row(field: &FieldSpec) -> bool {
 pub fn usage_code(component: &str, preview: &Preview, values: &[ControlValue]) -> String {
     let mut props = Vec::new();
     let mut children = None;
+    // Examples on fields without a control come first, as written: they
+    // are the data the preview is built from (`items`, `options`, …).
+    for example in &preview.fixed {
+        if example.children {
+            children = Some(child_block(example.code));
+        } else {
+            props.push(format!("    {} = {},", example.name, indent_rest(example.code)));
+        }
+    }
     for (index, (field, value)) in preview.fields.iter().zip(values).enumerate() {
         if *value == field.default {
             continue;
@@ -172,7 +181,7 @@ pub fn usage_code(component: &str, preview: &Preview, values: &[ControlValue]) -
         if field.children {
             children = Some(code);
         } else {
-            props.push(format!("    {} = {},", field.name, code));
+            props.push(format!("    {} = {},", field.name, indent_rest(&code)));
         }
     }
     let mut out = if props.is_empty() {
@@ -181,9 +190,252 @@ pub fn usage_code(component: &str, preview: &Preview, values: &[ControlValue]) -
         format!("{component}(\n{}\n)", props.join("\n"))
     };
     if let Some(child) = children {
-        out.push_str(&format!(" {{\n    {child}\n}}"));
+        out.push_str(&format!(" {{\n    {}\n}}", indent_rest(&child)));
     }
     out
+}
+
+/// `code` with every line after the first indented one level, so a
+/// multi-line value sits under the prop it is assigned to.
+fn indent_rest(code: &str) -> String {
+    code.replace('\n', "\n    ")
+}
+
+/// A children example as the body of the call's child block: the inside
+/// of its `ui! { … }`, dedented, or the expression itself when it is not
+/// one.
+fn child_block(code: &str) -> String {
+    let Some(body) = code
+        .trim()
+        .strip_prefix("ui!")
+        .map(str::trim)
+        .and_then(|b| b.strip_prefix('{'))
+        .and_then(|b| b.strip_suffix('}'))
+    else {
+        return code.to_string();
+    };
+    let lines: Vec<&str> = body.trim_matches('\n').lines().collect();
+    let margin = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    lines
+        .iter()
+        .map(|l| l.get(margin..).unwrap_or("").trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// What a fixed example's source names that the snippet must import: the
+/// crate's root exports it mentions by their bare name, plus `ui!`,
+/// `signal` and `Rc`. Read off the identifiers that start a path (not
+/// after `::` or `.`), since an example is written against its crate's
+/// public names.
+fn example_imports(code: &str, krate: &str, exports: &serde_json::Value) -> Vec<String> {
+    // Bare name → path, for the names the crate exports at its root.
+    let root = format!("{krate}::");
+    let exported: std::collections::BTreeMap<&str, &str> = exports[krate]["public"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, public)| public.as_str())
+        .filter_map(|public| Some((public.strip_prefix(root.as_str()).filter(|n| !n.contains("::"))?, public)))
+        .collect();
+    let bytes = code.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    let mut in_string = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            in_string = c != b'"';
+            i += 1;
+            continue;
+        }
+        if c == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        if c == b'_' || c.is_ascii_alphabetic() {
+            let start = i;
+            while i < bytes.len() && (bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric()) {
+                i += 1;
+            }
+            let ident = &code[start..i];
+            let before = code[..start].trim_end();
+            if before.ends_with("::") || before.ends_with('.') {
+                continue;
+            }
+            let after = code[i..].trim_start();
+            let path = match ident {
+                "ui" if after.starts_with('!') => Some("runtime_core::ui".to_string()),
+                "signal" if after.starts_with('(') => Some("runtime_core::signal".to_string()),
+                "Rc" => Some("std::rc::Rc".to_string()),
+                _ => exported.get(ident).map(|p| p.to_string()),
+            };
+            out.extend(path);
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Each component crate's public names (`build.rs`,
+/// `src/source_extract.rs`): crate → `{ public: { defining path: the
+/// shortest path a caller can use it by } }`.
+const EMBEDDED_EXPORTS_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/exports.json"));
+
+thread_local! {
+    static EXPORTS: serde_json::Value = serde_json::from_str(EMBEDDED_EXPORTS_JSON).unwrap_or_default();
+}
+
+/// `path` as a caller in another crate imports it: by `krate`'s public
+/// path for it when the component's crate has one (`idea_ui::components::
+/// alert::Alert` → `idea_ui::Alert`, `idea_theme::extensible::tone` →
+/// `idea_ui::tone`), else as written.
+fn public_path(path: &str, krate: &str, exports: &serde_json::Value) -> String {
+    exports[krate]["public"][path].as_str().unwrap_or(path).to_string()
+}
+
+/// `use` lines for `paths`, one per crate, sorted (`use idea_ui::{Alert,
+/// tone};`).
+fn use_lines(paths: Vec<String>) -> String {
+    let mut by_crate: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = Default::default();
+    for path in paths {
+        let (root, rest) = path.split_once("::").unwrap_or((path.as_str(), ""));
+        by_crate.entry(root.to_string()).or_default().insert(rest.to_string());
+    }
+    by_crate
+        .into_iter()
+        .map(|(root, items)| {
+            let items: Vec<String> = items.into_iter().filter(|i| !i.is_empty()).collect();
+            match items.as_slice() {
+                [] => format!("use {root};"),
+                [one] => format!("use {root}::{one};"),
+                many => format!("use {root}::{{{}}};", many.join(", ")),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The `use` lines the [`usage_code`] snippet needs: the component (at
+/// `component_path`, its defining `module::Name`) and whatever the spelled
+/// props name. Never `ui!`: the snippet is a call written inside one, so
+/// the reader already has it — a nested `ui!` in a prop value included.
+pub fn imports_code(component_path: &str, preview: &Preview, values: &[ControlValue]) -> String {
+    let krate = component_path.split("::").next().unwrap_or(component_path);
+    let mut paths = vec![component_path.to_string()];
+    for (index, (field, value)) in preview.fields.iter().zip(values).enumerate() {
+        if *value != field.default {
+            paths.extend(preview.imports(index, value));
+        }
+    }
+    EXPORTS.with(|exports| {
+        for example in &preview.fixed {
+            paths.extend(example_imports(example.code, krate, exports));
+        }
+        use_lines(paths.iter().filter(|p| *p != UI_MACRO_PATH).map(|p| public_path(p, krate, exports)).collect())
+    })
+}
+
+/// Where `ui!` is imported from — left out of the Imports block.
+const UI_MACRO_PATH: &str = "runtime_core::ui";
+
+/// `value` as the props panel's "Default:" line says it.
+fn value_label(value: &ControlValue) -> String {
+    match value {
+        ControlValue::Text(s) if s.is_empty() => "empty".to_string(),
+        ControlValue::Text(s) => format!("{s:?}"),
+        ControlValue::Bool(b) => if *b { "on" } else { "off" }.to_string(),
+        ControlValue::Number(n) => number_text(*n),
+        ControlValue::Choice(k) => title_case(k),
+        ControlValue::Optional(None) => "none".to_string(),
+        ControlValue::Optional(Some(v)) => value_label(v),
+        ControlValue::Group(_) => "…".to_string(),
+        ControlValue::Handler => "attached".to_string(),
+    }
+}
+
+/// The "Default:" line a field's row shows, when there's something to
+/// say: always for a choice (which option the component picks isn't
+/// visible otherwise), and for any other control whose default isn't its
+/// empty value (an off switch, an empty field, an unset option). Never for
+/// the children slot: its starting text is the preview's placeholder, not
+/// a default the component has.
+fn default_hint(field: &FieldSpec) -> Option<String> {
+    if field.children {
+        return None;
+    }
+    let base = match &field.control {
+        Control::Optional { .. } => ControlValue::Optional(None),
+        other => empty_value(other),
+    };
+    let choice = matches!(field.control, Control::Choice(_));
+    (choice || field.default != base).then(|| format!("Default: {}", value_label(&field.default)))
+}
+
+/// The canvas a preview sits on, in the current light/dark mode (see
+/// `crate::styles::Canvas` for why it isn't a theme color).
+pub fn canvas_style() -> Canvas {
+    Canvas().mode(derived(|| if crate::theme::dark_mode().get() { CanvasMode::Dark } else { CanvasMode::Light }))
+}
+
+/// The spacing of a dot-grid tile's dots, in points.
+const DOT_SPACING_PX: u16 = 16;
+
+/// One tile's dots as an SVG path: a 1px-radius disc every
+/// [`DOT_SPACING_PX`], offset half a step so tiles meet seamlessly.
+fn dot_tile_path() -> String {
+    let mut d = String::new();
+    let half = DOT_SPACING_PX / 2;
+    for y in (half..DOT_TILE_PX).step_by(DOT_SPACING_PX.into()) {
+        for x in (half..DOT_TILE_PX).step_by(DOT_SPACING_PX.into()) {
+            d.push_str(&format!("M{} {}a1 1 0 1 0 2 0a1 1 0 1 0 -2 0z", x - 1, y));
+        }
+    }
+    d
+}
+
+static DOT_TILE_PATH: std::sync::LazyLock<String> = std::sync::LazyLock::new(dot_tile_path);
+static DOT_TILE_PATHS: std::sync::LazyLock<[&'static str; 1]> = std::sync::LazyLock::new(|| [DOT_TILE_PATH.as_str()]);
+
+fn dot_tile() -> IconData {
+    IconData {
+        view_box: (DOT_TILE_PX, DOT_TILE_PX),
+        paths: &*DOT_TILE_PATHS,
+        fill_rule: runtime_core::FillRule::NonZero,
+        filled: true,
+    }
+}
+
+/// The dot grid a canvas draws behind its preview (see
+/// `styles::CANVAS_LIGHT`). Put it first in a `Canvas` or `PreviewBox`,
+/// with the preview in a positioned box after it.
+#[component]
+pub fn CanvasDots() -> Element {
+    let color: Reactive<Option<runtime_core::Color>> = Reactive::derive(|| {
+        let hex = if crate::theme::dark_mode().get() { CANVAS_DOTS_DARK } else { CANVAS_DOTS_LIGHT };
+        Some(runtime_core::Color(hex.into()))
+    });
+    let tiles = DOT_TILE_COLUMNS * DOT_TILE_ROWS;
+    ui! {
+        view(style = CanvasDotLayer()) {
+            for _ in 0..tiles {
+                Icon(data = dot_tile(), size = f32::from(DOT_TILE_PX), color = color.clone())
+            }
+        }
+    }
 }
 
 /// The canvas width: the docs column, or a phone's.
@@ -198,7 +450,14 @@ enum Width {
 /// Renders nothing when the symbol has no preview (check with
 /// [`component_preview`]).
 #[component]
-pub fn Playground(#[prop(static)] symbol: String, #[prop(static)] name: String) -> Element {
+pub fn Playground(
+    #[prop(static)] symbol: String,
+    #[prop(static)] name: String,
+    /// The component's defining module (`idea_ui::components::alert`), for
+    /// the Imports block.
+    #[prop(static)]
+    module_path: String,
+) -> Element {
     let Some(make) = component_preview(&symbol) else {
         return ui! { view() };
     };
@@ -226,6 +485,13 @@ pub fn Playground(#[prop(static)] symbol: String, #[prop(static)] name: String) 
     let copy_name = name.clone();
     let copy_text: Rc<dyn Fn() -> String> =
         Rc::new(move || usage_code(&copy_name, &copy_preview, &runtime_core::untrack(|| values.get())));
+    let component_path = format!("{module_path}::{name}");
+    let imports_preview = preview.clone();
+    let copy_imports_preview = preview.clone();
+    let copy_component_path = component_path.clone();
+    let copy_imports: Rc<dyn Fn() -> String> = Rc::new(move || {
+        imports_code(&copy_component_path, &copy_imports_preview, &runtime_core::untrack(|| values.get()))
+    });
 
     ui! {
         view(style = PlaygroundCard()) {
@@ -242,39 +508,56 @@ pub fn Playground(#[prop(static)] symbol: String, #[prop(static)] name: String) 
                             leading_icon = Some(icons_lucide::ROTATE_CCW),
                         )
                     }
-                    view(style = Canvas()) {
-                        // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the previewed component, rebuilt from the edited values and canvas width
-                        {switch(
-                            move || (width.get(), values.get()),
-                            move |(w, vals): &(Width, Vec<ControlValue>)| {
-                                let component = canvas_preview.render(vals);
-                                match w {
-                                    Width::Fill => ui! { view(style = FillFrame()) { component } },
-                                    Width::Phone => ui! { view(style = PhoneFrame()) { component } },
-                                }
-                            },
-                        )}
+                    view(style = canvas_style()) {
+                        CanvasDots()
+                        view(style = CanvasContent()) {
+                            // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the previewed component, rebuilt from the edited values and canvas width
+                            {switch(
+                                move || (width.get(), values.get()),
+                                move |(w, vals): &(Width, Vec<ControlValue>)| {
+                                    let component = canvas_preview.render(vals);
+                                    match w {
+                                        Width::Fill => ui! { view(style = FillFrame()) { component } },
+                                        Width::Phone => ui! { view(style = PhoneFrame()) { component } },
+                                    }
+                                },
+                            )}
+                        }
                     }
                 }
                 if has_rows {
-                    view(style = PropsPanel()) {
-                        text(style = PanelCaption()) { "Props" }
-                        // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the props panel, rebuilt from its initial values on Reset
-                        {switch(move || generation.get(), move |_| props_rows(&panel_preview, values.write_only()))}
+                    view(style = PropsColumn()) {
+                        scroll_view(style = PropsScroll()) {
+                            view(style = PropsPanel()) {
+                                text(style = PanelCaption()) { "Props" }
+                                // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the props panel, rebuilt from its initial values on Reset
+                                {switch(move || generation.get(), move |_| props_rows(&panel_preview, values.write_only()))}
+                            }
+                        }
                     }
                 }
             }
-            view(style = UsageBar()) {
-                text(style = UsageTitle()) { "Usage" }
-                text(style = UsageHint()) { "Props at their default are left out" }
-                view(style = ToolbarSpacer())
-                CopyButton(text = copy_text)
+            // The code section: the imports, then the call, each with its own
+            // Copy in its top-right corner (after the code, so it paints over
+            // it).
+            view(style = CodeSection()) {
+                view(style = CodeSectionBlock()) {
+                    // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the imports block for the current values
+                    {switch(move || values.get(), move |vals: &Vec<ControlValue>| {
+                        let src = imports_code(&component_path, &imports_preview, vals);
+                        ui! { CodeBlock(src = src) }
+                    })}
+                    view(style = CodeSectionCopy()) { CopyButton(text = copy_imports) }
+                }
+                view(style = CodeSectionBlock().divided(CodeSectionBlockDivided::On)) {
+                    // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the Usage snippet for the current values
+                    {switch(move || values.get(), move |vals: &Vec<ControlValue>| {
+                        let src = usage_code(&name, &usage_preview, vals);
+                        ui! { CodeBlock(src = src) }
+                    })}
+                    view(style = CodeSectionCopy()) { CopyButton(text = copy_text) }
+                }
             }
-            // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the Usage snippet for the current values
-            {switch(move || values.get(), move |vals: &Vec<ControlValue>| {
-                let src = usage_code(&name, &usage_preview, vals);
-                ui! { CodePanel(src = src) }
-            })}
         }
     }
 }
@@ -314,6 +597,7 @@ fn PropEditorRow(#[prop(static)] field: Option<FieldSpec>, #[prop(static, defaul
     let name = field.name.to_string();
     match field.control.clone() {
         Control::Optional { inner, example } => {
+            let hint = default_hint(&field);
             let ControlValue::Optional(start) = field.initial.clone() else { return ui! { view() } };
             let handler = *inner == Control::Handler;
             let enabled = signal(start.is_some());
@@ -347,11 +631,15 @@ fn PropEditorRow(#[prop(static)] field: Option<FieldSpec>, #[prop(static, defaul
                     if !handler {
                         ControlEditor(control = inner_control, initial = inner_initial, on_change = on_inner)
                     }
+                    if let Some(hint) = hint {
+                        text(style = PropDefault()) { hint }
+                    }
                 }
             }
         }
         control => {
             let ty = if field.children { "children".to_string() } else { short_type(field.type_name) };
+            let hint = default_hint(&field);
             let initial = field.initial;
             ui! {
                 view(style = PropRow()) {
@@ -360,6 +648,9 @@ fn PropEditorRow(#[prop(static)] field: Option<FieldSpec>, #[prop(static, defaul
                         text(style = PropType()) { ty }
                     }
                     ControlEditor(control = control, initial = initial, on_change = on_change)
+                    if let Some(hint) = hint {
+                        text(style = PropDefault()) { hint }
+                    }
                 }
             }
         }
@@ -575,29 +866,46 @@ pub fn editing_tracker() -> Rc<dyn Fn(bool)> {
 /// How long "Copied" shows before the button reads "Copy" again.
 const COPIED_MS: i32 = 1500;
 
-/// A small "Copy" button that puts `text()` on the clipboard.
+/// A small "Copy" button that puts `text()` on the clipboard. After a
+/// copy it reads "Copied!" in the success tone, with a check, for
+/// [`COPIED_MS`], then goes back.
 #[component]
 pub fn CopyButton(
     #[prop(static, default = Rc::new(String::new) as Rc<dyn Fn() -> String>)] text: Rc<dyn Fn() -> String>,
 ) -> Element {
     let copied = signal(false);
+    // The reset timer is armed from this component's own scope, not from
+    // the copy's async continuation: a scoped timer started there has no
+    // scope to belong to and never fires. The effect re-runs when
+    // `copied` turns true and schedules the turn back.
+    runtime_core::effect!({
+        if copied.get() {
+            runtime_core::after_ms_scoped(COPIED_MS, move || copied.set(false));
+        }
+    });
     let on_click: Rc<dyn Fn()> = Rc::new(move || {
         let value = text();
         runtime_core::spawn_then(async move { clipboard::set_text(&value).await }, move |result| {
             if result.is_ok() {
                 copied.set(true);
-                runtime_core::after_ms_scoped(COPIED_MS, move || copied.set(false));
             }
         });
     });
-    let label = runtime_core::memo(move || if copied.get() { "Copied".to_string() } else { "Copy".to_string() });
+    // Derived reads, not memos: a memo of a `ToneRef` (identity
+    // equality) would store a "new" value on every recompute.
+    let label = Reactive::derive(move || if copied.get() { "Copied!".to_string() } else { "Copy".to_string() });
+    let button_tone: Reactive<ToneRef> =
+        Reactive::derive(move || if copied.get() { tone::Success.into() } else { tone::Primary.into() });
+    let glyph: Reactive<Option<IconData>> =
+        Reactive::derive(move || Some(if copied.get() { icons_lucide::CHECK } else { icons_lucide::COPY }));
     ui! {
         Button(
             label = label,
             on_click = on_click,
+            tone = button_tone,
             variant = variant::Ghost,
             size = size::Sm,
-            leading_icon = Some(icons_lucide::COPY),
+            leading_icon = glyph,
         )
     }
 }
@@ -747,6 +1055,125 @@ mod tests {
             let all_default: Vec<_> = preview.fields.iter().map(|f| f.default.clone()).collect();
             assert_eq!(usage_code("Alert", &preview, &all_default), "Alert()");
         });
+    }
+
+    /// The Imports block names what the Usage snippet uses, through the
+    /// component crate's public paths: Alert and its axis types from
+    /// `idea_ui`, the `tone` module idea-ui re-exports from idea-theme,
+    /// `Rc` once a handler is attached, and never `ui!` (the snippet is
+    /// written inside one), even when a prop's value nests one.
+    #[test]
+    fn imports_block_uses_the_crates_public_paths() {
+        let model = CatalogModel::build();
+        let alert = component(&model, "Alert");
+        let make = component_preview(&alert.preview).expect("Alert's preview is linked");
+        runtime_core::__with_fresh_world(|| {
+            idea_ui::install_idea_theme(idea_ui::light_theme());
+            let preview = make();
+            let path = format!("{}::Alert", alert.module_path);
+            let mut values = preview.initial_values();
+            let at = |name: &str| preview.fields.iter().position(|f| f.name == name).unwrap();
+
+            let block = imports_code(&path, &preview, &values);
+            assert_eq!(block, "use idea_ui::Alert;", "{block}");
+
+            values[at("tone")] = ControlValue::Choice("success".into());
+            values[at("variant")] = ControlValue::Choice("filled".into());
+            values[at("close")] = ControlValue::Optional(Some(Box::new(ControlValue::Handler)));
+            // Spelled `ui! { text { "Undo" } }`: a nested `ui!`, still no import.
+            values[at("action")] = ControlValue::Optional(Some(Box::new(ControlValue::Text("Undo".into()))));
+            let block = imports_code(&path, &preview, &values);
+            assert_eq!(
+                block,
+                "use idea_ui::{Alert, AlertClose, AlertVariant, tone};\nuse std::rc::Rc;",
+                "{block}"
+            );
+        });
+    }
+
+    #[test]
+    fn public_paths_come_from_the_crates_public_names() {
+        let exports = serde_json::json!({ "lib": {
+            "public": { "lib::deep::Thing": "lib::Thing", "other::Renamed": "lib::Alias" }
+        }});
+        assert_eq!(public_path("lib::deep::Thing", "lib", &exports), "lib::Thing");
+        assert_eq!(public_path("other::Renamed", "lib", &exports), "lib::Alias");
+        assert_eq!(public_path("lib::hidden::Item", "lib", &exports), "lib::hidden::Item", "not public: as written");
+        assert_eq!(
+            use_lines(vec!["b::X".into(), "a::Y".into(), "b::W".into(), "b::X".into()]),
+            "use a::Y;\nuse b::{W, X};"
+        );
+    }
+
+    /// One dot per grid step, inside the tile, half a step from each edge
+    /// so neighbouring tiles continue the lattice.
+    #[test]
+    fn dot_tile_is_a_seamless_lattice() {
+        let path = dot_tile_path();
+        let per_side = usize::from(DOT_TILE_PX / DOT_SPACING_PX);
+        assert_eq!(path.matches('M').count(), per_side * per_side);
+        let half = DOT_SPACING_PX / 2;
+        assert!(path.starts_with(&format!("M{} {}a", half - 1, half)), "{}", &path[..20]);
+    }
+
+    /// A fixed example is spelled as written, multi-line values indented
+    /// under their prop, and a children `ui!` block becomes the call's
+    /// child block. Its imports are the crate's root names it mentions,
+    /// plus `ui!` / `signal` / `Rc` — not names inside strings, after a
+    /// `::`, or after a `.`.
+    #[test]
+    fn fixed_examples_are_spelled_and_imported_as_written() {
+        let exports = serde_json::json!({ "lib": { "public": {
+            "lib::a::Crumb": "lib::Crumb",
+            "lib::a::Typography": "lib::Typography",
+            "lib::b::new": "lib::b::new",
+        }}});
+        let code = "vec![\n    Crumb::new(\"Typography\"),\n    x.new(),\n]";
+        let mut paths = example_imports(code, "lib", &exports);
+        paths.extend(example_imports("ui! { Typography(content = \"Hi\") }", "lib", &exports));
+        paths.extend(example_imports("signal(Rc::new(1))", "lib", &exports));
+        assert_eq!(paths, ["lib::Crumb", "runtime_core::ui", "lib::Typography", "runtime_core::signal", "std::rc::Rc"]);
+
+        assert_eq!(indent_rest("vec![\n    a,\n]"), "vec![\n        a,\n    ]");
+        assert_eq!(child_block("ui! {\n    A()\n    B()\n}"), "A()\nB()");
+        assert_eq!(child_block("ui! { A() }"), "A()");
+        assert_eq!(child_block("vec![a, b]"), "vec![a, b]", "not a ui! block: as written");
+    }
+
+    /// A choice always says which option is the default (Avatar's variant
+    /// starts on Soft, the second segment); a control whose default is just
+    /// its empty value says nothing.
+    #[test]
+    fn rows_name_the_default_when_it_isnt_obvious() {
+        let model = CatalogModel::build();
+        let avatar = component(&model, "Avatar");
+        let make = component_preview(&avatar.preview).expect("Avatar's preview is linked");
+        runtime_core::__with_fresh_world(|| {
+            idea_ui::install_idea_theme(idea_ui::light_theme());
+            let preview = make();
+            let field = |name: &str| preview.fields.iter().find(|f| f.name == name).unwrap().clone();
+            assert_eq!(default_hint(&field("variant")).as_deref(), Some("Default: Soft"));
+            assert_eq!(default_hint(&field("initials")), None, "an empty default text says nothing");
+            assert_eq!(default_hint(&field("src")), None, "an unset optional says nothing");
+        });
+        let switch = FieldSpec {
+            name: "on",
+            type_name: "bool",
+            control: Control::Bool,
+            initial: ControlValue::Bool(true),
+            default: ControlValue::Bool(true),
+            children: false,
+        };
+        assert_eq!(default_hint(&switch).as_deref(), Some("Default: on"));
+        let children = FieldSpec {
+            name: "children",
+            type_name: "Vec<Element>",
+            control: Control::Text,
+            initial: ControlValue::Text("Child content".into()),
+            default: ControlValue::Text("Child content".into()),
+            children: true,
+        };
+        assert_eq!(default_hint(&children), None, "a placeholder is not a default");
     }
 
     #[test]

@@ -7,7 +7,7 @@
 
 use runtime_core::stylesheet;
 use runtime_core::{
-    AlignItems, Color, FlexDirection, FlexWrap, JustifyContent, Length, Overflow, TextAlign,
+    AlignItems, Color, FlexDirection, FlexWrap, JustifyContent, Length, Overflow, Position, TextAlign,
     Tokenized,
 };
 
@@ -215,6 +215,8 @@ stylesheet! {
     pub SidebarSearchBar<()> {
         base(_t) {
             flex_shrink: 0.0,
+            flex_direction: FlexDirection::Column,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
             padding_left: Tokenized::token("spacing-lg", Length::Px(16.0)),
             padding_right: Tokenized::token("spacing-lg", Length::Px(16.0)),
             padding_top: Tokenized::token("spacing-lg", Length::Px(16.0)),
@@ -371,22 +373,29 @@ stylesheet! {
 stylesheet! {
     pub PreviewBox<()> {
         base(_t) {
-            // Same surface as `DemoSurface` but designed to share a row
-            // with the controls panel.
-            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            // A recipe's live render, on the same canvas as the
+            // playground's (`CANVAS_LIGHT` / `CANVAS_DARK`).
+            background: Color(CANVAS_LIGHT.into()),
             border_width: 1.0,
             border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
             padding: Tokenized::token("spacing-xl", Length::Px(24.0)),
             gap: Tokenized::token("spacing-md", Length::Px(12.0)),
+            // Sized by its render (a column child: no flex basis, which
+            // would pin it at `min_height` and spill a taller render over
+            // the source below).
             flex_direction: FlexDirection::Column,
-            flex_basis: 0.0,
-            flex_grow: 2.0,
-            flex_shrink: 1.0,
-            min_width: 280.0,
             min_height: 160.0,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
+            position: Position::Relative,
+            overflow: Overflow::Hidden,
+        }
+        variant mode {
+            light(_t) {}
+            dark(_t) {
+                background: Color(CANVAS_DARK.into()),
+            }
         }
         transitions {
             background: 250ms EaseInOut,
@@ -415,9 +424,15 @@ stylesheet! {
 stylesheet! {
     pub PreviewSlot<()> {
         base(_t) {
+            // Positioned, to paint above the canvas's dot layer.
+            position: Position::Relative,
             width: Length::pct(100.0),
             flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Center,
+            // Stretched, as a page column lays its content out: a recipe is
+            // a composition, and centering would shrink its layout to its
+            // content — a Stack of progress bars to nothing, a toolbar's
+            // Spacer to no gap.
+            align_items: AlignItems::Stretch,
             justify_content: JustifyContent::Center,
             gap: Tokenized::token("spacing-md", Length::Px(12.0)),
         }
@@ -696,6 +711,31 @@ stylesheet! {
     }
 }
 
+/// The canvas a preview sits on — the playground's and each recipe's: a
+/// fixed neutral under a dot grid (`previews::CanvasDots`), not a theme
+/// color. No flat color works for both kinds of component. The theme's
+/// border (`color-border`) sits between its surfaces (`color-surface`,
+/// `-surface-alt`, `-background`), so a canvas darker than the surfaces
+/// hides the rings and tracks of outlined controls (a Radio, a Switch),
+/// and one made of a surface color hides a fill of that color (a `Card`
+/// on a white canvas). The base is near-white, so borders read as they do
+/// on a page; the dots stop at every filled box, so a fill shows even
+/// where its color matches the base. Picked by `previews::canvas_style`
+/// from the docs' light/dark switch.
+pub const CANVAS_LIGHT: &str = "#fbfcfd";
+pub const CANVAS_DARK: &str = "#07090c";
+/// The dot grid's tiles (`previews::CanvasDots`): their side, and how
+/// many run across and down — enough to cover the widest canvas and the
+/// tallest (the playground's grows with its props panel).
+pub const DOT_TILE_PX: u16 = 256;
+pub const DOT_TILE_COLUMNS: usize = 8;
+pub const DOT_TILE_ROWS: usize = 8;
+const DOT_LAYER_WIDTH_PX: f32 = DOT_TILE_PX as f32 * DOT_TILE_COLUMNS as f32;
+const DOT_LAYER_HEIGHT_PX: f32 = DOT_TILE_PX as f32 * DOT_TILE_ROWS as f32;
+/// The dot grid's color on each canvas.
+pub const CANVAS_DOTS_LIGHT: &str = "#cdd3dc";
+pub const CANVAS_DOTS_DARK: &str = "#262c36";
+
 stylesheet! {
     pub Canvas<()> {
         base(_t) {
@@ -705,7 +745,48 @@ stylesheet! {
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
             padding: Tokenized::token("spacing-xl", Length::Px(24.0)),
-            background: Tokenized::token("color-surface-alt", Color("#f6f7f9".into())),
+            background: Color(CANVAS_LIGHT.into()),
+            position: Position::Relative,
+            overflow: Overflow::Hidden,
+        }
+        variant mode {
+            light(_t) {}
+            dark(_t) {
+                background: Color(CANVAS_DARK.into()),
+            }
+        }
+    }
+}
+
+stylesheet! {
+    /// The dot grid behind a preview: a fixed block of tiles from the
+    /// canvas's top-left corner, larger than any canvas, which clips it.
+    /// Sized, not stretched to the canvas: a canvas-wide row would wrap
+    /// after however many whole tiles fit, leaving a bare strip at the
+    /// right edge.
+    pub CanvasDotLayer<()> {
+        base(_t) {
+            position: Position::Absolute,
+            top: 0.0,
+            left: 0.0,
+            width: DOT_LAYER_WIDTH_PX,
+            height: DOT_LAYER_HEIGHT_PX,
+            flex_direction: FlexDirection::Row,
+            flex_wrap: FlexWrap::Wrap,
+        }
+    }
+}
+
+stylesheet! {
+    /// The preview above the dot grid: positioned, so it paints over the
+    /// absolutely-positioned layer instead of under it.
+    pub CanvasContent<()> {
+        base(_t) {
+            position: Position::Relative,
+            width: Length::pct(100.0),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
         }
     }
 }
@@ -739,16 +820,52 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub PropsPanel<()> {
+    /// The props panel's column beside the canvas. In the wide layout it
+    /// is as tall as the canvas column and its rows scroll inside it
+    /// ([`PropsScroll`]), so a long props list never stretches the canvas
+    /// down the page.
+    pub PropsColumn<()> {
         base(_t) {
-            flex_direction: FlexDirection::Column,
             width: PROPS_PANEL_WIDTH_PX,
             flex_shrink: 0.0,
             max_width: Length::pct(100.0),
-            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
-            padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            flex_direction: FlexDirection::Column,
+            position: Position::Relative,
             border_left_width: 1.0,
             border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+        }
+    }
+}
+
+stylesheet! {
+    /// The props panel's scroll view, inside [`PropsColumn`]. Side by side
+    /// (`lg`) it is lifted out of flow to fill the column: in flow, its
+    /// rows' height would set the playground row's height — a wrapping
+    /// row's line is as tall as its tallest item, so no height cap on the
+    /// row could bound it. Below `lg` the column can wrap under the canvas,
+    /// where it must keep its rows' height, so it stays in flow there.
+    pub PropsScroll<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            min_height: 0.0,
+        }
+        breakpoint lg(_t) {
+            position: Position::Absolute,
+            top: 0.0,
+            left: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+        }
+    }
+}
+
+stylesheet! {
+    /// The props panel's content, inside [`PropsScroll`].
+    pub PropsPanel<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
+            padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
         }
     }
 }
@@ -804,42 +921,47 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub UsageBar<()> {
+    /// The playground's code section, full-bleed at the bottom of the
+    /// playground card: the Imports block and the Usage snippet on the code
+    /// surface's color, each under its own head, ruled off from the canvas.
+    pub CodeSection<()> {
         base(_t) {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
-            padding_left: Tokenized::token("spacing-lg", Length::Px(16.0)),
-            padding_right: Tokenized::token("spacing-md", Length::Px(12.0)),
-            padding_top: Tokenized::token("spacing-sm", Length::Px(8.0)),
-            padding_bottom: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            flex_direction: FlexDirection::Column,
+            background: Tokenized::token("color-surface-alt", Color("#f4eedb".into())),
             border_top_width: 1.0,
-            border_bottom_width: 1.0,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            min_width: 0.0,
+        }
+    }
+}
+
+stylesheet! {
+    /// One code block in the playground's code section, holding its Copy
+    /// button. `divided` rules it off from the block above.
+    pub CodeSectionBlock<()> {
+        base(_t) {
+            position: Position::Relative,
+            min_width: 0.0,
             border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
         }
-    }
-}
-
-stylesheet! {
-    pub UsageTitle<()> {
-        base(_t) {
-            font_size: 14.0,
-            font_weight: runtime_core::FontWeight::SemiBold,
-            color: Tokenized::token("color-text", Color("#1f2328".into())),
+        variant divided {
+            #[default]
+            off(_t) {}
+            on(_t) { border_top_width: 1.0 }
         }
     }
 }
 
 stylesheet! {
-    pub UsageHint<()> {
+    /// A code block's Copy button, pinned to the block's top-right corner.
+    pub CodeSectionCopy<()> {
         base(_t) {
-            font_size: 13.0,
-            color: Tokenized::token("color-text-muted", Color("#5b6275".into())),
+            position: Position::Absolute,
+            top: 8.0,
+            right: 8.0,
         }
     }
 }
-
-// ---- Entry page header (src/shell.rs) --------------------------------------
 
 stylesheet! {
     pub TitleRow<()> {
@@ -942,5 +1064,116 @@ stylesheet! {
             justify_content: JustifyContent::SpaceBetween,
             width: Length::pct(100.0),
         }
+    }
+}
+
+stylesheet! {
+    pub PropDefault<()> {
+        base(_t) {
+            font_size: 12.0,
+            color: Tokenized::token("color-text-muted", Color("#5b6275".into())),
+        }
+    }
+}
+
+// ---- Library switcher (src/shell.rs) ---------------------------------------
+
+stylesheet! {
+    /// The sidebar's entries for one library, spaced like the body.
+    pub SidebarNavGroup<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+        }
+    }
+}
+
+stylesheet! {
+    /// A library's name over its summary, taking the row's free width.
+    pub LibraryCardText<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            min_width: 0.0,
+            gap: 2.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub LibraryPopoverBody<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+        }
+    }
+}
+
+stylesheet! {
+    pub LibraryRowList<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: 2.0,
+        }
+    }
+}
+
+stylesheet! {
+    /// One library in the switcher's list; `active` marks the one shown.
+    pub LibraryRow<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+        }
+        state hovered(_t) {
+            background: Tokenized::token("color-surface-alt", Color("#f1f5f9".into())),
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                background: Tokenized::token("intent-primary-soft-bg", Color("#eef0ff".into())),
+            }
+        }
+    }
+}
+
+stylesheet! {
+    pub LibraryRowHead<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_core::resolve_style;
+
+    /// Regression: a recipe's preview box carried `flex_basis: 0` and a
+    /// grow factor from a side-by-side layout. Stacked in the recipe card's
+    /// column, the browser sized it at its 160px minimum — an auto-height
+    /// flex column sums its items' flex bases — so a taller render (four
+    /// stacked alerts, the type scale) spilled over the source below. The
+    /// box must be sized by its render: no basis, no grow.
+    ///
+    /// Asserted on the rules, not a layout: Taffy (what the tests could lay
+    /// out with) sizes that column from content, as the current spec does,
+    /// so it grows the box either way and can't show the bug.
+    #[test]
+    fn regression_preview_box_is_sized_by_its_render() {
+        runtime_core::__with_fresh_world(|| {
+            let rules = resolve_style(&PreviewBox().into_style_application());
+            assert_eq!(rules.flex_basis, None);
+            assert_eq!(rules.flex_grow, None);
+        });
     }
 }

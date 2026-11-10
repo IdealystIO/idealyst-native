@@ -381,12 +381,18 @@ pub struct SegmentedControlProps {
     /// control fits state that isn't a standalone string signal). Tapping a
     /// segment reports the new `id` via `on_change`; the segment whose `id`
     /// equals this paints selected.
+    #[prop(example = "week")]
     pub value: Reactive<String>,
     /// Fires with the chosen segment's `id` when the user taps a segment.
     /// Default is a no-op so an unwired control doesn't silently mutate —
     /// pass `move |id| value.set(id)` to make taps switch segments.
     pub on_change: Rc<dyn Fn(String)>,
     /// The segments, left-to-right.
+    #[prop(example = vec![
+        SegmentOption::new("day", "Day"),
+        SegmentOption::new("week", "Week"),
+        SegmentOption::new("month", "Month"),
+    ])]
     pub options: Vec<SegmentOption>,
     /// Control size — `Sm`, `Md` (default) or `Lg`, or an app-defined
     /// [`SegmentedControlSize`]. Each built-in size is the same height as a

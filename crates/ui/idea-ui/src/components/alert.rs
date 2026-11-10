@@ -202,6 +202,13 @@ impl runtime_core::previews::PropControl for AlertClose {
             _ => "AlertClose::Button(Rc::new(|| {}))".to_string(),
         })
     }
+    fn imports(value: &runtime_core::previews::ControlValue) -> Vec<String> {
+        let mut paths = vec![concat!(module_path!(), "::AlertClose").to_string()];
+        if matches!(value, runtime_core::previews::ControlValue::Optional(Some(_))) {
+            paths.push("std::rc::Rc".to_string());
+        }
+        paths
+    }
 }
 
 // Reactive-by-default: `#[props]` wraps the scalar data props (`tone`/`variant`)

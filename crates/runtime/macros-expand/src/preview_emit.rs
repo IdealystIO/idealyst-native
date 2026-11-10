@@ -43,6 +43,10 @@ pub(crate) fn props_impl(props: &Ident, generic: bool, fields: &[FieldIn<'_>]) -
         let name_str = name.to_string();
         let ty = f.ty;
         if is_element_vec(ty) {
+            // A children example is shown as written, not as editable text.
+            if f.example.is_some() {
+                return quote!();
+            }
             return quote! {
                 fields.push(::runtime_core::previews::PreviewField::children(
                     #name_str,
@@ -64,6 +68,8 @@ pub(crate) fn props_impl(props: &Ident, generic: bool, fields: &[FieldIn<'_>]) -
                     // push unifies `P`, and `p.field` needs the type.
                     |p: &mut Self| &mut p.#name,
                     |p: &Self| &p.#name,
+                ).with_imports(
+                    (&&&&::runtime_core::previews::__probe::Probe::<#ty>::new()).__imports(),
                 ));
             }
         }
@@ -73,8 +79,25 @@ pub(crate) fn props_impl(props: &Ident, generic: bool, fields: &[FieldIn<'_>]) -
         .filter_map(|f| {
             let example = f.example?;
             let name = f.name;
+            if is_element_vec(f.ty) {
+                return Some(quote! {
+                    props.#name = ::runtime_core::previews::IntoPreviewChildren::into_preview_children(#example);
+                });
+            }
             let value = crate::float_lit::coerce_prop_value(example);
             Some(quote! { props.#name = #value; })
+        })
+        .collect();
+    let example_entries: Vec<TokenStream2> = fields
+        .iter()
+        .filter_map(|f| {
+            let example = f.example?;
+            let name = f.name.to_string();
+            let code = example_source(example);
+            let children = is_element_vec(f.ty);
+            Some(quote! {
+                ::runtime_core::previews::PreviewExample { name: #name, code: #code, children: #children }
+            })
         })
         .collect();
     let base = if examples.is_empty() {
@@ -85,6 +108,9 @@ pub(crate) fn props_impl(props: &Ident, generic: bool, fields: &[FieldIn<'_>]) -
                 let mut props = <Self as ::runtime_core::BuildElement>::defaults();
                 #(#examples)*
                 props
+            }
+            fn preview_examples() -> &'static [::runtime_core::previews::PreviewExample] {
+                &[#(#example_entries),*]
             }
         }
     };
@@ -104,6 +130,30 @@ pub(crate) fn props_impl(props: &Ident, generic: bool, fields: &[FieldIn<'_>]) -
             #base
         }
     }
+}
+
+/// `example` as its author wrote it (`source_text::verbatim`), or
+/// formatted by `prettyplease` when its tokens have no source (built by
+/// another macro): wrapped in a fn body, which is then peeled off.
+fn example_source(example: &Expr) -> String {
+    if let Some(text) = crate::source_text::verbatim(&quote!(#example)) {
+        return text;
+    }
+    #[cfg(feature = "previews")]
+    {
+        let file: syn::File = syn::parse_quote! { fn __example() { #example } };
+        let text = prettyplease::unparse(&file);
+        let lines: Vec<&str> = text.lines().collect();
+        // `fn __example() {`, the body, `}`.
+        if lines.len() >= 3 {
+            return lines[1..lines.len() - 1]
+                .iter()
+                .map(|l| l.strip_prefix("    ").unwrap_or(l))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+    }
+    crate::token_text::token_text(&quote!(#example))
 }
 
 /// `Vec<Element>` — a children slot, previewed as editable text.
@@ -240,6 +290,43 @@ mod tests {
         assert!(out.contains("PreviewField::children(\"children\""), "{out}");
         assert!(out.contains("fnpreview_base()"), "an example overrides the base: {out}");
         assert!(out.contains("props.label=(\"Clickme\").into();"), "{out}");
+    }
+
+    /// Every example is recorded as written (for the Usage snippet of a
+    /// field with no control), and a children example replaces the
+    /// editable children text: the slot gets no control and starts at the
+    /// example, converted from an element or a list.
+    #[test]
+    fn examples_are_recorded_as_source_and_a_children_example_is_fixed() {
+        let items: Ident = syn::parse_quote!(items);
+        let items_ty: Type = syn::parse_quote!(Vec<Crumb>);
+        let items_example: Expr = syn::parse_quote!(vec![Crumb::new("Home"), Crumb::new("Docs")]);
+        let children: Ident = syn::parse_quote!(children);
+        let children_ty: Type = syn::parse_quote!(Vec<Element>);
+        let children_example: Expr = syn::parse_quote!(ui! { Badge(label = "One") });
+        let props: Ident = syn::parse_quote!(TrailProps);
+        let tokens = props_impl(
+            &props,
+            false,
+            &[
+                FieldIn { name: &items, ty: &items_ty, example: Some(&items_example) },
+                FieldIn { name: &children, ty: &children_ty, example: Some(&children_example) },
+            ],
+        );
+        let text = tokens.to_string();
+        let out = squash(tokens);
+        assert!(!out.contains("PreviewField::children("), "an example fixes the children slot: {out}");
+        assert!(
+            out.contains("props.children=::runtime_core::previews::IntoPreviewChildren::into_preview_children(ui!{Badge(label=\"One\")});"),
+            "{out}"
+        );
+        assert!(out.contains("fnpreview_examples()"), "{out}");
+        assert!(
+            text.contains(r#"code : "vec![Crumb::new(\"Home\"), Crumb::new(\"Docs\")]""#),
+            "the example's formatted source: {text}"
+        );
+        assert!(out.contains("name:\"children\",code:"), "{out}");
+        assert!(out.contains("children:true"), "{out}");
     }
 
     #[test]

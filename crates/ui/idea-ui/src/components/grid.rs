@@ -30,6 +30,11 @@ use runtime_core::{
 
 use crate::components::stack::StackGap;
 use crate::theme::IdeaThemeRef;
+// Named by `#[prop(example = …)]` values, which compile only in docs builds.
+#[allow(unused_imports)]
+use crate::{Card, CardPadding, Typography};
+#[allow(unused_imports)]
+use runtime_core::ui;
 
 component_styles! {
     /// The styled sections of [`Grid`].
@@ -80,6 +85,14 @@ pub struct GridProps {
     /// `StackGap` converts. Default Md.
     pub gap: GridGap,
     /// Cells, laid out left-to-right then wrapping to the next row.
+    #[prop(example = ui! {
+        Card(padding = CardPadding::Md) { Typography(content = "1") }
+        Card(padding = CardPadding::Md) { Typography(content = "2") }
+        Card(padding = CardPadding::Md) { Typography(content = "3") }
+        Card(padding = CardPadding::Md) { Typography(content = "4") }
+        Card(padding = CardPadding::Md) { Typography(content = "5") }
+        Card(padding = CardPadding::Md) { Typography(content = "6") }
+    })]
     pub children: Vec<Element>,
 }
 

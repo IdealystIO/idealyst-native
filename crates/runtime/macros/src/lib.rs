@@ -86,6 +86,15 @@ pub fn prop_control(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand::prop_control(attr.into(), item.into()).into()
 }
 
+/// `#[derive(PropControl)]` on a unit-only enum: how `idealyst docs`
+/// previews edit a prop of that type — a choice of its variants. Like
+/// `#[prop_control]`, it expands to nothing outside the `previews`
+/// feature, so dev and release builds compile none of it.
+#[proc_macro_derive(PropControl)]
+pub fn derive_prop_control(input: TokenStream) -> TokenStream {
+    expand::derive_prop_control(input.into()).into()
+}
+
 /// `recipe!(Component, fn name() -> Element { … })` — declare a
 /// compile-checked usage example ("recipe") for `Component`.
 ///

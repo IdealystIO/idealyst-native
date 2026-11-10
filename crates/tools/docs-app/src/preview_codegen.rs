@@ -23,7 +23,13 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 /// docs page with a backdrop nothing on the page can dismiss. Anything
 /// that composes one, directly or through other components, is shown
 /// without a live preview.
-const OVERLAY_COMPONENTS: &[&str] = &["Modal", "Menu", "SubMenu", "Popover", "Tooltip", "HoverCard", "ToastHost"];
+const OVERLAY_COMPONENTS: &[&str] = &["Modal", "Menu", "SubMenu", "Popover", "ToastHost"];
+/// Overlays that open only while the pointer rests on (or a long press
+/// holds) the trigger they wrap, and close when it leaves: a preview shows
+/// the trigger, and the bubble comes and goes with the reader's pointer.
+/// They are built from `anchored_overlay`, but reaching one doesn't make a
+/// component an overlay, so the composes walk stops at them.
+const HOVER_OVERLAYS: &[&str] = &["Tooltip", "HoverCard"];
 /// The primitives those portals are built from — what catches an app's
 /// own overlay component.
 const OVERLAY_PRIMITIVES: &[&str] = &["overlay", "anchored_overlay"];
@@ -64,6 +70,9 @@ fn overlay_reaching(cat: &serde_json::Value) -> BTreeSet<String> {
         let mut seen = BTreeSet::new();
         let mut queue = VecDeque::from([start.clone()]);
         while let Some(name) = queue.pop_front() {
+            if HOVER_OVERLAYS.contains(&name.as_str()) {
+                continue;
+            }
             if is_overlay(&name) {
                 reaching.insert(start.clone());
                 break;
@@ -179,6 +188,27 @@ mod tests {
             assert!(!src.contains(gone), "{gone} reaches an overlay: {src}");
         }
         assert!(src.contains("\"k\" => Some(") && src.contains("\"rk\" => Some("), "{src}");
+    }
+
+    /// A hover overlay opens only under the reader's pointer, so it and
+    /// whatever composes it keep their preview, even though it is built
+    /// from `anchored_overlay`.
+    #[test]
+    fn hover_overlays_and_their_users_keep_a_preview() {
+        let cat = json!({
+            "components": [
+                { "name": "Tooltip", "preview": "t", "composes": [{ "name": "anchored_overlay", "line": 1 }] },
+                { "name": "IconButton", "preview": "i", "composes": [{ "name": "Tooltip", "line": 1 }] },
+                { "name": "Menu", "preview": "m", "composes": [{ "name": "anchored_overlay", "line": 1 }] },
+                { "name": "Picker", "preview": "p", "composes": [{ "name": "Tooltip", "line": 1 }, { "name": "Menu", "line": 2 }] }
+            ],
+            "recipes": [{ "name": "hint", "preview": "rt", "uses": ["Tooltip", "IconButton"] }]
+        });
+        let src = previews_source(&cat);
+        for kept in ["\"t\" => Some(", "\"i\" => Some(", "\"rt\" => Some("] {
+            assert!(src.contains(kept), "{kept}: {src}");
+        }
+        assert!(!src.contains("\"m\"") && !src.contains("\"p\""), "a real overlay still excludes: {src}");
     }
 
     #[test]

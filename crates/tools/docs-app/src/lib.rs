@@ -36,7 +36,8 @@
 //! - `preview_codegen.rs` — run by `build.rs`: the `extern` block and
 //!   symbol lookups `previews.rs` includes.
 //! - `source_extract.rs` — run by `build.rs`: each component's source, for
-//!   the page's "View source".
+//!   the page's "View source", and each component crate's public names,
+//!   for the Imports block and for dropping a library's private components.
 //! - `styles.rs` — local chrome stylesheets (lifted from idea-ui-docs).
 
 use std::cell::RefCell;

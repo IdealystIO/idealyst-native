@@ -109,6 +109,11 @@ impl Crumb {
 pub struct BreadcrumbsProps {
     /// The trail, root-first. The last item renders as the current page
     /// (emphasized, not clickable).
+    #[prop(example = vec![
+        Crumb::linked("Home", Rc::new(|| {})),
+        Crumb::linked("Components", Rc::new(|| {})),
+        Crumb::new("Breadcrumbs"),
+    ])]
     pub items: Vec<Crumb>,
     /// Separator glyph between crumbs. Default `/`. Ignored when
     /// [`separator_icon`](Self::separator_icon) is `Some`.

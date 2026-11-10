@@ -448,3 +448,118 @@ fn optional_callback_can_be_attached_and_fields_carry_type_and_default() {
     assert_eq!(take(), ["text=Hi closable=true"]);
     assert_eq!(preview.code(1, &ControlValue::Optional(Some(Box::new(ControlValue::Handler)))).as_deref(), Some("Some(Rc::new(|| {}))"));
 }
+
+/// What a spelled value needs in scope: the macros pass each field
+/// type's `PropControl::imports` (or an axis type's own path) through the
+/// same dispatch as its adapter.
+#[test]
+fn values_report_the_imports_their_code_needs() {
+    use std::rc::Rc;
+    let attached = ControlValue::Optional(Some(Box::new(ControlValue::Handler)));
+    assert_eq!(<Option<Rc<dyn Fn()>>>::imports(&attached), ["std::rc::Rc"]);
+    assert!(<Option<Rc<dyn Fn()>>>::imports(&ControlValue::Optional(None)).is_empty());
+    assert_eq!(<Signal<bool>>::imports(&ControlValue::Bool(true)), ["runtime_core::signal"]);
+    assert_eq!(runtime_core::TextAlign::imports(&ControlValue::Choice("Center".into())), ["runtime_core::TextAlign"]);
+    assert!(String::imports(&ControlValue::Text("x".into())).is_empty());
+
+    let preview = preview_of!(Badge);
+    let size = preview.fields.iter().position(|f| f.name == "size").unwrap();
+    assert_eq!(
+        preview.imports(size, &ControlValue::Choice("lg".into())),
+        [format!("{}::Size", module_path!())],
+        "an axis enum without its own impl imports its type"
+    );
+    let on_press = preview.fields.iter().position(|f| f.name == "on_press").unwrap();
+    assert_eq!(preview.imports(on_press, &attached), ["std::rc::Rc"]);
+}
+
+/// A plain unit enum (no stylesheet axis): `#[derive(PropControl)]` gives
+/// it a choice per variant, spelled and imported from its own module.
+#[derive(Clone, Copy, Debug, Default, PartialEq, runtime_core::PropControl)]
+pub enum Expand {
+    #[default]
+    Single,
+    Multi,
+}
+
+#[component]
+fn Folds(expand: Expand) -> Element {
+    record(format!("expand={:?}", expand.get()));
+    ui! { view() }
+}
+
+#[test]
+fn derived_unit_enum_control_is_a_choice_of_its_variants() {
+    assert_eq!(Expand::control(), Control::Choice(vec!["Single".into(), "Multi".into()]));
+    assert_eq!(Expand::Multi.to_value(), ControlValue::Choice("Multi".into()));
+    assert_eq!(Expand::from_value(&ControlValue::Choice("Multi".into())), Some(Expand::Multi));
+    assert_eq!(Expand::from_value(&ControlValue::Choice("multi".into())), None);
+    assert_eq!(Expand::Multi.code().as_deref(), Some("Expand::Multi"));
+    assert_eq!(Expand::imports(&ControlValue::Choice("Multi".into())), [format!("{}::Expand", module_path!())]);
+
+    // Reached through a `Reactive` prop by the same dispatch as any other.
+    let preview = preview_of!(Folds);
+    let expand = field(&preview, "expand");
+    assert_eq!(expand.initial, ControlValue::Choice("Single".into()));
+    take();
+    let _ = preview.render(&[ControlValue::Choice("Multi".into())]);
+    assert_eq!(take(), ["expand=Multi"]);
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Crumb(pub String);
+
+#[component]
+fn Trail(
+    #[prop(example = vec![Crumb("Home".into()), Crumb("Docs".into())])] items: Vec<Crumb>,
+    #[prop(example = "Docs")] current: String,
+    #[prop(example = ui! { text { "First" } text { "Second" } })] children: Vec<Element>,
+) -> Element {
+    record(format!("items={} current={} children={}", items.len(), current.get(), children.len()));
+    ui! { view() }
+}
+
+/// An example on a field with no control (`items`) is applied and kept as
+/// written, for the Usage snippet; one on a controlled field (`current`)
+/// stays the control's starting value. A children example replaces the
+/// editable children text with the elements it builds.
+#[test]
+fn examples_without_a_control_are_fixed_as_written() {
+    let preview = preview_of!(Trail);
+    let names: Vec<_> = preview.fields.iter().map(|f| f.name).collect();
+    assert_eq!(names, ["current"], "items has no control; the children example fixes the slot");
+    let fixed: Vec<_> = preview.fixed.iter().map(|e| (e.name, e.code, e.children)).collect();
+    assert_eq!(
+        fixed,
+        [
+            ("items", r#"vec![Crumb("Home".into()), Crumb("Docs".into())]"#, false),
+            ("children", r#"ui! { text { "First" } text { "Second" } }"#, true),
+        ]
+    );
+    take();
+    let _ = preview.render(&preview.initial_values());
+    assert_eq!(take(), ["items=2 current=Docs children=1"], "the ui! block is one (fragment) child");
+}
+
+/// Regression: an `f32` reached the number field widened to `f64`, so a
+/// Progress `value` of `0.6` showed as `0.6000000238418579`.
+#[test]
+fn regression_f32_number_value_is_its_shortest_decimal() {
+    assert_eq!(0.6f32.to_value(), ControlValue::Number(0.6));
+    assert_eq!(f32::from_value(&0.6f32.to_value()), Some(0.6f32), "round-trips");
+    assert_eq!(0.1f64.to_value(), ControlValue::Number(0.1));
+}
+
+/// An anchored overlay's placement enums get a choice per variant,
+/// spelled and imported where an author names them.
+#[test]
+fn overlay_placement_enums_are_choices() {
+    use runtime_core::primitives::portal::{ElementAlign, ElementSide};
+    assert_eq!(ElementSide::control(), Control::Choice(vec!["Above".into(), "Below".into(), "Start".into(), "End".into()]));
+    assert_eq!(ElementSide::from_value(&ControlValue::Choice("Below".into())), Some(ElementSide::Below));
+    assert_eq!(ElementAlign::Center.code().as_deref(), Some("ElementAlign::Center"));
+    assert_eq!(
+        ElementAlign::imports(&ControlValue::Choice("Center".into())),
+        ["runtime_core::primitives::portal::ElementAlign"]
+    );
+}

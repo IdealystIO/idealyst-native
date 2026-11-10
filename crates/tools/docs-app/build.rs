@@ -23,6 +23,9 @@
 //!   catalog (via the same ephemeral `catalog` bin `idealyst mcp` runs) and
 //!   points us here, so one renderer crate can document any project.
 //!
+//! `IDEALYST_DOCS_PROJECT=<crate>` names the crate the docs are for, which
+//! the sidebar opens on; `idealyst docs` sets it beside the catalog.
+//!
 //! Note this deliberately does NOT include docs-app's *own* chrome
 //! components (`app`, `Section`, `CodePanel`, …) — build.rs can't link
 //! the crate it builds — which is correct: those are docs-app internals,
@@ -54,12 +57,19 @@ fn main() {
     // so `idealyst docs <project>` re-embeds a freshly extracted catalog.
     println!("cargo:rerun-if-env-changed=IDEALYST_DOCS_CATALOG");
 
+    // The crate the docs are for (`idealyst docs` sets it from the project's
+    // `[package]` name): the sidebar opens on its library. Empty for the
+    // framework's own catalog (`catalog::PROJECT_LIBRARY`).
+    println!("cargo:rerun-if-env-changed=IDEALYST_DOCS_PROJECT");
+    let project = std::env::var("IDEALYST_DOCS_PROJECT").unwrap_or_default();
+    println!("cargo:rustc-env=DOCS_PROJECT_LIBRARY={}", project.trim());
+
     // Catalog source — native framework extraction by default, or an
     // externally-injected JSON file when `IDEALYST_DOCS_CATALOG` names one
     // (see the module note above). The injected JSON is the exact shape
     // `mcp_catalog::catalog_json()` produces, so the recipe-codegen pass
     // below works identically on either source.
-    let (cat, injected): (serde_json::Value, bool) = match std::env::var_os("IDEALYST_DOCS_CATALOG") {
+    let (mut cat, injected): (serde_json::Value, bool) = match std::env::var_os("IDEALYST_DOCS_CATALOG") {
         Some(path) if !path.is_empty() => {
             let path = std::path::PathBuf::from(path);
             println!("cargo:rerun-if-changed={}", path.display());
@@ -103,12 +113,24 @@ fn main() {
         );
     }
 
+    // Each component crate's public names: the Imports block's paths, and
+    // which of a library's components its docs list (a private helper
+    // component is dropped before anything below reads the catalog).
+    let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"));
+    let (exports, export_files) = source_extract::crate_exports(&cat, &manifest_dir);
+    source_extract::drop_private_components(&mut cat, &exports);
+    for file in &export_files {
+        println!("cargo:rerun-if-changed={}", file.display());
+    }
+
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     std::fs::write(
         out.join("catalog.json"),
         serde_json::to_string(&cat).expect("serialize catalog"),
     )
     .expect("write catalog.json");
+    std::fs::write(out.join("exports.json"), serde_json::to_string(&exports).expect("serialize exports"))
+        .expect("write exports.json");
 
     // The live-preview lookups: an `extern` block over every preview and
     // recipe symbol the catalog records, plus symbol → fn maps. See
@@ -119,11 +141,13 @@ fn main() {
     // Component sources for "View source": `module_path::Name` → the fn
     // as written. Read from the files the catalog names; one that can't be
     // read (a catalog extracted elsewhere) just has no source.
-    let sources = source_extract::component_sources(&cat);
+    let sources = source_extract::component_sources(&cat, &manifest_dir);
     std::fs::write(out.join("sources.json"), serde_json::to_string(&sources).expect("serialize sources"))
         .expect("write sources.json");
     for file in cat["components"].as_array().into_iter().flatten().filter_map(|c| c["file"].as_str()) {
-        println!("cargo:rerun-if-changed={file}");
+        if let Some(path) = source_extract::resolve_file(file, &manifest_dir) {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
     }
     println!("cargo:rerun-if-changed=src/source_extract.rs");
 

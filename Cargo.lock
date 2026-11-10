@@ -3832,6 +3832,7 @@ dependencies = [
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
+ "serde",
  "serde_json",
  "swap-navigator",
  "syn 2.0.117",

@@ -34,6 +34,9 @@ use runtime_core::{
     FlexDirection, FontWeight, IdealystSchema, IntoElement, JustifyContent, Length, Position, Reactive, Signal,
     SlotStyle, StyleApplication, StyleRules, StyleSheet, Tokenized, VariantEnum,
 };
+// Named by a `#[prop(example = …)]` value, which compiles only in docs builds.
+#[allow(unused_imports)]
+use runtime_core::signal;
 use std::rc::Rc;
 
 use crate::components::stack::StackPadding;
@@ -461,11 +464,17 @@ pub struct TabsProps {
     /// added / removed / reordered reconcile by `Tab::id`, so a surviving tab
     /// keeps its component-local state (the strip updates without a full
     /// rebuild). A fixed strip wraps a literal in `signal(vec![...])`.
+    #[prop(example = signal(vec![
+        Tab::new("overview", "Overview"),
+        Tab::new("activity", "Activity"),
+        Tab::new("settings", "Settings"),
+    ]))]
     pub tabs: Signal<Vec<Tab>>,
     /// The **active tab's `id`**. `Reactive<String>` — a `Signal<String>` the
     /// host owns, or a model-derived `rx!(...)` (e.g. mapping a document's
     /// active page index to its id). The tab whose `id` equals this paints
     /// selected.
+    #[prop(example = "overview")]
     pub active: Reactive<String>,
     /// Fires with the **tapped tab's `id`**. Default is a no-op so an unwired
     /// Tabs doesn't silently mutate — pass `move |id| ...` to switch.
