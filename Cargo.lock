@@ -1444,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-core"
-version = "5.0.0"
+version = "5.1.0"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
@@ -1458,7 +1458,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -3644,7 +3644,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "19.0.0"
+version = "20.0.0"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -6417,7 +6417,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "10.0.0"
+version = "11.0.0"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6427,7 +6427,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme-editor"
-version = "17.0.0"
+version = "18.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6438,7 +6438,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "20.1.0"
+version = "21.0.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6458,7 +6458,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "21.0.1"
+version = "22.0.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6487,7 +6487,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-branded"
-version = "12.0.0"
+version = "13.0.0"
 dependencies = [
  "idea-theme",
  "idea-ui",
@@ -6500,7 +6500,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.30"
+version = "1.5.31"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6510,7 +6510,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.30"
+version = "1.5.31"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6530,7 +6530,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-nav"
-version = "17.0.0"
+version = "18.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6557,7 +6557,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.31.1"
+version = "1.32.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7727,7 +7727,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.40.0"
+version = "1.41.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -10876,7 +10876,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-core"
-version = "7.0.0"
+version = "7.1.0"
 dependencies = [
  "runtime-macros",
  "runtime-shared",
@@ -10893,14 +10893,14 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "runtime-macros-expand",
 ]
 
 [[package]]
 name = "runtime-macros-expand"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10979,7 +10979,7 @@ version = "0.1.1"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -11619,7 +11619,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "axum",
  "futures-channel",
