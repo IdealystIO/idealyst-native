@@ -22,7 +22,7 @@
 use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2_foundation::{NSAttributedString, NSObject};
-use objc2_ui_kit::UILabel;
+use objc2_ui_kit::UIView;
 use runtime_shared::{FontFamily, FontWeight, StyleRules, TextRun, TextRunStyle};
 
 use backend_apple_core::font::FontRegistry;
@@ -47,7 +47,7 @@ pub(crate) struct StyledTextEntry {
 /// paragraph style `para` (`None` = pre-style defaults: system font
 /// at UIKit's 17pt label size, the installed theme's `color-text`).
 pub(crate) fn realize(
-    label: &UILabel,
+    label: &UIView,
     runs: &[TextRun],
     para: Option<&StyleRules>,
     registry: &FontRegistry,

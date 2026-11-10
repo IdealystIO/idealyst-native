@@ -3207,6 +3207,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`text(selectable = true)` selects on iOS** (`backend-ios-mobile`, `backend-ios-core`). It
+  rendered an ordinary `UILabel`, which has no selection. A selectable text is now a read-only
+  `UITextView` (`IdealystSelectableText`) with UIKit's own selection (long-press, handles, the edit
+  menu), set up to render as the label does: the label's default font and colour, no insets or
+  line-fragment padding, TextKit 1, and its text centred vertically in its frame as a label's is.
+  It measures to the same size as the label for every style checked, and its glyphs land within a
+  pixel of the label's (the two text engines' line heights differ by a fraction of a point).
+  Padding, `max_lines`, alignment, styled runs, text transforms, text updates and the animated
+  text colour reach it as they reach a label. A selectable text takes its own touches, so inside
+  a pressable a press on it selects rather than presses.
 - **`text(selectable = true)` lets the reader select and copy text** (`runtime-vocabulary`,
   `runtime-macros-expand`, `backend-android-mobile`, `backend-web`, `backend-ssr`, `wire`,
   `dev-server`, `dev-client` minor). No text could be selected on Android. The new prop asks for
@@ -3216,8 +3226,8 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
     label, so only selectable text costs a `TextView`.
   - Web and SSR add `user-select: text`, which also overrides a `user-select: none` ancestor (web
     text is selectable by default otherwise).
-  - macOS and iOS don't select yet: their labels stay unselectable. On macOS, display labels
-    decline hit-testing, so `user_select: Text` can't select there either.
+  - macOS doesn't select yet: its labels stay unselectable, and they decline hit-testing, so
+    `user_select: Text` can't select there either. (iOS selects as of the entry above.)
   - The prop is read when the text mounts, because Android has to choose the widget then. A
     backend opts in through the new `TextOps::create_selectable_text` /
     `create_selectable_styled_text`, which default to the ordinary creates. The runtime-server

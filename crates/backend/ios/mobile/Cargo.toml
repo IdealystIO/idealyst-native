@@ -192,5 +192,9 @@ name = "native_readback"
 harness = false
 
 [[test]]
+name = "selectable_text"
+harness = false
+
+[[test]]
 name = "activity_indicator_size"
 harness = false

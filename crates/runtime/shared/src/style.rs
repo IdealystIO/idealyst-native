@@ -1161,10 +1161,10 @@ pub enum Cursor {
 ///   on text nodes; ignored on non-text views.
 /// - iOS / Android: no-op (their labels aren't selectable by default).
 ///
-/// To make a `text` selectable for the reader, including on Android, use
-/// the primitive's `selectable` prop (`text(selectable = true)`): Android
-/// realizes a selectable text as a different widget, which it has to know
-/// when the text is created, before any style applies.
+/// To make a `text` selectable for the reader, including on Android and
+/// iOS, use the primitive's `selectable` prop (`text(selectable = true)`):
+/// those backends realize a selectable text as a different widget, which
+/// they have to know when the text is created, before any style applies.
 ///
 /// The canonical use is [`UserSelect::None`] on a clickable's subtree so
 /// double-clicking a button doesn't select its label text. The framework

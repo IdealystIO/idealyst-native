@@ -1085,10 +1085,30 @@ pub fn apply_text_style(
 /// string's attributes at index 0, and the runs carry no paragraph style,
 /// so the line break mode is re-asserted afterwards (setting it applies to
 /// the whole attributed string).
+///
+/// A selectable `text` is a `UITextView`, which has no `numberOfLines` /
+/// `lineBreakMode`: the same values go to its `textContainer`
+/// (`maximumNumberOfLines` / `lineBreakMode`). Sending `setNumberOfLines:`
+/// to it would raise an unrecognized-selector exception.
 pub fn apply_label_line_config(view: &UIView, max_lines: Option<u32>) {
     let (lines, mode) = crate::style_diff::label_line_config(max_lines);
-    let _: () = unsafe { msg_send![view, setNumberOfLines: lines] };
-    let _: () = unsafe { msg_send![view, setLineBreakMode: mode] };
+    let is_label: bool =
+        unsafe { msg_send![view, respondsToSelector: objc2::sel!(setNumberOfLines:)] };
+    if is_label {
+        let _: () = unsafe { msg_send![view, setNumberOfLines: lines] };
+        let _: () = unsafe { msg_send![view, setLineBreakMode: mode] };
+        return;
+    }
+    let has_container: bool =
+        unsafe { msg_send![view, respondsToSelector: objc2::sel!(textContainer)] };
+    if has_container {
+        let container: *mut objc2::runtime::AnyObject = unsafe { msg_send![view, textContainer] };
+        if !container.is_null() {
+            let max = lines as usize;
+            let _: () = unsafe { msg_send![container, setMaximumNumberOfLines: max] };
+            let _: () = unsafe { msg_send![container, setLineBreakMode: mode] };
+        }
+    }
 }
 
 /// Apply the theme-resolved background + text color to an editable text control
@@ -1250,6 +1270,27 @@ fn idealyst_label_class() -> Option<&'static objc2::runtime::AnyClass> {
     Some(unsafe { &*(p as *const objc2::runtime::AnyClass) })
 }
 
+static IDEALYST_SELECTABLE_TEXT_CLASS: std::sync::atomic::AtomicPtr<objc2::runtime::AnyClass> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// Same lazy, retry-until-success class cache as [`idealyst_label_class`]
+/// for `IdealystSelectableText` — a selectable `text` (a `UITextView`) takes
+/// its padding through `setTextInsets:` like the label it renders as.
+fn idealyst_selectable_text_class() -> Option<&'static objc2::runtime::AnyClass> {
+    use std::sync::atomic::Ordering;
+    let cached = IDEALYST_SELECTABLE_TEXT_CLASS.load(Ordering::Relaxed);
+    if !cached.is_null() {
+        return Some(unsafe { &*cached });
+    }
+    let name = std::ffi::CString::new("IdealystSelectableText").ok()?;
+    let p = unsafe { objc2::ffi::objc_lookUpClass(name.as_ptr()) };
+    if p.is_null() {
+        return None;
+    }
+    IDEALYST_SELECTABLE_TEXT_CLASS.store(p as *mut _, Ordering::Relaxed);
+    Some(unsafe { &*(p as *const objc2::runtime::AnyClass) })
+}
+
 static IDEALYST_TEXT_FIELD_CLASS: std::sync::atomic::AtomicPtr<objc2::runtime::AnyClass> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
@@ -1275,15 +1316,16 @@ fn apply_text_insets_if_label(
     view: &UIView,
     style: &runtime_shared::StyleRules,
 ) {
-    // Applies to both the label (`IdealystLabel`) and the editable input
-    // (`IdealystTextField`) — both honor `padding_*` via `setTextInsets:`.
-    let is_label = idealyst_label_class()
-        .map(|c| unsafe { msg_send![view, isKindOfClass: c] })
-        .unwrap_or(false);
-    let is_field = idealyst_text_field_class()
-        .map(|c| unsafe { msg_send![view, isKindOfClass: c] })
-        .unwrap_or(false);
-    if !is_label && !is_field {
+    // Applies to the label (`IdealystLabel`), a selectable text
+    // (`IdealystSelectableText`) and the editable input
+    // (`IdealystTextField`) — all honor `padding_*` via `setTextInsets:`.
+    let is_kind = |class: Option<&'static objc2::runtime::AnyClass>| {
+        class.map(|c| unsafe { msg_send![view, isKindOfClass: c] }).unwrap_or(false)
+    };
+    if !is_kind(idealyst_label_class())
+        && !is_kind(idealyst_selectable_text_class())
+        && !is_kind(idealyst_text_field_class())
+    {
         return;
     }
 

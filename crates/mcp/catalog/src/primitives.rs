@@ -151,7 +151,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "text",
         pascal_name: "Text",
-        docs: "Renders a string. A literal interpolates `{name}` placeholders f-string-style — signal slots are LIVE by type, `Display` values bake in (`text { \"count: {count}\" }`); a closure is reactive (`text { move || … }`); plain literals are static. Backends use native text widgets (`UILabel`, a self-drawing label on Android — a `TextView` when `selectable`, `<span>`, `NSTextField`). SLOTS TAKE A BARE IDENTIFIER ONLY (`{count}`). A field path, index, or method call inside braces — `{item.name}`, `{items[0]}`, `{obj.field()}` — is NOT a slot and is a COMPILE ERROR (loud, never silent): the message names the fix. Pull the value into a local first (`let name = item.name.clone(); text { \"{name}\" }`) or, when it must stay reactive, use a closure that reads it directly: `text { move || item.name.clone() }`.",
+        docs: "Renders a string. A literal interpolates `{name}` placeholders f-string-style — signal slots are LIVE by type, `Display` values bake in (`text { \"count: {count}\" }`); a closure is reactive (`text { move || … }`); plain literals are static. Backends use native text widgets (`UILabel` — a read-only `UITextView` when `selectable`, a self-drawing label on Android — a `TextView` when `selectable`, `<span>`, `NSTextField`). SLOTS TAKE A BARE IDENTIFIER ONLY (`{count}`). A field path, index, or method call inside braces — `{item.name}`, `{items[0]}`, `{obj.field()}` — is NOT a slot and is a COMPILE ERROR (loud, never silent): the message names the fix. Pull the value into a local first (`let name = item.name.clone(); text { \"{name}\" }`) or, when it must stay reactive, use a closure that reads it directly: `text { move || item.name.clone() }`.",
         props: &[
             PropFieldSpec {
                 name: "content",
@@ -162,7 +162,7 @@ inventory::submit! {
             PropFieldSpec {
                 name: "selectable",
                 type_str: "bool",
-                doc: "`selectable = true`: the reader can select and copy the text with the platform's own selection (Android: long-press, handles, the copy menu; web: `user-select: text`, which also overrides a `user-select: none` ancestor). Read when the text mounts. Native labels are not selectable without it; macOS and iOS do not select yet. For text a reader needs to copy — a code, an address, an error message.",
+                doc: "`selectable = true`: the reader can select and copy the text with the platform's own selection (Android and iOS: long-press, handles, the copy menu; web: `user-select: text`, which also overrides a `user-select: none` ancestor). Read when the text mounts. Native labels are not selectable without it; macOS does not select yet. A selectable text takes its own touches, so inside a pressable a press on it selects rather than presses. For text a reader needs to copy — a code, an address, an error message.",
                 constraint: "static at mount (Android realizes a selectable text as a different widget)",
             },
             COMMON_STYLE_FIELD,

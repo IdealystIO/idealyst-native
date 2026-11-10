@@ -414,3 +414,171 @@ impl IdealystTextView {
         Retained::into_super(this)
     }
 }
+
+pub(crate) struct SelectableTextIvars {
+    /// The author's padding (`setTextInsets:`). The container inset is
+    /// this plus the vertical centring offset, see `layoutSubviews`.
+    insets: Cell<TextInsets>,
+}
+
+declare_class!(
+    /// A selectable `text` (`text(selectable = true)`): a `UITextView`, the
+    /// UIKit view with the platform's text selection (long-press, handles,
+    /// the edit menu), set up to lay out and draw like the `IdealystLabel`
+    /// every other text is:
+    ///
+    /// - not editable, not scrolling, no line-fragment padding, a clear
+    ///   background, no clipping, the label's default font and colour;
+    /// - on TextKit 1, the layout a label draws with;
+    /// - centred vertically in its bounds as a label centres its text, so
+    ///   the glyphs land where the label's would (a measured frame is
+    ///   rounded up, leaving a fraction of a point the label splits);
+    /// - padding through `setTextInsets:`, as the label's, which becomes
+    ///   the `textContainerInset` (plus that centring).
+    pub(crate) struct IdealystSelectableText;
+
+    unsafe impl ClassType for IdealystSelectableText {
+        type Super = UITextView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystSelectableText";
+    }
+
+    impl DeclaredClass for IdealystSelectableText {
+        type Ivars = SelectableTextIvars;
+    }
+
+    unsafe impl IdealystSelectableText {
+        #[method(setTextInsets:)]
+        fn set_text_insets(&self, insets: TextInsets) {
+            self.ivars().insets.set(insets);
+            self.recentre();
+        }
+
+        #[method(layoutSubviews)]
+        fn layout_subviews(&self) {
+            let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+            self.recentre();
+        }
+    }
+);
+
+impl IdealystSelectableText {
+    /// The author's padding.
+    pub(crate) fn author_insets(view: &UITextView) -> TextInsets {
+        let this: &Self = unsafe { &*(view as *const UITextView as *const Self) };
+        this.ivars().insets.get()
+    }
+
+    /// Set the container inset to the author's padding plus half the
+    /// height the text leaves unused, as `UILabel` centres its text.
+    fn recentre(&self) {
+        let author = self.ivars().insets.get();
+        let bounds: CGRect = unsafe { msg_send![self, bounds] };
+        let used = unsafe {
+            let container: *mut NSObject = msg_send![self, textContainer];
+            let manager: *mut NSObject = msg_send![self, layoutManager];
+            if container.is_null() || manager.is_null() {
+                return;
+            }
+            let _: () = msg_send![manager, ensureLayoutForTextContainer: container];
+            let rect: CGRect = msg_send![manager, usedRectForTextContainer: container];
+            rect.size.height
+        };
+        let spare = (bounds.size.height - author.top - author.bottom - used).max(0.0) / 2.0;
+        let want = TextInsets { top: author.top + spare, ..author };
+        let current: TextInsets = unsafe { msg_send![self, textContainerInset] };
+        let same = (current.top - want.top).abs() < 0.001
+            && (current.left - want.left).abs() < 0.001
+            && (current.bottom - want.bottom).abs() < 0.001
+            && (current.right - want.right).abs() < 0.001;
+        if !same {
+            let _: () = unsafe { msg_send![self, setTextContainerInset: want] };
+        }
+    }
+}
+
+impl IdealystSelectableText {
+    /// A new selectable text, typed as the `UITextView` the backend speaks.
+    pub(crate) fn new(mtm: MainThreadMarker) -> Retained<UITextView> {
+        let this = mtm.alloc::<Self>().set_ivars(SelectableTextIvars { insets: Cell::new(TextInsets::default()) });
+        let this: Retained<Self> = unsafe { msg_send_id![super(this), init] };
+        let view: Retained<UITextView> = Retained::into_super(this);
+        unsafe {
+            // Reading `layoutManager` puts the view on TextKit 1, the layout
+            // a `UILabel` draws with. On TextKit 2 (the default) the glyphs
+            // sat half a point off the label's.
+            let _: *mut NSObject = msg_send![&view, layoutManager];
+            let _: () = msg_send![&view, setEditable: false];
+            let _: () = msg_send![&view, setSelectable: true];
+            let _: () = msg_send![&view, setScrollEnabled: false];
+            let _: () = msg_send![&view, setTextContainerInset: TextInsets::default()];
+            let container: *mut objc2::runtime::AnyObject = msg_send![&view, textContainer];
+            if !container.is_null() {
+                let _: () = msg_send![container, setLineFragmentPadding: 0.0 as CGFloat];
+                // Word wrap, no line limit: the label's create-time
+                // configuration (`apply_label_line_config` with `None`).
+                let _: () = msg_send![container, setLineBreakMode: 0isize];
+                let _: () = msg_send![container, setMaximumNumberOfLines: 0usize];
+            }
+            // A text view's natural font is 12pt and its colour black; a
+            // label's are the system 17pt and `labelColor`. Take them from
+            // a real label, so a text that no style touches renders as one.
+            let label: Retained<UILabel> = msg_send_id![mtm.alloc::<UILabel>(), init];
+            let font: *mut NSObject = msg_send![&label, font];
+            let color: *mut NSObject = msg_send![&label, textColor];
+            let _: () = msg_send![&view, setFont: font];
+            let _: () = msg_send![&view, setTextColor: color];
+            let clear: Retained<objc2_ui_kit::UIColor> = objc2_ui_kit::UIColor::clearColor();
+            let _: () = msg_send![&view, setBackgroundColor: &*clear];
+            // A label doesn't clip (glyph overhang, a text shadow); a text
+            // view does by default, and `apply_clip` keeps the natural value.
+            let _: () = msg_send![&view, setClipsToBounds: false];
+        }
+        view
+    }
+}
+
+/// The size a selectable text needs at `avail_w` points wide (∞ for
+/// unbounded), for its Taffy measure_fn: what the label's `sizeThatFits:`
+/// answers — the widest laid-out line, the height of the lines shown, plus
+/// the author's padding. A text view's own `sizeThatFits:` answers the
+/// width it is given, so the text is laid out in a scratch TextKit 1 stack
+/// (the layout the view draws with: same string, line limit and wrap mode)
+/// at that width instead. The centring offset is not padding and is left
+/// out.
+pub(crate) fn selectable_text_fit(view: &UITextView, avail_w: f32) -> CGSize {
+    let insets = IdealystSelectableText::author_insets(view);
+    let pad_w = insets.left + insets.right;
+    let pad_h = insets.top + insets.bottom;
+    let bound = if avail_w.is_finite() {
+        (avail_w as CGFloat - pad_w).max(0.0)
+    } else {
+        CGFloat::MAX
+    };
+    let used = unsafe {
+        let attributed: *mut NSObject = msg_send![view, attributedText];
+        let live: *mut NSObject = msg_send![view, textContainer];
+        let storage: Retained<NSObject> = msg_send_id![
+            msg_send_id![objc2::class!(NSTextStorage), alloc],
+            initWithAttributedString: attributed
+        ];
+        let manager: Retained<NSObject> = msg_send_id![objc2::class!(NSLayoutManager), new];
+        let container: Retained<NSObject> = msg_send_id![
+            msg_send_id![objc2::class!(NSTextContainer), alloc],
+            initWithSize: CGSize { width: bound, height: CGFloat::MAX }
+        ];
+        let _: () = msg_send![&container, setLineFragmentPadding: 0.0 as CGFloat];
+        if !live.is_null() {
+            let lines: usize = msg_send![live, maximumNumberOfLines];
+            let mode: isize = msg_send![live, lineBreakMode];
+            let _: () = msg_send![&container, setMaximumNumberOfLines: lines];
+            let _: () = msg_send![&container, setLineBreakMode: mode];
+        }
+        let _: () = msg_send![&manager, addTextContainer: &*container];
+        let _: () = msg_send![&storage, addLayoutManager: &*manager];
+        let _: () = msg_send![&manager, ensureLayoutForTextContainer: &*container];
+        let rect: CGRect = msg_send![&manager, usedRectForTextContainer: &*container];
+        rect.size
+    };
+    CGSize { width: used.width.min(bound) + pad_w, height: used.height + pad_h }
+}

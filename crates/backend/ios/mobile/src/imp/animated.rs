@@ -603,6 +603,14 @@ impl IosBackend {
                             msg_send![label.as_ref(), setTextColor: &*ui_color]
                         };
                     }
+                    // A selectable text is a UITextView: its `tintColor`
+                    // is the caret and selection, so the text needs
+                    // `textColor` as the label does.
+                    IosNode::SelectableText(text) => {
+                        let _: () = unsafe {
+                            msg_send![text.as_ref(), setTextColor: &*ui_color]
+                        };
+                    }
                     IosNode::Button(btn) => {
                         // UIControlStateNormal = 0
                         let _: () = unsafe {

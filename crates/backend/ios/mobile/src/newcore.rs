@@ -905,11 +905,20 @@ mod ios_impl {
 
     impl caps::TextOps for IosBackend {
         fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
-            IosBackend::create_text_impl(self, content, a11y)
+            IosBackend::create_text_impl(self, content, a11y, false)
+        }
+
+        // A read-only UITextView laid out as the label (`IosNode::SelectableText`).
+        fn create_selectable_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node {
+            IosBackend::create_text_impl(self, content, a11y, true)
+        }
+
+        fn create_selectable_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
+            IosBackend::create_styled_text_impl(self, runs, a11y, true)
         }
 
         fn create_styled_text(&mut self, runs: &[TextRun], a11y: &AccessibilityProps) -> Self::Node {
-            IosBackend::create_styled_text_impl(self, runs, a11y)
+            IosBackend::create_styled_text_impl(self, runs, a11y, false)
         }
 
         fn update_styled_text(&mut self, node: &Self::Node, runs: &[TextRun]) {

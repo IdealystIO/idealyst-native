@@ -65,7 +65,7 @@ pub(crate) struct LabelText {
 /// `accessibilityLabel` half is a three-way decision rather than an
 /// unconditional write.
 fn set_label_text(
-    label: &UILabel,
+    label: &UIView,
     raw: &str,
     previous: TextTransform,
     next: TextTransform,
@@ -73,7 +73,9 @@ fn set_label_text(
 ) {
     let shown = next.apply(raw);
     let ns = NSString::from_str(&shown);
-    unsafe { label.setText(Some(&ns)) };
+    // `setText:` on either display-text view: the label or a selectable
+    // text's UITextView.
+    let _: () = unsafe { msg_send![label, setText: &*ns] };
     match a11y_label_write(previous, next, author_labelled) {
         A11yLabelWrite::Leave => {}
         A11yLabelWrite::SetRaw => a11y::set_label_override(label, Some(raw)),
@@ -374,6 +376,12 @@ pub enum IosNode {
     /// than the target/action pattern UITextField uses for change
     /// notifications.
     TextView(Retained<objc2_ui_kit::UITextView>),
+    /// A selectable `text` (`text(selectable = true)`): a read-only
+    /// `UITextView` (`text_inset::IdealystSelectableText`) laid out as a
+    /// label, for UIKit's text selection. Display text like
+    /// [`IosNode::Label`] in every other respect — see
+    /// [`IosNode::as_display_text`].
+    SelectableText(Retained<objc2_ui_kit::UITextView>),
     Switch(Retained<UISwitch>),
     Slider(Retained<UISlider>),
     ScrollView(Retained<UIScrollView>),
@@ -388,6 +396,7 @@ impl IosNode {
             IosNode::Button(b) => b,
             IosNode::TextField(t) => t,
             IosNode::TextView(t) => t,
+            IosNode::SelectableText(t) => t,
             IosNode::Switch(s) => s,
             IosNode::Slider(s) => s,
             IosNode::ScrollView(s) => s,
@@ -397,6 +406,17 @@ impl IosNode {
 
     pub fn view_key(&self) -> usize {
         self.as_view() as *const UIView as usize
+    }
+
+    /// The view of a `text` node — a label, or a selectable text's
+    /// UITextView — or `None` for any other primitive. Both take
+    /// `setText:` / `setAttributedText:` / the text style the same way.
+    pub fn as_display_text(&self) -> Option<&UIView> {
+        match self {
+            IosNode::Label(l) => Some(l),
+            IosNode::SelectableText(t) => Some(t),
+            _ => None,
+        }
     }
 }
 
@@ -837,13 +857,13 @@ impl IosBackend {
     /// so it is enforced by construction instead.
     pub(crate) fn record_label_text(
         &mut self,
-        label: &Retained<UILabel>,
+        label: &UIView,
         content: &str,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) {
         self.layout_for_view(label);
         self.label_texts.insert(
-            &**label as *const UILabel as usize,
+            label as *const UIView as usize,
             LabelText {
                 raw: content.to_string(),
                 transform: TextTransform::None,
@@ -1741,7 +1761,15 @@ impl IosBackend {
         node
     }
 
-    pub(crate) fn create_text_impl(&mut self, content: &str, a11y: &runtime_shared::accessibility::AccessibilityProps) -> IosNode {
+    pub(crate) fn create_text_impl(
+        &mut self,
+        content: &str,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+        selectable: bool,
+    ) -> IosNode {
+        if selectable {
+            return self.create_selectable_text_node(content, a11y);
+        }
         // `IdealystLabel` is a UILabel subclass with per-side text
         // insets. The framework's `StyleRules.padding_*` values get
         // applied by Taffy as the node's padding rect, which insets
@@ -1839,10 +1867,49 @@ impl IosBackend {
         node
     }
 
+    /// A selectable `text`: `IdealystSelectableText`, a read-only
+    /// UITextView set up as a label (see that type), measured by the same
+    /// `sizeThatFits:` contract as the label: a non-scrolling text view
+    /// answers its content size for the width it's given.
+    fn create_selectable_text_node(
+        &mut self,
+        content: &str,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> IosNode {
+        let view = text_inset::IdealystSelectableText::new(self.mtm);
+        let ns_text = NSString::from_str(content);
+        let _: () = unsafe { msg_send![&view, setText: &*ns_text] };
+        let layout = self.layout_for_view(&view);
+        self.record_label_text(&view, content, a11y);
+        let view_for_measure = view.clone();
+        self.layout.set_measure_fn(
+            layout,
+            std::rc::Rc::new(move |known_dimensions, available_space| {
+                let avail = |known: Option<f32>, space: runtime_layout::AvailableSpace| {
+                    known.unwrap_or(match space {
+                        runtime_layout::AvailableSpace::Definite(v) => v,
+                        runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
+                        runtime_layout::AvailableSpace::MinContent => 0.0,
+                    })
+                };
+                let avail_w = avail(known_dimensions.width, available_space.width);
+                let fitted = crate::imp::text_inset::selectable_text_fit(&view_for_measure, avail_w);
+                runtime_layout::Size {
+                    width: known_dimensions.width.unwrap_or((fitted.width as f32).ceil()),
+                    height: known_dimensions.height.unwrap_or((fitted.height as f32).ceil()),
+                }
+            }),
+        );
+        let node = IosNode::SelectableText(view);
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
     pub(crate) fn create_styled_text_impl(
         &mut self,
         runs: &[runtime_shared::TextRun],
         a11y: &runtime_shared::accessibility::AccessibilityProps,
+        selectable: bool,
     ) -> IosNode {
         // Reuse the full `create_text` path (inset label subclass, wrap
         // config, measure_fn — `sizeThatFits:` measures the attributed
@@ -1850,10 +1917,10 @@ impl IosBackend {
         // attributed realization. The paragraph style arrives via
         // `apply_style` right after and re-realizes with the real base.
         let plain = runtime_shared::styled_text::plain_text_of(runs);
-        let node = self.create_text_impl(&plain, a11y);
-        if let IosNode::Label(label) = &node {
+        let node = self.create_text_impl(&plain, a11y, selectable);
+        if let Some(label) = node.as_display_text() {
             styled_text::realize(label, runs, None, &self.font_registry);
-            let key = &**label as *const UILabel as *const UIView as usize;
+            let key = label as *const UIView as usize;
             self.styled_texts.insert(
                 key,
                 styled_text::StyledTextEntry { runs: runs.to_vec(), para: None },
@@ -1867,8 +1934,8 @@ impl IosBackend {
         // re-realization: keep the stored runs current and rebuild
         // against the last-applied paragraph style so run token colors
         // resolve on the current theme.
-        let IosNode::Label(label) = node else { return };
-        let key = &**label as *const UILabel as *const UIView as usize;
+        let Some(label) = node.as_display_text() else { return };
+        let key = label as *const UIView as usize;
         let para = match self.styled_texts.get_mut(&key) {
             Some(entry) => {
                 entry.runs = runs.to_vec();
@@ -3399,13 +3466,14 @@ impl IosBackend {
 
     pub(crate) fn update_text_impl(&mut self, node: &IosNode, content: &str) {
         match node {
-            IosNode::Label(label) => {
+            IosNode::Label(_) | IosNode::SelectableText(_) => {
+                let label: &UIView = node.as_view();
                 // New text, SAME transform: the sheet has not changed,
                 // so a label whose style upcases it must upcase this
                 // string too. Without the standing transform here, the
                 // first reactive text change silently un-styled the
                 // label.
-                let key = &**label as *const UILabel as usize;
+                let key = label as *const UIView as usize;
                 let (transform, author_a11y_label) = self
                     .label_texts
                     .get(&key)
@@ -3905,7 +3973,7 @@ impl IosBackend {
             &next_layout_key,
         );
         if layout_changed {
-            if matches!(node, IosNode::Label(_)) {
+            if node.as_display_text().is_some() {
                 let mut text_style: StyleRules = (**style).clone();
                 text_style.padding_left = None;
                 text_style.padding_right = None;
@@ -3991,7 +4059,7 @@ impl IosBackend {
         }
 
         match node {
-            IosNode::Label(_) => {
+            IosNode::Label(_) | IosNode::SelectableText(_) => {
                 let color_animated = self
                     .animated_states
                     .get(&node.view_key())
@@ -4015,7 +4083,7 @@ impl IosBackend {
                         entry.transform = next;
                         let raw = entry.raw.clone();
                         let author_labelled = entry.author_a11y_label;
-                        if let IosNode::Label(label) = node {
+                        if let Some(label) = node.as_display_text() {
                             set_label_text(label, &raw, previous, next, author_labelled);
                         }
                         // The glyph run just changed width — "CREW" is
@@ -4036,7 +4104,7 @@ impl IosBackend {
                     entry.para = Some(style.clone());
                     let runs = entry.runs.clone();
                     let para = entry.para.clone();
-                    if let IosNode::Label(label) = node {
+                    if let Some(label) = node.as_display_text() {
                         styled_text::realize(
                             label,
                             &runs,
@@ -4853,8 +4921,8 @@ impl IosBackend {
         // untransformed announcement. Same shape as the Link default in
         // `create_link_impl`: re-assert afterwards, author overrides
         // still win.
-        if let IosNode::Label(label) = node {
-            let key = &**label as *const UILabel as usize;
+        if let Some(label) = node.as_display_text() {
+            let key = label as *const UIView as usize;
             if let Some(entry) = self.label_texts.get_mut(&key) {
                 entry.author_a11y_label = a11y_props.label.is_some();
                 if a11y_label_write(entry.transform, entry.transform, entry.author_a11y_label)
