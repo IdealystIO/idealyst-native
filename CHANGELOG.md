@@ -1271,19 +1271,6 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
-- **A `Field` adornment can show only while a condition holds** (`idea-ui` minor).
-  `Field(trailing_when = Some(Rc::new(move || !q.get().is_empty())))` shows the `trailing`
-  adornment only while the closure returns `true` — a clear ✕ that exists only while the field
-  has text; `leading_when` does the same for `leading`. The closure is read reactively, and the
-  field keeps its adorned layout as the adornment comes and goes, so the input is never rebuilt.
-
-- **A pressable can fire as the pointer goes down** (`runtime-shared`, `runtime-vocabulary`,
-  `runtime-core`, `idea-ui`, every backend minor; `wire` / `dev-server` / `dev-client` minor).
-  `pressable(..).activation(PressActivation::Down)` and `Button(activation =
-  PressActivation::Down)` fire the action at the primary pointer-down instead of the release,
-  so a button that opens a `Menu` has it open before the button is released. The rest of that
-  press fires nothing more; a secondary press fires nothing; keyboard, screen-reader and robot
-  activation fire once in either mode. The default stays `PressActivation::Release`.
 - **Virtualized tables and grids reuse cells as they scroll** (`runtime-shared`,
   `runtime-vocabulary`, `backend-web`, `backend-macos`, `backend-ios-mobile`,
   `backend-android-mobile`, `host-mock`, `idea-ui` minor). `virtual_grid_recycled(…, reuse_class,
@@ -1331,6 +1318,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   columns sharing the visible width — re-lays the grid out when it changes. Cells that survive the
   change are re-placed on every backend.
 
+- **A `Field` adornment can show only while a condition holds** (`idea-ui` minor).
+  `Field(trailing_when = Some(Rc::new(move || !q.get().is_empty())))` shows the `trailing`
+  adornment only while the closure returns `true` — a clear ✕ that exists only while the field
+  has text; `leading_when` does the same for `leading`. The closure is read reactively, and the
+  field keeps its adorned layout as the adornment comes and goes, so the input is never rebuilt.
+
+- **A pressable can fire as the pointer goes down** (`runtime-shared`, `runtime-vocabulary`,
+  `runtime-core`, `idea-ui`, every backend minor; `wire` / `dev-server` / `dev-client` minor).
+  `pressable(..).activation(PressActivation::Down)` and `Button(activation =
+  PressActivation::Down)` fire the action at the primary pointer-down instead of the release,
+  so a button that opens a `Menu` has it open before the button is released. The rest of that
+  press fires nothing more; a secondary press fires nothing; keyboard, screen-reader and robot
+  activation fire once in either mode. The default stays `PressActivation::Release`.
   - **Press, drag, release picks a menu row** (`idea-ui`). The press that opened a `Menu` can be
     dragged onto a `MenuItem` (or through a `SubMenu` into a flyout row) and released there to
     pick it. Nothing to opt into. Mouse, trackpad and pen on every backend; a finger on iOS and Android,
@@ -3342,6 +3342,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **An Android `virtual_grid` cell whose content changed is rebuilt** (`backend-android-mobile`
+  patch). The Android grid diffed cells by position only, so after a data change that rewrote a
+  cell (a sorted table: same row and column, another record) the old content stayed on screen
+  until the cell scrolled out and back. It now compares each cell's key, as web, iOS and macOS do.
+
 - **`Table(styles = …)` styles every cell of the table** (`idea-ui` patch). The table's
   `head_cell` / `body_cell` overrides reached only the scrollbar corner; the cells the table
   adds (the select-all box, each row's selection box, the reorder grip) were built with default
@@ -3355,11 +3360,6 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 - **`idealyst docs` imports name public paths** (`idealyst-cli` via docs-app). Imports were read
   from the crate root's `pub use` items only, so an item re-exported in two hops (`TableGroup`,
-- **An Android `virtual_grid` cell whose content changed is rebuilt** (`backend-android-mobile`
-  patch). The Android grid diffed cells by position only, so after a data change that rewrote a
-  cell (a sorted table: same row and column, another record) the old content stayed on screen
-  until the cell scrolled out and back. It now compares each cell's key, as web, iOS and macOS do.
-
   `TablePager`, `TableCards`) was imported from a private module and didn't compile. Imports now
   resolve each item's shortest public path through the module tree.
 
