@@ -3313,3 +3313,97 @@ fn regression_band_title_truncates_before_its_actions_in_a_phone_width_scroll_x_
         assert!(layout.frame_of(title).width < TITLE_W, "the title truncates");
     });
 }
+
+// =========================================================================
+// Per-table cell styles: `Table.styles.head_cell` / `body_cell` reach
+// every cell, the ones the table adds included.
+// =========================================================================
+
+fn no_rule() -> StyleRules {
+    StyleRules { border_bottom_width: Some(Tokenized::Literal(0.0)), ..Default::default() }
+}
+
+fn pad_top(px: f32) -> StyleRules {
+    StyleRules { padding_top: Some(Tokenized::Literal(Length::Px(px))), ..Default::default() }
+}
+
+/// A selection table with a header, two selectable rows and a third row
+/// so the rows under test are not the last one (which drops its divider).
+fn selection_table(styles: TableSlotStyles, head: Vec<Element>, body: Vec<Element>) -> Element {
+    let selection = signal(BTreeSet::new());
+    Table(TableProps {
+        selection: Some(selection),
+        children: vec![
+            row_of(head),
+            TableRow(TableRowProps { children: body, id: Some(RowId::from("a")), selectable: true, ..Default::default() }),
+            id_row("b", &["Bo", "b@x"], true, false),
+        ],
+        styles,
+        ..Default::default()
+    })
+}
+
+/// REGRESSION (idea-ui 21.1.0): a selection table's select-all cell was
+/// built with default props, so `Table(styles = …head_cell(no rule))`
+/// removed the rule under every head cell but that one — a short 1px
+/// line stayed under the checkbox.
+#[test]
+fn regression_table_head_cell_override_reaches_the_select_all_cell() {
+    with_test_world(|| {
+        idea_theme::theme::install_idea_theme(crate::light_theme());
+        let t = selection_table(
+            TableSlotStyles::default().head_cell(no_rule()),
+            vec![head_cell("Name"), head_cell("Email")],
+            vec![body_cell("Ana"), body_cell("a@x")],
+        );
+        let widths: Vec<Option<f32>> = grid_cells(t)
+            .into_iter()
+            .map(|c| rules_of(c).border_bottom_width.as_ref().map(|w| w.resolve()))
+            .collect();
+        // Head row (select-all + 2 author cells) loses its rule; the body
+        // rows keep the theme's divider.
+        assert_eq!(&widths[..3], &[Some(0.0); 3], "every head cell, the select-all one included");
+        assert_eq!(&widths[3..6], &[Some(1.0); 3], "a head override must not reach body cells");
+    });
+}
+
+/// `Table.styles.body_cell` is the default for every body cell — the
+/// row's selection box included — without repeating it on each
+/// `TableCell`; a cell's own `styles` still wins over it.
+#[test]
+fn table_body_cell_override_is_every_cells_default_under_the_cells_own() {
+    with_test_world(|| {
+        idea_theme::theme::install_idea_theme(crate::light_theme());
+        let own = TableCell(TableCellProps {
+            text: Reactive::Static(Some("a@x".into())),
+            styles: TableSlotStyles::default().body_cell(pad_top(7.0)),
+            ..Default::default()
+        });
+        let t = selection_table(
+            TableSlotStyles::default().body_cell(pad_top(3.0)),
+            vec![head_cell("Name"), head_cell("Email")],
+            vec![body_cell("Ana"), own],
+        );
+        let pads: Vec<Option<f32>> = grid_cells(t).into_iter().map(|c| px_of(&rules_of(c).padding_top)).collect();
+        assert_ne!(pads[0], Some(3.0), "a body override must not reach head cells");
+        assert_eq!(&pads[3..6], &[Some(3.0), Some(3.0), Some(7.0)], "select box, plain cell, cell's own override");
+        assert_eq!(&pads[6..9], &[Some(3.0); 3]);
+    });
+}
+
+/// The table's override sits UNDER the geometry it computes for a cell:
+/// a sized column keeps its width when the override sets one too.
+#[test]
+fn table_cell_override_does_not_beat_table_geometry() {
+    with_test_world(|| {
+        idea_theme::theme::install_idea_theme(crate::light_theme());
+        let wide = StyleRules { width: Some(Tokenized::Literal(Length::Px(500.0))), ..Default::default() };
+        let t = selection_table(
+            TableSlotStyles::default().body_cell(wide),
+            vec![head_cell("Name"), head_cell("Email")],
+            vec![body_cell("Ana"), body_cell("a@x")],
+        );
+        let select_box = grid_cells(t).into_iter().nth(3).unwrap();
+        assert_eq!(px_of(&rules_of(select_box).width), Some(SELECT_COLUMN_WIDTH_PX));
+    });
+}

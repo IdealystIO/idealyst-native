@@ -365,6 +365,16 @@
 //! alone. Row tones read `color-table-row-{highlight,warning,danger}`
 //! and their `-hover` variants.
 //!
+//! # Per-table cell styles
+//!
+//! `Table(styles = TableSlotStyles::default().head_cell(…))` restyles
+//! every head cell of that table, and `.body_cell(…)` every body cell —
+//! the author's and the ones the table adds (the selection boxes, the
+//! reorder grip, the empty-state row). A cell's own `styles` layers over
+//! the table's, and the geometry the table computes (column widths,
+//! frozen offsets, edge inset) over both. For every table in the app,
+//! restyle `TableStyles` once instead.
+//!
 //! # Building your own row interaction
 //!
 //! For an interaction the table does not ship, the `table` SDK exposes
@@ -1301,6 +1311,24 @@ pub fn Table(props: TableProps) -> Element {
             });
         }
     }
+    // The table's `head_cell` / `body_cell` overrides are the default for
+    // EVERY cell — the author's and the ones the table adds (selection,
+    // grip, empty-state padding) — with a cell's own `styles` over them.
+    // After the static selections above, so an override's arms resolve
+    // against the axes the table selected (density, plain, sticky header).
+    let head_override = props.styles.head_cell.clone();
+    let body_override = props.styles.body_cell.clone();
+    if head_override.is_some() || body_override.is_some() {
+        let layer: Rc<dyn Fn(StyleApplication) -> StyleApplication> =
+            Rc::new(move |app| layer_table_cell_override(app, head_override.as_ref(), body_override.as_ref()));
+        for child in &children {
+            table::visit_rows(child, |row| {
+                table::visit_row_cells(row, |cell| {
+                    table::map_cell_application(cell, layer.clone());
+                });
+            });
+        }
+    }
     // A plain table's frozen columns draw their inner edge only while
     // columns are scrolled beneath it. Last, so it composes over every
     // selection above; and only on pinned cells, so the rest stay static.
@@ -1624,6 +1652,26 @@ fn empty_cell(empty: TableEmpty) -> Element {
             ..Default::default()
         }),
     }
+}
+
+/// Layer the table's cell override UNDER a built cell's inline layer:
+/// `head` for a head cell (its sheet carries the `sticky_header` axis, a
+/// body cell's does not), `body` otherwise. The cell's inline layer holds
+/// its own `styles` override and the geometry the table computed, so
+/// both keep winning for the fields they set.
+fn layer_table_cell_override(
+    app: StyleApplication,
+    head: Option<&runtime_core::SlotOverride>,
+    body: Option<&runtime_core::SlotOverride>,
+) -> StyleApplication {
+    let o = if app.variants.0.contains_key("sticky_header") { head } else { body };
+    let Some(o) = o else { return app };
+    let under = o.resolve(&app.variants);
+    let inline = match app.inline() {
+        Some(own) => Rc::new((*under).clone().merge(own)),
+        None => under,
+    };
+    app.with_inline_shared(inline)
 }
 
 /// Whether every cell of `row` is a head cell — `TableCell(header = true)`
