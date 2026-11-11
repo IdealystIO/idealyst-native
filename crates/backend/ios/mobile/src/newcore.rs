@@ -195,7 +195,7 @@ pub fn deliver_inbound_link(url: &str) -> bool {
 
 /// Flush the mounted world immediately (skipped while it is already
 /// mid-flush).
-fn flush_now() {
+pub(crate) fn flush_now() {
     let world = FLUSH_WORLD.with(|w| w.borrow().clone());
     if let Some(world) = world {
         if !world.is_flushing() {
@@ -1389,6 +1389,21 @@ mod ios_impl {
             frozen: primitives::virtual_grid::FrozenPanes,
         ) {
             IosBackend::set_virtual_grid_frozen_impl(self, node, frozen)
+        }
+
+        fn set_virtual_grid_recycling(
+            &mut self,
+            node: &Self::Node,
+            recycling: primitives::virtual_grid::GridRecycling,
+        ) {
+            // A rebind writes a signal (mounted world ambient). Not flushed
+            // here: the grid rebinds a batch and flushes once.
+            let f = recycling.rebind_cell;
+            let recycling = primitives::virtual_grid::GridRecycling {
+                reuse_class: recycling.reuse_class,
+                rebind_cell: Rc::new(move |scope, c, r| crate::newcore::enter_mounted_world(|| f(scope, c, r))),
+            };
+            crate::imp::virtual_grid::set_recycling(self, node, recycling)
         }
 
         fn virtual_grid_data_changed(&mut self, node: &Self::Node) {

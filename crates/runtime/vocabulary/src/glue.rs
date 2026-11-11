@@ -2811,9 +2811,9 @@ pub mod primitives {
     /// already has, so the wrapper would only ever be a lossy special
     /// case of it.
     pub mod virtual_grid {
-        pub use crate::builders::{virtual_grid, VirtualGridBuilder};
+        pub use crate::builders::{virtual_grid, virtual_grid_recycled, VirtualGridBuilder};
         pub use runtime_shared::primitives::virtual_grid::{
-            Band, CellKey, FrozenPanes, GridMetrics, GridWindow, PaneWindow, Scrollport,
+            Band, CellKey, FrozenPanes, GridMetrics, GridRecycling, GridWindow, PaneWindow, Scrollport,
             VirtualGridHandle,
         };
     }

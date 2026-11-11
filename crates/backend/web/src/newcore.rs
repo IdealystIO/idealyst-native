@@ -1524,6 +1524,26 @@ impl caps::GridOps for WebBackend {
         crate::primitives::virtual_grid::set_frozen(self, node, frozen)
     }
 
+    fn set_virtual_grid_recycling(
+        &mut self,
+        node: &Self::Node,
+        recycling: primitives::virtual_grid::GridRecycling,
+    ) {
+        // A rebind writes a signal (mounted world ambient); the flush it
+        // schedules is a microtask, which runs after the shim's scroll task
+        // and before the browser paints — so a reused cell never draws its
+        // old row in its new place.
+        let f = recycling.rebind_cell;
+        let recycling = primitives::virtual_grid::GridRecycling {
+            reuse_class: recycling.reuse_class,
+            rebind_cell: Rc::new(move |scope, c, r| {
+                enter_mounted_world(|| f(scope, c, r));
+                schedule_flush();
+            }),
+        };
+        crate::primitives::virtual_grid::set_recycling(self, node, recycling)
+    }
+
     fn virtual_grid_data_changed(&mut self, node: &Self::Node) {
         crate::primitives::virtual_grid::data_changed(self, node)
     }

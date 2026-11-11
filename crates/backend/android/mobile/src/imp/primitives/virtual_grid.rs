@@ -31,6 +31,15 @@
 //! by while no child sets a Z: scrolling cells at index 0, corners at the
 //! end, cells frozen on one axis just before the lowest corner
 //! ([`insert_index`]).
+//!
+//! ## Cell reuse
+//!
+//! With a [`GridRecycling`], a cell leaving the window is parked (views
+//! kept) under its (reuse class, bands), and a cell entering takes a parked
+//! one: rebound to the new position, re-framed and re-translated, and the
+//! batch's rebinds flushed once (`newcore::flush_now`) inside the scroll
+//! callback, before the frame draws. Whatever is still parked after the
+//! sync is released.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -40,7 +49,7 @@ use crate::imp::{with_env, AndroidBackend};
 use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;
 use runtime_shared::primitives::virtual_grid::{
-    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, PaneWindow,
+    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, GridRecycling, PaneWindow,
 };
 
 struct MountedCell {
@@ -69,6 +78,7 @@ pub(crate) struct GridState {
     mounted: RefCell<HashMap<(usize, usize), MountedCell>>,
     last_window: RefCell<Option<PaneWindow>>,
     frozen: std::cell::Cell<FrozenPanes>,
+    recycling: RefCell<Option<GridRecycling>>,
     /// Viewport in dp, reported by Kotlin's `onLayout`. Zero until the
     /// first layout pass — windowing against zero would mount nothing
     /// and cache that as current, so `sync` bails instead.
@@ -122,6 +132,7 @@ pub(crate) fn create(
         mounted: RefCell::new(HashMap::new()),
         last_window: RefCell::new(None),
         frozen: std::cell::Cell::new(FrozenPanes::NONE),
+        recycling: RefCell::new(None),
         viewport: RefCell::new((0.0, 0.0)),
         overscan,
         density: RefCell::new(1.0),
@@ -232,6 +243,14 @@ pub(crate) fn set_frozen(backend: &mut AndroidBackend, node: &GlobalRef, frozen:
     *state.last_window.borrow_mut() = None;
     sync(backend, key);
     crate::schedule_layout_pass();
+}
+
+/// Reuse cells from now on (module docs, "Cell reuse").
+pub(crate) fn set_recycling(backend: &mut AndroidBackend, node: &GlobalRef, recycling: GridRecycling) {
+    let key = node.as_obj().as_raw() as usize;
+    if let Some(state) = backend.virtual_grid_registry.get(&key) {
+        *state.recycling.borrow_mut() = Some(recycling);
+    }
 }
 
 /// Re-window: diff the visible cell rect and mount/release the delta.
@@ -419,11 +438,18 @@ fn sync_now(state: &GridState) {
         .filter(|((c, r), cell)| !window.contains(*c, *r) || cell.bands != window.bands(*c, *r))
         .map(|(slot, _)| *slot)
         .collect();
+    let recycling = state.recycling.borrow().clone();
+    let mut pool: HashMap<(u64, (Band, Band)), Vec<MountedCell>> = HashMap::new();
     for slot in leaving {
         let cell = state.mounted.borrow_mut().remove(&slot);
         let Some(cell) = cell else { continue };
-        unmount(state, cell);
+        match &recycling {
+            // Parked under the class of the position it LEFT.
+            Some(r) => pool.entry(((r.reuse_class)(slot.0, slot.1), cell.bands)).or_default().push(cell),
+            None => unmount(state, cell),
+        }
     }
+    let mut rebound = false;
 
     // Mount cells that entered — and re-mount any whose CONTENT changed
     // under them, which a positional diff cannot see.
@@ -445,6 +471,14 @@ fn sync_now(state: &GridState) {
                 }
                 continue;
             }
+            // A reusable cell follows its data reactively: a new key needs
+            // no rebuild (`virtual_grid_recycled`'s contract).
+            (Some(_), Some(new)) if recycling.is_some() => {
+                if let Some(cell) = state.mounted.borrow_mut().get_mut(&(col, row)) {
+                    cell.key = new;
+                }
+                continue;
+            }
             // Releasing FIRST keeps the scope count flat rather than
             // doubling for a frame.
             (Some(_), _) => {
@@ -454,6 +488,25 @@ fn sync_now(state: &GridState) {
                 }
             }
             (None, _) => {}
+        }
+        // Reuse a parked cell of this position's class and bands: rebind it
+        // (staged; flushed once below) and move it here.
+        let bands = window.bands(col, row);
+        if let Some(r) = &recycling {
+            let parked = pool.get_mut(&((r.reuse_class)(col, row), bands)).and_then(Vec::pop);
+            if let Some(mut cell) = parked {
+                (r.rebind_cell)(cell.scope_id, col, row);
+                let m = state.metrics.borrow();
+                let (w, h) = m.cell_size(col, row);
+                CELL_BOXES.with(|b| b.borrow_mut().insert(crate::imp::AndroidBackend::node_key(&cell.view), (w, h)));
+                set_frame(state, &cell.view, &m, col, row, density);
+                hold(&cell.view, &m, col, row, scroll, viewport, frozen, density);
+                drop(m);
+                cell.key = key_now.unwrap_or_default();
+                state.mounted.borrow_mut().insert((col, row), cell);
+                rebound = true;
+                continue;
+            }
         }
         let mount = state.callbacks.borrow().as_ref().map(|c| c.mount_cell.clone());
         let Some(mount) = mount else { break };
@@ -468,7 +521,6 @@ fn sync_now(state: &GridState) {
             m.borrow_mut()
                 .insert(crate::imp::AndroidBackend::node_key(&view), (w, h))
         });
-        let bands = window.bands(col, row);
         let index = insert_index(state, bands);
         with_env(|env| {
             let _ = env.call_method(
@@ -488,6 +540,13 @@ fn sync_now(state: &GridState) {
             (col, row),
             MountedCell { view, scope_id, key: key_now.unwrap_or_default(), bands },
         );
+    }
+    // The batch's rebinds land in one flush, inside this scroll callback.
+    if rebound {
+        crate::newcore::flush_now();
+    }
+    for cell in pool.into_values().flatten() {
+        unmount(state, cell);
     }
 }
 

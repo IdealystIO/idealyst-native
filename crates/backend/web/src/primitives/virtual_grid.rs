@@ -325,6 +325,44 @@ pub(crate) fn set_frozen(b: &mut WebBackend, node: &Node, frozen: FrozenPanes) {
     call0(&instance.js, "dataChanged");
 }
 
+/// Reuse cells (`GridRecycling`): hand the shim the reuse class and the
+/// rebind, which it calls as cells leave and enter the window.
+pub(crate) fn set_recycling(
+    b: &mut WebBackend,
+    node: &Node,
+    recycling: runtime_shared::primitives::virtual_grid::GridRecycling,
+) {
+    let Some(id) = grid_id_of(node) else { return };
+    let Some(instance) = b.virtual_grid_instances.get_mut(&id) else { return };
+    let class_cb = {
+        let f = recycling.reuse_class.clone();
+        crate::glue_dom::fn2r(move |c: JsValue, r: JsValue| {
+            let c = c.as_f64().unwrap_or(0.0) as usize;
+            let r = r.as_f64().unwrap_or(0.0) as usize;
+            // A u64 class as an f64 key: exact up to 2^53, and only ever
+            // compared for equality, so a collision above that is harmless
+            // beyond a missed reuse.
+            JsValue::from_f64(f(c, r) as f64)
+        })
+    };
+    let rebind_cb = {
+        let f = recycling.rebind_cell.clone();
+        crate::glue_dom::fn3(move |s: JsValue, c: JsValue, r: JsValue| {
+            f(
+                s.as_f64().unwrap_or(0.0) as u64,
+                c.as_f64().unwrap_or(0.0) as usize,
+                r.as_f64().unwrap_or(0.0) as usize,
+            );
+        })
+    };
+    let _ = web_glue::js::Reflect::get(&instance.js, &JsValue::from_str("setRecycling"))
+        .ok()
+        .and_then(|f| f.dyn_into::<web_glue::js::Function>().ok())
+        .map(|f| f.call2(&instance.js, class_cb.as_js(), rebind_cb.as_js()));
+    instance._closures.push(Box::new(class_cb));
+    instance._closures.push(Box::new(rebind_cb));
+}
+
 /// Two-phase teardown, identical in shape to the virtualizer's: flip
 /// the JS guard synchronously so queued scroll events stop calling
 /// into Rust, then microtask-defer the heavy release (which unmounts

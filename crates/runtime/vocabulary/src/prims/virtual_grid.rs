@@ -43,4 +43,18 @@ pub struct VirtualGridPrim {
     pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
     /// Rows and columns held still at the grid's edges.
     pub frozen: FrozenPanes,
+    /// The reusable renderer, for a grid that reuses cells
+    /// (`virtual_grid_recycled`). `render_cell` stays the fixed-position
+    /// form of the same renderer, for hosts that don't reuse.
+    pub recycle: Option<VirtualGridRecycle>,
+}
+
+/// A reusable renderer: the cell reads its position from a signal, so the
+/// same cell can be pointed at another `(col, row)` of its `reuse_class`.
+#[derive(Clone)]
+pub struct VirtualGridRecycle {
+    /// Which cells may stand in for each other.
+    pub reuse_class: Rc<dyn Fn(usize, usize) -> u64>,
+    /// Build a cell for the position the signal holds.
+    pub render: Rc<dyn Fn(runtime_world::ReadSignal<(usize, usize)>) -> Element>,
 }

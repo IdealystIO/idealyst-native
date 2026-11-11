@@ -435,6 +435,12 @@ status = "gap"
 reason = "virtual_grid missing"
 
 [[allow]]
+method = "GridOps::set_virtual_grid_recycling"
+backends = ["linux", "windows", "gpu"]
+status = "gap"
+reason = "virtual_grid missing"
+
+[[allow]]
 method = "GridOps::set_virtual_grid_frozen"
 backends = ["linux", "windows", "gpu"]
 status = "gap"

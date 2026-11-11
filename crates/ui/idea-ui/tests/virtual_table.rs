@@ -381,3 +381,115 @@ fn regression_hovering_one_row_restyles_every_cell() {
         .collect();
     assert_eq!(restyled, std::collections::BTreeSet::from([3]), "only the hovered row's cells restyle");
 }
+
+// ---------------------------------------------------------------------------
+// Cell reuse: the grid points a mounted cell at another row.
+// ---------------------------------------------------------------------------
+
+impl Fixture {
+    /// Point mounted cell `scope` at grid `(col, row)`, as a backend that
+    /// reuses cells does, and flush.
+    fn rebind(&self, scope: u64, col: usize, row: usize) {
+        let r = self.h.shared.virtual_grid_recycling.borrow()[0].clone();
+        self.h.world.enter(|| (r.rebind_cell)(scope, col, row));
+        self.h.flush();
+    }
+
+    fn mount_scoped(&self, col: usize, row: usize) -> (host_mock::Node, u64) {
+        let mount = self.grid().mount_cell;
+        let out = self.h.world.enter(|| mount(col, row));
+        self.h.flush();
+        out
+    }
+}
+
+/// The table asks the grid to reuse cells, a column's body cells sharing a
+/// class and each header cell a class of its own (never pointed at a row).
+#[test]
+fn the_table_reuses_body_cells_by_column() {
+    let f = table(100, |r, _| r);
+    let r = f.h.shared.virtual_grid_recycling.borrow()[0].clone();
+    assert_eq!((r.reuse_class)(2, 5), (r.reuse_class)(2, 80), "a column's body cells share a class");
+    assert_ne!((r.reuse_class)(2, 5), (r.reuse_class)(3, 5), "columns differ");
+    assert_ne!((r.reuse_class)(2, 0), (r.reuse_class)(2, 5), "a header cell is its own class");
+}
+
+/// `VirtualRows::new` content is built for one row: a reused cell rebuilds
+/// it for the new row, on the same cell node.
+#[test]
+fn a_reused_cell_shows_its_new_rows_content() {
+    let f = table(100, |r, _| r);
+    let (node, scope) = f.mount_scoped(2, 4);
+    assert!(f.text_of(node).contains("row 3 / email"), "{}", f.text_of(node));
+    f.rebind(scope, 2, 61);
+    assert!(f.text_of(node).contains("row 60 / email"), "{}", f.text_of(node));
+}
+
+/// `VirtualRows::reusing` content reads its row: a reused cell keeps its
+/// content nodes and only the text changes.
+#[test]
+fn reusing_content_follows_the_row_without_a_rebuild() {
+    let h = host_mock::Harness::new();
+    let rows_cell = std::cell::Cell::new(None);
+    let el = h.world.enter(|| {
+        install_idea_theme(light_theme());
+        let rows = signal((0..100).map(|i| format!("row {i}")).collect::<Vec<String>>());
+        rows_cell.set(Some(rows));
+        Table(TableProps {
+            columns: columns(),
+            virtualized: Some(VirtualRows::reusing(
+                move || rows.with(|r| r.len()),
+                move |i| RowId::from(rows.with(|r| r[i].clone())),
+                move |row, col: &ColumnId| {
+                    let col = col.as_str().to_string();
+                    text(move || format!("{} / {col}", rows.with(|r| r.get(row.get()).cloned().unwrap_or_default())))
+                        .into_element()
+                },
+            )),
+            ..Default::default()
+        })
+    });
+    let _r = h.mount(el);
+    h.flush();
+    let mount = h.virtual_grid(0).mount_cell;
+    let (node, scope) = h.world.enter(|| mount(1, 4));
+    h.flush();
+    let before = h.live_tree(node);
+    assert!(before.contains("row 3 / email"), "{before}");
+    let r = h.shared.virtual_grid_recycling.borrow()[0].clone();
+    h.world.enter(|| (r.rebind_cell)(scope, 1, 61));
+    h.flush();
+    let after = h.live_tree(node);
+    assert!(after.contains("row 60 / email"), "{after}");
+    let ids = |t: &str| t.lines().map(|l| l.trim().split(' ').next().unwrap_or("").to_string()).collect::<Vec<_>>();
+    assert_eq!(ids(&before), ids(&after), "the same nodes, only the text changed");
+    // Data edits reach a reused cell reactively.
+    let rows = rows_cell.take().unwrap();
+    h.world.enter(|| rows.update(|r| { let mut r = r.clone(); r[60] = "renamed".into(); r }));
+    h.flush();
+    assert!(h.live_tree(node).contains("renamed / email"), "{}", h.live_tree(node));
+}
+
+/// A reused cell's selection box, tone and hover follow the NEW row.
+#[test]
+fn a_reused_cell_selects_tints_and_hovers_its_new_row() {
+    let f = table(100, |r, _| r.on_row_click(|_| {}).tone(|i| if i == 60 { RowTone::Danger } else { RowTone::None }));
+    let (select, select_scope) = f.mount_scoped(0, 4);
+    let (cell, cell_scope) = f.mount_scoped(2, 4);
+    f.rebind(select_scope, 0, 61);
+    f.rebind(cell_scope, 2, 61);
+    assert_eq!(f.bg(cell).as_deref(), Some("color-table-row-danger"), "the new row's tone");
+
+    // The box now toggles row 60's id, not row 3's.
+    let presses = f.h.shared.press_handlers.borrow().len();
+    assert!(presses > 0);
+    let press = f.h.shared.press_handlers.borrow()[presses - 1].clone();
+    f.h.world.enter(|| press());
+    f.h.flush();
+    assert_eq!(
+        f.selection.with_untracked(|s| s.iter().cloned().collect::<Vec<_>>()),
+        vec![RowId::from("row 60")],
+        "the reused box selects its new row"
+    );
+    let _ = select;
+}

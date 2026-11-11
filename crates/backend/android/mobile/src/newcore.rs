@@ -175,7 +175,7 @@ pub fn deliver_inbound_link(url: &str) -> bool {
 
 /// Flush the mounted world immediately (skipped while it is already
 /// mid-flush).
-fn flush_now() {
+pub(crate) fn flush_now() {
     let world = FLUSH.with(|f| f.world.borrow().clone());
     if let Some(world) = world {
         if !world.is_flushing() {
@@ -356,7 +356,7 @@ pub fn mounted_world() -> Option<World> {
 /// the ambient fallback never double-books. Host-compilable (like the
 /// flushing* wrappers) so the glue tests can pin it without JNI.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
+pub(crate) fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
     match FLUSH.with(|fl| fl.world.borrow().clone()) {
         Some(world) => world.enter(f),
         None => f(),
@@ -1434,6 +1434,21 @@ mod native {
             frozen: primitives::virtual_grid::FrozenPanes,
         ) {
             AndroidBackend::set_virtual_grid_frozen_impl(self, node, frozen)
+        }
+
+        fn set_virtual_grid_recycling(
+            &mut self,
+            node: &Self::Node,
+            recycling: primitives::virtual_grid::GridRecycling,
+        ) {
+            // A rebind writes a signal (mounted world ambient). Not flushed
+            // here: the grid rebinds a batch and flushes once.
+            let f = recycling.rebind_cell;
+            let recycling = primitives::virtual_grid::GridRecycling {
+                reuse_class: recycling.reuse_class,
+                rebind_cell: Rc::new(move |scope, c, r| crate::newcore::enter_mounted_world(|| f(scope, c, r))),
+            };
+            AndroidBackend::set_virtual_grid_recycling_impl(self, node, recycling)
         }
 
         fn virtual_grid_data_changed(&mut self, node: &Self::Node) {

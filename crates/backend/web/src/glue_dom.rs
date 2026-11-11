@@ -141,6 +141,12 @@ pub(crate) fn fn2(mut f: impl FnMut(JsValue, JsValue) + 'static) -> web_glue::Cl
         JsValue::UNDEFINED
     })
 }
+pub(crate) fn fn3(mut f: impl FnMut(JsValue, JsValue, JsValue) + 'static) -> web_glue::Closure {
+    web_glue::Closure::new_with_args(move |a| {
+        f(arg(a, 0), arg(a, 1), arg(a, 2));
+        JsValue::UNDEFINED
+    })
+}
 pub(crate) fn fn2r(mut f: impl FnMut(JsValue, JsValue) -> JsValue + 'static) -> web_glue::Closure {
     web_glue::Closure::new_with_args(move |a| f(arg(a, 0), arg(a, 1)))
 }

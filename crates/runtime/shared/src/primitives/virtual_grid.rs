@@ -71,6 +71,19 @@
 //! `0`, `bottom = 1` the last row. Bands that would overlap (more frozen
 //! rows than rows) are clipped so no index is in two bands.
 //!
+//! ## Cell reuse
+//!
+//! A grid built with a reusable renderer (`virtual_grid_recycled`) can hand
+//! a cell that left the window to a position that entered it, instead of
+//! destroying one cell and building another: the backend asks
+//! [`GridRecycling::reuse_class`] which cells may stand in for each other,
+//! moves a parked cell of the right class to the new position, and calls
+//! [`GridRecycling::rebind_cell`], which updates the cell's reactive
+//! position — its content follows, with its native views kept. Backends
+//! flush that update before the frame draws, so a reused cell never shows
+//! its old row in its new place. A backend that does not reuse cells mounts
+//! fresh ones, which renders the same thing.
+//!
 //! ## The grid's own size
 //!
 //! The grid fills its parent by default, and it can fit its content
@@ -462,6 +475,19 @@ impl GridWindow {
     }
 }
 
+/// How a backend reuses cells — see the module docs, "Cell reuse". Handed
+/// to `GridOps::set_virtual_grid_recycling` once, after create.
+#[derive(Clone)]
+pub struct GridRecycling {
+    /// The class of the cell at `(col, row)`: a parked cell may only be
+    /// reused for a position of the same class (a table column's cells, say,
+    /// share one structure; a header cell has its own).
+    pub reuse_class: Rc<dyn Fn(usize, usize) -> u64>,
+    /// Point the mounted cell with this scope id at `(col, row)`. The
+    /// backend flushes the update before drawing.
+    pub rebind_cell: Rc<dyn Fn(u64, usize, usize)>,
+}
+
 /// Rows and columns held still at the grid's edges — see the module
 /// docs, "Frozen panes". Counts of indices at each end of an axis.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -504,7 +530,7 @@ fn clip_bands(lead: usize, trail: usize, count: usize) -> (usize, usize) {
 }
 
 /// Which band of one axis an index is in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Band {
     /// Frozen at the leading edge (top / left).
     Leading,

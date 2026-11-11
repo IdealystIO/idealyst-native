@@ -377,6 +377,12 @@
 //!   row `i`'s content per column — the renderer [`TableCards`] takes, so
 //!   one source feeds the wide and narrow forms. The children block stays
 //!   empty; the header comes from `columns` (each `TableColumn::label`).
+//! - Cells are REUSED as the table scrolls: a cell that leaves is pointed
+//!   at a row that enters, keeping its box; its style, selection box, tone
+//!   and hover follow the new row. Content from [`VirtualRows::new`] is
+//!   rebuilt for the new row; content from [`VirtualRows::reusing`] reads
+//!   its row through a memo and only what reads it changes — what keeps a
+//!   fast flick through a large table smooth.
 //! - Every row is one height ([`VirtualRows::row_height`], defaulting to a
 //!   one-line row at the table's density) and every cell of a column one
 //!   width: a `width` column keeps it, the others share what's left, held
@@ -401,7 +407,11 @@
 //!     selection = Some(picked),
 //!     max_height = Some(480.0),
 //!     virtualized = Some(
-//!         VirtualRows::new(move || rows.get().len(), move |i| rows.with(|r| r[i].id()), cell)
+//!         VirtualRows::reusing(
+//!             move || rows.get().len(),
+//!             move |i| rows.with(|r| r[i].id()),
+//!             move |row, col| ui! { Typography(content = rx!(field_of(row.get(), col))) },
+//!         )
 //!             .on_row_click(move |i| open(i))
 //!             .on_end_reached(400.0, move || load_more()),
 //!     ),

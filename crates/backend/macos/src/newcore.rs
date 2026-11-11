@@ -484,7 +484,7 @@ pub fn deliver_launch_link(url: &str) -> bool {
 
 /// Flush the mounted world immediately (skipped while it is already
 /// mid-flush).
-fn flush_now() {
+pub(crate) fn flush_now() {
     let world = FLUSH_WORLD.with(|w| w.borrow().clone());
     if let Some(world) = world {
         if !world.is_flushing() {
@@ -1237,6 +1237,23 @@ impl caps::GridOps for MacosBackend {
         frozen: primitives::virtual_grid::FrozenPanes,
     ) {
         MacosBackend::set_virtual_grid_frozen_impl(self, node, frozen)
+    }
+
+    fn set_virtual_grid_recycling(
+        &mut self,
+        node: &Self::Node,
+        recycling: primitives::virtual_grid::GridRecycling,
+    ) {
+        // A rebind writes a signal, which needs the mounted world ambient.
+        // It is NOT flushed here: the grid rebinds a batch, then flushes
+        // once (`flush_now`) before laying the batch out — see
+        // `imp::virtual_grid::sync_now`.
+        let f = recycling.rebind_cell;
+        let recycling = primitives::virtual_grid::GridRecycling {
+            reuse_class: recycling.reuse_class,
+            rebind_cell: Rc::new(move |scope, c, r| enter_mounted_world(|| f(scope, c, r))),
+        };
+        MacosBackend::set_virtual_grid_recycling_impl(self, node, recycling)
     }
 
     fn virtual_grid_data_changed(&mut self, node: &Self::Node) {

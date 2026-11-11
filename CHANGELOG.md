@@ -1271,6 +1271,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   so a button that opens a `Menu` has it open before the button is released. The rest of that
   press fires nothing more; a secondary press fires nothing; keyboard, screen-reader and robot
   activation fire once in either mode. The default stays `PressActivation::Release`.
+- **Virtualized tables and grids reuse cells as they scroll** (`runtime-shared`,
+  `runtime-vocabulary`, `backend-web`, `backend-macos`, `backend-ios-mobile`,
+  `backend-android-mobile`, `host-mock`, `idea-ui` minor). `virtual_grid_recycled(…, reuse_class,
+  render)` builds a grid whose cells read their position from a signal: a cell that scrolls out
+  is parked and pointed at a position of the same `reuse_class` that scrolls in, keeping its
+  native views, and the update is flushed before the frame draws. A virtualized `Table` builds
+  every cell this way — box, style, selection box, tone and hover follow the row. Content from
+  `VirtualRows::new` is rebuilt inside the kept box; content from the new
+  `VirtualRows::reusing(count, id, cell)`, whose `cell(row, column)` reads its row through a
+  `Memo<usize>`, is never rebuilt, only its text changes. On macOS (release) a fast flick went
+  from building 140–150 cells in one frame (45–95 ms) to rebinding them (under 8 ms for 99% of
+  scroll steps). Backends implement the new defaulted `GridOps::set_virtual_grid_recycling`;
+  one that doesn't mounts fresh cells with the same renderer, which renders the same.
+
 - **Virtualized tables keep their column layout and frozen columns** (`idea-ui` minor).
   `Table(virtualized = Some(VirtualRows::new(count, id, cell)))` lays the rows out on the
   two-axis `virtual_grid`: only the cells in view are built and mounted, so a 100,000-row

@@ -227,6 +227,20 @@ pub trait GridOps: ExternalOps {
     ) {
     }
 
+    /// Reuse cells (`primitives::virtual_grid::GridRecycling`): park a cell
+    /// that leaves the window and rebind it to a position of the same reuse
+    /// class that enters it, flushing the rebind before the frame draws.
+    /// Called once, after `create_virtual_grid`, for a grid built with a
+    /// reusable renderer. Optional: a backend that ignores it mounts fresh
+    /// cells, which renders the same thing at a higher cost.
+    #[allow(unused_variables)]
+    fn set_virtual_grid_recycling(
+        &mut self,
+        node: &Self::Node,
+        recycling: primitives::virtual_grid::GridRecycling,
+    ) {
+    }
+
     /// Counts or sizes changed: rebuild metrics and re-diff.
     #[allow(unused_variables)]
     fn virtual_grid_data_changed(&mut self, node: &Self::Node) {}

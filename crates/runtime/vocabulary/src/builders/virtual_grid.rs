@@ -7,7 +7,7 @@ use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::primitives::virtual_grid::{CellKey, FrozenPanes, VirtualGridHandle};
 use runtime_scene::{item, Element};
 
-use crate::prims::{PrimCell, VirtualGridPrim};
+use crate::prims::{PrimCell, VirtualGridPrim, VirtualGridRecycle};
 use crate::style_attach::IntoStyleProp;
 
 /// Start a `virtual_grid` — a grid of `col_count × row_count` cells
@@ -75,8 +75,54 @@ pub fn virtual_grid(
             ref_fill: None,
             on_scroll: None,
             frozen: FrozenPanes::NONE,
+            recycle: None,
         },
     }
+}
+
+/// [`virtual_grid`] with REUSABLE cells: `render` reads the cell's position
+/// from a signal, so a cell that scrolls out can be pointed at a position
+/// that scrolls in, keeping its native views — only what depends on the
+/// position updates. `reuse_class(col, row)` says which cells may stand in
+/// for each other: cells built the same way (a table column's body cells)
+/// share a class, a cell built differently (its header) gets its own. A
+/// cell's content must read everything that varies by position through the
+/// signal, and react to data changes on its own: a reused cell is never
+/// rebuilt, and `cell_key` no longer forces a rebuild. Backends that don't
+/// reuse cells mount fresh ones with the same renderer, so the result is
+/// the same everywhere — see the primitive's module docs, "Cell reuse".
+///
+/// ```ignore
+/// virtual_grid_recycled(
+///     move || cols.len(),
+///     move || rows.get().len(),
+///     |_| 120.0,
+///     |_| 44.0,
+///     |c, r| (c * 1_000_003 + r) as u64,
+///     |c, _| c as u64,                       // every cell of a column alike
+///     move |at| ui! { text(move || label(at.get())) },
+/// )
+/// ```
+pub fn virtual_grid_recycled(
+    col_count: impl Fn() -> usize + 'static,
+    row_count: impl Fn() -> usize + 'static,
+    col_width: impl Fn(usize) -> f32 + 'static,
+    row_height: impl Fn(usize) -> f32 + 'static,
+    cell_key: impl Fn(usize, usize) -> CellKey + 'static,
+    reuse_class: impl Fn(usize, usize) -> u64 + 'static,
+    render: impl Fn(runtime_world::ReadSignal<(usize, usize)>) -> Element + 'static,
+) -> VirtualGridBuilder {
+    let render: Rc<dyn Fn(runtime_world::ReadSignal<(usize, usize)>) -> Element> = Rc::new(render);
+    // The fixed-position form, for hosts that don't reuse: the same
+    // renderer over a position that never moves (created in the cell's
+    // own scope by the handler, like everything the renderer builds).
+    let fixed = {
+        let render = render.clone();
+        move |c: usize, r: usize| render(runtime_world::signal((c, r)).read_only())
+    };
+    let mut b = virtual_grid(col_count, row_count, col_width, row_height, cell_key, fixed);
+    b.prim.recycle = Some(VirtualGridRecycle { reuse_class: Rc::new(reuse_class), render });
+    b
 }
 
 pub struct VirtualGridBuilder {

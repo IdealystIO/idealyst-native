@@ -725,6 +725,9 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                         Rc::new(move |x: f32, y: f32| h(&(x, y))) as _
                     }),
                     frozen,
+                    // Remote cells are built bundle-side, position fixed;
+                    // the host mounts fresh ones, which renders the same.
+                    recycle: None,
                 }),
                 Vec::new(),
             )

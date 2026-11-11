@@ -130,17 +130,29 @@ fn select_all_control(
 
 /// One row's box.
 pub(super) fn select_row_box(selection: Signal<BTreeSet<RowId>>, id: RowId) -> Element {
+    select_row_box_live(selection, Rc::new(move || Some(id.clone())))
+}
+
+/// One row's box, for a row whose id can change under it — a reused cell
+/// of a virtualized table, pointed at another row. `id` is read reactively
+/// for the checked state and at the moment of the press for the toggle;
+/// `None` (a row that's gone) reads as unchecked and toggles nothing.
+pub(super) fn select_row_box_live(selection: Signal<BTreeSet<RowId>>, id: Rc<dyn Fn() -> Option<RowId>>) -> Element {
     let checked = signal(false);
     {
         let id = id.clone();
-        let _ = effect(move || checked.set(selection.with(|s| s.contains(&id))));
+        let _ = effect(move || {
+            let on = id().is_some_and(|id| selection.with(|s| s.contains(&id)));
+            checked.set(on);
+        });
     }
     Checkbox(&CheckboxProps {
         value: checked,
         on_change: Rc::new(move |on: bool| {
+            let Some(id) = runtime_core::untrack(|| id()) else { return };
             let mut next = selection.get();
             if on {
-                next.insert(id.clone());
+                next.insert(id);
             } else {
                 next.remove(&id);
             }

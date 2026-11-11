@@ -7,6 +7,17 @@
 //! cells as fit on screen, and frozen columns keep working with horizontal
 //! scrolling.
 //!
+//! # Cell reuse
+//!
+//! The grid is built with a reusable renderer (`virtual_grid_recycled`):
+//! as it scrolls, a cell that leaves is pointed at a row that enters, of the
+//! same column, instead of being destroyed while another is built. Each body
+//! cell reads its row through a memo — its style, tone, hover tint,
+//! selection box and press all follow it. Content from [`VirtualRows::new`]
+//! (built for one row) is rebuilt when the row changes, inside the kept box;
+//! content from [`VirtualRows::reusing`] reads the row itself and is never
+//! rebuilt. Header cells have a reuse class of their own.
+//!
 //! # Where the rows come from
 //!
 //! A virtualized table's rows come from [`VirtualRows`], not from the
@@ -48,15 +59,15 @@ use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use runtime_core::primitives::virtual_grid::{virtual_grid, FrozenPanes, VirtualGridHandle};
+use runtime_core::primitives::virtual_grid::{virtual_grid_recycled, FrozenPanes, VirtualGridHandle};
 use runtime_core::{
-    effect, memo, signal, tap, ui, Element, Length, Reactive, Ref, Signal, StyleApplication, StyleRules,
+    effect, memo, signal, tap, ui, Element, Length, Memo, Reactive, Ref, Signal, StyleApplication, StyleRules,
     TapRecognizer, Tokenized, VariantEnum, ViewHandle,
 };
 
 use super::columns::{live_width, ColumnResizeHandle};
 use super::scroller::detach_on_cleanup;
-use super::select::{select_all_line, select_row_box};
+use super::select::{select_all_line, select_row_box_live};
 use super::styles::{TableSlotStyles, TableStyles};
 use super::{
     added_column_growth, cell_text_children, select_cell_axes, side_inset, sort_indicator, CellTone, ColumnId,
@@ -87,7 +98,7 @@ use super::{
 pub struct VirtualRows {
     pub(super) count: Rc<dyn Fn() -> usize>,
     pub(super) id: Rc<dyn Fn(usize) -> RowId>,
-    pub(super) cell: Rc<dyn Fn(usize, &ColumnId) -> Element>,
+    pub(super) cell: CellSource,
     pub(super) height: Option<f32>,
     pub(super) tone: Option<Rc<dyn Fn(usize) -> RowTone>>,
     pub(super) on_row_click: Option<Rc<dyn Fn(usize)>>,
@@ -108,10 +119,43 @@ impl VirtualRows {
         id: impl Fn(usize) -> RowId + 'static,
         cell: impl Fn(usize, &ColumnId) -> Element + 'static,
     ) -> Self {
+        Self::with_source(Rc::new(count), Rc::new(id), CellSource::Fixed(Rc::new(cell)))
+    }
+
+    /// [`Self::new`] with REUSABLE content: `cell(row, column)` is built once
+    /// per cell and reads its row through `row` (a memo) — `rx!(name_of(row.get()))`
+    /// — so as the grid scrolls, a cell that leaves is pointed at a row that
+    /// enters and only what reads `row` updates; nothing is rebuilt. Read
+    /// your rows' data reactively in it too: the cell is never rebuilt for a
+    /// data change either.
+    ///
+    /// With [`Self::new`] the table still keeps each cell's box and rebuilds
+    /// only your content when the row changes; this goes the rest of the way,
+    /// and it is what keeps a fast flick through a large table smooth.
+    ///
+    /// ```ignore
+    /// VirtualRows::reusing(
+    ///     move || rows.with(|r| r.len()),
+    ///     move |i| rows.with(|r| r[i].id.clone()),
+    ///     move |row, col| match col.as_str() {
+    ///         "name" => ui! { Typography(content = rx!(rows.with(|r| r[row.get()].name.clone()))) },
+    ///         _ => ui! { Typography(content = rx!(rows.with(|r| r[row.get()].email.clone()))) },
+    ///     },
+    /// )
+    /// ```
+    pub fn reusing(
+        count: impl Fn() -> usize + 'static,
+        id: impl Fn(usize) -> RowId + 'static,
+        cell: impl Fn(Memo<usize>, &ColumnId) -> Element + 'static,
+    ) -> Self {
+        Self::with_source(Rc::new(count), Rc::new(id), CellSource::Reusable(Rc::new(cell)))
+    }
+
+    fn with_source(count: Rc<dyn Fn() -> usize>, id: Rc<dyn Fn(usize) -> RowId>, cell: CellSource) -> Self {
         Self {
-            count: Rc::new(count),
-            id: Rc::new(id),
-            cell: Rc::new(cell),
+            count,
+            id,
+            cell,
             height: None,
             tone: None,
             on_row_click: None,
@@ -173,6 +217,16 @@ impl VirtualRows {
         self.on_end_reached = Some(Rc::new(f));
         self
     }
+}
+
+/// How a body cell's content is built — see [`VirtualRows::new`] and
+/// [`VirtualRows::reusing`].
+#[derive(Clone)]
+pub(super) enum CellSource {
+    /// Built for one row; rebuilt when the cell is pointed at another.
+    Fixed(Rc<dyn Fn(usize, &ColumnId) -> Element>),
+    /// Built once, reading its row reactively.
+    Reusable(Rc<dyn Fn(Memo<usize>, &ColumnId) -> Element>),
 }
 
 /// One column of the grid: the selection column the table adds, or one of
@@ -542,13 +596,20 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
         }
     };
 
+    // Cells are REUSED as the grid scrolls (`virtual_grid_recycled`): a
+    // body cell that leaves is pointed at a row that enters, of the same
+    // column (its reuse class) — its box, style and the parts of its content
+    // that read the row follow; nothing is rebuilt. A header cell has a class
+    // of its own, so it is never pointed at a body row.
+    let reuse_class = |c: usize, r: usize| if r == 0 { u64::MAX - c as u64 } else { c as u64 };
     let render = {
         let shared = shared.clone();
-        move |c: usize, r: usize| {
+        move |at: runtime_core::ReadSignal<(usize, usize)>| {
+            let (c, r) = runtime_core::untrack(|| at.get());
             if r == 0 {
                 head_cell(&shared, c)
             } else {
-                body_cell(&shared, c, r - 1)
+                body_cell(&shared, c, memo(move || at.get().1 - 1))
             }
         }
     };
@@ -579,12 +640,13 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
     };
     let count = shared.items;
     let n_cols = shared.cols.len();
-    let grid = virtual_grid(
+    let grid = virtual_grid_recycled(
         move || n_cols,
         move || count.with(|v| v.len()) + 1,
         move |c| col_widths.with(|w| w.get(c).copied().unwrap_or(0.0)),
         move |_| row_height,
         key,
+        reuse_class,
         render,
     )
     .frozen(FrozenPanes { top: 1, left: frozen.0, right: frozen.1, ..FrozenPanes::NONE })
@@ -771,17 +833,51 @@ fn head_cell(shared: &Rc<Shared>, col: usize) -> Element {
     }
 }
 
-/// Body row `row`'s cell for grid column `col`.
-fn body_cell(shared: &Rc<Shared>, col: usize, row: usize) -> Element {
+/// A body cell of grid column `col`, showing body row `row` — a memo, since
+/// the grid reuses the cell for other rows as it scrolls. Everything that
+/// varies by row reads it: the content, the selection box, the tone, the
+/// hover tint and the press.
+fn body_cell(shared: &Rc<Shared>, col: usize, row: Memo<usize>) -> Element {
     let base = cell_app(shared, false, col);
-    let id = shared.items.with_untracked(|v| v.get(row).map(|(id, _)| id.clone()));
-    let content: Option<Element> = match (&shared.cols[col], id) {
-        (GridCol::Select, Some(id)) => {
-            let selectable = shared.rows.selectable.as_ref().is_none_or(|f| f(row));
-            shared.selection.filter(|_| selectable).map(|s| select_row_box(s, id))
-        }
-        (GridCol::Author(c), Some(_)) => Some((shared.rows.cell)(row, &c.id)),
-        (_, None) => None,
+    let items = shared.items;
+    let content: Element = match &shared.cols[col] {
+        GridCol::Select => match shared.selection {
+            Some(selection) => {
+                let selectable = shared.rows.selectable.clone();
+                let id: Rc<dyn Fn() -> Option<RowId>> =
+                    Rc::new(move || items.with(|v| v.get(row.get()).map(|(id, _)| id.clone())));
+                let shown = {
+                    let id = id.clone();
+                    move || id().is_some() && selectable.as_ref().is_none_or(|f| f(row.get()))
+                };
+                ui! {
+                    if shown() {
+                        select_row_box_live(selection, id.clone())
+                    }
+                }
+            }
+            None => ui! { view() },
+        },
+        GridCol::Author(c) => match &shared.rows.cell {
+            CellSource::Reusable(f) => f(row, &c.id),
+            CellSource::Fixed(f) => {
+                // Content built for one row: rebuilt when the cell is pointed
+                // at another, or that row's data changes — the cell's box
+                // around it is kept.
+                let (f, id) = (f.clone(), c.id.clone());
+                // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape
+                runtime_core::switch(
+                    move || {
+                        let r = row.get();
+                        (r, items.with(|v| v.get(r).map(|(_, g)| *g)))
+                    },
+                    move |&(r, generation)| match generation {
+                        Some(_) => f(r, &id),
+                        None => ui! { view() },
+                    },
+                )
+            }
+        },
     };
     let (align, _, _) = shared.column_axes(col);
     let inner = TableStyles::cell_inner()
@@ -797,13 +893,16 @@ fn body_cell(shared: &Rc<Shared>, col: usize, row: usize) -> Element {
     // mounted cell (each restyle also dirties the cell's layout on native).
     let lit = clickable.then(|| {
         let (hovered, pressed) = (shared.hovered, shared.pressed);
-        memo(move || hovered.get() == Some(row) || pressed.get() == Some(row))
+        memo(move || {
+            let r = Some(row.get());
+            hovered.get() == r || pressed.get() == r
+        })
     });
     let style = {
         let shared = shared.clone();
         move || {
             let app = shared.inset(col, shared.frozen_axes(col, base.clone()));
-            let app = match tone.as_ref().map(|f| f(row)) {
+            let app = match tone.as_ref().map(|f| f(row.get())) {
                 Some(t) if t != RowTone::None => app.with("tone", t.as_variant_str()),
                 _ => app,
             };
@@ -813,34 +912,31 @@ fn body_cell(shared: &Rc<Shared>, col: usize, row: usize) -> Element {
             }
         }
     };
+    let here = move || runtime_core::untrack(|| row.get());
     match shared.rows.on_row_click.clone() {
         Some(cb) => {
             let (hovered, pressed) = (shared.hovered, shared.pressed);
             let press = runtime_core::tap_with_press(
                 TapRecognizer::new(),
-                move || cb(row),
-                move |down| pressed.set(down.then_some(row)),
+                move || cb(here()),
+                move |down| pressed.set(down.then(here)),
             );
             let hover = move |entering: bool| {
                 if entering {
-                    hovered.set(Some(row));
-                } else if hovered.peek() == Some(row) {
+                    hovered.set(Some(here()));
+                } else if hovered.peek() == Some(here()) {
                     hovered.set(None);
                 }
             };
             ui! {
                 view(style = style, on_hover = hover, on_touch = move |ev| press(ev)) {
-                    if let Some(c) = content {
-                        view(style = inner) { c }
-                    }
+                    view(style = inner) { content }
                 }
             }
         }
         None => ui! {
             view(style = style) {
-                if let Some(c) = content {
-                    view(style = inner) { c }
-                }
+                view(style = inner) { content }
             }
         },
     }

@@ -3926,6 +3926,79 @@ async fn virtual_grid_frozen_panes_hold_at_the_edges_while_scrolling() {
     grid_el.remove();
 }
 
+/// Cell reuse on the web grid: after a jump, the cells that left are the
+/// cells that come back — rebound to the new positions and placed there —
+/// and only the shortfall is built. Nothing is released while a parked cell
+/// is still wanted.
+#[wasm_bindgen_test]
+async fn virtual_grid_reuses_cells_that_scroll_away() {
+    use runtime_shared::primitives::virtual_grid::GridRecycling;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let mount_doc = doc.clone();
+    let mounts = Rc::new(Cell::new(0usize));
+    let releases = Rc::new(Cell::new(0usize));
+    let (m, rl) = (mounts.clone(), releases.clone());
+    let callbacks = runtime_shared::primitives::virtual_grid::GridCallbacks::<web_glue::dom::Node> {
+        col_count: Rc::new(|| 3usize),
+        row_count: Rc::new(|| 1000usize),
+        col_width: Rc::new(|_| 50.0_f32),
+        row_height: Rc::new(|_| 40.0_f32),
+        cell_key: Rc::new(|c, r| (r * 3 + c) as u64),
+        mount_cell: Rc::new(move |c, r| {
+            m.set(m.get() + 1);
+            let el = mount_doc.create_element("div").unwrap();
+            let _ = el.set_attribute("data-cell", &format!("{c},{r}"));
+            let id = m.get() as u64;
+            (el.unchecked_into(), id)
+        }),
+        release_cell: Rc::new(move |_| rl.set(rl.get() + 1)),
+        on_scroll: None,
+    };
+    let grid = crate::primitives::virtual_grid::create(&mut backend, callbacks, 0.0);
+    let rebinds: Rc<RefCell<Vec<(u64, usize, usize)>>> = Rc::new(RefCell::new(Vec::new()));
+    let log = rebinds.clone();
+    crate::primitives::virtual_grid::set_recycling(
+        &mut backend,
+        &grid,
+        GridRecycling {
+            reuse_class: Rc::new(|c, _| c as u64),
+            rebind_cell: Rc::new(move |id, c, r| log.borrow_mut().push((id, c, r))),
+        },
+    );
+    let grid_el: web_glue::dom::HtmlElement = grid.clone().unchecked_into();
+    let _ = grid_el.set_attribute("style", "position: absolute; left: 0; top: 0; height: 200px; width: 150px; overflow: auto; scrollbar-width: none;");
+    doc.body().unwrap().append_child(&grid_el).unwrap();
+    sleep_ms(20).await;
+    let first = mounts.get();
+    assert!(first > 0);
+
+    grid_el.set_scroll_top(20_000);
+    grid_el.dispatch_event(&web_glue::dom::Event::new("scroll").unwrap()).unwrap();
+    sleep_ms(30).await;
+
+    assert_eq!(mounts.get(), first, "the new window reused every cell that left");
+    assert_eq!(releases.get(), 0, "nothing released");
+    assert_eq!(rebinds.borrow().len(), first, "each parked cell rebound once");
+    let origin = grid_el.get_bounding_client_rect();
+    // The cells now sit at the rows the window shows (rows 500.. at 40px).
+    let tops: Vec<f64> = (0..grid_el.query_selector_all("[data-cell]").unwrap().length())
+        .filter_map(|i| grid_el.query_selector_all("[data-cell]").unwrap().item(i))
+        .map(|n| {
+            let el: web_glue::dom::Element = n.unchecked_into();
+            el.get_bounding_client_rect().top() - origin.top()
+        })
+        .collect();
+    assert!(tops.iter().all(|t| *t >= -40.0 && *t <= 240.0), "every reused cell is placed in view: {tops:?}");
+
+    crate::primitives::virtual_grid::release(&mut backend, &grid);
+    grid_el.remove();
+}
+
 /// Build a `keydown` for `key` that bubbles and is cancelable, dispatch it on
 /// `target`, and return whether its default action ended up prevented.
 fn dispatch_bubbling_keydown(target: &web_glue::dom::Element, key: &str) -> bool {

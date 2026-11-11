@@ -192,6 +192,8 @@ pub struct Shared {
     pub virtualizers: RefCell<Vec<VirtualizerCallbacks<Node>>>,
     /// `virtual_grid` callback bundles (two-axis).
     pub virtual_grids: RefCell<Vec<primitives::virtual_grid::GridCallbacks<Node>>>,
+    /// `virtual_grid` reuse bundles (`set_virtual_grid_recycling`), in order.
+    pub virtual_grid_recycling: RefCell<Vec<primitives::virtual_grid::GridRecycling>>,
     /// Graphics lifecycle closures.
     pub graphics: RefCell<Vec<GraphicsCapture>>,
     /// Portal `on_dismiss` (None when absent).
@@ -336,6 +338,7 @@ impl Default for Shared {
             scroll_axes: RefCell::new(HashMap::new()),
             virtualizers: RefCell::new(Vec::new()),
             virtual_grids: RefCell::new(Vec::new()),
+            virtual_grid_recycling: RefCell::new(Vec::new()),
             graphics: RefCell::new(Vec::new()),
             portal_dismissals: RefCell::new(Vec::new()),
             file_drop_handlers: RefCell::new(Vec::new()),
@@ -1370,6 +1373,15 @@ impl caps::GridOps for HostMock {
         );
     }
 
+    fn set_virtual_grid_recycling(
+        &mut self,
+        node: &Node,
+        recycling: primitives::virtual_grid::GridRecycling,
+    ) {
+        self.s.virtual_grid_recycling.borrow_mut().push(recycling);
+        self.s.rec("set_virtual_grid_recycling", format!("set_virtual_grid_recycling n{node}"));
+    }
+
     fn virtual_grid_data_changed(&mut self, node: &Node) {
         self.s.rec(
             "virtual_grid_data_changed",
@@ -2059,6 +2071,7 @@ impl Harness {
         drop(std::mem::take(&mut *self.shared.end_observers.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.virtualizers.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.virtual_grids.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.virtual_grid_recycling.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.graphics.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.portal_dismissals.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.file_drop_handlers.borrow_mut()));

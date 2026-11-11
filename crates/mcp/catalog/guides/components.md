@@ -228,6 +228,12 @@ Two mechanisms render a list of items; pick by size and volatility:
   height would have to agree with its whole row. The size closures are
   reactive: a width read from a signal re-lays the grid out.
 
+  For a large grid, build it with `virtual_grid_recycled(…, reuse_class,
+  render)` instead: `render` receives the cell's position as a signal, so a
+  cell that scrolls out is pointed at one that scrolls in and keeps its
+  native views. `reuse_class(col, row)` groups cells built alike; the cell's
+  content must read its position (and its data) reactively.
+
   Freeze header rows, footer rows and edge columns with
   `.frozen(FrozenPanes { top, bottom, left, right })`: a frozen row still
   scrolls sideways, a frozen column vertically, a corner holds still, and

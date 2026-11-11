@@ -582,3 +582,59 @@ fn grid_teardown_releases_its_live_cells_to_the_host() {
         assert!(log.contains(&format!("release_subtree n{n}")), "cell n{n} released: {log:?}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Cell reuse (`virtual_grid_recycled`)
+// ---------------------------------------------------------------------------
+
+fn recycled_grid() -> runtime_scene::Element {
+    runtime_vocabulary::builders::virtual_grid_recycled(
+        || 4,
+        || 100,
+        |_| 100.0,
+        |_| 40.0,
+        |c, r| (c * 1000 + r) as u64,
+        |c, _| c as u64,
+        |at| text().content(move || { let (c, r) = at.get(); format!("c{c}r{r}") }).build(),
+    )
+    .build()
+}
+
+/// A reused cell is the same native node pointed at a new position: the
+/// rebind writes its position signal, and its content follows — no
+/// unmount, no rebuild.
+#[test]
+fn a_rebound_cell_shows_its_new_position_on_the_same_node() {
+    let h = harness();
+    let _realized = h.world.enter(|| realize(&h.backend, &h.registry, recycled_grid()));
+    assert!(h.take_log().iter().any(|l| l.starts_with("set_virtual_grid_recycling")));
+    let cbs = h.virtual_grid(0);
+    let recycling = h.shared.virtual_grid_recycling.borrow()[0].clone();
+    assert_eq!(((recycling.reuse_class)(2, 7), (recycling.reuse_class)(2, 90)), (2, 2), "a column's cells share a class");
+
+    let (node, scope) = h.world.enter(|| (cbs.mount_cell)(2, 7));
+    assert!(h.live_tree(node).contains("c2r7"), "{}", h.live_tree(node));
+    h.world.enter(|| (recycling.rebind_cell)(scope, 2, 90));
+    h.flush();
+    assert!(h.live_tree(node).contains("c2r90"), "the same node shows the new row: {}", h.live_tree(node));
+}
+
+/// A host that doesn't reuse cells mounts each with the same renderer at a
+/// fixed position: the grid shows the same thing either way.
+#[test]
+fn a_recycled_grid_still_mounts_fresh_cells_where_the_host_does_not_reuse() {
+    let h = harness();
+    let _realized = h.world.enter(|| realize(&h.backend, &h.registry, recycled_grid()));
+    let cbs = h.virtual_grid(0);
+    let (a, _) = h.world.enter(|| (cbs.mount_cell)(1, 3));
+    let (b, _) = h.world.enter(|| (cbs.mount_cell)(3, 50));
+    assert!(h.live_tree(a).contains("c1r3") && h.live_tree(b).contains("c3r50"));
+}
+
+/// A grid without a reusable renderer never asks the host to reuse.
+#[test]
+fn a_plain_grid_does_not_ask_for_reuse() {
+    let h = harness();
+    let _realized = h.world.enter(|| realize(&h.backend, &h.registry, grid_4x3()));
+    assert!(h.take_log().iter().all(|l| !l.starts_with("set_virtual_grid_recycling")));
+}

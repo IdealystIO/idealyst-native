@@ -4,8 +4,10 @@
 //! sideways as well as down. The selection column and the ID column are
 //! frozen at the left, the menu column at the right, and the header row at
 //! the top: scroll either way and the rest slides beneath them. Only the
-//! cells in view are built. The p99 header sorts; a row press shows which
-//! row was opened.
+//! cells in view are built, and as the table scrolls a cell that leaves is
+//! REUSED for a row that enters (`VirtualRows::reusing`) — only its text
+//! changes. The p99 header sorts; a row press shows which row was opened;
+//! the jump button brings a whole new screen of rows into view at once.
 
 use std::collections::BTreeSet;
 
@@ -13,7 +15,7 @@ use idea_ui::{
     install_idea_theme, light_theme, tone, variant, Button, CellAlign, ColumnId, ColumnPin, RowId,
     SortState, Table, TableColumn, TableScroller, Typography, VirtualRows,
 };
-use runtime_core::{signal, stylesheet, ui, Element, SafeAreaSides, Signal};
+use runtime_core::{rx, signal, stylesheet, ui, Element, Memo, SafeAreaSides, Signal};
 
 const ROWS: usize = 100_000;
 
@@ -72,14 +74,19 @@ pub fn app() -> Element {
     let opened = signal(None::<usize>);
     // Row `i` in the current sort order.
     let at = move |i: usize| if descending.get() { ROWS - 1 - i } else { i };
-    let cell = move |i: usize, col: &ColumnId| -> Element {
-        let n = at(i);
+    // Reusable content: built once per cell, reading its row through `row`.
+    // As the table scrolls, a cell that leaves is pointed at a row that
+    // enters and only its text changes (see `VirtualRows::reusing`).
+    let cell = move |row: Memo<usize>, col: &ColumnId| -> Element {
         match col.as_str() {
             "menu" => ui! { Typography(content = "⋮".to_string()) },
-            id => ui! { Typography(content = value(n, id)) },
+            id => {
+                let id = id.to_string();
+                ui! { Typography(content = rx!(value(at(row.get()), &id))) }
+            }
         }
     };
-    let rows = VirtualRows::new(move || ROWS, move |i| RowId::from(format!("row-{}", at(i))), cell)
+    let rows = VirtualRows::reusing(move || ROWS, move |i| RowId::from(format!("row-{}", at(i))), cell)
         .sort(
             move |col| {
                 (col.as_str() == "latency").then(|| if descending.get() { SortState::Desc } else { SortState::Asc })

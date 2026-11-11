@@ -46,6 +46,18 @@
 //!
 //! The containers also give the z-order: floating subviews draw (and
 //! hit-test) above the document, scroll-view subviews above both.
+//!
+//! # Cell reuse
+//!
+//! With a [`GridRecycling`] (a grid built with a reusable renderer), a cell
+//! that leaves the window is PARKED — kept, views and all, off in its old
+//! position — under its (reuse class, bands), and a cell that enters takes a
+//! parked one of the same key: it is rebound to the new position, placed and
+//! laid out, instead of mounted. Rebinds are batched and flushed once
+//! (`newcore::flush_now`) before the batch is laid out, so a reused cell
+//! never draws its old row in its new place. Bands are part of the key
+//! because a frozen cell lives in another container (module docs above).
+//! Whatever is still parked once a sync completes is released.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -56,7 +68,7 @@ use objc2::{msg_send, msg_send_id};
 use objc2_app_kit::NSView;
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSObject};
 use runtime_shared::primitives::virtual_grid::{
-    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, PaneWindow, Scrollport,
+    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, GridRecycling, PaneWindow, Scrollport,
 };
 
 use super::MacosNode;
@@ -90,6 +102,8 @@ pub(crate) struct VirtualGridInstance {
     incomplete: Rc<std::cell::Cell<bool>>,
     follow_up: Rc<std::cell::Cell<bool>>,
     retiring: Rc<RefCell<Vec<MountedCell>>>,
+    recycling: Rc<RefCell<Option<GridRecycling>>>,
+    pool: Rc<RefCell<HashMap<(u64, (Band, Band)), Vec<MountedCell>>>>,
     /// Bounds-change observer; the notification center holds it
     /// non-owningly, so the instance must.
     observer: Option<Retained<NSObject>>,
@@ -190,6 +204,8 @@ pub(crate) fn create(
             incomplete: Rc::new(std::cell::Cell::new(false)),
             follow_up: Rc::new(std::cell::Cell::new(false)),
             retiring: Rc::new(RefCell::new(Vec::new())),
+            recycling: Rc::new(RefCell::new(None)),
+            pool: Rc::new(RefCell::new(HashMap::new())),
             observer,
             gutter: Rc::new(std::cell::Cell::new(scroller_gutter(&scroll))),
             style_observer: Some(style_observer),
@@ -310,6 +326,19 @@ fn set_frozen_in(registry: &mut GridRegistry, node: &MacosNode, frozen: FrozenPa
     sync_in(registry, key);
 }
 
+/// Reuse cells from now on (module docs, "Cell reuse").
+pub(crate) fn set_recycling(backend: &mut crate::imp::MacosBackend, node: &MacosNode, recycling: GridRecycling) {
+    set_recycling_in(&backend.virtual_grid_registry, node, recycling);
+}
+
+fn set_recycling_in(registry: &GridRegistry, node: &MacosNode, recycling: GridRecycling) {
+    let MacosNode::View(view) = node else { return };
+    let key = &**view as *const NSView as usize;
+    if let Some(inst) = registry.get(&key) {
+        *inst.recycling.borrow_mut() = Some(recycling);
+    }
+}
+
 /// Everything one sync touches, with no backend borrow among them.
 ///
 /// The ONLY thing a sync needs the backend for is finding the instance
@@ -334,6 +363,11 @@ struct GridHandles {
     /// Cells that left the window: detached at once, released (their
     /// subtree and scope dropped) within the budget — see [`retire`].
     retiring: Rc<RefCell<Vec<MountedCell>>>,
+    /// The reuse bundle, when the grid reuses cells (module docs, "Cell
+    /// reuse").
+    recycling: Rc<RefCell<Option<GridRecycling>>>,
+    /// Parked cells, by (reuse class, bands).
+    pool: Rc<RefCell<HashMap<(u64, (Band, Band)), Vec<MountedCell>>>>,
 }
 
 /// How long one sync may spend on work that can wait — mounting OVERSCAN
@@ -463,6 +497,8 @@ fn sync_in(registry: &GridRegistry, key: usize) {
             incomplete: inst.incomplete.clone(),
             follow_up: inst.follow_up.clone(),
             retiring: inst.retiring.clone(),
+            recycling: inst.recycling.clone(),
+            pool: inst.pool.clone(),
         },
     );
 }
@@ -534,12 +570,23 @@ fn sync_now(h: &GridHandles) {
         .filter(|((c, r), cell)| !window.contains(*c, *r) || cell.bands != window.bands(*c, *r))
         .map(|(slot, _)| *slot)
         .collect();
+    let recycling = h.recycling.borrow().clone();
     for slot in leaving {
         let cell = mounted.borrow_mut().remove(&slot);
         if let Some(cell) = cell {
-            retire(h, cell);
+            match &recycling {
+                // Parked under the class of the position it LEFT, which is
+                // the structure it was built with.
+                Some(r) => {
+                    let class = (r.reuse_class)(slot.0, slot.1);
+                    h.pool.borrow_mut().entry((class, cell.bands)).or_default().push(cell);
+                }
+                None => retire(h, cell),
+            }
         }
     }
+    // Cells rebound in this sync, laid out after one flush.
+    let mut rebound: Vec<(Retained<NSView>, usize, usize)> = Vec::new();
 
     // Mount cells that entered — and re-mount any whose CONTENT changed
     // under them, which a positional diff cannot see.
@@ -563,6 +610,14 @@ fn sync_now(h: &GridHandles) {
                 }
                 continue;
             }
+            // A reusable cell's content follows its data reactively: a new
+            // key needs no rebuild (`virtual_grid_recycled`'s contract).
+            (Some(_), Some(new)) if recycling.is_some() => {
+                if let Some(cell) = mounted.borrow_mut().get_mut(&(col, row)) {
+                    cell.key = new;
+                }
+                continue;
+            }
             // Live cell whose content moved on: drop it so the mount
             // below rebuilds it. Releasing FIRST keeps the scope count
             // flat rather than doubling for a frame.
@@ -578,12 +633,25 @@ fn sync_now(h: &GridHandles) {
             deferred = true;
             continue;
         }
+        // Reuse a parked cell of this position's class and bands: rebind it
+        // (staged; flushed once below) and move it here.
+        let bands = window.bands(col, row);
+        if let Some(r) = &recycling {
+            let parked = h.pool.borrow_mut().get_mut(&((r.reuse_class)(col, row), bands)).and_then(Vec::pop);
+            if let Some(mut cell) = parked {
+                (r.rebind_cell)(cell.scope_id, col, row);
+                place(&cell.view, &metrics.borrow(), col, row, scroll_at, viewport, frozen);
+                rebound.push((cell.view.clone(), col, row));
+                cell.key = key_now.unwrap_or_default();
+                mounted.borrow_mut().insert((col, row), cell);
+                continue;
+            }
+        }
         let mount = callbacks.borrow().as_ref().map(|c| c.mount_cell.clone());
         let Some(mount) = mount else { break };
         let (node, scope_id) = mount(col, row);
         let MacosNode::View(view) = &node else { continue };
         place(view, &metrics.borrow(), col, row, scroll_at, viewport, frozen);
-        let bands = window.bands(col, row);
         insert_cell(&scroll, &document, view, bands);
         // Lay the new cell's contents out now: this runs from the drain,
         // after the pass that discovered the cell, and nothing guarantees
@@ -598,6 +666,22 @@ fn sync_now(h: &GridHandles) {
                 bands,
             },
         );
+    }
+    // The rebinds land in one flush, then the rebound cells are laid out
+    // against their new content — all before this frame draws.
+    if !rebound.is_empty() {
+        crate::newcore::flush_now();
+        for (view, col, row) in rebound {
+            layout_cell(&view, &metrics.borrow(), col, row, scroll_at, viewport, frozen);
+        }
+    }
+    // Parked cells nothing claimed once the window is complete: release
+    // them. Kept while overscan is still pending, which will want them.
+    if !deferred {
+        let leftovers: Vec<MountedCell> = h.pool.borrow_mut().drain().flat_map(|(_, v)| v).collect();
+        for cell in leftovers {
+            retire(h, cell);
+        }
     }
     h.incomplete.set(deferred);
     finish_turn(h, t0, deferred);
@@ -813,6 +897,7 @@ fn release_in(registry: &mut GridRegistry, node: &MacosNode) {
     let mut cells: Vec<MountedCell> = inst.mounted.borrow_mut().drain().map(|(_, v)| v).collect();
     // Cells already off screen but not yet released go with the rest.
     cells.append(&mut inst.retiring.borrow_mut());
+    cells.extend(inst.pool.borrow_mut().drain().flat_map(|(_, v)| v));
     // Queued, not run: this runs under the caller's backend borrow, and
     // dropping a cell scope re-enters it. Any sync still queued for this
     // grid runs first and finds `callbacks` already `None`.
@@ -1129,6 +1214,62 @@ mod pending_tests {
         backend.layout_detached_in_place(key, CGSize::new(40.0, 40.0));
         let after: CGRect = unsafe { msg_send![&cell, frame] };
         assert_eq!(after, slot, "the cell stays in its slot");
+    }
+
+    /// Cell reuse: a jump that replaces the whole window reuses every cell
+    /// that left — each entering position takes a parked cell of its class,
+    /// rebound to the new position and framed there — builds only what the
+    /// old window couldn't supply, and leaves nothing parked.
+    #[test]
+    fn a_jump_reuses_the_cells_that_scrolled_away() {
+        drain_pending();
+        let f = grid(5, 400); // 40x40 cells, 200x200 viewport
+        let rebinds: Rc<RefCell<Vec<(u64, usize, usize)>>> = Rc::new(RefCell::new(Vec::new()));
+        let log = rebinds.clone();
+        set_recycling_in(
+            &f.registry,
+            &f.node,
+            GridRecycling {
+                reuse_class: Rc::new(|c, _| c as u64),
+                rebind_cell: Rc::new(move |id, c, r| log.borrow_mut().push((id, c, r))),
+            },
+        );
+        sync_in(&f.registry, f.key);
+        drain_pending();
+        let inst = f.registry.get(&f.key).unwrap();
+        while inst.incomplete.get() {
+            sync_in(&f.registry, f.key);
+            drain_pending();
+        }
+        let built = f.mounts.get();
+        let views_before: std::collections::HashSet<usize> =
+            inst.mounted.borrow().values().map(|c| &*c.view as *const NSView as usize).collect();
+
+        let MacosNode::View(scroll) = f.node.clone() else { unreachable!() };
+        scroll_clip_to(&scroll, 0.0, 8000.0);
+        sync_in(&f.registry, f.key);
+        drain_pending();
+        while inst.incomplete.get() {
+            sync_in(&f.registry, f.key);
+            drain_pending();
+        }
+
+        // At the top the window is the view plus overscan BELOW (55 cells);
+        // mid-grid it has overscan on both sides (80). Every parked cell is
+        // reused; only the shortfall is built.
+        let window_now = inst.mounted.borrow().len();
+        assert_eq!(f.mounts.get() - built, window_now - views_before.len(), "only the shortfall is built");
+        assert!(!rebinds.borrow().is_empty());
+        for &(_, c, r) in rebinds.borrow().iter() {
+            let cell = inst.mounted.borrow().get(&(c, r)).map(|m| m.view.clone()).expect("rebound cell is mounted there");
+            let frame: CGRect = unsafe { msg_send![&*cell, frame] };
+            assert_eq!((frame.origin.x, frame.origin.y), (c as f64 * 40.0, r as f64 * 40.0), "framed at its new slot");
+        }
+        let views_after: std::collections::HashSet<usize> =
+            inst.mounted.borrow().values().map(|c| &*c.view as *const NSView as usize).collect();
+        assert!(views_before.is_subset(&views_after), "every old view is reused, now showing another row");
+        assert!(inst.pool.borrow().values().all(Vec::is_empty), "nothing left parked");
+        assert_eq!(f.releases.get(), 0, "nothing released");
     }
 
     fn pending_len() -> usize {

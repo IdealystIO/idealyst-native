@@ -52,7 +52,7 @@ pub use portal::{
     PortalBuilder,
 };
 pub use presence::{presence, PresenceBuilder};
-pub use virtual_grid::{virtual_grid, VirtualGridBuilder};
+pub use virtual_grid::{virtual_grid, virtual_grid_recycled, VirtualGridBuilder};
 pub use virtualizer::{virtualizer, VirtualizerBuilder};
 pub use text::{button, text, ButtonBuilder, IntoTextRuns, TextBuilder};
 pub use view::{

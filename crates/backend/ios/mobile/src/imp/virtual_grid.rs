@@ -39,6 +39,16 @@
 //! corners at the front, cells frozen on one axis just below the LOWEST
 //! corner ([`insert_cell`]). Setting `zPosition` instead would fight a cell's own
 //! `z_index` style.
+//!
+//! # Cell reuse
+//!
+//! With a [`GridRecycling`], a cell leaving the window is parked (views
+//! kept) under its (reuse class, bands), and a cell entering takes a parked
+//! one: rebound to the new position, re-framed, and the batch's rebinds
+//! flushed once (`newcore::flush_now`) inside the scroll callback, before
+//! the frame commits. Its subtree re-lays out in the layout pass the content
+//! change schedules, like any cell's (`CELL_BOXES`). Whatever is still
+//! parked after the sync is released.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -49,7 +59,7 @@ use objc2::msg_send;
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker};
 use objc2_ui_kit::{UIScrollView, UIView};
 use runtime_shared::primitives::virtual_grid::{
-    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, PaneWindow, Scrollport,
+    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, GridRecycling, PaneWindow, Scrollport,
 };
 
 use super::IosNode;
@@ -90,6 +100,7 @@ pub(crate) struct VirtualGridInstance {
     /// Buffer outside the visible window, in viewport extents — the
     /// author's `.overscan(..)`.
     overscan: f32,
+    recycling: Rc<RefCell<Option<GridRecycling>>>,
     /// Delegate target retained for the grid's lifetime; UIKit holds
     /// the delegate weakly.
     _delegate: Option<Retained<objc2::runtime::NSObject>>,
@@ -159,6 +170,7 @@ pub(crate) fn create(
             last_window: Rc::new(RefCell::new(None)),
             frozen: Rc::new(std::cell::Cell::new(FrozenPanes::NONE)),
             overscan,
+            recycling: Rc::new(RefCell::new(None)),
             _delegate: delegate,
         },
     );
@@ -190,6 +202,7 @@ struct GridHandles {
     last_window: Rc<RefCell<Option<PaneWindow>>>,
     frozen: Rc<std::cell::Cell<FrozenPanes>>,
     overscan: f32,
+    recycling: Rc<RefCell<Option<GridRecycling>>>,
 }
 
 /// A grid's cells, taken out of the registry, waiting to be dropped.
@@ -361,6 +374,24 @@ pub(crate) fn set_frozen(backend: &mut crate::imp::IosBackend, node: &IosNode, f
     crate::imp::schedule_layout_pass();
 }
 
+/// Reuse cells from now on (module docs, "Cell reuse").
+pub(crate) fn set_recycling(backend: &mut crate::imp::IosBackend, node: &IosNode, recycling: GridRecycling) {
+    let key = node.as_view() as *const UIView as usize;
+    if let Some(inst) = backend.virtual_grid_registry.get(&key) {
+        *inst.recycling.borrow_mut() = Some(recycling);
+    }
+}
+
+/// Detach a cell and drop its scope.
+fn release_now(callbacks: &RefCell<Option<GridCallbacks<IosNode>>>, cell: MountedCell, what: &'static str) {
+    CELL_BOXES.with(|m| m.borrow_mut().remove(&(&*cell.view as *const UIView as usize)));
+    unsafe { cell.view.removeFromSuperview() };
+    let release = callbacks.borrow().as_ref().map(|c| c.release_cell.clone());
+    if let Some(release) = release {
+        crate::imp::ffi_guard::guard_ffi(what, || release(cell.scope_id));
+    }
+}
+
 /// Re-window: recompute the visible rect, drop cells that left it,
 /// mount cells that entered it, and keep `contentSize` in step.
 ///
@@ -386,6 +417,7 @@ pub(crate) fn sync(backend: &mut crate::imp::IosBackend, key: usize) {
             last_window: inst.last_window.clone(),
             frozen: inst.frozen.clone(),
             overscan: inst.overscan,
+            recycling: inst.recycling.clone(),
         },
     );
 }
@@ -451,25 +483,19 @@ fn sync_now(h: &GridHandles) {
         .filter(|((c, r), cell)| !window.contains(*c, *r) || cell.bands != window.bands(*c, *r))
         .map(|(slot, _)| *slot)
         .collect();
+    let recycling = h.recycling.borrow().clone();
+    let mut pool: HashMap<(u64, (Band, Band)), Vec<MountedCell>> = HashMap::new();
     for slot in leaving {
         let cell = mounted.borrow_mut().remove(&slot);
         if let Some(cell) = cell {
-            CELL_BOXES.with(|m| {
-                m.borrow_mut()
-                    .remove(&(&*cell.view as *const UIView as usize))
-            });
-            unsafe { cell.view.removeFromSuperview() };
-            let release = callbacks
-                .borrow()
-                .as_ref()
-                .map(|c| c.release_cell.clone());
-            if let Some(release) = release {
-                crate::imp::ffi_guard::guard_ffi("virtual_grid::release_cell", || {
-                    release(cell.scope_id)
-                });
+            match &recycling {
+                // Parked under the class of the position it LEFT.
+                Some(r) => pool.entry(((r.reuse_class)(slot.0, slot.1), cell.bands)).or_default().push(cell),
+                None => release_now(callbacks, cell, "virtual_grid::release_cell"),
             }
         }
     }
+    let mut rebound = false;
 
     // Mount cells that entered — and re-mount any whose CONTENT
     // changed under them, which a positional diff cannot see.
@@ -492,6 +518,14 @@ fn sync_now(h: &GridHandles) {
                             m.borrow_mut().insert(&*cell.view as *const UIView as usize, (w, h))
                         });
                     }
+                }
+                continue;
+            }
+            // A reusable cell follows its data reactively: a new key needs
+            // no rebuild (`virtual_grid_recycled`'s contract).
+            (Some(_), Some(new)) if recycling.is_some() => {
+                if let Some(cell) = mounted.borrow_mut().get_mut(&(col, row)) {
+                    cell.key = new;
                 }
                 continue;
             }
@@ -520,6 +554,22 @@ fn sync_now(h: &GridHandles) {
             }
             (None, _) => {}
         }
+        // Reuse a parked cell of this position's class and bands: rebind it
+        // (staged; flushed once below) and move it here.
+        let bands = window.bands(col, row);
+        if let Some(r) = &recycling {
+            let parked = pool.get_mut(&((r.reuse_class)(col, row), bands)).and_then(Vec::pop);
+            if let Some(mut cell) = parked {
+                (r.rebind_cell)(cell.scope_id, col, row);
+                place(&cell.view, &metrics.borrow(), col, row, scroll_at, viewport, frozen);
+                let (w, h) = metrics.borrow().cell_size(col, row);
+                CELL_BOXES.with(|m| m.borrow_mut().insert(&*cell.view as *const UIView as usize, (w, h)));
+                cell.key = key_now.unwrap_or_default();
+                mounted.borrow_mut().insert((col, row), cell);
+                rebound = true;
+                continue;
+            }
+        }
         let mount = callbacks.borrow().as_ref().map(|c| c.mount_cell.clone());
         let Some(mount) = mount else { break };
         let (node, scope_id) =
@@ -534,7 +584,6 @@ fn sync_now(h: &GridHandles) {
             m.borrow_mut()
                 .insert(view as *const UIView as usize, (w, h))
         });
-        let bands = window.bands(col, row);
         insert_cell(&scroll, view, bands, &mounted.borrow());
         mounted.borrow_mut().insert(
             (col, row),
@@ -548,6 +597,13 @@ fn sync_now(h: &GridHandles) {
                 bands,
             },
         );
+    }
+    // The batch's rebinds land in one flush, inside this scroll callback.
+    if rebound {
+        crate::newcore::flush_now();
+    }
+    for cell in pool.into_values().flatten() {
+        release_now(callbacks, cell, "virtual_grid::release_cell (unclaimed)");
     }
 }
 

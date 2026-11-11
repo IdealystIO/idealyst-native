@@ -45,7 +45,7 @@ pub use presence::PresencePrim;
 pub use repeat::RepeatPrim;
 pub use text::{ButtonPrim, JsTextBinding, TextPrim, TextSourceProp};
 pub use view::{PressablePrim, ScrollViewPrim, ViewPrim};
-pub use virtual_grid::VirtualGridPrim;
+pub use virtual_grid::{VirtualGridPrim, VirtualGridRecycle};
 pub use virtualizer::VirtualizerPrim;
 pub use widgets::{ActivityIndicatorPrim, SliderPrim, TextAreaPrim, TextInputPrim, TogglePrim};
 

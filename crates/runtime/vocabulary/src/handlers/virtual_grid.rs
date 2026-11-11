@@ -23,7 +23,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_shared::primitives::virtual_grid::{CellKey, GridCallbacks};
+use runtime_shared::primitives::virtual_grid::{CellKey, GridCallbacks, GridRecycling};
 use runtime_scene::{realize, single_root, Element, MountCx, Realized, Registry};
 
 use crate::glue::IntoElement as _;
@@ -53,6 +53,9 @@ struct CellScope<N> {
     /// The cell's root node, handed to `Host::release_subtree` when the
     /// cell is discarded.
     node: N,
+    /// The cell's position, for a reusable cell (`virtual_grid_recycled`):
+    /// a rebind writes it.
+    slot: Option<runtime_world::Signal<(usize, usize)>>,
     _realized: Realized<N>,
     _extra: Owned,
 }
@@ -90,6 +93,7 @@ where
         let backend = backend.clone();
         let registry = registry.clone();
         let render = prim.render_cell.clone();
+        let recycle = prim.recycle.clone();
         let scopes = scopes.clone();
         let next_id = next_scope_id.clone();
         let cell_parent = cell_parent.clone();
@@ -97,9 +101,18 @@ where
             // Element construction runs INSIDE the cell's collector and
             // untracked — only the backend's window math decides cell
             // lifetime, never a stray signal read during construction.
-            let ((node, realized), extra) = cell_parent.enter(|| {
+            let ((node, realized, slot), extra) = cell_parent.enter(|| {
                 collect_owned(|| {
-                    let element = untrack(|| render(col, row));
+                    // A reusable cell reads its position from a signal it
+                    // owns, so a rebind can move it; a fixed one is built
+                    // for this position.
+                    let (element, slot) = match &recycle {
+                        Some(r) => {
+                            let slot = runtime_world::signal((col, row));
+                            (untrack(|| (r.render)(slot.read_only())), Some(slot))
+                        }
+                        None => (untrack(|| render(col, row)), None),
+                    };
                     // The engine measures and positions this one node, so a
                     // several-node cell needs a real box: an anchor has no size.
                     let element = single_root(element, |nodes| crate::glue::view(nodes).into_element());
@@ -112,7 +125,7 @@ where
                              element (got {n} top-level nodes)"
                         ),
                     };
-                    (node, realized)
+                    (node, realized, slot)
                 })
             });
             let id = {
@@ -125,6 +138,7 @@ where
                 id,
                 CellScope {
                     node: node.clone(),
+                    slot,
                     _realized: realized,
                     _extra: extra,
                 },
@@ -174,6 +188,23 @@ where
         .create_virtual_grid(callbacks, prim.overscan, &prim.a11y);
     if !prim.frozen.is_none() {
         backend.borrow_mut().set_virtual_grid_frozen(&node, prim.frozen);
+    }
+    if let Some(recycle) = prim.recycle.clone() {
+        // Point a mounted reusable cell at another position: write its slot.
+        // The write stages; the backend's glue flushes it before drawing.
+        let rebind_cell: Rc<dyn Fn(u64, usize, usize)> = {
+            let scopes = scopes.clone();
+            Rc::new(move |id, col, row| {
+                let slot = scopes.borrow().get(&id).and_then(|c| c.slot);
+                if let Some(slot) = slot {
+                    slot.set((col, row));
+                }
+            })
+        };
+        backend.borrow_mut().set_virtual_grid_recycling(
+            &node,
+            GridRecycling { reuse_class: recycle.reuse_class, rebind_cell },
+        );
     }
     #[cfg(feature = "robot")]
     {

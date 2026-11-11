@@ -85,6 +85,12 @@
              *  'SS' is the spacer itself. @type {Map<string, HTMLElement>} */
             this.layers = new Map();
 
+            /** Cell reuse (`setRecycling`): parked cells by
+             *  `reuseClass + '|' + layerKey`, and the Rust callbacks.
+             *  @type {Map<string, Array<{node: Element, scopeId: number, col: number, row: number, layer: string, key: number}>>} */
+            this.pool = new Map();
+            this.recycle = null;
+
             /** @type {Map<string, {node: Element, scopeId: number, col: number, row: number, key: number}>} */
             this.mounted = new Map();
 
@@ -120,6 +126,16 @@
                 if (this._released) return;
                 this.refresh();
             });
+        }
+
+        /** Reuse cells from now on: a cell leaving the window is parked —
+         *  node kept — and a cell entering takes a parked one of the same
+         *  reuse class and layer, rebound to its new position
+         *  (`rebind(scopeId, col, row)` writes the cell's position signal;
+         *  the framework's flush runs as a microtask, before the browser
+         *  paints) and re-placed. */
+        setRecycling(reuseClass, rebind) {
+            this.recycle = { reuseClass, rebind };
         }
 
         /** Map key for a mounted cell. Cells are addressed by position,
@@ -197,7 +213,17 @@
                     !colSet.has(e.col) || !rowSet.has(e.row) ||
                     e.layer !== this._layerKey(e.col, e.row, w)
                 ) {
-                    this._unmount(slot);
+                    if (this.recycle) {
+                        // Parked under the class of the position it LEFT —
+                        // the structure it was built with.
+                        this.mounted.delete(slot);
+                        const k = this.recycle.reuseClass(e.col, e.row) + '|' + e.layer;
+                        let list = this.pool.get(k);
+                        if (!list) this.pool.set(k, (list = []));
+                        list.push(e);
+                    } else {
+                        this._unmount(slot);
+                    }
                 }
             }
 
@@ -212,6 +238,14 @@
                     const existing = this.mounted.get(slot);
                     if (existing) {
                         if (!revalidate) continue;
+                        if (this.recycle) {
+                            // A reusable cell follows its data reactively:
+                            // a new key needs no rebuild, only a re-place.
+                            existing.key = this.cb.cellKey(col, row);
+                            const r = this.cb.cellRect(col, row);
+                            if (r) this._place(existing.node, r[0], r[1], r[2], r[3], col, row, w);
+                            continue;
+                        }
                         if (this.cb.cellKey(col, row) === existing.key) {
                             const r = this.cb.cellRect(col, row);
                             if (r) this._place(existing.node, r[0], r[1], r[2], r[3], col, row, w);
@@ -219,9 +253,41 @@
                         }
                         this._unmount(slot);
                     }
+                    if (this.recycle && this._reuse(col, row, slot, w)) continue;
                     this._mount(col, row, slot, w);
                 }
             }
+            // Parked cells nothing claimed: release them.
+            for (const list of this.pool.values()) {
+                for (const e of list) this._release(e);
+            }
+            this.pool.clear();
+        }
+
+        /** Take a parked cell of this position's class and layer, point it
+         *  at `(col, row)` and place it there. False when none is parked. */
+        _reuse(col, row, slot, w) {
+            const layerKey = this._layerKey(col, row, w);
+            const list = this.pool.get(this.recycle.reuseClass(col, row) + '|' + layerKey);
+            if (!list || list.length === 0) return false;
+            const e = list.pop();
+            this.recycle.rebind(e.scopeId, col, row);
+            const r = this.cb.cellRect(col, row);
+            if (r) this._place(e.node, r[0], r[1], r[2], r[3], col, row, w);
+            e.col = col;
+            e.row = row;
+            e.key = this.cb.cellKey(col, row);
+            // Back into row-major order within its layer (hit-testing of
+            // equal-z siblings follows DOM order).
+            this._insert(e.node, this._layer(layerKey), layerKey, col, row);
+            this.mounted.set(slot, e);
+            return true;
+        }
+
+        /** Detach a cell and drop its framework scope. */
+        _release(e) {
+            if (e.node.parentNode) e.node.parentNode.removeChild(e.node);
+            this.cb.releaseCell(e.scopeId);
         }
 
         /** One axis's mounted indices, ascending: `lead` frozen, the
@@ -302,12 +368,25 @@
             // Row-major DOM order — before the next mounted cell in
             // (row, col) order, else last — so equal-z cells stack and
             // hit-test by position, not by the order they scrolled in.
-            // Within the cell's own layer only; frozen layers are appended
-            // to the spacer after the scrolling cells and keep their place
-            // (`next` is always a sibling of `node` in `layer`).
+            this._insert(node, layer, layerKey, col, row);
+            this.mounted.set(slot, {
+                node,
+                scopeId,
+                col,
+                row,
+                layer: layerKey,
+                key: this.cb.cellKey(col, row),
+            });
+        }
+
+        /** Put `node` in `layer` at its row-major place. Within the cell's
+         *  own layer only; frozen layers are appended to the spacer after
+         *  the scrolling cells and keep their place (`next` is always a
+         *  sibling of `node` in `layer`). */
+        _insert(node, layer, layerKey, col, row) {
             let next = null;
             for (const e of this.mounted.values()) {
-                if (e.layer !== layerKey) continue;
+                if (e.layer !== layerKey || e.node === node) continue;
                 const after = e.row > row || (e.row === row && e.col > col);
                 const closer = next === null || e.row < next.row || (e.row === next.row && e.col < next.col);
                 if (after && closer) next = e;
@@ -317,14 +396,6 @@
                 // Scrolling cells stay before the sticky layers.
                 this.spacer.insertBefore(node, this.spacer.querySelector(':scope > [data-virtual-grid-layer]'));
             } else layer.appendChild(node);
-            this.mounted.set(slot, {
-                node,
-                scopeId,
-                col,
-                row,
-                layer: layerKey,
-                key: this.cb.cellKey(col, row),
-            });
         }
 
         _unmount(slot) {
@@ -376,6 +447,10 @@
             for (const slot of Array.from(this.mounted.keys())) {
                 this._unmount(slot);
             }
+            for (const list of this.pool.values()) {
+                for (const e of list) this._release(e);
+            }
+            this.pool.clear();
             this.layers.clear();
             if (this.spacer && this.spacer.parentNode === this.container) {
                 this.container.removeChild(this.spacer);

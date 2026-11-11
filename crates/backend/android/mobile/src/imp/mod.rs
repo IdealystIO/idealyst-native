@@ -3765,6 +3765,14 @@ impl AndroidBackend {
         node
     }
 
+    pub(crate) fn set_virtual_grid_recycling_impl(
+        &mut self,
+        node: &GlobalRef,
+        recycling: runtime_shared::primitives::virtual_grid::GridRecycling,
+    ) {
+        primitives::virtual_grid::set_recycling(self, node, recycling)
+    }
+
     pub(crate) fn set_virtual_grid_frozen_impl(
         &mut self,
         node: &GlobalRef,

@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
-use runtime_core::{current_breakpoint, rx, signal, ui, BorderStyle, Breakpoint, Element, Signal, StyleRules, StyleSheet};
+use runtime_core::{current_breakpoint, rx, signal, ui, Memo, BorderStyle, Breakpoint, Element, Signal, StyleRules, StyleSheet};
 use icons_lucide::{ELLIPSIS_VERTICAL, PENCIL, PLUS, TRASH_2};
 use idea_ui::{
     tone, typography_kind, variant, Button, Card, CardPadding, CardSlotStyles, IconButton, Stack, StackAxis,
@@ -398,9 +398,11 @@ TableCell {
         ui! {
             Section(title = "Virtualized: thousands of rows, frozen header and columns".to_string()) {
                 P(content = "Pass `virtualized = Some(VirtualRows::new(count, id, cell))` and only \
-                    the cells in view are built and mounted — this table has 10,000 rows. The rows \
-                    come from `VirtualRows` instead of the children block (`cell(i, column)` is the \
-                    same renderer `TableCards` takes), and the header from each column's `label`. \
+                    the cells in view are built and mounted — this table has 10,000 rows — and as \
+                    it scrolls, a cell that leaves is reused for a row that enters. The rows come \
+                    from `VirtualRows` instead of the children block, and the header from each \
+                    column's `label`. With `VirtualRows::reusing`, `cell(row, column)` reads its row \
+                    through a memo, so a reused cell only changes its text. \
                     The header row and the edge-pinned columns stay put while the rest scrolls on \
                     both axes. Every row is one height and every cell of a column one width: a \
                     `width` column keeps it, the rest share what is left within their \
@@ -420,7 +422,9 @@ TableCell {
     selection = Some(picked),
     max_height = Some(320.0),
     virtualized = Some(
-        VirtualRows::new(move || rows.get().len(), move |i| rows.with(|r| r[i].id.clone()), cell)
+        // `cell(row, col)` reads its row through the `row` memo, so cells are
+        // reused as the table scrolls — only their text changes.
+        VirtualRows::reusing(move || rows.get().len(), move |i| rows.with(|r| r[i].id.clone()), cell)
             .on_row_click(move |i| open(i))
             .on_end_reached(320.0, move || load_more()),
     ),
@@ -1037,23 +1041,25 @@ fn virtual_demo_table() -> Element {
         TableColumn::actions("menu").pinned(ColumnPin::Right),
     ];
     let owners = ["platform", "payments", "search", "identity", "data"];
-    let cell = move |i: usize, col: &ColumnId| -> Element {
-        let n = at(i);
+    // Reusable content: built once per cell, reading its row through `row`,
+    // so a cell scrolled out and pointed at another row only changes text.
+    let cell = move |row: Memo<usize>, col: &ColumnId| -> Element {
+        let n = move || at(row.get());
         match col.as_str() {
-            "id" => ui! { Typography(content = format!("#{n}")) },
-            "service" => ui! { Typography(content = format!("service-{n}")) },
-            "region" => ui! { Typography(content = regions[n % regions.len()].to_string()) },
-            "version" => ui! { Typography(content = format!("v2.{}.{}", n % 9, n % 4)) },
-            "owner" => ui! { Typography(content = format!("team-{}", owners[n % owners.len()])) },
-            "replicas" => ui! { Typography(content = format!("{}", 2 + n % 7)) },
-            "cpu" => ui! { Typography(content = format!("{}%", 5 + n * 13 % 90)) },
-            "memory" => ui! { Typography(content = format!("{} MiB", 128 + n * 37 % 2048)) },
-            "uptime" => ui! { Typography(content = format!("{}d", 1 + n % 180)) },
-            "latency" => ui! { Typography(content = format!("{}ms", 8 + n * 7 % 300)) },
+            "id" => ui! { Typography(content = rx!(format!("#{}", n()))) },
+            "service" => ui! { Typography(content = rx!(format!("service-{}", n()))) },
+            "region" => ui! { Typography(content = rx!(regions[n() % regions.len()].to_string())) },
+            "version" => ui! { Typography(content = rx!(format!("v2.{}.{}", n() % 9, n() % 4))) },
+            "owner" => ui! { Typography(content = rx!(format!("team-{}", owners[n() % owners.len()]))) },
+            "replicas" => ui! { Typography(content = rx!(format!("{}", 2 + n() % 7))) },
+            "cpu" => ui! { Typography(content = rx!(format!("{}%", 5 + n() * 13 % 90))) },
+            "memory" => ui! { Typography(content = rx!(format!("{} MiB", 128 + n() * 37 % 2048))) },
+            "uptime" => ui! { Typography(content = rx!(format!("{}d", 1 + n() % 180))) },
+            "latency" => ui! { Typography(content = rx!(format!("{}ms", 8 + n() * 7 % 300))) },
             _ => ui! { IconButton(icon = Some(ELLIPSIS_VERTICAL), on_click = noop(), tone = tone::Neutral, variant = variant::Ghost) },
         }
     };
-    let rows = VirtualRows::new(move || ROWS, move |i| RowId::from(format!("row-{}", at(i))), cell).sort(
+    let rows = VirtualRows::reusing(move || ROWS, move |i| RowId::from(format!("row-{}", at(i))), cell).sort(
         move |col| (col.as_str() == "latency").then(|| if descending.get() { SortState::Desc } else { SortState::Asc }),
         move |_, s| descending.set(s == SortState::Desc),
     );
