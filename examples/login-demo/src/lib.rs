@@ -28,9 +28,9 @@
 //! the cookie or the bearer).
 
 #[cfg(not(feature = "server"))]
-use idea_ui::{install_idea_theme, light_theme, Stack, StackGap, StackPadding, Typography};
+use idea_ui::{install_idea_theme, light_theme, Card, Stack, StackGap, StackPadding, Typography};
 #[cfg(not(feature = "server"))]
-use runtime_core::{effect, signal, ui, Element, Signal};
+use runtime_core::{component, effect, inject, provide, resource, rx, signal, ui, Element, NetworkState, Signal};
 use serde::{Deserialize, Serialize};
 use server::{server, ServerError};
 
@@ -149,6 +149,7 @@ pub fn app() -> Element {
     let user: Signal<Option<String>> = signal(None); // logged-in username
     let status: Signal<String> = signal("Enter demo / password".to_string());
     let protected: Signal<String> = signal(String::new());
+    provide(Session { user });
 
     // On mount, ask the server who we are — if a session cookie survives a
     // reload, this restores the logged-in state without re-entering creds.
@@ -230,8 +231,59 @@ pub fn app() -> Element {
             }
             text { move || status.get() }
             text { move || protected.get() }
+            AccountCard()
         }
     }
+}
+
+/// Who is signed in. `app()` provides it; anything under the app reads it
+/// with `inject::<Session>()`.
+#[cfg(not(feature = "server"))]
+#[derive(Clone, Copy)]
+pub struct Session {
+    pub user: Signal<Option<String>>,
+}
+
+/// The signed-in account: the name from the app's [`Session`], and what
+/// the protected `me()` call says about it. `me()` is asked again
+/// whenever the session's user changes.
+///
+/// It can't render on its own: the session comes from context and the
+/// second line from the server. `preview_setup` gives the docs preview
+/// stand-ins for both.
+#[cfg(not(feature = "server"))]
+#[component(preview_setup = account_card_preview)]
+pub fn AccountCard() -> Element {
+    let Some(session) = inject::<Session>() else {
+        return ui! { text { "AccountCard needs a Session in context" } };
+    };
+    let confirmed = resource(session.user, |_user, _cancel| me());
+    ui! {
+        Card() {
+            Typography(
+                content = rx!(match session.user.get() {
+                    Some(name) => format!("Signed in as {name}"),
+                    None => "Not signed in".to_string(),
+                }),
+                kind = idea_ui::typography_kind::H3,
+            )
+            text {
+                move || match confirmed.network_state() {
+                    NetworkState::Idle | NetworkState::Loading => "Checking with the server…".to_string(),
+                    NetworkState::Success(name) => format!("The server confirms: {name}"),
+                    NetworkState::Error(e) => format!("The server says no: {}", err_msg(e)),
+                }
+            }
+        }
+    }
+}
+
+/// [`AccountCard`]'s docs preview: a signed-in session in context, and a
+/// canned reply for the `me()` call so no server is needed.
+#[cfg(not(feature = "server"))]
+fn account_card_preview() {
+    provide(Session { user: signal(Some("ada".to_string())) });
+    server::mock::on("me", |()| -> Result<String, ServerError> { Ok("ada".to_string()) });
 }
 
 /// Flatten a `ServerError` to a display string.

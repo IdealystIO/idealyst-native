@@ -856,6 +856,24 @@ impl Preview {
         }
     }
 
+    /// Run `setup` before every build of the component, in the scope the
+    /// preview is rendered in. This is where a component that reads
+    /// context or fetches data gets stand-ins: `provide` a demo value,
+    /// register canned server replies. `#[component(preview_setup = …)]`
+    /// emits the call.
+    ///
+    /// It runs per render rather than once because a provision lives only
+    /// as long as the scope that made it, and the docs rebuild the
+    /// component in a fresh scope each time a control changes.
+    pub fn with_setup(mut self, setup: impl Fn() + 'static) -> Self {
+        let render = self.render;
+        self.render = Rc::new(move |values| {
+            setup();
+            render(values)
+        });
+        self
+    }
+
     /// The initial value of every control, in order.
     pub fn initial_values(&self) -> Vec<ControlValue> {
         self.fields.iter().map(|f| f.initial.clone()).collect()

@@ -971,6 +971,40 @@ let r = resource(deps, |args, cancel| async move {
 
 `server::with_cancel_token(token, fut)` is the explicit-token variant.
 
+### Mocking calls (`server::mock`)
+
+Client code can run with no server: a docs preview, a component test, a
+design-time story. `server::mock` answers a `#[server]` call in place of
+the network.
+
+```rust
+server::mock::on("get_user", |(id,): (u32,)| -> Result<User, ServerError> {
+    Ok(User { id, name: "Ada".into() })
+});
+server::mock::pending("slow_report");   // never resolves: the loading state
+```
+
+- A mock is keyed by the function's wire path: its name, or the
+  `#[server(path = "…")]` override.
+- The handler takes the wire arguments as a tuple (`()` for none) and
+  returns the function's return type. An `Err(ServerError::…)` return is
+  how the error branch is shown.
+- The stub's future resolves with the handler's value, so `resource`,
+  `mutation` and `spawn_then` above it behave as against a real server.
+- Handler types are checked when a call arrives. A mismatch resolves the
+  call with `ServerError::Codec("mock for `<path>`: …")`.
+- Mocks are process-wide (a call usually runs in an async task, outside
+  any reactive scope). Installing one for a path replaces the last;
+  `server::mock::remove(path)` and `server::mock::clear()` take them away.
+- Only `#[server]` calls are answered. `#[channel]`, `#[subscription]` and
+  `#[sse]` still open real connections.
+- With the `server` feature a `#[server]` fn is called in-process, so no
+  mock applies there.
+
+A client that installs no mock pays one atomic load per call. For docs
+previews, install mocks from `#[component(preview_setup = …)]` (the
+`component-previews` guide).
+
 ---
 
 ## 7. Streaming: `#[subscription]`, `#[channel]`, `#[sse]`

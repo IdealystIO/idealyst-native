@@ -287,6 +287,10 @@ pub fn props(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///   form only; inline props use `#[prop(default = …)]`).
 /// - `children` — mark this component as a container (informational; the
 ///   invocation macro is unchanged).
+/// - `preview_setup = expr` — a `Fn()` (path or closure) the docs preview
+///   runs before each build of the component: `provide` the context it
+///   injects, register `server::mock` replies for the calls it makes.
+///   Other builds type-check it and emit nothing.
 #[proc_macro_attribute]
 pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand::component(attr.into(), item.into()).into()

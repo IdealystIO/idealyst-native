@@ -6,6 +6,10 @@
 //!                                                  treatment in future tooling
 //!   `external` / `external(tag = "...")`        — mark for `idealyst export`
 //!                                                  (Web Component generation)
+//!   `preview_setup = expr`                      — a `Fn()` run before each
+//!                                                  docs preview builds the
+//!                                                  component (mock context,
+//!                                                  canned server replies)
 //! Empty input is valid.
 
 use proc_macro2::TokenStream as TokenStream2;
@@ -63,6 +67,11 @@ pub(crate) struct ComponentAttr {
     /// Set on the re-emission of a `remote` component's fn: it is the
     /// bundle's own, never an import of the app's.
     pub(crate) no_import: bool,
+    /// `#[component(preview_setup = expr)]` — a `Fn()` the docs preview
+    /// calls before it builds the component, in the preview's own scope:
+    /// where a component that needs context or server data gets stand-ins.
+    /// Emitted only under `previews`, so it costs a normal build nothing.
+    pub(crate) preview_setup: Option<Expr>,
 }
 
 impl ComponentAttr {
@@ -75,6 +84,7 @@ impl ComponentAttr {
             retryable: false,
             remote: false,
             no_import: false,
+            preview_setup: None,
         }
     }
 }
@@ -109,6 +119,7 @@ impl Parse for ComponentAttr {
         let mut lazy = false;
         let mut retryable = false;
         let mut remote = false;
+        let mut preview_setup = None;
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
             match ident.to_string().as_str() {
@@ -138,6 +149,10 @@ impl Parse for ComponentAttr {
                 }
                 "children" => {
                     has_children = true;
+                }
+                "preview_setup" => {
+                    let _: Token![=] = input.parse()?;
+                    preview_setup = Some(input.parse::<Expr>()?);
                 }
                 "external" => {
                     // Bare `external`, or `external(tag = "...")`.
@@ -171,7 +186,7 @@ impl Parse for ComponentAttr {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unexpected argument `{}`; only `default(...)`, `children`, `external`, `lazy`, `remote`, and `retryable` are supported",
+                            "unexpected argument `{}`; only `default(...)`, `children`, `external`, `lazy`, `preview_setup = ...`, `remote`, and `retryable` are supported",
                             other
                         ),
                     ));
@@ -196,7 +211,7 @@ impl Parse for ComponentAttr {
                  through the remote emission",
             ));
         }
-        Ok(ComponentAttr { defaults, has_children, external, lazy, retryable, remote, no_import: false })
+        Ok(ComponentAttr { defaults, has_children, external, lazy, retryable, remote, no_import: false, preview_setup })
     }
 }
 

@@ -218,12 +218,26 @@ fn symbol_name(kind: &str, ident: &Ident) -> String {
 ///
 /// `tag` names the component's `BuildElement` type: the tag alias / no-arg
 /// marker struct `#[component]` declares under the fn's own name.
-pub(crate) fn component_symbol(tag: &Ident) -> (TokenStream2, String) {
+///
+/// `setup` is `#[component(preview_setup = …)]`: a `Fn()` the preview runs
+/// before each build of the component (`Preview::with_setup`).
+pub(crate) fn component_symbol(tag: &Ident, setup: Option<&Expr>) -> (TokenStream2, String) {
     if !cfg!(feature = "previews") {
-        return (TokenStream2::new(), String::new());
+        // No preview, but the setup is still type-checked: a fixture that
+        // rots is caught by an ordinary build, and the items only it names
+        // aren't reported unused. Never called, so nothing is generated.
+        let check = setup.map(|setup| {
+            quote! {
+                const _: fn() = || {
+                    let _ = &#setup;
+                };
+            }
+        });
+        return (check.unwrap_or_default(), String::new());
     }
     let symbol = symbol_name("preview", tag);
     let fn_ident = Ident::new(&symbol, tag.span());
+    let with_setup = setup.map(|setup| quote! { .with_setup(#setup) });
     let tokens = quote! {
         #[doc(hidden)]
         #[unsafe(no_mangle)]
@@ -231,7 +245,7 @@ pub(crate) fn component_symbol(tag: &Ident) -> (TokenStream2, String) {
         pub fn #fn_ident() -> ::runtime_core::previews::Preview {
             #[allow(unused_imports)]
             use ::runtime_core::previews::__probe::{ViaBuildElement as _, ViaPreviewProps as _};
-            (&&::runtime_core::previews::__probe::PropsProbe::<#tag>::new()).__preview()
+            (&&::runtime_core::previews::__probe::PropsProbe::<#tag>::new()).__preview() #with_setup
         }
     };
     (tokens, symbol)
@@ -345,13 +359,23 @@ mod tests {
     #[test]
     fn component_symbol_is_exported_and_named_after_the_tag() {
         let tag: Ident = syn::parse_quote!(Button);
-        let (tokens, symbol) = component_symbol(&tag);
+        let (tokens, symbol) = component_symbol(&tag, None);
         assert!(symbol.starts_with("__idealyst_preview__"), "{symbol}");
         assert!(symbol.contains("__Button__"), "{symbol}");
         let out = squash(tokens);
         assert!(out.contains("#[unsafe(no_mangle)]"), "{out}");
         assert!(out.contains(&format!("pubfn{symbol}()->::runtime_core::previews::Preview")), "{out}");
         assert!(out.contains("(&&::runtime_core::previews::__probe::PropsProbe::<Button>::new()).__preview()"), "{out}");
+    }
+
+    #[test]
+    fn preview_setup_is_attached_to_the_exported_preview() {
+        let tag: Ident = syn::parse_quote!(Profile);
+        let setup: Expr = syn::parse_quote!(|| provide(Session::demo()));
+        let out = squash(component_symbol(&tag, Some(&setup)).0);
+        assert!(out.contains(".__preview().with_setup(||provide(Session::demo()))"), "{out}");
+        let plain = squash(component_symbol(&tag, None).0);
+        assert!(!plain.contains("with_setup"), "{plain}");
     }
 
     #[test]

@@ -101,6 +101,7 @@ pub use socket::{
 mod batch;
 mod cancel;
 mod client;
+pub mod mock;
 pub use batch::{batch, BatchScope};
 pub use cancel::{with_cancel, with_cancel_token, WithCancel};
 pub use client::{

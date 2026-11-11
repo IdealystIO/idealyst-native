@@ -241,6 +241,46 @@ docs site registers a set of common Lucide glyphs at startup; the first is
 the icon an optional icon prop starts at. An icon that isn't in the set
 shows as no selection.
 
+## Context and server data: `preview_setup`
+
+A component that reads context (`inject`) or fetches from a `#[server]`
+function has neither in the docs: nothing provided its context and there
+is no server. `#[component(preview_setup = …)]` names a `Fn()` the preview
+runs before each build of the component, in the preview's own scope:
+
+```rust
+#[component(preview_setup = account_card_preview)]
+pub fn AccountCard() -> Element {
+    let session = inject::<Session>()…;
+    let confirmed = resource(session.user, |_user, _cancel| me());
+    …
+}
+
+fn account_card_preview() {
+    provide(Session { user: signal(Some("ada".to_string())) });
+    server::mock::on("me", |()| -> Result<String, ServerError> { Ok("ada".to_string()) });
+}
+```
+
+- `provide` in the setup is what the component's `inject` finds. Signals
+  made there belong to the preview and are freed with it.
+- `server::mock::on(path, handler)` answers a `#[server]` call in place of
+  the network, so the `resource` above it goes through loading to loaded
+  as it does in the app. Return `Err(ServerError::…)` from the handler to
+  show the error state, or call `server::mock::pending(path)` to hold the
+  loading state. See `docs/server-functions.md` §6.
+- The setup is a path or a closure (`preview_setup = || provide(Theme::demo())`).
+
+The setup runs only in a preview. Other builds type-check it and emit
+nothing for it, so a fixture that stops compiling is caught by an ordinary
+build. A zero-argument recipe needs no attribute: it is a function, so it
+calls `provide` or `server::mock` itself before rendering. `examples/login-demo`'s
+`AccountCard` is the working example.
+
+Fetches that don't go through a `#[server]` function (a raw `net` request,
+another SDK's transport) are not mocked; have the component take its data
+source from context and provide a stand-in.
+
 ## What has no live preview
 
 - **Components that open an overlay.** `Modal`, `Menu`, `SubMenu`,

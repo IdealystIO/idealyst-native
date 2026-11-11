@@ -710,7 +710,7 @@ fn emit_component_fn(
         if invocation.is_empty() || !item_fn.sig.generics.params.is_empty() {
             (proc_macro2::TokenStream::new(), String::new())
         } else {
-            preview_emit::component_symbol(&item_fn.sig.ident)
+            preview_emit::component_symbol(&item_fn.sig.ident, attr.preview_setup.as_ref())
         };
     #[cfg(not(feature = "catalog"))]
     let _ = &preview_symbol;

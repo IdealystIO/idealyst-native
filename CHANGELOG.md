@@ -1258,6 +1258,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Docs previews can stand in for context and server data** (`runtime-macros-expand`,
+  `runtime-vocabulary`, `server`, `mcp-catalog` minor). `#[component(preview_setup = …)]` names a `Fn()` the
+  preview runs before each build of the component: `provide` the context it injects there, and
+  register canned replies for the `#[server]` functions it calls. Builds without previews
+  type-check the setup and emit nothing for it.
+  - `server::mock::on(path, handler)` answers a `#[server]` call without a server, and
+    `server::mock::pending(path)` leaves it loading; `remove` and `clear` undo them. Usable from
+    component tests as well as previews. A client that installs none pays one atomic load per
+    call. See `docs/server-functions.md` §6.
+  - `Preview::with_setup` is what the attribute emits.
+  - `examples/login-demo` gains `AccountCard`, which reads a `Session` from context and calls
+    `me()`, with a setup that mocks both.
+
 - **`idealyst docs` previews are fuller, and the sidebar shows one library at a time**
   (`runtime-macros` / `runtime-macros-expand` / `runtime-core` / `runtime-vocabulary` /
   `mcp-catalog` / `idealyst-cli` minor). `#[prop(example = …)]` now also works on a prop with

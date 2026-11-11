@@ -563,3 +563,40 @@ fn overlay_placement_enums_are_choices() {
         ["runtime_core::primitives::portal::ElementAlign"]
     );
 }
+
+/// Context a component can't render without.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Session(pub &'static str);
+
+fn demo_session() {
+    runtime_core::provide(Session("demo-user"));
+}
+
+#[component(preview_setup = demo_session)]
+fn Greeting(#[prop(example = "Hello")] salutation: String) -> Element {
+    let who = runtime_core::inject::<Session>().map_or("nobody", |s| s.0);
+    record(format!("{} {who}", salutation.get()));
+    ui! { view() }
+}
+
+/// `preview_setup` runs before each build of the previewed component, so a
+/// component that injects context finds the stand-in the setup provided,
+/// on the first render and on every re-render after a control changes.
+///
+/// The exported preview fn is `…__preview().with_setup(demo_session)`
+/// (asserted on the tokens in `preview_emit`'s tests, and compiled here by
+/// the attribute above); this spells the same expression, since the
+/// export is reachable only by its position-derived symbol.
+#[test]
+fn preview_setup_provides_the_context_the_component_injects() {
+    take();
+    runtime_core::__with_fresh_world(|| {
+        let bare = preview_of!(Greeting);
+        let _ = bare.render(&bare.initial_values());
+        assert_eq!(take(), ["Hello nobody"], "without the setup there is no session");
+        let preview = preview_of!(Greeting).with_setup(demo_session);
+        let _ = preview.render(&preview.initial_values());
+        let _ = preview.render(&[ControlValue::Text("Hi".into())]);
+    });
+    assert_eq!(take(), ["Hello demo-user", "Hi demo-user"]);
+}

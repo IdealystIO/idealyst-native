@@ -193,7 +193,7 @@ inventory::submit! {
         invocation: "#[component]",
         kind: MacroKind::Component,
         module_path: "runtime_macros",
-        docs: "The canonical way to declare a component. Generates the props struct's `BuildElement` impl, the `pub type Tag = TagProps` alias that makes `Tag(...)` work as a `ui!` call site, and the `Default` glue struct-literal dispatch relies on — so don't hand-roll `BuildElement` impls or builder methods. Accepts `#[component(children)]` for container components and `#[component(default(field = expr))]` for non-Default starting values. Name container fns PascalCase to match the tag. See [[component-hygiene]].",
+        docs: "The canonical way to declare a component. Generates the props struct's `BuildElement` impl, the `pub type Tag = TagProps` alias that makes `Tag(...)` work as a `ui!` call site, and the `Default` glue struct-literal dispatch relies on — so don't hand-roll `BuildElement` impls or builder methods. Accepts `#[component(children)]` for container components `#[component(default(field = expr))]` for non-Default starting values, and `#[component(preview_setup = expr)]` for a `Fn()` that gives its docs preview stand-in context and `server::mock` replies (see the `component-previews` guide). Name container fns PascalCase to match the tag. See [[component-hygiene]].",
         expansion: "props struct BuildElement impl + `pub type Tag = TagProps` alias + Default glue",
         snippet: "/// ${1:What it renders.}\n#[component]\nfn ${2:Name}(${3:label: String}) -> Element {\n\tui! {\n\t\t$0\n\t}\n}",
         _seal: (),

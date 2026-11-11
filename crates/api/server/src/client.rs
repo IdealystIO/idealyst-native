@@ -370,6 +370,18 @@ where
         Err(e) => return Ret::from_server_error(ServerError::Codec(e.to_string())),
     };
 
+    // A mocked path never reaches the network (see `crate::mock`).
+    match crate::mock::lookup(path) {
+        Some(crate::mock::Mock::Pending) => return std::future::pending().await,
+        Some(crate::mock::Mock::Reply(handler)) => {
+            return match handler(args_value).and_then(|v| serde_json::from_value::<Ret>(v).map_err(|e| format!("reply: {e}"))) {
+                Ok(r) => r,
+                Err(e) => Ret::from_server_error(ServerError::Codec(format!("mock for `{path}`: {e}"))),
+            };
+        }
+        None => {}
+    }
+
     // Direct single call by default; coalesce only inside a `batch(...)`
     // scope. The direct path also surfaces the server's return-schema
     // hash for the drift diagnostic below; the batch path doesn't thread

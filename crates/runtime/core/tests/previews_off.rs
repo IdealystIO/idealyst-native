@@ -5,6 +5,7 @@
 //!   `runtime_core::previews::PropControl`, which does not exist in these
 //!   builds, so it compiles only because the attribute dropped the impl;
 //! - `#[prop(example = …)]` is accepted and changes nothing;
+//! - `#[component(preview_setup = …)]` is type-checked and never run;
 //! - with `catalog` on but `previews` off (what `idealyst dev` builds), a
 //!   the catalog registers no preview symbol.
 //!
@@ -66,6 +67,25 @@ fn example_is_inert_and_prop_control_impls_vanish() {
     SEEN.with(|s| {
         assert_eq!(*s.borrow(), [":Rating(0)".to_string(), String::new()], "defaults, not examples");
     });
+}
+
+fn mark_setup_ran() {
+    SEEN.with(|s| s.borrow_mut().push("setup".into()));
+}
+
+#[component(preview_setup = mark_setup_ran)]
+fn Fixtured() -> Element {
+    ui! { view() }
+}
+
+/// The setup belongs to the docs preview alone: building the component in
+/// an app never runs it. (`mark_setup_ran` is private and otherwise
+/// unreferenced, so this file compiling warning-free is the type-check.)
+#[test]
+fn preview_setup_never_runs_outside_a_preview() {
+    SEEN.with(|s| s.borrow_mut().clear());
+    let _ = ui! { Fixtured() };
+    SEEN.with(|s| assert!(s.borrow().is_empty(), "{:?}", s.borrow()));
 }
 
 #[cfg(feature = "catalog")]
