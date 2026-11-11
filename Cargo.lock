@@ -6440,7 +6440,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "21.2.0"
+version = "21.3.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6460,7 +6460,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "22.0.0"
+version = "22.1.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
