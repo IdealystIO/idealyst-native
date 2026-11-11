@@ -1327,9 +1327,14 @@ impl LayoutTree {
         }
 
         let changed = style != existing;
-        self.tree
-            .set_style(node.0, style)
-            .expect("taffy set_style");
+        // Only when it changed: Taffy marks the node and every ancestor
+        // dirty on each `set_style`, so writing an identical style turned a
+        // paint-only restyle (a hover tint) into a relayout of the subtree.
+        if changed {
+            self.tree
+                .set_style(node.0, style)
+                .expect("taffy set_style");
+        }
 
         // When this node IS (or just became) a grid, reset its existing
         // children as grid items. `view` builds children BEFORE attaching
@@ -2504,6 +2509,41 @@ mod tests {
         assert_eq!((f.x, f.y), (88.0, 32.0), "a relative box is offset by its insets");
     }
 
+
+    /// REGRESSION: a paint-only restyle (a row's hover tint, a tone)
+    /// dirtied the node's layout. `set_style` reported "no layout change"
+    /// but still handed the style to Taffy, and Taffy marks a node — and
+    /// its ancestors — dirty on every `set_style`, so each hover step in a
+    /// virtualized table re-laid out the hovered row's cells (on macOS, every
+    /// pointer move while scrolling). An unchanged layout style must leave
+    /// the node clean; a changed one must still dirty it.
+    #[test]
+    fn regression_a_paint_only_restyle_dirties_the_layout() {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let cell = t.new_node();
+        t.add_child(root, cell);
+        let rules = StyleRules {
+            width: Some(Tokenized::Literal(FwLength::Px(80.0))),
+            height: Some(Tokenized::Literal(FwLength::Px(40.0))),
+            ..Default::default()
+        };
+        t.set_style(cell, &rules);
+        t.compute(root, 400.0, 400.0);
+        assert!(!t.is_dirty(cell) && !t.is_dirty(root), "clean after a layout pass");
+
+        let tinted = StyleRules {
+            background: Some(runtime_shared::Color("red".into()).into()),
+            ..rules.clone()
+        };
+        assert!(!t.set_style(cell, &tinted), "a background is not layout");
+        assert!(!t.is_dirty(cell), "a paint-only restyle leaves the node clean");
+        assert!(!t.is_dirty(root), "and its ancestors");
+
+        let wider = StyleRules { width: Some(Tokenized::Literal(FwLength::Px(120.0))), ..rules };
+        assert!(t.set_style(cell, &wider));
+        assert!(t.is_dirty(cell), "a layout change still dirties the node");
+    }
 
     // -----------------------------------------------------------------
     // Viewport seeding — what `set_overflow_scroll` is FOR.

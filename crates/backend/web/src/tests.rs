@@ -3834,6 +3834,98 @@ async fn regression_web_virtual_grid_cells_keep_row_major_order_after_scrolling_
     grid_el.remove();
 }
 
+/// Frozen panes on the web grid: after scrolling on both axes, the header
+/// row is held at the grid's top edge, the left pin at its left edge, the
+/// right pin at its right edge, and the corner at the top-left — the CSS
+/// sticky rule `GridMetrics::display_origin` defines. A grid that windowed
+/// the frozen rows like any other would have dropped the header as soon as
+/// row 0 scrolled out.
+#[wasm_bindgen_test]
+async fn virtual_grid_frozen_panes_hold_at_the_edges_while_scrolling() {
+    use runtime_shared::primitives::virtual_grid::FrozenPanes;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let mount_doc = doc.clone();
+    let width = Rc::new(std::cell::Cell::new(80.0_f32));
+    let w = width.clone();
+    let callbacks = runtime_shared::primitives::virtual_grid::GridCallbacks::<web_glue::dom::Node> {
+        col_count: Rc::new(|| 10usize),
+        row_count: Rc::new(|| 100usize),
+        col_width: Rc::new(move |_| w.get()),
+        row_height: Rc::new(|_| 40.0_f32),
+        cell_key: Rc::new(|c, r| (r * 10 + c) as u64),
+        mount_cell: Rc::new(move |c, r| {
+            let el = mount_doc.create_element("div").unwrap();
+            let _ = el.set_attribute("data-cell", &format!("{c},{r}"));
+            (el.unchecked_into(), (r * 10 + c) as u64)
+        }),
+        release_cell: Rc::new(|_| {}),
+        on_scroll: None,
+    };
+    let grid = crate::primitives::virtual_grid::create(&mut backend, callbacks, 0.0);
+    crate::primitives::virtual_grid::set_frozen(
+        &mut backend,
+        &grid,
+        FrozenPanes { top: 1, left: 1, right: 1, ..FrozenPanes::NONE },
+    );
+    let grid_el: web_glue::dom::HtmlElement = grid.clone().unchecked_into();
+    // No scrollbars take room, so the scrollport is exactly 300 x 200.
+    let _ = grid_el.set_attribute(
+        "style",
+        "position: absolute; left: 0; top: 0; height: 200px; width: 300px; overflow: auto; scrollbar-width: none;",
+    );
+    doc.body().unwrap().append_child(&grid_el).unwrap();
+    sleep_ms(20).await;
+
+    let scroll = |x: i32, y: i32| {
+        grid_el.set_scroll_left(x);
+        grid_el.set_scroll_top(y);
+        let ev = web_glue::dom::Event::new("scroll").unwrap();
+        grid_el.dispatch_event(&ev).unwrap();
+    };
+    scroll(240, 2000);
+    sleep_ms(30).await;
+
+    let origin = grid_el.get_bounding_client_rect();
+    let rect = |c: usize, r: usize| {
+        let el = grid_el
+            .query_selector(&format!("[data-cell=\"{c},{r}\"]"))
+            .unwrap()
+            .unwrap_or_else(|| panic!("cell {c},{r} is mounted"));
+        let b = el.get_bounding_client_rect();
+        ((b.left() - origin.left()).round(), (b.top() - origin.top()).round(), b.width().round())
+    };
+    // Scrolled to x=240 (col 3), y=2000 (row 50).
+    assert_eq!(rect(0, 0), (0.0, 0.0, 80.0), "the corner holds at the top-left");
+    assert_eq!(rect(4, 0), (80.0, 0.0, 80.0), "the header scrolls sideways, held at the top");
+    assert_eq!(rect(0, 52), (0.0, 80.0, 80.0), "the left pin scrolls down, held at the left");
+    assert_eq!(rect(9, 52), (220.0, 80.0, 80.0), "the right pin is held at the right edge");
+    assert_eq!(rect(4, 52), (80.0, 80.0, 80.0), "a body cell scrolls with the content");
+
+    // `scroll_to_cell` lands a row just under the frozen header, and a
+    // column just right of the frozen left column.
+    let handle = crate::primitives::virtual_grid::make_handle(&grid);
+    handle.scroll_to_cell(5, 60);
+    sleep_ms(30).await;
+    assert_eq!((grid_el.scroll_left(), grid_el.scroll_top()), (320, 2360));
+
+    // A width change re-places the cells that survive it, frozen ones
+    // included (the right pin's layer sits at the content's far edge,
+    // which moved).
+    width.set(100.0);
+    crate::primitives::virtual_grid::data_changed(&mut backend, &grid);
+    sleep_ms(30).await;
+    let (x, _, w) = rect(9, 60);
+    assert_eq!((x, w), (200.0, 100.0), "the right pin re-placed at the new width");
+    assert_eq!(rect(0, 0).2, 100.0, "the corner takes the new width");
+
+    crate::primitives::virtual_grid::release(&mut backend, &grid);
+    grid_el.remove();
+}
+
 /// Build a `keydown` for `key` that bubbles and is cancelable, dispatch it on
 /// `target`, and return whether its default action ended up prevented.
 fn dispatch_bubbling_keydown(target: &web_glue::dom::Element, key: &str) -> bool {

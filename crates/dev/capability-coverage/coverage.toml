@@ -435,6 +435,12 @@ status = "gap"
 reason = "virtual_grid missing"
 
 [[allow]]
+method = "GridOps::set_virtual_grid_frozen"
+backends = ["linux", "windows", "gpu"]
+status = "gap"
+reason = "virtual_grid missing"
+
+[[allow]]
 method = "GridOps::virtual_grid_data_changed"
 backends = ["linux", "windows", "gpu"]
 status = "gap"
@@ -502,7 +508,7 @@ reason = "on_wheel is inert"
 
 [[allow]]
 method = "InputOps::mark_preserves_focus"
-backends = ["android", "linux", "windows", "gpu"]
+backends = ["linux", "windows", "gpu"]
 status = "gap"
 reason = "a press inside a combobox blurs its text input"
 

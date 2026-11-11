@@ -94,7 +94,9 @@ pub mod wasm;
 /// - 12: [`Node::Text`] carries `selectable` (`text(selectable = true)`).
 /// - 13: [`Node::Pressable`] carries `activation` (a
 ///   [`runtime_shared::PressActivation`]).
-pub const CODEC_VERSION: u32 = 13;
+/// - 14: [`Node::VirtualGrid`] carries `frozen` (a
+///   [`runtime_shared::primitives::virtual_grid::FrozenPanes`]).
+pub const CODEC_VERSION: u32 = 14;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.
@@ -330,6 +332,7 @@ pub enum Node {
         render_cell: Cb,
         overscan: f32,
         on_scroll: Option<Cb>,
+        frozen: runtime_shared::primitives::virtual_grid::FrozenPanes,
     },
     StackNavigator {
         config: WireNavConfig,

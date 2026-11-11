@@ -212,6 +212,21 @@ pub trait GridOps: ExternalOps {
         )
     }
 
+    /// Set the grid's frozen panes (rows and columns held at its edges,
+    /// `runtime_shared::primitives::virtual_grid::FrozenPanes`). Called once,
+    /// right after `create_virtual_grid` and before the first
+    /// `virtual_grid_data_changed`. A backend with a grid engine MUST
+    /// implement it: frozen cells that scroll away would give the same
+    /// author tree a different result on this backend. Place them with
+    /// `GridMetrics::pane_window` / `display_origin`.
+    #[allow(unused_variables)]
+    fn set_virtual_grid_frozen(
+        &mut self,
+        node: &Self::Node,
+        frozen: primitives::virtual_grid::FrozenPanes,
+    ) {
+    }
+
     /// Counts or sizes changed: rebuild metrics and re-diff.
     #[allow(unused_variables)]
     fn virtual_grid_data_changed(&mut self, node: &Self::Node) {}

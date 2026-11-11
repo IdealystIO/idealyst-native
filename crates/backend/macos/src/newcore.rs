@@ -353,6 +353,12 @@ pub fn start_with<S, R, B>(
     // (b) the apple-core scheduler/executor post-dispatch hook.
     backend_apple_core::dispatch_hook::install_dispatch_hook(schedule_flush);
     set_flush_world(Some(world.clone()));
+    // The boot pass in `finish_impl` queued every `virtual_grid`'s first
+    // fill but, unlike a scheduled pass, nothing drains after it: the grid
+    // stayed EMPTY until some unrelated later pass happened to (on some
+    // launches, never). The backend borrow is released here, and the flush
+    // world is installed for the cells' mounts. See `virtual_grid::PENDING`.
+    crate::imp::virtual_grid::drain_pending();
     // Point the Robot bridge at the registry this boot actually fills.
     #[cfg(feature = "robot")]
     install_robot_env();
@@ -1223,6 +1229,14 @@ impl caps::GridOps for MacosBackend {
             }),
         };
         MacosBackend::create_virtual_grid_impl(self, callbacks, overscan, a11y)
+    }
+
+    fn set_virtual_grid_frozen(
+        &mut self,
+        node: &Self::Node,
+        frozen: primitives::virtual_grid::FrozenPanes,
+    ) {
+        MacosBackend::set_virtual_grid_frozen_impl(self, node, frozen)
     }
 
     fn virtual_grid_data_changed(&mut self, node: &Self::Node) {

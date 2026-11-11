@@ -24,6 +24,28 @@
 //!   top-left and the y arithmetic matches web/iOS with no sign flip.
 //!   Without it every cell would be positioned bottom-up and the grid
 //!   would render upside down.
+//!
+//! # Frozen panes
+//!
+//! AppKit holds frozen cells still itself — the mechanism `NSTableView`'s
+//! header uses — so no cell moves while the grid scrolls:
+//!
+//! - a cell frozen on ONE axis (a header cell, a pinned column's cell) is a
+//!   floating subview of the scroll view (`addFloatingSubview:forAxis:`),
+//!   which keeps its document-space frame but stays fixed on that axis;
+//! - a cell frozen on BOTH (a corner) is a plain subview of the scroll view,
+//!   above the clip view, fixed on both.
+//!
+//! Re-placing frozen cells from the scroll notification instead trails the
+//! scroll: AppKit scrolls asynchronously (responsive scrolling, which the
+//! document view keeps on — see `ScrollDocumentView`) and tells the main
+//! thread afterwards, so headers rode along with the rows and snapped back.
+//! In every one of those coordinate spaces a cell's frame is
+//! `GridMetrics::display_origin` at a ZERO scroll offset: the scrolling axis
+//! keeps document coordinates, the fixed one is the viewport's.
+//!
+//! The containers also give the z-order: floating subviews draw (and
+//! hit-test) above the document, scroll-view subviews above both.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -33,7 +55,9 @@ use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_app_kit::NSView;
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSObject};
-use runtime_shared::primitives::virtual_grid::{CellKey, GridCallbacks, GridMetrics, GridWindow, Scrollport};
+use runtime_shared::primitives::virtual_grid::{
+    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, PaneWindow, Scrollport,
+};
 
 use super::MacosNode;
 
@@ -47,6 +71,9 @@ struct MountedCell {
     /// CONTENT changed showing its old view until it scrolled out of the
     /// window.
     key: CellKey,
+    /// `(column band, row band)` it was inserted for — decides its
+    /// subview order and whether a scroll re-frames it.
+    bands: (Band, Band),
 }
 
 pub(crate) struct VirtualGridInstance {
@@ -55,7 +82,14 @@ pub(crate) struct VirtualGridInstance {
     callbacks: Rc<RefCell<Option<GridCallbacks<MacosNode>>>>,
     metrics: Rc<RefCell<GridMetrics>>,
     mounted: Rc<RefCell<HashMap<(usize, usize), MountedCell>>>,
-    last_window: Rc<RefCell<Option<GridWindow>>>,
+    last_window: Rc<RefCell<Option<PaneWindow>>>,
+    frozen: Rc<std::cell::Cell<FrozenPanes>>,
+    /// Buffer outside the visible window, in viewport extents — the
+    /// author's `.overscan(..)`.
+    overscan: f32,
+    incomplete: Rc<std::cell::Cell<bool>>,
+    follow_up: Rc<std::cell::Cell<bool>>,
+    retiring: Rc<RefCell<Vec<MountedCell>>>,
     /// Bounds-change observer; the notification center holds it
     /// non-owningly, so the instance must.
     observer: Option<Retained<NSObject>>,
@@ -75,7 +109,7 @@ pub(crate) fn create(
     mtm: MainThreadMarker,
     registry: &mut GridRegistry,
     callbacks: GridCallbacks<MacosNode>,
-    _overscan: f32,
+    overscan: f32,
 ) -> Retained<NSView> {
     let document_view: Retained<NSView> =
         Retained::into_super(crate::imp::view::ScrollDocumentView::new(mtm));
@@ -151,6 +185,11 @@ pub(crate) fn create(
             metrics,
             mounted: Rc::new(RefCell::new(HashMap::new())),
             last_window: Rc::new(RefCell::new(None)),
+            frozen: Rc::new(std::cell::Cell::new(FrozenPanes::NONE)),
+            overscan,
+            incomplete: Rc::new(std::cell::Cell::new(false)),
+            follow_up: Rc::new(std::cell::Cell::new(false)),
+            retiring: Rc::new(RefCell::new(Vec::new())),
             observer,
             gutter: Rc::new(std::cell::Cell::new(scroller_gutter(&scroll))),
             style_observer: Some(style_observer),
@@ -255,6 +294,22 @@ fn data_changed_in(registry: &mut GridRegistry, node: &MacosNode) {
     sync_in(registry, key);
 }
 
+/// Set the frozen panes and re-window: the bands join the mounted set,
+/// and cells already mounted are re-inserted at their band's z-order.
+pub(crate) fn set_frozen(backend: &mut crate::imp::MacosBackend, node: &MacosNode, frozen: FrozenPanes) {
+    set_frozen_in(&mut backend.virtual_grid_registry, node, frozen);
+    crate::imp::schedule_layout_pass();
+}
+
+fn set_frozen_in(registry: &mut GridRegistry, node: &MacosNode, frozen: FrozenPanes) {
+    let MacosNode::View(view) = node else { return };
+    let key = &**view as *const NSView as usize;
+    let Some(inst) = registry.get(&key) else { return };
+    inst.frozen.set(frozen);
+    *inst.last_window.borrow_mut() = None;
+    sync_in(registry, key);
+}
+
 /// Everything one sync touches, with no backend borrow among them.
 ///
 /// The ONLY thing a sync needs the backend for is finding the instance
@@ -267,8 +322,28 @@ struct GridHandles {
     callbacks: Rc<RefCell<Option<GridCallbacks<MacosNode>>>>,
     metrics: Rc<RefCell<GridMetrics>>,
     mounted: Rc<RefCell<HashMap<(usize, usize), MountedCell>>>,
-    last_window: Rc<RefCell<Option<GridWindow>>>,
+    last_window: Rc<RefCell<Option<PaneWindow>>>,
+    frozen: Rc<std::cell::Cell<FrozenPanes>>,
+    overscan: f32,
+    /// The registry key, for the follow-up sync that finishes the overscan.
+    key: usize,
+    /// The last sync left overscan cells unmounted (see [`OVERSCAN_BUDGET`]).
+    incomplete: Rc<std::cell::Cell<bool>>,
+    /// A follow-up sync is already scheduled.
+    follow_up: Rc<std::cell::Cell<bool>>,
+    /// Cells that left the window: detached at once, released (their
+    /// subtree and scope dropped) within the budget — see [`retire`].
+    retiring: Rc<RefCell<Vec<MountedCell>>>,
 }
+
+/// How long one sync may spend on work that can wait — mounting OVERSCAN
+/// cells (the ones just outside the viewport) and releasing cells that left
+/// the window — before it hands the rest to the next run-loop turn. Cells in
+/// view always mount at once. A fast flick brings several rows in and sends
+/// as many out; each table cell is a small styled view tree, and building the
+/// buffer and tearing down the leavers in the same scroll callback stalled
+/// the frame the scroll was drawing. Half of a 120 Hz frame.
+const OVERSCAN_BUDGET: std::time::Duration = std::time::Duration::from_millis(4);
 
 /// A grid's cells, taken out of the registry, waiting to be dropped.
 struct TeardownJob {
@@ -382,6 +457,12 @@ fn sync_in(registry: &GridRegistry, key: usize) {
             metrics: inst.metrics.clone(),
             mounted: inst.mounted.clone(),
             last_window: inst.last_window.clone(),
+            frozen: inst.frozen.clone(),
+            overscan: inst.overscan,
+            key,
+            incomplete: inst.incomplete.clone(),
+            follow_up: inst.follow_up.clone(),
+            retiring: inst.retiring.clone(),
         },
     );
 }
@@ -389,6 +470,7 @@ fn sync_in(registry: &GridRegistry, key: usize) {
 /// The borrow-free half of a sync: runs from the drain, with no backend
 /// borrow held.
 fn sync_now(h: &GridHandles) {
+    let t0 = std::time::Instant::now();
     let scroll = h.scroll.clone();
     let document = h.document.clone();
     let callbacks = &h.callbacks;
@@ -409,47 +491,59 @@ fn sync_now(h: &GridHandles) {
 
     let clip: Option<Retained<NSView>> = unsafe { msg_send_id![&scroll, contentView] };
     let Some(clip) = clip else { return };
-    let clip_bounds: CGRect = unsafe { msg_send![&clip, bounds] };
+    let mut clip_bounds: CGRect = unsafe { msg_send![&clip, bounds] };
+    if clip_bounds.size.width <= 0.0 || clip_bounds.size.height <= 0.0 {
+        // The layout pass framed the scroller, but NSScrollView sizes its
+        // clip view lazily (`tile`, on its next layout/display), and this
+        // sync runs right after that pass. Reading the clip here saw 0×0,
+        // bailed, and the grid stayed EMPTY until some unrelated later pass
+        // happened to re-sync it — on some launches never. Tile now.
+        let frame: CGRect = unsafe { msg_send![&scroll, frame] };
+        if frame.size.width > 0.0 && frame.size.height > 0.0 {
+            let _: () = unsafe { msg_send![&scroll, tile] };
+            clip_bounds = unsafe { msg_send![&clip, bounds] };
+        }
+    }
     if clip_bounds.size.width <= 0.0 || clip_bounds.size.height <= 0.0 {
         // Layout hasn't run. Bail WITHOUT caching, so the next pass
         // retries instead of remembering an empty window as current.
         return;
     }
 
-    let overscan = 1.0;
-    let window = metrics.borrow().visible_window(
-        (clip_bounds.origin.x as f32, clip_bounds.origin.y as f32),
-        (
-            clip_bounds.size.width as f32,
-            clip_bounds.size.height as f32,
-        ),
-        overscan,
-    );
+    let overscan = h.overscan;
+    let frozen = h.frozen.get();
+    let scroll_at = (clip_bounds.origin.x as f32, clip_bounds.origin.y as f32);
+    let viewport = (clip_bounds.size.width as f32, clip_bounds.size.height as f32);
+    let window = metrics.borrow().pane_window(scroll_at, viewport, overscan, frozen);
 
-    if *last_window.borrow() == Some(window) {
+    // The cells actually in view: these mount in this sync whatever it
+    // costs; the rest of `window` (the overscan) within `OVERSCAN_BUDGET`.
+    let in_view = metrics.borrow().pane_window(scroll_at, viewport, 0.0, frozen);
+    if *last_window.borrow() == Some(window) && !h.incomplete.get() {
+        finish_turn(h, t0, false);
         return;
     }
+    // A window that was invalidated (a data change, a layout pass) may
+    // have moved every surviving cell: a width or height changed.
+    let reframe_all = last_window.borrow().is_none();
     *last_window.borrow_mut() = Some(window);
 
     let leaving: Vec<(usize, usize)> = mounted
         .borrow()
-        .keys()
-        .copied()
-        .filter(|(c, r)| !window.contains(*c, *r))
+        .iter()
+        .filter(|((c, r), cell)| !window.contains(*c, *r) || cell.bands != window.bands(*c, *r))
+        .map(|(slot, _)| *slot)
         .collect();
     for slot in leaving {
         let cell = mounted.borrow_mut().remove(&slot);
         if let Some(cell) = cell {
-            let _: () = unsafe { msg_send![&cell.view, removeFromSuperview] };
-            let release = callbacks.borrow().as_ref().map(|c| c.release_cell.clone());
-            if let Some(release) = release {
-                release(cell.scope_id);
-            }
+            retire(h, cell);
         }
     }
 
     // Mount cells that entered — and re-mount any whose CONTENT changed
     // under them, which a positional diff cannot see.
+    let mut deferred = false;
     for (col, row) in window.cells() {
         let key_now = callbacks
             .borrow()
@@ -457,44 +551,160 @@ fn sync_now(h: &GridHandles) {
             .map(|c| (c.cell_key)(col, row));
         let mounted_key = mounted.borrow().get(&(col, row)).map(|m| m.key);
         match (mounted_key, key_now) {
-            // Live cell, unchanged content: leave it alone. This is the
-            // common case and the whole point of the pool.
-            (Some(old), Some(new)) if old == new => continue,
+            // Live cell, unchanged content: leave it alone (re-framed
+            // when its geometry may have moved). This is the common case
+            // and the whole point of the pool.
+            (Some(old), Some(new)) if old == new => {
+                if reframe_all {
+                    let view = mounted.borrow().get(&(col, row)).map(|c| c.view.clone());
+                    if let Some(view) = view {
+                        layout_cell(&view, &metrics.borrow(), col, row, scroll_at, viewport, frozen);
+                    }
+                }
+                continue;
+            }
             // Live cell whose content moved on: drop it so the mount
             // below rebuilds it. Releasing FIRST keeps the scope count
             // flat rather than doubling for a frame.
             (Some(_), _) => {
                 let stale = mounted.borrow_mut().remove(&(col, row));
                 if let Some(stale) = stale {
-                    let _: () = unsafe { msg_send![&stale.view, removeFromSuperview] };
-                    let release = callbacks.borrow().as_ref().map(|c| c.release_cell.clone());
-                    if let Some(release) = release {
-                        release(stale.scope_id);
-                    }
+                    retire(h, stale);
                 }
             }
             (None, _) => {}
+        }
+        if !in_view.contains(col, row) && t0.elapsed() >= OVERSCAN_BUDGET {
+            deferred = true;
+            continue;
         }
         let mount = callbacks.borrow().as_ref().map(|c| c.mount_cell.clone());
         let Some(mount) = mount else { break };
         let (node, scope_id) = mount(col, row);
         let MacosNode::View(view) = &node else { continue };
-        let (x, y) = metrics.borrow().cell_origin(col, row);
-        let (w, h) = metrics.borrow().cell_size(col, row);
-        let frame = CGRect {
-            origin: CGPoint { x: x as f64, y: y as f64 },
-            size: CGSize::new(w as f64, h as f64),
-        };
-        let _: () = unsafe { msg_send![&**view, setFrame: frame] };
-        let _: () = unsafe { msg_send![&document, addSubview: &**view] };
+        place(view, &metrics.borrow(), col, row, scroll_at, viewport, frozen);
+        let bands = window.bands(col, row);
+        insert_cell(&scroll, &document, view, bands);
+        // Lay the new cell's contents out now: this runs from the drain,
+        // after the pass that discovered the cell, and nothing guarantees
+        // another pass before it draws (see `layout_cells`).
+        layout_cell(view, &metrics.borrow(), col, row, scroll_at, viewport, frozen);
         mounted.borrow_mut().insert(
             (col, row),
             MountedCell {
                 view: view.clone(),
                 scope_id,
                 key: key_now.unwrap_or_default(),
+                bands,
             },
         );
+    }
+    h.incomplete.set(deferred);
+    finish_turn(h, t0, deferred);
+}
+
+/// Take a cell off screen now; release it within the budget ([`finish_turn`]).
+/// Detaching keeps its subtree assembled, which `release_subtree` needs.
+fn retire(h: &GridHandles, cell: MountedCell) {
+    let _: () = unsafe { msg_send![&cell.view, removeFromSuperview] };
+    h.retiring.borrow_mut().push(cell);
+}
+
+/// End of a sync: release retiring cells until the budget is spent, then, if
+/// overscan mounts or releases are left, schedule a follow-up sync on the
+/// next run-loop turn — after this frame has drawn.
+fn finish_turn(h: &GridHandles, t0: std::time::Instant, deferred: bool) {
+    let release = h.callbacks.borrow().as_ref().map(|c| c.release_cell.clone());
+    loop {
+        if t0.elapsed() >= OVERSCAN_BUDGET {
+            break;
+        }
+        let Some(cell) = h.retiring.borrow_mut().pop() else { break };
+        if let Some(release) = release.as_ref() {
+            release(cell.scope_id);
+        }
+    }
+    let more = deferred || !h.retiring.borrow().is_empty();
+    if more && !h.follow_up.replace(true) {
+        let (key, follow_up) = (h.key, h.follow_up.clone());
+        runtime_shared::scheduling::after_ms_detached(0, move || {
+            follow_up.set(false);
+            crate::imp::with_backend(|b| sync(b, key));
+            drain_pending();
+        });
+    }
+}
+
+/// Lay a cell's subtree out against its box (`layout_detached_in_place`,
+/// which keeps the root where the grid put it), then frame the root.
+/// Borrow-free callers only: it takes the backend.
+#[allow(clippy::too_many_arguments)]
+fn layout_cell(
+    view: &NSView,
+    m: &GridMetrics,
+    col: usize,
+    row: usize,
+    scroll: (f32, f32),
+    viewport: (f32, f32),
+    frozen: FrozenPanes,
+) {
+    let (w, h) = m.cell_size(col, row);
+    let key = view as *const NSView as usize;
+    crate::imp::with_backend(|b| b.layout_detached_in_place(key, CGSize::new(w as f64, h as f64)));
+    place(view, m, col, row, scroll, viewport, frozen);
+}
+
+/// Frame a cell where it draws: its origin, or for a frozen cell the
+/// sticky position at this scroll (`GridMetrics::display_origin`). Skips
+/// an unchanged frame — this runs per scroll for every frozen cell.
+fn place(
+    view: &NSView,
+    m: &GridMetrics,
+    col: usize,
+    row: usize,
+    scroll: (f32, f32),
+    viewport: (f32, f32),
+    frozen: FrozenPanes,
+) {
+    // Zero scroll: AppKit applies the scroll on the scrolling axes and holds
+    // the frozen ones (module docs, "Frozen panes").
+    let _ = scroll;
+    let (x, y) = m.display_origin(col, row, (0.0, 0.0), viewport, frozen);
+    let (w, h) = m.cell_size(col, row);
+    let frame = CGRect {
+        origin: CGPoint { x: x as f64, y: y as f64 },
+        size: CGSize::new(w as f64, h as f64),
+    };
+    let now: CGRect = unsafe { msg_send![view, frame] };
+    if now != frame {
+        // Implicit layer actions off: a cell moving to its slot jumps there.
+        unsafe {
+            let _: () = msg_send![objc2::class!(CATransaction), begin];
+            let _: () = msg_send![objc2::class!(CATransaction), setDisableActions: true];
+            let _: () = msg_send![view, setFrame: frame];
+            let _: () = msg_send![objc2::class!(CATransaction), commit];
+        }
+    }
+}
+
+/// Parent a cell by its bands (module docs, "Frozen panes"): the document
+/// for a scrolling cell, a floating subview fixed on the frozen axis for an
+/// edge cell, the scroll view itself for a corner.
+fn insert_cell(scroll: &NSView, document: &NSView, view: &NSView, bands: (Band, Band)) {
+    // NSEventGestureAxis: Horizontal = 1, Vertical = 2.
+    match bands {
+        (Band::Scrolling, Band::Scrolling) => unsafe {
+            let _: () = msg_send![document, addSubview: view];
+        },
+        (Band::Scrolling, _) => unsafe {
+            let _: () = msg_send![scroll, addFloatingSubview: view, forAxis: 2isize];
+        },
+        (_, Band::Scrolling) => unsafe {
+            let _: () = msg_send![scroll, addFloatingSubview: view, forAxis: 1isize];
+        },
+        _ => unsafe {
+            let _: () = msg_send![scroll, addSubview: view];
+        },
     }
 }
 
@@ -510,6 +720,68 @@ pub(crate) fn sync_all(backend: &mut crate::imp::MacosBackend) {
             *inst.last_window.borrow_mut() = None;
         }
         sync(backend, key);
+    }
+}
+
+/// Lay out every mounted cell's SUBTREE against the cell's box. A cell root
+/// is a Taffy root with no parent — this engine places it in the document
+/// view — so the host pass never reaches it, and without this everything
+/// inside a cell (a table cell's padding box and its text) stays 0×0: the
+/// cell frames draw, empty. `layout_detached_in_place` frames the subtree
+/// and leaves each root where the grid put it.
+/// iOS and Android do the same through their layout pass's `cell_box` hook.
+pub(crate) fn layout_cells(backend: &mut crate::imp::MacosBackend) {
+    struct Cell {
+        key: usize,
+        view: Retained<NSView>,
+        slot: (usize, usize),
+        size: CGSize,
+    }
+    struct Grid {
+        cells: Vec<Cell>,
+        metrics: Rc<RefCell<GridMetrics>>,
+        scroll: Retained<NSView>,
+        frozen: FrozenPanes,
+    }
+    let grids: Vec<Grid> = backend
+        .virtual_grid_registry
+        .values()
+        .map(|inst| {
+            let m = inst.metrics.borrow();
+            Grid {
+                cells: inst
+                    .mounted
+                    .borrow()
+                    .iter()
+                    // A cell whose subtree nothing touched since it was laid
+                    // out keeps its frames: re-laying out every mounted cell
+                    // on every pass cost hundreds of ms per scroll.
+                    .filter(|(_, cell)| {
+                        let key = &*cell.view as *const NSView as usize;
+                        backend.view_to_layout.get(&key).is_some_and(|(_, n)| backend.layout.is_dirty(*n))
+                    })
+                    .map(|(slot, cell)| {
+                        let (w, h) = m.cell_size(slot.0, slot.1);
+                        Cell {
+                            key: &*cell.view as *const NSView as usize,
+                            view: cell.view.clone(),
+                            slot: *slot,
+                            size: CGSize::new(w as f64, h as f64),
+                        }
+                    })
+                    .collect(),
+                metrics: inst.metrics.clone(),
+                scroll: inst.scroll_view.clone(),
+                frozen: inst.frozen.get(),
+            }
+        })
+        .collect();
+    for g in grids {
+        let (scroll_at, viewport) = clip_offset_and_size(&g.scroll);
+        for c in g.cells {
+            backend.layout_detached_in_place(c.key, c.size);
+            place(&c.view, &g.metrics.borrow(), c.slot.0, c.slot.1, scroll_at, viewport, g.frozen);
+        }
     }
 }
 
@@ -538,7 +810,9 @@ fn release_in(registry: &mut GridRegistry, node: &MacosNode) {
     }
     let cbs = inst.callbacks.borrow_mut().take();
     let release_cell = cbs.as_ref().map(|c| c.release_cell.clone());
-    let cells: Vec<MountedCell> = inst.mounted.borrow_mut().drain().map(|(_, v)| v).collect();
+    let mut cells: Vec<MountedCell> = inst.mounted.borrow_mut().drain().map(|(_, v)| v).collect();
+    // Cells already off screen but not yet released go with the rest.
+    cells.append(&mut inst.retiring.borrow_mut());
     // Queued, not run: this runs under the caller's backend borrow, and
     // dropping a cell scope re-enters it. Any sync still queued for this
     // grid runs first and finds `callbacks` already `None`.
@@ -562,10 +836,13 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for MacosVirtualGr
         let key = &**view as *const NSView as usize;
         // `with_backend` returns `()` on this backend, so the lookup
         // is captured out through a Cell rather than returned.
+        // Past the frozen header and columns, so the cell doesn't land
+        // beneath them (`GridMetrics::scroll_target`).
         let origin: std::cell::Cell<Option<(f32, f32)>> = std::cell::Cell::new(None);
         crate::imp::with_backend(|b| {
             if let Some(i) = b.virtual_grid_registry.get(&key) {
-                origin.set(Some(i.metrics.borrow().cell_origin(col, row)));
+                let (current, viewport) = clip_offset_and_size(view);
+                origin.set(Some(i.metrics.borrow().scroll_target(col, row, current, viewport, i.frozen.get())));
             }
         });
         let Some((x, y)) = origin.get() else { return };
@@ -656,6 +933,14 @@ fn scrollport_of(scroll: &NSView) -> Option<Scrollport> {
     })
 }
 
+/// The clip view's scroll offset and visible size.
+fn clip_offset_and_size(scroll: &NSView) -> ((f32, f32), (f32, f32)) {
+    let clip: Option<Retained<NSView>> = unsafe { msg_send_id![scroll, contentView] };
+    let Some(clip) = clip else { return ((0.0, 0.0), (0.0, 0.0)) };
+    let b: CGRect = unsafe { msg_send![&clip, bounds] };
+    ((b.origin.x as f32, b.origin.y as f32), (b.size.width as f32, b.size.height as f32))
+}
+
 fn scroll_clip_to(scroll: &Retained<NSView>, x: f32, y: f32) {
     let clip: Option<Retained<NSView>> = unsafe { msg_send_id![&**scroll, contentView] };
     let Some(clip) = clip else { return };
@@ -719,6 +1004,7 @@ mod pending_tests {
             }),
             mount_cell: Rc::new(move |c, r| {
                 m.set(m.get() + 1);
+                std::thread::sleep(MOUNT_DELAY.with(|d| d.get()));
                 let view: Retained<NSView> =
                     Retained::into_super(crate::imp::view::FlippedView::new(mtm));
                 (MacosNode::View(view), (c * 1000 + r) as u64)
@@ -740,6 +1026,109 @@ mod pending_tests {
             releases,
             origin_version,
         }
+    }
+
+    thread_local! {
+        /// How long each fixture cell takes to mount — what a heavy cell
+        /// (a table cell's styled view tree) looks like to the engine.
+        static MOUNT_DELAY: Cell<std::time::Duration> = const { Cell::new(std::time::Duration::ZERO) };
+    }
+
+    /// A fast flick brings several rows in at once. Mounting the overscan
+    /// buffer in the same scroll callback as the rows in view stalled the
+    /// frame being drawn: the cells IN VIEW must mount at once, the
+    /// overscan within `OVERSCAN_BUDGET`, and the rest on a later turn.
+    #[test]
+    fn regression_a_flick_mounts_the_whole_overscan_in_one_frame() {
+        drain_pending();
+        let f = grid(5, 400); // 40x40 cells, 200x200 viewport, overscan 1.0
+        MOUNT_DELAY.with(|d| d.set(std::time::Duration::from_millis(1)));
+        sync_in(&f.registry, f.key);
+        drain_pending();
+        let inst = f.registry.get(&f.key).unwrap();
+        // In view: rows 0..=5 (a partial 6th at 200) x 5 columns.
+        for r in 0..5 {
+            for c in 0..5 {
+                assert!(inst.mounted.borrow().contains_key(&(c, r)), "in-view cell ({c},{r}) mounts now");
+            }
+        }
+        let first = f.mounts.get();
+        assert!(first < 5 * 11, "the overscan was deferred, not mounted with the view: {first} mounts");
+        assert!(inst.incomplete.get(), "the sync knows it left work");
+        // The follow-up turns (the scheduled sync, run by hand here) finish it.
+        for _ in 0..20 {
+            if !inst.incomplete.get() {
+                break;
+            }
+            sync_in(&f.registry, f.key);
+            drain_pending();
+        }
+        MOUNT_DELAY.with(|d| d.set(std::time::Duration::ZERO));
+        assert!(!inst.incomplete.get(), "the overscan finishes");
+        assert_eq!(f.mounts.get(), 5 * 11, "rows 0..=10 (the view plus a viewport below) x 5 columns, each once");
+    }
+
+    /// A flick that replaces the whole screen also sends a screen of cells
+    /// out, and releasing them (subtree and scope teardown) in the same
+    /// scroll callback was ~40% of the worst frames. They leave the screen
+    /// at once — detached in that sync — and are released within the
+    /// budget, the rest on later turns.
+    #[test]
+    fn regression_cells_that_scroll_away_are_torn_down_in_the_scroll_frame() {
+        drain_pending();
+        let f = grid(5, 400);
+        sync_in(&f.registry, f.key);
+        drain_pending();
+        let inst = f.registry.get(&f.key).unwrap();
+        while inst.incomplete.get() {
+            sync_in(&f.registry, f.key);
+            drain_pending();
+        }
+        let old: Vec<Retained<NSView>> = inst.mounted.borrow().values().map(|c| c.view.clone()).collect();
+        let released_before = f.releases.get();
+
+        // Jump far; slow cells use up the budget on the cells in view.
+        MOUNT_DELAY.with(|d| d.set(std::time::Duration::from_millis(1)));
+        let MacosNode::View(scroll) = f.node.clone() else { unreachable!() };
+        scroll_clip_to(&scroll, 0.0, 8000.0);
+        sync_in(&f.registry, f.key);
+        drain_pending();
+        MOUNT_DELAY.with(|d| d.set(std::time::Duration::ZERO));
+
+        for v in &old {
+            let sup: *mut NSView = unsafe { msg_send![&**v, superview] };
+            assert!(sup.is_null(), "a cell that left the window is off screen in the same sync");
+        }
+        assert!(
+            f.releases.get() - released_before < old.len(),
+            "the release of a screenful of leavers waited for a later turn"
+        );
+        for _ in 0..50 {
+            if inst.retiring.borrow().is_empty() && !inst.incomplete.get() {
+                break;
+            }
+            sync_in(&f.registry, f.key);
+            drain_pending();
+        }
+        assert_eq!(f.releases.get() - released_before, old.len(), "every leaver is released");
+    }
+
+    /// REGRESSION: cells flashed through the header. Laying a cell's
+    /// contents out wrote the cell's own frame at the Taffy origin — the
+    /// grid's top-left, under the header — before the grid moved it back to
+    /// its slot. Laying out in place keeps the cell where the grid put it.
+    #[test]
+    fn regression_laying_out_a_cell_moves_it_under_the_header() {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut backend = crate::imp::MacosBackend::new(mtm);
+        let cell: Retained<NSView> = Retained::into_super(crate::imp::view::FlippedView::new(mtm));
+        let _ = backend.layout_for_view(&cell);
+        let slot = CGRect::new(CGPoint::new(120.0, 880.0), CGSize::new(40.0, 40.0));
+        let _: () = unsafe { msg_send![&cell, setFrame: slot] };
+        let key = &*cell as *const NSView as usize;
+        backend.layout_detached_in_place(key, CGSize::new(40.0, 40.0));
+        let after: CGRect = unsafe { msg_send![&cell, frame] };
+        assert_eq!(after, slot, "the cell stays in its slot");
     }
 
     fn pending_len() -> usize {
@@ -901,6 +1290,7 @@ mod pending_tests {
             view: Retained::into_super(crate::imp::view::FlippedView::new(mtm)),
             scope_id: 0,
             key: 0,
+            bands: (Band::Scrolling, Band::Scrolling),
         }
     }
 
@@ -939,6 +1329,92 @@ mod pending_tests {
         );
         let superview: *mut NSView = unsafe { msg_send![&*before, superview] };
         assert!(superview.is_null(), "the stale view is still in the document");
+    }
+
+    fn frame_of(f: &Fixture, slot: (usize, usize)) -> (f64, f64, f64) {
+        let v = view_at(f, slot).unwrap_or_else(|| panic!("{slot:?} is mounted"));
+        let r: CGRect = unsafe { msg_send![&*v, frame] };
+        (r.origin.x, r.origin.y, r.size.width)
+    }
+
+    /// Where cell `slot` shows, in the SCROLL VIEW's coordinates — the
+    /// visible box, whatever container the cell sits in.
+    fn on_screen(f: &Fixture, slot: (usize, usize)) -> (f64, f64) {
+        let v = view_at(f, slot).unwrap_or_else(|| panic!("{slot:?} is mounted"));
+        let MacosNode::View(scroll) = &f.node else { unreachable!() };
+        let frame: CGRect = unsafe { msg_send![&*v, frame] };
+        let sup: *mut NSView = unsafe { msg_send![&*v, superview] };
+        let r: CGRect = unsafe { msg_send![&**scroll, convertRect: frame, fromView: sup] };
+        (r.origin.x.round(), r.origin.y.round())
+    }
+
+    /// Frozen panes on AppKit: after scrolling both axes the header row, the
+    /// pinned columns and the corner show at the sticky position, and a
+    /// further scroll moves none of them — AppKit holds them (floating
+    /// subviews, the scroll view itself), so nothing has to re-place them
+    /// from the scroll notification, which arrives after an asynchronous
+    /// scroll has already moved the content. The regression: frozen cells
+    /// were document subviews moved on that notification, and rode along
+    /// with the rows before snapping back.
+    #[test]
+    fn regression_frozen_panes_ride_along_with_the_scroll() {
+        drain_pending();
+        let mut f = grid(10, 100); // 40x40 cells, 200x200 scroller
+        set_frozen_in(
+            &mut f.registry,
+            &f.node,
+            FrozenPanes { top: 1, left: 1, right: 1, ..FrozenPanes::NONE },
+        );
+        drain_pending();
+        let MacosNode::View(scroll) = f.node.clone() else { unreachable!() };
+        scroll_clip_to(&scroll, 120.0, 800.0);
+        sync_in(&f.registry, f.key);
+        drain_pending();
+
+        assert_eq!(on_screen(&f, (0, 0)), (0.0, 0.0), "corner");
+        assert_eq!(on_screen(&f, (4, 0)), (40.0, 0.0), "header: scrolled sideways, held at the top");
+        assert_eq!(on_screen(&f, (0, 22)), (0.0, 80.0), "left pin: scrolled down, held at the left");
+        assert_eq!(on_screen(&f, (9, 22)), (160.0, 80.0), "right pin at the right edge");
+        assert_eq!(on_screen(&f, (4, 22)), (40.0, 80.0), "body cell");
+
+        // Scroll WITHOUT a sync — what an asynchronous scroll looks like
+        // before the main thread hears of it. Frozen cells stay put; the
+        // body moves with the content.
+        scroll_clip_to(&scroll, 121.0, 801.0);
+        assert_eq!(on_screen(&f, (0, 0)), (0.0, 0.0));
+        assert_eq!(on_screen(&f, (4, 0)), (39.0, 0.0), "the header still scrolls sideways");
+        assert_eq!(on_screen(&f, (0, 22)), (0.0, 79.0), "the left pin still scrolls down");
+        assert_eq!(on_screen(&f, (4, 22)), (39.0, 79.0));
+    }
+
+    /// Z-order comes from the containers, so it can't depend on the order
+    /// cells mounted in: a corner is a scroll-view subview (above the clip
+    /// view and its floating layer), an edge cell floats above the document,
+    /// a body cell is in the document. The regression: cells were ordered one
+    /// by one, below "a" corner, and a row's selection cell landed above the
+    /// select-all corner.
+    #[test]
+    fn regression_a_frozen_column_cell_draws_over_the_header_corner() {
+        drain_pending();
+        let mut f = grid(6, 40);
+        set_frozen_in(&mut f.registry, &f.node, FrozenPanes { top: 1, left: 2, ..FrozenPanes::NONE });
+        drain_pending();
+        let MacosNode::View(scroll) = f.node.clone() else { unreachable!() };
+        let doc = f.registry.get(&f.key).unwrap().document_view.clone();
+        let parent = |slot| -> *mut NSView {
+            let v = view_at(&f, slot).expect("mounted");
+            unsafe { msg_send![&*v, superview] }
+        };
+        let scroll_ptr = &*scroll as *const NSView as *mut NSView;
+        let doc_ptr = &*doc as *const NSView as *mut NSView;
+        for corner in [(0, 0), (1, 0)] {
+            assert_eq!(parent(corner), scroll_ptr, "corner {corner:?} sits on the scroll view");
+        }
+        for edge in [(0, 3), (1, 3), (3, 0)] {
+            let p = parent(edge);
+            assert!(p != scroll_ptr && p != doc_ptr, "edge cell {edge:?} floats");
+        }
+        assert_eq!(parent((3, 3)), doc_ptr, "a body cell scrolls in the document");
     }
 
     /// The control for the pool: a data change that changes nothing
@@ -1068,6 +1544,52 @@ mod intrinsic_size_tests {
         (backend, node, f.height, clip_frame.size.height as f32)
     }
 
+    /// REGRESSION: scrolling down a grid jumped back to the top once new rows
+    /// mounted (around row 20), and the elastic bounce past the top made the
+    /// cells jump up and down. Mounting dirties the layout, and the layout
+    /// pass's `sync_scroll_document_views` resized EVERY scroll view's
+    /// document view to its Taffy children's bounding box — for a grid,
+    /// whose cells are not Taffy children, the viewport. AppKit then clamped
+    /// the scroll offset back into the shrunk document. The grid sizes its
+    /// own document; the pass must leave it alone.
+    #[test]
+    fn regression_a_layout_pass_scrolls_the_grid_back_to_the_top() {
+        drain_pending();
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut backend = crate::imp::MacosBackend::new(mtm);
+        let callbacks = GridCallbacks::<MacosNode> {
+            col_count: Rc::new(|| 5),
+            row_count: Rc::new(|| 100),
+            col_width: Rc::new(|_| 40.0),
+            row_height: Rc::new(|_| 40.0),
+            cell_key: Rc::new(|c, r| (c * 1000 + r) as u64),
+            mount_cell: Rc::new(move |_, _| {
+                let view: Retained<NSView> = Retained::into_super(crate::imp::view::FlippedView::new(mtm));
+                (MacosNode::View(view), 0)
+            }),
+            release_cell: Rc::new(|_| {}),
+            on_scroll: None,
+        };
+        let node = backend.create_virtual_grid_impl(callbacks, 1.0, &Default::default());
+        let scroll = node.as_view();
+        let _: () = unsafe {
+            msg_send![scroll, setFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(200.0, 200.0))]
+        };
+        let key = scroll as *const NSView as usize;
+        sync_in(&backend.virtual_grid_registry, key);
+        drain_pending();
+        let retained: Retained<NSView> = unsafe { Retained::retain(scroll as *const NSView as *mut NSView) }.unwrap();
+        scroll_clip_to(&retained, 0.0, 800.0);
+
+        backend.sync_scroll_document_views();
+
+        let ((_, y), _) = clip_offset_and_size(scroll);
+        assert_eq!(y, 800.0, "the scroll offset survives a layout pass");
+        let doc = backend.virtual_grid_registry.get(&key).unwrap().document_view.clone();
+        let frame: CGRect = unsafe { msg_send![&doc, frame] };
+        assert_eq!(frame.size.height, 4000.0, "the grid's document keeps the content height");
+    }
+
     /// What the "show scroll bars" preference does to a live grid: AppKit
     /// sets `scrollerStyle` on the scroll view, and the backend hears it
     /// through `scroller_style_changed`.
@@ -1177,3 +1699,5 @@ mod intrinsic_size_tests {
         drain_pending();
     }
 }
+
+

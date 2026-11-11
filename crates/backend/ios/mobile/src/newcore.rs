@@ -1383,6 +1383,14 @@ mod ios_impl {
             IosBackend::create_virtual_grid_impl(self, callbacks, overscan, a11y)
         }
 
+        fn set_virtual_grid_frozen(
+            &mut self,
+            node: &Self::Node,
+            frozen: primitives::virtual_grid::FrozenPanes,
+        ) {
+            IosBackend::set_virtual_grid_frozen_impl(self, node, frozen)
+        }
+
         fn virtual_grid_data_changed(&mut self, node: &Self::Node) {
             IosBackend::virtual_grid_data_changed_impl(self, node)
         }

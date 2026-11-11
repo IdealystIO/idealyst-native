@@ -1516,6 +1516,14 @@ impl caps::GridOps for WebBackend {
         node
     }
 
+    fn set_virtual_grid_frozen(
+        &mut self,
+        node: &Self::Node,
+        frozen: primitives::virtual_grid::FrozenPanes,
+    ) {
+        crate::primitives::virtual_grid::set_frozen(self, node, frozen)
+    }
+
     fn virtual_grid_data_changed(&mut self, node: &Self::Node) {
         crate::primitives::virtual_grid::data_changed(self, node)
     }

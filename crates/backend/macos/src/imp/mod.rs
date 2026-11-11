@@ -1208,6 +1208,21 @@ impl MacosBackend {
     /// reach them; `finish` calls this for each registered detached root, and
     /// `create_private_layer_window` calls it once on creation.
     pub(crate) fn layout_detached_root(&mut self, root_key: usize, size: CGSize) {
+        self.layout_detached(root_key, size, false)
+    }
+
+    /// [`Self::layout_detached_root`] for a root something else positions —
+    /// a `virtual_grid` cell, placed by the grid engine: the subtree is laid
+    /// out against `size` and the root takes that size, but keeps its live
+    /// ORIGIN. Writing the root's Taffy origin (0, 0) and moving it back
+    /// afterwards put the cell at the grid's top-left corner, under the
+    /// header, between the two writes — and a layer-backed cell could
+    /// animate between them, sliding through the header.
+    pub(crate) fn layout_detached_in_place(&mut self, root_key: usize, size: CGSize) {
+        self.layout_detached(root_key, size, true)
+    }
+
+    fn layout_detached(&mut self, root_key: usize, size: CGSize, keep_root_origin: bool) {
         let w = size.width as f32;
         let h = size.height as f32;
         if w <= 0.0 || h <= 0.0 {
@@ -1224,12 +1239,29 @@ impl MacosBackend {
         // frame-write the host pass does, scoped to the detached tree so we
         // don't disturb the main (recorded) tree's frames or transforms.
         let subtree = reachable_layout_nodes(&self.layout, root_layout);
-        let snapshot: Vec<(usize, runtime_layout::LayoutNode)> = self
-            .view_to_layout
-            .iter()
-            .filter(|(_, (_, n))| subtree.contains(n))
-            .map(|(k, (_, n))| (*k, *n))
-            .collect();
+        // The registered views of this subtree, found by walking the root
+        // VIEW's own subviews — not by scanning every registered view, which
+        // made each call O(all views in the app): a virtualized grid lays
+        // out each cell it mounts this way, hundreds per scroll.
+        let snapshot: Vec<(usize, runtime_layout::LayoutNode)> = match self.view_to_layout.get(&root_key) {
+            Some((root_view, _)) => {
+                fn walk(view: &NSView, out: &mut Vec<usize>) {
+                    out.push(view as *const NSView as usize);
+                    let subviews: Retained<objc2_foundation::NSArray<NSView>> =
+                        unsafe { msg_send_id![view, subviews] };
+                    for sub in subviews.iter() {
+                        walk(sub, out);
+                    }
+                }
+                let mut keys = Vec::new();
+                walk(&root_view.clone(), &mut keys);
+                keys.into_iter()
+                    .filter_map(|k| self.view_to_layout.get(&k).map(|(_, n)| (k, *n)))
+                    .filter(|(_, n)| subtree.contains(n))
+                    .collect()
+            }
+            None => Vec::new(),
+        };
         // Suppress implicit CALayer actions for the apply-frames pass (see the
         // host-tree pass in `compute_and_apply_layout` for the rationale).
         unsafe {
@@ -1246,7 +1278,7 @@ impl MacosBackend {
             let Some((view, _)) = self.view_to_layout.get(&key) else {
                 continue;
             };
-            let origin = if pinned.contains(&key) {
+            let origin = if pinned.contains(&key) || (keep_root_origin && key == root_key) {
                 let live: CGRect = unsafe { msg_send![&**view, frame] };
                 live.origin
             } else {
@@ -2498,6 +2530,14 @@ impl MacosBackend {
                     .external_content_measures
                     .contains_key(&(&**v as *const NSView as usize))
             })
+            // Skip a `virtual_grid`: its cells are not Taffy children (the
+            // grid engine places them), so the bbox is empty and this pass
+            // shrank the grid's document to the viewport — AppKit clamped the
+            // scroll offset into it, and a grid scrolled down jumped back to
+            // the top whenever a layout pass ran (each newly mounted row
+            // dirties the layout). The engine sizes its document to the
+            // content in every sync.
+            .filter(|(v, _)| !self.virtual_grid_registry.contains_key(&(&**v as *const NSView as usize)))
             .map(|(v, n)| (v.clone(), *n))
             .collect();
         for (scroll_view, scroll_layout) in scrolls {
@@ -2899,6 +2939,9 @@ impl MacosBackend {
         // without this pass a freshly-mounted grid sits empty until
         // the user happens to scroll it.
         virtual_grid::sync_all(self);
+        // Each mounted cell's contents, against the cell's box: cell roots
+        // are Taffy roots the pass above never reaches.
+        virtual_grid::layout_cells(self);
     }
 
     /// The host window's current content rect in SCREEN coordinates, or `None`
@@ -4949,32 +4992,77 @@ impl MacosBackend {
     }
 
     /// `Host::release_subtree`: the scene discarded `node`'s subtree (a
-    /// dropped screen, a branch swapped out, a keyed row removed). Drop the
-    /// per-view animation state of every view in it — the animated
-    /// transform / `ZIndex` slots and gradient caches. Keyed by view
-    /// pointer, an entry would otherwise outlive its view, and a later view
-    /// the allocator puts at the same address would inherit it: a stale
-    /// `anim_z_index` makes `apply_style` skip that view's static `z_index`,
-    /// a stale `anim_translate_*` offsets its transform. NOT on
+    /// dropped screen, a branch swapped out, a keyed row removed, a grid
+    /// cell scrolled away). Unregister every view in it — its layout
+    /// registration and Taffy node, and all per-view state keyed by its
+    /// pointer (animation slots, gradient caches, frame and text-measure
+    /// caches, sticky pins, tweens). Keyed by view pointer, an entry would
+    /// otherwise outlive its view, and a later view the allocator puts at
+    /// the same address would inherit it: a stale `anim_z_index` makes
+    /// `apply_style` skip that view's static `z_index`, a stale
+    /// `anim_translate_*` offsets its transform. NOT on
     /// `remove_child` / `clear_children`, which also run for moves and
     /// retired-but-animating nodes whose state must survive.
     ///
     /// Called while the subtree is still assembled — it walks `subviews`.
     pub(crate) fn release_subtree_impl(&mut self, node: &MacosNode) {
-        fn collect(view: &NSView, out: &mut Vec<usize>) {
+        fn collect(view: &NSView, out: &mut Vec<usize>, views: &mut Vec<Retained<NSView>>) {
             out.push(view as *const NSView as usize);
+            views.push(unsafe { Retained::retain(view as *const NSView as *mut NSView) }.expect("retain"));
             let subviews: Retained<objc2_foundation::NSArray<NSView>> =
                 unsafe { msg_send_id![view, subviews] };
             for sub in subviews.iter() {
-                collect(sub, out);
+                collect(sub, out, views);
             }
         }
         let mut keys = Vec::new();
-        collect(node.as_view(), &mut keys);
-        for k in keys {
+        let mut views = Vec::new();
+        collect(node.as_view(), &mut keys, &mut views);
+        // Each key once: `remove_node` on a freed Taffy slot is a
+        // corruption bug, and a subtree walk can meet a view twice.
+        let mut seen = std::collections::HashSet::with_capacity(keys.len());
+        for (k, view) in keys.into_iter().zip(views) {
+            if !seen.insert(k) {
+                continue;
+            }
             self.animated_states.remove(&k);
             self.gradient_states.remove(&k);
+            // A portal container, an overlay window root, a virtualizer or a
+            // grid inside the subtree has an ordered teardown of its own
+            // (`release_portal`, `release_private_layer_window`, the
+            // primitives' release) that frees its registration; freeing it
+            // here would pull the slot out from under that path.
+            if self.portal_roots.contains_key(&k)
+                || self.detached_window_roots.contains_key(&k)
+                || self.virtualizer_instances.contains_key(&k)
+                || self.virtual_grid_registry.contains_key(&k)
+            {
+                continue;
+            }
+            // The registration holds the view's last strong reference and a
+            // Taffy node: without this, every discarded subtree (a grid
+            // cell scrolled away, a disposed navigator screen) stayed
+            // registered for the life of the app — never deallocated, its
+            // node a stray Taffy root, and every walk over the map slower.
+            if let Some((_, layout_node)) = self.view_to_layout.remove(&k) {
+                self.layout.remove_node(layout_node);
+            }
+            // Pointer-keyed side state goes with it: once the view frees,
+            // AppKit can put a new view at the same address under the same
+            // key, and it must not inherit a dead view's frame cache, text
+            // measure, sticky pin or tween.
+            self.last_applied_frame.remove(&k);
+            self.text_measure_sig.remove(&k);
+            self.pending_sticky.remove(&k);
+            self.styled_texts.remove(&k);
+            self.external_content_measures.remove(&k);
+            sticky::deregister(&mut self.sticky_registry, &view);
+            transitions::forget_view(&view);
+            presence::forget_view(&view);
         }
+        // The subtree is gone from the layout tree, so whatever it hung
+        // from has a stale cached size until something dirties it.
+        schedule_layout_pass();
     }
 
     /// How many views carry per-view animation state. Introspection for
@@ -5782,6 +5870,14 @@ impl MacosBackend {
         let node = MacosNode::View(view);
         a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
         node
+    }
+
+    pub(crate) fn set_virtual_grid_frozen_impl(
+        &mut self,
+        node: &MacosNode,
+        frozen: runtime_shared::primitives::virtual_grid::FrozenPanes,
+    ) {
+        virtual_grid::set_frozen(self, node, frozen)
     }
 
     pub(crate) fn virtual_grid_data_changed_impl(&mut self, node: &MacosNode) {

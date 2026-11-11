@@ -1428,6 +1428,14 @@ mod native {
             AndroidBackend::create_virtual_grid_impl(self, callbacks, overscan, a11y)
         }
 
+        fn set_virtual_grid_frozen(
+            &mut self,
+            node: &Self::Node,
+            frozen: primitives::virtual_grid::FrozenPanes,
+        ) {
+            AndroidBackend::set_virtual_grid_frozen_impl(self, node, frozen)
+        }
+
         fn virtual_grid_data_changed(&mut self, node: &Self::Node) {
             AndroidBackend::virtual_grid_data_changed_impl(self, node)
         }

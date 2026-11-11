@@ -2813,7 +2813,8 @@ pub mod primitives {
     pub mod virtual_grid {
         pub use crate::builders::{virtual_grid, VirtualGridBuilder};
         pub use runtime_shared::primitives::virtual_grid::{
-            CellKey, GridMetrics, GridWindow, Scrollport, VirtualGridHandle,
+            Band, CellKey, FrozenPanes, GridMetrics, GridWindow, PaneWindow, Scrollport,
+            VirtualGridHandle,
         };
     }
 

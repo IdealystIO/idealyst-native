@@ -188,7 +188,8 @@ Two mechanisms render a list of items; pick by size and volatility:
       move |c, r| cell_id(c, r),     // stable identity
       move |c, r| ui! { ScheduleCell(day = c, crew = r) },
   )
-  .on_scroll(move |x, _y| header_offset.set(x))
+  // Row 0 (the day header) and column 0 (the crew names) hold still.
+  .frozen(FrozenPanes { top: 1, left: 1, ..FrozenPanes::NONE })
   ```
 
   The grid fills its parent by default. To make it fit its content (for
@@ -224,9 +225,17 @@ Two mechanisms render a list of items; pick by size and volatility:
 
   Sizes are per-column and per-row (a cell's box is their intersection), and
   author-supplied — there is no measure-on-mount mode, because a measured cell
-  height would have to agree with its whole row. Pair with
-  `position: Sticky, top: 0` for a frozen header and `position: Sticky,
-  left: 0` for a frozen column.
+  height would have to agree with its whole row. The size closures are
+  reactive: a width read from a signal re-lays the grid out.
+
+  Freeze header rows, footer rows and edge columns with
+  `.frozen(FrozenPanes { top, bottom, left, right })`: a frozen row still
+  scrolls sideways, a frozen column vertically, a corner holds still, and
+  frozen cells draw above the ones scrolling beneath them (give them a
+  background). Don't put `position: Sticky` on a grid cell — the engine
+  places cells itself. For a data TABLE, use idea-ui's
+  `Table(virtualized = Some(VirtualRows::new(…)))`, which does all of this
+  with the table's look, selection and sorting.
 
 Never assemble rows by pushing into a `Vec<Element>` outside the macro — that
 defeats keyed reconciliation and hides the children from reactive-scope

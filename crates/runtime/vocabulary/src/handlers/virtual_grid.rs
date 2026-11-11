@@ -50,6 +50,9 @@ where
 /// element. Same two-part shape (and the same leak it prevents) as the
 /// virtualizer's `RowScope`.
 struct CellScope<N> {
+    /// The cell's root node, handed to `Host::release_subtree` when the
+    /// cell is discarded.
+    node: N,
     _realized: Realized<N>,
     _extra: Owned,
 }
@@ -121,6 +124,7 @@ where
             scopes.borrow_mut().insert(
                 id,
                 CellScope {
+                    node: node.clone(),
                     _realized: realized,
                     _extra: extra,
                 },
@@ -132,10 +136,22 @@ where
     // release_cell: drop the cell scope (frees every signal/effect
     // inside it). Taken OUT of the map before dropping so cell
     // cleanups can never observe a held map borrow.
+    //
+    // A discarded cell is RELEASED, not just detached: `release_subtree`
+    // lets a host with per-node side tables (the native backends' layout
+    // registrations) free them — the contract every owner that drops a
+    // `Realized` for good follows. Without it each cell that scrolled away
+    // stayed registered for the life of the app. Called while the cell is
+    // still assembled, as the contract requires; the backends call
+    // `release_cell` with no backend borrow held.
     let release_cell: Rc<dyn Fn(u64)> = {
         let scopes = scopes.clone();
+        let backend = backend.clone();
         Rc::new(move |id| {
             let cell = scopes.borrow_mut().remove(&id);
+            if let Some(cell) = &cell {
+                backend.borrow_mut().release_subtree(&cell.node);
+            }
             drop(cell);
         })
     };
@@ -156,6 +172,9 @@ where
     let node = backend
         .borrow_mut()
         .create_virtual_grid(callbacks, prim.overscan, &prim.a11y);
+    if !prim.frozen.is_none() {
+        backend.borrow_mut().set_virtual_grid_frozen(&node, prim.frozen);
+    }
     #[cfg(feature = "robot")]
     {
         let _robot = crate::robot::register_mount(
@@ -170,19 +189,27 @@ where
         cell_parent.capture();
     }
 
-    // Data effect: touching BOTH counts subscribes to whatever signals
-    // either closure reads, so a change to rows or columns re-queries
-    // metrics and re-diffs the mounted set. Reading both unconditionally
+    // Data effect: touching BOTH counts and every size subscribes to
+    // whatever signals they read, so a change to rows, columns or a size
+    // (a column sharing the visible width) re-queries metrics and
+    // re-diffs the mounted set. Reading everything unconditionally
     // matters — short-circuiting on one would silently drop the other
-    // axis's dependency.
+    // axis's dependency. The size reads cost what the backend's metrics
+    // rebuild costs anyway (one call per column and per row).
     {
         let backend = backend.clone();
         let node = node.clone();
         let cols = col_count;
         let rows = row_count;
+        let (col_width, row_height) = (prim.col_width.clone(), prim.row_height.clone());
         let _data = effect(move || {
-            let _ = cols();
-            let _ = rows();
+            let (c, r) = (cols(), rows());
+            for i in 0..c {
+                let _ = col_width(i);
+            }
+            for i in 0..r {
+                let _ = row_height(i);
+            }
             backend.borrow_mut().virtual_grid_data_changed(&node);
         });
     }
@@ -207,6 +234,9 @@ where
             // map. Draining here also makes a backend's own
             // `release_cell` calls no-ops.
             let cells = std::mem::take(&mut *scopes.borrow_mut());
+            for cell in cells.values() {
+                b.borrow_mut().release_subtree(&cell.node);
+            }
             drop(cells);
 
             // Now the backend drops its listeners + callback handles so

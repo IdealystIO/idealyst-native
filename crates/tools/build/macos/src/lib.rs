@@ -335,7 +335,17 @@ edition = "2021"
 
 [dependencies]
 {deps_block}
-{features_block}{patch_block}"#,
+{features_block}
+# objc2 verifies every Objective-C message's argument and return encodings
+# when IT is built with debug assertions — a class-method lookup plus an
+# encoding parse on each `msg_send!`, which in a dev build was about a third
+# of the time spent mounting views (a scrolled table builds hundreds). The
+# checks exist to catch a wrong `msg_send!` signature in the BACKEND; the
+# framework's own test builds keep them. The app and framework crates keep
+# their debug assertions.
+[profile.dev.package.objc2]
+debug-assertions = false
+{patch_block}"#,
         mode = if opts.mode.is_runtime_server() { "runtime-server" } else { "local" },
         mode_desc = if opts.mode.is_runtime_server() {
             "Connects to the dev-server and renders commands from the sidecar; \

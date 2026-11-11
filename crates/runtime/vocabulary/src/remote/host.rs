@@ -700,7 +700,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 Vec::new(),
             )
         }
-        Node::VirtualGrid { common, col_count, row_count, col_width, row_height, cell_key, render_cell, overscan, on_scroll } => {
+        Node::VirtualGrid { common, col_count, row_count, col_width, row_height, cell_key, render_cell, overscan, on_scroll, frozen } => {
             let (_, style, a11y, fill) = self::common(conn, common);
             let cols = handler::<(), usize>(conn, col_count, || 0);
             let rows = handler::<(), usize>(conn, row_count, || 0);
@@ -724,6 +724,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                         let h = handler::<(f32, f32), ()>(conn, id, || ());
                         Rc::new(move |x: f32, y: f32| h(&(x, y))) as _
                     }),
+                    frozen,
                 }),
                 Vec::new(),
             )

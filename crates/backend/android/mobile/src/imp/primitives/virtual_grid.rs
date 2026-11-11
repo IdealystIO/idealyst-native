@@ -15,6 +15,22 @@
 //! view geometry is device pixels, so every frame and content extent
 //! handed across the JNI boundary is converted at the call site —
 //! never the inputs, matching the sticky module's discipline.
+//!
+//! ## Frozen panes
+//!
+//! A cell's frame stays at its content-space origin (Kotlin's `scrollTo`
+//! offsets the whole child canvas); a frozen cell is held at the viewport
+//! edge with `translationX/Y` — `GridMetrics::display_origin` minus its
+//! origin — set on every sync. A sync runs synchronously inside Kotlin's
+//! `onScrollChanged` (the JNI trampoline drains the queue before
+//! returning), so the translation lands in the frame the scroll draws.
+//! Android hit-tests through translations, so a frozen cell takes the
+//! touches where it is drawn.
+//!
+//! Z-order is CHILD order, which Android both draws and dispatches touches
+//! by while no child sets a Z: scrolling cells at index 0, corners at the
+//! end, cells frozen on one axis just before the lowest corner
+//! ([`insert_index`]).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -23,11 +39,22 @@ use std::rc::Rc;
 use crate::imp::{with_env, AndroidBackend};
 use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;
-use runtime_shared::primitives::virtual_grid::{GridCallbacks, GridMetrics, GridWindow};
+use runtime_shared::primitives::virtual_grid::{
+    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, PaneWindow,
+};
 
 struct MountedCell {
     view: GlobalRef,
     scope_id: u64,
+    /// The content key this cell was mounted for. `cell_key` is
+    /// content-addressed so a data change that rewrites a cell (a sorted
+    /// table: same `(col, row)`, another record) remounts it; a diff by
+    /// position alone kept the old content on screen until the cell
+    /// scrolled out and back.
+    key: CellKey,
+    /// `(column band, row band)` it was inserted for — decides its child
+    /// order and whether a scroll re-translates it.
+    bands: (Band, Band),
 }
 
 /// Per-grid state. Boxed and leaked to give Kotlin a stable pointer,
@@ -40,7 +67,8 @@ pub(crate) struct GridState {
     /// cell [`data_changed`] rebuilds.
     pub(crate) metrics: Rc<RefCell<GridMetrics>>,
     mounted: RefCell<HashMap<(usize, usize), MountedCell>>,
-    last_window: RefCell<Option<GridWindow>>,
+    last_window: RefCell<Option<PaneWindow>>,
+    frozen: std::cell::Cell<FrozenPanes>,
     /// Viewport in dp, reported by Kotlin's `onLayout`. Zero until the
     /// first layout pass — windowing against zero would mount nothing
     /// and cache that as current, so `sync` bails instead.
@@ -93,6 +121,7 @@ pub(crate) fn create(
         metrics: Rc::new(RefCell::new(metrics)),
         mounted: RefCell::new(HashMap::new()),
         last_window: RefCell::new(None),
+        frozen: std::cell::Cell::new(FrozenPanes::NONE),
         viewport: RefCell::new((0.0, 0.0)),
         overscan,
         density: RefCell::new(1.0),
@@ -189,6 +218,19 @@ pub(crate) fn data_changed(backend: &mut AndroidBackend, node: &GlobalRef) {
     // `viewport_changed` and `on_scroll` are both drained by their JNI
     // trampolines. Safe where `queue_sync` is not: this fires on a real
     // data change, not once per pass.
+    crate::schedule_layout_pass();
+}
+
+/// Set the frozen panes and re-window: the bands join the mounted set,
+/// and mounted cells are re-inserted at their band's child order.
+pub(crate) fn set_frozen(backend: &mut AndroidBackend, node: &GlobalRef, frozen: FrozenPanes) {
+    let key = node.as_obj().as_raw() as usize;
+    let Some(state) = backend.virtual_grid_registry.get(&key).cloned() else {
+        return;
+    };
+    state.frozen.set(frozen);
+    *state.last_window.borrow_mut() = None;
+    sync(backend, key);
     crate::schedule_layout_pass();
 }
 
@@ -343,55 +385,79 @@ fn sync_now(state: &GridState) {
         (x / density, y / density)
     });
 
+    let frozen = state.frozen.get();
     let window = state
         .metrics
         .borrow()
-        .visible_window(scroll, viewport, state.overscan);
+        .pane_window(scroll, viewport, state.overscan, frozen);
+
+    // Frozen cells follow every scroll, whether or not the window moved.
+    if !frozen.is_none() {
+        let m = state.metrics.borrow();
+        for ((col, row), cell) in state.mounted.borrow().iter() {
+            if cell.bands != (Band::Scrolling, Band::Scrolling) {
+                hold(&cell.view, &m, *col, *row, scroll, viewport, frozen, density);
+            }
+        }
+    }
+
     if *state.last_window.borrow() == Some(window) {
         return;
     }
+    // A window that was invalidated (a data change, a new viewport) may
+    // have moved every surviving cell: a width or height changed.
+    let reframe_all = state.last_window.borrow().is_none();
     *state.last_window.borrow_mut() = Some(window);
 
     // Release cells that left the window first, so their scopes free
-    // before the incoming ones allocate.
+    // before the incoming ones allocate. A cell whose band changed is
+    // remounted at its new child order.
     let leaving: Vec<(usize, usize)> = state
         .mounted
         .borrow()
-        .keys()
-        .copied()
-        .filter(|(c, r)| !window.contains(*c, *r))
+        .iter()
+        .filter(|((c, r), cell)| !window.contains(*c, *r) || cell.bands != window.bands(*c, *r))
+        .map(|(slot, _)| *slot)
         .collect();
     for slot in leaving {
         let cell = state.mounted.borrow_mut().remove(&slot);
         let Some(cell) = cell else { continue };
-        CELL_BOXES.with(|m| {
-            m.borrow_mut()
-                .remove(&crate::imp::AndroidBackend::node_key(&cell.view))
-        });
-        with_env(|env| {
-            let _ = env.call_method(
-                state.grid_view.as_obj(),
-                "removeView",
-                "(Landroid/view/View;)V",
-                &[JValue::Object(&cell.view.as_obj())],
-            );
-            let _ = env.exception_clear();
-        });
-        let release = state.callbacks.borrow().as_ref().map(|c| c.release_cell.clone());
-        if let Some(release) = release {
-            release(cell.scope_id);
-        }
+        unmount(state, cell);
     }
 
-    // Mount cells that entered.
+    // Mount cells that entered — and re-mount any whose CONTENT changed
+    // under them, which a positional diff cannot see.
     for (col, row) in window.cells() {
-        if state.mounted.borrow().contains_key(&(col, row)) {
-            continue;
+        let key_now = state.callbacks.borrow().as_ref().map(|c| (c.cell_key)(col, row));
+        let mounted_key = state.mounted.borrow().get(&(col, row)).map(|m| m.key);
+        match (mounted_key, key_now) {
+            (Some(old), Some(new)) if old == new => {
+                if reframe_all {
+                    if let Some(cell) = state.mounted.borrow().get(&(col, row)) {
+                        let m = state.metrics.borrow();
+                        let (w, h) = m.cell_size(col, row);
+                        CELL_BOXES.with(|b| {
+                            b.borrow_mut().insert(crate::imp::AndroidBackend::node_key(&cell.view), (w, h))
+                        });
+                        set_frame(state, &cell.view, &m, col, row, density);
+                        hold(&cell.view, &m, col, row, scroll, viewport, frozen, density);
+                    }
+                }
+                continue;
+            }
+            // Releasing FIRST keeps the scope count flat rather than
+            // doubling for a frame.
+            (Some(_), _) => {
+                let stale = state.mounted.borrow_mut().remove(&(col, row));
+                if let Some(stale) = stale {
+                    unmount(state, stale);
+                }
+            }
+            (None, _) => {}
         }
         let mount = state.callbacks.borrow().as_ref().map(|c| c.mount_cell.clone());
         let Some(mount) = mount else { break };
         let (view, scope_id) = mount(col, row);
-        let (x, y) = state.metrics.borrow().cell_origin(col, row);
         let (w, h) = state.metrics.borrow().cell_size(col, row);
         // Tell the layout pass this root is a cell, not a screen — see
         // `CELL_BOXES`. Kotlin's `setCellFrame` re-applies the FRAME on
@@ -402,35 +468,135 @@ fn sync_now(state: &GridState) {
             m.borrow_mut()
                 .insert(crate::imp::AndroidBackend::node_key(&view), (w, h))
         });
+        let bands = window.bands(col, row);
+        let index = insert_index(state, bands);
         with_env(|env| {
             let _ = env.call_method(
                 state.grid_view.as_obj(),
                 "addView",
-                "(Landroid/view/View;)V",
-                &[JValue::Object(&view.as_obj())],
-            );
-            // Content-space frame in device pixels; `RustVirtualGrid`
-            // stores it and re-applies it on every layout pass, so the
-            // frame survives Android re-laying the container out.
-            let _ = env.call_method(
-                state.grid_view.as_obj(),
-                "setCellFrame",
-                "(Landroid/view/View;IIII)V",
-                &[
-                    JValue::Object(&view.as_obj()),
-                    JValue::Int((x * density).round() as i32),
-                    JValue::Int((y * density).round() as i32),
-                    JValue::Int((w * density).round() as i32),
-                    JValue::Int((h * density).round() as i32),
-                ],
+                "(Landroid/view/View;I)V",
+                &[JValue::Object(&view.as_obj()), JValue::Int(index)],
             );
             let _ = env.exception_clear();
         });
-        state
-            .mounted
-            .borrow_mut()
-            .insert((col, row), MountedCell { view, scope_id });
+        {
+            let m = state.metrics.borrow();
+            set_frame(state, &view, &m, col, row, density);
+            hold(&view, &m, col, row, scroll, viewport, frozen, density);
+        }
+        state.mounted.borrow_mut().insert(
+            (col, row),
+            MountedCell { view, scope_id, key: key_now.unwrap_or_default(), bands },
+        );
     }
+}
+
+/// Detach a cell and drop its scope.
+fn unmount(state: &GridState, cell: MountedCell) {
+    CELL_BOXES.with(|m| {
+        m.borrow_mut()
+            .remove(&crate::imp::AndroidBackend::node_key(&cell.view))
+    });
+    with_env(|env| {
+        let _ = env.call_method(
+            state.grid_view.as_obj(),
+            "removeView",
+            "(Landroid/view/View;)V",
+            &[JValue::Object(&cell.view.as_obj())],
+        );
+        let _ = env.exception_clear();
+    });
+    let release = state.callbacks.borrow().as_ref().map(|c| c.release_cell.clone());
+    if let Some(release) = release {
+        release(cell.scope_id);
+    }
+}
+
+/// The cell's content-space frame in device pixels. `RustVirtualGrid`
+/// stores it and re-applies it on every layout pass, so the frame
+/// survives Android re-laying the container out.
+fn set_frame(state: &GridState, view: &GlobalRef, m: &GridMetrics, col: usize, row: usize, density: f32) {
+    let (x, y) = m.cell_origin(col, row);
+    let (w, h) = m.cell_size(col, row);
+    with_env(|env| {
+        let _ = env.call_method(
+            state.grid_view.as_obj(),
+            "setCellFrame",
+            "(Landroid/view/View;IIII)V",
+            &[
+                JValue::Object(&view.as_obj()),
+                JValue::Int((x * density).round() as i32),
+                JValue::Int((y * density).round() as i32),
+                JValue::Int((w * density).round() as i32),
+                JValue::Int((h * density).round() as i32),
+            ],
+        );
+        let _ = env.exception_clear();
+    });
+}
+
+/// Translate a cell from its origin to where it draws
+/// (`GridMetrics::display_origin`): zero for a scrolling cell, the sticky
+/// offset for a frozen one. Device pixels.
+#[allow(clippy::too_many_arguments)]
+fn hold(
+    view: &GlobalRef,
+    m: &GridMetrics,
+    col: usize,
+    row: usize,
+    scroll: (f32, f32),
+    viewport: (f32, f32),
+    frozen: FrozenPanes,
+    density: f32,
+) {
+    let (ox, oy) = m.cell_origin(col, row);
+    let (dx, dy) = m.display_origin(col, row, scroll, viewport, frozen);
+    with_env(|env| {
+        let _ = env.call_method(view.as_obj(), "setTranslationX", "(F)V", &[JValue::Float((dx - ox) * density)]);
+        let _ = env.call_method(view.as_obj(), "setTranslationY", "(F)V", &[JValue::Float((dy - oy) * density)]);
+        let _ = env.exception_clear();
+    });
+}
+
+/// Where a new cell goes in the child list (module docs): scrolling cells
+/// at 0, corners at the end, cells frozen on one axis just before the
+/// lowest corner.
+fn insert_index(state: &GridState, bands: (Band, Band)) -> i32 {
+    let corner = |b: (Band, Band)| b.0 != Band::Scrolling && b.1 != Band::Scrolling;
+    if bands == (Band::Scrolling, Band::Scrolling) {
+        return 0;
+    }
+    if corner(bands) {
+        // Append: corners are the top tier.
+        return with_env(|env| {
+            env.call_method(state.grid_view.as_obj(), "getChildCount", "()I", &[])
+                .and_then(|r| r.i())
+                .unwrap_or(0)
+        });
+    }
+    // Below the LOWEST corner in child order: below any corner would let an
+    // edge cell land between two corners, above one of them.
+    let corners: Vec<GlobalRef> =
+        state.mounted.borrow().values().filter(|m| corner(m.bands)).map(|m| m.view.clone()).collect();
+    with_env(|env| {
+        let lowest = corners
+            .iter()
+            .filter_map(|v| {
+                env.call_method(state.grid_view.as_obj(), "indexOfChild", "(Landroid/view/View;)I", &[JValue::Object(&v.as_obj())])
+                    .and_then(|r| r.i())
+                    .ok()
+                    .filter(|i| *i >= 0)
+            })
+            .min();
+        let _ = env.exception_clear();
+        match lowest {
+            Some(i) => i,
+            None => env
+                .call_method(state.grid_view.as_obj(), "getChildCount", "()I", &[])
+                .and_then(|r| r.i())
+                .unwrap_or(0),
+        }
+    })
 }
 
 /// Author scroll observer + re-window, called from the Kotlin
@@ -480,14 +646,17 @@ pub(crate) fn release(backend: &mut AndroidBackend, node: &GlobalRef) {
     crate::schedule_layout_pass();
 }
 
-/// Scroll so `(col, row)` sits at the leading corner. The origin comes
-/// from the LIVE metrics — column widths may have changed since mount.
+/// Scroll so `(col, row)` sits at the scrolling area's leading corner,
+/// past the frozen header and columns (`GridMetrics::scroll_target`). From
+/// the LIVE metrics — column widths may have changed since mount.
 pub(crate) fn scroll_to_cell(backend: &AndroidBackend, node: &GlobalRef, col: usize, row: usize) {
     let key = node.as_obj().as_raw() as usize;
     let Some(state) = backend.virtual_grid_registry.get(&key) else {
         return;
     };
-    let (x, y) = state.metrics.borrow().cell_origin(col, row);
+    let current = scroll_offset(node);
+    let viewport = *state.viewport.borrow();
+    let (x, y) = state.metrics.borrow().scroll_target(col, row, current, viewport, state.frozen.get());
     scroll_to(node, x, y);
 }
 

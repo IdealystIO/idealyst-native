@@ -700,6 +700,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             render_cell: handler(move |&(r, c): &(usize, usize)| tree(render(r, c))),
             overscan: p.overscan,
             on_scroll: p.on_scroll.map(|f| handler(move |&(x, y): &(f32, f32)| f(x, y))),
+            frozen: p.frozen,
         };
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<StackNavigatorPrim>>() {

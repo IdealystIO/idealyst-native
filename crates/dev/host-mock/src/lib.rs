@@ -1358,6 +1358,18 @@ impl caps::GridOps for HostMock {
         ))
     }
 
+    fn set_virtual_grid_frozen(
+        &mut self,
+        node: &Node,
+        frozen: primitives::virtual_grid::FrozenPanes,
+    ) {
+        let primitives::virtual_grid::FrozenPanes { top, bottom, left, right } = frozen;
+        self.s.rec(
+            "set_virtual_grid_frozen",
+            format!("set_virtual_grid_frozen n{node} top={top} bottom={bottom} left={left} right={right}"),
+        );
+    }
+
     fn virtual_grid_data_changed(&mut self, node: &Node) {
         self.s.rec(
             "virtual_grid_data_changed",

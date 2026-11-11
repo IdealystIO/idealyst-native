@@ -26,6 +26,19 @@
 //! window frees its subtree either way. What UIKit would add is a
 //! *view* pool, and with a viewport-bounded mounted set (tens of
 //! cells, not thousands) that is not where the cost is.
+//!
+//! # Frozen panes
+//!
+//! Frozen cells are re-framed at `GridMetrics::display_origin` on every
+//! sync, including one whose window did not move. A sync runs from
+//! `scrollViewDidScroll:`, which UIKit calls inside the scroll's layout,
+//! before the frame commits, so a frozen cell never trails the scroll.
+//!
+//! Z-order is subview order (the scroller's hit test follows tree order
+//! when no sibling has a `zPosition`): scrolling cells at the back,
+//! corners at the front, cells frozen on one axis just below the LOWEST
+//! corner ([`insert_cell`]). Setting `zPosition` instead would fight a cell's own
+//! `z_index` style.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -35,7 +48,9 @@ use objc2::rc::Retained;
 use objc2::msg_send;
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker};
 use objc2_ui_kit::{UIScrollView, UIView};
-use runtime_shared::primitives::virtual_grid::{CellKey, GridCallbacks, GridMetrics, GridWindow, Scrollport};
+use runtime_shared::primitives::virtual_grid::{
+    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, PaneWindow, Scrollport,
+};
 
 use super::IosNode;
 
@@ -55,6 +70,9 @@ struct MountedCell {
     /// "Applied to 1 crew member(s)" and left the cell reading an em
     /// dash. Only scrolling it out of the window and back repainted it.
     key: CellKey,
+    /// `(column band, row band)` it was inserted for — decides its
+    /// subview order and whether a scroll re-frames it.
+    bands: (Band, Band),
 }
 
 pub(crate) struct VirtualGridInstance {
@@ -67,7 +85,11 @@ pub(crate) struct VirtualGridInstance {
     /// Last applied window, so an unchanged one skips the diff
     /// entirely. `None` forces a full re-diff (mount, data change,
     /// bounds change).
-    last_window: Rc<RefCell<Option<GridWindow>>>,
+    last_window: Rc<RefCell<Option<PaneWindow>>>,
+    frozen: Rc<std::cell::Cell<FrozenPanes>>,
+    /// Buffer outside the visible window, in viewport extents — the
+    /// author's `.overscan(..)`.
+    overscan: f32,
     /// Delegate target retained for the grid's lifetime; UIKit holds
     /// the delegate weakly.
     _delegate: Option<Retained<objc2::runtime::NSObject>>,
@@ -84,7 +106,7 @@ pub(crate) fn create(
     mtm: MainThreadMarker,
     registry: &mut GridRegistry,
     callbacks: GridCallbacks<IosNode>,
-    _overscan: f32,
+    overscan: f32,
 ) -> Retained<UIView> {
     // `IdealystScrollView`: hit-testing follows sibling `z_index` paint order.
     let scroll = super::touch::IdealystScrollView::new(mtm);
@@ -135,6 +157,8 @@ pub(crate) fn create(
             metrics,
             mounted: Rc::new(RefCell::new(HashMap::new())),
             last_window: Rc::new(RefCell::new(None)),
+            frozen: Rc::new(std::cell::Cell::new(FrozenPanes::NONE)),
+            overscan,
             _delegate: delegate,
         },
     );
@@ -163,7 +187,9 @@ struct GridHandles {
     callbacks: Rc<RefCell<Option<GridCallbacks<IosNode>>>>,
     metrics: Rc<RefCell<GridMetrics>>,
     mounted: Rc<RefCell<HashMap<(usize, usize), MountedCell>>>,
-    last_window: Rc<RefCell<Option<GridWindow>>>,
+    last_window: Rc<RefCell<Option<PaneWindow>>>,
+    frozen: Rc<std::cell::Cell<FrozenPanes>>,
+    overscan: f32,
 }
 
 /// A grid's cells, taken out of the registry, waiting to be dropped.
@@ -322,6 +348,19 @@ pub(crate) fn data_changed(backend: &mut crate::imp::IosBackend, node: &IosNode)
     crate::imp::schedule_layout_pass();
 }
 
+/// Set the frozen panes and re-window: the bands join the mounted set,
+/// and mounted cells are re-inserted at their band's z-order.
+pub(crate) fn set_frozen(backend: &mut crate::imp::IosBackend, node: &IosNode, frozen: FrozenPanes) {
+    let key = node.as_view() as *const UIView as usize;
+    {
+        let Some(inst) = backend.virtual_grid_registry.get(&key) else { return };
+        inst.frozen.set(frozen);
+        *inst.last_window.borrow_mut() = None;
+    }
+    sync(backend, key);
+    crate::imp::schedule_layout_pass();
+}
+
 /// Re-window: recompute the visible rect, drop cells that left it,
 /// mount cells that entered it, and keep `contentSize` in step.
 ///
@@ -345,6 +384,8 @@ pub(crate) fn sync(backend: &mut crate::imp::IosBackend, key: usize) {
             metrics: inst.metrics.clone(),
             mounted: inst.mounted.clone(),
             last_window: inst.last_window.clone(),
+            frozen: inst.frozen.clone(),
+            overscan: inst.overscan,
         },
     );
 }
@@ -377,25 +418,38 @@ fn sync_now(h: &GridHandles) {
         return;
     }
 
-    let overscan = 1.0;
-    let window = metrics.borrow().visible_window(
-        (offset.x as f32, offset.y as f32),
-        (bounds.size.width as f32, bounds.size.height as f32),
-        overscan,
-    );
+    let overscan = h.overscan;
+    let frozen = h.frozen.get();
+    let scroll_at = (offset.x as f32, offset.y as f32);
+    let viewport = (bounds.size.width as f32, bounds.size.height as f32);
+    let window = metrics.borrow().pane_window(scroll_at, viewport, overscan, frozen);
+
+    // Frozen cells follow every scroll, whether or not the window moved.
+    if !frozen.is_none() {
+        let m = metrics.borrow();
+        for ((col, row), cell) in mounted.borrow().iter() {
+            if cell.bands != (Band::Scrolling, Band::Scrolling) {
+                place(&cell.view, &m, *col, *row, scroll_at, viewport, frozen);
+            }
+        }
+    }
 
     if *last_window.borrow() == Some(window) {
         return;
     }
+    // A window that was invalidated (a data change, a layout pass) may
+    // have moved every surviving cell: a width or height changed.
+    let reframe_all = last_window.borrow().is_none();
     *last_window.borrow_mut() = Some(window);
 
     // Drop cells outside the new window first, so their scopes are
-    // freed before the new ones allocate.
+    // freed before the new ones allocate. A cell whose band changed is
+    // remounted at its new z-order.
     let leaving: Vec<(usize, usize)> = mounted
         .borrow()
-        .keys()
-        .copied()
-        .filter(|(c, r)| !window.contains(*c, *r))
+        .iter()
+        .filter(|((c, r), cell)| !window.contains(*c, *r) || cell.bands != window.bands(*c, *r))
+        .map(|(slot, _)| *slot)
         .collect();
     for slot in leaving {
         let cell = mounted.borrow_mut().remove(&slot);
@@ -426,9 +480,21 @@ fn sync_now(h: &GridHandles) {
             .map(|c| (c.cell_key)(col, row));
         let mounted_key = mounted.borrow().get(&(col, row)).map(|m| m.key);
         match (mounted_key, key_now) {
-            // Live cell, unchanged content: leave it alone. This is the
-            // common case and the whole point of the pool.
-            (Some(old), Some(new)) if old == new => continue,
+            // Live cell, unchanged content: leave it alone (re-framed
+            // when its geometry may have moved). This is the common case
+            // and the whole point of the pool.
+            (Some(old), Some(new)) if old == new => {
+                if reframe_all {
+                    if let Some(cell) = mounted.borrow().get(&(col, row)) {
+                        place(&cell.view, &metrics.borrow(), col, row, scroll_at, viewport, frozen);
+                        let (w, h) = metrics.borrow().cell_size(col, row);
+                        CELL_BOXES.with(|m| {
+                            m.borrow_mut().insert(&*cell.view as *const UIView as usize, (w, h))
+                        });
+                    }
+                }
+                continue;
+            }
             // Live cell whose content moved on: drop it so the mount
             // below rebuilds it. Releasing FIRST keeps the scope count
             // flat rather than doubling for a frame.
@@ -459,13 +525,8 @@ fn sync_now(h: &GridHandles) {
         let (node, scope_id) =
             crate::imp::ffi_guard::guard_ffi("virtual_grid::mount_cell", || mount(col, row));
         let view = node.as_view();
-        let (x, y) = metrics.borrow().cell_origin(col, row);
+        place(view, &metrics.borrow(), col, row, scroll_at, viewport, frozen);
         let (w, h) = metrics.borrow().cell_size(col, row);
-        let frame = CGRect {
-            origin: CGPoint { x: x as f64, y: y as f64 },
-            size: CGSize::new(w as f64, h as f64),
-        };
-        let _: () = unsafe { msg_send![view, setFrame: frame] };
         // Tell the layout pass this root is a cell, not a screen — see
         // `CELL_BOXES`. Recorded BEFORE the view is attached, so the
         // pass a mount schedules cannot see it un-registered.
@@ -473,7 +534,8 @@ fn sync_now(h: &GridHandles) {
             m.borrow_mut()
                 .insert(view as *const UIView as usize, (w, h))
         });
-        unsafe { scroll.addSubview(view) };
+        let bands = window.bands(col, row);
+        insert_cell(&scroll, view, bands, &mounted.borrow());
         mounted.borrow_mut().insert(
             (col, row),
             MountedCell {
@@ -483,8 +545,67 @@ fn sync_now(h: &GridHandles) {
                 },
                 scope_id,
                 key: key_now.unwrap_or_default(),
+                bands,
             },
         );
+    }
+}
+
+/// Frame a cell where it draws: its origin, or for a frozen cell the
+/// sticky position at this scroll (`GridMetrics::display_origin`). Skips
+/// an unchanged frame — this runs per scroll for every frozen cell.
+fn place(
+    view: &UIView,
+    m: &GridMetrics,
+    col: usize,
+    row: usize,
+    scroll: (f32, f32),
+    viewport: (f32, f32),
+    frozen: FrozenPanes,
+) {
+    let (x, y) = m.display_origin(col, row, scroll, viewport, frozen);
+    let (w, h) = m.cell_size(col, row);
+    let frame = CGRect {
+        origin: CGPoint { x: x as f64, y: y as f64 },
+        size: CGSize::new(w as f64, h as f64),
+    };
+    let now: CGRect = unsafe { msg_send![view, frame] };
+    if now != frame {
+        let _: () = unsafe { msg_send![view, setFrame: frame] };
+    }
+}
+
+/// Add a cell to the scroller at its band's z-order (module docs):
+/// scrolling cells at the back, corners at the front, cells frozen on one
+/// axis just below the frontmost corner.
+fn insert_cell(
+    scroll: &UIScrollView,
+    view: &UIView,
+    bands: (Band, Band),
+    mounted: &HashMap<(usize, usize), MountedCell>,
+) {
+    match bands {
+        (Band::Scrolling, Band::Scrolling) => unsafe {
+            let _: () = msg_send![scroll, insertSubview: view, atIndex: 0isize];
+        },
+        (c, r) if c != Band::Scrolling && r != Band::Scrolling => unsafe { scroll.addSubview(view) },
+        _ => {
+            // Below the LOWEST corner in subview order: any corner would let
+            // an edge cell land between two corners, above one of them.
+            let corners: std::collections::HashSet<usize> = mounted
+                .values()
+                .filter(|m| m.bands.0 != Band::Scrolling && m.bands.1 != Band::Scrolling)
+                .map(|m| &*m.view as *const UIView as usize)
+                .collect();
+            let subviews = unsafe { scroll.subviews() };
+            let corner = subviews.iter().find(|v| corners.contains(&(&**v as *const UIView as usize)));
+            match corner {
+                Some(corner) => unsafe {
+                    let _: () = msg_send![scroll, insertSubview: view, belowSubview: &*corner];
+                },
+                None => unsafe { scroll.addSubview(view) },
+            }
+        }
     }
 }
 
@@ -564,12 +685,17 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for IosVirtualGrid
             return;
         };
         let key = n.as_view() as *const UIView as usize;
-        // The origin comes from the LIVE metrics — column widths may
-        // have changed since mount.
+        // From the LIVE metrics — column widths may have changed since
+        // mount — and past the frozen header and columns, so the cell
+        // doesn't land beneath them (`GridMetrics::scroll_target`).
+        let offset: CGPoint = unsafe { msg_send![n.as_view(), contentOffset] };
+        let bounds: CGRect = unsafe { msg_send![n.as_view(), bounds] };
+        let current = (offset.x as f32, offset.y as f32);
+        let viewport = (bounds.size.width as f32, bounds.size.height as f32);
         let origin = crate::imp::with_backend(|b| {
             b.virtual_grid_registry
                 .get(&key)
-                .map(|i| i.metrics.borrow().cell_origin(col, row))
+                .map(|i| i.metrics.borrow().scroll_target(col, row, current, viewport, i.frozen.get()))
         })
         .flatten();
         let Some((x, y)) = origin else { return };

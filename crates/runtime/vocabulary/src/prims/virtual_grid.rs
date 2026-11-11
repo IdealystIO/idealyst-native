@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use runtime_shared::accessibility::AccessibilityProps;
-use runtime_shared::primitives::virtual_grid::{CellKey, VirtualGridHandle};
+use runtime_shared::primitives::virtual_grid::{CellKey, FrozenPanes, VirtualGridHandle};
 use runtime_scene::Element;
 
 use crate::style_attach::StyleProp;
@@ -41,4 +41,6 @@ pub struct VirtualGridPrim {
     pub ref_fill: Option<Box<dyn FnOnce(VirtualGridHandle)>>,
     /// Scroll observer for the grid's own scroller.
     pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+    /// Rows and columns held still at the grid's edges.
+    pub frozen: FrozenPanes,
 }

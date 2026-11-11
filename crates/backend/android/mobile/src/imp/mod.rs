@@ -3765,6 +3765,14 @@ impl AndroidBackend {
         node
     }
 
+    pub(crate) fn set_virtual_grid_frozen_impl(
+        &mut self,
+        node: &GlobalRef,
+        frozen: runtime_shared::primitives::virtual_grid::FrozenPanes,
+    ) {
+        primitives::virtual_grid::set_frozen(self, node, frozen)
+    }
+
     pub(crate) fn virtual_grid_data_changed_impl(&mut self, node: &GlobalRef) {
         primitives::virtual_grid::data_changed(self, node)
     }

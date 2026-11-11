@@ -673,6 +673,13 @@ mod structural {
                     |r, c| (r * 2 + c) as u64,
                     |r, c| text().content(format!("cell {r},{c}")).build(),
                 )
+                // Frozen panes cross the codec: the native and remote logs
+                // must both carry the same `set_virtual_grid_frozen`.
+                .frozen(runtime_shared::primitives::virtual_grid::FrozenPanes {
+                    top: 1,
+                    left: 1,
+                    ..runtime_shared::primitives::virtual_grid::FrozenPanes::NONE
+                })
                 .build())
                 .build()
         })

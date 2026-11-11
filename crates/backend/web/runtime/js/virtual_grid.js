@@ -26,10 +26,14 @@
 //  * @typedef {Object} GridCallbacks
 //  * @property {(scrollX: number, scrollY: number, vpW: number, vpH: number)
 //  *            => {colStart:number,colEnd:number,rowStart:number,rowEnd:number,
+//  *                top:number,bottom:number,left:number,right:number,
+//  *                colCount:number,rowCount:number,
 //  *                contentW:number,contentH:number}} window
-//  *   Ask Rust for the visible window + content size at this offset.
+//  *   Ask Rust for the scrolling window (clipped to the scrolling band of
+//  *   each axis), the frozen bands, and the content size at this offset.
 //  * @property {(col: number, row: number) => number} cellKey
-//  * @property {(col: number, row: number) => [number, number]} cellOrigin
+//  * @property {(col: number, row: number) => [number, number, number, number]} cellRect
+//  * @property {(col: number, row: number) => [number, number]} scrollTarget
 //  * @property {(col: number, row: number) => [Element, number, number, number, number, number]}
 //  *   mountCell → [node, scopeId, x, y, w, h]
 //  * @property {(scopeId: number) => void} releaseCell
@@ -67,7 +71,19 @@
             // spacer documents.
             this.spacer.style.flexShrink = '0';
             this.spacer.style.flexBasis = 'auto';
+            // A one-cell grid the size of the content, so each frozen
+            // layer can sit at a corner of it (`justify-self` / `align-self`
+            // start or end) and stick from there. Scrolling cells are
+            // absolutely positioned and take no part in the grid.
+            this.spacer.style.display = 'grid';
+            this.spacer.style.gridTemplateColumns = '100%';
+            this.spacer.style.gridTemplateRows = '100%';
             container.appendChild(this.spacer);
+
+            /** Sticky layers for frozen cells, by band pair (`colBand +
+             *  rowBand`, each 'L' leading / 'S' scrolling / 'T' trailing).
+             *  'SS' is the spacer itself. @type {Map<string, HTMLElement>} */
+            this.layers = new Map();
 
             /** @type {Map<string, {node: Element, scopeId: number, col: number, row: number, key: number}>} */
             this.mounted = new Map();
@@ -152,54 +168,132 @@
                 !revalidate &&
                 prev &&
                 prev.colStart === w.colStart && prev.colEnd === w.colEnd &&
-                prev.rowStart === w.rowStart && prev.rowEnd === w.rowEnd
+                prev.rowStart === w.rowStart && prev.rowEnd === w.rowEnd &&
+                prev.top === w.top && prev.bottom === w.bottom &&
+                prev.left === w.left && prev.right === w.right &&
+                prev.colCount === w.colCount && prev.rowCount === w.rowCount
             ) {
                 return; // window unchanged — nothing to mount or drop
             }
             this.lastWindow = w;
 
-            // Unmount cells outside the new window. Snapshot the keys
-            // first: `_unmount` mutates the map.
+            // The mounted set is (rows) x (cols): each axis is its frozen
+            // leading band, the scrolling window, and its frozen trailing
+            // band. Rust clips the scrolling window to the scrolling band,
+            // so no index is in two bands. An empty scrolling window is
+            // `start > end` (Rust's `GridWindow::EMPTY`).
+            const rows = this._axis(w.top, w.rowStart, w.rowEnd, w.bottom, w.rowCount);
+            const cols = this._axis(w.left, w.colStart, w.colEnd, w.right, w.colCount);
+            const rowSet = new Set(rows);
+            const colSet = new Set(cols);
+
+            // Unmount cells outside the new set. Snapshot the keys
+            // first: `_unmount` mutates the map. A cell whose band
+            // changed (the frozen panes or a count moved) is remounted in
+            // its new layer.
             for (const slot of Array.from(this.mounted.keys())) {
                 const e = this.mounted.get(slot);
                 if (
-                    e.col < w.colStart || e.col > w.colEnd ||
-                    e.row < w.rowStart || e.row > w.rowEnd
+                    !colSet.has(e.col) || !rowSet.has(e.row) ||
+                    e.layer !== this._layerKey(e.col, e.row, w)
                 ) {
                     this._unmount(slot);
                 }
             }
 
-            // Mount cells inside the window that aren't already there.
-            // On a data-changed refresh, also remount any surviving cell
-            // whose key no longer matches — same content-identity
-            // contract as the 1-D virtualizer's keyed reuse.
-            // An empty window is `colStart > colEnd` (Rust's
-            // `GridWindow::EMPTY`), so these loops correctly do nothing
-            // rather than mounting a phantom cell at the origin.
-            for (let row = w.rowStart; row <= w.rowEnd; row++) {
-                for (let col = w.colStart; col <= w.colEnd; col++) {
+            // Mount cells inside the set that aren't already there. On a
+            // data-changed refresh, also remount any surviving cell whose
+            // key no longer matches — same content-identity contract as
+            // the 1-D virtualizer's keyed reuse — and re-place the rest:
+            // a width or height may have moved them.
+            for (const row of rows) {
+                for (const col of cols) {
                     const slot = this._slot(col, row);
                     const existing = this.mounted.get(slot);
                     if (existing) {
                         if (!revalidate) continue;
-                        if (this.cb.cellKey(col, row) === existing.key) continue;
+                        if (this.cb.cellKey(col, row) === existing.key) {
+                            const r = this.cb.cellRect(col, row);
+                            if (r) this._place(existing.node, r[0], r[1], r[2], r[3], col, row, w);
+                            continue;
+                        }
                         this._unmount(slot);
                     }
-                    this._mount(col, row, slot);
+                    this._mount(col, row, slot, w);
                 }
             }
         }
 
-        _mount(col, row, slot) {
+        /** One axis's mounted indices, ascending: `lead` frozen, the
+         *  scrolling `start..=end`, `trail` frozen at the end of `count`. */
+        _axis(lead, start, end, trail, count) {
+            const out = [];
+            for (let i = 0; i < lead; i++) out.push(i);
+            for (let i = start; i <= end; i++) out.push(i);
+            for (let i = count - trail; i < count; i++) out.push(i);
+            return out;
+        }
+
+        /** 'L' / 'S' / 'T' for index `i` of an axis. */
+        _band(i, lead, trail, count) {
+            if (i < lead) return 'L';
+            if (i >= count - trail) return 'T';
+            return 'S';
+        }
+
+        _layerKey(col, row, w) {
+            return this._band(col, w.left, w.right, w.colCount) +
+                this._band(row, w.top, w.bottom, w.rowCount);
+        }
+
+        /** The layer a band pair's cells go in. A frozen layer is a
+         *  zero-size `position: sticky` box at the matching corner of the
+         *  content, so the browser holds its cells at the scrollport's
+         *  edge (CSS sticky — `GridMetrics::display_origin`'s rule). Edge
+         *  strips draw above scrolling cells, corners above both. */
+        _layer(key) {
+            if (key === 'SS') return this.spacer;
+            let el = this.layers.get(key);
+            if (el) return el;
+            el = document.createElement('div');
+            const [cb, rb] = key;
+            el.style.position = 'sticky';
+            el.style.width = '0px';
+            el.style.height = '0px';
+            el.style.gridArea = '1 / 1';
+            el.style.justifySelf = cb === 'T' ? 'end' : 'start';
+            el.style.alignSelf = rb === 'T' ? 'end' : 'start';
+            if (cb === 'L') el.style.left = '0px';
+            if (cb === 'T') el.style.right = '0px';
+            if (rb === 'L') el.style.top = '0px';
+            if (rb === 'T') el.style.bottom = '0px';
+            el.style.zIndex = cb !== 'S' && rb !== 'S' ? '3' : '2';
+            el.setAttribute('data-virtual-grid-layer', key);
+            this.spacer.appendChild(el);
+            this.layers.set(key, el);
+            return el;
+        }
+
+        /** Position a cell node in its layer. A trailing layer sits at
+         *  the content's far edge, so its cells are offset back from it. */
+        _place(node, x, y, cw, ch, col, row, w) {
+            const key = this._layerKey(col, row, w);
+            const dx = key[0] === 'T' ? w.contentW : 0;
+            const dy = key[1] === 'T' ? w.contentH : 0;
+            node.style.left = (x - dx) + 'px';
+            node.style.top = (y - dy) + 'px';
+            node.style.width = cw + 'px';
+            node.style.height = ch + 'px';
+        }
+
+        _mount(col, row, slot, w) {
             const res = this.cb.mountCell(col, row);
             if (!res) return;
             const [node, scopeId, x, y, cw, ch] = res;
+            const layerKey = this._layerKey(col, row, w);
+            const layer = this._layer(layerKey);
             node.style.position = 'absolute';
-            node.style.left = x + 'px';
-            node.style.top = y + 'px';
-            node.style.width = cw + 'px';
-            node.style.height = ch + 'px';
+            this._place(node, x, y, cw, ch, col, row, w);
             // `box-sizing: border-box` so an author's padding/border
             // stays inside the cell's allotted column width instead of
             // pushing it over its neighbour. The grid owns cell
@@ -208,19 +302,27 @@
             // Row-major DOM order — before the next mounted cell in
             // (row, col) order, else last — so equal-z cells stack and
             // hit-test by position, not by the order they scrolled in.
+            // Within the cell's own layer only; frozen layers are appended
+            // to the spacer after the scrolling cells and keep their place
+            // (`next` is always a sibling of `node` in `layer`).
             let next = null;
             for (const e of this.mounted.values()) {
+                if (e.layer !== layerKey) continue;
                 const after = e.row > row || (e.row === row && e.col > col);
                 const closer = next === null || e.row < next.row || (e.row === next.row && e.col < next.col);
                 if (after && closer) next = e;
             }
-            if (next) this.spacer.insertBefore(node, next.node);
-            else this.spacer.appendChild(node);
+            if (next) layer.insertBefore(node, next.node);
+            else if (layer === this.spacer && this.layers.size > 0) {
+                // Scrolling cells stay before the sticky layers.
+                this.spacer.insertBefore(node, this.spacer.querySelector(':scope > [data-virtual-grid-layer]'));
+            } else layer.appendChild(node);
             this.mounted.set(slot, {
                 node,
                 scopeId,
                 col,
                 row,
+                layer: layerKey,
                 key: this.cb.cellKey(col, row),
             });
         }
@@ -228,19 +330,20 @@
         _unmount(slot) {
             const e = this.mounted.get(slot);
             if (!e) return;
-            if (e.node.parentNode === this.spacer) {
-                this.spacer.removeChild(e.node);
+            if (e.node.parentNode) {
+                e.node.parentNode.removeChild(e.node);
             }
             this.cb.releaseCell(e.scopeId);
             this.mounted.delete(slot);
         }
 
-        /** Scroll so cell `(col, row)` sits at the leading corner.
-         *  The origin comes from Rust's live metrics via `cellOrigin`,
-         *  so a column-width change since mount is reflected. */
+        /** Scroll so cell `(col, row)` sits at the scrolling area's
+         *  leading corner, just past any frozen header and columns. The
+         *  offset comes from Rust's live metrics via `scrollTarget`, so a
+         *  column-width change since mount is reflected. */
         scrollToCell(col, row) {
             if (this._released) return;
-            const o = this.cb.cellOrigin(col, row);
+            const o = this.cb.scrollTarget(col, row);
             if (!o) return;
             this.container.scrollLeft = o[0];
             this.container.scrollTop = o[1];
@@ -273,6 +376,7 @@
             for (const slot of Array.from(this.mounted.keys())) {
                 this._unmount(slot);
             }
+            this.layers.clear();
             if (this.spacer && this.spacer.parentNode === this.container) {
                 this.container.removeChild(this.spacer);
             }

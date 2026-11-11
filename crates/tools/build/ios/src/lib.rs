@@ -871,6 +871,14 @@ backend-ios-mobile = {bios_dep}
 objc2 = "0.5"
 objc2-foundation = {{ version = "0.2", features = ["NSString"] }}
 objc2-ui-kit = {{ version = "0.2", features = ["UIResponder", "UIView"] }}
+
+# objc2 verifies every Objective-C message's encodings when IT is built
+# with debug assertions — a method lookup plus an encoding parse per
+# `msg_send!`, which dominated mounting views in a dev build. The checks
+# guard the BACKEND's signatures; the framework's own test builds keep them,
+# and the app and framework crates keep their debug assertions.
+[profile.dev.package.objc2]
+debug-assertions = false
 {patch_block}"#,
         runtime_core_dep = runtime_core_dep,
         shared_dep = shared_dep,

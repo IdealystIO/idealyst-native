@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use runtime_shared::accessibility::AccessibilityProps;
-use runtime_shared::primitives::virtual_grid::{CellKey, VirtualGridHandle};
+use runtime_shared::primitives::virtual_grid::{CellKey, FrozenPanes, VirtualGridHandle};
 use runtime_scene::{item, Element};
 
 use crate::prims::{PrimCell, VirtualGridPrim};
@@ -27,6 +27,7 @@ use crate::style_attach::IntoStyleProp;
 ///     move |c, r| cell_id(c, r),       // stable identity
 ///     move |c, r| ui! { ScheduleCell(day = c, crew = r) },
 /// )
+/// .frozen(FrozenPanes { top: 1, left: 1, ..FrozenPanes::NONE })
 /// .overscan(1.0)
 /// .on_scroll(move |x, y| header_offset.set(x))
 /// ```
@@ -44,6 +45,10 @@ use crate::style_attach::IntoStyleProp;
 /// there the fit is exactly the rows. Add `max_height` to cap the fit.
 /// Don't pin a parent to `rows × row_height`: that leaves no room for
 /// the scrollbar.
+///
+/// The size functions are read reactively: a width that follows a
+/// signal (columns sharing the visible width) re-lays the grid out when
+/// it changes, as a count does.
 ///
 /// Reach for [`virtualizer`](super::virtualizer) instead when only one
 /// axis scrolls: its lanes wrap items across a fixed viewport, which
@@ -69,6 +74,7 @@ pub fn virtual_grid(
             a11y: AccessibilityProps::default(),
             ref_fill: None,
             on_scroll: None,
+            frozen: FrozenPanes::NONE,
         },
     }
 }
@@ -111,6 +117,19 @@ impl VirtualGridBuilder {
     /// pane reads. Fires at scroll frequency; keep it cheap.
     pub fn on_scroll(mut self, handler: impl Fn(f32, f32) + 'static) -> Self {
         self.prim.on_scroll = Some(Rc::new(handler));
+        self
+    }
+
+    /// Hold rows and columns still at the grid's edges while the rest
+    /// scrolls beneath them — a header row, pinned columns:
+    /// `.frozen(FrozenPanes { top: 1, left: 1, ..FrozenPanes::NONE })`.
+    /// A frozen row still scrolls sideways with the columns and a frozen
+    /// column vertically with the rows; a cell frozen on both holds still.
+    /// Frozen cells draw above scrolling ones, so give them a background.
+    /// Same sticky geometry on every backend — see the primitive's module
+    /// docs, "Frozen panes".
+    pub fn frozen(mut self, frozen: FrozenPanes) -> Self {
+        self.prim.frozen = frozen;
         self
     }
 

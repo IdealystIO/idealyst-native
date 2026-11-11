@@ -47,6 +47,30 @@
 //!   sizes, measure your data once and feed the result to
 //!   `col_width` / `row_height`.
 //!
+//! ## Frozen panes
+//!
+//! [`FrozenPanes`] holds rows and columns still at the grid's edges while
+//! the rest scrolls beneath them: `top` header rows, `bottom` footer rows,
+//! `left` / `right` pinned columns. A frozen row still scrolls sideways
+//! with the columns (it is a header, not an overlay), a frozen column
+//! still scrolls vertically with the rows, and a cell frozen on both axes
+//! (a corner) holds still.
+//!
+//! The geometry is CSS `position: sticky` against the scrollport, the same
+//! on every backend: a frozen cell sits where it would sit unscrolled, and
+//! is held at the viewport edge when scrolling would carry it past that
+//! edge. So a `right` column of a grid narrower than its viewport stays
+//! beside its neighbours instead of jumping to the far edge.
+//! [`GridMetrics::display_origin`] is that rule; [`GridMetrics::pane_window`]
+//! is the mounted set — the scrolling window plus every frozen cell on the
+//! window's rows and columns, so a frozen header always has its cells
+//! however far the rows have scrolled. Frozen cells draw above scrolling
+//! ones and corners above both (which [`Band`] a cell is in says which).
+//!
+//! Frozen bands hold the indices at each end of an axis: `top = 1` is row
+//! `0`, `bottom = 1` the last row. Bands that would overlap (more frozen
+//! rows than rows) are clipped so no index is in two bands.
+//!
 //! ## The grid's own size
 //!
 //! The grid fills its parent by default, and it can fit its content
@@ -229,6 +253,97 @@ impl GridMetrics {
         }
     }
 
+    /// The cells to mount with `frozen` panes: [`visible_window`]
+    /// clipped to the scrolling band of each axis, plus every frozen row
+    /// and column (see [`PaneWindow`]).
+    ///
+    /// [`visible_window`]: Self::visible_window
+    pub fn pane_window(
+        &self,
+        scroll: (f32, f32),
+        viewport: (f32, f32),
+        overscan: f32,
+        frozen: FrozenPanes,
+    ) -> PaneWindow {
+        let (cols, rows) = self.counts();
+        let rows_frozen = frozen.row_bands(rows);
+        let cols_frozen = frozen.col_bands(cols);
+        let w = self.visible_window(scroll, viewport, overscan);
+        let clip = |s: usize, e: usize, (lead, trail): (usize, usize), n: usize| {
+            let (lo, hi) = (lead, n - trail);
+            // An empty scrolling band (everything frozen) reads as 1..=0.
+            if lo >= hi {
+                return (1, 0);
+            }
+            let (s, e) = (s.max(lo), e.min(hi - 1));
+            if s > e { (1, 0) } else { (s, e) }
+        };
+        let scrolling = if w.is_empty() {
+            GridWindow::EMPTY
+        } else {
+            let (c0, c1) = clip(w.col_start, w.col_end, cols_frozen, cols);
+            let (r0, r1) = clip(w.row_start, w.row_end, rows_frozen, rows);
+            GridWindow { col_start: c0, col_end: c1, row_start: r0, row_end: r1 }
+        };
+        PaneWindow { scrolling, rows_frozen, cols_frozen, counts: (cols, rows) }
+    }
+
+    /// Where cell `(col, row)` is drawn, in content space, at `scroll`
+    /// with a `viewport`-sized scrollport — its [`cell_origin`] for a
+    /// scrolling cell, and for a frozen one the CSS `position: sticky`
+    /// rule: held at the viewport edge it would otherwise scroll past.
+    /// A backend that positions cells itself (no sticky layout of its own)
+    /// moves each frozen cell here on every scroll.
+    ///
+    /// [`cell_origin`]: Self::cell_origin
+    pub fn display_origin(
+        &self,
+        col: usize,
+        row: usize,
+        scroll: (f32, f32),
+        viewport: (f32, f32),
+        frozen: FrozenPanes,
+    ) -> (f32, f32) {
+        let (cols, rows) = self.counts();
+        let (x, y) = self.cell_origin(col, row);
+        let (cw, ch) = self.content_size();
+        let (left, right) = frozen.col_bands(cols);
+        let (top, bottom) = frozen.row_bands(rows);
+        let x = sticky(x, Band::of(col, left, right, cols), scroll.0, viewport.0, cw);
+        let y = sticky(y, Band::of(row, top, bottom, rows), scroll.1, viewport.1, ch);
+        (x, y)
+    }
+
+    /// The scroll offset that brings cell `(col, row)` into view at the
+    /// scrolling area's leading corner — just past the frozen top rows
+    /// and left columns, so it doesn't land under them. An axis on which
+    /// the cell is frozen keeps `current`: a frozen cell is always in view
+    /// on that axis. Clamped to the scrollable range at `viewport`.
+    pub fn scroll_target(
+        &self,
+        col: usize,
+        row: usize,
+        current: (f32, f32),
+        viewport: (f32, f32),
+        frozen: FrozenPanes,
+    ) -> (f32, f32) {
+        let (cols, rows) = self.counts();
+        let (x, y) = self.cell_origin(col, row);
+        let (cw, ch) = self.content_size();
+        let (left, right) = frozen.col_bands(cols);
+        let (top, bottom) = frozen.row_bands(rows);
+        let axis = |at: f32, band: Band, lead_extent: f32, cur: f32, content: f32, vp: f32| {
+            if band != Band::Scrolling {
+                return cur;
+            }
+            (at - lead_extent).clamp(0.0, (content - vp).max(0.0))
+        };
+        (
+            axis(x, Band::of(col, left, right, cols), at_or_last(&self.col_offsets, left), current.0, cw, viewport.0),
+            axis(y, Band::of(row, top, bottom, rows), at_or_last(&self.row_offsets, top), current.1, ch, viewport.1),
+        )
+    }
+
     /// `(col_count, row_count)` these metrics were built for.
     pub fn counts(&self) -> (usize, usize) {
         (
@@ -347,6 +462,147 @@ impl GridWindow {
     }
 }
 
+/// Rows and columns held still at the grid's edges — see the module
+/// docs, "Frozen panes". Counts of indices at each end of an axis.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FrozenPanes {
+    /// Leading rows held at the top edge (a header).
+    pub top: usize,
+    /// Trailing rows held at the bottom edge (a footer).
+    pub bottom: usize,
+    /// Leading columns held at the left edge.
+    pub left: usize,
+    /// Trailing columns held at the right edge.
+    pub right: usize,
+}
+
+impl FrozenPanes {
+    /// No frozen rows or columns: every cell scrolls.
+    pub const NONE: Self = Self { top: 0, bottom: 0, left: 0, right: 0 };
+
+    /// Whether anything is frozen.
+    pub fn is_none(self) -> bool {
+        self == Self::NONE
+    }
+
+    /// The row bands for `rows` rows: `(top, bottom)` clipped so they
+    /// never overlap.
+    fn row_bands(self, rows: usize) -> (usize, usize) {
+        clip_bands(self.top, self.bottom, rows)
+    }
+
+    /// The column bands for `cols` columns, clipped the same way.
+    fn col_bands(self, cols: usize) -> (usize, usize) {
+        clip_bands(self.left, self.right, cols)
+    }
+}
+
+fn clip_bands(lead: usize, trail: usize, count: usize) -> (usize, usize) {
+    let lead = lead.min(count);
+    (lead, trail.min(count - lead))
+}
+
+/// Which band of one axis an index is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Band {
+    /// Frozen at the leading edge (top / left).
+    Leading,
+    /// Scrolls.
+    Scrolling,
+    /// Frozen at the trailing edge (bottom / right).
+    Trailing,
+}
+
+impl Band {
+    fn of(i: usize, lead: usize, trail: usize, count: usize) -> Self {
+        if i < lead {
+            Band::Leading
+        } else if i >= count - trail {
+            Band::Trailing
+        } else {
+            Band::Scrolling
+        }
+    }
+}
+
+/// The cells a grid with frozen panes mounts: the scrolling window's
+/// rows and columns, plus every frozen row and column. The mounted set is
+/// the product of the two index sets, so a frozen header row has a cell in
+/// every visible column, and a frozen column a cell in every visible row.
+/// Built by [`GridMetrics::pane_window`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaneWindow {
+    /// The scrolling rows and columns in view, clipped to the scrolling
+    /// band of each axis (frozen indices are never in it).
+    pub scrolling: GridWindow,
+    /// `(top, bottom)` frozen rows, clipped (see [`FrozenPanes`]).
+    pub rows_frozen: (usize, usize),
+    /// `(left, right)` frozen columns, clipped.
+    pub cols_frozen: (usize, usize),
+    /// `(col_count, row_count)` of the grid.
+    pub counts: (usize, usize),
+}
+
+impl PaneWindow {
+    /// The rows mounted, ascending, each once.
+    pub fn rows(self) -> impl Iterator<Item = usize> {
+        let (top, bottom) = self.rows_frozen;
+        let n = self.counts.1;
+        let (s, e) = (self.scrolling.row_start, self.scrolling.row_end);
+        let scroll = if self.scrolling.is_empty() { 1..=0 } else { s..=e };
+        (0..top).chain(scroll).chain(n - bottom..n)
+    }
+
+    /// The columns mounted, ascending, each once.
+    pub fn cols(self) -> impl Iterator<Item = usize> {
+        let (left, right) = self.cols_frozen;
+        let n = self.counts.0;
+        let (s, e) = (self.scrolling.col_start, self.scrolling.col_end);
+        let scroll = if self.scrolling.is_empty() { 1..=0 } else { s..=e };
+        (0..left).chain(scroll).chain(n - right..n)
+    }
+
+    /// Every mounted `(col, row)`, row-major.
+    pub fn cells(self) -> impl Iterator<Item = (usize, usize)> {
+        self.rows().flat_map(move |r| self.cols().map(move |c| (c, r)))
+    }
+
+    /// Whether `(col, row)` is mounted.
+    pub fn contains(self, col: usize, row: usize) -> bool {
+        let (cols, rows) = self.counts;
+        if col >= cols || row >= rows {
+            return false;
+        }
+        let in_axis = |i: usize, (lead, trail): (usize, usize), n: usize, s: usize, e: usize| {
+            i < lead || i >= n - trail || (!self.scrolling.is_empty() && i >= s && i <= e)
+        };
+        in_axis(col, self.cols_frozen, cols, self.scrolling.col_start, self.scrolling.col_end)
+            && in_axis(row, self.rows_frozen, rows, self.scrolling.row_start, self.scrolling.row_end)
+    }
+
+    /// `(column band, row band)` of a cell: whether it scrolls on each
+    /// axis. A backend draws frozen cells above scrolling ones, and a cell
+    /// frozen on both axes (a corner) above both.
+    pub fn bands(self, col: usize, row: usize) -> (Band, Band) {
+        let (cols, rows) = self.counts;
+        (
+            Band::of(col, self.cols_frozen.0, self.cols_frozen.1, cols),
+            Band::of(row, self.rows_frozen.0, self.rows_frozen.1, rows),
+        )
+    }
+
+    /// Number of mounted cells.
+    pub fn len(self) -> usize {
+        self.rows().count() * self.cols().count()
+    }
+
+    /// Whether nothing is mounted.
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+}
+
 fn prefix_sums(count: usize, size: &dyn Fn(usize) -> f32) -> Vec<f32> {
     let mut out = Vec::with_capacity(count + 1);
     out.push(0.0);
@@ -361,6 +617,17 @@ fn prefix_sums(count: usize, size: &dyn Fn(usize) -> f32) -> Vec<f32> {
         out.push(acc);
     }
     out
+}
+
+/// CSS `position: sticky` on one axis, in content space: a leading cell
+/// is held at the scrollport's leading edge (`top: 0` / `left: 0`), a
+/// trailing one at its trailing edge (`bottom: 0` / `right: 0`).
+fn sticky(at: f32, band: Band, scroll: f32, viewport: f32, content: f32) -> f32 {
+    match band {
+        Band::Scrolling => at,
+        Band::Leading => at + scroll.max(0.0),
+        Band::Trailing => at + (scroll + viewport - content).min(0.0),
+    }
 }
 
 fn at_or_last(offsets: &[f32], i: usize) -> f32 {
@@ -852,5 +1119,139 @@ mod tests {
         let f = fired.clone();
         let _sub = h.on_scrollport(move |_| f.set(true));
         assert!(!fired.get());
+    }
+
+    // ---------------------------------------------------------------
+    // Frozen panes
+    // ---------------------------------------------------------------
+
+    fn frozen(top: usize, bottom: usize, left: usize, right: usize) -> FrozenPanes {
+        FrozenPanes { top, bottom, left, right }
+    }
+
+    /// A 20-column x 1,000-row table: columns 100 wide, rows 40 tall,
+    /// one header row, one pinned column each side.
+    fn table() -> GridMetrics {
+        GridMetrics::build(20, 1000, &|_| 100.0, &|_| 40.0)
+    }
+
+    /// The header row and the pinned columns must stay mounted however far
+    /// the grid scrolls — a plain window would drop row 0 as soon as it
+    /// scrolled out, and the header would vanish.
+    #[test]
+    fn frozen_rows_and_columns_stay_mounted_far_from_the_origin() {
+        let m = table();
+        let f = frozen(1, 0, 1, 1);
+        let w = m.pane_window((800.0, 20_000.0), (400.0, 200.0), 0.0, f);
+        let rows: Vec<usize> = w.rows().collect();
+        let cols: Vec<usize> = w.cols().collect();
+        assert_eq!(rows.first(), Some(&0), "header row mounted: {rows:?}");
+        assert!(rows[1..].iter().all(|r| (500..=505).contains(r)), "{rows:?}");
+        assert_eq!(cols.first(), Some(&0), "left pin mounted: {cols:?}");
+        assert_eq!(cols.last(), Some(&19), "right pin mounted: {cols:?}");
+        assert!(w.contains(0, 0) && w.contains(19, 0) && w.contains(10, 502));
+        assert!(!w.contains(10, 1), "a scrolled-away body row is not mounted");
+        // The product of the two sets, each cell once.
+        assert_eq!(w.cells().count(), rows.len() * cols.len());
+        assert_eq!(w.len(), rows.len() * cols.len());
+    }
+
+    /// At the origin the scrolling window starts at row 0 / column 0,
+    /// which are frozen: they must be mounted ONCE, not once per band.
+    #[test]
+    fn frozen_indices_are_never_in_the_scrolling_window() {
+        let m = table();
+        let w = m.pane_window((0.0, 0.0), (400.0, 200.0), 0.0, frozen(1, 0, 1, 1));
+        assert_eq!((w.scrolling.row_start, w.scrolling.col_start), (1, 1));
+        let rows: Vec<usize> = w.rows().collect();
+        let mut dedup = rows.clone();
+        dedup.dedup();
+        assert_eq!(rows, dedup);
+        let cells: Vec<(usize, usize)> = w.cells().collect();
+        let set: std::collections::BTreeSet<_> = cells.iter().copied().collect();
+        assert_eq!(set.len(), cells.len(), "a cell mounted twice");
+    }
+
+    #[test]
+    fn bands_say_which_cells_hold_still() {
+        let m = table();
+        let w = m.pane_window((0.0, 0.0), (400.0, 200.0), 0.0, frozen(1, 1, 1, 1));
+        assert_eq!(w.bands(0, 0), (Band::Leading, Band::Leading));
+        assert_eq!(w.bands(5, 0), (Band::Scrolling, Band::Leading));
+        assert_eq!(w.bands(19, 3), (Band::Trailing, Band::Scrolling));
+        assert_eq!(w.bands(5, 999), (Band::Scrolling, Band::Trailing));
+        assert_eq!(w.bands(5, 3), (Band::Scrolling, Band::Scrolling));
+    }
+
+    /// The sticky rule, per band: a leading cell rides the scroll offset
+    /// (held at the top/left edge), a trailing one is held at the bottom/
+    /// right edge, a scrolling one stays at its origin.
+    #[test]
+    fn display_origin_holds_frozen_cells_at_the_viewport_edges() {
+        let m = table(); // content 2000 x 40000
+        let f = frozen(1, 1, 1, 1);
+        let (scroll, vp) = ((300.0, 1000.0), (500.0, 400.0));
+        assert_eq!(m.display_origin(0, 0, scroll, vp, f), (300.0, 1000.0), "corner");
+        assert_eq!(m.display_origin(5, 0, scroll, vp, f), (500.0, 1000.0), "header scrolls sideways");
+        assert_eq!(m.display_origin(0, 30, scroll, vp, f), (300.0, 1200.0), "left pin scrolls down");
+        // Right pin: origin x 1900, held so its right edge meets the
+        // viewport's (300 + 500 = 800): 800 - 100 = 700.
+        assert_eq!(m.display_origin(19, 30, scroll, vp, f).0, 700.0);
+        // Bottom row: origin y 39960, held at 1000 + 400 - 40 = 1360.
+        assert_eq!(m.display_origin(5, 999, scroll, vp, f).1, 1360.0);
+        assert_eq!(m.display_origin(5, 30, scroll, vp, f), (500.0, 1200.0), "body cell");
+    }
+
+    /// CSS sticky: a trailing column of a grid NARROWER than its viewport
+    /// sits beside its neighbours, not at the viewport's far edge.
+    #[test]
+    fn trailing_frozen_column_of_a_narrow_grid_stays_in_place() {
+        let m = GridMetrics::build(3, 10, &|_| 100.0, &|_| 40.0); // 300 wide
+        let f = frozen(0, 0, 0, 1);
+        assert_eq!(m.display_origin(2, 0, (0.0, 0.0), (900.0, 200.0), f).0, 200.0);
+    }
+
+    /// Scrolling to a row lands it just under the frozen header, not
+    /// beneath it; an axis the cell is frozen on keeps its offset.
+    #[test]
+    fn scroll_target_clears_the_frozen_header_and_columns() {
+        let m = table();
+        let f = frozen(1, 0, 2, 0);
+        let vp = (500.0, 400.0);
+        assert_eq!(m.scroll_target(10, 100, (0.0, 0.0), vp, f), (800.0, 3960.0));
+        assert_eq!(m.scroll_target(0, 100, (123.0, 0.0), vp, f), (123.0, 3960.0), "frozen column: x kept");
+        assert_eq!(m.scroll_target(10, 0, (0.0, 77.0), vp, f), (800.0, 77.0), "header row: y kept");
+        // Clamped at the end of the content.
+        assert_eq!(m.scroll_target(19, 999, (0.0, 0.0), vp, f), (1500.0, 39600.0));
+    }
+
+    /// More frozen rows than rows: the bands are clipped, nothing is
+    /// mounted twice, and every row is frozen.
+    #[test]
+    fn overlapping_frozen_bands_are_clipped() {
+        let m = GridMetrics::build(2, 3, &|_| 10.0, &|_| 10.0);
+        let w = m.pane_window((0.0, 0.0), (100.0, 100.0), 0.0, frozen(2, 5, 0, 0));
+        assert_eq!(w.rows_frozen, (2, 1));
+        assert_eq!(w.rows().collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert!(w.scrolling.is_empty());
+    }
+
+    #[test]
+    fn no_frozen_panes_is_the_plain_window() {
+        let m = table();
+        let (s, v) = ((350.0, 900.0), (400.0, 200.0));
+        let plain = m.visible_window(s, v, 0.5);
+        let w = m.pane_window(s, v, 0.5, FrozenPanes::NONE);
+        assert_eq!(w.scrolling, plain);
+        assert_eq!(w.cells().collect::<Vec<_>>(), plain.cells().collect::<Vec<_>>());
+        assert_eq!(m.display_origin(7, 30, s, v, FrozenPanes::NONE), m.cell_origin(7, 30));
+    }
+
+    #[test]
+    fn empty_grid_with_frozen_panes_mounts_nothing() {
+        let m = GridMetrics::build(0, 0, &|_| 10.0, &|_| 10.0);
+        let w = m.pane_window((0.0, 0.0), (100.0, 100.0), 1.0, frozen(1, 1, 1, 1));
+        assert!(w.is_empty());
+        assert_eq!(w.cells().count(), 0);
     }
 }

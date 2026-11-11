@@ -22,15 +22,26 @@
 //! math was the same story before `runtime_shared::sticky`). Keeping
 //! the arithmetic on the Rust side means every backend's grid engine
 //! windows identically by construction, and the per-scroll cost is one
-//! wasm call returning six numbers — cheaper than the per-cell
+//! wasm call returning a dozen numbers — cheaper than the per-cell
 //! crossings the mount path already pays.
+//!
+//! ## Frozen panes
+//!
+//! Rust says which rows and columns are frozen (`window` returns the
+//! clipped bands with the scrolling window); the shim parents each frozen
+//! cell into a `position: sticky` layer — one per band combination, the
+//! top strip, left strip, a corner, … — so the BROWSER holds it at the
+//! edge during scrolling, on the compositor, with no frame of lag. Moving
+//! frozen cells from the scroll listener instead would trail the scroll by
+//! a frame on every browser with async scrolling. The layers follow
+//! `GridMetrics::display_origin`'s rule, which is CSS sticky's.
 
 use std::cell::RefCell;
 use web_glue::JsValue;
 use std::rc::Rc;
 
 use crate::WebBackend;
-use runtime_shared::primitives::virtual_grid::{GridCallbacks, GridMetrics, Scrollport};
+use runtime_shared::primitives::virtual_grid::{FrozenPanes, GridCallbacks, GridMetrics, Scrollport};
 use web_glue::JsCast;
 use web_glue::dom::Node;
 
@@ -62,6 +73,8 @@ pub(crate) struct VirtualGridInstance {
     /// `data_changed` can swap in fresh metrics and have the next
     /// window query see them.
     metrics: Rc<RefCell<GridMetrics>>,
+    /// Shared with the `window` and `scrollTarget` closures.
+    frozen: Rc<std::cell::Cell<FrozenPanes>>,
     sizing: Rc<Sizing>,
     _closures: Vec<Box<dyn std::any::Any>>,
 }
@@ -94,16 +107,20 @@ pub(crate) fn create(
         row_height: callbacks.row_height.clone(),
     });
     let metrics = Rc::new(RefCell::new(sizing.build_metrics()));
+    let frozen = Rc::new(std::cell::Cell::new(FrozenPanes::NONE));
 
-    // `window(scrollX, scrollY, vpW, vpH)` → the resolved rectangle +
-    // content size. This is the one call JS makes per scroll event.
+    // `window(scrollX, scrollY, vpW, vpH)` → the scrolling rectangle,
+    // the frozen bands and the content size. This is the one call JS
+    // makes per scroll event.
     let window_cb = {
         let metrics = metrics.clone();
+        let frozen = frozen.clone();
         crate::glue_dom::fn4r(
             move |sx: JsValue, sy: JsValue, vw: JsValue, vh: JsValue| {
                 let f = |v: JsValue| v.as_f64().unwrap_or(0.0) as f32;
                 let m = metrics.borrow();
-                let w = m.visible_window((f(sx), f(sy)), (f(vw), f(vh)), overscan);
+                let p = m.pane_window((f(sx), f(sy)), (f(vw), f(vh)), overscan, frozen.get());
+                let w = p.scrolling;
                 let (cw, ch) = m.content_size();
                 let obj = web_glue::js::Object::new();
                 let set = |k: &str, v: f64| {
@@ -117,6 +134,12 @@ pub(crate) fn create(
                 set("colEnd", w.col_end as f64);
                 set("rowStart", w.row_start as f64);
                 set("rowEnd", w.row_end as f64);
+                set("top", p.rows_frozen.0 as f64);
+                set("bottom", p.rows_frozen.1 as f64);
+                set("left", p.cols_frozen.0 as f64);
+                set("right", p.cols_frozen.1 as f64);
+                set("colCount", p.counts.0 as f64);
+                set("rowCount", p.counts.1 as f64);
                 set("contentW", cw as f64);
                 set("contentH", ch as f64);
                 obj.into()
@@ -164,16 +187,40 @@ pub(crate) fn create(
         )
     };
 
-    // `cellOrigin(col, row)` → `[x, y]`. Exists so the handle's
-    // `scroll_to_cell` can resolve a target offset from the live
-    // metrics WITHOUT reaching into the backend (see the ops impl).
-    let cell_origin_cb = {
+    // `cellRect(col, row)` → `[x, y, w, h]`: a surviving cell's geometry
+    // after a data change, when a width or height may have moved it.
+    let cell_rect_cb = {
         let metrics = metrics.clone();
         crate::glue_dom::fn2r(
             move |c: JsValue, r: JsValue| {
                 let col = c.as_f64().unwrap_or(0.0) as usize;
                 let row = r.as_f64().unwrap_or(0.0) as usize;
-                let (x, y) = metrics.borrow().cell_origin(col, row);
+                let m = metrics.borrow();
+                let ((x, y), (w, h)) = (m.cell_origin(col, row), m.cell_size(col, row));
+                let arr = web_glue::js::Array::new_with_length(4);
+                for (i, v) in [x, y, w, h].into_iter().enumerate() {
+                    arr.set(i as u32, JsValue::from_f64(v as f64));
+                }
+                arr.into()
+            },
+        )
+    };
+
+    // `scrollTarget(col, row)` → `[x, y]`: where `scroll_to_cell` scrolls,
+    // from the LIVE metrics (a column width may have changed since mount)
+    // and the frozen panes — the cell lands just past the frozen header
+    // and columns, not beneath them.
+    let scroll_target_cb = {
+        let metrics = metrics.clone();
+        let frozen = frozen.clone();
+        let el: web_glue::dom::HtmlElement = container.clone().unchecked_into();
+        crate::glue_dom::fn2r(
+            move |c: JsValue, r: JsValue| {
+                let col = c.as_f64().unwrap_or(0.0) as usize;
+                let row = r.as_f64().unwrap_or(0.0) as usize;
+                let current = (el.scroll_left() as f32, el.scroll_top() as f32);
+                let viewport = (el.client_width() as f32, el.client_height() as f32);
+                let (x, y) = metrics.borrow().scroll_target(col, row, current, viewport, frozen.get());
                 let arr = web_glue::js::Array::new_with_length(2);
                 arr.set(0, JsValue::from_f64(x as f64));
                 arr.set(1, JsValue::from_f64(y as f64));
@@ -208,7 +255,8 @@ pub(crate) fn create(
     set_fn("window", window_cb.as_js());
     set_fn("cellKey", cell_key_cb.as_js());
     set_fn("mountCell", mount_cell_cb.as_js());
-    set_fn("cellOrigin", cell_origin_cb.as_js());
+    set_fn("cellRect", cell_rect_cb.as_js());
+    set_fn("scrollTarget", scroll_target_cb.as_js());
     set_fn("releaseCell", release_cell_cb.as_js());
     if let Some(cb) = on_scroll_cb.as_ref() {
         set_fn("onScroll", cb.as_js());
@@ -233,7 +281,8 @@ pub(crate) fn create(
         Box::new(window_cb),
         Box::new(cell_key_cb),
         Box::new(mount_cell_cb),
-        Box::new(cell_origin_cb),
+        Box::new(cell_rect_cb),
+        Box::new(scroll_target_cb),
         Box::new(release_cell_cb),
     ];
     if let Some(cb) = on_scroll_cb {
@@ -247,6 +296,7 @@ pub(crate) fn create(
         VirtualGridInstance {
             js: instance,
             metrics,
+            frozen,
             sizing,
             _closures: closures,
         },
@@ -263,6 +313,15 @@ pub(crate) fn data_changed(b: &mut WebBackend, node: &Node) {
     let Some(id) = grid_id_of(node) else { return };
     let Some(instance) = b.virtual_grid_instances.get(&id) else { return };
     *instance.metrics.borrow_mut() = instance.sizing.build_metrics();
+    call0(&instance.js, "dataChanged");
+}
+
+/// Set the frozen panes, then have the shim re-diff: frozen cells move
+/// into their sticky layers and the bands join the window.
+pub(crate) fn set_frozen(b: &mut WebBackend, node: &Node, frozen: FrozenPanes) {
+    let Some(id) = grid_id_of(node) else { return };
+    let Some(instance) = b.virtual_grid_instances.get(&id) else { return };
+    instance.frozen.set(frozen);
     call0(&instance.js, "dataChanged");
 }
 
@@ -317,9 +376,9 @@ pub(crate) struct WebVirtualGridOps;
 
 impl runtime_shared::primitives::virtual_grid::VirtualGridOps for WebVirtualGridOps {
     /// Delegates to the shim's `scrollToCell`, which resolves the
-    /// origin through the `cellOrigin` callback — i.e. from the LIVE
+    /// offset through the `scrollTarget` callback — i.e. from the LIVE
     /// metrics, since the author may have changed column widths since
-    /// mount.
+    /// mount, and past any frozen header or columns.
     ///
     /// Routing through the instance rather than reading the metrics
     /// here keeps the handle backend-free: a handle can outlive the

@@ -484,3 +484,101 @@ fn regression_live_cells_die_before_the_release_probe_takes_the_backend() {
         "a drained scope map makes the backend's release_cell a no-op"
     );
 }
+
+/// Frozen panes must reach the backend BEFORE its first fill: a backend
+/// that learned them after the data effect had already windowed the grid
+/// would mount and place the first screen with the header scrolling.
+#[test]
+fn regression_frozen_panes_reach_the_backend_after_the_first_fill() {
+    use runtime_shared::primitives::virtual_grid::FrozenPanes;
+    let h = harness();
+    let _realized = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            virtual_grid(|| 4, || 3, |_| 100.0, |_| 40.0, |c, r| (c * 1000 + r) as u64, |c, r| {
+                text().content(format!("c{c}r{r}")).build()
+            })
+            .frozen(FrozenPanes { top: 1, left: 1, right: 1, ..FrozenPanes::NONE })
+            .build(),
+        )
+    });
+    assert_eq!(
+        h.take_log(),
+        vec![
+            "create n0 virtual_grid cols=4 rows=3 overscan=1".to_string(),
+            "set_virtual_grid_frozen n0 top=1 bottom=0 left=1 right=1".to_string(),
+            "virtual_grid_data_changed n0".to_string(),
+        ],
+    );
+}
+
+/// A grid without frozen panes never calls the hook, so a backend that
+/// has no frozen-pane support sees exactly the calls it always did.
+#[test]
+fn unfrozen_grid_does_not_call_the_frozen_hook() {
+    let h = harness();
+    let _realized = h.world.enter(|| realize(&h.backend, &h.registry, grid_4x3()));
+    assert!(h.take_log().iter().all(|l| !l.starts_with("set_virtual_grid_frozen")));
+}
+
+/// A column width read from a signal (columns sharing the visible width)
+/// must re-lay the grid out when the signal changes. With only the counts
+/// in the data effect, the backend kept the old widths: the columns stayed
+/// where they were after the viewport resized.
+#[test]
+fn regression_a_column_width_signal_does_not_relayout_the_grid() {
+    let h = harness();
+    let (_realized, width) = h.world.enter(|| {
+        let width = signal(100.0f32);
+        let realized = realize(
+            &h.backend,
+            &h.registry,
+            virtual_grid(|| 4, || 3, move |_| width.get(), |_| 40.0, |c, r| (c * 1000 + r) as u64, |c, r| {
+                text().content(format!("c{c}r{r}")).build()
+            })
+            .build(),
+        );
+        (realized, width)
+    });
+    h.take_log();
+    h.world.enter(|| width.set(150.0));
+    h.flush();
+    assert_eq!(h.take_log(), vec!["virtual_grid_data_changed n0".to_string()]);
+}
+
+/// A cell the grid discards must be RELEASED to the host, not just dropped:
+/// a host keeping per-node side tables (the native backends' layout
+/// registrations) only frees them on `release_subtree`. Without it every
+/// cell that scrolled away stayed registered on macOS for the life of the
+/// app — never deallocated, and the backend's per-cell layout slowed with
+/// every screen scrolled.
+#[test]
+fn regression_a_released_cell_stays_registered_with_the_host() {
+    let h = harness();
+    let _realized = h.world.enter(|| realize(&h.backend, &h.registry, grid_4x3()));
+    let cbs = h.virtual_grid(0);
+    let (node, scope) = h.world.enter(|| (cbs.mount_cell)(1, 2));
+    h.take_log();
+    h.world.enter(|| (cbs.release_cell)(scope));
+    assert!(
+        h.take_log().contains(&format!("release_subtree n{node}")),
+        "the discarded cell's subtree is released to the host"
+    );
+}
+
+/// Teardown releases every live cell the same way.
+#[test]
+fn grid_teardown_releases_its_live_cells_to_the_host() {
+    let h = harness();
+    let realized = h.world.enter(|| realize(&h.backend, &h.registry, grid_4x3()));
+    let cbs = h.virtual_grid(0);
+    let (a, _) = h.world.enter(|| (cbs.mount_cell)(0, 0));
+    let (b, _) = h.world.enter(|| (cbs.mount_cell)(3, 2));
+    h.take_log();
+    h.world.enter(|| drop(realized));
+    let log = h.take_log();
+    for n in [a, b] {
+        assert!(log.contains(&format!("release_subtree n{n}")), "cell n{n} released: {log:?}");
+    }
+}

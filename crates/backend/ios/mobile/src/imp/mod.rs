@@ -4914,6 +4914,14 @@ impl IosBackend {
         node
     }
 
+    pub(crate) fn set_virtual_grid_frozen_impl(
+        &mut self,
+        node: &IosNode,
+        frozen: runtime_shared::primitives::virtual_grid::FrozenPanes,
+    ) {
+        virtual_grid::set_frozen(self, node, frozen)
+    }
+
     pub(crate) fn virtual_grid_data_changed_impl(&mut self, node: &IosNode) {
         virtual_grid::data_changed(self, node)
     }
