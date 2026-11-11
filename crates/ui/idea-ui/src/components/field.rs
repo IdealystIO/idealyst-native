@@ -93,6 +93,9 @@ use idea_theme::tokens;
 ///   without growing the field.
 /// - [`Adornment::Group`] — several of the above side by side in one slot.
 ///
+/// To show an adornment only while a condition holds (a clear ✕ while the
+/// field has text), pass `Field(trailing_when = …)` / `leading_when`.
+///
 /// Adornments compose into a flex row alongside the input, so any width works.
 #[derive(Clone, runtime_core::Remote)]
 pub enum Adornment {
@@ -148,6 +151,17 @@ impl Adornment {
     /// visible.set(!visible.get()))`.
     pub fn labeled_button(icon: IconData, label: impl Into<String>, on_press: impl Fn() + 'static) -> Self {
         Adornment::Button { icon, label: Some(label.into()), on_press: Rc::new(on_press) }
+    }
+}
+
+impl Adornment {
+    /// Whether this renders nothing: `None`, or a group of only those.
+    fn is_empty(&self) -> bool {
+        match self {
+            Adornment::None => true,
+            Adornment::Group(items) => items.iter().all(Adornment::is_empty),
+            _ => false,
+        }
     }
 }
 
@@ -227,6 +241,32 @@ fn render_adornment(
             items.iter().flat_map(|a| render_adornment(a, size, disabled, styles)).collect()
         }
     }
+}
+
+/// [`render_adornment`], gated on `when` (`Field(leading_when / trailing_when)`).
+/// A gated adornment that renders anything is one reactive region, so the
+/// field takes its adorned layout whether or not it is showing — the
+/// shell never swaps for the bare input as the condition flips.
+fn shown_adornment(
+    adornment: &Adornment,
+    when: Option<Rc<dyn Fn() -> bool>>,
+    size: FieldSize,
+    disabled: &Reactive<bool>,
+    styles: &FieldSlotStyles,
+) -> Vec<Element> {
+    let Some(show) = when else {
+        return render_adornment(adornment, size, disabled, styles);
+    };
+    if adornment.is_empty() {
+        return Vec::new();
+    }
+    let (adornment, disabled, styles) = (adornment.clone(), disabled.clone(), styles.clone());
+    let shown = move || runtime_core::fragment(render_adornment(&adornment, size, &disabled, &styles));
+    vec![ui! {
+        if show() {
+            shown()
+        }
+    }]
 }
 
 component_styles! {
@@ -606,6 +646,17 @@ pub struct FieldProps {
     /// `Reactive<_>` (an element-builder isn't `PartialEq`, so it can't route).
     #[prop(static)]
     pub trailing: Adornment,
+    /// Show `leading` only while this returns `true`. Read reactively: the
+    /// adornment mounts and unmounts as the signals it reads change, and
+    /// the field keeps its adorned layout throughout, so the input never
+    /// rebuilds or jumps. `None` (default) always shows it.
+    #[prop(static)]
+    pub leading_when: Option<Rc<dyn Fn() -> bool>>,
+    /// Show `trailing` only while this returns `true` — a clear ✕ while
+    /// the field has text: `trailing_when = Some(Rc::new(move ||
+    /// !query.get().is_empty()))`. Same contract as `leading_when`.
+    #[prop(static)]
+    pub trailing_when: Option<Rc<dyn Fn() -> bool>>,
     /// Pin an exact minimum input height in pixels. When set, it layers a
     /// `min-height` on top of the size-derived height so the input can't
     /// shrink below it — use this to match a design's exact px floor (e.g.
@@ -691,6 +742,8 @@ impl Default for FieldProps {
             keyboard: Reactive::Static(KeyboardKind::Default),
             leading: Adornment::None,
             trailing: Adornment::None,
+            leading_when: None,
+            trailing_when: None,
             min_height: Reactive::Static(None),
             width: Reactive::Static(None),
             field_ref: None,
@@ -800,8 +853,8 @@ pub fn Field(props: &FieldProps) -> Element {
     );
 
     let secure = props.secure.clone();
-    let leading = render_adornment(&props.leading, size, &props.disabled, &styles);
-    let trailing = render_adornment(&props.trailing, size, &props.disabled, &styles);
+    let leading = shown_adornment(&props.leading, props.leading_when.clone(), size, &props.disabled, &styles);
+    let trailing = shown_adornment(&props.trailing, props.trailing_when.clone(), size, &props.disabled, &styles);
     let adorned = !leading.is_empty() || !trailing.is_empty();
 
     // `placeholder` is routed LIVE: a reactive source updates the native

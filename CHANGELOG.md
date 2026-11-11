@@ -1258,6 +1258,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **A `Field` adornment can show only while a condition holds** (`idea-ui` minor).
+  `Field(trailing_when = Some(Rc::new(move || !q.get().is_empty())))` shows the `trailing`
+  adornment only while the closure returns `true` — a clear ✕ that exists only while the field
+  has text; `leading_when` does the same for `leading`. The closure is read reactively, and the
+  field keeps its adorned layout as the adornment comes and goes, so the input is never rebuilt.
+
 - **A pressable can fire as the pointer goes down** (`runtime-shared`, `runtime-vocabulary`,
   `runtime-core`, `idea-ui`, every backend minor; `wire` / `dev-server` / `dev-client` minor).
   `pressable(..).activation(PressActivation::Down)` and `Button(activation =
@@ -3275,6 +3281,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **`Table(styles = …)` styles every cell of the table** (`idea-ui` patch). The table's
+  `head_cell` / `body_cell` overrides reached only the scrollbar corner; the cells the table
+  adds (the select-all box, each row's selection box, the reorder grip) were built with default
+  styles, so a per-table "no rule under the header" left a short line under the checkbox. Both
+  overrides are now the default for every head / body cell, added ones included, with a cell's
+  own `styles` layered over them — no need to repeat the override on each `TableCell`.
 
 - **`Progress` renders inside a centering parent** (`idea-ui` patch). Its track sat in a bare
   wrapper view with no width, so in `Center`, an `align = Center` stack, or any shrink-to-content

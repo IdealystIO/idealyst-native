@@ -535,8 +535,11 @@ ui! {
                 button's tap target grows to 44pt square around the glyph without growing the \
                 field. `Adornment::element(|| ui! { … })` any element for \
                 full control, and `Adornment::Group(vec![…])` several of those side by side in one \
-                slot (how `DateInput`'s clear ✕ sits beside its calendar button). Adornments lay \
-                out in a flex row inside the field box, so any width works.".to_string())
+                slot (how `DateInput`'s clear ✕ sits beside its calendar button). Pass \
+                `trailing_when` (or `leading_when`) to show the adornment only while a condition \
+                holds — a clear ✕ that appears once there is text; the field keeps \
+                its layout as it comes and goes. Adornments lay out in a flex row inside the \
+                field box, so any width works.".to_string())
             DemoSurface {
                 Field(
                     value = query,

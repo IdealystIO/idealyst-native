@@ -650,3 +650,43 @@ fn autocomplete_kept_row_commits_its_own_option_after_the_list_changes() {
     h.flush();
     assert_eq!(h.world.enter(|| val.peek()), "a", "the kept Alpha row commits Alpha's id");
 }
+
+/// `Field(trailing_when)`: a clear ✕ that exists only while the field has
+/// text. The field keeps its adorned row throughout, so the input itself
+/// is never rebuilt as the ✕ comes and goes.
+#[test]
+fn field_trailing_when_follows_its_condition_without_rebuilding_the_input() {
+    use idea_ui::components::field::{Adornment, Field};
+    use runtime_core::IconData;
+    const X: IconData = IconData {
+        view_box: (24, 24),
+        paths: &["M18 6 6 18"],
+        fill_rule: runtime_core::FillRule::NonZero,
+        filled: false,
+    };
+    let value = std::cell::Cell::new(None::<Signal<String>>);
+    let (h, _r) = boot(|| {
+        let q = signal(String::new());
+        value.set(Some(q));
+        ui! {
+            Field(
+                value = q,
+                on_change = Rc::new(move |v: String| q.set(v)) as Rc<dyn Fn(String)>,
+                trailing = Adornment::labeled_button(X, "Clear", move || q.set(String::new())),
+                trailing_when = Some(Rc::new(move || !q.get().is_empty()) as Rc<dyn Fn() -> bool>),
+            )
+        }
+    });
+    let q = value.get().unwrap();
+    assert!(node_of(&h, "pressable").is_none(), "no ✕ while empty:\n{}", screen(&h));
+    let input = node_of(&h, "text_input").expect(&screen(&h));
+
+    act(&h, || q.set("abc".into()));
+    assert!(node_of(&h, "pressable").is_some(), "✕ while the field has text:\n{}", screen(&h));
+    assert_eq!(node_of(&h, "text_input").unwrap(), input, "the input must not remount");
+
+    press(&h, 0);
+    assert_eq!(q.peek(), "");
+    assert!(node_of(&h, "pressable").is_none(), "✕ gone once cleared:\n{}", screen(&h));
+    assert_eq!(node_of(&h, "text_input").unwrap(), input);
+}
