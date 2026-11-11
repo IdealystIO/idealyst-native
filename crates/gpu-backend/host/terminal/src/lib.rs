@@ -654,6 +654,84 @@ mod mouse_tests {
         MouseEvent { kind, column, row, modifiers: M::NONE }
     }
 
+    type PressLog = Rc<RefCell<Vec<&'static str>>>;
+
+    /// A 20×3 backend whose root is a full-size pressable (`outer`)
+    /// holding a 5×1 pressable (`inner`) at cell (0, 0); `*_down` picks
+    /// `create_pressable_on_down` over `create_pressable`.
+    fn nested_pressables(outer_down: bool, inner_down: bool) -> (RefCell<TerminalBackend>, PressLog) {
+        use runtime_scene::Host;
+        use runtime_shared::accessibility::AccessibilityProps;
+        use runtime_shared::{Length, StyleRules, Tokenized};
+        use runtime_vocabulary::caps::{LifecycleOps, PressableOps, StyleOps};
+        let mut be = TerminalBackend::new();
+        be.set_viewport(20, 3);
+        let log: PressLog = Rc::default();
+        let mut make = |be: &mut TerminalBackend, down: bool, name: &'static str| {
+            let l = log.clone();
+            let f: Rc<dyn Fn()> = Rc::new(move || l.borrow_mut().push(name));
+            if down {
+                be.create_pressable_on_down(f, &AccessibilityProps::default())
+            } else {
+                be.create_pressable(f, &AccessibilityProps::default())
+            }
+        };
+        let mut outer = make(&mut be, outer_down, "outer");
+        let inner = make(&mut be, inner_down, "inner");
+        let size = |w: f32, h: f32| {
+            Rc::new(StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(w))),
+                height: Some(Tokenized::Literal(Length::Px(h))),
+                ..Default::default()
+            })
+        };
+        be.apply_style(&outer, &size(20.0, 3.0));
+        be.apply_style(&inner, &size(5.0, 1.0));
+        be.insert(&mut outer, inner);
+        be.finish(outer);
+        be.render_to_grid();
+        (RefCell::new(be), log)
+    }
+
+    /// The terminal's real press path, crossterm event by event: a
+    /// left Down fires a down-mode pressable once, then the drag and the
+    /// Up (even released over the enclosing release-mode pressable) fire
+    /// nothing more, and the enclosing pressable never fires.
+    #[test]
+    fn down_pressable_fires_at_left_down_only() {
+        let (backend, log) = nested_pressables(false, true);
+        dispatch_terminal_mouse(&backend, &mouse(E::Down(B::Left), 1, 0));
+        assert_eq!(log.borrow().as_slice(), &["inner"], "fired at the down");
+        dispatch_terminal_mouse(&backend, &mouse(E::Drag(B::Left), 10, 2));
+        dispatch_terminal_mouse(&backend, &mouse(E::Up(B::Left), 10, 2));
+        assert_eq!(log.borrow().as_slice(), &["inner"], "the rest of the press fires nothing");
+    }
+
+    /// A right or middle press never activates a down-mode pressable.
+    #[test]
+    fn down_pressable_ignores_non_primary_buttons() {
+        let (backend, log) = nested_pressables(false, true);
+        for b in [B::Right, B::Middle] {
+            dispatch_terminal_mouse(&backend, &mouse(E::Down(b), 1, 0));
+            dispatch_terminal_mouse(&backend, &mouse(E::Up(b), 1, 0));
+        }
+        assert!(log.borrow().is_empty());
+    }
+
+    /// Release-mode pressables are unchanged by the down-mode addition:
+    /// this host activates on the left Down for both, one fire per press,
+    /// deepest hit only.
+    #[test]
+    fn release_pressable_press_is_unchanged() {
+        let (backend, log) = nested_pressables(true, false);
+        dispatch_terminal_mouse(&backend, &mouse(E::Down(B::Left), 1, 0));
+        dispatch_terminal_mouse(&backend, &mouse(E::Up(B::Left), 1, 0));
+        assert_eq!(log.borrow().as_slice(), &["inner"]);
+        dispatch_terminal_mouse(&backend, &mouse(E::Down(B::Left), 10, 2));
+        dispatch_terminal_mouse(&backend, &mouse(E::Up(B::Left), 10, 2));
+        assert_eq!(log.borrow().as_slice(), &["inner", "outer"]);
+    }
+
     #[test]
     fn crossterm_mouse_kinds_map_to_app_pointer_kinds() {
         let k = |kind| terminal_pointer(&mouse(kind, 1, 2)).kind;

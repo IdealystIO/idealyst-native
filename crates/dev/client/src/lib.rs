@@ -591,11 +591,15 @@ where
                 );
                 self.nodes.insert(id, node);
             }
-            Command::CreatePressable { id, on_click, a11y } => {
+            Command::CreatePressable { id, on_click, a11y, on_down } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_unit(on_click);
                 let a11y = self.a11y_props(a11y);
-                let node = self.backend.borrow_mut().create_pressable(cb, &a11y);
+                let node = if on_down {
+                    self.backend.borrow_mut().create_pressable_on_down(cb, &a11y)
+                } else {
+                    self.backend.borrow_mut().create_pressable(cb, &a11y)
+                };
                 self.nodes.insert(id, node);
             }
             Command::CreateReactiveAnchor { id } => {

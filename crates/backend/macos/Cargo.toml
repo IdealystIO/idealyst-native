@@ -173,6 +173,15 @@ harness = false
 name = "focus_within"
 harness = false
 
+# Real-AppKit test of `PressActivation::Down` pressables
+# (`create_pressable_on_down`): a primary press fires once at the mouse-down,
+# the rest of the press fires nothing and never reaches an ancestor, a
+# secondary press fires nothing, and keyboard / AXPress / handle `click` fire
+# once in both modes. Main-thread only, for the same reason as `focus_attach`.
+[[test]]
+name = "press_down"
+harness = false
+
 # Real-AppKit test of the app-level pointer source (`src/imp/pointer.rs`):
 # the NSEvent mouse monitor, PreventDefault swallowing, the eaten-release
 # reconcile, pointer lock + focus-loss drop, cursor hiding and teardown.

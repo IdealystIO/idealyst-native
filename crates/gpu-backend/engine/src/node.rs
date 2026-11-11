@@ -300,6 +300,12 @@ pub enum NodeKind {
     },
     Pressable {
         on_click: Rc<dyn Fn()>,
+        /// Which moment of a primary press fires `on_click`: on release
+        /// over the node (`Release`, captured by `ActivePress::Click`)
+        /// or as the pointer goes down (`Down`, fired in
+        /// `Host::pointer_down` and then held by `ActivePress::HeldDown`
+        /// so the rest of the press fires nothing).
+        activation: runtime_shared::PressActivation,
     },
     Button {
         label: String,

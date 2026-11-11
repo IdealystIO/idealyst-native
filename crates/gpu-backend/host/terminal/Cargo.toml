@@ -46,5 +46,7 @@ libc = "0.2"
 runtime-server-shell-native = { workspace = true, optional = true, features = ["runtime-server"] }
 
 [dev-dependencies]
-# Tests install a keyboard sink through `caps::AppEnvOps`.
+# Tests install a keyboard sink through `caps::AppEnvOps`, and build
+# pressable trees through the caps traits + `runtime_scene::Host`.
 runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }

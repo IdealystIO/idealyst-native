@@ -403,6 +403,10 @@ impl caps::PressableOps for WireRecordingBackend {
         WireRecordingBackend::create_pressable(self, on_click, a11y)
     }
 
+    fn create_pressable_on_down(&mut self, on_press: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
+        WireRecordingBackend::create_pressable_on_down(self, on_press, a11y)
+    }
+
 }
 
 // ===========================================================================

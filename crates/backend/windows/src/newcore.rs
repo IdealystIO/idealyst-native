@@ -702,6 +702,12 @@ impl caps::PressableOps for WindowsBackend {
         // STATIC controls do not emit without subclassing).
         WindowsBackend::create_pressable(self, flushing0(on_click), _a11y)
     }
+
+    fn create_pressable_on_down(&mut self, on_press: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
+        // Same flush wrapping as `create_pressable`: the press-down
+        // handler writes signals and nothing commits without it.
+        WindowsBackend::create_pressable_on_down(self, flushing0(on_press), _a11y)
+    }
 }
 
 // ---------------------------------------------------------------------------

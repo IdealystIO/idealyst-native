@@ -46,6 +46,7 @@ mod host;
 mod id_frame;
 mod late;
 mod realize;
+mod exit;
 mod region_context;
 mod registry;
 
@@ -64,6 +65,7 @@ pub use element::with_rebuild;
 pub use host::Host;
 pub use id_frame::{use_id, use_id_keyed};
 pub use region_context::{install_region_context, RegionScope};
+pub use exit::{hold_on_exit, install_exit_defer, ExitDefer};
 pub use late::{defer_registration, drain_registrations, has_pending_registrations};
 pub use realize::{
     realize, DeferredLive, DynLive, DynWatch, KeyedLive, KeyedState, LiveNode, MountCx, Realized,

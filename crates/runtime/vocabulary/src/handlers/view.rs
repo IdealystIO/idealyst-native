@@ -146,7 +146,8 @@ pub(crate) fn focus_transitions(
 
 /// Mount a `pressable`.
 ///
-/// Sequence: (press-block wrap) → `create_pressable` → children →
+/// Sequence: (press-block wrap) → `create_pressable` (or
+/// `create_pressable_on_down` for `PressActivation::Down`) → children →
 /// attach_style → ref-fill → disabled binding → a11y-state binding →
 /// `mark_preserves_focus`.
 ///
@@ -206,7 +207,12 @@ where
     // as the view refuses a user.
     #[cfg(feature = "robot")]
     let robot_click = on_press.clone();
-    let mut node = backend.borrow_mut().create_pressable(on_press, &a11y);
+    let mut node = match prim.activation {
+        runtime_shared::PressActivation::Release => backend.borrow_mut().create_pressable(on_press, &a11y),
+        runtime_shared::PressActivation::Down => {
+            backend.borrow_mut().create_pressable_on_down(on_press, &a11y)
+        }
+    };
     #[cfg(feature = "robot")]
     let _robot = {
         let blocked = press_block.clone();

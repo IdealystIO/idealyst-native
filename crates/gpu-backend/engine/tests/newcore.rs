@@ -524,7 +524,7 @@ fn pressable_click_commits_through_wrapped_on_click() {
     let node =
         find_node(&root, &|k| matches!(k, NodeKind::Pressable { .. })).expect("pressable in tree");
     let on_click = match &node.borrow().kind {
-        NodeKind::Pressable { on_click } => on_click.clone(),
+        NodeKind::Pressable { on_click, .. } => on_click.clone(),
         _ => unreachable!(),
     };
     on_click();

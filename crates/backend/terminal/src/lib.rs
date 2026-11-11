@@ -395,6 +395,10 @@ impl TerminalBackend {
     ///
     /// Must be called after `render_to_grid` so the frame cache is
     /// populated.
+    ///
+    /// Hosts call this once per primary-button DOWN (the release is not
+    /// an activation here), which is what makes it fire a pressable in
+    /// either `PressActivation` mode exactly once, at the down.
     pub fn dispatch_click(&mut self, col: u16, row: u16) -> ClickOutcome {
         let Some(root) = self.find_root() else { return ClickOutcome::Unhandled };
         let mut hit: Option<HitTarget> = None;
@@ -1196,6 +1200,52 @@ mod regression_tests {
         }
         assert!(!inner_fired.get(), "a disabled pressable's handler is not fired");
         assert!(!card_fired.get(), "the disabled child swallowed the click; the card must not fire");
+    }
+
+    /// `create_pressable_on_down` (whose trait default panics) builds a
+    /// pressable the click hit-test fires once, and a down-mode pressable
+    /// nested in a release-mode one fires alone — the outer never sees
+    /// the click. Same with the modes swapped.
+    #[test]
+    fn down_pressable_fires_once_and_not_its_enclosing_pressable() {
+        use runtime_scene::Host;
+        use runtime_vocabulary::caps::{LifecycleOps, PressableOps};
+        for (outer_down, inner_down) in [(false, true), (true, false), (true, true)] {
+            let mut be = TerminalBackend::new();
+            be.set_viewport(20, 3);
+            let log: Rc<std::cell::RefCell<Vec<&'static str>>> = Rc::default();
+            let mut make = |be: &mut TerminalBackend, down: bool, name: &'static str| {
+                let l = log.clone();
+                let f: Rc<dyn Fn()> = Rc::new(move || l.borrow_mut().push(name));
+                if down {
+                    be.create_pressable_on_down(f, &AccessibilityProps::default())
+                } else {
+                    be.create_pressable(f, &AccessibilityProps::default())
+                }
+            };
+            let mut outer = make(&mut be, outer_down, "outer");
+            let inner = make(&mut be, inner_down, "inner");
+            be.apply_style(
+                &inner,
+                &Rc::new(StyleRules {
+                    width: Some(Tokenized::Literal(runtime_shared::Length::Px(5.0))),
+                    height: Some(Tokenized::Literal(runtime_shared::Length::Px(1.0))),
+                    ..Default::default()
+                }),
+            );
+            be.insert(&mut outer, inner);
+            be.finish(outer);
+            be.render_to_grid();
+            let mut click = |col, row| {
+                if let ClickOutcome::HandlerFired(h) = be.dispatch_click(col, row) {
+                    h();
+                }
+            };
+            click(0, 0);
+            assert_eq!(log.borrow().as_slice(), &["inner"], "modes ({outer_down}, {inner_down})");
+            click(0, 0);
+            assert_eq!(log.borrow().as_slice(), &["inner", "inner"], "one fire per click");
+        }
     }
 
     /// A disabled `toggle` is inert at the backend: the click that would

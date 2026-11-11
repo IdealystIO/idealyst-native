@@ -293,6 +293,10 @@ pub mod menu;
 /// Shared scrolling panel for the anchored-menu family (Select/Menu/SubMenu/
 /// Autocomplete). Internal — not a component; see `menu_panel::scrolling_menu_panel`.
 pub(crate) mod menu_panel;
+/// Press-drag-release picking for menu rows. Internal — see the module docs.
+pub(crate) mod press_drag;
+/// The shared open animation of anchored surfaces. Internal — see the module docs.
+pub(crate) mod pop_in;
 pub mod pagination;
 pub mod progress;
 pub mod radio;

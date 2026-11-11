@@ -187,6 +187,15 @@ harness = false
 name = "focus_within"
 harness = false
 
+# Real-UIKit test of `PressActivation::Down` pressables
+# (`create_pressable_on_down`): the zero-duration long-press wiring, its
+# Began-only action, raw touches not reaching an ancestor, and VoiceOver /
+# handle `click` firing once. iOS targets only — run the binary on a booted
+# simulator (see the file header).
+[[test]]
+name = "press_down"
+harness = false
+
 [[test]]
 name = "native_readback"
 harness = false

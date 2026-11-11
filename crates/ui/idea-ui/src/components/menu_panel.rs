@@ -159,15 +159,20 @@ pub(crate) fn slotted_menu_panel(
     max_width: Option<f32>,
 ) -> Element {
     let slotted = header.is_some() || footer.is_some();
-    let panel = runtime_core::view(slotted_panel_children(rows, header, footer));
+    // The panel's on-screen area bounds press-drag-release picking: a row
+    // scrolled out of the capped scroller is not under the pointer just
+    // because its rect is (see `press_drag`).
+    let area: runtime_core::Ref<runtime_core::ViewHandle> = runtime_core::Ref::new();
+    crate::components::press_drag::register_panel(move || area.with(|h| h.absolute_frame()).flatten());
+    let panel = runtime_core::view(slotted_panel_children(rows, header, footer)).bind(area);
     let panel = if slotted { panel.preserves_focus(true) } else { panel };
-    let style = match max_width {
-        Some(w) => SelectStyles::menu().inline(StyleRules {
-            max_width: Some(Tokenized::Literal(Length::Px(w))),
-            ..Default::default()
-        }),
-        None => SelectStyles::menu(),
-    };
+    // The panel fades and scales in (`pop_in`). Its style is static, which
+    // is what lets the start-transparent rule live on it.
+    crate::components::pop_in::pop_in(area);
+    let style = SelectStyles::menu().inline(StyleRules {
+        max_width: max_width.map(|w| Tokenized::Literal(Length::Px(w))),
+        ..crate::components::pop_in::pop_in_start_rules()
+    });
     panel.with_style(style).into_element()
 }
 

@@ -94,6 +94,18 @@ pub(crate) fn view_viewport_rect(
 }
 
 
+/// A screen point (physical px, as `getLocationOnScreen` + a `MotionEvent`
+/// offset give it) in viewport space: dp from the Activity root's top-left,
+/// the space [`view_viewport_rect`] reports. `None` before the root exists.
+pub(crate) fn screen_point_to_viewport(x_px: f32, y_px: f32) -> Option<(f32, f32)> {
+    let root = VIEWPORT_ROOT.with(|r| r.borrow().clone())?;
+    let root_rect = view_screen_rect(&root);
+    let density = super::with_env(|env| super::density_of(env, &root.as_obj())).unwrap_or(1.0);
+    let point = runtime_shared::primitives::portal::ViewportRect { x: x_px, y: y_px, width: 0.0, height: 0.0 };
+    let p = crate::anchored_portal_policy::screen_px_to_viewport_dp(point, (root_rect.x, root_rect.y), density);
+    Some((p.x, p.y))
+}
+
 /// Opacity at or below which a view counts as invisible — the painted
 /// backends' hit-test bar (`effective_opacity() <= 0.003`).
 const TRANSPARENT_ALPHA: f32 = 0.003;

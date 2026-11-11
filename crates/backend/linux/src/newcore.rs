@@ -50,7 +50,8 @@
 //! quietly ignores the user:
 //!
 //! - `connect_clicked` (Button `Action::fire`), `GestureClick::
-//!   connect_released` (Pressable **and** Link) — `flushing0`.
+//!   connect_released` (Pressable **and** Link) and `connect_pressed`
+//!   (press-down Pressable) — `flushing0`.
 //! - `connect_state_notify` (Toggle's `gtk::Switch`),
 //!   `connect_value_changed` (Slider's `gtk::Scale`), text input /
 //!   text area `on_change` — `flushing1`; `on_key_down` —
@@ -815,6 +816,11 @@ impl caps::PressableOps for LinuxBackend {
         // after it returns. Without this the handler mutates its signal and
         // nothing re-renders — the flush is not implicit.
         LinuxBackend::create_pressable(self, flushing0(on_click), _a11y)
+    }
+
+    fn create_pressable_on_down(&mut self, on_press: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
+        // Same flush wrapping as `create_pressable`.
+        LinuxBackend::create_pressable_on_down(self, flushing0(on_press), a11y)
     }
 }
 

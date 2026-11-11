@@ -167,7 +167,17 @@ pub(crate) static MACOS_BUTTON_OPS: MacosButtonOps = MacosButtonOps;
 
 pub(crate) struct MacosPressableOps;
 impl runtime_shared::PressableOps for MacosPressableOps {
-    fn click(&self, _node: &dyn Any) {}
+    /// Fire the pressable's activation closure once — the one keyboard and
+    /// AXPress run — in either `PressActivation` mode, so a programmatic
+    /// click is a single discrete press like web's `HTMLElement.click()`.
+    fn click(&self, node: &dyn Any) {
+        let Some(MacosNode::View(view)) = node.downcast_ref::<MacosNode>() else {
+            return;
+        };
+        if let Some(flipped) = crate::imp::as_flipped_view(view) {
+            flipped.fire_activate();
+        }
+    }
     fn rect(&self, node: &dyn Any) -> ViewportRect {
         absolute_rect_of_node(node).unwrap_or(ViewportRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 })
     }

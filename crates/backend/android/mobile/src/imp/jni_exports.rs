@@ -180,6 +180,49 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustStateListener_nativeS
 }
 
 // ---------------------------------------------------------------------------
+// Held press (press-down pressable)
+// ---------------------------------------------------------------------------
+
+/// `RustPressDownLayout.reportHeld`: one step of the press a press-down
+/// pressable fired for and still holds — a move, the lift, or a cancel —
+/// as a SCREEN point in physical px. Converted here to viewport dp (the
+/// space handle rects are in) and forwarded to
+/// `runtime_shared::held_press`, which is how a menu the press opened
+/// follows the finger. The flush commits what the listeners wrote: this
+/// trampoline is not an author callback that newcore wrapped.
+///
+/// # Safety
+///
+/// Called by the JVM on the UI thread with plain values; nothing to uphold.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustPressDownLayout_nativeHeldPress(
+    _env: JNIEnv,
+    _this: JObject,
+    phase: jint,
+    screen_x_px: jfloat,
+    screen_y_px: jfloat,
+) {
+    use runtime_shared::held_press::{report, HeldPressPhase};
+    let phase = match phase {
+        0 => HeldPressPhase::Moved,
+        1 => HeldPressPhase::Released,
+        2 => HeldPressPhase::Cancelled,
+        // An unknown phase is a Kotlin-side contract violation; drop it.
+        _ => return,
+    };
+    run_void_callback(
+        "held-press",
+        std::panic::AssertUnwindSafe(|| {
+            let Some((x, y)) = crate::imp::view_rect::screen_point_to_viewport(screen_x_px, screen_y_px) else {
+                return;
+            };
+            report(phase, x, y);
+            crate::newcore::schedule_flush();
+        }),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Touch listener (raw-touch pipeline)
 // ---------------------------------------------------------------------------
 

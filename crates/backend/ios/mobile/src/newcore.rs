@@ -894,6 +894,14 @@ mod ios_impl {
             IosBackend::create_pressable_impl(self, flushing0(on_click), a11y)
         }
 
+        fn create_pressable_on_down(
+            &mut self,
+            on_press: Rc<dyn Fn()>,
+            a11y: &AccessibilityProps,
+        ) -> Self::Node {
+            IosBackend::create_pressable_on_down_impl(self, flushing0(on_press), a11y)
+        }
+
         fn make_pressable_handle(&self, node: &Self::Node) -> runtime_shared::PressableHandle {
             IosBackend::make_pressable_handle_impl(self, node)
         }

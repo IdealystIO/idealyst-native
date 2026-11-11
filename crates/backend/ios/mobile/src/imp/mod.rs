@@ -3006,7 +3006,10 @@ impl IosBackend {
         // pressable opting back in (`Auto`) under a `none` root (an
         // overlay's backdrop, a click-through toast's button) takes taps.
         // A plain `UIView` dropped the `Auto` and the tap passed through.
-        let view: Retained<UIView> = Retained::into_super(touch::IdealystTouchView::new(self.mtm));
+        let touch_view = touch::IdealystTouchView::new(self.mtm);
+        // VoiceOver activation + handle `click` run the same action.
+        touch_view.set_activate(on_click.clone());
+        let view: Retained<UIView> = Retained::into_super(touch_view);
         let _: () = unsafe { msg_send![&view, setUserInteractionEnabled: true] };
 
         let target = CallbackTarget::new(self.mtm, on_click);
@@ -3045,6 +3048,82 @@ impl IosBackend {
         // Pressable is a tappable UIView with no implicit UIKit
         // accessibility role — `Role::Button` tells UIKit it's
         // interactive so VoiceOver announces "Button" after the label.
+        a11y::apply(
+            &node,
+            a11y,
+            Some(runtime_shared::accessibility::Role::Button),
+        );
+        node
+    }
+
+    /// `create_pressable` with `PressActivation::Down`: the same
+    /// `IdealystTouchView` (styling, `pointer_events`, a11y role, VoiceOver
+    /// activation, handle `click`) driven by a `UILongPressGestureRecognizer`
+    /// with `minimumPressDuration = 0` instead of the tap recognizer.
+    ///
+    /// Why a recognizer rather than firing from the view's `touchesBegan:`:
+    /// a recognizer sees the touch even when it lands on nested content, and
+    /// recognizing at touch-down makes UIKit fail the other recognizers
+    /// tracking that touch — an ancestor pressable's tap, an enclosing scroll
+    /// view's pan — so the release can't become a second action somewhere
+    /// else. Its action runs on every state change; `invokeOnBegan:` fires
+    /// only on `Began`. `buttonMaskRequired` stays at its primary-button
+    /// default, so a secondary (iPad pointer right-click) press never begins
+    /// it.
+    pub(crate) fn create_pressable_on_down_impl(&mut self, on_press: Rc<dyn Fn()>, a11y: &runtime_shared::accessibility::AccessibilityProps) -> IosNode {
+        let touch_view = touch::IdealystTouchView::new(self.mtm);
+        touch_view.set_activate(on_press.clone());
+        // The press belongs to the control: consume every raw phase so the
+        // responder chain doesn't hand Began/Moved/Ended to an ancestor's
+        // `on_touch` (a row the menu button sits on). Fires nothing itself —
+        // the recognizer below is the press. Nested content with its own
+        // `on_touch` is hit-tested first and still gets its touches.
+        //
+        // It also reports where the held finger goes (`held_press`): the
+        // press is this view's until it lifts, so a menu it opened can only
+        // follow the finger — light the row under it, pick the one it lifts
+        // over — if the view says where it is. `window_position` is the
+        // viewport space handle rects are in. The flush commits what the
+        // listeners wrote (this handler is not installed through newcore's
+        // flushing wrapper).
+        touch_view.set_handler(Rc::new(|ev: &runtime_shared::TouchEvent| {
+            use runtime_shared::held_press::{report, HeldPressPhase};
+            let phase = match ev.phase {
+                runtime_shared::TouchPhase::Hovered => return runtime_shared::TouchResponse::IGNORED,
+                runtime_shared::TouchPhase::Began => return runtime_shared::TouchResponse::CONSUMED,
+                runtime_shared::TouchPhase::Moved => HeldPressPhase::Moved,
+                runtime_shared::TouchPhase::Ended => HeldPressPhase::Released,
+                runtime_shared::TouchPhase::Cancelled => HeldPressPhase::Cancelled,
+            };
+            report(phase, ev.window_position.x, ev.window_position.y);
+            crate::newcore::schedule_flush();
+            runtime_shared::TouchResponse::CONSUMED
+        }));
+        let view: Retained<UIView> = Retained::into_super(touch_view);
+        let _: () = unsafe { msg_send![&view, setUserInteractionEnabled: true] };
+
+        let target = CallbackTarget::new(self.mtm, on_press);
+        let press_sel = objc2::sel!(invokeOnBegan:);
+        let press_gr = unsafe {
+            objc2_ui_kit::UILongPressGestureRecognizer::initWithTarget_action(
+                self.mtm.alloc(),
+                Some(&target),
+                Some(press_sel),
+            )
+        };
+        let _: () = unsafe { msg_send![&*press_gr, setMinimumPressDuration: 0.0f64] };
+        // Same mount-time stale-touch gate as `create_pressable`: a touch
+        // that began before this view existed can't press it. See
+        // `callbacks::touch_may_tap`.
+        let _: () = unsafe { msg_send![&*press_gr, setDelegate: &*target] };
+        // As in `create_pressable`: don't cancel the touches of nested
+        // interactive descendants when this recognizes.
+        let _: () = unsafe { msg_send![&*press_gr, setCancelsTouchesInView: false] };
+        let _: () = unsafe { msg_send![&view, addGestureRecognizer: &*press_gr] };
+        self.retain_target(&target);
+
+        let _ = self.layout_for_view(&view);
+        let node = IosNode::View(view);
         a11y::apply(
             &node,
             a11y,

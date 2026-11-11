@@ -514,6 +514,19 @@ impl WgpuBackend {
         on_click: Rc<dyn Fn()>,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> WgpuNode {
+        self.create_pressable_with_activation_impl(on_click, runtime_shared::PressActivation::Release, a11y)
+    }
+
+    /// One node shape for both activation modes: the mode is a field on
+    /// `NodeKind::Pressable`, read only by the host's pointer dispatch
+    /// (`Host::pointer_down` / `pick_action`), so styling, layout, a11y
+    /// and hit-testing are shared.
+    pub(crate) fn create_pressable_with_activation_impl(
+        &mut self,
+        on_click: Rc<dyn Fn()>,
+        activation: runtime_shared::PressActivation,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
         let layout = self.layout.new_node();
         // Wrap to request a redraw — the user's closure mutates
         // app state, but the framework doesn't drive a redraw on
@@ -523,7 +536,7 @@ impl WgpuBackend {
             on_click();
             request_redraw();
         });
-        let node = new_node(NodeKind::Pressable { on_click: cb }, layout);
+        let node = new_node(NodeKind::Pressable { on_click: cb, activation }, layout);
         init_node_a11y(&node, a11y, PrimitiveKind::Pressable);
         self.roots.push(node.clone());
         node

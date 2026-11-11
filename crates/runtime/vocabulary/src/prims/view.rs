@@ -50,6 +50,10 @@ pub struct PressablePrim {
     /// `robot`-feature registration in the mount handler.
     pub test_id: Option<&'static str>,
     pub on_press: Rc<dyn Fn()>,
+    /// Which moment of a pointer press fires `on_press`: the release
+    /// (default) or the down. Picks `PressableOps::create_pressable` or
+    /// `create_pressable_on_down` at mount.
+    pub activation: runtime_shared::PressActivation,
     /// Pointer-enter/leave notifications (`true` on enter), installed
     /// through the same `InputOps::install_hover_handler` as a view's.
     pub on_hover: Option<HoverHandler>,

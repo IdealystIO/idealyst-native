@@ -82,6 +82,7 @@ pub use runtime_shared::Easing;
 pub use runtime_shared::Color;
 pub use runtime_shared::{FileDropHandler, IntoAction, SafeAreaSides, TouchHandler, WheelHandler};
 pub use runtime_shared::ScrollAxis;
+pub use runtime_shared::PressActivation;
 // The EVENT PAYLOADS those handler aliases carry. Exporting only the
 // `*Handler` type aliases left SDKs unable to name their own handler's
 // argument — `Rc<dyn Fn(&FileDropEvent) -> bool>` is unspellable without
@@ -920,8 +921,9 @@ pub use runtime_shared::set_app_key_handler;
 // pointer, user activation, pointer lock) and app-wide mouse input with
 // pointer lock. See `crate::app_input`.
 pub use crate::app_input::{
-    add_pointer_listener, app_focused, app_visible, exit_pointer_lock, on_pointer, pointer_locked,
-    pointer_state, primary_pointer, reduce_motion, request_pointer_lock, set_cursor_hidden,
+    add_pointer_listener, app_focused, app_visible, exit_pointer_lock, on_held_press, on_pointer,
+    pointer_locked,
+    pointer_root_origin, pointer_state, primary_pointer, reduce_motion, request_pointer_lock, set_cursor_hidden,
     user_activated, PointerState,
 };
 pub use runtime_shared::app_state::PointerKind;
@@ -939,6 +941,11 @@ pub use runtime_shared::app_env::set_app_env_source;
 // timeouts, auto-lock). See `crate::user_activity`.
 pub use crate::user_activity::{add_user_activity_listener, user_activity};
 pub use runtime_shared::user_activity::UserActivityListener;
+pub use runtime_shared::held_press::{HeldPressEvent, HeldPressPhase};
+// Exit animations for conditionally shown content: a component asks the
+// `if` / `match` region that owns it to keep it mounted a moment longer
+// when it is switched out. See `runtime_scene::hold_on_exit`.
+pub use runtime_scene::hold_on_exit;
 pub use runtime_shared::pointer_input::{
     AppPointerEvent, MouseButton, PointerListener, PointerOutcome, PointerPhase,
 };
@@ -4019,6 +4026,16 @@ impl GluePressable {
 
     pub fn preserves_focus(mut self, preserve: bool) -> Self {
         self.b = self.b.preserves_focus(preserve);
+        self
+    }
+
+    /// Which moment of a pointer press fires the action: the release (the
+    /// default, a platform click) or the down — what a menu button wants,
+    /// so its menu is open before the button is released. Keyboard and
+    /// assistive-tech activation fire once either way. See
+    /// [`PressActivation`].
+    pub fn activation(mut self, activation: PressActivation) -> Self {
+        self.b = self.b.activation(activation);
         self
     }
 

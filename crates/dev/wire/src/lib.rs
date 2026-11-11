@@ -495,6 +495,11 @@ pub enum Command {
         on_click: HandlerId,
         #[serde(default)]
         a11y: WireAccessibilityProps,
+        /// `true` for a press-down pressable (`PressActivation::Down`): the
+        /// client mounts it through `create_pressable_on_down`. Defaults to
+        /// `false` (release) for recordings made before the field existed.
+        #[serde(default)]
+        on_down: bool,
     },
     CreateReactiveAnchor {
         id: NodeId,

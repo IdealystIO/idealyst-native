@@ -341,6 +341,56 @@ but keep momentum alive for the eventual `animate(...)` call.
 
 ---
 
+## Animating out: `hold_on_exit`
+
+Content shown with a conditional is removed in the same turn the condition
+turns false, so an animation started at that moment has no frame to play
+in. `hold_on_exit(ms, start)` asks for one:
+
+```rust
+#[component]
+fn Toast(message: String) -> Element {
+    let card: Ref<ViewHandle> = Ref::new();
+    let opacity = AnimatedValue::new(0.0_f32);
+    opacity.bind(card, AnimProp::Opacity);
+    opacity.animate(TweenTo::new(1.0, Duration::from_millis(120)).ease_out());
+
+    // When the `if` showing this toast switches it off: fade, then go.
+    let fade = opacity.clone();
+    hold_on_exit(90, move || {
+        fade.animate(TweenTo::new(0.0, Duration::from_millis(90)).ease_out());
+    });
+
+    ui! { view(bind = card) { text { message } } }
+}
+
+// The call site is an ordinary conditional.
+ui! { if visible.get() { Toast(message = "Saved") } }
+```
+
+Called while a component builds, it registers with the nearest enclosing
+`if` / `match` / `when` / `switch`. When that conditional switches the
+component out, it calls `start`, keeps the whole outgoing branch mounted
+for `ms` (the longest hold anything in the branch asked for), then detaches
+and frees it. Rules worth knowing:
+
+- **The new branch mounts immediately**, ahead of the leaving one. Flip the
+  condition back during the hold and both are on screen until the old one
+  finishes leaving.
+- **Only that conditional's own switch is held.** If an outer conditional
+  removes the lot, a keyed row is dropped, or the screen unmounts, it goes
+  at once.
+- **A held branch is still live.** Its handlers fire and its effects run.
+  Make it inert in `start` if a second press during the fade would matter
+  (idea-ui's menu rows do).
+- **Start invisible in the style, not just the animator.** An animator's
+  first write is skipped because it binds before the view mounts; a static
+  `opacity: 0` on the view prevents a full-opacity first frame.
+
+idea-ui's `Popover` and `Menu` use this (`components/pop_in.rs`), which is
+why `if open.get() { Menu(…) { … } }` fades out with no change at the call
+site.
+
 ## Backend integration
 
 ### `AnimProp`

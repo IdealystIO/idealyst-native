@@ -178,10 +178,7 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
             // ignored — a secondary press never enters `active`. Mouse only:
             // a Ctrl-held *touch* (iPad with hardware keyboard reports
             // platform "MacIntel") is not a click at all.
-            let mac_ctrl_click = ev.button() == 0
-                && ev.ctrl_key()
-                && ev.pointer_type() == "mouse"
-                && ctrl_click_is_secondary();
+            let mac_ctrl_click = is_mac_ctrl_click(&ev);
             let button = match ev.button() {
                 0 if mac_ctrl_click => PointerButton::Secondary,
                 0 => PointerButton::Primary,
@@ -789,6 +786,15 @@ fn swallow_ancestor_press(el: &web_glue::dom::Element) {
 #[allow(dead_code)]
 pub(crate) fn claim(_b: &mut WebBackend, _node: &Node, _touch_id: TouchId) {
     // No-op on web; see doc comment.
+}
+
+/// A `button == 0` mouse press with Ctrl held on macOS: the OS's secondary
+/// press, which Chrome and Firefox still report as `button == 0` (see the
+/// `pointerdown` listener in [`install`] and [`ctrl_click_is_secondary`]).
+/// Mouse only: a Ctrl-held *touch* (iPad with a hardware keyboard reports
+/// platform "MacIntel") is not a click at all.
+pub(crate) fn is_mac_ctrl_click(ev: &web_glue::dom::PointerEvent) -> bool {
+    ev.button() == 0 && ev.ctrl_key() && ev.pointer_type() == "mouse" && ctrl_click_is_secondary()
 }
 
 thread_local! {

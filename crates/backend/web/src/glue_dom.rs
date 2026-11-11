@@ -76,7 +76,13 @@ pub(crate) fn next_frame(f: impl FnOnce() + 'static) {
 /// dismissal) must still see the click. See [`claim_press`] for links.
 pub(crate) fn set_press_onclick(el: &impl AsRef<web_glue::JsValue>, f: impl FnMut() + 'static) {
     let mut f = f;
-    let func = web_glue::Closure::new(move |_| f()).into_js_value();
+    set_press_onclick_ev(el, move |_| f());
+}
+
+/// [`set_press_onclick`] whose handler receives the claimed `click` event.
+pub(crate) fn set_press_onclick_ev(el: &impl AsRef<web_glue::JsValue>, f: impl FnMut(Event) + 'static) {
+    let mut f = f;
+    let func = web_glue::Closure::new(move |ev: JsValue| f(ev.unchecked_into())).into_js_value();
     let el = target(el);
     unsafe { js_set_press_onclick(el.as_js().raw(), func.raw()) }
 }

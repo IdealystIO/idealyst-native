@@ -1,0 +1,25 @@
+[package]
+name = "press-down-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PressActivation side by side: one Button opens its Menu on release, the other as the pointer goes down."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+idealyst = { workspace = true }
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+idea-ui = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Press Down Demo"
+bundle_id = "ai.truday.idealyst.pressdowndemo"
+version   = "0.0.1"
+targets   = ["web", "macos", "ios", "android"]

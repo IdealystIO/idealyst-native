@@ -472,6 +472,12 @@ builtin_set!(
 pub fn register_builtins_with<H: AllCaps + 'static, S: BuiltinSet>(registry: &mut Registry<H>) {
     // Token reads inside effects follow theme swaps (see the fn docs).
     crate::theme::ensure_token_read_hook();
+    // The scene has no clock: give its exit holds one (`hold_on_exit`).
+    // Without a scheduler installed `after_ms` runs the call at once on
+    // native, so a hold there degrades to an immediate teardown.
+    runtime_scene::install_exit_defer(|ms, f| {
+        Box::new(runtime_shared::scheduling::after_ms(ms as i32, f)) as Box<dyn std::any::Any>
+    });
     // Every primitive goes through `S`'s method — NOT an `if S::FLAG`.
     // That distinction is the whole mechanism; see `BuiltinSet`.
     S::view(registry);

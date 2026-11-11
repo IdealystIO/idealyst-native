@@ -843,6 +843,19 @@ impl caps::PressableOps for WgpuBackend {
     ) -> Self::Node {
         WgpuBackend::create_pressable_impl(self, flushing0(on_click), a11y)
     }
+
+    fn create_pressable_on_down(
+        &mut self,
+        on_press: Rc<dyn Fn()>,
+        a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        WgpuBackend::create_pressable_with_activation_impl(
+            self,
+            flushing0(on_press),
+            runtime_shared::PressActivation::Down,
+            a11y,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------

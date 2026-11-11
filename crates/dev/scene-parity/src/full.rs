@@ -1139,6 +1139,13 @@ impl caps::PressableOps for FullRecorder {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> PNode {
         self.create_pressable_impl(on_click, a11y)
     }
+
+    fn create_pressable_on_down(&mut self, _on_press: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> PNode {
+        let n = self.rec.mint();
+        self.rec
+            .push(format!("create {n} pressable_on_down on_click=<fn>{}", a11y_suffix(a11y)));
+        n
+    }
 }
 
 impl caps::TextOps for FullRecorder {

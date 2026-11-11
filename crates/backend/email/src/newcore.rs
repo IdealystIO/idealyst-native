@@ -239,6 +239,11 @@ impl caps::PressableOps for EmailBackend {
         // No interaction in email; a pressable is just a container.
         nref(HtmlNode::new("div"))
     }
+
+    /// No pointer in email either: the same plain container.
+    fn create_pressable_on_down(&mut self, on_press: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
+        <Self as caps::PressableOps>::create_pressable(self, on_press, a11y)
+    }
 }
 
 // ===========================================================================

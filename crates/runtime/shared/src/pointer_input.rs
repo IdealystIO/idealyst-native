@@ -254,6 +254,7 @@ struct State {
     next_id: u64,
     buttons: u8,
     position: (f32, f32),
+    root_origin: (f32, f32),
     locked: bool,
     lock_wanted: bool,
     cursor_hidden: bool,
@@ -350,6 +351,24 @@ pub fn is_button_down(button: MouseButton) -> bool {
 /// Last known pointer position (logical px, app-root relative).
 pub fn position() -> (f32, f32) {
     STATE.with(|s| s.borrow().position)
+}
+
+/// Where the app's root sits in the viewport, in logical pixels: add it to
+/// an event's `x`/`y` to get the viewport position a handle's
+/// `ViewportRect` (`PressableHandle::rect`, `absolute_frame`) is measured
+/// in. `(0, 0)` wherever the app root IS the viewport — every native
+/// backend, and a web app mounted at the page origin. A web app mounted
+/// in an offset element reports that element's corner, as of the latest
+/// event.
+pub fn root_origin() -> (f32, f32) {
+    STATE.with(|s| s.borrow().root_origin)
+}
+
+/// Backend hook for [`root_origin`]: call it before delivering an event
+/// whenever the app root is not the viewport (web's mount element).
+#[doc(hidden)]
+pub fn set_root_origin(x: f32, y: f32) {
+    STATE.with(|s| s.borrow_mut().root_origin = (x, y));
 }
 
 /// Wire the backend. Called once per boot by
@@ -570,6 +589,20 @@ mod tests {
     }
     fn up(b: MouseButton) -> AppPointerEvent {
         AppPointerEvent { button: Some(b), ..AppPointerEvent::new(PointerPhase::Up, 10.0, 20.0) }
+    }
+
+    /// A web app mounted off the page origin reports pointer positions
+    /// relative to its mount element while handle rects are viewport
+    /// relative; without the origin a hit test of one against the other
+    /// misses by the mount's offset.
+    #[test]
+    fn root_origin_defaults_to_zero_and_follows_the_backend() {
+        let _host = wire();
+        assert_eq!(root_origin(), (0.0, 0.0));
+        set_root_origin(40.0, 120.0);
+        assert_eq!(root_origin(), (40.0, 120.0));
+        reset_for_tests();
+        assert_eq!(root_origin(), (0.0, 0.0));
     }
 
     #[test]

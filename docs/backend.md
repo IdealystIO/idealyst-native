@@ -131,6 +131,10 @@ method and marks the required ones):
   `create_presence_placeholder` is the exception: it defaults to
   `Host::create_anchor`, because a presence must be layout-transparent
   (see Presence / Portal below).
+  `create_pressable_on_down` has no fallback at all: its default panics,
+  because quietly firing on release would make one tree behave
+  differently on that backend. Implement it natively — fire `on_press`
+  at the primary pointer-down and swallow the rest of that press.
 - **Lowering defaults** — `create_styled_text` / `update_styled_text`
   concatenate runs into plain text; `update_button_label` lowers to
   `update_text` (hence `ButtonOps: TextOps`);

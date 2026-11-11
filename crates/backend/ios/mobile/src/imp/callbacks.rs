@@ -59,6 +59,9 @@ fn touch_may_tap(touch_began: f64, created: f64) -> bool {
     touch_began > created
 }
 
+/// `UIGestureRecognizerStateBegan`.
+const UI_GESTURE_RECOGNIZER_STATE_BEGAN: isize = 1;
+
 pub struct CallbackTargetIvars {
     callback: RefCell<Option<Rc<dyn Fn()>>>,
     /// `CACurrentMediaTime()` when this target (and so its control) was
@@ -89,6 +92,24 @@ declare_class!(
                 let ivars = self.ivars();
                 if let Some(cb) = ivars.callback.borrow().as_ref() {
                     cb();
+                }
+            })
+        }
+
+        /// Action of a press-down pressable's `UILongPressGestureRecognizer`
+        /// (`create_pressable_on_down`). A continuous recognizer sends its
+        /// action on every state change of one press — Began, then Changed
+        /// per move, then Ended / Cancelled — so the callback runs only on
+        /// `Began`: one press, one action, at the touch-down.
+        #[method(invokeOnBegan:)]
+        fn invoke_on_began(&self, recognizer: &objc2_ui_kit::UIGestureRecognizer) {
+            crate::imp::ffi_guard::guard_ffi("CallbackTarget::invokeOnBegan", || {
+                let state: isize = unsafe { msg_send![recognizer, state] };
+                if state == UI_GESTURE_RECOGNIZER_STATE_BEGAN {
+                    let cb = self.ivars().callback.borrow().clone();
+                    if let Some(cb) = cb {
+                        cb();
+                    }
                 }
             })
         }

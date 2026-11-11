@@ -158,6 +158,7 @@ pub fn pressable(on_press: impl Fn() + 'static) -> PressableBuilder {
         prim: PressablePrim {
             test_id: None,
             on_press: Rc::new(on_press),
+            activation: runtime_shared::PressActivation::Release,
             on_hover: None,
             on_focus: None,
             disabled: None,
@@ -206,6 +207,13 @@ impl PressableBuilder {
 
     pub fn preserves_focus(mut self, preserve: bool) -> Self {
         self.prim.preserves_focus = preserve;
+        self
+    }
+
+    /// Which moment of a pointer press fires the action — the release
+    /// (default) or the down. See [`runtime_shared::PressActivation`].
+    pub fn activation(mut self, activation: runtime_shared::PressActivation) -> Self {
+        self.prim.activation = activation;
         self
     }
 

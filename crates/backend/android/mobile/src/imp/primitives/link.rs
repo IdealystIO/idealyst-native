@@ -15,8 +15,16 @@ use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;
 
 pub(crate) fn create(b: &AndroidBackend, on_activate: std::rc::Rc<dyn Fn()>) -> GlobalRef {
+    create_as(b, "android/widget/FrameLayout", on_activate)
+}
+
+/// [`create`] with the container built as `class`, a `FrameLayout` subclass
+/// taking `(Context)`. A press-down pressable passes
+/// `io/idealyst/runtime/RustPressDownLayout`, which runs the same click
+/// listener on the primary pointer's down instead of on the release.
+pub(crate) fn create_as(b: &AndroidBackend, class: &str, on_activate: std::rc::Rc<dyn Fn()>) -> GlobalRef {
     with_env(|env| {
-        let class = env.find_class("android/widget/FrameLayout").unwrap();
+        let class = env.find_class(class).unwrap();
         let local = env
             .new_object(
                 &class,

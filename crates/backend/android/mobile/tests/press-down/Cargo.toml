@@ -1,0 +1,34 @@
+[package]
+name = "press-down-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# On-device regression app for the Android press-down `pressable`
+# (`PressActivation::Down`, `RustPressDownLayout`), built and driven by
+# `run.sh` (an `idealyst build --android` APK on an emulator or device).
+# Which MotionEvent fires the action is Android view-dispatch behaviour that
+# no host test reaches. Its own workspace; `run.sh` builds a copy under
+# target/ so no lockfile or dist/ lands in the source tree.
+[workspace]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+idealyst = { path = "../../../../../idealyst" }
+runtime-core = { path = "../../../../../runtime/core" }
+runtime-vocabulary = { path = "../../../../../runtime/vocabulary" }
+runtime-scene = { path = "../../../../../runtime/scene" }
+runtime-shared = { path = "../../../../../runtime/shared" }
+jni = "0.21"
+ndk-context = "0.1"
+
+[package.metadata.idealyst.app]
+name      = "Press Down Probe"
+bundle_id = "ai.truday.idealyst.pressdown"
+version   = "0.0.1"
+targets   = ["android"]
+
+[package.metadata.idealyst.android]
+runtime_kotlin = ["kotlin/io/idealyst/pressdown/PressDownProbe.kt"]

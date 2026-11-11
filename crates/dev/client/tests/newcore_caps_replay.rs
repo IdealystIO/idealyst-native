@@ -33,6 +33,10 @@ enum Kind {
     /// `TextOps::create_selectable_text` (`CreateText { selectable: true }`).
     SelectableText(String),
     Button(String),
+    /// `PressableOps::create_pressable`.
+    Pressable,
+    /// `PressableOps::create_pressable_on_down` (`CreatePressable { on_down: true }`).
+    PressableOnDown,
     Anchor,
 }
 
@@ -127,6 +131,16 @@ impl caps::ButtonOps for CapsOnly {
     }
 }
 
+impl caps::PressableOps for CapsOnly {
+    fn create_pressable(&mut self, _on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> usize {
+        self.alloc(Kind::Pressable)
+    }
+
+    fn create_pressable_on_down(&mut self, _on_press: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> usize {
+        self.alloc(Kind::PressableOnDown)
+    }
+}
+
 impl caps::StyleOps for CapsOnly {
     fn apply_style(&mut self, node: &usize, _style: &Rc<StyleRules>) {
         self.store.borrow_mut().styled.push(*node);
@@ -143,7 +157,6 @@ impl caps::LifecycleOps for CapsOnly {
 // blocks are the whole opt-in.
 impl caps::AppEnvOps for CapsOnly {}
 impl caps::InputOps for CapsOnly {}
-impl caps::PressableOps for CapsOnly {}
 impl caps::ImageOps for CapsOnly {}
 impl caps::IconOps for CapsOnly {}
 impl caps::LinkOps for CapsOnly {}
@@ -241,4 +254,32 @@ fn a_create_text_without_the_selectable_field_reads_as_unselectable() {
     let json = r#"{"CreateText":{"id":1,"content":"old"}}"#;
     let cmd: Command = serde_json::from_str(json).expect("old CreateText deserializes");
     assert!(matches!(cmd, Command::CreateText { selectable: false, .. }), "{cmd:?}");
+}
+
+#[test]
+fn regression_a_press_down_pressable_replays_as_press_down() {
+    // A press-down pressable (a menu button) mounted over the
+    // runtime-server wire must reach `create_pressable_on_down` on the
+    // device, or its menu opens on release there and on press-down locally.
+    let backend = CapsOnly::default();
+    let store = backend.store.clone();
+    let mut client = WireBackend::new(backend, OutboundSender::new());
+    let a11y = WireAccessibilityProps::default;
+    client
+        .apply_batch(vec![
+            Command::CreatePressable { id: NodeId(1), on_click: wire::HandlerId(1), a11y: a11y(), on_down: true },
+            Command::CreatePressable { id: NodeId(2), on_click: wire::HandlerId(2), a11y: a11y(), on_down: false },
+        ])
+        .expect("replay");
+    let s = store.borrow();
+    assert_eq!(s.kinds[0], Kind::PressableOnDown);
+    assert_eq!(s.kinds[1], Kind::Pressable);
+}
+
+#[test]
+fn a_create_pressable_without_the_on_down_field_reads_as_release() {
+    // Recordings from before the field existed still deserialize.
+    let json = r#"{"CreatePressable":{"id":1,"on_click":1}}"#;
+    let cmd: Command = serde_json::from_str(json).expect("old CreatePressable deserializes");
+    assert!(matches!(cmd, Command::CreatePressable { on_down: false, .. }), "{cmd:?}");
 }

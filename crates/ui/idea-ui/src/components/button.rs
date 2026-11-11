@@ -43,7 +43,7 @@ use runtime_core::primitives::activity_indicator::{activity_indicator, ActivityI
 use runtime_core::{
     component, component_styles, icon, resolve_style, text, AlignItems, AlignSelf, Color, Cursor,
     Element, FlexDirection, FontWeight, IconData, IdealystSchema, IntoElement, JustifyContent, Length,
-    PressableHandle, Reactive, Ref, SlotRestyle, TextAlign, UserSelect, VariantSet,
+    PressActivation, PressableHandle, Reactive, Ref, SlotRestyle, TextAlign, UserSelect, VariantSet,
 };
 
 use idea_theme::extensible::{
@@ -268,8 +268,16 @@ pub struct ButtonProps {
     #[schema(constraint = "reactive: static String or Signal/rx!")]
     #[prop(example = "Save changes")]
     pub label: Reactive<String>,
-    /// Fires on press/click.
+    /// Fires on press/click — on release by default, or the moment the
+    /// pointer goes down with `activation = PressActivation::Down`.
     pub on_click: Rc<dyn Fn()>,
+    /// Which moment of a pointer press fires `on_click`. Default
+    /// `PressActivation::Release`, a normal click. `PressActivation::Down`
+    /// fires as the primary pointer goes down, which is how a button that
+    /// opens a `Menu` should behave: the menu is open before the button is
+    /// released. Keyboard and screen-reader activation fire once either way.
+    #[prop(static)]
+    pub activation: PressActivation,
     /// Semantic color palette (Primary, Neutral, Danger, …, or a registered
     /// app tone). Default Primary.
     pub tone: ToneRef,
@@ -341,6 +349,7 @@ impl Default for ButtonProps {
         Self {
             label: Reactive::Static(String::new()),
             on_click: Rc::new(|| {}),
+            activation: PressActivation::Release,
             tone: Reactive::Static(ToneRef::default()),
             variant: Reactive::Static(ButtonVariant::default()),
             size: Reactive::Static(ButtonSize::default()),
@@ -439,6 +448,7 @@ pub fn Button(props: &ButtonProps) -> Element {
         let values = values.clone();
         let styles = styles.clone();
         let test_id = props.test_id;
+        let activation = props.activation;
         let accessibility_label = props.accessibility_label.clone();
         move |loading: bool, has_lead: bool, has_trail: bool, disabled: bool, block: bool| {
             // A loading spinner occupies the leading slot, so it needs the same
@@ -532,6 +542,7 @@ pub fn Button(props: &ButtonProps) -> Element {
 
             let on_click_for_p = on_click.clone();
             let mut bound = runtime_core::pressable(children, move || (on_click_for_p)())
+                .activation(activation)
                 .with_style(make_style(row_layout, block, disabled).overridden(styles.root.as_ref()));
             if inert {
                 bound = bound.disabled(true);

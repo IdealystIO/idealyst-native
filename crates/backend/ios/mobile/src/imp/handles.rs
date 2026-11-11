@@ -89,7 +89,22 @@ pub(crate) static IOS_BUTTON_OPS: IosButtonOps = IosButtonOps;
 
 pub(crate) struct IosPressableOps;
 impl PressableOps for IosPressableOps {
-    fn click(&self, _node: &dyn Any) {}
+    /// Run the pressable's action once, in either `PressActivation` mode —
+    /// a single discrete press, like web's `HTMLElement.click()`.
+    fn click(&self, node: &dyn Any) {
+        let Some(ios_node) = node.downcast_ref::<IosNode>() else {
+            return;
+        };
+        let view = ios_node.as_view();
+        let is_touch_view: bool =
+            unsafe { msg_send![view, isKindOfClass: objc2::class!(IdealystTouchView)] };
+        if is_touch_view {
+            // SAFETY: dynamic class just confirmed `IdealystTouchView`.
+            let tv: &crate::imp::touch::IdealystTouchView =
+                unsafe { &*(view as *const UIView as *const crate::imp::touch::IdealystTouchView) };
+            tv.fire_activate();
+        }
+    }
     fn rect(&self, node: &dyn Any) -> ViewportRect {
         rect_of_node(node)
     }

@@ -2132,6 +2132,15 @@ impl runtime_shared::ViewOps for AndroidViewOps {
             .unwrap_or_default()
     }
 
+    /// The same viewport rect, or `None` while the view isn't laid out.
+    /// Hit-testing a moving point against a view (a drag-and-drop target,
+    /// a menu panel under a held press) reads this; the trait default's
+    /// `None` made every such test miss on Android.
+    fn absolute_frame(&self, node: &dyn std::any::Any) -> Option<runtime_shared::primitives::portal::ViewportRect> {
+        let rect = view_rect::view_viewport_rect(node.downcast_ref::<GlobalRef>()?);
+        (rect.width > 0.0 || rect.height > 0.0).then_some(rect)
+    }
+
     fn subscribe_layout(
         &self,
         node: &dyn std::any::Any,
@@ -2874,6 +2883,26 @@ impl AndroidBackend {
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> GlobalRef {
         let node = primitives::link::create(self, on_click);
+        self.note_zero_padding(&node);
+        a11y::apply_new(&node, a11y, None);
+        node
+    }
+
+    /// `PressActivation::Down` pressable: [`Self::create_pressable_impl`]
+    /// with the container built as `RustPressDownLayout`, a `FrameLayout`
+    /// whose `onTouchEvent` calls `performClick()` on a primary
+    /// `ACTION_DOWN` and consumes the rest of that gesture. The click
+    /// listener is the same `RustClickListener`, so keyboard, TalkBack's
+    /// ACTION_CLICK and `PressableOps::click` (`performClick`) activate it
+    /// once exactly as they do a release-mode pressable. An `onTouchEvent`
+    /// override and not an `OnTouchListener`: the style system's
+    /// `RustStateListener` takes the view's one touch-listener slot.
+    pub(crate) fn create_pressable_on_down_impl(
+        &mut self,
+        on_press: std::rc::Rc<dyn Fn()>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
+        let node = primitives::link::create_as(self, "io/idealyst/runtime/RustPressDownLayout", on_press);
         self.note_zero_padding(&node);
         a11y::apply_new(&node, a11y, None);
         node

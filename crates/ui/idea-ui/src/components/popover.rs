@@ -57,7 +57,8 @@ use runtime_core::primitives::overlay::{overlay, BackdropMode};
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{
     component, component_styles, stylesheet, ui, ChildList, Color, Element, FlexDirection, IdealystSchema,
-    IntoElement, Length, Position, Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized,
+    IntoElement, Length, Position, Reactive, Ref, StyleApplication, StyleRules, StyleSheet, Tokenized,
+    ViewHandle,
 };
 
 use crate::theme::IdeaThemeRef;
@@ -115,6 +116,24 @@ stylesheet! {
     PopoverWrapperSheet<()> {
         base(_t) {
             position: Position::Absolute,
+        }
+    }
+}
+
+/// The surface's animation layer: the view `pop_in` fades and scales.
+/// A separate layer from the surface because the surface's style is
+/// reactive (`min_width`), and the start-transparent rule must sit on a
+/// STATIC style — a reactive one re-applying would zero the alpha again
+/// while the popover is open (see `pop_in::pop_in_start_rules`).
+fn pop_in_layer_sheet() -> Rc<StyleSheet> {
+    PopoverPopInSheet::sheet()
+}
+
+stylesheet! {
+    PopoverPopInSheet<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            opacity: 0.0,
         }
     }
 }
@@ -244,9 +263,16 @@ pub fn Popover(props: PopoverProps) -> Element {
     };
 
     let min_width = props.min_width.clone();
+    // The popover is held mounted while it fades out (`pop_in`). Its
+    // content is whatever the caller put there, still live for that
+    // moment; taking it out of hit testing keeps a second click from
+    // landing on a control that is on its way out.
+    let leaving = runtime_core::signal(false);
+    runtime_core::hold_on_exit(0, move || leaving.set(true));
     let surface_style = PopoverStyles::surface()
         .inline_with(move || StyleRules {
             min_width: Some(Tokenized::Literal(Length::Px(min_width.get()))),
+            pointer_events: leaving.get().then_some(runtime_core::PointerEvents::None),
             ..Default::default()
         })
         .overridden(props.styles.surface.as_ref());
@@ -255,8 +281,15 @@ pub fn Popover(props: PopoverProps) -> Element {
     for c in props.children {
         ChildList::append_to(c, &mut content);
     }
+    // The surface arrives with a quick fade and slight scale (`pop_in`),
+    // carried by a static layer around it.
+    let pop_layer: Ref<ViewHandle> = Ref::new();
+    crate::components::pop_in::pop_in(pop_layer);
+    let layer_style = || StyleApplication::new(pop_in_layer_sheet());
     let surface = ui! {
-        view(style = surface_style) { content }
+        view(style = layer_style, bind = pop_layer) {
+            view(style = surface_style) { content }
+        }
     };
 
     // Outside-click dismissal: a FULLSCREEN, transparent dismiss catcher
@@ -448,13 +481,29 @@ mod tests {
             _ => panic!("the second child is the anchored Portal"),
         };
         // The anchored overlay hosts its content in a wrapper view (styled
-        // only `pointer-events: auto`); the surface is the first sheet-styled
-        // view under it.
+        // only `pointer-events: auto`). Under it: the pop-in layer (the
+        // first sheet-styled view, starting transparent), then the surface.
         let mut node = classify(surface);
+        let mut layer_seen = false;
         let app = loop {
             match node {
-                P::View { style: Some(TStyle::AppFn(f)), .. } => break f(),
-                P::View { style: Some(TStyle::App(a)), .. } => break a,
+                P::View { style: Some(style @ (TStyle::AppFn(_) | TStyle::App(_))), mut children, .. } => {
+                    let app = match style {
+                        TStyle::AppFn(f) => f(),
+                        TStyle::App(a) => a,
+                        _ => unreachable!(),
+                    };
+                    if layer_seen {
+                        break app;
+                    }
+                    assert_eq!(
+                        runtime_core::resolve_style(&app).opacity.as_ref().map(|o| o.resolve()),
+                        Some(0.0),
+                        "the pop-in layer starts transparent so the first frame doesn't flash"
+                    );
+                    layer_seen = true;
+                    node = classify(children.remove(0));
+                }
                 P::View { style: None | Some(TStyle::Rules(_)), mut children, .. } if children.len() == 1 => {
                     node = classify(children.remove(0));
                 }

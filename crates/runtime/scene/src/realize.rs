@@ -1197,6 +1197,11 @@ fn drive_dyn_anchored<H: Host>(
     // Captured NOW, while the mount's ambient state is intact; every
     // later run realizes inside it (see `region_context`).
     let region = crate::region_context::capture();
+    // Exit holds (see `crate::exit`): what the mounted subtree asked for,
+    // and the swapped-out subtrees still attached while they animate away.
+    // Owned by the driver effect, so destroying the region drops both.
+    let mut exits: Vec<crate::exit::ExitRequest> = Vec::new();
+    let mut held = crate::exit::Held::default();
 
     // The driver effect registers into the ambient collector (the
     // enclosing Realized's Owned) — dropping that Realized retires the
@@ -1236,23 +1241,54 @@ fn drive_dyn_anchored<H: Host>(
                         nodes: old_nodes,
                     }));
                 }
-                None => {
-                    drop(old);
-                    release_discarded(&backend, &old_nodes);
-                    backend.borrow_mut().clear_children(&anchor_e);
-                }
+                None => match crate::exit::begin(std::mem::take(&mut exits)) {
+                    // The subtree asked to be held: its exit has started.
+                    // Nodes stay attached and the scope alive for the hold;
+                    // then the same order the spliced teardown uses
+                    // (detach, drop the scope, release).
+                    Some((ms, defer)) => {
+                        let (b, anchor) = (backend.clone(), anchor_e.clone());
+                        held.hold(ms, &defer, move || {
+                            {
+                                let mut host = b.borrow_mut();
+                                for node in &old_nodes {
+                                    host.remove_child(&anchor, node);
+                                }
+                            }
+                            drop(old);
+                            release_discarded(&b, &old_nodes);
+                        });
+                    }
+                    None => {
+                        drop(old);
+                        release_discarded(&backend, &old_nodes);
+                        let mut host = backend.borrow_mut();
+                        if held.any() {
+                            // An earlier subtree is still held under this
+                            // anchor: clearing it would cut its exit short.
+                            for node in &old_nodes {
+                                host.remove_child(&anchor_e, node);
+                            }
+                        } else {
+                            host.clear_children(&anchor_e);
+                        }
+                    }
+                },
             }
         }
-        let realized = region.enter(|| match &kind {
-            // Plain: the closure runs TRACKED inside the fresh scope —
-            // its reads are the rebuild deps.
-            DynKind::Plain(f) => build_into_anchor(&backend, &registry, &anchor_e, || f(), true),
-            // Guarded: the build runs UNTRACKED inside the fresh scope —
-            // only the select's reads are deps.
-            DynKind::Guarded { build, .. } => {
-                build_into_anchor(&backend, &registry, &anchor_e, || build(), false)
-            }
+        let (realized, requested) = crate::exit::collecting(|| {
+            region.enter(|| match &kind {
+                // Plain: the closure runs TRACKED inside the fresh scope —
+                // its reads are the rebuild deps.
+                DynKind::Plain(f) => build_into_anchor(&backend, &registry, &anchor_e, || f(), true),
+                // Guarded: the build runs UNTRACKED inside the fresh scope —
+                // only the select's reads are deps.
+                DynKind::Guarded { build, .. } => {
+                    build_into_anchor(&backend, &registry, &anchor_e, || build(), false)
+                }
+            })
         });
+        exits = requested;
         slot_e.borrow_mut().realized = Some(realized);
     });
 
@@ -1320,6 +1356,16 @@ fn drive_dyn_spliced<H: Host>(
     let DynSpec { kind, mut retire } = spec;
     // See `drive_dyn_anchored`.
     let region = crate::region_context::capture();
+    // Exit holds, as in `drive_dyn_anchored`. Held nodes stay in the parent
+    // AFTER the region's current ones (new content splices in at `base`,
+    // ahead of them), so the count this region publishes is
+    // `current + held` until each held subtree detaches — a later region
+    // in the same parent then still resolves its own start exactly.
+    let mut exits: Vec<crate::exit::ExitRequest> = Vec::new();
+    let mut held = crate::exit::Held::default();
+    let count = Rc::new(count);
+    let current_len = Rc::new(std::cell::Cell::new(0usize));
+    let held_len = Rc::new(std::cell::Cell::new(0usize));
 
     let _driver = effect(move || {
         if let DynKind::Guarded { changed, .. } = &kind {
@@ -1350,36 +1396,65 @@ fn drive_dyn_spliced<H: Host>(
                         nodes: old_nodes,
                     }));
                 }
-                None => {
-                    {
-                        let mut b = backend.borrow_mut();
-                        for node in &old_nodes {
-                            b.remove_child(&parent, node);
-                        }
+                None => match crate::exit::begin(std::mem::take(&mut exits)) {
+                    // The subtree asked to be held: its exit has started.
+                    Some((ms, defer)) => {
+                        held_len.set(held_len.get() + old_nodes.len());
+                        current_len.set(0);
+                        count.set(held_len.get());
+                        let (b, p) = (backend.clone(), parent.clone());
+                        let (count, current_len, held_len) =
+                            (count.clone(), current_len.clone(), held_len.clone());
+                        held.hold(ms, &defer, move || {
+                            {
+                                let mut host = b.borrow_mut();
+                                for node in &old_nodes {
+                                    host.remove_child(&p, node);
+                                }
+                            }
+                            // Publish before the scope drop runs arbitrary
+                            // cleanups, as the immediate path does.
+                            held_len.set(held_len.get() - old_nodes.len());
+                            count.set(current_len.get() + held_len.get());
+                            drop(old);
+                            release_discarded(&b, &old_nodes);
+                        });
                     }
-                    // The parent no longer holds them: publish before the
-                    // scope drop runs arbitrary cleanups.
-                    count.set(0);
-                    drop(old);
-                    release_discarded(&backend, &old_nodes);
-                }
+                    None => {
+                        {
+                            let mut b = backend.borrow_mut();
+                            for node in &old_nodes {
+                                b.remove_child(&parent, node);
+                            }
+                        }
+                        // The parent no longer holds them: publish before
+                        // the scope drop runs arbitrary cleanups.
+                        current_len.set(0);
+                        count.set(held_len.get());
+                        drop(old);
+                        release_discarded(&backend, &old_nodes);
+                    }
+                },
             }
         }
         // Build detached, then splice every top node at the region's
         // CURRENT start — resolved now, so an earlier sibling region that
         // grew or shrank since mount is accounted for.
-        let (nodes, realized) = region.enter(|| match &kind {
-            DynKind::Plain(f) => {
-                // Tracked producer — see build_realized's tracking split.
-                let realized =
-                    build_realized(&backend, &registry, || f(), true, |cx, element| {
-                        cx.realize_element_detached(element)
-                    });
-                let nodes = realized.collect_nodes();
-                (nodes, realized)
-            }
-            DynKind::Guarded { build, .. } => build_detached(&backend, &registry, || build()),
+        let ((nodes, realized), requested) = crate::exit::collecting(|| {
+            region.enter(|| match &kind {
+                DynKind::Plain(f) => {
+                    // Tracked producer — see build_realized's tracking split.
+                    let realized =
+                        build_realized(&backend, &registry, || f(), true, |cx, element| {
+                            cx.realize_element_detached(element)
+                        });
+                    let nodes = realized.collect_nodes();
+                    (nodes, realized)
+                }
+                DynKind::Guarded { build, .. } => build_detached(&backend, &registry, || build()),
+            })
         });
+        exits = requested;
         {
             let base_index = base.index();
             let mut b = backend.borrow_mut();
@@ -1388,7 +1463,8 @@ fn drive_dyn_spliced<H: Host>(
                 b.insert_at(&mut p, node.clone(), base_index + i);
             }
         }
-        count.set(nodes.len());
+        current_len.set(nodes.len());
+        count.set(nodes.len() + held_len.get());
         let mut s = slot_e.borrow_mut();
         s.nodes = nodes;
         s.realized = Some(realized);

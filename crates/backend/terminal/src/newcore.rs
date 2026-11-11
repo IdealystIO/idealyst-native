@@ -620,9 +620,29 @@ impl caps::InputOps for TerminalBackend {}
 
 impl caps::PressableOps for TerminalBackend {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
-        // Dispatch-site glue: the wrapped closure is what
-        // `dispatch_click` hands back in `ClickOutcome::HandlerFired`,
-        // so the host's plain `h()` call gets the flush for free.
+        self.alloc_pressable(on_click)
+    }
+
+    /// The same node as [`create_pressable`](caps::PressableOps::create_pressable):
+    /// the terminal's activation is already the down. The host
+    /// (`host-terminal`'s `dispatch_terminal_mouse`) calls
+    /// [`TerminalBackend::dispatch_click`] on a LEFT button `Down`, which
+    /// fires the deepest hit pressable once and nothing above it; a `Up`,
+    /// a drag and every non-left button never reach `dispatch_click`. So
+    /// a down-mode pressable fires at the primary down, the rest of the
+    /// press fires nothing, and a secondary press fires nothing — the
+    /// `create_pressable_on_down` contract — with no per-node flag.
+    fn create_pressable_on_down(&mut self, on_press: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
+        self.alloc_pressable(on_press)
+    }
+}
+
+impl TerminalBackend {
+    /// Allocate a `Pressable` node carrying `on_click`. Dispatch-site
+    /// glue: the wrapped closure is what `dispatch_click` hands back in
+    /// `ClickOutcome::HandlerFired`, so the host's plain `h()` call gets
+    /// the flush for free.
+    fn alloc_pressable(&mut self, on_click: Rc<dyn Fn()>) -> TermNode {
         let on_click = flushing0(on_click);
         let node = self.alloc_node(NodeKind::Pressable, String::new());
         if let Some(data) = self.nodes.get_mut(&node.id) {

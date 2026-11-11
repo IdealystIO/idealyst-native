@@ -8,7 +8,12 @@
 //! let trigger: Ref<PressableHandle> = Ref::new();
 //! let open = signal(false);
 //! ui! {
-//!     Button(label = "Actions", on_click = move || open.set(true), bind_to = Some(trigger))
+//!     Button(
+//!         label = "Actions",
+//!         activation = PressActivation::Down,
+//!         on_click = move || open.set(true),
+//!         bind_to = Some(trigger),
+//!     )
 //!     if open.get() {
 //!         Menu(target = AnchorTarget::from(trigger), on_dismiss = move || open.set(false)) {
 //!             MenuLabel(text = "Edit")
@@ -21,6 +26,22 @@
 //!     }
 //! }
 //! ```
+//!
+//! `activation = PressActivation::Down` opens the menu as the pointer goes
+//! down on the trigger, the way desktop menu buttons behave; leave it at the
+//! default and the menu opens on release, like any click.
+//!
+//! # Press, drag, release
+//!
+//! With a press-down trigger the press that opened the menu can keep going:
+//! drag onto a row and release to pick it, in one motion. Rows light up
+//! under the dragged pointer, a `SubMenu` row opens its flyout, and flyout
+//! rows are picked the same way. Releasing anywhere else picks nothing and
+//! leaves the menu open. It needs no setup: every `MenuItem` and flyout
+//! row does it. A mouse, trackpad or pen works on every backend; a finger
+//! works where the backend's press-down pressable reports the held touch
+//! (`runtime_shared::held_press` — iOS and Android today). The mechanism is
+//! `components/press_drag.rs`.
 //!
 //! A `SubMenu` flyout mounts conditionally, so its contents are passed
 //! as reconstructable [`MenuEntry`] data (mirroring `Select`'s menu),
@@ -96,10 +117,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use runtime_core::primitives::overlay::BackdropMode;
-use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
+use runtime_core::primitives::portal::{AnchorTarget, AnchorableHandle, ElementAlign, ElementSide};
 use runtime_core::{
-    after_ms, component, signal, ui, ChildList, IdealystSchema, IntoElement, Element, Reactive,
-    Ref, ScheduledTask, Signal, ViewHandle, component_styles, AlignItems, Color, Cursor, FlexDirection,
+    after_ms, component, signal, ui, ChildList, IdealystSchema, IntoElement, Element, PressableHandle,
+    Reactive, Ref, ScheduledTask, Signal, ViewHandle, component_styles, AlignItems, Color, Cursor, FlexDirection,
     FontWeight, JustifyContent, Length, TextAlign, TextTransform,
 };
 
@@ -277,6 +298,8 @@ fn slotted_panel(
 ) -> Element {
     crate::components::menu_panel::slotted_menu_panel(children, header, footer, max_width)
 }
+
+use crate::components::press_drag::{follow_pointer_over, follow_press};
 
 // =============================================================================
 // Menu
@@ -471,12 +494,30 @@ pub fn MenuItem(props: MenuItemProps) -> Element {
         kids.push(tr);
     }
 
-    // A live `active` re-styles the row in place.
+    // Press-drag-release: a press that opened the menu (a
+    // `PressActivation::Down` trigger) can be dragged onto this row and
+    // released to pick it. See `press_drag`.
+    //
+    // The row is still mounted, and still pressable, while its menu fades
+    // out: `leaving` keeps a second click that lands on it then from
+    // selecting again.
+    let leaving = crate::components::pop_in::leaving();
+    let on_select: Rc<dyn Fn()> = Rc::new(move || {
+        if !leaving.get() {
+            (on_select)();
+        }
+    });
+    let row: Ref<PressableHandle> = Ref::new();
+    let lit = signal(false);
+    follow_press(move || row.with(|h| h.rect()), lit, on_select.clone());
+
+    // A live `active` re-styles the row in place; so does the drag.
     let style = MenuStyles::item()
-        .set(active.map(MenuActive::from))
+        .set(Reactive::Dynamic(Rc::new(move || MenuActive::from(active.get() || lit.get()))))
         .overridden(props.styles.item.as_ref());
     with_test_id!(runtime_core::pressable(kids, move || (on_select)()), props.test_id)
         .with_style(style)
+        .bind(row)
         .into_element()
 }
 
@@ -874,14 +915,29 @@ fn flyout_row(entry: MenuEntry, close: Rc<dyn Fn()>, styles: &MenuSlotStyles) ->
         kids.push(grow());
         kids.push(build());
     }
-    let row = runtime_core::pressable(kids, move || {
+    // Still pressable while the flyout fades out (see `MenuItem`).
+    let leaving = crate::components::pop_in::leaving();
+    let pick: Rc<dyn Fn()> = Rc::new(move || {
+        if leaving.get() {
+            return;
+        }
         (on_select)();
         if !keep_open {
             (close)();
         }
     });
+    // Press-drag-release reaches flyout rows too (see `press_drag`).
+    let handle: Ref<PressableHandle> = Ref::new();
+    let lit = signal(false);
+    follow_press(move || handle.with(|h| h.rect()), lit, pick.clone());
+    let row = runtime_core::pressable(kids, move || (pick)());
     with_test_id!(row, test_id)
-        .with_style(MenuStyles::item().overridden(styles.item.as_ref()))
+        .with_style(
+            MenuStyles::item()
+                .set(Reactive::Dynamic(Rc::new(move || MenuActive::from(lit.get()))))
+                .overridden(styles.item.as_ref()),
+        )
+        .bind(handle)
         .into_element()
 }
 
@@ -992,6 +1048,15 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
     let level_id = next_submenu_id();
     let latch = Rc::new(HoverLatch::new(header.is_some() || footer.is_some()));
 
+    // Where a followed pointer is (`press_drag`): over the trigger row, over
+    // the flyout. STATE, where hover gives only edges — and the hover-out
+    // timer needs state. A flyout that flips on a narrow screen overlaps
+    // the parent menu, so a pointer leaving the row is often already inside
+    // the flyout: the "entered" edge fired earlier and no later one comes
+    // to cancel the timer the "left the row" edge starts.
+    let dragged_over = signal(false);
+    let flyout_over = signal(false);
+
     // Pending hover-out close. Stored (not detached) so a re-hover of the
     // trigger OR the flyout cancels it — the "hover intent" bridge. Owned by
     // this component scope; drops (cancelling any pending close) on unmount.
@@ -1009,9 +1074,19 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
             }
             latch.reset();
             release_flyout_level(level_id);
+            // The flyout's rect is gone with it.
+            flyout_over.set(false);
             open.set(false);
         })
     };
+
+    // When the menu itself is switched off, the flyout goes with it: it
+    // closes at that moment, so it fades out alongside its parent and its
+    // rows turn inert (a flyout row's `leaving` flag is the flyout's own).
+    {
+        let close = close.clone();
+        runtime_core::hold_on_exit(0, move || (close)());
+    }
 
     // Hover-in: cancel any pending close, take the level (collapsing any
     // other open flyout), and open immediately.
@@ -1040,7 +1115,13 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
                 t.cancel();
             }
             let close = close.clone();
-            let task = after_ms(SUBMENU_HOVER_GRACE_MS, move || (close)());
+            let task = after_ms(SUBMENU_HOVER_GRACE_MS, move || {
+                // Still over the row or the flyout: this leave was one
+                // half of a move between them, not the pointer going away.
+                if !(dragged_over.get() || flyout_over.get()) {
+                    (close)();
+                }
+            });
             *ct.borrow_mut() = Some(task);
         }
     };
@@ -1066,6 +1147,43 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
         let open_now = open_now.clone();
         let schedule_close = schedule_close.clone();
         let press_open = open_now.clone();
+        // A press dragged onto the row opens the flyout as hovering does:
+        // while a press is held the row gets no hover of its own (the
+        // press belongs to the control that took it — see `press_drag`).
+        // Releasing on the row opens it too, as a press on it does.
+        let row_handle: Ref<PressableHandle> = Ref::new();
+        // A release ON the row ends the drag with the pointer still there:
+        // it must not read as the pointer leaving, or the flyout it just
+        // opened would collapse after the hover grace.
+        let released_here = Rc::new(std::cell::Cell::new(false));
+        {
+            let open_now = open_now.clone();
+            let released_here = released_here.clone();
+            follow_press(
+                move || row_handle.with(|h| h.rect()),
+                dragged_over,
+                Rc::new(move || {
+                    released_here.set(true);
+                    open_now();
+                }),
+            );
+        }
+        {
+            let open_now = open_now.clone();
+            let schedule_close = schedule_close.clone();
+            // Only a CHANGE is the pointer crossing the row's edge.
+            let was_over = std::cell::Cell::new(false);
+            runtime_core::effect!({
+                let over = dragged_over.get();
+                if was_over.replace(over) != over {
+                    if over {
+                        open_now();
+                    } else if !released_here.replace(false) {
+                        schedule_close();
+                    }
+                }
+            });
+        }
         let row = runtime_core::pressable(vec![label_node, grow(), chevron], move || press_open());
         let row = with_test_id!(row, props.test_id)
             .with_style(
@@ -1073,6 +1191,7 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
                     .set(Reactive::Dynamic(Rc::new(move || MenuActive::from(open.get()))))
                     .overridden(styles.item.as_ref()),
             )
+            .bind(row_handle)
             .into_element();
         runtime_core::view(vec![row])
             .on_hover(move |entering| {
@@ -1104,15 +1223,32 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
             let on_enter = open_now.clone();
             let on_leave = schedule_close.clone();
             let latch = latch.clone();
-            let panel_view = runtime_core::view(vec![panel])
-                .on_hover(move |entering| {
-                    if entering {
-                        latch.engage();
-                        on_enter();
-                    } else {
-                        on_leave();
+            // Entering / leaving the flyout, from either source: the
+            // view's own hover, or — while a press is held, when no view
+            // gets hover — the pointer followed app-wide (`press_drag`).
+            let crossing: Rc<dyn Fn(bool)> = Rc::new(move |entering| {
+                if entering {
+                    latch.engage();
+                    on_enter();
+                } else {
+                    on_leave();
+                }
+            });
+            let area: Ref<ViewHandle> = Ref::new();
+            follow_pointer_over(move || area.with(|h| h.absolute_frame()).flatten(), flyout_over);
+            {
+                let crossing = crossing.clone();
+                let was_over = std::cell::Cell::new(false);
+                runtime_core::effect!({
+                    let over = flyout_over.get();
+                    if was_over.replace(over) != over {
+                        crossing(over);
                     }
-                })
+                });
+            }
+            let panel_view = runtime_core::view(vec![panel])
+                .on_hover(move |entering| crossing(entering))
+                .bind(area)
                 .into_element();
             let dismiss = close.clone();
             runtime_core::anchored_overlay(AnchorTarget::from(trigger_ref), vec![panel_view])

@@ -14,6 +14,9 @@ crash:
   labeled "unsupported" box;
 - a container trait declared `: ViewOps` (`pressable`, `link`, presence
   placeholders, `DocumentOps::create_element`) defaults to `create_view`;
+- the exception is `PressableOps::create_pressable_on_down`, which panics:
+  falling back to release activation would give the same tree different
+  behaviour on that backend, so a backend without press-down fails at mount;
 - `ButtonOps::update_button_label` defaults to `TextOps::update_text`, and
   `BatchOps::execute_batch_with_attach` to `execute_batch` +
   `Host::insert_many`.
@@ -52,11 +55,12 @@ Raw input channels installed on already-created nodes: touch, wheel, hover, OS f
 
 `install_touch_handler`, `claim_touch`, `install_wheel_handler`, `install_hover_handler`, `mark_preserves_focus`, `install_file_drop_handler`
 
-## `caps::PressableOps` (2) — `: ViewOps`
+## `caps::PressableOps` (3) — `: ViewOps`
 
-The `pressable` primitive — a tappable container.
+The `pressable` primitive — a tappable container. `create_pressable_on_down`
+mounts one that fires as the pointer goes down (`PressActivation::Down`).
 
-`create_pressable`, `make_pressable_handle`
+`create_pressable`, `create_pressable_on_down`, `make_pressable_handle`
 
 ## `caps::TextOps` (12) — `: Host`
 

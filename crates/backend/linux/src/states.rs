@@ -82,6 +82,17 @@ impl StateControllers {
     }
 }
 
+/// A pressable's activation gesture on `widget`, if it is one
+/// (`LinuxBackend::pressable_with` names it).
+fn press_gesture(widget: &gtk4::Widget) -> Option<gtk4::GestureClick> {
+    widget
+        .observe_controllers()
+        .iter::<gtk4::EventController>()
+        .filter_map(Result::ok)
+        .find(|c| c.name().as_deref() == Some(crate::PRESS_GESTURE_NAME))
+        .and_then(|c| c.downcast::<gtk4::GestureClick>().ok())
+}
+
 /// Wire `setter` to `widget`'s pointer / focus events. The returned
 /// handle MUST be kept and handed to [`StateControllers::detach`] when
 /// the node is torn down — see the type's docs for the abort this
@@ -115,6 +126,15 @@ pub(crate) fn attach(
     // press feedback, and `attach_states` stays independent of which
     // primitive built the node.
     let click = gtk4::GestureClick::new();
+    // Grouped with a pressable's activation gesture, so the two share the
+    // sequence's state. A press-down pressable CLAIMS the sequence at the
+    // press; GTK then DENIES it for every other ungrouped gesture on the
+    // widget without emitting `cancel` and stops feeding it events, so
+    // this gesture never saw the release and the node stayed pressed.
+    // In a group the claim covers this gesture too and it gets the release.
+    if let Some(activation) = press_gesture(widget) {
+        click.group_with(&activation);
+    }
     {
         let s = setter.clone();
         click.connect_pressed(move |_, _, _, _| s(StateBits::PRESSED, true));

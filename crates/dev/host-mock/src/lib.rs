@@ -442,7 +442,10 @@ impl runtime_shared::ViewOps for RecordingViewOps {
     }
     fn rect(&self, node: &dyn Any) -> ViewportRect {
         handle_rec(node, "rect".into());
-        ViewportRect::default()
+        placed_rect(node).unwrap_or_default()
+    }
+    fn absolute_frame(&self, node: &dyn Any) -> Option<ViewportRect> {
+        placed_rect(node)
     }
     fn subscribe_layout(&self, node: &dyn Any, _callback: Box<dyn Fn(f32, f32)>) -> runtime_shared::handles::LayoutSubscription {
         handle_rec(node, "subscribe_layout".into());
@@ -479,6 +482,18 @@ pub fn take_handle_log() -> Vec<String> {
     HANDLE_LOG.with(|l| std::mem::take(&mut *l.borrow_mut()))
 }
 
+thread_local! {
+    /// Rects a test placed nodes at, read back by the handle ops' `rect` /
+    /// `absolute_frame` (handle ops are `&'static`, so this can't live in
+    /// the harness). Set with [`Harness::place`]; cleared per harness.
+    static HANDLE_RECTS: RefCell<BTreeMap<Node, ViewportRect>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+fn placed_rect(node: &dyn Any) -> Option<ViewportRect> {
+    let n = node.downcast_ref::<Node>().copied()?;
+    HANDLE_RECTS.with(|r| r.borrow().get(&n).copied())
+}
+
 fn handle_rec(node: &dyn Any, what: String) {
     let n = node.downcast_ref::<Node>().copied().unwrap_or(Node::MAX);
     HANDLE_LOG.with(|l| l.borrow_mut().push(format!("{what} n{n}")));
@@ -498,7 +513,7 @@ impl runtime_shared::PressableOps for RecordingHandleOps {
     }
     fn rect(&self, node: &dyn Any) -> ViewportRect {
         handle_rec(node, "rect".into());
-        ViewportRect::default()
+        placed_rect(node).unwrap_or_default()
     }
 }
 
@@ -871,6 +886,18 @@ impl caps::PressableOps for HostMock {
         let node = self.mint("pressable".into());
         self.s.a11y.borrow_mut().insert(node, (a11y.clone(), None));
         self.s.press_by_node.borrow_mut().insert(node, on_click);
+        node
+    }
+
+    /// Same as `create_pressable`, minted under a distinct kind so a test
+    /// can tell which activation mode the mount handler asked for. The
+    /// mock has no pointer stream; its `click` fires the press once,
+    /// which is the contract for a discrete activation in either mode.
+    fn create_pressable_on_down(&mut self, on_press: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Node {
+        self.s.press_handlers.borrow_mut().push(on_press.clone());
+        let node = self.mint("pressable_on_down".into());
+        self.s.a11y.borrow_mut().insert(node, (a11y.clone(), None));
+        self.s.press_by_node.borrow_mut().insert(node, on_press);
         node
     }
 
@@ -1917,6 +1944,9 @@ impl Harness {
     /// SDK boot-registration seam — pass e.g. `codeblock::register`).
     pub fn with_registry(extra: impl FnOnce(&mut Registry<HostMock>)) -> Harness {
         let shared: Rc<Shared> = Rc::new(Shared::default());
+        // Node ids restart with every harness; a rect placed by an earlier
+        // one on this thread must not land on this one's nodes.
+        HANDLE_RECTS.with(|r| r.borrow_mut().clear());
         let backend = Rc::new(RefCell::new(HostMock::new(shared.clone())));
         let mut registry = Registry::new();
         register_builtins(&mut registry);
@@ -2144,6 +2174,14 @@ impl Harness {
             on_scroll: v.on_scroll.clone(),
             item_changed: v.item_changed.clone(),
         }
+    }
+
+    /// Put `node` at `rect` on screen: what a `ViewHandle` /
+    /// `PressableHandle` bound to it reports from `rect()` and
+    /// `absolute_frame()`. An unplaced node reports the zero rect / `None`
+    /// (an unmounted handle).
+    pub fn place(&self, node: Node, rect: ViewportRect) {
+        HANDLE_RECTS.with(|r| r.borrow_mut().insert(node, rect));
     }
 
     // --- node-tree snapshot helpers ---

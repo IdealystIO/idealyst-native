@@ -92,7 +92,9 @@ pub mod wasm;
 /// - 11: a [`KeyboardKind`](runtime_shared::primitives::text_input::KeyboardKind)
 ///   can be `SignedDecimal`.
 /// - 12: [`Node::Text`] carries `selectable` (`text(selectable = true)`).
-pub const CODEC_VERSION: u32 = 12;
+/// - 13: [`Node::Pressable`] carries `activation` (a
+///   [`runtime_shared::PressActivation`]).
+pub const CODEC_VERSION: u32 = 13;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.
@@ -150,6 +152,8 @@ pub enum Node {
     Pressable {
         common: Common,
         on_press: Cb,
+        /// Release or press-down activation (CODEC_VERSION 13).
+        activation: runtime_shared::PressActivation,
         /// Takes a `bool` (CODEC_VERSION 6).
         on_hover: Option<Cb>,
         /// Takes a `bool` (CODEC_VERSION 8).

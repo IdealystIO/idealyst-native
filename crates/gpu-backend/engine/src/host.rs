@@ -36,7 +36,8 @@ use glyphon::FontSystem;
 use runtime_layout::LayoutNode;
 #[allow(unused_imports)]
 use runtime_shared::{
-    ColorScheme, Easing, StateBits, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint,
+    ColorScheme, Easing, PressActivation, StateBits, TouchEvent, TouchHandler, TouchId, TouchPhase,
+    TouchPoint,
 };
 
 use crate::backend_impl::WgpuBackend;
@@ -292,6 +293,11 @@ enum ActivePress {
     /// Slider: press fires the initial value, every move updates,
     /// release just ends the drag.
     SliderDrag { node: WgpuNode },
+    /// A `PressActivation::Down` pressable that already fired at the
+    /// down. It owns the rest of the press: moves neither track `over`
+    /// nor upgrade to a pan, and the release only clears PRESSED — one
+    /// press is one action.
+    HeldDown { node: WgpuNode },
 }
 
 enum ReleaseAction {
@@ -876,6 +882,16 @@ impl Host {
     /// paths — touch-claimed interactions own the pointer until
     /// release.
     fn dispatch_touch_began(&mut self, ev: &PointerEvent) -> bool {
+        self.dispatch_touch_began_within(ev, None)
+    }
+
+    /// [`Self::dispatch_touch_began`] with the responder chain cut to
+    /// `scope`'s subtree (`scope` included) when `scope` is `Some`:
+    /// handlers on its ancestors never see the `Began`. Used for a
+    /// primary press on a `PressActivation::Down` pressable, which owns
+    /// the press — handlers inside it still get first refusal (deepest
+    /// responder wins, as on every backend), the ones above it don't.
+    fn dispatch_touch_began_within(&mut self, ev: &PointerEvent, scope: Option<&WgpuNode>) -> bool {
         let touch_id = TouchId(ev.id.0);
         let mut path: Vec<TouchPathEntry> = Vec::new();
         {
@@ -884,6 +900,9 @@ impl Host {
                 return false;
             };
             collect_touch_path(&backend, &root, 0.0, 0.0, ev.position, &mut path);
+        }
+        if let Some(scope) = scope {
+            path.retain(|entry| subtree_contains(scope, &entry.node));
         }
         if path.is_empty() {
             return false;
@@ -917,6 +936,22 @@ impl Host {
             }
         }
         false
+    }
+
+    /// The enabled `PressActivation::Down` pressable a primary press at
+    /// `position` would act on, if any — the same `hit_test_node` (and
+    /// so the same inflated touch target) `pointer_down`'s widget-action
+    /// step resolves, so the two always agree on the node.
+    fn down_pressable_at(&self, position: (f32, f32)) -> Option<WgpuNode> {
+        let backend = self.backend.borrow();
+        let root = backend.root()?;
+        let (node, ..) = hit_test_node(&backend, &root, 0.0, 0.0, position)?;
+        let is_down = {
+            let n = node.borrow();
+            !n.disabled
+                && matches!(n.kind, NodeKind::Pressable { activation: PressActivation::Down, .. })
+        };
+        is_down.then_some(node)
     }
 
     /// A non-primary press (right / middle / extra button). Delivered to
@@ -1037,6 +1072,10 @@ impl Host {
             return;
         };
         match press {
+            ActivePress::HeldDown { node } => {
+                // The press already fired; a move changes nothing.
+                self.active_press = Some(ActivePress::HeldDown { node });
+            }
             ActivePress::SliderDrag { node } => {
                 // A slider that went `disabled` mid-drag ends the drag
                 // instead of tracking on — what a native slider does when
@@ -1139,6 +1178,9 @@ impl Host {
     /// - Pressable / Button → capture; fire on release-inside
     ///   (drag past `PAN_THRESHOLD` upgrades to scroll-pan if a
     ///   scrollview is under the press).
+    /// - Down-mode Pressable → fire now; hold the press so the
+    ///   move / release fire nothing, and keep `on_touch` handlers
+    ///   above it from seeing the press.
     /// - Toggle           → capture; flip on release-inside.
     /// - Slider           → capture; emit initial value, start drag.
     /// - TextInput        → focus immediately (iOS keyboard model).
@@ -1170,7 +1212,14 @@ impl Host {
         // this pointer's lifecycle. Once the future Rust tap /
         // long-press recognizers replace Pressable's native path,
         // this short-circuit becomes the only branch.
-        if self.dispatch_touch_began(&ev) {
+        // A primary press whose interactive hit is a down-mode pressable
+        // belongs to that pressable: it fires below, at the widget-action
+        // step, and no `on_touch` handler above it may take the press
+        // (the `create_pressable_on_down` contract). Without the scope an
+        // ancestor's consuming `Began` would run first and the pressable
+        // would never fire.
+        let down_owner = self.down_pressable_at(ev.position);
+        if self.dispatch_touch_began_within(&ev, down_owner.as_ref()) {
             return;
         }
 
@@ -1310,6 +1359,15 @@ impl Host {
 
         let action = pick_action(&node);
         match action {
+            HitAction::FireOnDown(cb) => {
+                // Fire at the down, then hold the press so the move /
+                // release path fires nothing more. PRESSED stays on
+                // while held, for the same visual feedback as a
+                // release-mode press.
+                set_state(&self.backend, &node, StateBits::PRESSED, true);
+                self.active_press = Some(ActivePress::HeldDown { node: node.clone() });
+                cb();
+            }
             HitAction::Click(cb) => {
                 set_state(&self.backend, &node, StateBits::PRESSED, true);
                 self.active_press = Some(ActivePress::Click {
@@ -1386,6 +1444,13 @@ impl Host {
         // the press is finalized.
         let mut is_tap_outside = false;
         match press {
+            ActivePress::HeldDown { node } => {
+                // Fired at the down; the release only ends the press.
+                // Still a confirmed tap on a non-input widget, so it
+                // dismisses the keyboard like a release-mode click.
+                set_state(&self.backend, &node, StateBits::PRESSED, false);
+                is_tap_outside = true;
+            }
             ActivePress::SliderDrag { .. } => {
                 // Slider drag has no fire-on-release semantics; the
                 // last `pointer_move` already pushed the final
@@ -1593,7 +1658,7 @@ impl Host {
     /// firing the release action.
     pub fn pointer_cancel(&mut self) {
         match self.active_press.take() {
-            Some(ActivePress::Click { node, .. }) => {
+            Some(ActivePress::Click { node, .. }) | Some(ActivePress::HeldDown { node }) => {
                 set_state(&self.backend, &node, StateBits::PRESSED, false);
             }
             _ => {}
@@ -2010,6 +2075,8 @@ fn fire_release(node: &WgpuNode, action: ReleaseAction) {
 
 enum HitAction {
     Click(Rc<dyn Fn()>),
+    /// A `PressActivation::Down` pressable: fire now, at the down.
+    FireOnDown(Rc<dyn Fn()>),
     ToggleFlip {
         on_change: Rc<dyn Fn(bool)>,
     },
@@ -2023,6 +2090,15 @@ enum HitAction {
     Nothing,
 }
 
+/// Whether `node` is `scope` or one of its descendants (full `children`
+/// walk — called once per primary press, at human cadence).
+fn subtree_contains(scope: &WgpuNode, node: &WgpuNode) -> bool {
+    if Rc::ptr_eq(scope, node) {
+        return true;
+    }
+    scope.borrow().children.iter().any(|c| subtree_contains(c, node))
+}
+
 fn pick_action(node: &WgpuNode) -> HitAction {
     // A disabled node is inert to the pointer: no press / PRESSED state,
     // no toggle flip, no slider jump, and — the regression this guards —
@@ -2034,7 +2110,12 @@ fn pick_action(node: &WgpuNode) -> HitAction {
         return HitAction::Nothing;
     }
     match &node.borrow().kind {
-        NodeKind::Pressable { on_click } => HitAction::Click(on_click.clone()),
+        NodeKind::Pressable { on_click, activation: PressActivation::Down } => {
+            HitAction::FireOnDown(on_click.clone())
+        }
+        NodeKind::Pressable { on_click, activation: PressActivation::Release } => {
+            HitAction::Click(on_click.clone())
+        }
         NodeKind::Button { on_click, .. } => HitAction::Click(on_click.clone()),
         NodeKind::Toggle { on_change, .. } => HitAction::ToggleFlip {
             on_change: on_change.clone(),
@@ -3038,6 +3119,174 @@ mod tests {
             PointerButton::Primary,
             "the button slot is restored for the next (primary) press",
         );
+    }
+
+    // -------------------------------------------------------------
+    // PressActivation::Down — `create_pressable_on_down`
+    // -------------------------------------------------------------
+
+    type PressLog = Rc<RefCell<Vec<&'static str>>>;
+
+    fn logging(log: &PressLog, name: &'static str) -> Rc<dyn Fn()> {
+        let l = log.clone();
+        Rc::new(move || l.borrow_mut().push(name))
+    }
+
+    fn logging_touch(log: &PressLog, name: &'static str) -> runtime_shared::TouchHandler {
+        let l = log.clone();
+        Rc::new(move |ev: &TouchEvent| {
+            if ev.phase == TouchPhase::Began {
+                l.borrow_mut().push(name);
+            }
+            TouchResponse::CONSUMED
+        })
+    }
+
+    fn press_at(button: PointerButton) -> PointerEvent {
+        PointerEvent { id: render_api::PointerId::MOUSE, button, position: (50.0, 50.0) }
+    }
+
+    /// Lay `root` out (every node forced to 100×100, so the whole tree
+    /// stacks under (50, 50)) in a host with a viewport.
+    fn press_host(build: impl FnOnce(&mut WgpuBackend) -> WgpuNode) -> (Host, WgpuNode) {
+        let mut host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let root = {
+            let backend = host.backend().clone();
+            let mut b = backend.borrow_mut();
+            let root = build(&mut b);
+            b.finish_impl(root.clone());
+            root
+        };
+        force_layout(host.backend(), &root, 100.0, 100.0);
+        host.set_viewport(400.0, 800.0);
+        (host, root)
+    }
+
+    fn down_pressable(b: &mut WgpuBackend, on_press: Rc<dyn Fn()>) -> WgpuNode {
+        b.create_pressable_with_activation_impl(on_press, PressActivation::Down, &Default::default())
+    }
+
+    /// A primary press fires a down-mode pressable once, AT the down;
+    /// the moves and the release of that press fire nothing more, and
+    /// the press is held (not a release-mode `Click`) until it ends.
+    #[test]
+    fn down_pressable_fires_once_at_the_down() {
+        let log: PressLog = Rc::default();
+        let (mut host, _root) = press_host(|b| down_pressable(b, logging(&log, "down")));
+
+        host.pointer_down(press_at(PointerButton::Primary));
+        assert_eq!(log.borrow().as_slice(), &["down"], "fired at the down, before any release");
+        assert!(matches!(host.active_press, Some(ActivePress::HeldDown { .. })));
+
+        host.pointer_move(PointerEvent { position: (60.0, 55.0), ..press_at(PointerButton::Primary) });
+        // Released outside the node: still nothing (the press already
+        // fired; there is no drag-off-cancel to undo it).
+        host.pointer_up(PointerEvent { position: (300.0, 300.0), ..press_at(PointerButton::Primary) });
+        assert_eq!(log.borrow().as_slice(), &["down"], "the rest of the press fires nothing");
+        assert!(host.active_press.is_none(), "the release ends the held press");
+
+        // A second press is a second action.
+        host.pointer_down(press_at(PointerButton::Primary));
+        host.pointer_up(press_at(PointerButton::Primary));
+        assert_eq!(log.borrow().as_slice(), &["down", "down"]);
+    }
+
+    /// A secondary press never activates a down-mode pressable.
+    #[test]
+    fn down_pressable_ignores_secondary_press() {
+        let log: PressLog = Rc::default();
+        let (mut host, _root) = press_host(|b| down_pressable(b, logging(&log, "down")));
+        host.pointer_down(press_at(PointerButton::Secondary));
+        host.pointer_up(press_at(PointerButton::Secondary));
+        assert!(log.borrow().is_empty(), "a right-click fires nothing");
+        assert!(host.active_press.is_none());
+    }
+
+    /// A disabled down-mode pressable is inert, like a release-mode one.
+    #[test]
+    fn disabled_down_pressable_does_not_fire() {
+        let log: PressLog = Rc::default();
+        let (mut host, root) = press_host(|b| down_pressable(b, logging(&log, "down")));
+        host.backend().borrow_mut().set_disabled_impl(&root, true);
+        host.pointer_down(press_at(PointerButton::Primary));
+        host.pointer_up(press_at(PointerButton::Primary));
+        assert!(log.borrow().is_empty());
+    }
+
+    /// Release mode is unchanged by the activation field: nothing at the
+    /// down, one fire at a release over the node, none after a drag-off.
+    #[test]
+    fn release_pressable_still_fires_on_release_inside() {
+        let log: PressLog = Rc::default();
+        let (mut host, _root) =
+            press_host(|b| b.create_pressable_impl(logging(&log, "release"), &Default::default()));
+        host.pointer_down(press_at(PointerButton::Primary));
+        assert!(log.borrow().is_empty(), "release mode does not fire at the down");
+        host.pointer_up(press_at(PointerButton::Primary));
+        assert_eq!(log.borrow().as_slice(), &["release"]);
+
+        host.pointer_down(press_at(PointerButton::Primary));
+        host.pointer_move(PointerEvent { position: (300.0, 300.0), ..press_at(PointerButton::Primary) });
+        host.pointer_up(PointerEvent { position: (300.0, 300.0), ..press_at(PointerButton::Primary) });
+        assert_eq!(log.borrow().as_slice(), &["release"], "a drag-off release is cancelled");
+    }
+
+    /// A down-mode pressable inside a release-mode pressable: the press
+    /// fires the inner one at the down, and the release (over both)
+    /// does not fire the outer one.
+    #[test]
+    fn down_pressable_in_release_pressable_does_not_fire_the_outer() {
+        let log: PressLog = Rc::default();
+        let (mut host, _root) = press_host(|b| {
+            let mut outer = b.create_pressable_impl(logging(&log, "outer"), &Default::default());
+            let inner = down_pressable(b, logging(&log, "inner"));
+            b.insert_impl(&mut outer, inner);
+            outer
+        });
+        host.pointer_down(press_at(PointerButton::Primary));
+        assert_eq!(log.borrow().as_slice(), &["inner"]);
+        host.pointer_up(press_at(PointerButton::Primary));
+        assert_eq!(log.borrow().as_slice(), &["inner"], "the outer pressable never fires");
+    }
+
+    /// Regression for the responder-chain order: `on_touch` runs before
+    /// the widget-action step, so an ancestor view whose handler consumes
+    /// `Began` took the press and the down-mode pressable inside it never
+    /// fired. The press belongs to the pressable; the ancestor sees none
+    /// of it. Fails without the scoped `dispatch_touch_began_within`.
+    #[test]
+    fn regression_wgpu_down_pressable_press_reached_ancestor_on_touch() {
+        let log: PressLog = Rc::default();
+        let (mut host, _root) = press_host(|b| {
+            let mut row = b.create_view_impl(&Default::default());
+            b.install_touch_handler_impl(&row, logging_touch(&log, "row on_touch"));
+            let inner = down_pressable(b, logging(&log, "inner"));
+            b.insert_impl(&mut row, inner);
+            row
+        });
+        host.pointer_down(press_at(PointerButton::Primary));
+        host.pointer_move(PointerEvent { position: (55.0, 50.0), ..press_at(PointerButton::Primary) });
+        host.pointer_up(press_at(PointerButton::Primary));
+        assert_eq!(log.borrow().as_slice(), &["inner"], "only the pressable fires");
+        assert!(host.active_touches.is_empty(), "the ancestor never captured the press");
+    }
+
+    /// The scope cuts only the handlers ABOVE the pressable: an
+    /// `on_touch` view inside it is the deeper responder and still gets
+    /// first refusal, as on every backend's bubble order.
+    #[test]
+    fn on_touch_inside_down_pressable_still_responds_first() {
+        let log: PressLog = Rc::default();
+        let (mut host, _root) = press_host(|b| {
+            let mut pressable = down_pressable(b, logging(&log, "pressable"));
+            let child = b.create_view_impl(&Default::default());
+            b.install_touch_handler_impl(&child, logging_touch(&log, "child on_touch"));
+            b.insert_impl(&mut pressable, child);
+            pressable
+        });
+        host.pointer_down(press_at(PointerButton::Primary));
+        host.pointer_up(press_at(PointerButton::Primary));
+        assert_eq!(log.borrow().as_slice(), &["child on_touch"]);
     }
 
     // -------------------------------------------------------------

@@ -62,6 +62,8 @@ All are `ReadSignal`s; effects and `ui!` re-run when they change.
 | --- | --- |
 | `on_pointer(f)` | Every mouse, trackpad or pen event anywhere in the app while the calling component lives: `Down`/`Up` (with `button`), `Move` (`x`, `y`, and `dx`, `dy`), `Wheel` (`wheel_dx`, `wheel_dy`). Finger touches are not included; they go to the view-level touch and gesture APIs. |
 | `pointer_state()` | A `PointerState` handle to poll from a frame loop: `is_down(button)`, `take_movement()`, `take_wheel()`, `position()`, `is_locked()`, `clear()`. Each handle has its own movement and wheel accumulators. |
+| `pointer_root_origin()` | Where the app's root sits in the viewport. Event `x`/`y` are relative to the app root; a handle's `rect()` / `absolute_frame()` is relative to the viewport. Add this to an event position before testing it against a rect. `(0, 0)` unless the app is a web app mounted in an offset element. |
+| `on_held_press(f)` | The travel of a finger press that a `PressActivation::Down` pressable took: `Moved`, then `Released` or `Cancelled`, in viewport pixels. The touch counterpart of `on_pointer` for that one case, since `on_pointer` carries no finger touches. Reported by iOS and Android today. |
 | `add_pointer_listener(f)` | `on_pointer` with an explicit lifetime: the listener lives until the returned guard drops. |
 | `request_pointer_lock()` / `exit_pointer_lock()` | Ask for or release the lock. Call `request_pointer_lock` from a click or key handler. The result arrives as `pointer_locked()`. |
 | `set_cursor_hidden(bool)` | Hide or show the cursor over the app. A locked pointer is always hidden. |

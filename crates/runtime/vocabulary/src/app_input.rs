@@ -27,6 +27,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use runtime_shared::app_state::{self as host_state, AppState, PointerKind};
+use runtime_shared::held_press::HeldPressEvent;
 use runtime_shared::pointer_input::{
     self as substrate, AppPointerEvent, MouseButton, PointerListener, PointerOutcome, PointerPhase,
 };
@@ -146,6 +147,32 @@ pub fn add_pointer_listener(
     handler: impl Fn(&AppPointerEvent) -> PointerOutcome + 'static,
 ) -> PointerListener {
     substrate::add_listener(handler)
+}
+
+/// Where the app's root sits in the viewport, in logical pixels. An
+/// [`AppPointerEvent`]'s `x`/`y` are relative to the app root; a handle's
+/// rect (`PressableHandle::rect`, `absolute_frame`) is relative to the
+/// viewport. Add this to the event position before testing it against a
+/// rect. `(0, 0)` unless the app is a web app mounted in an offset element.
+pub fn pointer_root_origin() -> (f32, f32) {
+    substrate::root_origin()
+}
+
+/// Follow a finger press that a `PressActivation::Down` pressable took,
+/// for as long as the calling scope lives: its moves, and where it lifts.
+/// Positions are in viewport pixels, the space handle rects are in. The
+/// touch counterpart of [`on_pointer`] for that one case; see
+/// `runtime_shared::held_press`. Outside a scope it registers nothing and
+/// logs a warning.
+pub fn on_held_press(handler: impl Fn(&HeldPressEvent) + 'static) {
+    let listener = runtime_shared::held_press::add_listener(handler);
+    if let Err(listener) = crate::scoped_scheduling::own_in_scope(listener) {
+        drop(listener);
+        runtime_shared::logging::log(
+            runtime_shared::logging::LogLevel::Warn,
+            "on_held_press called outside any component/effect scope; nothing registered.",
+        );
+    }
 }
 
 /// Ask for pointer lock. Call it from a click or key handler — browsers

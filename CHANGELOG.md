@@ -1258,6 +1258,42 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **A pressable can fire as the pointer goes down** (`runtime-shared`, `runtime-vocabulary`,
+  `runtime-core`, `idea-ui`, every backend minor; `wire` / `dev-server` / `dev-client` minor).
+  `pressable(..).activation(PressActivation::Down)` and `Button(activation =
+  PressActivation::Down)` fire the action at the primary pointer-down instead of the release,
+  so a button that opens a `Menu` has it open before the button is released. The rest of that
+  press fires nothing more; a secondary press fires nothing; keyboard, screen-reader and robot
+  activation fire once in either mode. The default stays `PressActivation::Release`.
+  - **Press, drag, release picks a menu row** (`idea-ui`). The press that opened a `Menu` can be
+    dragged onto a `MenuItem` (or through a `SubMenu` into a flyout row) and released there to
+    pick it. Nothing to opt into. Mouse, trackpad and pen on every backend; a finger on iOS and Android,
+    through the new `on_held_press` / `runtime_shared::held_press` channel a press-down
+    pressable reports its held touch to.
+  - **`Popover` and menu panels animate in and out** (`idea-ui`). `Popover`, `Menu`, `SubMenu`
+    flyouts and the `Select` dropdown arrive with a 120 ms fade and a slight scale up, and leave
+    with a 90 ms fade; reduced motion keeps the fades and drops the scale. Call sites do not
+    change: `if open.get() { Menu(…) { … } }` now animates the close too. A menu row is inert
+    while its menu fades out, and a popover's content is out of hit testing. `Popover` gains one
+    wrapper view around its surface to carry the animation.
+  - **`hold_on_exit(ms, start)`** (`runtime-scene`, `runtime-vocabulary`, `runtime-core`): a
+    component asks the nearest `if` / `match` / `when` / `switch` region to keep it mounted for
+    `ms` after it is switched out, and to call `start` at that moment — the hook for an exit
+    animation on conditionally shown content. The region's new content mounts at once; the old
+    subtree is detached and freed when the hold ends. Only that region's own swap is held.
+  - Android `ViewHandle::absolute_frame()` now reports the view's viewport rect; it returned
+    `None`, so any hit test of a moving point against a view (a drag-and-drop target) missed.
+  - `pointer_root_origin()` (`runtime-shared`, `runtime-vocabulary`, `runtime-core`) converts an
+    `on_pointer` position to the viewport space handle rects are measured in.
+  - On macOS and iOS a `PressableHandle::click()` and screen-reader activation now fire a
+    pressable's action in both modes; they were no-ops there.
+  - **Backend authors:** `PressableOps::create_pressable_on_down` is new and its default
+    panics. A third-party backend that mounts a press-down pressable without implementing it
+    fails at mount, where it used to have no way to see the mode at all.
+  - The remote element codec is `CODEC_VERSION` 13 (`Node::Pressable` carries `activation`), so
+    a bundle and an app must be rebuilt together. The runtime-server wire's `CreatePressable`
+    gains a defaulted `on_down` field; older recordings read as release.
+
 - **Docs previews can stand in for context and server data** (`runtime-macros-expand`,
   `runtime-vocabulary`, `server`, `mcp-catalog` minor). `#[component(preview_setup = …)]` names a `Fn()` the
   preview runs before each build of the component: `provide` the context it injects there, and

@@ -312,6 +312,86 @@ fn regression_cpu_disabled_button_still_fires() {
     assert!(inner_fired.get() && !card_fired.get());
 }
 
+/// `outer` (40×40) containing `inner` (20×20 at the top-left), each
+/// pressable built by its own constructor, both logging their fires.
+fn nested_pressables(
+    outer_on_down: bool,
+    inner_on_down: bool,
+) -> (CpuBackend, Rc<std::cell::RefCell<Vec<&'static str>>>, crate::CpuNode) {
+    let mut backend = CpuBackend::new(40, 40);
+    let a11y = AccessibilityProps::default();
+    let log: Rc<std::cell::RefCell<Vec<&'static str>>> = Rc::default();
+    let mut make = |b: &mut CpuBackend, on_down: bool, name: &'static str| {
+        let l = log.clone();
+        let f: Rc<dyn Fn()> = Rc::new(move || l.borrow_mut().push(name));
+        if on_down {
+            b.create_pressable_on_down(f, &a11y)
+        } else {
+            b.create_pressable(f, &a11y)
+        }
+    };
+    let mut outer = make(&mut backend, outer_on_down, "outer");
+    let inner = make(&mut backend, inner_on_down, "inner");
+    let sized = |px: f32| {
+        style_with(move |s| {
+            s.width = Some(Tokenized::Literal(Length::Px(px)));
+            s.height = Some(Tokenized::Literal(Length::Px(px)));
+        })
+    };
+    backend.apply_style(&outer, &sized(40.0));
+    backend.apply_style(&inner, &sized(20.0));
+    backend.insert(&mut outer, inner.clone());
+    backend.finish(outer);
+    let mut surface = MemSurface::new(40, 40);
+    backend.render(&mut surface);
+    (backend, log, inner)
+}
+
+fn click(backend: &mut CpuBackend, x: u32, y: u32) {
+    if let ClickOutcome::HandlerFired(h) = backend.dispatch_click(x, y) {
+        h();
+    }
+}
+
+/// `create_pressable_on_down` builds a pressable `dispatch_click` hits
+/// like any other: one discrete activation fires it exactly once (the
+/// trait default panics, so this also pins that the backend overrides
+/// it). It is a `Pressable` node, sharing `create_pressable`'s shape.
+#[test]
+fn down_pressable_fires_once_per_click() {
+    let (mut backend, log, _) = nested_pressables(true, true);
+    click(&mut backend, 5, 5);
+    assert_eq!(log.borrow().as_slice(), &["inner"]);
+    click(&mut backend, 5, 5);
+    assert_eq!(log.borrow().as_slice(), &["inner", "inner"], "one fire per activation");
+    click(&mut backend, 30, 30);
+    assert_eq!(log.borrow().as_slice(), &["inner", "inner", "outer"]);
+}
+
+/// A down-mode pressable nested in a release-mode one: the click fires
+/// only the inner (deepest) one, never the enclosing pressable — and the
+/// reverse nesting behaves the same.
+#[test]
+fn down_pressable_nested_in_release_pressable_does_not_fire_the_outer() {
+    let (mut backend, log, _) = nested_pressables(false, true);
+    click(&mut backend, 5, 5);
+    assert_eq!(log.borrow().as_slice(), &["inner"]);
+
+    let (mut backend, log, _) = nested_pressables(true, false);
+    click(&mut backend, 5, 5);
+    assert_eq!(log.borrow().as_slice(), &["inner"]);
+}
+
+/// A disabled down-mode pressable is an inert hit, like a release-mode
+/// one: nothing fires and the click does not fall through to the outer.
+#[test]
+fn disabled_down_pressable_is_inert() {
+    let (mut backend, log, inner) = nested_pressables(false, true);
+    StyleOps::set_disabled(&mut backend, &inner, true);
+    click(&mut backend, 5, 5);
+    assert!(log.borrow().is_empty());
+}
+
 /// A style with `opacity` flipping to one without it stayed at the old value,
 /// while every prop next to it was reassigned: `opacity` alone was only written
 /// when stated.

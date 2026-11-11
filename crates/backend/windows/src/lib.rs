@@ -634,9 +634,15 @@ pub(crate) struct ViewVisual {
     pub border_style: runtime_shared::BorderStyle,
     /// `[top-left, top-right, bottom-right, bottom-left]` corner radii.
     pub radii: [f32; 4],
-    /// Pressable click handler; fired by the host's hit-tested
-    /// `WM_LBUTTONUP` routing.
+    /// Pressable click handler. A release-mode pressable is fired by the
+    /// host's hit-tested `WM_LBUTTONUP` routing ([`scene::pressable_at`]);
+    /// a down-mode one by the primary press itself
+    /// (`view_input::mouse_down`), per [`Self::activation`].
     pub on_click: Option<Rc<dyn Fn()>>,
+    /// Which moment of a primary press fires `on_click`. A down-mode
+    /// pressable still owns the release that follows: the host's release
+    /// routing fires nothing for it (see `view_input::mouse_up`).
+    pub activation: runtime_shared::PressActivation,
     pub scroll: Option<ScrollInfo>,
 }
 
@@ -2830,6 +2836,23 @@ impl WindowsBackend {
         // on_click; the host's hit-tested WM_LBUTTONUP fires it.
         self.add_node(NodeKind::View(ViewVisual {
             on_click: Some(on_click),
+            ..Default::default()
+        }))
+    }
+
+    /// [`Self::create_pressable`] whose `on_press` fires as the primary
+    /// button goes DOWN on it (`PressActivation::Down`): the same painted
+    /// container, fired from `view_input::mouse_down` instead of the
+    /// host's `WM_LBUTTONUP` routing, which then fires nothing for the
+    /// press.
+    pub fn create_pressable_on_down(
+        &mut self,
+        on_press: Rc<dyn Fn()>,
+        _a11y: &AccessibilityProps,
+    ) -> WindowsNode {
+        self.add_node(NodeKind::View(ViewVisual {
+            on_click: Some(on_press),
+            activation: runtime_shared::PressActivation::Down,
             ..Default::default()
         }))
     }

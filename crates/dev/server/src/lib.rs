@@ -1398,6 +1398,26 @@ impl WireRecordingBackend {
         on_click: Rc<dyn Fn()>,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> NodeId {
+        self.emit_create_pressable(on_click, a11y, false)
+    }
+
+    /// A press-down pressable: the client mounts it through
+    /// `create_pressable_on_down`, so the press fires on the client's
+    /// native pointer-down. The handler crossing is the same as release.
+    pub fn create_pressable_on_down(
+        &mut self,
+        on_press: Rc<dyn Fn()>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> NodeId {
+        self.emit_create_pressable(on_press, a11y, true)
+    }
+
+    fn emit_create_pressable(
+        &mut self,
+        on_click: Rc<dyn Fn()>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+        on_down: bool,
+    ) -> NodeId {
         let mut state = self.inner.borrow_mut();
         let identity = runtime_shared::current_identity();
         let id = Self::mint_node(&mut state);
@@ -1409,6 +1429,7 @@ impl WireRecordingBackend {
             id,
             on_click: handler,
             a11y: wire_a11y,
+            on_down,
         });
         id
     }

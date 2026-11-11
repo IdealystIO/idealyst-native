@@ -437,6 +437,7 @@ members = [
     "examples/login-demo",
     "examples/keyboard-avoid",
     "examples/user-activity",
+    "examples/press-down-demo",
     "examples/nav-showcase",
     "examples/whiteboard-demo",
     "examples/sdk-gallery",

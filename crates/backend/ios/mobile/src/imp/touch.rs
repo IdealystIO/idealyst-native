@@ -47,6 +47,11 @@ pub(crate) struct TouchViewIvars {
     /// because the UIKit flag disables the WHOLE subtree with no way
     /// for a descendant `Auto` to re-enable.
     pointer_events: Cell<Option<runtime_shared::PointerEvents>>,
+    /// A `pressable`'s action, set by `create_pressable` /
+    /// `create_pressable_on_down`: what VoiceOver activation
+    /// (`accessibilityActivate`) and the handle's `PressableOps::click` run.
+    /// `None` on every other view.
+    activate: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 declare_class!(
@@ -116,6 +121,18 @@ declare_class!(
             } else {
                 result
             }
+        }
+
+        // VoiceOver double-tap on a pressable: run its action once and
+        // answer YES, so UIKit does not ALSO synthesize a tap at the
+        // activation point (which a press-down pressable's recognizer would
+        // take as a second press). Views without an action keep UIKit's
+        // answer. Single tail expression: `declare_class!` wraps the body.
+        #[method(accessibilityActivate)]
+        fn accessibility_activate(&self) -> bool {
+            crate::imp::ffi_guard::guard_ffi("IdealystTouchView::accessibilityActivate", || {
+                self.fire_activate()
+            }) || unsafe { msg_send![super(self), accessibilityActivate] }
         }
 
         #[method(touchesCancelled:withEvent:)]
@@ -389,6 +406,7 @@ impl IdealystTouchView {
             handler: RefCell::new(None),
             active_touches: RefCell::new(HashSet::new()),
             pointer_events: Cell::new(None),
+            activate: RefCell::new(None),
         });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), init] };
         // multipleTouchEnabled = YES so every finger reaches us, not
@@ -406,6 +424,25 @@ impl IdealystTouchView {
     /// `InputOps::install_touch_handler` impl on `IosBackend`.
     pub(crate) fn set_handler(&self, handler: TouchHandler) {
         *self.ivars().handler.borrow_mut() = Some(handler);
+    }
+
+    /// Store a pressable's action for [`fire_activate`](Self::fire_activate).
+    pub(crate) fn set_activate(&self, activate: Rc<dyn Fn()>) {
+        *self.ivars().activate.borrow_mut() = Some(activate);
+    }
+
+    /// Run the pressable action once (VoiceOver activation, handle
+    /// `click`). `false` when this view carries none. The `Rc` is cloned
+    /// out first so an action that re-enters this view can't double-borrow.
+    pub(crate) fn fire_activate(&self) -> bool {
+        let cb = self.ivars().activate.borrow().clone();
+        match cb {
+            Some(cb) => {
+                cb();
+                true
+            }
+            None => false,
+        }
     }
 
     /// Map `StyleRules::pointer_events` onto this host. Called by

@@ -236,6 +236,10 @@ pub(crate) fn apply_pressable_a11y(widget: &gtk4::Widget, a11y: &AccessibilityPr
     widget.update_state(&[State::Expanded(expanded)]);
 }
 
+/// Name of a pressable's activation `GestureClick`, so the press-state
+/// gesture `states::attach` adds beside it can find it and join its group.
+pub(crate) const PRESS_GESTURE_NAME: &str = "idealyst-press";
+
 /// The GTK role for a pressable, where it differs from the generic one. GTK
 /// reads `accessible-role` once at construction, so this is decided before
 /// the widget exists.
@@ -2528,12 +2532,46 @@ impl LinuxBackend {
     ) -> LinuxNode {
         // A styled container (IdealystView) with a click gesture — the
         // framework's Pressable is "a View that fires a callback".
-        let widget: IdealystView = gtk4::glib::Object::builder()
-            .property("accessible-role", pressable_gtk_role(a11y))
-            .build();
+        // `GestureClick` listens to the primary button only (its `button`
+        // defaults to `GDK_BUTTON_PRIMARY`), so a right-click fires nothing.
         let gesture = gtk4::GestureClick::new();
         let fire = on_click.clone();
         gesture.connect_released(move |_, _, _, _| (fire)());
+        self.pressable_with(gesture, a11y)
+    }
+
+    /// [`Self::create_pressable`] whose `on_press` fires as the primary
+    /// button goes DOWN (`PressActivation::Down`), for a menu button whose
+    /// menu is open before the release.
+    ///
+    /// The gesture CLAIMS the sequence at the press. GTK then cancels the
+    /// sequence for every other widget on the event's path, so the press
+    /// and its release never reach an ancestor's gestures (a release-mode
+    /// pressable around this one does not also fire), and nothing is
+    /// connected to `released`, so the rest of the press fires nothing.
+    /// Like the release-mode gesture it only sees the primary button.
+    fn create_pressable_on_down(
+        &mut self,
+        on_press: Rc<dyn Fn()>,
+        a11y: &AccessibilityProps,
+    ) -> LinuxNode {
+        let gesture = gtk4::GestureClick::new();
+        gesture.connect_pressed(move |g, _, _, _| {
+            g.set_state(gtk4::EventSequenceState::Claimed);
+            (on_press)();
+        });
+        self.pressable_with(gesture, a11y)
+    }
+
+    /// The pressable container both activation modes share, activated by
+    /// `gesture`.
+    fn pressable_with(&mut self, gesture: gtk4::GestureClick, a11y: &AccessibilityProps) -> LinuxNode {
+        // Named so `states::attach` can group its press-state gesture with
+        // it (see there).
+        gesture.set_name(Some(PRESS_GESTURE_NAME));
+        let widget: IdealystView = gtk4::glib::Object::builder()
+            .property("accessible-role", pressable_gtk_role(a11y))
+            .build();
         widget.add_controller(gesture);
         apply_pressable_a11y(widget.upcast_ref(), a11y);
         self.wrap(widget.upcast::<gtk4::Widget>(), NodeKind::Pressable)

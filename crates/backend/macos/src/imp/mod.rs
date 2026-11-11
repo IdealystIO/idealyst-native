@@ -1365,6 +1365,30 @@ fn make_tap_handler(on_click: Rc<dyn Fn()>) -> runtime_shared::TouchHandler {
     })
 }
 
+/// Build the [`TouchHandler`] of a press-down pressable
+/// (`PressActivation::Down`): `on_press` fires on the primary
+/// `mouseDown:` itself, once. Every later phase of that press is consumed
+/// and fires nothing — consuming the `Began` is what makes `FlippedView`
+/// route the drag / up back here (its `active` flag) instead of to an
+/// ancestor, so a menu button's release can't reach the row it sits on,
+/// and there is no slop: once the press has fired, where the release
+/// lands no longer matters. A non-primary press is swallowed without
+/// firing, exactly as in [`make_tap_handler`].
+fn make_press_down_handler(on_press: Rc<dyn Fn()>) -> runtime_shared::TouchHandler {
+    use runtime_shared::{TouchEvent, TouchPhase, TouchResponse};
+    Rc::new(move |ev: &TouchEvent| match ev.phase {
+        TouchPhase::Hovered => TouchResponse::IGNORED,
+        TouchPhase::Began if !runtime_shared::pointer_button().is_primary() => {
+            TouchResponse::CONSUMED
+        }
+        TouchPhase::Began => {
+            (on_press)();
+            TouchResponse::CONSUMED
+        }
+        TouchPhase::Moved | TouchPhase::Ended | TouchPhase::Cancelled => TouchResponse::CONSUMED,
+    })
+}
+
 /// `true` if `view` is an `NSScrollView`. Used by `insert` to
 /// redirect children into the scroll view's documentView so
 /// the scroll machinery actually works. Implemented via
@@ -3391,6 +3415,25 @@ impl MacosBackend {
         // Keyboard half of the control: Tab-focusable + Space/Return activation,
         // firing the SAME click. See `FlippedView::set_activate`.
         flipped.set_activate(on_click);
+        let view: Retained<NSView> = Retained::into_super(flipped);
+        let _ = self.layout_for_view(&view);
+        let node = MacosNode::View(view);
+        a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Button));
+        node
+    }
+
+    /// `create_pressable` with `PressActivation::Down`: the same
+    /// `FlippedView` (keyboard activation, a11y role, focusability, styling
+    /// all identical) with the press-down touch handler in place of the tap
+    /// handler. See [`make_press_down_handler`].
+    pub(crate) fn create_pressable_on_down_impl(
+        &mut self,
+        on_press: Rc<dyn Fn()>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> MacosNode {
+        let flipped = FlippedView::new(self.mtm);
+        flipped.set_handler(make_press_down_handler(on_press.clone()));
+        flipped.set_activate(on_press);
         let view: Retained<NSView> = Retained::into_super(flipped);
         let _ = self.layout_for_view(&view);
         let node = MacosNode::View(view);

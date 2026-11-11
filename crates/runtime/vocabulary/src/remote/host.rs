@@ -339,12 +339,13 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 build_all(conn, children)?,
             )
         }
-        Node::Pressable { common, on_press, on_hover, on_focus, disabled, a11y_state, preserves_focus, children } => {
+        Node::Pressable { common, on_press, activation, on_hover, on_focus, disabled, a11y_state, preserves_focus, children } => {
             let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(PressablePrim {
                     test_id,
                     on_press: fire(conn, on_press),
+                    activation,
                     on_hover: on_hover.map(|id| {
                         let h = handler::<bool, ()>(conn, id, || ());
                         Rc::new(move |v: bool| h(&v)) as _

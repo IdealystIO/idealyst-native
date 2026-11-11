@@ -48,7 +48,8 @@
 //!    [`CpuBackend::dispatch_click`] returns
 //!    ([`crate::ClickOutcome::HandlerFired`] — the host fires it after
 //!    releasing the backend borrow). That closure comes from exactly
-//!    two places — `PressableOps::create_pressable`'s `on_click` and
+//!    two places — `PressableOps::create_pressable` /
+//!    `create_pressable_on_down`'s handler (one shared allocator) and
 //!    `ButtonOps::create_button`'s `Action.fire` — and both are wrapped
 //!    here, so the closure the host fires IS the wrapped one and every
 //!    interactive dispatch schedules a flush. All other callback-taking
@@ -545,11 +546,29 @@ impl caps::InputOps for CpuBackend {}
 
 impl caps::PressableOps for CpuBackend {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
-        // Dispatch-site glue: the wrapped closure lands in the node's
-        // `on_click` slot and is exactly what `dispatch_click` hands
-        // back in `ClickOutcome::HandlerFired`, so the host's plain
-        // `h()` call gets the flush for free (the completeness
-        // argument in the module docs).
+        self.alloc_pressable(on_click)
+    }
+
+    /// The same node as [`create_pressable`](caps::PressableOps::create_pressable).
+    /// This backend's only pointer input is [`CpuBackend::dispatch_click`],
+    /// one discrete activation per tap with no separate down / up / button
+    /// to tell apart, so both activation modes fire their handler exactly
+    /// once per `dispatch_click`, at the deepest hit (an enclosing pressable
+    /// never fires for it). That is the `PressActivation` rule for discrete
+    /// activation; a host that reads a touch panel's press and release
+    /// calls `dispatch_click` once per tap either way.
+    fn create_pressable_on_down(&mut self, on_press: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
+        self.alloc_pressable(on_press)
+    }
+}
+
+impl CpuBackend {
+    /// Allocate a `Pressable` node carrying `on_click`. Dispatch-site
+    /// glue: the wrapped closure lands in the node's `on_click` slot and
+    /// is exactly what `dispatch_click` hands back in
+    /// `ClickOutcome::HandlerFired`, so the host's plain `h()` call gets
+    /// the flush for free (the completeness argument in the module docs).
+    fn alloc_pressable(&mut self, on_click: Rc<dyn Fn()>) -> CpuNode {
         let on_click = flushing0(on_click);
         let node = self.alloc_node(NodeKind::Pressable, String::new());
         if let Some(data) = self.nodes.get_mut(&node.id) {

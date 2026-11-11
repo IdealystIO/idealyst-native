@@ -646,6 +646,12 @@ impl caps::PressableOps for MockBackend {
         id
     }
 
+    /// The mock has no pointer stream, so a press-down pressable is the
+    /// same node as a release one.
+    fn create_pressable_on_down(&mut self, on_press: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> u64 {
+        <Self as caps::PressableOps>::create_pressable(self, on_press, a11y)
+    }
+
 }
 
 impl caps::SafeAreaOps for MockBackend {

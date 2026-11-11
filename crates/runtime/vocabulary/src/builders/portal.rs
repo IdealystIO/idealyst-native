@@ -543,6 +543,7 @@ fn backdrop_layer(backdrop: BackdropMode, backdrop_style: Option<StyleProp>, on_
         PrimCell::new(PressablePrim {
             test_id: None,
             on_press,
+            activation: runtime_shared::PressActivation::Release,
             on_hover: None,
             on_focus: None,
             disabled: None,

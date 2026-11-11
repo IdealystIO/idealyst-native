@@ -47,4 +47,5 @@ on the registry internally, so one generic seam serves every target;
 | `keyboard-avoid` | `keyboard_avoiding_view` at the root: a bottom composer rides the keyboard in step with the platform's own keyboard animation, plus a `keyboard_inset()` readout. See `docs/keyboard.md`. | web, ios, android |
 | `sdk-gallery` | One panel per client SDK (SVG, clipboard, connectivity, notifications, web view, video, audio, location, share sheet, camera, screen recording) for checking each on a platform by hand. | web, macos, windows |
 | `user-activity` | A kiosk-style idle clock driven by `user_activity()`: every interaction anywhere in the app restarts it, with no handlers of the app's own. See `docs/user-activity.md`. | web, ios, android, macos |
+| `press-down-demo` | `PressActivation`: two Buttons open the same `Menu`, one on release and one as the pointer goes down. | web, macos, ios, android |
 | `fiddle` | The online playground's compile server (not an idealyst app itself; `template/` is the project it compiles user snippets into). | — |

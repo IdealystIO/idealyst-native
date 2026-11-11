@@ -2315,3 +2315,278 @@ fn a_rebuilt_hole_gets_fresh_use_ids() {
     assert_ne!(first[0], first[1], "the rebuild got a fresh id");
     assert_eq!(ids_in_world(), first, "the same tree in a new world answers the same ids");
 }
+
+// ============================================================================
+// Exit holds (`crate::exit`)
+// ============================================================================
+
+/// A hand-cranked timer for [`install_exit_defer`]: each pending call sits
+/// in a slot its guard empties on drop.
+#[derive(Clone, Default)]
+struct ExitClock {
+    pending: Rc<RefCell<Vec<Rc<RefCell<Option<Box<dyn FnOnce()>>>>>>>,
+}
+
+struct ExitGuard(Rc<RefCell<Option<Box<dyn FnOnce()>>>>);
+
+impl Drop for ExitGuard {
+    fn drop(&mut self) {
+        self.0.borrow_mut().take();
+    }
+}
+
+impl ExitClock {
+    /// Install this clock as the thread's exit timer.
+    fn install() -> ExitClock {
+        let clock = ExitClock::default();
+        let pending = clock.pending.clone();
+        install_exit_defer(move |_ms, f| {
+            let slot = Rc::new(RefCell::new(Some(f)));
+            pending.borrow_mut().push(slot.clone());
+            Box::new(ExitGuard(slot)) as Box<dyn Any>
+        });
+        clock
+    }
+
+    /// Fire every pending call that was not cancelled.
+    fn fire(&self) {
+        let slots: Vec<_> = std::mem::take(&mut *self.pending.borrow_mut());
+        for slot in slots {
+            let f = slot.borrow_mut().take();
+            if let Some(f) = f {
+                f();
+            }
+        }
+    }
+
+    fn pending(&self) -> usize {
+        self.pending.borrow().iter().filter(|s| s.borrow().is_some()).count()
+    }
+}
+
+/// `if on { held } else { nothing }` whose `held` branch asks for an exit
+/// hold and logs when the exit starts and when its scope is freed.
+fn held_branch(s: runtime_world::Signal<bool>, ops: Rc<RefCell<Vec<String>>>) -> Element {
+    dyn_keyed(
+        move || s.get(),
+        move |&on| {
+            if on {
+                let started = ops.clone();
+                hold_on_exit(120, move || started.borrow_mut().push("exit started".into()));
+                cleanup_marker(&ops, "held");
+                t("held")
+            } else {
+                fragment(vec![])
+            }
+        },
+    )
+}
+
+/// The feature itself, on both mount strategies: the swapped-out subtree
+/// is told its exit started, stays attached with its scope alive, and is
+/// detached then freed only when the hold runs out. Before exit holds a
+/// region tore its old subtree down in the same turn, so nothing inside
+/// it could animate away.
+#[test]
+fn exit_hold_keeps_the_swapped_out_subtree_until_the_timer() {
+    for splice in [true, false] {
+        let clock = ExitClock::install();
+        let rig = Rig::new(splice);
+        let s = rig.world.enter(|| signal(true));
+        let shell = rig.realize(v(vec![held_branch(s, rig.ops.clone())]));
+        let root = shell.collect_nodes()[0];
+        rig.take_ops();
+
+        s.set(false);
+        rig.flush();
+        assert_eq!(rig.take_ops(), ["exit started"], "splice={splice}: started, nothing torn down");
+        assert!(rig.dom(root).contains("held"), "splice={splice}: still attached: {}", rig.dom(root));
+        assert_eq!(clock.pending(), 1);
+
+        clock.fire();
+        let ops = rig.take_ops();
+        assert_eq!(ops.len(), 2, "splice={splice}: {ops:?}");
+        assert!(ops[0].starts_with("remove_child"), "splice={splice}: detach first: {ops:?}");
+        assert_eq!(ops[1], "cleanup held", "splice={splice}: then the scope");
+        assert!(!rig.dom(root).contains("held"), "splice={splice}: gone: {}", rig.dom(root));
+    }
+}
+
+/// A region that follows a holding region in the same parent must still
+/// find its own start. The held nodes are in the parent, so the holding
+/// region's published count has to include them until they detach — or
+/// the next region splices its new content one slot too early, in front
+/// of the node that is still animating out.
+#[test]
+fn regression_exit_hold_keeps_later_sibling_regions_in_place() {
+    let clock = ExitClock::install();
+    let rig = Rig::new(true);
+    let (s, later) = rig.world.enter(|| (signal(true), signal(false)));
+    let shell = rig.realize(v(vec![
+        t("first"),
+        held_branch(s, rig.ops.clone()),
+        dyn_keyed(move || later.get(), |&on| t(if on { "later-on" } else { "later-off" })),
+        t("last"),
+    ]));
+    let root = shell.collect_nodes()[0];
+    assert_eq!(rig.dom(root), "view[first held later-off last]");
+
+    s.set(false);
+    rig.flush();
+    later.set(true);
+    rig.flush();
+    assert_eq!(rig.dom(root), "view[first held later-on last]", "the later region stays after the held node");
+
+    clock.fire();
+    assert_eq!(rig.dom(root), "view[first later-on last]");
+    later.set(false);
+    rig.flush();
+    assert_eq!(rig.dom(root), "view[first later-off last]", "and resolves its start again once it is gone");
+}
+
+/// Flipping back during the hold mounts the new content at once, AHEAD of
+/// the held nodes, and each held subtree still leaves on its own timer.
+#[test]
+fn exit_hold_reopen_during_the_hold_mounts_new_content_first() {
+    for splice in [true, false] {
+        let clock = ExitClock::install();
+        let rig = Rig::new(splice);
+        let s = rig.world.enter(|| signal(true));
+        let shell = rig.realize(v(vec![held_branch(s, rig.ops.clone())]));
+        let root = shell.collect_nodes()[0];
+
+        s.set(false);
+        rig.flush();
+        s.set(true);
+        rig.flush();
+        let dom = rig.dom(root);
+        assert_eq!(dom.matches("held").count(), 2, "splice={splice}: old and new coexist: {dom}");
+
+        // Close the new one too: two subtrees held under one region.
+        s.set(false);
+        rig.flush();
+        assert_eq!(rig.dom(root).matches("held").count(), 2, "splice={splice}");
+        assert_eq!(clock.pending(), 2);
+        clock.fire();
+        assert_eq!(rig.dom(root).matches("held").count(), 0, "splice={splice}: {}", rig.dom(root));
+    }
+}
+
+/// No timer installed: a hold cannot be honoured, so the region behaves
+/// exactly as it did before holds existed — and does not claim an exit
+/// started that it will not wait for.
+#[test]
+fn exit_hold_without_a_timer_tears_down_immediately() {
+    // A fresh thread has no timer installed; make that explicit.
+    let rig = Rig::new(true);
+    let s = rig.world.enter(|| signal(true));
+    let _shell = rig.realize(v(vec![held_branch(s, rig.ops.clone())]));
+    rig.take_ops();
+    s.set(false);
+    rig.flush();
+    assert_eq!(rig.take_ops(), ["remove_child n0 -x n1", "cleanup held"]);
+}
+
+/// A hold belongs to the NEAREST region. One requested inside an inner
+/// region is that region's: swapping the inner region holds and starts it,
+/// and swapping the outer one afterwards starts nothing.
+#[test]
+fn exit_hold_registers_with_the_nearest_region_only() {
+    let clock = ExitClock::install();
+    let rig = Rig::new(true);
+    let (outer, inner) = rig.world.enter(|| (signal(true), signal(true)));
+    let ops = rig.ops.clone();
+    let _shell = rig.realize(v(vec![dyn_keyed(
+        move || outer.get(),
+        move |&on| {
+            if !on {
+                return fragment(vec![]);
+            }
+            let ops = ops.clone();
+            v(vec![dyn_keyed(
+                move || inner.get(),
+                move |&show| {
+                    if show {
+                        let started = ops.clone();
+                        hold_on_exit(120, move || started.borrow_mut().push("inner exit started".into()));
+                        t("inner")
+                    } else {
+                        t("inner-gone")
+                    }
+                },
+            )])
+        },
+    )]));
+    rig.take_ops();
+
+    inner.set(false);
+    rig.flush();
+    assert_eq!(rig.take_ops().iter().filter(|o| *o == "inner exit started").count(), 1);
+    clock.fire();
+    rig.take_ops();
+
+    outer.set(false);
+    rig.flush();
+    assert!(!rig.take_ops().iter().any(|o| o == "inner exit started"));
+    assert_eq!(clock.pending(), 0);
+}
+
+/// A part of the subtree that already left must not be told to start an
+/// exit: its animators and signals are freed, and writing to them panics.
+/// A keyed row built with the region registers with it; when the row is
+/// removed on its own and the region swaps later, only the surviving
+/// row's exit starts.
+#[test]
+fn regression_exit_hold_from_a_part_that_already_left_is_dropped() {
+    let clock = ExitClock::install();
+    let rig = Rig::new(true);
+    let (on, rows) = rig.world.enter(|| (signal(true), signal(vec![1i32, 2])));
+    let ops = rig.ops.clone();
+    let _shell = rig.realize(v(vec![dyn_keyed(
+        move || on.get(),
+        move |&show| {
+            if !show {
+                return fragment(vec![]);
+            }
+            let ops = ops.clone();
+            v(vec![keyed(
+                move || rows.get(),
+                |n| *n,
+                move |n: i32| {
+                    let started = ops.clone();
+                    hold_on_exit(120, move || started.borrow_mut().push(format!("row {n} exit started")));
+                    t(&format!("r{n}"))
+                },
+            )])
+        },
+    )]));
+
+    rows.set(vec![2]); // row 1 leaves on its own; its scope is dropped
+    rig.flush();
+    rig.take_ops();
+
+    on.set(false);
+    rig.flush();
+    let started: Vec<String> = rig.take_ops().into_iter().filter(|o| o.ends_with("exit started")).collect();
+    assert_eq!(started, ["row 2 exit started"]);
+    clock.fire();
+}
+
+/// Destroying a region while it holds a subtree cancels the timer and
+/// frees the held scope at once. The alternative — the timer firing later
+/// into a parent that no longer exists — is a use-after-teardown.
+#[test]
+fn exit_hold_is_released_when_the_region_is_destroyed() {
+    let clock = ExitClock::install();
+    let rig = Rig::new(true);
+    let s = rig.world.enter(|| signal(true));
+    let shell = rig.realize(v(vec![held_branch(s, rig.ops.clone())]));
+    s.set(false);
+    rig.flush();
+    rig.take_ops();
+
+    drop(shell);
+    assert_eq!(clock.pending(), 0, "the pending teardown was cancelled");
+    assert!(rig.take_ops().iter().any(|o| o == "cleanup held"), "the held scope was freed");
+    clock.fire();
+}

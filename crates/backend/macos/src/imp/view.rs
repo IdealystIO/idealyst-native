@@ -732,6 +732,19 @@ declare_class!(
             }
             let _: () = unsafe { msg_send![super(self), keyDown: event] };
         }
+
+        // VoiceOver / AX `AXPress` on a `pressable` / `link`: fire the same
+        // activation closure as Space/Return, once. A plain `NSView` answers
+        // `NO` here and synthesizes no click, so without this an AT press on a
+        // pressable would do nothing. Views without an activation closure
+        // keep AppKit's answer.
+        #[method(accessibilityPerformPress)]
+        // Single tail expression: `declare_class!` wraps the body, so an
+        // early `return` mistypes.
+        fn accessibility_perform_press(&self) -> bool {
+            self.fire_activate()
+                || unsafe { msg_send![super(self), accessibilityPerformPress] }
+        }
     }
 );
 
@@ -974,6 +987,21 @@ impl FlippedView {
         // Mirrors the text-field path, which None's its ring for the same
         // reason (see `apply_framework_field_chrome`).
         let _: () = unsafe { msg_send![self, setFocusRingType: 1usize] };
+    }
+
+    /// Run the activation closure (`set_activate`) once, as a keyboard /
+    /// assistive-tech / programmatic (`PressableOps::click`) press does.
+    /// Returns `false` when this view carries none. The `Rc` is cloned out
+    /// first so a handler that re-enters `activate` can't double-borrow.
+    pub(crate) fn fire_activate(&self) -> bool {
+        let cb = self.ivars().activate.borrow().clone();
+        match cb {
+            Some(cb) => {
+                cb();
+                true
+            }
+            None => false,
+        }
     }
 
     /// `true` if this view opted into keyboard activation (a `pressable` /

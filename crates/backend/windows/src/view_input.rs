@@ -19,6 +19,14 @@
 //!   pressable on the chain below a handler owns the press: the chain
 //!   stops there, as on macOS where the pressable's `mouseDown:` does not
 //!   call `super`.
+//! - **Press-down pressables.** A primary press whose nearest pressable
+//!   is down-mode (`PressActivation::Down`) fires it right there, once no
+//!   touch handler below it took the press. The press then belongs to it:
+//!   [`mouse_up`] reports the release as handled, so the host's release
+//!   routing fires no pressable for it wherever it lands (on a menu item
+//!   the press just opened, on a release-mode ancestor), and the host
+//!   holds capture until it arrives. A secondary or middle press fires
+//!   nothing.
 //! - **Wheel.** Offered deepest first until one consumes; a consumed tick
 //!   does not also scroll a scroll view (web `preventDefault`). Ctrl+wheel,
 //!   which is also what a precision touchpad pinch sends to a window
@@ -103,6 +111,12 @@ pub(crate) struct ViewInput {
     drag_target: Option<u64>,
     /// The handler that consumed the current press.
     active: Option<ActiveTouch>,
+    /// The current primary press fired a down-mode pressable, so its
+    /// release fires nothing. Set by every primary down (`false` when it
+    /// fired none), cleared by the primary release; deliberately kept
+    /// through a lost capture, so a release that still reaches the window
+    /// cannot fire a pressable for a press that already fired one.
+    down_press: bool,
     /// Nodes currently hovered (with a hover handler).
     hovered: Vec<u64>,
     /// Interaction-state setters, by node.
@@ -209,8 +223,13 @@ pub fn mouse_down(
     let point = b.dpi.point_to_logical(x, y);
     let targets = touch_targets(&b, point, true);
     let chain = chain_ids(&b, point);
+    let primary = button == PointerButton::Primary;
+    let on_down = if primary { scene::pressable_down_at(&b, point.0, point.1) } else { None };
     drop(b);
-    let pressed = button == PointerButton::Primary && press_states(cell, &chain);
+    if primary {
+        set_down_press(cell, false);
+    }
+    let pressed = primary && press_states(cell, &chain);
     for t in targets {
         let r = deliver(&t.handler, &touch_event(TouchPhase::Began, point, t.origin), button, mods);
         if r.consumed {
@@ -220,7 +239,20 @@ pub fn mouse_down(
             return true;
         }
     }
+    if let Some(on_press) = on_down {
+        // Mark the press before firing: the handler may re-enter the
+        // message loop, and its release must already be owned.
+        set_down_press(cell, true);
+        on_press();
+        return true;
+    }
     pressed
+}
+
+fn set_down_press(cell: &RefCell<WindowsBackend>, on: bool) {
+    if let Ok(mut b) = cell.try_borrow_mut() {
+        b.view_input.down_press = on;
+    }
 }
 
 /// Ids on the hit chain under the logical `point`, deepest first.
@@ -262,7 +294,7 @@ fn release_pressed(cell: &RefCell<WindowsBackend>) {
 /// capture after a button up only when this is `false`.
 pub fn holds_capture(cell: &RefCell<WindowsBackend>) -> bool {
     cell.try_borrow()
-        .map(|b| b.view_input.active.is_some() || !b.view_input.state_pressed.is_empty())
+        .map(|b| b.view_input.active.is_some() || b.view_input.down_press || !b.view_input.state_pressed.is_empty())
         .unwrap_or(false)
 }
 
@@ -296,9 +328,10 @@ pub fn mouse_moved(cell: &RefCell<WindowsBackend>, x: f32, y: f32, mods: Pointer
 }
 
 /// A mouse button came up at device `(x, y)`. The primary button's release
-/// clears `PRESSED`. Returns whether it ended a gesture a handler had taken
-/// (the host then fires no pressable). The release of a button that did
-/// not start the gesture changes no gesture.
+/// clears `PRESSED`. Returns whether the press was already handled — it
+/// ended a gesture a handler had taken, or it is the release of a press
+/// that fired a down-mode pressable — so the host fires no pressable. The
+/// release of a button that did not start the gesture changes no gesture.
 pub fn mouse_up(
     cell: &RefCell<WindowsBackend>,
     x: f32,
@@ -310,13 +343,17 @@ pub fn mouse_up(
     let point = b.dpi.point_to_logical(x, y);
     let ends = b.view_input.active.as_ref().is_some_and(|a| a.button == button);
     drop(b);
+    let mut fired_on_down = false;
     if button == PointerButton::Primary {
+        if let Ok(mut b) = cell.try_borrow_mut() {
+            fired_on_down = std::mem::take(&mut b.view_input.down_press);
+        }
         release_pressed(cell);
     }
     if ends {
         end_gesture(cell, TouchPhase::Ended, Some(point), mods);
     }
-    ends
+    ends || fired_on_down
 }
 
 /// The host lost mouse capture mid-gesture (`WM_CAPTURECHANGED`): the
@@ -541,7 +578,7 @@ mod tests {
 
     use super::*;
     use crate::{NodeMeta, ViewVisual};
-    use runtime_shared::PointerEvents;
+    use runtime_shared::{PointerEvents, PressActivation};
     use std::rc::Rc;
     use windows::Win32::Foundation::HWND;
 
@@ -888,6 +925,147 @@ mod tests {
         mouse_up(&cell, 150.0, 120.0, LEFT, NONE);
         mouse_left(&cell);
         assert!(take(&log).is_empty());
+    }
+
+    // --- press-down pressables ---
+
+    /// Makes `id` a pressable firing in `activation` mode that logs `tag`.
+    fn make_pressable(cell: &RefCell<WindowsBackend>, log: &Log, id: u64, tag: &'static str, activation: PressActivation) {
+        let log = log.clone();
+        if let NodeKind::View(v) = &mut cell.borrow_mut().nodes.get_mut(&id).unwrap().kind {
+            v.on_click = Some(Rc::new(move || log.borrow_mut().push(tag.to_string())));
+            v.activation = activation;
+        }
+    }
+
+    /// What the host's `WM_LBUTTONUP` does (`host_win32`'s `wnd_proc`, and
+    /// `private_layer::popup_proc`): fire the pressable under the release
+    /// unless `mouse_up` reports the press already handled.
+    fn host_left_up(cell: &RefCell<WindowsBackend>, x: f32, y: f32) {
+        if mouse_up(cell, x, y, LEFT, NONE) {
+            return;
+        }
+        let action = cell.borrow().pressable_action(x, y);
+        if let Some(action) = action {
+            action();
+        }
+    }
+
+    /// A menu button opens its menu as the pointer goes down: a down-mode
+    /// pressable fires once at the primary press, and the rest of that
+    /// press (moves, the release, over it or over a release-mode ancestor
+    /// elsewhere) fires nothing more. The host holds capture until the
+    /// release so it always arrives to end the press.
+    #[test]
+    fn regression_press_down_pressable_fires_once_at_the_down() {
+        let cell = fixture();
+        let log: Log = Default::default();
+        make_pressable(&cell, &log, 1, "ancestor", PressActivation::Release);
+        make_pressable(&cell, &log, 2, "menu", PressActivation::Down);
+
+        assert!(mouse_down(&cell, 150.0, 120.0, LEFT, NONE), "the press asks for capture");
+        assert_eq!(take(&log), ["menu"], "fired at the down");
+        assert!(holds_capture(&cell));
+        mouse_moved(&cell, 160.0, 130.0, NONE);
+        host_left_up(&cell, 160.0, 130.0);
+        assert!(take(&log).is_empty(), "the release over it fires nothing more");
+        assert!(!holds_capture(&cell), "the host may release capture");
+
+        // Released over the release-mode ancestor (outside the menu
+        // button): still the same press, still nothing.
+        mouse_down(&cell, 150.0, 120.0, LEFT, NONE);
+        assert_eq!(take(&log), ["menu"]);
+        mouse_moved(&cell, 10.0, 10.0, NONE);
+        host_left_up(&cell, 10.0, 10.0);
+        assert!(take(&log).is_empty(), "the release does not reach the ancestor");
+
+        // The next press is a new one: clicking the ancestor still works.
+        mouse_down(&cell, 10.0, 10.0, LEFT, NONE);
+        host_left_up(&cell, 10.0, 10.0);
+        assert_eq!(take(&log), ["ancestor"]);
+    }
+
+    /// Only the primary button activates; a right or middle press on a
+    /// down-mode pressable fires nothing, and leaves the next primary
+    /// release-mode click alone.
+    #[test]
+    fn press_down_pressable_ignores_secondary_and_middle_presses() {
+        let cell = fixture();
+        let log: Log = Default::default();
+        make_pressable(&cell, &log, 2, "menu", PressActivation::Down);
+        for button in [PointerButton::Secondary, PointerButton::Middle] {
+            assert!(!mouse_down(&cell, 150.0, 120.0, button, NONE), "{button:?}: no capture");
+            assert!(!mouse_up(&cell, 150.0, 120.0, button, NONE));
+        }
+        assert!(take(&log).is_empty());
+        // A release over it from a press that began elsewhere (or outside
+        // the window) is not a press of it, and the ancestor does not take
+        // it either: the down-mode pressable owns presses on it.
+        make_pressable(&cell, &log, 1, "ancestor", PressActivation::Release);
+        host_left_up(&cell, 150.0, 120.0);
+        assert!(take(&log).is_empty());
+        assert!(cell.borrow().pressable_action(150.0, 120.0).is_none());
+    }
+
+    /// Capture lost mid-press (Alt-Tab, another window took it): the press
+    /// already fired, so a release that still reaches the window fires
+    /// nothing.
+    #[test]
+    fn press_down_release_after_lost_capture_fires_nothing() {
+        let cell = fixture();
+        let log: Log = Default::default();
+        make_pressable(&cell, &log, 1, "ancestor", PressActivation::Release);
+        make_pressable(&cell, &log, 2, "menu", PressActivation::Down);
+        mouse_down(&cell, 150.0, 120.0, LEFT, NONE);
+        capture_lost(&cell);
+        host_left_up(&cell, 10.0, 10.0);
+        assert_eq!(take(&log), ["menu"]);
+    }
+
+    /// A touch handler inside the down-mode pressable that takes the press
+    /// owns it, as it does for a release-mode pressable.
+    #[test]
+    fn press_down_pressable_yields_to_a_handler_inside_it() {
+        let cell = fixture();
+        let log: Log = Default::default();
+        {
+            let mut b = cell.borrow_mut();
+            put(&mut b, 3, Some(2), (10.0, 10.0, 50.0, 50.0));
+            b.view_input.touch.insert(3, logger(&log, "inner", TouchResponse::CONSUMED));
+        }
+        make_pressable(&cell, &log, 2, "menu", PressActivation::Down);
+        assert!(mouse_down(&cell, 120.0, 120.0, LEFT, NONE));
+        host_left_up(&cell, 120.0, 120.0);
+        assert_eq!(take(&log), ["inner:Began@10,10", "inner:Ended@10,10"]);
+    }
+
+    /// Release mode is unchanged: the press fires nothing, the release does.
+    #[test]
+    fn release_mode_pressable_still_fires_on_the_release() {
+        let cell = fixture();
+        let log: Log = Default::default();
+        make_pressable(&cell, &log, 2, "button", PressActivation::Release);
+        assert!(!mouse_down(&cell, 150.0, 120.0, LEFT, NONE), "no capture without a stateful node");
+        assert!(take(&log).is_empty(), "nothing at the down");
+        host_left_up(&cell, 150.0, 120.0);
+        assert_eq!(take(&log), ["button"]);
+    }
+
+    /// `caps::PressableOps::create_pressable_on_down` builds the same
+    /// painted pressable as `create_pressable`, marked down-mode, and it
+    /// still introspects as a pressable (`on_click` set).
+    #[test]
+    fn create_pressable_on_down_builds_a_down_mode_pressable() {
+        let mut b = WindowsBackend::new(HWND(std::ptr::null_mut()));
+        let a11y = runtime_shared::AccessibilityProps::default();
+        let down = runtime_vocabulary::caps::PressableOps::create_pressable_on_down(&mut b, Rc::new(|| {}), &a11y);
+        let up = runtime_vocabulary::caps::PressableOps::create_pressable(&mut b, Rc::new(|| {}), &a11y);
+        let mode = |id: u64| match &b.nodes[&id].kind {
+            NodeKind::View(v) => (v.on_click.is_some(), v.activation),
+            _ => panic!("a pressable is a painted view"),
+        };
+        assert_eq!(mode(down.id), (true, PressActivation::Down));
+        assert_eq!(mode(up.id), (true, PressActivation::Release));
     }
 
     // --- file drop ---

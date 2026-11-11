@@ -481,6 +481,13 @@ impl caps::PressableOps for SsrBackend {
         node.attrs.push((css::VIEW_MARKER_ATTR, String::new()));
         nref(node)
     }
+
+    /// The same markup as a release pressable: activation is a live
+    /// listener the web backend attaches when it hydrates this `<div>`,
+    /// so a static first paint has nothing to say about it.
+    fn create_pressable_on_down(&mut self, on_press: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
+        <Self as caps::PressableOps>::create_pressable(self, on_press, a11y)
+    }
 }
 
 // ===========================================================================

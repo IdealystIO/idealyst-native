@@ -441,6 +441,9 @@ impl CpuBackend {
     /// hit-rect contains the point — or `Unhandled` if no clickable
     /// node was hit. Must be called after at least one `render` so
     /// the frame cache is populated.
+    ///
+    /// One call is one discrete activation (call it once per tap), so a
+    /// `pressable` fires once here in either `PressActivation` mode.
     pub fn dispatch_click(&mut self, x: u32, y: u32) -> ClickOutcome {
         let Some(root) = self.find_root() else { return ClickOutcome::Unhandled };
         // `Some(None)` is a hit on a disabled clickable node: the walk

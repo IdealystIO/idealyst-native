@@ -454,6 +454,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
         return Node::Pressable {
             common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             on_press: register(Entry::Fire(p.on_press)),
+            activation: p.activation,
             on_hover: p.on_hover.map(|f| handler(move |h: &bool| f(*h))),
             on_focus: p.on_focus.map(|f| handler(move |h: &bool| f(*h))),
             disabled: p.disabled.map(val),

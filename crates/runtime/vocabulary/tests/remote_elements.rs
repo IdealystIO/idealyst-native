@@ -1537,3 +1537,44 @@ mod text_selectable {
         assert!(native.iter().any(|l| l.contains("create n2 text \"plain\"") || l.ends_with("text \"plain\"")), "{native:?}");
     }
 }
+
+/// A pressable's `activation` crosses (CODEC_VERSION 13): a crossed
+/// press-down pressable reaches `create_pressable_on_down` like the native
+/// one, and its press still fires the bundle's handler. Before the field
+/// crossed, the host rebuilt every pressable as release-mode, so a menu
+/// button streamed from a bundle opened on release.
+mod pressable_activation {
+    use super::*;
+    use runtime_shared::PressActivation;
+    use std::cell::Cell;
+
+    fn creates(remote: bool) -> (Vec<String>, usize) {
+        let h = Harness::new();
+        h.record_all();
+        let fired = Rc::new(Cell::new(0usize));
+        let tree = h.world.enter(|| {
+            let f = fired.clone();
+            view()
+                .child(pressable(move || f.set(f.get() + 1)).activation(PressActivation::Down))
+                .child(pressable(|| {}))
+                .build()
+        });
+        let tree = if remote { cross(tree) } else { tree };
+        let realized = h.mount(tree);
+        let log: Vec<String> = h.take_log().into_iter().filter(|l| l.contains("pressable")).collect();
+        (h.press_handler(0))();
+        h.flush();
+        drop(realized);
+        (log, fired.get())
+    }
+
+    #[test]
+    fn regression_a_crossed_press_down_pressable_mounts_on_down() {
+        let (native, native_fired) = creates(false);
+        let (remote, remote_fired) = creates(true);
+        assert_eq!(remote, native, "the crossed pressables mount like the native ones");
+        assert!(native.iter().any(|l| l.ends_with("pressable_on_down")), "{native:?}");
+        assert!(native.iter().any(|l| l.ends_with(" pressable")), "{native:?}");
+        assert_eq!((native_fired, remote_fired), (1, 1), "the press fires the handler once on both paths");
+    }
+}

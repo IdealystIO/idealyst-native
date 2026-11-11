@@ -844,3 +844,41 @@ fn regression_cpu_static_z_index_wins_pixel_and_click_via_scene() {
     assert_eq!(run(Some(1)), ([255, 0, 0, 255], "first"));
     assert_eq!(run(None), ([0, 0, 255, 255], "second"));
 }
+
+/// A `pressable(...).activation(PressActivation::Down)` mounts through
+/// the scene (the vocabulary routes it to `create_pressable_on_down`,
+/// whose trait default panics) and a click on it fires its action once,
+/// staged and committed by the same flush as a release-mode press. It
+/// sits inside a release-mode pressable that must not fire.
+#[test]
+fn newcore_down_pressable_mounts_and_fires_once_inside_release_pressable() {
+    let hits: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+    let h = hits.clone();
+    let backend = fresh_backend();
+    let app = backend_cpu::newcore::start(backend.clone(), |_| {}, move || {
+        use runtime_vocabulary::builders::{pressable, view};
+        let (outer, inner) = (h.clone(), h.clone());
+        view()
+            .style(sized(W as f32, H as f32, "#000000"))
+            .child(
+                pressable(move || outer.borrow_mut().push("outer"))
+                    .style(sized(W as f32, H as f32, "#202020"))
+                    .child(
+                        pressable(move || inner.borrow_mut().push("inner"))
+                            .activation(runtime_shared::PressActivation::Down)
+                            .style(press_target_rules()),
+                    ),
+            )
+            .build()
+    });
+    test_scheduler::drain();
+    let _ = render(&backend);
+    let outcome = backend.borrow_mut().dispatch_click(PRESS_X, PRESS_Y);
+    let ClickOutcome::HandlerFired(f) = outcome else {
+        panic!("click must land on the down-mode pressable, got {outcome:?}");
+    };
+    f();
+    test_scheduler::drain();
+    app.stop();
+    assert_eq!(hits.borrow().as_slice(), &["inner"]);
+}

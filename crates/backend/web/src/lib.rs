@@ -2400,6 +2400,22 @@ impl WebBackend {
         node
     }
 
+    /// [`create_pressable_impl`](Self::create_pressable_impl) firing at the
+    /// primary pointer-down (`PressActivation::Down`).
+    pub(crate) fn create_pressable_on_down_impl(
+        &mut self,
+        on_press: Rc<dyn Fn()>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> Node {
+        let node = primitives::pressable::create_on_down(self, on_press);
+        a11y::apply(
+            &node,
+            a11y,
+            Some(runtime_shared::accessibility::Role::Button),
+        );
+        node
+    }
+
     pub(crate) fn install_touch_handler_impl(
         &mut self,
         node: &Node,

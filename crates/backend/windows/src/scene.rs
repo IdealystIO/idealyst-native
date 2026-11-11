@@ -59,7 +59,7 @@
 
 use std::rc::Rc;
 
-use runtime_shared::{Length, PointerEvents, TextAlign, Transform};
+use runtime_shared::{Length, PointerEvents, PressActivation, TextAlign, Transform};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::COLORREF;
@@ -1166,14 +1166,34 @@ pub(crate) fn hit_chain(b: &WindowsBackend, px: f32, py: f32) -> Vec<PathNode> {
     out
 }
 
-/// The pressable that takes a click at `(px, py)`: the nearest one on the
-/// hit chain. A view painted over a pressable takes the click itself (as
-/// on web), so the pressable underneath does not fire.
-pub(crate) fn pressable_at(b: &WindowsBackend, px: f32, py: f32) -> Option<Rc<dyn Fn()>> {
+/// The nearest pressable on the hit chain at `(px, py)`: its handler and
+/// when it fires. A view painted over a pressable takes the click itself
+/// (as on web), so the pressable underneath does not fire.
+fn nearest_pressable(b: &WindowsBackend, px: f32, py: f32) -> Option<(Rc<dyn Fn()>, PressActivation)> {
     hit_chain(b, px, py).into_iter().find_map(|n| match &b.nodes.get(&n.id)?.kind {
-        NodeKind::View(v) => v.on_click.clone(),
+        NodeKind::View(v) => v.on_click.clone().map(|f| (f, v.activation)),
         _ => None,
     })
+}
+
+/// The release-mode pressable that takes a click released at `(px, py)`.
+/// When the nearest pressable there is down-mode, nothing: it fires only
+/// from a primary press ([`pressable_down_at`]), and it owns the press,
+/// so a release-mode ancestor does not take the release instead.
+pub(crate) fn pressable_at(b: &WindowsBackend, px: f32, py: f32) -> Option<Rc<dyn Fn()>> {
+    match nearest_pressable(b, px, py)? {
+        (f, PressActivation::Release) => Some(f),
+        (_, PressActivation::Down) => None,
+    }
+}
+
+/// The down-mode pressable a primary press at `(px, py)` fires: the
+/// nearest pressable on the hit chain, when it is down-mode.
+pub(crate) fn pressable_down_at(b: &WindowsBackend, px: f32, py: f32) -> Option<Rc<dyn Fn()>> {
+    match nearest_pressable(b, px, py)? {
+        (f, PressActivation::Down) => Some(f),
+        (_, PressActivation::Release) => None,
+    }
 }
 
 pub(crate) fn node_origin(b: &WindowsBackend, id: u64, ox: f32, oy: f32) -> Option<(f32, f32, f32, f32)> {

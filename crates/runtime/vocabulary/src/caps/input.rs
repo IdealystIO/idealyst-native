@@ -92,6 +92,38 @@ pub trait PressableOps: ViewOps {
         self.create_view(a11y)
     }
 
+    /// Tappable container whose `on_press` fires as the primary pointer
+    /// goes DOWN on it ([`PressActivation::Down`](runtime_shared::PressActivation)),
+    /// not on release. Everything else matches [`create_pressable`]: the
+    /// same node kind, focusability, a11y and keyboard activation.
+    ///
+    /// The contract every implementation keeps:
+    /// - a primary press fires `on_press` once, at the down;
+    /// - the rest of that press (moves, the release, wherever it lands)
+    ///   fires nothing more and does not reach ancestors;
+    /// - a secondary press fires nothing;
+    /// - keyboard / assistive-tech activation and
+    ///   [`PressableOps::click`](runtime_shared::PressableOps::click) fire
+    ///   `on_press` once, as for a release-mode pressable.
+    ///
+    /// A touch backend also reports the held FINGER's travel after the down
+    /// (`runtime_shared::held_press::report`: each move, then the lift or
+    /// cancel), so something the press opened can follow it. Mouse presses
+    /// need nothing extra; `pointer_input` already carries them app-wide.
+    ///
+    /// No default fallback to release: a backend that silently fired on
+    /// release would render the same tree with different behaviour, so a
+    /// backend without support panics at mount instead.
+    ///
+    /// [`create_pressable`]: PressableOps::create_pressable
+    #[allow(unused_variables)]
+    fn create_pressable_on_down(&mut self, on_press: Rc<dyn Fn()>, a11y: &AccessibilityProps) -> Self::Node {
+        panic!(
+            "this backend does not implement `PressableOps::create_pressable_on_down`, \
+             so a pressable with `PressActivation::Down` cannot mount on it"
+        )
+    }
+
     /// Imperative-ref handle for a pressable. Default: no-op.
     #[allow(unused_variables)]
     fn make_pressable_handle(&self, node: &Self::Node) -> runtime_shared::PressableHandle {

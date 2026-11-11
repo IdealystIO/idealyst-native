@@ -98,6 +98,9 @@ impl Shared {
         // App-root relative. While locked the browser freezes clientX/Y at
         // the lock point, which is exactly the contract's "position stays".
         let rect = self.mount.get_bounding_client_rect();
+        // The mount's viewport corner converts these app-root positions to
+        // the viewport space handle rects are measured in.
+        runtime_shared::pointer_input::set_root_origin(rect.left() as f32, rect.top() as f32);
         let mut e = AppPointerEvent::new(
             phase,
             (me.client_x() as f64 - rect.left()) as f32,
