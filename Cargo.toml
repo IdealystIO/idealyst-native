@@ -438,6 +438,7 @@ members = [
     "examples/keyboard-avoid",
     "examples/user-activity",
     "examples/press-down-demo",
+    "examples/virtual-table-demo",
     "examples/nav-showcase",
     "examples/whiteboard-demo",
     "examples/sdk-gallery",

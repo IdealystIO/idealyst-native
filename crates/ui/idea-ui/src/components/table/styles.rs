@@ -238,6 +238,19 @@ component_styles! {
                 off(_t) {}
                 on(_t) { position: Position::Relative }
             }
+            // A cell a virtualized table mounts in its grid
+            // (`Table(virtualized = …)`). The grid engine places every cell
+            // itself and holds frozen ones at the edges, so the cell's own
+            // `position` must stay plain: `grid` cancels the `pinned` arms'
+            // `Sticky` (which would hand the cell to the sticky registry and
+            // move it twice) while keeping their opaque background, edge
+            // hairline and tone/hover compounds. Named to sort AFTER
+            // `pinned` — axis arms merge in name order.
+            variant placed {
+                #[default]
+                flow(_t) {}
+                grid(_t) { position: Position::Relative }
+            }
             // Table edge inset (`Table(inset_x = …)`): the outer padding of
             // a row's FIRST cell (`inset_left`) and LAST cell (`inset_right`),
             // so the row dividers run the table's full width while the text
@@ -310,6 +323,11 @@ component_styles! {
             // passes behind it — the rows, if they ever reach it, or a
             // column scrolled sideways under a frozen one.
             compound (variant: plain, sticky_header: on, row_hovered: off)(t) {
+                background: t.color.surface(),
+            }
+            // A virtualized table's header row is frozen over the rows the
+            // same way, so a plain one is opaque too.
+            compound (variant: plain, placed: grid, row_hovered: off)(t) {
                 background: t.color.surface(),
             }
             // A frozen column's inner-edge hairline, for a `plain` table:
@@ -450,6 +468,19 @@ component_styles! {
                     border_left_width: 1.0,
                     border_left_color: t.color.border(),
                 }
+            }
+            // A cell a virtualized table mounts in its grid
+            // (`Table(virtualized = …)`). The grid engine places every cell
+            // itself and holds frozen ones at the edges, so the cell's own
+            // `position` must stay plain: `grid` cancels the `pinned` arms'
+            // `Sticky` (which would hand the cell to the sticky registry and
+            // move it twice) while keeping their opaque background, edge
+            // hairline and tone/hover compounds. Named to sort AFTER
+            // `pinned` — axis arms merge in name order.
+            variant placed {
+                #[default]
+                flow(_t) {}
+                grid(_t) { position: Position::Relative }
             }
             // Table edge inset (`Table(inset_x = …)`): the outer padding of
             // a row's FIRST cell (`inset_left`) and LAST cell (`inset_right`),

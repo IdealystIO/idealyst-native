@@ -1271,6 +1271,39 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   so a button that opens a `Menu` has it open before the button is released. The rest of that
   press fires nothing more; a secondary press fires nothing; keyboard, screen-reader and robot
   activation fire once in either mode. The default stays `PressActivation::Release`.
+- **Virtualized tables keep their column layout and frozen columns** (`idea-ui` minor).
+  `Table(virtualized = Some(VirtualRows::new(count, id, cell)))` lays the rows out on the
+  two-axis `virtual_grid`: only the cells in view are built and mounted, so a 100,000-row
+  table costs about a screenful of cells, and the header row plus the edge-pinned columns stay
+  put while the rest scrolls on both axes. Rows come from `VirtualRows` — a reactive count, row
+  `i`'s id, and row `i`'s content per column (the renderer `TableCards` takes) — and the header
+  from `columns`. Every row is one height and every cell of a column one width: a `width`
+  column keeps it, the rest share what's left within `min_width` / `max_width`, and the table
+  scrolls sideways once the minimums don't fit. Selection (select-all covers every row), row
+  tones, clickable rows, sort headers, resizable columns, density, `variant`, the edge inset,
+  frame slots, `empty`, `scroller` and `on_end_reached` paging carry over. Drag-to-reorder and
+  row groups need every row mounted, so a virtualized table panics if given `on_reorder`,
+  `on_group_reorder` or children. Web, iOS, Android and macOS; the backends without a two-axis
+  grid engine (Linux, Windows, terminal, CPU, SSR, and `idealyst dev` without `--local`) show
+  the unsupported-primitive placeholder.
+
+- **`virtual_grid` freezes rows and columns at its edges** (`runtime-shared`,
+  `runtime-vocabulary`, `backend-web`, `backend-ios-mobile`, `backend-android-mobile`,
+  `backend-macos`, `host-mock` minor). `.frozen(FrozenPanes { top: 1, left: 1, ..FrozenPanes::NONE })`
+  holds header rows, footer rows and left/right columns still while the rest scrolls: a frozen
+  row still scrolls sideways, a frozen column vertically, and a corner holds still — CSS
+  `position: sticky` geometry, from one shared implementation (`GridMetrics::pane_window`,
+  `display_origin`, `scroll_target`). Frozen cells draw and take touches above the scrolling
+  ones, and `scroll_to_cell` lands a cell just past the frozen header and columns. Web pins with
+  sticky layers on the compositor; the native backends re-place frozen cells inside the scroll
+  callback, before the frame draws. Backends implement the new `GridOps::set_virtual_grid_frozen`.
+  The remote codec carries it (`CODEC_VERSION` 13 → 14: rebuild remote bundles).
+
+- **A grid's column widths and row heights are reactive** (`runtime-vocabulary` minor). The size
+  closures passed to `virtual_grid` subscribe like the counts do, so a width read from a signal —
+  columns sharing the visible width — re-lays the grid out when it changes. Cells that survive the
+  change are re-placed on every backend.
+
   - **Press, drag, release picks a menu row** (`idea-ui`). The press that opened a `Menu` can be
     dragged onto a `MenuItem` (or through a `SubMenu` into a flyout row) and released there to
     pick it. Nothing to opt into. Mouse, trackpad and pen on every backend; a finger on iOS and Android,
@@ -3295,6 +3328,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 - **`idealyst docs` imports name public paths** (`idealyst-cli` via docs-app). Imports were read
   from the crate root's `pub use` items only, so an item re-exported in two hops (`TableGroup`,
+- **An Android `virtual_grid` cell whose content changed is rebuilt** (`backend-android-mobile`
+  patch). The Android grid diffed cells by position only, so after a data change that rewrote a
+  cell (a sorted table: same row and column, another record) the old content stayed on screen
+  until the cell scrolled out and back. It now compares each cell's key, as web, iOS and macOS do.
+
   `TablePager`, `TableCards`) was imported from a private module and didn't compile. Imports now
   resolve each item's shortest public path through the module tree.
 

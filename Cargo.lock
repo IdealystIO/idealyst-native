@@ -14322,6 +14322,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtual-table-demo"
+version = "1.5.2"
+dependencies = [
+ "idea-ui",
+ "idealyst",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+]
+
+[[package]]
 name = "virtualized"
 version = "7.0.0"
 dependencies = [

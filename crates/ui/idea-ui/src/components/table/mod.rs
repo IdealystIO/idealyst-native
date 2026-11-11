@@ -365,6 +365,49 @@
 //! alone. Row tones read `color-table-row-{highlight,warning,danger}`
 //! and their `-hover` variants.
 //!
+//! # Virtualized tables
+//!
+//! `Table(virtualized = Some(VirtualRows::new(count, id, cell)))` lays the
+//! rows out on the two-axis `virtual_grid`: only the cells in view are
+//! built and mounted, so a 100,000-row table costs about a screenful of
+//! cells, and the header row plus the edge-pinned columns are the grid's
+//! frozen panes — they hold still while the rest scrolls on BOTH axes.
+//!
+//! - Rows come from [`VirtualRows`]: a reactive count, row `i`'s id, and
+//!   row `i`'s content per column — the renderer [`TableCards`] takes, so
+//!   one source feeds the wide and narrow forms. The children block stays
+//!   empty; the header comes from `columns` (each `TableColumn::label`).
+//! - Every row is one height ([`VirtualRows::row_height`], defaulting to a
+//!   one-line row at the table's density) and every cell of a column one
+//!   width: a `width` column keeps it, the others share what's left, held
+//!   to their `min_width` / `max_width`; when the minimums don't fit, the
+//!   table scrolls sideways.
+//! - Leading `ColumnPin::Left` columns and the selection column freeze at
+//!   the left edge, trailing `ColumnPin::Right` columns at the right.
+//! - Selection (select-all covers every row, mounted or not), row tones,
+//!   clickable rows, sort headers ([`VirtualRows::sort`]), resizable
+//!   columns, density, `variant`, the edge inset, frame slots, `empty`,
+//!   `scroller` and paging ([`VirtualRows::on_end_reached`]) all work.
+//!   Drag-to-reorder and row groups need every row mounted: a virtualized
+//!   table panics if given `on_reorder`, `on_group_reorder` or children.
+//! - Bound it like a `scroll_y` table: `max_height` fits the rows up to
+//!   the cap; without it the table fills its (bounded) parent.
+//! - Linux, Windows, the terminal, the CPU renderer and SSR have no
+//!   two-axis grid engine; they show the unsupported-primitive placeholder.
+//!
+//! ```ignore
+//! Table(
+//!     columns = columns,
+//!     selection = Some(picked),
+//!     max_height = Some(480.0),
+//!     virtualized = Some(
+//!         VirtualRows::new(move || rows.get().len(), move |i| rows.with(|r| r[i].id()), cell)
+//!             .on_row_click(move |i| open(i))
+//!             .on_end_reached(400.0, move || load_more()),
+//!     ),
+//! )
+//! ```
+//!
 //! # Per-table cell styles
 //!
 //! `Table(styles = TableSlotStyles::default().head_cell(…))` restyles
@@ -415,6 +458,7 @@ mod reorder;
 mod rows;
 mod scroller;
 mod select;
+mod virtual_table;
 
 
 pub use cards::{
@@ -431,6 +475,7 @@ pub use reorder::{move_in_place, slide_offset, GRIP_COLUMN_WIDTH_PX};
 pub use scroller::TableScroller;
 pub use rows::RowId;
 pub use select::{select_all_state, toggle_select_all, SelectAllState, SELECT_COLUMN_WIDTH_PX};
+pub use virtual_table::VirtualRows;
 
 use columns::ColumnModel;
 use reorder::{GroupReorder, Reorder, GRIP_ICON_PX, GRIP_MARK};
@@ -825,6 +870,14 @@ pub struct TableProps {
     /// rows the table is built with.
     #[prop(static)]
     pub empty: Option<TableEmpty>,
+    /// Lay the rows out on a virtualized grid that mounts only the cells in
+    /// view, with the header row and pinned columns frozen while the rest
+    /// scrolls on both axes. The rows come from [`VirtualRows`] instead of
+    /// the children block, and the header from `columns` — see the module
+    /// docs, "Virtualized tables". `None` (the default) is a regular table.
+    // STRUCTURAL — picks the grid instead of the `table` SDK at build.
+    #[prop(static)]
+    pub virtualized: Option<VirtualRows>,
 }
 
 /// What a row is to its table, by position.
@@ -861,7 +914,10 @@ impl Builtin {
 /// with column tracks shared across rows on native — so columns line up
 /// the same way on every platform. Pass `TableRow`s as children.
 #[component(children)]
-pub fn Table(props: TableProps) -> Element {
+pub fn Table(mut props: TableProps) -> Element {
+    if let Some(rows) = props.virtualized.take() {
+        return virtual_table::virtual_table(props, rows);
+    }
     // The SDK lands this style on a surface VIEW around the `<table>` /
     // native grid on every table, never on the `<table>`: browsers
     // ignore `border-radius` on a collapsed-border table. The sheet's

@@ -282,6 +282,7 @@ pub use components::table::{
     ColumnPin, ColumnResizeCallback, ColumnWidths, RowId, RowTone, SelectAllState, SortState,
     Table, TableCards, TableCardsProps, TableCell, TableCellProps, TableColumn, TableDensity,
     TableEmpty, TableFooter, TableFooterProps, TableGroup, TableGroupProps, TableInset, TablePager, TablePagerProps,
+    VirtualRows,
     TableProps, TableRestyle, TableRow, TableRowProps, TableScroller, TableSlotStyles, TableStyles, TableTone, TableVariant,
     ACTIONS_COLUMN_WIDTH_PX, CARD_CELL_CAP,
     CARD_ESTIMATE_PX, CARD_GAP_PX, CARD_LOAD_AHEAD_PX, CARD_ROW_MIN_HEIGHT_PX, COLUMN_RESET_DOUBLE_CLICK_NS,

@@ -12,7 +12,7 @@ use idea_ui::{
 use idea_ui::{
     move_in_place, CardSlot, CellAlign, CellTone, ColSpan, ColumnId, ColumnPin, ColumnWidths,
     RowId, RowTone, SortState, Table, TableCards, TableCell, TableColumn, TableDensity,
-    TableFooter, TableGroup, TableInset, TablePager, TableRow, TableVariant,
+    TableFooter, TableGroup, TableInset, TablePager, TableRow, TableVariant, VirtualRows,
 };
 
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, P};
@@ -396,6 +396,38 @@ TableCell {
             }
         },
         ui! {
+            Section(title = "Virtualized: thousands of rows, frozen header and columns".to_string()) {
+                P(content = "Pass `virtualized = Some(VirtualRows::new(count, id, cell))` and only \
+                    the cells in view are built and mounted — this table has 10,000 rows. The rows \
+                    come from `VirtualRows` instead of the children block (`cell(i, column)` is the \
+                    same renderer `TableCards` takes), and the header from each column's `label`. \
+                    The header row and the edge-pinned columns stay put while the rest scrolls on \
+                    both axes. Every row is one height and every cell of a column one width: a \
+                    `width` column keeps it, the rest share what is left within their \
+                    `min_width` / `max_width`. Selection, row tones, clickable rows, sort headers \
+                    and `on_end_reached` paging carry over; drag-to-reorder and row groups need \
+                    every row mounted and are refused.".to_string())
+                virtual_demo_table()
+                CodePanel(src = r##"Table(
+    columns = vec![
+        TableColumn::new("id").label("ID").width(90.0).pinned(ColumnPin::Left),
+        TableColumn::new("service").label("Service").min_width(180.0),
+        TableColumn::new("region").label("Region").width(140.0),
+        // …version, owner, replicas, CPU, memory, uptime…
+        TableColumn::new("latency").label("p99").width(110.0).align(CellAlign::Right),
+        TableColumn::actions("menu").pinned(ColumnPin::Right),
+    ],
+    selection = Some(picked),
+    max_height = Some(320.0),
+    virtualized = Some(
+        VirtualRows::new(move || rows.get().len(), move |i| rows.with(|r| r[i].id.clone()), cell)
+            .on_row_click(move |i| open(i))
+            .on_end_reached(320.0, move || load_more()),
+    ),
+)"##.to_string())
+            }
+        },
+        ui! {
             Section(title = "Row groups".to_string()) {
                 P(content = "`TableGroup` puts rows under a band row — the settings screen grouped by \
                     category. The band spans the table in the group tone, with the title, a \
@@ -632,6 +664,11 @@ TableFooter {
                         name: "max_height",
                         ty: "Option<f32>",
                         desc: "The most a scroll_y table grows to, in px, before its rows scroll. Without it a scroll_y table fills the height its parent gives it. Ignored without scroll_y. Default None.",
+                    },
+                    Prop {
+                        name: "virtualized",
+                        ty: "Option<VirtualRows>",
+                        desc: "Lay the rows out on a virtualized grid that builds only the cells in view, with the header row and edge-pinned columns frozen while the rest scrolls on both axes. Rows come from VirtualRows (count, id, per-column cell renderer) instead of children; the header from columns. Refuses on_reorder, on_group_reorder and children. Default None.",
                     },
                     Prop {
                         name: "inset_x",
@@ -974,6 +1011,54 @@ fn pinned_header_table(variant: TableVariant) -> Element {
                 }
             }
         }
+    }
+}
+
+/// Ten thousand rows on the virtualized grid: an id column frozen at the
+/// left, a menu column at the right, selection and sortable latency.
+fn virtual_demo_table() -> Element {
+    const ROWS: usize = 10_000;
+    let regions = ["eu-west-1", "us-east-1", "ap-south-1", "us-west-2", "sa-east-1"];
+    let picked: Signal<BTreeSet<RowId>> = signal(BTreeSet::new());
+    let descending = signal(false);
+    // Row `i` in the current sort order.
+    let at = move |i: usize| if descending.get() { ROWS - 1 - i } else { i };
+    let columns = vec![
+        TableColumn::new("id").label("ID").width(90.0).pinned(ColumnPin::Left),
+        TableColumn::new("service").label("Service").min_width(180.0),
+        TableColumn::new("region").label("Region").width(140.0),
+        TableColumn::new("version").label("Version").width(120.0),
+        TableColumn::new("owner").label("Owner").width(160.0),
+        TableColumn::new("replicas").label("Replicas").width(110.0).align(CellAlign::Right),
+        TableColumn::new("cpu").label("CPU").width(100.0).align(CellAlign::Right),
+        TableColumn::new("memory").label("Memory").width(120.0).align(CellAlign::Right),
+        TableColumn::new("uptime").label("Uptime").width(120.0).align(CellAlign::Right),
+        TableColumn::new("latency").label("p99").width(110.0).align(CellAlign::Right),
+        TableColumn::actions("menu").pinned(ColumnPin::Right),
+    ];
+    let owners = ["platform", "payments", "search", "identity", "data"];
+    let cell = move |i: usize, col: &ColumnId| -> Element {
+        let n = at(i);
+        match col.as_str() {
+            "id" => ui! { Typography(content = format!("#{n}")) },
+            "service" => ui! { Typography(content = format!("service-{n}")) },
+            "region" => ui! { Typography(content = regions[n % regions.len()].to_string()) },
+            "version" => ui! { Typography(content = format!("v2.{}.{}", n % 9, n % 4)) },
+            "owner" => ui! { Typography(content = format!("team-{}", owners[n % owners.len()])) },
+            "replicas" => ui! { Typography(content = format!("{}", 2 + n % 7)) },
+            "cpu" => ui! { Typography(content = format!("{}%", 5 + n * 13 % 90)) },
+            "memory" => ui! { Typography(content = format!("{} MiB", 128 + n * 37 % 2048)) },
+            "uptime" => ui! { Typography(content = format!("{}d", 1 + n % 180)) },
+            "latency" => ui! { Typography(content = format!("{}ms", 8 + n * 7 % 300)) },
+            _ => ui! { IconButton(icon = Some(ELLIPSIS_VERTICAL), on_click = noop(), tone = tone::Neutral, variant = variant::Ghost) },
+        }
+    };
+    let rows = VirtualRows::new(move || ROWS, move |i| RowId::from(format!("row-{}", at(i))), cell).sort(
+        move |col| (col.as_str() == "latency").then(|| if descending.get() { SortState::Desc } else { SortState::Asc }),
+        move |_, s| descending.set(s == SortState::Desc),
+    );
+    ui! {
+        Table(columns = columns, selection = Some(picked), max_height = Some(320.0), virtualized = Some(rows))
     }
 }
 
