@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use denoise::{AudioStream, Denoiser};
 use idea_ui::{
-    install_idea_theme, light_theme, size, tone, typography_kind, Badge, Button, Card, CardPadding,
+    install_idea_theme, light_theme, size, tone, typography_kind, Tag, Button, Card, CardPadding,
     Divider, Progress, Spinner, Stack, StackAlign, StackAxis, StackGap, StackJustify, StackPadding,
     ToneRef, Typography,
 };
@@ -667,7 +667,7 @@ pub fn app() -> Element {
                 Card(padding = CardPadding::Lg) {
                     Stack(gap = StackGap::Md) {
                         Stack(axis = StackAxis::Row, align = StackAlign::Center, gap = StackGap::Sm) {
-                            Badge(label = "● REC".to_string(), tone = tone::Danger)
+                            Tag(label = "● REC".to_string(), tone = tone::Danger)
                             Typography(content = status, muted = true)
                         }
                         raw_meter

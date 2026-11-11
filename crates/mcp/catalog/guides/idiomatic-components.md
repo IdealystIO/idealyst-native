@@ -128,7 +128,7 @@ the `pub type Name = NameProps` tag alias, the `BuildElement` impl, and an
 Pick the signature by whether the component owns children:
 
 **Leaf / passive** — takes `props: &FooProps` (by reference). This is the
-common case (Button, Checkbox, Divider, Badge):
+common case (Button, Checkbox, Divider, Tag):
 
 ```rust
 #[component]

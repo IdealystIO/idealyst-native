@@ -23,7 +23,7 @@ mod common;
 use std::rc::Rc;
 
 use common::{find, lay_out};
-use idea_ui::{Badge, Button, Field, IconButton, Stack, StackAlign, StackAxis, StackGap, Tooltip, Typography};
+use idea_ui::{Button, Field, IconButton, Stack, StackAlign, StackAxis, StackGap, Tag, Tooltip, Typography};
 use runtime_core::{ui, Element};
 use runtime_layout::Frame;
 
@@ -129,8 +129,8 @@ fn regression_tooltip_button_trigger_moved_in_a_stretched_row() {
 }
 
 #[test]
-fn regression_tooltip_badge_trigger_moved_in_a_stretched_row() {
-    assert_tooltip_is_transparent("Badge", "text \"New", in_a_stretched_row(|| ui! { Badge(label = "New".to_string()) }));
+fn regression_tooltip_tag_trigger_moved_in_a_stretched_row() {
+    assert_tooltip_is_transparent("Tag", "text \"New", in_a_stretched_row(|| ui! { Tag(label = "New".to_string()) }));
 }
 
 #[test]

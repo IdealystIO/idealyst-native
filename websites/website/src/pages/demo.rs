@@ -15,7 +15,7 @@ use std::time::Duration;
 use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo, TweenTo};
 use runtime_core::{node_ref, signal, ui, Element, Ref, ViewHandle};
 use idea_ui::{
-    Alert, Badge, Button, Card, Divider, Field, Stack, StackAlign, Switch, Tag, Typography, StackAxis, StackGap,
+    Alert, Button, Card, Divider, Field, Stack, StackAlign, Switch, Tag, Typography, StackAxis, StackGap,
 };
 
 use crate::pages::common::{DemoShowcase, PageHeader, PageSection};
@@ -363,14 +363,14 @@ fn intents() -> Element {
             Typography(content = "Intents".to_string(), kind = idea_ui::typography_kind::H2)
             Typography(content = "Every themed component takes a `tone` handle \u{2014} a \
                 shared vocabulary of seven semantic actions. One row per intent: a Button \
-                (Solid), a Badge (Soft), and a Tag (Outlined). The variant axis chooses the \
+                (Solid), a Tag (Soft), and a Tag (Outlined). The variant axis chooses the \
                 visual; the tone chooses the palette.".to_string(),
                 muted = true)
             Card {
                 for (name, make_tone) in intent_list {
                     Stack(gap = StackGap::Md, axis = StackAxis::Row, align = StackAlign::Center) {
                         Button(label = name.to_string(), on_click = Rc::new(|| {}) as Rc<dyn Fn()>, tone = make_tone(), variant = idea_ui::variant::Filled)
-                        Badge(label = name.to_string(), tone = make_tone(), variant = idea_ui::variant::Soft)
+                        Tag(label = name.to_string(), tone = make_tone(), variant = idea_ui::variant::Soft)
                         Tag(label = name.to_string(), tone = make_tone(), variant = idea_ui::variant::Outlined)
                     }
                 }

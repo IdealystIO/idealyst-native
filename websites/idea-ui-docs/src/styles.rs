@@ -508,7 +508,7 @@ stylesheet! {
 // Inner content column for a DemoSurface. The card spans the page, but its
 // content is capped and centered so a FULL-WIDTH component (a `Field` fills its
 // container by design) renders at a sensible width instead of sprawling the
-// whole card. `align_items: center` keeps content-sized previews (Button, Badge)
+// whole card. `align_items: center` keeps content-sized previews (Button, Tag)
 // centered; a Field's own `align_self: stretch` fills this capped column.
 stylesheet! {
     pub DemoSurfaceContent<IdeaThemeRef> {

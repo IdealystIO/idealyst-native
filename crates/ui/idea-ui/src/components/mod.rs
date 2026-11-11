@@ -281,7 +281,6 @@ pub(crate) mod tone_slots;
 pub mod alert;
 pub mod autocomplete;
 pub mod avatar;
-pub mod badge;
 pub mod breadcrumbs;
 pub mod checkbox;
 pub mod grid;

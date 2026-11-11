@@ -567,7 +567,7 @@ Avatar(initials = "AL", tone = tone::Violet, variant = variant::Filled)"##.to_st
                 P(content = "Semantic tones (Primary, Danger, …) mean something, and a theme \
                     may retint them. Palette hues are just colors: they come from the theme's \
                     separate `palette` block, so retinting `danger` never recolors your red \
-                    avatars. Tag, Chip and Badge take the hues too.".to_string())
+                    avatars. Tag and Chip take the hues too.".to_string())
             }
         },
     ])

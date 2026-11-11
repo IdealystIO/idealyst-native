@@ -283,7 +283,7 @@ fn read_paint_from_gsk(w: &gtk4::Widget, node: &mut NativeNode) {
     // `GtkLabel` is final in GTK4 and a text node has no `IdealystView` of its
     // own. A child-scoped GSK read cannot see it — `snapshot_child` renders
     // only the child's own node — so read the recorded model directly.
-    // Reporting nothing here is what made a fixed Badge still look unstyled to
+    // Reporting nothing here is what made a correctly painted text pill still look unstyled to
     // the parity harness.
     if let Some(view) = parent.downcast_ref::<crate::IdealystView>() {
         if let Some(model) = view.child_model(w).filter(|m| m.paints()) {

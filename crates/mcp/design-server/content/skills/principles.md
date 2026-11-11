@@ -53,7 +53,7 @@ the full playbook.
 ## 4. idea-ui first
 
 If idea-ui has a component for it, use it — `Button`, `Field`, `ListItem`,
-`Card`, `Modal`, `Alert`, `Tabs`, `Badge`, … Their states, focus rings,
+`Card`, `Modal`, `Alert`, `Tabs`, `Tag`, … Their states, focus rings,
 hover feedback, accessibility and theming are already right on every
 backend. Drop to primitives (`view`, `text`, `pressable`) only for
 genuinely new UI, and then style them with a token `stylesheet!`.

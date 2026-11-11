@@ -704,16 +704,16 @@ recipe!(
 );
 
 recipe!(
-    Badge,
+    Tag,
     /// A small status pill for counts and labels. Pick a semantic `tone`
     /// (Primary/Success/Danger/…) and a `variant` (Soft/Filled/Outline).
     /// `label` is reactive, so it can be driven by a signal.
-    pub fn badge_status() -> ::runtime_core::Element {
-        use crate::{tone, variant, Badge};
+    pub fn tag_status() -> ::runtime_core::Element {
+        use crate::{tone, variant, Tag};
         use ::runtime_core::ui;
 
         ui! {
-            Badge(label = "New", tone = tone::Primary, variant = variant::Soft)
+            Tag(label = "New", tone = tone::Primary, variant = variant::Soft)
         }
     }
 );
@@ -1499,23 +1499,23 @@ recipe!(
 );
 
 recipe!(
-    Badge,
-    /// One badge per tone. Pair the tone with the meaning (`Success` for
+    Tag,
+    /// One tag per tone. Pair the tone with the meaning (`Success` for
     /// done, `Warning` for attention, `Danger` for failure) so status reads
     /// the same everywhere; `Filled` raises the emphasis of the one that
     /// matters most.
-    pub fn badge_tones() -> ::runtime_core::Element {
-        use crate::{tone, variant, Badge, Stack, StackAxis, StackGap};
+    pub fn tag_tones() -> ::runtime_core::Element {
+        use crate::{tone, variant, Stack, StackAxis, StackGap, Tag};
         use ::runtime_core::ui;
 
         ui! {
             Stack(axis = StackAxis::Row, gap = StackGap::Sm, wrap = true) {
-                Badge(label = "Draft", tone = tone::Neutral)
-                Badge(label = "Info", tone = tone::Info)
-                Badge(label = "Active", tone = tone::Success)
-                Badge(label = "Due soon", tone = tone::Warning)
-                Badge(label = "Failed", tone = tone::Danger)
-                Badge(label = "3 new", tone = tone::Primary, variant = variant::Filled)
+                Tag(label = "Draft", tone = tone::Neutral)
+                Tag(label = "Info", tone = tone::Info)
+                Tag(label = "Active", tone = tone::Success)
+                Tag(label = "Due soon", tone = tone::Warning)
+                Tag(label = "Failed", tone = tone::Danger)
+                Tag(label = "3 new", tone = tone::Primary, variant = variant::Filled)
             }
         }
     }
@@ -1710,11 +1710,11 @@ recipe!(
 
 recipe!(
     ListItem,
-    /// Settings rows with both slots filled: an avatar `leading`, a badge
+    /// Settings rows with both slots filled: an avatar `leading`, a tag
     /// `trailing` (pushed to the right edge), and `active = true` marking the
     /// current row. `on_press` makes a row clickable.
     pub fn list_item_slots() -> ::runtime_core::Element {
-        use crate::{tone, Avatar, AvatarSize, Badge, List, ListItem};
+        use crate::{tone, Avatar, AvatarSize, List, ListItem, Tag};
         use ::runtime_core::ui;
         use ::std::rc::Rc;
 
@@ -1724,7 +1724,7 @@ recipe!(
                 ListItem(
                     label = "Ada Lovelace",
                     leading = Some(ui! { Avatar(initials = "AL", size = AvatarSize::Sm) }),
-                    trailing = Some(ui! { Badge(label = "2", tone = tone::Primary) }),
+                    trailing = Some(ui! { Tag(label = "2", tone = tone::Primary) }),
                     on_press = Some(open.clone()),
                     active = true,
                 )

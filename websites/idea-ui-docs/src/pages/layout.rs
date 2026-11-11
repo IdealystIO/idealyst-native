@@ -2,7 +2,7 @@
 
 use runtime_core::{ui, Element};
 use idea_ui::{
-    tone, typography_kind, variant, Badge, Center, Grid, Stack, StackAxis, StackGap, StackPadding,
+    tone, typography_kind, variant, Tag, Center, Grid, Stack, StackAxis, StackGap, StackPadding,
     Surface, SurfaceColor, Typography,
 };
 
@@ -21,9 +21,9 @@ pub fn stack() -> Element {
                     vertical rhythm without per-call stylesheets.".to_string())
                 DemoSurface {
                     Stack(gap = StackGap::Md) {
-                        Badge(label = "one".to_string(),   tone = tone::Primary, variant = variant::Soft)
-                        Badge(label = "two".to_string(),   tone = tone::Success, variant = variant::Soft)
-                        Badge(label = "three".to_string(), tone = tone::Warning, variant = variant::Soft)
+                        Tag(label = "one".to_string(),   tone = tone::Primary, variant = variant::Soft)
+                        Tag(label = "two".to_string(),   tone = tone::Success, variant = variant::Soft)
+                        Tag(label = "three".to_string(), tone = tone::Warning, variant = variant::Soft)
                     }
                 }
                 CodePanel(src = r##"Stack(gap = StackGap::Md) {
@@ -39,9 +39,9 @@ pub fn stack() -> Element {
                     rows. The same `gap` scale spaces children along the main axis.".to_string())
                 DemoSurface {
                     Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
-                        Badge(label = "one".to_string(),   tone = tone::Primary, variant = variant::Soft)
-                        Badge(label = "two".to_string(),   tone = tone::Success, variant = variant::Soft)
-                        Badge(label = "three".to_string(), tone = tone::Warning, variant = variant::Soft)
+                        Tag(label = "one".to_string(),   tone = tone::Primary, variant = variant::Soft)
+                        Tag(label = "two".to_string(),   tone = tone::Success, variant = variant::Soft)
+                        Tag(label = "three".to_string(), tone = tone::Warning, variant = variant::Soft)
                     }
                 }
                 CodePanel(src = r##"Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
@@ -180,7 +180,7 @@ pub fn center() -> Element {
                     justify: Center.".to_string())
                 DemoSurface {
                     Center {
-                        Badge(label = "Centered".to_string(), tone = tone::Primary, variant = variant::Soft)
+                        Tag(label = "Centered".to_string(), tone = tone::Primary, variant = variant::Soft)
                     }
                 }
             }

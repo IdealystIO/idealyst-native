@@ -11,16 +11,16 @@
 //! "ink" is light on a dark theme.
 //!
 //! Two of its values are app-defined: `CardVariant::Paper` (the default
-//! Card variant, from [`InkCardVariants`]) and `BadgeVariant::Ink` (the
-//! default Badge variant, from [`InkBadgeVariants`]), so every Card and
-//! Badge on the docs pages shows them. It also restyles the docs site's own
+//! Card variant, from [`InkCardVariants`]) and `TagVariant::Ink` (the
+//! default Tag variant, from [`InkTagVariants`]), so every Card and
+//! Tag on the docs pages shows them. It also restyles the docs site's own
 //! app values (`CardVariant::Tinted`, `ButtonVariant::Raised`) — a later
 //! restyle composes over an earlier one.
 
 use idea_ui::components::table::{TablePinned, TableRowHovered, TableStyles, TableVariant};
 use idea_ui::{
-    BadgeStyles, BadgeVariant, ButtonShape, ButtonStyles, ButtonVariant, CardStyles, CardVariant, FieldAppearance, FieldRing,
-    FieldStyles, SegmentedControlSelected, SegmentedControlStyles,
+    ButtonShape, ButtonStyles, ButtonVariant, CardStyles, CardVariant, FieldAppearance, FieldRing,
+    FieldStyles, SegmentedControlSelected, SegmentedControlStyles, TagStyles, TagVariant,
 };
 use idea_ui_docs::restyles::{DocsButtonVariants, DocsCardVariants};
 use runtime_core::{axis_values, Color, FontWeight, Length, Shadow, StateBits, StyleRules, Tokenized};
@@ -35,9 +35,9 @@ axis_values! {
 }
 
 axis_values! {
-    /// Ink's Badge variants.
-    pub trait InkBadgeVariants for BadgeVariant {
-        /// The variant every Badge takes by default under Ink: ink fill,
+    /// Ink's Tag variants.
+    pub trait InkTagVariants for TagVariant {
+        /// The variant every Tag takes by default under Ink: ink fill,
         /// paper text.
         Ink,
     }
@@ -148,14 +148,15 @@ pub fn install() {
             });
     });
 
-    // Badges: ink by default.
-    BadgeStyles::set_default(BadgeVariant::Ink);
-    BadgeStyles::restyle(|s| {
-        s.root().arm(BadgeVariant::Ink, |t| StyleRules {
-            background: Some(t.color.text()),
-            color: Some(t.color.surface()),
-            ..edge_width(none())
-        });
+    // Tags: ink by default. The label, a leading icon and the close `×`
+    // are their own nodes, each carrying the fill's foreground.
+    TagStyles::set_default(TagVariant::Ink);
+    TagStyles::restyle(|s| {
+        let paper = |t: &idea_ui::IdeaTokens| StyleRules { color: Some(t.color.surface()), ..Default::default() };
+        s.root().arm(TagVariant::Ink, |t| StyleRules { background: Some(t.color.text()), ..edge_width(none()) });
+        s.label().arm(TagVariant::Ink, paper);
+        s.icon().arm(TagVariant::Ink, paper);
+        s.glyph().arm(TagVariant::Ink, paper);
     });
 
     // Tables: borderless frame, an ink header band with paper text. The

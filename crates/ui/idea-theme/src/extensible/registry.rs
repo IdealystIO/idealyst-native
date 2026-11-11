@@ -3,7 +3,7 @@
 //!
 //! A tone is a palette ([`Tone`](super::Tone)); a variant is a surface
 //! recipe over a tone ([`Variant`](super::Variant)). A component that takes
-//! both (Button, Badge, Alert, …) declares `tone` and `variant` axes on its
+//! both (Button, Tag, Alert, …) declares `tone` and `variant` axes on its
 //! `component_styles!` slots, and its `extend` hook adds one compound per
 //! `(tone, variant)` pair with [`tone_variant_arms`] — rendered at
 //! composition time from the tones registered HERE. That is what makes an
@@ -87,7 +87,7 @@ pub fn semantic_tones() -> Vec<ToneRef> {
 }
 
 /// [`semantic_tones`] plus the twelve palette hues — what categorization
-/// components (Badge, Tag, Avatar) draw. Kept off the interactive
+/// components (Tag, Chip, Avatar) draw. Kept off the interactive
 /// components because each tone is rendered into the build-time CSS for
 /// every variant of every component that draws it: the hues on all of them
 /// measured 177 KB → 437 KB of CSS for every app.

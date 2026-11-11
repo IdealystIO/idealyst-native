@@ -11,7 +11,7 @@
 //!
 //! # Tones and variants
 //!
-//! Themed components (Button, Badge, Tag, …) take a `tone` (semantic
+//! Themed components (Button, Tag, Chip, …) take a `tone` (semantic
 //! `tone::Primary`/`tone::Danger`/… or a palette hue) and a `variant`
 //! (`variant::Filled`/`Soft`/`Outlined`/`Ghost`). Both are extensible:
 //! apps add their own by implementing [`Tone`]/[`Variant`] on a marker
@@ -175,7 +175,6 @@ pub use components::autocomplete::{
 pub use components::avatar::{
     Avatar, AvatarProps, AvatarRestyle, AvatarSize, AvatarSlotStyles, AvatarStyles, AvatarVariant,
 };
-pub use components::badge::{Badge, BadgeProps, BadgeRestyle, BadgeSlotStyles, BadgeStyles, BadgeVariant};
 pub use components::button::{
     Button, ButtonBlock, ButtonDimmed, ButtonLayout, ButtonProps, ButtonRestyle, ButtonShape, ButtonSize,
     ButtonSlotStyles, ButtonStyles, ButtonVariant,

@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use idea_ui::{tone, typography_kind, variant, Badge, Button, Field, FieldSize, Typography};
+use idea_ui::{tone, typography_kind, variant, Tag, Button, Field, FieldSize, Typography};
 use runtime_core::{component, memo, signal, ui, Element, ReadSignal, Signal};
 
 use super::styles::{AppRow, Caption, Column, ComponentName, ConnectColumn, Grow, MonoMuted, RowBetween, RowStart, TableBox};
@@ -125,7 +125,7 @@ fn AppLine(
             view(style = Grow()) {
                 view(style = RowStart()) {
                     text(style = ComponentName()) { app.name.clone() }
-                    Badge(label = platform, tone = tone::Neutral, variant = variant::Soft)
+                    Tag(label = platform, tone = tone::Neutral, variant = variant::Soft)
                 }
                 text(style = MonoMuted()) { detail }
             }

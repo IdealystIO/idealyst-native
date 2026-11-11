@@ -12,7 +12,7 @@
 
 use std::rc::Rc;
 
-use idea_ui::{tone, typography_kind, Badge, Button, Card, Typography};
+use idea_ui::{tone, typography_kind, Tag, Button, Card, Typography};
 use runtime_core::{component, rx, signal, ui, Element};
 use runtime_shared::{Color, FontWeight, Length, StyleRules, Tokenized};
 
@@ -28,7 +28,7 @@ pub fn Panel() -> Element {
         Card() {
             Typography(content = "This is a hot update".to_string(), kind = typography_kind::H3)
             Typography(content = "Change this text in crates/ota/demo/src/lib.rs, run ./publish.sh, and watch it arrive.".to_string())
-            Badge(label = "edit me".to_string(), tone = tone::Info)
+            Tag(label = "edit me".to_string(), tone = tone::Info)
             Button(
                 label = rx!(format!("Tapped {} times", taps.get())),
                 on_click = Rc::new(move || taps.update(|n| n + 1)) as Rc<dyn Fn()>,

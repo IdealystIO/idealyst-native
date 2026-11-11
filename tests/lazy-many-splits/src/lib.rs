@@ -52,7 +52,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use idea_ui::{
-    install_idea_theme, light_theme, tone, variant, Badge, Button, Stack, StackGap, ToneRef,
+    install_idea_theme, light_theme, tone, variant, Tag, Button, Stack, StackGap, ToneRef,
     Typography,
 };
 use runtime_core::primitives::lazy::LazyError;
@@ -113,7 +113,7 @@ macro_rules! lazy_pages {
                             Typography(content = format!("chunk page #{seed} mounted"))
                             Typography(content = format!("{} fmt bytes: {total}", lines.join(" | ")))
                             Typography(content = rx!(format!("count = {}", count.get())))
-                            Badge(label = format!("seed {seed}"), tone = page_tone.clone())
+                            Tag(label = format!("seed {seed}"), tone = page_tone.clone())
                             Button(
                                 label = format!("Increment page {seed}"),
                                 tone = page_tone,

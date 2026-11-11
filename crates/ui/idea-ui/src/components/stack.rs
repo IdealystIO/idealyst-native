@@ -50,7 +50,7 @@ component_styles! {
                 center(_t)   { align_items: AlignItems::Center }
                 end(_t)      { align_items: AlignItems::FlexEnd }
                 // Align children on their text baseline — for inline rows that mix
-                // prose and a Link/Badge so they sit on a common baseline.
+                // prose and a Link/Tag so they sit on a common baseline.
                 baseline(_t) { align_items: AlignItems::Baseline }
             }
             variant justify {

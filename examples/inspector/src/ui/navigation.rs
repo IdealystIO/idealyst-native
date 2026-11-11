@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use idea_ui::{tone, typography_kind, variant, Badge, Button, Field, FieldSize, Typography};
+use idea_ui::{tone, typography_kind, variant, Tag, Button, Field, FieldSize, Typography};
 use runtime_core::{component, derived, memo, pressable, signal, ui, Element, IntoElement, Signal, TrackSize};
 use serde_json::json;
 
@@ -68,7 +68,7 @@ fn NavigatorItem(#[prop(static)] nav: Navigator, picked: Signal<Option<u64>>, ch
                 text(style = ComponentName()) { format!("#{id}") }
                 text(style = Caption()) { nav.kind_label() }
                 if focused {
-                    Badge(label = "Focused".to_string(), tone = tone::Primary, variant = variant::Soft)
+                    Tag(label = "Focused".to_string(), tone = tone::Primary, variant = variant::Soft)
                 }
             }
             text(style = MonoMuted()) { nav.active_path.clone() }
@@ -136,7 +136,7 @@ fn NavigatorDetail(snapshot: Signal<Snapshot>, nav: Option<Navigator>) -> Elemen
                                 view(style = RowStart()) {
                                     text(style = Caption()) { i.to_string() }
                                     if current {
-                                        Badge(label = "Current".to_string(), tone = tone::Primary, variant = variant::Soft)
+                                        Tag(label = "Current".to_string(), tone = tone::Primary, variant = variant::Soft)
                                     }
                                 }
                                 text(style = ComponentName()) { route.clone() }

@@ -63,7 +63,7 @@ let total = memo(move || items.get().iter().map(|i| i.price).sum::<usize>());
 
 // (b) rx! — an inline live prop value; no caching, terse.
 ui! {
-    Badge(label = rx!(format!("{} items", items.get().len())))
+    Tag(label = rx!(format!("{} items", items.get().len())))
 }
 
 // (c) a plain closure — reactive text/bindings that are trivial to recompute.

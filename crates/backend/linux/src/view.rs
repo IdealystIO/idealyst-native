@@ -286,8 +286,8 @@ mod imp {
         /// do it. The parent already paints boxes and already knows this
         /// child's Taffy frame and transform, so it paints the child's box too.
         /// Before this, background / border / radius authored on a `text`
-        /// primitive was silently dropped on this backend (idea-ui's Badge
-        /// painted no pill at all, leaving white text on the page background).
+        /// primitive was silently dropped on this backend (a pill drawn as one
+        /// styled `text` painted no fill, leaving white text on the page background).
         pub model: RefCell<PaintModel>,
     }
 

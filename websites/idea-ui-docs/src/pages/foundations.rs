@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use runtime_core::{signal, ui, view, Color, Element, IntoElement, StyleApplication, Tokenized};
 use idea_ui::{
-    tone, typography_kind, variant, Badge, Button, Grid, Stack, StackAxis, StackGap, ToneRef,
+    tone, typography_kind, variant, Tag, Button, Grid, Stack, StackAxis, StackGap, ToneRef,
     Typography,
 };
 use idea_theme_editor::{ThemeDraft, ThemeEditor};
@@ -128,7 +128,7 @@ pub fn intents() -> Element {
                 Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
                     Button(label = label.clone(), on_click = on_click, tone = t.clone(), variant = variant::Filled)
                     Button(label = "Soft".to_string(), on_click = Rc::new(|| {}) as Rc<dyn Fn()>, tone = t.clone(), variant = variant::Soft)
-                    Badge(label = label, tone = t, variant = variant::Soft)
+                    Tag(label = label, tone = t, variant = variant::Soft)
                 }
             }
         })
@@ -138,7 +138,7 @@ pub fn intents() -> Element {
         ui! {
             Section(title = "Semantic palettes".to_string()) {
                 P(content = "An intent names a meaning rather than a color. \"Danger\" reads as the \
-                    right red on Button (Filled), the right tint on Badge (Soft), and the right \
+                    right red on Button (Filled), the right tint on Tag (Soft), and the right \
                     border on Alert (Outlined). You write the meaning once; the theme + variant \
                     axes produce the visual. Each tone exposes six slots: solid-bg, solid-text, \
                     soft-bg, soft-text, fg, border.".to_string())

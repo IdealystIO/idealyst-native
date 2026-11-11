@@ -1,5 +1,5 @@
 //! Regression (want_b06f208f, the hugging components after Button): Tag, Chip,
-//! Badge, IconButton, Avatar, Spinner hugged with `align_self: Center`, and
+//! IconButton, Avatar, Spinner hugged with `align_self: Center`, and
 //! SegmentedControl and Calendar with `align_self: FlexStart`. An `align_self`
 //! overrides the parent's `align_items`, so `Stack(align = Start)` could not
 //! place them under left-aligned text, nor `Stack(align = End)` at the end.
@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use common::{lay_out, Laid};
 use idea_ui::{
-    Alert, AlertClose, Avatar, Badge, Button, Calendar, CivilDate, Chip, IconButton, SegmentOption, SegmentedControl, Spinner,
+    Alert, AlertClose, Avatar, Button, Calendar, CivilDate, Chip, IconButton, SegmentOption, SegmentedControl, Spinner,
     Stack, StackAlign, StackAxis, StackGap, Tag, Typography,
 };
 use runtime_core::{signal, ui, Element};
@@ -149,7 +149,6 @@ per_component! {
     tag => || ui! { Tag(label = "Tag".to_string()) },
     chip => || ui! { Chip(label = "Chip".to_string()) },
     chip_pressable => || ui! { Chip(label = "Chip".to_string(), on_select = Some(Rc::new(|| {}) as Rc<dyn Fn()>)) },
-    badge => || ui! { Badge(label = "Badge".to_string()) },
     icon_button => || ui! { IconButton(glyph = "x".to_string()) },
     avatar => || ui! { Avatar(initials = "AB".to_string()) },
     spinner => || ui! { Spinner() },
@@ -177,7 +176,6 @@ fn a_long_label_stays_inside_the_column() {
     for (name, element) in [
         ("Tag", Box::new({ let label = label.clone(); move || ui! { Tag(label = label) } }) as Box<dyn FnOnce() -> Element>),
         ("Chip", Box::new({ let label = label.clone(); move || ui! { Chip(label = label) } })),
-        ("Badge", Box::new({ let label = label.clone(); move || ui! { Badge(label = label) } })),
     ] {
         let laid = lay_out(NARROW, HEIGHT, || {
             let pill = element();

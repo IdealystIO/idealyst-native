@@ -2818,7 +2818,7 @@ pub fn cached_stylesheet(
 /// deterministic winner between two ORDINARY axes without depending on
 /// the names:
 ///
-/// - **Fold the conflicting axes into one.** idea-theme's Badge/Tag/Alert
+/// - **Fold the conflicting axes into one.** idea-theme's Tag/Alert
 ///   sheets key a single `appearance` axis as `{tone}_{variant}` for exactly
 ///   this reason — one axis, no cross-axis ordering to reason about.
 /// - **Use a later resolution step.** A computed layer (step 4) resolves

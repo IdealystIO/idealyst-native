@@ -24,7 +24,7 @@
 
 use crate::page_layout::{Page, Section};
 use idea_ui::{
-    tone, typography_kind, variant, Badge, Button, Card, CardPadding, Grid, List,
+    tone, typography_kind, variant, Tag, Button, Card, CardPadding, Grid, List,
     ListItem, Stack, StackGap, ToneRef, Typography,
 };
 use runtime_core::{current_breakpoint, rx, ui, Breakpoint, Element};
@@ -87,7 +87,7 @@ pub fn app() -> Element {
                     for (who, what, status) in ATTENTION.iter().copied() {
                         ListItem(
                             label = format!("{who} — {what}"),
-                            trailing = Some(ui! { Badge(label = status, tone = tone::Warning, variant = variant::Soft) }),
+                            trailing = Some(ui! { Tag(label = status, tone = tone::Warning, variant = variant::Soft) }),
                             on_press = Some(open.clone()),
                         )
                     }

@@ -137,7 +137,6 @@ lazy_page!(CenterPage, center, pages::layout::center, crate::routes::CENTER_ROUT
 lazy_page!(SpinnerPage, spinner, pages::status::spinner, crate::routes::SPINNER_ROUTE);
 lazy_page!(SkeletonPage, skeleton, pages::status::skeleton, crate::routes::SKELETON_ROUTE);
 lazy_page!(ProgressPage, progress, pages::status::progress, crate::routes::PROGRESS_ROUTE);
-lazy_page!(BadgePage, badge, pages::status::badge, crate::routes::BADGE_ROUTE);
 lazy_page!(TagPage, tag, pages::status::tag, crate::routes::TAG_ROUTE);
 lazy_page!(ChipPage, chip, pages::status::chip, crate::routes::CHIP_ROUTE);
 // Actions

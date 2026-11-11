@@ -34,7 +34,7 @@ rendered. The per-component `.d.ts` is authoritative; this is the shape.
 
 | Axis | Values | Used by |
 |---|---|---|
-| `appearance` | `<tone>_<variant>` — tone: `primary` `secondary` `neutral` `success` `danger` `warning` `info`; variant: `filled` `soft` `outlined` `ghost` | Button, Badge, Tag, Alert, IconButton |
+| `appearance` | `<tone>_<variant>` — tone: `primary` `secondary` `neutral` `success` `danger` `warning` `info`; variant: `filled` `soft` `outlined` `ghost` | Button, Tag, Alert, IconButton |
 | `size` | `sm` `md` `lg` | Button, IconButton |
 | `shape` | `sm` `md` `lg` `pill` | Button |
 | `block` | `off` `on` (full width) | Button |
@@ -50,7 +50,7 @@ rendered. The per-component `.d.ts` is authoritative; this is the shape.
 | `color` | `default` `muted` `primary` `secondary` `neutral` `success` `danger` `warning` `info` | Typography |
 | `weight` | `thin` `extra_light` `light` `normal` `medium` `semi_bold` `bold` `extra_bold` `black` `inherit` | Typography |
 | `align` | `left` `center` `right` `justify` | Typography |
-| `interactive` | `off` `on` | Badge, Tag, Alert |
+| `interactive` | `off` `on` | Tag, Alert |
 
 ```jsx
 <Button appearance="danger_filled" size="lg" shape="pill">Delete</Button>
@@ -126,13 +126,13 @@ Component names and props here match the Rust API (`idea_ui::Button`,
 ## Worked example
 
 ```jsx
-const { Card, Stack, Typography, Button, Badge } = window.IdeaUI;
+const { Card, Stack, Typography, Button, Tag } = window.IdeaUI;
 
 <Card variant="elevated" padding="lg">
   <Stack gap="md">
     <Stack axis="row" justify="between" align="center">
       <Typography kind="h3">Deployment</Typography>
-      <Badge appearance="success_soft">Live</Badge>
+      <Tag appearance="success_soft">Live</Tag>
     </Stack>
     <Typography kind="body-sm">Last shipped 4 minutes ago.</Typography>
     <Stack axis="row" gap="sm" align="start">

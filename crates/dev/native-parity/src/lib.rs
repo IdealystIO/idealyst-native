@@ -1481,7 +1481,7 @@ mod tests {
         assert!(al.unmatched.iter().all(|u| !u.in_a && u.kind == "View"), "{:?}", al.unmatched);
     }
 
-    /// The variant actually seen on the docs' Badge page: web's extra
+    /// The variant seen on an idea-ui docs page: web's extra
     /// anonymous view holds NO identifiable content. Falling back to "first
     /// candidate in order" paired it with native's table passthrough.
     #[test]
@@ -1502,7 +1502,7 @@ mod tests {
         assert_eq!(matched(&al, 5), None, "a content-free box is not the table wrapper");
     }
 
-    /// The exact Badge-page shape, read from the live apps: web's section ends
+    /// A docs-page shape read from the live apps: web's section ends
     /// in a CHILDLESS view, native's holds the passthrough and then its own
     /// childless view. Positional pairing gave web's empty view the
     /// passthrough.

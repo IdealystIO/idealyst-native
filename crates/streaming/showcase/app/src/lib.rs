@@ -12,7 +12,7 @@
 //! | `ShopNavigator` | bundle | a navigator DEFINED in the bundle: typed routes, route links, screen options in its header, an async `#[host_fn]`, writing the app's cart |
 //! | `ToolsScreen` (`tools.rs`) | bundle | every kind of `#[host_fn]`, generic ones included, called with the bundle's own types |
 //! | `Settings` | app | native controls: the idea theme (light/dark) every screen follows, and the `FeedPrefs` context the feed reads |
-//! | idea-ui (`Card`, `Badge`, `Button`, `Typography`, `Switch`, `Slider`) | app | a component library the bundle uses — imported from the app, not bundled |
+//! | idea-ui (`Card`, `Tag`, `Button`, `Typography`, `Switch`, `Slider`) | app | a component library the bundle uses — imported from the app, not bundled |
 //!
 //! The rules on display:
 //! - `#[component(remote)]` ships in the bundle; every other `#[component]`
@@ -46,7 +46,7 @@ pub mod bench;
 /// Tools tab).
 pub mod tools;
 
-use idea_ui::{tone, typography_kind, Badge, Button, Card, IdeaThemeRef, Slider, Switch, Typography};
+use idea_ui::{tone, typography_kind, Tag, Button, Card, IdeaThemeRef, Slider, Switch, Typography};
 use runtime_core::{component, host_fn, rx, signal, ui, Element, ReadSignal, Remote, Signal};
 use runtime_shared::primitives::navigator::{Route, RouteParams};
 use runtime_shared::{Color, FontWeight, Length, StyleRules, Tokenized};
@@ -262,7 +262,7 @@ pub fn FeedScreen() -> Element {
                     Button(label = "☾ Dark".to_string(), on_click = handler(|| idea_ui::set_idea_color_scheme(runtime_core::ColorScheme::Dark)), tone = tone::Neutral)
                     Button(label = "Toast".to_string(), on_click = handler(|| { idea_ui::push_toast("Hello from the bundle", tone::Success); }), tone = tone::Neutral)
                 }
-                Badge(label = format!("running on {device}"), tone = tone::Info)
+                Tag(label = format!("running on {device}"), tone = tone::Info)
                 text(style = Muted()) { move || format!("density: {}", if compact.is_some_and(|c| c.get()) { "compact" } else { "comfortable" }) }
                 for (post, like) in POSTS.iter().zip(likes) {
                     Card() {

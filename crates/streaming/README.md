@@ -95,7 +95,7 @@ Edit `Scoreboard`, press **Reload remote**: the remote section remounts from the
 | `ShopNavigator` | bundle | a stack navigator defined in the bundle: route links with typed params, a header reading `StackNav` and the screen's title option, an async `#[host_fn]` (reviews), idea-ui's `Slider`/`Switch`/`Button` writing the app's cart signal |
 | `ToolsScreen` (`src/tools.rs`) | bundle | every kind of `#[host_fn]`: plain values, structs and `Result`, a list of numbers, `async`, and generic ones (`Key`, `Opaque`, `Numeric`) called with the bundle's own types |
 | `Settings` | app | native controls: the idea theme (light/dark) every screen follows, and the `FeedPrefs` the feed reads |
-| idea-ui (`Card`, `Badge`, `Button`, `Typography`, `Switch`, `Slider`) | app | a component library the bundle uses: imported from the app, rendered natively with the app's idea theme, not bundled |
+| idea-ui (`Card`, `Tag`, `Button`, `Typography`, `Switch`, `Slider`) | app | a component library the bundle uses: imported from the app, rendered natively with the app's idea theme, not bundled |
 
 ```sh
 cargo run --release -p stream-spike --bin stream-serve   # optional: serves /showcase.wasm, rebuilds on save

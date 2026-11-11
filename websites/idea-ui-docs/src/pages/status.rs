@@ -1,4 +1,4 @@
-//! Status — Spinner, Skeleton, Progress, Badge, Tag, Chip.
+//! Status — Spinner, Skeleton, Progress, Tag, Chip.
 //!
 //! Each `pub fn` returns the page **body only** — a column of demo
 //! `Section`s. The central frame (`shell::page_frame_content`, rendered
@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use runtime_core::{signal, ui, Element};
 use idea_ui::{
-    Badge, Button, Chip, Progress, ProgressMode, Skeleton, SkeletonWidth, Spinner,
+    Button, Chip, Progress, ProgressMode, Skeleton, SkeletonWidth, Spinner,
     SpinnerSize, Stack, StackAxis, StackGap, Tag, tone, variant,
 };
 
@@ -232,69 +232,6 @@ ui! { Progress(mode = ProgressMode::Simulated) }"##.to_string())
 }
 
 // =============================================================================
-// Badge
-// =============================================================================
-
-pub fn badge() -> Element {
-    body(vec![
-        ui! {
-            Section(title = "Soft (default)".to_string()) {
-                P(content = "A muted tint with a tone-colored label — the everyday status \
-                    pill. Every tone is available.".to_string())
-                DemoSurface {
-                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
-                        Badge(label = "Neutral".to_string(),   tone = tone::Neutral,   variant = variant::Soft)
-                        Badge(label = "Primary".to_string(),   tone = tone::Primary,   variant = variant::Soft)
-                        Badge(label = "Secondary".to_string(), tone = tone::Secondary, variant = variant::Soft)
-                        Badge(label = "Success".to_string(),   tone = tone::Success,   variant = variant::Soft)
-                        Badge(label = "Danger".to_string(),    tone = tone::Danger,    variant = variant::Soft)
-                        Badge(label = "Warning".to_string(),   tone = tone::Warning,   variant = variant::Soft)
-                        Badge(label = "Info".to_string(),      tone = tone::Info,      variant = variant::Soft)
-                    }
-                }
-            }
-        },
-        ui! {
-            Section(title = "Solid".to_string()) {
-                P(content = "The Filled variant paints a solid tone fill with a contrasting \
-                    label — use it for counts and high-emphasis statuses.".to_string())
-                DemoSurface {
-                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
-                        Badge(label = "Neutral".to_string(),   tone = tone::Neutral,   variant = variant::Filled)
-                        Badge(label = "Primary".to_string(),   tone = tone::Primary,   variant = variant::Filled)
-                        Badge(label = "Secondary".to_string(), tone = tone::Secondary, variant = variant::Filled)
-                        Badge(label = "Success".to_string(),   tone = tone::Success,   variant = variant::Filled)
-                        Badge(label = "Danger".to_string(),    tone = tone::Danger,    variant = variant::Filled)
-                        Badge(label = "Warning".to_string(),   tone = tone::Warning,   variant = variant::Filled)
-                        Badge(label = "Info".to_string(),      tone = tone::Info,      variant = variant::Filled)
-                    }
-                }
-            }
-        },
-        ui! {
-            Section(title = "Props".to_string()) {
-                PropsTable(rows = vec![
-                    Prop { name: "label",   ty: "Reactive<String>", desc: "Pill text. Static or reactive." },
-                    Prop { name: "tone",    ty: "ToneRef",          desc: "Semantic palette. Default: Neutral." },
-                    Prop { name: "variant", ty: "BadgeVariant",       desc: "Filled / Soft / Outlined. No Ghost (a transparent badge would be invisible). Default: Soft." },
-                ])
-                CodePanel(src = r##"// Status indicator in a header
-Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
-    Typography(content = "User settings".into(), kind = typography_kind::H2)
-    Badge(label = "Beta".into(), tone = tone::Info, variant = variant::Soft)
-}
-
-// Count badge next to a label
-Stack(axis = StackAxis::Row, gap = StackGap::Xs) {
-    Typography(content = "Inbox".into())
-    Badge(label = "3".into(), tone = tone::Primary, variant = variant::Filled)
-}"##.to_string())
-            }
-        },
-    ])
-}
-
-// =============================================================================
 // Tag
 // =============================================================================
 
@@ -331,17 +268,43 @@ pub fn tag() -> Element {
             }
         },
         ui! {
-            Section(title = "Intents".to_string()) {
-                P(content = "Tag carries the same tone × variant axes as Badge. Pick the tone \
-                    that matches the label's meaning.".to_string())
+            Section(title = "Status labels".to_string()) {
+                P(content = "Without `on_remove` a Tag is a static status label. Soft is a \
+                    muted tint with a tone-colored label, the everyday status pill; pick the \
+                    tone that matches the label's meaning.".to_string())
                 DemoSurface {
                     Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
+                        Tag(label = "Neutral".to_string(),   tone = tone::Neutral,   variant = variant::Soft)
                         Tag(label = "Primary".to_string(),   tone = tone::Primary,   variant = variant::Soft)
+                        Tag(label = "Secondary".to_string(), tone = tone::Secondary, variant = variant::Soft)
                         Tag(label = "Success".to_string(),   tone = tone::Success,   variant = variant::Soft)
                         Tag(label = "Danger".to_string(),    tone = tone::Danger,    variant = variant::Soft)
+                        Tag(label = "Warning".to_string(),   tone = tone::Warning,   variant = variant::Soft)
+                        Tag(label = "Info".to_string(),      tone = tone::Info,      variant = variant::Soft)
+                    }
+                }
+                P(content = "Filled paints a solid tone fill with a contrasting label: use it \
+                    for counts and high-emphasis statuses. Outlined keeps only the border.".to_string())
+                DemoSurface {
+                    Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
+                        Tag(label = "3".to_string(),         tone = tone::Primary,   variant = variant::Filled)
+                        Tag(label = "Success".to_string(),   tone = tone::Success,   variant = variant::Filled)
+                        Tag(label = "Danger".to_string(),    tone = tone::Danger,    variant = variant::Filled)
+                        Tag(label = "Warning".to_string(),   tone = tone::Warning,   variant = variant::Filled)
                         Tag(label = "Outlined".to_string(),  tone = tone::Neutral,   variant = variant::Outlined)
                     }
                 }
+                CodePanel(src = r##"// Status indicator in a header
+Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+    Typography(content = "User settings".into(), kind = typography_kind::H2)
+    Tag(label = "Beta".into(), tone = tone::Info, variant = variant::Soft)
+}
+
+// Count next to a label
+Stack(axis = StackAxis::Row, gap = StackGap::Xs) {
+    Typography(content = "Inbox".into())
+    Tag(label = "3".into(), tone = tone::Primary, variant = variant::Filled)
+}"##.to_string())
             }
         },
         ui! {

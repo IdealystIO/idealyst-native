@@ -52,7 +52,7 @@ a question it answers. → `dashboard` recipe.
 ### Collection (list of things)
 Header (title, count, primary "New" action), then search/filter toolbar,
 then the list or table. Rows show the identifying label, one or two
-attributes, and status as a `Badge`. Row press opens the detail. Design
+attributes, and status as a `Tag`. Row press opens the detail. Design
 the five states. → `collection_states` recipe; list + detail together →
 `list_detail_adaptive`.
 

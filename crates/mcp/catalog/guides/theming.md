@@ -287,7 +287,7 @@ time, on every platform and build. Use it for a stable per-user color:
 `tone::palette_hues()` lists the twelve in order.
 
 **Which components take them.** The categorization components — `Avatar`,
-`Tag`, `Chip` and `Badge` — have the hues in their default sheets. The other
+`Tag` and `Chip` — have the hues in their default sheets. The other
 tone components (`Button`, `Alert`, `Switch`, …) stay on the seven intents by
 default, because each tone is pre-rendered into the shipped CSS for every
 variant, and adding twelve hues to every component would add roughly 260 KB
@@ -358,7 +358,7 @@ The seven built-in intents cover most needs, but you can add your own semantic
 palette (a "tone") with the `tone!` macro and list it in your theme:
 `app_theme! { pub MyTheme { idea: IdeaThemeDefaults, tones: [Brand] } }`.
 Installing that theme registers the tone, and that is all it takes:
-`Button(tone = Brand)`, `Badge(tone = Brand)`, `Field(tone = Brand)` and every
+`Button(tone = Brand)`, `Tag(tone = Brand)`, `Field(tone = Brand)` and every
 other tone-aware component draw it, in every variant, and it premints with the
 rest. An app without its own theme type registers the tone directly with
 `register_tone(Brand)` at boot. Apps that only need to retune existing colors

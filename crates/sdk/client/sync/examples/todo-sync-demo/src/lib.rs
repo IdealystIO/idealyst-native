@@ -28,7 +28,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use idea_ui::{
-    install_idea_theme, light_theme, tone, typography_kind, variant, Badge, Button, Card,
+    install_idea_theme, light_theme, tone, typography_kind, variant, Tag, Button, Card,
     CardPadding, Field, Stack, StackAlign, StackAxis, StackGap, StackPadding, Typography,
 };
 use runtime_core::driver::spawn_detached;
@@ -275,13 +275,13 @@ fn TodoRow(props: &TodoRowProps) -> Element {
 
     let badge = match props.status {
         EntryStatus::Synced => {
-            ui! { Badge(label = "Synced".to_string(), tone = tone::Success, variant = variant::Soft) }
+            ui! { Tag(label = "Synced".to_string(), tone = tone::Success, variant = variant::Soft) }
         }
         EntryStatus::Pending => {
-            ui! { Badge(label = "Pending".to_string(), tone = tone::Warning, variant = variant::Soft) }
+            ui! { Tag(label = "Pending".to_string(), tone = tone::Warning, variant = variant::Soft) }
         }
         EntryStatus::Conflicted => {
-            ui! { Badge(label = "Conflict".to_string(), tone = tone::Danger, variant = variant::Soft) }
+            ui! { Tag(label = "Conflict".to_string(), tone = tone::Danger, variant = variant::Soft) }
         }
     };
 

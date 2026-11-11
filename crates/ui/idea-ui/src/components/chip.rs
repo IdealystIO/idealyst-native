@@ -1,8 +1,7 @@
 //! `Chip` — a selectable pill toggle.
 //!
-//! Where [`Badge`](super::badge::Badge) is a static status pill and
-//! [`Tag`](super::tag::Tag) is a removable one, `Chip` is the *selectable*
-//! member of the family: tapping it reports a select, and its `selected`
+//! Where [`Tag`](super::tag::Tag) is a status pill, optionally removable,
+//! `Chip` is the *selectable* member of the family: tapping it reports a select, and its `selected`
 //! flag drives a distinct on/off appearance. It's the everyday building
 //! block for filter rows, choice chips, and multi-select toggles.
 //!

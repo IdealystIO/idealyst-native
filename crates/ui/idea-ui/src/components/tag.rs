@@ -15,8 +15,8 @@
 //! }
 //! ```
 //!
-//! Same tone × variant axes as [`Badge`](super::badge::Badge) — the only
-//! difference is the optional close affordance. `leading` puts an
+//! With no `on_remove` it is a static status label (a count, a state).
+//! `leading` puts an
 //! [`Adornment`] before the label: `Adornment::Icon(MAP)`, or
 //! `Adornment::element(|| ui! { view(style = StatusDot()) })` for a status dot.
 //! Styling is [`TagStyles`]: `root` (the pill), `label`, `icon` (a leading

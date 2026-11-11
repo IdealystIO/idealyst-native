@@ -22,7 +22,7 @@
 //! something, leave idea-ui's default — don't invent a brand.
 
 use idea_ui::{
-    install_idea_theme_schemes, tone, typography_kind, variant, Badge, Button, ButtonShape,
+    install_idea_theme_schemes, tone, typography_kind, variant, Tag, Button, ButtonShape,
     ButtonStyles, Card, CardPadding, CardStyles, CardVariant, Field, FieldAppearance, FieldStyles,
     IdeaThemeDefaults, IntentColors, Stack, StackAxis, StackGap, StackPadding, Tokenized,
     Typography,
@@ -155,7 +155,7 @@ pub fn app() -> Element {
                 Stack(gap = StackGap::Md) {
                     Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
                         Typography(content = "New project", kind = typography_kind::H3)
-                        Badge(label = "Starter", tone = tone::Primary, variant = variant::Soft)
+                        Tag(label = "Starter", tone = tone::Primary, variant = variant::Soft)
                     }
                     Field(label = Some("Project name".to_string()), value = name, on_change = on_name)
                     Typography(content = "Your brand drives every surface on this card.", muted = true)

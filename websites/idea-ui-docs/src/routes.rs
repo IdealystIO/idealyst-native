@@ -86,7 +86,6 @@ pub const CENTER_ROUTE: Route<()> = Route::<()>::new("center", "/layout/center")
 pub const SPINNER_ROUTE: Route<()> = Route::<()>::new("spinner", "/status/spinner");
 pub const SKELETON_ROUTE: Route<()> = Route::<()>::new("skeleton", "/status/skeleton");
 pub const PROGRESS_ROUTE: Route<()> = Route::<()>::new("progress", "/status/progress");
-pub const BADGE_ROUTE: Route<()> = Route::<()>::new("badge", "/status/badge");
 pub const TAG_ROUTE: Route<()> = Route::<()>::new("tag", "/status/tag");
 pub const CHIP_ROUTE: Route<()> = Route::<()>::new("chip", "/status/chip");
 // Actions
@@ -323,22 +322,13 @@ pub const CATALOG: &[Group] = &[
                 code: "Progress(mode = ProgressMode::Indeterminate, tone = tone::Info)",
             },
             Entry {
-                route: &BADGE_ROUTE,
-                name: "Badge",
-                status: Detailed,
-                token: "intent-*-soft-*",
-                desc: "A compact status label. Solid or soft, across all seven intents, plus dot form.",
-                body: lazy_pages::badge,
-                code: "Badge(label = \"Active\".into(), tone = tone::Success)",
-            },
-            Entry {
                 route: &TAG_ROUTE,
                 name: "Tag",
                 status: Preview,
                 token: "intent-*-soft-*",
-                desc: "A removable label for categorising or filtering, with optional leading icon.",
+                desc: "A compact status label across every tone and variant, optionally removable, with an optional leading icon.",
                 body: lazy_pages::tag,
-                code: "",
+                code: "Tag(label = \"Active\".into(), tone = tone::Success)",
             },
             Entry {
                 route: &CHIP_ROUTE,

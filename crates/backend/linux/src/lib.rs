@@ -2655,8 +2655,8 @@ impl LinuxBackend {
             // A text leaf's box is painted by this parent, and `apply_style`
             // ran before the child had one — so hand it over now. Without
             // this the recorded model never reaches a painter and the box
-            // silently never draws (idea-ui's Badge: 67 such nodes in the
-            // docs catalogue, every one an invisible pill).
+            // silently never draws (a pill drawn as one styled `text` node
+            // is an invisible pill).
             if let Some(cs) = self.nodes.get(&child.id) {
                 if cs.text_box.paints() {
                     iv.set_child_model(&child.widget, cs.text_box.clone());
@@ -2949,8 +2949,8 @@ impl LinuxBackend {
                 // This arm used to resolve typography and colour only, so
                 // anything else a stylesheet put on a `text` node was dropped
                 // on this backend while web handed the same `StyleRules` to a
-                // `<span>` and CSS painted all of it. `idea-ui`'s Badge is
-                // exactly that shape (white text on a coloured pill), so on
+                // `<span>` and CSS painted all of it. A pill drawn as one styled
+                // `text` is exactly that shape (white text on a coloured fill), so on
                 // GTK it rendered white text on the page background — nothing
                 // visible at all in the light theme.
                 //
@@ -5939,8 +5939,8 @@ mod layout_tests {
         // `apply_style`'s `NodeKind::Text` arm resolved typography and colour
         // only, so box styling on a text node was dropped here while web
         // handed the same `StyleRules` to a `<span>` and CSS painted all of it.
-        // `idea-ui`'s Badge is exactly that shape — white text on a coloured
-        // pill — so on GTK it rendered white text on the page background:
+        // A pill drawn as one styled `text` is exactly that shape — white text
+        // on a coloured fill — so on GTK it rendered white text on the page background:
         // nothing visible at all in the light theme. 80 text nodes across the
         // docs catalogue were losing box styling this way.
         //
@@ -5971,7 +5971,7 @@ mod layout_tests {
                 .child_model(&badge.widget)
                 .expect("parent must know this child");
             let bg = model.background.expect(
-                "a text node's background was dropped — Badge renders white text on nothing",
+                "a text node's background was dropped — a text pill renders white text on nothing",
             );
             assert!(
                 (bg[0] - 0.8627).abs() < 1e-2 && bg[1] < 0.2 && bg[2] < 0.2,

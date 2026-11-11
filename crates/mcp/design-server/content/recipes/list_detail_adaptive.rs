@@ -36,7 +36,7 @@
 
 use crate::page_layout::{Page, PageWidth, Section};
 use idea_ui::{
-    tone, typography_kind, variant, Badge, Button, Card, CardPadding, Center, IdeaThemeRef, List,
+    tone, typography_kind, variant, Tag, Button, Card, CardPadding, Center, IdeaThemeRef, List,
     ListItem, Stack, StackGap, ToneRef, Typography,
 };
 use idea_ui_nav::StackHeader;
@@ -238,7 +238,7 @@ fn ProjectList(
                     ListItem(
                         label = project.name.to_string(),
                         trailing = Some(ui! {
-                            Badge(label = project.status, tone = status_tone(project.status), variant = variant::Soft)
+                            Tag(label = project.status, tone = status_tone(project.status), variant = variant::Soft)
                         }),
                         active = rx!(selected.is_some_and(|s| s.get() == format!("/projects/{}", project.id))),
                         on_press = Some({
@@ -264,7 +264,7 @@ fn ProjectDetail(
             Section(title = "Overview") {
                 Card(padding = CardPadding::Md) {
                     Stack(gap = StackGap::Sm) {
-                        Badge(label = status, tone = status_tone(status), variant = variant::Soft)
+                        Tag(label = status, tone = status_tone(status), variant = variant::Soft)
                         Typography(content = summary)
                     }
                 }

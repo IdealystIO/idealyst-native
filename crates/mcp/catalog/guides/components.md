@@ -116,7 +116,7 @@ The DSL coerces every prop value into its field type via `.into()` (it builds th
 ```rust
 ui! {
     Typography(content = "Hello", kind = typography_kind::H1)   // not H1.into()
-    Badge(label = label_string, tone = tone::Primary)            // not tone::Primary.into()
+    Tag(label = label_string, tone = tone::Primary)              // not tone::Primary.into()
 }
 ```
 

@@ -574,7 +574,7 @@ stylesheet! {
             on(t) {
                 // Theme-tokenized so the active-link highlight adapts
                 // to dark mode. Uses idea-ui's intent-primary-soft
-                // tokens (the same pair Badge/Tag/Alert use for the
+                // tokens (the same pair Tag/Alert use for the
                 // Soft kind), so the active link reads as "selected"
                 // in the framework's vocabulary on either palette.
                 background: t.intent.primary.soft_bg(),

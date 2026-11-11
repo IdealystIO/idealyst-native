@@ -26,7 +26,7 @@ extern crate runtime_core;
 
 use std::rc::Rc;
 
-use idea_ui::{tone, typography_kind, variant, Alert, Badge, Button, ButtonVariant, Card, Field, Modal, Switch, ToneRef, Tooltip, Typography};
+use idea_ui::{tone, typography_kind, variant, Alert, Tag, Button, ButtonVariant, Card, Field, Modal, Switch, ToneRef, Tooltip, Typography};
 use runtime_core::{component, signal, ui, Element, ReadSignal, Signal};
 use serde::{Deserialize, Serialize};
 use server::{server, ServerError};
@@ -660,9 +660,9 @@ fn BundleCard(#[prop(static)] bundle: BundleView) -> Element {
         Card() {
             view(style = row(10.0)) {
                 Typography(content = format!("Bundle `{name}`"), kind = typography_kind::H3)
-                Badge(label = headline, tone = headline_tone)
+                Tag(label = headline, tone = headline_tone)
                 if has_pin {
-                    Badge(label = "pinned".to_string(), tone = tone::Info)
+                    Tag(label = "pinned".to_string(), tone = tone::Info)
                     Button(label = "Unpin".to_string(), on_click = on_unpin.clone(), variant = variant::Ghost)
                 }
             }
@@ -706,10 +706,10 @@ fn ReleaseRow(
             view(style = row(8.0)) {
                 text(style = runtime_core::StyleRules { font_weight: Some(runtime_core::FontWeight::Bold), ..Default::default() }) { format!("{} · {}", r.version, short(&r.sha256)) }
                 if position == 0 {
-                    Badge(label = "live".to_string(), tone = tone::Success)
+                    Tag(label = "live".to_string(), tone = tone::Success)
                 }
                 if pinned {
-                    Badge(label = "pinned".to_string(), tone = tone::Info)
+                    Tag(label = "pinned".to_string(), tone = tone::Info)
                 }
             }
             text(style = runtime_core::StyleRules { color: Some(runtime_core::Tokenized::Literal(runtime_core::Color("#4b5563".into()))), ..Default::default() }) { detail }
@@ -764,7 +764,7 @@ fn WithdrawnRow(#[prop(static)] bundle: String, #[prop(static)] withdrawn: Withd
     ui! {
         view(style = row(10.0)) {
             if w.urgent {
-                Badge(label = "killed".to_string(), tone = tone::Danger)
+                Tag(label = "killed".to_string(), tone = tone::Danger)
             }
             text(style = runtime_core::StyleRules { flex_grow: Some(runtime_core::Tokenized::Literal(1.0)), ..Default::default() }) { line }
             Button(
@@ -1030,7 +1030,7 @@ fn BuildRow(#[prop(static)] build: BuildView) -> Element {
         }) {
             view(style = row(8.0)) {
                 text(style = runtime_core::StyleRules { font_weight: Some(runtime_core::FontWeight::Bold), ..Default::default() }) { name }
-                Badge(label = badge, tone = badge_tone)
+                Tag(label = badge, tone = badge_tone)
                 text(style = runtime_core::StyleRules { color: Some(runtime_core::Tokenized::Literal(runtime_core::Color("#4b5563".into()))), ..Default::default() }) { header }
             }
             for (runs, blocked) in lines {

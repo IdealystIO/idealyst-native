@@ -11,6 +11,19 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **idea-ui's `Badge` is gone; `Tag` is the one status pill** (`idea-ui` major). `Badge` and
+  `Tag` drew the same tone × variant pill, and a `Tag` with no `on_remove` already was a static
+  label. `Badge`, `BadgeProps`, `BadgeStyles`, `BadgeVariant`, `BadgeRestyle` and
+  `BadgeSlotStyles` are removed.
+  - **Rename every `Badge(` to `Tag(`.** `label`, `tone` and `variant` mean the same on both, so
+    the call site needs no other change. `BadgeVariant` becomes `TagVariant`.
+  - **The pill looks slightly different.** A Badge label was uppercase at caption size; a Tag
+    label is as written, at the small body size. Uppercase the string where that look mattered.
+  - **A `BadgeStyles` restyle moves to `TagStyles`,** and the text color moves with it: Badge was
+    one text node, so `root` carried both fill and color; Tag's label, leading icon and close `×`
+    are their own nodes, so set the color on the `label`, `icon` and `glyph` slots.
+  - The `badge_status` and `badge_tones` recipes are `tag_status` and `tag_tones`.
+
 - **An Android camera displays through a native surface, and makes CPU frames only on demand**
   (`camera`, `media-stream`, `video`, `video-compose` minor). `Video` showing a camera stream is
   now a `TextureView` Camera2 fills with no copy into the process, and the `ImageReader` is a

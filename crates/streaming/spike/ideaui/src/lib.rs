@@ -14,7 +14,7 @@ use std::rc::Rc;
 use idea_ui::components::card;
 use idea_ui::{
     shape, size, tone, typography_kind, variant, Accordion, Autocomplete, AccordionItem, Adornment, Alert, AlertClose, Avatar,
-    AvatarSize, Badge, Breadcrumbs, Button, Calendar, Card, CardPadding, Center, Checkbox, Chip, CivilDate,
+    AvatarSize, Breadcrumbs, Button, Calendar, Card, CardPadding, Center, Checkbox, Chip, CivilDate,
     CivilDateTime, CivilTime, Collapsible, Crumb, DateInput, DatePicker, DateRangePicker, DateTimeInput, DateTimePicker, Divider, DividerAxis, Field, FieldAppearance, FieldSize, Grid,
     Icon, IconButton, IconButtonSize, Image, Link, List, ListItem, Menu, MenuEntry, MenuItem, MenuLabel, MenuSeparator,
     Modal, ModalContent, ModalPresentation, Pagination, Popover, Progress, ProgressMode, Radio, RadioAxis, RadioGroup,
@@ -89,7 +89,7 @@ pub fn status_demo() -> Element {
             Typography(content = s("Heading"), kind = typography_kind::H1)
             Typography(content = s("muted, centred"), muted = true, align = TextAlign::Center)
             Typography(content = s("danger"), tone = Some(tone::Danger.into()))
-            Badge(label = s("Active"), tone = tone::Success, variant = variant::Soft)
+            Tag(label = s("Active"), tone = tone::Success, variant = variant::Soft)
             Tag(label = s("rust"), tone = tone::Info, on_remove = Some(act(move || closed.update(|n| n + 1))))
             Chip(label = s("filter"), selected = true, on_select = Some(act(|| {})))
             Avatar(initials = s("AB"), tone = tone::Violet, size = AvatarSize::Lg)
@@ -265,7 +265,7 @@ pub fn navigation_demo() -> Element {
             Pagination(page = page, total = 5usize, on_change = on(move |p| page.set(p)))
             List() {
                 ListItem(label = s("First"), on_press = Some(act(|| {})), active = true)
-                ListItem(label = s("Second"), trailing = Some(ui! { Badge(label = s("2")) }))
+                ListItem(label = s("Second"), trailing = Some(ui! { Tag(label = s("2")) }))
             }
         }
     }
@@ -332,7 +332,7 @@ pub fn data_demo() -> Element {
                 TableRow(on_row_click = Some(act(|| {}))) {
                     TableCell(text = Some(s("Ada")))
                     TableCell() {
-                        Badge(label = s("Admin"))
+                        Tag(label = s("Admin"))
                     }
                 }
             }

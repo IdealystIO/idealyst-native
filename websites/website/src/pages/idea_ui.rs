@@ -90,7 +90,7 @@ fn what_ships() -> Element {
                      `Autocomplete`, `Checkbox`, `Radio`, `Switch`, `Slider`, \
                      `SegmentedControl`. Overlays: `Modal`, `Popover`, `Tooltip`, \
                      `Toast`, `Menu`. Data & feedback: `Table`, `List`, `Tabs`, \
-                     `Pagination`, `Breadcrumbs`, `Badge`, `Chip`, `Tag`, `Avatar`, \
+                     `Pagination`, `Breadcrumbs`, `Chip`, `Tag`, `Avatar`, \
                      `Alert`, `Progress`, `Skeleton`, `Spinner`, `Collapsible`. Plus \
                      `Typography`, `Icon` (with the Lucide set), `Image`, and `Link`.".to_string(),
                     "Interactive components carry the details you'd otherwise build \

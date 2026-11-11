@@ -22,7 +22,7 @@
 //! }
 //! ```
 //!
-//! Same tone × variant axes as [`Badge`](super::badge::Badge). Styling is
+//! Same tone × variant axes as [`Tag`](super::tag::Tag). Styling is
 //! [`AlertStyles`]: `root` (the banner), `content` (the title/body
 //! column), `title`, `body`, `close` (the built-in close button) and
 //! `glyph` (its `×`). The text slots carry the fill's foreground on their

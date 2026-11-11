@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use idea_ui::{
-    tone, typography_kind, variant, Adornment, Badge, Button, Checkbox, ControlSize, Field,
+    tone, typography_kind, variant, Adornment, Tag, Button, Checkbox, ControlSize, Field,
     FieldSize, Icon, Typography,
 };
 use runtime_core::{component, derived, effect, memo, pressable, signal, ui, Element, IntoElement, Signal, TrackSize};
@@ -297,7 +297,7 @@ fn mode_badge(mode: &str) -> (&'static str, idea_ui::ToneRef) {
 fn PropLine(#[prop(static)] prop: Prop) -> Element {
     let (label, badge_tone) = mode_badge(&prop.mode);
     let badge_variant =
-        if prop.mode == "live" { idea_ui::BadgeVariant::Soft } else { idea_ui::BadgeVariant::Outlined };
+        if prop.mode == "live" { idea_ui::TagVariant::Soft } else { idea_ui::TagVariant::Outlined };
     let value = prop.value.clone().unwrap_or_else(|| "—".to_string());
     ui! {
         view(style = grid_row(&PROP_TRACKS, false, false)) {
@@ -305,7 +305,7 @@ fn PropLine(#[prop(static)] prop: Prop) -> Element {
             text(style = MonoMuted()) { prop.ty.clone() }
             text(style = Mono()) { value }
             view(style = RowStart()) {
-                Badge(
+                Tag(
                     label = label.to_string(),
                     tone = badge_tone,
                     variant = badge_variant,

@@ -1,6 +1,6 @@
 //! Shared building blocks for idea-ui's tone-aware component styles.
 //!
-//! A tone-aware component (Button, Badge, Tag, Alert, …) declares `tone`
+//! A tone-aware component (Button, Tag, Alert, …) declares `tone`
 //! and `variant` axes on its slots and draws one compound per `(tone,
 //! variant)` pair. These helpers are the `extend`-hook halves every one of
 //! them shares — the surface fill, the text foreground — plus the prop →
