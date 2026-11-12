@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "build-ios"
-version = "3.3.0"
+version = "3.4.0"
 dependencies = [
  "anyhow",
  "semver",
@@ -3676,7 +3676,7 @@ dependencies = [
 
 [[package]]
 name = "device-admin"
-version = "7.0.0"
+version = "7.1.0"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
@@ -5843,7 +5843,7 @@ dependencies = [
 
 [[package]]
 name = "host-gtk"
-version = "8.0.0"
+version = "8.0.1"
 dependencies = [
  "backend-linux",
  "gtk4",
@@ -6576,7 +6576,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7746,7 +7746,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -10844,7 +10844,7 @@ dependencies = [
 
 [[package]]
 name = "run-android"
-version = "5.0.0"
+version = "5.1.0"
 dependencies = [
  "anyhow",
  "build-android",
