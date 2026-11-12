@@ -32,7 +32,7 @@
 use runtime_core::{
     component, component_styles, pressable, resolve_style, text, ui, view, AlignItems, Color, Cursor, Element,
     FlexDirection, FontWeight, IdealystSchema, IntoElement, JustifyContent, Length, Position, Reactive, Signal,
-    SlotStyle, StyleApplication, StyleRules, StyleSheet, Tokenized, VariantEnum,
+    SlotStyle, StyleApplication, StyleRules, Tokenized, VariantEnum,
 };
 // Named by a `#[prop(example = …)]` value, which compiles only in docs builds.
 #[allow(unused_imports)]
@@ -351,6 +351,20 @@ component_styles! {
             }
         }
 
+        /// A tab's label. It carries the type itself: native text takes
+        /// nothing from the pressable it sits in (the web's cascade is what
+        /// let the box's `font_size` reach it), so a label styled only by
+        /// its tab drew at the platform default on iOS and Android. The
+        /// values are the tabs' own, so the web is unchanged. The colour
+        /// still comes per selection state from the computed layer in
+        /// `tab_button`.
+        slot label {
+            base(t) {
+                font_weight: FontWeight::Medium,
+                font_size: t.typography.body_size(),
+            }
+        }
+
         /// A content area for below the bar.
         slot panel {
             base(t) {
@@ -383,24 +397,6 @@ impl VariantEnum for TabIndicator {
     fn all_variants() -> &'static [Self] {
         &[TabIndicator::Underline, TabIndicator::Dot]
     }
-}
-
-runtime_tls::thread_local! {
-    static TAB_LABEL_BASE_SHEET: std::cell::RefCell<Option<Rc<StyleSheet>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// A single shared, empty base sheet for tab labels. The per-state color
-/// rides a `with_computed` layer keyed on the active state, so the
-/// resolution cache key (sheet Rc pointer + computed key) stays stable
-/// across renders — see the label-color comment in `Tabs`.
-fn tab_label_base_sheet() -> Rc<StyleSheet> {
-    TAB_LABEL_BASE_SHEET.with(|s| {
-        if s.borrow().is_none() {
-            *s.borrow_mut() = Some(StyleSheet::r#static(StyleRules::default()).premint_as("idea-ui.v1.tabs.empty"));
-        }
-        s.borrow().as_ref().cloned().unwrap()
-    })
 }
 
 /// One entry in the tab strip. `id` is the tab's stable identity — the
@@ -607,13 +603,13 @@ pub fn Tabs(props: TabsProps) -> Element {
 /// Build one tab pressable: the `id`-matched active style, the label, and (in
 /// Dot mode) a leading colored dot.
 ///
-/// Native TextView/UILabel/NSTextField don't inherit text color from the
-/// pressable (only web's CSS cascade does), so the label resolves the
-/// active/inactive foreground and carries it on its own node, reactively
-/// (re-runs on `active` + theme). The color rides a `with_computed` keyed by
-/// the active state on a shared base sheet so the resolution-cache key stays
-/// stable. The dot's color sits on the view node directly (backgrounds aren't
-/// inherited, so no such dance is needed there).
+/// Native TextView/UILabel/NSTextField inherit nothing from the pressable
+/// (only web's CSS cascade does): the label's type is its own `label` slot,
+/// and it resolves the active/inactive foreground and carries it on its own
+/// node, reactively (re-runs on `active` + theme). The color rides a
+/// `with_computed` keyed by the active state on the slot's sheet so the
+/// resolution-cache key stays stable. The dot's color sits on the view node
+/// directly (backgrounds aren't inherited, so no such dance is needed there).
 fn tab_button(
     tab: Tab,
     active: Reactive<String>,
@@ -652,10 +648,11 @@ fn tab_button(
     let label_style = {
         let active = active.clone();
         let id = id.clone();
+        let styles = styles.clone();
         move || {
             let on = active.get() == id;
             let app = button_app(on);
-            let base = StyleApplication::new(tab_label_base_sheet());
+            let base = TabsStyles::label().overridden(styles.label.as_ref()).into_style_application();
             if app.attaches_preminted() {
                 // Premint web build: the pressable's preminted class carries
                 // the on/off foreground and the label inherits it via the CSS
@@ -802,6 +799,45 @@ mod tests {
                 assert!(
                     resolve_style(&app).color.is_some(),
                     "and it resolves the TabButton foreground for the label node"
+                );
+            }
+        });
+    }
+
+    /// The label's size and weight live on the label node, not only on the
+    /// pressable: native text inherits neither, so a label styled through
+    /// its tab drew at the platform default (17pt regular on iOS) while the
+    /// web cascaded the tab's 14px Medium onto it.
+    #[test]
+    fn tab_labels_carry_their_own_type() {
+        with_test_world(|| {
+            theme();
+            let on_change: Rc<dyn Fn(String)> = Rc::new(|_| {});
+            for indicator in [TabIndicator::Underline, TabIndicator::Dot] {
+                let tab = tab_button(
+                    Tab::new("a", "A"),
+                    Reactive::Static("b".to_string()),
+                    on_change.clone(),
+                    Reactive::Static(indicator),
+                    &TabsSlotStyles::default(),
+                );
+                // A dot tab leads with its dot; the label is the text child.
+                let children = match classify(tab) {
+                    P::Pressable { children, .. } => children,
+                    _ => panic!("a tab is a Pressable"),
+                };
+                let rules = children
+                    .into_iter()
+                    .find_map(|child| match classify(child) {
+                        P::Text { style, .. } => Some(style.expect("tab label carries a style").resolve()),
+                        _ => None,
+                    })
+                    .expect("a tab has a text label");
+                assert!(rules.font_size.is_some(), "{indicator:?}: the label carries its own font size");
+                assert_eq!(
+                    rules.font_weight,
+                    Some(FontWeight::Medium),
+                    "{indicator:?}: the label carries the tab's weight"
                 );
             }
         });

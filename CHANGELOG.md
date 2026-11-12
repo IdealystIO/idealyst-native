@@ -3393,6 +3393,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   row stopped short and the rest of the table stayed empty. Its width is now its floor, as on a
   plain table: it keeps taking the spare room and stays resizable.
 
+- **A tab's label is the tab's size and weight on native** (`idea-ui` patch). `Tabs` kept
+  `font_size` and `font_weight` on the tab's pressable and drew the label as a bare text node,
+  which the web's cascade styled and native text, inheriting nothing, drew at the platform
+  default: 17pt regular on iOS beside a 14px Medium web tab. The label is now its own `label`
+  slot carrying the tab's type; its per-state colour is stamped as before. Restyle it through
+  `TabsSlotStyles::label`.
+
 - **A negative side margin reaches past the parent on native** (`runtime-layout` patch). The
   layout crate caps every normal-flow node at `max-width: 100%` of its parent's content box so
   text wraps as on the web. A stretched child with `margin_left` / `margin_right` negative — a
