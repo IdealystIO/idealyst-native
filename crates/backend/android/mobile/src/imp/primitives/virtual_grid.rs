@@ -49,7 +49,7 @@ use crate::imp::{with_env, AndroidBackend};
 use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;
 use runtime_shared::primitives::virtual_grid::{
-    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, GridRecycling, PaneWindow,
+    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, GridRecycling, MountedWindow,
 };
 
 struct MountedCell {
@@ -76,7 +76,7 @@ pub(crate) struct GridState {
     /// cell [`data_changed`] rebuilds.
     pub(crate) metrics: Rc<RefCell<GridMetrics>>,
     mounted: RefCell<HashMap<(usize, usize), MountedCell>>,
-    last_window: RefCell<Option<PaneWindow>>,
+    last_window: RefCell<Option<MountedWindow>>,
     frozen: std::cell::Cell<FrozenPanes>,
     /// `VirtualGridHandle::keep_row_mounted`'s row.
     kept_row: std::cell::Cell<Option<usize>>,

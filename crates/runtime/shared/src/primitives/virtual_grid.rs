@@ -94,8 +94,9 @@
 //! released view stops reporting it (on the web, even moving a reused cell
 //! in the DOM drops its pointer capture). A drag that starts in a cell —
 //! a reorder grip — keeps its row mounted until the drag ends, so the
-//! gesture survives the grid scrolling under it. [`PaneWindow::kept_row`]
-//! carries the row through every backend's window diff.
+//! gesture survives the grid scrolling under it. [`MountedWindow`] — a
+//! [`PaneWindow`] plus the kept row ([`PaneWindow::keeping_row`]) — is the
+//! set every backend's window diff mounts.
 //!
 //! ## The grid's own size
 //!
@@ -311,7 +312,7 @@ impl GridMetrics {
             let (r0, r1) = clip(w.row_start, w.row_end, rows_frozen, rows);
             GridWindow { col_start: c0, col_end: c1, row_start: r0, row_end: r1 }
         };
-        PaneWindow { scrolling, rows_frozen, cols_frozen, counts: (cols, rows), kept_row: None }
+        PaneWindow { scrolling, rows_frozen, cols_frozen, counts: (cols, rows) }
     }
 
     /// Where cell `(col, row)` is drawn, in content space, at `scroll`
@@ -581,20 +582,24 @@ pub struct PaneWindow {
     pub cols_frozen: (usize, usize),
     /// `(col_count, row_count)` of the grid.
     pub counts: (usize, usize),
-    /// A row mounted outside the window — see the module docs, "Keeping a
-    /// row mounted". Set by [`PaneWindow::keeping_row`], and only while the
-    /// row is in range and not mounted anyway, so two windows that mount
-    /// the same cells compare equal.
-    pub kept_row: Option<usize>,
 }
 
 impl PaneWindow {
     /// This window, also mounting row `row` (see the module docs, "Keeping
     /// a row mounted") across the window's columns. A row past the end, or
     /// one the window mounts anyway, adds nothing.
-    pub fn keeping_row(mut self, row: Option<usize>) -> Self {
-        self.kept_row = row.filter(|&r| r < self.counts.1 && !self.mounts_row(r));
-        self
+    pub fn keeping_row(self, row: Option<usize>) -> MountedWindow {
+        let kept_row = row.filter(|&r| r < self.counts.1 && !self.mounts_row(r));
+        MountedWindow { pane: self, kept_row }
+    }
+
+    /// Whether column `col` is in the frozen bands or the scrolling window.
+    fn mounts_col(self, col: usize) -> bool {
+        let (left, right) = self.cols_frozen;
+        let n = self.counts.0;
+        col < left
+            || col >= n - right
+            || (!self.scrolling.is_empty() && col >= self.scrolling.col_start && col <= self.scrolling.col_end)
     }
 
     /// Whether row `row` is in the frozen bands or the scrolling window.
@@ -612,12 +617,7 @@ impl PaneWindow {
         let n = self.counts.1;
         let (s, e) = (self.scrolling.row_start, self.scrolling.row_end);
         let scroll = if self.scrolling.is_empty() { 1..=0 } else { s..=e };
-        // The kept row is in the scrolling band but not the window: before
-        // the window's rows or after them (either, when the window is empty).
-        let kept = self.kept_row;
-        let before = kept.filter(|&k| self.scrolling.is_empty() || k < s);
-        let after = kept.filter(|&k| !self.scrolling.is_empty() && k > e);
-        (0..top).chain(before).chain(scroll).chain(after).chain(n - bottom..n)
+        (0..top).chain(scroll).chain(n - bottom..n)
     }
 
     /// The columns mounted, ascending, each once.
@@ -644,8 +644,7 @@ impl PaneWindow {
             i < lead || i >= n - trail || (!self.scrolling.is_empty() && i >= s && i <= e)
         };
         in_axis(col, self.cols_frozen, cols, self.scrolling.col_start, self.scrolling.col_end)
-            && (self.kept_row == Some(row)
-                || in_axis(row, self.rows_frozen, rows, self.scrolling.row_start, self.scrolling.row_end))
+            && in_axis(row, self.rows_frozen, rows, self.scrolling.row_start, self.scrolling.row_end)
     }
 
     /// `(column band, row band)` of a cell: whether it scrolls on each
@@ -657,6 +656,69 @@ impl PaneWindow {
             Band::of(col, self.cols_frozen.0, self.cols_frozen.1, cols),
             Band::of(row, self.rows_frozen.0, self.rows_frozen.1, rows),
         )
+    }
+
+    /// Number of mounted cells.
+    pub fn len(self) -> usize {
+        self.rows().count() * self.cols().count()
+    }
+
+    /// Whether nothing is mounted.
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// The cells a grid mounts: its [`PaneWindow`] plus a row kept mounted
+/// outside it — see the module docs, "Keeping a row mounted". Built by
+/// [`PaneWindow::keeping_row`]; the methods mirror [`PaneWindow`]'s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct MountedWindow {
+    pub pane: PaneWindow,
+    /// The kept row — only while it is in range and outside the pane
+    /// window, so two windows that mount the same cells compare equal.
+    pub kept_row: Option<usize>,
+}
+
+impl MountedWindow {
+    /// The rows mounted, ascending, each once.
+    pub fn rows(self) -> impl Iterator<Item = usize> {
+        let p = self.pane;
+        let (top, bottom) = p.rows_frozen;
+        let n = p.counts.1;
+        let (s, e) = (p.scrolling.row_start, p.scrolling.row_end);
+        let scroll = if p.scrolling.is_empty() { 1..=0 } else { s..=e };
+        // The kept row is in the scrolling band but not the window: before
+        // the window's rows or after them (either, when the window is empty).
+        let kept = self.kept_row;
+        let before = kept.filter(|&k| p.scrolling.is_empty() || k < s);
+        let after = kept.filter(|&k| !p.scrolling.is_empty() && k > e);
+        (0..top).chain(before).chain(scroll).chain(after).chain(n - bottom..n)
+    }
+
+    /// The columns mounted, ascending, each once.
+    pub fn cols(self) -> impl Iterator<Item = usize> {
+        self.pane.cols()
+    }
+
+    /// Every mounted `(col, row)`, row-major.
+    pub fn cells(self) -> impl Iterator<Item = (usize, usize)> {
+        self.rows().flat_map(move |r| self.cols().map(move |c| (c, r)))
+    }
+
+    /// Whether `(col, row)` is mounted.
+    pub fn contains(self, col: usize, row: usize) -> bool {
+        if self.kept_row == Some(row) {
+            col < self.pane.counts.0 && self.pane.mounts_col(col)
+        } else {
+            self.pane.contains(col, row)
+        }
+    }
+
+    /// `(column band, row band)` of a cell — [`PaneWindow::bands`].
+    pub fn bands(self, col: usize, row: usize) -> (Band, Band) {
+        self.pane.bands(col, row)
     }
 
     /// Number of mounted cells.
@@ -1362,11 +1424,15 @@ mod tests {
     fn keeping_a_mounted_or_missing_row_adds_nothing() {
         let m = table();
         let w = m.pane_window((0.0, 0.0), (400.0, 200.0), 0.0, frozen(1, 0, 0, 0));
-        assert_eq!(w.keeping_row(Some(2)), w, "in the window");
-        assert_eq!(w.keeping_row(Some(0)), w, "frozen");
-        assert_eq!(w.keeping_row(Some(1000)), w, "past the end");
-        assert_eq!(w.keeping_row(None), w);
-        assert_ne!(w.keeping_row(Some(700)), w, "a row outside the window is a different mounted set");
+        let plain = w.keeping_row(None);
+        assert_eq!(plain.kept_row, None);
+        assert_eq!(w.keeping_row(Some(2)), plain, "in the window");
+        assert_eq!(w.keeping_row(Some(0)), plain, "frozen");
+        assert_eq!(w.keeping_row(Some(1000)), plain, "past the end");
+        assert_ne!(w.keeping_row(Some(700)), plain, "a row outside the window is a different mounted set");
+        // Without a kept row the mounted set is the pane window's.
+        assert_eq!(plain.cells().collect::<Vec<_>>(), w.cells().collect::<Vec<_>>());
+        assert!((0..20).all(|c| (0..10).all(|r| plain.contains(c, r) == w.contains(c, r))));
     }
 
     /// With nothing in the scrolling window, the kept row is mounted

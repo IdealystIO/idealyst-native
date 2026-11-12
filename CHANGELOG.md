@@ -1283,8 +1283,8 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   are still refused. Underneath, `VirtualGridHandle::keep_row_mounted(Some(row))` keeps one
   row's cells mounted however far the grid scrolls from it, so a gesture that started in a cell
   outlives the cell scrolling away: a reused cell is otherwise moved to another row, and on
-  the web re-inserting it drops its pointer capture. `PaneWindow` gains `kept_row` /
-  `keeping_row`, and remote bundles send the call to apps at handle-call level 2. Demo:
+  the web re-inserting it drops its pointer capture. `PaneWindow::keeping_row` returns the
+  new `MountedWindow` (the pane window plus the kept row; `PaneWindow` is unchanged), and remote bundles send the call to apps at handle-call level 2. Demo:
   `examples/virtual-table-reorder-demo`.
 
 - **Virtualized tables and grids reuse cells as they scroll** (`runtime-shared`,

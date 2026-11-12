@@ -59,7 +59,7 @@ use objc2::msg_send;
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker};
 use objc2_ui_kit::{UIScrollView, UIView};
 use runtime_shared::primitives::virtual_grid::{
-    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, GridRecycling, PaneWindow, Scrollport,
+    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, GridRecycling, MountedWindow, Scrollport,
 };
 
 use super::IosNode;
@@ -95,7 +95,7 @@ pub(crate) struct VirtualGridInstance {
     /// Last applied window, so an unchanged one skips the diff
     /// entirely. `None` forces a full re-diff (mount, data change,
     /// bounds change).
-    last_window: Rc<RefCell<Option<PaneWindow>>>,
+    last_window: Rc<RefCell<Option<MountedWindow>>>,
     frozen: Rc<std::cell::Cell<FrozenPanes>>,
     /// `VirtualGridHandle::keep_row_mounted`'s row.
     kept_row: Rc<std::cell::Cell<Option<usize>>>,
@@ -202,7 +202,7 @@ struct GridHandles {
     callbacks: Rc<RefCell<Option<GridCallbacks<IosNode>>>>,
     metrics: Rc<RefCell<GridMetrics>>,
     mounted: Rc<RefCell<HashMap<(usize, usize), MountedCell>>>,
-    last_window: Rc<RefCell<Option<PaneWindow>>>,
+    last_window: Rc<RefCell<Option<MountedWindow>>>,
     frozen: Rc<std::cell::Cell<FrozenPanes>>,
     kept_row: Rc<std::cell::Cell<Option<usize>>>,
     overscan: f32,

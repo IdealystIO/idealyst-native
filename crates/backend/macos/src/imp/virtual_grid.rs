@@ -68,7 +68,7 @@ use objc2::{msg_send, msg_send_id};
 use objc2_app_kit::NSView;
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSObject};
 use runtime_shared::primitives::virtual_grid::{
-    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, GridRecycling, PaneWindow, Scrollport,
+    Band, CellKey, FrozenPanes, GridCallbacks, GridMetrics, GridRecycling, MountedWindow, Scrollport,
 };
 
 use super::MacosNode;
@@ -94,7 +94,7 @@ pub(crate) struct VirtualGridInstance {
     callbacks: Rc<RefCell<Option<GridCallbacks<MacosNode>>>>,
     metrics: Rc<RefCell<GridMetrics>>,
     mounted: Rc<RefCell<HashMap<(usize, usize), MountedCell>>>,
-    last_window: Rc<RefCell<Option<PaneWindow>>>,
+    last_window: Rc<RefCell<Option<MountedWindow>>>,
     frozen: Rc<std::cell::Cell<FrozenPanes>>,
     /// `VirtualGridHandle::keep_row_mounted`'s row.
     kept_row: Rc<std::cell::Cell<Option<usize>>>,
@@ -365,7 +365,7 @@ struct GridHandles {
     callbacks: Rc<RefCell<Option<GridCallbacks<MacosNode>>>>,
     metrics: Rc<RefCell<GridMetrics>>,
     mounted: Rc<RefCell<HashMap<(usize, usize), MountedCell>>>,
-    last_window: Rc<RefCell<Option<PaneWindow>>>,
+    last_window: Rc<RefCell<Option<MountedWindow>>>,
     frozen: Rc<std::cell::Cell<FrozenPanes>>,
     kept_row: Rc<std::cell::Cell<Option<usize>>>,
     overscan: f32,
