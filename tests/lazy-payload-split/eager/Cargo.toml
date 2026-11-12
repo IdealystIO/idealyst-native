@@ -26,7 +26,7 @@ lazy-payload-split-heavy = { path = "../heavy" }
 
 [package.metadata.idealyst.app]
 name      = "Lazy Payload Split (eager)"
-bundle_id = "ai.truday.idealyst.lazy_payload_split_eager"
+bundle_id = "io.idealyst.lazy_payload_split_eager"
 version   = "0.0.1"
 targets   = ["web"]
 

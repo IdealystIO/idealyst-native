@@ -72,7 +72,7 @@ backend-terminal = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Conformance"
-bundle_id = "ai.truday.idealyst.conformance"
+bundle_id = "io.idealyst.conformance"
 version   = "0.0.1"
 targets   = ["web", "ios", "android", "macos", "windows"]
 

@@ -32,7 +32,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../../../../../.." && pwd)"
 out="$repo/target/android-lifecycle-probe"
-pkg=ai.truday.idealyst.lifecycleprobe
+pkg=io.idealyst.lifecycleprobe
 keep_alive=false
 [[ "${1:-}" == "--keep-alive" ]] && keep_alive=true
 

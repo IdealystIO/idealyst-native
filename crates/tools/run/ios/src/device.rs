@@ -1226,7 +1226,7 @@ mod tests {
         let frameworks = camera_frameworks();
         let rendered = render_pbxproj(&PbxParams {
             app_name: "CameraPreview",
-            bundle_id: "ai.truday.idealyst.camerapreview",
+            bundle_id: "io.idealyst.camerapreview",
             team: "USC735CN86",
             library_search_path: Path::new("/tmp/target/aarch64-apple-ios/release"),
             lib_name: "camera_preview_demo_ios_wrapper",
@@ -1238,7 +1238,7 @@ mod tests {
             !rendered.contains("{{"),
             "unsubstituted placeholder left in pbxproj:\n{rendered}",
         );
-        assert!(rendered.contains("PRODUCT_BUNDLE_IDENTIFIER = ai.truday.idealyst.camerapreview;"));
+        assert!(rendered.contains("PRODUCT_BUNDLE_IDENTIFIER = io.idealyst.camerapreview;"));
         assert!(rendered.contains("DEVELOPMENT_TEAM = USC735CN86;"));
         assert!(rendered.contains("-lcamera_preview_demo_ios_wrapper"));
         assert!(rendered.contains("/tmp/target/aarch64-apple-ios/release"));

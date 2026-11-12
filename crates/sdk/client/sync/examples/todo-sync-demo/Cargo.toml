@@ -69,7 +69,7 @@ required-features = ["server"]
 
 [package.metadata.idealyst.app]
 name      = "TODO Sync"
-bundle_id = "ai.truday.idealyst.todosync"
+bundle_id = "io.idealyst.todosync"
 version   = "0.0.1"
 targets   = ["web", "ios", "android"]
 # `idealyst dev --web` runs THIS bin: it serves the wasm bundle AND the

@@ -27,7 +27,7 @@ export ANDROID_SERIAL
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../../../../../.." && pwd)"
 out="$repo/target/press-down-probe"
-pkg=ai.truday.idealyst.pressdown
+pkg=io.idealyst.pressdown
 
 rm -rf "$out/app"; mkdir -p "$out/app"
 cp -R "$here/src" "$here/kotlin" "$out/app/"

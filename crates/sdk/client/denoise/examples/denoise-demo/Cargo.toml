@@ -73,7 +73,7 @@ wasm-split = { workspace = true }
 # is the microphone one, sourced from the `microphone` dependency.
 [package.metadata.idealyst.app]
 name      = "Denoise Demo"
-bundle_id = "ai.truday.idealyst.denoisedemo"
+bundle_id = "io.idealyst.denoisedemo"
 version   = "0.0.1"
 targets   = ["web", "ios", "android", "macos"]
 

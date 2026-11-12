@@ -61,7 +61,7 @@ required-features = ["server"]
 
 [package.metadata.idealyst.app]
 name       = "OTA Console"
-bundle_id  = "ai.truday.idealyst.otaconsole"
+bundle_id  = "io.idealyst.otaconsole"
 version    = "0.0.1"
 server_bin = "server"
 server_port = 3100

@@ -45,7 +45,7 @@ dev-server = { workspace = true, optional = true }
 # the user-facing reason strings here.
 [package.metadata.idealyst.app]
 name      = "Media Recorder"
-bundle_id = "ai.truday.idealyst.mediarecorder"
+bundle_id = "io.idealyst.mediarecorder"
 version   = "0.0.1"
 targets   = ["web", "ios", "android", "macos"]
 

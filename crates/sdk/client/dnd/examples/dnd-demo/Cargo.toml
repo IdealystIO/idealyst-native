@@ -34,6 +34,6 @@ dev-server = { workspace = true, optional = true }
 
 [package.metadata.idealyst.app]
 name      = "Drag & Drop Demo"
-bundle_id = "ai.truday.idealyst.dnddemo"
+bundle_id = "io.idealyst.dnddemo"
 version   = "0.0.1"
 targets   = ["web", "ios", "android", "macos"]

@@ -4,7 +4,7 @@
 //! Make it device owner on a freshly wiped emulator (no accounts):
 //!
 //! ```text
-//! adb shell dpm set-device-owner ai.truday.idealyst.kioskagent/io.idealyst.deviceadmin.AdminReceiver
+//! adb shell dpm set-device-owner io.idealyst.kioskagent/io.idealyst.deviceadmin.AdminReceiver
 //! ```
 //!
 //! Then:
@@ -19,9 +19,9 @@
 //!
 //!   ```text
 //!   adb root
-//!   adb push kiosk-update.apk kiosk-update.sha256 /data/data/ai.truday.idealyst.kioskagent/files/
-//!   adb shell chown -R $(adb shell stat -c %u /data/data/ai.truday.idealyst.kioskagent) \
-//!       /data/data/ai.truday.idealyst.kioskagent/files
+//!   adb push kiosk-update.apk kiosk-update.sha256 /data/data/io.idealyst.kioskagent/files/
+//!   adb shell chown -R $(adb shell stat -c %u /data/data/io.idealyst.kioskagent) \
+//!       /data/data/io.idealyst.kioskagent/files
 //!   ```
 //! - **Release** undoes the lock-down and relinquishes device owner.
 //!
@@ -30,9 +30,9 @@
 use runtime_core::driver::spawn_detached;
 use runtime_core::{on_scope_drop, signal, text, ui, Element, Signal};
 
-const KIOSK: &str = "ai.truday.idealyst.kioskapp";
-const AGENT: &str = "ai.truday.idealyst.kioskagent";
-const UPDATE_DIR: &str = "/data/data/ai.truday.idealyst.kioskagent/files";
+const KIOSK: &str = "io.idealyst.kioskapp";
+const AGENT: &str = "io.idealyst.kioskagent";
+const UPDATE_DIR: &str = "/data/data/io.idealyst.kioskagent/files";
 
 /// Run `steps` in order, stopping at the first failure, and describe the
 /// outcome.

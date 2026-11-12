@@ -43,7 +43,7 @@ web-glue = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Media Sources"
-bundle_id = "ai.truday.idealyst.mediasources"
+bundle_id = "io.idealyst.mediasources"
 version   = "0.0.1"
 targets   = ["web", "ios", "android", "macos"]
 

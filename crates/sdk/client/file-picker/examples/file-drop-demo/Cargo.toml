@@ -38,6 +38,6 @@ dev-server = { workspace = true, optional = true }
 # file-drag concept, so this demo targets web + macOS (the mature drop backends).
 [package.metadata.idealyst.app]
 name      = "File Drop"
-bundle_id = "ai.truday.idealyst.filedrop"
+bundle_id = "io.idealyst.filedrop"
 version   = "0.0.1"
 targets   = ["web", "macos"]

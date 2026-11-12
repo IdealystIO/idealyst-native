@@ -44,7 +44,7 @@ canvas-vello = { workspace = true, optional = true }
 
 [package.metadata.idealyst.app]
 name      = "Charts"
-bundle_id = "ai.truday.idealyst.chartsdemo"
+bundle_id = "io.idealyst.chartsdemo"
 version   = "0.0.1"
 targets   = ["web", "macos"]
 

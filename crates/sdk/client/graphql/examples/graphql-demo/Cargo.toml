@@ -74,7 +74,7 @@ required-features = ["server"]
 
 [package.metadata.idealyst.app]
 name      = "GraphQL Demo"
-bundle_id = "ai.truday.idealyst.graphqldemo"
+bundle_id = "io.idealyst.graphqldemo"
 version   = "0.0.1"
 targets   = ["web", "ios", "android"]
 # `idealyst dev --web` runs THIS bin: it serves the wasm bundle AND the

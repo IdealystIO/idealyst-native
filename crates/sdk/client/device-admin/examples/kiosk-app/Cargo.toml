@@ -23,7 +23,7 @@ device-admin = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Kiosk"
-bundle_id = "ai.truday.idealyst.kioskapp"
+bundle_id = "io.idealyst.kioskapp"
 version   = "0.1.0"
 targets   = ["android", "ios"]
 

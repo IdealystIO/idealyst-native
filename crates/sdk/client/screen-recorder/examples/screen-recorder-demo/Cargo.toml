@@ -39,6 +39,6 @@ dev-server = { workspace = true, optional = true }
 
 [package.metadata.idealyst.app]
 name      = "Screen Recorder Demo"
-bundle_id = "ai.truday.idealyst.screenrecorderdemo"
+bundle_id = "io.idealyst.screenrecorderdemo"
 version   = "0.0.1"
 targets   = ["web"]

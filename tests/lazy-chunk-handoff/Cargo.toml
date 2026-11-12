@@ -27,7 +27,7 @@ web-glue = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Lazy Chunk Handoff Test"
-bundle_id = "ai.truday.idealyst.lazy_chunk_handoff_test"
+bundle_id = "io.idealyst.lazy_chunk_handoff_test"
 version   = "0.0.1"
 targets   = ["web"]
 

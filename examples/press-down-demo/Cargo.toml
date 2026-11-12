@@ -20,6 +20,6 @@ idea-ui = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Press Down Demo"
-bundle_id = "ai.truday.idealyst.pressdowndemo"
+bundle_id = "io.idealyst.pressdowndemo"
 version   = "0.0.1"
 targets   = ["web", "macos", "ios", "android"]

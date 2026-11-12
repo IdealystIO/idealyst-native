@@ -13,7 +13,7 @@ use runtime_core::{signal, text, ui, Element, Signal};
 
 /// The installed versionCode, shown so an update is visible on screen.
 fn version_label() -> String {
-    match device_admin::installed_version("ai.truday.idealyst.kioskapp") {
+    match device_admin::installed_version("io.idealyst.kioskapp") {
         Ok(Some(v)) => format!("Kiosk {} (versionCode {})", v.name.unwrap_or_default(), v.code),
         Ok(None) => "Kiosk (not installed?)".to_string(),
         Err(e) => format!("Kiosk ({e})"),

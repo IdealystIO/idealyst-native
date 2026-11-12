@@ -114,7 +114,7 @@ wasm-opt = false
 # `idealyst scaffold <platform>` to take ownership.
 [package.metadata.idealyst]
 app.name      = "Idealyst Docs"
-app.bundle_id = "ai.truday.idealyst.docs"
+app.bundle_id = "io.idealyst.docs"
 app.version   = "0.0.1"
 app.targets   = ["web", "ios"]
 

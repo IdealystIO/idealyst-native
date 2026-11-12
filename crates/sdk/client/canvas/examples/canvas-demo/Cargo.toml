@@ -37,6 +37,6 @@ canvas-native = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Canvas Demo"
-bundle_id = "ai.truday.idealyst.canvasdemo"
+bundle_id = "io.idealyst.canvasdemo"
 version   = "0.0.1"
 targets   = ["web", "ios", "android"]

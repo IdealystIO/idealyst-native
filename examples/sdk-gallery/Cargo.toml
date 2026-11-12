@@ -36,6 +36,6 @@ files = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "SDK Gallery"
-bundle_id = "ai.truday.idealyst.sdkgallery"
+bundle_id = "io.idealyst.sdkgallery"
 version   = "0.0.1"
 targets   = ["web", "macos", "windows"]

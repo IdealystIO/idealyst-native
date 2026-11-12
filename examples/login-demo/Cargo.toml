@@ -69,7 +69,7 @@ required-features = ["server"]
 
 [package.metadata.idealyst.app]
 name      = "Login Demo"
-bundle_id = "ai.truday.idealyst.logindemo"
+bundle_id = "io.idealyst.logindemo"
 version   = "0.0.1"
 # Run THIS crate's `server` bin (which serves both /_srv/* and the static
 # bundle) for `idealyst dev --web`, instead of the static-only dev server.

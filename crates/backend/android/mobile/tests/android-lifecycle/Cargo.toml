@@ -31,7 +31,7 @@ ndk-context = "0.1"
 
 [package.metadata.idealyst.app]
 name      = "Lifecycle Probe"
-bundle_id = "ai.truday.idealyst.lifecycleprobe"
+bundle_id = "io.idealyst.lifecycleprobe"
 version   = "0.0.1"
 targets   = ["android"]
 

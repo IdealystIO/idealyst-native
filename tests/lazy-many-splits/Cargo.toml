@@ -25,7 +25,7 @@ idea-ui = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Lazy Many Splits Test"
-bundle_id = "ai.truday.idealyst.lazy_many_splits_test"
+bundle_id = "io.idealyst.lazy_many_splits_test"
 version   = "0.0.1"
 targets   = ["web"]
 

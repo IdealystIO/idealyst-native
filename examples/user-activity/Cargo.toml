@@ -20,6 +20,6 @@ runtime-scene = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "User Activity"
-bundle_id = "ai.truday.idealyst.useractivity"
+bundle_id = "io.idealyst.useractivity"
 version   = "0.0.1"
 targets   = ["web", "ios", "android", "macos"]

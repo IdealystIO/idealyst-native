@@ -35,6 +35,6 @@ markdown = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Markdown Demo"
-bundle_id = "ai.truday.idealyst.markdowndemo"
+bundle_id = "io.idealyst.markdowndemo"
 version   = "0.0.1"
 targets   = ["web", "ios", "android"]

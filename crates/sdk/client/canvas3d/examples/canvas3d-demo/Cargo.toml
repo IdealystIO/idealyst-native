@@ -26,6 +26,6 @@ canvas = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Canvas3D Demo"
-bundle_id = "ai.truday.idealyst.canvas3ddemo"
+bundle_id = "io.idealyst.canvas3ddemo"
 version   = "0.0.1"
 targets   = ["web", "macos", "ios", "android"]

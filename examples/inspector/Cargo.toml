@@ -56,6 +56,6 @@ runtime-shared = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Inspector"
-bundle_id = "ai.truday.idealyst.inspector"
+bundle_id = "io.idealyst.inspector"
 version   = "0.0.1"
 targets   = ["web", "macos"]

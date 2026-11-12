@@ -82,7 +82,7 @@ required-features = ["server"]
 
 [package.metadata.idealyst.app]
 name = "PubSub Demo"
-bundle_id = "ai.truday.idealyst.pubsubdemo"
+bundle_id = "io.idealyst.pubsubdemo"
 version = "0.0.1"
 targets = ["web"]
 server_bin = "server"

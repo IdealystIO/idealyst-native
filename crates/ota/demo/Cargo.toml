@@ -52,7 +52,7 @@ host_fns = "host_fns"
 
 [package.metadata.idealyst.app]
 name      = "OTA Demo"
-bundle_id = "ai.truday.idealyst.otademo"
+bundle_id = "io.idealyst.otademo"
 version   = "0.0.1"
 targets   = ["macos"]
 

@@ -83,7 +83,7 @@ required-features = ["server"]
 
 [package.metadata.idealyst.app]
 name      = "Contact Form"
-bundle_id = "ai.truday.idealyst.contact_form_lambda"
+bundle_id = "io.idealyst.contact_form_lambda"
 version   = "0.0.1"
 targets   = ["web"]
 

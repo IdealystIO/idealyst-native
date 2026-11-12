@@ -33,6 +33,6 @@ dev-server = { workspace = true, optional = true }
 
 [package.metadata.idealyst.app]
 name      = "Kanban Demo"
-bundle_id = "ai.truday.idealyst.kanbandemo"
+bundle_id = "io.idealyst.kanbandemo"
 version   = "0.0.1"
 targets   = ["web", "ios", "android", "macos"]

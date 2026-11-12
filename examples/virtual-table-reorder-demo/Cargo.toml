@@ -20,6 +20,6 @@ idea-ui = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Virtual Table Reorder Demo"
-bundle_id = "ai.truday.idealyst.virtualtablereorderdemo"
+bundle_id = "io.idealyst.virtualtablereorderdemo"
 version   = "0.0.1"
 targets   = ["web", "macos", "ios", "android"]

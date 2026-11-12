@@ -65,6 +65,6 @@ log = "0.4"
 
 [package.metadata.idealyst.app]
 name      = "Newcore Smoke"
-bundle_id = "ai.truday.idealyst.newcoresmoke"
+bundle_id = "io.idealyst.newcoresmoke"
 version   = "0.0.1"
 targets   = ["android"]

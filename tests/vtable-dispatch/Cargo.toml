@@ -27,7 +27,7 @@ idea-ui = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Vtable Dispatch Test"
-bundle_id = "ai.truday.idealyst.vtable_dispatch_test"
+bundle_id = "io.idealyst.vtable_dispatch_test"
 version   = "0.0.1"
 targets   = ["web"]
 

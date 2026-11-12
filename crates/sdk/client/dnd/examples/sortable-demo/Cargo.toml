@@ -31,6 +31,6 @@ dev-server = { workspace = true, optional = true }
 
 [package.metadata.idealyst.app]
 name      = "Sortable Demo"
-bundle_id = "ai.truday.idealyst.sortabledemo"
+bundle_id = "io.idealyst.sortabledemo"
 version   = "0.0.1"
 targets   = ["web", "ios", "android", "macos"]

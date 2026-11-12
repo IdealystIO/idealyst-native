@@ -20,6 +20,6 @@ idea-ui = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Virtual Table Demo"
-bundle_id = "ai.truday.idealyst.virtualtabledemo"
+bundle_id = "io.idealyst.virtualtabledemo"
 version   = "0.0.1"
 targets   = ["web", "macos", "ios", "android"]

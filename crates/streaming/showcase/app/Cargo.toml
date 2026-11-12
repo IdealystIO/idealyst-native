@@ -67,7 +67,7 @@ tempfile = "3"
 
 [package.metadata.idealyst.app]
 name      = "Remote Showcase"
-bundle_id = "ai.truday.idealyst.remoteshowcase"
+bundle_id = "io.idealyst.remoteshowcase"
 version   = "0.0.1"
 targets   = ["ios", "android", "macos"]
 

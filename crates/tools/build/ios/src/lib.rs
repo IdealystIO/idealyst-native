@@ -124,7 +124,7 @@ pub struct AppMetadata {
     /// spaces. Falls back to title-cased `package.name`.
     pub name: String,
     /// Reverse-DNS bundle identifier (e.g.
-    /// `"ai.truday.idealyst.docs"`). Required by every platform
+    /// `"io.idealyst.docs"`). Required by every platform
     /// except Roku (which has no equivalent), so we keep it as
     /// `Option<String>` and let each platform's build/run path
     /// validate at point of use via [`AppMetadata::require_bundle_id`].

@@ -25,6 +25,6 @@ runtime-scene = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Keyboard Avoid"
-bundle_id = "ai.truday.idealyst.keyboardavoid"
+bundle_id = "io.idealyst.keyboardavoid"
 version   = "0.0.1"
 targets   = ["web", "ios", "android"]

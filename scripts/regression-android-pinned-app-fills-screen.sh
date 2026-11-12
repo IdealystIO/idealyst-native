@@ -12,7 +12,7 @@
 # lock-task handling. Run it against any framework app already in the
 # foreground (e.g. `idealyst dev --android --local examples/login-demo`):
 #
-#   scripts/regression-android-pinned-app-fills-screen.sh ai.truday.idealyst.logindemo
+#   scripts/regression-android-pinned-app-fills-screen.sh io.idealyst.logindemo
 #
 # Pins with `am task lock`, which needs no confirmation dialog.
 set -euo pipefail

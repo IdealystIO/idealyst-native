@@ -44,6 +44,6 @@ dev-server = { workspace = true, optional = true }
 
 [package.metadata.idealyst.app]
 name      = "Swap Demo"
-bundle_id = "ai.truday.idealyst.swapdemo"
+bundle_id = "io.idealyst.swapdemo"
 version   = "0.0.1"
 targets   = ["web", "ios", "android"]

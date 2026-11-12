@@ -58,6 +58,6 @@ backend-ssr = { path = "../../../../../backend/ssr" }
 
 [package.metadata.idealyst.app]
 name      = "i18n Demo"
-bundle_id = "ai.truday.idealyst.i18n_demo"
+bundle_id = "io.idealyst.i18n_demo"
 version   = "0.0.1"
 targets   = ["web"]

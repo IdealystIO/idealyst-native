@@ -41,6 +41,6 @@ dev-server = { workspace = true, optional = true }
 
 [package.metadata.idealyst.app]
 name      = "Nested Nav Demo"
-bundle_id = "ai.truday.idealyst.nestednavdemo"
+bundle_id = "io.idealyst.nestednavdemo"
 version   = "0.0.1"
 targets   = ["web"]

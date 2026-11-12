@@ -28,7 +28,7 @@ dev-server = { workspace = true, optional = true }
 
 [package.metadata.idealyst.app]
 name      = "NFC"
-bundle_id = "ai.truday.idealyst.nfc"
+bundle_id = "io.idealyst.nfcdemo"
 version   = "0.0.1"
 targets   = ["android", "ios", "web", "macos"]
 

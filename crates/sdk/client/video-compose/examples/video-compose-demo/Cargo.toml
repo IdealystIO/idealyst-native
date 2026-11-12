@@ -34,7 +34,7 @@ video-compose = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Video Compose"
-bundle_id = "ai.truday.idealyst.videocompose"
+bundle_id = "io.idealyst.videocompose"
 version   = "0.0.1"
 targets   = ["macos", "web", "ios", "android"]
 

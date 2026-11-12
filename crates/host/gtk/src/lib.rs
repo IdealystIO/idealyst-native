@@ -141,7 +141,7 @@ where
     // runner should open an independent window per launch, not silently
     // forward `activate` to an already-running process.
     let app = gtk4::Application::builder()
-        .application_id("ai.truday.idealyst.host")
+        .application_id("io.idealyst.host")
         .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
         .build();
 

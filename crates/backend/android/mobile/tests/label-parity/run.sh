@@ -21,7 +21,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../../../../../.." && pwd)"
 out="$repo/target/label-parity-probe"
-pkg=ai.truday.idealyst.labelparity
+pkg=io.idealyst.labelparity
 
 rm -rf "$out/app"; mkdir -p "$out/app"
 cp -R "$here/src" "$here/kotlin" "$out/app/"

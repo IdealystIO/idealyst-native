@@ -31,7 +31,7 @@ video = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Screen Share"
-bundle_id = "ai.truday.idealyst.screenshare"
+bundle_id = "io.idealyst.screenshare"
 version   = "0.0.1"
 targets   = ["web", "ios", "android", "macos"]
 

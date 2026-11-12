@@ -25,6 +25,6 @@ serde = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Offload"
-bundle_id = "ai.truday.idealyst.offloaddemo"
+bundle_id = "io.idealyst.offloaddemo"
 version   = "0.0.1"
 targets   = ["web", "ios", "android", "macos"]

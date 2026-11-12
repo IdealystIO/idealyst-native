@@ -45,6 +45,6 @@ dev-server = { workspace = true, optional = true }
 
 [package.metadata.idealyst.app]
 name      = "PDF Demo"
-bundle_id = "ai.truday.idealyst.pdfdemo"
+bundle_id = "io.idealyst.pdfdemo"
 version   = "0.0.1"
 targets   = ["macos", "web", "ios", "android"]

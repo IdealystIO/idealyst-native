@@ -43,6 +43,6 @@ dev-server = { workspace = true, optional = true }
 
 [package.metadata.idealyst.app]
 name      = "Stack Demo v2"
-bundle_id = "ai.truday.idealyst.stackdemov2"
+bundle_id = "io.idealyst.stackdemov2"
 version   = "0.0.1"
 targets   = ["web", "ios", "android"]

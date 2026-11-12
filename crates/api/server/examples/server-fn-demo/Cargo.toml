@@ -87,7 +87,7 @@ required-features = ["server"]
 
 [package.metadata.idealyst.app]
 name      = "Server Fn Demo"
-bundle_id = "ai.truday.idealyst.server_fn_demo"
+bundle_id = "io.idealyst.server_fn_demo"
 version   = "0.0.1"
 # `ios`/`android` added so the live-SSE demo can be exercised on a
 # simulator/emulator (`idealyst dev --ios --local` / `--android --local`),

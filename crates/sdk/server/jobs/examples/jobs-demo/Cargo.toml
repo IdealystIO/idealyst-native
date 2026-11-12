@@ -80,7 +80,7 @@ required-features = ["server"]
 
 [package.metadata.idealyst.app]
 name = "Jobs Demo"
-bundle_id = "ai.truday.idealyst.jobsdemo"
+bundle_id = "io.idealyst.jobsdemo"
 version = "0.0.1"
 targets = ["web"]
 # `idealyst dev --web` runs the server bin (serves bundle + `/_srv/*`). When

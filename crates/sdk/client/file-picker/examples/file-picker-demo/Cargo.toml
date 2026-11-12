@@ -39,6 +39,6 @@ dev-server = { workspace = true, optional = true }
 # permission on any platform — note the empty permissions table.
 [package.metadata.idealyst.app]
 name      = "File Picker"
-bundle_id = "ai.truday.idealyst.filepicker"
+bundle_id = "io.idealyst.filepickerdemo"
 version   = "0.0.1"
 targets   = ["web", "ios", "android", "macos"]

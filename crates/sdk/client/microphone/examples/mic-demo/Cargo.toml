@@ -47,7 +47,7 @@ dev-server = { workspace = true, optional = true }
 # Info.plist / AndroidManifest.
 [package.metadata.idealyst.app]
 name      = "Mic Demo"
-bundle_id = "ai.truday.idealyst.micdemo"
+bundle_id = "io.idealyst.micdemo"
 version   = "0.0.1"
 targets   = ["web", "ios", "android", "macos"]
 

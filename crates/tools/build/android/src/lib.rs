@@ -115,7 +115,7 @@ pub struct BuildArtifact {
     /// Wrapper crate directory.
     pub wrapper_dir: PathBuf,
     /// JNI package prefix the generated wrapper exports (e.g.
-    /// `ai_truday_idealyst_docs`). The Kotlin side's package must
+    /// `io_idealyst_docs`). The Kotlin side's package must
     /// match this (with dots in place of underscores) for the
     /// runtime lookup to find `NativeBridge.attach` / `detach`.
     pub jni_package: String,
