@@ -606,7 +606,7 @@ backend-windows = { path = "crates/backend/windows", version = "9.0.0", registry
 backend-linux = { path = "crates/backend/linux", version = "8.0.0", registry = "idealyst" }
 host-gtk = { path = "crates/host/gtk", version = "8.0.0", registry = "idealyst" }
 welcome = { path = "examples/welcome" }
-idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "23.1.0", registry = "idealyst" }
+idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "23.2.0", registry = "idealyst" }
 render-api = { path = "crates/gpu-backend/api", version = "7.0.0", registry = "idealyst" }
 render-wgpu = { path = "crates/gpu-backend/engine", version = "9.0.0", registry = "idealyst" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
@@ -632,7 +632,7 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme", version = "12.0.0", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "19.0.0", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "22.1.0", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "22.2.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "8.0.0", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "19.0.0", registry = "idealyst" }
 icons-lucide = { path = "crates/ui/icons-lucide", version = "8.0.0", registry = "idealyst" }
