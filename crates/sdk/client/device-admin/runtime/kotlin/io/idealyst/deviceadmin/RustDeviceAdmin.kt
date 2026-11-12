@@ -18,6 +18,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PersistableBundle
+import android.util.Log
 import java.io.File
 import java.security.MessageDigest
 import org.json.JSONArray
@@ -54,6 +55,7 @@ object RustDeviceAdmin {
     private const val EXTRA_OPERATION = "io.idealyst.deviceadmin.OPERATION"
     /** Oldest events are dropped past this, so a device that never runs the app cannot grow the queue without bound. */
     private const val QUEUE_LIMIT = 64
+    private const val LOG_TAG = "device_admin"
 
     private val main = Handler(Looper.getMainLooper())
 
@@ -602,6 +604,89 @@ object RustDeviceAdmin {
         // onReceive returns, before an async write lands.
         prefs.edit().putString(QUEUE_KEY, queue.toString()).commit()
     }
+
+    /**
+     * The admin-extras key naming packages to hide at the end of
+     * provisioning, comma-separated. A reserved name: it reaches the app's
+     * `ProvisioningComplete` extras like any other key.
+     */
+    const val EXTRA_HIDE_PACKAGES = "idealyst.hide_packages"
+
+    /**
+     * The `<application>` `<meta-data>` the CLI writes from the app's
+     * `provisioning_hide` list, comma-separated. Its name is fixed in
+     * `build-ios`'s `PROVISIONING_HIDE_META_DATA`.
+     */
+    private const val META_HIDE_PACKAGES = "io.idealyst.deviceadmin.HIDE_PACKAGES"
+
+    /**
+     * The device-owner work that must happen before setup ends, called by
+     * [PolicyComplianceActivity] while the app is already device owner.
+     * Nothing else of the app runs between the QR scan and the first time
+     * someone opens it: its Rust side starts only with its main activity.
+     *
+     * - An app that declares a HOME activity (`home_launcher = true`)
+     *   becomes the persistent home app, so setup ends by launching it
+     *   instead of the maker's launcher.
+     * - The packages the app's `provisioning_hide` list ([META_HIDE_PACKAGES])
+     *   and the QR code's [EXTRA_HIDE_PACKAGES] name are hidden (the maker's
+     *   out-of-box apps), so they never open. One that is not installed,
+     *   or is this app, is skipped.
+     *
+     * Each step is best effort: a failure is logged and never fails
+     * provisioning, which would leave the device to be reset.
+     */
+    fun finishProvisioning(ctx: Context, extras: PersistableBundle?) {
+        val dpm = dpm(ctx)
+        if (!dpm.isDeviceOwnerApp(ctx.packageName)) return
+        try {
+            val home = ctx.packageManager
+                .queryIntentActivities(
+                    Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),
+                    PackageManager.MATCH_DEFAULT_ONLY,
+                )
+                .firstOrNull { it.activityInfo.packageName == ctx.packageName }
+            if (home != null) {
+                val filter = IntentFilter(Intent.ACTION_MAIN).apply {
+                    addCategory(Intent.CATEGORY_HOME)
+                    addCategory(Intent.CATEGORY_DEFAULT)
+                }
+                dpm.addPersistentPreferredActivity(
+                    admin(ctx),
+                    filter,
+                    ComponentName(ctx.packageName, home.activityInfo.name),
+                )
+            }
+        } catch (t: Throwable) {
+            Log.w(LOG_TAG, "finishProvisioning: could not set the home app", t)
+        }
+        val manifestList = try {
+            ctx.packageManager
+                .getApplicationInfo(ctx.packageName, PackageManager.GET_META_DATA)
+                .metaData?.getString(META_HIDE_PACKAGES)
+        } catch (t: Throwable) {
+            null
+        }
+        val listed = "${manifestList ?: ""},${extras?.getString(EXTRA_HIDE_PACKAGES) ?: ""}"
+        for (pkg in hideList(listed, ctx.packageName)) {
+            try {
+                ctx.packageManager.getPackageInfo(pkg, MATCH_ALL)
+            } catch (e: PackageManager.NameNotFoundException) {
+                continue
+            }
+            try {
+                if (!dpm.isApplicationHidden(admin(ctx), pkg) && !dpm.setApplicationHidden(admin(ctx), pkg, true)) {
+                    Log.w(LOG_TAG, "finishProvisioning: Android refused to hide $pkg")
+                }
+            } catch (t: Throwable) {
+                Log.w(LOG_TAG, "finishProvisioning: could not hide $pkg", t)
+            }
+        }
+    }
+
+    /** A comma-separated package list as package names: trimmed, de-duplicated, without blanks or [own]. */
+    private fun hideList(value: String, own: String): List<String> =
+        value.split(',').map { it.trim() }.filter { it.isNotEmpty() && it != own }.distinct()
 
     /** Provisioning can be reported by both the compliance activity and the admin receiver's broadcast; deliver it once. */
     fun emitProvisioningComplete(ctx: Context, extras: PersistableBundle?) {

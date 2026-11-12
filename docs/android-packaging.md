@@ -22,6 +22,7 @@ version = "1.4.2"
 version_code   = 42                # optional; see "Versioning"
 lock_task_mode = "if_whitelisted"  # the main activity's android:lockTaskMode
 home_launcher  = true              # add a HOME + DEFAULT intent filter
+provisioning_hide = ["com.example.oobe"]  # hidden at the end of QR provisioning (device-admin)
 resizeable     = false             # the main activity's android:resizeableActivity
 screen_orientation = "landscape"   # the main activity's android:screenOrientation
 keep_alive     = true              # keep running in the background (foreground service)
@@ -256,3 +257,21 @@ user, which is what a kiosk wants. Pass `--leave-system-apps` to keep them
 can change its mind later: `device_admin::enable_system_app` restores a
 removed one, and `set_application_hidden` / `set_packages_suspended` switch
 off one that was kept.
+
+At the last step of provisioning (`ADMIN_POLICY_COMPLIANCE`), while the
+app is already device owner and before setup finishes, `device-admin`:
+
+- makes the app the persistent home app if it declares
+  `home_launcher = true`. Setup ends by going home, so the app starts there
+  with nobody opening it, and its `ProvisioningComplete` listener fires on
+  that first start. Without `home_launcher`, setup ends on the maker's
+  launcher and the app first runs when someone opens it.
+- hides the packages named by the app's `provisioning_hide` list and by the
+  QR code's `idealyst.hide_packages` admin extra (comma-separated), so a
+  maker's out-of-box apps never open. A package that is not installed is
+  skipped, so one list can name several makers' apps. The extras route
+  lets a server change the list without a new build:
+  `--extras '{"idealyst.hide_packages": "com.aura.oobe.lenovo,com.discovery.oobe"}'`.
+
+Neither step can fail provisioning: a failure is logged (tag
+`device_admin`) and setup carries on.

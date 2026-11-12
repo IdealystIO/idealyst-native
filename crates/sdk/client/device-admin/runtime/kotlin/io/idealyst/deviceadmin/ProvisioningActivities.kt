@@ -31,8 +31,11 @@ class ProvisioningModeActivity : Activity() {
 
 /**
  * Answers `ADMIN_POLICY_COMPLIANCE`, the last step of provisioning: the app
- * is now device owner. The admin extras bundle from the QR code is reported
- * as a `provisioning_complete` event, then the wizard is let finish.
+ * is now device owner. It makes a home-screen app the home app and hides
+ * the packages the QR code names ([RustDeviceAdmin.finishProvisioning]),
+ * reports the admin extras bundle as a `provisioning_complete` event, then
+ * lets the wizard finish — which launches home, so a home-screen app runs
+ * with nobody opening it.
  */
 class PolicyComplianceActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,6 +46,7 @@ class PolicyComplianceActivity : Activity() {
             @Suppress("DEPRECATION")
             intent.getParcelableExtra(DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE)
         }
+        RustDeviceAdmin.finishProvisioning(this, extras)
         RustDeviceAdmin.emitProvisioningComplete(this, extras)
         setResult(RESULT_OK)
         finish()

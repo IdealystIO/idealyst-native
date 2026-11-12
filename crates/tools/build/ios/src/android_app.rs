@@ -12,6 +12,10 @@
 //! # Declare the main activity as a home screen (HOME + DEFAULT categories),
 //! # so a device owner can make it the persistent launcher.
 //! home_launcher = true
+//! # Packages a device-owner app hides at the end of QR provisioning, before
+//! # setup finishes (`device-admin`), e.g. the maker's out-of-box apps. One
+//! # that is not installed is skipped, so the list can name several makers'.
+//! provisioning_hide = ["com.example.oobe"]
 //! # The main activity's `android:resizeableActivity`. `false` keeps it out
 //! # of split screen and free-form windows, and Android then gives it no
 //! # desktop-window handle — on a kiosk that handle can close the app even
@@ -81,6 +85,9 @@ pub struct AndroidAppMetadata {
     pub lock_task_mode: Option<LockTaskMode>,
     /// Add a HOME + DEFAULT intent filter to the main activity.
     pub home_launcher: bool,
+    /// Packages `device-admin` hides at the end of provisioning, emitted as
+    /// the [`PROVISIONING_HIDE_META_DATA`] `<meta-data>` entry.
+    pub provisioning_hide: Vec<String>,
     /// The main activity's `android:resizeableActivity`; `None` leaves
     /// Android's default.
     pub resizeable: Option<bool>,
@@ -103,6 +110,22 @@ fn is_resource_name(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The `<application>` `<meta-data>` name `device-admin` reads
+/// [`AndroidAppMetadata::provisioning_hide`] from, comma-separated.
+pub const PROVISIONING_HIDE_META_DATA: &str = "io.idealyst.deviceadmin.HIDE_PACKAGES";
+
+/// An Android package name: two or more dot-separated segments, each a
+/// letter followed by letters, digits or `_`.
+fn is_package_name(name: &str) -> bool {
+    let segments: Vec<&str> = name.split('.').collect();
+    segments.len() >= 2
+        && segments.iter().all(|s| {
+            let mut chars = s.chars();
+            matches!(chars.next(), Some(c) if c.is_ascii_alphabetic())
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
 }
 
 /// Values of the manifest's `android:screenOrientation` attribute.
@@ -179,6 +202,8 @@ pub(crate) struct RawAndroidAppMetadata {
     #[serde(default)]
     home_launcher: Option<bool>,
     #[serde(default)]
+    provisioning_hide: Vec<String>,
+    #[serde(default)]
     resizeable: Option<bool>,
     #[serde(default)]
     screen_orientation: Option<String>,
@@ -234,6 +259,14 @@ impl AndroidAppMetadata {
                 );
             }
         }
+        for pkg in &raw.provisioning_hide {
+            if !is_package_name(pkg) {
+                bail!(
+                    "`[package.metadata.idealyst.app.android].provisioning_hide`: {pkg:?} is not a \
+                     package name"
+                );
+            }
+        }
         for name in raw.strings.keys() {
             if !is_resource_name(name) {
                 bail!(
@@ -265,6 +298,7 @@ impl AndroidAppMetadata {
             version_code: raw.version_code,
             lock_task_mode,
             home_launcher: raw.home_launcher.unwrap_or(false),
+            provisioning_hide: raw.provisioning_hide,
             resizeable: raw.resizeable,
             screen_orientation: raw.screen_orientation,
             keep_alive: raw.keep_alive.unwrap_or(false),
@@ -371,6 +405,17 @@ mod tests {
         assert!(m.home_launcher);
         assert!(parse("lock_task_mode = \"if_allowlisted\"").is_err());
         assert!(parse("lock_task = \"always\"").is_err(), "unknown keys are rejected");
+    }
+
+    #[test]
+    fn provisioning_hide_takes_package_names() {
+        assert!(parse("").unwrap().provisioning_hide.is_empty());
+        let m = parse("provisioning_hide = [\"com.aura.oobe.lenovo\", \"com.discovery.oobe\"]").unwrap();
+        assert_eq!(m.provisioning_hide, ["com.aura.oobe.lenovo", "com.discovery.oobe"]);
+        for bad in ["\"oobe\"", "\"com..oobe\"", "\"com.9oobe\"", "\"com.oobe,com.x\""] {
+            let err = parse(&format!("provisioning_hide = [{bad}]")).unwrap_err().to_string();
+            assert!(err.contains("not a package name"), "{bad}: {err}");
+        }
     }
 
     #[test]

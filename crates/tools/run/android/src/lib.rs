@@ -1177,7 +1177,7 @@ struct ManifestInputs<'a> {
 
 fn render_manifest(template: &str, i: &ManifestInputs<'_>) -> String {
     let sdk_root = i.sdk.render_root(i.package);
-    let sdk_application = i.sdk.render_application(i.package);
+    let sdk_application = i.sdk.render_application(i.package) + &provisioning_hide_meta_data(i.android);
     let uses_permissions = with_keep_alive_permissions(i.uses_permissions, i.android);
     let keep_alive = keep_alive_service(i.package, i.android);
     render(template, &[
@@ -1269,6 +1269,19 @@ fn keep_alive_start(android: &AndroidAppMetadata) -> &'static str {
     } else {
         ""
     }
+}
+
+/// `provisioning_hide` as the `<application>` `<meta-data>` `device-admin`
+/// reads at the end of provisioning (empty when the app names none).
+fn provisioning_hide_meta_data(android: &AndroidAppMetadata) -> String {
+    if android.provisioning_hide.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n<meta-data android:name=\"{}\" android:value=\"{}\" />",
+        build_ios::android_app::PROVISIONING_HIDE_META_DATA,
+        xml_escape(&android.provisioning_hide.join(","))
+    )
 }
 
 /// The HOME intent filter for an app declared as a home screen. A separate
@@ -1894,6 +1907,34 @@ mod tests {
     /// Every placeholder in both templates is filled and the result is a
     /// well-formed manifest, with the app's kiosk attributes on the main
     /// activity and SDK fragments under the right parents.
+    #[test]
+    fn provisioning_hide_becomes_application_meta_data() {
+        let sdk = SdkManifestContributions::default();
+        let with = AndroidAppMetadata {
+            provisioning_hide: vec!["com.aura.oobe.lenovo".into(), "com.discovery.oobe".into()],
+            ..Default::default()
+        };
+        for template in [ANDROID_MANIFEST_LOCAL_XML, super::ANDROID_MANIFEST_AAS_XML] {
+            let xml = render_manifest(template, &inputs(&with, &sdk, false));
+            let doc = roxmltree::Document::parse(&xml).unwrap_or_else(|e| panic!("{e}\n{xml}"));
+            let app = doc.root_element().children().find(|c| c.has_tag_name("application")).unwrap();
+            let meta = app
+                .children()
+                .find(|c| {
+                    c.has_tag_name("meta-data")
+                        && c.attribute((ANDROID_NS, "name"))
+                            == Some(build_ios::android_app::PROVISIONING_HIDE_META_DATA)
+                })
+                .unwrap_or_else(|| panic!("no hide-list meta-data:\n{xml}"));
+            assert_eq!(
+                meta.attribute((ANDROID_NS, "value")),
+                Some("com.aura.oobe.lenovo,com.discovery.oobe")
+            );
+            let without = render_manifest(template, &inputs(&AndroidAppMetadata::default(), &sdk, false));
+            assert!(!without.contains(build_ios::android_app::PROVISIONING_HIDE_META_DATA));
+        }
+    }
+
     #[test]
     fn manifest_carries_kiosk_attributes_and_sdk_components_in_place() {
         let tmp = tempfile::tempdir().unwrap();

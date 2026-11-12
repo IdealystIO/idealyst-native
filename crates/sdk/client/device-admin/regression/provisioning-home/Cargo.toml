@@ -1,0 +1,37 @@
+[package]
+name = "provisioning-home-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# On-device regression app for device-admin's end of provisioning
+# (`RustDeviceAdmin.finishProvisioning`), built and driven by `run.sh` on a
+# throwaway emulator. What the setup wizard launches after
+# ADMIN_POLICY_COMPLIANCE, and whether a package stays hidden, is Android
+# behaviour no host test reaches. Its own workspace; `run.sh` builds a copy
+# under target/ so no lockfile or dist/ lands in the source tree.
+[workspace]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+idealyst = { path = "../../../../../idealyst" }
+runtime-core = { path = "../../../../../runtime/core", features = ["async-driver"] }
+runtime-vocabulary = { path = "../../../../../runtime/vocabulary" }
+runtime-scene = { path = "../../../../../runtime/scene" }
+device-admin = { path = "../.." }
+log = "0.4"
+
+[package.metadata.idealyst.app]
+name      = "Provisioning Home Probe"
+bundle_id = "io.idealyst.provisioninghome"
+version   = "0.0.1"
+targets   = ["android"]
+
+# The CrewForge agent's shape: the device owner is also the home screen, and
+# names the maker's out-of-box apps to hide. camera2 stands in for one; the
+# second package is on no device, and must be skipped.
+[package.metadata.idealyst.app.android]
+home_launcher = true
+provisioning_hide = ["com.android.camera2", "com.example.not.installed"]

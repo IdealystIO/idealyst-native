@@ -3409,6 +3409,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A provisioned kiosk app starts on its own** (`device-admin` minor, `build-ios`, `run-android`,
+  `idealyst-cli`). After QR provisioning a device-owner app never ran: setup ended on the maker's
+  launcher, so the app could not enrol, lock down or hide the maker's setup apps until someone
+  opened it. At the last provisioning step the SDK now makes a `home_launcher = true` app the
+  persistent home app, so setup ends in it and `ProvisioningComplete` arrives on that first start,
+  and hides the packages named by the new `[package.metadata.idealyst.app.android]
+  provisioning_hide` list and the QR code's `idealyst.hide_packages` admin extra (missing packages
+  skipped). Neither step can fail provisioning. Regression run:
+  `crates/sdk/client/device-admin/regression/provisioning-home/run.sh` on a throwaway emulator.
+
 - **An Android build no longer links SDK resources from an earlier build** (`run-android`). When
   the dependency graph stopped contributing resources (an SDK removed), the compiled
   `sdk-res.flata` from the previous build stayed on disk and was linked again. A flat whose input

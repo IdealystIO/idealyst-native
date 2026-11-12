@@ -61,6 +61,14 @@ signing and versionCode come from `[package.metadata.idealyst.app.android]`;
 see `docs/android-packaging.md`. Silent updates need every build signed with
 the same key.
 
+At the end of QR provisioning, before setup finishes, an app that declares
+`home_launcher = true` becomes the persistent home app, so setup ends in
+the app and `ProvisioningComplete` reaches it with nobody opening it. The
+packages named by the app's `provisioning_hide` list and the QR code's
+`idealyst.hide_packages` admin extra (comma-separated) are hidden; one that
+is not installed is skipped. See "Device-owner provisioning" in
+`docs/android-packaging.md`.
+
 ## API
 
 | Call | Android | Min API | iOS |
@@ -243,11 +251,18 @@ built by `idealyst build --android`:
   policy calls return `NotDeviceOwner` and an un-allow-listed
   `start_lock_task()` resolves `false`.
 - Both provisioning activities launch and report `ProvisioningComplete`.
+- The end of provisioning, on an API 34 emulator (`regression/provisioning-home/run.sh`):
+  a `home_launcher` device owner becomes the persistent home app, HOME starts
+  it and its listener gets `ProvisioningComplete`, a `provisioning_hide`
+  package is hidden, a missing one is skipped, and all of it survives a
+  reboot. With the step removed, the launcher stays home and the event waits.
 
 Not verified yet:
 
 - The full QR flow on a wiped device: the setup wizard downloading the APK
-  and handing over the extras bundle.
+  and handing over the extras bundle, including `idealyst.hide_packages`
+  (adb cannot send a `PersistableBundle`, so the regression run drives only
+  the `provisioning_hide` list, which takes the same path).
 - The iOS calls on a supervised iPad. They are compile-checked for
   `aarch64-apple-ios` only.
 - `set_permitted_accessibility_services` / `permitted_accessibility_services`
