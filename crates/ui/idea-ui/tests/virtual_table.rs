@@ -765,3 +765,31 @@ fn regression_the_drop_highlight_stays_on_the_moved_row() {
     assert_ne!(look(new_slot).1, Some(0), "with the sheet's fade back");
     assert_ne!(look(old_index).1, Some(0));
 }
+
+/// REGRESSION (reported): a `fill` column with a live width — a saved
+/// resize — became a fixed column, so with the other columns sized too the
+/// row stopped short and the rest of the table was empty. Its live width
+/// is now its floor, as on a plain table: in a 1200 px scrollport, a fill
+/// column saved at 300 beside a 120 px column takes 1080.
+#[test]
+fn regression_a_fill_column_with_a_saved_width_still_fills_the_row() {
+    let saved: Rc<std::cell::Cell<Option<Signal<idea_ui::components::table::ColumnWidths>>>> = Rc::default();
+    let s = saved.clone();
+    let f = table(10, move |r, p| {
+        p.selection = None;
+        p.columns = vec![TableColumn::new("name").fill().min_width(200.0), TableColumn::new("b").width(120.0)];
+        let widths = signal(idea_ui::components::table::ColumnWidths::from([(ColumnId::new("name"), 300.0)]));
+        s.set(Some(widths));
+        p.column_widths = Some(widths);
+        r
+    });
+    host_mock::set_virtual_grid_scrollport(f.grid_node(), Scrollport::overlay(1200.0, 400.0));
+    f.h.flush();
+    let g = f.grid();
+    assert_eq!(((g.col_width)(0), (g.col_width)(1)), (1080.0, 120.0));
+    // Resized wider than the room: the floor holds and the grid scrolls.
+    let widths = saved.get().unwrap();
+    f.h.world.enter(|| widths.update(|w| { let mut w = w.clone(); w.insert(ColumnId::new("name"), 1500.0); w }));
+    f.h.flush();
+    assert_eq!(((g.col_width)(0), (g.col_width)(1)), (1500.0, 120.0));
+}

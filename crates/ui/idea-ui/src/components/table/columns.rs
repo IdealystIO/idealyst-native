@@ -185,7 +185,9 @@ pub struct TableColumn {
     /// fill column may shrink to its `min_width`; pair it with `truncate`.
     /// In a `scroll_x` table it fills the scroller the same way, and the
     /// table overflows only once its `min_width` and the other columns no
-    /// longer fit.
+    /// longer fit. A width it gets — `width`, or a resize saved in the
+    /// width map — is its floor, not a fixed width, so it keeps filling
+    /// (on a virtualized table too).
     /// Lays the table out as grid columns.
     pub fill: bool,
     /// Draw a drag handle on the header cell's trailing edge, revealed

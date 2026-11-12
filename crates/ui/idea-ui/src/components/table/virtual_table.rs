@@ -33,9 +33,12 @@
 //! Every cell of a column is one width, and a row is one height, because
 //! the grid places cells from per-column widths and per-row heights — the
 //! content of cells that aren't mounted can't be measured. A column with a
-//! `width` keeps it; every other column shares the width the fixed ones
-//! leave, never below its `min_width` (or [`COLUMN_RESIZE_MIN_PX`]) or above
-//! its `max_width`. When the minimums don't fit, the grid scrolls sideways.
+//! `width` (or a live width from the width map) keeps it; every other
+//! column shares the width the fixed ones leave, never below its
+//! `min_width` (or [`COLUMN_RESIZE_MIN_PX`]) or above its `max_width`. A
+//! `fill` column always shares: its width, saved or dragged, is its floor,
+//! so it keeps taking the spare room and stays resizable. When the minimums
+//! don't fit, the grid scrolls sideways.
 //! Leading `ColumnPin::Left` columns (and the selection column) are frozen
 //! at the left edge, trailing `ColumnPin::Right` ones at the right edge.
 //!
@@ -274,6 +277,22 @@ fn frozen_columns(cols: &[GridCol]) -> (usize, usize) {
         }
     }
     (left, right)
+}
+
+/// An author column's `(fixed, min, max)` for [`column_widths`], given its
+/// live width (the width map's entry, else the spec's `width`). A column
+/// with a live width keeps it — except a `fill` column, whose live width
+/// is its FLOOR: it keeps taking the width the others leave, as on a plain
+/// table (`columns.rs`), instead of becoming a fixed track that leaves the
+/// rest of the row empty.
+fn author_track(col: &TableColumn, live: Option<f32>) -> (Option<f32>, f32, f32) {
+    let min = col.min_width.unwrap_or(COLUMN_RESIZE_MIN_PX);
+    let (fixed, min) = match (col.fill, live) {
+        (true, Some(w)) => (None, min.max(w)),
+        (_, live) => (live, min),
+    };
+    let max = col.max_width.unwrap_or(f32::INFINITY).max(min);
+    (fixed, min, max)
 }
 
 /// Column widths for a row `available` px wide, as CSS `minmax(min, 1fr)`
@@ -560,11 +579,7 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
                         let w = base + if i == 0 { lead_growth() } else { 0.0 };
                         (Some(w), w, w)
                     }
-                    GridCol::Author(c) => {
-                        let min = c.min_width.unwrap_or(COLUMN_RESIZE_MIN_PX);
-                        let max = c.max_width.unwrap_or(f32::INFINITY).max(min);
-                        (live.as_ref().and_then(|m| m.get()), min, max)
-                    }
+                    GridCol::Author(c) => author_track(c, live.as_ref().and_then(|m| m.get())),
                 })
                 .collect();
             column_widths(viewport_w.get(), &specs)
@@ -1054,6 +1069,27 @@ mod tests {
         assert_eq!(w, vec![80.0, 60.0, 70.0]);
         let w = column_widths(0.0, &[(None, 60.0, f32::INFINITY)]);
         assert_eq!(w, vec![60.0], "before the scrollport is known");
+    }
+
+    /// A fill column's live width (a saved resize, or its `width`) is its
+    /// floor, not a fixed width — the reported repro: a fill column at a
+    /// saved 300 beside a 120 column, 1200 px of room.
+    #[test]
+    fn regression_a_fill_column_with_a_width_still_takes_the_spare_room() {
+        let name = TableColumn::new("name").fill().min_width(200.0);
+        let b = TableColumn::new("b").width(120.0);
+        let tracks = [author_track(&name, Some(300.0)), author_track(&b, Some(120.0))];
+        assert_eq!(tracks[0], (None, 300.0, f32::INFINITY), "the saved width is the floor");
+        assert_eq!(column_widths(1200.0, &tracks), vec![1080.0, 120.0], "the row fills the table");
+        // Narrower than the floor allows: the fill column holds its floor
+        // and the grid scrolls sideways.
+        assert_eq!(column_widths(350.0, &tracks), vec![300.0, 120.0]);
+        // A non-fill column's live width stays exact.
+        let plain = TableColumn::new("c").min_width(200.0);
+        assert_eq!(author_track(&plain, Some(300.0)), (Some(300.0), 200.0, f32::INFINITY));
+        // A floor above the cap lifts the cap rather than inverting the range.
+        let capped = TableColumn::new("d").fill().max_width(250.0);
+        assert_eq!(author_track(&capped, Some(300.0)), (None, 300.0, 300.0));
     }
 
     fn col(id: &str, pin: Option<ColumnPin>) -> GridCol {

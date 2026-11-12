@@ -3387,6 +3387,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A fill column keeps filling a virtualized `Table` once it has a width** (`idea-ui` patch).
+  With a live width — a resize saved in `column_widths`, or a `width` — a `TableColumn::fill`
+  column became a fixed column in a virtualized table, so with the other columns sized too the
+  row stopped short and the rest of the table stayed empty. Its width is now its floor, as on a
+  plain table: it keeps taking the spare room and stays resizable.
+
 - **A negative side margin reaches past the parent on native** (`runtime-layout` patch). The
   layout crate caps every normal-flow node at `max-width: 100%` of its parent's content box so
   text wraps as on the web. A stretched child with `margin_left` / `margin_right` negative — a
