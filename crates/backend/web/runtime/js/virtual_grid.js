@@ -91,6 +91,9 @@
             this.pool = new Map();
             this.recycle = null;
 
+            /** A row kept mounted outside the window (`setKeptRow`), or -1. */
+            this.keepRow = -1;
+
             /** @type {Map<string, {node: Element, scopeId: number, col: number, row: number, key: number}>} */
             this.mounted = new Map();
 
@@ -136,6 +139,24 @@
          *  paints) and re-placed. */
         setRecycling(reuseClass, rebind) {
             this.recycle = { reuseClass, rebind };
+        }
+
+        /** Keep row `row`'s cells mounted however far the grid scrolls
+         *  from it (`-1`: none) — `VirtualGridHandle::keep_row_mounted`,
+         *  the same rule as Rust's `PaneWindow::keeping_row`. A cell that
+         *  leaves the window is parked and re-inserted elsewhere in the
+         *  DOM, which drops its pointer capture: a drag that started in it
+         *  would stop hearing the pointer. Re-windows on a microtask, as
+         *  the first fill does: the caller is framework code, and the
+         *  re-window mounts and releases cells, which re-enter it. */
+        setKeptRow(row) {
+            if (this._released || this.keepRow === row) return;
+            this.keepRow = row;
+            queueMicrotask(() => {
+                if (this._released) return;
+                this.lastWindow = null;
+                this.update();
+            });
         }
 
         /** Map key for a mounted cell. Cells are addressed by position,
@@ -199,6 +220,11 @@
             // so no index is in two bands. An empty scrolling window is
             // `start > end` (Rust's `GridWindow::EMPTY`).
             const rows = this._axis(w.top, w.rowStart, w.rowEnd, w.bottom, w.rowCount);
+            const kept = this.keepRow;
+            if (kept >= 0 && kept < w.rowCount && !rows.includes(kept)) {
+                rows.push(kept);
+                rows.sort((a, b) => a - b);
+            }
             const cols = this._axis(w.left, w.colStart, w.colEnd, w.right, w.colCount);
             const rowSet = new Set(rows);
             const colSet = new Set(cols);

@@ -407,8 +407,10 @@ TableCell {
                     both axes. Every row is one height and every cell of a column one width: a \
                     `width` column keeps it, the rest share what is left within their \
                     `min_width` / `max_width`. Selection, row tones, clickable rows, sort headers \
-                    and `on_end_reached` paging carry over; drag-to-reorder and row groups need \
-                    every row mounted and are refused.".to_string())
+                    and `on_end_reached` paging carry over. `on_reorder` adds a frozen grip \
+                    column: the held row follows the pointer, the table scrolls while it is held \
+                    near the top or bottom edge, and the drop reports row indices — apply them \
+                    with `move_in_place`. Row groups need every row mounted and are refused.".to_string())
                 virtual_demo_table()
                 CodePanel(src = r##"Table(
     columns = vec![
@@ -672,7 +674,7 @@ TableFooter {
                     Prop {
                         name: "virtualized",
                         ty: "Option<VirtualRows>",
-                        desc: "Lay the rows out on a virtualized grid that builds only the cells in view, with the header row and edge-pinned columns frozen while the rest scrolls on both axes. Rows come from VirtualRows (count, id, per-column cell renderer) instead of children; the header from columns. Refuses on_reorder, on_group_reorder and children. Default None.",
+                        desc: "Lay the rows out on a virtualized grid that builds only the cells in view, with the header row and edge-pinned columns frozen while the rest scrolls on both axes. Rows come from VirtualRows (count, id, per-column cell renderer) instead of children; the header from columns. on_reorder works (row indices, with autoscroll); refuses on_group_reorder and children. Default None.",
                     },
                     Prop {
                         name: "inset_x",
@@ -727,7 +729,7 @@ TableFooter {
                     Prop {
                         name: "on_reorder",
                         ty: "Option<Rc<dyn Fn(usize, usize)>>",
-                        desc: "Adds a leading grip column and drag-to-reorder: (from, to) are ordinals over the draggable body rows; move_in_place applies them. Default None.",
+                        desc: "Adds a leading grip column and drag-to-reorder: (from, to) are ordinals over the draggable body rows (row indices on a virtualized table, which also autoscrolls near its edges); move_in_place applies them. Default None.",
                     },
                     Prop {
                         name: "on_group_reorder",

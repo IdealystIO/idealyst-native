@@ -84,6 +84,19 @@
 //! its old row in its new place. A backend that does not reuse cells mounts
 //! fresh ones, which renders the same thing.
 //!
+//! ## Keeping a row mounted
+//!
+//! [`VirtualGridHandle::keep_row_mounted`] keeps one row's cells mounted
+//! however far the grid scrolls from it, at their own position. A cell that
+//! leaves the window is otherwise parked, reused for another row or
+//! released — and with it goes anything the cell owns, including a gesture
+//! in progress: a touch belongs to the view that took the press, and a
+//! released view stops reporting it (on the web, even moving a reused cell
+//! in the DOM drops its pointer capture). A drag that starts in a cell —
+//! a reorder grip — keeps its row mounted until the drag ends, so the
+//! gesture survives the grid scrolling under it. [`PaneWindow::kept_row`]
+//! carries the row through every backend's window diff.
+//!
 //! ## The grid's own size
 //!
 //! The grid fills its parent by default, and it can fit its content
@@ -298,7 +311,7 @@ impl GridMetrics {
             let (r0, r1) = clip(w.row_start, w.row_end, rows_frozen, rows);
             GridWindow { col_start: c0, col_end: c1, row_start: r0, row_end: r1 }
         };
-        PaneWindow { scrolling, rows_frozen, cols_frozen, counts: (cols, rows) }
+        PaneWindow { scrolling, rows_frozen, cols_frozen, counts: (cols, rows), kept_row: None }
     }
 
     /// Where cell `(col, row)` is drawn, in content space, at `scroll`
@@ -568,16 +581,43 @@ pub struct PaneWindow {
     pub cols_frozen: (usize, usize),
     /// `(col_count, row_count)` of the grid.
     pub counts: (usize, usize),
+    /// A row mounted outside the window — see the module docs, "Keeping a
+    /// row mounted". Set by [`PaneWindow::keeping_row`], and only while the
+    /// row is in range and not mounted anyway, so two windows that mount
+    /// the same cells compare equal.
+    pub kept_row: Option<usize>,
 }
 
 impl PaneWindow {
+    /// This window, also mounting row `row` (see the module docs, "Keeping
+    /// a row mounted") across the window's columns. A row past the end, or
+    /// one the window mounts anyway, adds nothing.
+    pub fn keeping_row(mut self, row: Option<usize>) -> Self {
+        self.kept_row = row.filter(|&r| r < self.counts.1 && !self.mounts_row(r));
+        self
+    }
+
+    /// Whether row `row` is in the frozen bands or the scrolling window.
+    fn mounts_row(self, row: usize) -> bool {
+        let (top, bottom) = self.rows_frozen;
+        let n = self.counts.1;
+        row < top
+            || row >= n - bottom
+            || (!self.scrolling.is_empty() && row >= self.scrolling.row_start && row <= self.scrolling.row_end)
+    }
+
     /// The rows mounted, ascending, each once.
     pub fn rows(self) -> impl Iterator<Item = usize> {
         let (top, bottom) = self.rows_frozen;
         let n = self.counts.1;
         let (s, e) = (self.scrolling.row_start, self.scrolling.row_end);
         let scroll = if self.scrolling.is_empty() { 1..=0 } else { s..=e };
-        (0..top).chain(scroll).chain(n - bottom..n)
+        // The kept row is in the scrolling band but not the window: before
+        // the window's rows or after them (either, when the window is empty).
+        let kept = self.kept_row;
+        let before = kept.filter(|&k| self.scrolling.is_empty() || k < s);
+        let after = kept.filter(|&k| !self.scrolling.is_empty() && k > e);
+        (0..top).chain(before).chain(scroll).chain(after).chain(n - bottom..n)
     }
 
     /// The columns mounted, ascending, each once.
@@ -604,7 +644,8 @@ impl PaneWindow {
             i < lead || i >= n - trail || (!self.scrolling.is_empty() && i >= s && i <= e)
         };
         in_axis(col, self.cols_frozen, cols, self.scrolling.col_start, self.scrolling.col_end)
-            && in_axis(row, self.rows_frozen, rows, self.scrolling.row_start, self.scrolling.row_end)
+            && (self.kept_row == Some(row)
+                || in_axis(row, self.rows_frozen, rows, self.scrolling.row_start, self.scrolling.row_end))
     }
 
     /// `(column band, row band)` of a cell: whether it scrolls on each
@@ -741,6 +782,15 @@ impl VirtualGridHandle {
         self.ops.scroll_to(&*self.node, x, y);
     }
 
+    /// Keep row `row`'s cells mounted however far the grid scrolls from it
+    /// (`None` lets the window decide again). One row at a time; a new call
+    /// replaces the last. For a gesture that starts in a cell and must
+    /// outlive the cell scrolling away — see the module docs, "Keeping a row
+    /// mounted".
+    pub fn keep_row_mounted(&self, row: Option<usize>) {
+        self.ops.keep_row_mounted(&*self.node, row);
+    }
+
     /// The box the cells show through right now — the grid's size minus
     /// any scrollbar that takes room — and each scrollbar's thickness.
     /// `None` until the grid has been laid out. See [`Scrollport`].
@@ -820,6 +870,12 @@ pub trait VirtualGridOps {
 
     #[allow(unused_variables)]
     fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {}
+
+    /// Mount row `row` beside the window from the next sync on (see
+    /// [`PaneWindow::keeping_row`]); `None` stops. Re-window at once, so a
+    /// row the window just left is not released first.
+    #[allow(unused_variables)]
+    fn keep_row_mounted(&self, node: &dyn Any, row: Option<usize>) {}
 
     /// The grid's current [`Scrollport`]; `None` before the grid is laid
     /// out (or on a backend without a grid engine).
@@ -1271,6 +1327,59 @@ mod tests {
         assert_eq!(w.scrolling, plain);
         assert_eq!(w.cells().collect::<Vec<_>>(), plain.cells().collect::<Vec<_>>());
         assert_eq!(m.display_origin(7, 30, s, v, FrozenPanes::NONE), m.cell_origin(7, 30));
+    }
+
+    /// A kept row stays mounted, across the window's columns, however far
+    /// the window scrolls from it — above it or below it — and is listed in
+    /// row order, once.
+    #[test]
+    fn a_kept_row_stays_mounted_outside_the_window() {
+        let m = table();
+        let f = frozen(1, 0, 1, 0);
+        // Window around rows 500..=505; row 3 kept from far above.
+        let w = m.pane_window((800.0, 20_000.0), (400.0, 200.0), 0.0, f).keeping_row(Some(3));
+        assert_eq!(w.kept_row, Some(3));
+        let rows: Vec<usize> = w.rows().collect();
+        assert_eq!(&rows[..2], &[0, 3], "header, then the kept row, then the window: {rows:?}");
+        assert!(rows[2..].iter().all(|r| (500..=505).contains(r)), "{rows:?}");
+        assert!(w.contains(0, 3) && w.contains(10, 3), "frozen and scrolling columns of the kept row");
+        assert!(!w.contains(1, 3), "only the window's columns");
+        assert_eq!(w.cells().count(), rows.len() * w.cols().count());
+
+        // Kept from far below.
+        let w = m.pane_window((0.0, 0.0), (400.0, 200.0), 0.0, f).keeping_row(Some(900));
+        let rows: Vec<usize> = w.rows().collect();
+        assert_eq!(rows.last(), Some(&900), "{rows:?}");
+        let mut sorted = rows.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(rows, sorted, "ascending, each once");
+    }
+
+    /// Keeping a row the window mounts anyway, or one past the end, changes
+    /// nothing — so the windows compare equal and a backend skips the diff.
+    #[test]
+    fn keeping_a_mounted_or_missing_row_adds_nothing() {
+        let m = table();
+        let w = m.pane_window((0.0, 0.0), (400.0, 200.0), 0.0, frozen(1, 0, 0, 0));
+        assert_eq!(w.keeping_row(Some(2)), w, "in the window");
+        assert_eq!(w.keeping_row(Some(0)), w, "frozen");
+        assert_eq!(w.keeping_row(Some(1000)), w, "past the end");
+        assert_eq!(w.keeping_row(None), w);
+        assert_ne!(w.keeping_row(Some(700)), w, "a row outside the window is a different mounted set");
+    }
+
+    /// With nothing in the scrolling window, the kept row is mounted
+    /// between the frozen bands, in the frozen columns.
+    #[test]
+    fn a_kept_row_is_mounted_beside_an_empty_window() {
+        let m = GridMetrics::build(2, 10, &|_| 10.0, &|_| 10.0);
+        let mut w = m.pane_window((0.0, 0.0), (20.0, 100.0), 0.0, frozen(1, 1, 1, 0));
+        w.scrolling = GridWindow::EMPTY;
+        let w = w.keeping_row(Some(4));
+        assert_eq!(w.rows().collect::<Vec<_>>(), vec![0, 4, 9]);
+        assert!(w.contains(0, 4));
+        assert_eq!(w.cells().count(), 3, "the frozen column on each mounted row");
     }
 
     #[test]

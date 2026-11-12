@@ -1271,6 +1271,22 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **A virtualized `Table` reorders rows by drag** (`runtime-shared`, `runtime-vocabulary`,
+  `backend-web`, `backend-macos`, `backend-ios-mobile`, `backend-android-mobile`, `host-mock`,
+  `idea-ui` minor). `Table(on_reorder = …, virtualized = …)` used to panic; it now adds a grip
+  column frozen at the left. The held row follows the pointer while the rows it passes slide
+  aside, the table autoscrolls while the row is held near its top (under the header) or bottom
+  edge, and the drop calls `on_reorder(from, to)` with row indices — apply the move there with
+  `move_in_place`. The dropped row keeps its highlight while it springs into its new slot, and
+  the cells at its old index lose it at once (no background fade while a row is held or
+  landing). `grip_on_hover` works as on a plain table; `on_group_reorder` and children
+  are still refused. Underneath, `VirtualGridHandle::keep_row_mounted(Some(row))` keeps one
+  row's cells mounted however far the grid scrolls from it, so a gesture that started in a cell
+  outlives the cell scrolling away: a reused cell is otherwise moved to another row, and on
+  the web re-inserting it drops its pointer capture. `PaneWindow` gains `kept_row` /
+  `keeping_row`, and remote bundles send the call to apps at handle-call level 2. Demo:
+  `examples/virtual-table-reorder-demo`.
+
 - **Virtualized tables and grids reuse cells as they scroll** (`runtime-shared`,
   `runtime-vocabulary`, `backend-web`, `backend-macos`, `backend-ios-mobile`,
   `backend-android-mobile`, `host-mock`, `idea-ui` minor). `virtual_grid_recycled(…, reuse_class,
@@ -3029,6 +3045,25 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   preminted) or `TableInset::Px(f32)` for an exact margin.
 
 ### Changed
+
+- **idea-ui's Alert, Tag and Toast are redesigned** (`idea-ui` minor).
+  - **Alert** draws a leading icon picked from its tone (a check for Success, a triangle for
+    Warning, an exclamation circle for Danger, an `i` circle otherwise). The new `icon: AlertIcon`
+    prop turns it off (`AlertIcon::None`) or swaps the glyph (`AlertIcon::Custom(data)`); a live
+    `tone` swaps the glyph in place. The banner stretches across a column parent instead of
+    hugging its title. Its tree is now `root → [main → [icon, content → [title, body]], action,
+    close]`: a restyle of `content` still reaches the title/body column, and the new `main` and
+    `icon` slots style the row and the glyph.
+  - **Tag and Alert draw a 1px border on every variant.** Soft is edged in the tone's border
+    color (its 50-shade tint alone barely showed on a white page), Filled in its own fill, Ghost
+    in transparent, so Filled, Soft and Outlined pills in one row are the same height.
+  - **The built-in close is a vector ✕** on Tag and Alert, dimmed until hovered. The `glyph`
+    slot now styles an icon: set `width`/`height` and `color` there, not a font size.
+  - **A Tag pill is taller** (an 18px label line), so its label and ✕ aren't cramped.
+  - **A toast sits on an opaque, shadowed card** (the new `ToastStyles::surface` slot), inside
+    the enter/exit animation. In the dark theme a Soft toast's fill is a 16%-alpha wash, so the
+    page used to show through it. `Toast::new` now defaults to the neutral tone its docs promised
+    (it was Primary).
 
 - **`idealyst dev` builds a full-stack project's server at lower CPU
   priority** (`idealyst-cli` minor). A save in a crate the web bundle and

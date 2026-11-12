@@ -39,9 +39,10 @@ use runtime_shared::Easing;
 ///
 /// - `0` — every call up to `Invoke`.
 /// - `1` — `Scrollport`, `SubscribeScrollport`.
+/// - `2` — `KeepRowMounted`.
 ///
 /// Bump it when appending a call, and gate the new call on the new level.
-pub const HANDLE_CALL_LEVEL: u32 = 1;
+pub const HANDLE_CALL_LEVEL: u32 = 2;
 
 /// One handle method, as it crosses. Each reply is postcard-encoded: the
 /// method's return value, `()` when it has none.
@@ -89,6 +90,8 @@ pub enum HandleCall {
     /// `Scrollport`. → the subscription's id (`u32`), released with
     /// [`HandleCall::Unsubscribe`].
     SubscribeScrollport { callback: super::Cb },
+    /// `VirtualGridHandle::keep_row_mounted`.
+    KeepRowMounted(Option<usize>),
 }
 
 /// A `NavCommand` as it crosses. Typed params never do: the receiving
@@ -352,6 +355,13 @@ mod bundle_side {
         }
         fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
             send(node, HandleCall::ScrollTo { x, y })
+        }
+        fn keep_row_mounted(&self, node: &dyn Any, row: Option<usize>) {
+            // An older app can't keep a row: what a backend without the
+            // call does, the trait default.
+            if app_answers(2) {
+                send(node, HandleCall::KeepRowMounted(row))
+            }
         }
         fn scrollport(&self, node: &dyn Any) -> Option<Scrollport> {
             if !app_answers(1) {
@@ -771,6 +781,7 @@ mod host_side {
             (H::VirtualGrid(h), C::ScrollTo { x, y }) => unit(h.scroll_to(x, y)),
             (H::Virtualizer(h), C::ScrollToIndex(i)) => unit(h.scroll_to_index(i)),
             (H::VirtualGrid(h), C::ScrollToCell { col, row }) => unit(h.scroll_to_cell(col, row)),
+            (H::VirtualGrid(h), C::KeepRowMounted(row)) => unit(h.keep_row_mounted(row)),
             (H::Virtualizer(h), C::ScrollOffset) => to_bytes(&h.scroll_offset()),
             (H::VirtualGrid(h), C::ScrollOffset) => to_bytes(&h.scroll_offset()),
             (H::Nav(nav), C::Nav(cmd)) => unit(nav.dispatch(nav_command(cmd))),

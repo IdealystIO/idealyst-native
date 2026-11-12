@@ -3834,6 +3834,74 @@ async fn regression_web_virtual_grid_cells_keep_row_major_order_after_scrolling_
     grid_el.remove();
 }
 
+/// `VirtualGridHandle::keep_row_mounted` on the web grid: the kept row's
+/// cells stay the SAME connected nodes however far the grid scrolls (a
+/// drag that started in one keeps its pointer capture only while its node
+/// is never removed), and are released once the row is let go. Without the
+/// kept row, scrolling away removes them — the control half.
+#[wasm_bindgen_test]
+async fn virtual_grid_kept_row_stays_mounted_while_scrolled_away() {
+    use runtime_shared::primitives::virtual_grid::VirtualGridOps;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let mount_doc = doc.clone();
+    let callbacks = runtime_shared::primitives::virtual_grid::GridCallbacks::<web_glue::dom::Node> {
+        col_count: Rc::new(|| 3usize),
+        row_count: Rc::new(|| 100usize),
+        col_width: Rc::new(|_| 50.0_f32),
+        row_height: Rc::new(|_| 40.0_f32),
+        cell_key: Rc::new(|c, r| (r * 3 + c) as u64),
+        mount_cell: Rc::new(move |c, r| {
+            let el = mount_doc.create_element("div").unwrap();
+            let _ = el.set_attribute("data-cell", &format!("{c}:{r}"));
+            (el.unchecked_into(), (r * 3 + c) as u64)
+        }),
+        release_cell: Rc::new(|_| {}),
+        on_scroll: None,
+    };
+    let grid = crate::primitives::virtual_grid::create(&mut backend, callbacks, 0.01);
+    let grid_el: web_glue::dom::HtmlElement = grid.clone().unchecked_into();
+    let _ = grid_el.set_attribute("style", "height: 200px; width: 150px; overflow: auto;");
+    doc.body().unwrap().append_child(&grid_el).unwrap();
+    sleep_ms(20).await;
+
+    let scroll_to = |y: f64| {
+        grid_el.set_scroll_top(y as i32);
+        let ev = web_glue::dom::Event::new("scroll").unwrap();
+        grid_el.dispatch_event(&ev).unwrap();
+    };
+    let cell = |c: usize, r: usize| grid_el.query_selector(&format!("[data-cell=\"{c}:{r}\"]")).unwrap();
+    let ops = crate::primitives::virtual_grid::WebVirtualGridOps;
+
+    let held: web_glue::dom::Node = cell(1, 2).expect("row 2 is in view").unchecked_into();
+    ops.keep_row_mounted(&grid_el, Some(2));
+    sleep_ms(20).await;
+    scroll_to(2000.0);
+    sleep_ms(20).await;
+    let now = cell(1, 2).expect("the kept row is still mounted far from the window");
+    let now: web_glue::dom::Node = now.unchecked_into();
+    assert!(now.is_same_node(Some(&held)), "the same node, never re-created");
+    assert!(grid_el.contains(Some(&held)));
+    assert!(cell(1, 50).is_some(), "the window followed the scroll");
+
+    ops.keep_row_mounted(&grid_el, None);
+    sleep_ms(20).await;
+    assert!(cell(1, 2).is_none(), "let go, the row leaves with the window");
+    assert!(!grid_el.contains(Some(&held)));
+
+    // Control: scrolled away with nothing kept, a row is dropped.
+    scroll_to(0.0);
+    sleep_ms(20).await;
+    assert!(cell(1, 2).is_some());
+    scroll_to(2000.0);
+    sleep_ms(20).await;
+    assert!(cell(1, 2).is_none());
+    grid_el.remove();
+}
+
 /// Frozen panes on the web grid: after scrolling on both axes, the header
 /// row is held at the grid's top edge, the left pin at its left edge, the
 /// right pin at its right edge, and the corner at the top-left — the CSS

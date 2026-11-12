@@ -78,6 +78,8 @@ pub(crate) struct GridState {
     mounted: RefCell<HashMap<(usize, usize), MountedCell>>,
     last_window: RefCell<Option<PaneWindow>>,
     frozen: std::cell::Cell<FrozenPanes>,
+    /// `VirtualGridHandle::keep_row_mounted`'s row.
+    kept_row: std::cell::Cell<Option<usize>>,
     recycling: RefCell<Option<GridRecycling>>,
     /// Viewport in dp, reported by Kotlin's `onLayout`. Zero until the
     /// first layout pass — windowing against zero would mount nothing
@@ -132,6 +134,7 @@ pub(crate) fn create(
         mounted: RefCell::new(HashMap::new()),
         last_window: RefCell::new(None),
         frozen: std::cell::Cell::new(FrozenPanes::NONE),
+        kept_row: std::cell::Cell::new(None),
         recycling: RefCell::new(None),
         viewport: RefCell::new((0.0, 0.0)),
         overscan,
@@ -242,6 +245,22 @@ pub(crate) fn set_frozen(backend: &mut AndroidBackend, node: &GlobalRef, frozen:
     state.frozen.set(frozen);
     *state.last_window.borrow_mut() = None;
     sync(backend, key);
+    crate::schedule_layout_pass();
+}
+
+/// Keep row `row` mounted outside the window (`VirtualGridHandle::
+/// keep_row_mounted`) and re-window. Needs only the registry lookup, so a
+/// shared borrow does — the handle reaches the backend through one.
+pub(crate) fn set_kept_row(backend: &AndroidBackend, node: &GlobalRef, row: Option<usize>) {
+    let key = node.as_obj().as_raw() as usize;
+    let Some(state) = backend.virtual_grid_registry.get(&key).cloned() else {
+        return;
+    };
+    if state.kept_row.replace(row) == row {
+        return;
+    }
+    *state.last_window.borrow_mut() = None;
+    queue_sync(key, state);
     crate::schedule_layout_pass();
 }
 
@@ -408,7 +427,8 @@ fn sync_now(state: &GridState) {
     let window = state
         .metrics
         .borrow()
-        .pane_window(scroll, viewport, state.overscan, frozen);
+        .pane_window(scroll, viewport, state.overscan, frozen)
+        .keeping_row(state.kept_row.get());
 
     // Frozen cells follow every scroll, whether or not the window moved.
     if !frozen.is_none() {

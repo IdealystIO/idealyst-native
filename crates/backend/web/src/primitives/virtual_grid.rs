@@ -445,6 +445,25 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for WebVirtualGrid
             });
     }
 
+    /// Delegates to the shim's `setKeptRow`, which holds the row in its
+    /// own window diff — the shim builds the mounted row list itself.
+    fn keep_row_mounted(&self, node: &dyn std::any::Any, row: Option<usize>) {
+        let Some(el) = node.downcast_ref::<web_glue::dom::HtmlElement>() else {
+            return;
+        };
+        let Ok(instance) = web_glue::js::Reflect::get(el, &JsValue::from_str(JS_INSTANCE_PROP)) else {
+            return;
+        };
+        if instance.is_undefined() || instance.is_null() {
+            return;
+        }
+        let row = row.map_or(-1.0, |r| r as f64);
+        let _ = web_glue::js::Reflect::get(&instance, &JsValue::from_str("setKeptRow"))
+            .ok()
+            .and_then(|f| f.dyn_into::<web_glue::js::Function>().ok())
+            .map(|f| f.call1(&instance, &JsValue::from_f64(row)));
+    }
+
     fn scroll_offset(&self, node: &dyn std::any::Any) -> (f32, f32) {
         match node.downcast_ref::<web_glue::dom::HtmlElement>() {
             Some(el) => (el.scroll_left() as f32, el.scroll_top() as f32),

@@ -97,6 +97,8 @@ pub(crate) struct VirtualGridInstance {
     /// bounds change).
     last_window: Rc<RefCell<Option<PaneWindow>>>,
     frozen: Rc<std::cell::Cell<FrozenPanes>>,
+    /// `VirtualGridHandle::keep_row_mounted`'s row.
+    kept_row: Rc<std::cell::Cell<Option<usize>>>,
     /// Buffer outside the visible window, in viewport extents — the
     /// author's `.overscan(..)`.
     overscan: f32,
@@ -169,6 +171,7 @@ pub(crate) fn create(
             mounted: Rc::new(RefCell::new(HashMap::new())),
             last_window: Rc::new(RefCell::new(None)),
             frozen: Rc::new(std::cell::Cell::new(FrozenPanes::NONE)),
+            kept_row: Rc::new(std::cell::Cell::new(None)),
             overscan,
             recycling: Rc::new(RefCell::new(None)),
             _delegate: delegate,
@@ -201,6 +204,7 @@ struct GridHandles {
     mounted: Rc<RefCell<HashMap<(usize, usize), MountedCell>>>,
     last_window: Rc<RefCell<Option<PaneWindow>>>,
     frozen: Rc<std::cell::Cell<FrozenPanes>>,
+    kept_row: Rc<std::cell::Cell<Option<usize>>>,
     overscan: f32,
     recycling: Rc<RefCell<Option<GridRecycling>>>,
 }
@@ -374,6 +378,20 @@ pub(crate) fn set_frozen(backend: &mut crate::imp::IosBackend, node: &IosNode, f
     crate::imp::schedule_layout_pass();
 }
 
+/// Keep row `row` mounted outside the window (`VirtualGridHandle::
+/// keep_row_mounted`) and re-window.
+fn set_kept_row(backend: &mut crate::imp::IosBackend, key: usize, row: Option<usize>) {
+    {
+        let Some(inst) = backend.virtual_grid_registry.get(&key) else { return };
+        if inst.kept_row.replace(row) == row {
+            return;
+        }
+        *inst.last_window.borrow_mut() = None;
+    }
+    sync(backend, key);
+    crate::imp::schedule_layout_pass();
+}
+
 /// Reuse cells from now on (module docs, "Cell reuse").
 pub(crate) fn set_recycling(backend: &mut crate::imp::IosBackend, node: &IosNode, recycling: GridRecycling) {
     let key = node.as_view() as *const UIView as usize;
@@ -416,6 +434,7 @@ pub(crate) fn sync(backend: &mut crate::imp::IosBackend, key: usize) {
             mounted: inst.mounted.clone(),
             last_window: inst.last_window.clone(),
             frozen: inst.frozen.clone(),
+            kept_row: inst.kept_row.clone(),
             overscan: inst.overscan,
             recycling: inst.recycling.clone(),
         },
@@ -454,7 +473,7 @@ fn sync_now(h: &GridHandles) {
     let frozen = h.frozen.get();
     let scroll_at = (offset.x as f32, offset.y as f32);
     let viewport = (bounds.size.width as f32, bounds.size.height as f32);
-    let window = metrics.borrow().pane_window(scroll_at, viewport, overscan, frozen);
+    let window = metrics.borrow().pane_window(scroll_at, viewport, overscan, frozen).keeping_row(h.kept_row.get());
 
     // Frozen cells follow every scroll, whether or not the window moved.
     if !frozen.is_none() {
@@ -736,6 +755,14 @@ pub(crate) fn release(backend: &mut crate::imp::IosBackend, node: &IosNode) {
 pub(crate) struct IosVirtualGridOps;
 
 impl runtime_shared::primitives::virtual_grid::VirtualGridOps for IosVirtualGridOps {
+    fn keep_row_mounted(&self, node: &dyn std::any::Any, row: Option<usize>) {
+        let Some(n) = node.downcast_ref::<IosNode>() else {
+            return;
+        };
+        let key = n.as_view() as *const UIView as usize;
+        crate::imp::with_backend(|b| set_kept_row(b, key, row));
+    }
+
     fn scroll_to_cell(&self, node: &dyn std::any::Any, col: usize, row: usize) {
         let Some(n) = node.downcast_ref::<IosNode>() else {
             return;

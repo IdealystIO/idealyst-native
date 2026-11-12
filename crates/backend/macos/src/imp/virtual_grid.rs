@@ -96,6 +96,8 @@ pub(crate) struct VirtualGridInstance {
     mounted: Rc<RefCell<HashMap<(usize, usize), MountedCell>>>,
     last_window: Rc<RefCell<Option<PaneWindow>>>,
     frozen: Rc<std::cell::Cell<FrozenPanes>>,
+    /// `VirtualGridHandle::keep_row_mounted`'s row.
+    kept_row: Rc<std::cell::Cell<Option<usize>>>,
     /// Buffer outside the visible window, in viewport extents — the
     /// author's `.overscan(..)`.
     overscan: f32,
@@ -200,6 +202,7 @@ pub(crate) fn create(
             mounted: Rc::new(RefCell::new(HashMap::new())),
             last_window: Rc::new(RefCell::new(None)),
             frozen: Rc::new(std::cell::Cell::new(FrozenPanes::NONE)),
+            kept_row: Rc::new(std::cell::Cell::new(None)),
             overscan,
             incomplete: Rc::new(std::cell::Cell::new(false)),
             follow_up: Rc::new(std::cell::Cell::new(false)),
@@ -326,6 +329,17 @@ fn set_frozen_in(registry: &mut GridRegistry, node: &MacosNode, frozen: FrozenPa
     sync_in(registry, key);
 }
 
+/// Keep row `row` mounted outside the window (`VirtualGridHandle::
+/// keep_row_mounted`) and re-window.
+fn set_kept_row_in(registry: &GridRegistry, key: usize, row: Option<usize>) {
+    let Some(inst) = registry.get(&key) else { return };
+    if inst.kept_row.replace(row) == row {
+        return;
+    }
+    *inst.last_window.borrow_mut() = None;
+    sync_in(registry, key);
+}
+
 /// Reuse cells from now on (module docs, "Cell reuse").
 pub(crate) fn set_recycling(backend: &mut crate::imp::MacosBackend, node: &MacosNode, recycling: GridRecycling) {
     set_recycling_in(&backend.virtual_grid_registry, node, recycling);
@@ -353,6 +367,7 @@ struct GridHandles {
     mounted: Rc<RefCell<HashMap<(usize, usize), MountedCell>>>,
     last_window: Rc<RefCell<Option<PaneWindow>>>,
     frozen: Rc<std::cell::Cell<FrozenPanes>>,
+    kept_row: Rc<std::cell::Cell<Option<usize>>>,
     overscan: f32,
     /// The registry key, for the follow-up sync that finishes the overscan.
     key: usize,
@@ -492,6 +507,7 @@ fn sync_in(registry: &GridRegistry, key: usize) {
             mounted: inst.mounted.clone(),
             last_window: inst.last_window.clone(),
             frozen: inst.frozen.clone(),
+            kept_row: inst.kept_row.clone(),
             overscan: inst.overscan,
             key,
             incomplete: inst.incomplete.clone(),
@@ -550,7 +566,7 @@ fn sync_now(h: &GridHandles) {
     let frozen = h.frozen.get();
     let scroll_at = (clip_bounds.origin.x as f32, clip_bounds.origin.y as f32);
     let viewport = (clip_bounds.size.width as f32, clip_bounds.size.height as f32);
-    let window = metrics.borrow().pane_window(scroll_at, viewport, overscan, frozen);
+    let window = metrics.borrow().pane_window(scroll_at, viewport, overscan, frozen).keeping_row(h.kept_row.get());
 
     // The cells actually in view: these mount in this sync whatever it
     // costs; the rest of `window` (the overscan) within `OVERSCAN_BUDGET`.
@@ -934,6 +950,16 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for MacosVirtualGr
         scroll_clip_to(view, x, y);
     }
 
+    fn keep_row_mounted(&self, node: &dyn std::any::Any, row: Option<usize>) {
+        let Some(MacosNode::View(view)) = node.downcast_ref::<MacosNode>() else {
+            return;
+        };
+        let key = &**view as *const NSView as usize;
+        crate::imp::with_backend(|b| set_kept_row_in(&b.virtual_grid_registry, key, row));
+        // The queued sync drains with the pass this arms.
+        crate::imp::schedule_layout_pass();
+    }
+
     fn scroll_offset(&self, node: &dyn std::any::Any) -> (f32, f32) {
         let Some(MacosNode::View(view)) = node.downcast_ref::<MacosNode>() else {
             return (0.0, 0.0);
@@ -1214,6 +1240,55 @@ mod pending_tests {
         backend.layout_detached_in_place(key, CGSize::new(40.0, 40.0));
         let after: CGRect = unsafe { msg_send![&cell, frame] };
         assert_eq!(after, slot, "the cell stays in its slot");
+    }
+
+    /// `keep_row_mounted`: with cell reuse on, a jump far away would park
+    /// the kept row's cells and hand them to other rows — the view a drag
+    /// started in would be moved and rebound mid-gesture. Kept, the row
+    /// keeps its own views at its own slot; let go, it leaves like any row.
+    #[test]
+    fn a_kept_row_keeps_its_views_through_a_jump() {
+        drain_pending();
+        let f = grid(5, 400); // 40x40 cells, 200x200 viewport
+        set_recycling_in(
+            &f.registry,
+            &f.node,
+            GridRecycling { reuse_class: Rc::new(|c, _| c as u64), rebind_cell: Rc::new(|_, _, _| {}) },
+        );
+        sync_in(&f.registry, f.key);
+        drain_pending();
+        let inst = f.registry.get(&f.key).unwrap();
+        while inst.incomplete.get() {
+            sync_in(&f.registry, f.key);
+            drain_pending();
+        }
+        let views_of_row = |r: usize| -> Vec<usize> {
+            (0..5)
+                .filter_map(|c| inst.mounted.borrow().get(&(c, r)).map(|m| &*m.view as *const NSView as usize))
+                .collect()
+        };
+        let held = views_of_row(2);
+        assert_eq!(held.len(), 5);
+
+        set_kept_row_in(&f.registry, f.key, Some(2));
+        drain_pending();
+        let MacosNode::View(scroll) = f.node.clone() else { unreachable!() };
+        scroll_clip_to(&scroll, 0.0, 8000.0);
+        sync_in(&f.registry, f.key);
+        drain_pending();
+        while inst.incomplete.get() {
+            sync_in(&f.registry, f.key);
+            drain_pending();
+        }
+        assert_eq!(views_of_row(2), held, "the kept row's own views, never parked or rebound");
+        let cell = inst.mounted.borrow().get(&(1, 2)).map(|m| m.view.clone()).unwrap();
+        let frame: CGRect = unsafe { msg_send![&*cell, frame] };
+        assert_eq!((frame.origin.x, frame.origin.y), (40.0, 80.0), "still at its own slot");
+        assert!(inst.mounted.borrow().contains_key(&(1, 200)), "the window followed the jump");
+
+        set_kept_row_in(&f.registry, f.key, None);
+        drain_pending();
+        assert!(views_of_row(2).is_empty(), "let go, the row leaves with the window");
     }
 
     /// Cell reuse: a jump that replaces the whole window reuses every cell

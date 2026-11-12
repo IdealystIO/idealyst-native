@@ -49,4 +49,5 @@ on the registry internally, so one generic seam serves every target;
 | `user-activity` | A kiosk-style idle clock driven by `user_activity()`: every interaction anywhere in the app restarts it, with no handlers of the app's own. See `docs/user-activity.md`. | web, ios, android, macos |
 | `press-down-demo` | `PressActivation`: two Buttons open the same `Menu`, one on release and one as the pointer goes down. | web, macos, ios, android |
 | `virtual-table-demo` | `Table(virtualized = …)`: 100,000 rows on the two-axis grid, header and edge columns frozen while the rest scrolls both ways. | web, macos, ios, android |
+| `virtual-table-reorder-demo` | `Table(virtualized = …, on_reorder = …)`: drag rows of a 5,000-task backlog by their grips, autoscrolling near the edges. | web, macos, ios, android |
 | `fiddle` | The online playground's compile server (not an idealyst app itself; `template/` is the project it compiles user snippets into). | — |

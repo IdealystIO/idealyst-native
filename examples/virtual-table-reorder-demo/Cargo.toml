@@ -1,0 +1,25 @@
+[package]
+name = "virtual-table-reorder-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Table(virtualized + on_reorder): drag rows of a 5,000-row backlog by their grips, with autoscroll near the edges."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+idealyst = { workspace = true }
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+idea-ui = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Virtual Table Reorder Demo"
+bundle_id = "ai.truday.idealyst.virtualtablereorderdemo"
+version   = "0.0.1"
+targets   = ["web", "macos", "ios", "android"]

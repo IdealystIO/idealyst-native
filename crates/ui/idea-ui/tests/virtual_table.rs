@@ -326,10 +326,10 @@ fn empty_state_follows_the_row_count() {
 }
 
 #[test]
-#[should_panic(expected = "drag-to-reorder")]
-fn a_virtualized_table_refuses_reorder() {
+#[should_panic(expected = "on_group_reorder")]
+fn a_virtualized_table_refuses_group_reorder() {
     table(10, |r, p| {
-        p.on_reorder = Some(Rc::new(|_, _| {}));
+        p.on_group_reorder = Some(Rc::new(|_, _| {}));
         r
     });
 }
@@ -492,4 +492,276 @@ fn a_reused_cell_selects_tints_and_hovers_its_new_row() {
         "the reused box selects its new row"
     );
     let _ = select;
+}
+
+// ---------------------------------------------------------------------------
+// Drag-to-reorder (`on_reorder`).
+// ---------------------------------------------------------------------------
+
+/// A reorderable 100-row table, 40 px rows, recording every `on_reorder`
+/// and applying it to the rows the way an app does.
+fn reorderable() -> (Fixture, Rc<RefCell<Vec<(usize, usize)>>>) {
+    let moves: Rc<RefCell<Vec<(usize, usize)>>> = Rc::new(RefCell::new(Vec::new()));
+    let m = moves.clone();
+    let rows_cell: Rc<std::cell::Cell<Option<Signal<Vec<String>>>>> = Rc::new(std::cell::Cell::new(None));
+    let rc = rows_cell.clone();
+    let f = table(100, move |r, p| {
+        p.on_reorder = Some(Rc::new(move |from, to| {
+            m.borrow_mut().push((from, to));
+            if let Some(rows) = rc.get() {
+                rows.update(|v| {
+                    let mut v = v.clone();
+                    idea_ui::components::table::move_in_place(&mut v, from, to);
+                    v
+                });
+            }
+        }));
+        r.row_height(40.0)
+    });
+    rows_cell.set(Some(f.rows));
+    host_mock::set_virtual_grid_scrollport(f.grid_node(), Scrollport::overlay(800.0, 400.0));
+    f.h.flush();
+    (f, moves)
+}
+
+fn press(phase: runtime_core::TouchPhase, y: f32, t_ms: u64) -> runtime_core::TouchEvent {
+    runtime_core::TouchEvent {
+        id: runtime_core::TouchId(1),
+        phase,
+        position: runtime_core::TouchPoint::new(10.0, 20.0 + y),
+        window_position: runtime_core::TouchPoint::new(10.0, 100.0 + y),
+        timestamp_ns: t_ms * 1_000_000,
+        force: None,
+    }
+}
+
+impl Fixture {
+    /// Deliver `ev` to the touch handler on `node`.
+    fn touch(&self, node: host_mock::Node, ev: runtime_core::TouchEvent) {
+        let handler = self
+            .h
+            .shared
+            .touch_handlers
+            .borrow()
+            .iter()
+            .find(|(n, _)| *n == node)
+            .map(|(_, f)| f.clone())
+            .expect("the cell takes touches");
+        self.h.world.enter(|| {
+            handler(&ev);
+        });
+        self.h.flush();
+    }
+
+    /// Press `grip`, then move to each of `ys` (px from the press).
+    fn drag(&self, grip: host_mock::Node, ys: &[f32]) {
+        use runtime_core::TouchPhase;
+        self.touch(grip, press(TouchPhase::Began, 0.0, 0));
+        for (i, y) in ys.iter().enumerate() {
+            self.touch(grip, press(TouchPhase::Moved, *y, 16 * (i as u64 + 1)));
+        }
+    }
+
+    fn release(&self, grip: host_mock::Node, y: f32) {
+        self.touch(grip, press(runtime_core::TouchPhase::Ended, y, 1_000));
+    }
+
+    /// The last translate written to `node`.
+    fn translate_y(&self, log: &[String], node: host_mock::Node) -> Option<f32> {
+        let prefix = format!("set_animated_f32 n{node} TranslateY ");
+        log.iter().rev().find_map(|l| l.strip_prefix(&prefix)?.parse().ok())
+    }
+
+    fn scroll_to(&self, y: f32) {
+        let scroll = self.grid().on_scroll.expect("the table observes the grid's scroll");
+        self.h.world.enter(|| scroll(0.0, y));
+        self.h.flush();
+    }
+}
+
+fn settle_springs() {
+    for _ in 0..240 {
+        runtime_shared::animation::clock::tick_for_test(std::time::Duration::from_millis(16));
+    }
+}
+
+/// `on_reorder` adds a grip column ahead of the selection column, frozen at
+/// the left with it; only the grip cells take a drag.
+#[test]
+fn reorder_adds_a_frozen_grip_column() {
+    let (f, _) = reorderable();
+    let log = f.h.take_log().join("\n");
+    assert!(
+        log.contains(&format!("set_virtual_grid_frozen n{} top=1 bottom=0 left=3 right=1", f.grid_node())),
+        "grip + selection + the pinned name column: {log}"
+    );
+    assert_eq!((f.grid().col_count)(), 6, "grip + selection + four columns");
+    assert_eq!((f.grid().col_width)(0), idea_ui::components::table::GRIP_COLUMN_WIDTH_PX);
+    let grip = f.mount(0, 3);
+    let name = f.mount(2, 3);
+    let takes_touch = |n| f.h.shared.touch_handlers.borrow().iter().any(|(m, _)| *m == n);
+    assert!(takes_touch(grip), "the grip takes the drag");
+    assert!(!takes_touch(name), "a plain cell keeps its own presses");
+}
+
+/// Dragging a row's grip: the grid keeps that row mounted while it is
+/// held, the held row's cells follow the pointer, the rows it passes slide
+/// up a row, and the drop reports `(from, to)` — row indices — and lets the
+/// row go.
+#[test]
+fn dragging_a_grip_moves_the_row_and_reports_the_drop() {
+    let (f, moves) = reorderable();
+    // Body row 3 is grid row 4.
+    let grip = f.mount(0, 4);
+    let held_name = f.mount(2, 4);
+    let passed = f.mount(2, 5); // body row 4: passed on the way down
+    let below = f.mount(2, 8); // body row 7: not reached
+    host_mock::take_handle_log();
+    host_mock::take_animated_log();
+
+    // Down 2.5 rows (a slop step first, to start the drag): row 3's centre
+    // is then at 3.5 + 2.5 = 6 rows, so it lands in slot 6.
+    f.drag(grip, &[12.0, 100.0]);
+    let handles = host_mock::take_handle_log();
+    assert!(handles.iter().any(|l| l.starts_with("keep_row_mounted Some(4)")), "{handles:?}");
+    settle_springs();
+    let anim = host_mock::take_animated_log();
+    assert_eq!(f.translate_y(&anim, held_name), Some(100.0), "the held row follows the pointer");
+    assert_eq!(f.translate_y(&anim, passed), Some(-40.0), "a row it passed moves up one");
+    assert_ne!(f.translate_y(&anim, below).unwrap_or(0.0), -40.0, "a row it never reached stays");
+
+    f.release(grip, 100.0);
+    assert_eq!(*moves.borrow(), vec![(3, 6)]);
+    let handles = host_mock::take_handle_log();
+    assert!(handles.iter().any(|l| l.starts_with("keep_row_mounted None")), "{handles:?}");
+    assert_eq!(f.rows.with(|r| r[6].clone()), "row 3", "the app moved the row");
+    settle_springs();
+    let anim = host_mock::take_animated_log();
+    assert_eq!(f.translate_y(&anim, passed), Some(0.0), "every row back in its slot");
+    assert_eq!(f.translate_y(&anim, held_name), Some(0.0));
+}
+
+/// The grid scrolling under a held row (a wheel, a fling or the
+/// autoscroll) carries the row with it: the landing slot counts the scroll
+/// as well as the pointer's travel.
+#[test]
+fn a_held_row_rides_the_scroll() {
+    let (f, moves) = reorderable();
+    let grip = f.mount(0, 4);
+    let held_name = f.mount(2, 4);
+    f.drag(grip, &[12.0, 12.0]);
+    // 30 rows' worth of scroll under a still pointer.
+    f.scroll_to(1200.0);
+    let anim = host_mock::take_animated_log();
+    assert_eq!(f.translate_y(&anim, held_name), Some(1212.0), "pointer travel plus the scroll");
+    f.release(grip, 12.0);
+    assert_eq!(*moves.borrow(), vec![(3, 33)], "landed 30 rows on, where it was let go");
+}
+
+/// Cells are reused while a row is held: a cell pointed at another row
+/// mid-drag takes that row's offset at once, and one pointed at the held
+/// row follows the pointer.
+#[test]
+fn a_cell_reused_mid_drag_takes_its_new_rows_offset() {
+    let (f, _) = reorderable();
+    let grip = f.mount(0, 4);
+    let (cell, scope) = f.mount_scoped(2, 30); // body row 29, far below
+    f.drag(grip, &[12.0, 100.0]); // held row 3 over slot 6
+    settle_springs();
+    host_mock::take_animated_log();
+    f.rebind(scope, 2, 6); // now body row 5: between the gap's ends
+    let anim = host_mock::take_animated_log();
+    assert_eq!(f.translate_y(&anim, cell), Some(-40.0), "at once, no spring from its old row");
+    f.rebind(scope, 2, 4); // the held row itself
+    let anim = host_mock::take_animated_log();
+    assert_eq!(f.translate_y(&anim, cell), Some(100.0));
+    f.release(grip, 100.0);
+}
+
+/// A cancelled drag (the platform took the touch) reports nothing and puts
+/// every row back.
+#[test]
+fn a_cancelled_drag_reports_nothing() {
+    let (f, moves) = reorderable();
+    let grip = f.mount(0, 4);
+    let passed = f.mount(2, 5);
+    f.drag(grip, &[12.0, 100.0]);
+    f.touch(grip, press(runtime_core::TouchPhase::Cancelled, 100.0, 500));
+    assert!(moves.borrow().is_empty());
+    settle_springs();
+    let anim = host_mock::take_animated_log();
+    assert_eq!(f.translate_y(&anim, passed), Some(0.0));
+    let handles = host_mock::take_handle_log();
+    assert!(handles.iter().any(|l| l.starts_with("keep_row_mounted None")), "{handles:?}");
+}
+
+/// REGRESSION: the drop read the landing slot back from the `over` signal.
+/// A signal write stages until the turn's flush, so a move and a release
+/// delivered in the same turn (a fast flick ending in one browser task)
+/// dropped the row at the PREVIOUS move's slot. Seen in Chrome as the
+/// `staged-read` warning on the drop.
+#[test]
+fn regression_a_release_in_the_same_turn_as_the_last_move_lands_there() {
+    use runtime_core::TouchPhase;
+    let (f, moves) = reorderable();
+    let grip = f.mount(0, 4); // body row 3
+    f.drag(grip, &[12.0]);
+    let handler = f
+        .h
+        .shared
+        .touch_handlers
+        .borrow()
+        .iter()
+        .find(|(n, _)| *n == grip)
+        .map(|(_, h)| h.clone())
+        .unwrap();
+    // One turn: move four rows down, then let go — no flush between.
+    f.h.world.enter(|| {
+        handler(&press(TouchPhase::Moved, 160.0, 100));
+        handler(&press(TouchPhase::Ended, 160.0, 120));
+    });
+    f.h.flush();
+    assert_eq!(*moves.borrow(), vec![(3, 7)], "landed under the pointer, not at the last flushed slot");
+}
+
+/// REGRESSION (reported): on the drop the highlight jumped to the row that
+/// took the dragged row's index and faded out there. Cells are positional:
+/// the cells at the old index show the next row from the drop on, and their
+/// lifted tint left over the cell sheet's 150 ms background fade. The tint
+/// must leave those cells with no fade, stay on the moved row while it lands
+/// in its new slot, and the fade come back once it has landed.
+#[test]
+fn regression_the_drop_highlight_stays_on_the_moved_row() {
+    // (background token, background transition ms) per node, last applied.
+    type Looks = Rc<RefCell<HashMap<host_mock::Node, (Option<String>, Option<u32>)>>>;
+    let (f, moves) = reorderable();
+    let looks: Looks = Rc::new(RefCell::new(HashMap::new()));
+    {
+        let l = looks.clone();
+        f.h.set_style_line(move |node, rules| {
+            let bg = rules.background.as_ref().and_then(|c| c.name().map(str::to_string));
+            let fade = rules.background_transition.map(|t| t.duration_ms);
+            l.borrow_mut().insert(node, (bg.clone(), fade));
+            format!("apply_style n{node} bg={bg:?}")
+        });
+    }
+    let grip = f.mount(0, 4); // body row 3
+    let old_index = f.mount(2, 4); // the held row's name cell: body row 3's slot
+    let new_slot = f.mount(2, 7); // body row 6
+    f.drag(grip, &[12.0, 120.0]); // centre at 3.5 + 3 rows: slot 6
+    let tint = looks.borrow()[&old_index].0.clone();
+    assert!(tint.is_some(), "the held row is tinted");
+
+    f.release(grip, 120.0);
+    assert_eq!(*moves.borrow(), vec![(3, 6)]);
+    let look = |n| looks.borrow()[&n].clone();
+    assert_ne!(look(old_index).0, tint, "the old index's cells drop the tint…");
+    assert_eq!(look(old_index).1, Some(0), "…at once, no fade");
+    assert_eq!(look(new_slot).0, tint, "the moved row keeps the highlight while it lands");
+
+    f.h.world.enter(settle_springs);
+    f.h.flush();
+    assert_ne!(look(new_slot).0, tint, "landed: the highlight goes");
+    assert_ne!(look(new_slot).1, Some(0), "with the sheet's fade back");
+    assert_ne!(look(old_index).1, Some(0));
 }

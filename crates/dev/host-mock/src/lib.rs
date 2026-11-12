@@ -609,6 +609,9 @@ impl primitives::virtual_grid::VirtualGridOps for RecordingHandleOps {
     fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
         handle_rec(node, format!("scroll_to {x} {y}"))
     }
+    fn keep_row_mounted(&self, node: &dyn Any, row: Option<usize>) {
+        handle_rec(node, format!("keep_row_mounted {row:?}"))
+    }
     fn scrollport(&self, node: &dyn Any) -> Option<primitives::virtual_grid::Scrollport> {
         handle_rec(node, "scrollport".into());
         let n = node.downcast_ref::<Node>().copied()?;

@@ -388,14 +388,22 @@
 //!   width: a `width` column keeps it, the others share what's left, held
 //!   to their `min_width` / `max_width`; when the minimums don't fit, the
 //!   table scrolls sideways.
-//! - Leading `ColumnPin::Left` columns and the selection column freeze at
-//!   the left edge, trailing `ColumnPin::Right` columns at the right.
+//! - Leading `ColumnPin::Left` columns and the added columns (grip,
+//!   selection) freeze at the left edge, trailing `ColumnPin::Right`
+//!   columns at the right.
 //! - Selection (select-all covers every row, mounted or not), row tones,
 //!   clickable rows, sort headers ([`VirtualRows::sort`]), resizable
 //!   columns, density, `variant`, the edge inset, frame slots, `empty`,
 //!   `scroller` and paging ([`VirtualRows::on_end_reached`]) all work.
-//!   Drag-to-reorder and row groups need every row mounted: a virtualized
-//!   table panics if given `on_reorder`, `on_group_reorder` or children.
+//! - `on_reorder` adds the grip column and drag-to-reorder by geometry:
+//!   the held row follows the pointer while the rows it passes slide
+//!   aside, the table autoscrolls while the row is held near its top or
+//!   bottom edge, and `cb(from, to)` gets ROW INDICES (every row is
+//!   draggable) — apply the move in the callback ([`move_in_place`]). The
+//!   grid keeps the held row's cells mounted however far it scrolls, so
+//!   the drag survives. `grip_on_hover` works as on a plain table. Row
+//!   groups need every row mounted: a virtualized table panics if given
+//!   `on_group_reorder` or children.
 //! - Bound it like a `scroll_y` table: `max_height` fits the rows up to
 //!   the cap; without it the table fills its (bounded) parent.
 //! - Linux, Windows, the terminal, the CPU renderer and SSR have no
@@ -468,6 +476,7 @@ mod reorder;
 mod rows;
 mod scroller;
 mod select;
+mod virtual_reorder;
 mod virtual_table;
 
 
@@ -482,6 +491,9 @@ pub use columns::{
 pub use group::{TableGroup, TableGroupProps};
 pub use pager::{page_window_text, pager_count_text, rows_picker_matters, TablePager, TablePagerProps};
 pub use reorder::{move_in_place, slide_offset, GRIP_COLUMN_WIDTH_PX};
+pub use virtual_reorder::{
+    autoscroll_step, landing_slot, uniform_slide, AUTOSCROLL_EDGE_PX, AUTOSCROLL_MAX_STEP_PX,
+};
 pub use scroller::TableScroller;
 pub use rows::RowId;
 pub use select::{select_all_state, toggle_select_all, SelectAllState, SELECT_COLUMN_WIDTH_PX};
@@ -861,7 +873,10 @@ pub struct TableProps {
     /// the first column when that one is pinned), lifts the dragged row
     /// above its neighbours while the others slide to open the gap, and
     /// calls this with `(from, to)` — ordinals over the draggable body
-    /// rows — on drop. See [`move_in_place`].
+    /// rows — on drop. See [`move_in_place`]. On a virtualized table the
+    /// grip column is always frozen, every row is draggable (so `from` /
+    /// `to` are row indices), and holding a row near the top or bottom edge
+    /// scrolls the table.
     pub on_reorder: Option<Rc<dyn Fn(usize, usize)>>,
     /// Makes [`TableGroup`]s draggable as a whole: each draggable group's
     /// band gets a grip (the grip column is added if `on_reorder` has not
@@ -1695,6 +1710,11 @@ fn grip_mark(hovered: Option<Signal<bool>>) -> Element {
         let pointer = runtime_core::primary_pointer();
         Rc::new(move || h.get() || pointer.get() == runtime_core::PointerKind::Coarse) as Rc<dyn Fn() -> bool>
     });
+    grip_mark_revealed(revealed)
+}
+
+/// The grip glyph, shown while `revealed` holds (always, when `None`).
+fn grip_mark_revealed(revealed: Option<Rc<dyn Fn() -> bool>>) -> Element {
     let style = group::grip_style(revealed);
     ui! {
         view(style = style) {

@@ -926,6 +926,43 @@ mod refs {
         assert_eq!(native.1, Some(native.0[1]));
     }
 
+    /// `keep_row_mounted` from a bundle reaches the app's grid as the same
+    /// call native code makes.
+    #[test]
+    fn a_grid_kept_row_crosses_exactly_like_the_native_one() {
+        use runtime_shared::primitives::virtual_grid::VirtualGridHandle;
+        use runtime_vocabulary::builders::virtual_grid;
+        let run = |remote: bool| {
+            let h = Harness::new();
+            let handle: Rc<RefCell<Option<VirtualGridHandle>>> = Rc::new(RefCell::new(None));
+            let sink = handle.clone();
+            let tree = h.world.enter(|| {
+                component_scope(move || {
+                    virtual_grid(|| 30, || 3, |_| 120.0, |_| 40.0, |c, r| (c * 100 + r) as u64, |_, _| {
+                        text().content("x").build()
+                    })
+                    .on_handle(move |g| *sink.borrow_mut() = Some(g))
+                    .build()
+                })
+            });
+            let tree = if remote { cross(tree) } else { tree };
+            let realized = h.mount(tree);
+            h.flush();
+            host_mock::take_handle_log();
+            let g = handle.borrow().clone().expect("ref filled");
+            g.keep_row_mounted(Some(7));
+            g.keep_row_mounted(None);
+            let log = host_mock::take_handle_log();
+            drop(g);
+            drop(realized);
+            h.flush();
+            log
+        };
+        let native = run(false);
+        assert_eq!(native, ["keep_row_mounted Some(7) n0", "keep_row_mounted None n0"]);
+        assert_eq!(run(true), native);
+    }
+
     /// The bundle's grid handle and the native grid behind it, filled the
     /// way an app from before handle-call levels fills a ref: the id
     /// alone. Returns the bundle's handle and the native grid's node.
@@ -984,6 +1021,10 @@ mod refs {
         assert!(!fired.get());
         drop(sub);
         assert_eq!(host_mock::take_handle_log(), Vec::<String>::new(), "nothing reached the app's handle");
+
+        // Nor does a kept row (level 2): the trait default, a no-op.
+        handle.keep_row_mounted(Some(3));
+        assert_eq!(host_mock::take_handle_log(), Vec::<String>::new(), "keep_row_mounted reached an older app");
 
         // Older calls still go through.
         handle.scroll_to(0.0, 40.0);

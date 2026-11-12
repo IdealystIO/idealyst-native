@@ -2345,6 +2345,18 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for AndroidVirtual
         });
     }
 
+    fn keep_row_mounted(&self, node: &dyn std::any::Any, row: Option<usize>) {
+        let Some(n) = node.downcast_ref::<GlobalRef>() else { return };
+        // The kept row lives in the registry's state — the same
+        // global-self reach as `scroll_to_cell`.
+        ANDROID_BACKEND_SELF.with(|s| {
+            let weak = s.borrow().clone();
+            let Some(rc) = weak.and_then(|w| w.upgrade()) else { return };
+            let Ok(b) = rc.try_borrow() else { return };
+            primitives::virtual_grid::set_kept_row(&b, n, row);
+        });
+    }
+
     fn scroll_offset(&self, node: &dyn std::any::Any) -> (f32, f32) {
         match node.downcast_ref::<GlobalRef>() {
             Some(n) => primitives::virtual_grid::scroll_offset(n),

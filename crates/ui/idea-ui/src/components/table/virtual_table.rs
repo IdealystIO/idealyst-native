@@ -46,9 +46,10 @@
 //! `variant`, the edge inset, frame slots, `selection` (select-all covers
 //! every row, mounted or not), row tones, clickable rows (hover tints the
 //! whole row), sort headers, resizable columns, `empty` and `scroller`.
-//! Drag-to-reorder and row groups need every row mounted, so a virtualized
-//! table refuses `on_reorder`, `on_group_reorder` and children with a panic
-//! naming the prop.
+//! `on_reorder` adds a frozen grip column and drag-to-reorder over row
+//! indices, with autoscroll — see [`super::virtual_reorder`]. Row groups
+//! need every row mounted, so a virtualized table refuses
+//! `on_group_reorder` and children with a panic naming the prop.
 //!
 //! Backends without a two-axis grid engine (Linux, Windows, terminal, the
 //! CPU renderer, SSR) show the framework's unsupported-primitive
@@ -62,13 +63,15 @@ use std::rc::Rc;
 use runtime_core::primitives::virtual_grid::{virtual_grid_recycled, FrozenPanes, VirtualGridHandle};
 use runtime_core::{
     effect, memo, signal, tap, ui, Element, Length, Memo, Reactive, Ref, Signal, StyleApplication, StyleRules,
-    TapRecognizer, Tokenized, VariantEnum, ViewHandle,
+    TapRecognizer, Tokenized, TouchHandler, VariantEnum, ViewHandle,
 };
 
 use super::columns::{live_width, ColumnResizeHandle};
+use super::reorder::GRIP_COLUMN_WIDTH_PX;
 use super::scroller::detach_on_cleanup;
 use super::select::{select_all_line, select_row_box_live};
 use super::styles::{TableSlotStyles, TableStyles};
+use super::virtual_reorder::VirtualReorder;
 use super::{
     added_column_growth, cell_text_children, select_cell_axes, side_inset, sort_indicator, CellTone, ColumnId,
     ColumnPin, ColumnWidths, InsetSide, RowId, RowTone, SortState, TableColumn, TableEmpty,
@@ -229,17 +232,19 @@ pub(super) enum CellSource {
     Reusable(Rc<dyn Fn(Memo<usize>, &ColumnId) -> Element>),
 }
 
-/// One column of the grid: the selection column the table adds, or one of
-/// the author's.
+/// One column of the grid: a column the table adds (the reorder grip, the
+/// selection boxes), or one of the author's.
 #[derive(Clone)]
 enum GridCol {
+    Grip,
     Select,
     Author(TableColumn),
 }
 
 /// Split the column list into frozen bands: `(left, right)` frozen counts.
-/// The selection column and every LEADING `ColumnPin::Left` column freeze at
-/// the left; every TRAILING `ColumnPin::Right` column at the right.
+/// The added columns (grip, selection) and every LEADING `ColumnPin::Left`
+/// column freeze at the left; every TRAILING `ColumnPin::Right` column at
+/// the right.
 ///
 /// # Panics
 ///
@@ -248,7 +253,7 @@ enum GridCol {
 /// columns at each END of the row.
 fn frozen_columns(cols: &[GridCol]) -> (usize, usize) {
     let pin = |c: &GridCol| match c {
-        GridCol::Select => Some(ColumnPin::Left),
+        GridCol::Grip | GridCol::Select => Some(ColumnPin::Left),
         GridCol::Author(c) => c.pinned,
     };
     let left = cols.iter().take_while(|c| pin(c) == Some(ColumnPin::Left)).count();
@@ -359,6 +364,10 @@ struct Shared {
     scroll_x: Signal<(f32, f32)>,
     widths: Signal<ColumnWidths>,
     on_column_resize: Option<Rc<dyn Fn(ColumnId, Option<f32>)>>,
+    /// Row reorder (`Table(on_reorder = …)`).
+    reorder: Option<Rc<VirtualReorder>>,
+    /// `Table(grip_on_hover = true)`: a row's grip shows while it is hovered.
+    grip_on_hover: bool,
 }
 
 impl Shared {
@@ -399,7 +408,7 @@ impl Shared {
 
     fn column_axes(&self, col: usize) -> (&'static str, &'static str, &'static str) {
         match &self.cols[col] {
-            GridCol::Select => ("center", "off", "icon"),
+            GridCol::Grip | GridCol::Select => ("center", "off", "icon"),
             GridCol::Author(c) => (
                 c.align.as_variant_str(),
                 if c.truncate { "on" } else { "off" },
@@ -422,12 +431,15 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
          built from `columns`)"
     );
     assert!(
-        props.on_reorder.is_none() && props.on_group_reorder.is_none(),
-        "virtualized Table: drag-to-reorder needs every row mounted; it isn't available on a \
-         virtualized table"
+        props.on_group_reorder.is_none(),
+        "virtualized Table: `on_group_reorder` needs row groups, which a virtualized table doesn't \
+         have"
     );
 
-    let mut cols: Vec<GridCol> = Vec::with_capacity(props.columns.len() + 1);
+    let mut cols: Vec<GridCol> = Vec::with_capacity(props.columns.len() + 2);
+    if props.on_reorder.is_some() {
+        cols.push(GridCol::Grip);
+    }
     if props.selection.is_some() {
         cols.push(GridCol::Select);
     }
@@ -486,6 +498,11 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
     let inset_right = side_inset(&props.inset_right, &props.inset_x);
     let widths = props.column_widths.unwrap_or_else(|| signal(ColumnWidths::new()));
     let viewport_w = signal(0.0f32);
+    let handle: Rc<RefCell<Option<VirtualGridHandle>>> = Rc::new(RefCell::new(None));
+    let reorder = props.on_reorder.clone().map(|on_reorder| {
+        let count: Rc<dyn Fn() -> usize> = Rc::new(move || items.with_untracked(|v| v.len()));
+        VirtualReorder::new(on_reorder, row_height, count, handle.clone())
+    });
     let shared = Rc::new(Shared {
         cols,
         frozen,
@@ -503,6 +520,8 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
         scroll_x: signal((0.0, 0.0)),
         widths,
         on_column_resize: props.on_column_resize.clone(),
+        reorder,
+        grip_on_hover: props.grip_on_hover,
     });
 
     // Column widths: live entries (a resize drag) and fixed specs keep
@@ -515,7 +534,7 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
             .iter()
             .map(|c| match c {
                 GridCol::Author(c) => Some(live_width(shared.widths, c)),
-                GridCol::Select => None,
+                GridCol::Grip | GridCol::Select => None,
             })
             .collect();
         let lead_growth = {
@@ -529,8 +548,9 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
                 .zip(&live)
                 .enumerate()
                 .map(|(i, (c, live))| match c {
-                    GridCol::Select => {
-                        let w = SELECT_COLUMN_WIDTH_PX + if i == 0 { lead_growth() } else { 0.0 };
+                    GridCol::Grip | GridCol::Select => {
+                        let base = if matches!(c, GridCol::Grip) { GRIP_COLUMN_WIDTH_PX } else { SELECT_COLUMN_WIDTH_PX };
+                        let w = base + if i == 0 { lead_growth() } else { 0.0 };
                         (Some(w), w, w)
                     }
                     GridCol::Author(c) => {
@@ -544,7 +564,6 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
         })
     };
 
-    let handle: Rc<RefCell<Option<VirtualGridHandle>>> = Rc::new(RefCell::new(None));
     // The scrollport subscription lives exactly as long as the table: it
     // is filled at mount (`on_handle`) and dropped with the table's scope.
     let port_sub: Rc<RefCell<Option<runtime_core::LayoutSubscription>>> = Rc::new(RefCell::new(None));
@@ -575,6 +594,9 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
     let on_scroll = {
         let (shared, handle, end_armed) = (shared.clone(), handle.clone(), end_armed.clone());
         move |x: f32, y: f32| {
+            if let Some(r) = shared.reorder.as_ref() {
+                r.scrolled(x, y);
+            }
             let port = handle.borrow().as_ref().and_then(|h| h.scrollport());
             let (vw, vh) = port.map_or((0.0, 0.0), |p| (p.width, p.height));
             let content_w: f32 = runtime_core::untrack(|| col_widths.with(|w| w.iter().sum()));
@@ -751,9 +773,9 @@ fn cell_app(shared: &Shared, head: bool, col: usize) -> StyleApplication {
 fn head_cell(shared: &Rc<Shared>, col: usize) -> Element {
     let base = cell_app(shared, true, col);
     let column = match &shared.cols[col] {
-        GridCol::Select => {
-            let content = match (shared.selection, shared.select_all) {
-                (Some(s), Some(all)) => Some(select_all_line(s, all, Reactive::Static(None))),
+        GridCol::Grip | GridCol::Select => {
+            let content = match (&shared.cols[col], shared.selection, shared.select_all) {
+                (GridCol::Select, Some(s), Some(all)) => Some(select_all_line(s, all, Reactive::Static(None))),
                 _ => None,
             };
             let style = {
@@ -836,11 +858,12 @@ fn head_cell(shared: &Rc<Shared>, col: usize) -> Element {
 /// A body cell of grid column `col`, showing body row `row` — a memo, since
 /// the grid reuses the cell for other rows as it scrolls. Everything that
 /// varies by row reads it: the content, the selection box, the tone, the
-/// hover tint and the press.
+/// hover tint, the press and, with reorder, the drag offset.
 fn body_cell(shared: &Rc<Shared>, col: usize, row: Memo<usize>) -> Element {
     let base = cell_app(shared, false, col);
     let items = shared.items;
     let content: Element = match &shared.cols[col] {
+        GridCol::Grip => grip_glyph(shared, row),
         GridCol::Select => match shared.selection {
             Some(selection) => {
                 let selectable = shared.rows.selectable.clone();
@@ -906,40 +929,94 @@ fn body_cell(shared: &Rc<Shared>, col: usize, row: Memo<usize>) -> Element {
                 Some(t) if t != RowTone::None => app.with("tone", t.as_variant_str()),
                 _ => app,
             };
-            match lit {
+            let app = match lit {
                 None => app,
                 Some(lit) => app.with("interactive", "on").with("row_hovered", if lit.get() { "on" } else { "off" }),
-            }
+            };
+            // While a row is held or landing: it rides above the rest with
+            // the hover tint (opaque), and the rows it crosses paint their
+            // surface — with no background fade (see `virtual_reorder`).
+            let Some(reorder) = shared.reorder.as_ref() else { return app };
+            let app = match reorder.drag_arm(row.get()) {
+                Some("lifted") => app.with("drag", "lifted").with("row_hovered", "on"),
+                Some(arm) => app.with("drag", arm),
+                None => app,
+            };
+            reorder.quiet_background(app)
         }
     };
+    let cell_ref: Ref<ViewHandle> = Ref::new();
+    if let Some(reorder) = shared.reorder.as_ref() {
+        reorder.bind_cell(row, cell_ref);
+    }
     let here = move || runtime_core::untrack(|| row.get());
-    match shared.rows.on_row_click.clone() {
-        Some(cb) => {
-            let (hovered, pressed) = (shared.hovered, shared.pressed);
+    // The grip takes the drag; the other cells of a clickable row its press.
+    let touch: Option<TouchHandler> = match (&shared.cols[col], shared.reorder.as_ref(), shared.rows.on_row_click.clone()) {
+        (GridCol::Grip, Some(reorder), _) => Some(reorder.grip_handler(row)),
+        (GridCol::Grip, None, _) => None,
+        (_, _, Some(cb)) => {
+            let pressed = shared.pressed;
             let press = runtime_core::tap_with_press(
                 TapRecognizer::new(),
                 move || cb(here()),
                 move |down| pressed.set(down.then(here)),
             );
-            let hover = move |entering: bool| {
-                if entering {
-                    hovered.set(Some(here()));
-                } else if hovered.peek() == Some(here()) {
-                    hovered.set(None);
-                }
-            };
-            ui! {
-                view(style = style, on_hover = hover, on_touch = move |ev| press(ev)) {
-                    view(style = inner) { content }
-                }
-            }
+            Some(Rc::new(move |ev: &runtime_core::TouchEvent| press(ev)))
         }
-        None => ui! {
-            view(style = style) {
+        (_, _, None) => None,
+    };
+    // The row under the pointer: for a clickable row's tint, and for a grip
+    // revealed on hover.
+    let tracks_hover = clickable || (shared.reorder.is_some() && shared.grip_on_hover);
+    let hover = tracks_hover.then(|| {
+        let hovered = shared.hovered;
+        Rc::new(move |entering: bool| {
+            if entering {
+                hovered.set(Some(here()));
+            } else if hovered.peek() == Some(here()) {
+                hovered.set(None);
+            }
+        }) as Rc<dyn Fn(bool)>
+    });
+    match (touch, hover) {
+        (Some(touch), Some(hover)) => ui! {
+            view(style = style, bind = cell_ref, on_hover = move |e| hover(e), on_touch = move |ev| touch(ev)) {
+                view(style = inner) { content }
+            }
+        },
+        (Some(touch), None) => ui! {
+            view(style = style, bind = cell_ref, on_touch = move |ev| touch(ev)) {
+                view(style = inner) { content }
+            }
+        },
+        (None, Some(hover)) => ui! {
+            view(style = style, bind = cell_ref, on_hover = move |e| hover(e)) {
+                view(style = inner) { content }
+            }
+        },
+        (None, None) => ui! {
+            view(style = style, bind = cell_ref) {
                 view(style = inner) { content }
             }
         },
     }
+}
+
+/// A grip cell's glyph: the plain table's, revealed on hover when the table
+/// asks (`grip_on_hover`) — while its row is hovered or held, and always
+/// where the primary pointer cannot hover.
+fn grip_glyph(shared: &Shared, row: Memo<usize>) -> Element {
+    let revealed: Option<Rc<dyn Fn() -> bool>> = shared.grip_on_hover.then(|| {
+        let (hovered, reorder) = (shared.hovered, shared.reorder.clone());
+        let pointer = runtime_core::primary_pointer();
+        Rc::new(move || {
+            let r = row.get();
+            hovered.get() == Some(r)
+                || reorder.as_ref().is_some_and(|o| o.is_held(r))
+                || pointer.get() == runtime_core::PointerKind::Coarse
+        }) as Rc<dyn Fn() -> bool>
+    });
+    super::grip_mark_revealed(revealed)
 }
 
 #[cfg(test)]

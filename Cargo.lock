@@ -14333,6 +14333,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtual-table-reorder-demo"
+version = "1.5.2"
+dependencies = [
+ "idea-ui",
+ "idealyst",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+]
+
+[[package]]
 name = "virtualized"
 version = "8.0.0"
 dependencies = [
