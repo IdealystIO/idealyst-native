@@ -242,6 +242,10 @@ pub struct IosBackend {
     /// pass. Cumulative cost grew ~2–3 ms per navigation in
     /// profiling, dwarfing every other phase by round 4.
     pub(crate) applied_frames: HashMap<usize, (f32, f32, f32, f32)>,
+    /// Views whose style declares a layout transition (`transitions {
+    /// left: … }`, `width`, …), keyed like `applied_frames`: their frame
+    /// changes animate with it (`layout_transition_policy`).
+    pub(crate) frame_transitions: HashMap<usize, runtime_shared::Transition>,
     /// Per-view cached key over only the *layout-affecting* style
     /// fields (see `style_diff::layout_affecting_key`). `apply_style`
     /// compares the incoming style's key against this; if it's
@@ -796,6 +800,7 @@ impl IosBackend {
             styled_texts: HashMap::new(),
             label_texts: HashMap::new(),
             applied_frames: HashMap::new(),
+            frame_transitions: HashMap::new(),
             layout_style_keys: HashMap::new(),
             root_boxes: HashMap::new(),
             keyboard_overlap: 0.0,
@@ -3820,6 +3825,17 @@ impl IosBackend {
         let view = node.as_view();
         apply_style_to_view(view, style);
         self.impl_apply_static_opacity(node, style);
+        // A layout transition is a standing declaration, as in CSS: the
+        // frame pass animates this view's frame changes until a style
+        // without one lands.
+        match crate::layout_transition_policy::layout_transition(style) {
+            Some(t) => {
+                self.frame_transitions.insert(node.view_key(), t);
+            }
+            None => {
+                self.frame_transitions.remove(&node.view_key());
+            }
+        }
 
         // Pointer events: `None` makes the subtree hit-transparent (with
         // explicit-`Auto` descendants opting back in) — the AppShell scrim /
@@ -5297,8 +5313,37 @@ impl IosBackend {
             } else {
                 true
             };
-            let _: () = unsafe { msg_send![view, setBounds: bounds] };
-            let _: () = unsafe { msg_send![view, setCenter: center] };
+            // A view whose style transitions a layout property takes the
+            // new box inside a UIView animation of that transition, as
+            // CSS would move it — the AppShell drawer sliding on `left`.
+            // The model values are set at once, so every sync below reads
+            // the final box; the compositor draws the way there.
+            let layout_transition = self
+                .frame_transitions
+                .get(key)
+                .copied()
+                .filter(|_| {
+                    crate::layout_transition_policy::should_animate_frame(
+                        self.applied_frames.contains_key(key),
+                        self.keyboard_animating,
+                    )
+                });
+            match layout_transition {
+                Some(transition) => {
+                    let animated_view = view.clone();
+                    backend_ios_core::style::animate(
+                        &transition,
+                        Rc::new(move || {
+                            let _: () = unsafe { msg_send![&*animated_view, setBounds: bounds] };
+                            let _: () = unsafe { msg_send![&*animated_view, setCenter: center] };
+                        }),
+                    );
+                }
+                None => {
+                    let _: () = unsafe { msg_send![view, setBounds: bounds] };
+                    let _: () = unsafe { msg_send![view, setCenter: center] };
+                }
+            }
             if first_frame_unanimated {
                 let _: () =
                     unsafe { msg_send![objc2::class!(UIView), setAnimationsEnabled: animations_were_enabled] };
@@ -5360,6 +5405,7 @@ impl IosBackend {
         // anymore. Cheap iteration over a small map (entries only
         // grow with view count; never more than `view_to_layout`).
         self.applied_frames.retain(|k, _| still_present.contains(k));
+        self.frame_transitions.retain(|k, _| still_present.contains(k));
         // Same lifecycle for the layout-affecting style-key cache: a
         // recycled view-pointer must not inherit a previous view's key
         // (which would make the first `apply_style` on the new view

@@ -3387,6 +3387,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A layout transition animates on iOS** (`backend-ios-mobile` patch). A `transitions { left: … }`
+  (or `top`, `right`, `bottom`, `width`, `height`, a margin or a padding) moved the box on the web
+  through CSS and snapped on iOS: the frame pass wrote every Taffy frame at once, so a drawer
+  sliding on `left` teleported in and out while its scrim, on an `opacity` transition, faded. A view
+  whose style declares a layout transition now takes its frame changes inside a UIView animation of
+  that duration and curve (the longest declared, so the box arrives as one). The first frame still
+  snaps, as a CSS transition fires only on a change, and the keyboard's own frame block is left
+  alone.
+
 - **A fill column keeps filling a virtualized `Table` once it has a width** (`idea-ui` patch).
   With a live width — a resize saved in `column_widths`, or a `width` — a `TableColumn::fill`
   column became a fixed column in a virtualized table, so with the other columns sized too the

@@ -32,6 +32,7 @@ mod portal_policy;
 // AppShell drawer slide). Un-gated so the regression tests run from
 // any host; the `UIView animateWithDuration:` half is ios-only.
 mod transform_transition_policy;
+mod layout_transition_policy;
 
 // Pure decision for a plain label's `accessibilityLabel` under a
 // `text-transform`: UIKit has no such property, so the transform is the
