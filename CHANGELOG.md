@@ -3342,6 +3342,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A negative side margin reaches past the parent on native** (`runtime-layout` patch). The
+  layout crate caps every normal-flow node at `max-width: 100%` of its parent's content box so
+  text wraps as on the web. A stretched child with `margin_left` / `margin_right` negative — a
+  list bleeding to the screen's edges through the page gutter — is meant to be wider than that
+  box, so the cap held it at the content width and shifted it to the start edge, leaving a band
+  the size of both gutters on the end side (a phone table whose rows stopped 32pt short of the
+  right edge, on iOS, Android, macOS and the other Taffy backends; the web was right). A
+  negative side margin now lifts the cap, as an explicit `width` or `position: absolute` does.
+
 - **An Android `virtual_grid` cell whose content changed is rebuilt** (`backend-android-mobile`
   patch). The Android grid diffed cells by position only, so after a data change that rewrote a
   cell (a sorted table: same row and column, another record) the old content stayed on screen

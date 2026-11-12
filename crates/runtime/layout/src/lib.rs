@@ -1379,6 +1379,13 @@ impl LayoutTree {
     ///   the parent.
     /// - **horizontal-scroll content** (`hscroll_content`): content that
     ///   is meant to be wider than its scroll viewport so it can scroll.
+    /// - **a negative side margin**: the node is pulled out through its
+    ///   parent's padding (a list bleeding to the screen's edges through
+    ///   the page gutter). CSS stretches such an item to the parent's
+    ///   inner size MINUS its margins, so it comes out wider than the
+    ///   parent's content box; `100%` resolves against that content box
+    ///   and would cap it there, leaving the width the margins should
+    ///   have added as a blank band on the end side.
     ///
     /// Otherwise the clamp is (re)asserted as `Percent(1.0)`.
     fn apply_default_max_width(&self, node: NodeId, style: &mut Style) {
@@ -1388,7 +1395,8 @@ impl LayoutTree {
         let exempt = style.position == Position::Absolute
             || style.aspect_ratio.is_some()
             || (!self.auto_width.contains(&node) && style.size.width != Dimension::fit_content())
-            || self.hscroll_content.contains(&node);
+            || self.hscroll_content.contains(&node)
+            || has_negative_side_margin(style);
         style.max_size.width = if exempt {
             LengthPercentageAuto::auto()
         } else {
@@ -2378,6 +2386,14 @@ fn table_column_widths(w: f32, cols: &[TableColumnInput]) -> Vec<f32> {
         widths[i] = cols[i].floor.max(content(i).min(cap));
     }
     widths
+}
+
+/// Whether a horizontal margin is a negative length: the node reaches
+/// past its parent's content box on that side.
+fn has_negative_side_margin(style: &Style) -> bool {
+    [style.margin.left, style.margin.right]
+        .into_iter()
+        .any(|m| matches!(m.expand(), ExpandedLengthPercentageAuto::Length(v) if v < 0.0))
 }
 
 fn length_to_lpa(l: Option<FwLength>) -> LengthPercentageAuto {
@@ -5666,6 +5682,36 @@ mod tests {
             "horizontal-scroll content must keep its 400px content width \
              (not clamp to the 300px viewport), got {}",
             t.frame_of(track).width
+        );
+    }
+
+    /// Exemption: a stretched child with negative side margins reaches past
+    /// its parent's content box, as on the web — a 300px parent padded 16 a
+    /// side holds a 268px content box, and a child with `margin: 0 -16`
+    /// comes out 300px wide at x=0, not 268px at x=0 with a 32px band on
+    /// the right.
+    #[test]
+    fn max_width_default_exempts_negative_side_margins() {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let mut rr = StyleRules::default();
+        rr.padding_left = Some(px(16.0));
+        rr.padding_right = Some(px(16.0));
+        t.set_style(root, &rr);
+        let bleed = t.new_node();
+        let mut br = StyleRules::default();
+        br.margin_left = Some(px(-16.0));
+        br.margin_right = Some(px(-16.0));
+        br.height = Some(px(40.0));
+        t.set_style(bleed, &br);
+        t.add_child(root, bleed);
+        t.compute(root, 300.0, 800.0);
+        let f = t.frame_of(bleed);
+        assert!(
+            f.x.abs() < 0.5 && (f.width - 300.0).abs() < 0.5,
+            "a child pulled out through both gutters spans the parent's whole 300px, got x={} width={}",
+            f.x,
+            f.width
         );
     }
 
