@@ -588,7 +588,7 @@ backend-apple-core = { path = "crates/backend/apple/core", version = "6.0.0", re
 backend-image-source = { path = "crates/backend/image-source", version = "6.0.0", registry = "idealyst" }
 backend-macos = { path = "crates/backend/macos", version = "9.1.0", registry = "idealyst" }
 backend-ios-core = { path = "crates/backend/ios/core", version = "6.0.0", registry = "idealyst" }
-backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "9.1.0", registry = "idealyst" }
+backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "9.1.1", registry = "idealyst" }
 backend-ios-rs-shell = { path = "crates/backend/ios/rs-shell", version = "9.0.0", registry = "idealyst" }
 backend-ios-tv = { path = "crates/backend/ios/tv", version = "9.0.0", registry = "idealyst" }
 backend-android-core = { path = "crates/backend/android/core", version = "6.0.0", registry = "idealyst" }
