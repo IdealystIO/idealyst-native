@@ -20,9 +20,11 @@
 //! [`Adornment`] before the label: `Adornment::Icon(MAP)`, or
 //! `Adornment::element(|| ui! { view(style = StatusDot()) })` for a status dot.
 //! Styling is [`TagStyles`]: `root` (the pill), `label`, `icon` (a leading
-//! icon), `close` (the close button) and `glyph` (its `×`). The label and the
-//! `×` carry the fill's foreground on their own nodes: native text inherits no
-//! color from its container.
+//! icon), `close` (the close button) and `glyph` (its ✕). Every variant
+//! draws a 1px border — Soft in the tone's border color, Filled in its own
+//! fill — so a soft pill has an edge on a white page and pills of mixed
+//! variants line up. The label and the ✕ carry the fill's foreground on their
+//! own nodes: native text and icons inherit no color from their container.
 
 use std::rc::Rc;
 
@@ -34,9 +36,16 @@ use runtime_core::{
 use idea_theme::extensible::{categorization_tones, tone, ToneRef};
 
 use crate::components::field::Adornment;
-use crate::components::tone_slots::{foreground_arms, pill_adornment, surface_arms, with_tone};
+use crate::components::date_input::CLEAR_GLYPH;
+use crate::components::tone_slots::{bordered_surface_arms, foreground_arms, pill_adornment, pill_icon, with_tone};
 use crate::modifiers::{marker_into_axis, variant};
 use crate::theme::IdeaThemeRef;
+
+/// Line height of the label — the pill's height is this plus its 1px
+/// border and vertical inset.
+const LABEL_LINE_PX: f32 = 18.0;
+/// Size of the close button's ✕ glyph.
+const CLOSE_GLYPH_PX: f32 = 12.0;
 
 component_styles! {
     /// The styled sections of [`Tag`].
@@ -44,7 +53,9 @@ component_styles! {
         /// The surface treatment — a tone-aware recipe per value.
         axis variant { filled, #[default] soft, outlined, ghost }
 
-        /// The pill.
+        /// The pill. Every variant draws a 1px border (see
+        /// `bordered_surface_arms`), so Filled, Soft and Outlined pills in
+        /// one row are the same height.
         slot root {
             extend(root_surfaces)
             base(t) {
@@ -56,12 +67,13 @@ component_styles! {
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 gap: t.spacing.xs(),
-                padding_vertical: 2.0,
+                // Below the theme's smallest spacing step: the label's line
+                // box sets the pill's height.
+                padding_vertical: Length::Px(1.0),
                 padding_horizontal: t.spacing.sm(),
                 border_radius: t.radius.pill(),
-                font_size: t.typography.caption_size(),
+                font_size: t.typography.body_sm_size(),
                 font_weight: FontWeight::SemiBold,
-                letter_spacing: 0.4,
                 text_align: TextAlign::Center,
             }
         }
@@ -72,7 +84,8 @@ component_styles! {
             base(t) {
                 font_size: t.typography.body_sm_size(),
                 font_weight: FontWeight::SemiBold,
-                letter_spacing: 0.3,
+                line_height: LABEL_LINE_PX,
+                letter_spacing: 0.1,
             }
         }
 
@@ -87,41 +100,40 @@ component_styles! {
             }
         }
 
-        /// The close button (and a leading [`Adornment::Button`]): a 16×16 hit box with no fill of its own.
+        /// The close button (and a leading [`Adornment::Button`]): a
+        /// label-line-high square with no fill of its own, dimmed until
+        /// hovered. It sits flush against the pill's trailing inset.
         slot close {
-            base(t) {
+            base(_t) {
                 background: Color("transparent".into()),
                 padding: 0.0,
-                // The `×` is a child text node, so flex-center it within the
-                // box — `text_align` alone only centers glyphs inside a text
-                // node, not the node within this container.
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 cursor: Cursor::Pointer,
-                font_size: t.typography.body_size(),
-                font_weight: FontWeight::Bold,
-                text_align: TextAlign::Center,
-                line_height: 14.0,
                 width: 16.0,
                 height: 16.0,
-                border_radius: t.radius.pill(),
+                flex_shrink: 0.0,
+                opacity: 0.65,
             }
+            state hovered(_t) { opacity: 1.0 }
             transitions {
-                background: 150ms EaseOut,
                 opacity: 150ms EaseOut,
             }
         }
 
-        /// The close button's `×`, in the fill's foreground.
+        /// The close button's ✕, in the fill's foreground.
         slot glyph {
             extend(text_foregrounds)
-            base(_t) {}
+            base(_t) {
+                width: CLOSE_GLYPH_PX,
+                height: CLOSE_GLYPH_PX,
+            }
         }
     }
 }
 
 fn root_surfaces(s: &mut SlotRestyle<'_, TagStyles>) {
-    surface_arms(s, &categorization_tones());
+    bordered_surface_arms(s, &categorization_tones());
 }
 
 fn text_foregrounds(s: &mut SlotRestyle<'_, TagStyles>) {
@@ -203,9 +215,13 @@ pub fn Tag(props: &TagProps) -> Element {
     };
 
     let close: Option<Element> = props.on_remove.clone().map(|on_remove| {
-        let glyph = runtime_core::text("×".to_string())
-            .with_style(TagStyles::glyph().values(&values).overridden(styles.glyph.as_ref()))
-            .into_element();
+        let glyph_values = values.clone();
+        let glyph_styles = styles.clone();
+        let glyph = pill_icon(
+            CLEAR_GLYPH,
+            &(Rc::new(move || TagStyles::glyph().values(&glyph_values).overridden(glyph_styles.glyph.as_ref()))
+                as Rc<dyn Fn() -> _>),
+        );
         let close = runtime_core::pressable(vec![glyph], move || (on_remove)())
             .with_style(TagStyles::close().values(&values).overridden(styles.close.as_ref()));
         with_test_id!(close, props.test_id).into_element()
@@ -361,7 +377,8 @@ mod tests {
         });
     }
 
-    // The close `×` is also a bare text node; it must carry the color too.
+    // The close ✕ is a vector glyph; native icons inherit no color, so it
+    // must carry the fill's foreground on its own node too.
     #[test]
     fn regression_filled_tag_close_glyph_carries_intent_text_color() {
         with_test_world(|| {
@@ -379,9 +396,40 @@ mod tests {
                 P::Pressable { mut children, .. } => children.remove(0),
                 _ => panic!("close is a Pressable"),
             };
-            let color = text_node_color(close_glyph)
-                .expect("close glyph must carry its own color");
-            assert_eq!(color, container_fg());
-    });
+            match classify(close_glyph) {
+                P::Icon { data, color, .. } => {
+                    assert_eq!(data.paths, CLEAR_GLYPH.paths, "the close glyph is the vector ✕");
+                    assert_eq!(color.expect("close glyph must carry its own color"), container_fg());
+                }
+                _ => panic!("the close glyph is an icon"),
+            }
+        });
+    }
+
+    /// Regression (mixed-variant tag rows were ragged): Outlined drew a 1px
+    /// border and Filled/Soft drew none, so in one row the outlined pill sat
+    /// 2px taller. Every variant now draws a 1px border, and Soft's is in
+    /// the tone's border color so a soft pill has an edge on a white page.
+    #[test]
+    fn regression_every_tag_variant_draws_a_hairline_border() {
+        with_test_world(|| {
+            theme();
+            for (name, v) in [
+                ("filled", TagVariant::Filled),
+                ("soft", TagVariant::Soft),
+                ("outlined", TagVariant::Outlined),
+                ("ghost", TagVariant::Ghost),
+            ] {
+                let r = resolve_style(&TagStyles::root().raw("tone", "danger").set(v).into_style_application());
+                assert_eq!(r.border_top_width.as_ref().map(|w| w.resolve()), Some(1.0), "{name} has a 1px border");
+                assert_eq!(r.border_left_width.as_ref().map(|w| w.resolve()), Some(1.0), "{name} has a 1px border");
+            }
+            let soft = resolve_style(&TagStyles::root().raw("tone", "danger").set(TagVariant::Soft).into_style_application());
+            assert_eq!(
+                soft.border_top_color.clone().expect("soft border colored").resolve().0.to_ascii_lowercase(),
+                "#fecaca",
+                "soft borders in the tone's border color"
+            );
+        });
     }
 }

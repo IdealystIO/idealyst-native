@@ -148,7 +148,7 @@ pub fn install() {
             });
     });
 
-    // Tags: ink by default. The label, a leading icon and the close `×`
+    // Tags: ink by default. The label, a leading icon and the close ✕
     // are their own nodes, each carrying the fill's foreground.
     TagStyles::set_default(TagVariant::Ink);
     TagStyles::restyle(|s| {

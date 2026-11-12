@@ -52,8 +52,16 @@ pub(crate) fn pill_adornment<S: ComponentStyles + 'static>(
 /// `--premint-only` a resolve here would panic). Elsewhere native icons inherit
 /// nothing, so the color is resolved inside the setter's closure: a live axis
 /// (a `Chip` flipping `selected`, a reactive `tone`) retints in place.
-fn pill_icon<S: ComponentStyles + 'static>(data: IconData, slot: &Rc<dyn Fn() -> SlotStyle<S>>) -> Element {
-    let el = icon(data).with_style(slot());
+pub(crate) fn pill_icon<S: ComponentStyles + 'static>(data: IconData, slot: &Rc<dyn Fn() -> SlotStyle<S>>) -> Element {
+    tinted_icon(icon(data), slot)
+}
+
+/// [`pill_icon`] for an already-built icon — one whose `data` is live.
+pub(crate) fn tinted_icon<S: ComponentStyles + 'static>(
+    el: runtime_core::GlueIcon,
+    slot: &Rc<dyn Fn() -> SlotStyle<S>>,
+) -> Element {
+    let el = el.with_style(slot());
     if slot().into_style_application().attaches_preminted() {
         return el.into_element();
     }
@@ -73,6 +81,49 @@ fn pill_icon<S: ComponentStyles + 'static>(data: IconData, slot: &Rc<dyn Fn() ->
 pub(crate) fn surface_arms<S: ComponentStyles>(s: &mut SlotRestyle<'_, S>, tones: &[ToneRef]) {
     for (key, recipe) in variant::builtin_recipes() {
         tone_variant_arms(s, tones, key, recipe);
+    }
+}
+
+/// [`surface_arms`] with a 1px border on every variant, for a static surface
+/// (Tag, Alert) shown beside its siblings in other variants. Outlined keeps
+/// its stroke; Filled strokes in its own fill, Soft in the tone's border
+/// color (a soft tint alone barely separates from a white page), Ghost in
+/// transparent. The border is part of the box, so without it on every arm a
+/// Filled pill sits 2px shorter than an Outlined one in the same row.
+pub(crate) fn bordered_surface_arms<S: ComponentStyles>(s: &mut SlotRestyle<'_, S>, tones: &[ToneRef]) {
+    for (key, recipe) in variant::builtin_recipes() {
+        with_idea_theme(|theme| {
+            for tone in tones {
+                let ctx = ResolutionCtx { theme, tone: &*tone.0 };
+                let mut rules = recipe.render(&ctx);
+                let stroke = match key {
+                    "outlined" => None,
+                    "filled" => Some(tone.fill_bg(theme)),
+                    "soft" => Some(tone.stroke_color(theme)),
+                    _ => Some(Tokenized::Literal(Color("transparent".into()))),
+                };
+                if let Some(color) = stroke {
+                    rules = rules.merge(&hairline_border(color));
+                }
+                s.raw_compound(&[("tone", tone.key()), ("variant", key)], rules);
+            }
+        });
+    }
+}
+
+/// A 1px border on all four sides in `color`.
+fn hairline_border(color: Tokenized<Color>) -> StyleRules {
+    let w = Tokenized::Literal(1.0);
+    StyleRules {
+        border_top_width: Some(w.clone()),
+        border_right_width: Some(w.clone()),
+        border_bottom_width: Some(w.clone()),
+        border_left_width: Some(w),
+        border_top_color: Some(color.clone()),
+        border_right_color: Some(color.clone()),
+        border_bottom_color: Some(color.clone()),
+        border_left_color: Some(color),
+        ..Default::default()
     }
 }
 

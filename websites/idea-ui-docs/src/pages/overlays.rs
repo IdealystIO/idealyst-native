@@ -868,15 +868,13 @@ pub fn alert() -> Element {
     body(vec![ui! {
         Stack(gap = StackGap::Xl) {
             Section(title = "Intents (soft)".to_string()) {
-                P(content = "Tone drives the surface color; the soft variant tints a muted \
-                    background behind the text.".to_string())
+                P(content = "Tone drives the surface color and the leading icon; the soft \
+                    variant tints a muted background, edged in the tone's border color.".to_string())
                 DemoSurface {
-                    Stack(gap = StackGap::Sm) {
-                        Alert(title = "Info: cache refreshed".to_string(),  tone = tone::Info,    variant = variant::Soft)
-                        Alert(title = "Success: saved 12 rows".to_string(), tone = tone::Success, variant = variant::Soft)
-                        Alert(title = "Warning: quota at 80%".to_string(),  tone = tone::Warning, variant = variant::Soft)
-                        Alert(title = "Danger: payment failed".to_string(), tone = tone::Danger,  variant = variant::Soft)
-                    }
+                    Alert(title = "Info: cache refreshed".to_string(),  tone = tone::Info,    variant = variant::Soft)
+                    Alert(title = "Success: saved 12 rows".to_string(), tone = tone::Success, variant = variant::Soft)
+                    Alert(title = "Warning: quota at 80%".to_string(),  tone = tone::Warning, variant = variant::Soft)
+                    Alert(title = "Danger: payment failed".to_string(), tone = tone::Danger,  variant = variant::Soft)
                 }
             }
 
@@ -884,17 +882,15 @@ pub fn alert() -> Element {
                 P(content = "The filled variant carries the tone as a solid fill with inverted \
                     text — for the loudest, most urgent banners.".to_string())
                 DemoSurface {
-                    Stack(gap = StackGap::Sm) {
-                        Alert(title = "Deploy complete".to_string(),          tone = tone::Success, variant = variant::Filled)
-                        Alert(title = "Action required: verify email".to_string(), tone = tone::Warning, variant = variant::Filled)
-                        Alert(title = "Outage: API unreachable".to_string(),  tone = tone::Danger,  variant = variant::Filled)
-                    }
+                    Alert(title = "Deploy complete".to_string(),          tone = tone::Success, variant = variant::Filled)
+                    Alert(title = "Action required: verify email".to_string(), tone = tone::Warning, variant = variant::Filled)
+                    Alert(title = "Outage: API unreachable".to_string(),  tone = tone::Danger,  variant = variant::Filled)
                 }
             }
 
             Section(title = "With body & dismiss".to_string()) {
-                P(content = "Pass a body for a second detail line, and on_dismiss to surface a \
-                    close affordance in the top-right.".to_string())
+                P(content = "Pass a body for a second detail line, and close = \
+                    AlertClose::Button(handler) to surface a close affordance in the top-right.".to_string())
                 alert_dismissible_demo()
             }
 
@@ -903,9 +899,10 @@ pub fn alert() -> Element {
                     Prop { name: "title",      ty: "Reactive<String>",         desc: "Headline text." },
                     Prop { name: "body",       ty: "Reactive<Option<String>>", desc: "Optional second-line detail." },
                     Prop { name: "tone",       ty: "ToneRef",                  desc: "Semantic palette. Default: Info." },
-                    Prop { name: "variant",    ty: "AlertVariant",               desc: "Filled / Soft / Outlined. Default: Soft." },
+                    Prop { name: "variant",    ty: "AlertVariant",             desc: "Filled / Soft / Outlined / Ghost. Default: Soft." },
+                    Prop { name: "icon",       ty: "AlertIcon",                desc: "Auto (default, picked from the tone) / None / Custom(IconData)." },
                     Prop { name: "action",     ty: "Option<Element>",          desc: "Optional trailing action slot (e.g. a Retry button)." },
-                    Prop { name: "close",      ty: "AlertClose",               desc: "None (default) / Button(handler) for the × / Custom(element)." },
+                    Prop { name: "close",      ty: "AlertClose",               desc: "None (default) / Button(handler) for the ✕ / Custom(element)." },
                 ])
             }
 
@@ -1003,10 +1000,11 @@ idea_ui::dismiss_toast(id);"##.to_string())
             }
 
             Callout(label = "Same styling as Alert".to_string()) {
-                P(content = "Toast surfaces reuse the installed Alert stylesheet, so they carry \
-                    the same tone × variant treatment and theme tokens — override globally via \
-                    install_alert_sheet(...). The difference is lifecycle: Alert is in-flow \
-                    and persistent, Toast is overlaid and transient.".to_string())
+                P(content = "A standard toast renders an Alert on an opaque, shadowed card, so it \
+                    carries the same tone × variant treatment, tone icon and theme tokens — \
+                    restyle globally through AlertStyles (the card itself is ToastStyles' \
+                    surface slot). The difference is lifecycle: Alert is in-flow and \
+                    persistent, Toast is overlaid and transient.".to_string())
             }
         }
     }])

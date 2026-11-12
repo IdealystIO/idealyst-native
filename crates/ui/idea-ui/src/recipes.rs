@@ -460,11 +460,13 @@ recipe!(
 
 recipe!(
     Alert,
-    /// A banner with a title, optional body line, an optional trailing
-    /// `action` slot, and a configurable `close`. Pick a semantic `tone`
-    /// (Info/Success/Warning/Danger) and a `variant` (Soft/Filled/
-    /// Outline). `close = AlertClose::Button(handler)` shows the standard
-    /// ×; `AlertClose::Custom(element)` supplies your own; the default
+    /// A banner with a tone icon, a title, optional body line, an optional
+    /// trailing `action` slot, and a configurable `close`. Pick a semantic
+    /// `tone` (Info/Success/Warning/Danger) and a `variant` (Soft/Filled/
+    /// Outlined/Ghost); the leading icon follows the tone unless `icon =
+    /// AlertIcon::None` / `AlertIcon::Custom(data)`. `close =
+    /// AlertClose::Button(handler)` shows the standard ✕;
+    /// `AlertClose::Custom(element)` supplies your own; the default
     /// `AlertClose::None` shows nothing.
     pub fn alert_with_action() -> ::runtime_core::Element {
         use crate::{tone, variant, Alert, AlertClose, Button};

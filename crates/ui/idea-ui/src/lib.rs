@@ -167,7 +167,7 @@ pub use breakpoint::{
 // and the `*Props` struct + any companion enums. `ui! { Foo(...) }` resolves
 // `Foo` via the type alias, while direct fn-call sites resolve to the fn —
 // they coexist in different namespaces.
-pub use components::alert::{Alert, AlertClose, AlertProps, AlertRestyle, AlertSlotStyles, AlertStyles, AlertVariant};
+pub use components::alert::{Alert, AlertClose, AlertIcon, AlertProps, AlertRestyle, AlertSlotStyles, AlertStyles, AlertVariant};
 pub use components::autocomplete::{
     Autocomplete, AutocompleteProps, AutocompleteSize, AutocompleteSlot, AutocompleteSlotCx, AutocompleteSlotStyles,
     AutocompleteStyles, AutocompleteTrailing,

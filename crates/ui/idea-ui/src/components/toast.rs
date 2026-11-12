@@ -32,11 +32,14 @@
 //! removes itself.
 //!
 //! A standard toast renders an [`Alert`](crate::Alert) surface, so toasts
-//! carry the same `tone` × `variant` styling and theme tokens as Alert
-//! (an `AlertStyles` restyle reaches them), inherit Alert's
+//! carry the same `tone` × `variant` styling, tone icon and theme tokens as
+//! Alert (an `AlertStyles` restyle reaches them), inherit Alert's
 //! native text-color fix — a `Filled` toast's text would otherwise vanish
 //! on iOS/Android, which don't cascade color from the container fill — and
-//! get a × close affordance (on by default) wired to [`dismiss_toast`].
+//! get a ✕ close affordance (on by default) wired to [`dismiss_toast`].
+//! Every toast, standard or [`push_toast_node`], sits on the `surface` slot:
+//! an opaque, shadowed layer, so a translucent fill doesn't show the page
+//! underneath.
 //!
 //! The queue is a process-global (thread-local) signal created with
 //! `unscope` so it outlives any one render scope — a scoped signal would
@@ -102,11 +105,32 @@ component_styles! {
         }
 
         /// One card. Re-enables hit-testing under the click-through host —
-        /// otherwise the close × and any action inside a toast would be
+        /// otherwise the close ✕ and any action inside a toast would be
         /// dead.
         slot card {
             base(_t) {
                 pointer_events: PointerEvents::Auto,
+            }
+        }
+
+        /// The opaque, raised layer under a toast's content, inside the
+        /// enter/exit animation so it fades with the content. A toast floats
+        /// over arbitrary app content: the Alert's own fill is translucent
+        /// in the dark theme's Soft wash (and absent for Ghost/Outlined), so
+        /// without this layer the page shows through. The radius matches
+        /// Alert's, so the Alert's border traces this layer's edge.
+        slot surface {
+            base(t) {
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Stretch,
+                background: t.color.surface(),
+                border_radius: t.radius.md(),
+                shadow: runtime_core::Shadow {
+                    x: 0.0,
+                    y: 6.0,
+                    blur: 20.0,
+                    color: t.effect.shadow(),
+                },
             }
         }
     }
@@ -278,12 +302,12 @@ pub struct Toast {
 
 impl Toast {
     /// Start a toast with `message` as its title. Defaults: neutral tone,
-    /// the default variant, no body, no action, close × on.
+    /// the default variant, no body, no action, close ✕ on.
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             body: None,
-            tone: ToneRef::default(),
+            tone: idea_theme::extensible::tone::Neutral.into(),
             variant: AlertVariant::default(),
             action: None,
             close: ToastClose::Auto,
@@ -497,8 +521,13 @@ pub fn ToastCard(props: &ToastCardProps) -> Element {
     let id = entry.id;
     let render = entry.render.clone();
 
-    // The card content, re-run by `presence`.
-    let surface = move || render();
+    // The card content on its opaque layer, re-run by `presence`.
+    let styles = props.styles.clone();
+    let surface = move || {
+        runtime_core::view(vec![render()])
+            .with_style(ToastStyles::surface().overridden(styles.surface.as_ref()))
+            .into_element()
+    };
 
     let card = presence(surface)
         // Reactively read this entry's `leaving` flag from the queue. If
@@ -767,6 +796,44 @@ mod tests {
                 "toast card must opt back into pointer-events under the click-through host",
             );
     });
+    }
+
+    /// Regression (dark theme: the page showed through a toast): a standard
+    /// toast's Soft fill is a 16%-alpha wash in the dark theme, and nothing
+    /// under it was opaque, so the sidebar text behind a bottom-left toast
+    /// read through its title. The card's animated content must sit on an
+    /// opaque, shadowed layer — inside `presence`, so it fades with the
+    /// content rather than lingering as a blank box on exit.
+    #[test]
+    fn regression_dark_toast_sits_on_an_opaque_surface() {
+        with_test_world(|| {
+            install_idea_theme(idea_theme::theme::dark_theme());
+            let soft_alert = resolve_style(
+                &AlertStyles::root().raw("tone", "success").set(AlertVariant::Soft).into_style_application(),
+            );
+            let wash = soft_alert.background.clone().expect("soft fill").resolve();
+            assert!(wash.0.starts_with("rgba"), "precondition: the dark soft fill is translucent ({})", wash.0);
+
+            let card = ToastCard(&ToastCardProps {
+                entry: ToastEntry { id: 9, ..Default::default() },
+                ..Default::default()
+            });
+            let presence = match classify(card) {
+                P::View { mut children, .. } => children.remove(0),
+                _ => panic!("a toast card is a view"),
+            };
+            let layer = match classify(presence) {
+                P::Presence { child, .. } => child(),
+                _ => panic!("the card animates its content through presence"),
+            };
+            let rules = match classify(layer) {
+                P::View { style: Some(TStyle::App(app)), .. } => resolve_style(&app),
+                _ => panic!("presence's child is the styled surface layer"),
+            };
+            let bg = rules.background.clone().expect("the surface layer is filled").resolve();
+            assert!(!bg.0.starts_with("rgba") && !bg.0.eq_ignore_ascii_case("transparent"), "opaque fill, got {}", bg.0);
+            assert!(rules.shadow.is_some(), "the toast is raised off the page");
+        });
     }
 
     /// Walk the rendered tree and return the first `Text` node's resolved

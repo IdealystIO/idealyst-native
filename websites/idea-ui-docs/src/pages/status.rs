@@ -9,8 +9,9 @@
 use std::rc::Rc;
 
 use runtime_core::{signal, ui, Element};
+use icons_lucide::{CHECK, STAR};
 use idea_ui::{
-    Button, Chip, Progress, ProgressMode, Skeleton, SkeletonWidth, Spinner,
+    Adornment, Button, Chip, Progress, ProgressMode, Skeleton, SkeletonWidth, Spinner,
     SpinnerSize, Stack, StackAxis, StackGap, Tag, tone, variant,
 };
 
@@ -256,13 +257,13 @@ pub fn tag() -> Element {
         },
         ui! {
             Section(title = "With icon".to_string()) {
-                P(content = "Tag's label is plain text today — there's no icon slot. To pair a \
-                    glyph with the label, put the glyph in the label string, or lay an Icon \
-                    primitive next to the Tag inside a row.".to_string())
+                P(content = "`leading` draws an Adornment before the label: \
+                    Adornment::Icon(data) for a glyph tinted in the pill's foreground, or \
+                    Adornment::element(...) for a status dot.".to_string())
                 DemoSurface {
                     Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Sm) {
-                        Tag(label = "★ Featured".to_string(), tone = tone::Warning, variant = variant::Soft)
-                        Tag(label = "✓ Verified".to_string(), tone = tone::Success, variant = variant::Soft)
+                        Tag(label = "Featured".to_string(), tone = tone::Warning, variant = variant::Soft, leading = Adornment::Icon(STAR))
+                        Tag(label = "Verified".to_string(), tone = tone::Success, variant = variant::Soft, leading = Adornment::Icon(CHECK))
                     }
                 }
             }
