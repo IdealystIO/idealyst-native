@@ -1,0 +1,46 @@
+[package]
+name = "remote-control"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "accessibility-service SDK demo: screenshots, gestures and system keys, driven over a localhost command port."
+# A runnable example, not a library consumers depend on.
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+idealyst = { workspace = true }
+# `async-driver` for `driver::spawn_detached`; `runtime-vocabulary` because
+# the `ui!` emission spells absolute `::runtime_vocabulary::glue::…` paths;
+# `runtime-scene` because `register_scene_extensions` is generic over the
+# registry host.
+runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+accessibility-service = { workspace = true }
+# The command port's thread drives the SDK's futures to completion.
+pollster = "0.4"
+
+[package.metadata.idealyst.app]
+name      = "Remote Control"
+bundle_id = "io.idealyst.remotecontrol"
+version   = "0.1.0"
+targets   = ["android"]
+
+# The command port is a localhost socket, which Android only allows with
+# INTERNET.
+[package.metadata.idealyst]
+capabilities = ["internet"]
+
+[package.metadata.idealyst.app.permissions]
+internet = "The command port listens on localhost for adb-forwarded commands."
+
+[package.metadata.idealyst.app.android]
+# Keep the command port answering while another app (the kiosk) is in front.
+keep_alive = true
+
+[package.metadata.idealyst.app.android.strings]
+accessibility_service_label = "Remote Control demo"
+accessibility_service_description = "Lets the Remote Control demo take screenshots and tap, swipe and press keys on this device, for testing the accessibility-service SDK."

@@ -26,6 +26,9 @@ resizeable     = false             # the main activity's android:resizeableActiv
 screen_orientation = "landscape"   # the main activity's android:screenOrientation
 keep_alive     = true              # keep running in the background (foreground service)
 
+[package.metadata.idealyst.app.android.strings]
+accessibility_service_label = "Example remote support"   # replace an SDK's string
+
 [package.metadata.idealyst.app.android.signing]
 keystore = "keys/release.jks"      # relative to the app crate
 alias    = "release"
@@ -68,6 +71,19 @@ in its listing. It does not hold a wake lock: with the screen off the CPU
 can still sleep, and timers wait for it to wake. A device-owner app that
 must also run after boot with no Activity (an MDM agent) uses
 `device_admin::start_keep_alive` instead.
+
+### SDK strings
+
+Some SDKs ship user-visible text as Android string resources, such as the
+label and description Settings shows for `accessibility-service`'s
+service. `[package.metadata.idealyst.app.android.strings]` replaces them by
+resource name: the build writes the values into the app's own resources
+and links them after the SDKs', so each one overrides the SDK's default.
+Quotes, apostrophes, `&`, `<`, a leading `@` or `?` and newlines are
+escaped for you. A name that no SDK in the dependency graph declares fails
+the build and lists the names that are declared, so a typo cannot quietly
+leave the default in place. Each SDK's README names the strings it
+declares.
 
 ### System Back
 
@@ -142,7 +158,9 @@ res                  = ["res/xml/foo.xml"]           # compiled into the APK
   `${applicationId}` is replaced with the app's package name.
 - **`res`**: each entry is `res/<type>/<file>` with a lowercase file name
   (`res/xml/device_admin.xml`). Two SDKs declaring the same resource is an
-  error, because resource names share one namespace in the APK.
+  error, because resource names share one namespace in the APK. A
+  `<string>` in a `res/values*/` file is a default the app can replace in
+  `[package.metadata.idealyst.app.android.strings]` (see "SDK strings").
 - **`androidx`**: Maven libraries the SDK's Kotlin/Java needs, as
   `[group, artifact, version]` (any group, not only `androidx.*`). See
   "Android libraries" below for how they resolve.

@@ -80,6 +80,7 @@ the same key.
 | `set_packages_suspended(&[pkg], b)` / `is_package_suspended(pkg)` | `setPackagesSuspended` / `isPackageSuspended` | 24 | `Unsupported` |
 | `enable_system_app(pkg)` | `enableSystemApp` | 21 | `Unsupported` |
 | `installed_packages(include_system)` | `getInstalledPackages(MATCH_UNINSTALLED_PACKAGES)`, plus one `queryIntentActivities` for launcher activities (`has_launcher`) | 21 | `Unsupported` |
+| `set_permitted_accessibility_services(Some(&[pkg]) / None)` / `permitted_accessibility_services()` | `setPermittedAccessibilityServices` / `getPermittedAccessibilityServices` | 21 | `Unsupported` |
 | `start_keep_alive(title, text)` / `stop_keep_alive()` | a `systemExempted` foreground service | 26 | `Unsupported` |
 | `install_apk(path, cert_sha256)` | `PackageInstaller` session, committed silently | 21 | `Unsupported` |
 | `uninstall(pkg)` | `PackageInstaller.uninstall` | 21 | `Unsupported` |
@@ -249,3 +250,6 @@ Not verified yet:
   and handing over the extras bundle.
 - The iOS calls on a supervised iPad. They are compile-checked for
   `aarch64-apple-ios` only.
+- `set_permitted_accessibility_services` / `permitted_accessibility_services`
+  on a device. They are compile-checked for Android and covered by the
+  off-device `Unsupported` test.

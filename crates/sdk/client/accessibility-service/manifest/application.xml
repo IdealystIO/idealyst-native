@@ -1,0 +1,15 @@
+<!-- The app's accessibility service. Inert until someone switches it on in
+     Settings > Accessibility (or `adb shell settings put secure
+     enabled_accessibility_services ${applicationId}/io.idealyst.accessibilityservice.RustAccessibilityService`).
+     BIND_ACCESSIBILITY_SERVICE lets only the system bind it; the system
+     binds a non-exported service, so nothing else can reach it. -->
+<service android:name="io.idealyst.accessibilityservice.RustAccessibilityService"
+    android:label="@string/accessibility_service_label"
+    android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+    android:exported="false">
+    <intent-filter>
+        <action android:name="android.accessibilityservice.AccessibilityService" />
+    </intent-filter>
+    <meta-data android:name="android.accessibilityservice"
+        android:resource="@xml/accessibility_service" />
+</service>

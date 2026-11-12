@@ -474,9 +474,22 @@ pub fn package(project_dir: &Path, opts: &PackageOptions) -> Result<PackagedApk>
     // into their own `.flata` and linked beside the project's icon flat.
     let sdk_res = build_dir.join("sdk-res");
     let sdk_res_flat = build_dir.join("sdk-res.flata");
-    if sdk_contrib.stage_res(&sdk_res)? {
+    let sdk_res_staged = sdk_contrib.stage_res(&sdk_res)?;
+    if sdk_res_staged {
         aapt2_compile_dir(&build_tools, &sdk_res, &sdk_res_flat, "SDK resources")?;
     }
+    let sdk_res_flat = sdk_manifest::fresh_flat(&sdk_res_flat, sdk_res_staged)?;
+    // The app's replacements for SDK strings
+    // (`[package.metadata.idealyst.app.android.strings]`), linked after the
+    // SDK resources so each overrides the SDK's default.
+    let app_strings = build_dir.join("app-strings");
+    let app_strings_flat = build_dir.join("app-strings.flata");
+    let app_strings_staged =
+        sdk_contrib.stage_string_overrides(&manifest.app.android.strings, &app_strings)?;
+    if app_strings_staged {
+        aapt2_compile_dir(&build_tools, &app_strings, &app_strings_flat, "app string overrides")?;
+    }
+    let app_strings_flat = sdk_manifest::fresh_flat(&app_strings_flat, app_strings_staged)?;
 
     // ── 5. Prepare AAR resources + Kotlin runtime ────────────────
     // The backend ships a small Kotlin runtime (RustDrawerLayout,
@@ -506,9 +519,10 @@ pub fn package(project_dir: &Path, opts: &PackageOptions) -> Result<PackagedApk>
     if project_icon_flat.is_file() {
         runtime.aar_resource_flats.push(project_icon_flat.clone());
     }
-    if sdk_res_flat.is_file() {
-        runtime.aar_resource_flats.push(sdk_res_flat.clone());
-    }
+    // Order matters: `aapt2 link` applies `-R` overlays in order, so a
+    // later flat's resource replaces an earlier one of the same name.
+    runtime.aar_resource_flats.extend(sdk_res_flat);
+    runtime.aar_resource_flats.extend(app_strings_flat);
 
     // ── 6. aapt2 link → APK + generated R.java ───────────────────
     let unsigned_apk = build_dir.join("unsigned.apk");

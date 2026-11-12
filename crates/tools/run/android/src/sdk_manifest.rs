@@ -31,8 +31,12 @@
 //! device-admin receiver does nothing until the app is made an admin).
 //! App-specific choices — whether the main activity is a launcher, its lock
 //! task mode — are the app's, in `[package.metadata.idealyst.app.android]`.
+//! So is the wording of an SDK's user-visible strings: an SDK ships a
+//! default in a `res/values*/` file and the app replaces it by name in
+//! `[package.metadata.idealyst.app.android.strings]`
+//! ([`SdkManifestContributions::stage_string_overrides`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -186,6 +190,124 @@ impl SdkManifestContributions {
             })?;
         }
         Ok(true)
+    }
+}
+
+impl SdkManifestContributions {
+    /// The `<string>` names the SDKs' `res/values*/` files declare.
+    pub fn declared_strings(&self) -> Result<BTreeSet<String>> {
+        let mut names = BTreeSet::new();
+        for f in &self.res {
+            let is_values = f
+                .staged
+                .parent()
+                .and_then(|d| d.to_str())
+                .is_some_and(|d| d == "values" || d.starts_with("values-"));
+            if !is_values {
+                continue;
+            }
+            let xml = fs::read_to_string(&f.source)
+                .with_context(|| format!("read {} (from {})", f.source.display(), f.package))?;
+            let doc = roxmltree::Document::parse(&xml)
+                .with_context(|| format!("{}: {} is not well-formed XML", f.package, f.source.display()))?;
+            names.extend(
+                doc.root_element()
+                    .children()
+                    .filter(|n| n.has_tag_name("string"))
+                    .filter_map(|n| n.attribute("name").map(str::to_string)),
+            );
+        }
+        Ok(names)
+    }
+
+    /// Write the app's string overrides to `<res_root>/values/strings.xml`,
+    /// replacing whatever was there. They are linked after the SDK
+    /// resources, as an overlay, so each replaces the SDK's default. A name
+    /// no SDK declares is an error: it would add an unused resource and
+    /// leave the default the app meant to replace. Returns `false` when
+    /// there is nothing to stage.
+    pub fn stage_string_overrides(
+        &self,
+        strings: &BTreeMap<String, String>,
+        res_root: &Path,
+    ) -> Result<bool> {
+        if res_root.exists() {
+            fs::remove_dir_all(res_root)
+                .with_context(|| format!("clear {}", res_root.display()))?;
+        }
+        if strings.is_empty() {
+            return Ok(false);
+        }
+        let declared = self.declared_strings()?;
+        let unknown: Vec<&str> = strings
+            .keys()
+            .map(String::as_str)
+            .filter(|k| !declared.contains(*k))
+            .collect();
+        if !unknown.is_empty() {
+            bail!(
+                "`[package.metadata.idealyst.app.android.strings]` names {} that no SDK in the \
+                 dependency graph declares; declared: {}",
+                unknown.join(", "),
+                if declared.is_empty() {
+                    "none".to_string()
+                } else {
+                    declared.iter().cloned().collect::<Vec<_>>().join(", ")
+                }
+            );
+        }
+        let mut xml = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<resources>\n");
+        for (name, value) in strings {
+            xml.push_str(&format!(
+                "    <string name=\"{name}\">{}</string>\n",
+                android_string_escape(value)
+            ));
+        }
+        xml.push_str("</resources>\n");
+        let dest = res_root.join("values/strings.xml");
+        fs::create_dir_all(dest.parent().expect("has a values dir"))?;
+        fs::write(&dest, xml).with_context(|| format!("write {}", dest.display()))?;
+        Ok(true)
+    }
+}
+
+/// A string as an Android `<string>` element's content: XML-escaped, then
+/// Android's own escapes — `\'` and `\"` (aapt2 rejects a bare apostrophe
+/// and drops bare quotes), `\\`, `\n`, and a leading `@` or `?` that would
+/// otherwise read as a resource reference.
+pub(crate) fn android_string_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for (i, c) in value.chars().enumerate() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '@' | '?' if i == 0 => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// `flat` when `staged` (it was just compiled from fresh input), else
+/// `None` with any copy from an earlier build deleted, so an input removed
+/// since then (an SDK dropped from the graph, an override deleted) is not
+/// linked again from the stale file.
+pub(crate) fn fresh_flat(flat: &Path, staged: bool) -> Result<Option<PathBuf>> {
+    if staged {
+        return Ok(Some(flat.to_path_buf()));
+    }
+    match fs::remove_file(flat) {
+        Ok(()) => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("remove stale {}", flat.display())),
     }
 }
 
@@ -365,6 +487,83 @@ mod tests {
             fs::read_to_string(res_root.join("xml/device_admin.xml")).unwrap(),
             "<device-admin/>"
         );
+    }
+
+    const STRINGS: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="svc_label">Default label</string>
+    <string name="svc_description">Default description</string>
+</resources>"#;
+
+    fn with_strings(tmp: &Path) -> SdkManifestContributions {
+        write(tmp, "res/values/svc_strings.xml", STRINGS);
+        write(tmp, "res/xml/svc.xml", "<svc/>");
+        SdkManifestContributions::from_metadata(&sdk(
+            tmp,
+            json!({ "res": ["res/xml/svc.xml", "res/values/svc_strings.xml"] }),
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn declared_strings_come_from_values_files_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = with_strings(tmp.path());
+        let names: Vec<String> = c.declared_strings().unwrap().into_iter().collect();
+        assert_eq!(names, ["svc_description", "svc_label"]);
+    }
+
+    #[test]
+    fn string_overrides_are_written_escaped_for_aapt2() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = with_strings(tmp.path());
+        let out = tmp.path().join("app-strings");
+        let strings = BTreeMap::from([
+            ("svc_label".to_string(), "Bob's \"remote\" & <support>".to_string()),
+            ("svc_description".to_string(), "@not a ref\nline two".to_string()),
+        ]);
+        assert!(c.stage_string_overrides(&strings, &out).unwrap());
+        let xml = fs::read_to_string(out.join("values/strings.xml")).unwrap();
+        assert!(xml.contains(r#"<string name="svc_label">Bob\'s \"remote\" &amp; &lt;support&gt;</string>"#), "{xml}");
+        assert!(xml.contains(r#"<string name="svc_description">\@not a ref\nline two</string>"#), "{xml}");
+        roxmltree::Document::parse(&xml).expect("well-formed");
+    }
+
+    #[test]
+    fn an_override_no_sdk_declares_fails_and_lists_the_declared_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = with_strings(tmp.path());
+        let strings = BTreeMap::from([("svc_lable".to_string(), "typo".to_string())]);
+        let err = c
+            .stage_string_overrides(&strings, &tmp.path().join("app-strings"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("svc_lable") && err.contains("svc_label"), "{err}");
+    }
+
+    #[test]
+    fn no_overrides_stage_nothing_and_clear_an_earlier_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = with_strings(tmp.path());
+        let out = tmp.path().join("app-strings");
+        write(&out, "values/strings.xml", "<resources/>");
+        assert!(!c.stage_string_overrides(&BTreeMap::new(), &out).unwrap());
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn regression_a_removed_resource_input_is_not_linked_from_a_stale_flat() {
+        // A build with SDK resources leaves `sdk-res.flata` behind; a later
+        // build with none must not link it again.
+        let tmp = tempfile::tempdir().unwrap();
+        let flat = tmp.path().join("sdk-res.flata");
+        fs::write(&flat, b"stale").unwrap();
+        assert_eq!(fresh_flat(&flat, false).unwrap(), None);
+        assert!(!flat.exists());
+        assert_eq!(fresh_flat(&flat, false).unwrap(), None, "already gone is fine");
+        fs::write(&flat, b"fresh").unwrap();
+        assert_eq!(fresh_flat(&flat, true).unwrap(), Some(flat.clone()));
+        assert!(flat.exists());
     }
 
     #[test]

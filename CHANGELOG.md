@@ -1271,6 +1271,28 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`accessibility-service`: an app's own Android accessibility service** (new crate). An app that
+  depends on it ships an `AccessibilityService`; once someone switches it on (Settings or `adb`),
+  `screenshot(ImageFormat::Rgba | Jpeg { quality })` captures whatever is on screen, other apps
+  included, and `tap` / `long_press` / `swipe` / `global_action` / `set_focused_text` operate
+  anywhere on it — remote support of an unattended kiosk with nobody there to approve each session.
+  Screenshots and gestures share the display's current-rotation pixel space. `is_enabled` and
+  `on_enabled_change` follow the switch; `TooSoon { retry_after_ms }` reports Android's
+  three-a-second screenshot limit, and on API 34+ a secure window is `SecureWindow` rather than a
+  black frame. Off Android every call is `Unsupported`. `examples/remote-control` drives it over an
+  `adb`-forwarded command port. See the crate README.
+
+- **`device_admin::set_permitted_accessibility_services` / `permitted_accessibility_services`**
+  (`device-admin` minor). A device or profile owner limits which accessibility services may be
+  switched on (`Some(&[pkg])`), or allows every one again (`None`), so a locked tablet runs its own
+  agent's service and no other.
+
+- **An app replaces an SDK's Android strings** (`build-ios`, `run-android`, `idealyst-cli`).
+  `[package.metadata.idealyst.app.android.strings]` overrides, by name, a `<string>` an SDK declares
+  in a `res/values*/` file, such as `accessibility_service_label`. The build links the app's values
+  after the SDKs'; a name no SDK declares fails the build and lists the declared ones. See
+  `docs/android-packaging.md`, "SDK strings".
+
 - **A table's header shows when rows have scrolled beneath it** (`idea-ui` minor). In a
   `Table(scroll_y = true)` and a virtualized table, the cells of the last header row select the
   `head_cell` sheet's new `head_edge` axis: `hidden` at the top of the list, `scrolled` once rows
@@ -3386,6 +3408,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **An Android build no longer links SDK resources from an earlier build** (`run-android`). When
+  the dependency graph stopped contributing resources (an SDK removed), the compiled
+  `sdk-res.flata` from the previous build stayed on disk and was linked again. A flat whose input
+  is gone is now deleted before linking.
 
 - **A layout transition animates on iOS** (`backend-ios-mobile` patch). A `transitions { left: … }`
   (or `top`, `right`, `bottom`, `width`, `height`, a margin or a padding) moved the box on the web

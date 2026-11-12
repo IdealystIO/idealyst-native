@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shown in Settings > Accessibility. Defaults; an app replaces them in
+     `[package.metadata.idealyst.app.android.strings]`. -->
+<resources>
+    <string name="accessibility_service_label">Remote control</string>
+    <string name="accessibility_service_description">Lets this app see the screen and operate the device: take screenshots, tap, swipe, press system keys and type into the focused field.</string>
+</resources>

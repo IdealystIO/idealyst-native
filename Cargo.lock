@@ -25,6 +25,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
+name = "accessibility-service"
+version = "0.1.0"
+dependencies = [
+ "futures-channel",
+ "jni 0.21.1",
+ "log",
+ "ndk-context",
+ "pollster 0.4.0",
+ "runtime-core",
+ "runtime-shared",
+ "runtime-tls",
+ "runtime-vocabulary",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "accesskit"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10501,6 +10518,18 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "remote-control"
+version = "0.1.0"
+dependencies = [
+ "accessibility-service",
+ "idealyst",
+ "pollster 0.4.0",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
 ]
 
 [[package]]

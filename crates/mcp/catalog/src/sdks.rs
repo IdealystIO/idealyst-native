@@ -502,7 +502,13 @@ sdk!(
     "device-admin",
     SdkCategory::Device,
     SdkKind::Api,
-    "Android device-owner policy for kiosks and dedicated devices: lock an app onto the screen (`set_lock_task_packages` / `start_lock_task`), disable the keyguard and status bar, set the home activity, add user restrictions, and silently `install_apk` (certificate-pinned) / `uninstall` / `reboot`, with no MDM or app store. Every policy call returns `Error::NotDeviceOwner` unless the app is the device owner, and `Error::Unsupported` off Android. On iOS only lock-task (Autonomous Single App Mode on a supervised device), `lock_task_state` (Guided Access) and `managed_config` exist."
+    "Android device-owner policy for kiosks and dedicated devices: lock an app onto the screen (`set_lock_task_packages` / `start_lock_task`), disable the keyguard and status bar, set the home activity, add user restrictions, and silently `install_apk` (certificate-pinned) / `uninstall` / `reboot`, and limit which accessibility services may be switched on (`set_permitted_accessibility_services`), with no MDM or app store. Every policy call returns `Error::NotDeviceOwner` unless the app is the device owner, and `Error::Unsupported` off Android. On iOS only lock-task (Autonomous Single App Mode on a supervised device), `lock_task_state` (Guided Access) and `managed_config` exist."
+);
+sdk!(
+    "accessibility-service",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "The app's own Android accessibility service, to see and operate the whole screen with nobody at the device (remote support of an unattended kiosk): `screenshot(ImageFormat::Jpeg { quality })` of whatever is on screen, other apps included, and `tap` / `long_press` / `swipe` / `global_action(GlobalAction::Back)` / `set_focused_text` anywhere on it. Screenshot pixels and gesture points share one space (the display in its current rotation), so a click on a frame is the point to tap. Only a person (Settings > Accessibility, `open_settings()`) or adb can switch the service on; until then every call is `Error::NotEnabled`, and `is_enabled()` / `on_enabled_change` report it. About three screenshots a second (`TooSoon { retry_after_ms }` sooner); a secure window is `SecureWindow` on API 34+. The app words the Settings entry in `[package.metadata.idealyst.app.android.strings]` (`accessibility_service_label`, `accessibility_service_description`). Off Android every call is `Unsupported`. For live video with on-site approval use `screen-recorder`."
 );
 sdk!(
     "share",

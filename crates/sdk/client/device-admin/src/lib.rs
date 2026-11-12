@@ -591,6 +591,29 @@ pub fn installed_packages(include_system: bool) -> Result<Vec<PackageInfo>> {
     )?)
 }
 
+// ── Accessibility services ─────────────────────────────────────────────
+
+/// Allow only the accessibility services of `packages` to be switched on,
+/// or every service with `None` (the default). System accessibility
+/// services are always allowed. A locked-down tablet lists only its own
+/// agent, so nobody can switch on a service that reads or drives the
+/// screen. [`Error::Platform`] when the list leaves out a service that is
+/// already switched on: Android keeps the previous list rather than switch
+/// it off. Device or profile owner; API 21.
+pub fn set_permitted_accessibility_services(packages: Option<&[&str]>) -> Result<()> {
+    call("set_permitted_accessibility_services", json!({ "packages": packages })).map(drop)
+}
+
+/// The packages whose accessibility services may be switched on, or `None`
+/// when every service may (no list is set). Device or profile owner; API 21.
+pub fn permitted_accessibility_services() -> Result<Option<Vec<String>>> {
+    let v = call("permitted_accessibility_services", json!({}))?;
+    if v.is_null() {
+        return Ok(None);
+    }
+    packages::strings(&v).map(Some)
+}
+
 // ── Background execution ────────────────────────────────────────────────
 
 /// Keep this app's process running while it is in the background, by

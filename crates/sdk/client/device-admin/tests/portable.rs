@@ -39,6 +39,9 @@ fn every_sync_call_is_unsupported_off_mobile() {
     unsupported(is_package_suspended("com.example.bloat"));
     unsupported(enable_system_app("com.example.bloat"));
     unsupported(installed_packages(true));
+    unsupported(set_permitted_accessibility_services(Some(&["com.example.agent"])));
+    unsupported(set_permitted_accessibility_services(None));
+    unsupported(permitted_accessibility_services());
     unsupported(start_keep_alive("Agent", "connected"));
     unsupported(stop_keep_alive());
     unsupported(launch("com.example.kiosk"));

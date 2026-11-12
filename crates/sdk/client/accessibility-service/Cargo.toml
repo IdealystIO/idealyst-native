@@ -1,0 +1,63 @@
+[package]
+name = "accessibility-service"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "An app's own Android accessibility service: screenshots of the whole screen, taps, swipes, system keys and text entry anywhere on it."
+
+# The app's own Android AccessibilityService, for seeing and operating the
+# device with nobody at it (remote support of an unattended kiosk tablet).
+#
+#   - Android:  an AccessibilityService (runtime/kotlin) reached over JNI.
+#   - others:   every call is Err(Unsupported); is_enabled() is false.
+#
+# The service is a JVM class the system binds by name, so it is Kotlin; Rust
+# is the typed surface and a small JNI transport.
+
+[package.metadata.idealyst.android]
+runtime_kotlin = [
+    "runtime/kotlin/io/idealyst/accessibilityservice/RustAccessibilityService.kt",
+]
+# The <service> (inside <application>), its accessibility-service
+# configuration, and the label and description Settings shows. Inert until
+# someone switches the service on in Settings > Accessibility. An app
+# replaces the two strings in `[package.metadata.idealyst.app.android.strings]`.
+manifest_application = ["manifest/application.xml"]
+res = [
+    "res/xml/accessibility_service.xml",
+    "res/values/accessibility_service_strings.xml",
+]
+
+[features]
+# Compile-checked usage recipes for the catalog / MCP / docs surface. Off in
+# production builds, so recipes cost nothing there.
+catalog = ["dep:runtime-core", "dep:runtime-vocabulary", "runtime-core/catalog", "runtime-core/async-driver"]
+
+[dependencies]
+thiserror = { workspace = true }
+# Replies cross the JNI boundary as JSON; screenshot pixels as a byte[].
+serde_json = { workspace = true }
+# The UI-thread enabled-change listener registry, one pthread key per process
+# on Android.
+runtime-tls = { workspace = true }
+# Recipes only (`catalog`). `runtime-vocabulary` is direct because the
+# recipes' `ui!` emission spells absolute `::runtime_vocabulary::glue::…`
+# paths.
+runtime-core = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+# Parks an asynchronous call's sender until the service reports back.
+futures-channel = "0.3"
+# Failures reported to logcat through the backend's logger (stderr is not
+# captured on Android).
+log = "0.4"
+# Enabled-change notifications reach listeners through the host's async
+# executor (`driver::spawn_detached`): its polls fire the backend's
+# post-dispatch flush, so a listener's signal writes commit.
+runtime-shared = { workspace = true, features = ["async-driver"] }
+
+[dev-dependencies]
+pollster = "0.4"

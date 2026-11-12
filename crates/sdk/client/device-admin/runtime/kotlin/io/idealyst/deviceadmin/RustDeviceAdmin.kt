@@ -334,6 +334,23 @@ object RustDeviceAdmin {
                 }
                 dpm.enableSystemApp(admin(ctx), pkg)
             }
+            "set_permitted_accessibility_services" -> {
+                requireDeviceOrProfileOwner(ctx)
+                val packages = if (args.isNull("packages")) null else strings(args, "packages").toList()
+                // false: a service already switched on is missing from the
+                // list; Android keeps the old list rather than switch it off.
+                if (!dpm.setPermittedAccessibilityServices(admin(ctx), packages)) {
+                    throw Failure(
+                        "platform",
+                        "Android refused the list: it leaves out an accessibility service that is switched on",
+                    )
+                }
+            }
+            "permitted_accessibility_services" -> {
+                requireDeviceOrProfileOwner(ctx)
+                val packages = dpm.getPermittedAccessibilityServices(admin(ctx)) ?: return JSONObject.NULL
+                return JSONArray(packages)
+            }
             "installed_packages" -> {
                 requireDeviceOrProfileOwner(ctx)
                 val includeSystem = args.getBoolean("include_system")

@@ -28,6 +28,12 @@
 //! # backgrounded process within about a minute.
 //! keep_alive = true
 //!
+//! [package.metadata.idealyst.app.android.strings]
+//! # Replace a string resource an SDK declares, e.g. the label Settings
+//! # shows for `accessibility-service`'s service. A name no SDK declares is
+//! # an error, so a typo cannot silently keep the default.
+//! accessibility_service_label = "Example remote support"
+//!
 //! [package.metadata.idealyst.app.android.signing]
 //! # Release keystore. Relative paths resolve against the app crate.
 //! keystore = "keys/release.jks"
@@ -53,6 +59,7 @@
 //! the key is the app's, never the framework's. With no `signing` block,
 //! builds use the debug keystore.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
@@ -83,8 +90,19 @@ pub struct AndroidAppMetadata {
     /// Run a foreground service for the life of the process so a
     /// backgrounded app is not frozen (see the module docs).
     pub keep_alive: bool,
+    /// String resources the app replaces, by resource name (each declared
+    /// by an SDK in the dependency graph; checked when the APK is built).
+    pub strings: BTreeMap<String, String>,
     /// Release signing; `None` signs with the debug keystore.
     pub signing: Option<AndroidSigning>,
+}
+
+/// A string-resource name: ASCII letters, digits and `_`, not starting with
+/// a digit, so it is also the `R.string` field name.
+fn is_resource_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Values of the manifest's `android:screenOrientation` attribute.
@@ -167,6 +185,8 @@ pub(crate) struct RawAndroidAppMetadata {
     #[serde(default)]
     keep_alive: Option<bool>,
     #[serde(default)]
+    strings: BTreeMap<String, String>,
+    #[serde(default)]
     signing: Option<RawAndroidSigning>,
 }
 
@@ -214,6 +234,14 @@ impl AndroidAppMetadata {
                 );
             }
         }
+        for name in raw.strings.keys() {
+            if !is_resource_name(name) {
+                bail!(
+                    "`[package.metadata.idealyst.app.android.strings]`: {name:?} is not a \
+                     resource name (a letter or `_`, then letters, digits and `_`)"
+                );
+            }
+        }
         let signing = match raw.signing {
             None => None,
             Some(s) => {
@@ -240,6 +268,7 @@ impl AndroidAppMetadata {
             resizeable: raw.resizeable,
             screen_orientation: raw.screen_orientation,
             keep_alive: raw.keep_alive.unwrap_or(false),
+            strings: raw.strings,
             signing,
         })
     }
@@ -349,6 +378,18 @@ mod tests {
         assert!(!parse("").unwrap().keep_alive);
         assert!(parse("keep_alive = true").unwrap().keep_alive);
         assert!(parse("keep_alive = \"yes\"").is_err());
+    }
+
+    #[test]
+    fn string_overrides_parse_and_need_resource_names() {
+        assert!(parse("").unwrap().strings.is_empty());
+        let m = parse("[strings]\naccessibility_service_label = \"Support\"").unwrap();
+        assert_eq!(m.strings.get("accessibility_service_label").map(String::as_str), Some("Support"));
+        for bad in ["\"9lives\"", "\"has-dash\"", "\"dotted.name\"", "\"\""] {
+            let err = parse(&format!("[strings]\n{bad} = \"x\"")).unwrap_err().to_string();
+            assert!(err.contains("not a resource name"), "{bad}: {err}");
+        }
+        assert!(parse("[strings]\nlabel = 3").is_err(), "values are strings");
     }
 
     #[test]
