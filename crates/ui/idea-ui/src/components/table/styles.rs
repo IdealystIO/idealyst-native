@@ -330,6 +330,19 @@ component_styles! {
             compound (variant: plain, placed: grid, row_hovered: off)(t) {
                 background: t.color.surface(),
             }
+            // The pinned header's bottom edge (`Table(scroll_y = true)` and
+            // virtualized tables): `scrolled` while body rows have scrolled beneath
+            // the header, `hidden` at the top of the list (and on a table whose rows
+            // don't scroll under it). The table selects it on the LAST header row's
+            // cells. Both arms are empty — give `scrolled` its look once with
+            // `TableStyles::restyle(|s| { s.head_cell().arm(TableHeadEdge::Scrolled,
+            // |t| …); })`, e.g. a shadow. Keep it to paint (shadow, border colour):
+            // the header must not move as the edge comes and goes.
+            variant head_edge {
+                #[default]
+                hidden(_t) {}
+                scrolled(_t) {}
+            }
             // A frozen column's inner-edge hairline, for a `plain` table:
             // `Table` selects `hidden` while nothing is scrolled beneath that
             // edge, so the line appears only once content slides under the

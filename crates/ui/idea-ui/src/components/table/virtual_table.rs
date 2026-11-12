@@ -46,6 +46,9 @@
 //! `variant`, the edge inset, frame slots, `selection` (select-all covers
 //! every row, mounted or not), row tones, clickable rows (hover tints the
 //! whole row), sort headers, resizable columns, `empty` and `scroller`.
+//! The header cells select `head_edge: scrolled` while rows are scrolled
+//! beneath the frozen header, from the grid's scroll report — the same
+//! axis a `scroll_y` table's header selects.
 //! `on_reorder` adds a frozen grip column and drag-to-reorder over row
 //! indices, with autoscroll — see [`super::virtual_reorder`]. Row groups
 //! need every row mounted, so a virtualized table refuses
@@ -362,6 +365,9 @@ struct Shared {
     /// The grid's scroll offset and how far it can scroll sideways — what a
     /// plain table's frozen edges show by.
     scroll_x: Signal<(f32, f32)>,
+    /// Whether rows have scrolled beneath the frozen header — the header
+    /// cells' `head_edge` arm.
+    head_scrolled: Signal<bool>,
     widths: Signal<ColumnWidths>,
     on_column_resize: Option<Rc<dyn Fn(ColumnId, Option<f32>)>>,
     /// Row reorder (`Table(on_reorder = …)`).
@@ -518,6 +524,7 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
         hovered: signal(None),
         pressed: signal(None),
         scroll_x: signal((0.0, 0.0)),
+        head_scrolled: signal(false),
         widths,
         on_column_resize: props.on_column_resize.clone(),
         reorder,
@@ -597,6 +604,7 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
             if let Some(r) = shared.reorder.as_ref() {
                 r.scrolled(x, y);
             }
+            shared.head_scrolled.set(super::rows_scrolled_under_head(y));
             let port = handle.borrow().as_ref().and_then(|h| h.scrollport());
             let (vw, vh) = port.map_or((0.0, 0.0), |p| (p.width, p.height));
             let content_w: f32 = runtime_core::untrack(|| col_widths.with(|w| w.iter().sum()));
@@ -780,7 +788,7 @@ fn head_cell(shared: &Rc<Shared>, col: usize) -> Element {
             };
             let style = {
                 let shared = shared.clone();
-                move || shared.inset(col, shared.frozen_axes(col, base.clone()))
+                move || super::head_edge(shared.inset(col, shared.frozen_axes(col, base.clone())), shared.head_scrolled.get())
             };
             return ui! { view(style = style) { content } };
         }
@@ -812,6 +820,7 @@ fn head_cell(shared: &Rc<Shared>, col: usize) -> Element {
         let shared = shared.clone();
         move || {
             let app = shared.inset(col, shared.frozen_axes(col, base.clone()));
+            let app = super::head_edge(app, shared.head_scrolled.get());
             let app = if sortable { app.with("interactive", "on") } else { app };
             if anchor { app.with("anchor", "on") } else { app }
         }

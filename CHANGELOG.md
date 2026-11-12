@@ -1271,6 +1271,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **A table's header shows when rows have scrolled beneath it** (`idea-ui` minor). In a
+  `Table(scroll_y = true)` and a virtualized table, the cells of the last header row select the
+  `head_cell` sheet's new `head_edge` axis: `hidden` at the top of the list, `scrolled` once rows
+  have scrolled under the pinned header. It is the vertical counterpart of `pin_edge` and flips
+  only as the rows leave or reach the top. Both arms are empty, so nothing changes until an app
+  gives `scrolled` a look — once, for every table:
+  `TableStyles::restyle(|s| { s.head_cell().arm(TableHeadEdge::Scrolled, |t| StyleRules { shadow:
+  …, ..Default::default() }); })`. Keep it to paint (a shadow, a border colour) so the header does
+  not move. `TableHeadEdge` is exported from `idea_ui`.
+
 - **A virtualized `Table` reorders rows by drag** (`runtime-shared`, `runtime-vocabulary`,
   `backend-web`, `backend-macos`, `backend-ios-mobile`, `backend-android-mobile`, `host-mock`,
   `idea-ui` minor). `Table(on_reorder = …, virtualized = …)` used to panic; it now adds a grip

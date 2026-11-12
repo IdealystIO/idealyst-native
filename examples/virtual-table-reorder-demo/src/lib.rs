@@ -11,15 +11,19 @@
 //! The app owns the list, so it applies the move itself (`move_in_place`)
 //! in the same callback; the cells read the tasks reactively, so they show
 //! the new order in the same frame.
+//!
+//! Scroll the rows and the header grows a soft shadow along its bottom
+//! edge, gone again back at the top: the header cells' `head_edge` axis,
+//! given its look once with `TableStyles::restyle`.
 
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use idea_ui::{
     install_idea_theme, light_theme, move_in_place, CellAlign, ColumnId, ColumnPin, RowId, Table, TableColumn,
-    Typography, VirtualRows,
+    TableHeadEdge, TableStyles, Typography, VirtualRows,
 };
-use runtime_core::{rx, signal, stylesheet, ui, Element, Memo, SafeAreaSides, Signal};
+use runtime_core::{rx, signal, stylesheet, ui, Element, Memo, SafeAreaSides, Shadow, Signal, StyleRules};
 
 const TASKS: u32 = 5_000;
 
@@ -79,6 +83,13 @@ fn value(tasks: Signal<Vec<Task>>, i: usize, col: &str) -> String {
 
 pub fn app() -> Element {
     install_idea_theme(light_theme());
+    // The header's edge over scrolled rows: a soft shadow, for every table.
+    TableStyles::restyle(|s| {
+        s.head_cell().arm(TableHeadEdge::Scrolled, |t| StyleRules {
+            shadow: Some(Shadow { x: 0.0, y: 2.0, blur: 4.0, color: t.effect.shadow() }),
+            ..Default::default()
+        });
+    });
 
     let tasks: Signal<Vec<Task>> = signal((1..=TASKS).map(Task::new).collect());
     let picked: Signal<BTreeSet<RowId>> = signal(BTreeSet::new());

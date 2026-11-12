@@ -664,7 +664,7 @@ TableFooter {
                     Prop {
                         name: "scroll_y",
                         ty: "bool",
-                        desc: "Vertical-scroll mode: rows scroll inside the table's own height under the header (the leading rows of header cells), which sits above the rows' scroller — the scrollbar runs beside the rows only. The header keeps the rows' columns and, with scroll_x, their sideways scroll. Default false.",
+                        desc: "Vertical-scroll mode: rows scroll inside the table's own height under the header (the leading rows of header cells), which sits above the rows' scroller — the scrollbar runs beside the rows only. The header keeps the rows' columns and, with scroll_x, their sideways scroll. While rows are scrolled beneath it the last header row's cells select head_edge: scrolled (style it once with TableStyles::restyle, e.g. a shadow). Default false.",
                     },
                     Prop {
                         name: "max_height",

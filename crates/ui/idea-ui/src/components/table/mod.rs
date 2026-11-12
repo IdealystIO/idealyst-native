@@ -333,6 +333,29 @@
 //! other cell stays a static selection. Frozen cells must stay opaque
 //! and paint `color-surface`, so a plain table belongs on that surface.
 //!
+//! # The header over scrolled rows
+//!
+//! In a `scroll_y` table, and in a virtualized one, the cells of the LAST
+//! header row select the `head_cell` sheet's `head_edge` axis: `hidden`
+//! while the rows sit at the top, `scrolled` once they have scrolled
+//! beneath the header. It is the vertical counterpart of `pin_edge`, and
+//! like it flips only as the rows leave or reach the top — a scroll in
+//! between restyles nothing. Both arms are empty in the built-in sheet;
+//! give `scrolled` its look once and every table picks it up:
+//!
+//! ```ignore
+//! TableStyles::restyle(|s| {
+//!     s.head_cell().arm(TableHeadEdge::Scrolled, |t| StyleRules {
+//!         shadow: Some(Shadow { x: 0.0, y: 2.0, blur: 4.0, color: t.effect.shadow() }),
+//!         ..Default::default()
+//!     });
+//! });
+//! ```
+//!
+//! Keep it to paint — a shadow, a border colour — so the header does not
+//! move as the edge comes and goes. A table whose rows don't scroll under
+//! its header (no `scroll_y`) stays at `hidden`.
+//!
 //! # Frame slots
 //!
 //! `header_slot` / `footer_slot` draw content inside the table's frame,
@@ -792,7 +815,9 @@ pub struct TableProps {
     /// scrollbar beside the rows only. Bound it with `max_height`, or let
     /// it fill a bounded parent. With `scroll_x` the header follows the
     /// rows' horizontal scroll and frozen columns stay frozen in both —
-    /// see the module docs.
+    /// see the module docs. The last header row's cells select
+    /// `head_edge: scrolled` while rows are scrolled beneath the header
+    /// (module docs, "The header over scrolled rows").
     // STRUCTURAL — selects the SDK's scroller and the header pin at build.
     #[prop(static)]
     pub scroll_y: bool,
@@ -1410,6 +1435,25 @@ pub fn Table(mut props: TableProps) -> Element {
             });
         }
     }
+    // `head_edge`: the pinned header's bottom edge, selected on the LAST
+    // header row's cells from whether the rows' scroller has left the top.
+    // A scroll-y table pins its header; without one nothing scrolls under it.
+    let last_head = kinds.iter().rposition(|k| *k == RowKind::Head);
+    let head_scrolled = (props.scroll_y && last_head.is_some()).then(|| {
+        let scrolled = signal(false);
+        let mut row_i = 0usize;
+        for child in &children {
+            table::visit_rows(child, |row| {
+                if Some(row_i) == last_head {
+                    table::visit_row_cells(row, |cell| {
+                        table::map_cell_style(cell, Rc::new(move |app| head_edge(app, scrolled.get())));
+                    });
+                }
+                row_i += 1;
+            });
+        }
+        scrolled
+    });
     // A plain table's frozen columns draw their inner edge only while
     // columns are scrolled beneath it. Last, so it composes over every
     // selection above; and only on pinned cells, so the rest stay static.
@@ -1530,9 +1574,22 @@ pub fn Table(mut props: TableProps) -> Element {
         Some(viewport) => table.on_viewport_width(move |w| viewport.set(Some(w))),
         None => table,
     };
-    let table = match row_scroll {
-        Some((body, x)) => table.bind_scroller(body, move |offset, _| x.set(offset)),
-        None => table,
+    // The rows' scroller feeds `TableScroller` its horizontal offset and
+    // `head_edge` its vertical one — one binding, since the SDK hands out
+    // one scroller.
+    let table = match (row_scroll, head_scrolled) {
+        (None, None) => table,
+        (row_scroll, head_scrolled) => {
+            let body = row_scroll.as_ref().map_or_else(Ref::new, |(body, _)| *body);
+            table.bind_scroller(body, move |offset_x, offset_y| {
+                if let Some((_, x)) = &row_scroll {
+                    x.set(offset_x);
+                }
+                if let Some(scrolled) = head_scrolled {
+                    scrolled.set(rows_scrolled_under_head(offset_y));
+                }
+            })
+        }
     };
     match edges {
         Some(edges) => table.on_scroll_edges(move |e| edges.set(e)).into_element(),
@@ -1786,6 +1843,18 @@ fn pin_edge(app: StyleApplication, edges: Signal<table::ScrollEdges>) -> StyleAp
         _ => return app,
     };
     app.with("pin_edge", if behind { "shown" } else { "hidden" })
+}
+
+/// Whether a vertical scroll offset has carried body rows beneath the
+/// pinned header. Half a pixel of slack, as `ScrollEdges` takes: a
+/// scroller resting at the top can report a fractional offset.
+pub(super) fn rows_scrolled_under_head(offset_y: f32) -> bool {
+    offset_y > 0.5
+}
+
+/// Select the `head_edge` arm for a header cell of the last header row.
+pub(super) fn head_edge(app: StyleApplication, scrolled: bool) -> StyleApplication {
+    app.with("head_edge", if scrolled { "scrolled" } else { "hidden" })
 }
 
 // =============================================================================
