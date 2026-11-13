@@ -3481,6 +3481,22 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **idea-ui labels carry their own ink and type on native** (`idea-ui` minor). The Select and
+  date-picker trigger, a `ListItem`, a `Collapsible` text title and a linked `Breadcrumbs` crumb
+  drew their text as a bare `text` relying on the container's color and font size, which native
+  text does not inherit: iOS drew it in the system's black at 17pt (unreadable on a dark theme).
+  Each label now wears a slot of its own from the theme — `Select`'s `label` (sized with the
+  trigger, used by the date pickers too), `ListItem`'s `label`, `Collapsible`'s `title`,
+  `Breadcrumbs`' `crumb_label` (brightened on the crumb's hover and focus). On the web, a
+  `trigger` / `root` / `header` / `crumb` override that set `color` or `font_size` for the text
+  must move to the new slot.
+
+- **A tap on a button inside a tappable row no longer also taps the row on iOS**
+  (`backend-ios-mobile` patch). A release-mode pressable's tap recognizer does not cancel touches
+  in its view, so the raw touch went on up the responder chain to an ancestor's `on_touch` — a
+  table row's tap — and a row's menu button opened the menu and navigated. The pressable now
+  consumes its raw touches, as the press-down pressable already did.
+
 - **An unshrinkable item in a flex row keeps its own width on native** (`runtime-layout` patch).
   The default `max-width: 100%` clamp also capped a `flex_shrink: 0` item in a row, where width is
   the main axis and CSS lets the item overflow. A pill wrapped onto a narrow row's second line came

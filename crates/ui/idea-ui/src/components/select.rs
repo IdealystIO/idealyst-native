@@ -136,6 +136,22 @@ component_styles! {
             }
         }
 
+        /// The value (or placeholder) in the trigger — the date pickers'
+        /// too. Its own ink and type, sized with the trigger: native text
+        /// takes none from the pressable around it.
+        slot label {
+            base(t) {
+                color: t.color.text(),
+                font_size: t.typography.body_size(),
+            }
+            variant size {
+                sm(t) { font_size: t.typography.body_sm_size() }
+                #[default]
+                md(t) { font_size: t.typography.body_size() }
+                lg(t) { font_size: t.typography.body_lg_size() }
+            }
+        }
+
         /// The dropdown panel, rendered inside an overlay.
         slot menu {
             base(t) {
@@ -675,7 +691,9 @@ pub fn Select(props: SelectProps) -> Element {
             .or_else(|| label_placeholder.get())
             .unwrap_or_default()
     };
-    let label_child = runtime_core::text(label_source).into_element();
+    let label_child = runtime_core::text(label_source)
+        .with_style(SelectStyles::label().set(size.clone()).overridden(props.styles.label.as_ref()))
+        .into_element();
 
     // Trailing chevron that rotates 180° while the menu is open.
     let chevron = rotating_chevron(icon_data, SELECT_CHEVRON_PX, open);
@@ -874,6 +892,25 @@ fn menu_build(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: the trigger's label was a bare `text` relying on the
+    /// trigger's ink and type, which native text does not inherit — iOS drew
+    /// it in the system's black at 17pt on a dark theme. It wears the
+    /// `label` slot; so does a date picker's trigger.
+    #[test]
+    fn regression_trigger_label_carries_its_own_ink() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            crate::test_support::assert_text_carries_ink(Select(SelectProps::default()));
+            crate::test_support::assert_text_carries_ink(crate::components::date_picker::picker_trigger(
+                || "Nov 13, 2026".to_string(),
+                runtime_core::signal(false),
+                Reactive::Static(SelectSize::default()),
+                runtime_core::Ref::new(),
+                None,
+            ));
+        });
+    }
     use crate::test_support::{classify, P};
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};

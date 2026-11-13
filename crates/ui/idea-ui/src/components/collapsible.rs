@@ -140,6 +140,16 @@ component_styles! {
             }
         }
 
+        /// A text `title`'s ink and type — the header's: native text takes
+        /// none from the toggle around it.
+        slot title {
+            base(t) {
+                color: t.color.text(),
+                font_size: 14.0,
+                font_weight: FontWeight::SemiBold,
+            }
+        }
+
         /// / The header row when a `trailing` element sits beside the toggle:
         /// / the toggle (growing) then the trailing element, which gets the
         /// / header's end padding since the toggle's padding no longer reaches
@@ -457,11 +467,12 @@ fn collapsible_header(
         }
     };
 
-    // The title is a bare `text` straight in the toggle (the header sheet
-    // carries its type); a custom header gets a growing box so a chevron at
-    // the end stays at the end.
+    // A text title wears the `title` slot; a custom header gets a growing
+    // box so a chevron at the end stays at the end.
     let content = match content {
-        HeaderContent::Title(title) => text(title).into_element(),
+        HeaderContent::Title(title) => {
+            text(title).with_style(CollapsibleStyles::title().overridden(styles.title.as_ref())).into_element()
+        }
         HeaderContent::Custom(el) => {
             let content_style =
                 CollapsibleStyles::header_content().overridden(styles.header_content.as_ref());
@@ -907,5 +918,26 @@ pub fn Accordion(props: AccordionProps) -> Element {
 
     ui! {
         view(style = container_style) { item_views }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use idea_theme::testing::with_test_world;
+    use idea_theme::theme::{install_idea_theme, light_theme};
+
+    /// Regression: a text `title` was a bare `text` relying on the header's
+    /// ink and type, which native text does not inherit. It wears the
+    /// `title` slot (the chevron already had its own).
+    #[test]
+    fn regression_collapsible_title_carries_its_own_ink() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            crate::test_support::assert_text_carries_ink(Collapsible(CollapsibleProps {
+                title: Reactive::Static("Details".to_string()),
+                ..Default::default()
+            }));
+        });
     }
 }

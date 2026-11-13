@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 use runtime_core::{
     component, component_styles, icon, ui, AlignItems, Color, Cursor, Element, FlexDirection, FontWeight,
-    IconData, IdealystSchema, IntoElement, Length, Reactive, StyleRules, Tokenized,
+    IconData, IdealystSchema, IntoElement, Length, Reactive, StyleRules, Tokenized, signal,
 };
 
 use crate::theme::IdeaThemeRef;
@@ -62,6 +62,23 @@ component_styles! {
             state hovered(t) { color: t.color.text() }
             // Focus mirrors hover (text brighten) — replaces the native macOS ring.
             state focused(t) { color: t.color.text() }
+            transitions { color: 120ms EaseOut }
+        }
+
+        /// A linked crumb's label — the `crumb` slot's ink and type, which
+        /// native text does not take from the pressable around it. `lit`
+        /// follows the pressable's hover and focus, the brighten the `crumb`
+        /// states give a plain crumb.
+        slot crumb_label {
+            base(t) {
+                color: t.color.text_muted(),
+                font_size: t.typography.body_sm_size(),
+            }
+            variant lit {
+                #[default]
+                off(_t) {}
+                on(t) { color: t.color.text() }
+            }
             transitions { color: 120ms EaseOut }
         }
 
@@ -158,16 +175,27 @@ pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
             // A clickable crumb: pressable + a pointer cursor so it reads as
             // interactive (the current/last crumb and plain crumbs stay
             // default-cursor text).
-            Some(cb) if !is_current => runtime_core::pressable(
-                vec![runtime_core::text(crumb.label).into_element()],
-                move || (cb)(),
-            )
-            .with_style(
-                BreadcrumbsStyles::crumb()
-                    .set(BreadcrumbsInteractive::On)
-                    .overridden(props.styles.crumb.as_ref()),
-            )
-            .into_element(),
+            Some(cb) if !is_current => {
+                let (hovered, focused) = (signal(false), signal(false));
+                let label = runtime_core::text(crumb.label)
+                    .with_style(
+                        BreadcrumbsStyles::crumb_label()
+                            .set(Reactive::Dynamic(Rc::new(move || {
+                                BreadcrumbsLit::from(hovered.get() || focused.get())
+                            })))
+                            .overridden(props.styles.crumb_label.as_ref()),
+                    )
+                    .into_element();
+                runtime_core::pressable(vec![label], move || (cb)())
+                    .with_style(
+                        BreadcrumbsStyles::crumb()
+                            .set(BreadcrumbsInteractive::On)
+                            .overridden(props.styles.crumb.as_ref()),
+                    )
+                    .on_hover(move |on| hovered.set(on))
+                    .on_focus(move |on| focused.set(on))
+                    .into_element()
+            }
             _ => runtime_core::text(crumb.label)
                 .with_style(
                     BreadcrumbsStyles::crumb()
@@ -203,4 +231,26 @@ pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
 
     let row_style = BreadcrumbsStyles::row().overridden(props.styles.row.as_ref());
     ui! { view(style = row_style) { kids } }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use idea_theme::testing::with_test_world;
+    use idea_theme::theme::{install_idea_theme, light_theme};
+
+    /// Regression: a linked crumb's label was a bare `text` inside the crumb
+    /// pressable, relying on its ink and type, which native text does not
+    /// inherit. It wears `crumb_label`; the current crumb and separators
+    /// already carried their own.
+    #[test]
+    fn regression_linked_crumb_label_carries_its_own_ink() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            crate::test_support::assert_text_carries_ink(Breadcrumbs(BreadcrumbsProps {
+                items: vec![Crumb::linked("Home", Rc::new(|| {})), Crumb::new("Here")],
+                ..Default::default()
+            }));
+        });
+    }
 }

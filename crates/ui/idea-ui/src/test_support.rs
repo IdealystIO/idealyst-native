@@ -212,6 +212,39 @@ impl P {
 
 pub use imp::classify;
 
+/// Assert every text node in `el` carries its own color and font size
+/// (see [`text_nodes`]), and that there is at least one.
+pub fn assert_text_carries_ink(el: Element) {
+    let nodes = text_nodes(el);
+    assert!(!nodes.is_empty(), "no text nodes found");
+    for (text, rules) in nodes {
+        let r = rules.unwrap_or_else(|| panic!("text {text:?} is unstyled: native draws it in the system ink and size"));
+        assert!(r.color.is_some(), "text {text:?} has no color of its own");
+        assert!(r.font_size.is_some(), "text {text:?} has no font size of its own");
+    }
+}
+
+/// Every text node in `el`'s tree, as its content (when static) and its
+/// resolved rules (`None` for an unstyled text). Native text inherits no
+/// ink or type from its container, so a component's text must carry its
+/// own: tests assert on this.
+pub fn text_nodes(el: Element) -> Vec<(Option<String>, Option<Rc<StyleRules>>)> {
+    let mut out = Vec::new();
+    fn walk(el: Element, out: &mut Vec<(Option<String>, Option<Rc<StyleRules>>)>) {
+        match classify(el) {
+            P::Text { text, style, .. } => out.push((text, style.map(|s| s.resolve()))),
+            p @ (P::View { .. } | P::Pressable { .. } | P::ScrollView { .. } | P::Portal { .. } | P::Fragment { .. }) => {
+                for c in p.children() {
+                    walk(c, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(el, &mut out);
+    out
+}
+
 /// The portals `el` mounts, in order: an overlay with a backdrop lowers to
 /// `[backdrop portal, content portal]`, one without to its portal alone.
 /// Anything that is not a portal comes back as itself.

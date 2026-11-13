@@ -135,6 +135,14 @@ component_styles! {
             state focused(t) { background: t.color.surface_alt() }
             transitions { background: 120ms EaseOut }
         }
+        /// The row's label. Its own ink and type: native text takes none
+        /// from the row around it.
+        slot label {
+            base(t) {
+                color: t.color.text(),
+                font_size: t.typography.body_size(),
+            }
+        }
     }
 }
 
@@ -193,7 +201,11 @@ pub fn ListItem(props: ListItemProps) -> Element {
     if let Some(l) = props.leading {
         kids.push(l);
     }
-    kids.push(runtime_core::text(props.label).into_element());
+    kids.push(
+        runtime_core::text(props.label)
+            .with_style(ListItemStyles::label().overridden(props.styles.label.as_ref()))
+            .into_element(),
+    );
     if let Some(tr) = props.trailing {
         kids.push(spacer());
         kids.push(tr);
@@ -219,6 +231,20 @@ pub fn ListItem(props: ListItemProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: the label was a bare `text` relying on the row's ink and
+    /// type, which native text does not inherit (system black on a dark
+    /// theme). It wears the `label` slot.
+    #[test]
+    fn regression_list_item_label_carries_its_own_ink() {
+        with_test_world(|| {
+            install();
+            crate::test_support::assert_text_carries_ink(ListItem(ListItemProps {
+                label: Reactive::Static("Row".to_string()),
+                ..Default::default()
+            }));
+        });
+    }
     use crate::test_support::{classify, P};
     use idea_theme::testing::with_test_world;
     use runtime_core::Cursor;

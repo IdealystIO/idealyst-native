@@ -95,7 +95,7 @@ pub(crate) fn picker_trigger(
     trigger_ref: Ref<PressableHandle>,
     test_id: Option<&'static str>,
 ) -> Element {
-    let label_child = text(label_source).into_element();
+    let label_child = text(label_source).with_style(SelectStyles::label().set(size.clone())).into_element();
     let glyph = icon(CALENDAR_GLYPH)
         .size(16.0)
         .color(|| tokens().color.text_muted().resolve())
