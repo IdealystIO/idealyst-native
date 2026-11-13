@@ -27,6 +27,7 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 #[derive(Parser, Debug)]
@@ -88,8 +89,11 @@ pub struct Args {
     /// headless Chrome's window can't go below 500); desktop apps
     /// (`--macos`/`--linux`/`--windows`) relaunch at each size via
     /// `IDEALYST_WINDOW_SIZE`. iOS and Android take the device's own screen
-    /// (pick devices with `--simulator`). Tests see the current size as
+    /// (pick devices with `--simulator`). Tests see the run's size as
     /// `IDEALYST_TEST_VIEWPORT`. Default `1280x800` when no `--device` is given.
+    /// A test can also resize mid-run with robot-test's `set_viewport`: on web
+    /// the runner resizes the page in place, keeping the run's pixel ratio,
+    /// touch and user agent.
     #[arg(long, value_name = "WxH", value_delimiter = ',')]
     pub viewport: Vec<String>,
     /// Web only: emulate a named device in the headless browser — its
@@ -613,8 +617,10 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<(String, Outco
     let addr = wait_for_registration(dir, &apps_dirs, &preexisting, launched, Duration::from_secs(300))
         .with_context(|| see_log("the app never registered with the relay"))?;
 
-    // Declared after `kill`, so it is dropped (browser closed) first.
-    let mut browser: Option<HeadlessBrowser> = None;
+    // Declared after `kill`, so it is dropped (browser closed) first. Shared
+    // with the browser-control thread, which holds it weakly.
+    let mut browser: Option<Arc<Mutex<HeadlessBrowser>>> = None;
+    let mut control: Option<SocketAddr> = None;
     if platform == "web" && !args.attach {
         if !wait_for_web_server(port, Duration::from_secs(600)) {
             anyhow::bail!(
@@ -622,15 +628,18 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<(String, Outco
                  build probably failed; run `idealyst dev --web` to see it"
             );
         }
-        browser = Some(HeadlessBrowser::launch(
+        let b = Arc::new(Mutex::new(HeadlessBrowser::launch(
             &format!("http://127.0.0.1:{port}/"),
             &session_state_dir(dir, isolated),
-        )?);
+        )?));
+        control = Some(serve_browser_control(Arc::downgrade(&b))?);
+        browser = Some(b);
     }
 
     for size in &launch.sizes {
         let ran = (|| -> Result<Outcome> {
-            if let (Some(b), Some(e)) = (browser.as_mut(), &size.emulation) {
+            if let (Some(b), Some(e)) = (browser.as_ref(), &size.emulation) {
+                let mut b = b.lock().unwrap();
                 b.show(e).with_context(|| format!("see {}", b.log.display()))?;
             }
             // Confirm the app is actually answering before we hand the suite the
@@ -646,6 +655,9 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<(String, Outco
                 .env("CARGO_MANIFEST_DIR", dir)
                 .envs(suite_env(size, port, user_env))
                 .env("IDEALYST_ROBOT_BRIDGE", addr.to_string());
+            if let Some(control) = control {
+                suite.env(robot_test::browser_control::ENV, control.to_string());
+            }
             // The platform the app itself reports (an attached app may not be
             // the default `--web`); an app too old to say is taken at the flag.
             let here = app_platform(addr).unwrap_or_else(|| platform.to_string());
@@ -668,6 +680,43 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<(String, Outco
     drop(browser);
     drop(kill); // tear down the dev session
     Ok(())
+}
+
+/// Serve the run's browser control (`robot_test::browser_control`): the
+/// robot's `set_viewport` on web, which a page cannot do for itself. On a
+/// thread for the run's length; it ends once `browser` is dropped.
+fn serve_browser_control(browser: Weak<Mutex<HeadlessBrowser>>) -> Result<SocketAddr> {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").context("binding the browser control socket")?;
+    let addr = listener.local_addr()?;
+    listener.set_nonblocking(true)?;
+    std::thread::spawn(move || loop {
+        if browser.strong_count() == 0 {
+            return;
+        }
+        let stream = match listener.accept() {
+            Ok((s, _)) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+            Err(_) => return,
+        };
+        let _ = stream.set_nonblocking(false);
+        let mut line = String::new();
+        if BufReader::new(&stream).read_line(&mut line).is_err() {
+            continue;
+        }
+        let result = match robot_test::browser_control::parse_set_viewport(line.trim()) {
+            None => Err(format!("unknown browser control request {:?}", line.trim())),
+            Some((w, h)) => match browser.upgrade() {
+                None => Err("the run's browser is closed".into()),
+                Some(b) => b.lock().unwrap().resize(w, h).map_err(|e| format!("{e:#}")),
+            },
+        };
+        let _ = writeln!(&stream, "{}", robot_test::browser_control::reply(result));
+    });
+    Ok(addr)
 }
 
 /// `idealyst test --parity web,macos`: launch every named platform of the same

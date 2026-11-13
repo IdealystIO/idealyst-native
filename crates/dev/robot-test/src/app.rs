@@ -157,9 +157,11 @@ impl App {
 
     /// Resize the app's window so its viewport is `width × height` logical
     /// px, and wait until the app reports that size. Desktop apps (macOS,
-    /// Windows, Linux) resize their own window; elsewhere this panics with
-    /// the reason — see [`try_set_viewport`](Self::try_set_viewport) to
-    /// skip instead.
+    /// Windows, Linux) resize their own window; a web app under
+    /// `idealyst test --web` is resized by the runner, in place, keeping the
+    /// run's pixel ratio, touch and user agent. Elsewhere this panics with
+    /// the reason — see [`try_set_viewport`](Self::try_set_viewport) to skip
+    /// instead.
     pub fn set_viewport(&mut self, width: f64, height: f64) {
         self.try_set_viewport(width, height).unwrap_or_else(|e| panic!("set_viewport({width}, {height}): {e}"))
     }
@@ -170,11 +172,18 @@ impl App {
     pub fn try_set_viewport(&mut self, width: f64, height: f64) -> Result<(), String> {
         let desc = format!("set_viewport({width}, {height})");
         // Idempotent, so a busy app is asked again.
-        self.wait(&desc, |app| match app.query("set_viewport", json!({ "width": width, "height": height })) {
+        let asked = self.wait(&desc, |app| match app.query("set_viewport", json!({ "width": width, "height": height })) {
             Ok(_) => Ok(Ok(())),
             Err(Failure::Fatal(e)) => Ok(Err(e)),
             Err(other) => Err(other),
-        })?;
+        });
+        // A page cannot resize its own window: under `idealyst test --web`
+        // the runner sizes the browser (`browser_control`).
+        if let Err(e) = asked {
+            let Some(control) = crate::browser_control::from_env() else { return Err(e) };
+            crate::browser_control::set_viewport(control, width.round() as u32, height.round() as u32)
+                .map_err(|c| format!("{e}; and the test runner could not resize the browser: {c}"))?;
+        }
         self.wait(&desc, |app| {
             let v: Viewport = serde_json::from_value(app.query("get_viewport", json!({}))?)
                 .map_err(|e| Failure::Fatal(format!("get_viewport: unexpected shape ({e})")))?;

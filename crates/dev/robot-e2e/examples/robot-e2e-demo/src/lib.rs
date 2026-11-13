@@ -42,7 +42,7 @@ use idea_ui::theme::IdeaThemeRef;
 use idea_ui::{install_idea_theme, light_theme, typography_kind, Stack, StackGap, StackPadding, Typography};
 use runtime_core::{
     signal, stylesheet, text, ui, BlurOutcome, Element, FlexDirection, IntoElement, JustifyContent,
-    KeyEvent, KeyOutcome, KeyboardKind, Length, Signal, StyleRules,
+    KeyEvent, KeyOutcome, KeyboardKind, Length, Overflow, Signal, StyleRules,
 };
 
 #[cfg(feature = "robot")]
@@ -604,8 +604,72 @@ fn screen(count: Signal<i32>, show_secret: Signal<bool>, name: Signal<String>, n
             button(label = "Run E2E suite again", on_click = run_suite, test_id = "run-suite")
             // — Deep links through navigators that mount late —
             deep_link_navigators()
+            // — A layout that changes at `md` —
+            responsive_section()
             // — The end of a screen taller than a phone's window —
             button(label = "Page end", on_click = move || page_end_taps.set(page_end_taps.get() + 1), test_id = "page-end")
+        }
+    }
+}
+
+/// A layout that changes at `md`, the shapes the robot has to measure
+/// across a resize: a step rail its base style collapses (zero high,
+/// clipped) and its `md` overlay opens, and a panel stacked under a record
+/// taller than a phone's window, beside it from `md`.
+fn responsive_section() -> Element {
+    ui! {
+        view(style = SplitLayout()) {
+            view(style = StepRail(), test_id = "rail") { text { "Steps" } }
+            view(style = RecordBox(), test_id = "record") { text { "Record" } }
+            view(style = PanelBox(), test_id = "panel") { text { "Panel" } }
+        }
+    }
+}
+
+/// Taller than a phone's window, so the panel under it starts below the fold.
+const RECORD_HEIGHT: f32 = 900.0;
+
+stylesheet! {
+    pub SplitLayout<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+        }
+        breakpoint md(_t) {
+            flex_direction: FlexDirection::Row,
+        }
+    }
+}
+
+stylesheet! {
+    pub StepRail<IdeaThemeRef> {
+        base(_t) {
+            height: Length::Px(0.0),
+            min_height: Length::Px(0.0),
+            overflow: Overflow::Hidden,
+        }
+        breakpoint md(_t) {
+            height: Length::Auto,
+            min_height: Length::Auto,
+            width: Length::Px(160.0),
+            overflow: Overflow::Visible,
+        }
+    }
+}
+
+stylesheet! {
+    pub RecordBox<IdeaThemeRef> {
+        base(_t) {
+            flex_shrink: 0.0,
+            height: Length::Px(RECORD_HEIGHT),
+        }
+    }
+}
+
+stylesheet! {
+    pub PanelBox<IdeaThemeRef> {
+        base(_t) {
+            flex_shrink: 0.0,
+            height: Length::Px(120.0),
         }
     }
 }

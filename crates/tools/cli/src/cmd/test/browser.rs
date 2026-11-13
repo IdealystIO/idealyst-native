@@ -215,6 +215,8 @@ pub struct HeadlessBrowser {
     cdp: Cdp,
     url: String,
     default_user_agent: String,
+    /// What the page was last put into ([`Self::show`], [`Self::resize`]).
+    current: Option<Emulation>,
     /// Chrome's own stderr — the evidence when the browser is what failed.
     pub log: PathBuf,
     /// The browser's profile, removed with it.
@@ -297,6 +299,7 @@ impl HeadlessBrowser {
             cdp,
             url: url.to_string(),
             default_user_agent,
+            current: None,
             log,
             profile,
         })
@@ -319,6 +322,28 @@ impl HeadlessBrowser {
         let loaded = self.cdp.wait_event("Page.loadEventFired", Duration::from_secs(120));
         self.cdp.call("Page.disable", json!({}))?;
         loaded.with_context(|| format!("loading {} in the headless browser", self.url))?;
+        self.current = Some(e.clone());
+        Ok(())
+    }
+
+    /// Resize the running page to `width` x `height` CSS px in place, keeping
+    /// its pixel ratio, touch and user agent: the robot's `set_viewport` on
+    /// web. Nothing reloads, so the app sees a window resize, as a user
+    /// dragging it would.
+    ///
+    /// Through THIS session: Chrome ties a metrics override to the DevTools
+    /// session that set it. A second session's override wins while it is
+    /// attached and is dropped when it detaches, back to the window's own
+    /// size rather than this session's override, so the resize cannot come
+    /// from a short-lived connection.
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
+        let mut e = self.current.clone().unwrap_or_else(|| Emulation::desktop(width, height));
+        e.width = width;
+        e.height = height;
+        for (method, params) in emulation_commands(&e, &self.default_user_agent) {
+            self.cdp.call(method, params)?;
+        }
+        self.current = Some(e);
         Ok(())
     }
 
@@ -580,6 +605,36 @@ mod tests {
         assert_eq!(v[2], 1.0, "{v}");
         assert_eq!(v[3], 0, "{v}");
         assert!(!v[5].as_str().unwrap().contains("iPhone"), "{v}");
+    }
+
+    /// The robot's `set_viewport` on web: the running page resizes in place
+    /// (no reload: a page-set marker survives, and a `resize` event fires)
+    /// and keeps the phone it was showing. And it lasts: a resize through a
+    /// DevTools session that then closes is undone by Chrome, which is why
+    /// it goes through the runner's own session.
+    #[test]
+    fn resize_changes_the_running_pages_size_and_keeps_its_emulation() {
+        if headless_browser().is_none() {
+            eprintln!("skipping: no headless browser (set IDEALYST_CHROME)");
+            return;
+        }
+        let page = "data:text/html,<meta name=viewport content='width=device-width'><body>hi</body>";
+        let profiles = tempfile::tempdir().unwrap();
+        let mut b = HeadlessBrowser::launch(page, profiles.path()).expect("launch");
+        b.show(&device_preset("iphone-14").unwrap().emulation()).unwrap();
+        b.evaluate("window.__marker = 1; window.__resized = 0; addEventListener('resize', () => window.__resized++)")
+            .unwrap();
+        b.resize(1100, 900).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let probe = "JSON.stringify([innerWidth, innerHeight, devicePixelRatio, navigator.maxTouchPoints, \
+                     window.__marker, window.__resized, matchMedia('(min-width: 768px)').matches])";
+        let v: Value = serde_json::from_str(b.evaluate(probe).unwrap().as_str().unwrap()).unwrap();
+        assert_eq!((v[0].as_u64(), v[1].as_u64()), (Some(1100), Some(900)), "{v}");
+        assert_eq!(v[2], 3.0, "the phone's pixel ratio stays: {v}");
+        assert!(v[3].as_u64().unwrap() >= 1, "touch stays: {v}");
+        assert_eq!(v[4], 1, "no reload: {v}");
+        assert!(v[5].as_u64().unwrap() >= 1, "the page saw a resize: {v}");
+        assert_eq!(v[6], true, "media queries follow: {v}");
     }
 
     /// The runner's browser must be visible to the dev session's robot

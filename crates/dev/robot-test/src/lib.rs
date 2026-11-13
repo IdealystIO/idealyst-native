@@ -48,6 +48,7 @@
 //! every platform — the relay makes them all reachable as the same bridge.
 
 mod app;
+pub mod browser_control;
 mod client;
 pub mod fixture;
 mod harness;

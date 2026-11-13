@@ -400,3 +400,56 @@ fn an_email_field_reports_the_email_keyboard(app: &mut App) {
     assert_eq!(app.test_id("email").keyboard().as_deref(), Some("email"));
     app.test_id("name").assert_keyboard("default");
 }
+
+/// The window's size before a test resized it, put back when it ends so
+/// the tests after it run at the size the run asked for.
+struct Viewport<'a>(&'a mut App, f64, f64);
+impl Drop for Viewport<'_> {
+    fn drop(&mut self) {
+        let (w, h) = (self.1, self.2);
+        self.0.set_viewport(w, h);
+    }
+}
+
+fn frame(app: &mut App, id: &str) -> (f64, f64, f64, f64) {
+    let el = app.call("find_element", json!({ "test_id": id }));
+    let f = app.call("get_absolute_frame", json!({ "element_id": el["id"] }));
+    let n = |k: &str| f[k].as_f64().unwrap_or_else(|| panic!("{id}: no {k} in {f}"));
+    (n("x"), n("y"), n("width"), n("height"))
+}
+
+/// want_42e78771: a rail its base style collapses and its `md` overlay
+/// opens reads visible once a resize crosses `md`, and hidden again below.
+#[robot_test(platforms = [web, macos])]
+fn a_resize_across_md_shows_what_the_overlay_opens(app: &mut App) {
+    let v = app.viewport();
+    let mut app = Viewport(app, v.width, v.height);
+    app.0.set_viewport(390.0, 844.0);
+    let rail = app.0.call("find_element", json!({ "test_id": "rail" }));
+    assert_eq!(rail["visible"], json!(false), "collapsed below md: {rail}");
+    app.0.set_viewport(1100.0, 900.0);
+    let rail = app.0.call("find_element", json!({ "test_id": "rail" }));
+    assert_eq!(rail["visible"], json!(true), "opened by the md overlay after the resize: {rail}");
+    app.0.set_viewport(390.0, 844.0);
+    let rail = app.0.call("find_element", json!({ "test_id": "rail" }));
+    assert_eq!(rail["visible"], json!(false), "collapsed again: {rail}");
+}
+
+/// want_2497c37b: a panel stacked under a record taller than the window is
+/// measured where it is drawn, below the fold, before anything scrolls,
+/// including after a resize brings the stacked layout back.
+#[robot_test(platforms = [web, macos])]
+fn a_frame_below_the_fold_is_where_it_is_drawn(app: &mut App) {
+    let v = app.viewport();
+    let mut app = Viewport(app, v.width, v.height);
+    for (w, h) in [(390.0, 844.0), (1100.0, 900.0), (390.0, 844.0)] {
+        app.0.set_viewport(w, h);
+        let (rx, ry, rw, rh) = frame(app.0, "record");
+        let (px, py, _, _) = frame(app.0, "panel");
+        if w < 768.0 {
+            assert!(py >= ry + rh - 1.0, "at {w}: the panel (y {py}) is under the record ({ry}..{})", ry + rh);
+        } else {
+            assert!(px >= rx + rw - 1.0, "at {w}: the panel (x {px}) is beside the record (ends {})", rx + rw);
+        }
+    }
+}

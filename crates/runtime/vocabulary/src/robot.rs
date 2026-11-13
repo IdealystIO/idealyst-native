@@ -1459,8 +1459,9 @@ pub struct Viewport {
 
 /// Why [`Robot::set_viewport`] can't resize on this platform.
 pub const SET_VIEWPORT_UNSUPPORTED: &str = "set_viewport is unsupported on this platform: the app cannot \
-     resize its own window here. On web, size the browser from the test runner (its viewport list); \
-     on iOS and Android, run on a device or simulator of the size you need";
+     resize its own window here. On web, run under `idealyst test --web`, whose runner resizes the \
+     page for robot-test's `set_viewport`; on iOS and Android, run on a device or simulator of the \
+     size you need";
 
 /// Errors returned by robot control operations.
 #[derive(Clone, Debug, PartialEq)]

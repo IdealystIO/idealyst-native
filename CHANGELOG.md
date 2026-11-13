@@ -1271,6 +1271,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **robot-test's `set_viewport` works on web under `idealyst test --web`** (`robot-test` minor,
+  `idealyst-cli`). A page cannot resize its own window, so the runner does it: it serves a control
+  socket for the run (`robot_test::browser_control`, named to the suite in
+  `IDEALYST_TEST_BROWSER_CONTROL`) and resizes the page in place through its own DevTools session,
+  keeping the run's pixel ratio, touch and user agent, with no reload. It must be that session:
+  Chrome drops a metrics override when the DevTools connection that set it closes, so a resize
+  from a short-lived connection lasts only until that connection closes, and the page falls back
+  to the window's own size (500 px wide in headless Chrome), not to the runner's emulation.
+
 - **Table rows open a menu on a right-click or a hold** (`idea-ui` minor).
   `VirtualRows::on_row_menu(|i, point| …)` and `TableCards(on_row_menu = …)` call back with the row
   and the press point in window coordinates. The hook shares the row's press handler with
