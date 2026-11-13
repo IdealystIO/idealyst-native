@@ -1271,6 +1271,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`accessibility-service`: find and press elements, and watch windows** (minor). For an
+  unattended device's agent that has to press a system prompt's button (Android's "Start
+  recording?" before each MediaProjection session) or react to system UI appearing over a kiosk.
+  - `find(&Query)` returns every element on screen matching a view id, text or content
+    description (exact or contains, ignoring case), package and class, across every interactive
+    window; `wait_for(&Query, timeout)` waits for one (`Error::Timeout`). Each `Node` carries its
+    bounds, text, description, view id, package, class, `clickable` and `enabled`.
+  - `click(&Node)` clicks the element with `ACTION_CLICK`, falling back to a tap at the centre of
+    its current bounds; an element that has left the screen is `Error::StaleNode`.
+  - `windows()` lists the windows on screen (kind, layer, bounds, package, title, focus, display),
+    and `on_window_change(f)` reports `TYPE_WINDOWS_CHANGED` (with what changed) and
+    `TYPE_WINDOW_STATE_CHANGED` (with the package and class).
+  - The service config adds `flagReportViewIds` and the two window event types, and Android now
+    delivers events after 100 ms instead of 1 s.
+
 - **robot-test's `set_viewport` works on web under `idealyst test --web`** (`robot-test` minor,
   `idealyst-cli`). A page cannot resize its own window, so the runner does it: it serves a control
   socket for the run (`robot_test::browser_control`, named to the suite in

@@ -25,21 +25,64 @@
 //! | `swipe <x1> <y1> <x2> <y2> <ms>` | `OK <ms>` |
 //! | `global back\|home\|recents\|notifications\|quick_settings\|lock_screen` | `OK` |
 //! | `text <string>` | `OK` (into the focused field) |
+//! | `find <query>` | `OK <n> <ms>`, then one line per element: `<i> <node>` |
+//! | `wait <ms> <query>` | as `find`, once something matches |
+//! | `click <i>` | `OK <ms>`: clicks element `i` of the last `find` / `wait` |
+//! | `windows` | `OK <n>`, then one line per window |
+//! | `events` | `OK <n>`, then the window events heard since the last `events` |
+//!
+//! A `<query>` is `key=value` words, `+` standing for a space in a value:
+//! `id=`, `text=`, `text~=` (contains), `desc=`, `desc~=`, `pkg=`,
+//! `class=`. For example `find pkg=com.android.systemui text~=start+now`.
 //!
 //! A failure replies `ERR <error>`. The screen shows whether the service is
-//! on, kept current by `on_enabled_change`.
+//! on, kept current by `on_enabled_change`, and the app listens for window
+//! changes from launch.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use accessibility_service::{Error, GlobalAction, ImageFormat};
+use accessibility_service::{Error, GlobalAction, ImageFormat, Node, Query};
 use runtime_core::{on_scope_drop, signal, text, ui, Element, Signal};
 
 const PORT: u16 = 7878;
 
 static SERVER_STARTED: AtomicBool = AtomicBool::new(false);
+/// The last `find` / `wait` result, for `click <i>`.
+static LAST_FOUND: Mutex<Vec<Node>> = Mutex::new(Vec::new());
+/// Window events heard on the UI thread, drained by `events`.
+static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn parse_query<'a>(words: impl Iterator<Item = &'a str>) -> Result<Query, String> {
+    let mut q = Query::new();
+    for word in words {
+        let (key, value) = word.split_once('=').ok_or(format!("{word:?} is not key=value"))?;
+        let value = value.replace('+', " ");
+        q = match key {
+            "id" => q.view_id(value),
+            "text" => q.text(value),
+            "text~" => q.text_contains(value),
+            "desc" => q.description(value),
+            "desc~" => q.description_contains(value),
+            "pkg" => q.package(value),
+            "class" => q.class_name(value),
+            other => return Err(format!("unknown query key {other:?}")),
+        };
+    }
+    Ok(q)
+}
+
+fn found_reply(nodes: Vec<Node>, ms: u128) -> (String, Vec<u8>) {
+    let mut reply = format!("OK {} {ms}", nodes.len());
+    for (i, n) in nodes.iter().enumerate() {
+        reply.push_str(&format!("\n{i} {n:?}"));
+    }
+    *LAST_FOUND.lock().unwrap() = nodes;
+    (reply, Vec::new())
+}
 
 fn parse_f32(word: Option<&str>) -> Result<f32, String> {
     word.ok_or("missing number")?.parse().map_err(|e| format!("{e}"))
@@ -140,6 +183,41 @@ fn run(line: &str) -> Result<(String, Vec<u8>), String> {
             accessibility_service::set_focused_text(text).map_err(err)?;
             Ok(("OK".to_string(), Vec::new()))
         }
+        "find" => {
+            let q = parse_query(words)?;
+            let nodes = pollster::block_on(accessibility_service::find(&q)).map_err(err)?;
+            Ok(found_reply(nodes, ms()))
+        }
+        "wait" => {
+            let timeout = Duration::from_millis(u64::from(parse_u32(words.next())?));
+            let q = parse_query(words)?;
+            let nodes =
+                pollster::block_on(accessibility_service::wait_for(&q, timeout)).map_err(err)?;
+            Ok(found_reply(nodes, ms()))
+        }
+        "click" => {
+            let i = parse_u32(words.next())? as usize;
+            let node = LAST_FOUND.lock().unwrap().get(i).cloned().ok_or(format!("no element {i}"))?;
+            pollster::block_on(accessibility_service::click(&node)).map_err(err)?;
+            Ok((format!("OK {}", ms()), Vec::new()))
+        }
+        "windows" => {
+            let windows = pollster::block_on(accessibility_service::windows()).map_err(err)?;
+            let mut reply = format!("OK {}", windows.len());
+            for w in windows {
+                reply.push_str(&format!("\n{w:?}"));
+            }
+            Ok((reply, Vec::new()))
+        }
+        "events" => {
+            let events = std::mem::take(&mut *EVENTS.lock().unwrap());
+            let mut reply = format!("OK {}", events.len());
+            for e in events {
+                reply.push('\n');
+                reply.push_str(&e);
+            }
+            Ok((reply, Vec::new()))
+        }
         other => Err(format!("unknown command {other:?}")),
     }
 }
@@ -187,6 +265,10 @@ pub fn app() -> Element {
     let enabled: Signal<bool> = signal(accessibility_service::is_enabled());
     let subscription = accessibility_service::on_enabled_change(move |on| enabled.set(on));
     on_scope_drop(move || drop(subscription));
+    let windows = accessibility_service::on_window_change(|e| {
+        EVENTS.lock().unwrap().push(format!("{e:?}"));
+    });
+    on_scope_drop(move || drop(windows));
 
     let open = move || {
         let _ = accessibility_service::open_settings();

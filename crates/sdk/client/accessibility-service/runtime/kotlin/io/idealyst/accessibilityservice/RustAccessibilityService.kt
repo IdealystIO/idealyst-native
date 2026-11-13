@@ -7,6 +7,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Point
+import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Bundle
@@ -16,16 +17,19 @@ import android.provider.Settings
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
  * The app's accessibility service. The system binds it once someone
  * switches it on in Settings > Accessibility, and it then does what Rust
- * asks through [RustAccessibility]. It reads no accessibility events.
+ * asks through [RustAccessibility]. The only events it reads are window
+ * changes, passed to Rust while it listens for them.
  */
 class RustAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
@@ -33,7 +37,9 @@ class RustAccessibilityService : AccessibilityService() {
         RustAccessibility.connected(this)
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event != null) RustAccessibility.event(event)
+    }
 
     override fun onInterrupt() {}
 
@@ -55,7 +61,8 @@ class RustAccessibilityService : AccessibilityService() {
  * result arrives later through [nativeResult] / [nativeScreenshot], or
  * `{"error": code, "message": text}` with `code` one of `not_enabled`,
  * `too_soon`, `secure_window`, `gesture_cancelled`, `refused`,
- * `no_focused_input`, `invalid_argument`, `unsupported`, `platform`.
+ * `no_focused_input`, `stale_node`, `timeout`, `invalid_argument`,
+ * `unsupported`, `platform`.
  *
  * Shipped from the `accessibility-service` SDK crate via
  * `[package.metadata.idealyst.android].runtime_kotlin`; the `native*`
@@ -70,6 +77,13 @@ object RustAccessibility {
      * tens of milliseconds.
      */
     private val worker = Executors.newSingleThreadScheduledExecutor()
+
+    /**
+     * Element searches, clicks and the window list. Every step of a tree walk
+     * is a call into the app that owns the window, so it stays off the main
+     * thread, and off [worker] so a long search does not hold a screenshot.
+     */
+    private val finder = Executors.newSingleThreadScheduledExecutor()
 
     /**
      * How long a screenshot waits for the secure-window probe once the
@@ -88,6 +102,23 @@ object RustAccessibility {
     @Volatile
     private var listening = false
 
+    /** Rust has a window listener, so [nativeWindowEvent] may be called. */
+    @Volatile
+    private var listeningWindows = false
+
+    /**
+     * Elements [find] returned, by the handle Rust holds, for [click]: the
+     * most recent [nodeHandles], oldest dropped first. A node keeps its window and view id, so [click]
+     * re-reads it with `refresh()` rather than trusting what was found.
+     */
+    private val nodes = object : LinkedHashMap<Long, AccessibilityNodeInfo>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, AccessibilityNodeInfo>?) =
+            size > nodeHandles
+    }
+    /** Set from each `find`'s `node_handles`, so Rust's constant is the only one. */
+    private var nodeHandles = 0
+    private var nextNode = 1L
+
     private class Failure(val code: String, message: String) : Exception(message)
 
     private object Pending
@@ -97,6 +128,23 @@ object RustAccessibility {
     @JvmStatic external fun nativeScreenshot(token: Long, width: Int, height: Int, rotation: Int, data: ByteArray)
 
     @JvmStatic external fun nativeEnabled(enabled: Boolean)
+
+    @JvmStatic external fun nativeWindowEvent(json: String)
+
+    /** An accessibility event, on the main thread: window changes go to Rust while it listens. */
+    fun event(e: AccessibilityEvent) {
+        if (!listeningWindows) return
+        val type = e.eventType
+        if (type != AccessibilityEvent.TYPE_WINDOWS_CHANGED && type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val json = JSONObject()
+            .put("type", type)
+            .put("window_id", e.windowId)
+            .putOpt("package", e.packageName?.toString())
+            .putOpt("class_name", e.className?.toString())
+        if (Build.VERSION.SDK_INT >= 28) json.put("changes", e.windowChanges)
+        if (Build.VERSION.SDK_INT >= 30) json.put("display_id", e.displayId)
+        nativeWindowEvent(json.toString())
+    }
 
     fun connected(s: RustAccessibilityService) {
         val was = service
@@ -142,8 +190,15 @@ object RustAccessibility {
 
     private fun dispatch(ctx: Context, method: String, args: JSONObject, token: Long): Any? = when (method) {
         "is_enabled" -> service != null
-        "attach" -> { listening = true; null }
-        "detach" -> { listening = false; null }
+        "listen" -> {
+            val on = args.getBoolean("on")
+            when (args.getString("what")) {
+                "enabled" -> listening = on
+                "windows" -> listeningWindows = on
+                else -> throw Failure("invalid_argument", "nothing to listen for named ${args.getString("what")}")
+            }
+            null
+        }
         "open_settings" -> {
             ctx.startActivity(
                 Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -154,6 +209,9 @@ object RustAccessibility {
         "gesture" -> gesture(args, token)
         "global_action" -> globalAction(args.getString("action"))
         "set_focused_text" -> setFocusedText(args.getString("text"))
+        "find" -> find(args, token)
+        "click" -> click(args, token)
+        "windows" -> windows(token)
         else -> throw Failure("platform", "unknown method $method")
     }
 
@@ -297,11 +355,20 @@ object RustAccessibility {
 
     private fun gesture(args: JSONObject, token: Long): Any {
         val s = requireService()
+        return stroke(
+            s,
+            args.getDouble("x1").toFloat(),
+            args.getDouble("y1").toFloat(),
+            args.getDouble("x2").toFloat(),
+            args.getDouble("y2").toFloat(),
+            args.getLong("duration_ms"),
+            token,
+        )
+    }
+
+    /** Dispatch one stroke; its result goes to [nativeResult] under [token]. */
+    private fun stroke(s: RustAccessibilityService, x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long, token: Long): Any {
         val size = screenSize(s)
-        val x1 = args.getDouble("x1").toFloat()
-        val y1 = args.getDouble("y1").toFloat()
-        val x2 = args.getDouble("x2").toFloat()
-        val y2 = args.getDouble("y2").toFloat()
         for ((x, y) in listOf(x1 to y1, x2 to y2)) {
             if (x >= size.x || y >= size.y) {
                 throw Failure("invalid_argument", "($x, $y) is outside the ${size.x} × ${size.y} screen")
@@ -311,7 +378,7 @@ object RustAccessibility {
             moveTo(x1, y1)
             if (x1 != x2 || y1 != y2) lineTo(x2, y2)
         }
-        val stroke = GestureDescription.StrokeDescription(path, 0, args.getLong("duration_ms"))
+        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
         val accepted = s.dispatchGesture(
             GestureDescription.Builder().addStroke(stroke).build(),
             object : AccessibilityService.GestureResultCallback() {
@@ -359,5 +426,191 @@ object RustAccessibility {
             throw Failure("refused", "the focused field refused the text")
         }
         return null
+    }
+
+    /**
+     * A query from Rust's `Query::to_json`. Text compares ignore case: a
+     * button styled in capitals reports its text as written.
+     */
+    private class Query(o: JSONObject) {
+        /** A criterion: a string, or `{"exact": s}` / `{"contains": s}` for text; absent is null. */
+        private fun criterion(o: JSONObject, key: String): Any? = if (o.isNull(key)) null else o.get(key)
+
+        val viewId = criterion(o, "view_id") as String?
+        val text = criterion(o, "text") as JSONObject?
+        val description = criterion(o, "description") as JSONObject?
+        val pkg = criterion(o, "package") as String?
+        val className = criterion(o, "class_name") as String?
+
+        fun matches(n: AccessibilityNodeInfo): Boolean {
+            if (pkg != null && n.packageName?.toString() != pkg) return false
+            if (viewId != null) {
+                val id = n.viewIdResourceName ?: return false
+                // "android:id/button1" exactly; "button1" in any package.
+                if (if (':' in viewId) id != viewId else !id.endsWith(":id/$viewId")) return false
+            }
+            if (className != null) {
+                val c = n.className?.toString() ?: return false
+                if (if ('.' in className) c != className else c.substringAfterLast('.') != className) return false
+            }
+            if (text != null && !textMatches(text, n.text)) return false
+            if (description != null && !textMatches(description, n.contentDescription)) return false
+            return true
+        }
+
+        private fun textMatches(m: JSONObject, value: CharSequence?): Boolean {
+            val v = value?.toString() ?: return false
+            return if (m.has("exact")) v.equals(m.getString("exact"), ignoreCase = true)
+            else v.contains(m.getString("contains"), ignoreCase = true)
+        }
+    }
+
+    /**
+     * `find` and `wait_for`: search every interactive window on [finder].
+     * Without `timeout_ms` one search replies with what it found, empty
+     * included; with it the search repeats every `poll_ms` until something
+     * matches or the time is up (`timeout`).
+     */
+    private fun find(args: JSONObject, token: Long): Any {
+        requireService()
+        val query = Query(args.getJSONObject("query"))
+        val pollMs = args.getLong("poll_ms")
+        synchronized(nodes) { nodeHandles = args.getInt("node_handles") }
+        val waiting = args.has("timeout_ms")
+        val timeoutMs = if (waiting) args.getLong("timeout_ms") else 0L
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        finder.execute(object : Runnable {
+            override fun run() {
+                try {
+                    val s = requireService()
+                    // A zero timeout checks once, so its one walk runs to the end.
+                    val found = search(s, query, if (timeoutMs > 0) deadline else null)
+                    when {
+                        found.length() > 0 || !waiting -> nativeResult(token, JSONObject().put("ok", found).toString())
+                        System.nanoTime() >= deadline -> nativeResult(token, error("timeout", "nothing matched before the timeout"))
+                        else -> finder.schedule(this, pollMs, TimeUnit.MILLISECONDS)
+                    }
+                } catch (f: Failure) {
+                    nativeResult(token, error(f.code, f.message))
+                } catch (t: Throwable) {
+                    nativeResult(token, error("platform", "${t.javaClass.simpleName}: ${t.message}"))
+                }
+            }
+        })
+        return Pending
+    }
+
+    /**
+     * Every match in every interactive window, depth first in tree order.
+     * With a [deadline] (`wait_for`) the walk stops once it passes, with
+     * what it has matched so far: each step is a call into the window's
+     * app, which Android lets block for seconds while that app's UI thread
+     * is busy (SystemUI closing a dialog), so a check only between
+     * searches would let one search overrun the timeout by many seconds.
+     */
+    private fun search(s: RustAccessibilityService, query: Query, deadline: Long?): JSONArray {
+        val out = JSONArray()
+        for (window in s.windows) {
+            val root = window.root ?: continue
+            val stack = ArrayDeque<AccessibilityNodeInfo>()
+            stack.addLast(root)
+            while (stack.isNotEmpty()) {
+                if (deadline != null && System.nanoTime() >= deadline) return out
+                val n = stack.removeLast()
+                if (query.matches(n)) out.put(describe(n, remember(n)))
+                // Pushed last-first so the first child is visited next.
+                for (i in n.childCount - 1 downTo 0) n.getChild(i)?.let { stack.addLast(it) }
+            }
+        }
+        return out
+    }
+
+    private fun remember(n: AccessibilityNodeInfo): Long = synchronized(nodes) {
+        val handle = nextNode++
+        nodes[handle] = n
+        handle
+    }
+
+    private fun describe(n: AccessibilityNodeInfo, handle: Long): JSONObject {
+        val r = Rect()
+        n.getBoundsInScreen(r)
+        return JSONObject()
+            .put("handle", handle)
+            .put("window_id", n.windowId)
+            .put("bounds", JSONArray().put(r.left).put(r.top).put(r.right).put(r.bottom))
+            .putOpt("text", n.text?.toString())
+            .putOpt("description", n.contentDescription?.toString())
+            .putOpt("view_id", n.viewIdResourceName)
+            .putOpt("package", n.packageName?.toString())
+            .putOpt("class_name", n.className?.toString())
+            .put("clickable", n.isClickable)
+            .put("enabled", n.isEnabled)
+    }
+
+    /**
+     * `click`: `ACTION_CLICK` on the node when it takes one, else a tap at
+     * the centre of its bounds as they are now. On [finder]: `refresh` and
+     * `performAction` are calls into the app that owns the node.
+     */
+    private fun click(args: JSONObject, token: Long): Any {
+        requireService()
+        val handle = args.getLong("node")
+        val tapMs = args.getLong("tap_ms")
+        finder.execute {
+            try {
+                val s = requireService()
+                val n = synchronized(nodes) { nodes[handle] }
+                    ?: throw Failure("stale_node", "the element was found too long ago; find it again")
+                // false: the view is gone, or its window is.
+                if (!n.refresh()) throw Failure("stale_node", "the element is no longer on screen")
+                if (n.isClickable && n.isEnabled && n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    nativeResult(token, JSONObject().put("ok", JSONObject.NULL).toString())
+                } else {
+                    val r = Rect()
+                    n.getBoundsInScreen(r)
+                    if (r.isEmpty) throw Failure("refused", "the element takes no click and has no area on screen to tap")
+                    stroke(s, r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), tapMs, token)
+                }
+            } catch (f: Failure) {
+                nativeResult(token, error(f.code, f.message))
+            } catch (t: Throwable) {
+                nativeResult(token, error("platform", "${t.javaClass.simpleName}: ${t.message}"))
+            }
+        }
+        return Pending
+    }
+
+    /** `windows`: the default display's windows, top of the stack first. On [finder]: each `root` is a call into its app. */
+    private fun windows(token: Long): Any {
+        requireService()
+        finder.execute {
+            try {
+                val out = JSONArray()
+                for (w in requireService().windows) out.put(describe(w))
+                nativeResult(token, JSONObject().put("ok", out).toString())
+            } catch (f: Failure) {
+                nativeResult(token, error(f.code, f.message))
+            } catch (t: Throwable) {
+                nativeResult(token, error("platform", "${t.javaClass.simpleName}: ${t.message}"))
+            }
+        }
+        return Pending
+    }
+
+    private fun describe(w: AccessibilityWindowInfo): JSONObject {
+        val r = Rect()
+        w.getBoundsInScreen(r)
+        val json = JSONObject()
+            .put("id", w.id)
+            .put("type", w.type)
+            .put("layer", w.layer)
+            .put("bounds", JSONArray().put(r.left).put(r.top).put(r.right).put(r.bottom))
+            .putOpt("package", w.root?.packageName?.toString())
+            .putOpt("title", w.title?.toString())
+            .put("focused", w.isFocused)
+            .put("active", w.isActive)
+        if (Build.VERSION.SDK_INT >= 26) json.put("picture_in_picture", w.isInPictureInPictureMode)
+        if (Build.VERSION.SDK_INT >= 30) json.put("display_id", w.displayId)
+        return json
     }
 }

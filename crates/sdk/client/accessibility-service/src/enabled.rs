@@ -1,18 +1,11 @@
-//! Enabled-state change notifications and the listener registry they are
-//! delivered to.
-//!
-//! Listeners live in a UI-thread thread-local: the platform half reports a
-//! bind or unbind on the main thread, and a listener typically writes a
-//! signal, which belongs to that thread. The platform half reports changes
-//! only while at least one listener is registered.
+//! Enabled-state change notifications.
 
 use std::cell::RefCell;
-use std::rc::Rc;
 
-type Listener = Rc<dyn Fn(bool)>;
+use crate::listeners::{deliver, Listeners};
 
 runtime_tls::thread_local! {
-    static LISTENERS: RefCell<(u64, Vec<(u64, Listener)>)> = const { RefCell::new((0, Vec::new())) };
+    static LISTENERS: RefCell<Listeners<bool>> = const { RefCell::new(Listeners::new()) };
 }
 
 /// Call `listener` with the new state whenever the service binds (`true`,
@@ -22,16 +15,9 @@ runtime_tls::thread_local! {
 /// thread. Off Android the listener is kept and never called.
 #[must_use = "notifications stop when the subscription is dropped"]
 pub fn on_enabled_change(listener: impl Fn(bool) + 'static) -> EnabledSubscription {
-    let (id, first) = LISTENERS.with(|l| {
-        let mut l = l.borrow_mut();
-        l.0 += 1;
-        let id = l.0;
-        let first = l.1.is_empty();
-        l.1.push((id, Rc::new(listener)));
-        (id, first)
-    });
+    let (id, first) = LISTENERS.with(|l| l.borrow_mut().add(listener));
     if first {
-        set_platform_listening(true);
+        crate::platform_listening("enabled", true);
     }
     EnabledSubscription { id }
 }
@@ -45,47 +31,23 @@ pub struct EnabledSubscription {
 
 impl Drop for EnabledSubscription {
     fn drop(&mut self) {
-        let now_empty = LISTENERS.with(|l| {
-            let mut l = l.borrow_mut();
-            let before = l.1.len();
-            l.1.retain(|(id, _)| *id != self.id);
-            before != l.1.len() && l.1.is_empty()
-        });
-        if now_empty {
-            set_platform_listening(false);
+        if LISTENERS.with(|l| l.borrow_mut().remove(self.id)) {
+            crate::platform_listening("enabled", false);
         }
     }
 }
 
-/// Deliver a state change to every listener. The list is cloned first, so a
-/// listener may register or drop subscriptions while it runs.
+/// Deliver a state change to every listener.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) fn dispatch(enabled: bool) {
-    let listeners: Vec<Listener> =
-        LISTENERS.with(|l| l.borrow().1.iter().map(|(_, f)| f.clone()).collect());
-    for listener in listeners {
-        listener(enabled);
-    }
-}
-
-fn set_platform_listening(on: bool) {
-    #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
-    {
-        // A failure here (no JVM context yet) means no change is reported;
-        // the next first registration retries.
-        let method = if on { "attach" } else { "detach" };
-        if let Err(e) = crate::android::call(method, &serde_json::json!({})) {
-            log::warn!("accessibility_service: {method} failed: {e}");
-        }
-    }
-    #[cfg(not(all(not(target_arch = "wasm32"), target_os = "android")))]
-    let _ = on;
+    deliver(LISTENERS.with(|l| l.borrow().snapshot()), enabled);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use std::rc::Rc;
 
     #[test]
     fn listeners_hear_changes_until_their_subscription_drops() {

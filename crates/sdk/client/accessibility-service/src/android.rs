@@ -6,11 +6,13 @@
 //! binds by name, so the logic lives in Kotlin and the Rust side is this
 //! transport plus the typed surface in `lib.rs`.
 //!
-//! Screenshots and gestures reply `{"pending": true}` and later report
-//! under the token they were given: a gesture or a failure through
-//! [`nativeResult`] (on the main thread), a screenshot's pixels through
-//! [`nativeScreenshot`] (on the SDK's background thread), as a `byte[]`
-//! rather than JSON. Enabled-state changes arrive through [`nativeEnabled`].
+//! Screenshots, gestures, searches and clicks reply `{"pending": true}` and
+//! later report under the token they were given: a value or a failure
+//! through [`nativeResult`] (on the main thread or the SDK's search
+//! thread), a screenshot's pixels through [`nativeScreenshot`] (on the
+//! SDK's screenshot thread), as a `byte[]` rather than JSON. Enabled-state
+//! changes arrive through [`nativeEnabled`], window changes through
+//! [`nativeWindowEvent`].
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -327,6 +329,35 @@ pub extern "system" fn Java_io_idealyst_accessibilityservice_RustAccessibility_n
     }
 }
 
+/// `RustAccessibility.nativeWindowEvent(json)`: a window change, on the
+/// main thread, reported only while a window listener is registered.
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_accessibilityservice_RustAccessibility_nativeWindowEvent(
+    mut env: JNIEnv,
+    _class: JClass,
+    json: JString,
+) {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(text) = env.get_string(&json).map(String::from) else {
+            return;
+        };
+        let event = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|v| crate::WindowEvent::from_json(&v));
+        let Some(event) = event else {
+            log::warn!("accessibility_service: unreadable window event {text}");
+            return;
+        };
+        // Through the executor, as `nativeEnabled`: a listener's staged
+        // signal writes commit at the poll's flush.
+        runtime_shared::driver::spawn_detached(async move { crate::windows::dispatch(event) });
+    }));
+    if outcome.is_err() {
+        eprintln!("accessibility_service: panic in nativeWindowEvent; aborting");
+        std::process::abort();
+    }
+}
+
 /// Pin the exports in the app `cdylib`'s dynamic symbol table: the JVM
 /// resolves them by `dlsym`, and a dependency rlib's `#[no_mangle]` export
 /// that nothing in Rust references can be dropped by the linker.
@@ -339,3 +370,6 @@ static KEEP_NATIVE_SCREENSHOT: extern "system" fn(JNIEnv, JClass, jlong, jint, j
 #[used]
 static KEEP_NATIVE_ENABLED: extern "system" fn(JNIEnv, JClass, jboolean) =
     Java_io_idealyst_accessibilityservice_RustAccessibility_nativeEnabled;
+#[used]
+static KEEP_NATIVE_WINDOW_EVENT: extern "system" fn(JNIEnv, JClass, JString) =
+    Java_io_idealyst_accessibilityservice_RustAccessibility_nativeWindowEvent;

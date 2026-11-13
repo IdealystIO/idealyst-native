@@ -1,18 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- What the service may do, shown to the person switching it on.
      canTakeScreenshot (API 30) for `screenshot`, canPerformGestures for the
-     gestures, canRetrieveWindowContent for `set_focused_text` (it finds the
-     input-focused node). flagRetrieveInteractiveWindows makes Android track
-     every window for the service: without it takeScreenshotOfWindow, which
-     `screenshot` uses to detect a secure window, fails with "invalid
-     window". The service reads no events: the one type here is the minimum
-     the attribute takes, and the service ignores it. -->
+     gestures, canRetrieveWindowContent for `find`, `click`, `windows` and
+     `set_focused_text`.
+     flagRetrieveInteractiveWindows makes Android track every window for the
+     service: without it `getWindows` is empty, so `find` sees no window and
+     takeScreenshotOfWindow, which `screenshot` uses to detect a secure
+     window, fails with "invalid window". flagReportViewIds fills in each
+     element's resource name, which `Query::view_id` matches.
+     The events are the two `on_window_change` reports. notificationTimeout
+     is how long Android holds back a burst of one event type before
+     delivering its last event. -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/accessibility_service_description"
-    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityEventTypes="typeWindowsChanged|typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:notificationTimeout="1000"
-    android:accessibilityFlags="flagRetrieveInteractiveWindows"
+    android:notificationTimeout="100"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds"
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"
     android:canTakeScreenshot="true" />

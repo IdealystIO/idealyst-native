@@ -1,5 +1,5 @@
 //! Pure decisions made before a call reaches Android: the screenshot rate
-//! gate and gesture argument checks. Un-gated so they are tested on any host.
+//! gate, gesture argument checks and the search limits. Un-gated so they are tested on any host.
 
 use std::time::Duration;
 
@@ -20,6 +20,17 @@ pub(crate) const MAX_GESTURE_MS: u32 = 60_000;
 /// `ViewConfiguration.getTapTimeout` (100 ms), so no view reads it as the
 /// start of a long press.
 pub(crate) const TAP_MS: u32 = 50;
+
+/// How often [`wait_for`](crate::wait_for) searches the screen again. A
+/// search walks every window's tree, a call into each app per element, so
+/// this keeps a long wait from loading the device while still answering a
+/// dialog within a quarter of a second.
+pub(crate) const WAIT_POLL_MS: u32 = 250;
+
+/// How many found elements the platform half keeps for
+/// [`click`](crate::click). A busy screen has a few hundred elements, so an
+/// empty query's results still fit; past this the oldest are dropped.
+pub(crate) const NODE_HANDLES: usize = 512;
 
 /// `Some(ms)` to wait before a screenshot may be requested, given the time
 /// since the last accepted request (`None`: there was none).

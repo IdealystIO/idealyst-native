@@ -39,6 +39,8 @@ pub(crate) fn parse(json: &str) -> Result<Reply> {
             "gesture_cancelled" => Error::GestureCancelled,
             "refused" => Error::Refused(message),
             "no_focused_input" => Error::NoFocusedInput,
+            "stale_node" => Error::StaleNode,
+            "timeout" => Error::Timeout,
             "invalid_argument" => Error::InvalidArgument(message),
             "unsupported" => Error::Unsupported(message),
             _ => Error::Platform(message),
@@ -87,6 +89,8 @@ mod tests {
         assert_eq!(err("gesture_cancelled"), Error::GestureCancelled);
         assert_eq!(err("refused"), Error::Refused("m".into()));
         assert_eq!(err("no_focused_input"), Error::NoFocusedInput);
+        assert_eq!(err("stale_node"), Error::StaleNode);
+        assert_eq!(err("timeout"), Error::Timeout);
         assert_eq!(err("invalid_argument"), Error::InvalidArgument("m".into()));
         assert_eq!(err("unsupported"), Error::Unsupported("m".into()));
         assert_eq!(err("platform"), Error::Platform("m".into()));

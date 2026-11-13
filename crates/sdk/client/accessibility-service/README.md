@@ -1,10 +1,13 @@
 # `accessibility-service`
 
 The app's own Android accessibility service, for seeing and operating a
-device with nobody at it: screenshots of the whole screen, and taps,
-swipes, system keys and text entry anywhere on it. Built for remote support
-of unattended devices, such as an MDM agent streaming a locked kiosk
-tablet to an admin console and replaying the admin's clicks as taps.
+device with nobody at it: screenshots of the whole screen; taps, swipes,
+system keys and text entry anywhere on it; finding an element on screen by
+id, text, package or class and pressing it; and the windows on screen,
+with notice when they change. Built for remote support of unattended
+devices, such as an MDM agent streaming a locked kiosk tablet to an admin
+console, replaying the admin's clicks as taps, and pressing a system
+prompt's button when nobody is at the tablet to.
 
 ```rust,ignore
 use accessibility_service::{GlobalAction, ImageFormat};
@@ -16,6 +19,17 @@ send_frame(shot.width, shot.height, &shot.data);
 accessibility_service::tap(812.0, 440.0).await?;
 accessibility_service::swipe((1200.0, 900.0), (1200.0, 300.0), 300).await?;
 accessibility_service::global_action(GlobalAction::Back)?;
+
+// Press a button by what it is, in any app or system dialog:
+let q = Query::new().package("com.android.systemui").view_id("android:id/button1");
+let found = accessibility_service::wait_for(&q, Duration::from_secs(5)).await?;
+accessibility_service::click(&found[0]).await?;
+
+// Hear when windows change, and read them:
+let sub = accessibility_service::on_window_change(|e| log::info!("{e:?}"));
+for w in accessibility_service::windows().await? {
+    log::info!("{:?} {:?} {:?}", w.kind, w.package, w.bounds);
+}
 ```
 
 Live video with a person on site to approve it is `screen-recorder`
@@ -34,6 +48,10 @@ on, needs nobody.
 | `tap(x, y)` / `long_press(x, y, ms)` / `swipe(from, to, ms)` | `dispatchGesture` | 24 |
 | `global_action(a)` | `performGlobalAction` (`LockScreen`: 28) | 24 |
 | `set_focused_text(text)` | `ACTION_SET_TEXT` on the input-focused node | 24 |
+| `find(&query)` / `wait_for(&query, timeout)` | a walk of every interactive window's node tree | 24 |
+| `click(&node)` | `ACTION_CLICK`, else a tap at the centre of its bounds | 24 |
+| `windows()` | `getWindows` (picture-in-picture: 26, display: 30) | 24 |
+| `on_window_change(f)` | `TYPE_WINDOWS_CHANGED` / `TYPE_WINDOW_STATE_CHANGED` (what changed: 28) | 24 |
 
 Off Android every call is `Error::Unsupported` and `is_enabled()` is
 `false`. Every call is `Error::NotEnabled` until the service is switched on.
@@ -58,6 +76,27 @@ Off Android every call is `Error::Unsupported` and `is_enabled()` is
 - **`global_action`** reports whether Android accepted the action, not
   whether it happened: in lock task mode Home is blocked silently and the
   call still succeeds.
+- **Finding elements.** A `Query` matches on any of view id, text,
+  content description, package and class; every criterion set must hold.
+  Text and description compare ignoring case, exactly or as a substring.
+  A view id without a `:` (`"button1"`) matches that id in any package, a
+  class without a `.` (`"Button"`) its simple name. The search covers every
+  interactive window (the app in front, a system dialog, the status bar,
+  the keyboard) and runs on a background thread on the device: each
+  element is a call into the app that draws it. `wait_for` searches again
+  every 250 ms until something matches or the timeout passes
+  (`Timeout`). Only elements an app reports to accessibility are found.
+- **Clicking.** `click` asks Android to click the element itself, which
+  works whatever is drawn over it. An element that takes no click (a label
+  inside a clickable row) is tapped at its centre instead, read again at
+  the time of the click. An element that has left the screen is
+  `StaleNode`; so is one from more than the last 512 found, so find again.
+- **Windows** are listed top of the stack first with their kind
+  (application, system, keyboard, split-screen divider, …), layer,
+  bounds, package, title and focus. `on_window_change` reports windows
+  appearing, going away, moving or changing focus, and activities, dialogs
+  or menus opening; Android delivers the last of a burst at most every
+  100 ms.
 
 ## Switching the service on
 
@@ -88,8 +127,8 @@ Through `[package.metadata.idealyst.android]` in this crate's
 `Cargo.toml`, every app that depends on it gets the
 `io.idealyst.accessibilityservice.RustAccessibilityService` `<service>`,
 its configuration (`res/xml/accessibility_service.xml`: screenshots,
-gestures, window content, interactive windows) and two strings Settings
-shows. The service is inert until switched on. The app replaces the
+gestures, window content, interactive windows, view ids, and the window
+events) and two strings Settings shows. The service is inert until switched on. The app replaces the
 strings:
 
 ```toml
@@ -120,8 +159,28 @@ Verified on an Android 14 (API 34) tablet emulator with
 - A Chrome incognito tab is `SecureWindow`; with it closed, screenshots
   succeed again.
 - Every call is `NotEnabled` once the service is switched off.
+- `find` / `wait_for` / `click` / `windows` / `on_window_change`
+  (API 34 tablet emulator, 2026-11-13): SystemUI's own "Start
+  Recording?" dialog (`ScreenRecordDialog`, opened from the Screen record
+  tile) lists every element with its view id
+  (`com.android.systemui:id/button_start`). `wait_for(id = "button_start")`
+  finds it and `click` starts the recording, every time across repeated
+  runs. A `Stop` button in the notification shade is clicked the same
+  way. A label that takes no click (a Settings row's `android:id/title`)
+  is tapped at its centre and opens its page. A node from a closed shade
+  is `StaleNode`. A 1.5 s `wait_for` with no match is `Timeout` after
+  1.6 s, and a zero timeout answers at once. `windows()` lists the
+  taskbar, status bar and app with kind, layer, bounds, package and
+  title. Events report windows added, removed, moved and refocused, and
+  each activity or dialog opening with its package and class.
 
 Not verified yet:
+
+- Android's MediaProjection prompt for another app ("Start recording or
+  casting with …?"). No Android app in this repo requests MediaProjection,
+  so the check above used SystemUI's own screen-record dialog. On a
+  device, `find(Query::new().package("com.android.systemui"))` while the
+  prompt is up shows its buttons and their ids.
 
 - The target CrewForge tablet (Lenovo TB336FU, Android 16) under
   device-owner lock task. The kiosk's lock blocked launching the test app

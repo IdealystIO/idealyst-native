@@ -5,12 +5,16 @@
 //! someone switches it on in Settings > Accessibility, the app can take
 //! screenshots of whatever is on screen (another app included), and tap,
 //! long-press, swipe, press system keys and type into the focused field
-//! anywhere on it. It is built for remote support of unattended devices: an
+//! anywhere on it. It can also find an element on screen by its id, text,
+//! package or class and press it, list the windows on screen, and hear when
+//! they change. It is built for remote support of unattended devices: an
 //! MDM agent streaming a kiosk tablet's screen to an admin console and
-//! playing the admin's clicks back as taps.
+//! playing the admin's clicks back as taps, and pressing a system prompt's
+//! button when nobody is at the tablet to.
 //!
 //! ```ignore
-//! use accessibility_service::{GlobalAction, ImageFormat};
+//! use std::time::Duration;
+//! use accessibility_service::{GlobalAction, ImageFormat, Query};
 //!
 //! if !accessibility_service::is_enabled() {
 //!     accessibility_service::open_settings()?; // one-time switch-on
@@ -22,6 +26,11 @@
 //! accessibility_service::tap(812.0, 440.0).await?;
 //! accessibility_service::swipe((1200.0, 900.0), (1200.0, 300.0), 300).await?;
 //! accessibility_service::global_action(GlobalAction::Back)?;
+//!
+//! // Press a button by what it is, in any app or system dialog:
+//! let q = Query::new().package("com.android.systemui").view_id("android:id/button1");
+//! let found = accessibility_service::wait_for(&q, Duration::from_secs(5)).await?;
+//! accessibility_service::click(&found[0]).await?;
 //! ```
 //!
 //! # Coordinates
@@ -30,7 +39,8 @@
 //! rotation, and gestures take points in that same space: a point on the
 //! screenshot is the point to tap. [`Screenshot::rotation`] says how the
 //! display is turned from its natural orientation, for a viewer that wants
-//! to know.
+//! to know. [`Node::bounds`] and [`WindowInfo::bounds`] are in the same
+//! space.
 //!
 //! # Switching the service on
 //!
@@ -56,6 +66,9 @@
 //! needs (named per function). [`screenshot`] says when to retry rather
 //! than failing silently ([`Error::TooSoon`]), and on API 34+ refuses a
 //! frame whose active window is secure with [`Error::SecureWindow`].
+//! [`click`] on an element that has left the screen is
+//! [`Error::StaleNode`], and [`wait_for`] that runs out of time is
+//! [`Error::Timeout`].
 //!
 //! # Manifest
 //!
@@ -80,10 +93,18 @@ use std::pin::Pin;
 #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
 mod android;
 mod enabled;
+mod find;
+mod listeners;
 mod policy;
 mod reply;
+mod windows;
 
 pub use enabled::{on_enabled_change, EnabledSubscription};
+pub use find::{click, find, wait_for, Bounds, Node, Query, TextMatch, NODE_HANDLES, WAIT_POLL};
+pub use windows::{
+    on_window_change, windows, WindowChange, WindowEvent, WindowEventKind, WindowInfo, WindowKind,
+    WindowSubscription,
+};
 
 /// Compile-checked usage recipes (docs / MCP catalog). Present only under the
 /// `catalog` feature.
@@ -119,6 +140,13 @@ pub enum Error {
     /// [`set_focused_text`]: no input field has focus.
     #[error("no input field has focus")]
     NoFocusedInput,
+    /// [`click`]: the element is no longer on screen, or was found too long
+    /// ago ([`NODE_HANDLES`]). Find it again.
+    #[error("the element is no longer on screen; find it again")]
+    StaleNode,
+    /// [`wait_for`]: nothing matched before the timeout.
+    #[error("nothing matched before the timeout")]
+    Timeout,
     /// An argument the platform cannot take: a point off the screen, a
     /// duration outside 1 ms – 60 s, a JPEG quality above 100.
     #[error("invalid argument: {0}")]
@@ -317,6 +345,22 @@ pub fn global_action(action: GlobalAction) -> Result<()> {
 /// [`Error::NoFocusedInput`] when no field has focus.
 pub fn set_focused_text(text: &str) -> Result<()> {
     sync_call("set_focused_text", serde_json::json!({ "text": text })).map(drop)
+}
+
+/// Tell the platform half to start or stop reporting `what` (`"enabled"`,
+/// `"windows"`): called when a listener list goes from or to empty.
+fn platform_listening(what: &str, on: bool) {
+    #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
+    {
+        // A failure here (no JVM context yet) means no change is reported;
+        // the next first registration retries.
+        let args = serde_json::json!({ "what": what, "on": on });
+        if let Err(e) = android::call("listen", &args) {
+            log::warn!("accessibility_service: listen {what} {on} failed: {e}");
+        }
+    }
+    #[cfg(not(all(not(target_arch = "wasm32"), target_os = "android")))]
+    let _ = (what, on);
 }
 
 fn sync_call(method: &str, args: serde_json::Value) -> Result<serde_json::Value> {

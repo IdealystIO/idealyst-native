@@ -24,6 +24,10 @@ fn every_call_is_unsupported_off_android() {
     unsupported(pollster::block_on(tap(10.0, 10.0)));
     unsupported(pollster::block_on(long_press(10.0, 10.0, 600)));
     unsupported(pollster::block_on(swipe((10.0, 10.0), (10.0, 400.0), 300)));
+    let q = Query::new().text("Start now");
+    unsupported(pollster::block_on(find(&q)));
+    unsupported(pollster::block_on(wait_for(&q, std::time::Duration::from_secs(1))));
+    unsupported(pollster::block_on(windows()));
 }
 
 #[test]
@@ -42,5 +46,11 @@ fn bad_arguments_are_rejected_before_the_platform_on_every_target() {
 #[test]
 fn an_enabled_listener_is_kept_and_never_called_off_android() {
     let sub = on_enabled_change(|_| panic!("no platform reports changes here"));
+    drop(sub);
+}
+
+#[test]
+fn a_window_listener_is_kept_and_never_called_off_android() {
+    let sub = on_window_change(|_| panic!("no platform reports changes here"));
     drop(sub);
 }
