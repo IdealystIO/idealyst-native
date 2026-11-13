@@ -27,8 +27,8 @@ use std::rc::Rc;
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
-use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker, NSObject};
-use objc2_ui_kit::{UILabel, UITextField, UITextView, UIView};
+use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker, NSObject, NSString};
+use objc2_ui_kit::{UIColor, UILabel, UITextField, UITextView, UIView};
 
 /// Per-side text inset, in points. Layout matches `UIEdgeInsets`
 /// (top, left, bottom, right) so the same struct can be sent over
@@ -173,6 +173,11 @@ pub(crate) struct TextFieldIvars {
     /// robot key lands in. A separate slot from `focus_setter`: a field
     /// can have either without the other.
     focus_handler: RefCell<Option<Rc<dyn Fn(bool)>>>,
+    /// The placeholder text and its ink, kept together: UIKit's plain
+    /// `placeholder` setter drops a colored `attributedPlaceholder`, so a
+    /// text change must rebuild it with the ink (`apply_placeholder`).
+    placeholder: RefCell<Option<String>>,
+    placeholder_color: RefCell<Option<Retained<UIColor>>>,
 }
 
 declare_class!(
@@ -284,8 +289,42 @@ impl IdealystTextField {
             insets: Cell::new(TextInsets::default()),
             focus_setter: RefCell::new(None),
             focus_handler: RefCell::new(None),
+            placeholder: RefCell::new(None),
+            placeholder_color: RefCell::new(None),
         });
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// Set the placeholder text (`None` clears), keeping its ink.
+    pub(crate) fn set_placeholder_text(&self, text: Option<&str>) {
+        *self.ivars().placeholder.borrow_mut() = text.map(str::to_owned);
+        self.apply_placeholder();
+    }
+
+    /// Set the placeholder ink (`None`: UIKit's own), keeping its text.
+    pub(crate) fn set_placeholder_color(&self, color: Option<Retained<UIColor>>) {
+        *self.ivars().placeholder_color.borrow_mut() = color;
+        self.apply_placeholder();
+    }
+
+    /// The placeholder as UIKit takes it: plain with no ink (UIKit's own
+    /// gray), else attributed with only the foreground color set — the
+    /// field's font still applies to the attributes it leaves out.
+    fn apply_placeholder(&self) {
+        let text = self.ivars().placeholder.borrow().clone();
+        let color = self.ivars().placeholder_color.borrow().clone();
+        // Clear the attributed one first: the plain setter keeps the ink of
+        // an attributed placeholder already set, so `None` would not return
+        // to UIKit's own.
+        let _: () = unsafe { msg_send![self, setAttributedPlaceholder: std::ptr::null::<NSObject>()] };
+        match (text, color) {
+            (None, _) => unsafe { self.setPlaceholder(None) },
+            (Some(t), None) => unsafe { self.setPlaceholder(Some(&NSString::from_str(&t))) },
+            (Some(t), Some(c)) => unsafe {
+                let attributed = colored_attributed_string(&t, &c);
+                let _: () = msg_send![self, setAttributedPlaceholder: &*attributed];
+            },
+        }
     }
 
     /// Inset the text rect HORIZONTALLY only. UITextField already centers a
@@ -329,6 +368,28 @@ impl IdealystTextField {
     }
 }
 
+/// `text` as an `NSAttributedString` whose only attribute is its
+/// foreground color (`NSForegroundColorAttributeName`, the string
+/// `"NSColor"`).
+fn colored_attributed_string(text: &str, color: &UIColor) -> Retained<NSObject> {
+    unsafe {
+        let key = NSString::from_str("NSColor");
+        let attrs: Retained<NSObject> =
+            msg_send_id![objc2::class!(NSDictionary), dictionaryWithObject: color, forKey: &*key];
+        let alloc: *mut NSObject = msg_send![objc2::class!(NSAttributedString), alloc];
+        let ns = NSString::from_str(text);
+        let inited: *mut NSObject = msg_send![alloc, initWithString: &*ns, attributes: &*attrs];
+        Retained::from_raw(inited).expect("NSAttributedString init returned nil")
+    }
+}
+
+/// `field` as the `IdealystTextField` every `text_input` is, if it is one.
+pub(crate) fn as_idealyst_text_field(field: &UITextField) -> Option<&IdealystTextField> {
+    let is_ours: bool = unsafe { msg_send![field, isKindOfClass: IdealystTextField::class()] };
+    // SAFETY: just confirmed the dynamic class is `IdealystTextField`.
+    is_ours.then(|| unsafe { &*(field as *const UITextField as *const IdealystTextField) })
+}
+
 /// Install a focus setter on `view` if it is an `IdealystTextField`; no-op
 /// otherwise. The iOS analogue of macOS's `set_text_field_focus_setter`.
 pub(crate) fn set_text_field_focus_setter(view: &UIView, setter: Rc<dyn Fn(bool)>) {
@@ -370,10 +431,25 @@ declare_class!(
     }
 
     impl DeclaredClass for IdealystTextView {
-        type Ivars = ();
+        type Ivars = TextViewIvars;
     }
 
     unsafe impl IdealystTextView {
+        /// Seat the placeholder label over the first line, in the view's
+        /// own font, shown only while the view is empty.
+        #[method(layoutSubviews)]
+        fn layout_subviews(&self) {
+            let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+            self.layout_placeholder();
+        }
+
+        /// A font set by style moves the placeholder with the text.
+        #[method(setFont:)]
+        fn set_font(&self, font: *mut NSObject) {
+            let _: () = unsafe { msg_send![super(self), setFont: font] };
+            let _: () = unsafe { msg_send![self, setNeedsLayout] };
+        }
+
         #[method(didMoveToWindow)]
         fn did_move_to_window(&self) {
             let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
@@ -406,13 +482,100 @@ declare_class!(
     }
 );
 
+/// UITextView has no placeholder, so the text area draws its own: a label
+/// over the first line, created when a placeholder is set.
+pub(crate) struct TextViewIvars {
+    placeholder: RefCell<Option<Retained<UILabel>>>,
+}
+
 impl IdealystTextView {
     /// A new text view, typed as the `UITextView` the backend speaks.
     pub(crate) fn new(mtm: MainThreadMarker) -> Retained<UITextView> {
-        let this = mtm.alloc::<Self>().set_ivars(());
+        let this = mtm.alloc::<Self>().set_ivars(TextViewIvars { placeholder: RefCell::new(None) });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), init] };
         Retained::into_super(this)
     }
+
+    /// The placeholder label, made on first use: no taps (they reach the
+    /// text view), wrapping, in UIKit's own placeholder gray until an ink
+    /// is set.
+    fn placeholder_label(&self) -> Retained<UILabel> {
+        if let Some(l) = self.ivars().placeholder.borrow().as_ref() {
+            return l.clone();
+        }
+        let mtm = MainThreadMarker::from(self);
+        let label: Retained<UILabel> = unsafe { msg_send_id![mtm.alloc::<UILabel>(), init] };
+        unsafe {
+            let _: () = msg_send![&label, setUserInteractionEnabled: false];
+            let _: () = msg_send![&label, setNumberOfLines: 0isize];
+            let gray: Retained<UIColor> = msg_send_id![objc2::class!(UIColor), placeholderTextColor];
+            let _: () = msg_send![&label, setTextColor: &*gray];
+            let _: () = msg_send![self, addSubview: &*label];
+        }
+        *self.ivars().placeholder.borrow_mut() = Some(label.clone());
+        label
+    }
+
+    fn layout_placeholder(&self) {
+        let Some(label) = self.ivars().placeholder.borrow().clone() else { return };
+        unsafe {
+            let has_text: bool = msg_send![self, hasText];
+            let _: () = msg_send![&label, setHidden: has_text];
+            let font: *mut NSObject = msg_send![self, font];
+            if !font.is_null() {
+                let _: () = msg_send![&label, setFont: font];
+            }
+            // Where UIKit lays the first glyph: the container inset plus the
+            // container's line-fragment padding.
+            let inset: TextInsets = msg_send![self, textContainerInset];
+            let container: *mut NSObject = msg_send![self, textContainer];
+            let pad: CGFloat = if container.is_null() { 0.0 } else { msg_send![container, lineFragmentPadding] };
+            let bounds: CGRect = msg_send![self, bounds];
+            let width = (bounds.size.width - inset.left - inset.right - 2.0 * pad).max(0.0);
+            let fit: CGSize = msg_send![&label, sizeThatFits: CGSize { width, height: CGFloat::MAX }];
+            let frame = CGRect {
+                origin: CGPoint { x: inset.left + pad, y: inset.top },
+                size: CGSize { width, height: fit.height },
+            };
+            let _: () = msg_send![&label, setFrame: frame];
+        }
+    }
+}
+
+/// Set a text area's placeholder text (`None` removes it).
+pub(crate) fn set_text_view_placeholder(view: &UITextView, text: Option<&str>) {
+    let Some(tv) = as_idealyst_text_view(view) else { return };
+    match text {
+        Some(t) => unsafe {
+            let label = tv.placeholder_label();
+            label.setText(Some(&NSString::from_str(t)));
+        },
+        None => {
+            if let Some(label) = tv.ivars().placeholder.borrow_mut().take() {
+                unsafe { label.removeFromSuperview() };
+            }
+        }
+    }
+    let _: () = unsafe { msg_send![view, setNeedsLayout] };
+}
+
+/// Set a text area's placeholder ink (`None`: UIKit's placeholder gray).
+pub(crate) fn set_text_view_placeholder_color(view: &UITextView, color: Option<Retained<UIColor>>) {
+    let Some(tv) = as_idealyst_text_view(view) else { return };
+    let label = tv.placeholder_label();
+    let color = color.unwrap_or_else(|| unsafe { msg_send_id![objc2::class!(UIColor), placeholderTextColor] });
+    unsafe { label.setTextColor(Some(&color)) };
+}
+
+/// Re-show or hide a text area's placeholder after its text changed.
+pub(crate) fn text_view_text_changed(view: &UITextView) {
+    let _: () = unsafe { msg_send![view, setNeedsLayout] };
+}
+
+fn as_idealyst_text_view(view: &UITextView) -> Option<&IdealystTextView> {
+    let is_ours: bool = unsafe { msg_send![view, isKindOfClass: IdealystTextView::class()] };
+    // SAFETY: just confirmed the dynamic class is `IdealystTextView`.
+    is_ours.then(|| unsafe { &*(view as *const UITextView as *const IdealystTextView) })
 }
 
 pub(crate) struct SelectableTextIvars {

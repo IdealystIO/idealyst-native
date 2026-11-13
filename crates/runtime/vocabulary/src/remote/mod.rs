@@ -96,7 +96,9 @@ pub mod wasm;
 ///   [`runtime_shared::PressActivation`]).
 /// - 14: [`Node::VirtualGrid`] carries `frozen` (a
 ///   [`runtime_shared::primitives::virtual_grid::FrozenPanes`]).
-pub const CODEC_VERSION: u32 = 14;
+/// - 15: [`Node::TextInput`] and [`Node::TextArea`] carry
+///   `placeholder_color`.
+pub const CODEC_VERSION: u32 = 15;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.
@@ -244,6 +246,8 @@ pub enum Node {
         secure: Val<bool>,
         /// The soft-keyboard hint (CODEC_VERSION 5).
         keyboard: Val<runtime_shared::primitives::text_input::KeyboardKind>,
+        /// The placeholder's ink (CODEC_VERSION 15).
+        placeholder_color: Val<Option<runtime_shared::Color>>,
         /// `Some` when the author bound `disabled` (CODEC_VERSION 4).
         disabled: Option<Val<bool>>,
     },
@@ -253,6 +257,8 @@ pub enum Node {
         on_change: Cb,
         on_key_down: Option<Cb>,
         placeholder: Option<String>,
+        /// The placeholder's ink (CODEC_VERSION 15).
+        placeholder_color: Val<Option<runtime_shared::Color>>,
         wrap: bool,
         min_rows: Option<u32>,
         max_rows: Option<u32>,

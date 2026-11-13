@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::primitives;
+use runtime_shared::Color;
 
 use super::noop;
 use super::ExternalOps;
@@ -65,6 +66,12 @@ pub trait TextInputOps: ExternalOps {
     #[allow(unused_variables)]
     fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {}
 
+    /// Set the placeholder's ink (`None`: the toolkit's own). Called once
+    /// after `create_text_input` for a static `Some`, and per change of a
+    /// live source. Default: no-op, for a backend that draws no placeholder.
+    #[allow(unused_variables)]
+    fn update_text_input_placeholder_color(&mut self, node: &Self::Node, color: Option<&Color>) {}
+
     /// Create a multi-line text editor (row-bounded intrinsic growth).
     #[allow(unused_variables)]
     fn create_text_area(
@@ -84,6 +91,11 @@ pub trait TextInputOps: ExternalOps {
     /// Controlled-value write-back for the text area.
     #[allow(unused_variables)]
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {}
+
+    /// The text area's placeholder ink — same contract as
+    /// [`update_text_input_placeholder_color`](Self::update_text_input_placeholder_color).
+    #[allow(unused_variables)]
+    fn update_text_area_placeholder_color(&mut self, node: &Self::Node, color: Option<&Color>) {}
 
     /// Imperative-ref handle for a text input. Default: no-op.
     #[allow(unused_variables)]

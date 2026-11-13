@@ -1319,6 +1319,8 @@ declare_class!(
         /// rides this method.
         #[method(textViewDidChange:)]
         fn text_view_did_change(&self, text_view: &UITextView) {
+            // Typing the first character hides the drawn placeholder.
+            crate::imp::text_inset::text_view_text_changed(text_view);
             let ivars = self.ivars();
             if let Some(cb) = ivars.on_change.borrow().as_ref() {
                 let text: Option<Retained<NSString>> =

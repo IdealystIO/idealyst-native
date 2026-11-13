@@ -600,6 +600,34 @@ hydrates without a change. Over a remote bundle `keyboard` crosses as a
 field of the node (`CODEC_VERSION` 5), and under runtime-server dev as
 `Command::UpdateTextInputKeyboard` (`PROTOCOL_VERSION` 24).
 
+**`placeholder_color`** sets the placeholder's ink, on `text_input` and
+`text_area` alike: a `Color`, or a live source (`rx!`, a theme token read
+in a closure) that re-applies in place on a theme swap. Left unset, each
+toolkit draws its own placeholder color, and a native toolkit's follows
+the OS appearance rather than the app's theme, so a component library
+sets it from its theme (idea-ui's editors use `color.text_muted`).
+
+```rust
+ui! {
+    text_input(value = name, on_change = move |s| name.set(s),
+               placeholder = "Name".to_string(),
+               placeholder_color = Some(Color("#64748b".into())))
+}
+```
+
+| Platform | Mechanism |
+|---|---|
+| iOS | `UITextField.attributedPlaceholder` (foreground color only, so the field's font still applies); a `text_area` draws its own placeholder label, since `UITextView` has none |
+| Android | `EditText.setHintTextColor`; unset restores the theme's hint colors |
+| macOS | the field cell's `placeholderAttributedString`, built at draw time in the cell's current font; the `text_area`'s drawn placeholder |
+| Web | a `--idealyst-placeholder-color` custom property read by one shared `::placeholder` rule (at full opacity: Firefox dims placeholders) |
+
+Linux, Windows and the drawn backends (wgpu, terminal, CPU) keep their
+own placeholder color. Over a remote bundle it crosses as a field of the
+node (`CODEC_VERSION` 15), and under runtime-server dev as
+`Command::UpdateTextInputPlaceholderColor` /
+`UpdateTextAreaPlaceholderColor` (`PROTOCOL_VERSION` 27).
+
 **Why controlled?** The rest of the framework's reactive shape
 assumes a single source of truth per piece of state. Uncontrolled
 inputs would create a parallel universe where the input's "real"

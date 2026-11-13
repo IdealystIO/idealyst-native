@@ -1463,7 +1463,7 @@ fn natural_object(env: &mut JNIEnv, view: &JObject, getter: &str, sig: &str) -> 
         .and_then(|o| env.new_global_ref(o).ok())
 }
 
-fn clear_pending_exception(env: &mut JNIEnv) {
+pub(crate) fn clear_pending_exception(env: &mut JNIEnv) {
     if env.exception_check().unwrap_or(false) {
         let _ = env.exception_clear();
     }

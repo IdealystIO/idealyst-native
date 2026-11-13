@@ -5875,6 +5875,34 @@ fn regression_text_input_keyboard_sets_inputmode_and_composes_with_secure() {
     }
 }
 
+/// Regression: an editor's placeholder had no ink of its own. The ink
+/// rides a custom property plus a marker attribute that one shared
+/// `::placeholder` rule reads; `None` removes both so the browser's own
+/// placeholder returns. Same for `<textarea>`.
+#[wasm_bindgen_test]
+fn regression_placeholder_color_reaches_the_placeholder_rule() {
+    use runtime_shared::Color;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let input = backend.create_text_input_impl("", Some("Name"), Rc::new(|_: String| {}), None, None, false, &Default::default());
+    let area = backend.create_text_area_impl("", Some("Notes"), true, None, None, Rc::new(|_: String| {}), None, &Default::default());
+    for node in [&input, &area] {
+        let el: web_glue::dom::HtmlElement = node.clone().unchecked_into();
+        backend.update_placeholder_color_impl(node, Some(&Color("#123456".into())));
+        assert!(el.has_attribute("data-idealyst-placeholder-color"));
+        assert_eq!(el.style().get_property_value("--idealyst-placeholder-color").unwrap(), "#123456");
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let rule = doc.get_element_by_id("idealyst-placeholder-color").expect("the shared rule is installed");
+        assert!(rule.text_content().unwrap_or_default().contains("::placeholder"));
+
+        backend.update_placeholder_color_impl(node, None);
+        assert!(!el.has_attribute("data-idealyst-placeholder-color"));
+        assert_eq!(el.style().get_property_value("--idealyst-placeholder-color").unwrap(), "");
+    }
+}
+
 // ---- scroll_view: two axes ----------------------------------------------------
 
 /// A `ScrollAxis::Both` scroller pans on both axes, `on_scroll` reports

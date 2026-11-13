@@ -1642,6 +1642,9 @@ pub(crate) struct TextViewIvars {
     /// unlike an overlaid `NSTextField` (whose cell adds its own inset +
     /// centering). NSTextView has no native `placeholderString`.
     placeholder: StdRefCell<Option<Retained<NSString>>>,
+    /// The placeholder's ink (`TextInputOps::update_text_area_placeholder_color`);
+    /// `None` draws in AppKit's `placeholderTextColor`.
+    placeholder_color: StdRefCell<Option<Retained<NSColor>>>,
     /// `StateBits::FOCUSED` driver, installed by `attach_states`. An NSTextView
     /// is its OWN editor (no field-editor cell), so we fire this from its
     /// first-responder transitions — the macOS analogue of the single-line
@@ -1751,6 +1754,7 @@ impl IdealystTextView {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(TextViewIvars {
             placeholder: StdRefCell::new(None),
+            placeholder_color: StdRefCell::new(None),
             focus_setter: StdRefCell::new(None),
         });
         unsafe { msg_send_id![super(this), init] }
@@ -1769,6 +1773,12 @@ impl IdealystTextView {
             Some(t) if !t.is_empty() => Some(NSString::from_str(t)),
             _ => None,
         };
+        let _: () = unsafe { msg_send![self, setNeedsDisplay: true] };
+    }
+
+    /// Set the placeholder's ink (`None`: AppKit's placeholder color).
+    pub(crate) fn set_placeholder_color(&self, color: Option<Retained<NSColor>>) {
+        *self.ivars().placeholder_color.borrow_mut() = color;
         let _: () = unsafe { msg_send![self, setNeedsDisplay: true] };
     }
 
@@ -1803,8 +1813,10 @@ impl IdealystTextView {
             let point = CGPoint { x: inset.width + lfp, y: inset.height };
             // Muted system placeholder color; font = the (restyled) input font,
             // falling back to the system font so the attributes are never nil.
-            let color: Retained<NSColor> =
-                msg_send_id![objc2::class!(NSColor), placeholderTextColor];
+            let color: Retained<NSColor> = match self.ivars().placeholder_color.borrow().clone() {
+                Some(c) => c,
+                None => msg_send_id![objc2::class!(NSColor), placeholderTextColor],
+            };
             let mut font: *mut AnyObject = msg_send![self, font];
             if font.is_null() {
                 font = msg_send![objc2::class!(NSFont), systemFontOfSize: 13.0_f64];
@@ -1841,6 +1853,14 @@ impl IdealystTextView {
 pub(crate) fn sync_text_area_placeholder(view: &NSView) {
     if let Some(tv) = as_idealyst_text_view(view) {
         tv.sync_placeholder();
+    }
+}
+
+/// Set a `text_area`'s placeholder ink if `view` is an [`IdealystTextView`];
+/// no-op for any other view.
+pub(crate) fn set_text_area_placeholder_color(view: &NSView, color: Option<Retained<NSColor>>) {
+    if let Some(tv) = as_idealyst_text_view(view) {
+        tv.set_placeholder_color(color);
     }
 }
 
@@ -1898,6 +1918,12 @@ pub(crate) struct CellIvars {
     /// `NSTextAlignment` waiting for the current edit to end. Set by
     /// [`set_alignment_after_edit`]; unused by `IdealystLabelCell`.
     alignment_after_edit: StdCell<Option<isize>>,
+    /// The placeholder's ink, for an editable field's cell. Read at draw
+    /// time by the cell's `placeholderAttributedString`, which pairs it with
+    /// the CURRENT placeholder text and font: an attributed placeholder set
+    /// once would keep a stale font after a restyle (AppKit does not apply
+    /// the cell's font to one). Unused by `IdealystLabelCell`.
+    placeholder_color: RefCell<Option<Retained<NSColor>>>,
 }
 
 impl Default for CellIvars {
@@ -1908,6 +1934,7 @@ impl Default for CellIvars {
             focus_setter: RefCell::new(None),
             blur_handler: RefCell::new(None),
             author_focus: RefCell::new(None),
+            placeholder_color: RefCell::new(None),
         }
     }
 }
@@ -2168,6 +2195,18 @@ declare_class!(
     }
 
     unsafe impl VCenterTextFieldCell {
+        /// With a placeholder ink set, the placeholder as AppKit draws it:
+        /// the current text in the current font and that ink. Without one,
+        /// AppKit's own.
+        #[method_id(placeholderAttributedString)]
+        fn placeholder_attributed_string(&self) -> Option<Retained<AnyObject>> {
+            let color = self.ivars().placeholder_color.borrow().clone();
+            match color {
+                Some(c) => colored_placeholder(self, &c),
+                None => unsafe { msg_send_id![super(self), placeholderAttributedString] },
+            }
+        }
+
         #[method(drawingRectForBounds:)]
         fn drawing_rect_for_bounds(&self, bounds: CGRect) -> CGRect {
             let i = self.ivars().insets.get();
@@ -2287,6 +2326,18 @@ declare_class!(
     }
 
     unsafe impl VCenterSecureTextFieldCell {
+        /// With a placeholder ink set, the placeholder as AppKit draws it:
+        /// the current text in the current font and that ink. Without one,
+        /// AppKit's own.
+        #[method_id(placeholderAttributedString)]
+        fn placeholder_attributed_string(&self) -> Option<Retained<AnyObject>> {
+            let color = self.ivars().placeholder_color.borrow().clone();
+            match color {
+                Some(c) => colored_placeholder(self, &c),
+                None => unsafe { msg_send_id![super(self), placeholderAttributedString] },
+            }
+        }
+
         #[method(drawingRectForBounds:)]
         fn drawing_rect_for_bounds(&self, bounds: CGRect) -> CGRect {
             let i = self.ivars().insets.get();
@@ -2462,6 +2513,46 @@ fn framework_cell_ivars(field: &NSView) -> Option<&CellIvars> {
     }
 }
 
+/// `cell`'s placeholder string in its font and `color`; `None` when it has
+/// no placeholder.
+fn colored_placeholder(cell: &NSTextFieldCell, color: &NSColor) -> Option<Retained<AnyObject>> {
+    unsafe {
+        let text: *mut NSString = msg_send![cell, placeholderString];
+        if text.is_null() {
+            return None;
+        }
+        let mut font: *mut AnyObject = msg_send![cell, font];
+        if font.is_null() {
+            font = msg_send![objc2::class!(NSFont), systemFontOfSize: 13.0_f64];
+        }
+        let fg_key = NSString::from_str("NSColor");
+        let font_key = NSString::from_str("NSFont");
+        let objs: [*const AnyObject; 2] = [color as *const NSColor as *const AnyObject, font];
+        let keys: [*const AnyObject; 2] = [
+            Retained::as_ptr(&fg_key) as *const AnyObject,
+            Retained::as_ptr(&font_key) as *const AnyObject,
+        ];
+        let dict: *mut AnyObject = msg_send![
+            objc2::class!(NSDictionary),
+            dictionaryWithObjects: objs.as_ptr(),
+            forKeys: keys.as_ptr(),
+            count: 2usize
+        ];
+        let alloc: *mut AnyObject = msg_send![objc2::class!(NSAttributedString), alloc];
+        let inited: *mut AnyObject = msg_send![alloc, initWithString: text, attributes: dict];
+        Retained::from_raw(inited)
+    }
+}
+
+/// Set a text input's placeholder ink (`None`: AppKit's own) on its
+/// framework cell, and repaint. No-op for any other view.
+pub(crate) fn set_text_field_placeholder_color(field: &NSView, color: Option<Retained<NSColor>>) {
+    if let Some(iv) = framework_cell_ivars(field) {
+        *iv.placeholder_color.borrow_mut() = color;
+        let _: () = unsafe { msg_send![field, setNeedsDisplay: true] };
+    }
+}
+
 /// Push the author's `padding_*` into a text input's framework cell (plain OR
 /// secure) so its text is inset from the border (AppKit otherwise paints
 /// flush). The macOS analogue of `set_label_insets` for editable fields; no-op
@@ -2605,14 +2696,15 @@ pub(crate) fn set_text_field_secure(mtm: MainThreadMarker, field: &NSView, secur
         // live on the cell's ivars — the swap below blanks them, so carry them
         // across. Clone the Rc/handler out so the restore writes them onto the
         // NEW cell.
-        let (carry_focus, carry_blur, carry_author, carry_insets) = match framework_cell_ivars(field) {
+        let (carry_focus, carry_blur, carry_author, carry_insets, carry_ph_color) = match framework_cell_ivars(field) {
             Some(iv) => (
                 iv.focus_setter.borrow().clone(),
                 iv.blur_handler.borrow().clone(),
                 iv.author_focus.borrow().clone(),
                 Some(iv.insets.get()),
+                iv.placeholder_color.borrow().clone(),
             ),
-            None => (None, None, None, None),
+            None => (None, None, None, None, None),
         };
 
         // Is the field currently being edited? The window's first responder
@@ -2656,6 +2748,9 @@ pub(crate) fn set_text_field_secure(mtm: MainThreadMarker, field: &NSView, secur
                 }
                 if let Some(insets) = carry_insets {
                     iv.insets.set(insets);
+                }
+                if carry_ph_color.is_some() {
+                    *iv.placeholder_color.borrow_mut() = carry_ph_color;
                 }
             }
         }

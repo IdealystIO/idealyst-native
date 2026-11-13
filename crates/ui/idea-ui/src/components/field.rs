@@ -885,6 +885,7 @@ pub fn Field(props: &FieldProps) -> Element {
         .secure(secure)
         .keyboard(props.keyboard.clone())
         .placeholder_reactive(props.placeholder.clone())
+        .placeholder_color(crate::components::placeholder_ink())
         .autofocus(props.autofocus);
     // Accessible name: the explicit override, else the visible label. The
     // label is a sibling of the input, so the input can't derive it.
@@ -1016,6 +1017,18 @@ recipe!(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: the editor left its placeholder in the native toolkit's
+    /// own color, which follows the OS appearance, not the theme — dark gray
+    /// on a dark theme on iOS. It sets the theme's muted text as the ink.
+    #[test]
+    fn regression_field_sets_the_theme_placeholder_ink() {
+        idea_theme::testing::with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let inks = crate::test_support::editor_placeholder_inks(Field(&FieldProps::default()));
+            assert_eq!(inks, vec![Some(idea_theme::tokens().color.text_muted().resolve())]);
+        });
+    }
     use crate::test_support::{classify, P, TStyle};
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::install_idea_theme;

@@ -1053,6 +1053,14 @@ impl caps::TextInputOps for MacosBackend {
         MacosBackend::update_text_area_value_impl(self, node, value)
     }
 
+    fn update_text_input_placeholder_color(&mut self, node: &Self::Node, color: Option<&runtime_shared::Color>) {
+        MacosBackend::update_text_input_placeholder_color_impl(self, node, color)
+    }
+
+    fn update_text_area_placeholder_color(&mut self, node: &Self::Node, color: Option<&runtime_shared::Color>) {
+        MacosBackend::update_text_area_placeholder_color_impl(self, node, color)
+    }
+
     fn make_text_input_handle(&self, node: &Self::Node) -> primitives::text_input::TextInputHandle {
         MacosBackend::make_text_input_handle_impl(self, node)
     }

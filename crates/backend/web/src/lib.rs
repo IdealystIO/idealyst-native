@@ -2818,6 +2818,11 @@ impl WebBackend {
         primitives::text_input::update_placeholder(node, placeholder)
     }
 
+    /// Both editors: `<input>` and `<textarea>` share the `::placeholder` rule.
+    pub(crate) fn update_placeholder_color_impl(&mut self, node: &Node, color: Option<&runtime_shared::Color>) {
+        primitives::text_input::update_placeholder_color(node, color)
+    }
+
     pub(crate) fn create_text_area_impl(
         &mut self,
         initial_value: &str,

@@ -168,6 +168,10 @@ name = "keyboard_kinds"
 harness = false
 
 [[test]]
+name = "placeholder_color"
+harness = false
+
+[[test]]
 name = "fullscreen_overlay"
 harness = false
 

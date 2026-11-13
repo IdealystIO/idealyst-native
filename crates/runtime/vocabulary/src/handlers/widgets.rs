@@ -614,6 +614,13 @@ where
             b.borrow_mut().update_text_input_placeholder(&n, p.as_deref());
         });
     }
+    {
+        let b = backend.clone();
+        let n = node.clone();
+        bind_placeholder_color(prim.placeholder_color, move |c| {
+            b.borrow_mut().update_text_input_placeholder_color(&n, c);
+        });
+    }
     let mounts_disabled = {
         let gate = disabled_gate.clone();
         bind_disabled(&backend, &node, prim.disabled, disabled_gate, state_setter);
@@ -638,6 +645,17 @@ where
         fill(handle);
     }
     node
+}
+
+/// Route a placeholder ink to the backend: nothing for `Const(None)` (the
+/// toolkit's own ink, what every backend creates with), one call for a
+/// static color, an effect that applies now and per change for a live one.
+fn bind_placeholder_color(value: Value<Option<runtime_shared::Color>>, apply: impl Fn(Option<&runtime_shared::Color>) + 'static) {
+    match value {
+        Value::Const(None) => {}
+        Value::Const(Some(c)) => apply(Some(&c)),
+        live @ Value::Dyn(_) => bind_dyn(live, move |c: &Option<runtime_shared::Color>| apply(c.as_ref())),
+    }
 }
 
 /// Mount a `text_area`. Placeholder/wrap/rows are
@@ -676,6 +694,13 @@ where
         key_down,
         &prim.a11y,
     );
+    {
+        let b = backend.clone();
+        let n = node.clone();
+        bind_placeholder_color(prim.placeholder_color, move |c| {
+            b.borrow_mut().update_text_area_placeholder_color(&n, c);
+        });
+    }
     // `ElementKind::TextInput`: the robot surface doesn't distinguish
     // single- vs multi-line. `type_text` replaces the text as for
     // `text_input`; `focus` / `blur` go through the area's handle. A text

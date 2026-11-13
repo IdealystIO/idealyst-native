@@ -455,6 +455,10 @@ pub struct AndroidBackend {
     /// field harmless — and dropped in `on_node_unstyled`.
     pub(crate) text_input_modes:
         HashMap<usize, (runtime_shared::primitives::text_input::KeyboardKind, bool)>,
+    /// Per-editor theme hint colors (`getHintTextColors`), captured before
+    /// a placeholder ink first replaces them, so `None` can put them back.
+    /// Keyed and dropped like `text_input_modes`.
+    pub(crate) natural_hint_colors: HashMap<usize, GlobalRef>,
     /// View pointer → (`GlobalRef`, Taffy node). Indexed by the same
     /// raw `JObject*` pointer scheme as `anim_state`. Iterated in the
     /// layout pass to apply computed frames.
@@ -1232,6 +1236,7 @@ impl AndroidBackend {
             layout: runtime_layout::LayoutTree::new(),
             keyboard_avoiders: HashMap::new(),
             text_input_modes: HashMap::new(),
+            natural_hint_colors: HashMap::new(),
             view_to_layout: HashMap::new(),
             font_registry: font::FontRegistry::new(),
             sticky_registry: HashMap::new(),
@@ -3305,6 +3310,44 @@ impl AndroidBackend {
         node
     }
 
+    /// A placeholder's ink is the EditText's hint color, for both editors.
+    /// `None` restores the theme's hint colors, captured on first change.
+    pub(crate) fn update_placeholder_color_impl(&mut self, node: &GlobalRef, color: Option<&runtime_shared::Color>) {
+        let key = Self::node_key(node);
+        let packed = color.and_then(|c| backend_android_core::helpers::parse_color(&c.0));
+        with_env(|env| {
+            if !self.natural_hint_colors.contains_key(&key) {
+                if let Ok(list) = env
+                    .call_method(node.as_obj(), "getHintTextColors", "()Landroid/content/res/ColorStateList;", &[])
+                    .and_then(|v| v.l())
+                {
+                    if let Ok(global) = env.new_global_ref(list) {
+                        self.natural_hint_colors.insert(key, global);
+                    }
+                }
+                crate::imp::style::clear_pending_exception(env);
+            }
+            match (color, packed) {
+                (Some(_), Some(argb)) => {
+                    let _ = env.call_method(node.as_obj(), "setHintTextColor", "(I)V", &[JValue::Int(argb)]);
+                }
+                // An unparseable color leaves the ink as it is.
+                (Some(_), None) => {}
+                (None, _) => {
+                    if let Some(natural) = self.natural_hint_colors.get(&key) {
+                        let _ = env.call_method(
+                            node.as_obj(),
+                            "setHintTextColor",
+                            "(Landroid/content/res/ColorStateList;)V",
+                            &[JValue::Object(natural.as_obj())],
+                        );
+                    }
+                }
+            }
+            crate::imp::style::clear_pending_exception(env);
+        });
+    }
+
     pub(crate) fn update_text_area_value_impl(&mut self, node: &GlobalRef, value: &str) {
         primitives::text_input::update_value(node, value);
         // The text changed, so the EditText's measured height changed,
@@ -3874,6 +3917,7 @@ impl AndroidBackend {
         self.image_states.remove(&key);
         self.external_scrollers.remove(&key);
         self.text_input_modes.remove(&key);
+        self.natural_hint_colors.remove(&key);
         self.pending_sticky.remove(&key);
         soft_keyboard::unregister(self, key);
     }
@@ -4494,6 +4538,7 @@ impl AndroidBackend {
         });
         self.pending_sticky.remove(&node_key);
         self.text_input_modes.remove(&node_key);
+        self.natural_hint_colors.remove(&node_key);
         // If this node is a ScrollView outer, drop our held inner
         // GlobalRef so the JVM can GC the inner LinearLayout once
         // the outer is released.

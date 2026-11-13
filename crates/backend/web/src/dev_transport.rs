@@ -443,6 +443,8 @@ fn command_kind(c: &wire::Command) -> &'static str {
         UpdateTextInputSecure { .. } => "UpdateTextInputSecure",
         UpdateTextInputPlaceholder { .. } => "UpdateTextInputPlaceholder",
         UpdateTextInputKeyboard { .. } => "UpdateTextInputKeyboard",
+        UpdateTextInputPlaceholderColor { .. } => "UpdateTextInputPlaceholderColor",
+        UpdateTextAreaPlaceholderColor { .. } => "UpdateTextAreaPlaceholderColor",
         MarkKeyboardAvoiding { .. } => "MarkKeyboardAvoiding",
         UpdateTextAreaValue { .. } => "UpdateTextAreaValue",
         UpdateToggleValue { .. } => "UpdateToggleValue",

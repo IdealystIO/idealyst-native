@@ -134,7 +134,7 @@ pub fn breakpoint_to_wire(b: runtime_shared::Breakpoint) -> wire::WireBreakpoint
     }
 }
 
-fn color_to_wire(c: &Color) -> WireColor {
+pub(crate) fn color_to_wire(c: &Color) -> WireColor {
     WireColor(c.0.clone())
 }
 

@@ -130,6 +130,8 @@ pub enum P {
         secure: bool,
         /// Evaluated current soft-keyboard hint.
         keyboard: runtime_core::KeyboardKind,
+        /// Evaluated current placeholder ink.
+        placeholder_color: Option<Color>,
         /// The mount-time `autofocus` flag.
         autofocus: bool,
         /// The input's accessible name (`a11y.label`).
@@ -139,6 +141,8 @@ pub enum P {
     TextArea {
         min_rows: Option<u32>,
         max_rows: Option<u32>,
+        /// Evaluated current placeholder ink.
+        placeholder_color: Option<Color>,
         /// The mount-time `autofocus` flag.
         autofocus: bool,
         /// The text area's accessible name (`a11y.label`).
@@ -211,6 +215,25 @@ impl P {
 }
 
 pub use imp::classify;
+
+/// The placeholder ink of every editor (`text_input` / `text_area`) in
+/// `el`'s tree, in order.
+pub fn editor_placeholder_inks(el: Element) -> Vec<Option<Color>> {
+    let mut out = Vec::new();
+    fn walk(el: Element, out: &mut Vec<Option<Color>>) {
+        match classify(el) {
+            P::TextInput { placeholder_color, .. } | P::TextArea { placeholder_color, .. } => out.push(placeholder_color),
+            p @ (P::View { .. } | P::Pressable { .. } | P::ScrollView { .. } | P::Portal { .. } | P::Fragment { .. }) => {
+                for c in p.children() {
+                    walk(c, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(el, &mut out);
+    out
+}
 
 /// Assert every text node in `el` carries its own color and font size
 /// (see [`text_nodes`]), and that there is at least one.
@@ -363,6 +386,7 @@ mod imp {
                 on_focus: p.on_focus.is_some(),
                 secure: eval(p.secure),
                 keyboard: eval(p.keyboard),
+                placeholder_color: eval(p.placeholder_color),
                 autofocus: p.autofocus,
                 a11y_label: p.a11y.label,
                 style: style(p.style),
@@ -373,6 +397,7 @@ mod imp {
             return P::TextArea {
                 min_rows: p.min_rows,
                 max_rows: p.max_rows,
+                placeholder_color: eval(p.placeholder_color),
                 autofocus: p.autofocus,
                 a11y_label: p.a11y.label,
                 style: style(p.style),

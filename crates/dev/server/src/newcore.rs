@@ -578,6 +578,14 @@ impl caps::TextInputOps for WireRecordingBackend {
         WireRecordingBackend::update_text_input_placeholder(self, node, placeholder)
     }
 
+    fn update_text_input_placeholder_color(&mut self, node: &Self::Node, color: Option<&runtime_shared::Color>) {
+        WireRecordingBackend::update_text_input_placeholder_color(self, node, color)
+    }
+
+    fn update_text_area_placeholder_color(&mut self, node: &Self::Node, color: Option<&runtime_shared::Color>) {
+        WireRecordingBackend::update_text_area_placeholder_color(self, node, color)
+    }
+
     fn create_text_area(
         &mut self,
         initial_value: &str,

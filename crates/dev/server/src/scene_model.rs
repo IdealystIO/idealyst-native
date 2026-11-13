@@ -127,6 +127,10 @@ pub struct SceneModel {
     /// node's `Create*` so a late-joining client shows the same soft
     /// keyboard (email / phone / digits) as the live one.
     node_text_input_keyboard: HashMap<NodeId, Command>,
+    /// Per-text-input / text-area latest placeholder ink
+    /// (`Update*PlaceholderColor`), replayed after the create like the
+    /// keyboard hint.
+    node_placeholder_color: HashMap<NodeId, Command>,
     /// Latest host-surface background (`SetAppBackground`), scrollbar theme
     /// (`SetScrollbarTheme`), and page metadata (`SetPageMetadata`) — each
     /// single-latest (the theme SDK re-emits on swap). Replayed in the
@@ -556,6 +560,7 @@ impl SceneModel {
                 self.node_safe_area.remove(node);
                 self.node_keyboard_avoid.remove(node);
                 self.node_text_input_keyboard.remove(node);
+                self.node_placeholder_color.remove(node);
                 // Releasing this node may have removed the last referent of
                 // a retired style — collect any now-unreferenced rules.
                 self.gc_retired_styles();
@@ -606,6 +611,10 @@ impl SceneModel {
             }
             Command::UpdateTextInputKeyboard { node, .. } => {
                 self.node_text_input_keyboard.insert(*node, cmd.clone());
+            }
+            Command::UpdateTextInputPlaceholderColor { node, .. }
+            | Command::UpdateTextAreaPlaceholderColor { node, .. } => {
+                self.node_placeholder_color.insert(*node, cmd.clone());
             }
             // Live-region announcements are transient — they fire once
             // when posted and don't have a persistent identity to
@@ -892,6 +901,9 @@ impl SceneModel {
                 out.push(cmd.clone());
             }
             if let Some(cmd) = self.node_text_input_keyboard.get(id) {
+                out.push(cmd.clone());
+            }
+            if let Some(cmd) = self.node_placeholder_color.get(id) {
                 out.push(cmd.clone());
             }
         }
@@ -1371,6 +1383,48 @@ mod tests {
             }
             other => panic!("expected a folded CreateTextInput, got {other:?}"),
         }
+    }
+
+    /// A late-joining client must show the same placeholder ink as the live
+    /// one: the latest `UpdateTextInputPlaceholderColor` replays after the
+    /// create, and a released node drops it.
+    #[test]
+    fn placeholder_color_replays_in_snapshot_after_create() {
+        let mut model = SceneModel::new();
+        let node = wire::NodeId(1);
+        model.apply(&Command::CreateTextInput {
+            id: node,
+            initial_value: String::new(),
+            placeholder: Some("Name".into()),
+            on_change: wire::HandlerId(0),
+            secure: false,
+            a11y: Default::default(),
+        });
+        model.apply(&Command::UpdateTextInputPlaceholderColor { node, color: Some(wire::WireColor("#111".into())) });
+        model.apply(&Command::UpdateTextInputPlaceholderColor { node, color: Some(wire::WireColor("#eee".into())) });
+        model.apply(&Command::Finish { root: node });
+        let snap = model.snapshot_commands();
+        let create = snap
+            .iter()
+            .position(|c| matches!(c, Command::CreateTextInput { id, .. } if *id == node))
+            .expect("snapshot creates the input");
+        let inks: Vec<(usize, Option<wire::WireColor>)> = snap
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| match c {
+                Command::UpdateTextInputPlaceholderColor { node: n, color } if *n == node => Some((i, color.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(inks.len(), 1, "only the latest ink replays: {snap:?}");
+        assert_eq!(inks[0].1.as_ref().map(|c| c.0.as_str()), Some("#eee"), "latest wins");
+        assert!(inks[0].0 > create, "the ink replays after the create");
+
+        model.apply(&Command::ReleaseNode { node });
+        assert!(
+            !model.snapshot_commands().iter().any(|c| matches!(c, Command::UpdateTextInputPlaceholderColor { .. })),
+            "a released node's ink is dropped"
+        );
     }
 
     /// A late-joining client must get the text input's soft-keyboard hint:

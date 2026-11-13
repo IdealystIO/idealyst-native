@@ -1020,6 +1020,16 @@ where
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
                 self.backend.borrow_mut().update_text_input_keyboard(&n, convert::wire_keyboard_kind(keyboard));
             }
+            Command::UpdateTextInputPlaceholderColor { node, color } => {
+                let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
+                let color = color.map(convert::wire_color_to_color);
+                self.backend.borrow_mut().update_text_input_placeholder_color(&n, color.as_ref());
+            }
+            Command::UpdateTextAreaPlaceholderColor { node, color } => {
+                let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
+                let color = color.map(convert::wire_color_to_color);
+                self.backend.borrow_mut().update_text_area_placeholder_color(&n, color.as_ref());
+            }
             Command::UpdateTextInputPlaceholder { node, placeholder } => {
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
                 self.backend.borrow_mut().update_text_input_placeholder(&n, placeholder.as_deref());

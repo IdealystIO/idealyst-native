@@ -103,6 +103,12 @@ pub struct TextInputPrim {
     /// through `update_text_input_keyboard`; a `Const(Default)` makes no
     /// backend call at all. Backends without a soft keyboard ignore it.
     pub keyboard: Value<KeyboardKind>,
+    /// The placeholder's ink. `None` (the default) leaves the toolkit's
+    /// own placeholder color, which on a native toolkit follows the OS
+    /// appearance rather than the app's theme — a component library sets
+    /// it from its theme. Static or live: a `Dyn` source re-applies in
+    /// place (a theme swap). A `Const(None)` makes no backend call.
+    pub placeholder_color: Value<Option<Color>>,
     /// Focus this field once, right after it mounts (HTML `autofocus`).
     /// Mount-time only: flipping it later does nothing. Runs through the
     /// same `focus()` a `Ref` handle calls, which is attach-safe — a node
@@ -139,6 +145,9 @@ pub struct TextAreaPrim {
     pub on_change: Rc<dyn Fn(String)>,
     pub on_key_down: Option<KeyDownHandler>,
     pub placeholder: Option<String>,
+    /// The placeholder's ink — same contract as
+    /// [`TextInputPrim::placeholder_color`].
+    pub placeholder_color: Value<Option<Color>>,
     pub wrap: bool,
     pub min_rows: Option<u32>,
     pub max_rows: Option<u32>,

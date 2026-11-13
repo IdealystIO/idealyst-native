@@ -297,8 +297,9 @@ pub fn Textarea(props: &TextareaProps) -> Element {
     let help_node =
         crate::components::optional_reactive_text(help_combined, help_style.overridden(styles.help.as_ref()));
 
-    let mut input =
-        runtime_core::text_area(value, move |v: String| (on_change)(v)).autofocus(props.autofocus);
+    let mut input = runtime_core::text_area(value, move |v: String| (on_change)(v))
+        .placeholder_color(crate::components::placeholder_ink())
+        .autofocus(props.autofocus);
     // Autogrow bounds now ride on the PRIMITIVE so every backend converts
     // rows→px from its real line height (web included). Snapshotted at build —
     // a live `rows`/`max_rows` source isn't routed through yet (mirrors the
@@ -408,6 +409,18 @@ pub fn Textarea(props: &TextareaProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: the editor left its placeholder in the native toolkit's
+    /// own color, which follows the OS appearance, not the theme — dark gray
+    /// on a dark theme on iOS. It sets the theme's muted text as the ink.
+    #[test]
+    fn regression_textarea_sets_the_theme_placeholder_ink() {
+        idea_theme::testing::with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let inks = crate::test_support::editor_placeholder_inks(Textarea(&TextareaProps::default()));
+            assert_eq!(inks, vec![Some(idea_theme::tokens().color.text_muted().resolve())]);
+        });
+    }
 
     #[test]
     fn row_bounds_uncapped_passes_floor_only() {

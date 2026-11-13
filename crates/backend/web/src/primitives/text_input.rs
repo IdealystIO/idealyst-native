@@ -222,6 +222,48 @@ pub(crate) fn update_placeholder(node: &Node, placeholder: Option<&str>) {
     }
 }
 
+/// Marks an `<input>` / `<textarea>` whose placeholder ink the author set;
+/// the one rule in [`PLACEHOLDER_COLOR_CSS`] colors only those, so a field
+/// with none keeps the browser's own placeholder.
+const PLACEHOLDER_COLOR_ATTR: &str = "data-idealyst-placeholder-color";
+const PLACEHOLDER_COLOR_VAR: &str = "--idealyst-placeholder-color";
+const PLACEHOLDER_COLOR_STYLE_ID: &str = "idealyst-placeholder-color";
+/// `opacity: 1` because Firefox dims `::placeholder` to 0.54 by default,
+/// which would make the set ink lighter than the one asked for.
+const PLACEHOLDER_COLOR_CSS: &str = "[data-idealyst-placeholder-color]::placeholder{color:var(--idealyst-placeholder-color);opacity:1}";
+
+/// Set (or, with `None`, drop) a text input's or text area's placeholder
+/// ink: `::placeholder` is reachable only from a stylesheet, so the color
+/// rides a custom property on the element and one shared rule reads it.
+pub(crate) fn update_placeholder_color(node: &Node, color: Option<&runtime_shared::Color>) {
+    let Some(el) = node.dyn_ref::<web_glue::dom::HtmlElement>() else { return };
+    match color {
+        Some(c) => {
+            if let Some(doc) = el.owner_document() {
+                ensure_placeholder_color_style(&doc);
+            }
+            let _ = el.style().set_property(PLACEHOLDER_COLOR_VAR, &c.0);
+            let _ = el.set_attribute(PLACEHOLDER_COLOR_ATTR, "");
+        }
+        None => {
+            let _ = el.style().remove_property(PLACEHOLDER_COLOR_VAR);
+            let _ = el.remove_attribute(PLACEHOLDER_COLOR_ATTR);
+        }
+    }
+}
+
+fn ensure_placeholder_color_style(doc: &web_glue::dom::Document) {
+    if doc.get_element_by_id(PLACEHOLDER_COLOR_STYLE_ID).is_some() {
+        return;
+    }
+    let Ok(style) = doc.create_element("style") else { return };
+    style.set_id(PLACEHOLDER_COLOR_STYLE_ID);
+    style.set_text_content(Some(PLACEHOLDER_COLOR_CSS));
+    if let Some(head) = doc.head() {
+        let _ = head.append_child(&style);
+    }
+}
+
 pub(crate) fn make_handle(node: &Node) -> TextInputHandle {
     let input: web_glue::dom::HtmlInputElement = node
         .clone()

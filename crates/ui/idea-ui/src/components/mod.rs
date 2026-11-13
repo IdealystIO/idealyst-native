@@ -97,6 +97,14 @@ pub(crate) fn field_label_line(
 /// Call this in the component body: handler-reached spawns then live as
 /// long as the picker and die when it unmounts. `Button` does the same
 /// for its `on_click`. Regression: `tests/picker_commit_spawn.rs`.
+/// The placeholder ink every idea-ui editor sets: the theme's muted text,
+/// live so a theme swap re-tints it. Set explicitly because a native
+/// toolkit's own placeholder color follows the OS appearance, not the
+/// app's theme (a dark-themed app on a light-mode phone drew it dark).
+pub(crate) fn placeholder_ink() -> Reactive<Option<runtime_core::Color>> {
+    Reactive::Dynamic(Rc::new(|| Some(idea_theme::tokens().color.text_muted().resolve())))
+}
+
 pub(crate) fn anchor_to_component<A: 'static>(f: Rc<dyn Fn(A)>) -> Rc<dyn Fn(A)> {
     let anchor = runtime_core::ScopeAlive::current();
     Rc::new(move |a| anchor.run_within(|| f(a)))

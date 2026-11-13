@@ -247,6 +247,7 @@ pub fn text_input() -> TextInputBuilder {
             placeholder: Value::Const(None),
             secure: Value::Const(false),
             keyboard: Value::Const(KeyboardKind::Default),
+            placeholder_color: Value::Const(None),
             autofocus: false,
             disabled: None,
             style: None,
@@ -302,6 +303,19 @@ impl TextInputBuilder {
     /// Live placeholder (`None` clears).
     pub fn placeholder_dyn(mut self, f: impl Fn() -> Option<String> + 'static) -> Self {
         self.prim.placeholder = Value::Dyn(Box::new(f));
+        self
+    }
+
+    /// Static placeholder ink ([`TextInputPrim::placeholder_color`]).
+    pub fn placeholder_color(mut self, color: Color) -> Self {
+        self.prim.placeholder_color = Value::Const(Some(color));
+        self
+    }
+
+    /// Live placeholder ink, re-applied in place when it changes (a theme
+    /// swap); `None` returns to the toolkit's own.
+    pub fn placeholder_color_dyn(mut self, f: impl Fn() -> Option<Color> + 'static) -> Self {
+        self.prim.placeholder_color = Value::Dyn(Box::new(f));
         self
     }
 
@@ -384,6 +398,7 @@ pub fn text_area() -> TextAreaBuilder {
             on_change: Rc::new(|_| {}),
             on_key_down: None,
             placeholder: None,
+            placeholder_color: Value::Const(None),
             wrap: true,
             min_rows: None,
             max_rows: None,
@@ -418,6 +433,18 @@ impl TextAreaBuilder {
 
     pub fn placeholder(mut self, text: impl Into<String>) -> Self {
         self.prim.placeholder = Some(text.into());
+        self
+    }
+
+    /// Static placeholder ink ([`TextAreaPrim::placeholder_color`]).
+    pub fn placeholder_color(mut self, color: Color) -> Self {
+        self.prim.placeholder_color = Value::Const(Some(color));
+        self
+    }
+
+    /// Live placeholder ink — see [`TextInputBuilder::placeholder_color_dyn`].
+    pub fn placeholder_color_dyn(mut self, f: impl Fn() -> Option<Color> + 'static) -> Self {
+        self.prim.placeholder_color = Value::Dyn(Box::new(f));
         self
     }
 

@@ -1693,6 +1693,22 @@ impl WireRecordingBackend {
         });
     }
 
+    pub fn update_text_input_placeholder_color(&mut self, node: &NodeId, color: Option<&runtime_shared::Color>) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::UpdateTextInputPlaceholderColor {
+            node: *node,
+            color: color.map(convert_out::color_to_wire),
+        });
+    }
+
+    pub fn update_text_area_placeholder_color(&mut self, node: &NodeId, color: Option<&runtime_shared::Color>) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::UpdateTextAreaPlaceholderColor {
+            node: *node,
+            color: color.map(convert_out::color_to_wire),
+        });
+    }
+
     pub fn update_text_input_placeholder(&mut self, node: &NodeId, placeholder: Option<&str>) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateTextInputPlaceholder {

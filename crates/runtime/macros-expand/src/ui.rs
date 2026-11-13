@@ -1141,6 +1141,7 @@ const TEXT_INPUT_BUILDER_PROPS: &[&str] = &[
     "on_blur",
     "on_key_down",
     "placeholder_reactive",
+    "placeholder_color",
     "bind",
     "autofocus",
     "disabled",

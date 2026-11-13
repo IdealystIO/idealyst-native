@@ -578,6 +578,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             placeholder: val(p.placeholder),
             secure: val(p.secure),
             keyboard: val(p.keyboard),
+            placeholder_color: val(p.placeholder_color),
             disabled: p.disabled.map(val),
         };
     }
@@ -591,6 +592,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             on_change: handler(move |v: &String| f(v.clone())),
             on_key_down: p.on_key_down.map(|f| handler(move |e| f(e))),
             placeholder: p.placeholder,
+            placeholder_color: val(p.placeholder_color),
             wrap: p.wrap,
             min_rows: p.min_rows,
             max_rows: p.max_rows,

@@ -1303,6 +1303,14 @@ impl caps::TextInputOps for WebBackend {
         WebBackend::set_text_input_focus_handler_impl(self, node, flushing1(handler))
     }
 
+    fn update_text_input_placeholder_color(&mut self, node: &Self::Node, color: Option<&runtime_shared::Color>) {
+        WebBackend::update_placeholder_color_impl(self, node, color)
+    }
+
+    fn update_text_area_placeholder_color(&mut self, node: &Self::Node, color: Option<&runtime_shared::Color>) {
+        WebBackend::update_placeholder_color_impl(self, node, color)
+    }
+
     fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
         WebBackend::update_text_input_placeholder_impl(self, node, placeholder)
     }

@@ -978,6 +978,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // `placeholder` is routed LIVE: a reactive source updates the native
     // placeholder in place; a `Static` one sets it once.
     .placeholder_reactive(placeholder)
+    .placeholder_color(crate::components::placeholder_ink())
     .autofocus(props.autofocus);
     let input = with_test_id!(input, props.test_id);
     let input = input
@@ -1285,6 +1286,18 @@ fn row(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: the editor left its placeholder in the native toolkit's
+    /// own color, which follows the OS appearance, not the theme — dark gray
+    /// on a dark theme on iOS. It sets the theme's muted text as the ink.
+    #[test]
+    fn regression_autocomplete_sets_the_theme_placeholder_ink() {
+        idea_theme::testing::with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let inks = crate::test_support::editor_placeholder_inks(Autocomplete(AutocompleteProps::default()));
+            assert_eq!(inks, vec![Some(idea_theme::tokens().color.text_muted().resolve())]);
+        });
+    }
     use crate::test_support::{classify, P, TStyle};
     use idea_theme::testing::with_test_world;
 

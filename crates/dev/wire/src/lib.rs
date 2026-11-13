@@ -68,7 +68,7 @@ pub use payload_serde::{
 /// [`WireStyleRules`] carries every `StyleRules` property; the
 /// conversions on both ends are exhaustive destructures, so a new
 /// property cannot compile until it crosses (see `WireStyleRules`).
-pub const PROTOCOL_VERSION: u32 = 26;
+pub const PROTOCOL_VERSION: u32 = 27;
 
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
@@ -779,6 +779,19 @@ pub enum Command {
     UpdateTextInputKeyboard {
         node: NodeId,
         keyboard: WireKeyboardKind,
+    },
+    /// Set an existing text input's placeholder ink (PROTOCOL_VERSION 27;
+    /// `None`: the toolkit's own) — the vocabulary's
+    /// `update_text_input_placeholder_color` op, verbatim. Replayed after
+    /// the create in a snapshot, like `UpdateTextInputKeyboard`.
+    UpdateTextInputPlaceholderColor {
+        node: NodeId,
+        color: Option<WireColor>,
+    },
+    /// The text area's `UpdateTextInputPlaceholderColor`.
+    UpdateTextAreaPlaceholderColor {
+        node: NodeId,
+        color: Option<WireColor>,
     },
     UpdateTextAreaValue {
         node: NodeId,

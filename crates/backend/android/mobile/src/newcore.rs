@@ -1231,6 +1231,14 @@ mod native {
             )
         }
 
+        fn update_text_input_placeholder_color(&mut self, node: &Self::Node, color: Option<&runtime_shared::Color>) {
+            AndroidBackend::update_placeholder_color_impl(self, node, color)
+        }
+
+        fn update_text_area_placeholder_color(&mut self, node: &Self::Node, color: Option<&runtime_shared::Color>) {
+            AndroidBackend::update_placeholder_color_impl(self, node, color)
+        }
+
         fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
             AndroidBackend::update_text_area_value_impl(self, node, value)
         }

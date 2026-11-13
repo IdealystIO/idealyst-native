@@ -1149,6 +1149,20 @@ impl caps::TextInputOps for HostMock {
         );
     }
 
+    fn update_text_input_placeholder_color(&mut self, node: &Node, color: Option<&runtime_shared::Color>) {
+        self.s.rec_v(
+            "update_text_input_placeholder_color",
+            format!("update_text_input_placeholder_color n{node} {color:?}"),
+        );
+    }
+
+    fn update_text_area_placeholder_color(&mut self, node: &Node, color: Option<&runtime_shared::Color>) {
+        self.s.rec_v(
+            "update_text_area_placeholder_color",
+            format!("update_text_area_placeholder_color n{node} {color:?}"),
+        );
+    }
+
     fn set_text_input_focus_handler(&mut self, node: &Node, handler: Rc<dyn Fn(bool)>) {
         self.s.rec_v(
             "set_text_input_focus_handler",

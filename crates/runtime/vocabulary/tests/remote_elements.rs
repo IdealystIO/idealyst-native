@@ -1360,6 +1360,52 @@ mod text_keyboard {
     }
 }
 
+/// `text_input` / `text_area` `placeholder_color` crosses (CODEC_VERSION
+/// 15): a crossed ink drives the backend exactly like the native one —
+/// once for a static ink, per change for a live one, none for `None`.
+mod placeholder_color {
+    use super::*;
+    use runtime_shared::Color;
+    use runtime_vocabulary::builders::{text_area, text_input};
+
+    fn script(remote: bool) -> Vec<Vec<String>> {
+        let h = Harness::new();
+        h.record_all();
+        let (tree, ink) = h.world.enter(|| {
+            let ink = signal(Color("#111111".into()));
+            let tree = view()
+                .child(text_input().placeholder_color(Color("#64748b".into())))
+                .child(text_input().placeholder_color_dyn(move || Some(ink.get())))
+                .child(text_area().placeholder_color(Color("#64748b".into())))
+                .child(text_input())
+                .build();
+            (tree, ink)
+        });
+        let tree = if remote { cross(tree) } else { tree };
+        let realized = h.mount(tree);
+        h.flush();
+        let ink_ops = |log: Vec<String>| {
+            log.into_iter().filter(|l| l.contains("placeholder_color")).collect::<Vec<_>>()
+        };
+        let mut steps = vec![ink_ops(h.take_log())];
+        h.world.enter(|| ink.set(Color("#eeeeee".into())));
+        h.flush();
+        steps.push(ink_ops(h.take_log()));
+        drop(realized);
+        steps
+    }
+
+    #[test]
+    fn a_crossed_placeholder_ink_reaches_the_backend_exactly_like_the_native_one() {
+        let native = script(false);
+        let remote = script(true);
+        assert_eq!(remote, native, "the crossed fields drive the backend like the native ones");
+        assert_eq!(native[0].len(), 3, "two static inks + one live; None makes no call: {native:?}");
+        assert_eq!(native[1].len(), 1, "{native:?}");
+        assert!(native[1][0].contains("#eeeeee"), "{native:?}");
+    }
+}
+
 /// `pressable` `a11y_state` crosses (CODEC_VERSION 10): the host's binding
 /// re-reads the bundle's getter, so a crossed checkbox reports its state live.
 mod pressable_a11y_state {

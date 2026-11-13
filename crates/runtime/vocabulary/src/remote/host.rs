@@ -506,7 +506,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 Vec::new(),
             )
         }
-        Node::TextInput { common, value: v, on_change, on_key_down, on_blur, on_focus, placeholder, secure, keyboard, disabled } => {
+        Node::TextInput { common, value: v, on_change, on_key_down, on_blur, on_focus, placeholder, secure, keyboard, placeholder_color, disabled } => {
             let (test_id, style, a11y, fill) = self::common(conn, common);
             let change = handler::<String, ()>(conn, on_change, || ());
             runtime_scene::item(
@@ -526,6 +526,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     placeholder: value(conn, placeholder),
                     secure: value(conn, secure),
                     keyboard: value(conn, keyboard),
+                    placeholder_color: value(conn, placeholder_color),
                     // A bundle's `autofocus` arrives as a `focus()` handle
                     // call after the fill (`bundle::autofocus_fill`), not as
                     // a field — the app mounts it unfocused.
@@ -538,7 +539,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 Vec::new(),
             )
         }
-        Node::TextArea { common, value: v, on_change, on_key_down, placeholder, wrap, min_rows, max_rows, disabled } => {
+        Node::TextArea { common, value: v, on_change, on_key_down, placeholder, placeholder_color, wrap, min_rows, max_rows, disabled } => {
             let (test_id, style, a11y, fill) = self::common(conn, common);
             let change = handler::<String, ()>(conn, on_change, || ());
             runtime_scene::item(
@@ -548,6 +549,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     on_change: Rc::new(move |t: String| change(&t)),
                     on_key_down: on_key_down.map(|id| Rc::new(handler(conn, id, || KeyOutcome::Default)) as _),
                     placeholder,
+                    placeholder_color: value(conn, placeholder_color),
                     wrap,
                     min_rows,
                     max_rows,

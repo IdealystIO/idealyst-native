@@ -43,10 +43,10 @@ use host_mock::Harness;
 use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
 use runtime_shared::primitives::icon::IconData;
 use runtime_shared::primitives::text_input::{BlurOutcome, KeyboardKind};
-use runtime_shared::FillRule;
+use runtime_shared::{Color, FillRule};
 use runtime_scene::realize;
 use runtime_vocabulary::builders::{
-    activity_indicator, icon, image, link, pressable, text_input, view,
+    activity_indicator, icon, image, link, pressable, text_area, text_input, view,
 };
 use runtime_world::signal;
 
@@ -943,5 +943,87 @@ fn regression_glue_text_area_on_key_down_threads_to_backend() {
         selection_end: 0,
     };
     assert_eq!(handler(&tab), KeyOutcome::PreventDefault);
+    drop(realized);
+}
+
+// ===========================================================================
+// text_input / text_area `placeholder_color`
+// ===========================================================================
+
+/// REGRESSION: an editor's placeholder had no ink of its own, so a native
+/// toolkit drew it in the OS appearance's color — near-invisible in a
+/// dark-themed app on a light-mode phone. A static ink reaches the backend
+/// once after the create; `None` (the default) makes no call.
+#[test]
+fn regression_static_placeholder_color_reaches_backend_once() {
+    let h = harness();
+    let realized = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            text_input().placeholder("Name").placeholder_color(Color("#64748b".into())).build(),
+        )
+    });
+    let log = h.take_log();
+    assert_eq!(
+        ops_named(&log, "update_text_input_placeholder_color"),
+        vec![r##"update_text_input_placeholder_color n0 Some(Color("#64748b"))"##.to_string()],
+        "{log:?}"
+    );
+    drop(realized);
+
+    let h = harness();
+    let realized = h.world.enter(|| realize(&h.backend, &h.registry, text_input().placeholder("Name").build()));
+    assert!(ops_named(&h.take_log(), "update_text_input_placeholder_color").is_empty());
+    drop(realized);
+}
+
+/// A live ink (a theme swap) re-applies in place, without a rebuild.
+#[test]
+fn reactive_placeholder_color_updates_in_place() {
+    let h = harness();
+    let world = h.world.clone();
+    let (realized, ink) = world.enter(|| {
+        let ink = signal(Color("#111111".into()));
+        let realized = realize(
+            &h.backend,
+            &h.registry,
+            text_input().placeholder_color_dyn(move || Some(ink.get())).build(),
+        );
+        (realized, ink)
+    });
+    assert_eq!(
+        ops_named(&h.take_log(), "update_text_input_placeholder_color"),
+        vec![r##"update_text_input_placeholder_color n0 Some(Color("#111111"))"##.to_string()],
+    );
+    ink.set(Color("#eeeeee".into()));
+    world.flush();
+    let log = h.take_log();
+    assert_eq!(
+        ops_named(&log, "update_text_input_placeholder_color"),
+        vec![r##"update_text_input_placeholder_color n0 Some(Color("#eeeeee"))"##.to_string()],
+        "{log:?}"
+    );
+    assert!(!log.iter().any(|l| l.starts_with("create")), "no rebuild: {log:?}");
+    drop(realized);
+}
+
+/// The text area takes the same ink through its own op.
+#[test]
+fn text_area_placeholder_color_reaches_backend() {
+    let h = harness();
+    let realized = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            text_area().placeholder("Notes").placeholder_color(Color("#64748b".into())).build(),
+        )
+    });
+    let log = h.take_log();
+    assert_eq!(
+        ops_named(&log, "update_text_area_placeholder_color"),
+        vec![r##"update_text_area_placeholder_color n0 Some(Color("#64748b"))"##.to_string()],
+        "{log:?}"
+    );
     drop(realized);
 }

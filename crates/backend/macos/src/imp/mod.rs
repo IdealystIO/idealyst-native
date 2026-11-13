@@ -4176,6 +4176,15 @@ impl MacosBackend {
         MacosNode::View(container)
     }
 
+    pub(crate) fn update_text_input_placeholder_color_impl(&mut self, node: &MacosNode, color: Option<&runtime_shared::Color>) {
+        view::set_text_field_placeholder_color(node.as_view(), color.map(color_to_nscolor));
+    }
+
+    pub(crate) fn update_text_area_placeholder_color_impl(&mut self, node: &MacosNode, color: Option<&runtime_shared::Color>) {
+        let tv = editable_text_target(node.as_view());
+        view::set_text_area_placeholder_color(&tv, color.map(color_to_nscolor));
+    }
+
     pub(crate) fn update_text_area_value_impl(&mut self, node: &MacosNode, value: &str) {
         let view = node.as_view();
         // String ops target the inner NSTextView (the node is its NSScrollView

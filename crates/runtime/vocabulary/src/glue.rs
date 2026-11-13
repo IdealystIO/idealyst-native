@@ -2074,6 +2074,20 @@ pub mod primitives {
                 self
             }
 
+            /// The placeholder's ink — a color or a live source; `None`
+            /// leaves the toolkit's own. A live source re-applies in place.
+            pub fn placeholder_color(
+                mut self,
+                color: impl Into<super::super::Reactive<Option<Color>>>,
+            ) -> Self {
+                self.b = match color.into() {
+                    super::super::Reactive::Static(None) => self.b,
+                    super::super::Reactive::Static(Some(c)) => self.b.placeholder_color(c),
+                    live => self.b.placeholder_color_dyn(move || live.get()),
+                };
+                self
+            }
+
             /// Fill `r` with the mounted node's handle.
             pub fn bind(mut self, r: super::super::Ref<TextInputHandle>) -> Self {
                 self.b = self.b.on_handle(move |h| crate::glue::fill_ref_while_mounted(r, h));
@@ -2881,6 +2895,19 @@ pub mod primitives {
 
             pub fn placeholder(mut self, text: String) -> Self {
                 self.b = self.b.placeholder(text);
+                self
+            }
+
+            /// The placeholder's ink — see `GlueTextInput::placeholder_color`.
+            pub fn placeholder_color(
+                mut self,
+                color: impl Into<super::super::Reactive<Option<Color>>>,
+            ) -> Self {
+                self.b = match color.into() {
+                    super::super::Reactive::Static(None) => self.b,
+                    super::super::Reactive::Static(Some(c)) => self.b.placeholder_color(c),
+                    live => self.b.placeholder_color_dyn(move || live.get()),
+                };
                 self
             }
 

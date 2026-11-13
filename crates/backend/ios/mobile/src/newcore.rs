@@ -1131,6 +1131,14 @@ mod ios_impl {
             IosBackend::update_text_input_keyboard_impl(self, node, keyboard)
         }
 
+        fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
+            IosBackend::update_text_input_placeholder_impl(self, node, placeholder)
+        }
+
+        fn update_text_input_placeholder_color(&mut self, node: &Self::Node, color: Option<&runtime_shared::Color>) {
+            IosBackend::update_text_input_placeholder_color_impl(self, node, color)
+        }
+
         fn create_text_area(
             &mut self,
             initial_value: &str,
@@ -1157,6 +1165,10 @@ mod ios_impl {
 
         fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
             IosBackend::update_text_area_value_impl(self, node, value)
+        }
+
+        fn update_text_area_placeholder_color(&mut self, node: &Self::Node, color: Option<&runtime_shared::Color>) {
+            IosBackend::update_text_area_placeholder_color_impl(self, node, color)
         }
 
         fn make_text_input_handle(

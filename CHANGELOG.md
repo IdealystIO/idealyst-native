@@ -11,6 +11,18 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **Wire protocol 27 and remote codec 15: an editor's placeholder takes an ink**
+  (`runtime-vocabulary`, `wire`, `dev-server`, `dev-client`, `backend-ios-mobile`,
+  `backend-android-mobile`, `backend-macos`, `backend-web`, `idea-ui` minor). `text_input` and
+  `text_area` gain `placeholder_color` (a `Color` or a live source), and `TextInputOps` gains
+  `update_text_input_placeholder_color` / `update_text_area_placeholder_color` (default no-op).
+  Left unset, each toolkit draws its own placeholder color, and a native toolkit's follows the
+  OS appearance, not the app's theme: dark gray on a dark-themed app on iOS. idea-ui's `Field`,
+  `Textarea` and `Autocomplete` now set the theme's `color.text_muted`. A dev client and a
+  remote bundle must match the new versions. Along the way, iOS gained two things it lacked: a
+  live placeholder text update on `text_input` (`update_text_input_placeholder` was a no-op
+  there), and any placeholder at all on `text_area` (UITextView has none; it now draws one).
+
 - **An untinted idea-ui `Icon` paints in the theme's text color** (`idea-ui` minor). With neither
   `tone` nor `color`, `Icon` left its color to inheritance, which only the web has: on iOS it fell
   back to the OS label color, frozen at creation and following the phone's appearance rather than

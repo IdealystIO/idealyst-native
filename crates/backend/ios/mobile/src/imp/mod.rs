@@ -2071,10 +2071,7 @@ impl IosBackend {
         // when secure text entry is on.
         keyboard_kind::set_secure(&field, secure);
 
-        if let Some(ph) = placeholder {
-            let ns_ph = NSString::from_str(ph);
-            unsafe { field.setPlaceholder(Some(&ns_ph)) };
-        }
+        field.set_placeholder_text(placeholder);
 
         // No native bezel (0 = UITextBorderStyleNone): the framework draws the
         // border via the style's CALayer stroke (so a `focused` variant's
@@ -2203,7 +2200,7 @@ impl IosBackend {
     pub(crate) fn create_text_area_impl(
         &mut self,
         initial_value: &str,
-        _placeholder: Option<&str>,
+        placeholder: Option<&str>,
         wrap: bool,
         min_rows: Option<u32>,
         max_rows: Option<u32>,
@@ -2213,16 +2210,16 @@ impl IosBackend {
     ) -> IosNode {
         // UITextView is the multi-line equivalent of UITextField. It
         // ships with `editable: true` already, so we don't need to
-        // flip it. Note: UITextView has no `placeholder` property —
-        // matching the framework primitive shape requires a manual
-        // overlay-label hack; for v1 we accept the `placeholder` arg
-        // but ignore it (callers shouldn't depend on placeholder
-        // text rendering on iOS yet).
-        // `IdealystTextView`: a UITextView subclass for its `didMoveToWindow`,
-        // the attach hook of the attach-safe `focus()` (`pending_focus`).
+        // flip it. It has no placeholder: `IdealystTextView` draws one
+        // (a label over the first line, hidden once there is text), and
+        // is the subclass for `didMoveToWindow`, the attach hook of the
+        // attach-safe `focus()` (`pending_focus`).
         let view: Retained<UITextView> = text_inset::IdealystTextView::new(self.mtm);
         let ns_val = NSString::from_str(initial_value);
         unsafe { view.setText(Some(&ns_val)) };
+        if placeholder.is_some() {
+            text_inset::set_text_view_placeholder(&view, placeholder);
+        }
 
         // Wrapping: UITextView wraps by default. For the code-editor
         // shape (`wrap == false`) the text container must stop tracking
@@ -2319,6 +2316,29 @@ impl IosBackend {
         node
     }
 
+    /// Live placeholder text (`None` clears), keeping a placeholder ink.
+    pub(crate) fn update_text_input_placeholder_impl(&mut self, node: &IosNode, placeholder: Option<&str>) {
+        if let IosNode::TextField(f) = node {
+            if let Some(field) = text_inset::as_idealyst_text_field(f) {
+                field.set_placeholder_text(placeholder);
+            }
+        }
+    }
+
+    pub(crate) fn update_text_input_placeholder_color_impl(&mut self, node: &IosNode, color: Option<&runtime_shared::Color>) {
+        if let IosNode::TextField(f) = node {
+            if let Some(field) = text_inset::as_idealyst_text_field(f) {
+                field.set_placeholder_color(color.map(color_to_uicolor));
+            }
+        }
+    }
+
+    pub(crate) fn update_text_area_placeholder_color_impl(&mut self, node: &IosNode, color: Option<&runtime_shared::Color>) {
+        if let IosNode::TextView(view) = node {
+            text_inset::set_text_view_placeholder_color(view, color.map(color_to_uicolor));
+        }
+    }
+
     pub(crate) fn update_text_area_value_impl(&mut self, node: &IosNode, value: &str) {
         if let IosNode::TextView(view) = node {
             let current: Option<Retained<NSString>> = unsafe { msg_send_id![view, text] };
@@ -2326,6 +2346,7 @@ impl IosBackend {
             if current_str != value {
                 let ns = NSString::from_str(value);
                 unsafe { view.setText(Some(&ns)) };
+                text_inset::text_view_text_changed(view);
             }
         }
         // Same invalidation as `update_text`: setting the text changes
