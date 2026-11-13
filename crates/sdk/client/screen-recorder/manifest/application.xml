@@ -1,0 +1,7 @@
+<!-- Asks for screen-capture consent: see-through and in a task of its own, so
+     asking does not bring the app's own task forward over what is on screen. -->
+<activity android:name="io.idealyst.screenrecorder.ScreenCaptureConsentActivity"
+    android:theme="@android:style/Theme.Translucent.NoTitleBar"
+    android:taskAffinity=""
+    android:excludeFromRecents="true"
+    android:exported="false" />

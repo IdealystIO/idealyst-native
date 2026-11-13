@@ -98,6 +98,32 @@ impl ScreenRecorder {
         imp::request_permission(source).await
     }
 
+    /// Whether [`start`](ScreenRecorder::start) of a screen source will run
+    /// without asking anyone, consent having been given ahead of time. On
+    /// Android that is the `PROJECT_MEDIA` app op, which only adb or the
+    /// system grants; an unattended device without it would show a prompt
+    /// nobody answers. `false` where there is no such grant.
+    pub fn consent_pregranted(&self) -> bool {
+        #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
+        {
+            imp::consent_pregranted()
+        }
+        #[cfg(not(all(not(target_arch = "wasm32"), target_os = "android")))]
+        false
+    }
+
+    /// The main display's size in pixels: what a whole-screen capture is
+    /// scaled down from, so input given in a frame's pixels can be scaled back
+    /// to the screen's. `None` where the backend does not report it.
+    pub fn display_size(&self) -> Option<(u32, u32)> {
+        #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
+        {
+            imp::display_size()
+        }
+        #[cfg(not(all(not(target_arch = "wasm32"), target_os = "android")))]
+        None
+    }
+
     /// Begin capturing and return a live [`MediaStream`] — the same
     /// platform-agnostic source the `camera` SDK produces and the `video` SDK
     /// displays. Capture runs while any clone of the stream is alive; dropping
@@ -106,6 +132,12 @@ impl ScreenRecorder {
     /// Tap raw RGBA8 frames with [`MediaStream::subscribe`] /
     /// [`MediaStream::latest`], or hand the stream to the `video` SDK to show
     /// the live screen. May surface the OS capture-consent prompt.
+    ///
+    /// On Android a whole-screen stream's native source is a
+    /// `media_stream::PreviewSource`: a consumer that claims it (the
+    /// `video-codec` encoder, the `video` SDK's display) gets frames rendered
+    /// straight into its own `Surface`, and CPU subscribers get none while it
+    /// holds the claim.
     pub async fn start(&self, config: RecordingConfig) -> Result<MediaStream, RecorderError> {
         let (stream, writer) = MediaStream::new();
         let (recording, native) = imp::start(config, writer).await?;

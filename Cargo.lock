@@ -14294,6 +14294,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "video-codec"
+version = "0.1.0"
+dependencies = [
+ "jni 0.21.1",
+ "media-stream",
+ "ndk-context",
+ "thiserror 2.0.18",
+ "web-glue",
+]
+
+[[package]]
 name = "video-compose"
 version = "10.0.0"
 dependencies = [
