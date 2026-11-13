@@ -64,8 +64,21 @@ object RustScreenCaptureHelper {
     // ~30fps cadence for the app-only PixelCopy loop.
     private const val PIXELCOPY_INTERVAL_MS = 33L
 
+    /**
+     * How long [ScreenCaptureConsentActivity] has to open before [start] gives
+     * up. Android silently drops an activity launch from an app in the
+     * background unless the app is exempt (the device owner, an app that may
+     * draw over other apps), and nothing reports the drop: without this the
+     * start would wait forever. An exempt launch opens in well under a second;
+     * the margin is for a loaded device.
+     */
+    private const val CONSENT_OPEN_TIMEOUT_MS = 5_000L
+
     /** What [ScreenCaptureConsentActivity] needs to carry on once it has an answer. */
-    private class Request(val width: Int, val height: Int)
+    private class Request(val width: Int, val height: Int) {
+        /** The consent activity opened; set and read on the main thread. */
+        var opened = false
+    }
 
     private val requests = ConcurrentHashMap<Long, Request>()
 
@@ -128,6 +141,7 @@ object RustScreenCaptureHelper {
                             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                             .putExtra(ScreenCaptureConsentActivity.EXTRA_TOKEN, token),
                     )
+                    main.postDelayed({ consentDidNotOpen(token) }, CONSENT_OPEN_TIMEOUT_MS)
                 }
             } catch (t: Throwable) {
                 requests.remove(token)
@@ -135,6 +149,31 @@ object RustScreenCaptureHelper {
                 nativeError(token, ERR_EXCEPTION, t.message ?: t.toString())
             }
         }
+    }
+
+    /**
+     * [ScreenCaptureConsentActivity] opened for [token]; on the main thread.
+     * `false` when the request is gone (it timed out, or the capture was
+     * stopped): the activity then closes without asking.
+     */
+    internal fun consentOpened(token: Long): Boolean {
+        val request = requests[token] ?: return false
+        request.opened = true
+        return true
+    }
+
+    /** [CONSENT_OPEN_TIMEOUT_MS] after the launch, on the main thread. */
+    private fun consentDidNotOpen(token: Long) {
+        val request = requests[token] ?: return
+        if (request.opened) return
+        requests.remove(token)
+        cleanup(token)
+        nativeError(
+            token,
+            ERR_EXCEPTION,
+            "the screen-capture consent screen did not open: Android does not let an app in the " +
+                "background open it unless the app is the device owner or may draw over other apps",
+        )
     }
 
     /** The default display's real size in pixels, packed `width << 16 | height`. */

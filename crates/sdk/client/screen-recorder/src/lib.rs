@@ -137,7 +137,17 @@ impl ScreenRecorder {
     /// `media_stream::PreviewSource`: a consumer that claims it (the
     /// `video-codec` encoder, the `video` SDK's display) gets frames rendered
     /// straight into its own `Surface`, and CPU subscribers get none while it
-    /// holds the claim.
+    /// holds the claim. With no claim, frames are captured only while someone
+    /// wants them: an active [`MediaStream::subscribe`], or
+    /// [`MediaStream::latest`] polled at least every two seconds (the first
+    /// poll answers `None` and starts the capture).
+    ///
+    /// Android asks for consent from a see-through activity of the SDK's own,
+    /// so an app capturing from behind another is not brought forward. Android
+    /// lets an app in the background open an activity only when it is exempt
+    /// (the device owner, an app that may draw over other apps); otherwise the
+    /// prompt never opens and this fails with [`RecorderError::Platform`]
+    /// after five seconds.
     pub async fn start(&self, config: RecordingConfig) -> Result<MediaStream, RecorderError> {
         let (stream, writer) = MediaStream::new();
         let (recording, native) = imp::start(config, writer).await?;

@@ -22,6 +22,11 @@ class ScreenCaptureConsentActivity : Activity() {
         super.onCreate(savedInstanceState)
         token = intent.getLongExtra(EXTRA_TOKEN, 0L)
         if (savedInstanceState != null) return
+        // Opened too late (the start gave up) or for a capture since stopped.
+        if (!RustScreenCaptureHelper.consentOpened(token)) {
+            close()
+            return
+        }
         try {
             @Suppress("DEPRECATION")
             startActivityForResult(RustScreenCaptureHelper.consentIntent(this), REQUEST)

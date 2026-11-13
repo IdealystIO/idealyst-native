@@ -15,6 +15,7 @@
 //! let encoder = Encoder::start(&screen, EncoderConfig::realtime(), |event| match event {
 //!     EncoderEvent::Frame(frame) => send(frame),
 //!     EncoderEvent::Ended(why) => log(why),
+//!     _ => {}
 //! })?;
 //! encoder.request_keyframe(); // the receiver lost a frame
 //!
@@ -34,6 +35,16 @@
 //! | web | — | WebCodecs |
 //!
 //! A dash is [`VideoCodecError::Unsupported`].
+//!
+//! # Sources
+//!
+//! The Android encoder takes a stream whose native source is a
+//! `media_stream::PreviewSource`: a whole-screen `screen-recorder` capture
+//! (verified), or a `camera`. It encodes the buffers as the source renders
+//! them, which for a camera is in the sensor's orientation and, for a front
+//! camera, mirrored: the receiver turns the picture by the source's
+//! `PreviewGeometry::sensor_orientation` itself. A screen capture is
+//! upright.
 //!
 //! # Frame loss
 //!
@@ -118,6 +129,7 @@ pub struct EncodedFrame {
 
 /// What an [`Encoder`] reports, on its own thread.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum EncoderEvent {
     /// A frame came out of the encoder.
     Frame(EncodedFrame),
@@ -128,6 +140,7 @@ pub enum EncoderEvent {
 
 /// Why encoding or decoding could not start.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum VideoCodecError {
     /// Not on this platform (yet), for the named direction.
     #[error("video {0} is not supported on this platform")]

@@ -39,8 +39,7 @@ object RustVideoEncoder {
         val thread = HandlerThread("idealyst-video-encoder-$token").also { it.start() }
         val codec = MediaCodec.createEncoderByType(MIME)
         try {
-            codec.setCallback(callback(token), Handler(thread.looper))
-            configure(codec, width, height, bitrate, fps)
+            configure(codec, callback(token), Handler(thread.looper), width, height, bitrate, fps)
             val surface = codec.createInputSurface()
             sessions[token] = Session(codec, surface, thread)
             codec.start()
@@ -125,8 +124,20 @@ object RustVideoEncoder {
      * repeated while the picture is still, so a receiver that lost a frame is
      * not left waiting for it to change. An encoder that refuses the profile
      * gets the rest without it.
+     *
+     * The callback is set before each `configure`: `reset` returns the codec
+     * to its uninitialised state, callback included, and a codec configured
+     * without one runs synchronously and never calls back with a frame.
      */
-    private fun configure(codec: MediaCodec, width: Int, height: Int, bitrate: Int, fps: Int) {
+    private fun configure(
+        codec: MediaCodec,
+        callback: MediaCodec.Callback,
+        handler: Handler,
+        width: Int,
+        height: Int,
+        bitrate: Int,
+        fps: Int,
+    ) {
         fun format(baseline: Boolean) = MediaFormat.createVideoFormat(MIME, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
@@ -143,9 +154,11 @@ object RustVideoEncoder {
             if (baseline) setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
         }
         try {
+            codec.setCallback(callback, handler)
             codec.configure(format(true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         } catch (_: Throwable) {
             codec.reset()
+            codec.setCallback(callback, handler)
             codec.configure(format(false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         }
     }

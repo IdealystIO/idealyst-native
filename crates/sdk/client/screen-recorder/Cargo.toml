@@ -127,9 +127,9 @@ web-glue = { workspace = true }
 backend-web = { workspace = true }
 
 # Android capture: MediaProjection + VirtualDisplay + ImageReader, driven by a
-# Kotlin shim (RustScreenCaptureHelper) that owns the consent Activity-result
-# flow, the mandatory mediaProjection foreground service, and the capture loop,
-# and trampolines each RGBA frame back through the
+# Kotlin shim (RustScreenCaptureHelper) that owns the consent flow (through its
+# own ScreenCaptureConsentActivity), the mandatory mediaProjection foreground
+# service, and the capture loop, and trampolines each RGBA frame back through the
 # `Java_io_idealyst_screenrecorder_RustScreenCaptureHelper_native*` exports in
 # android.rs. `ndk-context` exposes the host JavaVM + Activity; `futures-channel`
 # bridges the shim's `nativeStarted`/`nativeError` callbacks to the awaiting

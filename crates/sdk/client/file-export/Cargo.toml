@@ -37,7 +37,7 @@ futures-channel = "0.3"
 
 # Android: Storage Access Framework via a Kotlin shim that launches
 # ACTION_CREATE_DOCUMENT and routes the result back through the shared
-# `RustActivityResult` registry (same path screen-recorder's consent uses).
+# `RustActivityResult` registry.
 [target.'cfg(target_os = "android")'.dependencies]
 # The Kotlin shim names `io.idealyst.runtime.RustActivityResult`, which ships in
 # backend-android-mobile's Kotlin runtime. Depending on the backend makes this

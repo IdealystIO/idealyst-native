@@ -11,6 +11,20 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **`screen-recorder` on Android captures CPU frames only on demand, and `RecordingConfig` has a
+  new field** (`screen-recorder` major). A whole-screen stream renders into an `ImageReader` only
+  while someone wants CPU frames: an active `subscribe`, or `latest()` polled at least every two
+  seconds. A one-off `latest()` right after `start` now answers `None` (and starts the capture);
+  use `screenshot()` for a single frame. While a consumer holds the stream's `PreviewSource` (the
+  `video-codec` encoder, the `video` SDK's display), CPU subscribers get no frames.
+  - **`RecordingConfig` gains `max_edge`.** A `RecordingConfig { .. }` struct literal must name it
+    (`max_edge: None`); the builder (`RecordingConfig::new()…`) needs no change.
+  - **Android consent opens from the SDK's own activity** in a task of its own, not the app's
+    activity. An app in the background may open it only when Android exempts it (the device
+    owner, an app that may draw over other apps); otherwise `start` fails with `Platform` after
+    5 s. The capture size is now `RecordingConfig::output_size(display)`, each side rounded down
+    to a multiple of 8.
+
 - **idea-ui's `Badge` is gone; `Tag` is the one status pill** (`idea-ui` major). `Badge` and
   `Tag` drew the same tone × variant pill, and a `Tag` with no `on_remove` already was a static
   label. `Badge`, `BadgeProps`, `BadgeStyles`, `BadgeVariant`, `BadgeRestyle` and
@@ -1270,6 +1284,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **`video-codec`: live hardware video encoding and decoding** (new crate). `Encoder::start(&stream,
+  EncoderConfig::realtime(), on_event)` encodes a capture stream with Android's MediaCodec H.264,
+  fed through its input surface (the capture renders straight into the encoder), and emits each
+  frame, keyframes with SPS/PPS in front, keyframes on `request_keyframe()`. `Decoder::new(Codec::
+  H264)` decodes on the web with WebCodecs into a `MediaStream` the `video` SDK plays.
+  `h264::codec_string` reads a keyframe's WebCodecs codec string. Other platforms are
+  `Unsupported`.
+- **`screen-recorder`: a zero-copy Android source, `max_edge`, pre-granted consent, display size.**
+  A whole-screen stream's native source is a `media_stream::PreviewSource` a consumer claims for
+  its own `Surface`. `RecordingConfig::max_edge(px)` scales the output down in shape, and
+  `output_size(source)` reports the result. `ScreenRecorder::consent_pregranted()` reads the
+  `PROJECT_MEDIA` app op; `ScreenRecorder::display_size()` the display's real size.
 
 - **`accessibility-service`: find and press elements, and watch windows** (minor). For an
   unattended device's agent that has to press a system prompt's button (Android's "Start

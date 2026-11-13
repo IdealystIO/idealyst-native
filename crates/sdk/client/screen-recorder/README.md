@@ -22,9 +22,19 @@ trick, generalized to every backend).
 - `ScreenRecorder::request_permission(&source)` — optionally trigger the consent
   flow up front. On most targets the prompt only appears at `start`, so this
   usually just resolves `Ok` to defer to that call.
-- [`RecordingConfig`] — builder over `source`, `audio`, `fps`, `size`. Construct
-  with `RecordingConfig::new()` (defaults: `Source::ThisApp`, no audio,
-  `DEFAULT_FPS` = 30, native size).
+- [`RecordingConfig`] — builder over `source`, `audio`, `fps`, `size`,
+  `max_edge` (the longest output edge; the source's shape, scaled down only).
+  Construct with `RecordingConfig::new()` (defaults: `Source::ThisApp`, no
+  audio, `DEFAULT_FPS` = 30, native size). `output_size(source)` says what a
+  source comes out at: on Android each side is rounded down to a multiple of 8
+  for hardware encoders, and a size of another shape than the screen is
+  letterboxed, not stretched.
+- `ScreenRecorder::consent_pregranted()` — whether a screen capture will start
+  without a prompt (Android: the `PROJECT_MEDIA` app op, which only adb or the
+  system grants). `false` elsewhere.
+- `ScreenRecorder::display_size()` — the main display's size in pixels, for
+  scaling input given in a frame's pixels back to the screen (Android; `None`
+  elsewhere).
 - [`Source`] — `ThisApp`, `UserChoice`, `FullScreen`, or `Window(WindowSelector)`.
 - [`AudioSource`] — reserved enum (`None` / `App` / `System` / `Microphone` /
   `AppAndMic`) for when audio capture lands; the frame callback is video-only today.
@@ -100,7 +110,7 @@ differs.
 | --- | --- | --- |
 | iOS | ReplayKit (`RPScreenRecorder.startCapture`) → `CMSampleBuffer` | separate `UIWindow` — ReplayKit records the key window only (device-verified) |
 | macOS | ScreenCaptureKit (`SCStream` + `SCContentFilter`) | separate `NSWindow`/`NSPanel` excluded via `SCContentFilter` |
-| Android | `MediaProjection` + `VirtualDisplay` + `ImageReader` (JNI/Kotlin shim) | separate `WindowManager` window — PixelCopy-excluded |
+| Android | `MediaProjection` + `VirtualDisplay` (JNI/Kotlin shim). A whole-screen stream's native source is a `media_stream::PreviewSource`: a consumer that claims it (the `video-codec` encoder, the `video` SDK's display) gets the display rendered straight into its `Surface`. CPU frames come from an `ImageReader` that exists only while there is CPU demand (a subscriber, or `latest()` polled at least every 2 s; the first poll answers `None`), and get none while a consumer holds the claim | separate `WindowManager` window — PixelCopy-excluded |
 | Web (wasm32) | `getDisplayMedia` → hidden `<video>` → `<canvas>` pixel pump | inline no-op (TODO: Element Capture `restrictTo`) |
 | Windows | `Windows.Graphics.Capture`: this app's window / a window by title / the primary monitor / the system capture picker; a free-threaded frame pool copied to the CPU as BGRA, paced to `fps`; video only (an audio request is logged and ignored, as on Linux). Verified on a Windows 11 VM | a per-pixel-alpha popup owned by the app's window, which a capture of the app's window never contains; while a recording runs the popups also carry `WDA_EXCLUDEFROMCAPTURE`, so monitor and picked-window captures leave them out too (and so does any other capture, screenshots included, for that time). Painted content only: a native control (`button`, `text_input`, `toggle`, `slider`) inside the layer stays a child window of the app's and IS recorded. Verified on a Windows 11 VM |
 | Linux | xdg-desktop-portal ScreenCast + PipeWire | none available |
@@ -119,7 +129,15 @@ at build time and injects the right per-platform artifacts:
   system-wide capture. `ReplayKit`/`CoreMedia`/`CoreVideo` are auto-linked.
 - **macOS** — the system Screen Recording (TCC) permission prompt.
 - **Android** — `FOREGROUND_SERVICE_MEDIA_PROJECTION` plus the MediaProjection
-  consent dialog (re-prompts each session on API 14+).
+  consent dialog (re-prompts each session on API 14+, where it asks for the
+  whole display only). The dialog is opened from the SDK's own see-through
+  `ScreenCaptureConsentActivity`, in a task of its own, so an app capturing
+  from behind another is not brought forward. Android lets an app in the
+  background open it only when exempt (the device owner, an app that may draw
+  over other apps); otherwise `start` fails with `Platform` after 5 s instead
+  of waiting forever. The `PROJECT_MEDIA` app op (adb:
+  `appops set <pkg> PROJECT_MEDIA allow`) lets the dialog close before it
+  draws.
 - **Web** — nothing to declare; the browser shows the source picker on
   `getDisplayMedia`.
 
@@ -142,7 +160,7 @@ item as you exercise it.
 **Behavior**
 - [ ] **Web** — `getDisplayMedia` source picker appears; frames stream as RGBA8; `PrivateLayer` is an inline no-op (no exclusion yet).
 - [ ] **iOS** — device-verified: ReplayKit consent dialog appears; `Source::ThisApp` frames stream (in-app capture shows the app — recursive mirror expected); the private layer's separate `UIWindow` is excluded; `UserChoice` falls back to `ThisApp`, `Window` → `UnsupportedSource`.
-- [ ] **Android** — ⚠️ not yet device-confirmed: MediaProjection consent dialog appears (re-prompts each session on API 14+); confirm the `FOREGROUND_SERVICE_MEDIA_PROJECTION` foreground-service notification shows; frames stream; the private layer's separate `WindowManager` window is PixelCopy-excluded.
+- [ ] **Android** — partly device-verified on a Lenovo TB336FU (Android 16) with a device-owner agent: the consent activity, the `PreviewSource` claim by the `video-codec` encoder, and the encoded stream reaching a browser decoder. Not yet confirmed: the CPU path's frames, the foreground-service notification, the private layer's PixelCopy exclusion, and the 5 s consent timeout for a background app that is not exempt.
 - [x] **Windows** — VM-verified: `ThisApp` and `FullScreen` recordings show the app and not the private layer (`regression_recordings_leave_the_private_layer_out`); the gallery's REC badge shows on screen during a recording and is absent from the saved clip.
 - [ ] **macOS** — system Screen Recording (TCC) prompt appears; ScreenCaptureKit frames stream; the private `NSWindow`/`NSPanel` is excluded via `SCContentFilter`.
 
