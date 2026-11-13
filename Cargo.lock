@@ -6457,7 +6457,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "22.3.0"
+version = "22.4.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6576,7 +6576,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7436,7 +7436,7 @@ dependencies = [
 
 [[package]]
 name = "lint"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "proc-macro2",
@@ -10796,7 +10796,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "anyhow",
  "native-parity",
@@ -11021,7 +11021,7 @@ version = "0.1.1"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "9.1.0"
+version = "9.2.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -12341,7 +12341,7 @@ dependencies = [
 
 [[package]]
 name = "stack-navigator"
-version = "9.0.0"
+version = "9.1.0"
 dependencies = [
  "android-navigator-helpers",
  "backend-android-mobile",
