@@ -444,10 +444,16 @@
 //!             move |row, col| ui! { Typography(content = rx!(field_of(row.get(), col))) },
 //!         )
 //!             .on_row_click(move |i| open(i))
+//!             .on_row_menu(move |i, at| show_menu(i, at))
 //!             .on_end_reached(400.0, move || load_more()),
 //!     ),
 //! )
 //! ```
+//!
+//! `on_row_menu` opens a row's menu on a right-click or a hold, through the
+//! same press handler as `on_row_click`, so a hold opens the menu and not
+//! the row. `on_end_reached` also asks when the first page is too short to
+//! scroll, and again whenever a page leaves the end in view.
 //!
 //! # Per-table cell styles
 //!
@@ -496,6 +502,7 @@ mod columns;
 mod group;
 mod pager;
 mod reorder;
+mod row_press;
 mod rows;
 mod scroller;
 mod select;

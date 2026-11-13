@@ -103,24 +103,43 @@ fn scan_for_headers(stream: TokenStream, hit: &mut impl FnMut(Span)) {
             match &tokens[k] {
                 TokenTree::Group(g) if g.delimiter() == Delimiter::Brace => break,
                 TokenTree::Punct(p) if p.as_char() == ',' => break,
-                // `.get()` — Punct('.'), Ident("get"), empty parens group.
-                TokenTree::Punct(p) if p.as_char() == '.' => {
-                    if let (Some(TokenTree::Ident(m)), Some(TokenTree::Group(args))) =
-                        (tokens.get(k + 1), tokens.get(k + 2))
-                    {
-                        if m == "get"
-                            && args.delimiter() == Delimiter::Parenthesis
-                            && args.stream().is_empty()
-                        {
-                            hit(m.span());
-                        }
-                    }
+                // A closure's body runs later, not at build (`memo(move ||
+                // q.get())` is the reactive spelling), so nothing after
+                // one is a snapshot.
+                TokenTree::Punct(p) if p.as_char() == '|' => break,
+                _ => {
+                    zero_arg_get_at(&tokens, k, hit);
                     k += 1;
                 }
-                _ => k += 1,
             }
         }
         i = j + 1;
+    }
+}
+
+/// Report a zero-arg `.get()` starting at `tokens[k]`, or inside the
+/// argument group at `tokens[k]`: `f(&sig.get()).iter()` reads the signal
+/// once at build exactly like `sig.get()` does.
+fn zero_arg_get_at(tokens: &[TokenTree], k: usize, hit: &mut impl FnMut(Span)) {
+    match &tokens[k] {
+        // `.get()` — Punct('.'), Ident("get"), empty parens group.
+        TokenTree::Punct(p) if p.as_char() == '.' => {
+            if let (Some(TokenTree::Ident(m)), Some(TokenTree::Group(args))) = (tokens.get(k + 1), tokens.get(k + 2)) {
+                if m == "get" && args.delimiter() == Delimiter::Parenthesis && args.stream().is_empty() {
+                    hit(m.span());
+                }
+            }
+        }
+        TokenTree::Group(g) if g.delimiter() != Delimiter::Brace => {
+            let inner: Vec<TokenTree> = g.stream().into_iter().collect();
+            for at in 0..inner.len() {
+                if matches!(&inner[at], TokenTree::Punct(p) if p.as_char() == '|') {
+                    break;
+                }
+                zero_arg_get_at(&inner, at, hit);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -229,6 +248,26 @@ mod tests {
                         text { "{selected.get()}" }
                     }
                 }
+            }
+        });
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// The read inside a call in the header is the same snapshot:
+    /// CrewForge's filter menus wrote `for x in f(&query.get()).iter()` and
+    /// the rows never narrowed. A read inside a closure is deferred, so
+    /// `memo(move || …)` stays quiet.
+    #[test]
+    fn regression_get_inside_a_call_in_the_header_is_a_snapshot() {
+        let out = diags(quote! {
+            fn build() -> Element {
+                ui! { for x in matches(&query.get()).iter(), key = x.id { Row(data = x) } }
+            }
+        });
+        assert_eq!(out.len(), 1, "{out:?}");
+        let out = diags(quote! {
+            fn build() -> Element {
+                ui! { for x in memo(move || matches(&query.get())), key = x.id { Row(data = x) } }
             }
         });
         assert!(out.is_empty(), "{out:?}");

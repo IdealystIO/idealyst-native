@@ -167,7 +167,7 @@ use crate::components::field::{adornment_icon_color, adornment_icon_px_for};
 use crate::components::icon::Icon;
 use crate::components::select::{
     live_options, menu_entries, option_active, option_group_heading, option_text, rotating_chevron, MenuEntry,
-    SelectActive, SelectOption, SelectSize, SelectStyles, CHEVRON_DOWN,
+    SelectActive, SelectMulti, SelectOption, SelectSize, SelectStyles, CHEVRON_DOWN,
 };
 
 // Right padding the autocomplete input reserves, per size, so typed text
@@ -1267,9 +1267,10 @@ fn row(
         selection.is_none() && value.get() == text_id
     }));
     let press_id = id.clone();
+    let multi = if selection.is_some() { SelectMulti::On } else { SelectMulti::Off };
     let row = pressable(kids, move || (commit)(&press_id));
     with_test_id!(row, row_test_id)
-        .with_style(SelectStyles::option().set(Reactive::Dynamic(Rc::new(move || {
+        .with_style(SelectStyles::option().set(multi).set(Reactive::Dynamic(Rc::new(move || {
             let highlighted = cursor_id().as_deref() == Some(id.as_str());
             let selected = selection.is_none() && value.get() == id;
             if !selected && highlighted {
@@ -1400,6 +1401,35 @@ mod tests {
                 panic!("an undescribed row's body is the label text alone");
             };
             assert_eq!(text.as_deref(), Some("Plain"));
+        });
+    }
+
+    /// A multi-select row is [checkbox, label] laid out as a centred row.
+    /// The option slot alone is a column, which stacked the checkbox above
+    /// its label, and the row had no slot a host could restyle to fix it.
+    #[test]
+    fn regression_multi_select_row_puts_checkbox_beside_label() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let value: Signal<String> = runtime_core::signal(String::new());
+            let picks: Signal<Vec<String>> = runtime_core::signal(vec![]);
+            let flex = |selection: Option<Signal<Vec<String>>>| {
+                let P::Pressable { children, style, .. } =
+                    classify(row(SelectOption::new("a", "Apple"), Rc::new(|_: &str| {}), || None, value, selection))
+                else {
+                    panic!("a menu row is a pressable");
+                };
+                let rules = style.expect("rows carry the option style").resolve();
+                (children.len(), rules.flex_direction, rules.align_items)
+            };
+            assert_eq!(
+                flex(Some(picks)),
+                (2, Some(FlexDirection::Row), Some(AlignItems::Center)),
+                "a multi row is [checkbox, label] side by side"
+            );
+            let (kids, dir, _) = flex(None);
+            assert_eq!(kids, 1);
+            assert_ne!(dir, Some(FlexDirection::Row), "a single row keeps the slot's column");
         });
     }
 

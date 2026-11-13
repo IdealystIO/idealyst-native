@@ -19,6 +19,10 @@
 //! the theme's border between rows. `Field` and `Detail` columns live in the
 //! detail sheet, which a press on the row opens unless `on_row_click` claims it.
 //!
+//! `on_row_menu` opens a row's menu on a hold or a right-click. It rides the
+//! row's own press handler: a `long_press` wrapped around the list never sees
+//! a hold, because the row's press takes the touch.
+//!
 //! `scroller` scrolls the list to a row ([`TableScroller`]); hand the same one
 //! to the wide form.
 //!
@@ -60,10 +64,10 @@ use std::rc::Rc;
 
 use runtime_core::primitives::flat_list::{flat_list, FlatListItemSize};
 use runtime_core::{
-    component, effect, memo, rx, signal, tap, ui, Element, IdealystSchema, IntoElement, Reactive, Signal,
-    TapRecognizer,
+    component, effect, memo, rx, signal, ui, Element, IdealystSchema, IntoElement, Reactive, Signal, TouchPoint,
 };
 
+use super::row_press::{row_press, RowMenu};
 use super::scroller::{detach_on_cleanup_cell, TableScroller};
 use super::select::{select_all_line, select_row_box};
 use super::{CardSlot, ColumnId, RowId, TableColumn};
@@ -232,6 +236,12 @@ pub struct TableCardsProps {
     /// Called with the row index when a card is pressed — the row's own
     /// controls (its menu, its checkbox) still take their own presses.
     pub on_row_click: Option<Rc<dyn Fn(usize)>>,
+    /// Open row `i`'s menu: called with the press point (window
+    /// coordinates) on a hold (a long press, on touch) or a secondary
+    /// press. It shares the row's press handler with `on_row_click`, so a
+    /// hold opens the menu and not the row. A `long_press` wrapped around
+    /// the list never sees a hold: the row's own press takes the touch.
+    pub on_row_menu: Option<Rc<dyn Fn(usize, TouchPoint)>>,
     /// Fetch the next page: called as the reader nears the last card.
     pub on_end_reached: Option<Rc<dyn Fn()>>,
     /// The screen's selection, as for `Table(selection = …)`: a box on each
@@ -269,6 +279,7 @@ impl Default for TableCardsProps {
             cell_empty: None,
             cell_caption: None,
             on_row_click: None,
+            on_row_menu: None,
             on_end_reached: None,
             selection: None,
             selection_label: None,
@@ -296,6 +307,7 @@ struct CardsModel {
     cell_empty: Option<Rc<dyn Fn(usize, &ColumnId) -> bool>>,
     cell_caption: Option<Rc<dyn Fn(usize, &ColumnId) -> Option<String>>>,
     on_row_click: Option<Rc<dyn Fn(usize)>>,
+    on_row_menu: Option<Rc<dyn Fn(usize, TouchPoint)>>,
     selection: Option<Signal<BTreeSet<RowId>>>,
     presentation: CardPresentation,
     /// The row whose detail sheet is open.
@@ -314,6 +326,7 @@ impl Default for CardsModel {
             cell_empty: None,
             cell_caption: None,
             on_row_click: None,
+            on_row_menu: None,
             selection: None,
             presentation: CardPresentation::default(),
             detail_row: signal(None),
@@ -325,6 +338,11 @@ impl Default for CardsModel {
 impl CardsModel {
     fn is_empty(&self, i: usize, id: &ColumnId) -> bool {
         self.cell_empty.as_ref().is_some_and(|f| f(i, id))
+    }
+
+    /// Row `i`'s menu callback, when the list has one.
+    fn row_menu(&self, i: usize) -> Option<RowMenu> {
+        self.on_row_menu.clone().map(|f| Rc::new(move |at| f(i, at)) as RowMenu)
     }
 
     /// A labelled cell's caption on row `i`.
@@ -352,6 +370,7 @@ pub fn TableCards(props: &TableCardsProps) -> Element {
         cell_empty: props.cell_empty.clone(),
         cell_caption: props.cell_caption.clone(),
         on_row_click: props.on_row_click.clone(),
+        on_row_menu: props.on_row_menu.clone(),
         selection: props.selection,
         presentation: props.presentation,
         detail_row: signal(None),
@@ -599,14 +618,15 @@ fn TableCardItem(props: &TableCardItemProps) -> Element {
             }
         }
     };
-    match model.on_row_click.clone() {
-        Some(cb) => runtime_core::view(vec![card])
-            .on_touch({
-                let press = tap(TapRecognizer::new(), move || cb(i));
-                move |ev| press(ev)
-            })
-            .into_element(),
-        None => card,
+    let on_tap = model.on_row_click.clone().map(|cb| Rc::new(move || cb(i)) as Rc<dyn Fn()>);
+    with_row_press(card, on_tap, model.row_menu(i))
+}
+
+/// `content` inside the row's press surface, when it has a tap or a menu.
+fn with_row_press(content: Element, on_tap: Option<Rc<dyn Fn()>>, on_menu: Option<RowMenu>) -> Element {
+    match row_press(on_tap, on_menu, |_| {}) {
+        Some(press) => runtime_core::view(vec![content]).on_touch(move |ev| press(ev)).into_element(),
+        None => content,
     }
 }
 
@@ -679,15 +699,7 @@ fn TableCardRow(props: &TableCardRowProps) -> Element {
             actions
         }
     };
-    match press {
-        Some(press) => runtime_core::view(vec![row])
-            .on_touch({
-                let press = tap(TapRecognizer::new(), move || press());
-                move |ev| press(ev)
-            })
-            .into_element(),
-        None => row,
-    }
+    with_row_press(row, press, model.row_menu(i))
 }
 
 #[cfg(test)]

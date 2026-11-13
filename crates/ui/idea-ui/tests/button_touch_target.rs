@@ -114,6 +114,32 @@ fn touch_target_follows_the_viewport_across_md() {
     drop(realized);
 }
 
+/// An app whose layout switches at `Sm` (640) moves the release there:
+/// with the release fixed at `Md` (768), controls changed size at a
+/// different width from everything else.
+#[test]
+fn regression_touch_target_release_follows_the_apps_breakpoint() {
+    const SM_TABLET: ViewportSize = ViewportSize { width: 700.0, height: 900.0 };
+    let (h, realized, applied) = mount(SM_TABLET, save_button);
+    assert_eq!(
+        last_box_minimums(&applied).1,
+        Some(Length::Px(MIN_TOUCH_TARGET_PX)),
+        "at 700 the default (Md) release keeps the floor"
+    );
+    h.world.enter(|| idea_ui::touch::set_touch_target_release(runtime_core::Breakpoint::Sm));
+    // A remount composes with the new release.
+    drop(realized);
+    let (_h, realized, applied) = mount(SM_TABLET, save_button);
+    assert_eq!(last_box_minimums(&applied).1, Some(Length::Auto), "released from Sm up");
+    let (_h2, realized2, applied2) = mount(PHONE, save_button);
+    assert_eq!(
+        last_box_minimums(&applied2).1,
+        Some(Length::Px(MIN_TOUCH_TARGET_PX)),
+        "a phone keeps it"
+    );
+    drop((realized, realized2));
+}
+
 #[test]
 fn no_touch_target_opts_one_button_out() {
     let (_h, realized, applied) = mount(PHONE, || {

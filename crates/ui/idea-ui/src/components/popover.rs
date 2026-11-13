@@ -178,14 +178,32 @@ stylesheet! {
 /// focused: a text input inside a `Popover`/`Menu` could not be focused or
 /// typed into at all (the press landed, focus was yanked to the catcher root).
 /// A catcher's whole job is the outside tap; it must never own focus.
+///
+/// While its branch is held for an exit animation the catcher stops taking
+/// clicks: it is invisible and full-screen, so a click in that window (on
+/// the trigger, right after Escape) landed on it, re-dismissed a surface
+/// that was already closing, and never reached what the reader clicked.
 pub(crate) fn dismiss_catcher(on_dismiss: Option<Rc<dyn Fn()>>) -> Element {
+    let leaving = runtime_core::signal(false);
+    runtime_core::hold_on_exit(0, move || leaving.set(true));
+    let backdrop = move || {
+        let app = StyleApplication::new(transparent_backdrop_sheet());
+        if leaving.get() {
+            app.with_inline(StyleRules {
+                pointer_events: Some(runtime_core::PointerEvents::None),
+                ..Default::default()
+            })
+        } else {
+            app
+        }
+    };
     let mut c = overlay(Vec::new())
         // FullScreen so the portal (and its inset-0 backdrop) is viewport-sized
         // — the default Center placement would size the portal to its (empty)
         // content, collapsing the catcher to 0×0.
         .placement(ViewportPlacement::FullScreen)
         .backdrop(BackdropMode::Dismiss)
-        .backdrop_style(StyleApplication::new(transparent_backdrop_sheet()))
+        .backdrop_style(backdrop)
         .trap_focus(false);
     if let Some(d) = on_dismiss {
         c = c.on_dismiss(move || (d)());

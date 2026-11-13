@@ -112,7 +112,7 @@ const NAV_COMPACT_PX: f32 = 32.0;
 /// shrink the stepper below the page buttons beside it.
 fn nav_touch_target(s: &mut SlotRestyle<'_, PaginationStyles>) {
     crate::touch::touch_target(s);
-    s.breakpoint(crate::touch::TOUCH_TARGET_RELEASE, |_| runtime_core::StyleRules {
+    s.breakpoint(crate::touch::touch_target_release(), |_| runtime_core::StyleRules {
         min_width: Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(NAV_COMPACT_PX))),
         ..Default::default()
     });

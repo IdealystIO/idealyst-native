@@ -22,7 +22,8 @@
 //!
 //! On phones the box is at least 44 × 44 pt whatever its `size`
 //! ([`touch_target`](crate::touch::touch_target): the floor sits on the
-//! `Xs` base and releases at `Md`). Opt one button out with
+//! `Xs` base and releases at `Md`, or where the app's
+//! `set_touch_target_release` puts it). Opt one button out with
 //! `styles = ButtonSlotStyles::default().root(no_touch_target())`.
 //!
 //! `accessibility_label` renames the button for screen readers and robot

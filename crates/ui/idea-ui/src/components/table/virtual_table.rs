@@ -69,11 +69,12 @@ use std::rc::Rc;
 use runtime_core::primitives::virtual_grid::{virtual_grid_recycled, FrozenPanes, VirtualGridHandle};
 use runtime_core::{
     effect, memo, signal, tap, ui, Element, Length, Memo, Reactive, Ref, Signal, StyleApplication, StyleRules,
-    TapRecognizer, Tokenized, TouchHandler, VariantEnum, ViewHandle,
+    TapRecognizer, Tokenized, TouchHandler, TouchPoint, VariantEnum, ViewHandle,
 };
 
 use super::columns::{live_width, ColumnResizeHandle};
 use super::reorder::GRIP_COLUMN_WIDTH_PX;
+use super::row_press::{row_press, RowMenu};
 use super::scroller::detach_on_cleanup;
 use super::select::{select_all_line, select_row_box_live};
 use super::styles::{TableSlotStyles, TableStyles};
@@ -116,6 +117,7 @@ pub struct VirtualRows {
     pub(super) on_sort: Option<Rc<dyn Fn(&ColumnId, SortState)>>,
     pub(super) on_end_reached: Option<Rc<dyn Fn()>>,
     pub(super) end_threshold: f32,
+    pub(super) on_row_menu: Option<Rc<dyn Fn(usize, TouchPoint)>>,
 }
 
 impl VirtualRows {
@@ -173,6 +175,7 @@ impl VirtualRows {
             on_sort: None,
             on_end_reached: None,
             end_threshold: 0.0,
+            on_row_menu: None,
         }
     }
 
@@ -195,6 +198,16 @@ impl VirtualRows {
     /// selection box, a button in a cell) still take their own presses.
     pub fn on_row_click(mut self, f: impl Fn(usize) + 'static) -> Self {
         self.on_row_click = Some(Rc::new(f));
+        self
+    }
+
+    /// Open row `i`'s menu: `f(i, point)` on a secondary press (right-click,
+    /// two-finger click) or a hold (a long press, on touch), with the press
+    /// point in window coordinates for anchoring the menu there. It shares
+    /// the cells' press handler with [`Self::on_row_click`], so a hold opens
+    /// the menu and not the row. A row's own controls keep their presses.
+    pub fn on_row_menu(mut self, f: impl Fn(usize, TouchPoint) + 'static) -> Self {
+        self.on_row_menu = Some(Rc::new(f));
         self
     }
 
@@ -221,6 +234,11 @@ impl VirtualRows {
     /// Fetch the next page: called once as the reader comes within
     /// `threshold` px of the last row, and again after scrolling away and
     /// back. A screenful is the usual threshold.
+    ///
+    /// The end is also checked once the table is laid out and whenever the
+    /// row count changes, so a page too short to scroll still asks for the
+    /// next one, and a page that leaves the end in view asks again. A fetch
+    /// that adds no rows does not.
     pub fn on_end_reached(mut self, threshold: f32, f: impl Fn() + 'static) -> Self {
         self.end_threshold = threshold.max(0.0);
         self.on_end_reached = Some(Rc::new(f));
@@ -611,10 +629,53 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
     }
 
     // `on_end_reached`: armed while the reader is further than the threshold
-    // from the last row, fired once on crossing it.
+    // from the last row, fired once on crossing it. Checked on every scroll,
+    // when the scrollport is first measured or resized, and when the row
+    // count changes, so a first page shorter than the viewport (nothing to
+    // scroll) still asks for the next one. A changed count re-arms it: a
+    // page that added rows may still leave the end in view, while a fetch
+    // that added none leaves the count, and so the check, quiet. Nothing
+    // runs before the scrollport is known: a 0-high viewport would read as
+    // "near the end" of any short list.
     let end_armed = Rc::new(std::cell::Cell::new(true));
+    let check_end: Rc<dyn Fn(f32, f32)> = {
+        let (shared, end_armed) = (shared.clone(), end_armed.clone());
+        Rc::new(move |y: f32, vh: f32| {
+            let Some(f) = shared.rows.on_end_reached.as_ref() else { return };
+            let count = shared.items.with_untracked(|v| v.len());
+            let content_h = (count + 1) as f32 * row_height;
+            let near = y + vh >= content_h - shared.rows.end_threshold;
+            if near && end_armed.get() {
+                end_armed.set(false);
+                f();
+            } else if !near {
+                end_armed.set(true);
+            }
+        })
+    };
+    // Re-check against the live scroll position and scrollport.
+    let recheck: Rc<dyn Fn()> = {
+        let (handle, check_end) = (handle.clone(), check_end.clone());
+        Rc::new(move || {
+            let at = handle.borrow().as_ref().and_then(|h| h.scrollport().map(|p| (h.scroll_offset().1, p.height)));
+            if let Some((y, vh)) = at {
+                check_end(y, vh);
+            }
+        })
+    };
+    if shared.rows.on_end_reached.is_some() {
+        let (items, end_armed, recheck) = (shared.items, end_armed.clone(), recheck.clone());
+        let last = std::cell::Cell::new(None::<usize>);
+        effect(move || {
+            let n = items.with(|v| v.len());
+            if last.replace(Some(n)).is_some_and(|was| was != n) {
+                end_armed.set(true);
+            }
+            runtime_core::untrack(|| recheck());
+        });
+    }
     let on_scroll = {
-        let (shared, handle, end_armed) = (shared.clone(), handle.clone(), end_armed.clone());
+        let (shared, handle, check_end) = (shared.clone(), handle.clone(), check_end.clone());
         move |x: f32, y: f32| {
             if let Some(r) = shared.reorder.as_ref() {
                 r.scrolled(x, y);
@@ -627,16 +688,8 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
             if shared.plain && shared.frozen != (0, 0) {
                 shared.scroll_x.set((x, max_x));
             }
-            if let Some(f) = shared.rows.on_end_reached.as_ref() {
-                let count = shared.items.with_untracked(|v| v.len());
-                let content_h = (count + 1) as f32 * row_height;
-                let near = y + vh >= content_h - shared.rows.end_threshold;
-                if near && end_armed.get() {
-                    end_armed.set(false);
-                    f();
-                } else if !near {
-                    end_armed.set(true);
-                }
+            if port.is_some() {
+                check_end(y, vh);
             }
         }
     };
@@ -704,7 +757,12 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
         let (handle, port_sub) = (handle.clone(), port_sub.clone());
         move |h| {
             // The scrollport's width is what flexible columns share.
-            *port_sub.borrow_mut() = Some(h.on_scrollport(move |p| viewport_w.set(p.width)));
+            let (check_end, at) = (check_end.clone(), handle.clone());
+            *port_sub.borrow_mut() = Some(h.on_scrollport(move |p| {
+                viewport_w.set(p.width);
+                let y = at.borrow().as_ref().map_or(0.0, |h| h.scroll_offset().1);
+                check_end(y, p.height);
+            }));
             *handle.borrow_mut() = Some(h);
         }
     })
@@ -792,6 +850,15 @@ fn cell_app(shared: &Shared, head: bool, col: usize) -> StyleApplication {
     })
 }
 
+/// The row inside every cell, header and body alike, that places the
+/// cell's content by its column's `align`.
+fn cell_inner(shared: &Shared, col: usize) -> StyleApplication {
+    TableStyles::cell_inner()
+        .overridden(shared.styles.cell_inner.as_ref())
+        .into_style_application()
+        .with("align", shared.column_axes(col).0)
+}
+
 /// The header row's cell for grid column `col`.
 fn head_cell(shared: &Rc<Shared>, col: usize) -> Element {
     let base = cell_app(shared, true, col);
@@ -805,7 +872,12 @@ fn head_cell(shared: &Rc<Shared>, col: usize) -> Element {
                 let shared = shared.clone();
                 move || super::head_edge(shared.inset(col, shared.frozen_axes(col, base.clone())), shared.head_scrolled.get())
             };
-            return ui! { view(style = style) { content } };
+            // Inside the same `cell_inner` row the body cells use, so the
+            // select-all box centres in its column exactly as the row boxes
+            // do (straight in the column flex it sat at the start, 3.5px
+            // left of them).
+            let inner = cell_inner(shared, col);
+            return ui! { view(style = style) { view(style = inner) { content } } };
         }
         GridCol::Author(c) => c.clone(),
     };
@@ -826,10 +898,7 @@ fn head_cell(shared: &Rc<Shared>, col: usize) -> Element {
     if let (true, Some(sort)) = (sortable, sort.clone()) {
         content.push(sort_indicator(sort));
     }
-    let inner = TableStyles::cell_inner()
-        .overridden(shared.styles.cell_inner.as_ref())
-        .into_style_application()
-        .with("align", align);
+    let inner = cell_inner(shared, col);
     let anchor = column.resizable;
     let style = {
         let shared = shared.clone();
@@ -926,11 +995,7 @@ fn body_cell(shared: &Rc<Shared>, col: usize, row: Memo<usize>) -> Element {
             }
         },
     };
-    let (align, _, _) = shared.column_axes(col);
-    let inner = TableStyles::cell_inner()
-        .overridden(shared.styles.cell_inner.as_ref())
-        .into_style_application()
-        .with("align", align);
+    let inner = cell_inner(shared, col);
     let tone = shared.rows.tone.clone();
     let clickable = shared.rows.on_row_click.is_some();
     // Whether THIS row is lit (hovered or pressed). The style reads this
@@ -975,19 +1040,15 @@ fn body_cell(shared: &Rc<Shared>, col: usize, row: Memo<usize>) -> Element {
     }
     let here = move || runtime_core::untrack(|| row.get());
     // The grip takes the drag; the other cells of a clickable row its press.
-    let touch: Option<TouchHandler> = match (&shared.cols[col], shared.reorder.as_ref(), shared.rows.on_row_click.clone()) {
-        (GridCol::Grip, Some(reorder), _) => Some(reorder.grip_handler(row)),
-        (GridCol::Grip, None, _) => None,
-        (_, _, Some(cb)) => {
+    let touch: Option<TouchHandler> = match (&shared.cols[col], shared.reorder.as_ref()) {
+        (GridCol::Grip, Some(reorder)) => Some(reorder.grip_handler(row)),
+        (GridCol::Grip, None) => None,
+        _ => {
             let pressed = shared.pressed;
-            let press = runtime_core::tap_with_press(
-                TapRecognizer::new(),
-                move || cb(here()),
-                move |down| pressed.set(down.then(here)),
-            );
-            Some(Rc::new(move |ev: &runtime_core::TouchEvent| press(ev)))
+            let on_tap = shared.rows.on_row_click.clone().map(|cb| Rc::new(move || cb(here())) as Rc<dyn Fn()>);
+            let on_menu = shared.rows.on_row_menu.clone().map(|f| Rc::new(move |at| f(here(), at)) as RowMenu);
+            row_press(on_tap, on_menu, move |down| pressed.set(down.then(here)))
         }
-        (_, _, None) => None,
     };
     // The row under the pointer: for a clickable row's tint, and for a grip
     // revealed on hover.

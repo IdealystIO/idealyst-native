@@ -146,7 +146,7 @@ component_styles! {
 }
 
 /// The labelled row's phone tap target: the shared floor, released at
-/// [`TOUCH_TARGET_RELEASE`](crate::touch::TOUCH_TARGET_RELEASE).
+/// [`touch_target_release`](crate::touch::touch_target_release).
 fn row_touch_target(s: &mut SlotRestyle<'_, CheckboxStyles>) {
     crate::touch::touch_target(s);
 }

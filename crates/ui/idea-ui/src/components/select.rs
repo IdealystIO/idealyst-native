@@ -201,6 +201,19 @@ component_styles! {
                     color: t.intent.primary.solid_text(),
                 }
             }
+            // `on` = an Autocomplete MULTI-select row: a leading checkbox
+            // beside the label, centred on it, the same shape as a
+            // checkable `Menu` item. A single-select row holds only its
+            // text, so it keeps the default column.
+            variant multi {
+                #[default]
+                off(_t) {}
+                on(t) {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    gap: t.spacing.sm(),
+                }
+            }
             state hovered(t) {
                 background: t.color.surface_alt(),
             }

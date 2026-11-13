@@ -137,8 +137,26 @@ fn tracked(name: &str) -> Option<&'static str> {
     constructor(name).or_else(|| CONTROL_FLOW.iter().copied().find(|c| *c == name))
 }
 
+/// The framework's own crate names: a path through one of these is the
+/// framework's wherever it appears.
+const FRAMEWORK_CRATES: &[&str] = &["runtime_core", "runtime_vocabulary", "idealyst"];
+
+/// Whether a path whose module segments are `segs` (the called fn or
+/// imported item excluded) points into the framework: through one of
+/// [`FRAMEWORK_CRATES`], or STARTING at one of the framework's module
+/// names (`glue::text`, `builders::view`, a `use prelude::*` of a module
+/// brought in earlier). Not a module name further in: `diesel::prelude::*`
+/// is another crate's prelude, and counting it read every bare `text(…)`
+/// in a Diesel file as the framework's.
+fn framework_path<'a>(mut segs: impl Iterator<Item = &'a str>) -> bool {
+    let Some(first) = segs.next() else { return false };
+    FRAMEWORK_ROOTS.contains(&first) || FRAMEWORK_CRATES.contains(&first) || segs.any(|s| FRAMEWORK_CRATES.contains(&s))
+}
+
 fn has_framework_root(path: &syn::Path) -> bool {
-    FRAMEWORK_ROOTS.iter().any(|root| has_module_segment(path, root))
+    let idents: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    let modules = &idents[..idents.len().saturating_sub(1)];
+    framework_path(modules.iter().map(String::as_str))
 }
 
 /// The framework's raw builder layer, called directly: a fn whose OWNING
@@ -230,14 +248,22 @@ impl FileContext {
     /// seen on the path so far. `use runtime_core::{view, text as t}` →
     /// `named_imports = {view, t}`; `use runtime_core::*` → glob.
     fn record_use_tree(&mut self, tree: &syn::UseTree, under_framework: bool) {
+        self.record_use_path(tree, &mut Vec::new(), under_framework);
+    }
+
+    /// `prefix` is the module path walked so far; whether it points into
+    /// the framework is [`framework_path`]'s call.
+    fn record_use_path(&mut self, tree: &syn::UseTree, prefix: &mut Vec<String>, under_framework: bool) {
         match tree {
             syn::UseTree::Path(p) => {
-                let under = under_framework || FRAMEWORK_ROOTS.contains(&p.ident.to_string().as_str());
-                self.record_use_tree(&p.tree, under);
+                prefix.push(p.ident.to_string());
+                let under = under_framework || framework_path(prefix.iter().map(String::as_str));
+                self.record_use_path(&p.tree, prefix, under);
+                prefix.pop();
             }
             syn::UseTree::Group(g) => {
                 for item in &g.items {
-                    self.record_use_tree(item, under_framework);
+                    self.record_use_path(item, prefix, under_framework);
                 }
             }
             syn::UseTree::Name(n) if under_framework => {
@@ -557,6 +583,35 @@ mod tests {
                 fn f() -> Element { view(vec![]).into_element() }
             });
             assert_eq!(out.len(), 1, "{glob} → {out:?}");
+        }
+    }
+
+    /// Another crate's `prelude` is not the framework's. CrewForge's Diesel
+    /// files (`use diesel::prelude::*;` plus a local `text(…) -> Value`
+    /// reached through `use super::*;`) drew 30 findings.
+    #[test]
+    fn regression_another_crates_prelude_glob_is_not_framework_evidence() {
+        for src in [
+            quote! {
+                use diesel::prelude::*;
+                use super::*;
+                fn f(name: String) { let _ = ("name", text(Some(name))); }
+            },
+            quote! { use sea_orm::prelude::text; fn f() { text(1); } },
+            quote! { fn f() { diesel::prelude::text(1); } },
+            quote! { fn f() { some_crate::glue::view(); } },
+        ] {
+            let out = diags(src.clone());
+            assert!(out.is_empty(), "{src} → {out:?}");
+        }
+        // The framework's own modules still count, at the start of a path
+        // or under a framework crate.
+        for src in [
+            quote! { use glue::*; fn f() { text("x"); } },
+            quote! { use idealyst::runtime_core::prelude::*; fn f() { text("x"); } },
+            quote! { fn f() { glue::text("x"); } },
+        ] {
+            assert_eq!(diags(src.clone()).len(), 1, "{src}");
         }
     }
 

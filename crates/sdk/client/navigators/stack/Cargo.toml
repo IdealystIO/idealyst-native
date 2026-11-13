@@ -60,12 +60,6 @@ wasm-bindgen = "0.2"
 # crate in the graph turns these features on.
 web-sys = { version = "0.3", features = ["History", "Window", "Document", "Element", "HtmlElement", "Node"] }
 
-[target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
-backend-linux = { workspace = true }
-
-[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
-backend-macos = { workspace = true }
-
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }
 # Native push surface: `IosStackPresenter` (UINavigationController, bar

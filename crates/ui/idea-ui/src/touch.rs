@@ -19,10 +19,16 @@
 //! It is a floor, not a size: a control already taller or wider than the
 //! target is unchanged at every width.
 //!
-//! The release is `Md`, not `Sm`: the `Sm` band (640–767) is large phones
-//! in landscape and small tablets — still fingers. Width is the only
-//! signal the style system can branch on; the primary pointer kind is a
-//! runtime signal (`runtime_core::primary_pointer`), not an overlay axis.
+//! The release is `Md` by default, not `Sm`: the `Sm` band (640–767) is
+//! large phones in landscape and small tablets — still fingers. Width is
+//! the only signal the style system can branch on; the primary pointer
+//! kind is a runtime signal (`runtime_core::primary_pointer`), not an
+//! overlay axis.
+//!
+//! An app whose own layout switches at another breakpoint moves the
+//! release with [`set_touch_target_release`], once at boot, so every
+//! floored control (and any that gains the floor later) steps at the same
+//! width as the rest of the app.
 //!
 //! # Opting out
 //!
@@ -33,7 +39,7 @@
 //!   `ButtonStyles::restyle(|s| { s.root().base(|_| no_touch_target()); })`.
 //! - A different floor (48 dp): restyle the base with your own
 //!   `min_width` / `min_height`. The release overlay still frees it at
-//!   `Md` and up.
+//!   [`touch_target_release`] and up.
 //!
 //! # Using it in a component
 //!
@@ -64,8 +70,33 @@ use runtime_core::{Breakpoint, ComponentStyles, Length, SlotRestyle, StyleRules,
 /// Apple HIG 44 pt / WCAG 2.5.5 44 CSS px.
 pub const MIN_TOUCH_TARGET_PX: f32 = 44.0;
 
-/// The first breakpoint that drops the floor — `Xs` and `Sm` keep it.
+/// The default first breakpoint that drops the floor — `Xs` and `Sm` keep
+/// it. [`set_touch_target_release`] moves it.
 pub const TOUCH_TARGET_RELEASE: Breakpoint = Breakpoint::Md;
+
+runtime_tls::thread_local! {
+    static RELEASE: std::cell::Cell<Breakpoint> = const { std::cell::Cell::new(TOUCH_TARGET_RELEASE) };
+}
+
+/// The breakpoint that currently drops the floor: [`TOUCH_TARGET_RELEASE`]
+/// unless the app moved it.
+pub fn touch_target_release() -> Breakpoint {
+    RELEASE.with(|r| r.get())
+}
+
+/// Release the touch floor from `at` up, instead of `Md`, on every
+/// component that floors a slot. Call it once at boot, beside
+/// `install_theme`: `extend` hooks read it when a component's styles are
+/// composed, so this drops every composition (a change after the first
+/// mount restyles mounted controls the way a late restyle does, with the
+/// same warning).
+///
+/// `Breakpoint::Xs` releases it at every width, which is the floor off.
+pub fn set_touch_target_release(at: Breakpoint) {
+    if RELEASE.with(|r| r.replace(at)) != at {
+        runtime_core::component_styles::invalidate_all();
+    }
+}
 
 /// `min_width` / `min_height` at [`MIN_TOUCH_TARGET_PX`] — the rules
 /// [`touch_target`] puts on the slot's base.
@@ -89,8 +120,8 @@ pub fn no_touch_target() -> StyleRules {
 }
 
 /// Floor `slot` at [`MIN_TOUCH_TARGET_PX`] on phones: the rules on the
-/// base, released to `auto` from [`TOUCH_TARGET_RELEASE`] up.
+/// base, released to `auto` from [`touch_target_release`] up.
 pub fn touch_target<S: ComponentStyles>(slot: &mut SlotRestyle<'_, S>) {
     slot.base(|_| touch_target_rules());
-    slot.breakpoint(TOUCH_TARGET_RELEASE, |_| no_touch_target());
+    slot.breakpoint(touch_target_release(), |_| no_touch_target());
 }

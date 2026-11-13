@@ -161,7 +161,7 @@ component_styles! {
 }
 
 /// The labelled row's phone tap target: the shared floor, released at
-/// [`TOUCH_TARGET_RELEASE`](crate::touch::TOUCH_TARGET_RELEASE).
+/// [`touch_target_release`](crate::touch::touch_target_release).
 fn row_touch_target(s: &mut SlotRestyle<'_, RadioStyles>) {
     crate::touch::touch_target(s);
 }
@@ -172,7 +172,7 @@ fn row_touch_target(s: &mut SlotRestyle<'_, RadioStyles>) {
 /// their ring. The `row` axis sets its own gap at every width.
 fn group_gap(s: &mut SlotRestyle<'_, RadioStyles>) {
     s.base(|_| StyleRules { gap: Some(Tokenized::Literal(Length::Px(0.0))), ..Default::default() });
-    s.breakpoint(crate::touch::TOUCH_TARGET_RELEASE, |t| StyleRules {
+    s.breakpoint(crate::touch::touch_target_release(), |t| StyleRules {
         gap: Some(t.spacing.sm()),
         ..Default::default()
     });

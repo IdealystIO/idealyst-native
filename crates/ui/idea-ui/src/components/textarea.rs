@@ -37,6 +37,11 @@
 //! from keyboard focus, `on_change` never fires, and the shared input
 //! sheet's `state disabled` overlay dims it.
 //!
+//! `leading` / `trailing` take Field's [`Adornment`]s and draw them inside
+//! the border: `leading` at the top edge, `trailing` at the bottom, so a
+//! dictation mic or send button stays beside the last line as the box
+//! grows, and the text wraps clear of both.
+//!
 //! `field_ref` binds the underlying `text_area`'s handle, for inserting at
 //! the caret with `insert_text` or moving focus from code. `on_focus_change`
 //! reports focus arriving and leaving, for saving on blur:
@@ -65,7 +70,9 @@ use runtime_core::{component, ui, Element, IdealystSchema, IntoElement, Length, 
 use idea_theme::extensible::ToneRef;
 
 pub use crate::components::field::{FieldAppearance, FieldSize, FieldSlotStyles, FieldStyles};
-use crate::components::field::field_tone_key;
+use crate::components::field::{
+    field_tone_key, render_adornment, Adornment, FieldAdorned, FieldDimmed, FieldEdge, FieldPlacement, FieldRing,
+};
 
 // Reactive-by-default: `#[props]` rewrites each scalar-DATA field `T` →
 // `Reactive<T>` so a `ui!` call site can pass a `Signal`/`rx!` and have it
@@ -156,6 +163,18 @@ pub struct TextareaProps {
     /// disables in place, without rebuilding the native view.
     #[schema(constraint = "reactive: static bool or Signal/rx!")]
     pub disabled: bool,
+    /// Adornment drawn inside the box before the text, at its top edge: an
+    /// icon, an element, or a button. The same [`Adornment`] as
+    /// [`Field`](crate::components::field::Field)'s `leading`. Default
+    /// [`Adornment::None`].
+    #[prop(static)]
+    pub leading: Adornment,
+    /// Adornment drawn inside the box after the text, at its BOTTOM edge,
+    /// so a growing box keeps it beside the last line (a dictation mic, a
+    /// clear or send button, a unit). The text wraps clear of it. Default
+    /// [`Adornment::None`].
+    #[prop(static)]
+    pub trailing: Adornment,
     /// The input's accessible name — what screen readers announce and what
     /// the robot reports as the input's `label`. Defaults to `label`. Set
     /// it when the visible label is drawn OUTSIDE this component (a custom
@@ -192,6 +211,8 @@ impl Default for TextareaProps {
             field_ref: None,
             on_focus_change: None,
             disabled: Reactive::Static(false),
+            leading: Adornment::None,
+            trailing: Adornment::None,
             styles: Default::default(),
         }
     }
@@ -316,10 +337,51 @@ pub fn Textarea(props: &TextareaProps) -> Element {
         Reactive::Static(true) => input.disabled(true),
         live => input.disabled(move || live.get()),
     };
+    let size = props.size.get();
+    let leading = render_adornment(&props.leading, size, &props.disabled, &styles);
+    let trailing = render_adornment(&props.trailing, size, &props.disabled, &styles);
     // INVARIANT (D9): see Field. A live-error-derived (or any live
     // style-driving) border is a reactive slot style, so it re-resolves in
     // place; with every style prop fixed it stays a static application.
-    let input_node = input.with_style(input_style).into_element();
+    let input_node = if leading.is_empty() && trailing.is_empty() {
+        input.with_style(input_style).into_element()
+    } else {
+        // ADORNED, as Field: the chrome (border, tone, dims) moves to a row
+        // SHELL and the text area goes flat inside it, filling the row
+        // between the adornment columns. The shell is a plain view, so the
+        // focus ring rides the `ring` axis from its focus-within, and the
+        // disabled dim the `dimmed` axis.
+        let focused = runtime_core::signal(false);
+        let disabled = props.disabled.clone();
+        let shell_style = input_style
+            .set(FieldAdorned::On)
+            .set(runtime_core::derived(move || FieldRing::from(focused.get())))
+            .set(runtime_core::derived(move || FieldDimmed::from(disabled.get())));
+        let bare_style = FieldStyles::input()
+            .values(&values)
+            .set(FieldAppearance::Bare)
+            .set(FieldPlacement::Shell)
+            .overridden(styles.input.as_ref());
+        let input_node = input.with_style(bare_style).into_element();
+        let edge = |at: FieldEdge, items: Vec<Element>| {
+            (!items.is_empty()).then(|| {
+                let style = FieldStyles::edge_adornment()
+                    .values(&values)
+                    .set(at)
+                    .overridden(styles.edge_adornment.as_ref());
+                ui! { view(style = style) { items } }
+            })
+        };
+        let leading = edge(FieldEdge::Leading, leading);
+        let trailing = edge(FieldEdge::Trailing, trailing);
+        ui! {
+            view(style = shell_style, on_focus = move |f: bool| focused.set(f)) {
+                leading
+                input_node
+                trailing
+            }
+        }
+    };
     let group_style = FieldStyles::group().values(&values).overridden(styles.group.as_ref());
 
     // `label_node` / `help_node` are `Option<Element>` — an absent one
@@ -626,5 +688,43 @@ mod tests {
             };
             assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(320.0))));
     });
+    }
+
+    /// A growing text box could not hold a mic, clear button or unit inside
+    /// its border: `Textarea` had no adornments. With one, the chrome moves
+    /// to a row shell holding [leading column, flat text area, trailing
+    /// column], the trailing column pinned to the bottom edge.
+    #[test]
+    fn regression_textarea_takes_leading_and_trailing_adornments() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let ta = Textarea(&TextareaProps {
+                leading: Adornment::element(|| runtime_core::text("L").into_element()),
+                trailing: Adornment::element(|| runtime_core::text("T").into_element()),
+                ..Default::default()
+            });
+            let shell = classify(ta)
+                .children()
+                .into_iter()
+                .map(classify)
+                .find(|c| matches!(c, P::View { .. }))
+                .expect("the adorned box is a view shell");
+            let P::View { children, style, .. } = shell else { unreachable!() };
+            let shell_rules = style.expect("the shell carries the field chrome").resolve();
+            assert_eq!(shell_rules.flex_direction, Some(runtime_core::FlexDirection::Row));
+            let kids: Vec<P> = children.into_iter().map(classify).collect();
+            assert_eq!(kids.len(), 3, "leading, the text area, trailing");
+            assert!(matches!(kids[1], P::TextArea { .. }), "the text sits between the columns");
+            let align = |p: &P| match p {
+                P::View { style, .. } => style.as_ref().expect("edge style").resolve().align_self,
+                _ => panic!("an adornment column is a view"),
+            };
+            assert_eq!(align(&kids[0]), Some(runtime_core::AlignSelf::FlexStart));
+            assert_eq!(align(&kids[2]), Some(runtime_core::AlignSelf::FlexEnd), "trailing sits at the bottom edge");
+
+            // No adornment: the text area is the box itself, as before.
+            let plain = classify(Textarea(&TextareaProps::default())).children();
+            assert!(plain.into_iter().map(classify).any(|c| matches!(c, P::TextArea { .. })));
+        });
     }
 }

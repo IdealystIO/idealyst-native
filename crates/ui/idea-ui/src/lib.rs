@@ -231,7 +231,8 @@ pub use components::collapsible::{
 };
 pub use components::divider::{Divider, DividerAxis, DividerProps};
 pub use components::field::{
-    Adornment, Field, FieldAdorned, FieldAlign, FieldAppearance, FieldDimmed, FieldPlacement, FieldProps, FieldRestyle,
+    Adornment, Field, FieldAdorned, FieldAlign, FieldAppearance, FieldDimmed, FieldEdge, FieldPlacement, FieldProps,
+    FieldRestyle,
     FieldRing, FieldSize, FieldSlotStyles, FieldStyles, FieldTone,
 };
 pub use components::icon_button::{
@@ -258,7 +259,8 @@ pub use components::segmented_control::{
 pub use components::select::{Select, SelectProps};
 // Data/style types shared with Autocomplete.
 pub use components::select::{
-    SelectActive, SelectOpen, SelectOption, SelectRestyle, SelectSize, SelectSlotStyles, SelectStyles,
+    SelectActive, SelectMulti, SelectOpen, SelectOption, SelectRestyle, SelectSize, SelectSlotStyles,
+    SelectStyles,
 };
 pub use components::skeleton::{Skeleton, SkeletonProps, SkeletonWidth};
 pub use components::slider::{

@@ -184,6 +184,33 @@ fn header_cells_carry_the_labels_and_body_cells_the_renderers_content() {
     assert!(f.text_of(one).contains("pressable"), "{}", f.text_of(one));
 }
 
+/// The select-all box and a row's box sit in the same wrapper, the
+/// column-aligned `cell_inner` row, so they line up. The header put its box
+/// straight into the cell's column flex, at the start, 3.5px left of the
+/// centred row boxes.
+#[test]
+fn regression_select_all_box_lines_up_with_the_row_boxes() {
+    let f = table(10, |r, _| r);
+    fn path_to_pressable(h: &host_mock::Harness, node: host_mock::Node) -> Option<Vec<String>> {
+        let kind = h.kind_of(node).unwrap_or_default();
+        if kind.starts_with("pressable") {
+            return Some(vec![kind]);
+        }
+        h.children_of(node).into_iter().find_map(|c| {
+            let mut p = path_to_pressable(h, c)?;
+            // A reactive region's anchor takes no layout; only the views
+            // that place the box count.
+            if !kind.starts_with("anchor") {
+                p.insert(0, kind.clone());
+            }
+            Some(p)
+        })
+    }
+    let head = path_to_pressable(&f.h, f.mount(0, 0)).expect("the header holds the select-all box");
+    let row = path_to_pressable(&f.h, f.mount(0, 3)).expect("a row holds its box");
+    assert_eq!(head, row, "the header's box is wrapped like the rows'");
+}
+
 /// Select-all covers every row, not just the mounted ones: with 1,000 rows
 /// and a handful of cells on screen, pressing it selects all 1,000.
 #[test]
@@ -290,6 +317,34 @@ fn end_reached_fires_once_per_approach() {
     at(1000.0);
     at(3500.0);
     assert_eq!(hits.get(), 2, "re-armed after scrolling away");
+}
+
+/// A first page shorter than the viewport has nothing to scroll, so a
+/// check that ran only on scroll never asked for the second page and the
+/// rest of the rows could not be reached. The table checks when the
+/// scrollport is measured and when the row count changes; a fetch that adds
+/// nothing leaves it quiet.
+#[test]
+fn regression_end_reached_fires_when_the_first_page_fits() {
+    let hits = Rc::new(std::cell::Cell::new(0));
+    let h2 = hits.clone();
+    let f = table(3, move |r, _| r.row_height(40.0).on_end_reached(100.0, move || h2.set(h2.get() + 1)));
+    assert_eq!(hits.get(), 0, "nothing before the scrollport is known");
+    host_mock::set_virtual_grid_scrollport(f.grid_node(), Scrollport::overlay(800.0, 400.0));
+    f.h.flush();
+    assert_eq!(hits.get(), 1, "4 rows x 40 in a 400px viewport: the end is in view");
+    // The next page still fits: ask again.
+    f.h.world.enter(|| f.rows.update(|r| r.iter().cloned().chain((3..6).map(|i| format!("row {i}"))).collect()));
+    f.h.flush();
+    assert_eq!(hits.get(), 2, "a page that still leaves the end in view asks for another");
+    // A rewrite with the same count (no new rows) does not.
+    f.h.world.enter(|| f.rows.update(|r| { let mut r = r.clone(); r[0] = "edited".into(); r }));
+    f.h.flush();
+    assert_eq!(hits.get(), 2, "no new rows: no new request");
+    // Enough rows to fill and pass the threshold: quiet until scrolled.
+    f.h.world.enter(|| f.rows.update(|r| r.iter().cloned().chain((6..40).map(|i| format!("row {i}"))).collect()));
+    f.h.flush();
+    assert_eq!(hits.get(), 2, "the end is out of view");
 }
 
 /// `TableScroller::scroll_to_row` lands the row just under the frozen
@@ -792,4 +847,45 @@ fn regression_a_fill_column_with_a_saved_width_still_fills_the_row() {
     f.h.world.enter(|| widths.update(|w| { let mut w = w.clone(); w.insert(ColumnId::new("name"), 1500.0); w }));
     f.h.flush();
     assert_eq!(((g.col_width)(0), (g.col_width)(1)), (1500.0, 120.0));
+}
+
+/// A virtual table had no way to open a row's menu: its cells' press
+/// handler was a tap only, and a press belongs to whoever consumes
+/// `Began`, so nothing outside could listen for a hold or a right-click.
+/// `on_row_menu` shares the cells' handler: a hold opens the menu and not
+/// the row, a right-click opens the menu, a tap still opens the row.
+#[test]
+fn regression_on_row_menu_opens_on_a_hold_or_a_secondary_press() {
+    use runtime_core::TouchPhase;
+    host_mock::pump::install_scheduler();
+    let clicks = Rc::new(RefCell::new(Vec::<usize>::new()));
+    let menus = Rc::new(RefCell::new(Vec::<(usize, f32, f32)>::new()));
+    let (c, m) = (clicks.clone(), menus.clone());
+    let f = table(10, move |r, _| {
+        r.on_row_click(move |i| c.borrow_mut().push(i))
+            .on_row_menu(move |i, at| m.borrow_mut().push((i, at.x, at.y)))
+    });
+    let cell = f.mount(2, 3);
+
+    // A tap opens the row.
+    f.touch(cell, press(TouchPhase::Began, 0.0, 0));
+    f.touch(cell, press(TouchPhase::Ended, 0.0, 100));
+    assert_eq!(*clicks.borrow(), vec![2]);
+    assert!(menus.borrow().is_empty());
+
+    // A hold opens the menu at the press point, and its release does not
+    // also open the row.
+    f.touch(cell, press(TouchPhase::Began, 0.0, 1_000));
+    host_mock::pump::pump_timers();
+    f.h.flush();
+    assert_eq!(*menus.borrow(), vec![(2, 10.0, 100.0)]);
+    f.touch(cell, press(TouchPhase::Ended, 0.0, 1_600));
+    assert_eq!(*clicks.borrow(), vec![2], "the hold is not also a click");
+
+    // A secondary press opens the menu straight away.
+    runtime_shared::set_pointer_button(runtime_core::PointerButton::Secondary);
+    f.touch(cell, press(TouchPhase::Began, 5.0, 3_000));
+    runtime_shared::set_pointer_button(runtime_core::PointerButton::Primary);
+    assert_eq!(menus.borrow().last(), Some(&(2, 10.0, 105.0)));
+    assert_eq!(*clicks.borrow(), vec![2]);
 }

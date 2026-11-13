@@ -53,7 +53,7 @@ use std::rc::Rc;
 
 use runtime_core::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_core::{
-    component, component_styles, derived, pressable, recipe, ui, AlignItems, Color, Cursor, Element, FlexDirection,
+    component, component_styles, derived, pressable, recipe, ui, AlignItems, AlignSelf, Color, Cursor, Element, FlexDirection,
     FontWeight, IconData, IdealystSchema, IntoElement, JustifyContent, Length, Reactive, Signal, SlotRestyle, StyleRules, TextAlign, Tokenized, VariantEnum,
 };
 
@@ -200,7 +200,7 @@ pub(crate) fn adornment_icon_color() -> Color {
 /// (press blocked, out of the Tab order) — a read-only field must not be
 /// clearable through its ✕. An `Element` adornment is the author's own
 /// tree and is left as built.
-fn render_adornment(
+pub(crate) fn render_adornment(
     adornment: &Adornment,
     size: FieldSize,
     disabled: &Reactive<bool>,
@@ -483,6 +483,28 @@ component_styles! {
         /// pointer cursor, a subtle hover/press dim. On phones its tap
         /// target is floored at `MIN_TOUCH_TARGET_PX` square
         /// (`adornment_touch_target`) without growing the field.
+        /// A `Textarea`'s leading or trailing adornments: one column each
+        /// side of the text. `leading` sits at the top edge and `trailing`
+        /// at the bottom, so a growing box keeps a mic or send button
+        /// beside the last line; the vertical padding is the input's, so a
+        /// glyph lines up with the first (or last) line of text.
+        slot edge_adornment {
+            base(_t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+            }
+            variant edge {
+                #[default]
+                leading(_t) { align_self: AlignSelf::FlexStart }
+                trailing(_t) { align_self: AlignSelf::FlexEnd }
+            }
+            variant size {
+                sm(t) { padding_vertical: t.spacing.xs() }
+                md(t) { padding_vertical: t.spacing.sm() }
+                lg(t) { padding_vertical: t.spacing.md() }
+            }
+        }
+
         slot adornment {
             extend(adornment_touch_target)
             base(_t) {
@@ -498,8 +520,8 @@ component_styles! {
 
 /// The adornment button's phone tap target: the shared
 /// [`touch_target`](crate::touch::touch_target) floor (44 square through
-/// the `Sm` band, released from `Md` up), plus a negative vertical margin
-/// of half the floor. The margin box then contributes no height to the
+/// the `Sm` band, released from `touch::touch_target_release()` up, `Md`
+/// by default), plus a negative vertical margin of half the floor. The margin box then contributes no height to the
 /// shell row, so the field keeps the height its input gives it, and the
 /// row's `align-items: center` centers the 44pt box on the glyph — the hit
 /// area grows, the field does not. Horizontally the box stays in flow, so
@@ -516,7 +538,7 @@ fn adornment_touch_target(s: &mut SlotRestyle<'_, FieldStyles>) {
         margin_bottom: outset(-crate::touch::MIN_TOUCH_TARGET_PX / 2.0),
         ..Default::default()
     });
-    s.breakpoint(crate::touch::TOUCH_TARGET_RELEASE, |_| StyleRules {
+    s.breakpoint(crate::touch::touch_target_release(), |_| StyleRules {
         margin_top: outset(0.0),
         margin_bottom: outset(0.0),
         ..Default::default()

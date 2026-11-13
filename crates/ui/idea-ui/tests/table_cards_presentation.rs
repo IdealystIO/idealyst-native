@@ -256,3 +256,49 @@ fn table_sdk_binds_the_rows_scroller_for_every_scrolling_shape() {
         assert!(log.iter().any(|l| l.starts_with("scroll_to 0 120")), "{log:?}");
     }
 }
+
+/// want_d4d6a0c8: a `long_press` wrapped around a `TableCards` list never
+/// saw a hold on a phone row, because the row's own tap consumes the
+/// touch. The row's press handler takes `on_row_menu` instead: a hold
+/// opens the menu for that row, and does not also open the row.
+#[test]
+fn regression_hairline_row_hold_opens_the_row_menu() {
+    use runtime_core::{TouchEvent, TouchId, TouchPhase, TouchPoint};
+    host_mock::pump::install_scheduler();
+    let h = Harness::new();
+    let clicks = Rc::new(std::cell::RefCell::new(Vec::<usize>::new()));
+    let menus = Rc::new(std::cell::RefCell::new(Vec::<usize>::new()));
+    let (c, m) = (clicks.clone(), menus.clone());
+    let _r = mount(&h, move || {
+        let columns = vec![TableColumn::new("name").card(CardSlot::Title)];
+        let on_click: Rc<dyn Fn(usize)> = Rc::new(move |i| c.borrow_mut().push(i));
+        let on_menu: Rc<dyn Fn(usize, TouchPoint)> = Rc::new(move |i, _| m.borrow_mut().push(i));
+        ui! {
+            TableCards(
+                columns = columns,
+                row_count = 2usize,
+                cell = cell(),
+                presentation = CardPresentation::Hairline,
+                on_row_click = Some(on_click),
+                on_row_menu = Some(on_menu),
+            )
+        }
+    });
+    show_row(&h, 1);
+    let handler = h.shared.touch_handlers.borrow().last().map(|(_, f)| f.clone()).expect("the row takes presses");
+    let at = |phase, t_ms: u64| TouchEvent {
+        id: TouchId(1),
+        phase,
+        position: TouchPoint::new(5.0, 5.0),
+        window_position: TouchPoint::new(5.0, 5.0),
+        timestamp_ns: t_ms * 1_000_000,
+        force: None,
+    };
+    h.world.enter(|| handler(&at(TouchPhase::Began, 0)));
+    host_mock::pump::pump_timers();
+    h.flush();
+    h.world.enter(|| handler(&at(TouchPhase::Ended, 600)));
+    h.flush();
+    assert_eq!(*menus.borrow(), vec![1], "the hold opened row 1's menu");
+    assert!(clicks.borrow().is_empty(), "and not the row");
+}

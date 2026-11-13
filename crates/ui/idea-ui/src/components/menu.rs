@@ -59,9 +59,11 @@
 //! let query = signal(String::new());
 //! // `Field` reports edits; the CALLER owns the write that re-renders the rows.
 //! let on_query: Rc<dyn Fn(String)> = Rc::new(move |v| query.set(v));
-//! let rows = rx!({
+//! // A `Memo`, iterated as-is below: `for` re-renders only over a signal or
+//! // memo. A plain iterator (`filter(&query.get()).iter()`) is built once.
+//! let rows = memo(move || {
 //!     let q = query.get().to_lowercase();
-//!     options.iter().filter(|o| o.label.to_lowercase().contains(&q)).collect()
+//!     options.iter().filter(|o| o.label.to_lowercase().contains(&q)).cloned().collect::<Vec<_>>()
 //! });
 //! ui! {
 //!     Menu(
@@ -69,8 +71,10 @@
 //!         on_dismiss = Some(on_dismiss),
 //!         header = Some(ui! { Field(value = query, on_change = on_query) }),
 //!     ) {
-//!         // …one MenuItem per surviving option, plus a "No matches" row
-//!         // when the query filters everything out.
+//!         for o in rows, key = o.id.clone() {
+//!             MenuItem(label = o.label.clone(), on_select = pick(o.id.clone()))
+//!         }
+//!         // …plus a "No matches" row when the query filters everything out.
 //!     }
 //! }
 //! ```

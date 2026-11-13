@@ -1271,6 +1271,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Table rows open a menu on a right-click or a hold** (`idea-ui` minor).
+  `VirtualRows::on_row_menu(|i, point| …)` and `TableCards(on_row_menu = …)` call back with the row
+  and the press point in window coordinates. The hook shares the row's press handler with
+  `on_row_click`, so a hold opens the menu and not the row. A virtual table's cells had no way to
+  take a menu, and a `long_press` wrapped around a `TableCards` list never saw a hold, because the
+  row's own tap takes the touch.
+- **`Textarea(leading = …, trailing = …)`** (`idea-ui` minor) take `Field`'s `Adornment`s inside the
+  border. `leading` sits at the top edge and `trailing` at the bottom, so a mic or send button stays
+  beside the last line as the box grows; the text wraps clear of both. The columns are the new
+  `FieldStyles::edge_adornment` slot.
+- **`idea_ui::touch::set_touch_target_release(Breakpoint)`** (`idea-ui` minor) moves the width at
+  which the 44 pt touch floor lets go (default `Md`). Call it once at boot so controls change size at
+  the same width as the rest of the app's layout.
+
 - **`accessibility-service`: an app's own Android accessibility service** (new crate). An app that
   depends on it ships an `AccessibilityService`; once someone switches it on (Settings or `adb`),
   `screenshot(ImageFormat::Rgba | Jpeg { quality })` captures whatever is on screen, other apps
@@ -3408,6 +3422,25 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **`VirtualRows::on_end_reached` fires when the first page fits** (`idea-ui`). The end check ran
+  only on scroll, so a first page shorter than the viewport never asked for the next one. It now
+  also runs once the table is laid out and whenever the row count changes; a fetch that adds no
+  rows stays quiet.
+- **A virtual table's select-all box lines up with the row boxes** (`idea-ui`). It sat 3.5 px to
+  their left, outside the column-aligned wrapper the row boxes use.
+- **Autocomplete multi-select rows put the checkbox beside the label** (`idea-ui`). The row was a
+  column; the `option` slot's new `multi` axis lays it out as a centred row.
+- **A leaving menu's or popover's backdrop lets clicks through** (`idea-ui`). For the exit
+  animation the invisible full-screen catcher stayed hit-testable, so a click on the trigger right
+  after Escape landed on it.
+- **`stack-navigator` no longer pulls in `backend-linux` or `backend-macos`** (`stack-navigator`).
+  Neither was used, and `backend-linux` made every host build of a UI crate compile GTK 4, which
+  fails on Ubuntu 24.04's pango.
+- **`idealyst lint`: another crate's `prelude` is not the framework's** (`lint`). With
+  `use diesel::prelude::*;` in a file, `prefer-ui-macro` read every bare `text(…)` as the
+  framework's. And `snapshot-loop` now catches `.get()` inside a call in a `for` header
+  (`for x in filter(&q.get()).iter()`), which renders once and never updates; iterate a `memo`.
 
 - **A provisioned kiosk app starts on its own** (`device-admin` minor, `build-ios`, `run-android`,
   `idealyst-cli`). After QR provisioning a device-owner app never ran: setup ended on the maker's
