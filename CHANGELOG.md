@@ -1317,6 +1317,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `output_size(source)` reports the result. `ScreenRecorder::consent_pregranted()` reads the
   `PROJECT_MEDIA` app op; `ScreenRecorder::display_size()` the display's real size.
 
+- **`accessibility-service`: type and press keys in the focused field** (minor). `type_text`
+  commits text at the focused field's cursor, replacing the selection, and `press_key(Key)`
+  presses Backspace, Delete, Enter, Tab, the arrows, Home, End or Escape there, through the
+  service's own input method (`flagInputMethodEditor`, API 33; `Unsupported` below it). Unlike
+  `set_focused_text` they edit rather than replace, and work in password fields; Enter in a
+  single-line field runs its action (Search, Go, Next, Done). The service's config gains
+  `flagInputMethodEditor`, so an app picks it up on its next build.
+
 - **`accessibility-service`: find and press elements, and watch windows** (minor). For an
   unattended device's agent that has to press a system prompt's button (Android's "Start
   recording?" before each MediaProjection session) or react to system UI appearing over a kiosk.
