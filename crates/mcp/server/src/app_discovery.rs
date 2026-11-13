@@ -489,6 +489,35 @@ mod tests {
         assert_eq!(found.len(), 1);
         let _ = std::fs::remove_dir_all(&root);
     }
+    /// Two sessions of one app on one platform (a dev session beside a
+    /// leftover robot-test session on the same simulator) both listed the
+    /// selector `CrewForge:ios`, and every robot tool refused it as
+    /// ambiguous — no selector reached either app. Each now lists
+    /// `name:platform@pid`, and that selector picks it.
+    #[test]
+    fn regression_same_name_and_platform_sessions_get_distinct_selectors() {
+        let a = DiscoveredApp {
+            name: "demo".into(),
+            bundle_id: None,
+            project_root: None,
+            catalog_bin: None,
+            pid: 10,
+            bridge_addr: "127.0.0.1:4790".into(),
+            platform: Some("ios".into()),
+            under_test: false,
+        };
+        let b = DiscoveredApp { pid: 11, bridge_addr: "127.0.0.1:4791".into(), ..a.clone() };
+        let live = vec![a, b];
+        let selectors = crate::catalog_service::app_selectors(&live);
+        assert_eq!(selectors, vec!["demo:ios@10".to_string(), "demo:ios@11".to_string()]);
+        for (sel, pid) in [("demo:ios@11", 11), ("demo@10", 10)] {
+            let picked = crate::catalog_service::select_app(Some(sel), live.clone()).expect(sel);
+            assert_eq!(picked.pid, pid, "{sel}");
+        }
+        let err = crate::catalog_service::select_app(Some("demo:ios"), live).unwrap_err();
+        assert!(err.contains("demo:ios@10") && err.contains("demo:ios@11"), "{err}");
+    }
+
     /// An agent's robot tools drove the app of an `idealyst test` run
     /// beside the run's own suite, each resetting state the other asserted
     /// on. The registration says the app is under test; listing shows it,

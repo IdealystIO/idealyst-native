@@ -8,7 +8,7 @@ Robot tools (`find_element`, `click`, `screenshot`, …) act on a **running** ap
 
 - With exactly one app registered, `app` is optional.
 - With several registered, it is required. The error lists the candidates.
-- `selector` is the app `name`, or `name:platform` when one app runs on two platforms (`todo:web` vs `todo:macos`).
+- `selector` is the app `name`, or `name:platform` when one app runs on two platforms (`todo:web` vs `todo:macos`). Two sessions of one app on one platform (a dev session beside a robot-test session on the same simulator) add the process id: `todo:ios@4812`. `name@pid` works too.
 - `compare_native_parity` takes two selectors, `app_a` and `app_b`.
 - An entry with `"under_test": true` is the app of an `idealyst test` run. That run's suite drives it alone, so Robot tools refuse it: your steps would interleave with the suite's. Start your own session (`run_dev`) to drive the project.
 

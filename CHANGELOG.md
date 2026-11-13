@@ -11,6 +11,13 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **An untinted idea-ui `Icon` paints in the theme's text color** (`idea-ui` minor). With neither
+  `tone` nor `color`, `Icon` left its color to inheritance, which only the web has: on iOS it fell
+  back to the OS label color, frozen at creation and following the phone's appearance rather than
+  the app's theme (black icons in an app themed dark). It now paints `color.text()` on every
+  backend and re-tints on a theme swap. On the web an untinted `Icon` inside colored text no
+  longer picks up that color: pass `tone` or `color` where it should.
+
 - **`screen-recorder` on Android captures CPU frames only on demand, and `RecordingConfig` has a
   new field** (`screen-recorder` major). A whole-screen stream renders into an `ImageReader` only
   while someone wants CPU frames: an active `subscribe`, or `latest()` polled at least every two
@@ -3473,6 +3480,25 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **An unshrinkable item in a flex row keeps its own width on native** (`runtime-layout` patch).
+  The default `max-width: 100%` clamp also capped a `flex_shrink: 0` item in a row, where width is
+  the main axis and CSS lets the item overflow. A pill wrapped onto a narrow row's second line came
+  out squeezed to the row's width with its label wrapped, so a row that measures its items to
+  decide what fits read widths that depended on its own limit and flipped forever. A
+  `flex_shrink: 0` item whose parent is a flex row is now exempt from the clamp; in a column, or
+  shrinkable, it is still clamped.
+
+- **`idealyst dev --local` on iOS and Android takes rebuild requests** (`idealyst-cli` patch). The
+  one-shot build had no watcher behind it, so the panel's `r`, the control endpoint and the MCP's
+  `rebuild_dev` reached nothing and a change meant stopping the session. A request now rebuilds,
+  reinstalls and relaunches the app, reported as a build of `ios` / `android`; one arriving
+  mid-run gets a run of its own after it. Saves still do not relaunch on their own.
+
+- **Two sessions of one app on one platform each get a robot selector** (`mcp-server` patch).
+  `list_apps` gave both the same `name:platform`, and every robot tool refused it as ambiguous.
+  A selector takes an `@pid` suffix (`todo:ios@4812`, or `todo@4812`), and `list_apps` shows it
+  when two sessions share a name and platform.
 
 - **The robot finds a screen's page scroller** (`runtime-vocabulary`). A navigator's screens
   registered under the navigator element (the first screen) or as detached roots (screens shown

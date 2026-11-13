@@ -5273,9 +5273,20 @@ pub(crate) fn open_url_in_browser(url: &str) {
 ///
 /// Default (runtime-server) is the live path: the dev-server handles
 /// reload on source change, the iOS app re-renders automatically.
-/// `--local` does a one-shot build + run; the user restarts when they
-/// want a new build.
+/// `--local` builds and runs once, then rebuilds and relaunches on a
+/// rebuild request (the panel's `r`, the control endpoint, the MCP's
+/// `rebuild_dev`) — not on every save, which would kill the app's state
+/// mid-edit ([`register_local_relauncher`]).
 fn launch_ios(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Result<()> {
+    launch_ios_once(dir, args, runtime_server_port)?;
+    if args.local {
+        let (dir, args) = (dir.to_path_buf(), args.shallow_clone());
+        register_local_relauncher("ios", move || launch_ios_once(&dir, &args, None));
+    }
+    Ok(())
+}
+
+fn launch_ios_once(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Result<()> {
     let mode = if args.local {
         run_ios::RunMode::Local
     } else {
@@ -5316,6 +5327,64 @@ fn launch_ios(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
     Ok(())
 }
 
+/// Take rebuild requests for a `--local` native target, whose app is a
+/// one-shot build with no watcher behind it: each request runs `relaunch`
+/// (build, install, launch) on its own thread, reported as a build of
+/// `target` so `wait_for_build` sees how it ended. A request arriving
+/// while one runs is folded into one more run after it, not dropped: the
+/// save it was made for may have landed after the running build read the
+/// source.
+fn register_local_relauncher(target: &'static str, relaunch: impl Fn() -> Result<()> + Send + 'static) {
+    struct State {
+        running: bool,
+        again: bool,
+        gen: u64,
+    }
+    let state = Arc::new(Mutex::new(State { running: false, again: false, gen: 1 }));
+    let relaunch = Arc::new(Mutex::new(relaunch));
+    crate::dev_log::register_rebuilder(
+        target,
+        Arc::new(move |request| {
+            crate::dev_log::emit(dev_events::DevEvent::RebuildTaken { target: target.into(), request });
+            {
+                let Ok(mut s) = state.lock() else { return false };
+                if s.running {
+                    s.again = true;
+                    return true;
+                }
+                s.running = true;
+            }
+            let (state, relaunch) = (state.clone(), relaunch.clone());
+            std::thread::spawn(move || loop {
+                crate::dev_log::emit(dev_events::DevEvent::BuildStarted {
+                    target: target.into(),
+                    cause: dev_events::BuildCause::Forced,
+                });
+                let started = std::time::Instant::now();
+                let result = relaunch.lock().map_err(|_| anyhow::anyhow!("relaunch lock poisoned")).and_then(|f| (*f)());
+                let Ok(mut s) = state.lock() else { return };
+                let outcome = match result {
+                    Ok(()) => {
+                        s.gen += 1;
+                        dev_events::BuildOutcome::Reloaded { gen: s.gen }
+                    }
+                    Err(e) => dev_events::BuildOutcome::Failed { error: format!("{e:#}") },
+                };
+                crate::dev_log::emit(dev_events::DevEvent::BuildFinished {
+                    target: target.into(),
+                    outcome,
+                    ms: started.elapsed().as_millis() as u64,
+                });
+                if !std::mem::take(&mut s.again) {
+                    s.running = false;
+                    return;
+                }
+            });
+            true
+        }),
+    );
+}
+
 /// Android launcher. Same shape as [`launch_ios`]: builds the cdylib
 /// + Java glue + APK via `run-android`, installs to a connected
 /// emulator (booting one if none is online), launches the app.
@@ -5333,6 +5402,16 @@ fn launch_ios(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
 /// `ws://127.0.0.1:<port>` into the APK manifest. Physical devices
 /// over USB pick up the same tunnel for free.
 fn launch_android(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Result<()> {
+    launch_android_once(dir, args, runtime_server_port)?;
+    // `--local` relaunches on a rebuild request, as iOS does (`launch_ios`).
+    if args.local {
+        let (dir, args) = (dir.to_path_buf(), args.shallow_clone());
+        register_local_relauncher("android", move || launch_android_once(&dir, &args, None));
+    }
+    Ok(())
+}
+
+fn launch_android_once(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Result<()> {
     let mode = if args.local {
         run_android::RunMode::Local
     } else {
@@ -5785,6 +5864,33 @@ mod tests {
     use super::*;
     use std::process::Command;
     use std::time::{Duration, Instant};
+
+    /// An iOS `--local` session had no watcher, so a rebuild request
+    /// (`rebuild_dev`, the panel's `r`) reached nothing and the only way to
+    /// see a change was to stop the session. A registered relauncher takes
+    /// the request and runs; one arriving mid-run is folded into one more
+    /// run, not dropped.
+    #[test]
+    fn regression_local_native_session_takes_rebuild_requests() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counted = runs.clone();
+        register_local_relauncher("test-local-relaunch", move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            Ok(())
+        });
+        let first = crate::dev_log::request_rebuild();
+        assert!(first.targets.iter().any(|t| t == "test-local-relaunch"), "{:?}", first.targets);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let second = crate::dev_log::request_rebuild();
+        assert!(second.targets.iter().any(|t| t == "test-local-relaunch"), "{:?}", second.targets);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while runs.load(Ordering::SeqCst) < 2 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 2, "the request made mid-run gets a run of its own");
+    }
 
     /// Parse a `dev` invocation the way the real CLI does, so the tests
     /// below exercise clap's own defaulting rather than a hand-built

@@ -358,7 +358,7 @@ impl LayoutTree {
         // re-derives this clamp on every apply and lifts it for nodes
         // that legitimately exceed their parent (explicit `width`,
         // `position: absolute`, `aspect_ratio`, horizontal-scroll
-        // content). Tracked in `auto_max_width` so an author-set
+        // content, an unshrinkable item in a flex row). Tracked in `auto_max_width` so an author-set
         // `max_width` overrides it. A `Percent` of an *indefinite*
         // parent resolves to no constraint, so this is a no-op until
         // some ancestor has a definite width — exactly when web clamps.
@@ -602,6 +602,7 @@ impl LayoutTree {
                 self.exempt_as_hscroll_content(n);
             }
             self.mark_grid_item_if_grid_parent(ancestor, n);
+            self.refresh_default_max_width(n);
         }
     }
 
@@ -1327,6 +1328,8 @@ impl LayoutTree {
         }
 
         let changed = style != existing;
+        let axis_changed =
+            style.display != existing.display || style.flex_direction != existing.flex_direction;
         // Only when it changed: Taffy marks the node and every ancestor
         // dirty on each `set_style`, so writing an identical style turned a
         // paint-only restyle (a hover tint) into a relayout of the subtree.
@@ -1334,6 +1337,14 @@ impl LayoutTree {
             self.tree
                 .set_style(node.0, style)
                 .expect("taffy set_style");
+        }
+        // The children's width clamp depends on this node's direction
+        // (`apply_default_max_width`), and `view` attaches children before
+        // their parent's style, so they were derived against the default.
+        if axis_changed {
+            for c in self.tree.children(node.0).unwrap_or_default() {
+                self.refresh_default_max_width(c);
+            }
         }
 
         // When this node IS (or just became) a grid, reset its existing
@@ -1386,6 +1397,15 @@ impl LayoutTree {
     ///   parent's content box; `100%` resolves against that content box
     ///   and would cap it there, leaving the width the margins should
     ///   have added as a blank band on the end side.
+    /// - **`flex_shrink: 0` in a flex row**: width is the row's MAIN axis,
+    ///   and CSS keeps an unshrinkable item at its own width even past the
+    ///   row's end (it overflows, or wraps to its own line and overflows
+    ///   that). Capped at `100%`, a pill wrapped onto a narrow row's second
+    ///   line came out squeezed to the row's width with its label wrapped,
+    ///   so a row that measures its items to decide what fits read a width
+    ///   that depended on its own limit and never settled. Depends on the
+    ///   parent, so it is re-derived when the node is linked and when the
+    ///   parent's direction changes (`refresh_default_max_width`).
     ///
     /// Otherwise the clamp is (re)asserted as `Percent(1.0)`.
     fn apply_default_max_width(&self, node: NodeId, style: &mut Style) {
@@ -1396,12 +1416,40 @@ impl LayoutTree {
             || style.aspect_ratio.is_some()
             || (!self.auto_width.contains(&node) && style.size.width != Dimension::fit_content())
             || self.hscroll_content.contains(&node)
-            || has_negative_side_margin(style);
+            || has_negative_side_margin(style)
+            || (style.flex_shrink == 0.0 && self.parent_is_flex_row(node));
         style.max_size.width = if exempt {
             LengthPercentageAuto::auto()
         } else {
             LengthPercentageAuto::percent(1.0)
         };
+    }
+
+    /// Whether `node`'s layout parent is a flex container laid out in a
+    /// row, so that width is the axis `flex_shrink` governs.
+    fn parent_is_flex_row(&self, node: NodeId) -> bool {
+        self.tree
+            .parent(node)
+            .and_then(|p| self.tree.style(p).ok())
+            .is_some_and(|ps| {
+                ps.display == Display::Flex
+                    && matches!(ps.flex_direction, FlexDirection::Row | FlexDirection::RowReverse)
+            })
+    }
+
+    /// Re-derive `node`'s default width clamp against its stored style,
+    /// for a change that is not its own `set_style`: it was linked under
+    /// a parent, or its parent's direction changed.
+    fn refresh_default_max_width(&mut self, node: NodeId) {
+        if !self.auto_max_width.contains(&node) {
+            return;
+        }
+        let Ok(mut style) = self.tree.style(node).cloned() else { return };
+        let before = style.max_size.width;
+        self.apply_default_max_width(node, &mut style);
+        if style.max_size.width != before {
+            let _ = self.tree.set_style(node, style);
+        }
     }
 
     /// Size horizontal-scroll content to its content along the scroll
@@ -5713,6 +5761,67 @@ mod tests {
             f.x,
             f.width
         );
+    }
+
+    /// A row `width` wide holding one auto-width child that wraps a fixed
+    /// 160px box, with the child's `flex_shrink` and the row's direction
+    /// set by the caller. Returns the child's laid-out width.
+    fn unshrinkable_child_width(direction: FwFlexDirection, shrink: f32, style_parent_last: bool) -> f32 {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let row = t.new_node();
+        let mut rr = StyleRules::default();
+        rr.flex_direction = Some(direction);
+        rr.flex_wrap = Some(FwFlexWrap::Wrap);
+        rr.width = Some(px(100.0));
+        let child = t.new_node();
+        let mut cr = StyleRules::default();
+        cr.flex_shrink = Some(runtime_shared::Tokenized::Literal(shrink));
+        t.set_style(child, &cr);
+        let inner = t.new_node();
+        let mut ir = StyleRules::default();
+        ir.width = Some(px(160.0));
+        ir.height = Some(px(28.0));
+        t.set_style(inner, &ir);
+        t.add_child(child, inner);
+        if !style_parent_last {
+            t.set_style(row, &rr);
+        }
+        t.add_child(row, child);
+        // `view` attaches children before the parent's own style.
+        if style_parent_last {
+            t.set_style(row, &rr);
+        }
+        t.add_child(root, row);
+        t.compute(root, 300.0, 800.0);
+        t.frame_of(child).width
+    }
+
+    /// Regression: an unshrinkable item in a wrapping row keeps its own
+    /// width, as in CSS. The default clamp capped it at the row's width, so
+    /// a 160px pill wrapped onto a 100px row's second line came out 100px
+    /// wide — and a row measuring its pills to decide what fits read a
+    /// width that depended on the limit it had just set, and never settled.
+    #[test]
+    fn regression_unshrinkable_item_in_a_row_keeps_its_width() {
+        for parent_last in [false, true] {
+            let w = unshrinkable_child_width(FwFlexDirection::Row, 0.0, parent_last);
+            assert!(
+                (w - 160.0).abs() < 0.5,
+                "a flex_shrink: 0 item in a 100px row is its own 160px (parent styled last: {parent_last}), got {w}"
+            );
+        }
+    }
+
+    /// The exemption is for the row's main axis only: a shrinkable item in
+    /// a row, and an unshrinkable one in a column (where width is the
+    /// cross axis and CSS fits it to the parent), stay clamped.
+    #[test]
+    fn max_width_default_still_clamps_shrinkable_and_column_items() {
+        let w = unshrinkable_child_width(FwFlexDirection::Row, 1.0, false);
+        assert!((w - 100.0).abs() < 0.5, "a shrinkable item fits the 100px row, got {w}");
+        let w = unshrinkable_child_width(FwFlexDirection::Column, 0.0, false);
+        assert!((w - 100.0).abs() < 0.5, "an unshrinkable item in a column fits the 100px parent, got {w}");
     }
 
     /// The author-set `max_width` still wins over the default clamp:

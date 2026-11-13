@@ -154,9 +154,11 @@ impl RobotResolver {
     }
 }
 
-/// The live app a robot tool's `app` argument names — `name`, or
-/// `name:platform` to tell two platforms of one app apart — or the only
-/// live app when it names none. Refuses an app an `idealyst test` run
+/// The live app a robot tool's `app` argument names — `name`,
+/// `name:platform` to tell two platforms of one app apart, and an `@pid`
+/// suffix to tell apart two sessions of one app on one platform (a dev
+/// session beside a robot-test session on the same simulator) — or the
+/// only live app when it names none. Refuses an app an `idealyst test` run
 /// launched (`under_test`): that run's suite drives it alone, and a second
 /// driver's steps interleave with the suite's (a test saw its tap's count
 /// reset before it read it).
@@ -168,14 +170,19 @@ pub(crate) fn select_app(
         // The selector is `name` or — to disambiguate two platforms of one
         // app — `name:platform` (e.g. `todo:web`).
         Some(sel) => {
-            let (name, platform) = match sel.split_once(':') {
+            let (rest, pid) = match sel.rsplit_once('@') {
+                Some((r, p)) if p.parse::<u32>().is_ok() => (r, p.parse::<u32>().ok()),
+                _ => (sel, None),
+            };
+            let (name, platform) = match rest.split_once(':') {
                 Some((n, p)) => (n, Some(p)),
-                None => (sel, None),
+                None => (rest, None),
             };
             let matches: Vec<_> = live
                 .iter()
                 .filter(|a| a.name == name)
                 .filter(|a| platform.map_or(true, |p| a.platform.as_deref() == Some(p)))
+                .filter(|a| pid.map_or(true, |p| a.pid == p))
                 .collect();
             match matches.as_slice() {
                 [one] => (*one).clone(),
@@ -189,7 +196,7 @@ pub(crate) fn select_app(
                 }
                 _ => {
                     return Err(format!(
-                        "{:?} is ambiguous across platforms; pass `name:platform` \
+                        "{:?} names more than one live app; pass one of their selectors \
                          (one of: {:?})",
                         sel,
                         app_selectors(&live)
@@ -221,16 +228,18 @@ pub(crate) fn select_app(
 }
 
 /// The unambiguous selector string for each live app: `name` when its name is
-/// unique, else `name:platform`. What `list_apps` shows and the agent passes
-/// back as `app`.
+/// unique, else `name:platform`, and `@pid` after that when two sessions
+/// share both. What `list_apps` shows and the agent passes back as `app`.
 pub(crate) fn app_selectors(live: &[crate::app_discovery::DiscoveredApp]) -> Vec<String> {
     live.iter()
         .map(|a| {
             let name_count = live.iter().filter(|b| b.name == a.name).count();
-            match (name_count, &a.platform) {
+            let base = match (name_count, &a.platform) {
                 (n, Some(p)) if n > 1 => format!("{}:{}", a.name, p),
                 _ => a.name.clone(),
-            }
+            };
+            let same = live.iter().filter(|b| b.name == a.name && b.platform == a.platform).count();
+            if same > 1 { format!("{base}@{}", a.pid) } else { base }
         })
         .collect()
 }
@@ -1941,7 +1950,8 @@ impl CatalogService {
     async fn list_apps(&self) -> Result<CallToolResult, McpError> {
         let live = self.live_apps();
         // `selector` is the exact string to pass as the `app` arg — `name`
-        // when unique, else `name:platform` (two platforms of one app).
+        // when unique, else `name:platform` (two platforms of one app), with
+        // `@pid` when two sessions share both.
         let selectors = app_selectors(&live);
         let json: Vec<serde_json::Value> = live
             .iter()

@@ -14,7 +14,10 @@
 //! `Icon` pins an explicit square `size` and lets call sites tint it
 //! either by a semantic `tone` (resolved to the tone's intent color,
 //! theme-reactive) or an explicit `color`. With neither set, the icon
-//! inherits the ambient text color — matching the primitive's default.
+//! paints in the theme's text color (theme-reactive), on every backend.
+//! Not the primitive's inherited color: native nodes inherit none, so an
+//! untinted icon there fell back to the platform's label color, which
+//! follows the OS appearance rather than the app's theme.
 
 use runtime_core::{
     component, component_styles, icon, Color, Element, IconData, IdealystSchema, IntoElement, Length, Reactive,
@@ -22,6 +25,7 @@ use runtime_core::{
 };
 
 use idea_theme::extensible::ToneRef;
+use idea_theme::tokens;
 use idea_theme::theme::IdeaThemeRef;
 
 component_styles! {
@@ -61,7 +65,7 @@ pub struct IconProps {
     /// Takes precedence over `color`.
     pub tone: Option<ToneRef>,
     /// Optional explicit color override. Used only when `tone` is `None`.
-    /// When both are `None`, the icon inherits the ambient text color.
+    /// When both are `None`, the icon paints in the theme's text color.
     pub color: Option<Color>,
 }
 
@@ -135,6 +139,8 @@ pub fn Icon(props: &IconProps) -> Element {
         });
     } else if has_color {
         node = node.color(move || explicit.get().expect("color present (checked above)"));
+    } else {
+        node = node.color(|| tokens().color.text().resolve());
     }
 
     node.into_element()
@@ -188,15 +194,21 @@ mod tests {
     });
     }
 
-    // With neither tone nor color, the icon inherits ambient text color
-    // (no override) — matching the raw primitive's default.
+    // Regression: an untinted Icon left its color to inheritance, which
+    // native nodes do not have — iOS painted it the OS label color, black
+    // in an app themed dark on a light-mode phone. It paints the theme's
+    // text color instead.
     #[test]
-    fn no_tint_inherits_ambient_color() {
+    fn regression_untinted_icon_paints_theme_text_color() {
         with_test_world(|| {
             theme();
             let props = IconProps { data: Reactive::Static(DOT), ..Default::default() };
-            let (has_color, _) = icon_parts(Icon(&props));
-            assert!(!has_color, "an untinted Icon leaves color to inherit");
+            let el = Icon(&props);
+            let color = match classify(el) {
+                P::Icon { color, .. } => color,
+                _ => panic!("Icon renders an Icon primitive"),
+            };
+            assert_eq!(color, Some(tokens().color.text().resolve()), "an untinted Icon paints the theme's text color");
     });
     }
 

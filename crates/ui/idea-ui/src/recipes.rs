@@ -73,7 +73,7 @@ recipe!(
     /// constant (from an icon pack like `icons_lucide`); `size` sets the
     /// square in points. Pass `tone = Some(...)` to paint it in a
     /// semantic intent color, or `color = Some(...)` for an explicit one
-    /// — with neither, it inherits the ambient text color.
+    /// — with neither, it paints in the theme's text color.
     pub fn icon_tinted() -> ::runtime_core::Element {
         use crate::components::icon::Icon;
         use crate::tone;
