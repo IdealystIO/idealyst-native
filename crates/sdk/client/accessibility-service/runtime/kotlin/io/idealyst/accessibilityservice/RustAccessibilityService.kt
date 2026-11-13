@@ -2,6 +2,7 @@ package io.idealyst.accessibilityservice
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.accessibilityservice.InputMethod
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -13,11 +14,15 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
+import android.text.InputType
 import android.view.Display
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import android.view.inputmethod.EditorInfo
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
@@ -209,6 +214,8 @@ object RustAccessibility {
         "gesture" -> gesture(args, token)
         "global_action" -> globalAction(args.getString("action"))
         "set_focused_text" -> setFocusedText(args.getString("text"))
+        "type_text" -> typeText(args.getString("text"))
+        "press_key" -> pressKey(args.getString("key"))
         "find" -> find(args, token)
         "click" -> click(args, token)
         "windows" -> windows(token)
@@ -425,6 +432,65 @@ object RustAccessibility {
         if (!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
             throw Failure("refused", "the focused field refused the text")
         }
+        return null
+    }
+
+    /**
+     * The service's own input method (flagInputMethodEditor, API 33): Android
+     * binds it to whichever field has input focus, as it binds the keyboard,
+     * so text and keys reach the field at its cursor, password fields included.
+     */
+    private fun inputMethod(): InputMethod {
+        requireApi(33, "typing")
+        return requireService().inputMethod
+            ?: throw Failure("unsupported", "the service has no input method: flagInputMethodEditor is off")
+    }
+
+    private fun inputConnection(ime: InputMethod) =
+        ime.currentInputConnection ?: throw Failure("no_focused_input", "no input field has focus")
+
+    private fun typeText(text: String): Any? {
+        inputConnection(inputMethod()).commitText(text, 1, null)
+        return null
+    }
+
+    private fun pressKey(name: String): Any? {
+        val ime = inputMethod()
+        val conn = inputConnection(ime)
+        if (name == "enter") {
+            // A single-line field's Enter is its action (Search, Go, Done),
+            // which the field hears through performEditorAction; a key event
+            // would reach it as a bare newline it drops.
+            val info = ime.currentInputEditorInfo
+            if (info != null) {
+                val action = info.imeOptions and EditorInfo.IME_MASK_ACTION
+                val multiLine = (info.inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0
+                val noAction = (info.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
+                if (!multiLine && !noAction && action != EditorInfo.IME_ACTION_UNSPECIFIED &&
+                    action != EditorInfo.IME_ACTION_NONE
+                ) {
+                    conn.performEditorAction(action)
+                    return null
+                }
+            }
+        }
+        val code = when (name) {
+            "backspace" -> KeyEvent.KEYCODE_DEL
+            "delete" -> KeyEvent.KEYCODE_FORWARD_DEL
+            "enter" -> KeyEvent.KEYCODE_ENTER
+            "tab" -> KeyEvent.KEYCODE_TAB
+            "left" -> KeyEvent.KEYCODE_DPAD_LEFT
+            "right" -> KeyEvent.KEYCODE_DPAD_RIGHT
+            "up" -> KeyEvent.KEYCODE_DPAD_UP
+            "down" -> KeyEvent.KEYCODE_DPAD_DOWN
+            "home" -> KeyEvent.KEYCODE_MOVE_HOME
+            "end" -> KeyEvent.KEYCODE_MOVE_END
+            "escape" -> KeyEvent.KEYCODE_ESCAPE
+            else -> throw Failure("invalid_argument", "unknown key $name")
+        }
+        val now = SystemClock.uptimeMillis()
+        conn.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0))
+        conn.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, code, 0))
         return null
     }
 

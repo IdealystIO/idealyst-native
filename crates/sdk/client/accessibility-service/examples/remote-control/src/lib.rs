@@ -24,7 +24,9 @@
 //! | `long <x> <y> <ms>` | `OK <ms>` |
 //! | `swipe <x1> <y1> <x2> <y2> <ms>` | `OK <ms>` |
 //! | `global back\|home\|recents\|notifications\|quick_settings\|lock_screen` | `OK` |
-//! | `text <string>` | `OK` (into the focused field) |
+//! | `text <string>` | `OK` (replaces the focused field's text) |
+//! | `type <string>` | `OK` (typed at the focused field's cursor) |
+//! | `key backspace\|delete\|enter\|tab\|left\|right\|up\|down\|home\|end\|escape` | `OK` |
 //! | `find <query>` | `OK <n> <ms>`, then one line per element: `<i> <node>` |
 //! | `wait <ms> <query>` | as `find`, once something matches |
 //! | `click <i>` | `OK <ms>`: clicks element `i` of the last `find` / `wait` |
@@ -45,7 +47,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use accessibility_service::{Error, GlobalAction, ImageFormat, Node, Query};
+use accessibility_service::{Error, GlobalAction, ImageFormat, Key, Node, Query};
 use runtime_core::{on_scope_drop, signal, text, ui, Element, Signal};
 
 const PORT: u16 = 7878;
@@ -101,6 +103,23 @@ fn global(name: &str) -> Result<GlobalAction, String> {
         "quick_settings" => GlobalAction::QuickSettings,
         "lock_screen" => GlobalAction::LockScreen,
         other => return Err(format!("unknown global action {other}")),
+    })
+}
+
+fn key(name: &str) -> Result<Key, String> {
+    Ok(match name {
+        "backspace" => Key::Backspace,
+        "delete" => Key::Delete,
+        "enter" => Key::Enter,
+        "tab" => Key::Tab,
+        "left" => Key::Left,
+        "right" => Key::Right,
+        "up" => Key::Up,
+        "down" => Key::Down,
+        "home" => Key::Home,
+        "end" => Key::End,
+        "escape" => Key::Escape,
+        other => return Err(format!("unknown key {other}")),
     })
 }
 
@@ -181,6 +200,15 @@ fn run(line: &str) -> Result<(String, Vec<u8>), String> {
         "text" => {
             let text = line.trim_start().strip_prefix("text").unwrap_or("").trim_start();
             accessibility_service::set_focused_text(text).map_err(err)?;
+            Ok(("OK".to_string(), Vec::new()))
+        }
+        "type" => {
+            let text = line.trim_start().strip_prefix("type").unwrap_or("").trim_start();
+            accessibility_service::type_text(text).map_err(err)?;
+            Ok(("OK".to_string(), Vec::new()))
+        }
+        "key" => {
+            accessibility_service::press_key(key(words.next().unwrap_or(""))?).map_err(err)?;
             Ok(("OK".to_string(), Vec::new()))
         }
         "find" => {

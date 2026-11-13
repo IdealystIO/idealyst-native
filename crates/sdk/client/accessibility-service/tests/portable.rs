@@ -19,6 +19,8 @@ fn every_call_is_unsupported_off_android() {
     unsupported(open_settings());
     unsupported(global_action(GlobalAction::Back));
     unsupported(set_focused_text("hello"));
+    unsupported(type_text("hello"));
+    unsupported(press_key(Key::Enter));
     unsupported(pollster::block_on(screenshot(ImageFormat::Rgba)));
     unsupported(pollster::block_on(screenshot(ImageFormat::Jpeg { quality: 70 })));
     unsupported(pollster::block_on(tap(10.0, 10.0)));

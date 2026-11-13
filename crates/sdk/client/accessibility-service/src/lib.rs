@@ -14,7 +14,7 @@
 //!
 //! ```ignore
 //! use std::time::Duration;
-//! use accessibility_service::{GlobalAction, ImageFormat, Query};
+//! use accessibility_service::{GlobalAction, ImageFormat, Key, Query};
 //!
 //! if !accessibility_service::is_enabled() {
 //!     accessibility_service::open_settings()?; // one-time switch-on
@@ -26,6 +26,10 @@
 //! accessibility_service::tap(812.0, 440.0).await?;
 //! accessibility_service::swipe((1200.0, 900.0), (1200.0, 300.0), 300).await?;
 //! accessibility_service::global_action(GlobalAction::Back)?;
+//!
+//! // Type into whatever field has focus, as a keyboard would:
+//! accessibility_service::type_text("Main gate")?;
+//! accessibility_service::press_key(Key::Enter)?;
 //!
 //! // Press a button by what it is, in any app or system dialog:
 //! let q = Query::new().package("com.android.systemui").view_id("android:id/button1");
@@ -341,10 +345,73 @@ pub fn global_action(action: GlobalAction) -> Result<()> {
     sync_call("global_action", serde_json::json!({ "action": action.wire_name() })).map(drop)
 }
 
-/// Replace the text of the input-focused field with `text`.
+/// Replace the text of the input-focused field with `text`. To type
+/// into the field as a keyboard does, at its cursor, use [`type_text`].
 /// [`Error::NoFocusedInput`] when no field has focus.
 pub fn set_focused_text(text: &str) -> Result<()> {
     sync_call("set_focused_text", serde_json::json!({ "text": text })).map(drop)
+}
+
+/// A key [`press_key`] presses in the focused field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Key {
+    /// Delete the character before the cursor, or the selection.
+    Backspace,
+    /// Delete the character after the cursor, or the selection.
+    Delete,
+    /// The field's own action when it has one (Search, Go, Next, Done),
+    /// else a new line.
+    Enter,
+    /// Move focus to the next field.
+    Tab,
+    /// Move the cursor one character left.
+    Left,
+    /// Move the cursor one character right.
+    Right,
+    /// Move the cursor up a line.
+    Up,
+    /// Move the cursor down a line.
+    Down,
+    /// The start of the line.
+    Home,
+    /// The end of the line.
+    End,
+    /// Escape: closes what the field opened (a suggestion list).
+    Escape,
+}
+
+impl Key {
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    fn wire_name(self) -> &'static str {
+        match self {
+            Key::Backspace => "backspace",
+            Key::Delete => "delete",
+            Key::Enter => "enter",
+            Key::Tab => "tab",
+            Key::Left => "left",
+            Key::Right => "right",
+            Key::Up => "up",
+            Key::Down => "down",
+            Key::Home => "home",
+            Key::End => "end",
+            Key::Escape => "escape",
+        }
+    }
+}
+
+/// Type `text` into the focused field at its cursor, replacing the
+/// selection, as a keyboard does. Works in password fields, whose text the
+/// service cannot read. API 33+ ([`Error::Unsupported`] below it);
+/// [`Error::NoFocusedInput`] when no field has focus.
+pub fn type_text(text: &str) -> Result<()> {
+    sync_call("type_text", serde_json::json!({ "text": text })).map(drop)
+}
+
+/// Press `key` in the focused field. API 33+ ([`Error::Unsupported`]
+/// below it); [`Error::NoFocusedInput`] when no field has focus.
+pub fn press_key(key: Key) -> Result<()> {
+    sync_call("press_key", serde_json::json!({ "key": key.wire_name() })).map(drop)
 }
 
 /// Tell the platform half to start or stop reporting `what` (`"enabled"`,
