@@ -3005,15 +3005,27 @@ impl IosBackend {
         // through to `create_view()`. This
         // override is what makes `idea_ui::Tabs`, `CardTabs`, and
         // any other Pressable-backed control respond to taps on iOS.
-        // An `IdealystTouchView`, not a plain `UIView`: with no touch
-        // handler installed it forwards touches to `super` unchanged, and it
-        // is the class that records an explicit `pointer_events` — so a
+        // An `IdealystTouchView`, not a plain `UIView`: it is the class that
+        // takes the consuming touch handler below, and the class that
+        // records an explicit `pointer_events` — so a
         // pressable opting back in (`Auto`) under a `none` root (an
         // overlay's backdrop, a click-through toast's button) takes taps.
         // A plain `UIView` dropped the `Auto` and the tap passed through.
         let touch_view = touch::IdealystTouchView::new(self.mtm);
         // VoiceOver activation + handle `click` run the same action.
         touch_view.set_activate(on_click.clone());
+        // The tap belongs to the control: consume every raw phase so the
+        // responder chain doesn't hand the touch to an ancestor's
+        // `on_touch`. The tap recognizer below doesn't cancel touches in
+        // the view, so without this a press on a row's menu button opened
+        // the menu AND reached the row's tap handler, which navigated. The
+        // web's click stops propagating at the button the same way. Fires
+        // nothing itself — the recognizer is the press. Nested content with
+        // its own `on_touch` is hit-tested first and still gets its touches.
+        touch_view.set_handler(Rc::new(|ev: &runtime_shared::TouchEvent| match ev.phase {
+            runtime_shared::TouchPhase::Hovered => runtime_shared::TouchResponse::IGNORED,
+            _ => runtime_shared::TouchResponse::CONSUMED,
+        }));
         let view: Retained<UIView> = Retained::into_super(touch_view);
         let _: () = unsafe { msg_send![&view, setUserInteractionEnabled: true] };
 

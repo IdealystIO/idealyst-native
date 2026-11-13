@@ -224,7 +224,19 @@ mod imp {
     /// Control: the same calls on a plain child view DO reach the ancestor,
     /// so the empty log is the pressable consuming, not a dead path.
     fn raw_touches_do_not_reach_ancestor(mtm: MainThreadMarker, backend: &mut IosBackend) {
-        let fx = fixture(mtm, backend, true);
+        raw_touches_do_not_reach_ancestor_in(mtm, backend, true);
+    }
+
+    /// Regression: a release-mode pressable (Button, IconButton) let its raw
+    /// touches bubble, so a tap on a table row's menu button opened the menu
+    /// AND reached the row's `on_touch` tap, which navigated. It consumes
+    /// them as the press-down pressable does.
+    fn regression_release_pressable_touches_do_not_reach_ancestor(mtm: MainThreadMarker, backend: &mut IosBackend) {
+        raw_touches_do_not_reach_ancestor_in(mtm, backend, false);
+    }
+
+    fn raw_touches_do_not_reach_ancestor_in(mtm: MainThreadMarker, backend: &mut IosBackend, on_down: bool) {
+        let fx = fixture(mtm, backend, on_down);
         raw_press(fx.node.as_view());
         assert_eq!(fx.presses.get(), 0, "raw touches don't fire; the recognizer does");
         assert!(fx.ancestor.borrow().is_empty(), "nothing reaches the ancestor: {:?}", fx.ancestor.borrow());
@@ -285,10 +297,14 @@ mod imp {
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
         backend_ios::install_scheduler();
         let mut backend = IosBackend::new(mtm);
-        let tests: [(&str, fn(MainThreadMarker, &mut IosBackend)); 5] = [
+        let tests: [(&str, fn(MainThreadMarker, &mut IosBackend)); 6] = [
             ("wired_as_a_zero_duration_long_press", wired_as_a_zero_duration_long_press),
             ("action_fires_on_began_only", action_fires_on_began_only),
             ("raw_touches_do_not_reach_ancestor", raw_touches_do_not_reach_ancestor),
+            (
+                "regression_release_pressable_touches_do_not_reach_ancestor",
+                regression_release_pressable_touches_do_not_reach_ancestor,
+            ),
             (
                 "regression_press_down_reports_the_held_fingers_travel",
                 regression_press_down_reports_the_held_fingers_travel,
