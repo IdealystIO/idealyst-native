@@ -1918,12 +1918,18 @@ pub(crate) struct CellIvars {
     /// `NSTextAlignment` waiting for the current edit to end. Set by
     /// [`set_alignment_after_edit`]; unused by `IdealystLabelCell`.
     alignment_after_edit: StdCell<Option<isize>>,
-    /// The placeholder's ink, for an editable field's cell. Read at draw
-    /// time by the cell's `placeholderAttributedString`, which pairs it with
-    /// the CURRENT placeholder text and font: an attributed placeholder set
-    /// once would keep a stale font after a restyle (AppKit does not apply
-    /// the cell's font to one). Unused by `IdealystLabelCell`.
+    /// The placeholder's ink, for an editable field's cell. With one set,
+    /// the cell holds an attributed placeholder of `placeholder_text` in its
+    /// current font and this ink, rebuilt by [`apply_placeholder_ink`] when
+    /// the ink, the text or the font changes: AppKit does not apply the
+    /// cell's font to an attributed placeholder, and it draws the one set
+    /// through `setPlaceholderAttributedString:` (an override of the getter
+    /// is never asked). Unused by `IdealystLabelCell`.
     placeholder_color: RefCell<Option<Retained<NSColor>>>,
+    /// The plain placeholder text last given to `setPlaceholderString:`,
+    /// kept because `placeholderString` does not describe an attributed
+    /// placeholder. Unused by `IdealystLabelCell`.
+    placeholder_text: RefCell<Option<Retained<NSString>>>,
 }
 
 impl Default for CellIvars {
@@ -1935,6 +1941,7 @@ impl Default for CellIvars {
             blur_handler: RefCell::new(None),
             author_focus: RefCell::new(None),
             placeholder_color: RefCell::new(None),
+            placeholder_text: RefCell::new(None),
         }
     }
 }
@@ -2195,15 +2202,23 @@ declare_class!(
     }
 
     unsafe impl VCenterTextFieldCell {
-        /// With a placeholder ink set, the placeholder as AppKit draws it:
-        /// the current text in the current font and that ink. Without one,
-        /// AppKit's own.
-        #[method_id(placeholderAttributedString)]
-        fn placeholder_attributed_string(&self) -> Option<Retained<AnyObject>> {
-            let color = self.ivars().placeholder_color.borrow().clone();
-            match color {
-                Some(c) => colored_placeholder(self, &c),
-                None => unsafe { msg_send_id![super(self), placeholderAttributedString] },
+        /// Keeps the plain text for [`apply_placeholder_ink`], which redraws
+        /// it in the ink when one is set.
+        #[method(setPlaceholderString:)]
+        fn set_placeholder_string(&self, text: *mut NSString) {
+            *self.ivars().placeholder_text.borrow_mut() = unsafe { Retained::retain(text) };
+            let _: () = unsafe { msg_send![super(self), setPlaceholderString: text] };
+            if self.ivars().placeholder_color.borrow().is_some() {
+                apply_placeholder_ink(self, self.ivars());
+            }
+        }
+
+        /// A restyle's font reaches an inked placeholder too.
+        #[method(setFont:)]
+        fn set_font(&self, font: *mut AnyObject) {
+            let _: () = unsafe { msg_send![super(self), setFont: font] };
+            if self.ivars().placeholder_color.borrow().is_some() {
+                apply_placeholder_ink(self, self.ivars());
             }
         }
 
@@ -2326,15 +2341,23 @@ declare_class!(
     }
 
     unsafe impl VCenterSecureTextFieldCell {
-        /// With a placeholder ink set, the placeholder as AppKit draws it:
-        /// the current text in the current font and that ink. Without one,
-        /// AppKit's own.
-        #[method_id(placeholderAttributedString)]
-        fn placeholder_attributed_string(&self) -> Option<Retained<AnyObject>> {
-            let color = self.ivars().placeholder_color.borrow().clone();
-            match color {
-                Some(c) => colored_placeholder(self, &c),
-                None => unsafe { msg_send_id![super(self), placeholderAttributedString] },
+        /// Keeps the plain text for [`apply_placeholder_ink`], which redraws
+        /// it in the ink when one is set.
+        #[method(setPlaceholderString:)]
+        fn set_placeholder_string(&self, text: *mut NSString) {
+            *self.ivars().placeholder_text.borrow_mut() = unsafe { Retained::retain(text) };
+            let _: () = unsafe { msg_send![super(self), setPlaceholderString: text] };
+            if self.ivars().placeholder_color.borrow().is_some() {
+                apply_placeholder_ink(self, self.ivars());
+            }
+        }
+
+        /// A restyle's font reaches an inked placeholder too.
+        #[method(setFont:)]
+        fn set_font(&self, font: *mut AnyObject) {
+            let _: () = unsafe { msg_send![super(self), setFont: font] };
+            if self.ivars().placeholder_color.borrow().is_some() {
+                apply_placeholder_ink(self, self.ivars());
             }
         }
 
@@ -2513,21 +2536,29 @@ fn framework_cell_ivars(field: &NSView) -> Option<&CellIvars> {
     }
 }
 
-/// `cell`'s placeholder string in its font and `color`; `None` when it has
-/// no placeholder.
-fn colored_placeholder(cell: &NSTextFieldCell, color: &NSColor) -> Option<Retained<AnyObject>> {
+/// Give `cell` its inked placeholder: `ivars.placeholder_text` in the cell's
+/// current font and `ivars.placeholder_color`, as an attributed placeholder.
+/// With no ink, the attributed one is cleared and the plain text set again,
+/// so AppKit draws its own. Calls `setPlaceholderString:` only on that path,
+/// where the override does not call back here.
+fn apply_placeholder_ink(cell: &NSTextFieldCell, ivars: &CellIvars) {
+    let color = ivars.placeholder_color.borrow().clone();
+    let text = ivars.placeholder_text.borrow().clone();
     unsafe {
-        let text: *mut NSString = msg_send![cell, placeholderString];
-        if text.is_null() {
-            return None;
-        }
+        let _: () = msg_send![cell, setPlaceholderAttributedString: std::ptr::null::<AnyObject>()];
+        let Some(color) = color else {
+            let plain: *const NSString = text.as_deref().map_or(std::ptr::null(), |t| t as *const NSString);
+            let _: () = msg_send![cell, setPlaceholderString: plain];
+            return;
+        };
+        let Some(text) = text else { return };
         let mut font: *mut AnyObject = msg_send![cell, font];
         if font.is_null() {
             font = msg_send![objc2::class!(NSFont), systemFontOfSize: 13.0_f64];
         }
         let fg_key = NSString::from_str("NSColor");
         let font_key = NSString::from_str("NSFont");
-        let objs: [*const AnyObject; 2] = [color as *const NSColor as *const AnyObject, font];
+        let objs: [*const AnyObject; 2] = [Retained::as_ptr(&color) as *const AnyObject, font];
         let keys: [*const AnyObject; 2] = [
             Retained::as_ptr(&fg_key) as *const AnyObject,
             Retained::as_ptr(&font_key) as *const AnyObject,
@@ -2539,16 +2570,22 @@ fn colored_placeholder(cell: &NSTextFieldCell, color: &NSColor) -> Option<Retain
             count: 2usize
         ];
         let alloc: *mut AnyObject = msg_send![objc2::class!(NSAttributedString), alloc];
-        let inited: *mut AnyObject = msg_send![alloc, initWithString: text, attributes: dict];
-        Retained::from_raw(inited)
+        let attributed: Option<Retained<AnyObject>> =
+            Retained::from_raw(msg_send![alloc, initWithString: &*text, attributes: dict]);
+        if let Some(a) = attributed {
+            let _: () = msg_send![cell, setPlaceholderAttributedString: &*a];
+        }
     }
 }
 
 /// Set a text input's placeholder ink (`None`: AppKit's own) on its
 /// framework cell, and repaint. No-op for any other view.
 pub(crate) fn set_text_field_placeholder_color(field: &NSView, color: Option<Retained<NSColor>>) {
+    let cell: *mut NSTextFieldCell = unsafe { msg_send![field, cell] };
     if let Some(iv) = framework_cell_ivars(field) {
         *iv.placeholder_color.borrow_mut() = color;
+        // SAFETY: `framework_cell_ivars` found a framework cell, so `cell` is one.
+        apply_placeholder_ink(unsafe { &*cell }, iv);
         let _: () = unsafe { msg_send![field, setNeedsDisplay: true] };
     }
 }
@@ -2696,16 +2733,18 @@ pub(crate) fn set_text_field_secure(mtm: MainThreadMarker, field: &NSView, secur
         // live on the cell's ivars — the swap below blanks them, so carry them
         // across. Clone the Rc/handler out so the restore writes them onto the
         // NEW cell.
-        let (carry_focus, carry_blur, carry_author, carry_insets, carry_ph_color) = match framework_cell_ivars(field) {
-            Some(iv) => (
-                iv.focus_setter.borrow().clone(),
-                iv.blur_handler.borrow().clone(),
-                iv.author_focus.borrow().clone(),
-                Some(iv.insets.get()),
-                iv.placeholder_color.borrow().clone(),
-            ),
-            None => (None, None, None, None, None),
-        };
+        let (carry_focus, carry_blur, carry_author, carry_insets, carry_ph_color, carry_ph_text) =
+            match framework_cell_ivars(field) {
+                Some(iv) => (
+                    iv.focus_setter.borrow().clone(),
+                    iv.blur_handler.borrow().clone(),
+                    iv.author_focus.borrow().clone(),
+                    Some(iv.insets.get()),
+                    iv.placeholder_color.borrow().clone(),
+                    iv.placeholder_text.borrow().clone(),
+                ),
+                None => (None, None, None, None, None, None),
+            };
 
         // Is the field currently being edited? The window's first responder
         // is the shared field editor; its delegate is the field while it
@@ -2755,8 +2794,13 @@ pub(crate) fn set_text_field_secure(mtm: MainThreadMarker, field: &NSView, secur
             }
         }
 
-        // Restore the carried-over state onto the new cell.
-        if !placeholder.is_null() {
+        // Restore the carried-over state onto the new cell. The framework
+        // cell's own copy of the text first: with an ink set, the field's
+        // `placeholderString` does not describe the attributed placeholder.
+        // The new cell's override re-inks it (its ink was restored above).
+        if let Some(text) = carry_ph_text.as_deref() {
+            let _: () = msg_send![field, setPlaceholderString: text];
+        } else if !placeholder.is_null() {
             let _: () = msg_send![field, setPlaceholderString: placeholder];
         }
         if !font.is_null() {
