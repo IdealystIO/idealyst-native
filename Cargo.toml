@@ -703,7 +703,7 @@ share = { path = "crates/sdk/client/share", version = "8.0.0", registry = "ideal
 deep-link = { path = "crates/sdk/client/deep-link", version = "9.0.0", registry = "idealyst" }
 connectivity = { path = "crates/sdk/client/connectivity", version = "8.0.0", registry = "idealyst" }
 device-admin = { path = "crates/sdk/client/device-admin", version = "7.1.0", registry = "idealyst" }
-accessibility-service = { path = "crates/sdk/client/accessibility-service", version = "0.1.0", registry = "idealyst" }
+accessibility-service = { path = "crates/sdk/client/accessibility-service", version = "0.2.0", registry = "idealyst" }
 haptics = { path = "crates/sdk/client/haptics", version = "8.0.0", registry = "idealyst" }
 datetime = { path = "crates/sdk/client/datetime", version = "1.6.1", registry = "idealyst" }
 audio = { path = "crates/sdk/client/audio", version = "8.0.0", registry = "idealyst" }
