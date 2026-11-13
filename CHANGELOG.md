@@ -3532,7 +3532,7 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   reinstalls and relaunches the app, reported as a build of `ios` / `android`; one arriving
   mid-run gets a run of its own after it. Saves still do not relaunch on their own.
 
-- **Two sessions of one app on one platform each get a robot selector** (`mcp-server` patch).
+- **Two sessions of one app on one platform each get a robot selector** (`mcp-server` minor).
   `list_apps` gave both the same `name:platform`, and every robot tool refused it as ambiguous.
   A selector takes an `@pid` suffix (`todo:ios@4812`, or `todo@4812`), and `list_apps` shows it
   when two sessions share a name and platform.
