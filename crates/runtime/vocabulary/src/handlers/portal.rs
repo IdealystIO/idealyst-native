@@ -39,7 +39,11 @@ where
         &prim.a11y,
     );
 
-    cx.realize_children_into(&mut node, children);
+    // The content is drawn on the window, not inside the element that
+    // opened it: the robot must not clip it to that element's ancestors
+    // (a flyout opening left of its menu read as zero-width on the menu's
+    // edge) or scroll them to reach it.
+    crate::robot::drawn_elsewhere(|| cx.realize_children_into(&mut node, children));
 
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);

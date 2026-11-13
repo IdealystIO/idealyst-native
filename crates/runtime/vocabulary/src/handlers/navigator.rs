@@ -199,17 +199,42 @@ runtime_tls::thread_local! {
     /// slot) so a nested navigator building its own layout inside a
     /// parent's layout captures into its own cell, never the parent's.
     static OUTLET_CAPTURE: RefCell<Vec<Box<dyn Any>>> = const { RefCell::new(Vec::new()) };
+    /// Beside [`OUTLET_CAPTURE`], one slot per frame: where the outlet sits
+    /// in the robot's element tree, so the navigator registers its screens
+    /// there (under the scroller the layout wraps the outlet in), not under
+    /// itself.
+    #[cfg(feature = "robot")]
+    static OUTLET_ROBOT: RefCell<Vec<Rc<RefCell<Option<crate::robot::CapturedParent>>>>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 struct OutletCaptureGuard<N: Clone + 'static> {
     cell: Rc<RefCell<Option<N>>>,
+    #[cfg(feature = "robot")]
+    robot: Rc<RefCell<Option<crate::robot::CapturedParent>>>,
 }
 
 impl<N: Clone + 'static> OutletCaptureGuard<N> {
     fn push() -> Self {
         let cell: Rc<RefCell<Option<N>>> = Rc::new(RefCell::new(None));
         OUTLET_CAPTURE.with(|s| s.borrow_mut().push(Box::new(cell.clone())));
-        OutletCaptureGuard { cell }
+        #[cfg(feature = "robot")]
+        let robot = {
+            let robot = Rc::new(RefCell::new(None));
+            OUTLET_ROBOT.with(|s| s.borrow_mut().push(robot.clone()));
+            robot
+        };
+        OutletCaptureGuard {
+            cell,
+            #[cfg(feature = "robot")]
+            robot,
+        }
+    }
+
+    /// Where the outlet registered in the robot's tree.
+    #[cfg(feature = "robot")]
+    fn robot_position(&self) -> Option<crate::robot::CapturedParent> {
+        self.robot.borrow().clone()
     }
 
     /// The captured outlet node, or `None` if the built layout contained
@@ -225,7 +250,42 @@ impl<N: Clone + 'static> Drop for OutletCaptureGuard<N> {
         OUTLET_CAPTURE.with(|s| {
             s.borrow_mut().pop();
         });
+        #[cfg(feature = "robot")]
+        OUTLET_ROBOT.with(|s| {
+            s.borrow_mut().pop();
+        });
     }
+}
+
+/// Run `f` (a screen's mount) registering its elements at the outlet's
+/// position in the robot's tree, once the layout has put it there. A
+/// screen mounted by the driver after a navigation otherwise registered
+/// as a detached root, and the first screen under the navigator itself:
+/// either way not under the scroller around the outlet, so
+/// `scroll_into_view` never moved it.
+fn at_outlet<R>(
+    #[cfg(feature = "robot")] robot_at: &RefCell<Option<crate::robot::CapturedParent>>,
+    f: impl FnOnce() -> R,
+) -> R {
+    #[cfg(feature = "robot")]
+    if let Some(at) = robot_at.borrow().clone() {
+        return crate::robot::with_captured_parent(&at, f);
+    }
+    f()
+}
+
+/// After the layout is built: move the first screen's elements (mounted
+/// before the outlet existed, so registered under the navigator) to the
+/// outlet's position, and register later screens there.
+#[cfg(feature = "robot")]
+fn seat_robot_screens(
+    robot_at: &RefCell<Option<crate::robot::CapturedParent>>,
+    at: Option<crate::robot::CapturedParent>,
+    first_screen: &[crate::robot::ElementId],
+) {
+    let Some(at) = at else { return };
+    crate::robot::move_under(first_screen, &at);
+    *robot_at.borrow_mut() = Some(at);
 }
 
 fn outlet_capture_record<N: Clone + 'static>(node: &N) {
@@ -1451,6 +1511,10 @@ struct SwapShared<H: NavCaps + 'static> {
     registry: Rc<Registry<H>>,
     screens: Rc<HashMap<&'static str, NavScreenEntry>>,
     outlet: RefCell<Option<H::Node>>,
+    /// Where screens register in the robot's tree: the outlet's position
+    /// (see [`OUTLET_ROBOT`]). `None` until the layout is built.
+    #[cfg(feature = "robot")]
+    robot_at: RefCell<Option<crate::robot::CapturedParent>>,
     /// Mounted screens keyed by normalized URL — NOT route name: a
     /// parameterized route funnels many screens through one name;
     /// name-keying made same-route selects no-ops and served entry A's
@@ -1541,18 +1605,24 @@ impl<H: NavCaps + 'static> SwapShared<H> {
         let node = if let Some(n) = cached {
             n
         } else {
-            let live = realize_screen(
-                &self.backend,
-                &self.registry,
-                &self.screens,
-                &key,
-                self.active_route,
-                self.active_query,
-                &self.activator(),
-                name,
-                params,
-                query,
-                None,
+            let live = at_outlet(
+                #[cfg(feature = "robot")]
+                &self.robot_at,
+                || {
+                    realize_screen(
+                        &self.backend,
+                        &self.registry,
+                        &self.screens,
+                        &key,
+                        self.active_route,
+                        self.active_query,
+                        &self.activator(),
+                        name,
+                        params,
+                        query,
+                        None,
+                    )
+                },
             );
             let node = live.node.clone();
             self.mounted.borrow_mut().insert(key.clone(), live);
@@ -1580,10 +1650,10 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     let root = backend.borrow_mut().create_view(&prim.a11y);
     backend.borrow_mut().apply_style(&root, &navigator_fill_rules());
     // Identity registration (robot builds): the navigator surfaces as an
-    // `ElementKind::Navigator` element whose children are everything
-    // mounted inside this handler (initial screen + chrome) — the guard
-    // lives to the end of the fn so those mounts link here. Screens
-    // mounted LATER by the driver effect register as orphan roots.
+    // `ElementKind::Navigator` element; its layout registers under it.
+    // Every screen registers where the layout put the outlet (`at_outlet`):
+    // the first one is built before the layout, so it registers here and
+    // moves there once the layout is built (`seat_robot_screens`).
     #[cfg(feature = "robot")]
     let robot_reg = crate::robot::register_mount(
         &backend,
@@ -1630,6 +1700,8 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         registry,
         screens: Rc::new(prim.config.screens),
         outlet: RefCell::new(None),
+        #[cfg(feature = "robot")]
+        robot_at: RefCell::new(None),
         mounted: RefCell::new(HashMap::new()),
         active: RefCell::new(None),
         mount_policy: prim.mount_policy,
@@ -1798,6 +1870,10 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         None,
     );
     backend.borrow_mut().hydrate_nav_screen_end();
+    // The first screen's elements, registered under the navigator until
+    // the layout below gives them the outlet's position.
+    #[cfg(feature = "robot")]
+    let first_screen = crate::robot::children_of(robot_reg.id());
     // Root navigator: the nested subtree mounted synchronously above, so
     // every nested navigator already peeked the launch URL. Clear the
     // slot so a later rebuild isn't poisoned — holding the path for the
@@ -1859,6 +1935,8 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         None => crate::builders::navigator_outlet().build(),
     });
     let (layout_root, chrome) = cx.realize_detached(layout_element);
+    #[cfg(feature = "robot")]
+    let outlet_robot = guard.robot_position();
     let outlet = guard.take();
     debug_assert!(
         outlet.is_some(),
@@ -1878,6 +1956,8 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         backend.borrow_mut().insert(&mut parent, layout_root);
     }
     *shared.outlet.borrow_mut() = outlet;
+    #[cfg(feature = "robot")]
+    seat_robot_screens(&shared.robot_at, outlet_robot, &first_screen);
     // Seat the initial screen: cache under the RESOLVED url (deep-link
     // aware) and show it.
     let key = url_key(&initial_path);
@@ -2000,6 +2080,9 @@ struct StackShared<H: NavCaps + 'static> {
     screens: Rc<HashMap<&'static str, NavScreenEntry>>,
     base: String,
     outlet: RefCell<Option<H::Node>>,
+    /// See `SwapShared::robot_at`.
+    #[cfg(feature = "robot")]
+    robot_at: RefCell<Option<crate::robot::CapturedParent>>,
     stack: RefCell<Vec<StackEntry<H::Node>>>,
     /// A `Cell` because a successful presenter attach TIGHTENS it: a
     /// native container retains covered screens by construction, so
@@ -2051,18 +2134,24 @@ impl<H: NavCaps + 'static> StackShared<H> {
     /// `realize_screen`), so it must be the URL the entry actually
     /// carries, never the registered pattern.
     fn mount(&self, name: &'static str, path: &str, params: Box<dyn Any>, query: QueryParams) -> LiveScreen<H::Node> {
-        realize_screen(
-            &self.backend,
-            &self.registry,
-            &self.screens,
-            path,
-            self.active_route,
-            self.active_query,
-            &self.activator(),
-            name,
-            params,
-            query,
-            Some(&self.screen_overlay),
+        at_outlet(
+            #[cfg(feature = "robot")]
+            &self.robot_at,
+            || {
+                realize_screen(
+                    &self.backend,
+                    &self.registry,
+                    &self.screens,
+                    path,
+                    self.active_route,
+                    self.active_query,
+                    &self.activator(),
+                    name,
+                    params,
+                    query,
+                    Some(&self.screen_overlay),
+                )
+            },
         )
     }
 
@@ -2410,6 +2499,8 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         screens: Rc::new(prim.config.screens),
         base: base.clone(),
         outlet: RefCell::new(None),
+        #[cfg(feature = "robot")]
+        robot_at: RefCell::new(None),
         stack: RefCell::new(Vec::new()),
         retention: std::cell::Cell::new(retention),
         presenter: RefCell::new(None),
@@ -2586,6 +2677,8 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     backend.borrow_mut().hydrate_nav_screen_begin(&root, &base);
     let initial = shared.mount(initial_route, &initial_path, initial_params, initial_query.clone());
     backend.borrow_mut().hydrate_nav_screen_end();
+    #[cfg(feature = "robot")]
+    let first_screen = crate::robot::children_of(robot_reg.id());
     // Root: clear the launch slot, holding an unreached path for late
     // navigators (see the swap mount).
     if base.is_empty() {
@@ -2626,6 +2719,8 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         None => crate::builders::navigator_outlet().build(),
     });
     let (layout_root, chrome) = cx.realize_detached(layout_element);
+    #[cfg(feature = "robot")]
+    let outlet_robot = guard.robot_position();
     let outlet = guard.take();
     debug_assert!(
         outlet.is_some(),
@@ -2642,6 +2737,8 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         backend.borrow_mut().insert(&mut parent, layout_root);
     }
     *shared.outlet.borrow_mut() = outlet;
+    #[cfg(feature = "robot")]
+    seat_robot_screens(&shared.robot_at, outlet_robot, &first_screen);
 
     // Native transitions, if a host installed a presenter AND it accepts
     // this outlet's node type. Must run BEFORE `seat_initial`: the seat
@@ -2816,6 +2913,12 @@ pub fn mount_navigator_outlet<H: NavCaps + 'static>(
     // Record into the innermost active capture cell so the enclosing
     // navigator can address this node for screen swaps.
     outlet_capture_record::<H::Node>(&node);
+    #[cfg(feature = "robot")]
+    OUTLET_ROBOT.with(|s| {
+        if let Some(top) = s.borrow().last() {
+            *top.borrow_mut() = Some(crate::robot::capture_parent());
+        }
+    });
     node
 }
 

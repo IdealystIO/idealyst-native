@@ -330,3 +330,55 @@ fn regression_robot_could_not_scroll_a_flat_list() {
     );
     robot.reset();
 }
+
+/// want_02425a72: a submenu that flips to open LEFT of its menu was
+/// reported zero-wide on the menu's left edge, and `click` refused it.
+/// The flyout is a portal, drawn on the window, but its elements register
+/// under the menu row that opened it, and the clip walk cut them to the
+/// menu panel's scroller. A portal's content stops the walk.
+#[test]
+fn regression_portal_content_is_not_clipped_by_the_element_that_opened_it() {
+    use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
+    use runtime_vocabulary::builders::portal;
+    let robot = Robot::new();
+    robot.reset();
+    let h = Harness::new();
+    let _r = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            view()
+                .test_id("menu")
+                .child(
+                    view()
+                        .test_id("row")
+                        .child(
+                            portal(PortalTarget::Viewport(ViewportPlacement::default()))
+                                .child(text().content("Working").test_id("option").build())
+                                .build(),
+                        )
+                        .build(),
+                )
+                .build(),
+        )
+    });
+    window(1440.0, 900.0);
+    let node_of = |kind: &str| -> u32 {
+        *h.shared.kinds.borrow().iter().find(|(_, k)| k.starts_with(kind)).unwrap_or_else(|| panic!("a {kind}")).0
+    };
+    let (menu, row, option) = (0, 1, node_of("text"));
+    {
+        let mut frames = h.shared.frames.borrow_mut();
+        frames.insert(menu, rect(1217.0, 100.0, 223.0, 300.0)); // the menu, at the window's right edge
+        frames.insert(row, rect(1217.0, 115.0, 223.0, 32.0));
+        frames.insert(option, rect(1056.0, 123.0, 57.0, 16.0)); // the flyout, flipped to the left
+    }
+    h.shared.clips.borrow_mut().insert(menu, ContentClip::Scroll);
+
+    let el = find(&robot, "option");
+    assert_eq!(robot.visibility(&el).unwrap(), Visibility { visible: true, in_viewport: Some(true) });
+    assert_eq!(robot.visible_frame(&el).unwrap(), Some(rect(1056.0, 123.0, 57.0, 16.0)), "measured where it is drawn");
+    // Still the row's descendant in the tree.
+    assert_eq!(robot.parent_of(&el).map(|p| p.test_id), Some(Some("row")));
+    robot.reset();
+}

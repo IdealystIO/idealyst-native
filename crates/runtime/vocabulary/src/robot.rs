@@ -480,6 +480,12 @@ pub(crate) struct RegistryEntry {
     pub children: Vec<ElementId>,
     /// Sibling sort key — see [`OrderKey`].
     pub order: OrderKey,
+    /// Drawn somewhere other than inside its parent: a top-level element
+    /// of a portal's content (a menu panel, a sheet, a flyout), which the
+    /// backend draws on the window. It stays the opener's child in the
+    /// tree, but nothing above it clips or scrolls it: the visibility and
+    /// `scroll_into_view` walks stop here.
+    pub detached: bool,
 }
 
 /// Where an entry sits among its siblings.
@@ -635,6 +641,9 @@ impl Registry {
 struct Frame {
     id: Option<ElementId>,
     region: Option<Rc<RegionOrder>>,
+    /// Registrations under this frame are drawn elsewhere
+    /// ([`RegistryEntry::detached`]); pushed by [`drawn_elsewhere`].
+    detached: bool,
 }
 
 struct RegionOrder {
@@ -725,7 +734,67 @@ pub fn capture_parent() -> CapturedParent {
             base: next_seq(),
             next: std::cell::Cell::new(1),
         })),
+        // Content a region swaps in at the top of a portal is still
+        // drawn on the window.
+        detached: PARENT_STACK.with(|s| s.borrow().last().is_some_and(|f| f.detached)),
     })
+}
+
+/// Run `f` with what it registers marked drawn elsewhere — a portal's
+/// content (see [`RegistryEntry::detached`]). The elements stay under the
+/// current parent in the tree.
+pub(crate) fn drawn_elsewhere<R>(f: impl FnOnce() -> R) -> R {
+    let frame = PARENT_STACK.with(|s| {
+        let top = s.borrow().last().cloned();
+        Frame { detached: true, ..top.unwrap_or(Frame { id: None, region: None, detached: true }) }
+    });
+    PARENT_STACK.with(|s| s.borrow_mut().push(frame));
+    let depth = PARENT_STACK.with(|s| s.borrow().len());
+    let out = f();
+    PARENT_STACK.with(|s| {
+        let mut stack = s.borrow_mut();
+        debug_assert_eq!(stack.len(), depth, "robot parent stack out of order around a portal's content");
+        stack.pop();
+    });
+    out
+}
+
+/// The elements registered directly under `id`, in order.
+pub(crate) fn children_of(id: ElementId) -> Vec<ElementId> {
+    REGISTRY.with(|r| r.borrow().get(id).map(|e| e.children.clone()).unwrap_or_default())
+}
+
+/// Move `ids` (with their subtrees) to the captured position, after
+/// whatever is already registered there. For content mounted before the
+/// place it is shown in existed: a navigator's first screen is built
+/// before the layout holding its outlet.
+pub(crate) fn move_under(ids: &[ElementId], to: &CapturedParent) {
+    let Frame { id: new_parent, region, .. } = &to.0;
+    REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        for &id in ids {
+            let Some(old) = reg.get(id).map(|e| e.parent) else { continue };
+            if let Some(Some(p)) = old.and_then(|p| reg.entries.get_mut(p.0 as usize)) {
+                p.children.retain(|c| *c != id);
+            }
+            let order = match region {
+                Some(region) => {
+                    let n = region.next.get();
+                    region.next.set(n + 1);
+                    (region.base, n)
+                }
+                None => (next_seq(), 0),
+            };
+            if let Some(Some(e)) = reg.entries.get_mut(id.0 as usize) {
+                e.parent = *new_parent;
+                e.order = order;
+            }
+            if let Some(pid) = new_parent {
+                reg.link_child(*pid, id, order);
+            }
+        }
+    });
+    bump_revision();
 }
 
 /// Run `f` registering at the captured position.
@@ -908,14 +977,14 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
     backend.borrow().note_introspection_root(node);
     ensure_region_hook();
 
-    let (parent, order) = PARENT_STACK.with(|s| match s.borrow().last() {
-        Some(Frame { id, region: Some(region) }) => {
+    let (parent, order, detached) = PARENT_STACK.with(|s| match s.borrow().last() {
+        Some(Frame { id, region: Some(region), detached }) => {
             let n = region.next.get();
             region.next.set(n + 1);
-            (*id, (region.base, n))
+            (*id, (region.base, n), *detached)
         }
-        Some(Frame { id, region: None }) => (*id, (next_seq(), 0)),
-        None => (None, (next_seq(), 0)),
+        Some(Frame { id, region: None, detached }) => (*id, (next_seq(), 0), *detached),
+        None => (None, (next_seq(), 0), false),
     });
     let resize_window = parent.is_none().then(|| {
         let b = backend.clone();
@@ -964,6 +1033,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
             parent,
             children: Vec::new(),
             order,
+            detached,
         })
     });
     if let Some(pid) = parent {
@@ -987,7 +1057,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
         bump_revision();
     });
 
-    PARENT_STACK.with(|s| s.borrow_mut().push(Frame { id: Some(id), region: None }));
+    PARENT_STACK.with(|s| s.borrow_mut().push(Frame { id: Some(id), region: None, detached: false }));
     RegisteredPrim { id, live: true }
 }
 
@@ -1708,14 +1778,16 @@ fn visibility_and_frame(id: ElementId) -> Option<(Visibility, Option<ViewportRec
         let reg = r.borrow();
         let e = reg.get(id)?;
         // Innermost first: `Visibility::clipped` reads the order.
+        // Up to the first element drawn elsewhere: a portal's content is
+        // not inside the boxes of the element that opened it.
         let mut ancestors: Vec<Ancestor> = Vec::new();
-        let mut cur = e.parent;
+        let mut cur = (!e.detached).then_some(e.parent).flatten();
         while let Some(pid) = cur {
             let Some(p) = reg.get(pid) else { break };
             if let (Some(clip), Some(frame)) = (p.actions.clip.clone(), p.actions.absolute_frame.clone()) {
                 ancestors.push((clip, frame));
             }
-            cur = p.parent;
+            cur = (!p.detached).then_some(p.parent).flatten();
         }
         Some((e.actions.shown.clone(), e.actions.absolute_frame.clone(), ancestors))
     })?;
@@ -2523,8 +2595,11 @@ impl Robot {
             let reg = r.borrow();
             let entry = reg.get(element.id).ok_or(RobotError::ElementGone)?;
             let mut out: Vec<Candidate> = Vec::new();
+            // Up to the first element drawn elsewhere (a portal's
+            // content): the scrollers around its opener don't move it, and
+            // the page candidate is whatever scrolls around IT.
             let mut root = (element.id, entry);
-            let mut cur = entry.parent;
+            let mut cur = (!entry.detached).then_some(entry.parent).flatten();
             while let Some(pid) = cur {
                 let Some(p) = reg.get(pid) else { break };
                 out.push(Candidate {
@@ -2537,7 +2612,7 @@ impl Robot {
                     set_port: p.actions.set_scroll_port.clone(),
                 });
                 root = (pid, p);
-                cur = p.parent;
+                cur = (!p.detached).then_some(p.parent).flatten();
             }
             out.push(Candidate {
                 id: root.0,
@@ -2868,7 +2943,8 @@ impl Robot {
     /// coordinates: its [`absolute_frame`](Self::absolute_frame) cut by the
     /// window and by every registered ancestor that clips its content
     /// ([`IntrospectionOps::content_clip`] — `overflow: hidden`, a scroller,
-    /// a list). Zero-sized when nothing is left or the element is not
+    /// a list), up to a portal: a portal's content is drawn on the window,
+    /// so the ancestors of the element that opened it don't cut it. Zero-sized when nothing is left or the element is not
     /// [visible](Visibility::visible); `None` when its frame is unknown.
     pub fn visible_frame(&self, element: &Element) -> Result<Option<ViewportRect>, RobotError> {
         visibility_and_frame(element.id).map(|(_, f)| f).ok_or(RobotError::ElementGone)
@@ -3902,6 +3978,7 @@ mod tests {
             parent: None,
             children: Vec::new(),
             order: (0, 0),
+            detached: false,
         }
     }
 
@@ -4316,6 +4393,7 @@ impl Default for RegistryEntry {
             parent: None,
             children: Vec::new(),
             order: (0, 0),
+            detached: false,
         }
     }
 }

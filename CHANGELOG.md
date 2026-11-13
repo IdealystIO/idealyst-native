@@ -3423,6 +3423,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **The robot finds a screen's page scroller** (`runtime-vocabulary`). A navigator's screens
+  registered under the navigator element (the first screen) or as detached roots (screens shown
+  after a navigation), never under the scroller the layout wraps around the outlet, so
+  `scroll_into_view` on a row below the fold of a page moved nothing. Screens now register where the
+  layout put the outlet.
+- **The robot measures a portal's content where it is drawn** (`runtime-vocabulary`). A menu flyout,
+  sheet or popover registers under the element that opened it, and the robot clipped it to that
+  element's scrolling or `overflow: hidden` ancestors: a submenu that flipped to open left of its
+  menu read as zero-wide on the menu's edge, and `click` refused it. The visibility walk and
+  `scroll_into_view` now stop at a portal's content. The tree is unchanged: the content is still
+  the opener's descendant.
+
 - **`VirtualRows::on_end_reached` fires when the first page fits** (`idea-ui`). The end check ran
   only on scroll, so a first page shorter than the viewport never asked for the next one. It now
   also runs once the table is laid out and whenever the row count changes; a fetch that adds no

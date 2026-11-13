@@ -1495,3 +1495,70 @@ fn regression_literal_route_beats_param_sibling_through_navigate() {
         }
     }
 }
+
+/// want_ac463cc9: `scroll_into_view` on a row of a screen in a navigator
+/// whose layout wraps the outlet in the page scroller moved nothing. The
+/// screen's elements registered under the NAVIGATOR (the first screen) or
+/// as a detached root (a screen shown after a navigation), so the
+/// scroller was never among their ancestors. Screens register at the
+/// outlet's position.
+#[cfg(feature = "robot")]
+fn screens_register_under_the_layout_scroller(stack: bool) {
+    use runtime_vocabulary::builders::scroll_view;
+    use runtime_vocabulary::robot::{all_navigators, navigate, NavAction, NavId, Query, Robot};
+    let robot = Robot::new();
+    robot.reset();
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let home = |_| view().child(text().content("home-row").test_id("home-row")).build();
+        let about = |_| view().child(text().content("about-row").test_id("about-row")).build();
+        let layout = || {
+            view()
+                .child(text().content("chrome").test_id("chrome"))
+                .child(scroll_view().test_id("page").child(navigator_outlet()).build())
+                .build()
+        };
+        let el = if stack {
+            stack_navigator(&HOME).screen(HOME, home).screen(ABOUT, about).layout(layout).build()
+        } else {
+            swap_navigator(&HOME)
+                .screen(HOME, home)
+                .screen(ABOUT, about)
+                .mount_policy(MountPolicy::LazyPersistent)
+                .layout(layout)
+                .build()
+        };
+        let _r = realize(&h.backend, &h.registry, el);
+        world.flush();
+        let under_page = |id: &'static str| -> bool {
+            let mut up = robot.find(Query::test_id(id)).and_then(|e| robot.parent_of(&e));
+            while let Some(p) = up {
+                if p.test_id == Some("page") {
+                    return true;
+                }
+                up = robot.parent_of(&p);
+            }
+            false
+        };
+        assert!(under_page("home-row"), "the first screen sits under the scroller around the outlet");
+        assert!(!under_page("chrome"), "chrome outside the scroller stays outside");
+        navigate(NavId(all_navigators()[0].nav_id), NavAction::Push("/about".into())).expect("navigate");
+        world.flush();
+        assert!(under_page("about-row"), "so does a screen shown after a navigation");
+        assert_eq!(robot.snapshot().len(), 1, "no screen is a detached root");
+    });
+    robot.reset();
+}
+
+#[cfg(feature = "robot")]
+#[test]
+fn regression_swap_screens_register_under_the_layout_scroller() {
+    screens_register_under_the_layout_scroller(false);
+}
+
+#[cfg(feature = "robot")]
+#[test]
+fn regression_stack_screens_register_under_the_layout_scroller() {
+    screens_register_under_the_layout_scroller(true);
+}

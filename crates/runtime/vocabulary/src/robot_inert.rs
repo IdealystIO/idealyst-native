@@ -46,3 +46,8 @@ pub fn is_test_driven() -> bool {
 /// Mark the app as owned by an external test driver. Does nothing in a
 /// build without the robot.
 pub fn set_test_driven(_on: bool) {}
+
+/// Without `robot` there is no registry to mark: runs `f`.
+pub(crate) fn drawn_elsewhere<R>(f: impl FnOnce() -> R) -> R {
+    f()
+}
