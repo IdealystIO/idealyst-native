@@ -687,7 +687,7 @@ file-picker = { path = "crates/sdk/client/file-picker", version = "8.0.0", regis
 auto-update = { path = "crates/sdk/client/auto-update", version = "8.0.0", registry = "idealyst" }
 credentials = { path = "crates/sdk/client/credentials", version = "1.5.3", registry = "idealyst" }
 biometrics = { path = "crates/sdk/client/biometrics", version = "1.7.2", registry = "idealyst" }
-screen-recorder = { path = "crates/sdk/client/screen-recorder", version = "9.0.0", registry = "idealyst" }
+screen-recorder = { path = "crates/sdk/client/screen-recorder", version = "10.0.0", registry = "idealyst" }
 files = { path = "crates/sdk/client/files", version = "1.6.2", registry = "idealyst" }
 i18n = { path = "crates/sdk/client/i18n", version = "8.0.0", registry = "idealyst" }
 i18n-macros = { path = "crates/sdk/client/i18n/macros", version = "1.5.2", registry = "idealyst" }
