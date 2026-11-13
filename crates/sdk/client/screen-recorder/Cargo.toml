@@ -192,7 +192,11 @@ ashpd = "0.9"
 runtime_kotlin = [
     "runtime/kotlin/io/idealyst/screenrecorder/RustScreenCaptureHelper.kt",
     "runtime/kotlin/io/idealyst/screenrecorder/MediaProjectionService.kt",
+    "runtime/kotlin/io/idealyst/screenrecorder/ScreenCaptureConsentActivity.kt",
 ]
+# The consent activity (inside <application>). The service and its permission
+# come from the `screen_capture` capability above.
+manifest_application = ["manifest/application.xml"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

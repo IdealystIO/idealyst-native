@@ -1,37 +1,50 @@
 package io.idealyst.screenrecorder
 
 import android.app.Activity
+import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.media.ImageReader
 import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.util.DisplayMetrics
 import android.view.PixelCopy
+import android.view.Surface
 import android.view.WindowManager
-import io.idealyst.runtime.RustActivityResult
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Bridges Android **MediaProjection** + **VirtualDisplay** + **ImageReader**
- * to Rust for the `screen-recorder` SDK. Rust calls [start] with a `token`
- * identifying the awaiting native stream; the shim runs the consent →
- * foreground-service → capture flow and trampolines each captured frame
- * (tightly-packed top-down `RGBA8`) back through [nativeFrameDirect]. Lifecycle
- * (success / failure / declined) goes through [nativeStarted] / [nativeError].
- * [stop] tears the session down.
+ * Bridges Android **MediaProjection** + **VirtualDisplay** to Rust for the
+ * `screen-recorder` SDK. Rust calls [start] with a `token` identifying the
+ * awaiting native stream; the shim runs the consent → foreground-service →
+ * capture flow, and lifecycle (success / failure / declined) goes through
+ * [nativeStarted] / [nativeError]. [stop] tears the session down.
  *
- * The dance has to live in Kotlin (not raw JNI) because it needs:
- *   1. an Activity-result round-trip for the consent intent (delivered to
- *      `MainActivity.onActivityResult` → [RustActivityResult] → us), and
- *   2. a started foreground service before `getMediaProjection` (a
- *      SecurityException otherwise on API 34).
+ * The virtual display has one surface at a time, and which one follows
+ * demand:
+ *   - a consumer's own surface while one is attached ([attachSurface], from
+ *     the stream's `PreviewSource`: an encoder's input surface, a display's
+ *     `TextureView`). Frames go GPU to consumer and never reach this process.
+ *   - otherwise an `RGBA_8888` [ImageReader] while a CPU subscriber wants
+ *     frames ([setCpuDemand]); each is packed tight and handed over through
+ *     [nativeFrameDirect].
+ *   - otherwise none: nothing is rendered.
+ * An attached consumer wins over CPU subscribers, who get no frames until it
+ * detaches. A projection allows one virtual display on Android 14+, so the
+ * surface is switched on that one display rather than a second one made.
+ *
+ * Consent goes through [ScreenCaptureConsentActivity], a see-through activity
+ * in a task of its own, not the app's activity: an app capturing from behind
+ * another (a device-owner kiosk agent) would otherwise bring its own task
+ * forward to ask.
  *
  * Shipped from the `screen-recorder` SDK crate via
  * `[package.metadata.idealyst.android].runtime_kotlin`; the `native*` symbols
@@ -43,10 +56,6 @@ object RustScreenCaptureHelper {
     private const val ERR_DENIED = -10
     private const val ERR_EXCEPTION = -1
 
-    // Request code for the consent Activity result. Large constant to avoid
-    // colliding with any app-level startActivityForResult.
-    private const val REQUEST_CONSENT = 0x5C12
-
     // Source discriminant passed from Rust (`screen_recorder::Source`): 0 =
     // ThisApp → app-only PixelCopy (no consent, no service); anything else →
     // whole-screen MediaProjection.
@@ -55,10 +64,23 @@ object RustScreenCaptureHelper {
     // ~30fps cadence for the app-only PixelCopy loop.
     private const val PIXELCOPY_INTERVAL_MS = 33L
 
+    /** What [ScreenCaptureConsentActivity] needs to carry on once it has an answer. */
+    private class Request(val width: Int, val height: Int)
+
+    private val requests = ConcurrentHashMap<Long, Request>()
+
+    private val main by lazy { Handler(Looper.getMainLooper()) }
+
     private class Session {
         var projection: MediaProjection? = null
         var virtualDisplay: android.hardware.display.VirtualDisplay? = null
         var reader: ImageReader? = null
+        var token = 0L
+        var width = 0
+        var height = 0
+        // A consumer's surface, while one is attached.
+        var attached: Surface? = null
+        var cpuDemand = false
         var thread: HandlerThread? = null
         var handler: Handler? = null
         // Reusable DIRECT RGBA output buffer sized width*height*4; reused
@@ -80,30 +102,98 @@ object RustScreenCaptureHelper {
     private val sessions = ConcurrentHashMap<Long, Session>()
 
     /**
-     * Begin a capture session for [token]. Launches the MediaProjection
-     * consent intent; the rest of the flow continues in the Activity-result
-     * handler. Must be called with an Activity [context] (the consent intent
-     * needs `startActivityForResult`).
+     * Begin a capture session for [token]. A screen source asks for consent
+     * through [ScreenCaptureConsentActivity] and carries on from its answer;
+     * frames come out at [width] × [height] (Rust sizes them from
+     * [displaySize] and the request). The app-only source needs an Activity
+     * [context], whose window it copies.
      */
     @JvmStatic
-    fun start(context: Context, token: Long, source: Int) {
+    fun start(context: Context, token: Long, source: Int, width: Int, height: Int) {
         // Cache the application context for service teardown — cleanup may run
         // after the Activity is gone.
         appContext = context.applicationContext
-        // Bounce to the main thread: startActivityForResult + the consent UI
-        // (MediaProjection) and reading the Activity window (PixelCopy) must run
-        // on the UI thread, and Rust may call us from any thread.
-        Handler(context.mainLooper).post {
+        // Bounce to the main thread: starting the consent activity and reading
+        // the Activity window (PixelCopy) must run on the UI thread, and Rust
+        // may call us from any thread.
+        main.post {
             try {
                 if (source == SOURCE_THIS_APP) {
                     startPixelCopy(context, token)
                 } else {
-                    launchConsent(context, token)
+                    requests[token] = Request(width, height)
+                    val app = context.applicationContext
+                    app.startActivity(
+                        Intent(app, ScreenCaptureConsentActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                            .putExtra(ScreenCaptureConsentActivity.EXTRA_TOKEN, token),
+                    )
                 }
             } catch (t: Throwable) {
+                requests.remove(token)
                 cleanup(token)
                 nativeError(token, ERR_EXCEPTION, t.message ?: t.toString())
             }
+        }
+    }
+
+    /** The default display's real size in pixels, packed `width << 16 | height`. */
+    @JvmStatic
+    fun displaySize(context: Context): Int {
+        val m = displayMetrics(context)
+        return (m.widthPixels shl 16) or (m.heightPixels and 0xffff)
+    }
+
+    /**
+     * Whether consent is already given (the `PROJECT_MEDIA` app op, which only
+     * adb or the system can grant), so [start] shows nobody a prompt.
+     */
+    @JvmStatic
+    fun consentPregranted(context: Context): Boolean {
+        val ops = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+        @Suppress("DEPRECATION")
+        val mode = ops.unsafeCheckOpNoThrow("android:project_media", android.os.Process.myUid(), context.packageName)
+        return mode == AppOpsManager.MODE_ALLOWED
+    }
+
+    /** Render into [surface] (a consumer's), in place of anything else, until [detachSurface]. */
+    @JvmStatic
+    fun attachSurface(token: Long, surface: Surface) {
+        main.post {
+            val s = sessions[token] ?: return@post
+            s.attached = surface
+            route(s)
+        }
+    }
+
+    /** Stop rendering into the attached surface, which its consumer is about to release. */
+    @JvmStatic
+    fun detachSurface(token: Long) {
+        main.post {
+            val s = sessions[token] ?: return@post
+            s.attached = null
+            route(s)
+        }
+    }
+
+    /** Whether CPU subscribers want frames; an [ImageReader] exists only while they do. */
+    @JvmStatic
+    fun setCpuDemand(token: Long, wants: Boolean) {
+        main.post {
+            val s = sessions[token] ?: return@post
+            s.cpuDemand = wants
+            route(s)
+        }
+    }
+
+    /** Point the virtual display at what wants frames now (see the class docs). */
+    private fun route(s: Session) {
+        val display = s.virtualDisplay ?: return
+        display.surface = s.attached ?: if (s.cpuDemand) readerFor(s).surface else null
+        // Closed only once the display has stopped rendering into it.
+        if (!s.cpuDemand) {
+            s.reader?.close()
+            s.reader = null
         }
     }
 
@@ -132,7 +222,8 @@ object RustScreenCaptureHelper {
         session.handler = Handler(thread.looper)
         // App capture has no consent gate — the stream is live immediately.
         session.started = true
-        nativeStarted(token)
+        // No virtual display, so no size to report and no surface to attach.
+        nativeStarted(token, 0, 0)
         pixelCopyFrame(token)
     }
 
@@ -191,23 +282,22 @@ object RustScreenCaptureHelper {
         Handler(android.os.Looper.getMainLooper()).post { cleanup(token) }
     }
 
-    private fun launchConsent(context: Context, token: Long) {
-        val activity = context as? Activity
-            ?: throw IllegalStateException("screen capture requires an Activity context")
-        val pm = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
-            as MediaProjectionManager
-
-        // Register the result handler BEFORE launching, keyed by our request
-        // code. The handler is single-shot (RustActivityResult removes it
-        // after firing).
-        RustActivityResult.register(REQUEST_CONSENT) { resultCode, data ->
-            onConsentResult(context, token, resultCode, data)
-            true
+    /** The whole default display, never one app: on 14+ the prompt would otherwise offer a choice. */
+    internal fun consentIntent(context: Context): Intent {
+        val pm = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        return if (Build.VERSION.SDK_INT >= 34) {
+            pm.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+        } else {
+            pm.createScreenCaptureIntent()
         }
-        activity.startActivityForResult(pm.createScreenCaptureIntent(), REQUEST_CONSENT)
     }
 
-    private fun onConsentResult(context: Context, token: Long, resultCode: Int, data: Intent?) {
+    /**
+     * [ScreenCaptureConsentActivity]'s answer, while it is still in front: that
+     * is what lets the foreground service start from an app in the background.
+     */
+    internal fun onConsentResult(context: Context, token: Long, resultCode: Int, data: Intent?) {
+        val request = requests.remove(token) ?: return
         if (resultCode != Activity.RESULT_OK || data == null) {
             cleanup(token)
             nativeError(token, ERR_DENIED, "screen capture consent declined")
@@ -223,7 +313,7 @@ object RustScreenCaptureHelper {
             // don't do projection setup inside the service's onStartCommand.
             Handler(context.mainLooper).post {
                 try {
-                    beginCapture(context, token, resultCode, data)
+                    beginCapture(context, token, request, resultCode, data)
                 } catch (t: Throwable) {
                     cleanup(token)
                     nativeError(token, ERR_EXCEPTION, t.message ?: t.toString())
@@ -238,7 +328,7 @@ object RustScreenCaptureHelper {
         }
     }
 
-    private fun beginCapture(context: Context, token: Long, resultCode: Int, data: Intent) {
+    private fun beginCapture(context: Context, token: Long, request: Request, resultCode: Int, data: Intent) {
         val pm = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
             as MediaProjectionManager
         // Now legal: the FGS is foregrounded.
@@ -247,24 +337,51 @@ object RustScreenCaptureHelper {
 
         val session = Session()
         session.projection = projection
+        session.token = token
+        session.width = request.width
+        session.height = request.height
         sessions[token] = session
-
-        // Real display metrics. The consent token carries no size, so we mirror
-        // the primary display at its native resolution + density.
-        val metrics = displayMetrics(context)
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
-        val densityDpi = metrics.densityDpi
 
         val thread = HandlerThread("idealyst-screen-capture-$token").also { it.start() }
         val handler = Handler(thread.looper)
         session.thread = thread
         session.handler = handler
 
-        // RGBA_8888 so each plane is a single packed-ish buffer; we strip the
-        // rowStride padding below. Two buffers so the producer never stalls.
+        // Registered before the virtual display: Android 14+ refuses one
+        // otherwise. Fires if the projection is revoked (the system's "stop
+        // sharing").
+        projection.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() {
+                main.post { cleanup(token) }
+            }
+        }, handler)
+
+        // AUTO_MIRROR mirrors the default display, scaled into whatever surface
+        // [route] gives it; none yet, so nothing is rendered until something
+        // wants frames.
+        session.virtualDisplay = projection.createVirtualDisplay(
+            "idealyst-capture",
+            request.width,
+            request.height,
+            displayMetrics(context).densityDpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            null,
+            null,
+            handler,
+        )
+        route(session)
+
+        session.started = true
+        nativeStarted(token, request.width, request.height)
+    }
+
+    /** The session's CPU reader, made on first use at the capture size. */
+    private fun readerFor(session: Session): ImageReader {
+        session.reader?.let { return it }
+        val width = session.width
+        val height = session.height
+        // Two buffers so the producer never stalls.
         val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        session.reader = reader
         reader.setOnImageAvailableListener({ r ->
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
@@ -275,37 +392,16 @@ object RustScreenCaptureHelper {
                     session.directBuf = buf
                 }
                 if (packRgba(image, width, height, buf)) {
-                    nativeFrameDirect(token, buf, width, height)
+                    nativeFrameDirect(session.token, buf, width, height)
                 }
             } catch (_: Throwable) {
                 // Drop the frame; never throw into the listener.
             } finally {
                 image.close()
             }
-        }, handler)
-
-        // MediaProjection callbacks fire if the user revokes the projection
-        // (e.g. via the system "stop sharing" affordance). Tear down + report.
-        projection.registerCallback(object : MediaProjection.Callback() {
-            override fun onStop() {
-                cleanup(token)
-            }
-        }, handler)
-
-        // AUTO_MIRROR mirrors the default display's content into our surface.
-        session.virtualDisplay = projection.createVirtualDisplay(
-            "idealyst-capture",
-            width,
-            height,
-            densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            reader.surface,
-            null,
-            handler,
-        )
-
-        session.started = true
-        nativeStarted(token)
+        }, session.handler)
+        session.reader = reader
+        return reader
     }
 
     /**
@@ -365,7 +461,7 @@ object RustScreenCaptureHelper {
         // Clear the service hook so a stale callback can't fire into a torn-down
         // session.
         MediaProjectionService.onForegrounded = {}
-        RustActivityResult.unregister(REQUEST_CONSENT)
+        requests.remove(token)
         val session = sessions.remove(token) ?: run {
             // Even with no session, stop the FGS in case consent was declined
             // after the service started (it normally isn't started until OK).
@@ -409,7 +505,7 @@ object RustScreenCaptureHelper {
     private var appContext: Context? = null
 
     @JvmStatic
-    private external fun nativeStarted(token: Long)
+    private external fun nativeStarted(token: Long, width: Int, height: Int)
 
     @JvmStatic
     private external fun nativeError(token: Long, code: Int, message: String?)

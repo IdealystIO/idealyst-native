@@ -1,0 +1,34 @@
+[package]
+name = "video-codec"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Live video encoding and decoding on the platform's own codecs: a capture stream to encoded frames, and encoded frames to a stream the video SDK plays."
+
+# Realtime, not file: the encoder emits each encoded frame as it comes out,
+# keyframes on request, and the decoder shows the newest frame as soon as it
+# is decoded. Moving the frames (a socket, QUIC datagrams) is the caller's.
+#
+#   - Encoder, Android: MediaCodec H.264 fed through its input surface, which
+#     claims the stream's `media_stream::PreviewSource` (the screen-recorder's
+#     virtual display, a camera), so frames go capture to encoder on the GPU.
+#   - Decoder, web: WebCodecs `VideoDecoder`, drawn onto a canvas whose
+#     `captureStream()` backs the returned `MediaStream`.
+#   - everything else: Err(Unsupported).
+
+[package.metadata.idealyst.android]
+runtime_kotlin = [
+    "runtime/kotlin/io/idealyst/videocodec/RustVideoEncoder.kt",
+]
+
+[dependencies]
+thiserror = { workspace = true }
+media-stream = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The JS boundary for WebCodecs, which nothing else in the framework wraps.
+web-glue = { workspace = true }
