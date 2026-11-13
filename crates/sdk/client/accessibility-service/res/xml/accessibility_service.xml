@@ -8,6 +8,8 @@
      takeScreenshotOfWindow, which `screenshot` uses to detect a secure
      window, fails with "invalid window". flagReportViewIds fills in each
      element's resource name, which `Query::view_id` matches.
+     flagInputMethodEditor (API 33) gives the service an input connection to
+     the focused field, which `type_text` and `press_key` type through.
      The events are the two `on_window_change` reports. notificationTimeout
      is how long Android holds back a burst of one event type before
      delivering its last event. -->
@@ -16,7 +18,7 @@
     android:accessibilityEventTypes="typeWindowsChanged|typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:notificationTimeout="100"
-    android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds|flagInputMethodEditor"
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"
     android:canTakeScreenshot="true" />

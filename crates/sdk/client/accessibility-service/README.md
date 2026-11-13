@@ -48,6 +48,8 @@ on, needs nobody.
 | `tap(x, y)` / `long_press(x, y, ms)` / `swipe(from, to, ms)` | `dispatchGesture` | 24 |
 | `global_action(a)` | `performGlobalAction` (`LockScreen`: 28) | 24 |
 | `set_focused_text(text)` | `ACTION_SET_TEXT` on the input-focused node | 24 |
+| `type_text(text)` | the service's input method (`flagInputMethodEditor`): `commitText` at the cursor | 33 |
+| `press_key(key)` | the same input connection: a key event, or the field's editor action for `Enter` | 33 |
 | `find(&query)` / `wait_for(&query, timeout)` | a walk of every interactive window's node tree | 24 |
 | `click(&node)` | `ACTION_CLICK`, else a tap at the centre of its bounds | 24 |
 | `windows()` | `getWindows` (picture-in-picture: 26, display: 30) | 24 |
@@ -154,6 +156,12 @@ Verified on an Android 14 (API 34) tablet emulator with
   orientations; a swipe scrolls a Settings list; an 800 ms long press opens
   the launcher's long-press menu; `set_focused_text` fills the focused
   search field, and with no field focused it is `NoFocusedInput`.
+- `type_text` and `press_key` (API 34 emulator, Contacts' new-contact
+  form): text lands at the cursor; Backspace, Delete, Home, End and the
+  arrows edit and move as a keyboard does; Tab moves to the next field and
+  typing follows it; Enter in a single-line field runs its action (Next).
+  Typing within ~50 ms of the tap that focuses a field is
+  `NoFocusedInput`: Android binds the input connection a moment later.
 - Back, Home and Notifications act. In screen pinning (lock task)
   Home leaves the app in front and the call returns `Ok`.
 - A Chrome incognito tab is `SecureWindow`; with it closed, screenshots
