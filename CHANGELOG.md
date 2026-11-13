@@ -3517,6 +3517,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `flex_shrink: 0` item whose parent is a flex row is now exempt from the clamp; in a column, or
   shrinkable, it is still clamped.
 
+- **A `fill` column in `Table(scroll_x = true)` takes the space left on native** (`table` patch).
+  As horizontal-scroll content the table was laid out at its max-content width, which sized the
+  `fill` column to its whole one-line content: a long name pushed the table past a 945px
+  scroller (1240px) instead of truncating, and a frozen fill column on a phone kept its content
+  width instead of its `min_width`. With a fill column the scroll content is now the scroller's
+  width, floored at its min-content width, as on the web: the table overflows only once the other
+  columns plus the fill column's `min_width` no longer fit. idea-ui's native layout tests now
+  register scrollers' axes as the backends do; they passed before only because they did not.
+
 - **`idealyst dev --local` on iOS and Android takes rebuild requests** (`idealyst-cli` patch). The
   one-shot build had no watcher behind it, so the panel's `r`, the control endpoint and the MCP's
   `rebuild_dev` reached nothing and a change meant stopping the session. A request now rebuilds,

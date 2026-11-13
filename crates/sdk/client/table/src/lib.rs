@@ -1978,13 +1978,14 @@ fn build_table(parts: TableParts) -> Element {
             split_head::native_sizer_row(columns, |i| sync.sizer_style(i, false), |i| sync.head_cell(i)),
         );
         let head_specs = sync.head_specs(&specs);
+        let fills = has_flex_column(&specs);
         let body_grid = native_grid(extracted, columns, specs, false);
         let head_grid = native_grid(head, columns, head_specs, true);
         let body_fill = sync.body_grid();
         let edges = watch.clone();
         let content = runtime_vocabulary::builders::view()
             .children(vec![body_grid])
-            .style(StyleProp::Static(Rc::new(native_styles::scroll_content_rules(scroll_x))))
+            .style(StyleProp::Static(Rc::new(native_styles::scroll_content_rules(scroll_x, fills))))
             .on_handle(move |h| {
                 if let Some(watch) = edges {
                     watch.measure(h.clone(), |w| &w.content);
@@ -2017,6 +2018,7 @@ fn build_table(parts: TableParts) -> Element {
         return el;
     }
 
+    let fills = has_flex_column(&specs);
     let inner = native_grid(extracted, columns, specs, false);
     let mut el = if scroll_x || scroll_y {
         // Structure: styled SURFACE > [header slot, scroll_view >
@@ -2035,7 +2037,7 @@ fn build_table(parts: TableParts) -> Element {
         let binding = scroller;
         let mut content = runtime_vocabulary::builders::view()
             .children(vec![inner])
-            .style(StyleProp::Static(Rc::new(native_styles::scroll_content_rules(scroll_x))));
+            .style(StyleProp::Static(Rc::new(native_styles::scroll_content_rules(scroll_x, fills))));
         if let Some(watch) = watch.clone() {
             content = content.on_handle(move |h| watch.measure(h, |w| &w.content));
         }
@@ -2562,16 +2564,34 @@ mod native_styles {
     /// `regression_scroll_x_table_floors_at_scroller_width_and_overflows_past_it`
     /// in `runtime-layout`.
     ///
+    /// With a fill (`fr`) column (`fills`), the content is the scroller's
+    /// width instead, floored at its min-content width: the fill column
+    /// takes what the other columns leave and truncates, and the table
+    /// overflows only once the other columns plus the fill column's
+    /// `min_width` no longer fit — the web's `width: 100%; min-width:
+    /// min-content`. The floor is the flex item's automatic minimum
+    /// (`min_width: Auto`), which is its min-content width. Not the
+    /// default above: as horizontal-scroll content an unsized node is
+    /// laid out at max-content, which sizes an `fr` track to its whole
+    /// one-line content. Pinned by `table_flex_column_scroll_x_layout`
+    /// in idea-ui.
+    ///
     /// A scroll-y-only table (`scroll_x == false`) takes no floor: its
     /// content is a cross-axis child of a column scroller and stretches
     /// to the scroller's width, so the columns fill and wrap as in a
     /// plain table. `flex_shrink: 0` still holds the rows at their full
     /// height on the scroll axis — without it they would squeeze into
     /// the bounded scroller and nothing would scroll.
-    pub(super) fn scroll_content_rules(scroll_x: bool) -> StyleRules {
+    pub(super) fn scroll_content_rules(scroll_x: bool, fills: bool) -> StyleRules {
+        let pct = |v| glue::Tokenized::Literal(glue::Length::Percent(v));
+        let (width, min_width) = match (scroll_x, fills) {
+            (true, true) => (Some(pct(100.0)), Some(glue::Tokenized::Literal(glue::Length::Auto))),
+            (true, false) => (None, Some(pct(100.0))),
+            (false, _) => (None, None),
+        };
         StyleRules {
-            min_width: scroll_x
-                .then(|| glue::Tokenized::Literal(glue::Length::Percent(100.0))),
+            width,
+            min_width,
             flex_shrink: Some(glue::Tokenized::Literal(0.0)),
             ..Default::default()
         }

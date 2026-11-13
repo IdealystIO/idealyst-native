@@ -7,6 +7,9 @@
 //! single-line measure (fixed advance per char), standing in for the
 //! platform text measurer.
 //!
+//! Scrollers register their axis with the layout tree as the native
+//! backends do, so horizontal-scroll content is laid out as it is there.
+//!
 //! Every node gets the browser's `min-width: auto` unless it sets its own
 //! `min_width` — see `switch_flex_shrink_layout.rs` (WEB SEMANTICS) for why
 //! that is the faithful default.
@@ -117,6 +120,13 @@ pub fn lay_out(pane_width: f32, pane_height: f32, build: impl FnOnce() -> Elemen
             rules.min_width = Some(Tokenized::Literal(Length::Auto));
         }
         layout.set_style(ln, &rules);
+        // A scroller registers its axis, as every native backend does at
+        // create time: a horizontal one's children are then laid out as
+        // scroll content (exempt from the width clamp, sized to their
+        // content unless they set a width), not clamped to the viewport.
+        if let Some(axis) = h.shared.scroll_axes.borrow().get(&node) {
+            layout.set_overflow_scroll_axis(ln, *axis);
+        }
         if let Some(content) = kind.strip_prefix("text ") {
             layout.set_measure_fn(ln, text_measure(content.trim_matches('"').to_string()));
         }
