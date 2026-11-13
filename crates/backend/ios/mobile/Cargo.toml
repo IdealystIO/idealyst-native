@@ -209,5 +209,9 @@ name = "selectable_text"
 harness = false
 
 [[test]]
+name = "label_restyle_measure"
+harness = false
+
+[[test]]
 name = "activity_indicator_size"
 harness = false

@@ -3493,6 +3493,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A label whose font changes is re-measured on native** (`runtime-layout` patch). A font
+  weight, size, family, style, line height, letter spacing, transform or line limit changes a
+  label's measured size without changing its layout box, so the cached measurement stood: a
+  label restyled from regular to semibold kept its regular width, and on iOS and Android its
+  last word wrapped onto a clipped second line ("Cost" for "Cost items" in an active sidebar
+  row). `LayoutTree::set_style` now re-measures a measured node when those inputs move, for
+  every backend; a paint-only restyle (a hover tint) still leaves layout alone.
+
 - **idea-ui labels carry their own ink and type on native** (`idea-ui` minor). The Select and
   date-picker trigger, a `ListItem`, a `Collapsible` text title and a linked `Breadcrumbs` crumb
   drew their text as a bare `text` relying on the container's color and font size, which native

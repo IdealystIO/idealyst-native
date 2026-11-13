@@ -305,6 +305,31 @@ pub struct LayoutTree {
     /// Each node's LOGICAL parent (real or contents). Taffy's own
     /// `parent` knows only the real one.
     logical_parent: HashMap<NodeId, NodeId>,
+    /// Each node's text-measure inputs as last applied (see
+    /// [`text_measure_inputs`]). A font change moves a label's measured
+    /// size without moving its Taffy `Style`, so `set_style` compares
+    /// these to know the cached measurement is stale.
+    measure_inputs: HashMap<NodeId, String>,
+}
+
+/// What a measured leaf's size depends on beyond its Taffy `Style`. A
+/// typeface keys by its id: its faces carry their font bytes.
+fn text_measure_inputs(rules: &StyleRules) -> String {
+    let family = match rules.font_family.as_ref() {
+        Some(runtime_shared::FontFamily::Typeface(t)) => format!("t{}", t.id.0),
+        Some(runtime_shared::FontFamily::System(name)) => format!("s{name}"),
+        None => String::new(),
+    };
+    format!(
+        "{family}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        rules.font_size.as_ref().map(|t| *t.value()),
+        rules.font_weight,
+        rules.font_style,
+        rules.line_height.as_ref().map(|t| *t.value()),
+        rules.letter_spacing.as_ref().map(|t| *t.value()),
+        rules.text_transform,
+        rules.max_lines,
+    )
 }
 
 impl LayoutTree {
@@ -328,6 +353,7 @@ impl LayoutTree {
             declared_width: HashMap::new(),
             contents: HashSet::new(),
             logical_children: HashMap::new(),
+            measure_inputs: HashMap::new(),
             logical_parent: HashMap::new(),
         }
     }
@@ -748,6 +774,7 @@ impl LayoutTree {
         let _ = self.tree.remove(node.0);
         self.contents.remove(&node.0);
         self.measure_fns.remove(&node.0);
+        self.measure_inputs.remove(&node.0);
         self.auto_width.remove(&node.0);
         self.auto_height.remove(&node.0);
         self.auto_max_width.remove(&node.0);
@@ -1338,6 +1365,17 @@ impl LayoutTree {
                 .set_style(node.0, style)
                 .expect("taffy set_style");
         }
+        // A measured leaf whose font moved measures differently under the
+        // same box: drop its cached measurement. The first apply records
+        // only; a new node is dirty already.
+        // Recorded for every node: a measure fn can arrive after the
+        // first style.
+        let inputs = text_measure_inputs(rules);
+        let prev = self.measure_inputs.insert(node.0, inputs.clone());
+        let remeasure = self.measure_fns.contains_key(&node.0) && prev.is_some_and(|p| p != inputs);
+        if remeasure {
+            self.tree.mark_dirty(node.0).expect("taffy mark_dirty");
+        }
         // The children's width clamp depends on this node's direction
         // (`apply_default_max_width`), and `view` attaches children before
         // their parent's style, so they were derived against the default.
@@ -1369,7 +1407,7 @@ impl LayoutTree {
                 }
             }
         }
-        changed
+        changed || remeasure
     }
 
     /// Re-derive the framework's default `max-width: 100%` cross-axis
@@ -5822,6 +5860,47 @@ mod tests {
         assert!((w - 100.0).abs() < 0.5, "a shrinkable item fits the 100px row, got {w}");
         let w = unshrinkable_child_width(FwFlexDirection::Column, 0.0, false);
         assert!((w - 100.0).abs() < 0.5, "an unshrinkable item in a column fits the 100px parent, got {w}");
+    }
+
+    /// Regression: a label restyled from regular to semibold kept its
+    /// regular width — the weight moves the glyphs, not the Taffy `Style`,
+    /// so the cached measurement stood and the bolder text wrapped its last
+    /// word onto a clipped second line (an iOS sidebar's active row read
+    /// "Cost" for "Cost items").
+    #[test]
+    fn regression_font_change_remeasures_the_leaf() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let mut row = StyleRules::default();
+        row.flex_direction = Some(FwFlexDirection::Row);
+        row.align_items = Some(runtime_shared::AlignItems::FlexStart);
+        t.set_style(root, &row);
+        let label = t.new_node();
+        // Stands in for the backend label, which measures in its current font.
+        let glyphs = Rc::new(Cell::new(70.0_f32));
+        let read = glyphs.clone();
+        t.set_measure_fn(label, Rc::new(move |_, _| Size { width: read.get(), height: 17.0 }));
+        let mut regular = StyleRules::default();
+        regular.font_weight = Some(runtime_shared::FontWeight::Normal);
+        t.set_style(label, &regular);
+        t.add_child(root, label);
+        t.compute(root, 300.0, 100.0);
+        assert!((t.frame_of(label).width - 70.0).abs() < 0.5);
+
+        let mut semibold = regular.clone();
+        semibold.font_weight = Some(runtime_shared::FontWeight::SemiBold);
+        glyphs.set(74.0);
+        assert!(t.set_style(label, &semibold), "a font change reports a change");
+        t.compute(root, 300.0, 100.0);
+        let w = t.frame_of(label).width;
+        assert!((w - 74.0).abs() < 0.5, "the semibold label is re-measured, got {w}");
+
+        // A paint-only restyle (a hover tint) still leaves layout alone.
+        let mut tinted = semibold.clone();
+        tinted.color = Some(runtime_shared::Color("#ff0000".into()).into());
+        assert!(!t.set_style(label, &tinted), "a colour change is not a layout change");
     }
 
     /// The author-set `max_width` still wins over the default clamp:
