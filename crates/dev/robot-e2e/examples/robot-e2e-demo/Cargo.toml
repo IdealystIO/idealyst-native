@@ -64,6 +64,6 @@ targets   = ["web", "ios", "android", "macos", "linux", "windows"]
 # a device on each platform. `idealyst test --plan` shows what this machine
 # can run of it.
 [package.metadata.idealyst.test.devices]
-phone   = { web = "chromium:iphone-15", ios = "iPhone 17 @ iOS 26", android = "Pixel_6_Pro_API_34" }
-tablet  = { web = "chromium:ipad-air", ios = "iPad Pro 13-inch (M5)", android = "Tablet_10" }
+phone   = { web = "chromium:iphone-15", ios = "iPhone 17 @ iOS 26", android = "pixel_7 @ 34" }
+tablet  = { web = "chromium:ipad-air", ios = "iPad Air 11-inch (M3) @ iOS 26", android = "pixel_tablet @ 34" }
 desktop = { web = "1280x800", macos = "1280x800", linux = "1280x800", windows = "1280x800" }

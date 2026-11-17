@@ -771,8 +771,22 @@ reasons are:
   the command that makes it);
 - an image is for another CPU architecture.
 
-`idealyst test --plan` prints the plan and exits. A run where nothing
-could run fails; skips alongside runs that passed don't. The one-off
+A simulator or AVD the matrix names that doesn't exist yet is made when
+its row runs, from what's installed: `xcrun simctl create` on the newest
+installed runtime that runs that device (the `@ iOS` version pins it), or
+`avdmanager create avd` from the API level's Google APIs system image for
+this machine's architecture (an AVD spec must be `<profile> @ <api>` for
+that; a bare AVD name can only be found). The plan shows such a row as
+`run … creates … first`. A missing runtime or system image is a multi-GB
+download the runner never starts: that row is a skip naming the install
+command. `--no-create` reports missing devices instead of making them.
+`idealyst dev` boots the device; after the row, the runner shuts down a
+simulator or emulator this run booted (one already running is left as it
+was; `--keep-devices` leaves them all). A physical device (`serial:`) is
+never shut down.
+
+`idealyst test --plan` prints the plan and exits, creating nothing. A run
+where nothing could run fails; skips alongside runs that passed don't. The one-off
 flags below (`--viewport`, `--device`, `--simulator`, `--emulator`,
 `--mobile`, `--attach`) still work and replace the matrix for that run.
 Tests see their class as `IDEALYST_TEST_CLASS`.

@@ -24,7 +24,10 @@
 //! and `--platforms` (or the platform flags). The plan is printed before
 //! anything builds; a class × platform this machine can't run is a `SKIP`
 //! row with the reason (not built for it, wrong host, not installed, wrong
-//! architecture), never dropped. `--plan` prints it and exits. Each run
+//! architecture), never dropped. A missing simulator or AVD is made from
+//! what's installed before its row runs, and a device the run booted is
+//! shut down after it ([`provision`]; `--no-create`, `--keep-devices`).
+//! `--plan` prints the plan and exits. Each run
 //! tells the suite its class (`IDEALYST_TEST_CLASS`) and where to record
 //! tests that don't apply to its device (`robot_test::RESULTS_ENV`); those
 //! are listed under the run as `n/a` with why. The one-off device flags
@@ -32,6 +35,7 @@
 
 mod browser;
 mod matrix;
+mod provision;
 
 use anyhow::{Context, Result};
 use browser::{device_preset, Emulation, HeadlessBrowser};
@@ -168,6 +172,14 @@ pub struct Args {
     /// can't) and exit, building nothing.
     #[arg(long)]
     pub plan: bool,
+    /// Don't create a matrix simulator or AVD that doesn't exist yet;
+    /// report it as a skip instead.
+    #[arg(long)]
+    pub no_create: bool,
+    /// Leave the simulators and emulators this run booted running after
+    /// their rows (default: shut down what the run started).
+    #[arg(long)]
+    pub keep_devices: bool,
     /// `KEY=VALUE` set for the app (passed as `idealyst dev --app-env`, which
     /// delivers it on every platform), the dev session (so a full-stack
     /// project's server inherits it), the tests, and the `--before`/`--after`
@@ -565,7 +577,7 @@ pub fn run(args: Args) -> Result<()> {
             let mut platforms: Vec<String> =
                 args.platforms.iter().map(|p| normalize_platform(p)).collect::<Result<_>>()?;
             platforms.extend(flagged.iter().map(|p| p.to_string()));
-            let filter = matrix::Filter { classes: args.devices.clone(), platforms };
+            let filter = matrix::Filter { classes: args.devices.clone(), platforms, no_create: args.no_create };
             let rows = matrix::plan(m, project.targets.as_deref(), &filter, &matrix::ThisHost)?;
             anyhow::ensure!(!rows.is_empty(), "the device matrix names nothing for the classes and platforms asked for");
             eprintln!("{}", matrix::describe(&rows));
@@ -588,7 +600,13 @@ pub fn run(args: Args) -> Result<()> {
             anyhow::ensure!(!args.plan, "--plan prints the device matrix's plan; the project declares no matrix");
             anyhow::ensure!(flagged.len() <= 1, "pick one platform flag (or declare a device matrix to run several)");
             let platform = flagged.first().copied().unwrap_or("web");
-            vec![Job::Run { platform: platform.to_string(), class: None, launches: plan_launches(&args, platform)? }]
+            vec![Job::Run {
+                platform: platform.to_string(),
+                class: None,
+                launches: plan_launches(&args, platform)?,
+                create: None,
+                device: None,
+            }]
         }
     };
 
@@ -644,14 +662,48 @@ pub fn run(args: Args) -> Result<()> {
         let mut results = Vec::new();
         let mut index = 0;
         for job in &jobs {
-            let (platform, class, launches) = match job {
+            let (platform, class, launches, create, device) = match job {
                 Job::Skip { label, why } => {
                     results.push(RunResult::new(label.clone(), Outcome::Skipped(why.clone())));
                     continue;
                 }
-                Job::Run { platform, class, launches } => (platform.as_str(), class.as_deref(), launches),
+                Job::Run { platform, class, launches, create, device } => {
+                    (platform.as_str(), class.as_deref(), launches.clone(), create, device.clone())
+                }
             };
-            for launch in launches {
+            // A device the plan said to make: made now, and the launches
+            // pointed at it.
+            let (launches, device) = match create {
+                None => (launches, device),
+                Some(c) => match provision::create(c) {
+                    Ok(id) => {
+                        let mut launches = launches;
+                        for launch in &mut launches {
+                            launch.target_device = Some(id.clone());
+                            for size in &mut launch.sizes {
+                                size.device = Some(id.clone());
+                            }
+                        }
+                        let device = match c {
+                            matrix::Create::Simulator { .. } => provision::Device::Simulator(id),
+                            matrix::Create::Avd { .. } => provision::Device::Avd(id),
+                        };
+                        (launches, Some(device))
+                    }
+                    Err(e) => {
+                        eprintln!("[test] {e:#}");
+                        for launch in &launches {
+                            for size in &launch.sizes {
+                                results.push(RunResult::new(size.label.clone(), Outcome::Error(format!("{e:#}"))));
+                            }
+                        }
+                        continue;
+                    }
+                },
+            };
+            // Stopped afterwards only if this run is what boots it.
+            let was_running = device.as_ref().is_some_and(provision::Device::running);
+            for launch in &launches {
                 let ctx = LaunchCtx {
                     args: &args,
                     dir: &dir,
@@ -672,6 +724,11 @@ pub fn run(args: Args) -> Result<()> {
                     for size in &launch.sizes[results.len() - before..] {
                         results.push(RunResult::new(size.label.clone(), Outcome::Error(format!("{e:#}"))));
                     }
+                }
+            }
+            if let Some(device) = &device {
+                if !args.keep_devices && !was_running && device.running() {
+                    device.stop();
                 }
             }
         }
@@ -699,7 +756,17 @@ pub fn run(args: Args) -> Result<()> {
 /// One platform's share of a run: its launches, or the reason the matrix
 /// plan couldn't make it here.
 enum Job {
-    Run { platform: String, class: Option<String>, launches: Vec<Launch> },
+    Run {
+        platform: String,
+        class: Option<String>,
+        launches: Vec<Launch>,
+        /// A device to make before the launches (they are pointed at it).
+        create: Option<matrix::Create>,
+        /// The simulator / emulator the row runs on, to stop afterwards if
+        /// the run booted it. `None` for a physical device and the desktop
+        /// and web platforms.
+        device: Option<provision::Device>,
+    },
     Skip { label: String, why: String },
 }
 
@@ -714,8 +781,15 @@ fn job_for_row(args: &Args, row: &matrix::Row) -> Result<Job> {
     let mut one = args.clone();
     one.viewport = target.viewport.map(|(w, h)| format!("{w}x{h}")).into_iter().collect();
     one.device = target.device.clone().into_iter().collect();
-    one.simulator = target.simulator.clone().into_iter().collect();
-    one.emulator = target.emulator.clone().into_iter().collect();
+    // A device still to make is planned under its name; the run points the
+    // launches at what `create` returns.
+    let (simulator, emulator) = match &target.create {
+        Some(matrix::Create::Simulator { name, .. }) => (Some(name.clone()), None),
+        Some(matrix::Create::Avd { name, .. }) => (None, Some(name.clone())),
+        None => (target.simulator.clone(), target.emulator.clone()),
+    };
+    one.simulator = simulator.clone().into_iter().collect();
+    one.emulator = emulator.clone().into_iter().collect();
     one.mobile = false;
     let mut launches = plan_launches(&one, &row.platform)?;
     for launch in &mut launches {
@@ -723,7 +797,20 @@ fn job_for_row(args: &Args, row: &matrix::Row) -> Result<Job> {
             size.label = row.label();
         }
     }
-    Ok(Job::Run { platform: row.platform.clone(), class: Some(row.class.clone()), launches })
+    let device = match (target.create.is_some(), row.platform.as_str()) {
+        (true, _) => None,
+        (false, "ios") => simulator.map(provision::Device::Simulator),
+        // An attached device (`serial:`) is never stopped.
+        (false, "android") if !row.spec.trim_start().starts_with("serial:") => emulator.map(provision::Device::Avd),
+        _ => None,
+    };
+    Ok(Job::Run {
+        platform: row.platform.clone(),
+        class: Some(row.class.clone()),
+        launches,
+        create: target.create.clone(),
+        device,
+    })
 }
 
 /// What every launch of one run shares.
@@ -2065,16 +2152,17 @@ mod tests {
     #[test]
     fn a_matrix_row_becomes_a_labelled_launch_or_a_skip() {
         let row = |platform: &str, plan| matrix::Row { class: "phone".into(), platform: platform.into(), spec: "x".into(), plan };
-        let target = matrix::Target { simulator: Some("U-15".into()), emulator: None, device: None, viewport: None };
+        let target = matrix::Target { create: None, simulator: Some("U-15".into()), emulator: None, device: None, viewport: None };
         match job_for_row(&args(&[]), &row("ios", Ok(target))).unwrap() {
-            Job::Run { platform, class, launches } => {
+            Job::Run { platform, class, launches, device, .. } => {
                 assert_eq!((platform.as_str(), class.as_deref()), ("ios", Some("phone")));
                 assert_eq!(launches[0].target_device.as_deref(), Some("U-15"));
                 assert_eq!(launches[0].sizes[0].label, "phone on ios (x)");
+                assert_eq!(device, Some(provision::Device::Simulator("U-15".into())), "stopped after if the run booted it");
             }
             Job::Skip { .. } => panic!("runs"),
         }
-        let web = matrix::Target { simulator: None, emulator: None, device: Some("iphone-15".into()), viewport: None };
+        let web = matrix::Target { create: None, simulator: None, emulator: None, device: Some("iphone-15".into()), viewport: None };
         match job_for_row(&args(&[]), &row("web", Ok(web))).unwrap() {
             Job::Run { launches, .. } => assert_eq!(launches[0].sizes[0].device.as_deref(), Some("iphone-15")),
             Job::Skip { .. } => panic!("runs"),

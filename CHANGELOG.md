@@ -1353,7 +1353,10 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   installs it, wrong CPU architecture). `--plan` prints it and exits. Tests target classes:
   `#[robot_test(form = phone)]`, `input = touch`, checked against the app's own breakpoint and
   pointer when they run; a test that doesn't apply is listed as `n/a` with why. The robot's
-  `get_viewport` also reports the primary pointer. See "Device matrix" in `docs/robot.md`.
+  `get_viewport` also reports the primary pointer. A matrix simulator or AVD that doesn't exist is
+  created from the installed runtime / system image when its row runs (`xcrun simctl create`,
+  `avdmanager create avd` for a `<profile> @ <api>` spec), and a device the run booted is shut
+  down after its row (`--no-create`, `--keep-devices`). See "Device matrix" in `docs/robot.md`.
 
 - **A Table's selection boxes have accessible names and robot test ids** (`idea-ui` minor). Every
   row's box was an unnamed checkbox with no test id, so a screen reader couldn't say which row it

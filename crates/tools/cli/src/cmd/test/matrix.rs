@@ -94,9 +94,32 @@ pub fn parse(manifest: &str) -> Result<ProjectTest> {
     Ok(ProjectTest { matrix: Some(Matrix { classes }), targets })
 }
 
+/// A device the run makes before it can run on it: from what this machine
+/// already has installed (a simulator runtime, a system image), never a
+/// download.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Create {
+    /// `xcrun simctl create <name> <device type> <runtime>`.
+    Simulator { name: String, device_type: String, runtime: String, runtime_name: String },
+    /// `avdmanager create avd -n <name> -k <package> -d <profile>`.
+    Avd { name: String, package: String, profile: String },
+}
+
+impl Create {
+    fn describe(&self) -> String {
+        match self {
+            Create::Simulator { name, runtime_name, .. } => format!("creates simulator \"{name}\" on {runtime_name} first"),
+            Create::Avd { name, package, .. } => format!("creates AVD {name} ({package}) first"),
+        }
+    }
+}
+
 /// One run the plan can make: what `idealyst test` would be told by flags.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Target {
+    /// A device to make first; the run then points `simulator` /
+    /// `emulator` at it.
+    pub create: Option<Create>,
     /// `--simulator` (a UDID or name).
     pub simulator: Option<String>,
     /// `--emulator` (an AVD name or adb serial).
@@ -162,6 +185,33 @@ pub trait Host {
     fn adb_serials(&self) -> Result<Vec<String>, String>;
     /// Whether a remote Windows machine is configured.
     fn windows_remote(&self) -> bool;
+    /// The installed iOS simulator runtimes, or why they can't be listed.
+    fn ios_runtimes(&self) -> Result<Vec<IosRuntime>, String>;
+    /// The installed Android system images, or why they can't be listed.
+    fn android_images(&self) -> Result<Vec<SystemImage>, String>;
+    /// `avdmanager`'s hardware profile ids, or why it can't be asked.
+    fn android_profiles(&self) -> Result<Vec<String>, String>;
+}
+
+/// An installed iOS simulator runtime.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IosRuntime {
+    /// `iOS 26.5`.
+    pub name: String,
+    /// `26.5` (or `18.3.1`).
+    pub version: String,
+    pub identifier: String,
+    /// The device types it runs: (name, identifier).
+    pub device_types: Vec<(String, String)>,
+}
+
+/// An installed Android system image.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemImage {
+    pub api: u32,
+    /// `google_apis`, `google_apis_playstore`, `default`, …
+    pub tag: String,
+    pub abi: String,
 }
 
 /// What the run asked for: classes and platforms to keep (empty: all).
@@ -169,6 +219,8 @@ pub trait Host {
 pub struct Filter {
     pub classes: Vec<String>,
     pub platforms: Vec<String>,
+    /// Don't create missing simulators / AVDs (`--no-create`): report them.
+    pub no_create: bool,
 }
 
 /// The plan: one row per class × platform the matrix names and the filter
@@ -196,7 +248,7 @@ pub fn plan(matrix: &Matrix, targets: Option<&[String]>, filter: &Filter, host: 
                     "the project doesn't build for {platform} ([package.metadata.idealyst.app] targets = [{}])",
                     t.join(", ")
                 )),
-                _ => resolve(platform, spec, host),
+                _ => resolve(platform, spec, host, !filter.no_create),
             };
             rows.push(Row { class: class.clone(), platform: platform.to_string(), spec: spec.clone(), plan });
         }
@@ -210,8 +262,8 @@ fn parse_size(s: &str) -> Option<(u32, u32)> {
 }
 
 /// The target for one spec on one platform, or why it can't run here.
-pub fn resolve(platform: &str, spec: &str, host: &dyn Host) -> Result<Target, String> {
-    let none = Target { simulator: None, emulator: None, device: None, viewport: None };
+pub fn resolve(platform: &str, spec: &str, host: &dyn Host, create: bool) -> Result<Target, String> {
+    let none = Target { create: None, simulator: None, emulator: None, device: None, viewport: None };
     match platform {
         "web" => {
             let (engine, rest) = match spec.split_once(':') {
@@ -275,37 +327,48 @@ pub fn resolve(platform: &str, spec: &str, host: &dyn Host) -> Result<Target, St
                         have == v || have.starts_with(&format!("{v}."))
                     })
             });
-            match found {
-                Some(s) => Ok(Target { simulator: Some(s.udid.clone()), ..none }),
-                None => {
-                    let runtimes: Vec<&str> = {
-                        let mut r: Vec<&str> = sims.iter().map(|s| s.runtime.as_str()).collect();
-                        r.sort();
-                        r.dedup();
-                        r
-                    };
-                    let runtime_missing = version.is_some_and(|v| {
-                        !runtimes.iter().any(|r| {
-                            let have = r.trim_start_matches("iOS").trim();
-                            have == v || have.starts_with(&format!("{v}."))
-                        })
-                    });
-                    Err(if runtime_missing {
-                        format!(
-                            "the iOS {} simulator runtime isn't installed (installed: {}); add it in Xcode > \
-                             Settings > Components, or `xcodebuild -downloadPlatform iOS`",
-                            version.unwrap_or_default(),
-                            if runtimes.is_empty() { "none".to_string() } else { runtimes.join(", ") }
-                        )
-                    } else {
-                        format!(
-                            "no simulator named \"{name}\"{} exists; create one with `xcrun simctl create \
-                             \"{name}\" \"{name}\" <runtime>` (`xcrun simctl list runtimes` lists them)",
-                            version.map(|v| format!(" on iOS {v}")).unwrap_or_default()
-                        )
-                    })
-                }
+            if let Some(s) = found {
+                return Ok(Target { simulator: Some(s.udid.clone()), ..none });
             }
+            // None to run on: make one from an installed runtime.
+            let runtimes = host.ios_runtimes()?;
+            let matching: Vec<&IosRuntime> =
+                runtimes.iter().filter(|r| version.is_none_or(|v| version_matches(&r.version, v))).collect();
+            if matching.is_empty() {
+                let installed: Vec<&str> = runtimes.iter().map(|r| r.name.as_str()).collect();
+                return Err(format!(
+                    "the iOS {} simulator runtime isn't installed (installed: {}); add it in Xcode > \
+                     Settings > Components, or `xcodebuild -downloadPlatform iOS`",
+                    version.unwrap_or_default(),
+                    if installed.is_empty() { "none".to_string() } else { installed.join(", ") }
+                ));
+            }
+            let pick = matching
+                .iter()
+                .filter_map(|r| r.device_types.iter().find(|(n, _)| n == name).map(|(_, id)| (*r, id)))
+                .max_by(|a, b| version_key(&a.0.version).cmp(&version_key(&b.0.version)));
+            let Some((runtime, device_type)) = pick else {
+                return Err(format!(
+                    "no installed iOS{} runtime runs a device named \"{name}\" (`xcrun simctl list \
+                     devicetypes` lists the names; a newer device needs a newer runtime)",
+                    version.map(|v| format!(" {v}")).unwrap_or_default()
+                ));
+            };
+            if !create {
+                return Err(format!(
+                    "no simulator named \"{name}\" exists ({} could run one; --no-create was given)",
+                    runtime.name
+                ));
+            }
+            Ok(Target {
+                create: Some(Create::Simulator {
+                    name: name.to_string(),
+                    device_type: device_type.clone(),
+                    runtime: runtime.identifier.clone(),
+                    runtime_name: runtime.name.clone(),
+                }),
+                ..none
+            })
         }
         "android" => {
             if let Some(serial) = spec.strip_prefix("serial:") {
@@ -337,32 +400,76 @@ pub fn resolve(platform: &str, spec: &str, host: &dyn Host) -> Result<Target, St
                     )),
                     _ => Ok(Target { emulator: Some(avd.name.clone()), ..none }),
                 },
-                None => Err(match spec.split_once('@') {
-                    Some((device, api)) => format!(
-                        "no AVD made from the {} profile with API {} exists; create one with `avdmanager \
-                         create avd -n {}_{} -d {} -k \"system-images;android-{};google_apis;{host_abi}\"` \
-                         (after `sdkmanager` installs that image)",
-                        device.trim(),
-                        api.trim(),
-                        device.trim(),
-                        api.trim(),
-                        device.trim(),
-                        api.trim()
-                    ),
-                    None => format!(
-                        "no AVD named {} exists (`emulator -list-avds` lists {})",
+                None => match spec.split_once('@') {
+                    Some((device, api)) => {
+                        let (device, api_text) = (device.trim(), api.trim());
+                        let api: u32 = api_text.parse().map_err(|_| format!("`{api_text}` is not an Android API level"))?;
+                        create_avd(host, device, api, host_abi, create)
+                    }
+                    None => Err(format!(
+                        "no AVD named {} exists (`emulator -list-avds` lists {}); name a hardware profile \
+                         and API level instead (`pixel_7 @ 34`) to have one made",
                         spec.trim(),
                         if avds.is_empty() {
                             "none".to_string()
                         } else {
                             avds.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")
                         }
-                    ),
-                }),
+                    )),
+                },
             }
         }
         other => Err(format!("unknown platform `{other}`")),
     }
+}
+
+/// A missing `<profile> @ <api>` AVD: made from an installed system image
+/// for this host's architecture, or why it can't be.
+fn create_avd(host: &dyn Host, device: &str, api: u32, host_abi: &str, create: bool) -> Result<Target, String> {
+    let images = host.android_images()?;
+    // Google APIs first: what a framework app's Google Play services and
+    // the stock emulator images expect.
+    let rank = |tag: &str| match tag {
+        "google_apis" => 0,
+        "google_apis_playstore" => 1,
+        "default" => 2,
+        _ => 3,
+    };
+    let Some(image) = images.iter().filter(|i| i.api == api && i.abi == host_abi).min_by_key(|i| rank(&i.tag)) else {
+        return Err(format!(
+            "no API {api} system image for {host_abi} is installed; install one with `sdkmanager \
+             \"system-images;android-{api};google_apis;{host_abi}\"`"
+        ));
+    };
+    let profiles = host.android_profiles()?;
+    if !profiles.iter().any(|p| p == device) {
+        return Err(format!(
+            "avdmanager has no hardware profile `{device}` (`avdmanager list device -c` lists them)"
+        ));
+    }
+    let name = format!("idealyst_{device}_{api}");
+    let package = format!("system-images;android-{api};{};{}", image.tag, image.abi);
+    if !create {
+        return Err(format!("no AVD made from {device} with API {api} exists ({package} could make one; --no-create was given)"));
+    }
+    Ok(Target {
+        create: Some(Create::Avd { name, package, profile: device.to_string() }),
+        simulator: None,
+        emulator: None,
+        device: None,
+        viewport: None,
+    })
+}
+
+/// `18.3.1` → `[18, 3, 1]`, for ordering runtimes.
+fn version_key(v: &str) -> Vec<u32> {
+    v.split('.').filter_map(|p| p.parse().ok()).collect()
+}
+
+/// Whether runtime version `have` (`18.3.1`) is the asked-for `want`
+/// (`18`, `18.3`).
+fn version_matches(have: &str, want: &str) -> bool {
+    have == want || have.starts_with(&format!("{want}."))
 }
 
 /// The plan as the runner prints it before anything builds.
@@ -372,6 +479,9 @@ pub fn describe(rows: &[Row]) -> String {
     for row in rows {
         let label = row.label();
         match &row.plan {
+            Ok(Target { create: Some(c), .. }) => {
+                out.push_str(&format!("  run    {label:width$}  {}\n", c.describe()))
+            }
             Ok(_) => out.push_str(&format!("  run    {label}\n")),
             Err(why) => out.push_str(&format!("  skip   {label:width$}  {why}\n")),
         }
@@ -457,6 +567,108 @@ impl Host for ThisHost {
     fn windows_remote(&self) -> bool {
         std::env::var_os("IDEALYST_WINDOWS_REMOTE").is_some()
     }
+
+    fn ios_runtimes(&self) -> Result<Vec<IosRuntime>, String> {
+        let out = std::process::Command::new("xcrun")
+            .args(["simctl", "list", "runtimes", "-j"])
+            .output()
+            .map_err(|_| "Xcode's command-line tools aren't installed (`xcode-select --install`)".to_string())?;
+        if !out.status.success() {
+            return Err(format!("`xcrun simctl list runtimes` failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        parse_runtimes(&out.stdout)
+    }
+
+    fn android_images(&self) -> Result<Vec<SystemImage>, String> {
+        let sdk = android_sdk().ok_or("the Android SDK isn't installed (set ANDROID_HOME, or install Android Studio)")?;
+        Ok(scan_system_images(&sdk.join("system-images")))
+    }
+
+    fn android_profiles(&self) -> Result<Vec<String>, String> {
+        let sdk = android_sdk().ok_or("the Android SDK isn't installed (set ANDROID_HOME)")?;
+        let avdmanager = avdmanager(&sdk).ok_or(
+            "avdmanager isn't installed (`sdkmanager \"cmdline-tools;latest\"`, or Android Studio > SDK Manager > \
+             SDK Tools > Android SDK Command-line Tools)",
+        )?;
+        let out = std::process::Command::new(&avdmanager)
+            .args(["list", "device", "-c"])
+            .output()
+            .map_err(|e| format!("running {}: {e}", avdmanager.display()))?;
+        if !out.status.success() {
+            return Err(format!(
+                "`avdmanager list device` failed (it needs a Java runtime): {}",
+                String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or("").trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+    }
+}
+
+/// `avdmanager` in the SDK: the `cmdline-tools` package (`latest`, else any
+/// version), else the old `tools`.
+pub fn avdmanager(sdk: &Path) -> Option<std::path::PathBuf> {
+    let latest = sdk.join("cmdline-tools/latest/bin/avdmanager");
+    if latest.is_file() {
+        return Some(latest);
+    }
+    let any = std::fs::read_dir(sdk.join("cmdline-tools"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join("bin/avdmanager"))
+        .find(|p| p.is_file());
+    any.or_else(|| Some(sdk.join("tools/bin/avdmanager")).filter(|p| p.is_file()))
+}
+
+/// The Android SDK root (see [`android_sdk`]), for the provisioning steps.
+pub fn sdk_root() -> Option<std::path::PathBuf> {
+    android_sdk()
+}
+
+/// `xcrun simctl list runtimes -j` → the available iOS runtimes.
+pub fn parse_runtimes(json: &[u8]) -> Result<Vec<IosRuntime>, String> {
+    let v: serde_json::Value = serde_json::from_slice(json).map_err(|e| format!("reading simctl's runtimes: {e}"))?;
+    Ok(v["runtimes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["platform"] == "iOS" && r["isAvailable"] != false)
+        .filter_map(|r| {
+            Some(IosRuntime {
+                name: r["name"].as_str()?.to_string(),
+                version: r["version"].as_str()?.to_string(),
+                identifier: r["identifier"].as_str()?.to_string(),
+                device_types: r["supportedDeviceTypes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|d| Some((d["name"].as_str()?.to_string(), d["identifier"].as_str()?.to_string())))
+                    .collect(),
+            })
+        })
+        .collect())
+}
+
+/// `<sdk>/system-images/android-<api>/<tag>/<abi>/` → the installed images.
+pub fn scan_system_images(dir: &Path) -> Vec<SystemImage> {
+    let mut out = Vec::new();
+    let dirs = |d: &Path| -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(d).map(|r| r.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default()
+    };
+    for api_dir in dirs(dir) {
+        let name = api_dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        // `android-34`, `android-37.0`: the level is the leading digits.
+        let Some(level) = name.strip_prefix("android-") else { continue };
+        let digits: String = level.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let Ok(api) = digits.parse() else { continue };
+        for tag_dir in dirs(&api_dir) {
+            let tag = tag_dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            for abi_dir in dirs(&tag_dir) {
+                let abi = abi_dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                out.push(SystemImage { api, tag: tag.clone(), abi });
+            }
+        }
+    }
+    out
 }
 
 /// The Android SDK root: `ANDROID_HOME`, `ANDROID_SDK_ROOT`, or the default
@@ -542,6 +754,35 @@ mod tests {
         fn windows_remote(&self) -> bool {
             false
         }
+        fn ios_runtimes(&self) -> Result<Vec<IosRuntime>, String> {
+            Ok(vec![
+                IosRuntime {
+                    name: "iOS 17.5".into(),
+                    version: "17.5".into(),
+                    identifier: "rt.iOS-17-5".into(),
+                    device_types: vec![
+                        ("iPhone 15".into(), "dt.iPhone-15".into()),
+                        ("iPhone SE (3rd generation)".into(), "dt.iPhone-SE-3".into()),
+                    ],
+                },
+                IosRuntime {
+                    name: "iOS 17.0".into(),
+                    version: "17.0".into(),
+                    identifier: "rt.iOS-17-0".into(),
+                    device_types: vec![("iPhone SE (3rd generation)".into(), "dt.iPhone-SE-3".into())],
+                },
+            ])
+        }
+        fn android_images(&self) -> Result<Vec<SystemImage>, String> {
+            Ok(vec![
+                SystemImage { api: 34, tag: "google_apis_playstore".into(), abi: "arm64-v8a".into() },
+                SystemImage { api: 34, tag: "google_apis".into(), abi: "arm64-v8a".into() },
+                SystemImage { api: 30, tag: "google_apis".into(), abi: "x86_64".into() },
+            ])
+        }
+        fn android_profiles(&self) -> Result<Vec<String>, String> {
+            Ok(vec!["pixel_7".into(), "pixel_tablet".into()])
+        }
     }
 
     fn mac() -> FakeHost {
@@ -589,7 +830,7 @@ mod tests {
 
         let why = |c, p| row(&rows, c, p).plan.clone().unwrap_err();
         assert!(why("tablet", "web").contains("webkit engine isn't supported"), "{}", why("tablet", "web"));
-        assert!(why("tablet", "ios").contains("iOS 18 simulator runtime isn't installed (installed: iOS 17.5)"));
+        assert!(why("tablet", "ios").contains("iOS 18 simulator runtime isn't installed (installed: iOS 17.5, iOS 17.0)"));
         assert!(why("tablet", "android").contains("x86_64 system image, which can't run on this aarch64 host"));
         assert!(why("desktop", "windows").contains("doesn't build for windows"), "targets come first");
         assert!(why("desktop", "linux").contains("doesn't build for linux"));
@@ -618,7 +859,7 @@ mod tests {
 
     #[test]
     fn the_filter_keeps_the_classes_and_platforms_asked_for() {
-        let rows = rows(&mac(), Filter { classes: vec!["phone".into()], platforms: vec!["ios".into(), "web".into()] });
+        let rows = rows(&mac(), Filter { classes: vec!["phone".into()], platforms: vec!["ios".into(), "web".into()], no_create: false });
         let got: Vec<(&str, &str)> = rows.iter().map(|r| (r.class.as_str(), r.platform.as_str())).collect();
         assert_eq!(got, [("phone", "web"), ("phone", "ios")]);
         let p = parse(MANIFEST).unwrap();
@@ -628,17 +869,78 @@ mod tests {
         assert!(err.contains("no class `watch`") && err.contains("phone, tablet, desktop"), "{err}");
     }
 
+    /// A missing simulator or AVD that can be made from what's installed is
+    /// planned as a run that creates it first (the newest runtime that runs
+    /// the device; the Google APIs image for this host); `--no-create`
+    /// reports it instead. What can't be made says what to install.
     #[test]
-    fn missing_devices_name_how_to_make_them() {
+    fn missing_devices_are_created_from_what_is_installed_or_say_what_to_install() {
         let host = mac();
-        let e = resolve("ios", "iPhone SE (3rd generation) @ iOS 17", &host).unwrap_err();
-        assert!(e.contains("no simulator named \"iPhone SE (3rd generation)\" on iOS 17") && e.contains("simctl create"), "{e}");
-        let e = resolve("android", "pixel_tablet @ 34", &host).unwrap_err();
-        assert!(e.contains("avdmanager create avd") && e.contains("android-34;google_apis;arm64-v8a"), "{e}");
-        let e = resolve("android", "serial:HA2HC863", &host).unwrap_err();
+        let t = resolve("ios", "iPhone SE (3rd generation) @ iOS 17", &host, true).unwrap();
+        assert_eq!(
+            t.create,
+            Some(Create::Simulator {
+                name: "iPhone SE (3rd generation)".into(),
+                device_type: "dt.iPhone-SE-3".into(),
+                runtime: "rt.iOS-17-5".into(),
+                runtime_name: "iOS 17.5".into(),
+            }),
+            "the newest iOS 17 runtime that runs it"
+        );
+        let e = resolve("ios", "iPhone SE (3rd generation) @ iOS 17", &host, false).unwrap_err();
+        assert!(e.contains("--no-create was given"), "{e}");
+        let e = resolve("ios", "iPhone 99 @ iOS 17", &host, true).unwrap_err();
+        assert!(e.contains("no installed iOS 17 runtime runs a device named \"iPhone 99\""), "{e}");
+
+        let t = resolve("android", "pixel_tablet @ 34", &host, true).unwrap();
+        assert_eq!(
+            t.create,
+            Some(Create::Avd {
+                name: "idealyst_pixel_tablet_34".into(),
+                package: "system-images;android-34;google_apis;arm64-v8a".into(),
+                profile: "pixel_tablet".into(),
+            })
+        );
+        let e = resolve("android", "pixel_7 @ 30", &host, true).unwrap_err();
+        assert!(e.contains("no API 30 system image for arm64-v8a") && e.contains("sdkmanager"), "an x86_64 image doesn't count: {e}");
+        let e = resolve("android", "nexus_1 @ 34", &host, true).unwrap_err();
+        assert!(e.contains("no hardware profile `nexus_1`"), "{e}");
+        let e = resolve("android", "serial:HA2HC863", &host, true).unwrap_err();
         assert!(e.contains("HA2HC863 is not attached"), "{e}");
-        assert!(resolve("web", "chromium:galaxy-fold-9", &host).is_err(), "an unknown preset");
-        assert!(resolve("macos", "big", &host).unwrap_err().contains("not a window size"));
+        assert!(resolve("web", "chromium:galaxy-fold-9", &host, true).is_err(), "an unknown preset");
+        assert!(resolve("macos", "big", &host, true).unwrap_err().contains("not a window size"));
+        let rows = vec![Row {
+            class: "phone".into(),
+            platform: "ios".into(),
+            spec: "iPhone SE (3rd generation) @ iOS 17".into(),
+            plan: resolve("ios", "iPhone SE (3rd generation) @ iOS 17", &host, true),
+        }];
+        assert!(describe(&rows).contains("creates simulator \"iPhone SE (3rd generation)\" on iOS 17.5 first"));
+    }
+
+    #[test]
+    fn runtimes_and_system_images_are_read() {
+        let json = br#"{"runtimes":[
+            {"name":"iOS 26.5","version":"26.5","identifier":"rt26","platform":"iOS","isAvailable":true,
+             "supportedDeviceTypes":[{"name":"iPhone 17","identifier":"dt17"}]},
+            {"name":"watchOS 11","version":"11.0","identifier":"w","platform":"watchOS","isAvailable":true,"supportedDeviceTypes":[]}]}"#;
+        let r = parse_runtimes(json).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].device_types, [("iPhone 17".to_string(), "dt17".to_string())]);
+
+        let dir = tempfile::tempdir().unwrap();
+        for p in ["android-34/google_apis/arm64-v8a", "android-37.0/google_apis_playstore/arm64-v8a", "notes"] {
+            std::fs::create_dir_all(dir.path().join(p)).unwrap();
+        }
+        let mut images = scan_system_images(dir.path());
+        images.sort_by_key(|i| i.api);
+        assert_eq!(
+            images,
+            [
+                SystemImage { api: 34, tag: "google_apis".into(), abi: "arm64-v8a".into() },
+                SystemImage { api: 37, tag: "google_apis_playstore".into(), abi: "arm64-v8a".into() },
+            ]
+        );
     }
 
     #[test]
