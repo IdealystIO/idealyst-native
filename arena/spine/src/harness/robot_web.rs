@@ -114,7 +114,7 @@ pub fn start_relay(project_dir: &Path, dist: &Path) -> anyhow::Result<robot_rela
             bundle_id: None,
             project_root: Some(project_root.to_string_lossy().to_string()),
         }),
-        screenshot_dir: None,
+        ..Default::default()
     })?;
 
     let index = dist.join("index.html");

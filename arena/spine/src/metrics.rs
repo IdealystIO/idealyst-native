@@ -64,7 +64,7 @@ pub struct Pathologies {
 
 /// Heuristic: which tools are documentation lookups whose repeat-rate is a
 /// doc-quality signal. Kept deliberately broad — the MCP surface is
-/// `list`/`describe_*`/`search_*`/`*_recipe`/icon catalogs.
+/// `list`/`describe`/`search*`/`get_docs`/icon catalogs.
 fn is_doc_tool(tool: &str) -> bool {
     let t = tool.to_ascii_lowercase();
     t.contains("describe")
@@ -75,9 +75,26 @@ fn is_doc_tool(tool: &str) -> bool {
         || t.contains("catalog")
 }
 
+/// The argument that picks which of a folded tool's jobs a call does:
+/// `list`/`describe`'s `kind`, `dev_session`'s `action`, `inspect_element`'s
+/// `what`, `configure_project`'s `target`. Counted as part of the tool, so
+/// coverage says `list:recipe` was never reached rather than only that
+/// `list` was.
+fn selector(args: &serde_json::Value) -> Option<&str> {
+    ["kind", "action", "what", "target"].iter().find_map(|key| args.get(key).and_then(|v| v.as_str()))
+}
+
+/// `tool`, or `tool:selector` for a call that carries one.
+fn tool_key(tool: &str, args: &serde_json::Value) -> String {
+    match selector(args) {
+        Some(s) => format!("{tool}:{s}"),
+        None => tool.to_string(),
+    }
+}
+
 /// Primary identifying argument of a doc lookup, used as the fetch key so
-/// `describe_component(name=Button)` and `describe_component(name=Card)` count
-/// separately while two Button lookups collapse.
+/// `describe(kind=component, name=Button)` and `…name=Card` count separately
+/// while two Button lookups collapse.
 fn primary_arg(args: &serde_json::Value) -> String {
     for key in ["name", "id", "component", "query", "tag"] {
         if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
@@ -167,11 +184,11 @@ pub fn analyze(t: &Transcript) -> Pathologies {
             // `mcp__<server>__<tool>` → `<tool>`; keeps the coverage map
             // readable and server-agnostic.
             let short = call.tool.rsplit("__").next().unwrap_or(&call.tool);
-            *mcp_tools_used.entry(short.to_string()).or_insert(0) += 1;
+            *mcp_tools_used.entry(tool_key(short, &call.args)).or_insert(0) += 1;
         }
 
         if is_doc_tool(&call.tool) {
-            let key = format!("{}:{}", call.tool, primary_arg(&call.args));
+            let key = format!("{}:{}", tool_key(&call.tool, &call.args), primary_arg(&call.args));
             *doc_fetch_counts.entry(key).or_insert(0) += 1;
         }
     }
@@ -213,7 +230,7 @@ mod tests {
         err_call.error = true;
         let t = Transcript {
             calls: vec![
-                call("mcp__idealyst__read_guide", json!({"slug": "styling"})),
+                call("mcp__idealyst__describe", json!({"kind": "guide", "name": "styling"})),
                 err_call,
                 call("mcp__idealyst__click", json!({"id": "y"})),
                 call("Bash", json!({"command": "ls"})), // non-MCP: uncounted
@@ -223,7 +240,7 @@ mod tests {
         assert_eq!(p.mcp_calls, 3);
         assert_eq!(p.mcp_errors, 1);
         assert_eq!(p.mcp_tools_used.get("click"), Some(&2));
-        assert_eq!(p.mcp_tools_used.get("read_guide"), Some(&1));
+        assert_eq!(p.mcp_tools_used.get("describe:guide"), Some(&1));
         assert!(!p.mcp_tools_used.contains_key("Bash"));
     }
 
@@ -231,9 +248,9 @@ mod tests {
     fn detects_exact_duplicate_calls() {
         let t = Transcript {
             calls: vec![
-                call("describe_component", json!({"name": "Button"})),
-                call("describe_component", json!({"name": "Button"})), // dup
-                call("describe_component", json!({"name": "Card"})),   // not a dup
+                call("describe", json!({"kind": "component", "name": "Button"})),
+                call("describe", json!({"kind": "component", "name": "Button"})), // dup
+                call("describe", json!({"kind": "component", "name": "Card"})), // not a dup
             ],
         };
         let p = analyze(&t);
@@ -248,16 +265,34 @@ mod tests {
         // calls count as duplicates.
         let t = Transcript {
             calls: vec![
-                call("describe_component", json!({"name": "Button"})),
-                call("describe_component", json!({"name": "Button", "verbose": true})),
-                call("describe_component", json!({"name": "Button"})),
+                call("describe", json!({"kind": "component", "name": "Button"})),
+                call("describe", json!({"kind": "component", "name": "Button", "verbose": true})),
+                call("describe", json!({"kind": "component", "name": "Button"})),
             ],
         };
         let p = analyze(&t);
         assert_eq!(p.duplicate_calls, 1, "two byte-identical Button calls");
-        let button = p.doc_fetch_counts.get("describe_component:Button").copied();
+        let button = p.doc_fetch_counts.get("describe:component:Button").copied();
         assert_eq!(button, Some(3), "all three target the Button doc");
         assert_eq!(p.repeated_docs.first().unwrap().1, 3);
+    }
+
+    #[test]
+    fn a_folded_tool_is_counted_per_kind() {
+        // `describe` serves every catalog slice: a recipe and a component of
+        // one name are different docs, and coverage names the slice reached.
+        let t = Transcript {
+            calls: vec![
+                call("mcp__idealyst__describe", json!({"kind": "component", "name": "Toast"})),
+                call("mcp__idealyst__describe", json!({"kind": "recipe", "name": "Toast"})),
+                call("mcp__idealyst__dev_session", json!({"action": "wait", "pid": 4})),
+            ],
+        };
+        let p = analyze(&t);
+        assert!(p.repeated_docs.is_empty(), "{:?}", p.repeated_docs);
+        assert_eq!(p.mcp_tools_used.get("describe:component"), Some(&1));
+        assert_eq!(p.mcp_tools_used.get("describe:recipe"), Some(&1));
+        assert_eq!(p.mcp_tools_used.get("dev_session:wait"), Some(&1));
     }
 
     #[test]

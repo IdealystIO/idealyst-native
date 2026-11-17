@@ -57,7 +57,7 @@ pub fn build_feedback_prompt(inputs: &FeedbackInputs) -> String {
          ## Pass 1 — Rubric-anchored\n\
          For each item below the agent lost or that was neutralized, trace the transcript to the \
          specific MCP navigation or comprehension failure that caused it (e.g. \"never called \
-         describe_sdk for storage, so it guessed an API that doesn't exist\"). Tie each finding to \
+         describe (kind sdk) for storage, so it guessed an API that doesn't exist\"). Tie each finding to \
          a concrete doc/tool change.\n\n\
          Items lost/neutralized:\n{lost}\n\n\
          ## Pass 2 — Process logic\n\

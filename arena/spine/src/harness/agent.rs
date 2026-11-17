@@ -233,7 +233,7 @@ mod tests {
         // one Bash call) with per-turn usage, the idealyst result returned as a
         // user tool_result, and a final text block.
         let stream = r#"
-{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"tool_use","id":"t1","name":"mcp__idealyst__list_components","input":{}}],"usage":{"input_tokens":10,"cache_creation_input_tokens":100,"cache_read_input_tokens":0,"output_tokens":3}}}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"tool_use","id":"t1","name":"mcp__idealyst__list","input":{"kind":"component"}}],"usage":{"input_tokens":10,"cache_creation_input_tokens":100,"cache_read_input_tokens":0,"output_tokens":3}}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"AAAAAAAA"}]}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"idealyst build --web"}}],"usage":{"input_tokens":5,"cache_read_input_tokens":200,"output_tokens":42}}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"a long bash result that is NOT idealyst docs"}]}}
@@ -241,7 +241,7 @@ mod tests {
 "#;
         let run = parse_session_jsonl(stream.as_bytes());
         assert_eq!(run.transcript.calls.len(), 2);
-        assert_eq!(run.transcript.calls[0].tool, "mcp__idealyst__list_components");
+        assert_eq!(run.transcript.calls[0].tool, "mcp__idealyst__list");
         // input = (10+100) + 5 + 1 = 116 — cache reads (0+200+0) live apart
         assert_eq!(run.input_tokens, 116);
         assert_eq!(run.cache_read_tokens, 200);
