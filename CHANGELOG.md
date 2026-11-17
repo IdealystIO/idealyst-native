@@ -1364,7 +1364,8 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   pointer when they run; a test that doesn't apply is listed as `n/a` with why. The robot's
   `get_viewport` also reports the primary pointer. A matrix simulator or AVD that doesn't exist is
   created from the installed runtime / system image when its row runs (`xcrun simctl create`,
-  `avdmanager create avd` for a `<profile> @ <api>` spec), and a device the run booted is shut
+  `avdmanager create avd` for a `<profile> @ <api>` spec, which runs only on that
+  `idealyst_<profile>_<api>` AVD, never another sharing the profile), and a device the run booted is shut
   down after its row (`--no-create`, `--keep-devices`). The web rows share one launch; the summary
   names each failed run's failing tests; `--junit <path>` writes a JUnit report; `--jobs N` runs up
   to N platforms at once. See "Device matrix" in `docs/robot.md`.

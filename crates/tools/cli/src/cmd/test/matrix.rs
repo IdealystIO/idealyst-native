@@ -400,10 +400,16 @@ pub fn resolve(platform: &str, spec: &str, host: &dyn Host, create: bool) -> Res
             let host_abi = if host.arch() == "aarch64" { "arm64-v8a" } else { "x86_64" };
             let pick = match spec.split_once('@') {
                 None => avds.iter().find(|a| a.name == spec.trim()),
+                // Only the AVD this runner makes for the spec, never another
+                // AVD that happens to share the profile: that one belongs to
+                // someone (a kiosk or device-owner setup, an app's data), and
+                // a suite would install into it. An existing AVD is used by
+                // naming it.
                 Some((device, api)) => {
                     let (device, api) = (device.trim(), api.trim());
                     let api: u32 = api.parse().map_err(|_| format!("`{api}` is not an Android API level"))?;
-                    avds.iter().find(|a| a.device.as_deref() == Some(device) && a.api == Some(api))
+                    let name = avd_name(device, api);
+                    avds.iter().find(|a| a.name == name)
                 }
             };
             match pick {
@@ -463,7 +469,7 @@ fn create_avd(host: &dyn Host, device: &str, api: u32, host_abi: &str, create: b
             "avdmanager has no hardware profile `{device}` (`avdmanager list device -c` lists them)"
         ));
     }
-    let name = format!("idealyst_{device}_{api}");
+    let name = avd_name(device, api);
     let package = format!("system-images;android-{api};{};{}", image.tag, image.abi);
     if !create {
         return Err(format!("no AVD made from {device} with API {api} exists ({package} could make one; --no-create was given)"));
@@ -476,6 +482,12 @@ fn create_avd(host: &dyn Host, device: &str, api: u32, host_abi: &str, create: b
         viewport: None,
         engine: None,
     })
+}
+
+/// The AVD a `<profile> @ <api>` spec runs on, made by the runner when
+/// missing.
+fn avd_name(profile: &str, api: u32) -> String {
+    format!("idealyst_{profile}_{api}")
 }
 
 /// `18.3.1` → `[18, 3, 1]`, for ordering runtimes.
@@ -498,6 +510,11 @@ pub fn describe(rows: &[Row]) -> String {
         match &row.plan {
             Ok(Target { create: Some(c), .. }) => {
                 out.push_str(&format!("  run    {label:width$}  {}\n", c.describe()))
+            }
+            // The AVD or serial it runs on: a spec can name a profile, and
+            // the plan says which device that is.
+            Ok(Target { emulator: Some(on), .. }) if row.platform == "android" => {
+                out.push_str(&format!("  run    {label:width$}  on {on}\n"))
             }
             Ok(_) => out.push_str(&format!("  run    {label}\n")),
             Err(why) => out.push_str(&format!("  skip   {label:width$}  {why}\n")),
@@ -823,7 +840,8 @@ mod tests {
             chromium: true,
             sims: Ok(vec![Simulator { name: "iPhone 15".into(), udid: "U-15".into(), runtime: "iOS 17.5".into() }]),
             avds: Ok(vec![
-                Avd { name: "Pixel_7_API_34".into(), device: Some("pixel_7".into()), api: Some(34), abi: Some("arm64-v8a".into()) },
+                Avd { name: "idealyst_pixel_7_34".into(), device: Some("pixel_7".into()), api: Some(34), abi: Some("arm64-v8a".into()) },
+                Avd { name: "Kiosk_Tablet".into(), device: Some("pixel_tablet".into()), api: Some(34), abi: Some("arm64-v8a".into()) },
                 Avd { name: "Old_x86".into(), device: Some("pixel_4".into()), api: Some(30), abi: Some("x86_64".into()) },
             ]),
         }
@@ -857,7 +875,7 @@ mod tests {
         let phone = |p| row(&rows, "phone", p).plan.clone();
         assert_eq!(phone("web").unwrap().device.as_deref(), Some("iphone-15"));
         assert_eq!(phone("ios").unwrap().simulator.as_deref(), Some("U-15"), "the simulator, by UDID");
-        assert_eq!(phone("android").unwrap().emulator.as_deref(), Some("Pixel_7_API_34"));
+        assert_eq!(phone("android").unwrap().emulator.as_deref(), Some("idealyst_pixel_7_34"));
 
         let why = |c, p| row(&rows, c, p).plan.clone().unwrap_err();
         assert_eq!(row(&rows, "tablet", "web").plan.clone().unwrap().engine, Some(crate::cmd::test::engines::Engine::Webkit), "Safari on a Mac");
@@ -869,6 +887,22 @@ mod tests {
         let shown = describe(&rows);
         assert!(shown.contains("  run    phone on ios (iPhone 15 @ iOS 17)"), "{shown}");
         assert!(shown.contains("  skip   tablet on ios"), "{shown}");
+        assert!(shown.contains("phone on android (pixel_7 @ 34)") && shown.contains("on idealyst_pixel_7_34"), "{shown}");
+    }
+
+    /// A `<profile> @ <api>` spec never runs on an AVD it didn't make: the
+    /// first matching AVD on a dev machine was a CrewForge kiosk tablet's,
+    /// and the suite would have installed into it. It gets its own
+    /// `idealyst_<profile>_<api>`; an existing AVD runs when named.
+    #[test]
+    fn regression_a_profile_spec_does_not_take_someone_elses_avd() {
+        let host = mac();
+        let t = resolve("android", "pixel_tablet @ 34", &host, true).unwrap();
+        assert_eq!(t.emulator, None, "Kiosk_Tablet shares the profile and is not used");
+        assert!(matches!(t.create, Some(Create::Avd { ref name, .. }) if name == "idealyst_pixel_tablet_34"), "{t:?}");
+        let e = resolve("android", "pixel_tablet @ 34", &host, false).unwrap_err();
+        assert!(e.contains("--no-create"), "{e}");
+        assert_eq!(resolve("android", "Kiosk_Tablet", &host, true).unwrap().emulator.as_deref(), Some("Kiosk_Tablet"), "by name");
     }
 
     #[test]

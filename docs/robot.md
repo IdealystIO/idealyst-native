@@ -770,7 +770,11 @@ desktop = { web = "1440x900", macos = "1440x900", linux = "1440x900", windows = 
   suites see the engine as `IDEALYST_TEST_ENGINE`).
 - `ios`: a simulator name, `@ iOS <version>` to pin its runtime.
 - `android`: an AVD name, `<hardware profile> @ <API level>`, or
-  `serial:<adb serial>` for an attached device.
+  `serial:<adb serial>` for an attached device. A profile spec runs on
+  the runner's own AVD for it, `idealyst_<profile>_<api>` (made when
+  missing), never on another AVD that shares the profile: that one is
+  someone's (a kiosk setup, an app's data). Name an existing AVD to use
+  it. The plan prints the AVD or serial each Android row runs on.
 - `macos` / `linux` / `windows`: the window size.
 
 With a matrix, `idealyst test <project>` runs every class on every
