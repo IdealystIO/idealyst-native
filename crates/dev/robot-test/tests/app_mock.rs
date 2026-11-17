@@ -240,7 +240,9 @@ fn respond(cmd: &str, args: &Value, m: &mut Mock) -> Result<Value, String> {
                 m.viewport = next;
             }
             let bp = if width >= 1280.0 { "xl" } else if width >= 768.0 { "md" } else { "xs" };
-            json!({ "width": width, "height": height, "breakpoint": bp })
+            // A phone-sized mock is a touch device; a wider one has a mouse.
+            let pointer = if width < 768.0 { "coarse" } else { "fine" };
+            json!({ "width": width, "height": height, "breakpoint": bp, "pointer": pointer })
         }
         "set_viewport" if m.viewport_fixed => {
             return Err("set_viewport is unsupported on this platform: the app cannot resize its own window here".into())
@@ -1039,4 +1041,28 @@ fn keyboard_reports_the_fields_keyboard_kind() {
         app.test_id("email").assert_keyboard("phone");
     });
     assert!(msg.contains("keyboard is Some(\"email\")"), "{msg}");
+}
+
+
+/// A device-class test asks the app its class: on a desktop-sized app a
+/// `form = phone` test does not apply, says why, and is recorded for the
+/// runner (`IDEALYST_TEST_RESULTS`); a `desktop` / `pointer` one applies.
+#[test]
+fn a_device_class_test_is_not_applicable_where_the_app_is_another_class() {
+    let mut app = app();
+    let class = app.device_class();
+    assert_eq!(class.form, Some(robot_test::Form::Desktop), "{class:?}");
+    assert_eq!(class.input, Some(robot_test::Input::Pointer));
+
+    let results = std::env::temp_dir().join(format!("robot_test_na_{}.jsonl", std::process::id()));
+    let _ = std::fs::remove_file(&results);
+    std::env::set_var(robot_test::RESULTS_ENV, &results);
+    let why = robot_test::__not_applicable(&mut app, "kb::opens_the_number_pad", &["phone"], &["touch"]).unwrap();
+    assert!(why.contains("needs phone, touch input") && why.contains("the app is a desktop"), "{why}");
+    assert_eq!(robot_test::__not_applicable(&mut app, "x", &["desktop"], &["pointer"]), None);
+    std::env::remove_var(robot_test::RESULTS_ENV);
+    let line: Value = serde_json::from_str(std::fs::read_to_string(&results).unwrap().trim()).unwrap();
+    assert_eq!(line["test"], "kb::opens_the_number_pad");
+    assert_eq!(line["outcome"], "na");
+    let _ = std::fs::remove_file(&results);
 }

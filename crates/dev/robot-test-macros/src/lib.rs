@@ -64,6 +64,25 @@
 //! `SKIP`) when the app is on another platform. Because the body sits in a
 //! module, it reaches the test file's items through a `use super::*`: write
 //! `crate::…` rather than `super::…` / `self::…` paths in such a body.
+//!
+//! # Device classes
+//!
+//! A test that only means something on some kinds of device says which, in
+//! the terms the app branches on (see `robot_test::Form`):
+//!
+//! ```ignore
+//! #[robot_test(form = phone)]                 // breakpoint xs / sm
+//! #[robot_test(form = [tablet, desktop])]
+//! #[robot_test(input = touch)]                // primary pointer is a finger
+//! #[robot_test(platforms = [ios], form = tablet)]
+//! ```
+//!
+//! Forms are `phone`, `tablet`, `desktop`; inputs `touch`, `pointer`. The
+//! class is checked against what the app reports when the test runs, so a
+//! `phone` test runs on an iPhone, a Pixel and a phone-sized browser alike.
+//! Where it doesn't match, the test is **not applicable**: it prints
+//! `[robot_test] N/A …` with the reason, and `idealyst test` counts it apart
+//! from passes.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -110,17 +129,23 @@ fn platform_names(name: &syn::Ident) -> syn::Result<&'static [&'static str]> {
     })
 }
 
-/// `platforms = [ios, android]` / `platforms = native` → the platforms, in
-/// [`PLATFORMS`] order; `None` for no arguments (runs everywhere).
-fn parse_platforms(attr: TokenStream2) -> syn::Result<Option<Vec<&'static str>>> {
-    if attr.is_empty() {
-        return Ok(None);
-    }
-    let nv: syn::MetaNameValue = syn::parse2(attr.clone()).map_err(|_| unknown_argument(&attr))?;
-    if !nv.path.is_ident("platforms") {
-        return Err(unknown_argument(&nv.path));
-    }
-    let names: Vec<syn::Ident> = match &nv.value {
+/// What `#[robot_test(…)]` was given.
+#[derive(Default)]
+struct TestArgs {
+    /// `None`: every platform.
+    platforms: Option<Vec<&'static str>>,
+    /// Device forms (`phone`, …); empty: any.
+    forms: Vec<String>,
+    /// Inputs (`touch`, `pointer`); empty: any.
+    inputs: Vec<String>,
+}
+
+const FORMS: [&str; 3] = ["phone", "tablet", "desktop"];
+const INPUTS: [&str; 2] = ["touch", "pointer"];
+
+/// `name` or `[a, b]` → the identifiers.
+fn idents(value: &syn::Expr) -> syn::Result<Vec<syn::Ident>> {
+    let names: Vec<syn::Ident> = match value {
         syn::Expr::Path(p) => vec![p.path.get_ident().cloned().ok_or_else(|| unknown_argument(p))?],
         syn::Expr::Array(a) => a
             .elems
@@ -133,25 +158,62 @@ fn parse_platforms(attr: TokenStream2) -> syn::Result<Option<Vec<&'static str>>>
         other => return Err(unknown_argument(other)),
     };
     if names.is_empty() {
-        return Err(syn::Error::new_spanned(&nv.value, "#[robot_test(platforms = [])] names no platform to run on"));
+        return Err(syn::Error::new_spanned(value, "#[robot_test] names nothing to run on here"));
     }
-    let mut wanted = Vec::new();
-    for n in &names {
-        wanted.extend_from_slice(platform_names(n)?);
+    Ok(names)
+}
+
+/// One of `allowed`, or a compile error naming them.
+fn one_of(name: &syn::Ident, what: &str, allowed: &[&str]) -> syn::Result<String> {
+    let s = name.to_string();
+    if allowed.contains(&s.as_str()) {
+        Ok(s)
+    } else {
+        Err(syn::Error::new_spanned(name, format!("unknown {what} `{s}`: use {}", allowed.join(", "))))
     }
-    Ok(Some(PLATFORMS.iter().copied().filter(|p| wanted.contains(p)).collect()))
+}
+
+/// `platforms = …, form = …, input = …`, each optional, in any order.
+fn parse_args(attr: TokenStream2) -> syn::Result<TestArgs> {
+    let mut out = TestArgs::default();
+    if attr.is_empty() {
+        return Ok(out);
+    }
+    let list = syn::parse::Parser::parse2(
+        syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated,
+        attr.clone(),
+    )
+    .map_err(|_| unknown_argument(&attr))?;
+    for nv in list {
+        let names = idents(&nv.value)?;
+        if nv.path.is_ident("platforms") {
+            let mut wanted = Vec::new();
+            for n in &names {
+                wanted.extend_from_slice(platform_names(n)?);
+            }
+            out.platforms = Some(PLATFORMS.iter().copied().filter(|p| wanted.contains(p)).collect());
+        } else if nv.path.is_ident("form") {
+            out.forms = names.iter().map(|n| one_of(n, "form", &FORMS)).collect::<syn::Result<_>>()?;
+        } else if nv.path.is_ident("input") {
+            out.inputs = names.iter().map(|n| one_of(n, "input", &INPUTS)).collect::<syn::Result<_>>()?;
+        } else {
+            return Err(unknown_argument(&nv.path));
+        }
+    }
+    Ok(out)
 }
 
 fn unknown_argument(at: &impl quote::ToTokens) -> syn::Error {
     syn::Error::new_spanned(
         at,
-        "#[robot_test] takes only `platforms = [ios, android]` (or `platforms = native`); declare \
-         fixtures as parameters after the app, e.g. `fn my_test(app: &mut App, user: &SignedIn)`",
+        "#[robot_test] takes `platforms = [ios, android]`, `form = [phone, tablet, desktop]` and \
+         `input = touch | pointer`; declare fixtures as parameters after the app, e.g. \
+         `fn my_test(app: &mut App, user: &SignedIn)`",
     )
 }
 
 fn expand(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
-    let platforms = parse_platforms(attr)?;
+    let TestArgs { platforms, forms, inputs: input_kinds } = parse_args(attr)?;
     let func: ItemFn = syn::parse2(item)?;
 
     // The first argument is the `&mut App` handle the test drives; any after
@@ -209,6 +271,21 @@ fn expand(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
         None => quote! { ::robot_test::__acquire(#name_str) },
         Some(ps) => quote! { ::robot_test::__acquire_on(#name_str, &[#(#ps),*]) },
     };
+    // A device-class test checks the app's class first; where it doesn't
+    // apply it says why and returns (see the crate docs, "Device classes").
+    let class_check = if forms.is_empty() && input_kinds.is_empty() {
+        quote! {}
+    } else {
+        let (form_list, input_list) = (forms.iter(), input_kinds.iter());
+        quote! {
+            if let ::std::option::Option::Some(__why) =
+                ::robot_test::__not_applicable(__app, #name_str, &[#(#form_list),*], &[#(#input_list),*])
+            {
+                ::std::eprintln!("[robot_test] N/A {}: {}", #name_str, __why);
+                return;
+            }
+        }
+    };
     // `__body` carries the author's original signature + block verbatim; the
     // generated `#[test]` decides whether to run or skip, then invokes it.
     let body = quote! {
@@ -217,6 +294,7 @@ fn expand(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
         match #acquire {
             ::robot_test::Acquire::Ready(mut __handle) => {
                 let __app: &mut ::robot_test::App = &mut *__handle;
+                #class_check
                 #call;
             }
             ::robot_test::Acquire::Skip(__reason) => {
@@ -307,11 +385,31 @@ mod tests {
     #[test]
     fn unknown_arguments_on_the_attribute_are_an_error() {
         let e = error(quote!(setup = "x"), quote! { fn t(app: &mut App) {} });
-        assert!(e.contains("takes only `platforms"), "{e}");
+        assert!(e.contains("takes `platforms"), "{e}");
         let e = error(quote!(platforms = [ios, tvos]), quote! { fn t(app: &mut App) {} });
         assert!(e.contains("unknown platform `tvos`"), "{e}");
         let e = error(quote!(platforms = []), quote! { fn t(app: &mut App) {} });
-        assert!(e.contains("names no platform"), "{e}");
+        assert!(e.contains("names nothing"), "{e}");
+        let e = error(quote!(form = watch), quote! { fn t(app: &mut App) {} });
+        assert!(e.contains("unknown form `watch`"), "{e}");
+        let e = error(quote!(input = voice), quote! { fn t(app: &mut App) {} });
+        assert!(e.contains("unknown input `voice`"), "{e}");
+    }
+
+    /// A device-class test checks the app's class before its body and
+    /// returns, saying why, where it doesn't apply; a plain test does not.
+    #[test]
+    fn a_device_class_test_checks_the_app_before_its_body() {
+        let out = expand(quote!(form = [phone, tablet], input = touch), quote! { fn t(app: &mut App) {} })
+            .unwrap()
+            .to_string();
+        let check = out.find("__not_applicable").expect(&out);
+        assert!(out.contains(r#"& ["phone" , "tablet"]"#) && out.contains(r#"& ["touch"]"#), "{out}");
+        assert!(check < out.rfind("__body (__app").unwrap(), "checked before the body: {out}");
+        assert!(!expanded(quote! { fn t(app: &mut App) {} }).contains("__not_applicable"));
+        // With platforms too: still platform-bound by name.
+        let out = expand(quote!(platforms = [ios], form = tablet), quote! { fn t(app: &mut App) {} }).unwrap().to_string();
+        assert!(out.contains("robot_only_ios") && out.contains("__not_applicable"), "{out}");
     }
 
     fn with_platforms(attr: TokenStream2, item: TokenStream2) -> String {

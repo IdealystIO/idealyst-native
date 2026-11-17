@@ -3367,11 +3367,20 @@ pub mod bridge {
             }
             "get_viewport" => {
                 let v = robot.viewport();
+                // The primary pointer rides along: with the breakpoint it is
+                // what a test's device class is checked against
+                // (`#[robot_test(form = …, input = …)]`).
+                let pointer = match runtime_shared::app_state::current().primary_pointer {
+                    runtime_shared::app_state::PointerKind::Fine => "fine",
+                    runtime_shared::app_state::PointerKind::Coarse => "coarse",
+                    runtime_shared::app_state::PointerKind::None => "none",
+                };
                 Ok(format!(
-                    "{{\"width\":{},\"height\":{},\"breakpoint\":\"{}\"}}",
+                    "{{\"width\":{},\"height\":{},\"breakpoint\":\"{}\",\"pointer\":\"{}\"}}",
                     v.width,
                     v.height,
                     breakpoint_name(v.breakpoint),
+                    pointer,
                 ))
             }
             "set_viewport" => {
@@ -4314,7 +4323,10 @@ mod tests {
         runtime_shared::set_viewport_size(runtime_shared::ViewportSize::new(390.0, 844.0));
         let v: serde_json::Value =
             serde_json::from_str(&bridge::invoke_command("get_viewport", &json!({})).unwrap()).unwrap();
-        assert_eq!(v, json!({ "width": 390, "height": 844, "breakpoint": "xs" }));
+        assert_eq!(v["width"], 390);
+        assert_eq!(v["height"], 844);
+        assert_eq!(v["breakpoint"], "xs");
+        assert!(["fine", "coarse", "none"].contains(&v["pointer"].as_str().unwrap()), "{v}");
         runtime_shared::set_viewport_size(runtime_shared::ViewportSize::new(1280.0, 800.0));
         let v: serde_json::Value =
             serde_json::from_str(&bridge::invoke_command("get_viewport", &json!({})).unwrap()).unwrap();

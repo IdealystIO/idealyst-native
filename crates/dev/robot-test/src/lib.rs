@@ -50,6 +50,7 @@
 mod app;
 mod camera;
 mod clock;
+mod device;
 mod multi;
 mod file_picker;
 mod net;
@@ -71,6 +72,7 @@ pub use parity::{capture_native, diff as diff_native, report as report_parity, C
 
 pub use camera::Camera;
 pub use clock::Clock;
+pub use device::{not_applicable, DeviceClass, Form, Input, RESULTS_ENV, __not_applicable};
 pub use multi::RelayApp;
 pub use file_picker::FilePicker;
 pub use net::{HeldRequest, Net, NetRule};
