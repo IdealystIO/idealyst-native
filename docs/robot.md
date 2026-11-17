@@ -817,7 +817,9 @@ that never reached its tests is an `error`).
 `--jobs N` runs up to N platforms at once (default 1). A platform's own
 rows still run one after another, one device at a time; each platform
 gets its own port and isolation key (`test-<platform>`), and its suites'
-output goes to a log file the run names. Builds and emulators are heavy,
+output goes to a log file the run names. Progress lines from a platform's
+worker say which it is (`[test ios] …`), as they interleave. Builds and
+emulators are heavy,
 so raise it only on a machine with room.
 
 `idealyst test --plan` prints the plan and exits, creating nothing. A run

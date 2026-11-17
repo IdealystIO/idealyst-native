@@ -50,7 +50,7 @@ pub(super) fn headless_browser() -> Option<String> {
         if !explicit.contains('/') || Path::new(&explicit).exists() {
             return Some(explicit);
         }
-        eprintln!("[test] IDEALYST_CHROME={explicit} does not exist — falling back to a search");
+        note!("IDEALYST_CHROME={explicit} does not exist — falling back to a search");
     }
     CHROME_CANDIDATES
         .iter()

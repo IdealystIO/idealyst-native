@@ -33,6 +33,14 @@
 //! are listed under the run as `n/a` with why. The one-off device flags
 //! replace the matrix for a run.
 
+/// A progress line on stderr: `[test] …`, or `[test ios] …` from a
+/// `--jobs` worker, whose lines interleave with the other platforms'.
+macro_rules! note {
+    ($($arg:tt)*) => {
+        eprintln!("[{}] {}", $crate::cmd::test::note_tag(), format_args!($($arg)*))
+    };
+}
+
 mod browser;
 mod engines;
 mod matrix;
@@ -658,7 +666,7 @@ fn hook_command(cmd: &str) -> Command {
 /// Run each hook in order; the first non-zero exit fails.
 fn run_hooks(flag: &str, hooks: &[String], dir: &Path, env: &[(String, String)]) -> Result<()> {
     for hook in hooks {
-        eprintln!("[test] {flag}: {hook}");
+        note!("{flag}: {hook}");
         let status = hook_command(hook)
             .current_dir(dir)
             .envs(env.iter().map(|(k, v)| (k, v)))
@@ -763,7 +771,7 @@ pub fn run(args: Args) -> Result<()> {
             session_key(wanted.as_deref(), per_platform, &dir, &registered_sessions(), &session_is_live)?
         };
         if let Some(key) = &key {
-            eprintln!("[test] {platform} dev session isolated as `{key}` (beside any `idealyst dev` of this project)");
+            note!("{platform} dev session isolated as `{key}` (beside any `idealyst dev` of this project)");
         }
         isolated.insert(platform.clone(), key);
     }
@@ -783,7 +791,7 @@ pub fn run(args: Args) -> Result<()> {
         // The suite's test names, which carry the platforms a
         // `#[robot_test(platforms = …)]` test declared.
         let tests = list_tests(&test_bin, &dir).unwrap_or_else(|e| {
-            eprintln!("[test] could not list the suite's tests ({e:#}); platform-bound tests stay ignored");
+            note!("could not list the suite's tests ({e:#}); platform-bound tests stay ignored");
             TestList::default()
         });
         (test_bin, tests)
@@ -816,14 +824,14 @@ pub fn run(args: Args) -> Result<()> {
     let results = outcome?;
     if let Some(path) = &args.junit {
         match std::fs::write(path, junit(&results)) {
-            Ok(()) => eprintln!("[test] JUnit report: {}", path.display()),
-            Err(e) => eprintln!("[test] could not write the JUnit report {}: {e}", path.display()),
+            Ok(()) => note!("JUnit report: {}", path.display()),
+            Err(e) => note!("could not write the JUnit report {}: {e}", path.display()),
         }
     }
     let (summary, mut code) = summarize(&results);
     eprintln!("\n{summary}");
     if let Err(e) = after {
-        eprintln!("[test] {e:#}");
+        note!("{e:#}");
         if code == 0 {
             code = 1;
         }
@@ -875,7 +883,7 @@ fn run_job(cx: &JobCtx, job: &Job, port: u16, index: usize, suite_log: Option<&P
                 (launches, Some(device))
             }
             Err(e) => {
-                eprintln!("[test] {e:#}");
+                note!("{e:#}");
                 return launches
                     .iter()
                     .flat_map(|l| &l.sizes)
@@ -901,7 +909,7 @@ fn run_job(cx: &JobCtx, job: &Job, port: u16, index: usize, suite_log: Option<&P
         };
         let before = results.len();
         if let Err(e) = run_launch(&ctx, launch, &mut results) {
-            eprintln!("[test] {e:#}");
+            note!("{e:#}");
             // Every size this launch didn't reach is reported, not dropped.
             for size in &launch.sizes[results.len() - before..] {
                 results.push(RunResult::new(size.label.clone(), Outcome::Error(format!("{e:#}"))));
@@ -933,6 +941,20 @@ fn platform_groups(jobs: &[Job]) -> Vec<(String, Vec<usize>)> {
 /// `--jobs N`: up to N platforms at once, each platform's jobs in order on
 /// one worker, each with its own port and suite log. Results come back in
 /// the plan's order.
+thread_local! {
+    /// The platform a `--jobs` worker thread runs; empty on the main thread.
+    static NOTE_PLATFORM: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// What [`note!`] lines start with: `test`, or `test <platform>` on a
+/// `--jobs` worker.
+pub(crate) fn note_tag() -> String {
+    NOTE_PLATFORM.with(|p| match p.borrow().as_str() {
+        "" => "test".to_string(),
+        platform => format!("test {platform}"),
+    })
+}
+
 fn run_parallel(cx: &JobCtx, jobs: &[Job], first_port: u16) -> Result<Vec<RunResult>> {
     use std::collections::VecDeque;
     let groups = platform_groups(jobs);
@@ -954,7 +976,8 @@ fn run_parallel(cx: &JobCtx, jobs: &[Job], first_port: u16) -> Result<Vec<RunRes
                 let Some(((platform, idx), port)) = queue.lock().unwrap().pop_front() else { return };
                 let log = std::env::temp_dir().join(format!("idealyst-test-{platform}-{}-suites.log", std::process::id()));
                 let _ = std::fs::remove_file(&log);
-                eprintln!("[test] {platform}: running on port {port}; its suites' output is in {}", log.display());
+                NOTE_PLATFORM.with(|p| *p.borrow_mut() = platform.clone());
+                note!("running on port {port}; its suites' output is in {}", log.display());
                 for i in idx {
                     let out = run_job(cx, &jobs[i], port, i * 100, Some(&log));
                     slots.lock().unwrap()[i] = Some(out);
@@ -1083,7 +1106,7 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
         // by default, so the app dials the relay; killing the child tears it down.
         let self_exe = std::env::current_exe().context("locating the idealyst binary")?;
         let on = launch.target_device.as_deref().map(|s| format!(" on {s}")).unwrap_or_default();
-        eprintln!("[test] launching {platform} app{on} via `idealyst dev` (port {port})…");
+        note!("launching {platform} app{on} via `idealyst dev` (port {port})…");
         let mut cmd = dev_command(
             &self_exe,
             &DevOpts {
@@ -1101,13 +1124,13 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
         let log = dev_log.as_ref().expect("set when not attaching");
         let file = std::fs::File::create(log).with_context(|| format!("creating {}", log.display()))?;
         cmd.arg(dir).stdout(file.try_clone()?).stderr(file);
-        eprintln!("[test] dev session log: {}", log.display());
+        note!("dev session log: {}", log.display());
         kill.0.push(own_group(&mut cmd).spawn().context("spawning `idealyst dev`")?);
     }
 
     // Wait for the relay registration for this project (a cold build can take a
     // while), then for web open the page headlessly so the app dials.
-    eprintln!("[test] waiting for the app to come up…");
+    note!("waiting for the app to come up…");
     let launched = Launched { platform, child: kill.0.last_mut(), log: dev_log.as_deref() };
     let addr = wait_for_registration(dir, &apps_dirs, &preexisting, launched, Duration::from_secs(300))
         .with_context(|| see_log("the app never registered with the relay"))?;
@@ -1140,8 +1163,8 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
                 if slot.as_ref().map(|b| b.engine()) != Some(size.engine) {
                     *slot = None; // the previous engine's browser closes first
                     if size.engine == engines::Engine::Webkit {
-                        eprintln!(
-                            "[test] webkit runs as Safari (a real window) and emulates the viewport only: \
+                        note!(
+                            "webkit runs as Safari (a real window) and emulates the viewport only: \
                              no touch, user agent or pixel ratio"
                         );
                     }
@@ -1155,7 +1178,7 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
             // a cold app build finishes, launches, and dials — so give the app a
             // generous budget and reconnect each attempt.
             wait_until_ready(addr, Duration::from_secs(240)).with_context(|| see_log("the app did not become ready"))?;
-            eprintln!("[test] running `{}` on {platform} at {}…\n", args.test, size.label);
+            note!("running `{}` on {platform} at {}…\n", args.test, size.label);
             let mut suite = Command::new(test_bin);
             // Where the suite's not-applicable tests are recorded.
             let _ = std::fs::remove_file(&na_file);
@@ -1176,7 +1199,7 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
             let here = app_platform(addr).unwrap_or_else(|| platform.to_string());
             let selection = select_tests(tests, &here, args.filter.as_deref());
             for (name, on) in &selection.elsewhere {
-                eprintln!("[test] not on {here}: {name} (runs on {})", on.join(", "));
+                note!("not on {here}: {name} (runs on {})", on.join(", "));
             }
             suite.args(&selection.args);
             // One shared app: tests run serialized against it.
@@ -1194,7 +1217,7 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
             Ok(if status.success() { Outcome::Passed } else { Outcome::Failed(status.code()) })
         })();
         let outcome = ran.unwrap_or_else(|e| {
-            eprintln!("[test] {}: {e:#}", size.label);
+            note!("{}: {e:#}", size.label);
             Outcome::Error(format!("{e:#}"))
         });
         let not_applicable = read_not_applicable(&na_file);
@@ -1600,7 +1623,7 @@ fn dev_command(self_exe: &Path, o: &DevOpts) -> Command {
 /// note: there are multiple different versions of crate `runtime_scene`
 /// ```
 fn build_test_binary(dir: &Path, test_name: &str) -> Result<PathBuf> {
-    eprintln!("[test] building the `{test_name}` test target…");
+    note!("building the `{test_name}` test target…");
     let out = Command::new("cargo")
         .current_dir(dir)
         .args(["test", "--test", test_name, "--no-run", "--message-format=json"])
@@ -2136,6 +2159,21 @@ fn wait_for_web_server(port: u16, timeout: Duration) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// `--jobs` workers' progress lines interleave on one terminal; each
+    /// says its platform, and the main thread's stay plain `[test]`.
+    #[test]
+    fn a_jobs_worker_s_progress_lines_name_its_platform() {
+        assert_eq!(note_tag(), "test");
+        let on_worker = std::thread::spawn(|| {
+            NOTE_PLATFORM.with(|p| *p.borrow_mut() = "ios".into());
+            note_tag()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(on_worker, "test ios");
+        assert_eq!(note_tag(), "test", "the main thread is untouched");
+    }
+
     use super::*;
 
     /// The runner's browser profile goes where `idealyst dev`'s

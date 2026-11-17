@@ -20,7 +20,7 @@ use super::matrix::{self, Create};
 pub fn create(c: &Create) -> Result<String> {
     match c {
         Create::Simulator { name, device_type, runtime, runtime_name } => {
-            eprintln!("[test] creating simulator \"{name}\" on {runtime_name}…");
+            note!("creating simulator \"{name}\" on {runtime_name}…");
             let out = Command::new("xcrun")
                 .args(["simctl", "create", name, device_type, runtime])
                 .output()
@@ -35,7 +35,7 @@ pub fn create(c: &Create) -> Result<String> {
             Ok(udid)
         }
         Create::Avd { name, package, profile } => {
-            eprintln!("[test] creating AVD {name} ({package}, {profile})…");
+            note!("creating AVD {name} ({package}, {profile})…");
             let sdk = matrix::sdk_root().context("the Android SDK isn't installed")?;
             let avdmanager = matrix::avdmanager(&sdk).context("avdmanager isn't installed")?;
             let mut child = Command::new(&avdmanager)
@@ -81,12 +81,12 @@ impl Device {
     pub fn stop(&self) {
         match self {
             Device::Simulator(udid) => {
-                eprintln!("[test] shutting down simulator {udid} (this run booted it)");
+                note!("shutting down simulator {udid} (this run booted it)");
                 let _ = Command::new("xcrun").args(["simctl", "shutdown", udid]).status();
             }
             Device::Avd(name) => {
                 let Some(serial) = emulator_serial(name) else { return };
-                eprintln!("[test] shutting down emulator {name} ({serial}; this run booted it)");
+                note!("shutting down emulator {name} ({serial}; this run booted it)");
                 if let Some(adb) = adb() {
                     let _ = Command::new(adb).args(["-s", &serial, "emu", "kill"]).status();
                 }
