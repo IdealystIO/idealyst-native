@@ -525,3 +525,72 @@ fn presence_re_present_mid_exit_builds_fresh_while_old_finishes() {
     pump_frame();
     assert_eq!(h.take_log(), ["apply_presence n2 rest 200ms"]);
 }
+
+/// Regression (CrewForge): open a menu with a submenu, then press Escape
+/// twice a few ms apart. The first closed the flyout; the flyout stayed
+/// mounted for its fade (an exit hold), still on top of the backend's
+/// Escape stack, so the second Escape called the fading flyout's
+/// `on_dismiss` (a no-op by then) and the menu under it stayed open. A
+/// leaving portal hands Escape on to the live one beneath, on the
+/// backend's stack and on the shared registry alike.
+#[test]
+fn regression_escape_passes_over_a_portal_held_for_its_exit() {
+    use runtime_vocabulary::escape_dismiss::dismiss_topmost;
+    let h = harness();
+    let flyout_open = h.world.enter(|| signal(true));
+    let menu_dismissed = Rc::new(Cell::new(0usize));
+    let flyout_dismissed = Rc::new(Cell::new(0usize));
+    let (md, fd) = (menu_dismissed.clone(), flyout_dismissed.clone());
+    let _root = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            portal(PortalTarget::Viewport(ViewportPlacement::Center))
+                .on_dismiss(move || md.set(md.get() + 1))
+                .child(text().content("menu"))
+                .child(dyn_keyed(
+                    move || flyout_open.get(),
+                    move |&on| {
+                        if !on {
+                            return text().content("no flyout").build();
+                        }
+                        // The flyout's fade-out, as `pop_in` asks for it.
+                        runtime_scene::hold_on_exit(150, || {});
+                        let fd = fd.clone();
+                        portal(PortalTarget::Viewport(ViewportPlacement::Center))
+                            .on_dismiss(move || {
+                                fd.set(fd.get() + 1);
+                                flyout_open.set(false);
+                            })
+                            .child(text().content("flyout"))
+                            .build()
+                    },
+                ))
+                .build(),
+        )
+    });
+    h.flush();
+    // The backend's stack: what it was handed, in mount order. The
+    // flyout's is its topmost until the flyout is actually released.
+    let backend_escape = || {
+        let top = h.shared.portal_dismissals.borrow().iter().rev().flatten().next().cloned();
+        top.expect("a dismissable portal")()
+    };
+
+    backend_escape(); // first Escape: the flyout closes, and starts fading
+    h.flush();
+    assert_eq!((flyout_dismissed.get(), menu_dismissed.get()), (1, 0));
+
+    backend_escape(); // second Escape, mid-fade: still the backend's topmost
+    h.flush();
+    assert_eq!(
+        (flyout_dismissed.get(), menu_dismissed.get()),
+        (1, 1),
+        "the second Escape closes the menu beneath the fading flyout"
+    );
+
+    assert!(dismiss_topmost(), "the registry's topmost live portal is the menu");
+    assert_eq!(menu_dismissed.get(), 2, "the registry passes over the leaving flyout too");
+    pump_timers(); // the fade ends; the flyout is released
+    h.flush();
+}

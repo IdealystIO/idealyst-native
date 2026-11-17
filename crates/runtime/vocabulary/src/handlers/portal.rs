@@ -23,15 +23,46 @@ where
     // `on_dismiss` is held by native chrome (an Escape controller, a
     // backdrop tap target) that can outlive the portal's scope.
     let alive = crate::callback_guard::ScopeAlive::current();
-    let dismiss_for_backend = alive.wrap0_opt(prim.on_dismiss.clone());
+    let dismiss = alive.wrap0_opt(prim.on_dismiss.clone());
     // The shared Escape stack (`crate::escape_dismiss`): the key paths with
     // no Escape-to-dismiss of their own (the robot's dispatch, iOS's
     // hardware keyboard) close the topmost portal through it. Same guarded
     // callback the backend holds.
     let hidden = std::rc::Rc::new(std::cell::Cell::new(false));
-    let escape = dismiss_for_backend
-        .clone()
-        .map(|dismiss| crate::escape_dismiss::register(dismiss, hidden.clone()));
+    let escape = std::rc::Rc::new(
+        dismiss.clone().map(|dismiss| crate::escape_dismiss::register(dismiss, hidden.clone())),
+    );
+    // A portal held mounted for an exit animation (a submenu's flyout
+    // fading after the first Escape) is on its way out: Escape passes
+    // over it. The registry skips it; the backend's own stack (web, macOS,
+    // Android's Back) still calls this portal's callback while it is
+    // their topmost, so that callback hands the Escape on to the live
+    // portal beneath. Without it, the second of two quick Escapes landed
+    // on the fading flyout, did nothing, and left the menu open.
+    let leaving = std::rc::Rc::new(std::cell::Cell::new(false));
+    if escape.is_some() {
+        // Weak: the region keeps this request until it next swaps, which
+        // can be after the portal went some other way, and the teardown
+        // below must be what takes the portal off the stack.
+        let (escape, leaving) = (std::rc::Rc::downgrade(&escape), leaving.clone());
+        runtime_scene::hold_on_exit(0, move || {
+            leaving.set(true);
+            if let Some(reg) = escape.upgrade() {
+                if let Some(reg) = reg.as_ref() {
+                    reg.leave();
+                }
+            }
+        });
+    }
+    let dismiss_for_backend = dismiss.map(|dismiss| {
+        std::rc::Rc::new(move || {
+            if leaving.get() {
+                crate::escape_dismiss::dismiss_topmost();
+            } else {
+                dismiss();
+            }
+        }) as std::rc::Rc<dyn Fn()>
+    });
     let mut node = backend.borrow_mut().create_portal(
         prim.target,
         dismiss_for_backend,

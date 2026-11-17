@@ -11,6 +11,15 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **Escape passes over an overlay that is fading out** (`runtime-vocabulary` minor,
+  `runtime-scene` patch). An overlay held mounted for its exit animation stayed on top of the
+  Escape stack, so a second quick Escape (a submenu's flyout fading after the first) landed on
+  it, did nothing, and left the menu beneath open. A portal now steps off the stack the moment
+  its subtree is switched out, and an Escape a backend still delivers to it goes to the live
+  overlay beneath. `escape_dismiss::Registration` gains `leave()`. A `hold_on_exit(0, …)` with
+  no longer hold beside it now tears its subtree down in the same turn instead of a timer tick
+  later.
+
 - **`spawn_then`'s callback reads what its future wrote** (`runtime-vocabulary` patch,
   `runtime-world` minor). A `set` made inside the future stayed staged until the host flushed
   after the poll, and the callback runs inside that same poll, so it read the old value (a

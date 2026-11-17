@@ -2412,6 +2412,41 @@ fn exit_hold_keeps_the_swapped_out_subtree_until_the_timer() {
     }
 }
 
+/// A 0 ms hold only asks to be told: `start` runs, and the subtree goes in
+/// the same turn. A portal asks this way on every mount (to step off the
+/// Escape stack when it starts leaving); deferring its teardown to a timer
+/// tick would have delayed every overlay's removal.
+#[test]
+fn a_zero_ms_exit_hold_is_told_and_torn_down_at_once() {
+    let clock = ExitClock::install();
+    let rig = Rig::new(true);
+    let s = rig.world.enter(|| signal(true));
+    let ops = rig.ops.clone();
+    let shell = rig.realize(v(vec![dyn_keyed(
+        move || s.get(),
+        move |&on| {
+            if on {
+                let started = ops.clone();
+                hold_on_exit(0, move || started.borrow_mut().push("exit started".into()));
+                cleanup_marker(&ops, "told");
+                t("told")
+            } else {
+                fragment(vec![])
+            }
+        },
+    )]));
+    let root = shell.collect_nodes()[0];
+    rig.take_ops();
+
+    s.set(false);
+    rig.flush();
+    let ops = rig.take_ops();
+    assert_eq!(ops.first().map(String::as_str), Some("exit started"), "{ops:?}");
+    assert!(ops.iter().any(|o| o == "cleanup told"), "torn down in the same turn: {ops:?}");
+    assert!(!rig.dom(root).contains("told"), "gone: {}", rig.dom(root));
+    assert_eq!(clock.pending(), 0, "no timer");
+}
+
 /// A region that follows a holding region in the same parent must still
 /// find its own start. The held nodes are in the parent, so the holding
 /// region's published count has to include them until they detach — or

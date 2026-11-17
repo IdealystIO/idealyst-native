@@ -74,6 +74,11 @@ pub fn install_exit_defer(defer: impl Fn(u32, Box<dyn FnOnce()>) -> Box<dyn Any>
 /// moment. Call it while the subtree builds (a component body). Outside
 /// any region's build it does nothing: there is no region to hold it.
 ///
+/// `ms = 0` only asks to be told: `start` runs when the subtree is switched
+/// out, and unless another part of the subtree asked for time, it is torn
+/// down at once, in the same turn. A portal uses this to step off the
+/// Escape stack the moment its subtree starts leaving.
+///
 /// See the module docs for exactly which removals are held.
 pub fn hold_on_exit(ms: u32, start: impl FnOnce() + 'static) {
     let alive = Rc::new(Cell::new(true));
@@ -131,7 +136,9 @@ pub(crate) fn begin(requests: Vec<ExitRequest>) -> Option<(u32, ExitDefer)> {
             (request.start)();
         }
     });
-    Some((ms, defer))
+    // Nothing asked for time: every request only wanted to be told. Tear
+    // down now, in this turn, rather than a timer tick later.
+    (ms > 0).then_some((ms, defer))
 }
 
 /// The subtrees a region is holding: each entry's guard keeps its timer

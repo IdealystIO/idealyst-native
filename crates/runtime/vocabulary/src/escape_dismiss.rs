@@ -20,7 +20,11 @@
 //!
 //! The portal handler ([`crate::handlers::portal`]) registers each portal
 //! with an `on_dismiss` at mount and unregisters it at teardown; a portal
-//! hidden because its screen is not the active route is skipped. "Topmost"
+//! hidden because its screen is not the active route is skipped, and so is
+//! one whose subtree is leaving (held mounted for an exit animation). The
+//! backend's own stacks still call a leaving portal's `on_dismiss` when it
+//! is their topmost; the handler hands that Escape to [`dismiss_topmost`],
+//! which reaches the live portal beneath. "Topmost"
 //! is the most recently mounted, the same rule macOS's `field_keys` and
 //! the web's portal stack use: an overlay opened from inside another one
 //! mounts after it and sits above it.
@@ -31,7 +35,17 @@ use std::rc::Rc;
 struct Entry {
     id: u64,
     hidden: Rc<Cell<bool>>,
+    /// Set once the portal's subtree starts leaving ([`Registration::leave`]).
+    leaving: bool,
     dismiss: Rc<dyn Fn()>,
+}
+
+impl Entry {
+    /// Does an Escape stop here? Not while the portal's screen is hidden,
+    /// and not once it is on its way out.
+    fn live(&self) -> bool {
+        !self.leaving && !self.hidden.get()
+    }
 }
 
 #[derive(Default)]
@@ -48,6 +62,22 @@ thread_local! {
 #[must_use = "dropping the registration removes the portal from the Escape stack"]
 pub struct Registration {
     id: u64,
+}
+
+impl Registration {
+    /// The portal is leaving: its subtree was switched out and is held
+    /// mounted only for an exit animation. From now on Escape passes over
+    /// it to the portal beneath, as if it were already gone. A second
+    /// Escape pressed while a submenu fades must close the menu under it,
+    /// not land on the fading flyout and do nothing.
+    pub fn leave(&self) {
+        let id = self.id;
+        let _ = STACK.try_with(|s| {
+            if let Some(e) = s.borrow_mut().entries.iter_mut().find(|e| e.id == id) {
+                e.leaving = true;
+            }
+        });
+    }
 }
 
 impl Drop for Registration {
@@ -67,7 +97,7 @@ pub fn register(dismiss: Rc<dyn Fn()>, hidden: Rc<Cell<bool>>) -> Registration {
         let mut s = s.borrow_mut();
         s.next_id += 1;
         let id = s.next_id;
-        s.entries.push(Entry { id, hidden, dismiss });
+        s.entries.push(Entry { id, hidden, leaving: false, dismiss });
         Registration { id }
     })
 }
@@ -75,7 +105,7 @@ pub fn register(dismiss: Rc<dyn Fn()>, hidden: Rc<Cell<bool>>) -> Registration {
 /// Whether a shown portal with an `on_dismiss` is open — what an Escape
 /// would close.
 pub fn has_dismissable() -> bool {
-    STACK.with(|s| s.borrow().entries.iter().any(|e| !e.hidden.get()))
+    STACK.with(|s| s.borrow().entries.iter().any(Entry::live))
 }
 
 /// Call the topmost shown portal's `on_dismiss`, as an unconsumed Escape
@@ -83,7 +113,7 @@ pub fn has_dismissable() -> bool {
 /// path swallows it. The handler runs with no borrow of the stack held: it
 /// closes the portal, whose teardown unregisters it.
 pub fn dismiss_topmost() -> bool {
-    let top = STACK.with(|s| s.borrow().entries.iter().rev().find(|e| !e.hidden.get()).map(|e| e.dismiss.clone()));
+    let top = STACK.with(|s| s.borrow().entries.iter().rev().find(|e| e.live()).map(|e| e.dismiss.clone()));
     match top {
         Some(dismiss) => {
             dismiss();
