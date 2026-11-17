@@ -1,7 +1,7 @@
 +++
 title = "Testing apps (robot E2E)"
 order = 62
-tags = ["testing", "e2e", "robot", "robot_test", "robot_fn", "tap_native", "call_function", "idealyst test", "mcp"]
+tags = ["testing", "e2e", "robot", "robot_test", "robot_fn", "tap_native", "call_function", "idealyst test", "mcp", "device matrix", "orientation", "firefox", "webkit", "clock", "net"]
 +++
 
 # Testing apps (robot E2E)
@@ -104,6 +104,8 @@ functions. Register them at boot (no `cfg`, inert in release):
 | `connectivity` | `connectivity::register_robot_controls()` | `connectivity.set {online, transport?}`, `connectivity.clear` |
 | `notifications` | `notifications::register_robot_controls()` | `notifications.log` (what the app posted), `notifications.clear_log` |
 | `permissions` | `permissions::register_robot_controls()` | `permissions.set {permission, status}`, `permissions.clear`, `permissions.requests` |
+| `file-picker` | `file_picker::register_robot_controls()` | `file_picker.queue {files: [{name, mime?, base64? \| text?}]}`, `file_picker.cancel_next`, `file_picker.requests`, `file_picker.clear` |
+| `camera` | `camera::register_robot_controls()` | `camera.fake {width, height, rgba}` (every `open` streams it), `camera.clear`, `camera.status` |
 
 A fake replaces the platform for the SDK's whole surface until it is
 cleared. For example, after `location.set`, `current()` resolves the fix
@@ -112,6 +114,36 @@ device's own updates are dropped. Give your own SDK the same shape: its
 fakes go in `runtime_vocabulary::robot_only! { … }` (items only robot
 builds compile) or `robot_select! { on: { … } off: { … } }` (one set of
 items per build), so a release build carries none of them.
+
+Two fakes are in every robot build, with nothing to register:
+
+- **The clock** (`clock.set`, `clock.advance`, `clock.freeze`,
+  `clock.zone`, `clock.clear`, `clock.now`): the app's wall clock, both
+  the framework's (`epoch_millis`, a date picker's "today") and the
+  `datetime` SDK's. Set it to the moment a time rule applies instead of
+  waiting for it. Timers and the monotonic clock keep real time, and the
+  app's server keeps its own clock.
+- **The network** (`net.intercept`, `net.held`, `net.release`,
+  `net.remove`, `net.clear`): hold, delay or fail the app's HTTP requests
+  by URL (`*` matches any run), server functions (`/_srv/<name>`)
+  included, to test what the UI does while a request is in flight or
+  after it fails. WebSockets and SSE are not matched.
+
+robot-test wraps the fakes:
+
+```rust
+app.clock().set_utc("2026-11-17T22:30:00Z").freeze();
+app.clock().advance(Duration::from_secs(2 * 3600));
+let search = app.net().hold("/_srv/*search");
+app.net().wait_held(search);                  // the request is in flight
+app.net().release(search);
+app.net().fail_status("/_srv/save", 503, "down");
+app.file_picker().queue_files(["tests/fixtures/template.pdf"]);
+app.camera().fake_image("tests/fixtures/face.jpg");
+```
+
+Clear what a test set (`app.clock().clear()`, `app.net().clear()`) so the
+next test starts from the real device.
 
 Deep links need no SDK: `open_link {url}` delivers a URL as the OS would,
 to observers, interceptors and then the navigators. It opens the whole
@@ -242,6 +274,59 @@ out` (or leaves it `ignored`) elsewhere, and a bare `cargo test` shows it
 Keep tests independent of run order. Each test should be the only one
 mutating the state it asserts, and a robot function that resets the state
 is the cheap way to get there — wrapped in a fixture, so no test forgets it.
+
+### Device classes: phone, tablet, desktop
+
+Target a kind of device rather than a platform. `form` is the app's own
+breakpoint (`phone` xs/sm, `tablet` md, `desktop` lg/xl); `input` is the
+primary pointer (`touch` coarse, `pointer` fine):
+
+```rust
+#[robot_test(form = phone)]
+fn the_tab_bar_is_at_the_bottom(app: &mut App) { … }
+
+#[robot_test(form = [phone, tablet], input = touch)]
+fn a_long_press_opens_the_menu(app: &mut App) { … }
+```
+
+The class is checked against what the app reports when the test runs, so
+one test covers an iPhone, a Pixel and a phone-sized browser. Where it
+doesn't match, the test is listed as `n/a` with the reason (`needs phone;
+the app is a tablet (md, 820x1180, touch)`), never as a pass.
+`app.device_class()` reads it directly. Prefer a class to `platforms = …`:
+keep platform lists for what is genuinely one platform's (a native
+keyboard, a browser cookie).
+
+### Changing the screen
+
+A resize or a rotation reflows the app, and that reflow is its own place
+for bugs. A test does it as a step:
+
+```rust
+app.set_orientation(Orientation::Landscape);   // waits until the app has turned
+app.test_id("panel").assert_visible();
+app.set_viewport(1100.0, 900.0);               // desktop window, web page
+```
+
+- `set_orientation` turns the screen as a person turns the device. An
+  iPhone app turns itself; under `idealyst test` the runner turns the
+  rest: an Android display (adb), an iPad simulator (Simulator.app), a web
+  page (width and height swapped). A desktop window has no orientation.
+- `set_viewport` resizes a desktop window or a web page. A phone or
+  tablet's size is the device's.
+- `try_set_orientation` / `try_set_viewport` return why instead of
+  panicking.
+- Whatever a test changed is put back after it, also after a failure, so
+  the next test starts on the run's own screen. Don't restore it by hand.
+
+### Two apps in one test
+
+`app.open_page(url)` opens another tab of the same web app with its own
+cookies (a second user signed in beside the first; `open_page_shared`
+shares them), `App::connect_project(dir)` reaches the running app of
+another project (a kiosk beside the main app), and `app.apps()` /
+`select_app(id)` pick among the apps on one relay. Each returned `App` is
+driven like the first.
 
 ### Fixtures: per-test setup
 
@@ -445,6 +530,55 @@ target, and `--attach` drives an app you already started with
 platform and runs only the `platforms = …` tests that belong to it, naming
 the rest on a `[test] not on <platform>: …` line.
 
+### The device matrix
+
+Declare once which device each class runs as on each platform, and a bare
+`idealyst test <project>` runs every class on every platform this machine
+can:
+
+```toml
+[package.metadata.idealyst.test.devices]
+phone   = { web = "chromium:iphone-15", ios = "iPhone 17 @ iOS 26", android = "pixel_7 @ 34" }
+tablet  = { web = "firefox:ipad-air",   ios = "iPad Air 11-inch (M3) @ iOS 26", android = "pixel_tablet @ 34" }
+desktop = { web = "1280x800", macos = "1280x800", linux = "1280x800", windows = "1280x800" }
+```
+
+- `web`: `[engine:]preset` or `[engine:]WxH`. Engines: `chromium` (the
+  default, everything emulated), `firefox` (headless, WebDriver BiDi, no
+  geckodriver) and `webkit` (Safari through `safaridriver`, macOS only, a
+  real window, size only; `safaridriver --enable` once).
+- `ios`: a simulator name, `@ iOS <version>` to pin the runtime.
+- `android`: `<hardware profile> @ <API level>` (runs on the runner's own
+  `idealyst_<profile>_<api>` AVD, made when missing, never on another AVD
+  that shares the profile), an AVD name, or `serial:<adb serial>`.
+- `macos` / `linux` / `windows`: the window size.
+
+Before building, the runner prints the plan: each class × platform runs,
+or is skipped with the reason (not a target in
+`[package.metadata.idealyst.app] targets`, the wrong host, a runtime or
+system image not installed with the command that installs it, the wrong
+CPU architecture). The reasons repeat in the summary. `--plan` prints it
+and exits. A simulator or AVD that doesn't exist is created from what is
+installed (`--no-create` reports it instead), and a device the run booted
+is shut down after its row (`--keep-devices` leaves it). Phone and tablet
+rows start upright, whatever the device booted in.
+
+```text
+idealyst test <project>                            # the whole matrix
+idealyst test --devices phone --platforms ios,web <project>
+idealyst test --plan <project>                     # what would run, and why not
+idealyst test --junit results.xml <project>        # a suite per run, a case per test
+idealyst test --jobs 2 <project>                   # two platforms at once
+```
+
+`--jobs N` runs N platforms at once (each on its own port and isolation
+key, its suites' output in a log file the run names). Builds and
+emulators are heavy: raise it only on a machine with room, and never
+several Android emulators on a laptop. Tests see their class as
+`IDEALYST_TEST_CLASS` and a web row's engine as `IDEALYST_TEST_ENGINE`.
+
+The flags below replace the matrix for one run.
+
 ### Sizes, devices and simulators
 
 ```text
@@ -516,7 +650,10 @@ down:
    `in_viewport` and `state`.
 3. `get_state`, `get_snapshot`, `screenshot`, `get_logs`: read.
 4. `click`, `tap_native`, `type_text`, `set_toggle`, `set_slider`,
-   `set_scroll`, `drag_native`: act.
+   `set_scroll`, `drag_native`: act. `viewport {width, height}` resizes a
+   desktop window and `viewport {orientation}` turns an iPhone app; the
+   other screens are turned by the test runner (`set_orientation` in a
+   suite).
 5. `list_functions` / `call_function {name, args}`: the app's and SDKs'
    controls. `call_function` waits for an async function to finish.
 6. `open_link {url}`, `list_navigators` / `navigate`,

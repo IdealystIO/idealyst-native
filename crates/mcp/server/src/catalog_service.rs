@@ -293,8 +293,19 @@ pub struct RobotViewport {
     /// New height, px.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<f64>,
+    /// Or turn the screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orientation: Option<OrientationArg>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+}
+
+/// Which way up `viewport` turns the screen.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OrientationArg {
+    Portrait,
+    Landscape,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -1705,17 +1716,21 @@ impl CatalogService {
         self.robot_call("get_state", app.as_deref(), body).await
     }
 
-    #[tool(description = "Viewport size + breakpoint; with width+height, resize a desktop window first.")]
+    #[tool(description = "Viewport size + breakpoint; resize (width+height) or turn (orientation) first.")]
     async fn viewport(
         &self,
         Parameters(args): Parameters<RobotViewport>,
     ) -> Result<CallToolResult, McpError> {
         let app = args.app.clone();
-        match (args.width, args.height) {
-            (None, None) => self.robot_call("get_viewport", app.as_deref(), json!({})).await,
-            (Some(width), Some(height)) => {
+        match (args.width, args.height, args.orientation) {
+            (None, None, None) => self.robot_call("get_viewport", app.as_deref(), json!({})).await,
+            (Some(width), Some(height), None) => {
                 self.robot_call("set_viewport", app.as_deref(), json!({ "width": width, "height": height })).await
             }
+            (None, None, Some(orientation)) => {
+                self.robot_call("set_orientation", app.as_deref(), json!({ "orientation": orientation })).await
+            }
+            (_, _, Some(_)) => Err(McpError::invalid_params("give orientation or width and height, not both", None)),
             _ => Err(McpError::invalid_params("give both width and height, or neither", None)),
         }
     }
@@ -6909,8 +6924,18 @@ mod tests {
         }))
         .await
         .unwrap();
-        svc.viewport(Parameters(RobotViewport { width: None, height: None, app: None })).await.unwrap();
-        svc.viewport(Parameters(RobotViewport { width: Some(800.0), height: Some(600.0), app: None })).await.unwrap();
+        svc.viewport(Parameters(RobotViewport { width: None, height: None, orientation: None, app: None })).await.unwrap();
+        svc.viewport(Parameters(RobotViewport { width: Some(800.0), height: Some(600.0), orientation: None, app: None }))
+            .await
+            .unwrap();
+        svc.viewport(Parameters(RobotViewport {
+            width: None,
+            height: None,
+            orientation: Some(OrientationArg::Landscape),
+            app: None,
+        }))
+        .await
+        .unwrap();
         svc.tap_native(Parameters(RobotElementId { element_id: 5, app: None })).await.unwrap();
         svc.drag_native(Parameters(RobotDragNative { element_id: 5, points: vec![[1.0, 2.0], [3.0, 4.0]], app: None }))
             .await
@@ -6942,6 +6967,7 @@ mod tests {
             ("find_all_elements", json!({ "label": "Email", "kind": "TextInput", "within": { "test_id": "dialog" } })),
             ("get_viewport", json!({})),
             ("set_viewport", json!({ "width": 800.0, "height": 600.0 })),
+            ("set_orientation", json!({ "orientation": "landscape" })),
             ("tap_native", json!({ "element_id": 5 })),
             ("drag_native", json!({ "element_id": 5, "points": [[1.0, 2.0], [3.0, 4.0]] })),
             ("hover_native", json!({ "element_id": 6 })),
@@ -7015,7 +7041,7 @@ mod tool_surface_tests {
     /// Serialized size of every tool definition. 90.9 k chars before tool
     /// docs moved behind `get_docs`; ~27 k after. The headroom is for new
     /// tools, not for regrowing descriptions.
-    const SURFACE_BUDGET_CHARS: usize = 32_000;
+    const SURFACE_BUDGET_CHARS: usize = 32_500;
     const DESCRIPTION_MAX_CHARS: usize = 120;
     const PARAM_DOC_MAX_CHARS: usize = 100;
     const INSTRUCTIONS_MAX_CHARS: usize = 700;

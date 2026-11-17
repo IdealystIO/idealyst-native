@@ -134,7 +134,9 @@ Moves navigator `nav_id` without clicking through the UI. `action` is `push`, `r
 
 With no arguments, reads the app's viewport: `{ width, height, breakpoint }`, logical px, with `breakpoint` one of `xs`, `sm`, `md`, `lg`, `xl` — what the app's responsive layout sees (bridge verb `get_viewport`).
 
-With `width` and `height`, first resizes the app's window so its viewport is that size (bridge verb `set_viewport`), then returns `"ok"`; read it again until it reports the new size. Desktop apps only (macOS, Windows, Linux). Elsewhere it is an error: on web the test runner sizes the browser, and on iOS and Android the size is the device's. A maximized or full-screen window refuses.
+With `width` and `height`, first resizes the app's window so its viewport is that size (bridge verb `set_viewport`), then returns `"ok"`; read it again until it reports the new size. Desktop apps only (macOS, Windows, Linux). Elsewhere it is an error: on web the test runner sizes the browser, and on iOS and Android the size is the device's (turn it with `orientation`). A maximized or full-screen window refuses.
+
+With `orientation` (`portrait` or `landscape`) instead, first turns the app's screen as a person turns the device (bridge verb `set_orientation`), then returns `"ok"`; read it again until it reports the turned size — the platform animates the rotation first. Only where the app can turn its own interface: an iPhone app. Elsewhere it is an error saying why: an Android app can only request an orientation (a tablet letterboxes it instead of turning), a multitasking iPad app can't choose one, a web page can't turn its browser, and a desktop window has no orientation. Under `idealyst test`, robot-test's `set_orientation` turns those through the test runner (adb, Simulator.app, the browser).
 
 ## open_link
 
