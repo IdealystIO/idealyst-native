@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "9.2.0"
+version = "9.3.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1542,7 +1542,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "9.2.0"
+version = "9.3.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "10.2.0"
+version = "10.3.0"
 dependencies = [
  "css",
  "dev-client",
@@ -3581,7 +3581,7 @@ dependencies = [
 
 [[package]]
 name = "dev-http"
-version = "9.0.0"
+version = "9.1.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -5960,7 +5960,7 @@ dependencies = [
 
 [[package]]
 name = "host-wgpu-accesskit"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -6457,7 +6457,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "22.5.0"
+version = "22.6.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6576,7 +6576,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "2.1.1"
+version = "2.1.2"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -10965,7 +10965,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-scene"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "runtime-tls",
  "runtime-world",
@@ -10986,7 +10986,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "6.1.0"
+version = "6.2.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -11021,7 +11021,7 @@ version = "0.1.1"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "9.3.0"
+version = "9.4.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -11042,7 +11042,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-world"
-version = "1.9.0"
+version = "1.10.1"
 dependencies = [
  "runtime-tls",
  "rustc-hash 2.1.2",
