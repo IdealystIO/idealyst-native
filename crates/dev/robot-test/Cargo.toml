@@ -18,3 +18,8 @@ anyhow = "1"
 base64 = "0.22"
 # `app.camera().fake_image(path)`: the test image is decoded on the test's side.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[dev-dependencies]
+# `tests/multi_app.rs`: a real relay with two fake apps behind it.
+robot-relay = { path = "../robot-relay" }
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }

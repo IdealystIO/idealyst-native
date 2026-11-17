@@ -90,6 +90,7 @@ pub struct RobotClient {
     writer: TcpStream,
     next_id: u64,
     io_timeout: Duration,
+    addr: SocketAddr,
 }
 
 impl RobotClient {
@@ -100,6 +101,7 @@ impl RobotClient {
             writer: stream,
             next_id: 1,
             io_timeout: DEFAULT_IO_TIMEOUT,
+            addr,
         };
         client.set_io_timeout(DEFAULT_IO_TIMEOUT)?;
         Ok(client)
@@ -120,6 +122,11 @@ impl RobotClient {
     /// The per-call I/O timeout ([`set_io_timeout`](Self::set_io_timeout)).
     pub fn io_timeout(&self) -> Duration {
         self.io_timeout
+    }
+
+    /// The bridge address this client is connected to.
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
     }
 
     /// Issue a verb; return the `ok` payload, or `Err` on a bridge `err`.

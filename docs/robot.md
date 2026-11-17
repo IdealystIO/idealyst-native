@@ -670,6 +670,32 @@ after it in reverse — also when the body panics. A fixture can build on
 another by calling its `setup`. See `crates/dev/robot-test/src/fixture.rs`
 and the testing guide.
 
+### Two apps in one test
+
+A test can hold more than one [`App`], each its own connection driving
+its own app:
+
+- `app.open_page(url)`: another tab of the same web app, in its own
+  browser context (its own cookies, so a second user signs in beside the
+  first); `open_page_shared(url)` shares this tab's. The relay serves it
+  (`open_page {url, isolated?}`) over CDP, so it needs a browser the dev
+  session launched (`idealyst test --web`). The new tab joins as a
+  secondary app: it never becomes the relay's default, so `app` keeps its
+  own tab.
+- `app.apps()` / `select_app(id)`: the apps on this relay (`apps`), and
+  which one this connection drives (`select_app {app}`; `null` for the
+  default, the newest app not opened by `open_page`). A selected app
+  that disconnects fails that connection's requests, saying so.
+- `App::connect_project(dir)`: the running app of another project (a
+  kiosk beside the main app), found in `~/.idealyst/apps` like the main
+  one. The suite starts it (`idealyst dev` there); `idealyst test`
+  launches only its own project.
+
+```rust
+let mut bob = app.open_page("/forms/claim");
+let mut kiosk = App::connect_project("../app-checkin");
+```
+
 ### Running a suite on each platform
 
 `idealyst test --web | --macos | --ios | --android | --linux | --windows

@@ -96,6 +96,34 @@ pub fn with_page<T>(ports: &[u16], nonce: &str, f: impl FnOnce(&mut Page) -> Res
     ))
 }
 
+/// Open a new tab at `url` in the first browser on `ports` that answers,
+/// in a fresh browser context (its own cookies and storage, so a second
+/// user can sign in beside the first) when `isolated`. Returns the new
+/// target's id.
+pub fn open_target(ports: &[u16], url: &str, isolated: bool) -> Result<String, String> {
+    let mut last = "no browser launched by this dev session answers CDP".to_string();
+    for &port in ports {
+        let attempt = (|| {
+            let body = http_get(port, "/json/version")?;
+            let version: Value = serde_json::from_slice(&body).map_err(|e| format!("/json/version: {e}"))?;
+            let ws = version["webSocketDebuggerUrl"].as_str().ok_or("/json/version: no webSocketDebuggerUrl")?;
+            let mut browser = Page::connect(ws)?;
+            let mut params = json!({ "url": url });
+            if isolated {
+                let ctx = browser.call("Target.createBrowserContext", json!({}))?;
+                params["browserContextId"] = ctx["browserContextId"].clone();
+            }
+            let target = browser.call("Target.createTarget", params)?;
+            target["targetId"].as_str().map(str::to_string).ok_or_else(|| "Target.createTarget: no targetId".into())
+        })();
+        match attempt {
+            Ok(id) => return Ok(id),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
 /// The `webSocketDebuggerUrl` of every `page` target on the browser at
 /// `port` (`GET /json/list`).
 fn page_targets(port: u16) -> Result<Vec<String>, String> {

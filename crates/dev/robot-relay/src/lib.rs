@@ -58,9 +58,20 @@
 //! ## Several apps
 //!
 //! Every open connection is tracked ([`RelayHandle::apps`],
-//! [`RelayConfig::on_apps`]), but requests go to ONE app: the newest, until
-//! it disconnects, then the newest still connected. Two tabs of one page
-//! are both listed; the one opened last is driven.
+//! [`RelayConfig::on_apps`]). A TCP connection's requests go to its
+//! DEFAULT app: the newest, until it disconnects, then the newest still
+//! connected. Two tabs of one page are both listed; the one opened last is
+//! the default.
+//!
+//! A connection can drive another app instead: `apps` (served by the
+//! relay) lists them with ids, and `select_app {app}` pins this
+//! connection to one (`{app: null}` unpins). A pinned app that disconnects
+//! fails that connection's requests, naming it; its in-flight requests are
+//! failed without touching other apps'. `open_page {url, isolated?}`
+//! opens another tab of a web app over CDP ([`browser::open_page`]), in a
+//! fresh browser context by default; that page joins as a SECONDARY app,
+//! never the default, so the connection driving the first tab keeps it.
+//! `changed` pushes still come from the default app only.
 //!
 //! MCP side (TCP, newline-delimited JSON): the existing protocol, unchanged.
 //! The relay multiplexes: it rewrites each forwarded request's `id` to a private
@@ -213,8 +224,13 @@ struct Inner {
     /// — gets a new session while the old one may still be noticing its
     /// socket died; the old one must not clear the new one's channel.
     app_session: AtomicU64,
-    /// Forwarded-request id → response sink.
-    pending: Mutex<HashMap<u64, Sender<Value>>>,
+    /// Forwarded-request id → the app session it went to, and its response
+    /// sink. The session lets an app's disconnect fail only its own requests.
+    pending: Mutex<HashMap<u64, (u64, Sender<Value>)>>,
+    /// Pages `open_page` launched that have not dialed in yet: the next
+    /// that many connections join as secondary apps, reached only by a
+    /// connection that selects them, instead of becoming the default.
+    secondary_expected: AtomicU64,
     /// TCP connections that issued `subscribe`, to fan pushes out to.
     subscribers: Mutex<Vec<Arc<Mutex<TcpStream>>>>,
     next_id: AtomicU64,
@@ -263,19 +279,38 @@ impl Inner {
         }
     }
 
+    /// Fail the requests in flight to `session` now, rather than at their
+    /// timeout: dropping their sinks answers the waiting TCP sessions.
+    fn fail_pending_of(&self, session: u64) {
+        self.pending.lock().unwrap().retain(|_, (s, _)| *s != session);
+    }
+
     /// Install `tx` as the connected app's channel, for a new session.
     fn set_app(&self, session: u64, tx: Sender<String>) {
+        // A page `open_page` launched: listed and selectable, but the default
+        // stays where it was, so a test's main connection keeps its app.
+        if self
+            .secondary_expected
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            self.update_apps(|apps| {
+                apps.push((AppInfo { id: session, platform: None, label: None, active: false }, tx))
+            });
+            return;
+        }
         // Lock order: `app_outbound`, then `apps` (inside `update_apps`).
         let mut out = self.app_outbound.lock().unwrap();
-        self.app_session.store(session, Ordering::SeqCst);
+        let previous = self.app_session.swap(session, Ordering::SeqCst);
         *out = Some(tx.clone());
         self.update_apps(|apps| {
             apps.push((AppInfo { id: session, platform: None, label: None, active: true }, tx))
         });
         drop(out);
-        // Requests forwarded to the previous app will not be answered by
-        // this one: fail them now rather than at their timeout.
-        self.pending.lock().unwrap().clear();
+        // Requests forwarded to the previous default will not be answered by
+        // this one: fail them now rather than at their timeout. A connection
+        // that selected another app keeps its requests.
+        self.fail_pending_of(previous);
         // The new app has not been told to push yet.
         self.app_subscribed.store(false, Ordering::SeqCst);
     }
@@ -296,6 +331,8 @@ impl Inner {
                 self.app_session.store(next.as_ref().map_or(0, |(id, _)| *id), Ordering::SeqCst);
             }
         });
+        // Its requests will not be answered.
+        self.fail_pending_of(session);
         if !was_routed {
             return false;
         }
@@ -303,8 +340,6 @@ impl Inner {
         *out = next.map(|(_, tx)| tx);
         drop(out);
         self.app_subscribed.store(false, Ordering::SeqCst);
-        // Fail any in-flight requests so their TCP sessions don't hang.
-        self.pending.lock().unwrap().clear();
         rerouted
     }
 }
@@ -375,6 +410,7 @@ pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
         app_outbound: Mutex::new(None),
         app_session: AtomicU64::new(0),
         pending: Mutex::new(HashMap::new()),
+        secondary_expected: AtomicU64::new(0),
         subscribers: Mutex::new(Vec::new()),
         next_id: AtomicU64::new(1),
         app_subscribed: AtomicBool::new(false),
@@ -534,7 +570,7 @@ fn route_from_app(text: &str, inner: &Arc<Inner>, session: u64) {
         return;
     }
     if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
-        if let Some(sink) = inner.pending.lock().unwrap().remove(&id) {
+        if let Some((_, sink)) = inner.pending.lock().unwrap().remove(&id) {
             let _ = sink.send(v);
         }
         return;
@@ -554,6 +590,9 @@ fn tcp_session(stream: TcpStream, inner: &Arc<Inner>) {
         Err(_) => return,
     };
     let reader = BufReader::new(stream);
+    // The app this connection drives (`select_app`), `None` for the
+    // default: the newest app that was not opened by `open_page`.
+    let mut pinned: Option<u64> = None;
     for line in reader.lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
@@ -574,15 +613,22 @@ fn tcp_session(stream: TcpStream, inner: &Arc<Inner>) {
         }
 
         let wait = response_wait(&req);
-        let result = if cmd == "screenshot" {
-            screenshot(inner, &args, wait)
+        let result = if cmd == "apps" {
+            Ok(json!({ "ok": apps_json(inner, pinned) }))
+        } else if cmd == "select_app" {
+            select_app(inner, &args, &mut pinned)
+        } else if cmd == "open_page" {
+            let wait = if req.get("timeout_ms").is_none() { browser::LOAD_URL_WAIT } else { wait };
+            browser::open_page(inner, pinned, &args, wait)
+        } else if cmd == "screenshot" {
+            screenshot(inner, pinned, &args, wait)
         } else if browser::VERBS.contains(&cmd.as_str()) {
             // A reboot outlasts an action's reply: a caller that names no
             // wait (the MCP's `call_verb`) gets the boot's.
             let wait = if cmd == "load_url" && req.get("timeout_ms").is_none() { browser::LOAD_URL_WAIT } else { wait };
-            browser::serve(inner, &cmd, &args, wait)
+            browser::serve(inner, pinned, &cmd, &args, wait)
         } else {
-            forward(inner, &cmd, &args, wait)
+            forward(inner, pinned, &cmd, &args, wait)
         };
         match result {
             Ok(mut resp) => {
@@ -609,12 +655,12 @@ fn tcp_session(stream: TcpStream, inner: &Arc<Inner>) {
 
 /// Serve `screenshot` (see the module docs): capture over CDP when asked
 /// to and possible, else forward to the app.
-fn screenshot(inner: &Arc<Inner>, args: &Value, wait: Duration) -> Result<Value, String> {
+fn screenshot(inner: &Arc<Inner>, pinned: Option<u64>, args: &Value, wait: Duration) -> Result<Value, String> {
     let source = args.get("source").and_then(|s| s.as_str()).unwrap_or("auto");
     if source != "cdp" && source != "auto" {
-        return forward(inner, "screenshot", args, wait);
+        return forward(inner, pinned, "screenshot", args, wait);
     }
-    let session = inner.app_session.load(Ordering::SeqCst);
+    let session = pinned.unwrap_or_else(|| inner.app_session.load(Ordering::SeqCst));
     let nonce = inner.nonces.lock().unwrap().get(&session).cloned();
     let shot = match (&nonce, &inner.cdp_profiles_dir) {
         (Some(nonce), Some(dir)) => cdp::capture(&cdp::browser_ports(dir), nonce),
@@ -637,7 +683,7 @@ fn screenshot(inner: &Arc<Inner>, args: &Value, wait: Duration) -> Result<Value,
              the user's own browser use source \"tab\" (they share the tab once from the dev \
              overlay) or \"dom\""
         )),
-        Err(_) => forward(inner, "screenshot", args, wait),
+        Err(_) => forward(inner, pinned, "screenshot", args, wait),
     }
 }
 
@@ -697,11 +743,17 @@ fn response_wait(req: &Value) -> Duration {
 /// A timeout's error starts `app response timed out` (clients match on it):
 /// the relay is up and the app is connected, but the app did not answer —
 /// busy on its UI thread, or hung. A late answer is dropped.
-fn forward(inner: &Arc<Inner>, cmd: &str, args: &Value, wait: Duration) -> Result<Value, String> {
-    let out_tx = wait_for_app(inner).ok_or_else(|| "no app connected to the relay".to_string())?;
+fn forward(inner: &Arc<Inner>, pinned: Option<u64>, cmd: &str, args: &Value, wait: Duration) -> Result<Value, String> {
+    let (session, out_tx) = match pinned {
+        Some(id) => (id, selected_app(inner, id)?),
+        None => {
+            let tx = wait_for_app(inner).ok_or_else(|| "no app connected to the relay".to_string())?;
+            (inner.app_session.load(Ordering::SeqCst), tx)
+        }
+    };
     let rid = inner.next_id.fetch_add(1, Ordering::SeqCst);
     let (tx, rx) = channel::<Value>();
-    inner.pending.lock().unwrap().insert(rid, tx);
+    inner.pending.lock().unwrap().insert(rid, (session, tx));
 
     // The app's own bridge waits as long for its UI thread, so the two
     // timeouts don't disagree about a slow verb.
@@ -719,6 +771,54 @@ fn forward(inner: &Arc<Inner>, cmd: &str, args: &Value, wait: Duration) -> Resul
                  (the app is connected but busy or hung)",
                 wait.as_millis()
             ))
+        }
+    }
+}
+
+/// The outbound channel of the app `id`, which a connection selected.
+fn selected_app(inner: &Arc<Inner>, id: u64) -> Result<Sender<String>, String> {
+    inner
+        .apps
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(a, _)| a.id == id)
+        .map(|(_, tx)| tx.clone())
+        .ok_or_else(|| format!("app {id} (selected with select_app) is no longer connected to the relay"))
+}
+
+/// `apps`: every connected app, oldest first, with which one this
+/// connection drives (`selected`) and which is the default (`active`).
+fn apps_json(inner: &Arc<Inner>, pinned: Option<u64>) -> Value {
+    let default = inner.app_session.load(Ordering::SeqCst);
+    let driven = pinned.unwrap_or(default);
+    Value::Array(
+        inner
+            .apps
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(a, _)| {
+                json!({ "id": a.id, "platform": a.platform, "label": a.label,
+                        "active": a.id == default, "selected": a.id == driven })
+            })
+            .collect(),
+    )
+}
+
+/// `select_app {app}`: drive app `app` from this connection from now on;
+/// `{app: null}` goes back to the default.
+fn select_app(inner: &Arc<Inner>, args: &Value, pinned: &mut Option<u64>) -> Result<Value, String> {
+    match args.get("app") {
+        None | Some(Value::Null) => {
+            *pinned = None;
+            Ok(json!({ "ok": { "app": null } }))
+        }
+        Some(v) => {
+            let id = v.as_u64().ok_or("select_app: `app` is an app id from `apps`")?;
+            selected_app(inner, id)?;
+            *pinned = Some(id);
+            Ok(json!({ "ok": { "app": id } }))
         }
     }
 }
@@ -894,6 +994,7 @@ mod tests {
                 app_outbound: Mutex::new(None),
                 app_session: AtomicU64::new(0),
                 pending: Mutex::new(HashMap::new()),
+        secondary_expected: AtomicU64::new(0),
                 subscribers: Mutex::new(Vec::new()),
                 next_id: AtomicU64::new(1),
                 app_subscribed: AtomicBool::new(false),

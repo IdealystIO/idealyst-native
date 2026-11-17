@@ -242,3 +242,89 @@ fn regression_load_url_and_cookies_drive_a_real_headless_tab() {
     drop(_browser);
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// want_b853a728 (CrewForge): the two-supervisor claim needs the same web
+/// app open twice, signed in as two users. `open_page` opens a second tab
+/// in its own browser context: it does not see the first tab's cookies, it
+/// joins as a secondary app (listed, not the default, so the first tab's
+/// driver keeps its tab), and the call returns its id once it has dialed in.
+#[test]
+fn regression_open_page_opens_an_isolated_second_tab_beside_the_first() {
+    let Some(browser) = browser() else {
+        eprintln!("cdp_real_browser: no Chromium-family browser found; skipped");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("relay_open_page_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let profiles = root.join(".idealyst");
+    let profile = profiles.join("headless-client-profile-1");
+    std::fs::create_dir_all(&profile).unwrap();
+    let relay = robot_relay::start(robot_relay::RelayConfig {
+        register: false,
+        cdp_profiles_dir: Some(profiles.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+
+    // Every page: its own nonce, and a label naming its path and the cookies it sees.
+    let page = format!(
+        r#"<!doctype html><body><script>
+        var n = "n" + Math.random();
+        window.{global} = n;
+        var ws = new WebSocket("ws://127.0.0.1:{port}/");
+        ws.onopen = function () {{
+          ws.send(JSON.stringify({{ hello: {{ platform: "web", nonce: n,
+            label: location.pathname + "|" + document.cookie }} }}));
+        }};
+        </script></body>"#,
+        global = robot_relay::cdp::NONCE_GLOBAL,
+        port = relay.ws_addr.port(),
+    );
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", server.local_addr().unwrap());
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    {
+        let (page, seen) = (page.clone(), seen.clone());
+        std::thread::spawn(move || {
+            for stream in server.incoming().flatten() {
+                serve_one(stream, &page, &seen);
+            }
+        });
+    }
+    let _browser = Kill(
+        Command::new(&browser)
+            .args(["--headless=new", "--remote-debugging-port=0", "--no-first-run", "--disable-gpu"])
+            .arg(format!("--user-data-dir={}", profile.display()))
+            .arg(format!("{origin}/first"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn the browser"),
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !relay.apps().iter().any(|a| a.label.as_deref().is_some_and(|l| l.starts_with("/first"))) {
+        assert!(std::time::Instant::now() < deadline, "the first page never dialed the relay");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // The first user's session.
+    let set = call(&relay, "set_cookie", json!({ "name": "who", "value": "alice" }));
+    assert!(set.get("err").is_none(), "{set}");
+
+    let opened = call(&relay, "open_page", json!({ "url": "/second" }));
+    let second = opened["ok"]["app"].as_u64().unwrap_or_else(|| panic!("{opened}"));
+    let apps = relay.apps();
+    let second_app = apps.iter().find(|a| a.id == second).expect("listed");
+    assert_eq!(second_app.label.as_deref(), Some("/second|"), "its own context: no cookie of the first's");
+    assert!(!second_app.active, "a secondary app, not the default");
+    assert!(
+        apps.iter().any(|a| a.active && a.label.as_deref().is_some_and(|l| l.starts_with("/first"))),
+        "the first tab is still the default: {apps:?}"
+    );
+
+    // Not isolated: the same context, the first tab's cookie with it.
+    let shared = call(&relay, "open_page", json!({ "url": "/third", "isolated": false }));
+    let third = shared["ok"]["app"].as_u64().unwrap_or_else(|| panic!("{shared}"));
+    let label = relay.apps().into_iter().find(|a| a.id == third).and_then(|a| a.label);
+    assert_eq!(label.as_deref(), Some("/third|who=alice"));
+    std::fs::remove_dir_all(&root).ok();
+}

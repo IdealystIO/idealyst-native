@@ -104,6 +104,16 @@ impl App {
         self.try_call(verb, args).unwrap_or_else(|e| panic!("{verb} failed: {e}"))
     }
 
+    /// The per-call I/O timeout in force.
+    pub(crate) fn client_io_timeout(&self) -> Duration {
+        self.client.io_timeout()
+    }
+
+    /// The bridge (or relay) address this app is driven through.
+    pub(crate) fn bridge_addr(&self) -> std::net::SocketAddr {
+        self.client.addr()
+    }
+
     /// [`call`](Self::call), returning the bridge's error instead of panicking.
     pub fn try_call(&mut self, verb: &str, args: Value) -> anyhow::Result<Value> {
         self.client.call(verb, args)

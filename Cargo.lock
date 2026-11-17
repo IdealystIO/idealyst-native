@@ -10813,9 +10813,11 @@ dependencies = [
  "base64",
  "image",
  "native-parity",
+ "robot-relay",
  "robot-test-macros",
  "serde",
  "serde_json",
+ "tungstenite 0.24.0",
 ]
 
 [[package]]

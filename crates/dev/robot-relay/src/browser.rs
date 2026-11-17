@@ -72,11 +72,17 @@ pub fn native_link(url: &str) -> String {
 
 /// Serve one of [`VERBS`]. The `Ok` value is the whole response body
 /// (`{"ok": …}`), as `forward` returns it.
-pub(crate) fn serve(inner: &Arc<Inner>, cmd: &str, args: &Value, wait: Duration) -> Result<Value, String> {
-    if inner.app_outbound.lock().unwrap().is_none() {
+pub(crate) fn serve(
+    inner: &Arc<Inner>,
+    pinned: Option<u64>,
+    cmd: &str,
+    args: &Value,
+    wait: Duration,
+) -> Result<Value, String> {
+    if pinned.is_none() && inner.app_outbound.lock().unwrap().is_none() {
         return Err("no app connected to the relay".into());
     }
-    let session = inner.app_session.load(Ordering::SeqCst);
+    let session = pinned.unwrap_or_else(|| inner.app_session.load(Ordering::SeqCst));
     let nonce = inner.nonces.lock().unwrap().get(&session).cloned();
     let Some(nonce) = nonce else {
         return native(inner, session, cmd, args, wait);
@@ -137,6 +143,71 @@ fn native(inner: &Arc<Inner>, session: u64, cmd: &str, args: &Value, wait: Durat
     relaunch(&platform, &link).map_err(|e| format!("load_url on {platform}: {e}"))?;
     wait_for_new_app(inner, session, wait)?;
     Ok(json!({ "ok": { "url": link } }))
+}
+
+/// `open_page {url, isolated?}`: open another tab of the web app, at `url`
+/// resolved against the driven page's address, in a fresh browser context
+/// unless `isolated: false` (so a second user can sign in beside the
+/// first). The new page joins as a secondary app: listed by `apps`, driven
+/// by a connection that `select_app`s it, never the default, so the
+/// connection driving the first page keeps it. Answers `{app}` once the
+/// page has dialed in and said `hello`.
+///
+/// While it waits, the next app to connect is taken to be the new page:
+/// the first page reloading at the same moment would be counted as it.
+pub(crate) fn open_page(inner: &Arc<Inner>, pinned: Option<u64>, args: &Value, wait: Duration) -> Result<Value, String> {
+    let url = str_arg(args, "url", "open_page")?;
+    let isolated = args.get("isolated").and_then(|v| v.as_bool()).unwrap_or(true);
+    let dir = inner
+        .cdp_profiles_dir
+        .as_ref()
+        .ok_or("open_page: this relay was started without CDP access")?;
+    let ports = cdp::browser_ports(dir);
+    let session = pinned.unwrap_or_else(|| inner.app_session.load(Ordering::SeqCst));
+    let nonce = inner.nonces.lock().unwrap().get(&session).cloned();
+    let target = match nonce {
+        Some(nonce) => {
+            let quoted = serde_json::to_string(url).expect("a string serializes");
+            cdp::with_page(&ports, &nonce, |p| p.evaluate(&format!("new URL({quoted}, location.href).href")))
+                .map_err(|e| format!("open_page: {e}"))?
+                .as_str()
+                .ok_or_else(|| format!("open_page: {url:?} is not a URL"))?
+                .to_string()
+        }
+        None if url.contains("://") => url.to_string(),
+        None => return Err("open_page: a relative url needs a driven web page to resolve it against".into()),
+    };
+    let before = inner.apps.lock().unwrap().iter().map(|(a, _)| a.id).max().unwrap_or(0);
+    inner.secondary_expected.fetch_add(1, Ordering::SeqCst);
+    if let Err(e) = cdp::open_target(&ports, &target, isolated) {
+        let _ = inner
+            .secondary_expected
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+        return Err(format!(
+            "open_page: {e}. The relay opens tabs only in a browser the dev session launched \
+             (`idealyst test --web`, or `idealyst dev --headless-client`)"
+        ));
+    }
+    let deadline = Instant::now() + wait;
+    loop {
+        let opened = inner
+            .apps
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(a, _)| a.id > before && !a.active && a.platform.is_some())
+            .map(|(a, _)| a.id);
+        if let Some(id) = opened {
+            return Ok(json!({ "ok": { "app": id, "url": target } }));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "open_page: the page at {target} did not connect to the relay within {} ms",
+                wait.as_millis()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn str_arg<'a>(args: &'a Value, key: &str, cmd: &str) -> Result<&'a str, String> {

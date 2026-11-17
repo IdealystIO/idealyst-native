@@ -1343,6 +1343,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **One robot test can drive two apps** (`robot-relay` minor, `robot-test` minor). The relay
+  serves `apps`, `select_app {app}` (this connection drives that app) and `open_page {url,
+  isolated?}` (another tab of the web app over CDP, in its own browser context by default, joining
+  as a secondary app that never becomes the default). `robot-test`: `app.open_page(url)` /
+  `open_page_shared(url)` return an `App` driving the new tab, `app.apps()` / `select_app(id)`,
+  and `App::connect_project(dir)` connects to another project's running app. A pinned app's
+  disconnect fails only its own connection's requests.
+
 - **A robot test can feed the app's camera from an image** (`camera` minor, `robot-test` minor).
   `camera::register_robot_controls()` adds `camera.fake {width, height, rgba}` (every `open`
   streams the image: no device, no prompt, `devices()` lists a "Robot test camera"),
