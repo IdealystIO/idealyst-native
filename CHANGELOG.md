@@ -1343,6 +1343,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Robot suites run in Firefox and WebKit too** (`idealyst-cli` minor, `robot-test` minor,
+  `robot-relay` minor). A device matrix web spec takes an engine: `firefox:ipad-air` runs headless
+  Firefox over WebDriver BiDi (no geckodriver), `webkit:1280x800` runs Safari through `safaridriver`
+  on macOS (a real window, viewport-only emulation). The runner drives every engine behind one
+  interface and, for Firefox and WebKit, answers `load_url`, cookies, `open_page` and screenshots
+  itself; `robot-test` routes them there (`IDEALYST_TEST_ENGINE`), and the relay's new
+  `expect_secondary` keeps a runner-opened tab secondary. A missing engine is a plan skip naming
+  what to install.
+
 - **Device classes and a device matrix for robot tests** (`idealyst-cli`, `robot-test` and
   `robot-test-macros` minor, `runtime-vocabulary` patch). A project declares
   `[package.metadata.idealyst.test.devices]` (class → platform → device: `phone = { web =

@@ -749,8 +749,25 @@ tablet  = { web = "chromium:ipad-air",  ios = "iPad Pro 13-inch (M5)", android =
 desktop = { web = "1440x900", macos = "1440x900", linux = "1440x900", windows = "1440x900" }
 ```
 
-- `web`: `[engine:]preset` or `[engine:]WxH`. `chromium` is the default
-  engine; `webkit` and `firefox` are reported as not supported yet.
+- `web`: `[engine:]preset` or `[engine:]WxH`. The engine is `chromium`
+  (the default), `firefox` or `webkit`:
+  - `chromium`: headless Chrome over DevTools, emulating everything a
+    preset names (viewport, pixel ratio, touch, mobile layout, user agent).
+  - `firefox`: headless Firefox over WebDriver BiDi (Firefox ships it; no
+    geckodriver). Viewport and pixel ratio change in place; touch, the
+    coarse pointer and the user agent are launch preferences, so a size
+    that changes them restarts Firefox (the app's server stays up).
+  - `webkit`: Safari through `safaridriver`, macOS only, in a real window
+    (not headless). Only the viewport is emulated (no touch, user agent or
+    pixel ratio), and its one cookie jar means `open_page` must share it
+    (`open_page_shared`). Safari's remote automation must be on once:
+    `safaridriver --enable`.
+
+  Web rows of different engines still share one app launch; the browser
+  is swapped between them. For Firefox and WebKit the runner, which holds
+  the browser's one WebDriver session, answers `load_url`, the cookie
+  verbs, `open_page` and `screenshot` (`robot-test` routes them there;
+  suites see the engine as `IDEALYST_TEST_ENGINE`).
 - `ios`: a simulator name, `@ iOS <version>` to pin its runtime.
 - `android`: an AVD name, `<hardware profile> @ <API level>`, or
   `serial:<adb serial>` for an attached device.

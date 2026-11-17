@@ -6590,6 +6590,7 @@ version = "2.1.2"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
+ "base64",
  "build-android",
  "build-ios",
  "build-linux",

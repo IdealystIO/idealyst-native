@@ -13,8 +13,8 @@
 //! A device spec per platform:
 //!
 //! - `web`: `[engine:]preset` or `[engine:]WxH`. The engine is `chromium`
-//!   (the default); `webkit` and `firefox` are planned and reported as not
-//!   supported yet.
+//!   (the default), `firefox` (headless, WebDriver BiDi) or `webkit`
+//!   (Safari through `safaridriver`, macOS only); see `engines`.
 //! - `ios`: a simulator name, optionally `@ iOS <version>` to pin its
 //!   runtime (`iPhone SE (3rd generation) @ iOS 17`).
 //! - `android`: an AVD name, `<device profile> @ <api level>` (an AVD made
@@ -128,6 +128,8 @@ pub struct Target {
     pub device: Option<String>,
     /// `--viewport`.
     pub viewport: Option<(u32, u32)>,
+    /// Web: the engine (`None`: Chromium).
+    pub engine: Option<super::engines::Engine>,
 }
 
 /// One class × platform of the plan.
@@ -177,6 +179,10 @@ pub trait Host {
     fn arch(&self) -> &str;
     /// Whether a Chromium-family browser is installed.
     fn chromium(&self) -> bool;
+    /// Whether Firefox is installed.
+    fn firefox(&self) -> bool;
+    /// Whether `safaridriver` is installed (macOS).
+    fn safaridriver(&self) -> bool;
     /// The available simulators, or why there are none to ask.
     fn simulators(&self) -> Result<Vec<Simulator>, String>;
     /// The AVDs, or why there are none to ask (no SDK).
@@ -263,32 +269,42 @@ fn parse_size(s: &str) -> Option<(u32, u32)> {
 
 /// The target for one spec on one platform, or why it can't run here.
 pub fn resolve(platform: &str, spec: &str, host: &dyn Host, create: bool) -> Result<Target, String> {
-    let none = Target { create: None, simulator: None, emulator: None, device: None, viewport: None };
+    let none = Target { create: None, simulator: None, emulator: None, device: None, viewport: None, engine: None };
     match platform {
         "web" => {
             let (engine, rest) = match spec.split_once(':') {
                 Some((e, r)) => (e.trim(), r.trim()),
                 None => ("chromium", spec.trim()),
             };
+            use super::engines::Engine;
+            let engine = Engine::parse(engine)
+                .ok_or_else(|| format!("unknown web engine `{engine}` (use chromium, webkit or firefox)"))?;
             match engine {
-                "chromium" | "chrome" => {}
-                "webkit" | "firefox" => {
+                Engine::Chromium if !host.chromium() => {
+                    return Err("no Chromium-family browser is installed (install Chrome or Chromium, or set \
+                                IDEALYST_CHROME to one)"
+                        .into())
+                }
+                Engine::Firefox if !host.firefox() => {
+                    return Err("Firefox isn't installed (install it, or set IDEALYST_FIREFOX to one)".into())
+                }
+                Engine::Webkit if host.os() != "macos" => {
                     return Err(format!(
-                        "the {engine} engine isn't supported by `idealyst test` yet: web runs on Chromium only"
+                        "webkit runs as Safari, through safaridriver, on macOS only; this host is {}",
+                        host.os()
                     ))
                 }
-                other => return Err(format!("unknown web engine `{other}` (use chromium, webkit or firefox)")),
+                Engine::Webkit if !host.safaridriver() => {
+                    return Err("safaridriver isn't installed (it ships with macOS: /usr/bin/safaridriver)".into())
+                }
+                _ => {}
             }
-            if !host.chromium() {
-                return Err("no Chromium-family browser is installed (install Chrome or Chromium, or set \
-                            IDEALYST_CHROME to one)"
-                    .into());
-            }
+            let engine = (engine != Engine::Chromium).then_some(engine);
             if let Some(size) = parse_size(rest) {
-                return Ok(Target { viewport: Some(size), ..none });
+                return Ok(Target { viewport: Some(size), engine, ..none });
             }
             match super::browser::device_preset(rest) {
-                Ok(_) => Ok(Target { device: Some(rest.to_string()), ..none }),
+                Ok(_) => Ok(Target { device: Some(rest.to_string()), engine, ..none }),
                 Err(e) => Err(format!("{e:#}")),
             }
         }
@@ -458,6 +474,7 @@ fn create_avd(host: &dyn Host, device: &str, api: u32, host_abi: &str, create: b
         emulator: None,
         device: None,
         viewport: None,
+        engine: None,
     })
 }
 
@@ -507,6 +524,14 @@ impl Host for ThisHost {
 
     fn chromium(&self) -> bool {
         super::browser::headless_browser().is_some()
+    }
+
+    fn firefox(&self) -> bool {
+        super::engines::firefox_binary().is_some()
+    }
+
+    fn safaridriver(&self) -> bool {
+        super::engines::safaridriver().is_some()
     }
 
     fn simulators(&self) -> Result<Vec<Simulator>, String> {
@@ -742,6 +767,12 @@ mod tests {
         fn chromium(&self) -> bool {
             self.chromium
         }
+        fn firefox(&self) -> bool {
+            self.chromium
+        }
+        fn safaridriver(&self) -> bool {
+            self.os == "macos"
+        }
         fn simulators(&self) -> Result<Vec<Simulator>, String> {
             self.sims.clone()
         }
@@ -829,7 +860,7 @@ mod tests {
         assert_eq!(phone("android").unwrap().emulator.as_deref(), Some("Pixel_7_API_34"));
 
         let why = |c, p| row(&rows, c, p).plan.clone().unwrap_err();
-        assert!(why("tablet", "web").contains("webkit engine isn't supported"), "{}", why("tablet", "web"));
+        assert_eq!(row(&rows, "tablet", "web").plan.clone().unwrap().engine, Some(crate::cmd::test::engines::Engine::Webkit), "Safari on a Mac");
         assert!(why("tablet", "ios").contains("iOS 18 simulator runtime isn't installed (installed: iOS 17.5, iOS 17.0)"));
         assert!(why("tablet", "android").contains("x86_64 system image, which can't run on this aarch64 host"));
         assert!(why("desktop", "windows").contains("doesn't build for windows"), "targets come first");
@@ -852,6 +883,7 @@ mod tests {
         let rows = rows(&host, Filter::default());
         let why = |c, p| row(&rows, c, p).plan.clone().unwrap_err();
         assert!(why("phone", "web").contains("no Chromium-family browser"));
+        assert!(why("tablet", "web").contains("webkit runs as Safari, through safaridriver, on macOS only; this host is linux"));
         assert!(why("phone", "ios").contains("only on a Mac; this host is linux"));
         assert!(why("phone", "android").contains("Android SDK isn't installed"));
         assert!(why("desktop", "macos").contains("only on a macos host; this host is linux"));

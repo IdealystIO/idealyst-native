@@ -64,6 +64,24 @@ impl App {
     }
 
     fn open_page_with(&mut self, url: &str, isolated: bool) -> App {
+        // Firefox / WebKit: the runner opens the tab; the relay is told to
+        // take the next page as a secondary app, as its own `open_page` does.
+        if let Some(control) = crate::browser_control::runner_answers_browser_verbs() {
+            let before = self.newest_app_id();
+            self.call("expect_secondary", json!({}));
+            if let Err(e) = crate::browser_control::request(control, "open_page", json!({ "url": url, "isolated": isolated })) {
+                self.call("expect_secondary", json!({ "cancel": true }));
+                panic!("open_page({url:?}): {e}");
+            }
+            let id = self
+                .wait_for_new_app(before, OPEN_PAGE_WAIT, true)
+                .unwrap_or_else(|e| panic!("open_page({url:?}): {e}"));
+            let mut other = App::connect(self.bridge_addr())
+                .unwrap_or_else(|e| panic!("open_page: a second connection to the relay: {e}"));
+            other.timeout = self.timeout;
+            other.select_app(id);
+            return other;
+        }
         let io = self.client_io_timeout();
         self.set_io_timeout(OPEN_PAGE_WAIT + Duration::from_secs(5));
         // The relay waits as long as this connection does (`timeout_ms`).

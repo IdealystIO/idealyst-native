@@ -117,3 +117,25 @@ fn regression_each_connection_drives_the_app_it_selected() {
     assert_eq!(other.call("whoami", json!({}))["ok"], "first", "the default again (the only app left)");
     let _ = second;
 }
+
+/// A page another driver opens (the test runner, on Firefox or WebKit)
+/// joins as a secondary app after `expect_secondary`, and the default stays.
+#[test]
+fn expect_secondary_marks_the_next_app_as_secondary() {
+    let relay = robot_relay::start(robot_relay::RelayConfig { register: false, ..Default::default() }).unwrap();
+    let _a = spawn_app(relay.ws_addr, "first");
+    let mut main = Bridge::connect(relay.tcp_addr);
+    wait_for_apps(&mut main, 1);
+    assert_eq!(main.call("expect_secondary", json!({}))["ok"], true);
+    let _b = spawn_app(relay.ws_addr, "second");
+    let apps = wait_for_apps(&mut main, 2);
+    assert_eq!(apps[0]["active"], true, "the first page is still the default: {apps:?}");
+    assert_eq!(apps[1]["active"], false);
+    assert_eq!(main.call("whoami", json!({}))["ok"], "first");
+    // Taken back: the next page is the default again.
+    main.call("expect_secondary", json!({}));
+    main.call("expect_secondary", json!({ "cancel": true }));
+    let _c = spawn_app(relay.ws_addr, "third");
+    let apps = wait_for_apps(&mut main, 3);
+    assert_eq!(apps[2]["active"], true, "{apps:?}");
+}

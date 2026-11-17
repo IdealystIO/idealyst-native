@@ -34,6 +34,7 @@
 //! replace the matrix for a run.
 
 mod browser;
+mod engines;
 mod matrix;
 mod provision;
 
@@ -299,6 +300,8 @@ struct Size {
     emulation: Option<Emulation>,
     /// The matrix class this run is (`IDEALYST_TEST_CLASS`).
     class: Option<String>,
+    /// Web: the engine the page runs in (`IDEALYST_TEST_ENGINE`).
+    engine: engines::Engine,
 }
 
 /// One app launch, and the suite runs made against it.
@@ -350,7 +353,7 @@ fn plan_launches(args: &Args, platform: &str) -> Result<Vec<Launch>> {
                 .iter()
                 .map(|&(w, h)| {
                     let e = if args.mobile { Emulation::mobile(w, h) } else { Emulation::desktop(w, h) };
-                    Size { label: e.describe(), viewport: Some((w, h)), device: None, emulation: Some(e), class: None }
+                    Size { label: e.describe(), viewport: Some((w, h)), device: None, emulation: Some(e), class: None, engine: engines::Engine::Chromium }
                 })
                 .collect();
             sizes.extend(devices.iter().map(|d| {
@@ -361,12 +364,13 @@ fn plan_launches(args: &Args, platform: &str) -> Result<Vec<Launch>> {
                     device: Some(d.name.to_string()),
                     emulation: Some(e),
                     class: None,
+                    engine: engines::Engine::Chromium,
                 }
             }));
             if sizes.is_empty() {
                 let (w, h) = DEFAULT_VIEWPORT;
                 let e = if args.mobile { Emulation::mobile(w, h) } else { Emulation::desktop(w, h) };
-                sizes.push(Size { label: e.describe(), viewport: Some((w, h)), device: None, emulation: Some(e), class: None });
+                sizes.push(Size { label: e.describe(), viewport: Some((w, h)), device: None, emulation: Some(e), class: None, engine: engines::Engine::Chromium });
             }
             if args.attach && (sizes.len() > 1 || !devices.is_empty() || args.mobile) {
                 one_launch("resize or emulate a browser it didn't start")?;
@@ -404,6 +408,7 @@ fn plan_launches(args: &Args, platform: &str) -> Result<Vec<Launch>> {
                         device: sim.clone(),
                         emulation: None,
                         class: None,
+                        engine: engines::Engine::Chromium,
                     }],
                     target_device: sim,
                 })
@@ -427,6 +432,7 @@ fn plan_launches(args: &Args, platform: &str) -> Result<Vec<Launch>> {
                         device: None,
                         emulation: None,
                         class: None,
+                        engine: engines::Engine::Chromium,
                     }],
                 })
                 .collect()
@@ -1024,6 +1030,7 @@ fn job_for_row(args: &Args, row: &matrix::Row) -> Result<Job> {
         for size in &mut launch.sizes {
             size.label = row.label();
             size.class = Some(row.class.clone());
+            size.engine = target.engine.unwrap_or(engines::Engine::Chromium);
         }
     }
     let device = match (target.create.is_some(), row.platform.as_str()) {
@@ -1106,22 +1113,20 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
         .with_context(|| see_log("the app never registered with the relay"))?;
 
     // Declared after `kill`, so it is dropped (browser closed) first. Shared
-    // with the browser-control thread, which holds it weakly.
-    let mut browser: Option<Arc<Mutex<HeadlessBrowser>>> = None;
+    // with the browser-control thread, which holds it weakly. Holds the
+    // browser of the size being run: a size in another engine swaps it.
+    let browser: BrowserSlot = Arc::new(Mutex::new(None));
     let mut control: Option<SocketAddr> = None;
-    if platform == "web" && !args.attach {
+    let page_url = format!("http://127.0.0.1:{port}/");
+    let web = platform == "web" && !args.attach;
+    if web {
         if !wait_for_web_server(port, Duration::from_secs(600)) {
             anyhow::bail!(
                 "the web dev server never served http://127.0.0.1:{port} — the wasm \
                  build probably failed; run `idealyst dev --web` to see it"
             );
         }
-        let b = Arc::new(Mutex::new(HeadlessBrowser::launch(
-            &format!("http://127.0.0.1:{port}/"),
-            &session_state_dir(dir, isolated),
-        )?));
-        control = Some(serve_browser_control(Arc::downgrade(&b))?);
-        browser = Some(b);
+        control = Some(serve_browser_control(Arc::downgrade(&browser))?);
     }
 
     for (n, size) in launch.sizes.iter().enumerate() {
@@ -1130,9 +1135,20 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
         let test_log = std::env::temp_dir().join(format!("idealyst-test-log-{}-{index}-{n}.txt", std::process::id()));
         let _ = std::fs::remove_file(&test_log);
         let ran = (|| -> Result<Outcome> {
-            if let (Some(b), Some(e)) = (browser.as_ref(), &size.emulation) {
-                let mut b = b.lock().unwrap();
-                b.show(e).with_context(|| format!("see {}", b.log.display()))?;
+            if let (true, Some(e)) = (web, &size.emulation) {
+                let mut slot = browser.lock().unwrap();
+                if slot.as_ref().map(|b| b.engine()) != Some(size.engine) {
+                    *slot = None; // the previous engine's browser closes first
+                    if size.engine == engines::Engine::Webkit {
+                        eprintln!(
+                            "[test] webkit runs as Safari (a real window) and emulates the viewport only: \
+                             no touch, user agent or pixel ratio"
+                        );
+                    }
+                    *slot = Some(engines::launch(size.engine, &page_url, &session_state_dir(dir, isolated))?);
+                }
+                let b = slot.as_mut().expect("launched above");
+                b.show(e).with_context(|| format!("see {}", b.log().display()))?;
             }
             // Confirm the app is actually answering before we hand the suite the
             // bridge. The relay registers as soon as `dev` hosts it — well before
@@ -1153,6 +1169,7 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
 
             if let Some(control) = control {
                 suite.env(robot_test::browser_control::ENV, control.to_string());
+                suite.env(robot_test::browser_control::ENGINE_ENV, size.engine.name());
             }
             // The platform the app itself reports (an attached app may not be
             // the default `--web`); an app too old to say is taken at the flag.
@@ -1186,15 +1203,20 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
         let _ = std::fs::remove_file(&test_log);
         results.push(RunResult { label: size.label.clone(), outcome, tests, not_applicable });
     }
-    drop(browser);
+    browser.lock().unwrap().take();
     drop(kill); // tear down the dev session
     Ok(())
 }
 
+/// The browser a web run drives, shared with the control thread.
+type BrowserSlot = Arc<Mutex<Option<Box<dyn engines::Browser>>>>;
+
 /// Serve the run's browser control (`robot_test::browser_control`): the
-/// robot's `set_viewport` on web, which a page cannot do for itself. On a
-/// thread for the run's length; it ends once `browser` is dropped.
-fn serve_browser_control(browser: Weak<Mutex<HeadlessBrowser>>) -> Result<SocketAddr> {
+/// robot's `set_viewport` on web, which a page cannot do for itself, and,
+/// for Firefox and WebKit, the browser verbs the relay answers over
+/// DevTools for Chromium (`load_url`, cookies, `open_page`, `screenshot`).
+/// On a thread for the run's length; it ends once `browser` is dropped.
+fn serve_browser_control(browser: Weak<Mutex<Option<Box<dyn engines::Browser>>>>) -> Result<SocketAddr> {
     use std::io::{BufRead, BufReader, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").context("binding the browser control socket")?;
     let addr = listener.local_addr()?;
@@ -1216,16 +1238,57 @@ fn serve_browser_control(browser: Weak<Mutex<HeadlessBrowser>>) -> Result<Socket
         if BufReader::new(&stream).read_line(&mut line).is_err() {
             continue;
         }
-        let result = match robot_test::browser_control::parse_set_viewport(line.trim()) {
+        let result = match robot_test::browser_control::parse_request(line.trim()) {
             None => Err(format!("unknown browser control request {:?}", line.trim())),
-            Some((w, h)) => match browser.upgrade() {
+            Some((verb, args)) => match browser.upgrade() {
                 None => Err("the run's browser is closed".into()),
-                Some(b) => b.lock().unwrap().resize(w, h).map_err(|e| format!("{e:#}")),
+                Some(slot) => match slot.lock().unwrap().as_mut() {
+                    None => Err("the run's browser isn't open".into()),
+                    Some(b) => browser_verb(b.as_mut(), &verb, &args).map_err(|e| format!("{e:#}")),
+                },
             },
         };
-        let _ = writeln!(&stream, "{}", robot_test::browser_control::reply(result));
+        let _ = writeln!(&stream, "{}", robot_test::browser_control::reply_value(result));
     });
     Ok(addr)
+}
+
+/// One browser-control request against the run's browser.
+fn browser_verb(b: &mut dyn engines::Browser, verb: &str, args: &serde_json::Value) -> Result<serde_json::Value> {
+    use serde_json::json;
+    let dim = |k: &str| args[k].as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| *n > 0);
+    Ok(match verb {
+        "set_viewport" => {
+            let (w, h) = dim("width").zip(dim("height")).context("set_viewport needs a positive width and height")?;
+            b.resize(w, h)?;
+            json!(true)
+        }
+        "load_url" => json!({ "url": b.navigate(args["url"].as_str().context("load_url needs a url")?)? }),
+        "set_cookie" => {
+            b.set_cookie(args)?;
+            json!(true)
+        }
+        "get_cookies" => b.get_cookies()?,
+        "clear_cookies" => {
+            b.clear_cookies(args["name"].as_str())?;
+            json!(true)
+        }
+        "open_page" => {
+            b.open_page(args["url"].as_str().context("open_page needs a url")?, args["isolated"].as_bool().unwrap_or(true))?;
+            json!(true)
+        }
+        "screenshot" => {
+            let png = b.screenshot()?;
+            let size = |at: usize| png.get(at..at + 4).map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]));
+            let dir = std::env::temp_dir().join("idealyst-screenshots");
+            std::fs::create_dir_all(&dir)?;
+            let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+            let path = dir.join(format!("{}-{millis}.png", b.engine().name()));
+            std::fs::write(&path, &png)?;
+            json!({ "path": path, "width": size(16), "height": size(20) })
+        }
+        other => anyhow::bail!("unknown browser control request `{other}`"),
+    })
 }
 
 /// `idealyst test --parity web,macos`: launch every named platform of the same
@@ -2416,8 +2479,9 @@ mod tests {
             emulator: None,
             device: Some(device.into()),
             viewport: None,
+            engine: None,
         };
-        let ios = matrix::Target { create: None, simulator: Some("U".into()), emulator: None, device: None, viewport: None };
+        let ios = matrix::Target { create: None, simulator: Some("U".into()), emulator: None, device: None, viewport: None, engine: None };
         let jobs = vec![
             job_for_row(&args(&[]), &row("phone", "web", web("iphone-15"))).unwrap(),
             job_for_row(&args(&[]), &row("phone", "ios", ios)).unwrap(),
@@ -2468,7 +2532,7 @@ mod tests {
     #[test]
     fn a_matrix_row_becomes_a_labelled_launch_or_a_skip() {
         let row = |platform: &str, plan| matrix::Row { class: "phone".into(), platform: platform.into(), spec: "x".into(), plan };
-        let target = matrix::Target { create: None, simulator: Some("U-15".into()), emulator: None, device: None, viewport: None };
+        let target = matrix::Target { create: None, simulator: Some("U-15".into()), emulator: None, device: None, viewport: None, engine: None };
         match job_for_row(&args(&[]), &row("ios", Ok(target))).unwrap() {
             Job::Run { platform, launches, device, .. } => {
                 assert_eq!(platform.as_str(), "ios");
@@ -2479,7 +2543,7 @@ mod tests {
             }
             Job::Skip { .. } => panic!("runs"),
         }
-        let web = matrix::Target { create: None, simulator: None, emulator: None, device: Some("iphone-15".into()), viewport: None };
+        let web = matrix::Target { create: None, simulator: None, emulator: None, device: Some("iphone-15".into()), viewport: None, engine: None };
         match job_for_row(&args(&[]), &row("web", Ok(web))).unwrap() {
             Job::Run { launches, .. } => assert_eq!(launches[0].sizes[0].device.as_deref(), Some("iphone-15")),
             Job::Skip { .. } => panic!("runs"),

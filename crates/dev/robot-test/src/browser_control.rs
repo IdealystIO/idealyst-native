@@ -14,6 +14,19 @@
 //! The resize goes through the runner's own DevTools session because
 //! Chrome ties a metrics override to the session that set it: one set from
 //! a short-lived connection is dropped when that connection closes.
+//!
+//! For Firefox and WebKit ([`ENGINE_ENV`]) the runner also answers the
+//! browser verbs the robot relay answers over DevTools for Chromium,
+//! since a WebDriver session has one client and the runner is it:
+//!
+//! ```text
+//! → {"load_url":{"url":"/x"}}           ← {"ok":{"url":"http://…/x"}}
+//! → {"set_cookie":{"name":…,…}}         ← {"ok":true}
+//! → {"get_cookies":{}}                  ← {"ok":[{"name":…,…}]}
+//! → {"clear_cookies":{"name"?:…}}       ← {"ok":true}
+//! → {"open_page":{"url":…,"isolated":…}}← {"ok":true}
+//! → {"screenshot":{}}                   ← {"ok":{"png_base64":…,"width":…,"height":…}}
+//! ```
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -23,6 +36,46 @@ use serde_json::{json, Value};
 
 /// Names the control socket (`host:port`) in a suite's environment.
 pub const ENV: &str = "IDEALYST_TEST_BROWSER_CONTROL";
+
+/// The web engine a suite's page runs in: `chromium`, `firefox`, `webkit`.
+pub const ENGINE_ENV: &str = "IDEALYST_TEST_ENGINE";
+
+/// The runner's control socket when it, not the relay, answers the browser
+/// verbs: a Firefox or WebKit page.
+pub fn runner_answers_browser_verbs() -> Option<SocketAddr> {
+    let engine = std::env::var(ENGINE_ENV).ok()?;
+    (engine == "firefox" || engine == "webkit").then(from_env).flatten()
+}
+
+/// One request: `{verb: args}` → the reply's `ok` value, or its `err`.
+pub fn request(addr: SocketAddr, verb: &str, args: Value) -> Result<Value, String> {
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+        .map_err(|e| format!("the test runner's browser control at {addr}: {e}"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(120))).map_err(|e| e.to_string())?;
+    writeln!(stream, "{}", json!({ verb: args })).map_err(|e| e.to_string())?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).map_err(|e| format!("the test runner did not answer: {e}"))?;
+    let v: Value = serde_json::from_str(line.trim()).map_err(|e| format!("the test runner's answer {line:?}: {e}"))?;
+    match v.get("err").and_then(|e| e.as_str()) {
+        Some(e) => Err(e.to_string()),
+        None => Ok(v.get("ok").cloned().unwrap_or(Value::Null)),
+    }
+}
+
+/// A request line's verb and arguments.
+pub fn parse_request(line: &str) -> Option<(String, Value)> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    let (verb, args) = v.as_object()?.iter().next()?;
+    Some((verb.clone(), args.clone()))
+}
+
+/// A reply line carrying a value.
+pub fn reply_value(result: Result<Value, String>) -> String {
+    match result {
+        Ok(v) => json!({ "ok": v }).to_string(),
+        Err(e) => json!({ "err": e }).to_string(),
+    }
+}
 
 /// The control socket this suite was given, if any.
 pub fn from_env() -> Option<SocketAddr> {

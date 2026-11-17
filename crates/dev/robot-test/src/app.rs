@@ -535,6 +535,17 @@ impl App {
     /// panicking. `Ok` is the address the app was loaded at.
     pub fn try_load_url(&mut self, url: &str) -> anyhow::Result<String> {
         let wait = self.timeout.max(LOAD_URL_TIMEOUT);
+        // Firefox / WebKit: the runner navigates (it holds the browser's one
+        // WebDriver session); the new page's app is waited for here.
+        if let Some(control) = crate::browser_control::runner_answers_browser_verbs() {
+            let before = self.newest_app_id();
+            let answer = crate::browser_control::request(control, "load_url", json!({ "url": url }))
+                .map_err(|e| anyhow::anyhow!("load_url: {e}"))?;
+            let loaded = answer["url"].as_str().unwrap_or(url).to_string();
+            self.wait_for_new_app(before, wait, false)?;
+            self.client.wait_ready(wait)?;
+            return Ok(loaded);
+        }
         let io = self.client.io_timeout();
         self.client.set_io_timeout(wait)?;
         let answer = self.client.call("load_url", json!({ "url": url }));
@@ -558,24 +569,24 @@ impl App {
     /// the robot does not reach, and the call panics saying so.
     pub fn set_cookie(&mut self, cookie: Cookie) {
         let args = serde_json::to_value(&cookie).expect("a cookie serializes");
-        self.call("set_cookie", args);
+        self.browser_verb("set_cookie", args);
     }
 
     /// The cookies the browser sends to the page's address, HttpOnly ones
     /// included. Web only, as [`set_cookie`](Self::set_cookie).
     pub fn cookies(&mut self) -> Vec<Cookie> {
-        let v = self.call("get_cookies", json!({}));
+        let v = self.browser_verb("get_cookies", json!({}));
         serde_json::from_value(v.clone()).unwrap_or_else(|e| panic!("get_cookies: unexpected shape {v}: {e}"))
     }
 
     /// Delete every cookie in the page's browser. Web only.
     pub fn clear_cookies(&mut self) {
-        self.call("clear_cookies", json!({}));
+        self.browser_verb("clear_cookies", json!({}));
     }
 
     /// Delete the page origin's cookie named `name`. Web only.
     pub fn clear_cookie(&mut self, name: &str) {
-        self.call("clear_cookies", json!({ "name": name }));
+        self.browser_verb("clear_cookies", json!({ "name": name }));
     }
 
     // --- whole-app ---
@@ -583,8 +594,49 @@ impl App {
     /// Capture a screenshot; returns the saved path (or `"(in memory)"` if the
     /// relay didn't persist one). Panics on a bridge error.
     pub fn screenshot(&mut self) -> String {
+        if let Some(control) = crate::browser_control::runner_answers_browser_verbs() {
+            let v = crate::browser_control::request(control, "screenshot", json!({}))
+                .unwrap_or_else(|e| panic!("screenshot failed: {e}"));
+            return v["path"].as_str().unwrap_or("(in memory)").to_string();
+        }
         let v = self.call("screenshot", json!({}));
         v.get("path").and_then(|p| p.as_str()).unwrap_or("(in memory)").to_string()
+    }
+
+    /// A browser verb: the runner's control socket for a Firefox or WebKit
+    /// page (`browser_control`), the relay's DevTools otherwise.
+    fn browser_verb(&mut self, verb: &str, args: Value) -> Value {
+        match crate::browser_control::runner_answers_browser_verbs() {
+            Some(control) => crate::browser_control::request(control, verb, args)
+                .unwrap_or_else(|e| panic!("{verb} failed: {e}")),
+            None => self.call(verb, args),
+        }
+    }
+
+    /// The newest app id the relay lists (0 for none).
+    pub(crate) fn newest_app_id(&mut self) -> u64 {
+        let v = self.call("apps", json!({}));
+        v.as_array().into_iter().flatten().filter_map(|a| a["id"].as_u64()).max().unwrap_or(0)
+    }
+
+    /// Wait for an app newer than `after` to connect and say hello, and
+    /// return its id; `secondary` waits for one that is not the default (an
+    /// `open_page` tab).
+    pub(crate) fn wait_for_new_app(&mut self, after: u64, wait: Duration, secondary: bool) -> anyhow::Result<u64> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let v = self.call("apps", json!({}));
+            let found = v.as_array().into_iter().flatten().find(|a| {
+                a["id"].as_u64().is_some_and(|id| id > after)
+                    && a["platform"].is_string()
+                    && (!secondary || a["active"] == false)
+            });
+            if let Some(a) = found {
+                return Ok(a["id"].as_u64().unwrap_or(0));
+            }
+            anyhow::ensure!(Instant::now() < deadline, "no new app connected to the relay within {wait:?}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     /// The app's log lines (`log_info!` and friends), oldest first.

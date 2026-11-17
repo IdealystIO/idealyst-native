@@ -72,6 +72,9 @@
 //! fresh browser context by default; that page joins as a SECONDARY app,
 //! never the default, so the connection driving the first tab keeps it.
 //! `changed` pushes still come from the default app only.
+//! `expect_secondary` (`{cancel: true}` to take it back) marks the next
+//! app to connect as secondary without opening it, for a page another
+//! driver opens (the test runner, on Firefox or WebKit).
 //!
 //! MCP side (TCP, newline-delimited JSON): the existing protocol, unchanged.
 //! The relay multiplexes: it rewrites each forwarded request's `id` to a private
@@ -617,6 +620,16 @@ fn tcp_session(stream: TcpStream, inner: &Arc<Inner>) {
             Ok(json!({ "ok": apps_json(inner, pinned) }))
         } else if cmd == "select_app" {
             select_app(inner, &args, &mut pinned)
+        } else if cmd == "expect_secondary" {
+            // A page another driver opens (`idealyst test` on Firefox /
+            // WebKit) joins as a secondary app, like `open_page`'s;
+            // `{cancel: true}` takes the expectation back when it failed.
+            if args.get("cancel").and_then(|c| c.as_bool()) == Some(true) {
+                let _ = inner.secondary_expected.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+            } else {
+                inner.secondary_expected.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(json!({ "ok": true }))
         } else if cmd == "open_page" {
             let wait = if req.get("timeout_ms").is_none() { browser::LOAD_URL_WAIT } else { wait };
             browser::open_page(inner, pinned, &args, wait)
