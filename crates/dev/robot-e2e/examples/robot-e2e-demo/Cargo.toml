@@ -59,3 +59,11 @@ name      = "Robot E2E Demo"
 bundle_id = "io.idealyst.robote2edemo"
 version   = "0.0.1"
 targets   = ["web", "ios", "android", "macos", "linux", "windows"]
+
+# The device matrix `idealyst test` runs the suite across: each class as
+# a device on each platform. `idealyst test --plan` shows what this machine
+# can run of it.
+[package.metadata.idealyst.test.devices]
+phone   = { web = "chromium:iphone-15", ios = "iPhone 17 @ iOS 26", android = "Pixel_6_Pro_API_34" }
+tablet  = { web = "chromium:ipad-air", ios = "iPad Pro 13-inch (M5)", android = "Tablet_10" }
+desktop = { web = "1280x800", macos = "1280x800", linux = "1280x800", windows = "1280x800" }

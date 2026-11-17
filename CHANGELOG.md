@@ -1343,6 +1343,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Device classes and a device matrix for robot tests** (`idealyst-cli`, `robot-test` and
+  `robot-test-macros` minor, `runtime-vocabulary` patch). A project declares
+  `[package.metadata.idealyst.test.devices]` (class → platform → device: `phone = { web =
+  "chromium:iphone-15", ios = "iPhone 17 @ iOS 26", android = "Pixel_6_Pro_API_34" }`), and
+  `idealyst test` runs every class on every platform this machine can, narrowed by `--devices` /
+  `--platforms`. The plan is printed first; a class × platform that can't run here is a `SKIP`
+  with the reason (not in the app's `targets`, wrong host, not installed with the command that
+  installs it, wrong CPU architecture). `--plan` prints it and exits. Tests target classes:
+  `#[robot_test(form = phone)]`, `input = touch`, checked against the app's own breakpoint and
+  pointer when they run; a test that doesn't apply is listed as `n/a` with why. The robot's
+  `get_viewport` also reports the primary pointer. See "Device matrix" in `docs/robot.md`.
+
 - **A Table's selection boxes have accessible names and robot test ids** (`idea-ui` minor). Every
   row's box was an unnamed checkbox with no test id, so a screen reader couldn't say which row it
   ticks and a test could find one only by position. A row's box is now named by the new

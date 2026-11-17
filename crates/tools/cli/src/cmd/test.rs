@@ -15,8 +15,23 @@
 //! A `#[robot_test(platforms = …)]` test runs only where the app reports a
 //! platform it names ([`select_tests`]); elsewhere it is filtered out or
 //! stays ignored, never passed.
+//!
+//! # Device matrix
+//!
+//! A project that declares `[package.metadata.idealyst.test.devices]`
+//! (class → platform → device, see [`matrix`]) is run across it: every
+//! class on every platform this machine can run, narrowed by `--devices`
+//! and `--platforms` (or the platform flags). The plan is printed before
+//! anything builds; a class × platform this machine can't run is a `SKIP`
+//! row with the reason (not built for it, wrong host, not installed, wrong
+//! architecture), never dropped. `--plan` prints it and exits. Each run
+//! tells the suite its class (`IDEALYST_TEST_CLASS`) and where to record
+//! tests that don't apply to its device (`robot_test::RESULTS_ENV`); those
+//! are listed under the run as `n/a` with why. The one-off device flags
+//! replace the matrix for a run.
 
 mod browser;
+mod matrix;
 
 use anyhow::{Context, Result};
 use browser::{device_preset, Emulation, HeadlessBrowser};
@@ -30,7 +45,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 pub struct Args {
     /// Project directory.
     #[arg(default_value = ".")]
@@ -138,6 +153,21 @@ pub struct Args {
     /// `.idealyst/`, like a plain `idealyst dev`.
     #[arg(long)]
     pub no_isolated: bool,
+    /// Device classes from the project's matrix
+    /// (`[package.metadata.idealyst.test.devices]`) to run, comma list or
+    /// repeated (`--devices phone,tablet`). Default: every class. See
+    /// "Device matrix" in the module docs.
+    #[arg(long, value_name = "CLASS", value_delimiter = ',')]
+    pub devices: Vec<String>,
+    /// Platforms to run the matrix on, comma list (`--platforms ios,web`);
+    /// the `--web` / `--ios` / … flags add to it. Default: every platform
+    /// the matrix names, each run only where this machine can.
+    #[arg(long, value_name = "PLATFORMS", value_delimiter = ',')]
+    pub platforms: Vec<String>,
+    /// Print the device matrix's plan (what runs here, and why the rest
+    /// can't) and exit, building nothing.
+    #[arg(long)]
+    pub plan: bool,
     /// `KEY=VALUE` set for the app (passed as `idealyst dev --app-env`, which
     /// delivers it on every platform), the dev session (so a full-stack
     /// project's server inherits it), the tests, and the `--before`/`--after`
@@ -396,26 +426,70 @@ enum Outcome {
     Failed(Option<i32>),
     /// The suite never ran (the app didn't come up, the page didn't load).
     Error(String),
+    /// The run was planned but this machine can't make it, and why (a
+    /// runtime not installed, the wrong host, an image for another
+    /// architecture): from the device matrix's plan.
+    Skipped(String),
 }
 
-/// The per-size summary and the process exit code: 0 when every run passed;
-/// a single run's own failure code; 1 otherwise.
-fn summarize(results: &[(String, Outcome)]) -> (String, i32) {
+/// One suite run: what it ran on, how it ended, and the tests that didn't
+/// apply to its device (`#[robot_test(form = …)]`), with why.
+#[derive(Debug, Clone, PartialEq)]
+struct RunResult {
+    label: String,
+    outcome: Outcome,
+    not_applicable: Vec<(String, String)>,
+}
+
+impl RunResult {
+    fn new(label: impl Into<String>, outcome: Outcome) -> Self {
+        Self { label: label.into(), outcome, not_applicable: Vec::new() }
+    }
+}
+
+/// The summary and the process exit code: 0 when every run that ran passed
+/// (a skip is reported, not failed); a single run's own failure code; 1
+/// otherwise, or when nothing could run at all.
+fn summarize(results: &[RunResult]) -> (String, i32) {
     let mut out = String::from("[test] results:\n");
-    for (label, outcome) in results {
-        let line = match outcome {
+    for r in results {
+        let label = &r.label;
+        let line = match &r.outcome {
             Outcome::Passed => format!("  PASS   {label}\n"),
             Outcome::Failed(_) => format!("  FAIL   {label}\n"),
             Outcome::Error(e) => format!("  ERROR  {label}: {e}\n"),
+            Outcome::Skipped(why) => format!("  SKIP   {label}: {why}\n"),
         };
         out.push_str(&line);
+        for (test, why) in &r.not_applicable {
+            out.push_str(&format!("           n/a {test}: {why}\n"));
+        }
     }
-    let code = match results {
-        _ if results.iter().all(|(_, o)| *o == Outcome::Passed) => 0,
-        [(_, Outcome::Failed(Some(code)))] if *code != 0 => *code,
+    let ran: Vec<&RunResult> = results.iter().filter(|r| !matches!(r.outcome, Outcome::Skipped(_))).collect();
+    let code = match ran.as_slice() {
+        [] => {
+            out.push_str("  nothing could run on this machine\n");
+            1
+        }
+        _ if ran.iter().all(|r| r.outcome == Outcome::Passed) => 0,
+        [r] if matches!(r.outcome, Outcome::Failed(Some(c)) if c != 0) => match r.outcome {
+            Outcome::Failed(Some(c)) => c,
+            _ => 1,
+        },
         _ => 1,
     };
     (out, code)
+}
+
+/// The not-applicable tests one suite run recorded in its results file
+/// (`robot_test::RESULTS_ENV`).
+fn read_not_applicable(path: &Path) -> Vec<(String, String)> {
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["outcome"] == "na")
+        .map(|v| (v["test"].as_str().unwrap_or_default().to_string(), v["reason"].as_str().unwrap_or_default().to_string()))
+        .collect()
 }
 
 /// A `--before` / `--after` hook: `sh -c CMD` (`cmd /C` on Windows).
@@ -466,32 +540,78 @@ pub fn run(args: Args) -> Result<()> {
         test_file.display()
     );
 
-    let platform = if args.macos {
-        "macos"
-    } else if args.ios {
-        "ios"
-    } else if args.android {
-        "android"
-    } else if args.linux {
-        "linux"
-    } else if args.windows {
-        "windows"
-    } else {
-        "web"
+    // The device matrix, when the project declares one and no one-off
+    // device flag overrides it (see "Device matrix" in the module docs).
+    let project = matrix::load(&dir)?;
+    let one_off = !args.viewport.is_empty()
+        || !args.device.is_empty()
+        || args.mobile
+        || !args.simulator.is_empty()
+        || !args.emulator.is_empty()
+        || args.attach;
+    let flagged: Vec<&str> = [
+        (args.web, "web"),
+        (args.ios, "ios"),
+        (args.android, "android"),
+        (args.macos, "macos"),
+        (args.linux, "linux"),
+        (args.windows, "windows"),
+    ]
+    .into_iter()
+    .filter_map(|(on, p)| on.then_some(p))
+    .collect();
+    let jobs = match (&project.matrix, one_off) {
+        (Some(m), false) => {
+            let mut platforms: Vec<String> =
+                args.platforms.iter().map(|p| normalize_platform(p)).collect::<Result<_>>()?;
+            platforms.extend(flagged.iter().map(|p| p.to_string()));
+            let filter = matrix::Filter { classes: args.devices.clone(), platforms };
+            let rows = matrix::plan(m, project.targets.as_deref(), &filter, &matrix::ThisHost)?;
+            anyhow::ensure!(!rows.is_empty(), "the device matrix names nothing for the classes and platforms asked for");
+            eprintln!("{}", matrix::describe(&rows));
+            if args.plan {
+                return Ok(());
+            }
+            rows.iter().map(|row| job_for_row(&args, row)).collect::<Result<Vec<_>>>()?
+        }
+        _ => {
+            anyhow::ensure!(
+                args.devices.is_empty() && args.platforms.is_empty(),
+                "--devices / --platforms pick from the project's device matrix{}",
+                if project.matrix.is_none() {
+                    " ([package.metadata.idealyst.test.devices]), which it doesn't declare"
+                } else {
+                    ", which one-off device flags (--viewport, --device, --simulator, --emulator, --mobile, \
+                     --attach) replace"
+                }
+            );
+            anyhow::ensure!(!args.plan, "--plan prints the device matrix's plan; the project declares no matrix");
+            anyhow::ensure!(flagged.len() <= 1, "pick one platform flag (or declare a device matrix to run several)");
+            let platform = flagged.first().copied().unwrap_or("web");
+            vec![Job::Run { platform: platform.to_string(), class: None, launches: plan_launches(&args, platform)? }]
+        }
     };
 
-    let launches = plan_launches(&args, platform)?;
     // Decided, and checked against the live sessions, before anything
     // builds: a key another session holds is refused here, not after a
     // launch `idealyst dev` would refuse.
-    let isolated = if args.attach {
-        None
-    } else {
-        let wanted = isolation_key(&args, platform, project_has_server(&dir))?;
-        session_key(wanted.as_deref(), None, &dir, &registered_sessions(), &session_is_live)?
-    };
-    if let Some(key) = &isolated {
-        eprintln!("[test] dev session isolated as `{key}` (beside any `idealyst dev` of this project)");
+    let has_server = project_has_server(&dir);
+    let mut isolated: std::collections::BTreeMap<String, Option<String>> = Default::default();
+    for job in &jobs {
+        let Job::Run { platform, .. } = job else { continue };
+        if isolated.contains_key(platform) {
+            continue;
+        }
+        let key = if args.attach {
+            None
+        } else {
+            let wanted = isolation_key(&args, platform, has_server)?;
+            session_key(wanted.as_deref(), None, &dir, &registered_sessions(), &session_is_live)?
+        };
+        if let Some(key) = &key {
+            eprintln!("[test] {platform} dev session isolated as `{key}` (beside any `idealyst dev` of this project)");
+        }
+        isolated.insert(platform.clone(), key);
     }
     let port = match args.port {
         Some(p) => p,
@@ -500,44 +620,65 @@ pub fn run(args: Args) -> Result<()> {
     let mut hook_env = user_env.clone();
     hook_env.push(("IDEALYST_TEST_PORT".into(), port.to_string()));
 
+    let runs_anything = jobs.iter().any(|j| matches!(j, Job::Run { .. }));
     // Compile the suite before launching anything: a compile error fails fast,
     // and the suite binary is then run directly per size (see
     // `build_test_binary` for why it must not be built after the app).
-    let test_bin = build_test_binary(&dir, &args.test)?;
-    // The suite's test names, which carry the platforms a
-    // `#[robot_test(platforms = …)]` test declared.
-    let tests = list_tests(&test_bin, &dir).unwrap_or_else(|e| {
-        eprintln!("[test] could not list the suite's tests ({e:#}); platform-bound tests stay ignored");
-        TestList::default()
-    });
+    let (test_bin, tests) = if runs_anything {
+        let test_bin = build_test_binary(&dir, &args.test)?;
+        // The suite's test names, which carry the platforms a
+        // `#[robot_test(platforms = …)]` test declared.
+        let tests = list_tests(&test_bin, &dir).unwrap_or_else(|e| {
+            eprintln!("[test] could not list the suite's tests ({e:#}); platform-bound tests stay ignored");
+            TestList::default()
+        });
+        (test_bin, tests)
+    } else {
+        (PathBuf::new(), TestList::default())
+    };
 
-    let outcome = run_hooks("--before", &args.before, &dir, &hook_env).map(|()| {
+    let outcome = (|| -> Result<Vec<RunResult>> {
+        if runs_anything {
+            run_hooks("--before", &args.before, &dir, &hook_env)?;
+        }
         let mut results = Vec::new();
-        for (i, launch) in launches.iter().enumerate() {
-            let ctx = LaunchCtx {
-                args: &args,
-                dir: &dir,
-                platform,
-                port,
-                isolated: isolated.as_deref(),
-                user_env: &user_env,
-                test_bin: &test_bin,
-                tests: &tests,
-                index: i,
+        let mut index = 0;
+        for job in &jobs {
+            let (platform, class, launches) = match job {
+                Job::Skip { label, why } => {
+                    results.push(RunResult::new(label.clone(), Outcome::Skipped(why.clone())));
+                    continue;
+                }
+                Job::Run { platform, class, launches } => (platform.as_str(), class.as_deref(), launches),
             };
-            let before = results.len();
-            if let Err(e) = run_launch(&ctx, launch, &mut results) {
-                eprintln!("[test] {e:#}");
-                // Every size this launch didn't reach is reported, not dropped.
-                for size in &launch.sizes[results.len() - before..] {
-                    results.push((size.label.clone(), Outcome::Error(format!("{e:#}"))));
+            for launch in launches {
+                let ctx = LaunchCtx {
+                    args: &args,
+                    dir: &dir,
+                    platform,
+                    class,
+                    port,
+                    isolated: isolated.get(platform).and_then(|k| k.as_deref()),
+                    user_env: &user_env,
+                    test_bin: &test_bin,
+                    tests: &tests,
+                    index,
+                };
+                index += 1;
+                let before = results.len();
+                if let Err(e) = run_launch(&ctx, launch, &mut results) {
+                    eprintln!("[test] {e:#}");
+                    // Every size this launch didn't reach is reported, not dropped.
+                    for size in &launch.sizes[results.len() - before..] {
+                        results.push(RunResult::new(size.label.clone(), Outcome::Error(format!("{e:#}"))));
+                    }
                 }
             }
         }
-        results
-    });
+        Ok(results)
+    })();
     // Teardown runs whatever happened above.
-    let after = run_hooks("--after", &args.after, &dir, &hook_env);
+    let after = if runs_anything { run_hooks("--after", &args.after, &dir, &hook_env) } else { Ok(()) };
 
     let results = outcome?;
     let (summary, mut code) = summarize(&results);
@@ -555,11 +696,43 @@ pub fn run(args: Args) -> Result<()> {
     }
 }
 
+/// One platform's share of a run: its launches, or the reason the matrix
+/// plan couldn't make it here.
+enum Job {
+    Run { platform: String, class: Option<String>, launches: Vec<Launch> },
+    Skip { label: String, why: String },
+}
+
+/// The job for one matrix row: the one-off flags it stands for, through the
+/// same launch planning as `--simulator` / `--device` / …, labelled by its
+/// class.
+fn job_for_row(args: &Args, row: &matrix::Row) -> Result<Job> {
+    let target = match &row.plan {
+        Ok(t) => t,
+        Err(why) => return Ok(Job::Skip { label: row.label(), why: why.clone() }),
+    };
+    let mut one = args.clone();
+    one.viewport = target.viewport.map(|(w, h)| format!("{w}x{h}")).into_iter().collect();
+    one.device = target.device.clone().into_iter().collect();
+    one.simulator = target.simulator.clone().into_iter().collect();
+    one.emulator = target.emulator.clone().into_iter().collect();
+    one.mobile = false;
+    let mut launches = plan_launches(&one, &row.platform)?;
+    for launch in &mut launches {
+        for size in &mut launch.sizes {
+            size.label = row.label();
+        }
+    }
+    Ok(Job::Run { platform: row.platform.clone(), class: Some(row.class.clone()), launches })
+}
+
 /// What every launch of one run shares.
 struct LaunchCtx<'a> {
     args: &'a Args,
     dir: &'a Path,
     platform: &'a str,
+    /// The matrix class this launch runs as (`IDEALYST_TEST_CLASS`).
+    class: Option<&'a str>,
     port: u16,
     isolated: Option<&'a str>,
     user_env: &'a [(String, String)],
@@ -570,8 +743,8 @@ struct LaunchCtx<'a> {
 
 /// Launch the app (unless attaching), then run the suite at each of the
 /// launch's sizes, appending one result per size to `results`.
-fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<(String, Outcome)>) -> Result<()> {
-    let LaunchCtx { args, dir, platform, port, isolated, user_env, test_bin, tests, index } = *ctx;
+fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) -> Result<()> {
+    let LaunchCtx { args, dir, platform, class, port, isolated, user_env, test_bin, tests, index } = *ctx;
     let apps_dirs = registry_dirs()?;
     // Registrations already live before the launch belong to another run
     // (an earlier launch of this one included) or to the app being attached
@@ -636,7 +809,8 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<(String, Outco
         browser = Some(b);
     }
 
-    for size in &launch.sizes {
+    for (n, size) in launch.sizes.iter().enumerate() {
+        let na_file = std::env::temp_dir().join(format!("idealyst-test-na-{}-{index}-{n}.jsonl", std::process::id()));
         let ran = (|| -> Result<Outcome> {
             if let (Some(b), Some(e)) = (browser.as_ref(), &size.emulation) {
                 let mut b = b.lock().unwrap();
@@ -649,12 +823,18 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<(String, Outco
             wait_until_ready(addr, Duration::from_secs(240)).with_context(|| see_log("the app did not become ready"))?;
             eprintln!("[test] running `{}` on {platform} at {}…\n", args.test, size.label);
             let mut suite = Command::new(test_bin);
+            // Where the suite's not-applicable tests are recorded.
+            let _ = std::fs::remove_file(&na_file);
             suite
                 .current_dir(dir)
                 // What `cargo test` would set, for suites that read it at runtime.
                 .env("CARGO_MANIFEST_DIR", dir)
                 .envs(suite_env(size, port, user_env))
-                .env("IDEALYST_ROBOT_BRIDGE", addr.to_string());
+                .env("IDEALYST_ROBOT_BRIDGE", addr.to_string())
+                .env(robot_test::RESULTS_ENV, &na_file);
+            if let Some(class) = class {
+                suite.env("IDEALYST_TEST_CLASS", class);
+            }
             if let Some(control) = control {
                 suite.env(robot_test::browser_control::ENV, control.to_string());
             }
@@ -675,7 +855,9 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<(String, Outco
             eprintln!("[test] {}: {e:#}", size.label);
             Outcome::Error(format!("{e:#}"))
         });
-        results.push((size.label.clone(), outcome));
+        let not_applicable = read_not_applicable(&na_file);
+        let _ = std::fs::remove_file(&na_file);
+        results.push(RunResult { label: size.label.clone(), outcome, not_applicable });
     }
     drop(browser);
     drop(kill); // tear down the dev session
@@ -1833,15 +2015,74 @@ mod tests {
 
     #[test]
     fn the_summary_fails_the_run_if_any_size_fails() {
-        let pass = ("a".to_string(), Outcome::Passed);
+        let r = |label: &str, o: Outcome| RunResult::new(label, o);
+        let pass = r("a", Outcome::Passed);
         assert_eq!(summarize(&[pass.clone(), pass.clone()]).1, 0);
-        let (text, code) = summarize(&[pass.clone(), ("b".into(), Outcome::Failed(Some(101)))]);
+        let (text, code) = summarize(&[pass.clone(), r("b", Outcome::Failed(Some(101)))]);
         assert_eq!(code, 1);
         assert!(text.contains("PASS   a") && text.contains("FAIL   b"), "{text}");
-        assert_eq!(summarize(&[("b".into(), Outcome::Failed(Some(101)))]).1, 101, "a single run keeps its code");
-        let (text, code) = summarize(&[("c".into(), Outcome::Error("app never came up".into()))]);
+        assert_eq!(summarize(&[r("b", Outcome::Failed(Some(101)))]).1, 101, "a single run keeps its code");
+        let (text, code) = summarize(&[r("c", Outcome::Error("app never came up".into()))]);
         assert_eq!(code, 1);
         assert!(text.contains("ERROR  c: app never came up"), "{text}");
+    }
+
+    /// A planned run this machine can't make is reported with its reason
+    /// and doesn't fail the run; a run where nothing could run does. Tests
+    /// that didn't apply to a run's device are listed under it, with why.
+    #[test]
+    fn the_summary_reports_skips_and_not_applicable_tests_with_their_reasons() {
+        let mut phone = RunResult::new("phone on web (chromium:iphone-15)", Outcome::Passed);
+        phone.not_applicable.push(("hover_menu".into(), "needs pointer input; the app is a phone (xs, 390x844, touch)".into()));
+        let skip = RunResult::new(
+            "phone on ios (iPhone 15 @ iOS 17)",
+            Outcome::Skipped("iOS simulators run only on a Mac; this host is linux".into()),
+        );
+        let (text, code) = summarize(&[phone, skip.clone()]);
+        assert_eq!(code, 0, "a skip is reported, not failed: {text}");
+        assert!(text.contains("SKIP   phone on ios (iPhone 15 @ iOS 17): iOS simulators run only on a Mac"), "{text}");
+        assert!(text.contains("n/a hover_menu: needs pointer input"), "{text}");
+        let (text, code) = summarize(&[skip]);
+        assert_eq!(code, 1);
+        assert!(text.contains("nothing could run on this machine"), "{text}");
+    }
+
+    #[test]
+    fn not_applicable_tests_are_read_from_the_results_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("na.jsonl");
+        std::fs::write(
+            &file,
+            "{\"test\":\"a\",\"outcome\":\"na\",\"reason\":\"needs phone\"}\nnot json\n",
+        )
+        .unwrap();
+        assert_eq!(read_not_applicable(&file), [("a".to_string(), "needs phone".to_string())]);
+        assert!(read_not_applicable(&dir.path().join("missing")).is_empty());
+    }
+
+    /// A matrix row runs through the same launch planning as its one-off
+    /// flags, labelled by its class; a row the plan can't make is a skip.
+    #[test]
+    fn a_matrix_row_becomes_a_labelled_launch_or_a_skip() {
+        let row = |platform: &str, plan| matrix::Row { class: "phone".into(), platform: platform.into(), spec: "x".into(), plan };
+        let target = matrix::Target { simulator: Some("U-15".into()), emulator: None, device: None, viewport: None };
+        match job_for_row(&args(&[]), &row("ios", Ok(target))).unwrap() {
+            Job::Run { platform, class, launches } => {
+                assert_eq!((platform.as_str(), class.as_deref()), ("ios", Some("phone")));
+                assert_eq!(launches[0].target_device.as_deref(), Some("U-15"));
+                assert_eq!(launches[0].sizes[0].label, "phone on ios (x)");
+            }
+            Job::Skip { .. } => panic!("runs"),
+        }
+        let web = matrix::Target { simulator: None, emulator: None, device: Some("iphone-15".into()), viewport: None };
+        match job_for_row(&args(&[]), &row("web", Ok(web))).unwrap() {
+            Job::Run { launches, .. } => assert_eq!(launches[0].sizes[0].device.as_deref(), Some("iphone-15")),
+            Job::Skip { .. } => panic!("runs"),
+        }
+        match job_for_row(&args(&[]), &row("ios", Err("no Mac".into()))).unwrap() {
+            Job::Skip { label, why } => assert_eq!((label.as_str(), why.as_str()), ("phone on ios (x)", "no Mac")),
+            Job::Run { .. } => panic!("skips"),
+        }
     }
 
     #[cfg(unix)]

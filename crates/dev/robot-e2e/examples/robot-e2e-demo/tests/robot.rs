@@ -453,3 +453,12 @@ fn a_frame_below_the_fold_is_where_it_is_drawn(app: &mut App) {
         }
     }
 }
+
+/// A device-class test: it runs where the app is phone-sized (its
+/// breakpoint, from the app's own table) and is reported not applicable
+/// elsewhere, so `idealyst test` across the matrix shows it once per class.
+#[robot_test(form = phone)]
+fn a_phone_test_runs_only_on_a_phone(app: &mut App) {
+    let class = app.device_class();
+    assert_eq!(class.form, Some(robot_test::Form::Phone), "{class:?}");
+}

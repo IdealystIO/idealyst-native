@@ -737,6 +737,55 @@ and age. Runs in parallel take a key each — `--isolated <key>`, or
 `--parity` run suffixes each key with the platform). An entry whose
 process is gone (a crashed run) holds nothing.
 
+### Device matrix
+
+A project declares, once, which device each class runs as on each
+platform:
+
+```toml
+[package.metadata.idealyst.test.devices]
+phone   = { web = "chromium:iphone-15", ios = "iPhone 17 @ iOS 26", android = "Pixel_6_Pro_API_34" }
+tablet  = { web = "chromium:ipad-air",  ios = "iPad Pro 13-inch (M5)", android = "pixel_tablet @ 34" }
+desktop = { web = "1440x900", macos = "1440x900", linux = "1440x900", windows = "1440x900" }
+```
+
+- `web`: `[engine:]preset` or `[engine:]WxH`. `chromium` is the default
+  engine; `webkit` and `firefox` are reported as not supported yet.
+- `ios`: a simulator name, `@ iOS <version>` to pin its runtime.
+- `android`: an AVD name, `<hardware profile> @ <API level>`, or
+  `serial:<adb serial>` for an attached device.
+- `macos` / `linux` / `windows`: the window size.
+
+With a matrix, `idealyst test <project>` runs every class on every
+platform this machine can run. `--devices phone,tablet` and `--platforms
+ios,web` (or the `--web` / `--ios` / … flags) narrow it. Before building,
+it prints the plan: each class × platform either runs or is skipped with
+the reason, and the reasons repeat in the final summary (`SKIP`). The
+reasons are:
+
+- the project doesn't build for that platform (`[package.metadata.idealyst.app]
+  targets`);
+- the host can't run it (iOS needs a Mac, Windows a Windows host or
+  `IDEALYST_WINDOWS_REMOTE`);
+- a runtime, system image, simulator, AVD or browser isn't installed (with
+  the command that makes it);
+- an image is for another CPU architecture.
+
+`idealyst test --plan` prints the plan and exits. A run where nothing
+could run fails; skips alongside runs that passed don't. The one-off
+flags below (`--viewport`, `--device`, `--simulator`, `--emulator`,
+`--mobile`, `--attach`) still work and replace the matrix for that run.
+Tests see their class as `IDEALYST_TEST_CLASS`.
+
+Tests target classes rather than devices: `#[robot_test(form = phone)]`
+(breakpoint xs/sm; `tablet` is md, `desktop` lg/xl, from the app's own
+breakpoint table) and `#[robot_test(input = touch)]` (a coarse primary
+pointer; `pointer` is fine). The class is checked against what the app
+reports when the test runs, so one test covers an iPhone, a Pixel and a
+phone-sized browser. Where it doesn't match, the test is listed under that
+run as `n/a` with the reason, never as a pass. `app.device_class()` reads
+the class directly.
+
 One run can cover several configurations, each a full pass of the suite
 with its own line in the summary (any failure fails the run):
 
