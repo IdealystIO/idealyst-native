@@ -1213,6 +1213,31 @@ fn start_view_intent(
 
 
 
+/// Make the host root the window's resting focus: focusable in touch mode,
+/// taking focus before its descendants.
+///
+/// When the focused view goes away (a modal closes with its field focused,
+/// a focused row unmounts) or the window regains focus with nothing
+/// focused, Android re-requests focus from the window's root, and in touch
+/// mode that walk lands on the first visible view focusable in touch mode:
+/// a text field. The field the user never touched took focus, its
+/// `on_focus` ran and the keyboard could come up. iOS and web leave focus
+/// nowhere. With the host root focusable, the walk stops at the root (no
+/// keyboard, no field event); a field focused on purpose (a tap, `focus()`,
+/// D-pad/Tab) is still reached directly. The app-level key listener makes
+/// the same root focusable for its own reason (`keyboard.rs`).
+fn install_focus_sink(root: &GlobalRef) {
+    /// `ViewGroup.FOCUS_BEFORE_DESCENDANTS`.
+    const FOCUS_BEFORE_DESCENDANTS: i32 = 0x20000;
+    with_env(|env| {
+        let _ = env.call_method(root, "setFocusableInTouchMode", "(Z)V", &[JValue::Bool(1)]);
+        let _ = env.call_method(root, "setDescendantFocusability", "(I)V", &[JValue::Int(FOCUS_BEFORE_DESCENDANTS)]);
+        // A root that isn't a ViewGroup (or a failed call) throws; a
+        // pending exception would poison the next JNI call.
+        let _ = env.exception_clear();
+    });
+}
+
 impl AndroidBackend {
     /// Construct a backend rooted at the provided Android `Context`
     /// and a parent `ViewGroup` to mount under.
@@ -1224,6 +1249,7 @@ impl AndroidBackend {
         // SDK call panics "android context was not initialized" → abort.
         init_ndk_context(&context);
         view_rect::set_viewport_root(&root);
+        install_focus_sink(&root);
         let mut backend = Self {
             context,
             root,
