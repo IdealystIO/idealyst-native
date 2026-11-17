@@ -189,7 +189,8 @@ fn role_to_ns_accessibility_role(role: Role) -> Option<&'static NSString> {
         NSAccessibilityProgressIndicatorRole, NSAccessibilityRadioButtonRole,
         NSAccessibilityRadioGroupRole, NSAccessibilityRowRole, NSAccessibilitySplitterRole,
         NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole, NSAccessibilityTextFieldRole,
-        NSAccessibilityToolbarRole, NSAccessibilityWindowRole,
+        NSAccessibilityToolbarRole, NSAccessibilityWindowRole, NSAccessibilityTableRole,
+        NSAccessibilityCellRole,
     };
     // SAFETY: each `NSAccessibility*Role` is a stable AppKit string
     // constant loaded once by the dynamic linker; reading them is
@@ -212,6 +213,11 @@ fn role_to_ns_accessibility_role(role: Role) -> Option<&'static NSString> {
             Role::ListItem => NSAccessibilityRowRole,
             Role::Group | Role::TabPanel | Role::Region => NSAccessibilityGroupRole,
             Role::Separator => NSAccessibilitySplitterRole,
+            Role::Table => NSAccessibilityTableRole,
+            Role::Row => NSAccessibilityRowRole,
+            // AppKit has no column-header role: a header is a cell the
+            // table lists in its `accessibilityColumnHeaderUIElements`.
+            Role::Cell | Role::ColumnHeader => NSAccessibilityCellRole,
             Role::TextField | Role::TextArea | Role::SearchField => NSAccessibilityTextFieldRole,
             // `Switch` is a checkbox with the `switch` subrole on
             // AppKit — see `role_to_ns_accessibility_subrole`.

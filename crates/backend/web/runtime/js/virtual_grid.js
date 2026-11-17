@@ -4,6 +4,31 @@
 // the wasm→JS boundary is crossed only when cells enter or leave
 // the window, never on every scroll tick.
 //
+// # Rows
+//
+// Each mounted row is one element holding that row's mounted cells, in
+// column order, so a row is a real DOM container: `getByRole('row')` and
+// `row.getByRole('cell')` (Playwright scopes by DOM descent, not
+// `aria-owns`) and `filter({ hasText })` see every cell of it, the frozen
+// ones included. Frozen panes are CSS sticky on the row and cell level:
+//
+// - a scrolling row is absolutely placed in the spacer at its `y`; a
+//   frozen row sits in flow in the top or bottom BAND, a sticky strip at
+//   that edge of the content (`GridMetrics::display_origin`'s rule);
+// - in a row, a frozen LEADING column's cell is in flow at its own `x`
+//   (the leading columns are contiguous from 0) and sticks at `left: x`;
+//   a TRAILING one is in flow after the row's filler, at the far edge,
+//   and sticks at `right`; a scrolling column's cell is absolutely placed
+//   at its `x`.
+//
+// The browser holds frozen cells at the edge on the compositor, with no
+// frame of lag; moving them from the scroll listener would trail.
+//
+// With `setTable(true)` (the grid's role is `table`) the rows carry
+// `role=row` + `aria-rowindex`, the cells `role=columnheader` (frozen top
+// rows) or `cell` + `aria-colindex`, and the container `aria-rowcount` /
+// `aria-colcount` for the rows that are not mounted.
+//
 // # What's different from the 1-D shim
 //
 // `virtualizer.js` windows one axis and treats the cross axis as
@@ -71,19 +96,30 @@
             // spacer documents.
             this.spacer.style.flexShrink = '0';
             this.spacer.style.flexBasis = 'auto';
-            // A one-cell grid the size of the content, so each frozen
-            // layer can sit at a corner of it (`justify-self` / `align-self`
-            // start or end) and stick from there. Scrolling cells are
-            // absolutely positioned and take no part in the grid.
-            this.spacer.style.display = 'grid';
-            this.spacer.style.gridTemplateColumns = '100%';
-            this.spacer.style.gridTemplateRows = '100%';
+            // A column the size of the content: the frozen top band, the
+            // scrolling rows (absolutely placed, out of flow), a filler,
+            // the frozen bottom band. The bands stick to the scrollport's
+            // top and bottom edges.
+            this.spacer.style.display = 'flex';
+            this.spacer.style.flexDirection = 'column';
             container.appendChild(this.spacer);
+            this.topBand = this._makeBand('L');
+            this.filler = document.createElement('div');
+            this.filler.style.flex = '1 1 auto';
+            this.bottomBand = this._makeBand('T');
+            this.spacer.appendChild(this.topBand);
+            this.spacer.appendChild(this.filler);
+            this.spacer.appendChild(this.bottomBand);
 
-            /** Sticky layers for frozen cells, by band pair (`colBand +
-             *  rowBand`, each 'L' leading / 'S' scrolling / 'T' trailing).
-             *  'SS' is the spacer itself. @type {Map<string, HTMLElement>} */
-            this.layers = new Map();
+            /** Mounted rows by index: the row element, its band ('L' top
+             *  frozen / 'S' scrolling / 'T' bottom frozen), its filler
+             *  (between the scrolling and the trailing frozen cells) and
+             *  its mounted cells by column.
+             *  @type {Map<number, {el: HTMLElement, band: string, filler: HTMLElement, cells: Map<number, Object>}>} */
+            this.rows = new Map();
+            this.contentW = 0;
+            /** Table semantics (`setTable`). */
+            this.table = false;
 
             /** Cell reuse (`setRecycling`): parked cells by
              *  `reuseClass + '|' + layerKey`, and the Rust callbacks.
@@ -129,6 +165,17 @@
                 if (this._released) return;
                 this.refresh();
             });
+        }
+
+        /** Give the grid table semantics: rows and cells carry their
+         *  roles and indices (see the file's header). Called by Rust right
+         *  after construction, before the first fill. */
+        setTable(on) {
+            this.table = !!on;
+            for (const b of [this.topBand, this.bottomBand]) {
+                if (this.table) b.setAttribute('role', 'rowgroup');
+                else b.removeAttribute('role');
+            }
         }
 
         /** Reuse cells from now on: a cell leaving the window is parked —
@@ -196,6 +243,14 @@
             // leaves the scroller briefly scrolled past its own content.
             this.spacer.style.width = w.contentW + 'px';
             this.spacer.style.height = w.contentH + 'px';
+            if (w.contentW !== this.contentW) {
+                this.contentW = w.contentW;
+                for (const r of this.rows.values()) r.el.style.width = w.contentW + 'px';
+            }
+            if (this.table) {
+                this.container.setAttribute('aria-rowcount', String(w.rowCount));
+                this.container.setAttribute('aria-colcount', String(w.colCount));
+            }
 
             const revalidate = this._revalidateKeys;
             this._revalidateKeys = false;
@@ -241,8 +296,10 @@
                 ) {
                     if (this.recycle) {
                         // Parked under the class of the position it LEFT —
-                        // the structure it was built with.
+                        // the structure it was built with. Its node stays
+                        // in the old row until it is reused or released.
                         this.mounted.delete(slot);
+                        this._leaveRow(e);
                         const k = this.recycle.reuseClass(e.col, e.row) + '|' + e.layer;
                         let list = this.pool.get(k);
                         if (!list) this.pool.set(k, (list = []));
@@ -288,6 +345,10 @@
                 for (const e of list) this._release(e);
             }
             this.pool.clear();
+            // Rows left with no mounted cell go.
+            for (const [row, r] of Array.from(this.rows)) {
+                if (r.cells.size === 0) this._dropRow(row);
+            }
         }
 
         /** Take a parked cell of this position's class and layer, point it
@@ -298,14 +359,15 @@
             if (!list || list.length === 0) return false;
             const e = list.pop();
             this.recycle.rebind(e.scopeId, col, row);
-            const r = this.cb.cellRect(col, row);
-            if (r) this._place(e.node, r[0], r[1], r[2], r[3], col, row, w);
             e.col = col;
             e.row = row;
             e.key = this.cb.cellKey(col, row);
-            // Back into row-major order within its layer (hit-testing of
-            // equal-z siblings follows DOM order).
-            this._insert(e.node, this._layer(layerKey), layerKey, col, row);
+            const rowRec = this._rowFor(row, w);
+            const r = this.cb.cellRect(col, row);
+            if (r) this._place(e.node, r[0], r[1], r[2], r[3], col, row, w);
+            // Into its new row, in column order.
+            this._insert(e, rowRec, w);
+            this._cellRole(e.node, col, row, w);
             this.mounted.set(slot, e);
             return true;
         }
@@ -338,44 +400,115 @@
                 this._band(row, w.top, w.bottom, w.rowCount);
         }
 
-        /** The layer a band pair's cells go in. A frozen layer is a
-         *  zero-size `position: sticky` box at the matching corner of the
-         *  content, so the browser holds its cells at the scrollport's
-         *  edge (CSS sticky — `GridMetrics::display_origin`'s rule). Edge
-         *  strips draw above scrolling cells, corners above both. */
-        _layer(key) {
-            if (key === 'SS') return this.spacer;
-            let el = this.layers.get(key);
-            if (el) return el;
-            el = document.createElement('div');
-            const [cb, rb] = key;
+        /** A frozen row band: a sticky strip at the content's top ('L')
+         *  or bottom ('T') edge, its rows in flow inside it, drawn above
+         *  the scrolling rows. */
+        _makeBand(key) {
+            const el = document.createElement('div');
             el.style.position = 'sticky';
-            el.style.width = '0px';
-            el.style.height = '0px';
-            el.style.gridArea = '1 / 1';
-            el.style.justifySelf = cb === 'T' ? 'end' : 'start';
-            el.style.alignSelf = rb === 'T' ? 'end' : 'start';
-            if (cb === 'L') el.style.left = '0px';
-            if (cb === 'T') el.style.right = '0px';
-            if (rb === 'L') el.style.top = '0px';
-            if (rb === 'T') el.style.bottom = '0px';
-            el.style.zIndex = cb !== 'S' && rb !== 'S' ? '3' : '2';
-            el.setAttribute('data-virtual-grid-layer', key);
-            this.spacer.appendChild(el);
-            this.layers.set(key, el);
+            el.style.flex = 'none';
+            el.style.zIndex = '3';
+            if (key === 'L') el.style.top = '0px';
+            else el.style.bottom = '0px';
+            el.setAttribute('data-virtual-grid-band', key);
             return el;
         }
 
-        /** Position a cell node in its layer. A trailing layer sits at
-         *  the content's far edge, so its cells are offset back from it. */
+        /** Row `row`'s record, created (and put in its band, in row
+         *  order) if it has none. A row whose band changed since (the
+         *  frozen counts moved) is rebuilt: its cells were all moved out
+         *  by the window diff, which compares bands too. */
+        _rowFor(row, w) {
+            const band = this._band(row, w.top, w.bottom, w.rowCount);
+            let r = this.rows.get(row);
+            if (r && r.band === band) return r;
+            if (r) this._dropRow(row);
+            const el = document.createElement('div');
+            el.style.display = 'flex';
+            el.style.flexDirection = 'row';
+            el.style.flex = 'none';
+            el.style.width = this.contentW + 'px';
+            if (band === 'S') {
+                el.style.position = 'absolute';
+                el.style.left = '0px';
+            } else {
+                el.style.position = 'relative';
+            }
+            el.setAttribute('data-virtual-grid-row', String(row));
+            if (this.table) {
+                el.setAttribute('role', 'row');
+                el.setAttribute('aria-rowindex', String(row + 1));
+            }
+            const filler = document.createElement('div');
+            filler.style.flex = '1 1 auto';
+            filler.style.minWidth = '0px';
+            el.appendChild(filler);
+            r = { el, band, filler, cells: new Map() };
+            // In row order among its band's rows: rows sit in DOM order,
+            // the header first, for `getByRole('row').nth(i)`.
+            let next = null;
+            for (const [i, o] of this.rows) {
+                if (o.band === band && i > row && (next === null || i < next[0])) next = [i, o];
+            }
+            const parent = band === 'L' ? this.topBand : band === 'T' ? this.bottomBand : this.spacer;
+            const fallback = band === 'S' ? this.filler : null;
+            parent.insertBefore(el, next ? next[1].el : fallback);
+            this.rows.set(row, r);
+            return r;
+        }
+
+        _dropRow(row) {
+            const r = this.rows.get(row);
+            if (!r) return;
+            if (r.el.parentNode) r.el.parentNode.removeChild(r.el);
+            this.rows.delete(row);
+        }
+
+        /** Take cell entry `e` out of its row's bookkeeping. */
+        _leaveRow(e) {
+            const r = this.rows.get(e.row);
+            if (r && r.cells.get(e.col) === e) r.cells.delete(e.col);
+        }
+
+        /** Place a cell node in its row, and the row at the cell's `y`.
+         *  A scrolling column's cell is absolutely placed at its `x`; a
+         *  frozen one is in flow and sticks at that edge. */
         _place(node, x, y, cw, ch, col, row, w) {
-            const key = this._layerKey(col, row, w);
-            const dx = key[0] === 'T' ? w.contentW : 0;
-            const dy = key[1] === 'T' ? w.contentH : 0;
-            node.style.left = (x - dx) + 'px';
-            node.style.top = (y - dy) + 'px';
+            const r = this.rows.get(row);
+            if (r) {
+                if (r.band === 'S') r.el.style.top = y + 'px';
+                r.el.style.height = ch + 'px';
+            }
             node.style.width = cw + 'px';
             node.style.height = ch + 'px';
+            node.style.flex = 'none';
+            const band = this._band(col, w.left, w.right, w.colCount);
+            if (band === 'S') {
+                node.style.position = 'absolute';
+                node.style.left = x + 'px';
+                node.style.top = '0px';
+                node.style.right = '';
+                node.style.zIndex = '';
+            } else {
+                // Above the row's scrolling cells, which pass beneath it.
+                node.style.position = 'sticky';
+                node.style.top = '';
+                node.style.zIndex = '1';
+                if (band === 'L') {
+                    node.style.left = x + 'px';
+                    node.style.right = '';
+                } else {
+                    node.style.left = '';
+                    node.style.right = (w.contentW - x - cw) + 'px';
+                }
+            }
+        }
+
+        /** Table semantics for a cell (`setTable`). */
+        _cellRole(node, col, row, w) {
+            if (!this.table) return;
+            node.setAttribute('role', row < w.top ? 'columnheader' : 'cell');
+            node.setAttribute('aria-colindex', String(col + 1));
         }
 
         _mount(col, row, slot, w) {
@@ -383,45 +516,42 @@
             if (!res) return;
             const [node, scopeId, x, y, cw, ch] = res;
             const layerKey = this._layerKey(col, row, w);
-            const layer = this._layer(layerKey);
-            node.style.position = 'absolute';
+            const rowRec = this._rowFor(row, w);
             this._place(node, x, y, cw, ch, col, row, w);
             // `box-sizing: border-box` so an author's padding/border
             // stays inside the cell's allotted column width instead of
             // pushing it over its neighbour. The grid owns cell
             // geometry; the author owns what's drawn in it.
             node.style.boxSizing = 'border-box';
-            // Row-major DOM order — before the next mounted cell in
-            // (row, col) order, else last — so equal-z cells stack and
-            // hit-test by position, not by the order they scrolled in.
-            this._insert(node, layer, layerKey, col, row);
-            this.mounted.set(slot, {
+            const e = {
                 node,
                 scopeId,
                 col,
                 row,
                 layer: layerKey,
                 key: this.cb.cellKey(col, row),
-            });
+            };
+            this._insert(e, rowRec, w);
+            this._cellRole(node, col, row, w);
+            this.mounted.set(slot, e);
         }
 
-        /** Put `node` in `layer` at its row-major place. Within the cell's
-         *  own layer only; frozen layers are appended to the spacer after
-         *  the scrolling cells and keep their place (`next` is always a
-         *  sibling of `node` in `layer`). */
-        _insert(node, layer, layerKey, col, row) {
+        /** Put cell entry `e` in row `r` at its column-order place: before
+         *  the next mounted cell of a higher column, and the leading and
+         *  scrolling cells before the row's filler, the trailing ones
+         *  after it (so they sit in flow at the far edge). */
+        _insert(e, r, w) {
             let next = null;
-            for (const e of this.mounted.values()) {
-                if (e.layer !== layerKey || e.node === node) continue;
-                const after = e.row > row || (e.row === row && e.col > col);
-                const closer = next === null || e.row < next.row || (e.row === next.row && e.col < next.col);
-                if (after && closer) next = e;
+            for (const [c, o] of r.cells) {
+                if (o === e || c <= e.col) continue;
+                if (next === null || c < next.col) next = o;
             }
-            if (next) layer.insertBefore(node, next.node);
-            else if (layer === this.spacer && this.layers.size > 0) {
-                // Scrolling cells stay before the sticky layers.
-                this.spacer.insertBefore(node, this.spacer.querySelector(':scope > [data-virtual-grid-layer]'));
-            } else layer.appendChild(node);
+            const trailing = (c) => this._band(c, w.left, w.right, w.colCount) === 'T';
+            let ref = next ? next.node : null;
+            if (!trailing(e.col) && (ref === null || trailing(next.col))) ref = r.filler;
+            r.el.insertBefore(e.node, ref);
+            e.layer = this._layerKey(e.col, e.row, w);
+            r.cells.set(e.col, e);
         }
 
         _unmount(slot) {
@@ -432,6 +562,7 @@
             }
             this.cb.releaseCell(e.scopeId);
             this.mounted.delete(slot);
+            this._leaveRow(e);
         }
 
         /** Scroll so cell `(col, row)` sits at the scrolling area's
@@ -477,7 +608,7 @@
                 for (const e of list) this._release(e);
             }
             this.pool.clear();
-            this.layers.clear();
+            this.rows.clear();
             if (this.spacer && this.spacer.parentNode === this.container) {
                 this.container.removeChild(this.spacer);
             }

@@ -44,6 +44,11 @@
 //!
 //! # What it supports, and doesn't
 //!
+//! It is a table to assistive tech and locators: the grid takes the
+//! `table` role, and the web grid gives each mounted row `role=row`
+//! (`aria-rowindex`), the header cells `columnheader` and the rest `cell`
+//! (`aria-colindex`), with `aria-rowcount` for the rows not mounted.
+//!
 //! The cell look is the same sheets' (`TableStyles::head_cell` /
 //! `body_cell`, with the table's `styles` over them), as are density,
 //! `variant`, the edge inset, frame slots, `selection` (select-all covers
@@ -752,6 +757,10 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
     // grid's default (a whole viewport each side) mounts about nine
     // screenfuls of cells, and every table cell is a small styled subtree.
     .overscan(TABLE_OVERSCAN)
+    // A table to assistive tech and locators, as the non-virtual Table's
+    // `<table>` is: the grid gives its rows `row`, its header cells
+    // `columnheader` and the rest `cell`, with their indices.
+    .a11y(runtime_core::AccessibilityProps { role: Some(runtime_core::Role::Table), ..Default::default() })
     .on_scroll(on_scroll)
     .on_handle({
         let (handle, port_sub) = (handle.clone(), port_sub.clone());

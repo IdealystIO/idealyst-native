@@ -50,6 +50,13 @@ pub enum Role {
     Group,
     Separator,
 
+    // Tabular: a table, its rows, and their cells. `ColumnHeader` is a
+    // cell that labels its column.
+    Table,
+    Row,
+    Cell,
+    ColumnHeader,
+
     // Input
     TextField,
     TextArea,
@@ -224,6 +231,10 @@ impl Role {
             Role::ListItem => "listitem",
             Role::Group => "group",
             Role::Separator => "separator",
+            Role::Table => "table",
+            Role::Row => "row",
+            Role::Cell => "cell",
+            Role::ColumnHeader => "columnheader",
             Role::TextField | Role::TextArea => "textbox",
             Role::Switch => "switch",
             Role::Slider => "slider",
@@ -639,6 +650,10 @@ mod tests {
         assert_eq!(Role::Checkbox.aria(), Some("checkbox"));
         assert_eq!(Role::RadioButton.aria(), Some("radio"));
         assert_eq!(Role::TabList.aria(), Some("tablist"));
+        assert_eq!(Role::Table.aria(), Some("table"));
+        assert_eq!(Role::Row.aria(), Some("row"));
+        assert_eq!(Role::Cell.aria(), Some("cell"));
+        assert_eq!(Role::ColumnHeader.aria(), Some("columnheader"));
         assert_eq!(Role::Dialog.aria(), Some("dialog"));
         assert_eq!(Role::AlertDialog.aria(), Some("alertdialog"));
         // ARIA has no spinner: it is an indeterminate progressbar.

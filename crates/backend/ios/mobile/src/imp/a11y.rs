@@ -146,7 +146,9 @@ fn role_to_traits_bits(role: Role) -> u64 {
         Role::Button => BUTTON,
         Role::Link | Role::NavigationLink => LINK,
         Role::Image => IMAGE,
-        Role::Header => HEADER,
+        // A column header announces as a heading, as UIKit's own data
+        // tables do.
+        Role::Header | Role::ColumnHeader => HEADER,
         Role::SearchField => SEARCH_FIELD,
         Role::Slider => ADJUSTABLE,
         Role::Switch | Role::Checkbox | Role::RadioButton => TOGGLE_BUTTON,
@@ -162,6 +164,9 @@ fn role_to_traits_bits(role: Role) -> u64 {
         | Role::ComboBox
         | Role::List
         | Role::ListItem
+        | Role::Table
+        | Role::Row
+        | Role::Cell
         | Role::Group
         | Role::Separator
         | Role::RadioGroup

@@ -3820,10 +3820,11 @@ async fn regression_web_virtual_grid_cells_keep_row_major_order_after_scrolling_
     scroll_to(1800.0);
     sleep_ms(20).await;
 
-    let spacer = grid_el.first_element_child().expect("the spacer");
-    let cells = spacer.children();
+    // Document order: each row's cells sit in that row's element.
+    let cells = grid_el.query_selector_all("[data-cell]").unwrap();
     let order: Vec<u32> = (0..cells.length())
         .filter_map(|i| cells.item(i))
+        .filter_map(|c| c.dyn_into::<web_glue::dom::Element>().ok())
         .filter_map(|c| c.get_attribute("data-cell"))
         .map(|c| c.parse().unwrap())
         .collect();
@@ -3981,14 +3982,112 @@ async fn virtual_grid_frozen_panes_hold_at_the_edges_while_scrolling() {
     assert_eq!((grid_el.scroll_left(), grid_el.scroll_top()), (320, 2360));
 
     // A width change re-places the cells that survive it, frozen ones
-    // included (the right pin's layer sits at the content's far edge,
-    // which moved).
+    // included (the right pin sticks at an offset from the content's far
+    // edge, which moved).
     width.set(100.0);
     crate::primitives::virtual_grid::data_changed(&mut backend, &grid);
     sleep_ms(30).await;
     let (x, _, w) = rect(9, 60);
     assert_eq!((x, w), (200.0, 100.0), "the right pin re-placed at the new width");
     assert_eq!(rect(0, 0).2, 100.0, "the corner takes the new width");
+
+    crate::primitives::virtual_grid::release(&mut backend, &grid);
+    grid_el.remove();
+}
+
+/// Regression (CrewForge): a virtualized idea-ui `Table` read as a flat
+/// `list > generic` — no row to find with `getByRole('row')`, no cell
+/// with `getByRole('cell', { name })`. Frozen cells sat in sticky layers
+/// apart from their rows, so no element could be a row. In table mode
+/// every mounted row is one `role=row` element holding all its cells,
+/// pinned ones included, in column order; header cells are
+/// `columnheader`; indices and counts describe the rows not mounted.
+#[wasm_bindgen_test]
+async fn regression_virtual_grid_table_has_rows_holding_their_cells() {
+    use runtime_shared::primitives::virtual_grid::FrozenPanes;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let mount_doc = doc.clone();
+    let callbacks = runtime_shared::primitives::virtual_grid::GridCallbacks::<web_glue::dom::Node> {
+        col_count: Rc::new(|| 10usize),
+        row_count: Rc::new(|| 100usize),
+        col_width: Rc::new(|_| 80.0_f32),
+        row_height: Rc::new(|_| 40.0_f32),
+        cell_key: Rc::new(|c, r| (r * 10 + c) as u64),
+        mount_cell: Rc::new(move |c, r| {
+            let el = mount_doc.create_element("div").unwrap();
+            let _ = el.set_attribute("data-cell", &format!("{c},{r}"));
+            (el.unchecked_into(), (r * 10 + c) as u64)
+        }),
+        release_cell: Rc::new(|_| {}),
+        on_scroll: None,
+    };
+    let grid = crate::primitives::virtual_grid::create(&mut backend, callbacks, 0.0);
+    crate::primitives::virtual_grid::set_table(&mut backend, &grid);
+    crate::primitives::virtual_grid::set_frozen(
+        &mut backend,
+        &grid,
+        FrozenPanes { top: 1, left: 1, right: 1, ..FrozenPanes::NONE },
+    );
+    let grid_el: web_glue::dom::HtmlElement = grid.clone().unchecked_into();
+    let _ = grid_el.set_attribute(
+        "style",
+        "position: absolute; left: 0; top: 0; height: 200px; width: 300px; overflow: auto; scrollbar-width: none;",
+    );
+    doc.body().unwrap().append_child(&grid_el).unwrap();
+    sleep_ms(20).await;
+    grid_el.set_scroll_left(240);
+    grid_el.set_scroll_top(2000);
+    grid_el.dispatch_event(&web_glue::dom::Event::new("scroll").unwrap()).unwrap();
+    sleep_ms(30).await;
+
+    assert_eq!(grid_el.get_attribute("aria-rowcount").as_deref(), Some("100"));
+    assert_eq!(grid_el.get_attribute("aria-colcount").as_deref(), Some("10"));
+
+    let all = |el: &web_glue::dom::Element, sel: &str| -> Vec<web_glue::dom::Element> {
+        let list = el.query_selector_all(sel).unwrap();
+        (0..list.length())
+            .filter_map(|i| list.item(i))
+            .filter_map(|n| n.dyn_into::<web_glue::dom::Element>().ok())
+            .collect()
+    };
+    let grid_elem: &web_glue::dom::Element = grid_el.as_ref();
+    let rows = all(grid_elem, "[role=row]");
+    let indices: Vec<u32> =
+        rows.iter().map(|r| r.get_attribute("aria-rowindex").unwrap().parse().unwrap()).collect();
+    let mut sorted = indices.clone();
+    sorted.sort_unstable();
+    assert_eq!(indices, sorted, "rows in document order, the header first: {indices:?}");
+    assert_eq!(indices[0], 1, "the header row is mounted");
+    assert!(indices.contains(&53), "the scrolled-to rows are mounted: {indices:?}");
+
+    // Every mounted cell is inside ITS row, the pinned ones included.
+    for cell in all(grid_elem, "[data-cell]") {
+        let at = cell.get_attribute("data-cell").unwrap();
+        let (c, r) = at.split_once(',').unwrap();
+        let (c, r): (u32, u32) = (c.parse().unwrap(), r.parse().unwrap());
+        let row = cell.closest("[role=row]").unwrap().unwrap_or_else(|| panic!("cell {at} is in a row"));
+        assert_eq!(row.get_attribute("aria-rowindex"), Some((r + 1).to_string()), "cell {at}");
+        assert_eq!(cell.get_attribute("aria-colindex"), Some((c + 1).to_string()), "cell {at}");
+        let want = if r == 0 { "columnheader" } else { "cell" };
+        assert_eq!(cell.get_attribute("role").as_deref(), Some(want), "cell {at}");
+    }
+
+    // A body row holds its cells in column order: left pin, the scrolled
+    // window, right pin.
+    let row53 = rows.iter().find(|r| r.get_attribute("aria-rowindex").as_deref() == Some("53")).unwrap();
+    let cols: Vec<u32> = all(row53, "[role=cell]")
+        .iter()
+        .map(|c| c.get_attribute("aria-colindex").unwrap().parse().unwrap())
+        .collect();
+    assert_eq!(cols.first(), Some(&1), "the left pin: {cols:?}");
+    assert_eq!(cols.last(), Some(&10), "the right pin: {cols:?}");
+    let mut sorted = cols.clone();
+    sorted.sort_unstable();
+    assert_eq!(cols, sorted, "column order: {cols:?}");
 
     crate::primitives::virtual_grid::release(&mut backend, &grid);
     grid_el.remove();

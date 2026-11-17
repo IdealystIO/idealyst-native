@@ -63,6 +63,9 @@ pub enum Role {
     // Structural
     Button, Link, Image, Text, Header, List, ListItem, Group, Separator,
 
+    // Tabular
+    Table, Row, Cell, ColumnHeader,
+
     // Input
     TextField, TextArea, Switch, Slider, Checkbox, RadioButton, RadioGroup,
     ComboBox, SearchField,
@@ -101,6 +104,10 @@ uses the underlying NSString constants
 | `ListItem`       | (none — content inside list)           | (no first-class role; relies on parent)            | `listitem`        | `.row`                          |
 | `Group`          | (none)                                 | `android.view.ViewGroup`                           | `group`           | `.group`                        |
 | `Separator`      | (none — visual)                        | (no first-class role; `Divider` heuristic)         | `separator`       | `.splitter`                     |
+| `Table`          | (none — container)                     | (none; no first-class role)                        | `table`           | `.table`                        |
+| `Row`            | (none)                                 | (none)                                             | `row`             | `.row`                          |
+| `Cell`           | (none)                                 | (none)                                             | `cell`            | `.cell`                         |
+| `ColumnHeader`   | `.header`                              | (none)                                             | `columnheader`    | `.cell`                         |
 | `TextField`      | `.searchField` or none + `accessibilityValue` | `android.widget.EditText`                  | `textbox`         | `.textField`                    |
 | `TextArea`       | (none — value reflects content)        | `android.widget.EditText` + `setMultiLine(true)`   | `textbox` + `aria-multiline=true` | `.textField` + `.textArea` subrole |
 | `Switch`         | `.switchButton`                        | `android.widget.Switch` + `isCheckable`            | `switch`          | `.checkBox` + `subrole=AXSwitch` |

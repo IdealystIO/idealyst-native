@@ -25,16 +25,19 @@
 //! wasm call returning a dozen numbers — cheaper than the per-cell
 //! crossings the mount path already pays.
 //!
-//! ## Frozen panes
+//! ## Rows and frozen panes
 //!
 //! Rust says which rows and columns are frozen (`window` returns the
-//! clipped bands with the scrolling window); the shim parents each frozen
-//! cell into a `position: sticky` layer — one per band combination, the
-//! top strip, left strip, a corner, … — so the BROWSER holds it at the
-//! edge during scrolling, on the compositor, with no frame of lag. Moving
-//! frozen cells from the scroll listener instead would trail the scroll by
-//! a frame on every browser with async scrolling. The layers follow
-//! `GridMetrics::display_origin`'s rule, which is CSS sticky's.
+//! clipped bands with the scrolling window). The shim puts each mounted
+//! row's cells in one row element, so a row is a real DOM container (what
+//! table semantics and locators need), and holds frozen panes with CSS
+//! sticky: frozen rows sit in a sticky band at the top or bottom edge,
+//! and a frozen column's cell sticks within its row. The BROWSER holds
+//! them at the edge during scrolling, on the compositor, with no frame of
+//! lag; moving frozen cells from the scroll listener instead would trail
+//! the scroll by a frame on every browser with async scrolling. The
+//! placement follows `GridMetrics::display_origin`'s rule, which is CSS
+//! sticky's.
 
 use std::cell::RefCell;
 use web_glue::JsValue;
@@ -316,13 +319,27 @@ pub(crate) fn data_changed(b: &mut WebBackend, node: &Node) {
     call0(&instance.js, "dataChanged");
 }
 
-/// Set the frozen panes, then have the shim re-diff: frozen cells move
-/// into their sticky layers and the bands join the window.
+/// Set the frozen panes, then have the shim re-diff: frozen rows move into
+/// their sticky bands, frozen columns' cells stick in their rows, and the
+/// bands join the window.
 pub(crate) fn set_frozen(b: &mut WebBackend, node: &Node, frozen: FrozenPanes) {
     let Some(id) = grid_id_of(node) else { return };
     let Some(instance) = b.virtual_grid_instances.get(&id) else { return };
     instance.frozen.set(frozen);
     call0(&instance.js, "dataChanged");
+}
+
+/// Table semantics: the shim gives each mounted row `role=row` and its
+/// cells `role=cell` / `columnheader` (the frozen top rows), with their
+/// indices, and the grid the row and column counts. The grid itself gets
+/// `role=table` from its accessibility props.
+pub(crate) fn set_table(b: &mut WebBackend, node: &Node) {
+    let Some(id) = grid_id_of(node) else { return };
+    let Some(instance) = b.virtual_grid_instances.get(&id) else { return };
+    let _ = web_glue::js::Reflect::get(&instance.js, &JsValue::from_str("setTable"))
+        .ok()
+        .and_then(|f| f.dyn_into::<web_glue::js::Function>().ok())
+        .map(|f| f.call1(&instance.js, &JsValue::from_bool(true)));
 }
 
 /// Reuse cells (`GridRecycling`): hand the shim the reuse class and the

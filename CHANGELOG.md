@@ -11,6 +11,18 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **A virtualized idea-ui `Table` is a table to assistive tech and locators** (`runtime-shared`
+  minor, `backend-web` minor, `idea-ui` minor; role mappings in `backend-macos`,
+  `backend-ios-mobile`, `host-wgpu-accesskit`, `wire`, `dev-server`, `dev-client`). It read as a
+  flat `list` of `generic` cells, so `getByRole('row')` found nothing. `Role` gains `Table`, `Row`,
+  `Cell` and `ColumnHeader`; the virtual Table's grid takes `Role::Table`, and the web grid then
+  gives each mounted row `role=row` (`aria-rowindex`), header cells `columnheader` and the rest
+  `cell` (`aria-colindex`), and the grid `aria-rowcount` / `aria-colcount`. **Web `virtual_grid`
+  DOM change, for every grid:** each mounted row is now one element holding its cells in column
+  order, frozen rows sit in sticky top/bottom bands and frozen columns' cells stick within their
+  row (formerly separate sticky layers). The frozen-pane geometry is unchanged. Native backends map
+  the new roles but do not yet expose row structure for the grid.
+
 - **A fresh page in `idealyst dev --web` mounts with the session's hot patch already applied**
   (`backend-web` minor, `dev-http` minor, CLI). A page loaded after a hot patch mounted the base
   bundle and then took the replayed patch, rebuilding the tree 50-100 ms in; every input

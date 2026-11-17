@@ -78,6 +78,10 @@ semantics independent of how it looks:
 
 - **Structural** — `Button`, `Link`, `Image`, `Text`, `Header`, `List`,
   `ListItem`, `Group`, `Separator`.
+- **Tabular** — `Table`, `Row`, `Cell`, `ColumnHeader`. A virtualized
+  idea-ui `Table` is a `Table`: on the web its grid gives each mounted row
+  `row` and its cells `cell` / `columnheader`, with row and column indices
+  and counts for the rows not mounted.
 - **Input** — `TextField`, `TextArea`, `Switch`, `Slider`, `Checkbox`,
   `RadioButton`, `RadioGroup`, `ComboBox`, `SearchField`.
 - **Disclosure / navigation** — `Tab`, `TabList`, `TabPanel`,

@@ -278,3 +278,68 @@ async fn regression_scroll_y_scrollbar_runs_under_the_header() {
     assert!((rect(&name_th).left() - name_x).abs() < 0.5, "the frozen header cell stayed put");
     drop(realized);
 }
+
+/// Regression (CrewForge, ~30 specs): a virtualized idea-ui `Table` read as
+/// a flat `list > generic > generic "Copper Creek Mine"`: `getByRole('row')`
+/// counted 0 and `getByRole('cell', { name })` found nothing, where the
+/// non-virtual Table is a real `<table>`. It is now a `table` whose mounted
+/// rows are `row` elements holding all their cells, the pinned ones
+/// included, with `columnheader` cells in the header row.
+#[wasm_bindgen_test]
+async fn regression_virtualized_table_exposes_rows_and_cells() {
+    use idea_ui::components::table::{ColumnId, ColumnPin, RowId, Table, TableColumn, TableProps, VirtualRows};
+
+    let (backend, registry, world) = harness();
+    crate::newcore::set_mounted_world_for_tests(Some(world.clone()));
+    let sites = ["Copper Creek Mine", "Iron Ridge", "Silver Flats"];
+    let realized = world.enter(|| {
+        idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+        let table = Table(TableProps {
+            columns: vec![
+                TableColumn::new("name").label("Name").width(200.0).pinned(ColumnPin::Left),
+                TableColumn::new("status").label("Status").width(160.0),
+                TableColumn::new("owner").label("Owner").width(160.0),
+            ],
+            virtualized: Some(VirtualRows::new(
+                move || 30,
+                move |i| RowId::from(format!("r{i}")),
+                move |i, col: &ColumnId| {
+                    let s = match col.as_str() {
+                        "name" => sites[i % 3].to_string(),
+                        other => format!("{other} {i}"),
+                    };
+                    runtime_vocabulary::builders::text().content(s).build()
+                },
+            )),
+            max_height: Some(300.0),
+            ..Default::default()
+        });
+        realize(&backend, &registry, view().child(table).build())
+    });
+    let root = realized.collect_nodes().pop().expect("one root");
+    let host = mount_in(1440.0, root);
+    settle(&world).await;
+
+    let all = |el: &web_glue::dom::Element, sel: &str| -> Vec<web_glue::dom::Element> {
+        let list = el.query_selector_all(sel).unwrap();
+        (0..list.length()).filter_map(|i| list.item(i)).map(|n| n.unchecked_into()).collect()
+    };
+    let grid = host.query_selector("[role=table]").unwrap().expect("the grid is a table");
+    assert_eq!(grid.get_attribute("aria-rowcount").as_deref(), Some("31"), "30 rows and the header");
+    let rows = all(&grid, "[role=row]");
+    assert!(rows.len() > 2, "rows are mounted: {}", rows.len());
+
+    let heads: Vec<String> =
+        all(&rows[0], "[role=columnheader]").iter().map(|h| h.text_content().unwrap_or_default()).collect();
+    assert_eq!(heads, ["Name", "Status", "Owner"], "the header row's column headers, in order");
+
+    let copper = all(&grid, "[role=cell]")
+        .into_iter()
+        .find(|c| c.text_content().as_deref() == Some("Copper Creek Mine"))
+        .expect("getByRole('cell', { name: 'Copper Creek Mine' })");
+    let row = copper.closest("[role=row]").unwrap().expect("the cell is in a row");
+    let text = row.text_content().unwrap_or_default();
+    assert!(text.contains("status 0") && text.contains("owner 0"), "its row holds the whole row: {text:?}");
+    crate::newcore::set_mounted_world_for_tests(None);
+    drop(realized);
+}

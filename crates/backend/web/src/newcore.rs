@@ -748,6 +748,14 @@ fn flush_now() {
 /// realize) the boot's own `enter` is still ambient, so a bare call is
 /// already entered; nesting `enter` is a legal stack, so the ambient
 /// fallback never double-books.
+/// Make `world` the mounted world for a test that realizes without the
+/// boot path, so callbacks that build later (a virtual grid's cells, from
+/// the shim's microtask) enter it as they do in an app.
+#[cfg(test)]
+pub(crate) fn set_mounted_world_for_tests(world: Option<World>) {
+    FLUSH_WORLD.with(|w| *w.borrow_mut() = world);
+}
+
 fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
     match FLUSH_WORLD.with(|w| w.borrow().clone()) {
         Some(world) => world.enter(f),
@@ -1538,6 +1546,10 @@ impl caps::GridOps for WebBackend {
         };
         let node = crate::primitives::virtual_grid::create(self, callbacks, overscan);
         crate::a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
+        // A grid that is a table gives its rows and cells their roles too.
+        if a11y.role == Some(runtime_shared::accessibility::Role::Table) {
+            crate::primitives::virtual_grid::set_table(self, &node);
+        }
         node
     }
 

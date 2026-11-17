@@ -48,6 +48,10 @@ pub fn role_to_accesskit(role: Role) -> accesskit::Role {
         Role::ListItem => A::ListItem,
         Role::Group => A::Group,
         Role::Separator => A::Splitter,
+        Role::Table => A::Table,
+        Role::Row => A::Row,
+        Role::Cell => A::Cell,
+        Role::ColumnHeader => A::ColumnHeader,
         // Input.
         Role::TextField => A::TextInput,
         Role::TextArea => A::MultilineTextInput,
