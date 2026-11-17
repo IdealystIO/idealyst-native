@@ -1379,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "9.2.0"
+version = "9.2.1"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "9.3.0"
+version = "9.4.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "10.3.0"
+version = "10.3.1"
 dependencies = [
  "css",
  "dev-client",
@@ -2240,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "camera"
-version = "9.0.0"
+version = "9.1.0"
 dependencies = [
  "async-channel",
  "base64",
@@ -3353,7 +3353,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "datetime"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "chrono",
  "iana-time-zone",
@@ -4344,7 +4344,7 @@ dependencies = [
 
 [[package]]
 name = "file-picker"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "ashpd",
  "backend-android-mobile",
@@ -6467,7 +6467,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "22.6.0"
+version = "22.7.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6586,7 +6586,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "2.1.2"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7757,7 +7757,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7814,7 +7814,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "6.1.0"
+version = "6.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -8279,7 +8279,7 @@ dependencies = [
 
 [[package]]
 name = "net"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
@@ -10798,7 +10798,7 @@ dependencies = [
 
 [[package]]
 name = "robot-relay"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -10808,7 +10808,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -10823,7 +10823,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test-macros"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -11002,7 +11002,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "6.2.0"
+version = "6.3.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -11038,7 +11038,7 @@ version = "0.1.1"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "9.4.0"
+version = "9.5.0"
 dependencies = [
  "dev-hot",
  "host-mock",
