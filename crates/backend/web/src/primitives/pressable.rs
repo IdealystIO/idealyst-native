@@ -89,7 +89,7 @@ fn create_with(b: &mut WebBackend, on_click: Rc<dyn Fn()>, activation: PressActi
     let el_for_key: Node = el.clone().unchecked_into();
     let el_for_key: web_glue::dom::EventTarget = el_for_key.unchecked_into();
     // Element-lifetime: the element owns the listener, and its closure is
-    // released when JS collects the element.
+    // dropped when the element's subtree is released.
     crate::glue_dom::listen_for_element_lifetime(&el, "keydown", Default::default(), move |ev| {
         let ev: web_glue::dom::KeyboardEvent = web_glue::JsCast::unchecked_into(ev);
         let is_self = ev

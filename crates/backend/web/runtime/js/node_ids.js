@@ -13,6 +13,7 @@
 // JS object to the same `u32`:
 //
 //   __idealystNodeId(node) → u32   // allocate on first sight, recall thereafter
+//   __idealystNodeIdsUnder(root) → u32[]   // ids already minted in a subtree
 //
 // Storage is a `WeakMap` so entries auto-clear when the DOM element
 // is garbage-collected. No explicit unregister is required; the
@@ -33,6 +34,21 @@
       map.set(node, id);
     }
     return id;
+  };
+  // The ids already minted for `root` and the elements under it (none is
+  // minted here). A released subtree's per-id state is dropped by these.
+  window.__idealystNodeIdsUnder = function (root) {
+    var out = [];
+    var id = map.get(root);
+    if (id !== undefined) out.push(id);
+    if (typeof root.querySelectorAll === "function") {
+      var els = root.querySelectorAll("*");
+      for (var i = 0; i < els.length; i++) {
+        id = map.get(els[i]);
+        if (id !== undefined) out.push(id);
+      }
+    }
+    return out;
   };
   // Diagnostic: how many distinct DOM nodes have we minted ids for?
   // Backed by `next - 1` rather than walking the map (WeakMap has no

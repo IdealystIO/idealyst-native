@@ -3659,6 +3659,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Web: a discarded subtree's elements are freed** (`backend-web` patch, `web-glue` minor). Leaving
+  a screen, swapping an `if`/`match` branch, removing a list row or scrolling a virtual grid's cells
+  away kept every element of the old subtree for the life of the page: CrewForge measured +3,560
+  DOM nodes and +5,640 listeners per visit to a virtualized `Table` screen, ~370 nodes per form
+  screen, and a robot suite stalling near 100k nodes. A listener an element owns for its lifetime
+  (press, touch, hover, focus, scroll, wheel, link, image load) usually holds a handle to that
+  element, and a handle is a slot in the JS handle table, which is a GC root: element, listener
+  and closure kept each other alive, and the detached subtree with them. `Host::release_subtree`
+  was a no-op on web; it now drops those closures (after detaching the listeners) for the whole
+  subtree, and the tracked listeners of unstyled inputs, toggles and sliders, which no style
+  teardown removed. `web-glue` adds `Closure::into_owned_by`, `release_owned` and `Released`;
+  `Listener::into_target_owned` records its owner. No app change is needed. A screen a navigator
+  keeps mounted (`LazyPersistent`) is not released, as before.
+
 - **Closing a modal on Android no longer focuses a field of the page** (`backend-android-mobile`
   patch). When the focused view went away (a modal closed with its field focused), Android
   re-requested focus from the window root and landed on the first visible text field: its

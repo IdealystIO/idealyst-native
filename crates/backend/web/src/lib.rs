@@ -1930,6 +1930,29 @@ impl WebBackend {
         self.state_listeners.entry(id).or_default().push(TrackedListener(listener));
     }
 
+    /// Detach and drop the tracked listeners of every node in the subtree
+    /// under `root`. A node's style teardown (`on_node_unstyled`) does this
+    /// for a styled node; an unstyled input, toggle or slider has no style
+    /// effect to run it, and its listeners — each holding a handle to the
+    /// element — would stay in `state_listeners` for the life of the page.
+    pub(crate) fn release_tracked_listeners_under(&mut self, root: &Node) {
+        if self.state_listeners.is_empty() || self.node_id_fn.is_none() {
+            return; // nothing tracked, or no id was ever minted
+        }
+        let Some(window) = web_glue::dom::window() else { return };
+        let Ok(ids_under) = web_glue::js::Reflect::get(&window, &web_glue::JsValue::from_str("__idealystNodeIdsUnder"))
+            .and_then(|f| f.unchecked_into::<web_glue::js::Function>().call1(&web_glue::JsValue::NULL, root.as_ref()))
+        else {
+            return;
+        };
+        let ids: web_glue::js::Array = ids_under.unchecked_into();
+        for id in ids.iter() {
+            if let Some(id) = id.as_f64() {
+                self.state_listeners.remove(&(id as u32));
+            }
+        }
+    }
+
     /// Assigns a stable per-Node id we use as a key in `dynamic`,
     /// `state_listeners`, `animated_states`, and friends.
     ///

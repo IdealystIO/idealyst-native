@@ -831,6 +831,23 @@ impl Host for WebBackend {
         crate::pending_focus::node_attached();
     }
 
+    /// Drop the closures of every listener the subtree's elements own.
+    ///
+    /// The DOM does not free a discarded subtree by itself: a listener
+    /// registered for its element's lifetime usually holds a handle to that
+    /// element (a press takes pointer capture on it, a scroll reads its
+    /// offset), and a handle is a slot in the JS handle table, which is a
+    /// GC root. Element, listener and closure then keep each other alive,
+    /// and with them the whole detached subtree — every screen ever left,
+    /// every virtual grid cell ever scrolled away.
+    ///
+    /// Tracked listeners go too: a styled node's teardown already drops
+    /// them, an unstyled input's has nothing to run it.
+    fn release_subtree(&mut self, node: &Self::Node) {
+        crate::drop_deferral::drop_released(web_glue::release_owned(node.as_ref()));
+        self.release_tracked_listeners_under(node);
+    }
+
     fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
         let _t = crate::phase_timer::PhaseTimer::start("nc_remove_child");
         WebBackend::remove_child_impl(self, parent, child)
@@ -3911,6 +3928,79 @@ mod tests {
         assert_eq!(heard.borrow().last(), Some(&false), "and leave: {:?}", heard.borrow());
         js("window.__iyFocusThief.close(); window.focus();");
         drop(realized);
+    }
+
+    /// Let queued timers and microtasks run for `ms` (a timer, not an
+    /// animation frame: a headless page is never painted, so it gets none).
+    async fn wait_ms(ms: i32) {
+        let promise = web_glue::js::Promise::new(&mut |resolve, _reject| {
+            web_glue::dom::window()
+                .unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+                .unwrap();
+        });
+        let _ = web_glue::JsFuture::new(&promise).await;
+    }
+
+    /// One screen's worth of interactive elements: every primitive whose
+    /// DOM listeners the element owns for its lifetime.
+    fn interactive_screen() -> runtime_scene::Element {
+        use runtime_vocabulary::builders::{pressable, scroll_view, text_input};
+        view()
+            .child(
+                view()
+                    .on_touch(Rc::new(|_| runtime_shared::TouchResponse::default()))
+                    .on_hover(|_| {})
+                    .on_focus(|_| {})
+                    .child(text().content("touch"))
+                    .build(),
+            )
+            .child(pressable(|| {}).child(text().content("press")).build())
+            .child(button().label("button").on_press(|| {}).build())
+            .child(scroll_view().on_scroll(|_, _| {}).child(text().content("scroll")).build())
+            .child(text_input().value("").build())
+            .build()
+    }
+
+    /// REGRESSION (CrewForge: ~3,560 DOM nodes and ~5,600 listeners kept
+    /// per visit to a virtualized Table screen, the page stalling near
+    /// 100k nodes): a discarded subtree's elements were never freed. A
+    /// listener the element owns (press, touch, hover, focus, scroll)
+    /// captures a handle to that element, so the element held its listener,
+    /// the listener's Rust closure held the element's slot in the JS handle
+    /// table, and no garbage collection could break the loop: the whole
+    /// detached screen stayed reachable. Releasing the subtree now drops
+    /// those closures, so the handle and closure counts return to where
+    /// they were, with no collection needed.
+    #[wasm_bindgen_test]
+    async fn regression_released_subtree_frees_its_element_handles_and_listeners() {
+        let (backend, registry, world) = focus_harness();
+        let cycle = || {
+            let realized = world.enter(|| realize(&backend, &registry, interactive_screen()));
+            let root = realized.collect_nodes().pop().expect("one root");
+            let mut parent: web_glue::dom::Node = setup_mount_child();
+            Host::insert(&mut *backend.borrow_mut(), &mut parent, root.clone());
+            // What the scene does when it throws a subtree away: tell the
+            // host while it is assembled, detach it, drop its scopes.
+            Host::release_subtree(&mut *backend.borrow_mut(), &root);
+            Host::remove_child(&mut *backend.borrow_mut(), &parent, &root);
+            drop(realized);
+            let _ = parent.parent_node().map(|p| p.remove_child(&parent));
+        };
+        // Once to load what is created on first use (shims, style rules).
+        cycle();
+        wait_ms(50).await;
+        let (handles, closures) = (JsValue::live_count(), web_glue::Closure::live_count());
+        for _ in 0..5 {
+            cycle();
+        }
+        wait_ms(50).await;
+        assert_eq!(
+            web_glue::Closure::live_count(),
+            closures,
+            "five discarded screens left their listener closures registered"
+        );
+        assert_eq!(JsValue::live_count(), handles, "five discarded screens left element handles in the table");
     }
 
     fn setup_mount_append(node: &web_glue::dom::Node) {

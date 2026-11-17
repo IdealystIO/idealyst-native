@@ -61,8 +61,8 @@ pub(crate) fn create(
     // reject that benign second call (`web_glue::Closure::new_fn`).
     //
     // The element owns the listener for its lifetime; the closure is
-    // released when JS collects the element (a `.forget()` would leak one
-    // closure per ScrollView for the life of the page).
+    // dropped when the element's subtree is released (a `.forget()` would
+    // leak one closure per ScrollView for the life of the page).
     if let Some(cb) = on_scroll {
         let element_for_handler = div.clone();
         crate::glue_dom::listen_fn_for_element_lifetime(&div, "scroll", move |_| {

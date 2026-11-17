@@ -101,3 +101,36 @@ fn request_drain_frame() {
     // slices needed to drain (~18 per 250 ms transition window).
     std::mem::forget(task);
 }
+
+thread_local! {
+    /// Listener closures taken from released subtrees, waiting for
+    /// [`drop_released`]'s timer.
+    static RELEASED: RefCell<Vec<web_glue::Released>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drop the closures `Host::release_subtree` took from a discarded subtree,
+/// on the next timer turn.
+///
+/// Not inline: the release runs under the backend's `borrow_mut`, and a
+/// closure's captures (an author's handler, and whatever that owns) may
+/// run `Drop` code that reaches the backend again. Not on an animation
+/// frame either, as scope drops are: a hidden tab gets no frames, and the
+/// handles these closures hold are what keeps the detached elements alive.
+/// One timer serves every release made before it fires (a grid scrolling
+/// its cells away releases them one by one).
+pub(crate) fn drop_released(released: web_glue::Released) {
+    if released.is_empty() {
+        return;
+    }
+    let first = RELEASED.with(|q| {
+        let mut q = q.borrow_mut();
+        q.push(released);
+        q.len() == 1
+    });
+    if first {
+        crate::glue_dom::after_ms_once(0, || {
+            let taken = RELEASED.with(|q| std::mem::take(&mut *q.borrow_mut()));
+            drop(taken);
+        });
+    }
+}

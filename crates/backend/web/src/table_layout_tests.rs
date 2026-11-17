@@ -343,3 +343,92 @@ async fn regression_virtualized_table_exposes_rows_and_cells() {
     crate::newcore::set_mounted_world_for_tests(None);
     drop(realized);
 }
+
+/// REGRESSION (CrewForge: 10 round trips between two virtualized-Table
+/// screens kept +35,600 DOM nodes and +56,400 listeners; the page stalled
+/// near 100k nodes): leaving a screen freed none of its elements. Each grid
+/// cell container and row owns listeners whose closures hold a handle to
+/// the element itself, so the element, its listeners and the JS handle
+/// table kept each other alive for the life of the page. The scene tells
+/// the host when a subtree is discarded, and the web backend now drops
+/// those closures then: after any number of visits to the table screen
+/// and to a form screen, the handle table and the closure registry are the
+/// size they were after the first.
+#[wasm_bindgen_test]
+async fn regression_leaving_a_virtualized_table_screen_frees_its_cells() {
+    use idea_ui::components::table::{ColumnId, ColumnPin, RowId, Table, TableColumn, TableProps, VirtualRows};
+    use runtime_world::signal;
+
+    let (backend, registry, world) = harness();
+    crate::newcore::set_mounted_world_for_tests(Some(world.clone()));
+    let table_screen = || {
+        Table(TableProps {
+            columns: vec![
+                TableColumn::new("name").label("Name").width(200.0).pinned(ColumnPin::Left),
+                TableColumn::new("status").label("Status").width(160.0),
+                TableColumn::new("owner").label("Owner").width(160.0),
+            ],
+            virtualized: Some(
+                VirtualRows::new(
+                    move || 200,
+                    move |i| RowId::from(format!("r{i}")),
+                    move |i, col: &ColumnId| {
+                        runtime_vocabulary::builders::text().content(format!("{} {i}", col.as_str())).build()
+                    },
+                )
+                .on_row_click(|_| {}),
+            ),
+            max_height: Some(300.0),
+            ..Default::default()
+        })
+    };
+    let (on_table, realized) = world.enter(|| {
+        idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+        let on_table = signal(true);
+        let tree = view()
+            .child(runtime_scene::dyn_element(move || {
+                if on_table.get() {
+                    table_screen()
+                } else {
+                    // The other screen is a form: the report's form
+                    // screens kept ~370 nodes per visit the same way.
+                    view()
+                        .child(idea_ui::Button(&idea_ui::ButtonProps::default()))
+                        .child(idea_ui::Field(&idea_ui::FieldProps::default()))
+                        .child(idea_ui::Switch(&idea_ui::SwitchProps::default()))
+                        .child(idea_ui::Checkbox(&idea_ui::CheckboxProps::default()))
+                        .build()
+                }
+            }))
+            .build();
+        (on_table, realize(&backend, &registry, tree))
+    });
+    let root = realized.collect_nodes().pop().expect("one root");
+    let host = mount_in(1440.0, root);
+    settle(&world).await;
+    let cells = |host: &web_glue::dom::Element| host.query_selector_all("[role=cell]").unwrap().length();
+    assert!(cells(&host) > 6, "the table's cells are mounted: {}", cells(&host));
+
+    let round_trip = |world: &World| {
+        let world = world.clone();
+        async move {
+            world.enter(|| on_table.set(false));
+            settle(&world).await;
+            world.enter(|| on_table.set(true));
+            settle(&world).await;
+        }
+    };
+    // The first trip loads what is created once (shims, style rules).
+    round_trip(&world).await;
+    assert!(cells(&host) > 6, "back on the table");
+    let (handles, closures) = (web_glue::JsValue::live_count(), web_glue::Closure::live_count());
+    for _ in 0..4 {
+        round_trip(&world).await;
+    }
+    assert!(cells(&host) > 6, "back on the table");
+    assert_eq!(web_glue::Closure::live_count(), closures, "four more visits left listener closures registered");
+    assert_eq!(web_glue::JsValue::live_count(), handles, "four more visits left element handles in the table");
+
+    crate::newcore::set_mounted_world_for_tests(None);
+    drop(realized);
+}

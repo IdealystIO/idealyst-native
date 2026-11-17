@@ -21,9 +21,10 @@ pub(crate) fn listen(
 }
 
 /// Attach `f` to `t` for `ty` for the element's lifetime: the element keeps
-/// the listener alive, and the Rust closure is released when JS collects
-/// the element (see `web_glue::Closure::into_js_value`). For listeners on nodes with no
-/// teardown record; anything that must detach earlier uses
+/// the listener alive, and the Rust closure is dropped when the subtree
+/// holding the element is released (`Host::release_subtree` →
+/// `web_glue::release_owned`). For listeners on nodes with no teardown
+/// record; anything that must detach earlier uses
 /// `WebBackend::track_listener`.
 pub(crate) fn listen_for_element_lifetime(
     t: &impl AsRef<web_glue::JsValue>,
@@ -65,7 +66,8 @@ pub(crate) fn next_frame(f: impl FnOnce() + 'static) {
 /// `el.onclick = f` for a press target (pressable, button) — the property
 /// handler (one per element; replacing it replaces the old one, unlike
 /// `addEventListener`). The element owns the function; the Rust closure is
-/// released when JS collects it (see [`listen_for_element_lifetime`]).
+/// dropped when its subtree is released (see
+/// [`listen_for_element_lifetime`]).
 ///
 /// Only the innermost press target runs for one click. `click` bubbles, so
 /// a pressable inside a pressable (a button in a clickable row) would
@@ -82,8 +84,8 @@ pub(crate) fn set_press_onclick(el: &impl AsRef<web_glue::JsValue>, f: impl FnMu
 /// [`set_press_onclick`] whose handler receives the claimed `click` event.
 pub(crate) fn set_press_onclick_ev(el: &impl AsRef<web_glue::JsValue>, f: impl FnMut(Event) + 'static) {
     let mut f = f;
-    let func = web_glue::Closure::new(move |ev: JsValue| f(ev.unchecked_into())).into_js_value();
     let el = target(el);
+    let func = web_glue::Closure::new(move |ev: JsValue| f(ev.unchecked_into())).into_owned_by(el.as_js());
     unsafe { js_set_press_onclick(el.as_js().raw(), func.raw()) }
 }
 

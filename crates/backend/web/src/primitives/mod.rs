@@ -9,7 +9,8 @@
 //! in `lib.rs` call into them.
 
 // Element-lifetime listeners — the element owns the listener and its
-// closure is released when JS collects the element — are
+// closure is dropped when the element's subtree is released
+// (`Host::release_subtree`) — are
 // `crate::glue_dom::listen_for_element_lifetime` — never a backend-owned
 // `Vec`, which would pin every closure for the life of the process (a
 // virtualized list re-slicing as it scrolls would leak several per cell
