@@ -644,7 +644,7 @@ impl CatalogSlice for IconSetEntry {
         // for any icon. It's the bulk of the document for a large pack —
         // but it's names only (no geometry), and the MCP `list_*` tools
         // never echo it back; only `search_icons` / paginated
-        // `describe_icon_set` surface individual icons.
+        // `describe(kind: "icon_set")` surface individual icons.
         let icons: Vec<Value> = self
             .icons
             .iter()

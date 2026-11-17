@@ -240,8 +240,8 @@ sheet's rule closures out.
 
 Each component's axis values are its own type. `Card(variant = ButtonVariant::Ghost)`
 does not compile, and neither does a restyle arm keyed by another component's
-value. For MCP completion, every declared axis value is a `list_values` entry
-under its axis type (`list_values("ButtonVariant")`). Under the
+value. For MCP completion, every declared axis value is a `list(kind: "value")` entry
+under its axis type (`list(kind: "value", filter: "ButtonVariant")`). Under the
 `idealyst_premint_dump` cfg every linked component composes during the dump —
 a component no crawled screen rendered still ships its restyled CSS — and
 `runtime_core::component_styles::composed_slots()` names each composed slot.

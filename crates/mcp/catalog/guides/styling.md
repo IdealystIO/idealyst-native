@@ -145,7 +145,7 @@ pub fn app() -> Element {
 }
 ```
 
-This exact pattern is available as a compile-checked recipe: `describe_recipe("dark_mode_toggle")`.
+This exact pattern is available as a compile-checked recipe: `describe(kind: "recipe", name: "dark_mode_toggle")`.
 
 For a fully signal-driven variant selection (no explicit `set_theme` calls), `idea_theme::install_themes(active, &[("light", LIGHT), ("dark", DARK)])` takes a `Signal<String>` naming the active variant and swaps automatically whenever the signal changes.
 

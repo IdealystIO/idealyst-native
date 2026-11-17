@@ -23,7 +23,7 @@ extension's completions, and AI-assisted authoring. Design:
 - **`resolve` module** — turns the bare idents recorded in `composes` edges
   into fully-qualified refs (same-module-first → closest ancestor →
   workspace-wide).
-- **`guides/`** — the bundled framework guides `read_guide` serves.
+- **`guides/`** — the bundled framework guides `describe(kind: "guide")` serves.
 
 ## What this crate is *not*
 

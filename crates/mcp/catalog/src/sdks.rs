@@ -24,7 +24,7 @@ macro_rules! sdk {
     };
     // Entries whose prose home is a dedicated guide (e.g. the navigator
     // crates → `navigation`) override the default `sdks` anchor so
-    // `describe_sdk` points an agent at the guide that actually documents
+    // `describe` (kind `sdk`) points an agent at the guide that actually documents
     // the crate's API shape.
     ($name:literal, $cat:expr, $kind:expr, $summary:literal, guide = $guide:literal) => {
         sdk!($name, $cat, $kind, $summary, guide = $guide,
@@ -290,7 +290,7 @@ sdk!(
     "idea-ui",
     SdkCategory::Ui,
     SdkKind::External,
-    "The cross-platform component library — `Button`, `Card`, `Field`, `Select`, etc. Its `#[component]`s surface in `list_components` once linked."
+    "The cross-platform component library — `Button`, `Card`, `Field`, `Select`, etc. Its `#[component]`s surface in `list(kind: \"component\")` once linked."
 );
 sdk!(
     "idea-ui-mail",

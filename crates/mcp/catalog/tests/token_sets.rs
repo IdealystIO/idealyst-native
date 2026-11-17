@@ -1,6 +1,6 @@
 //! A `#[derive(Tokens)]` theme registers its whole vocabulary as one
 //! `StyleTokenSetEntry`, and `style_tokens()` — what the catalog JSON and
-//! `list_tokens` read — expands it into ordinary token entries.
+//! `list(kind: "token")` read — expands it into ordinary token entries.
 
 use runtime_core::{Color, Length, Tokens};
 

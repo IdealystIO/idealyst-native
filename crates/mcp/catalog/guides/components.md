@@ -11,8 +11,8 @@ tags = ["components", "core"]
 > **Before hand-rolling composite UI, check for an SDK.** Tables/grids,
 > code panels, rendered markdown, maps, SVG, and web views all ship as
 > first-party extension SDKs — don't rebuild a table out of
-> `view`/`text` or a code panel out of styled spans. Run `list_sdks` /
-> `describe_sdk` (or read the [[sdks]] guide) first: `table`, `codeblock`,
+> `view`/`text` or a code panel out of styled spans. Run `list(kind: "sdk")` /
+> `describe(kind: "sdk")` (or read the [[sdks]] guide) first: `table`, `codeblock`,
 > `markdown`, `maps`, `svg`, `webview`, `toolbar`, `video`. Each needs an
 > explicit registration step — an unregistered payload panics at realize;
 > see the sdks guide's "Registering extension SDKs".
@@ -57,7 +57,7 @@ Dispatch is transform-free: the call site `Greeting` resolves to the verbatim `G
 
 Documentation is plain Rust doc comments — there's no separate doc format.
 
-- **Component docs**: a `///` doc comment on the `#[component]` function. It flows to the component's catalog entry and is what `describe_component` returns + what `list_components` shows as the one-line `summary`.
+- **Component docs**: a `///` doc comment on the `#[component]` function. It flows to the component's catalog entry and is what `describe(kind: "component")` returns + what `list(kind: "component")` shows as the one-line `summary`.
 - **Prop docs**: a `///` on each field of the props struct. These are captured **only when the struct derives `IdealystSchema`** — that derive is what records the per-field docs (and optional `#[schema(constraint = "…")]` hints) into the catalog. Without it, the prop docs stay in your source but never reach the catalog.
 
 ```rust
@@ -92,7 +92,7 @@ pub fn Card(props: &CardProps) -> Element {
 Notes:
 - `#[derive(Default)]` is already required by `#[component]` dispatch — just add `IdealystSchema` alongside it.
 - `#[schema(constraint = "…")]` is an optional free-form hint (e.g. a range, a max length); it surfaces as the field's `constraint`.
-- The MCP catalog inlines the schema's per-field docs/constraints into the component's `params[].schema`, so `describe_component` returns the full prop API — docs, types, and constraints — in one place.
+- The MCP catalog inlines the schema's per-field docs/constraints into the component's `params[].schema`, so `describe(kind: "component")` returns the full prop API — docs, types, and constraints — in one place.
 
 ### Enforcing docs at compile time — the `strict-docs` feature
 
@@ -245,10 +245,10 @@ Two mechanisms render a list of items; pick by size and volatility:
 
 Never assemble rows by pushing into a `Vec<Element>` outside the macro — that
 defeats keyed reconciliation and hides the children from reactive-scope
-inference. See `describe_primitive("flat_list")` for its props.
+inference. See `describe(kind: "primitive", name: "flat_list")` for its props.
 
 > Compile-checked, copy-pasteable examples exist for these patterns:
-> `list_recipes` / `describe_recipe` — the canonical reactive list is
+> `list(kind: "recipe")` / `describe(kind: "recipe")` — the canonical reactive list is
 > `keyed_list_add_remove`, the canonical form is `input_with_submit`.
 
 ## Accessibility

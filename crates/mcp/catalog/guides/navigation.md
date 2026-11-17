@@ -64,7 +64,7 @@ nav.get().map(|h| h.push(&DETAIL, ())).unwrap_or_default(); // pushes /detail
 
 **When two patterns match the same URL** (`/projects/new` beside `/projects/:id`), the navigator picks the most specific one, deterministically: first the pattern that consumes more URL segments, then the one with more literal (non-`:param`) segments, then the screen registered first. So `/projects/new` opens the `new` screen and `/projects/42` the `:id` one, in either registration order — no need to make `from_segments` reject its siblings' literals. A `from_segments` that returns `None` still disqualifies its route for that URL.
 
-The compile-checked **`stack_two_screens` recipe** (visible in `list_recipes` once `stack-navigator = { workspace = true }` is in your `Cargo.toml`) is the full list + detail skeleton with a typed param and a layout shell — copy-paste it as a starting point.
+The compile-checked **`stack_two_screens` recipe** (visible in `list(kind: "recipe")` once `stack-navigator = { workspace = true }` is in your `Cargo.toml`) is the full list + detail skeleton with a typed param and a layout shell — copy-paste it as a starting point.
 
 ## Passing state to a screen
 
@@ -203,7 +203,7 @@ Switch screens imperatively through the bound handle with typed params:
 nav.get().map(|h| h.select(&SEARCH, ()));
 ```
 
-The compile-checked **`swap_three_screens_tab_bar` recipe** (visible in `list_recipes` once `swap-navigator = { workspace = true }` is in your `Cargo.toml`) is the full three-screen + tab-bar skeleton — copy-paste it as a starting point.
+The compile-checked **`swap_three_screens_tab_bar` recipe** (visible in `list(kind: "recipe")` once `swap-navigator = { workspace = true }` is in your `Cargo.toml`) is the full three-screen + tab-bar skeleton — copy-paste it as a starting point.
 
 ## Writing a `.layout(...)` shell
 

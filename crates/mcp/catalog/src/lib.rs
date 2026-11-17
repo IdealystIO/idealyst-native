@@ -393,7 +393,7 @@ impl UtilityCategory {
 #[non_exhaustive]
 pub struct MacroEntry {
     /// Bare identifier with no `!` / `#[…]` decoration — `"effect"`,
-    /// `"ui"`, `"component"`. Doubles as the `describe_macro` lookup
+    /// `"ui"`, `"component"`. Doubles as the `describe(kind: "macro")` lookup
     /// key.
     pub name: &'static str,
     /// Canonical call syntax as an author writes it: `"effect!({ … })"`,
@@ -422,7 +422,7 @@ pub struct MacroEntry {
 
 /// Classification for [`MacroEntry`] — the role a macro plays in
 /// authoring. Mirrors the `as_str()` lowercase tags used in the
-/// catalog JSON and the `list_macros` filter.
+/// catalog JSON and the `list(kind: "macro")` filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacroKind {
     /// State + reactivity: `effect!`, `rx!`. (Signal creation
@@ -493,7 +493,7 @@ impl TokenDefault {
 /// A design system registers its whole token vocabulary here, so
 /// tooling can offer the token set **as data** rather than guessing at
 /// it: the VS Code extension completes `t.spacing.│` from this slice,
-/// and `list_tokens` / `describe_token` answer the same question over
+/// and `list(kind: "token")` / `describe(kind: "token")` answer the same question over
 /// MCP.
 ///
 /// Registration rides the same macro that generates the accessor (see
@@ -589,7 +589,7 @@ pub struct GuideEntry {
     /// Display ordering for table-of-contents — lowest first.
     pub order: u32,
     /// Free-form classification tags surfaced through the MCP server's
-    /// `list_guides` and `search` tools.
+    /// `list(kind: "guide")` and `search` tools.
     pub tags: &'static [&'static str],
     /// Raw markdown body — `include_str!`'d at build time. Cross-
     /// references between guides / catalog entries use the
@@ -687,7 +687,7 @@ pub struct RecipeEntry {
     /// docs and handed to the LLM.
     pub source: &'static str,
     /// Every component the recipe's `ui!` / `jsx!` body references (the
-    /// composes walk). Lets `describe_component` surface recipes that
+    /// composes walk). Lets `describe(kind: "component")` surface recipes that
     /// merely *use* a component, not just the primary one.
     pub uses: &'static [&'static str],
 }
@@ -741,7 +741,7 @@ pub struct ScopeEntry {
 #[non_exhaustive]
 pub struct SdkEntry {
     /// Crate name as written in `Cargo.toml` (no `idealyst-` prefix) —
-    /// `"net"`, `"storage"`, `"idea-ui"`. Doubles as the `describe_sdk`
+    /// `"net"`, `"storage"`, `"idea-ui"`. Doubles as the `describe(kind: "sdk")`
     /// lookup key.
     pub name: &'static str,
     /// One-line summary of what the crate gives you.
@@ -751,7 +751,7 @@ pub struct SdkEntry {
     /// the source (git/rev/path) mirrors the project's `runtime-core`
     /// line.
     pub dep_line: &'static str,
-    /// Broad classification for grouping in `list_sdks`.
+    /// Broad classification for grouping in `list(kind: "sdk")`.
     pub category: SdkCategory,
     /// Whether the crate's surface is plain functions/types (`Api`) or a
     /// `ui!` primitive backed by a scene-registry payload handler
@@ -760,7 +760,7 @@ pub struct SdkEntry {
     pub kind: SdkKind,
     /// Slug of the guide (this slice's prose home) for cross-reference.
     /// Defaults to `"sdks"`; entries with a dedicated guide override it
-    /// (e.g. the navigator crates point at `"navigation"`). `describe_sdk`
+    /// (e.g. the navigator crates point at `"navigation"`). `describe(kind: "sdk")`
     /// surfaces this so an agent lands on the guide that documents the
     /// crate's actual API shape.
     pub guide: &'static str,
@@ -862,7 +862,7 @@ pub struct IconRef {
 #[derive(Debug)]
 pub struct IconSetEntry {
     /// Crate name as written in `Cargo.toml` (`"icons-lucide"`).
-    /// Doubles as the `describe_icon_set` lookup key.
+    /// Doubles as the `describe(kind: "icon_set")` lookup key.
     pub name: &'static str,
     /// Human-facing pack title — `"Lucide"`.
     pub title: &'static str,

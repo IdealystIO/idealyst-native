@@ -116,7 +116,7 @@ value). See `ButtonProps`/`CardProps` in the source for the hand-written form.
 Add `#[derive(IdealystSchema)]` and put a `///` doc comment on every field —
 that derive is what flows the per-field docs (and any
 `#[schema(constraint = "…")]` hint) into the MCP catalog so
-`describe_component` returns the full prop surface. Without it, the docs stay
+`describe(kind: "component")` returns the full prop surface. Without it, the docs stay
 in your source but never reach tooling.
 
 ## 2. The `#[component]` fn — signature tells the story

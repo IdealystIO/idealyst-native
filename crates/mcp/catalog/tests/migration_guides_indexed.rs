@@ -9,7 +9,7 @@
 //!
 //! It caught the real drift it was written for: `migration-0-5-0-to-1-0-0`
 //! shipped in `docs/` for the 1.0 release but was never added to the
-//! catalog, so `list_guides` stopped at 0.4 → 0.5.
+//! catalog, so `list(kind: "guide")` stopped at 0.4 → 0.5.
 //!
 //! Invocation: `cargo test -p mcp-catalog`.
 
@@ -47,7 +47,7 @@ fn migration_index_links_resolve_to_real_guides() {
         assert!(
             mcp_catalog::lookup_guide(&slug).is_some(),
             "guides/migrations.md links [[{slug}]], but no guide with that slug is registered — \
-             `read_guide` would fail on it"
+             `describe` (kind `guide`) would fail on it"
         );
     }
 }

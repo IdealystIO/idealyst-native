@@ -67,7 +67,7 @@ stylesheet! {
 
 The `<…>` slot names the sheet's **token vocabulary** and the block binding (`base(t)`) *is* that vocabulary, so a theme token is a path the compiler checks — `t.spacing.sm()` references the `spacing-sm` token. The binding carries token *names*, not the theme's values: values arrive at resolve time from the token registry, which is what makes a theme swap one write per token instead of a re-mint. So there is no `theme.colors.primary` to read. A sheet with no vocabulary declares `<()>` and names tokens with `Tokenized::token("name", fallback)` — the right form for app-defined names. (The color field is `background` / `color`; there is no `background_color`.)
 
-The four valid state names are [[hovered]], [[pressed]], [[focused]], and [[disabled]] (see `list_states`). Authors cannot add new state names — the cross-platform contract is fixed.
+The four valid state names are [[hovered]], [[pressed]], [[focused]], and [[disabled]] (see `list(kind: "state")`). Authors cannot add new state names — the cross-platform contract is fixed.
 
 ## Why the split matters
 

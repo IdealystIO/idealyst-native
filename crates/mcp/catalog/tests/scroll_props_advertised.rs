@@ -36,7 +36,7 @@ fn scroll_view_advertises_its_behavioural_props() {
 }
 
 /// The entry is found by the tag an author writes. It was catalogued
-/// under the internal name `virtualizer`, so `describe_primitive
+/// under the internal name `virtualizer`, so `describe(kind: "primitive")
 /// flat_list` answered "not found".
 #[test]
 fn regression_flat_list_is_found_by_its_tag() {

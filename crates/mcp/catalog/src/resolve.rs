@@ -22,7 +22,7 @@
 //! Resolution runs *once* over the global catalog via
 //! [`ResolvedCatalog::build`]; the forward and reverse adjacency maps
 //! are then constant-time lookups. Reverse adjacency gives
-//! `find_uses(name)` — who composes me? — in O(1) after the one-pass
+//! "who composes me?" (`find_references`) in O(1) after the one-pass
 //! build.
 
 use std::collections::HashMap;

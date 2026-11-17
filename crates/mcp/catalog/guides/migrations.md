@@ -78,7 +78,7 @@ rests on.
   e.g. `migration-0-1-0-to-0-2-0`).
 - **Frontmatter:** `title = "Migrating 0.1.0 → 0.2.0"`, an `order` in the
   **900+ band** ascending by target version (so migrations cluster at the end
-  of `list_guides` in timeline order), and `tags` including `"migration"` and
+  of `list(kind: "guide")` in timeline order), and `tags` including `"migration"` and
   the target version (`"0.2.0"`).
 - **Add a row** to the Guides table above and a `[[link]]`.
 - **One section per breaking change**, each with the same four beats:

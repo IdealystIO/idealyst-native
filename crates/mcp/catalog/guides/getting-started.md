@@ -38,7 +38,7 @@ That's it. No `main` function in your crate — the per-platform host (web/iOS/A
 
 ## Three concepts to learn next
 
-1. **Primitives** (`list_primitives`) — the leaf nodes of `ui!`: [[View]], [[Text]], [[Button]], [[ScrollView]], etc. These map to native widgets on every backend.
+1. **Primitives** (`list(kind: "primitive")`) — the leaf nodes of `ui!`: [[View]], [[Text]], [[Button]], [[ScrollView]], etc. These map to native widgets on every backend.
 2. **[[components|Components]]** — your own reusable units, declared with `#[component]`. Compose them inside `ui!` just like primitives.
 3. **[[reactivity|Reactivity]]** — `Signal<T>` values, f-string text slots, and the closure-form reactive bindings inside `ui!`.
 
@@ -48,10 +48,10 @@ Beyond the UI core, capabilities like networking, persistence, and a full compon
 
 The MCP server (running automatically when you launch the project in Claude Code) exposes the entire framework surface:
 
-- `list_primitives` → every framework primitive
-- `list_utilities` → free helpers like [[platform]], [[parse]], [[now_micros]]
-- `list_states` → interaction state names you can use in `stylesheet!`
-- `list_guides` → these documents
+- `list(kind: "primitive")` → every framework primitive
+- `list(kind: "utility")` → free helpers like [[platform]], [[parse]], [[now_micros]]
+- `list(kind: "state")` → interaction state names you can use in `stylesheet!`
+- `list(kind: "guide")` → these documents
 - `describe_*` for any individual entry
 
-Pair these with `list_components` for your project's own components, and you have the complete authoring vocabulary in one place.
+Pair these with `list(kind: "component")` for your project's own components, and you have the complete authoring vocabulary in one place.

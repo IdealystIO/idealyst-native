@@ -128,7 +128,7 @@ ui! {
 
 `presence` is a **lowercase primitive** tag; `present` / `enter` / `exit` are
 its props. `PresenceAnim::fade(ms, easing)` is a one-liner for the opacity-only
-case. See `describe_recipe("animated_toast")` for the full appearing-and-leaving
+case. See `describe(kind: "recipe", name: "animated_toast")` for the full appearing-and-leaving
 pattern.
 
 ### Continuous motion on a mounted node → `animated!`
@@ -160,13 +160,13 @@ Use `timeline!` to fire animations at set offsets — its timers belong to the e
    for item in items, key = item.id { Row(item = item) }
    ```
 
-   See [[components]] § Rendering collections and `describe_recipe("keyed_list_add_remove")` for the full working form.
+   See [[components]] § Rendering collections and `describe(kind: "recipe", name: "keyed_list_add_remove")` for the full working form.
 3. **`HashMap::get()` is not a signal read** — the reactivity detector keys on `.get()` calls and false-positives benignly here. Don't worry about it; it just means an extra effect run that immediately settles.
 
 ## See also
 
 - [[concepts|Primitives, Components, Style]] — the structural layer signals operate on.
-- `list_primitives` / `describe_primitive` — every primitive's reactive props.
+- `list(kind: "primitive")` / `describe(kind: "primitive")` — every primitive's reactive props.
 - The [[Signal]] type entry for the full method surface.
-- **Recipes** — compile-checked, copy-pasteable examples via `list_recipes` /
-  `describe_recipe`; the canonical reactive list is `keyed_list_add_remove`.
+- **Recipes** — compile-checked, copy-pasteable examples via `list(kind: "recipe")` /
+  `describe(kind: "recipe")`; the canonical reactive list is `keyed_list_add_remove`.

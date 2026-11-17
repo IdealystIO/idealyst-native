@@ -642,15 +642,17 @@ starts.
 
 ## Driving a live app from the MCP
 
-The tools mirror the verbs, so an agent can try a flow before writing it
-down:
+The tools reach the same verbs, so an agent can try a flow before writing
+it down:
 
 1. `list_apps`: what is running.
 2. `find_element {test_id}` → an `element_id`, with `visible`,
-   `in_viewport` and `state`.
-3. `get_state`, `get_snapshot`, `screenshot`, `get_logs`: read.
-4. `click`, `tap_native`, `type_text`, `set_toggle`, `set_slider`,
-   `set_scroll`, `drag_native`: act. `viewport {width, height}` resizes a
+   `in_viewport` and `state`; `mode: "all"` or `"count"` for every match.
+3. `inspect_element {element_id, what}` (`state`, `frame`, `children`,
+   `native`, …), `get_snapshot`, `screenshot`, `get_logs`: read.
+4. `click`, `type_text`, `set_toggle`, `set_slider`, `set_scroll`, and
+   `pointer_native {element_id, action}` for real platform input (`tap`,
+   `drag`, `hover`, …): act. `viewport {width, height}` resizes a
    desktop window and `viewport {orientation}` turns an iPhone app; the
    other screens are turned by the test runner (`set_orientation` in a
    suite).

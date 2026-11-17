@@ -16,7 +16,7 @@ NOT an idea-ui-only facility:
   `set_theme`, `install_themes`) plus token-referencing `stylesheet!` rules.
   That path, with a complete light/dark example and the signal-driven swap
   pattern, is covered in the [[styling]] guide (and the `dark_mode_toggle`
-  recipe — `describe_recipe("dark_mode_toggle")`).
+  recipe — `describe(kind: "recipe", name: "dark_mode_toggle")`).
 - **idea-ui apps** get a richer, typed layer on top: every idea-ui component
   reads its colors, spacing, radii, and type scale from an installed
   `IdeaTheme`. This guide covers that concrete API (`install_idea_theme`,
@@ -419,8 +419,8 @@ The namespaces are `t.color.*` (neutrals), `t.intent.<intent>.<slot>()` (the sev
 intents × six slots), `t.palette.<hue>.<slot>()` (the twelve palette hues × the
 same six slots), `t.spacing.*`, `t.radius.*`, and `t.typography.*_size()`.
 
-**Don't guess a token — ask.** `list_tokens` returns the whole vocabulary as data
-(`name`, `path`, `accessor`, `value_type`, `default_value`); `describe_token`
+**Don't guess a token — ask.** `list(kind: "token")` returns the whole vocabulary as data
+(`name`, `path`, `accessor`, `value_type`, `default_value`); `describe(kind: "token")`
 takes either spelling (`spacing-md` or `spacing.md`) and hands back the accessor
 to write. `search` matches both spellings too, so a token you know by its old
 string name resolves to its accessor. The same slice drives token completion in

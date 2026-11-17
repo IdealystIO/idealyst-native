@@ -1,6 +1,6 @@
 //! The SDK table is hand-curated, so it drifts whenever a crate lands
 //! without an entry: `qr`, `gpu-surface` and `idea-theme-editor` all
-//! shipped invisible to `list_sdks` / `describe_sdk` / `search` until the
+//! shipped invisible to `list(kind: "sdk")` / `describe(kind: "sdk")` / `search` until the
 //! mcp-catalog-drift audit caught them. This walks the crate directories
 //! the audit names and fails on the first crate with no `sdk!` entry, and
 //! on any entry whose crate no longer exists.

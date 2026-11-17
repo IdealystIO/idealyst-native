@@ -12,7 +12,7 @@ component library — lives in **separate opt-in crates** you add to your projec
 `Cargo.toml` as you need them. This keeps binaries small: you only link what you
 use.
 
-These crates are **not** in the `list_components` / `list_primitives` catalog
+These crates are **not** in the `list(kind: "component")` / `list(kind: "primitive")` catalog
 surface, because they expose plain Rust functions and types (e.g.
 `net::Client`, `storage::platform_storage()`), not `#[component]`s or `ui!`
 primitives. This guide is the index for them.
@@ -42,7 +42,7 @@ loading.
 |---|---|
 | **`net`** | Cross-platform async networking — HTTP, WebSocket, and Server-Sent Events. `net::Client` is the HTTP entry point. `net::WebSocket` carries text and binary frames; after `recv()` ends, `close_status()` gives the peer's code/reason (1000 normal; 1005/1006 synthesized identically on every target). The transport layer the server-functions layer composes (see [[server-functions]]). |
 | **`server`** | Full-stack server functions — `#[server] async fn`, `server::configure`, `server::router`, extractors, auth guards. See the dedicated [[server-functions]] guide. |
-| **`storage`** | Cross-platform **insecure** key-value storage for non-sensitive app data. For signal-backed state PREFER `storage::persisted_signal(ns, key, initial)` (feature `reactive`): hydrates on creation, persists on change, and a user write before the async load resolves WINS — don't hand-roll load/persist wiring, it almost always clobbers that write. Raw store: `storage::platform_storage(ns) -> Arc<dyn Storage>`; async `get(key) -> Result<Option<String>, _>` / `set` / `remove` (see "Calling async APIs" below), and synchronous `get_now` / `set_now` / `remove_now` for values needed before first paint (a saved theme). Backends: localStorage / NSUserDefaults / SharedPreferences / JSON file. Once storage is a dependency, the `persisted_signal` recipe registers in `list_recipes`. Use `credentials` for secrets. |
+| **`storage`** | Cross-platform **insecure** key-value storage for non-sensitive app data. For signal-backed state PREFER `storage::persisted_signal(ns, key, initial)` (feature `reactive`): hydrates on creation, persists on change, and a user write before the async load resolves WINS — don't hand-roll load/persist wiring, it almost always clobbers that write. Raw store: `storage::platform_storage(ns) -> Arc<dyn Storage>`; async `get(key) -> Result<Option<String>, _>` / `set` / `remove` (see "Calling async APIs" below), and synchronous `get_now` / `set_now` / `remove_now` for values needed before first paint (a saved theme). Backends: localStorage / NSUserDefaults / SharedPreferences / JSON file. Once storage is a dependency, the `persisted_signal` recipe registers in `list(kind: "recipe")`. Use `credentials` for secrets. |
 | **`graphql`** | Typed GraphQL — `#[derive(GraphQLQuery)]` codegen over `.graphql` files (`graphql_client` re-exported), driven through the `GraphqlClient` + `Transport` seam. Point `GraphqlClient::http(url)` at any endpoint, or bridge an app-authored `#[server] async fn(GraphqlRequest) -> Result<GraphqlResponse, _>` with `graphql::graphql_transport!` to inherit its auth/CSRF/base URL — the crate has **no** dependency on the `server` SDK. `use_query` / `use_mutation` wrap `resource` / `mutation`. Server execution (`execute_request`, `Schema`, `sdl`) is behind the off-by-default `server` feature so wasm never pulls async-graphql. v1 is queries + mutations; **subscriptions are not implemented**. |
 | **`sync`** | Offline-first cache + server synchronization. Download a named **partition** of server data, read/mutate it offline against a reactive `Signal`, and replay a durable outbox on reconnect. The SDK owns persistence (on `storage`), the outbox, the engine and the `pull`/`push` protocol; **you** own the entity type, both server bodies, and the per-entity `Merge` policy — bridged with `sync::sync_transport!`. No dependency on `server`. Correctness scope: no silent data loss, crash-safe, conflicts surfaced, under **single-writer-per-device** — not CRDTs or multi-device convergence. Reference in-memory server is behind the off-by-default `reference-server` feature. |
 | **`credentials`** | Cross-platform **secure** storage for secrets (auth tokens, API keys) — Keychain / Keystore on device. Web errors rather than faking security. |
@@ -170,7 +170,7 @@ extension SDKs" just below.
 
 | Crate | What it gives you |
 |---|---|
-| **`idea-ui`** | The cross-platform **component library** — `Button`, `Card`, `Field`, `Select`, etc. Most apps depend on this. Its components ARE catalogued (`list_components`) once linked. |
+| **`idea-ui`** | The cross-platform **component library** — `Button`, `Card`, `Field`, `Select`, etc. Most apps depend on this. Its components ARE catalogued (`list(kind: "component")`) once linked. |
 | **`idea-ui-mail`** | Email-safe component set (`EmailBody`, `EmailContainer`, `Section`, `Heading`, `Text`, `Button`, `Divider`, `Spacer`) — the opinion layer over the un-opinionated `backend-email` renderer. Builds its `StyleRules` directly and reads **no theme** (a headless email render has no theme lifecycle), so `idea-theme` tokens do not apply and colors are plain CSS strings. For email templates handed to the `email` SDK's `.template(...)`, not for app screens. Nothing to register. |
 | **`idea-ui-nav`** | Themed navigation **chrome** for the navigators — `AppShell` (responsive pinned-sidebar ⇄ drawer), `TabBar`, `Drawer`, `StackHeader`. It does **not** navigate: a navigator owns only `{ nav.outlet }`, and these are the author layout wrapping it, wired to `nav.active_route` / `nav.on_select` from the `.layout(|nav| …)` closure. This is why there is no tab- or drawer-navigator crate. See [[navigation]]. Nothing to register. |
 | **`idea-theme`** | Theming abstraction + extensibility for the idealyst design system. |
@@ -320,7 +320,7 @@ app supplies the reason string.
 ## How they relate to the catalog
 
 - An SDK that ships `#[component]`s (like `idea-ui`) surfaces those components
-  through `list_components` / `describe_component` **once it's a dependency of
+  through `list(kind: "component")` / `describe(kind: "component")` **once it's a dependency of
   the build the catalog is extracted from**.
 - An SDK that exposes free functions / scene-registry primitives (like
   `net`, `storage`, `webview`) is documented here and in its own crate docs —
