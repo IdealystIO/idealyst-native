@@ -1357,8 +1357,8 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   created from the installed runtime / system image when its row runs (`xcrun simctl create`,
   `avdmanager create avd` for a `<profile> @ <api>` spec), and a device the run booted is shut
   down after its row (`--no-create`, `--keep-devices`). The web rows share one launch; the summary
-  names each failed run's failing tests; `--junit <path>` writes a JUnit report. See "Device
-  matrix" in `docs/robot.md`.
+  names each failed run's failing tests; `--junit <path>` writes a JUnit report; `--jobs N` runs up
+  to N platforms at once. See "Device matrix" in `docs/robot.md`.
 
 - **A Table's selection boxes have accessible names and robot test ids** (`idea-ui` minor). Every
   row's box was an unnamed checkbox with no test id, so a screen reader couldn't say which row it

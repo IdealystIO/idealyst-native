@@ -186,6 +186,14 @@ pub struct Args {
     /// `skipped` with the reason.
     #[arg(long, value_name = "PATH")]
     pub junit: Option<PathBuf>,
+    /// How many platforms of the device matrix run at once (default 1).
+    /// A platform's own rows still run one after another (one device at a
+    /// time); each platform gets its own port and isolation key
+    /// (`test-<platform>`), and its suites' output goes to a log file the
+    /// run names instead of the terminal. Builds and emulators are heavy:
+    /// raise it only on a machine with room.
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    pub jobs: usize,
     /// `KEY=VALUE` set for the app (passed as `idealyst dev --app-env`, which
     /// delivers it on every platform), the dev session (so a full-stack
     /// project's server inherits it), the tests, and the `--before`/`--after`
@@ -732,6 +740,8 @@ pub fn run(args: Args) -> Result<()> {
     // builds: a key another session holds is refused here, not after a
     // launch `idealyst dev` would refuse.
     let has_server = project_has_server(&dir);
+    anyhow::ensure!(args.jobs >= 1, "--jobs is at least 1");
+    let parallel = args.jobs > 1 && jobs.iter().filter(|j| matches!(j, Job::Run { .. })).count() > 1;
     let mut isolated: std::collections::BTreeMap<String, Option<String>> = Default::default();
     for job in &jobs {
         let Job::Run { platform, .. } = job else { continue };
@@ -742,7 +752,9 @@ pub fn run(args: Args) -> Result<()> {
             None
         } else {
             let wanted = isolation_key(&args, platform, has_server)?;
-            session_key(wanted.as_deref(), None, &dir, &registered_sessions(), &session_is_live)?
+            // Platforms running at once need a session key each.
+            let per_platform = (parallel).then_some(platform.as_str());
+            session_key(wanted.as_deref(), per_platform, &dir, &registered_sessions(), &session_is_live)?
         };
         if let Some(key) = &key {
             eprintln!("[test] {platform} dev session isolated as `{key}` (beside any `idealyst dev` of this project)");
@@ -777,78 +789,19 @@ pub fn run(args: Args) -> Result<()> {
         if runs_anything {
             run_hooks("--before", &args.before, &dir, &hook_env)?;
         }
-        let mut results = Vec::new();
-        let mut index = 0;
-        for job in &jobs {
-            let (platform, launches, create, device) = match job {
-                Job::Skip { label, why } => {
-                    results.push(RunResult::new(label.clone(), Outcome::Skipped(why.clone())));
-                    continue;
-                }
-                Job::Run { platform, launches, create, device } => {
-                    (platform.as_str(), launches.clone(), create, device.clone())
-                }
-            };
-            // A device the plan said to make: made now, and the launches
-            // pointed at it.
-            let (launches, device) = match create {
-                None => (launches, device),
-                Some(c) => match provision::create(c) {
-                    Ok(id) => {
-                        let mut launches = launches;
-                        for launch in &mut launches {
-                            launch.target_device = Some(id.clone());
-                            for size in &mut launch.sizes {
-                                size.device = Some(id.clone());
-                            }
-                        }
-                        let device = match c {
-                            matrix::Create::Simulator { .. } => provision::Device::Simulator(id),
-                            matrix::Create::Avd { .. } => provision::Device::Avd(id),
-                        };
-                        (launches, Some(device))
-                    }
-                    Err(e) => {
-                        eprintln!("[test] {e:#}");
-                        for launch in &launches {
-                            for size in &launch.sizes {
-                                results.push(RunResult::new(size.label.clone(), Outcome::Error(format!("{e:#}"))));
-                            }
-                        }
-                        continue;
-                    }
-                },
-            };
-            // Stopped afterwards only if this run is what boots it.
-            let was_running = device.as_ref().is_some_and(provision::Device::running);
-            for launch in &launches {
-                let ctx = LaunchCtx {
-                    args: &args,
-                    dir: &dir,
-                    platform,
-                    port,
-                    isolated: isolated.get(platform).and_then(|k| k.as_deref()),
-                    user_env: &user_env,
-                    test_bin: &test_bin,
-                    tests: &tests,
-                    index,
-                };
-                index += 1;
-                let before = results.len();
-                if let Err(e) = run_launch(&ctx, launch, &mut results) {
-                    eprintln!("[test] {e:#}");
-                    // Every size this launch didn't reach is reported, not dropped.
-                    for size in &launch.sizes[results.len() - before..] {
-                        results.push(RunResult::new(size.label.clone(), Outcome::Error(format!("{e:#}"))));
-                    }
-                }
-            }
-            if let Some(device) = &device {
-                if !args.keep_devices && !was_running && device.running() {
-                    device.stop();
-                }
-            }
-        }
+        let shared = JobCtx {
+            args: &args,
+            dir: &dir,
+            isolated: &isolated,
+            user_env: &user_env,
+            test_bin: &test_bin,
+            tests: &tests,
+        };
+        let results = if parallel {
+            run_parallel(&shared, &jobs, port)?
+        } else {
+            jobs.iter().enumerate().flat_map(|(i, job)| run_job(&shared, job, port, i * 100, None)).collect()
+        };
         Ok(results)
     })();
     // Teardown runs whatever happened above.
@@ -874,6 +827,136 @@ pub fn run(args: Args) -> Result<()> {
     } else {
         std::process::exit(code);
     }
+}
+
+/// What every job of one run shares.
+struct JobCtx<'a> {
+    args: &'a Args,
+    dir: &'a Path,
+    isolated: &'a std::collections::BTreeMap<String, Option<String>>,
+    user_env: &'a [(String, String)],
+    test_bin: &'a Path,
+    tests: &'a TestList,
+}
+
+/// Run one job: make its device if the plan said to, run its launches, and
+/// stop a device the run booted. `index` numbers its launches' files apart
+/// from other jobs'; `suite_log` sends the suites' output to a file (a
+/// parallel run) instead of the terminal.
+fn run_job(cx: &JobCtx, job: &Job, port: u16, index: usize, suite_log: Option<&Path>) -> Vec<RunResult> {
+    let mut results = Vec::new();
+    let (platform, launches, create, device) = match job {
+        Job::Skip { label, why } => return vec![RunResult::new(label.clone(), Outcome::Skipped(why.clone()))],
+        Job::Run { platform, launches, create, device } => (platform.as_str(), launches.clone(), create, device.clone()),
+    };
+    // A device the plan said to make: made now, and the launches pointed
+    // at it.
+    let (launches, device) = match create {
+        None => (launches, device),
+        Some(c) => match provision::create(c) {
+            Ok(id) => {
+                let mut launches = launches;
+                for launch in &mut launches {
+                    launch.target_device = Some(id.clone());
+                    for size in &mut launch.sizes {
+                        size.device = Some(id.clone());
+                    }
+                }
+                let device = match c {
+                    matrix::Create::Simulator { .. } => provision::Device::Simulator(id),
+                    matrix::Create::Avd { .. } => provision::Device::Avd(id),
+                };
+                (launches, Some(device))
+            }
+            Err(e) => {
+                eprintln!("[test] {e:#}");
+                return launches
+                    .iter()
+                    .flat_map(|l| &l.sizes)
+                    .map(|size| RunResult::new(size.label.clone(), Outcome::Error(format!("{e:#}"))))
+                    .collect();
+            }
+        },
+    };
+    // Stopped afterwards only if this run is what boots it.
+    let was_running = device.as_ref().is_some_and(provision::Device::running);
+    for (n, launch) in launches.iter().enumerate() {
+        let ctx = LaunchCtx {
+            args: cx.args,
+            dir: cx.dir,
+            platform,
+            port,
+            isolated: cx.isolated.get(platform).and_then(|k| k.as_deref()),
+            user_env: cx.user_env,
+            test_bin: cx.test_bin,
+            tests: cx.tests,
+            index: index + n,
+            suite_log,
+        };
+        let before = results.len();
+        if let Err(e) = run_launch(&ctx, launch, &mut results) {
+            eprintln!("[test] {e:#}");
+            // Every size this launch didn't reach is reported, not dropped.
+            for size in &launch.sizes[results.len() - before..] {
+                results.push(RunResult::new(size.label.clone(), Outcome::Error(format!("{e:#}"))));
+            }
+        }
+    }
+    if let Some(device) = &device {
+        if !cx.args.keep_devices && !was_running && device.running() {
+            device.stop();
+        }
+    }
+    results
+}
+
+/// The jobs to run, grouped by platform in the order each platform first
+/// appears: a group runs on one worker, one device at a time.
+fn platform_groups(jobs: &[Job]) -> Vec<(String, Vec<usize>)> {
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for (i, job) in jobs.iter().enumerate() {
+        let Job::Run { platform, .. } = job else { continue };
+        match groups.iter_mut().find(|(p, _)| p == platform) {
+            Some((_, idx)) => idx.push(i),
+            None => groups.push((platform.clone(), vec![i])),
+        }
+    }
+    groups
+}
+
+/// `--jobs N`: up to N platforms at once, each platform's jobs in order on
+/// one worker, each with its own port and suite log. Results come back in
+/// the plan's order.
+fn run_parallel(cx: &JobCtx, jobs: &[Job], first_port: u16) -> Result<Vec<RunResult>> {
+    use std::collections::VecDeque;
+    let groups = platform_groups(jobs);
+    let mut ports = vec![first_port];
+    while ports.len() < groups.len() {
+        ports.push(free_port()?);
+    }
+    let queue: Mutex<VecDeque<((String, Vec<usize>), u16)>> = Mutex::new(groups.into_iter().zip(ports).collect());
+    let slots: Mutex<Vec<Option<Vec<RunResult>>>> = Mutex::new(vec![None; jobs.len()]);
+    for (i, job) in jobs.iter().enumerate() {
+        if let Job::Skip { .. } = job {
+            slots.lock().unwrap()[i] = Some(run_job(cx, job, 0, 0, None));
+        }
+    }
+    let workers = cx.args.jobs.min(queue.lock().unwrap().len()).max(1);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let Some(((platform, idx), port)) = queue.lock().unwrap().pop_front() else { return };
+                let log = std::env::temp_dir().join(format!("idealyst-test-{platform}-{}-suites.log", std::process::id()));
+                let _ = std::fs::remove_file(&log);
+                eprintln!("[test] {platform}: running on port {port}; its suites' output is in {}", log.display());
+                for i in idx {
+                    let out = run_job(cx, &jobs[i], port, i * 100, Some(&log));
+                    slots.lock().unwrap()[i] = Some(out);
+                }
+            });
+        }
+    });
+    Ok(slots.into_inner().unwrap().into_iter().flatten().flatten().collect())
 }
 
 /// One platform's share of a run: its launches, or the reason the matrix
@@ -969,12 +1052,14 @@ struct LaunchCtx<'a> {
     test_bin: &'a Path,
     tests: &'a TestList,
     index: usize,
+    /// Where the suites' output goes, when not the terminal (`--jobs`).
+    suite_log: Option<&'a Path>,
 }
 
 /// Launch the app (unless attaching), then run the suite at each of the
 /// launch's sizes, appending one result per size to `results`.
 fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) -> Result<()> {
-    let LaunchCtx { args, dir, platform, port, isolated, user_env, test_bin, tests, index } = *ctx;
+    let LaunchCtx { args, dir, platform, port, isolated, user_env, test_bin, tests, index, suite_log } = *ctx;
     let apps_dirs = registry_dirs()?;
     // Registrations already live before the launch belong to another run
     // (an earlier launch of this one included) or to the app being attached
@@ -1080,6 +1165,14 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
             // One shared app: tests run serialized against it.
             suite.args(["--test-threads=1", "--nocapture"]);
             suite.arg("--logfile").arg(&test_log);
+            if let Some(log) = suite_log {
+                let file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(log)
+                    .with_context(|| format!("opening {}", log.display()))?;
+                suite.stdout(file.try_clone()?).stderr(file);
+            }
             let status = suite.status().with_context(|| format!("running {}", test_bin.display()))?;
             Ok(if status.success() { Outcome::Passed } else { Outcome::Failed(status.code()) })
         })();
@@ -2292,6 +2385,19 @@ mod tests {
         .unwrap();
         assert_eq!(read_not_applicable(&file), [("a".to_string(), "needs phone".to_string())]);
         assert!(read_not_applicable(&dir.path().join("missing")).is_empty());
+    }
+
+    /// `--jobs`: a platform's jobs stay together, in order, on one worker;
+    /// skipped rows are no one's.
+    #[test]
+    fn parallel_runs_group_jobs_by_platform() {
+        let run = |p: &str| Job::Run { platform: p.into(), launches: Vec::new(), create: None, device: None };
+        let skip = Job::Skip { label: "x".into(), why: "y".into() };
+        let jobs = vec![run("ios"), run("android"), skip, run("ios"), run("macos")];
+        assert_eq!(
+            platform_groups(&jobs),
+            [("ios".to_string(), vec![0, 3]), ("android".to_string(), vec![1]), ("macos".to_string(), vec![4])]
+        );
     }
 
     /// Every web row joins one launch (the page resizes between them), each

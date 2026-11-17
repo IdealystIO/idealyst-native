@@ -793,6 +793,12 @@ XML for CI, a suite per run and a case per test (a test that didn't apply,
 and a run this machine couldn't make, are `skipped` with the reason; a run
 that never reached its tests is an `error`).
 
+`--jobs N` runs up to N platforms at once (default 1). A platform's own
+rows still run one after another, one device at a time; each platform
+gets its own port and isolation key (`test-<platform>`), and its suites'
+output goes to a log file the run names. Builds and emulators are heavy,
+so raise it only on a machine with room.
+
 `idealyst test --plan` prints the plan and exits, creating nothing. A run
 where nothing could run fails; skips alongside runs that passed don't. The one-off
 flags below (`--viewport`, `--device`, `--simulator`, `--emulator`,
