@@ -1,4 +1,4 @@
-//! `dev_status`: a session's present, summarized.
+//! `dev_session`'s `status`: a session's present, summarized.
 //!
 //! A session's `GET /status` answers with its registry entry and its
 //! event snapshot (the events that describe its present, as its event
@@ -30,11 +30,11 @@ pub fn check_answer(answer: &dev_events::sessions::CheckAnswer) -> Value {
     use dev_events::sessions::CheckAnswer;
     let (status, state, next) = match answer {
         CheckAnswer::Done(state) if state["ok"] == true => {
-            ("passed", state, "nothing was applied; rebuild_dev without `apply` applies it, and finds these crates fresh")
+            ("passed", state, "nothing was applied; dev_session rebuild without `apply` applies it, and finds these crates fresh")
         }
         CheckAnswer::Done(state) => ("failed", state, "the running app is untouched; fix the errors and check again"),
         CheckAnswer::Running(state) => {
-            ("running", state, "still building: dev_status lists the check under `checks` when it ends")
+            ("running", state, "still building: dev_session status lists the check under `checks` when it ends")
         }
     };
     let mut out = state.clone();
@@ -219,7 +219,7 @@ mod check_answer_tests {
         assert_eq!(check_answer(&CheckAnswer::Done(state(true, true)))["status"], "passed");
         let running = check_answer(&CheckAnswer::Running(state(false, false)));
         assert_eq!(running["status"], "running");
-        assert!(running["next"].as_str().unwrap().contains("dev_status"));
+        assert!(running["next"].as_str().unwrap().contains("dev_session status"));
     }
 
     /// `dev_status` carries the session's newest checks, and nothing when none ran.

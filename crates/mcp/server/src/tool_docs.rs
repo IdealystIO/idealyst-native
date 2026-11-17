@@ -10,7 +10,9 @@
 //!
 //! A topic is one markdown file. Its `## ` headings split it into sections;
 //! a section whose heading names tools (`## tap` or
-//! `## get_logs, clear_logs`) is the doc for those tools. The
+//! `## get_logs, clear_logs`) is the doc for those tools. A tool that folds
+//! several things behind one argument (`list`'s `kind`, `dev_session`'s
+//! `action`) gives each a `### ` subsection, which `query` narrows to. The
 //! `every_tool_has_a_docs_section` test pins that each registered tool has
 //! exactly one such section, so adding a tool without docs fails CI.
 
@@ -38,7 +40,7 @@ pub(crate) const TOPICS: &[Topic] = &[
     },
     Topic {
         name: "catalog",
-        summary: "Catalog tools: list/describe flow, filter syntax, name resolution, freshness, search.",
+        summary: "Catalog tools: `list` / `describe` and their kinds, filter syntax, name resolution, freshness, search.",
         body: include_str!("../docs/catalog.md"),
     },
     Topic {
@@ -206,38 +208,67 @@ pub(crate) fn render_search_all(query: &str) -> String {
 
 /// Rank the sections of `docs` (split at `level`) by how many distinct
 /// query terms each contains, OR-matched and case-insensitive, the same
-/// ranking the catalog `search` tool uses. The best few come back in full;
-/// the rest are named so the caller can fetch them.
+/// ranking the catalog `search` tool uses; a term in the section's heading
+/// counts twice, so `wait` finds `### wait` ahead of sections that mention
+/// waiting. The best few come back in full; the rest are named so the
+/// caller can fetch them.
+///
+/// A section with subsections one level down is searched by subsection (its
+/// own lead-in text counting as one): a tool that folds several actions
+/// into one section answers a query with the action asked about, not with
+/// all of them.
 fn render_matches(query: &str, docs: &[(&str, &str)], level: usize) -> String {
     let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    let mut hits: Vec<(usize, &str, Section<'_>)> = Vec::new();
+    let score = |title: &str, text: &str| {
+        let (title, hay) = (title.to_lowercase(), text.to_lowercase());
+        terms.iter().map(|t| hay.contains(t.as_str()) as usize + title.contains(t.as_str()) as usize).sum::<usize>()
+    };
+    // (score, doc, parent heading, title, text)
+    let mut hits: Vec<(usize, &str, &str, &str, &str)> = Vec::new();
     for &(doc, body) in docs {
         for s in split_sections(body, level) {
-            let hay = s.text.to_lowercase();
-            let score = terms.iter().filter(|t| hay.contains(t.as_str())).count();
-            if score > 0 {
-                hits.push((score, doc, s));
+            let parts = split_sections(s.text, level + 1);
+            if parts.len() < 2 {
+                hits.push((score(s.title, s.text), doc, "", s.title, s.text));
+                continue;
+            }
+            for part in parts {
+                // The lead-in keeps the parent's own heading line.
+                let (parent, title) = if part.title.is_empty() { ("", s.title) } else { (s.title, part.title) };
+                hits.push((score(title, part.text), doc, parent, title, part.text));
             }
         }
     }
+    hits.retain(|h| h.0 > 0);
     if hits.is_empty() {
         return format!("No sections match `{query}`. `get_docs()` lists every topic.\n");
     }
     // Stable sort keeps document order among equal scores.
     hits.sort_by_key(|h| std::cmp::Reverse(h.0));
+    let place = |doc: &str, parent: &str| match (docs.len() > 1, parent.is_empty()) {
+        (true, true) => doc.to_string(),
+        (true, false) => format!("{doc} › {parent}"),
+        (false, _) => parent.to_string(),
+    };
     let mut out = String::new();
-    for (_, doc, s) in hits.iter().take(MAX_SEARCH_SECTIONS) {
-        if docs.len() > 1 {
-            out.push_str(&format!("<!-- {doc} -->\n"));
+    for (_, doc, parent, _, text) in hits.iter().take(MAX_SEARCH_SECTIONS) {
+        let place = place(doc, parent);
+        if !place.is_empty() {
+            out.push_str(&format!("<!-- {place} -->\n"));
         }
-        out.push_str(s.text);
+        out.push_str(text);
         out.push_str("\n\n");
     }
     if hits.len() > MAX_SEARCH_SECTIONS {
         let rest: Vec<String> = hits[MAX_SEARCH_SECTIONS..]
             .iter()
-            .map(|(_, doc, s)| {
-                if s.title.is_empty() { (*doc).to_string() } else { format!("{doc} › {}", s.title) }
+            .map(|(_, doc, parent, title, _)| {
+                let place = place(doc, parent);
+                match (place.is_empty(), title.is_empty()) {
+                    (true, _) => (*title).to_string(),
+                    (false, true) => place,
+                    (false, false) => format!("{place} › {title}"),
+                }
             })
             .collect();
         out.push_str(&format!("Also matching: {}.\n", rest.join("; ")));
@@ -277,6 +308,10 @@ fn render_params(schema: &Value) -> String {
 fn type_label(prop: &Value) -> String {
     if let Some(r) = prop.get("$ref").and_then(Value::as_str) {
         return r.rsplit('/').next().unwrap_or(r).to_string();
+    }
+    if let Some(values) = prop.get("enum").and_then(Value::as_array) {
+        let names: Vec<String> = values.iter().map(|v| v.as_str().map_or_else(|| v.to_string(), |s| format!("`{s}`"))).collect();
+        return names.join(" | ");
     }
     match prop.get("type") {
         Some(Value::String(t)) if t == "array" => match prop.get("items") {
@@ -324,6 +359,22 @@ mod tests {
         let out = render_search_all("hold_ms long press");
         let first = out.lines().find(|l| l.starts_with("## ")).unwrap();
         assert_eq!(first, "## drag", "got:\n{out}");
+    }
+
+    #[test]
+    fn search_answers_with_the_subsection_of_a_folded_tool() {
+        // `dev_session` documents seven actions in one section; a query
+        // about one of them returns that action, not the whole section.
+        let out = render_search_all("SIGKILL");
+        assert!(out.starts_with("<!-- dev › dev_session -->\n### stop\n"), "got:\n{out}");
+        assert!(!out.contains("### metrics"), "got:\n{out}");
+    }
+
+    #[test]
+    fn a_term_in_the_heading_outranks_a_mention_in_the_text() {
+        let (_, body) = tool_section("dev_session").map(|(t, s)| (t, s.body())).unwrap();
+        let out = render_matches("wait", &[("dev", body)], 3);
+        assert!(out.starts_with("### wait\n"), "got:\n{}", &out[..out.len().min(200)]);
     }
 
     #[test]

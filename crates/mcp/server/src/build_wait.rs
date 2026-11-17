@@ -1,4 +1,4 @@
-//! `wait_for_build`: block until a dev session's build or save has
+//! `dev_session`'s `wait`: block until a dev session's build or save has
 //! landed, then say how it ended.
 //!
 //! The wait reads the session's own event stream (`events_url` in its
@@ -638,30 +638,30 @@ impl Wait {
             .collect();
         let failed = applied.iter().any(|(_, d)| d.failed);
         let (status, next) = if let Some(why) = ended {
-            ("session_ended", format!("the session's event stream closed ({why}); list_dev_sessions shows whether it is still running"))
+            ("session_ended", format!("the session's event stream closed ({why}); dev_session list shows whether it is still running"))
         } else if targets.is_empty() {
             (
                 "unknown_request",
                 format!(
-                    "this session has no rebuild request {n}: rebuild_dev returns the number to wait on (a session \
-                     restarted since numbers its requests from 1 again). wait_for_build with after: {} waits for \
+                    "this session has no rebuild request {n}: dev_session rebuild returns the number to wait on (a session \
+                     restarted since numbers its requests from 1 again). dev_session wait with after: {} waits for \
                      whatever builds next",
                     t.cursor()
                 ),
             )
         } else if !pending.is_empty() {
-            ("building", format!("not applied by the deadline; call wait_for_build again with request: {n}"))
+            ("building", format!("not applied by the deadline; call dev_session wait again with request: {n}"))
         } else if failed {
             (
                 "failed",
                 format!(
-                    "fix the errors and save; then wait_for_build with after: {}. The full output is in `log`: \
-                     read_dev_log with filter \"error\" shows it",
+                    "fix the errors and save; then dev_session wait with after: {}. The full output is in `log`: \
+                     dev_session log with filter \"error\" shows it",
                     t.cursor()
                 ),
             )
         } else {
-            ("finished", format!("request {n} is applied; after your next save, wait_for_build with after: {}", t.cursor()))
+            ("finished", format!("request {n} is applied; after your next save, dev_session wait with after: {}", t.cursor()))
         };
         let mut out = json!({ "status": status, "request": n, "cursor": t.cursor(), "builds": builds, "next": next });
         let o = out.as_object_mut().expect("an object");
@@ -698,34 +698,34 @@ impl Wait {
         let builds: Vec<Value> = done.iter().map(|(n, d)| done_json(n, d)).collect();
         let failed = done.iter().any(|(_, d)| d.failed);
         let (status, next) = if let Some(why) = ended {
-            ("session_ended", format!("the session's event stream closed ({why}); list_dev_sessions shows whether it is still running"))
+            ("session_ended", format!("the session's event stream closed ({why}); dev_session list shows whether it is still running"))
         } else if !building.is_empty() {
-            ("building", format!("still building at the deadline; call wait_for_build again with after: {after}"))
+            ("building", format!("still building at the deadline; call dev_session wait again with after: {after}"))
         } else if done.is_empty() && !self.preparing().is_empty() {
             (
                 "preparing",
                 format!(
                     "the session's watcher is still starting up (scanning the workspace); a save made now is \
-                     applied once it is ready. Call wait_for_build again with after: {after}"
+                     applied once it is ready. Call dev_session wait again with after: {after}"
                 ),
             )
         } else if !queued.is_empty() {
-            ("queued", format!("saves are queued (--no-watch); call rebuild_dev, then wait_for_build with after: {}", t.cursor()))
+            ("queued", format!("saves are queued (--no-watch); call dev_session rebuild, then dev_session wait with after: {}", t.cursor()))
         } else if !builds.is_empty() {
             if failed {
                 (
                     "failed",
                     format!(
-                        "fix the errors and save; then wait_for_build with after: {}. The full output is in \
-                         `log`: read_dev_log with filter \"error\" shows it",
+                        "fix the errors and save; then dev_session wait with after: {}. The full output is in \
+                         `log`: dev_session log with filter \"error\" shows it",
                         t.cursor()
                     ),
                 )
             } else {
-                ("finished", format!("after your next save, wait_for_build with after: {}", t.cursor()))
+                ("finished", format!("after your next save, dev_session wait with after: {}", t.cursor()))
             }
         } else {
-            ("idle", format!("nothing is building; after your next save, wait_for_build with after: {}", t.cursor()))
+            ("idle", format!("nothing is building; after your next save, dev_session wait with after: {}", t.cursor()))
         };
         let mut out = json!({
             "status": status,
@@ -1093,7 +1093,7 @@ mod tests {
         let a = w.answer(false, None);
         assert_eq!(a["status"], "failed");
         assert_eq!(a["log"], "/p/target/idealyst/app/dev.log", "the whole log is referenced");
-        assert!(a["next"].as_str().unwrap().contains("read_dev_log"));
+        assert!(a["next"].as_str().unwrap().contains("dev_session log"));
         assert_eq!(a["builds"][0]["errors"][0]["location"], "src/app.rs:12:9");
         assert_eq!(a["builds"][0]["error"], "cargo exited with 101");
     }
@@ -1312,7 +1312,7 @@ mod tests {
         let (step, a) = run(Some(0), true, &[change(10)], &[]);
         assert_eq!(step, Step::Answer);
         assert_eq!(a["status"], "queued");
-        assert!(a["next"].as_str().unwrap().contains("rebuild_dev"));
+        assert!(a["next"].as_str().unwrap().contains("dev_session rebuild"));
         // The rebuild then continues the queued episode, and a wait with the
         // cursor from before it answers.
         let (_, a) = run(Some(10), true, &[change(10)], &[rebuild(11), started(12), reloaded(20, 2)]);

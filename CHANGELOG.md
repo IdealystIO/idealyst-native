@@ -11,6 +11,35 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **The idealyst MCP advertises 44 tools instead of 87: families are one tool with an argument**
+  (`mcp-server` major, `mcp-catalog` patch, CLI). The tool definitions a client loads into
+  context go from 32,146 to 18,170 characters. No capability is removed, but the folded tools'
+  old names are no longer served, so anything that names them (skills, agent instructions,
+  permission allowlists such as `mcp__idealyst__describe_component`) must move to the new call:
+
+  | Before | Now |
+  |---|---|
+  | `list_components`, `list_primitives`, `list_macros`, `list_utilities`, `list_types`, `list_values`, `list_tokens`, `list_states`, `list_recipes`, `list_sdks`, `list_icon_sets`, `list_guides`, `list_scopes`, `list_tools`, `list_methods`, `list_animations` | `list(kind, filter?, app?)`, `kind` the singular (`component`, `icon_set`, …; the plural is accepted) |
+  | `describe_component`, `describe_primitive`, `describe_macro`, `describe_utility`, `describe_type`, `describe_token`, `describe_recipe`, `describe_sdk`, `describe_icon_set`, `describe_scope`, `describe_tool` | `describe(kind, name, app?)` (`offset` / `limit` for `icon_set`) |
+  | `read_guide(slug)` | `describe(kind: "guide", name: <slug>)` |
+  | `find_uses`, `find_dependencies` | `find_references(name, direction: "uses" \| "dependencies")` |
+  | `find_all_elements`, `count_elements` | `find_element` with `mode: "all"` / `"count"` (default `first`) |
+  | `get_state`, `get_frame`, `get_absolute_frame`, `get_children`, `get_parent`, `introspect_native` | `inspect_element(element_id, what: "state" \| "frame" \| "absolute_frame" \| "children" \| "parent" \| "native")` |
+  | `tap_native`, `drag_native` | `pointer_native` with `action: "tap"` / `"drag"` (+ `points`), beside its `hover`, `press`, `release`, `context_click` |
+  | `list_dev_sessions`, `dev_status`, `wait_for_build`, `read_dev_log`, `read_build_metrics`, `rebuild_dev`, `stop_dev` | `dev_session(action: "list" \| "status" \| "wait" \| "log" \| "metrics" \| "rebuild" \| "stop", …)`, each action's arguments unchanged |
+  | `configure_devcontainer`, `configure_vscode` | `configure_project(target: "devcontainer" \| "vscode", items?, …)`; `services` / `aspects` are `items` |
+
+  The other 36 tools keep their names and arguments. The Robot bridge verbs each tool sends are
+  unchanged, so apps already built answer the new server. Differences beyond the names: `list`
+  with kind `method` or `animation` narrows with `filter` (a substring of the name or parent
+  component) where `list_methods` / `list_animations` took the parent's exact `name`, and
+  honours `app`; kinds `token`, `state` and `guide` take `filter` too. `get_docs` gives a folded
+  tool one subsection per `kind` / `action` / `what`, and a `query` returns the matching
+  subsection rather than the whole section. Advertised schemas inline their enums (no `$defs`)
+  and drop empty defaults. The server's own hints (`next` in a build wait, error messages) and
+  the bundled guides name the new calls; `idealyst dev`'s "a session already runs here" message
+  does too. The surface budget test now holds the definitions under 19,000 characters.
+
 - **A virtualized idea-ui `Table` is a table to assistive tech and locators** (`runtime-shared`
   minor, `backend-web` minor, `idea-ui` minor; role mappings in `backend-macos`,
   `backend-ios-mobile`, `host-wgpu-accesskit`). The dev wire carries the new roles as `Unknown`

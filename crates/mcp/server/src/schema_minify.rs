@@ -8,6 +8,10 @@
 //! - `Option<T>` as `"type": ["T", "null"]` plus `"default": null`. An
 //!   optional argument is already expressed by its absence from `required`,
 //!   and serde accepts an explicit `null` for an `Option` either way.
+//! - `#[serde(default)]` on a `bool`, `String` or `Vec` as `"default": false`
+//!   (`""`, `[]`): the value an absent argument has anyway.
+//! - `#[serde(skip_serializing)]` as `"writeOnly": true`, and an open map as
+//!   `"additionalProperties": true`.
 //! - Rust integer widths as `"format": "uint64", "minimum": 0` (and
 //!   `"maximum": 65535` for a `u16`), and floats as `"format": "float"`.
 //! - `Option<Struct>` as `"anyOf": [{ "$ref": … }, { "type": "null" }]`.
@@ -15,6 +19,9 @@
 //!   root `"description"`, on the root and on every `$defs` entry. Those
 //!   comments are written for maintainers of this crate; the tool's own
 //!   description is what a caller reads. Property descriptions stay.
+//! - A named type as a `$defs` entry plus a `$ref` to it. A definition
+//!   that does not refer to a definition itself is written in place of each
+//!   reference, and `$defs` goes when nothing is left in it.
 //!
 //! Only the advertised schema changes. Arguments are still deserialized
 //! into the same typed structs, so validation is unchanged.
@@ -33,6 +40,57 @@ pub fn minify(schema: &mut Map<String, Value>) {
         }
     }
     minify_object(schema);
+    inline_defs(schema);
+}
+
+/// Replace each `{ "$ref": "#/$defs/X" }` with X's own schema, keeping the
+/// keys written beside the reference (a property's description). A
+/// definition that itself holds a `$ref` stays in `$defs`, so a recursive
+/// type cannot expand without end.
+fn inline_defs(schema: &mut Map<String, Value>) {
+    let Some(Value::Object(defs)) = schema.remove("$defs") else {
+        return;
+    };
+    let (leaf, kept): (Map<String, Value>, Map<String, Value>) =
+        defs.into_iter().partition(|(_, def)| !holds_ref(def));
+    for value in schema.values_mut() {
+        inline_refs(value, &leaf);
+    }
+    if !kept.is_empty() {
+        let mut kept = Value::Object(kept);
+        inline_refs(&mut kept, &leaf);
+        schema.insert("$defs".into(), kept);
+    }
+}
+
+fn holds_ref(value: &Value) -> bool {
+    match value {
+        Value::Object(m) => m.contains_key("$ref") || m.values().any(holds_ref),
+        Value::Array(a) => a.iter().any(holds_ref),
+        _ => false,
+    }
+}
+
+fn inline_refs(value: &mut Value, defs: &Map<String, Value>) {
+    match value {
+        Value::Object(m) => {
+            let target = m
+                .get("$ref")
+                .and_then(Value::as_str)
+                .and_then(|r| r.strip_prefix("#/$defs/"))
+                .and_then(|name| defs.get(name))
+                .and_then(Value::as_object);
+            if let Some(def) = target {
+                m.remove("$ref");
+                for (k, v) in def {
+                    m.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
+            m.values_mut().for_each(|v| inline_refs(v, defs));
+        }
+        Value::Array(a) => a.iter_mut().for_each(|v| inline_refs(v, defs)),
+        _ => {}
+    }
 }
 
 fn strip_struct_docs(obj: &mut Map<String, Value>) {
@@ -49,8 +107,21 @@ fn minify_object(obj: &mut Map<String, Value>) {
             obj.insert("type".into(), non_null.into_iter().next().unwrap());
         }
     }
-    if obj.get("default").is_some_and(Value::is_null) {
+    // An absent argument already deserializes to these.
+    let is_empty_default = |d: &Value| match d {
+        Value::Null | Value::Bool(false) => true,
+        Value::String(s) => s.is_empty(),
+        Value::Array(a) => a.is_empty(),
+        _ => false,
+    };
+    if obj.get("default").is_some_and(is_empty_default) {
         obj.remove("default");
+    }
+    // What `skip_serializing` and an open `Map` turn into: neither tells a
+    // caller anything about what to send.
+    obj.remove("writeOnly");
+    if obj.get("additionalProperties") == Some(&Value::Bool(true)) {
+        obj.remove("additionalProperties");
     }
     // `anyOf: [X, {type: null}]` → X's keys merged into this object.
     if let Some(Value::Array(any)) = obj.get("anyOf") {
@@ -123,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn strips_schema_uri_null_unions_and_width_formats() {
+    fn strips_schema_uri_null_unions_width_formats_and_empty_defaults() {
         let out = run(json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
@@ -132,7 +203,10 @@ mod tests {
                 "id": { "type": "integer", "format": "uint64", "minimum": 0 },
                 "port": { "type": ["integer", "null"], "format": "uint16", "minimum": 0, "maximum": 65535 },
                 "tol": { "type": ["number", "null"], "format": "float" },
-                "flag": { "type": "boolean", "default": false }
+                "flag": { "type": "boolean", "default": false },
+                "list": { "type": "array", "default": [], "items": { "type": "object", "additionalProperties": true } },
+                "mode": { "type": "string", "writeOnly": true },
+                "y": { "type": "number", "default": 0.0 }
             },
             "required": ["id"]
         }));
@@ -145,7 +219,10 @@ mod tests {
                     "id": { "type": "integer" },
                     "port": { "type": "integer" },
                     "tol": { "type": "number" },
-                    "flag": { "type": "boolean", "default": false }
+                    "flag": { "type": "boolean" },
+                    "list": { "type": "array", "items": { "type": "object" } },
+                    "mode": { "type": "string" },
+                    "y": { "type": "number", "default": 0.0 }
                 },
                 "required": ["id"]
             })
@@ -153,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn collapses_optional_ref_and_recurses_into_defs_and_items() {
+    fn collapses_optional_ref_and_inlines_defs() {
         let out = run(json!({
             "properties": {
                 "aspects": { "type": ["array", "null"], "items": { "$ref": "#/$defs/A" } },
@@ -162,10 +239,11 @@ mod tests {
             },
             "$defs": { "A": { "properties": { "n": { "type": ["integer", "null"], "format": "int32" } } } }
         }));
-        assert_eq!(out["properties"]["aspects"]["type"], "array");
-        assert_eq!(out["properties"]["one"], json!({ "$ref": "#/$defs/A", "description": "x" }));
+        let a = json!({ "properties": { "n": { "type": "integer" } } });
+        assert_eq!(out["properties"]["aspects"], json!({ "type": "array", "items": a }));
+        assert_eq!(out["properties"]["one"], json!({ "properties": { "n": { "type": "integer" } }, "description": "x" }));
         assert_eq!(out["properties"]["pts"]["items"]["items"], json!({ "type": "number" }));
-        assert_eq!(out["$defs"]["A"]["properties"]["n"], json!({ "type": "integer" }));
+        assert!(out.get("$defs").is_none());
     }
 
     #[test]
@@ -173,16 +251,36 @@ mod tests {
         let out = run(json!({
             "title": "RunDevArgs",
             "description": "Args for `run_dev` — maintainer notes.",
-            "properties": { "dir": { "type": "string", "description": "Project dir." } },
-            "$defs": { "A": { "title": "A", "description": "struct doc", "properties": {} } }
+            "properties": {
+                "dir": { "type": "string", "description": "Project dir." },
+                "a": { "$ref": "#/$defs/A", "description": "Property doc." }
+            },
+            "$defs": { "A": { "title": "A", "description": "struct doc", "enum": ["x", "y"] } }
         }));
         assert_eq!(
             out,
             json!({
-                "properties": { "dir": { "type": "string", "description": "Project dir." } },
-                "$defs": { "A": { "properties": {} } }
+                "properties": {
+                    "dir": { "type": "string", "description": "Project dir." },
+                    "a": { "enum": ["x", "y"], "description": "Property doc." }
+                }
             })
         );
+    }
+
+    #[test]
+    fn a_definition_that_refers_to_another_stays_in_defs() {
+        let out = run(json!({
+            "properties": { "tree": { "$ref": "#/$defs/Node" } },
+            "$defs": {
+                "Node": { "properties": { "kind": { "$ref": "#/$defs/Kind" }, "next": { "$ref": "#/$defs/Node" } } },
+                "Kind": { "enum": ["a"] }
+            }
+        }));
+        assert_eq!(out["properties"]["tree"], json!({ "$ref": "#/$defs/Node" }));
+        assert_eq!(out["$defs"]["Node"]["properties"]["kind"], json!({ "enum": ["a"] }));
+        assert_eq!(out["$defs"]["Node"]["properties"]["next"], json!({ "$ref": "#/$defs/Node" }));
+        assert!(out["$defs"].get("Kind").is_none());
     }
 
     #[test]

@@ -83,7 +83,7 @@ pub struct CatalogService {
     /// harmlessly so) when no app is running.
     discovery: crate::app_discovery::DiscoveryTable,
     /// Tracks `idealyst dev` sessions launched via the `run_dev` tool so
-    /// `list_dev_sessions` / `stop_dev` can manage them. Shared by `Arc`
+    /// `dev_session` can list and stop them. Shared by `Arc`
     /// so every `CatalogService` clone (and the rmcp handler) sees the
     /// same table; the single owning `Arc` drop tears sessions down on
     /// server shutdown.
@@ -259,11 +259,10 @@ pub struct NameRequest {
 // instructions and the `app` docs topic explain it once instead of in
 // every tool definition. `strip_app` removes it before the bridge call.
 
-/// Find-by criteria for `find_element` / `find_all_elements` /
-/// `count_elements`. Every criterion set must match (AND); with none set
-/// every element matches. `within` scopes the search to a container's
-/// descendants. `skip_serializing_if` keeps the wire payload to the criteria
-/// the caller actually set.
+/// Find-by criteria for `find_element`. Every criterion set must match
+/// (AND); with none set every element matches. `within` scopes the search to
+/// a container's descendants. `skip_serializing_if` keeps the wire payload
+/// to the criteria the caller actually set.
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RobotFindArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -283,6 +282,38 @@ pub struct RobotFindArgs {
     /// Descendants of an element_id or find object (+`nth`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub within: Option<serde_json::Value>,
+    /// Default `first`.
+    #[serde(default, skip_serializing)]
+    pub mode: Option<FindMode>,
+}
+
+/// What `find_element` returns for its criteria. Each is its own bridge
+/// verb, so the mode never reaches the wire.
+#[derive(Debug, Clone, Copy, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum FindMode {
+    First,
+    All,
+    Count,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotInspect {
+    pub element_id: u64,
+    pub what: InspectWhat,
+    pub app: Option<String>,
+}
+
+/// The aspect of an element `inspect_element` reads; each is a bridge verb.
+#[derive(Debug, Clone, Copy, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InspectWhat {
+    State,
+    Frame,
+    AbsoluteFrame,
+    Children,
+    Parent,
+    Native,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -310,7 +341,7 @@ pub enum OrientationArg {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RobotElementId {
-    /// From `find_element` / `find_all_elements`.
+    /// From `find_element`.
     pub element_id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
@@ -409,35 +440,26 @@ pub struct RobotInvokeMethod {
     pub app: Option<String>,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct RobotDragNative {
-    pub element_id: u64,
-    /// `[x, y]` path in logical px, relative to the element's top-left.
-    pub points: Vec<[f32; 2]>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub app: Option<String>,
-}
-
-/// What `pointer_native` does with the mouse.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "lowercase")]
+/// What `pointer_native` does with real platform input; each is a bridge
+/// verb. The variants are explained in the tool's docs section, which keeps
+/// the advertised schema a plain enum.
+#[derive(Debug, Clone, Copy, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum PointerNativeAction {
-    /// Move over the element with no button held.
+    Tap,
     Hover,
-    /// Press the primary button down on it and keep it down.
     Press,
-    /// Lift the press at it.
     Release,
-    /// Right-click it.
-    #[serde(rename = "context_click")]
     ContextClick,
+    Drag,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct RobotPointerNative {
     pub element_id: u64,
     pub action: PointerNativeAction,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// `drag`: `[x, y]` path in logical px, relative to the element's top-left.
+    pub points: Option<Vec<[f32; 2]>>,
     pub app: Option<String>,
 }
 
@@ -592,7 +614,7 @@ pub struct RunDevArgs {
     /// Web: serve without the initial build.
     #[serde(default)]
     pub no_build: bool,
-    /// Queue saves; `rebuild_dev` applies them.
+    /// Queue saves; `dev_session` `rebuild` applies them.
     #[serde(default)]
     pub no_watch: bool,
     /// Both experimental tiers.
@@ -601,7 +623,7 @@ pub struct RunDevArgs {
     /// Patch the running server in place.
     #[serde(default)]
     pub experimental_server_patch: bool,
-    /// Record each save's cost (`read_build_metrics`).
+    /// Record each save's cost (`dev_session` `metrics`).
     #[serde(default)]
     pub metrics: bool,
     /// `metrics`, plus each save's diff.
@@ -609,14 +631,14 @@ pub struct RunDevArgs {
     pub metrics_diffs: bool,
 }
 
-/// Args for `stop_dev` — stop one tracked dev session by id, or all of
+/// Args for `dev_session`'s `stop` — stop one tracked dev session by id, or all of
 /// them.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct StopDevArgs {
     /// Session to stop, by the id `run_dev` gave it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<u64>,
-    /// Session to stop, by process id (from `list_dev_sessions`).
+    /// Session to stop, by process id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     /// Stop every session this server or an exited idealyst mcp started (`include_external`: all).
@@ -627,38 +649,26 @@ pub struct StopDevArgs {
     pub include_external: bool,
 }
 
-/// Which session a tool acts on: the id `run_dev` gave it, or its process
-/// id (any session `list_dev_sessions` shows).
-#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
-pub struct DevSessionArgs {
-    /// From `run_dev`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<u64>,
-    /// From `list_dev_sessions`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pid: Option<u32>,
-}
-
-/// Args for `rebuild_dev`.
+/// Args for `dev_session`'s `rebuild`.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct RebuildDevArgs {
     /// From `run_dev`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<u64>,
-    /// From `list_dev_sessions`.
+    /// The session\'s process id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apply: Option<bool>,
 }
 
-/// Args for `dev_status`.
+/// Args for `dev_session`'s `status`.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct DevStatusArgs {
     /// From `run_dev`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<u64>,
-    /// From `list_dev_sessions`.
+    /// The session\'s process id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     /// The session's event snapshot as sent (watched roots, every diagnostic) instead of the summary.
@@ -666,14 +676,14 @@ pub struct DevStatusArgs {
     pub detail: bool,
 }
 
-/// Args for `read_build_metrics` — the records `idealyst dev --metrics`
+/// Args for `dev_session`'s `metrics` — the records `idealyst dev --metrics`
 /// wrote for a session's project, or for a project directory.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadBuildMetricsArgs {
     /// From `run_dev`: only that session's records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<u64>,
-    /// From `list_dev_sessions` (any session, a person's included): only that session's records.
+    /// The session\'s process id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     /// Project dir: every session's records, running or not (default: the server's cwd).
@@ -690,14 +700,14 @@ pub struct ReadBuildMetricsArgs {
     pub detail: bool,
 }
 
-/// Args for `wait_for_build` — block until a session's build or save has
+/// Args for `dev_session`'s `wait` — block until a session's build or save has
 /// landed.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct WaitForBuildArgs {
     /// From `run_dev`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<u64>,
-    /// From `list_dev_sessions` (any session, a person's included).
+    /// The session\'s process id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     /// A `cursor` from an earlier answer: wait for an outcome after it.
@@ -711,13 +721,13 @@ pub struct WaitForBuildArgs {
     pub timeout_secs: Option<u64>,
 }
 
-/// Args for `read_dev_log` — tail a tracked dev session's log file.
+/// Args for `dev_session`'s `log` — tail a tracked dev session's log file.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadDevLogArgs {
     /// From `run_dev`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<u64>,
-    /// From `list_dev_sessions` (any session, a person's included).
+    /// The session\'s process id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     /// Lines from the end (default 100, max 2000).
@@ -853,7 +863,7 @@ pub struct SlugRequest {
     pub slug: String,
 }
 
-/// Args for `describe_icon_set` — a pack name plus a pagination window
+/// Args for `describe`'s `icon_set` — a pack name plus a pagination window
 /// over its (name-sorted) icon list. An icon pack has ~1600 icons, so the
 /// full list is never dumped at once; the caller pages or, better, uses
 /// `search_icons`.
@@ -898,7 +908,7 @@ pub struct LintRequest {
     pub limit: Option<usize>,
 }
 
-/// One service instruction for `configure_devcontainer`.
+/// One add-on instruction for `configure_project`'s `devcontainer`.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ConfigureServiceArg {
     /// `database`, `redis`, `minio`, `playwright`, `claude`, `codex`, or `idealyst-cli`.
@@ -911,7 +921,7 @@ pub struct ConfigureServiceArg {
     pub action: Option<String>,
 }
 
-/// Args for `configure_devcontainer` — initialize or update a project's
+/// Args for `configure_project`'s `devcontainer` — initialize or update a project's
 /// devcontainer + its idealyst-managed sidecar services.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ConfigureDevcontainerRequest {
@@ -926,7 +936,7 @@ pub struct ConfigureDevcontainerRequest {
     pub config: Option<String>,
 }
 
-/// One aspect instruction for `configure_vscode`.
+/// One aspect instruction for `configure_project`'s `vscode`.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ConfigureVscodeAspectArg {
     /// `extensions` or `lint`.
@@ -936,7 +946,7 @@ pub struct ConfigureVscodeAspectArg {
     pub action: Option<String>,
 }
 
-/// Args for `configure_vscode` — configure a project's `.vscode/` settings +
+/// Args for `configure_project`'s `vscode` — configure a project's `.vscode/` settings +
 /// extension recommendations.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ConfigureVscodeRequest {
@@ -951,14 +961,235 @@ pub struct ConfigureVscodeRequest {
     pub remove_all: Option<bool>,
 }
 
+/// A catalog slice `list` can return. The plural spelling is accepted too.
+#[derive(Debug, Clone, Copy, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ListKind {
+    #[serde(alias = "components")]
+    Component,
+    #[serde(alias = "primitives")]
+    Primitive,
+    #[serde(alias = "macros")]
+    Macro,
+    #[serde(alias = "utilities")]
+    Utility,
+    #[serde(alias = "types")]
+    Type,
+    #[serde(alias = "values")]
+    Value,
+    #[serde(alias = "tokens")]
+    Token,
+    #[serde(alias = "states")]
+    State,
+    #[serde(alias = "recipes")]
+    Recipe,
+    #[serde(alias = "sdks")]
+    Sdk,
+    #[serde(alias = "icon_sets")]
+    IconSet,
+    #[serde(alias = "guides")]
+    Guide,
+    #[serde(alias = "scopes")]
+    Scope,
+    #[serde(alias = "tools")]
+    Tool,
+    #[serde(alias = "methods")]
+    Method,
+    #[serde(alias = "animations")]
+    Animation,
+}
+
+/// Args for `list`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListRequest {
+    /// `guide`: how-tos; `recipe`: compile-checked examples; `sdk`: opt-in crates (net, storage, …).
+    pub kind: ListKind,
+    /// Case-insensitive terms, AND'd; `*` globs.
+    #[serde(default)]
+    pub filter: Option<String>,
+    /// Restrict to one crate (`my-app` or `my_app`).
+    #[serde(default)]
+    pub app: Option<String>,
+}
+
+/// A catalog slice whose entries `describe` returns in full. The plural
+/// spelling is accepted too.
+#[derive(Debug, Clone, Copy, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DescribeKind {
+    #[serde(alias = "components")]
+    Component,
+    #[serde(alias = "primitives")]
+    Primitive,
+    #[serde(alias = "macros")]
+    Macro,
+    #[serde(alias = "utilities")]
+    Utility,
+    #[serde(alias = "types")]
+    Type,
+    #[serde(alias = "tokens")]
+    Token,
+    #[serde(alias = "recipes")]
+    Recipe,
+    #[serde(alias = "sdks")]
+    Sdk,
+    #[serde(alias = "icon_sets")]
+    IconSet,
+    #[serde(alias = "guides")]
+    Guide,
+    #[serde(alias = "scopes")]
+    Scope,
+    #[serde(alias = "tools")]
+    Tool,
+}
+
+/// Args for `describe`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DescribeRequest {
+    pub kind: DescribeKind,
+    /// Short or fully-qualified name; a guide's slug.
+    pub name: String,
+    /// Restrict to one crate (`my-app` or `my_app`).
+    #[serde(default)]
+    pub app: Option<String>,
+    /// `icon_set`: page start (default 0).
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// `icon_set`: page size (default 100, max 500).
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// Which way `find_references` walks the composes graph.
+#[derive(Debug, Clone, Copy, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ReferenceDirection {
+    Uses,
+    Dependencies,
+}
+
+/// Args for `find_references`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct FindReferencesRequest {
+    /// Short or fully-qualified component name.
+    pub name: String,
+    /// Default `uses`.
+    #[serde(default)]
+    pub direction: Option<ReferenceDirection>,
+    /// Restrict to one crate (`my-app` or `my_app`).
+    #[serde(default)]
+    pub app: Option<String>,
+}
+
+/// What `dev_session` does.
+#[derive(Debug, Clone, Copy, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DevSessionAction {
+    List,
+    Status,
+    Wait,
+    Log,
+    Metrics,
+    Rebuild,
+    Stop,
+}
+
+/// Args for `dev_session`: the action, the session it acts on, and each
+/// action's own options (named with the action they belong to).
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DevSessionRequest {
+    pub action: DevSessionAction,
+    /// From `run_dev`.
+    #[serde(default)]
+    pub session_id: Option<u64>,
+    /// From `list` (any session, a person's included).
+    #[serde(default)]
+    pub pid: Option<u32>,
+    /// `status`, `metrics`: full records instead of summaries.
+    #[serde(default)]
+    pub detail: bool,
+    /// `wait`: a `cursor` from an earlier answer; wait for an outcome after it.
+    #[serde(default)]
+    pub after: Option<u64>,
+    /// `wait`: a `request` from `rebuild`; wait for the builds that apply it.
+    #[serde(default)]
+    pub request: Option<u64>,
+    /// `wait`: longest wait (default 120, max 600).
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// `log`: lines from the end (default 100, max 2000).
+    #[serde(default)]
+    pub lines: Option<usize>,
+    /// `log`: case-insensitive substring, applied before the tail.
+    #[serde(default)]
+    pub filter: Option<String>,
+    /// `metrics`: newest records to return (default 10, max 200).
+    #[serde(default)]
+    pub last: Option<usize>,
+    /// `metrics`: only cargo builds.
+    #[serde(default)]
+    pub rebuilds_only: bool,
+    /// `metrics`: a project dir, for every session's records, running or not.
+    #[serde(default)]
+    pub dir: Option<String>,
+    /// `rebuild`: `false` builds without applying.
+    #[serde(default)]
+    pub apply: Option<bool>,
+    /// `stop`: every session this server or an exited idealyst mcp started.
+    #[serde(default)]
+    pub all: bool,
+    /// `stop`: allow a session a person or another idealyst mcp started.
+    #[serde(default)]
+    pub include_external: bool,
+}
+
+/// What `configure_project` sets up.
+#[derive(Debug, Clone, Copy, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigureTarget {
+    Devcontainer,
+    Vscode,
+}
+
+/// One add-on (devcontainer) or aspect (vscode) instruction.
+#[derive(Debug, serde::Deserialize)]
+pub struct ConfigureItemArg {
+    pub id: String,
+    #[serde(default)]
+    pub variant: Option<String>,
+    #[serde(default)]
+    pub action: Option<String>,
+}
+
+/// Args for `configure_project`. `items` is advertised as a bare array of
+/// objects: its ids and variants differ per target and are listed in the
+/// tool's docs section instead of in every session's context.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ConfigureProjectRequest {
+    pub target: ConfigureTarget,
+    /// Project dir (default: the live app's root, else the server's cwd).
+    #[serde(default)]
+    pub dir: Option<String>,
+    /// `[{ id, action?, variant? }]` add-ons or aspects to change: get_docs("configure_project").
+    #[serde(default)]
+    #[schemars(with = "Option<Vec<serde_json::Map<String, serde_json::Value>>>")]
+    pub items: Option<Vec<ConfigureItemArg>>,
+    /// `devcontainer`: named config under `.devcontainer/<config>/`.
+    #[serde(default)]
+    pub config: Option<String>,
+    /// `vscode`: remove everything idealyst manages.
+    #[serde(default)]
+    pub remove_all: Option<bool>,
+}
+
 /// How long a session a person started gets to exit on SIGINT before
-/// `stop_dev` kills it: its teardown stops simulators and servers, which
+/// `dev_session` `stop` kills it: its teardown stops simulators and servers, which
 /// takes longer than this server's own sessions are given.
 const EXTERNAL_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// How long `rebuild_dev` with `apply: false` waits for the session's builds,
-/// the longest `wait_for_build` waits. Past it the answer is `running`, and
-/// `dev_status` has the result.
+/// How long `dev_session` `rebuild` with `apply: false` waits for the session's
+/// builds, the longest `wait` waits. Past it the answer is `running`, and
+/// `status` has the result.
 const SESSION_CHECK_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 
 impl CatalogService {
@@ -975,14 +1206,14 @@ impl CatalogService {
             (Some(id), None) => self
                 .dev_runner
                 .pid_of(id)
-                .ok_or_else(|| format!("no running dev session with id {id} — see list_dev_sessions"))?,
-            (None, None) => return Err("name the session: `session_id` (from run_dev) or `pid` (from list_dev_sessions)".into()),
+                .ok_or_else(|| format!("no running dev session with id {id} — see dev_session list"))?,
+            (None, None) => return Err("name the session: `session_id` (from run_dev) or `pid` (from dev_session list)".into()),
         };
         crate::dev_sessions::find(pid).ok_or_else(|| {
             format!(
                 "pid {pid} has no control endpoint: it is not a running `idealyst dev`, or it is still \
                  starting (its endpoint comes up with its first output), or its `idealyst` predates \
-                 the session registry (CLI 1.18). read_dev_log still works for this server's sessions."
+                 the session registry (CLI 1.18). dev_session log still works for this server's sessions."
             )
         })
     }
@@ -1265,7 +1496,155 @@ impl CatalogService {
         self.replace_catalog(ResolvedCatalog::build()).await;
     }
 
-    #[tool(description = "List the project's components ({ app, name, fqn, summary }); narrow with `filter`, then `describe_component`.")]
+    #[tool(description = "List one slice of the project's catalog as light summaries; narrow with `filter`, then `describe` an entry.")]
+    async fn list(
+        &self,
+        Parameters(req): Parameters<ListRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let args = Parameters(FilterRequest { filter: req.filter, app: req.app });
+        match req.kind {
+            ListKind::Component => self.list_components(args).await,
+            ListKind::Primitive => self.list_primitives(args).await,
+            ListKind::Macro => self.list_macros(args).await,
+            ListKind::Utility => self.list_utilities(args).await,
+            ListKind::Type => self.list_types(args).await,
+            ListKind::Value => self.list_values(args).await,
+            ListKind::Token => self.list_tokens(args).await,
+            ListKind::State => self.list_states(args).await,
+            ListKind::Recipe => self.list_recipes(args).await,
+            ListKind::Sdk => self.list_sdks(args).await,
+            ListKind::IconSet => self.list_icon_sets(args).await,
+            ListKind::Guide => self.list_guides(args).await,
+            ListKind::Scope => self.list_scopes(args).await,
+            ListKind::Tool => self.list_tools(args).await,
+            ListKind::Method => self.list_methods(args).await,
+            ListKind::Animation => self.list_animations(args).await,
+        }
+    }
+
+    #[tool(description = "One catalog entry in full: docs, props or signature, source location; a guide's text.")]
+    async fn describe(
+        &self,
+        Parameters(req): Parameters<DescribeRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let DescribeRequest { kind, name, app, offset, limit } = req;
+        let args = |name| Parameters(NameRequest { name, app });
+        match kind {
+            DescribeKind::Component => self.describe_component(args(name)).await,
+            DescribeKind::Primitive => self.describe_primitive(args(name)).await,
+            DescribeKind::Macro => self.describe_macro(args(name)).await,
+            DescribeKind::Utility => self.describe_utility(args(name)).await,
+            DescribeKind::Type => self.describe_type(args(name)).await,
+            DescribeKind::Token => self.describe_token(args(name)).await,
+            DescribeKind::Recipe => self.describe_recipe(args(name)).await,
+            DescribeKind::Sdk => self.describe_sdk(args(name)).await,
+            DescribeKind::Scope => self.describe_scope(args(name)).await,
+            DescribeKind::Tool => self.describe_tool(args(name)).await,
+            DescribeKind::IconSet => {
+                self.describe_icon_set(Parameters(DescribeIconSetRequest { name, offset, limit })).await
+            }
+            DescribeKind::Guide => self.read_guide(Parameters(SlugRequest { slug: name })).await,
+        }
+    }
+
+    #[tool(description = "The components that compose a component (`uses`), or the ones it composes (`dependencies`).")]
+    async fn find_references(
+        &self,
+        Parameters(req): Parameters<FindReferencesRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let args = Parameters(NameRequest { name: req.name, app: req.app });
+        match req.direction.unwrap_or(ReferenceDirection::Uses) {
+            ReferenceDirection::Uses => self.find_uses(args).await,
+            ReferenceDirection::Dependencies => self.find_dependencies(args).await,
+        }
+    }
+
+    #[tool(description = "Act on a running dev session: list them, or one's status, wait (for a build), log, metrics, rebuild, stop.")]
+    async fn dev_session(
+        &self,
+        Parameters(req): Parameters<DevSessionRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let (session_id, pid) = (req.session_id, req.pid);
+        match req.action {
+            DevSessionAction::List => self.list_dev_sessions().await,
+            DevSessionAction::Status => {
+                self.dev_status(Parameters(DevStatusArgs { session_id, pid, detail: req.detail })).await
+            }
+            DevSessionAction::Wait => {
+                self.wait_for_build(Parameters(WaitForBuildArgs {
+                    session_id,
+                    pid,
+                    after: req.after,
+                    request: req.request,
+                    timeout_secs: req.timeout_secs,
+                }))
+                .await
+            }
+            DevSessionAction::Log => {
+                self.read_dev_log(Parameters(ReadDevLogArgs { session_id, pid, lines: req.lines, filter: req.filter }))
+                    .await
+            }
+            DevSessionAction::Metrics => {
+                self.read_build_metrics(Parameters(ReadBuildMetricsArgs {
+                    session_id,
+                    pid,
+                    dir: req.dir,
+                    last: req.last,
+                    rebuilds_only: req.rebuilds_only,
+                    detail: req.detail,
+                }))
+                .await
+            }
+            DevSessionAction::Rebuild => {
+                self.rebuild_dev(Parameters(RebuildDevArgs { session_id, pid, apply: req.apply })).await
+            }
+            DevSessionAction::Stop => {
+                self.stop_dev(Parameters(StopDevArgs {
+                    session_id,
+                    pid,
+                    all: req.all,
+                    include_external: req.include_external,
+                }))
+                .await
+            }
+        }
+    }
+
+    #[tool(description = "Set up a project's devcontainer (and its add-ons: database, redis, agent CLIs, …) or VS Code workspace.")]
+    async fn configure_project(
+        &self,
+        Parameters(req): Parameters<ConfigureProjectRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        match req.target {
+            ConfigureTarget::Devcontainer => {
+                let services = req
+                    .items
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|i| ConfigureServiceArg { id: i.id, variant: i.variant, action: i.action })
+                    .collect();
+                self.configure_devcontainer(Parameters(ConfigureDevcontainerRequest {
+                    dir: req.dir,
+                    services,
+                    config: req.config,
+                }))
+                .await
+            }
+            ConfigureTarget::Vscode => {
+                let aspects = req.items.map(|items| {
+                    items.into_iter().map(|i| ConfigureVscodeAspectArg { id: i.id, action: i.action }).collect()
+                });
+                self.configure_vscode(Parameters(ConfigureVscodeRequest {
+                    dir: req.dir,
+                    aspects,
+                    remove_all: req.remove_all,
+                }))
+                .await
+            }
+        }
+    }
+
+    /// List the project's components ({ app, name, fqn, summary }); narrow with `filter`, then `describe`.
     async fn list_components(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -1351,7 +1730,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "One component in full: docs, props, file/line, and the components it composes.")]
+    /// One component in full: docs, props, file/line, and the components it composes.
     async fn describe_component(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -1366,7 +1745,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "Which components compose the given one (reverse edges).")]
+    /// Which components compose the given one (reverse edges).
     async fn find_uses(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -1381,7 +1760,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "Which components the given one composes, with resolution status (forward edges).")]
+    /// Which components the given one composes, with resolution status (forward edges).
     async fn find_dependencies(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -1411,7 +1790,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "List `#[idealyst_tool]` functions; then `describe_tool`.")]
+    /// List `#[idealyst_tool]` functions.
     async fn list_tools(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -1438,7 +1817,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "One `#[idealyst_tool]` function: docs, params, return type.")]
+    /// One `#[idealyst_tool]` function: docs, params, return type.
     async fn describe_tool(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -1481,27 +1860,38 @@ impl CatalogService {
     // returns "robot tools disabled" and the catalog tools keep
     // working.
 
-    #[tool(description = "Find the first element in a running app matching all given criteria.")]
+    #[tool(description = "Find elements in a running app matching all given criteria: the first (default), all, or a count.")]
     async fn find_element(
         &self,
         Parameters(args): Parameters<RobotFindArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let verb = match args.mode.unwrap_or(FindMode::First) {
+            FindMode::First => "find_element",
+            FindMode::All => "find_all_elements",
+            FindMode::Count => "count_elements",
+        };
         let app = args.app.clone();
         let body = strip_app(serde_json::to_value(args).unwrap_or_default());
-        self.robot_call("find_element", app.as_deref(), body).await
+        self.robot_call(verb, app.as_deref(), body).await
     }
 
-    #[tool(description = "Find every element in a running app matching all given criteria.")]
-    async fn find_all_elements(
+    #[tool(description = "Read one aspect of an element: state, frame, absolute_frame, children, parent, or its native render.")]
+    async fn inspect_element(
         &self,
-        Parameters(args): Parameters<RobotFindArgs>,
+        Parameters(args): Parameters<RobotInspect>,
     ) -> Result<CallToolResult, McpError> {
-        let app = args.app.clone();
-        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
-        self.robot_call("find_all_elements", app.as_deref(), body).await
+        let verb = match args.what {
+            InspectWhat::State => "get_state",
+            InspectWhat::Frame => "get_frame",
+            InspectWhat::AbsoluteFrame => "get_absolute_frame",
+            InspectWhat::Children => "get_children",
+            InspectWhat::Parent => "get_parent",
+            InspectWhat::Native => "introspect_native",
+        };
+        self.robot_call(verb, args.app.as_deref(), json!({ "element_id": args.element_id })).await
     }
 
-    #[tool(description = "Press an element through the framework's handlers (no hit testing); see `tap_native` for real input.")]
+    #[tool(description = "Press an element through the framework's handlers (no hit testing); see `pointer_native` for real input.")]
     async fn click(
         &self,
         Parameters(args): Parameters<RobotElementId>,
@@ -1579,36 +1969,6 @@ impl CatalogService {
         self.robot_call("get_snapshot", args.app.as_deref(), json!({})).await
     }
 
-    #[tool(description = "An element's children.")]
-    async fn get_children(
-        &self,
-        Parameters(args): Parameters<RobotElementId>,
-    ) -> Result<CallToolResult, McpError> {
-        let app = args.app.clone();
-        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
-        self.robot_call("get_children", app.as_deref(), body).await
-    }
-
-    #[tool(description = "An element's parent.")]
-    async fn get_parent(
-        &self,
-        Parameters(args): Parameters<RobotElementId>,
-    ) -> Result<CallToolResult, McpError> {
-        let app = args.app.clone();
-        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
-        self.robot_call("get_parent", app.as_deref(), body).await
-    }
-
-    #[tool(description = "Count elements in a running app matching all given criteria.")]
-    async fn count_elements(
-        &self,
-        Parameters(args): Parameters<RobotFindArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let app = args.app.clone();
-        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
-        self.robot_call("count_elements", app.as_deref(), body).await
-    }
-
     #[tool(description = "The running app's captured logs.")]
     async fn get_logs(
         &self,
@@ -1623,36 +1983,6 @@ impl CatalogService {
         Parameters(args): Parameters<RobotAppOnly>,
     ) -> Result<CallToolResult, McpError> {
         self.robot_call("clear_logs", args.app.as_deref(), json!({})).await
-    }
-
-    #[tool(description = "An element's layout frame relative to its parent.")]
-    async fn get_frame(
-        &self,
-        Parameters(args): Parameters<RobotElementId>,
-    ) -> Result<CallToolResult, McpError> {
-        let app = args.app.clone();
-        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
-        self.robot_call("get_frame", app.as_deref(), body).await
-    }
-
-    #[tool(description = "An element's layout frame in window coordinates.")]
-    async fn get_absolute_frame(
-        &self,
-        Parameters(args): Parameters<RobotElementId>,
-    ) -> Result<CallToolResult, McpError> {
-        let app = args.app.clone();
-        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
-        self.robot_call("get_absolute_frame", app.as_deref(), body).await
-    }
-
-    #[tool(description = "An element's render state as the platform reports it (native class, frame, colors, fonts).")]
-    async fn introspect_native(
-        &self,
-        Parameters(args): Parameters<RobotElementId>,
-    ) -> Result<CallToolResult, McpError> {
-        let app = args.app.clone();
-        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
-        self.robot_call("introspect_native", app.as_deref(), body).await
     }
 
     #[tool(description = "Diff the native render (geometry and visual props) of two running apps to find cross-platform divergences.")]
@@ -1672,48 +2002,26 @@ impl CatalogService {
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
-    #[tool(description = "Tap an element with real platform input, through hit testing and overlays.")]
-    async fn tap_native(
-        &self,
-        Parameters(args): Parameters<RobotElementId>,
-    ) -> Result<CallToolResult, McpError> {
-        let app = args.app.clone();
-        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
-        self.robot_call("tap_native", app.as_deref(), body).await
-    }
-
-    #[tool(description = "Drag with real platform input along a path.")]
-    async fn drag_native(
-        &self,
-        Parameters(args): Parameters<RobotDragNative>,
-    ) -> Result<CallToolResult, McpError> {
-        let app = args.app.clone();
-        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
-        self.robot_call("drag_native", app.as_deref(), body).await
-    }
-
-    #[tool(description = "Hover, press (hold), release or right-click an element with real input.")]
+    #[tool(description = "Real platform input on an element: tap, hover, press (hold), release, context_click, or drag along `points`.")]
     async fn pointer_native(
         &self,
         Parameters(args): Parameters<RobotPointerNative>,
     ) -> Result<CallToolResult, McpError> {
         let verb = match args.action {
+            PointerNativeAction::Tap => "tap_native",
             PointerNativeAction::Hover => "hover_native",
             PointerNativeAction::Press => "press_native",
             PointerNativeAction::Release => "release_native",
             PointerNativeAction::ContextClick => "context_click",
+            PointerNativeAction::Drag => {
+                let Some(points) = args.points else {
+                    return Err(McpError::invalid_params("`drag` needs `points`", None));
+                };
+                let body = json!({ "element_id": args.element_id, "points": points });
+                return self.robot_call("drag_native", args.app.as_deref(), body).await;
+            }
         };
         self.robot_call(verb, args.app.as_deref(), json!({ "element_id": args.element_id })).await
-    }
-
-    #[tool(description = "An element's user-visible state: value, checked, disabled, focused, hovered, pressed.")]
-    async fn get_state(
-        &self,
-        Parameters(args): Parameters<RobotElementId>,
-    ) -> Result<CallToolResult, McpError> {
-        let app = args.app.clone();
-        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
-        self.robot_call("get_state", app.as_deref(), body).await
     }
 
     #[tool(description = "Viewport size + breakpoint; resize (width+height) or turn (orientation) first.")]
@@ -2020,7 +2328,7 @@ impl CatalogService {
         }
     }
 
-    #[tool(description = "List every running dev session on this machine: ones a person started and ones this server launched.")]
+    /// List every running dev session on this machine: ones a person started and ones this server launched.
     async fn list_dev_sessions(&self) -> Result<CallToolResult, McpError> {
         let mine = self.dev_runner.list();
         let live = crate::dev_sessions::live();
@@ -2061,7 +2369,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Rebuild a session, applying queued saves; `apply: false` only builds.")]
+    /// Rebuild a session, applying queued saves; `apply: false` only builds.
     async fn rebuild_dev(
         &self,
         Parameters(args): Parameters<RebuildDevArgs>,
@@ -2095,10 +2403,10 @@ impl CatalogService {
                 // an older one only with how many watchers took it.
                 let next = match v.get("request").and_then(|r| r.as_u64()) {
                     Some(n) => format!(
-                        "wait_for_build with request: {n} waits for the builds that apply this request \
+                        "dev_session wait with request: {n} waits for the builds that apply this request \
                          (a later request, another agent's, is not waited for)"
                     ),
-                    None => "wait_for_build waits for its outcome (pass the cursor from before this call as `after`)".into(),
+                    None => "dev_session wait waits for its outcome (pass the cursor from before this call as `after`)".into(),
                 };
                 let mut out = json!({ "requested": v, "next": next });
                 if let Some(n) = v.get("request") {
@@ -2111,7 +2419,7 @@ impl CatalogService {
         }
     }
 
-    #[tool(description = "A dev session's state: its settings, and per target the latest build or save with its outcome.")]
+    /// A dev session's state: its settings, and per target the latest build or save with its outcome.
     async fn dev_status(
         &self,
         Parameters(args): Parameters<DevStatusArgs>,
@@ -2130,7 +2438,7 @@ impl CatalogService {
         }
     }
 
-    #[tool(description = "Stop one or all dev sessions this server launched, or that an exited idealyst mcp left behind.")]
+    /// Stop one or all dev sessions this server launched, or that an exited idealyst mcp left behind.
     async fn stop_dev(
         &self,
         Parameters(args): Parameters<StopDevArgs>,
@@ -2203,12 +2511,12 @@ impl CatalogService {
                 Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
             },
             None => Ok(CallToolResult::error(vec![Content::text(
-                "stop_dev needs `session_id`, `pid`, or `all: true`".to_string(),
+                "dev_session stop needs `session_id`, `pid`, or `all: true`".to_string(),
             )])),
         }
     }
 
-    #[tool(description = "What each save cost in a `metrics` dev session: tier, time, and the crates cargo recompiled and why.")]
+    /// What each save cost in a `metrics` dev session: tier, time, and the crates cargo recompiled and why.
     async fn read_build_metrics(
         &self,
         Parameters(args): Parameters<ReadBuildMetricsArgs>,
@@ -2255,7 +2563,7 @@ impl CatalogService {
         Ok(CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&out).unwrap())]))
     }
 
-    #[tool(description = "Wait until a dev session's save or build lands and return how it ended; always returns by its timeout.")]
+    /// Wait until a dev session's save or build lands and return how it ended; always returns by its timeout.
     async fn wait_for_build(
         &self,
         Parameters(args): Parameters<WaitForBuildArgs>,
@@ -2267,7 +2575,7 @@ impl CatalogService {
         let Some(url) = live.entry.events_url.clone() else {
             return Ok(CallToolResult::error(vec![Content::text(format!(
                 "the session (pid {}) publishes no event stream (its idealyst predates it); \
-                 follow it with dev_status or read_dev_log",
+                 follow it with dev_session status or log",
                 live.entry.pid
             ))]));
         };
@@ -2284,7 +2592,7 @@ impl CatalogService {
         let on = match (args.request, args.after) {
             (Some(_), Some(_)) => {
                 return Ok(CallToolResult::error(vec![Content::text(
-                    "pass `request` (from rebuild_dev) or `after` (a cursor), not both",
+                    "pass `request` (from dev_session rebuild) or `after` (a cursor), not both",
                 )]))
             }
             (Some(n), None) => crate::build_wait::On::Request(n),
@@ -2297,7 +2605,7 @@ impl CatalogService {
         }
     }
 
-    #[tool(description = "Tail a dev session's log, optionally filtered (e.g. to compile errors).")]
+    /// Tail a dev session's log, optionally filtered (e.g. to compile errors).
     async fn read_dev_log(
         &self,
         Parameters(args): Parameters<ReadDevLogArgs>,
@@ -2315,7 +2623,7 @@ impl CatalogService {
         let Some(path) = path else {
             return Ok(CallToolResult::error(vec![Content::text(
                 "no log for that session — pass `session_id` (from run_dev) or `pid` (from \
-                 list_dev_sessions) of a session that ran here or is running now."
+                 dev_session list) of a session that ran here or is running now."
                     .to_string(),
             )]));
         };
@@ -2644,7 +2952,7 @@ impl CatalogService {
     // can discover the full authoring vocabulary, not just the
     // user's components.
 
-    #[tool(description = "List the `ui!` leaf primitives (view, text, button, …); then `describe_primitive`.")]
+    /// List the `ui!` leaf primitives (view, text, button, …).
     async fn list_primitives(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -2670,7 +2978,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "One primitive: every prop, backend support, docs.")]
+    /// One primitive: every prop, backend support, docs.
     async fn describe_primitive(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -2711,7 +3019,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "List free helper functions (`platform()`, `parse_color()`, …); then `describe_utility`.")]
+    /// List free helper functions (`platform()`, `parse_color()`, …).
     async fn list_utilities(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -2739,7 +3047,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "One utility: docs, params, return type, authoring snippet.")]
+    /// One utility: docs, params, return type, authoring snippet.
     async fn describe_utility(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -2808,7 +3116,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "List the authoring macros (`ui!`, `effect!`, `#[component]`, `stylesheet!`, …); then `describe_macro`.")]
+    /// List the authoring macros (`ui!`, `effect!`, `#[component]`, `stylesheet!`, …).
     async fn list_macros(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -2834,7 +3142,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "One macro: invocation syntax, exporting crate, and what it expands to.")]
+    /// One macro: invocation syntax, exporting crate, and what it expands to.
     async fn describe_macro(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -2863,12 +3171,16 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "The interaction states `stylesheet!` arms can name (hovered, pressed, focused, disabled).")]
-    async fn list_states(&self) -> Result<CallToolResult, McpError> {
+    /// The interaction states `stylesheet!` arms can name (hovered, pressed, focused, disabled).
+    async fn list_states(
+        &self,
+        Parameters(req): Parameters<FilterRequest>,
+    ) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
         let json: Vec<serde_json::Value> = cat
             .states()
             .iter()
+            .filter(|s| matches_filter(&req.filter, &[s.name]))
             .map(|s| {
                 serde_json::json!({
                     "name": s.name,
@@ -2882,12 +3194,16 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "The theme tokens a `stylesheet!` can reference, with accessor path and value type.")]
-    async fn list_tokens(&self) -> Result<CallToolResult, McpError> {
+    /// The theme tokens a `stylesheet!` can reference, with accessor path and value type.
+    async fn list_tokens(
+        &self,
+        Parameters(req): Parameters<FilterRequest>,
+    ) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
         let json: Vec<serde_json::Value> = cat
             .style_tokens()
             .iter()
+            .filter(|t| matches_filter(&req.filter, &[t.name, t.path, t.namespace]))
             .map(|t| {
                 serde_json::json!({
                     "name": t.name,
@@ -2905,7 +3221,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "One theme token by registry name or accessor path.")]
+    /// One theme token by registry name or accessor path.
     async fn describe_token(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -2919,7 +3235,7 @@ impl CatalogService {
             .ok_or_else(|| {
                 McpError::invalid_params(
                     format!(
-                        "no theme token `{needle}` — call list_tokens for the vocabulary. \
+                        "no theme token `{needle}` — list kind `token` for the vocabulary. \
                          Tokens are named by registry key (`spacing-md`) or accessor path \
                          (`spacing.md`)."
                     ),
@@ -2944,12 +3260,20 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "List the bundled framework guides; read one with `read_guide`.")]
-    async fn list_guides(&self) -> Result<CallToolResult, McpError> {
+    /// List the bundled framework guides.
+    async fn list_guides(
+        &self,
+        Parameters(req): Parameters<FilterRequest>,
+    ) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
         let json: Vec<serde_json::Value> = cat
             .guides()
             .iter()
+            .filter(|g| {
+                let mut fields = vec![g.slug, g.title];
+                fields.extend(g.tags.iter().copied());
+                matches_filter(&req.filter, &fields)
+            })
             .map(|g| {
                 serde_json::json!({
                     "slug": g.slug,
@@ -2972,7 +3296,7 @@ impl CatalogService {
         Ok(self.docs_result(req))
     }
 
-    #[tool(description = "Read one framework guide's markdown by slug.")]
+    /// Read one framework guide's markdown by slug.
     async fn read_guide(
         &self,
         Parameters(req): Parameters<SlugRequest>,
@@ -2995,7 +3319,7 @@ impl CatalogService {
         if !related.is_empty() {
             body.push_str(&format!(
                 "\n\nRelated recipes: {} — fetch the compile-checked source with \
-                 describe_recipe(name); browse all with list_recipes.",
+                 describe(kind: \"recipe\", name); browse all with list(kind: \"recipe\").",
                 related.join(", ")
             ));
         } else if matches!(
@@ -3007,8 +3331,8 @@ impl CatalogService {
             // discoverable.
             body.push_str(
                 "\n\nRelated recipes: compile-checked usage examples for this area \
-                 live in the recipe catalog — browse with list_recipes, fetch one \
-                 with describe_recipe.",
+                 live in the recipe catalog — browse with list(kind: \"recipe\"), fetch one \
+                 with describe(kind: \"recipe\", name).",
             );
         }
         let json = serde_json::json!({
@@ -3023,20 +3347,19 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "List `#[method]` functions declared in components, optionally for one parent component.")]
+    /// List `#[method]` functions declared in components, optionally for one parent component.
     async fn list_methods(
         &self,
-        Parameters(req): Parameters<NameRequest>,
+        Parameters(req): Parameters<FilterRequest>,
     ) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
-        let needle = req.name.trim();
         let json: Vec<serde_json::Value> = cat
             .methods()
             .iter()
             .filter(|m| {
-                needle.is_empty()
-                    || m.parent_name == needle
-                    || format!("{}::{}", m.parent_module_path, m.parent_name) == needle
+                let parent_fqn = format!("{}::{}", m.parent_module_path, m.parent_name);
+                matches_filter(&req.filter, &[m.name, &parent_fqn])
+                    && app_matches(req.app.as_deref(), mcp_catalog::origin_crate(m.parent_module_path))
             })
             .map(|m| {
                 let params: Vec<serde_json::Value> = m
@@ -3064,20 +3387,19 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "List `animated!` values declared in components, optionally for one parent component.")]
+    /// List `animated!` values declared in components, optionally for one parent component.
     async fn list_animations(
         &self,
-        Parameters(req): Parameters<NameRequest>,
+        Parameters(req): Parameters<FilterRequest>,
     ) -> Result<CallToolResult, McpError> {
         let cat = self.catalog.read().await;
-        let needle = req.name.trim();
         let json: Vec<serde_json::Value> = cat
             .animations()
             .iter()
             .filter(|a| {
-                needle.is_empty()
-                    || a.parent_name == needle
-                    || format!("{}::{}", a.parent_module_path, a.parent_name) == needle
+                let parent_fqn = format!("{}::{}", a.parent_module_path, a.parent_name);
+                matches_filter(&req.filter, &[a.binding, &parent_fqn])
+                    && app_matches(req.app.as_deref(), mcp_catalog::origin_crate(a.parent_module_path))
             })
             .map(|a| {
                 serde_json::json!({
@@ -3093,7 +3415,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "List `#[derive(IdealystSchema)]` structs and enums; then `describe_type`.")]
+    /// List `#[derive(IdealystSchema)]` structs and enums.
     async fn list_types(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -3123,7 +3445,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "What values an open-set prop accepts (e.g. `tone = tone::Primary`), with the import to use.")]
+    /// What values an open-set prop accepts (e.g. `tone = tone::Primary`), with the import to use.
     async fn list_values(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -3153,7 +3475,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "One type: struct fields or enum variants.")]
+    /// One type: struct fields or enum variants.
     async fn describe_type(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -3189,15 +3511,15 @@ impl CatalogService {
                 let short = req.name.rsplit("::").next().unwrap_or(&req.name);
                 let hint = if CORE_STYLE_TYPES.contains(&short) {
                     " — this is a core style type, not an IdealystSchema type: \
-                     see read_guide(\"styling\") and the `stylesheet` macro entry \
-                     (describe_macro(\"stylesheet\"))"
+                     see the `styling` guide and the `stylesheet` macro entry \
+                     (describe kind `guide` / `macro`)"
                 } else if req.name.ends_with("Props") {
                     " — if this is a component's props struct, its fields are \
                      catalogued only when it derives `#[derive(IdealystSchema)]`; \
                      the defining crate may not annotate it yet"
                 } else {
                     " — only structs/enums deriving `#[derive(IdealystSchema)]` are \
-                     catalogued; use list_types to see what's available"
+                     catalogued; list kind `type` shows what's available"
                 };
                 McpError::invalid_params(
                     format!("type {:?} not found in the catalog{}", req.name, hint),
@@ -3209,7 +3531,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "List compile-checked usage examples; then `describe_recipe` for the source.")]
+    /// List compile-checked usage examples.
     async fn list_recipes(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -3254,7 +3576,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "One recipe's verified, copy-pasteable source and docs.")]
+    /// One recipe's verified, copy-pasteable source and docs.
     async fn describe_recipe(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -3269,7 +3591,7 @@ impl CatalogService {
             .ok_or_else(|| {
                 McpError::invalid_params(
                     format!(
-                        "recipe {:?} not found — use list_recipes to see what's available",
+                        "recipe {:?} not found — list kind `recipe` shows what's available",
                         req.name
                     ),
                     None,
@@ -3291,7 +3613,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "List documentation scopes (feature areas); then `describe_scope`.")]
+    /// List documentation scopes (feature areas).
     async fn list_scopes(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -3317,7 +3639,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "One scope: its docs and the entities directly in it.")]
+    /// One scope: its docs and the entities directly in it.
     async fn describe_scope(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -3329,7 +3651,7 @@ impl CatalogService {
             .find(|s| s.slug == req.name)
             .ok_or_else(|| {
                 McpError::invalid_params(
-                    format!("scope {:?} not found — use list_scopes to see what's available", req.name),
+                    format!("scope {:?} not found — list kind `scope` shows what's available", req.name),
                     None,
                 )
             })?;
@@ -3364,7 +3686,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "List opt-in SDK crates (networking, storage, camera, maps, …) with their Cargo dependency line.")]
+    /// List opt-in SDK crates (networking, storage, camera, maps, …) with their Cargo dependency line.
     async fn list_sdks(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -3391,7 +3713,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "One SDK crate: summary, dependency line, kind, and its guide.")]
+    /// One SDK crate: summary, dependency line, kind, and its guide.
     async fn describe_sdk(
         &self,
         Parameters(req): Parameters<NameRequest>,
@@ -3404,8 +3726,8 @@ impl CatalogService {
             .ok_or_else(|| {
                 McpError::invalid_params(
                     format!(
-                        "SDK crate {:?} not found — use list_sdks to see what's available, \
-                         or read_guide(\"sdks\") for the full roster",
+                        "SDK crate {:?} not found — list kind `sdk` shows what's available, \
+                         and the `sdks` guide has the full roster",
                         req.name
                     ),
                     None,
@@ -3424,7 +3746,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "List the icon packs available to the `icon(...)` primitive.")]
+    /// List the icon packs available to the `icon(...)` primitive.
     async fn list_icon_sets(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -3450,7 +3772,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "Page through one icon pack's icons with their import paths.")]
+    /// Page through one icon pack's icons with their import paths.
     async fn describe_icon_set(
         &self,
         Parameters(req): Parameters<DescribeIconSetRequest>,
@@ -3831,7 +4153,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Create or update a project's devcontainer and its add-ons (database, redis, minio, playwright, agent CLIs).")]
+    /// Create or update a project's devcontainer and its add-ons (database, redis, minio, playwright, agent CLIs).
     async fn configure_devcontainer(
         &self,
         Parameters(req): Parameters<ConfigureDevcontainerRequest>,
@@ -3903,7 +4225,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "Set up a project's VS Code workspace (extension recommendations, inline lint).")]
+    /// Set up a project's VS Code workspace (extension recommendations, inline lint).
     async fn configure_vscode(
         &self,
         Parameters(req): Parameters<ConfigureVscodeRequest>,
@@ -4242,7 +4564,7 @@ fn resolve_component<'a>(
                 format!(
                     "component {needle:?} not found in the project catalog. NOTE: {} live \
                      app(s) are registered ({}) and this lookup does NOT search them — \
-                     only list_components does. If the component belongs to a running \
+                     only list (kind `component`) does. If the component belongs to a running \
                      app, it may exist despite this answer.",
                     live_apps.len(),
                     live_apps.join(", "),
@@ -4690,7 +5012,7 @@ impl ServerHandler for CatalogService {
             // The tool list itself names every tool; this only orients a
             // caller and points at get_docs, so it stays a few sentences.
             format!(
-                "Idealyst framework MCP: query the project's catalog (list_* / describe_* / search), \
+                "Idealyst framework MCP: query the project's catalog (list / describe / search), \
                  drive running apps (Robot tools), run `idealyst dev`, and lint/configure projects. \
                  Tool descriptions are summaries: call get_docs(name) for a tool's full parameters, \
                  return shape and caveats, or get_docs() for the topic index. \
@@ -4962,13 +5284,13 @@ fn wait_for_app_timeout_message(
              target, run_dev needs local=true (the relay only exists in local mode) and \
              something must load the served page — on a display-less machine dev \
              auto-launches a headless browser client (or pass headless_client=true). \
-             read_dev_log shows the page's progress.",
+             dev_session log shows the page's progress.",
             registered.join(", ")
         );
     }
     format!(
         "timed out after {secs}s: no registration for {target} appeared — {apps_dir_note}. \
-         If you launched it with run_dev, read_dev_log shows whether the build is still \
+         If you launched it with run_dev, dev_session log shows whether the build is still \
          running or failed, and warns if the relay could not write its registration."
     )
 }
@@ -6104,15 +6426,15 @@ mod tests {
                 .expect_err("core style type must not resolve as a schema type");
             let msg = err.message.to_string();
             assert!(msg.contains("core style type"), "{name}: {msg}");
-            assert!(msg.contains("read_guide(\"styling\")"), "{name}: {msg}");
+            assert!(msg.contains("the `styling` guide"), "{name}: {msg}");
             assert!(msg.contains("stylesheet"), "{name}: {msg}");
         }
-        // Unrelated unknown types keep the generic list_types hint.
+        // Unrelated unknown types keep the generic "list the types" hint.
         let err = svc
             .describe_type(Parameters(NameRequest { name: "NoSuchType".into(), app: None }))
             .await
             .expect_err("unknown type still errors");
-        assert!(err.message.contains("list_types"), "{}", err.message);
+        assert!(err.message.contains("list kind `type`"), "{}", err.message);
     }
 
     /// Regression for the arena debug-fix miss: the agent read the
@@ -6169,7 +6491,7 @@ mod tests {
         let body = body_of(&r);
         assert!(body.contains("Related recipes:"), "{body}");
         assert!(body.contains("keyed_list_add_remove"), "{body}");
-        assert!(body.contains("describe_recipe"), "{body}");
+        assert!(body.contains("describe(kind: \"recipe\", name)"), "{body}");
         assert!(body.starts_with("signals prose"), "footer must append, not replace: {body}");
 
         // Styling: the fuzzy join (recipe target == guide slug) finds the
@@ -6207,8 +6529,8 @@ mod tests {
             .unwrap();
         let body = body_of(&r);
         assert!(body.contains("Related recipes:"), "{body}");
-        assert!(body.contains("list_recipes"), "{body}");
-        assert!(body.contains("describe_recipe"), "{body}");
+        assert!(body.contains("list(kind: \"recipe\")"), "{body}");
+        assert!(body.contains("describe(kind: \"recipe\", name)"), "{body}");
     }
 
     // ---- provenance across a multi-project catalog ----
@@ -6659,12 +6981,12 @@ mod tests {
     fn robot_docs_name_real_tools_and_the_testing_guide() {
         let tools: std::collections::HashSet<String> =
             CatalogService::tool_router().list_all().into_iter().map(|t| t.name.to_string()).collect();
-        for tool in ["tap_native", "call_function", "list_functions", "open_link"] {
+        for tool in ["pointer_native", "call_function", "list_functions", "open_link"] {
             let (topic, _) = crate::tool_docs::tool_section(tool).expect("documented");
             assert_eq!(topic.name, "robot", "{tool} is documented in the robot topic");
         }
         let robot_doc = crate::tool_docs::topic("robot").unwrap().body;
-        assert!(robot_doc.contains("read_guide testing"));
+        assert!(robot_doc.contains("The `testing` guide (`describe` kind `guide`)"));
         assert!(mcp_catalog::guides().any(|g| g.slug == "testing"), "the testing guide ships");
 
         for pinned in [None, Some("127.0.0.1:1".to_string())] {
@@ -6806,8 +7128,8 @@ mod tests {
         assert_marked!("list_sdks", svc.list_sdks(Parameters(FilterRequest::default())));
         assert_marked!("list_macros", svc.list_macros(Parameters(FilterRequest::default())));
         assert_marked!("list_scopes", svc.list_scopes(Parameters(FilterRequest::default())));
-        assert_marked!("list_tokens", svc.list_tokens());
-        assert_marked!("list_guides", svc.list_guides());
+        assert_marked!("list_tokens", svc.list_tokens(Parameters(FilterRequest::default())));
+        assert_marked!("list_guides", svc.list_guides(Parameters(FilterRequest::default())));
     }
 
     #[tokio::test]
@@ -6819,7 +7141,7 @@ mod tests {
             ("list_components", svc.list_components(Parameters(FilterRequest::default())).await.unwrap()),
             ("list_recipes", svc.list_recipes(Parameters(FilterRequest::default())).await.unwrap()),
             ("list_icon_sets", svc.list_icon_sets(Parameters(FilterRequest::default())).await.unwrap()),
-            ("list_guides", svc.list_guides().await.unwrap()),
+            ("list_guides", svc.list_guides(Parameters(FilterRequest::default())).await.unwrap()),
         ] {
             assert_eq!(out.content.len(), 1, "{label} must return payload only when current");
             assert!(!format!("{out:?}").contains("[catalog:"), "{label} must be silent");
@@ -6895,7 +7217,16 @@ mod tests {
         });
         let svc = CatalogService::with_robot_mode(true, Some(addr.to_string()));
 
-        svc.get_state(Parameters(RobotElementId { element_id: 4, app: None })).await.unwrap();
+        for what in [
+            InspectWhat::State,
+            InspectWhat::Frame,
+            InspectWhat::AbsoluteFrame,
+            InspectWhat::Children,
+            InspectWhat::Parent,
+            InspectWhat::Native,
+        ] {
+            svc.inspect_element(Parameters(RobotInspect { element_id: 4, what, app: None })).await.unwrap();
+        }
         svc.set_scroll(Parameters(RobotSetScroll { element_id: 4, x: 0.0, y: 120.0, app: None })).await.unwrap();
         svc.list_navigators(Parameters(RobotAppOnly { app: None })).await.unwrap();
         svc.get_navigator_state(Parameters(RobotNavId { nav_id: 2, app: None })).await.unwrap();
@@ -6914,16 +7245,19 @@ mod tests {
             .unwrap();
         svc.list_functions(Parameters(RobotAppOnly { app: None })).await.unwrap();
         svc.open_link(Parameters(RobotOpenLink { url: "myapp://items/4".into(), app: None })).await.unwrap();
-        svc.find_all_elements(Parameters(RobotFindArgs {
-            app: None,
-            test_id: None,
-            label: Some("Email".into()),
-            label_contains: None,
-            kind: Some("TextInput".into()),
-            within: Some(json!({ "test_id": "dialog" })),
-        }))
-        .await
-        .unwrap();
+        for mode in [None, Some(FindMode::All), Some(FindMode::Count)] {
+            svc.find_element(Parameters(RobotFindArgs {
+                app: None,
+                test_id: None,
+                label: Some("Email".into()),
+                label_contains: None,
+                kind: Some("TextInput".into()),
+                within: Some(json!({ "test_id": "dialog" })),
+                mode,
+            }))
+            .await
+            .unwrap();
+        }
         svc.viewport(Parameters(RobotViewport { width: None, height: None, orientation: None, app: None })).await.unwrap();
         svc.viewport(Parameters(RobotViewport { width: Some(800.0), height: Some(600.0), orientation: None, app: None }))
             .await
@@ -6936,22 +7270,41 @@ mod tests {
         }))
         .await
         .unwrap();
-        svc.tap_native(Parameters(RobotElementId { element_id: 5, app: None })).await.unwrap();
-        svc.drag_native(Parameters(RobotDragNative { element_id: 5, points: vec![[1.0, 2.0], [3.0, 4.0]], app: None }))
-            .await
-            .unwrap();
+        svc.pointer_native(Parameters(RobotPointerNative {
+            element_id: 5,
+            action: PointerNativeAction::Tap,
+            points: None,
+            app: None,
+        }))
+        .await
+        .unwrap();
+        svc.pointer_native(Parameters(RobotPointerNative {
+            element_id: 5,
+            action: PointerNativeAction::Drag,
+            points: Some(vec![[1.0, 2.0], [3.0, 4.0]]),
+            app: None,
+        }))
+        .await
+        .unwrap();
         for action in [
             PointerNativeAction::Hover,
             PointerNativeAction::Press,
             PointerNativeAction::Release,
             PointerNativeAction::ContextClick,
         ] {
-            svc.pointer_native(Parameters(RobotPointerNative { element_id: 6, action, app: None })).await.unwrap();
+            svc.pointer_native(Parameters(RobotPointerNative { element_id: 6, action, points: None, app: None }))
+                .await
+                .unwrap();
         }
 
         let seen = seen.lock().unwrap().clone();
         let expected = vec![
             ("get_state", json!({ "element_id": 4 })),
+            ("get_frame", json!({ "element_id": 4 })),
+            ("get_absolute_frame", json!({ "element_id": 4 })),
+            ("get_children", json!({ "element_id": 4 })),
+            ("get_parent", json!({ "element_id": 4 })),
+            ("introspect_native", json!({ "element_id": 4 })),
             ("set_scroll", json!({ "element_id": 4, "x": 0.0, "y": 120.0 })),
             ("list_navigators", json!({})),
             ("get_navigator_state", json!({ "nav_id": 2 })),
@@ -6964,7 +7317,9 @@ mod tests {
             ("get_identity", json!({})),
             ("list_functions", json!({})),
             ("open_link", json!({ "url": "myapp://items/4" })),
+            ("find_element", json!({ "label": "Email", "kind": "TextInput", "within": { "test_id": "dialog" } })),
             ("find_all_elements", json!({ "label": "Email", "kind": "TextInput", "within": { "test_id": "dialog" } })),
+            ("count_elements", json!({ "label": "Email", "kind": "TextInput", "within": { "test_id": "dialog" } })),
             ("get_viewport", json!({})),
             ("set_viewport", json!({ "width": 800.0, "height": 600.0 })),
             ("set_orientation", json!({ "orientation": "landscape" })),
@@ -7028,6 +7383,196 @@ mod tests {
 }
 
 #[cfg(test)]
+mod folded_tool_tests {
+    //! The tools that fold a family behind one argument (`list`'s `kind`,
+    //! `dev_session`'s `action`, …) are called here the way a client calls
+    //! them: from the JSON arguments the advertised schema describes.
+
+    use super::*;
+    use serde_json::Value;
+
+    fn args<T: serde::de::DeserializeOwned>(v: Value) -> Parameters<T> {
+        Parameters(serde_json::from_value(v).expect("arguments the schema allows"))
+    }
+
+    fn text(r: &CallToolResult) -> String {
+        r.content.iter().filter_map(|c| c.as_text().map(|t| t.text.clone())).collect()
+    }
+
+    fn json_of(r: &CallToolResult) -> Value {
+        serde_json::from_str(&text(r)).expect("a JSON answer")
+    }
+
+    /// The `enum` a tool advertises for one of its arguments.
+    fn advertised_enum(tool: &str, arg: &str) -> Vec<String> {
+        let svc = CatalogService::with_robot_mode(false, None);
+        let tool = ServerHandler::get_tool(&svc, tool).expect("served");
+        tool.input_schema["properties"][arg]["enum"]
+            .as_array()
+            .unwrap_or_else(|| panic!("`{arg}` is advertised as an enum"))
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn list_serves_every_advertised_kind_and_its_plural() {
+        let svc = CatalogService::with_robot_mode(false, None);
+        let kinds = advertised_enum("list", "kind");
+        assert_eq!(kinds.len(), 16, "{kinds:?}");
+        for kind in kinds {
+            let one = svc.list(args(json!({ "kind": kind }))).await.unwrap_or_else(|e| panic!("list {kind}: {e:?}"));
+            assert!(json_of(&one).is_array(), "list {kind} answers an array");
+            let plural = if kind == "utility" { "utilities".to_string() } else { format!("{kind}s") };
+            let many = svc.list(args(json!({ "kind": plural }))).await.unwrap();
+            assert_eq!(text(&one), text(&many), "`{plural}` is the same slice as `{kind}`");
+        }
+    }
+
+    #[tokio::test]
+    async fn list_filters_the_kinds_that_had_no_filter_of_their_own() {
+        let svc = CatalogService::with_robot_mode(false, None);
+        for (kind, filter, field) in [("state", "hover", "name"), ("guide", "react", "slug"), ("token", "spacing", "path")] {
+            let all = json_of(&svc.list(args(json!({ "kind": kind }))).await.unwrap());
+            let some = json_of(&svc.list(args(json!({ "kind": kind, "filter": filter }))).await.unwrap());
+            let (all, some) = (all.as_array().unwrap(), some.as_array().unwrap());
+            if kind != "token" {
+                // Tokens come from the project's theme; this server has none linked.
+                assert!(!some.is_empty(), "`{filter}` matches a {kind}");
+            }
+            assert!(some.len() < all.len() || all.is_empty(), "`{filter}` narrows {kind}: {} of {}", some.len(), all.len());
+            for row in some {
+                let hay = row.to_string().to_lowercase();
+                assert!(hay.contains(filter), "{kind} row {} matches `{filter}` ({field})", row[field]);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn describe_serves_every_advertised_kind() {
+        let svc = CatalogService::with_robot_mode(false, None);
+        // A name each slice has without a project linked; the rest answer
+        // "not found" for the slice asked for, which shows the kind reached it.
+        let known = [("primitive", "view"), ("macro", "ui"), ("utility", "signal"), ("sdk", "net"), ("guide", "reactivity")];
+        for kind in advertised_enum("describe", "kind") {
+            match known.iter().find(|(k, _)| *k == kind) {
+                Some((_, name)) => {
+                    let r = svc.describe(args(json!({ "kind": kind, "name": name }))).await;
+                    let r = r.unwrap_or_else(|e| panic!("describe {kind} {name}: {e:?}"));
+                    assert!(json_of(&r).is_object(), "describe {kind} {name} answers a record");
+                }
+                None => {
+                    let e = svc.describe(args(json!({ "kind": kind, "name": "NoSuchEntry" }))).await.unwrap_err();
+                    assert!(e.message.contains("NoSuchEntry"), "describe {kind}: {}", e.message);
+                }
+            }
+        }
+        let guide = json_of(&svc.describe(args(json!({ "kind": "guides", "name": "reactivity" }))).await.unwrap());
+        assert_eq!(guide["slug"], "reactivity");
+        assert!(guide["body"].as_str().unwrap().len() > 500, "the guide's text is returned");
+    }
+
+    #[tokio::test]
+    async fn find_references_walks_either_direction() {
+        let svc = CatalogService::with_robot_mode(false, None);
+        let cat = json!({
+            "components": [
+                { "name": "Page", "module_path": "app", "file": "/w/app.rs", "line": 1, "docs": "", "params": [], "composes": [{ "name": "Row", "line": 3 }] },
+                { "name": "Row", "module_path": "app", "file": "/w/app.rs", "line": 9, "docs": "", "params": [], "composes": [] }
+            ]
+        });
+        svc.replace_catalog(ResolvedCatalog::build_from_json(&cat.to_string()).unwrap()).await;
+
+        let uses = json_of(&svc.find_references(args(json!({ "name": "Row" }))).await.unwrap());
+        assert_eq!(uses, json!(["app::Page"]), "`uses` is the default direction");
+        let uses = json_of(&svc.find_references(args(json!({ "name": "Row", "direction": "uses" }))).await.unwrap());
+        assert_eq!(uses, json!(["app::Page"]));
+        let deps =
+            json_of(&svc.find_references(args(json!({ "name": "Page", "direction": "dependencies" }))).await.unwrap());
+        assert_eq!(deps[0]["raw_name"], "Row");
+        assert_eq!(deps[0]["resolved_fqn"], "app::Row");
+    }
+
+    #[tokio::test]
+    async fn dev_session_reaches_each_action() {
+        let svc = CatalogService::with_robot_mode(false, None);
+        let actions = advertised_enum("dev_session", "action");
+        assert_eq!(actions, ["list", "status", "wait", "log", "metrics", "rebuild", "stop"]);
+
+        let list = svc.dev_session(args(json!({ "action": "list" }))).await.unwrap();
+        assert!(json_of(&list).is_array());
+
+        // No session has this id, and each action says so in its own words.
+        for (action, says) in [
+            ("status", "no running dev session with id 987654"),
+            ("wait", "no running dev session with id 987654"),
+            ("rebuild", "no running dev session with id 987654"),
+            ("log", "no log for that session"),
+            ("metrics", "pass the project's `dir` instead"),
+            ("stop", "987654"),
+        ] {
+            let r = svc.dev_session(args(json!({ "action": action, "session_id": 987654 }))).await.unwrap();
+            assert_eq!(r.is_error, Some(true), "{action}: {}", text(&r));
+            assert!(text(&r).contains(says), "{action}: {}", text(&r));
+        }
+
+        // `metrics` reads a project directory with no session at all.
+        let dir = std::env::temp_dir().join(format!("idealyst-dev-session-metrics-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"folded\"\nversion = \"0.0.0\"\n").unwrap();
+        let r = svc
+            .dev_session(args(json!({ "action": "metrics", "dir": dir.display().to_string(), "last": 3, "detail": true })))
+            .await
+            .unwrap();
+        assert_ne!(r.is_error, Some(true), "{}", text(&r));
+        assert_eq!(json_of(&r)["total"], 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn configure_project_passes_items_to_its_target() {
+        let dir = std::env::temp_dir().join(format!("idealyst-configure-project-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let svc = CatalogService::with_robot_mode(false, None);
+        let at = dir.display().to_string();
+
+        let dc = svc
+            .configure_project(args(json!({
+                "target": "devcontainer",
+                "dir": at,
+                "items": [{ "id": "database", "variant": "mysql" }]
+            })))
+            .await
+            .unwrap();
+        assert!(json_of(&dc)["added"].as_array().unwrap().iter().any(|s| s == "database"), "{}", text(&dc));
+        let managed = std::fs::read_to_string(dir.join(".devcontainer/docker-compose.idealyst.yml")).unwrap();
+        assert!(managed.contains("mysql"), "the variant reached the add-on: {managed}");
+
+        // No `items`: every aspect is enabled.
+        let all = json_of(&svc.configure_project(args(json!({ "target": "vscode", "dir": at }))).await.unwrap());
+        let added: Vec<&str> = all["added"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        assert!(added.contains(&"extensions") && added.contains(&"lint"), "{all}");
+        // One aspect removed by `items`; the other stays.
+        let one = svc
+            .configure_project(args(json!({ "target": "vscode", "dir": at, "items": [{ "id": "lint", "action": "remove" }] })))
+            .await
+            .unwrap();
+        assert_eq!(json_of(&one)["removed"], json!(["lint"]), "{}", text(&one));
+        assert!(dir.join(".vscode/extensions.json").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pointer_native_drag_needs_its_points() {
+        let svc = CatalogService::with_robot_mode(false, None);
+        let e = svc.pointer_native(args(json!({ "element_id": 1, "action": "drag" }))).await.unwrap_err();
+        assert!(e.message.contains("`points`"), "{}", e.message);
+    }
+}
+
+#[cfg(test)]
 mod tool_surface_tests {
     //! The advertised tool surface is resent to the model as context for the
     //! whole session, so its size is a contract: definitions stay terse and
@@ -7038,10 +7583,14 @@ mod tool_surface_tests {
     use crate::tool_docs::{split_sections, tool_section, TOPICS};
     use serde_json::Value;
 
-    /// Serialized size of every tool definition. 90.9 k chars before tool
-    /// docs moved behind `get_docs`; ~27 k after. The headroom is for new
-    /// tools, not for regrowing descriptions.
-    const SURFACE_BUDGET_CHARS: usize = 32_500;
+    /// Serialized size of every tool definition (name, description, input
+    /// schema). The surface stays this small by shape, not by trimming words:
+    /// a family of tools that differ in one argument is one tool with a
+    /// `kind` / `action` / `what` enum, and its long form is a docs section
+    /// with a subsection per value. A new capability that fits a family is
+    /// a new enum value, which costs its name; the headroom is for the ones
+    /// that don't.
+    const SURFACE_BUDGET_CHARS: usize = 19_000;
     const DESCRIPTION_MAX_CHARS: usize = 120;
     const PARAM_DOC_MAX_CHARS: usize = 100;
     const INSTRUCTIONS_MAX_CHARS: usize = 700;
@@ -7201,7 +7750,7 @@ mod tool_surface_tests {
         let topic = text(&svc.docs_result(GetDocsRequest { name: Some("dev".into()), query: None }));
         assert_eq!(topic, crate::tool_docs::topic("dev").unwrap().body);
         let search = text(&svc.docs_result(GetDocsRequest { name: None, query: Some("SIGKILL".into()) }));
-        assert!(search.contains("## stop_dev"), "got:\n{search}");
+        assert!(search.starts_with("<!-- dev › dev_session -->\n### stop\n"), "got:\n{search}");
     }
 
     #[test]

@@ -206,8 +206,8 @@ impl DevRunner {
         // log.
         if let Some(l) = crate::dev_sessions::running_in(&dir) {
             return Err(format!(
-                "a dev session already runs in {} (pid {}, started by {}): use it — dev_status, \
-                 rebuild_dev and wait_for_build take its `pid` — or stop it first with stop_dev. \
+                "a dev session already runs in {} (pid {}, started by {}): use it — dev_session \
+                 takes its `pid` — or stop it first with dev_session stop. \
                  Two sessions of one project share its target directory and log, and their builds race.",
                 dir.display(),
                 l.entry.pid,

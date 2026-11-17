@@ -1,4 +1,4 @@
-//! `read_build_metrics`: the records `idealyst dev --metrics` writes.
+//! `dev_session`'s `metrics`: the records `idealyst dev --metrics` writes.
 //!
 //! A session started with `--metrics` (or `--metrics-diffs`) appends one
 //! JSON record per save, and per initial build, to

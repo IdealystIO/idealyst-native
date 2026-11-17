@@ -2,7 +2,7 @@
 
 Robot tools drive a RUNNING app through its Robot bridge: find elements, read state, press, type, drag, scroll, navigate, call test hooks, and capture screenshots. The app must be built with the robot feature (`idealyst dev` turns it on unless you pass `--no-robot`), and must be registered: `list_apps` shows what is up, and `wait_for_app` blocks until it is. Every Robot tool takes an optional `app` selector (see `get_docs("app")`).
 
-`read_guide testing` explains writing a cross-platform E2E suite on top of these tools.
+The `testing` guide (`describe` kind `guide`) explains writing a cross-platform E2E suite on top of these tools.
 
 ## elements
 
@@ -20,17 +20,27 @@ Apps built before criteria combined honored only the first present (test_id, lab
 
 ## find_element
 
-Returns the first match as `{ id, kind, test_id, label, visible, in_viewport, state? }`. `visible` means the toolkit shows it with a non-empty box. `state` is the same object `get_state` returns.
+Finds by the criteria under `elements`. `mode` picks what comes back:
 
-## find_all_elements, count_elements
+- `first` (default): the first match as `{ id, kind, test_id, label, visible, in_viewport, state? }`. `visible` means the toolkit shows it with a non-empty box. `state` is the object `inspect_element` returns for `what: "state"`.
+- `all`: every match, in the same shape.
+- `count`: only how many match.
 
-`find_all_elements` returns every match, in the same shape as `find_element`. `count_elements` returns only how many match.
+The bridge verbs are `find_element`, `find_all_elements` and `count_elements`.
 
-## get_children, get_parent
+## inspect_element
+
+Reads one aspect of an element, chosen by `what`. Each is a bridge verb (`get_state`, `get_frame`, `get_absolute_frame`, `get_children`, `get_parent`, `introspect_native`).
+
+### children, parent
 
 Walk the element tree from an element: its children, or its parent (`null` at the root). Each element has the `find_element` shape.
 
-## get_state
+### frame, absolute_frame
+
+`frame` is the element's layout frame relative to its parent; `absolute_frame` is the same frame in window coordinates.
+
+### state
 
 An element's own STATE, as a user would see it, with no help from the app: `{ value, checked, disabled, focused, hovered, pressed }`. `value` is a TextInput's text or a Slider's value; `checked` a Toggle's; `focused` a TextInput's. `hovered` / `pressed` are whether the element's `state hovered` / `state pressed` style is on; they are omitted on web (CSS owns hover there) and on elements whose style has no state variants. A TextInput adds `keyboard` (the soft-keyboard kind asked for: `default`, `email`, `phone`, `number`, `decimal`, `url`) and, on web/iOS/Android, `native_keyboard` (the kind the native widget holds).
 
@@ -38,24 +48,25 @@ To read an element's resolved style, `call_verb` with `get_style` and `{ "elemen
 
 Robot actions on a disabled element fail with "refused: the element is disabled", the same way the control refuses a user.
 
+### native
+
+Reads an element's PLATFORM-NATIVE render state: the resolved geometry and visual properties as the backend itself reports them (a `CALayer`'s backgroundColor/cornerRadius/borderWidth + the resolved NSFont or UIFont; an Android `View`'s alpha, background drawable and typeface; web's `getComputedStyle` + `getBoundingClientRect`), NOT the styles the author wrote.
+
+Returns a `NativeNode` tree:
+
+- `class`: the platform class/tag (`NSView`, `div`).
+- `role`.
+- `frame`: logical px, window-relative.
+- `props`: canonical keys, each a typed `{ type, value }`: `background_color`, `opacity`, `corner_radius`, `border_width`, `border_color`, `text_color`, `font_family`, `font_size`, `font_weight`, `text`, `shadow_radius`, `shadow_color`, `hidden`. A key is ABSENT when the platform doesn't expose it (missing ≠ 0).
+- `children`: the native sub-objects composing THIS primitive, pruned at child framework elements.
+
+`null` means the element isn't laid out yet or the backend has no read. Web, macOS, iOS, Android, Linux/GTK and Windows read it (Windows' painted nodes and the GPU renderer report what the painter draws from, having no separate toolkit to ask); terminal, SSR and CPU have no read. Android reports `font_family` only where the platform names it (a system face on API 34+) and `font_weight` from API 28. Pair with `compare_native_parity`.
+
 ## click
 
 Presses an element inside the framework. A Button/Pressable/Link runs its press handler; anything else gets a synthetic tap (began → ended at its center) delivered to the nearest `on_touch` handler, bubbling to ancestors, so clicking a Text inside a clickable Table row presses the row.
 
-It skips the OS event path, hit testing and overlays. Use `tap_native` to check that a real tap would land. A disabled control refuses.
-
-## tap_native
-
-Taps an element's center with REAL platform input, through the toolkit's own event path: hit testing, overlays, gesture recognizers and the native disabled state all take part, which `click` skips.
-
-It refuses the way a finger would fail: the element is not visible, its center is outside the window (scroll it into view), or another element covers it (the error names it).
-
-Returns `{ mechanism }`:
-
-- `"native"`: platform events (web DOM events, macOS NSEvents, Android MotionEvents, Windows window messages).
-- `"hit_test"`: iOS, where an app can't create touches. UIKit's hit test confirms the point, then the element's press runs.
-
-Android has no hit test, so there the injected event is the only check. Errors with "unsupported" on Linux; use `click`. On Android, `tap` injects at the OS level instead (adb).
+It skips the OS event path, hit testing and overlays. Use `pointer_native` with `action: "tap"` to check that a real tap would land. A disabled control refuses.
 
 ## tap
 
@@ -77,20 +88,35 @@ On a Slider, each point's x across the track sets the value (0 = min, right edge
 
 `hold_ms` presses and holds at the first point before moving. It is required for drag-and-drop on iOS/Android, where a drag picks up after a 200 ms long press (pass 200 or more). The hold is carried by event timestamps, not real time, so it reaches recognizers that read the event clock (drag-and-drop does), but not other app timers.
 
-## drag_native
-
-Drags with REAL platform input along `points` (same coordinates as `drag`): down at the first point, moves, up at the last, through the toolkit's event path. The first point is checked like `tap_native`'s. Errors with "unsupported" where the backend can't synthesize input (iOS, Linux); use `drag` there.
-
 ## pointer_native
 
-Real platform mouse input on an element, one `action` at a time:
+Real platform input on an element, one `action` at a time, through the toolkit's own event path. Each action is a bridge verb (`tap_native`, `hover_native`, `press_native`, `release_native`, `context_click`, `drag_native`).
+
+### tap
+
+Taps an element's center with REAL platform input, through the toolkit's own event path: hit testing, overlays, gesture recognizers and the native disabled state all take part, which `click` skips.
+
+It refuses the way a finger would fail: the element is not visible, its center is outside the window (scroll it into view), or another element covers it (the error names it).
+
+Returns `{ mechanism }`:
+
+- `"native"`: platform events (web DOM events, macOS NSEvents, Android MotionEvents, Windows window messages).
+- `"hit_test"`: iOS, where an app can't create touches. UIKit's hit test confirms the point, then the element's press runs.
+
+Android has no hit test, so there the injected event is the only check. Errors with "unsupported" on Linux; use `click`. On Android, the `tap` tool injects at the OS level instead (adb).
+
+### hover, press, release, context_click
 
 - `"hover"`: the pointer moves over the element's center with no button held. Drives `on_hover` and the `state hovered` style.
-- `"press"`: the primary button goes down on its center and stays down, so `get_state` can show `pressed: true`.
+- `"press"`: the primary button goes down on its center and stays down, so the element's state can show `pressed: true`.
 - `"release"`: the button comes up at its center. The press is held for the real time between `press` and `release`, so the pair is a long press.
 - `"context_click"`: a secondary (right) click on its center, `contextmenu` included on web.
 
-The point is checked like `tap_native`'s. Returns `{ mechanism }`: `native` for real input, `hit_test` where the backend can't inject it (iOS, Linux; `context_click` on Android too): the robot then sends the press (or the right click) through the framework's own touch handlers, so long-press recognizers and context-menu handlers still run. Some backends post their events (macOS), so the state can change a moment later: poll `get_state`. `hover` errors with "unsupported" on iOS, Android and Linux. On web the events reach `on_hover` handlers, but CSS `:hover` only follows a real pointer.
+The point is checked like `tap`'s. Returns `{ mechanism }`: `native` for real input, `hit_test` where the backend can't inject it (iOS, Linux; `context_click` on Android too): the robot then sends the press (or the right click) through the framework's own touch handlers, so long-press recognizers and context-menu handlers still run. Some backends post their events (macOS), so the state can change a moment later: poll `inspect_element`. `hover` errors with "unsupported" on iOS, Android and Linux. On web the events reach `on_hover` handlers, but CSS `:hover` only follows a real pointer.
+
+### drag
+
+Drags with REAL platform input along `points` (same coordinates as the `drag` tool): down at the first point, moves, up at the last, through the toolkit's event path. The first point is checked like `tap`'s. Errors with "unsupported" where the backend can't synthesize input (iOS, Linux); use the `drag` tool there.
 
 ## type_text
 
@@ -102,17 +128,13 @@ Set a Toggle's `value` (true/false) or a Slider's `value` the way a user's input
 
 ## focus, blur
 
-Give an element (typically a TextInput) keyboard focus, or take it away. `get_state` reports `focused`.
+Give an element (typically a TextInput) keyboard focus, or take it away. Its state (`inspect_element`) reports `focused`.
 
 ## set_scroll
 
 Scrolls a ScrollView's content to offset (`x`, `y`) in logical px through the native scroll view, so its `on_scroll` / `on_end_reached` fire as for a user's scroll.
 
-To show an element rather than reach an offset, `call_verb` with `scroll_into_view` and `{ "element_id": … }`: every scroll view the element sits in (nested, either axis) moves the least that shows it in each and in the window, and the reply lists the scrollers it moved, `{ "scrolled": [{ "element_id", "x", "y", "page"? }] }`. Scrollers include any element whose native view scrolls, and on web the page itself (`page: true`) when the app's root outgrows the window. Already in view, nothing moves. Do this before `tap_native` on an element outside the window. `get_platform` (also through `call_verb`) names the app's platform: `web`, `ios`, `android`, `macos`, `linux`, `windows`.
-
-## get_frame, get_absolute_frame
-
-An element's layout frame relative to its parent. `get_absolute_frame` returns it in window coordinates.
+To show an element rather than reach an offset, `call_verb` with `scroll_into_view` and `{ "element_id": … }`: every scroll view the element sits in (nested, either axis) moves the least that shows it in each and in the window, and the reply lists the scrollers it moved, `{ "scrolled": [{ "element_id", "x", "y", "page"? }] }`. Scrollers include any element whose native view scrolls, and on web the page itself (`page: true`) when the app's root outgrows the window. Already in view, nothing moves. Do this before a `pointer_native` tap on an element outside the window. `get_platform` (also through `call_verb`) names the app's platform: `web`, `ios`, `android`, `macos`, `linux`, `windows`.
 
 ## get_snapshot
 
@@ -164,7 +186,7 @@ Calls a registered function with `args` keyed by parameter name and returns its 
 
 ## list_component_instances
 
-The component INSTANCES mounted in the app (`list_components` lists the catalog instead): `[{ instance_id, name, file, line, element_id, methods: [{ name, args }] }]`. `instance_id` is what `invoke_method` and `get_component_instance` take; `element_id` is the element the instance renders as.
+The component INSTANCES mounted in the app (`list` kind `component` lists the catalog instead): `[{ instance_id, name, file, line, element_id, methods: [{ name, args }] }]`. `instance_id` is what `invoke_method` and `get_component_instance` take; `element_id` is the element the instance renders as.
 
 ## get_component_instance
 
@@ -210,21 +232,7 @@ Native apps capture their real rendered surface whatever the `source`. A runtime
 
 `width`/`height` (physical px) apply to `replay` only (default: the session's viewport); every other capture returns the surface's own pixel size.
 
-Use `get_snapshot` / `introspect_native` for structured assertions. Errors if the session hasn't registered the screenshot verb.
-
-## introspect_native
-
-Reads an element's PLATFORM-NATIVE render state: the resolved geometry and visual properties as the backend itself reports them (a `CALayer`'s backgroundColor/cornerRadius/borderWidth + the resolved NSFont or UIFont; an Android `View`'s alpha, background drawable and typeface; web's `getComputedStyle` + `getBoundingClientRect`), NOT the styles the author wrote.
-
-Returns a `NativeNode` tree:
-
-- `class`: the platform class/tag (`NSView`, `div`).
-- `role`.
-- `frame`: logical px, window-relative.
-- `props`: canonical keys, each a typed `{ type, value }`: `background_color`, `opacity`, `corner_radius`, `border_width`, `border_color`, `text_color`, `font_family`, `font_size`, `font_weight`, `text`, `shadow_radius`, `shadow_color`, `hidden`. A key is ABSENT when the platform doesn't expose it (missing ≠ 0).
-- `children`: the native sub-objects composing THIS primitive, pruned at child framework elements.
-
-`null` means the element isn't laid out yet or the backend has no read. Web, macOS, iOS, Android, Linux/GTK and Windows read it (Windows' painted nodes and the GPU renderer report what the painter draws from, having no separate toolkit to ask); terminal, SSR and CPU have no read. Android reports `font_family` only where the platform names it (a system face on API 34+) and `font_weight` from API 28. Pair with `compare_native_parity`.
+Use `get_snapshot` / `inspect_element` for structured assertions. Errors if the session hasn't registered the screenshot verb.
 
 ## compare_native_parity
 
@@ -234,7 +242,7 @@ For a meaningful result both apps must show the SAME screen at the SAME viewport
 
 ### Alignment
 
-The two element trees are aligned STRUCTURALLY by a cross-platform signature: `test_id` where present, else framework kind + label. Raw positional index is never used, because it collapses when one platform nests an extra wrapper. Each aligned pair's `introspect_native` is then diffed.
+The two element trees are aligned STRUCTURALLY by a cross-platform signature: `test_id` where present, else framework kind + label. Raw positional index is never used, because it collapses when one platform nests an extra wrapper. Each aligned pair's native render (`inspect_element` with `what: "native"`) is then diffed.
 
 ### Geometry
 

@@ -9,14 +9,14 @@ This server answers questions about an idealyst project and drives its running a
 
 `app` explains the `app` argument, which means a running app on Robot tools and a crate on catalog tools.
 
-The `idealyst://catalog` resource returns the whole catalog as one JSON document (every slice). Prefer the `list_*` / `describe_*` tools, which return only what you ask for.
+The `idealyst://catalog` resource returns the whole catalog as one JSON document (every slice). Prefer `list` / `describe`, which return only what you ask for.
 
 ## get_docs
 
 Tool descriptions are one-line summaries. `get_docs` holds the rest: argument details, return shapes, platform caveats and workflows.
 
 - `get_docs()`: lists the topics and which tools each covers.
-- `get_docs(name: "<tool>")`: one tool's summary, parameters, and its full section.
+- `get_docs(name: "<tool>")`: one tool's summary, parameters, and its full section. A tool that takes a `kind`, `action` or `what` has one subsection per value: add `query: "<value>"` to read only that one.
 - `get_docs(name: "<topic>")`: a whole topic.
 - `query`: keeps only the sections matching any of its words, ranked by how many distinct words each hit. With a `name`, it searches inside that doc; without one, across every doc.
 

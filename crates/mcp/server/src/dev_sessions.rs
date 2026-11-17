@@ -149,7 +149,7 @@ pub fn rebuild(entry: &SessionEntry) -> Result<serde_json::Value, String> {
 fn call(entry: &SessionEntry, method: &str, path: &str) -> Result<serde_json::Value, String> {
     let (code, body) = sessions::request(entry, method, path, REQUEST_TIMEOUT).map_err(|e| {
         format!(
-            "the session (pid {}) did not answer on {}: {e}. If it is hung, `stop_dev` with \
+            "the session (pid {}) did not answer on {}: {e}. If it is hung, `dev_session` `stop` with \
              `pid` and `include_external: true` stops it by signal.",
             entry.pid, entry.control_url
         )

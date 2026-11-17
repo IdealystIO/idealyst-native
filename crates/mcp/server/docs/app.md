@@ -16,8 +16,8 @@ Apps are discovered from per-process registration files at `~/.idealyst/apps/<na
 
 ## Crate filter (catalog tools)
 
-Catalog tools (`list_components`, `describe_component`, …) read the project **catalog**. One catalog can span every crate in a workspace, so `app` here restricts results to components from ONE crate: an app, or a shared component library.
+Catalog tools (`list`, `describe`, …) read the project **catalog**. One catalog can span every crate in a workspace, so `app` here restricts results to components from ONE crate: an app, or a shared component library.
 
 - Either spelling works: `my-app` or `my_app`.
-- Each `list_*` result has an `app` field telling you what to pass.
-- On a `describe_*` / `find_*` lookup, a short name that matches components in several crates (two apps each defining `AppRoot`) is reported as ambiguous, with its candidates. Pick one by passing `app` or a fully-qualified `name`.
+- Each `list` row of a kind that spans crates has an `app` field telling you what to pass.
+- On a `describe` / `find_references` lookup, a short name that matches components in several crates (two apps each defining `AppRoot`) is reported as ambiguous, with its candidates. Pick one by passing `app` or a fully-qualified `name`.

@@ -3,7 +3,7 @@ name = "mcp-server"
 version = "6.2.0"
 edition.workspace = true
 license.workspace = true
-description = "Stdio MCP server that surfaces the framework's component catalog. Provides list_components / describe_component / find_uses / find_dependencies tools, plus the `idealyst://catalog` resource. Consumes the `mcp-catalog` ResolvedCatalog built from the linked-in inventory."
+description = "Stdio MCP server that surfaces the framework's component catalog. Provides `list` / `describe` / `search` catalog tools, Robot tools that drive running apps, and dev-session tools, plus the `idealyst://catalog` resource. Consumes the `mcp-catalog` ResolvedCatalog built from the linked-in inventory."
 
 [dependencies]
 # `mcp-catalog` provides the catalog data; consumers of this crate
