@@ -95,6 +95,12 @@ pub const RELOAD_SSE_URL: &str = "/__idealyst/reload";
 /// beacon sent from a page that is about to reload still goes out.
 pub const ACK_URL: &str = "/__idealyst/ack";
 
+/// The SSE event that ends the replay a page is sent on connect. The
+/// reload script holds a booting bundle's first mount until it arrives
+/// (`window.__idealyst_replay_ready`), so a replayed hot patch is in place
+/// before the tree is built instead of rebuilding it after.
+pub const REPLAYED_EVENT: &str = "replayed";
+
 /// The session's whole event stream, as Server-Sent Events: one
 /// versioned JSON object per `data:` line — the same objects
 /// `idealyst dev --events-file` writes (schema: `idealyst dev
@@ -291,14 +297,54 @@ const RELOAD_SCRIPT: &str = r#"<script>
   var queue = [];
   var timer = null;
   var waitingSince = null;
+  // While the bundle is booting (`__idealyst_booting`, set by the bundle
+  // until its first mount) only the pre-mount hot applier exists: an
+  // overlay patch waits for its applier instead of taking the fallback.
   function booted() {
+    if (window.__idealyst_booting) return false;
     return typeof window.__idealyst_hot_patch === "function" ||
       typeof window.__idealyst_overlay_patch === "function";
   }
   function enqueue(applier, run) {
+    // A hot patch is compiled from the source those queued overlay edits
+    // were made to, so it carries them; and applying it rebuilds the tree,
+    // which drops staged overlay edits anyway. Applied after a pre-mount
+    // hot patch they would override it with the old literals.
+    if (applier === "__idealyst_hot_patch") {
+      queue = queue.filter(function (p) {
+        if (p.applier !== "__idealyst_overlay_patch") return true;
+        ack({ kind: "overlay", applied: 0, refused: 0 });
+        return false;
+      });
+    }
     queue.push({ applier: applier, run: run });
     pump();
   }
+  // The replay a fresh page is sent on connect ends with a `replayed`
+  // event. A booting bundle asks to be told (`__idealyst_replay_ready`)
+  // and mounts after it, with the replayed hot patch already in place: a
+  // rebuild after the first mount would remount every input and lose
+  // what was typed into it meanwhile. A stream that never says (one that
+  // is down) releases the bundle after REPLAY_WAIT_MS, and a hot patch
+  // that comes later rebuilds the mounted tree as any live one does.
+  var REPLAY_WAIT_MS = 2000;
+  var replayed = false;
+  var replayWaiters = [];
+  function replayDone() {
+    if (replayed) return;
+    replayed = true;
+    var waiters = replayWaiters;
+    replayWaiters = [];
+    waiters.forEach(function (f) {
+      try { f(); } catch (err) { console.error("[idealyst] boot after replay failed", err); }
+    });
+  }
+  window.__idealyst_replay_ready = function (cb) {
+    pump();
+    if (replayed) { cb(); return; }
+    replayWaiters.push(cb);
+    setTimeout(replayDone, REPLAY_WAIT_MS);
+  };
   function pump() {
     while (queue.length) {
       var head = queue[0];
@@ -377,6 +423,11 @@ __STATUS_OVERLAY__
       location.reload();
     }
   }
+  es.addEventListener("replayed", function (e) {
+    if (!sameSession(e)) return;
+    pump();
+    replayDone();
+  });
   es.addEventListener("hot-patch", function (e) {
     if (!sameSession(e) || !firstTime(e)) return;
     enqueue("__idealyst_hot_patch", function (apply) { hot(apply, e); });
@@ -1056,6 +1107,11 @@ fn serve_sse(request: Request, signal: Option<Arc<ReloadSignal>>) {
         {
             return;
         }
+    }
+    // The replay is over: a booting bundle waiting on it
+    // (`__idealyst_replay_ready`) mounts now, with the hot patch in place.
+    if write_patch(&mut writer, REPLAYED_EVENT, None, "{}").is_err() {
+        return;
     }
     for json in &state {
         if write_patch(&mut writer, PatchKind::DevState.sse_event(), None, json).is_err() {

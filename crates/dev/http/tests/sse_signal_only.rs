@@ -216,10 +216,13 @@ fn regression_a_page_connecting_after_a_hot_patch_receives_it() {
     stream
         .write_all(format!("GET {RELOAD_SSE_URL} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").as_bytes())
         .unwrap();
-    let got = read_until(&mut stream, "patch-1.wasm", Instant::now() + Duration::from_secs(3));
+    let got = read_until(&mut stream, "event: replayed", Instant::now() + Duration::from_secs(3));
     let baseline = got.find("data: 0").expect(&got);
     let patch = got.find("event: hot-patch").unwrap_or_else(|| panic!("no hot patch replayed: {got}"));
     assert!(baseline < patch, "the baseline generation must come first: {got}");
+    // The end of the replay, which a booting bundle mounts on.
+    let end = got.find("event: replayed").unwrap_or_else(|| panic!("no end-of-replay marker: {got}"));
+    assert!(patch < end, "the marker follows the replay: {got}");
 
     signal.base_replaced();
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");

@@ -72,11 +72,27 @@ if (scenario === "replay-before-boot") {
   gen("a:0", 1);
   // The dev session was restarted: same generation number, new session.
   gen("b:0", 1); hot("b:2", 2);
+} else if (scenario === "boot-waits-for-the-replay") {
+  // A bundle mid-boot: its pre-mount hot applier is up, and it asks to be
+  // told when the replay is over before mounting. Overlay o2 predates the
+  // hot patch (which carries it); o4 comes after and waits for the mount.
+  window.__idealyst_booting = true; window.__idealyst_hot_patch = hotApplier;
+  window.__idealyst_replay_ready(() => {
+    applied.push("mount");
+    window.__idealyst_booting = false; window.__idealyst_overlay_patch = overlayApplier;
+  });
+  gen("s:0", 1); overlay("s:2", "o2"); hot("s:3", 3); overlay("s:4", "o4");
+  es.fire("replayed", {});
+} else if (scenario === "boot-released-without-the-marker") {
+  window.__idealyst_booting = true; window.__idealyst_hot_patch = hotApplier;
+  window.__idealyst_replay_ready(() => applied.push("mount"));
+  gen("s:0", 1);
 } else if (scenario === "booted-without-hot-applier") {
   window.__idealyst_overlay_patch = overlayApplier;
   gen("s:0", 1); hot("s:3", 3);
 }
-later(500, () => process.stdout.write(JSON.stringify({ applied, reloads, acks })));
+const end = scenario === "boot-released-without-the-marker" ? 2600 : 500;
+later(end, () => process.stdout.write(JSON.stringify({ applied, reloads, acks })));
 "##;
 
 fn run(scenario: &str) -> Option<serde_json::Value> {
@@ -109,18 +125,17 @@ fn run(scenario: &str) -> Option<serde_json::Value> {
 /// Regression: the replayed hot patch reached a page whose module had
 /// not booted, found no applier and reloaded — and the reloaded page was
 /// replayed it again, for ever (seen on CrewForge: a refresh after a hot
-/// patch never settled). It now waits, then applies in order, once.
+/// patch never settled). It now waits, then applies once. The overlay
+/// edit queued ahead of the hot patch is dropped, not applied: the hot
+/// patch is built from the source that edit was made to, and its rebuild
+/// unstages overlay edits anyway.
 #[test]
 fn regression_a_patch_replayed_before_the_module_boots_waits_for_it() {
     let Some(out) = run("replay-before-boot") else {
         return eprintln!("node not on PATH; skipped");
     };
     assert_eq!(out["reloads"], 0, "{out}");
-    assert_eq!(
-        out["applied"],
-        serde_json::json!(["overlay o2", "hot /p3"]),
-        "{out}"
-    );
+    assert_eq!(out["applied"], serde_json::json!(["hot /p3"]), "{out}");
 }
 
 #[test]
@@ -164,4 +179,30 @@ fn a_booted_page_without_the_applier_still_reloads() {
             .any(|a| a == "failed"),
         "{out}"
     );
+}
+
+/// Regression (CrewForge): a fresh load mounted the base bundle and THEN
+/// took the replayed hot patch, rebuilding the tree 50-100 ms in; every
+/// input remounted and lost what had been typed into it. The bundle now
+/// mounts after the replay, with the hot patch already applied. An overlay
+/// edit older than the hot patch is dropped (the patch carries it, and
+/// would otherwise be overridden by its old literal); a newer one waits
+/// for the mount.
+#[test]
+fn regression_a_booting_bundle_mounts_after_the_replayed_hot_patch() {
+    let Some(out) = run("boot-waits-for-the-replay") else {
+        return eprintln!("node not on PATH; skipped");
+    };
+    assert_eq!(out["reloads"], 0, "{out}");
+    assert_eq!(out["applied"], serde_json::json!(["hot /p3", "mount", "overlay o4"]), "{out}");
+}
+
+/// A stream that never says the replay is over (it is down) must not keep
+/// the app off screen: the bundle is released after the wait.
+#[test]
+fn a_booting_bundle_mounts_when_the_replay_never_ends() {
+    let Some(out) = run("boot-released-without-the-marker") else {
+        return;
+    };
+    assert_eq!(out["applied"], serde_json::json!(["mount"]), "{out}");
 }

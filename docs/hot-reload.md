@@ -996,6 +996,19 @@ so the ordinary session has it.
    belongs to another session — the generation restarts at 1 every
    session, so only the session id can tell a page left open across a
    restart that the bundle it runs may not be the new session's.
+
+   The replay ends with a `replayed` event, and a dev bundle holds its
+   first mount until it arrives (`backend_web::hot_patch::before_first_mount`):
+   it publishes an applier that only loads and commits, asks the script
+   through `window.__idealyst_replay_ready`, and mounts once the replay
+   is over and every replayed patch has loaded. The tree is built
+   against the patch, so nothing is rebuilt under the user: a rebuild
+   remounts every input, and `hot_state` carries only signals from the
+   first build walk, so a form behind a navigator lost what was typed
+   into it. While the bundle boots (`window.__idealyst_booting`) an
+   overlay patch waits for its applier; one queued ahead of a hot patch
+   is dropped, since the hot patch is compiled from that edit's source.
+   A stream that never sends the marker releases the mount after 2 s.
 6. Once the rebuilt tree is mounted, the page reports back — a `POST` to
    `/__idealyst/ack` with how many functions were redirected and how many
    signal values were carried — and the session records it as a

@@ -62,6 +62,98 @@ thread_local! {
     /// How many functions the last applied table redirected, for the ack
     /// the rebuild sends once the tree is back.
     static REDIRECTED: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// The first mount, while it waits on the replay ([`before_first_mount`]).
+    static FIRST_MOUNT: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+    /// Replayed patches still loading before the first mount.
+    static LOADING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The reload script said the replay is over.
+    static REPLAYED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The page global the reload script sets ready-callbacks on
+/// (`dev_http`'s `RELOAD_SCRIPT`).
+const REPLAY_READY: &str = "__idealyst_replay_ready";
+/// The page global that tells the reload script the bundle is booting:
+/// only the hot-patch applier is up, so an overlay patch waits.
+const BOOTING: &str = "__idealyst_booting";
+
+/// Hold the first mount until the patches the dev session replays to a
+/// fresh page are in place.
+///
+/// A page that loads after a hot patch runs the BASE bundle, and the
+/// session replays the patch to it over the reload stream. Applied after
+/// the mount, it rebuilds the tree 50-100 ms in, and the rebuild remounts
+/// every input: text typed meanwhile is gone (`hot_state` only carries
+/// signals from the first build walk, not a login form behind a
+/// navigator). Applied before the mount, there is nothing to rebuild.
+///
+/// So: publish an applier that only loads and commits, ask the reload
+/// script to say when the replay is over (it gives up after its own
+/// wait), and run `mount` once that is said and every load has finished.
+/// A page with no reload script (served some other way) mounts at once.
+pub(crate) fn before_first_mount(mount: impl FnOnce() + 'static) {
+    let ready = web_glue::dom::window().and_then(|w| {
+        let f = web_glue::js::Reflect::get(&w, &JsValue::from_str(REPLAY_READY)).ok()?;
+        f.dyn_into::<web_glue::js::Function>().ok().map(|f| (w, f))
+    });
+    let Some((window, ready)) = ready else {
+        mount();
+        return;
+    };
+    FIRST_MOUNT.with(|m| *m.borrow_mut() = Some(Box::new(mount)));
+    let _ = web_glue::js::Reflect::set(&window, &JsValue::from_str(BOOTING), &JsValue::from_bool(true));
+    publish_applier(&window);
+    let on_ready = web_glue::Closure::new_with_args(|_| {
+        REPLAYED.with(|r| r.set(true));
+        mount_if_ready();
+        JsValue::UNDEFINED
+    });
+    // The script may call back at once (the replay already ended); the
+    // closure is owned by the script's waiter list from here on.
+    if let Err(e) = ready.call1(&JsValue::NULL, &on_ready.into_js_value()) {
+        web_glue::dom::console::error_2(&"[idealyst] hot patch: waiting on the replay failed".into(), &e);
+        REPLAYED.with(|r| r.set(true));
+        mount_if_ready();
+    }
+}
+
+/// Is the first mount still waiting? Then a patch applied now is a
+/// replayed one, and goes in without a rebuild.
+fn before_mount() -> bool {
+    FIRST_MOUNT.with(|m| m.borrow().is_some())
+}
+
+/// Run the held first mount once the replay is over and nothing is loading.
+fn mount_if_ready() {
+    if !REPLAYED.with(|r| r.get()) || LOADING.with(|l| l.get()) > 0 {
+        return;
+    }
+    let Some(mount) = FIRST_MOUNT.with(|m| m.borrow_mut().take()) else { return };
+    mount();
+    if let Some(window) = web_glue::dom::window() {
+        let _ = web_glue::js::Reflect::set(&window, &JsValue::from_str(BOOTING), &JsValue::from_bool(false));
+    }
+}
+
+/// Publish `window.__idealyst_hot_patch`, the page's entry point. Before
+/// the first mount it only loads and commits; [`install`] publishes it
+/// again after the mount, when a commit rebuilds.
+fn publish_applier(window: &web_glue::dom::Window) {
+    // The livereload script is inline JS in the page that never imports
+    // the module, so the entry point lives on `window` — the same reason
+    // `__idealyst_overlay_patch` is published this way. `window` owns the
+    // function (and so the closure) for the life of the page.
+    let apply = web_glue::Closure::new_with_args(|args| {
+        let url = args.first().and_then(JsValue::as_string).unwrap_or_default();
+        let table = args.get(1).and_then(JsValue::as_string).unwrap_or_default();
+        apply_patch(&url, &table);
+        JsValue::UNDEFINED
+    });
+    let _ = web_glue::js::Reflect::set(
+        window,
+        &JsValue::from_str("__idealyst_hot_patch"),
+        &apply.into_js_value(),
+    );
 }
 
 /// Report an outcome to the dev session through the page's reload script
@@ -112,21 +204,7 @@ pub(crate) fn install(root: Rc<dyn Fn() -> Element>) {
     });
 
     let Some(window) = web_glue::dom::window() else { return };
-    // The livereload script is inline JS in the page that never imports
-    // the module, so the entry point lives on `window` — the same reason
-    // `__idealyst_overlay_patch` is published this way. `window` owns the
-    // function (and so the closure) for the life of the page.
-    let apply = web_glue::Closure::new_with_args(|args| {
-        let url = args.first().and_then(JsValue::as_string).unwrap_or_default();
-        let table = args.get(1).and_then(JsValue::as_string).unwrap_or_default();
-        apply_patch(&url, &table);
-        JsValue::UNDEFINED
-    });
-    let _ = web_glue::js::Reflect::set(
-        &window,
-        &JsValue::from_str("__idealyst_hot_patch"),
-        &apply.into_js_value(),
-    );
+    publish_applier(&window);
 }
 
 /// The page's entry point: `window.__idealyst_hot_patch(url, tableJson)`.
@@ -162,7 +240,15 @@ pub fn apply_patch(url: &str, table_json: &str) {
         return;
     }
     let entries = table.map.len();
-    REDIRECTED.with(|r| r.set(Some(entries)));
+    // Before the first mount there is no tree to rebuild and no rebuild
+    // handler registered yet: the commit alone puts the patch in place,
+    // and the mount waits for it (`before_first_mount`).
+    let premount = before_mount();
+    if premount {
+        LOADING.with(|l| l.set(l.get() + 1));
+    } else {
+        REDIRECTED.with(|r| r.set(Some(entries)));
+    }
     let url = url.to_string();
     // The rebuild rides `dev_hot::register_handler`, which `dev_hot::commit`
     // fires once the patch is really in place. Loading is asynchronous —
@@ -180,14 +266,17 @@ pub fn apply_patch(url: &str, table_json: &str) {
             ("what", JsValue::from_str("hot_patch")),
             ("error", JsValue::from_str("[idealyst] hot patch: loading a wasm patch needs wasm32")),
         ]);
+        if premount {
+            loaded_before_mount();
+        }
     }
     #[cfg(target_arch = "wasm32")]
     web_glue::spawn_local(async move {
         match load(&url, &table).await {
             Ok(map) => {
+                let what = if premount { "before the first mount" } else { "rebuilding" };
                 web_glue::dom::console::info_1(
-                    &format!("[idealyst] hot patch: {entries} function(s) redirected, rebuilding")
-                        .into(),
+                    &format!("[idealyst] hot patch: {entries} function(s) redirected, {what}").into(),
                 );
                 // SAFETY: the table pairs functions matched by identical
                 // mangled name between the base and the patch, so their
@@ -195,6 +284,14 @@ pub fn apply_patch(url: &str, table_json: &str) {
                 // `build_web::hotpatch_wasm`), and `load` rebased every
                 // value onto the slots the patch was instantiated into.
                 unsafe { dev_hot::commit(map) };
+                if premount {
+                    ack(&[
+                        ("kind", JsValue::from_str("hot_patch")),
+                        ("carried", JsValue::from_f64(0.0)),
+                        ("redirected", JsValue::from_f64(entries as f64)),
+                    ]);
+                    loaded_before_mount();
+                }
             }
             Err(e) => {
                 web_glue::dom::console::error_2(&"[idealyst] hot patch: apply failed:".into(), &e);
@@ -204,9 +301,19 @@ pub fn apply_patch(url: &str, table_json: &str) {
                     ("what", JsValue::from_str("hot_patch")),
                     ("error", JsValue::from_str(&format!("[idealyst] hot patch: apply failed: {msg}"))),
                 ]);
+                if premount {
+                    loaded_before_mount();
+                }
             }
         }
     });
+}
+
+/// A replayed patch finished loading (or failed to) before the first
+/// mount: mount if it was the last thing waited on.
+fn loaded_before_mount() {
+    LOADING.with(|l| l.set(l.get().saturating_sub(1)));
+    mount_if_ready();
 }
 
 // The hybrid glue module's hot-patch entry points (`wasm_carve::glue_js`,
@@ -520,4 +627,107 @@ fn remount() -> Result<usize, JsValue> {
         &format!("[idealyst] hot patch: rebuilt, carrying {count} signal value(s)").into(),
     );
     Ok(count)
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    //! The first-mount gate, in a real page. Run with the repo's browser
+    //! runner: `cargo test --target wasm32-unknown-unknown --features
+    //! hot-reload --lib hot_patch` from `crates/backend/web` (see
+    //! `crate::tests` for the driver setup).
+
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use wasm_bindgen_test::*;
+    use web_glue::js::Reflect;
+
+    use super::*;
+
+    fn window() -> web_glue::dom::Window {
+        web_glue::dom::window().expect("a browser window")
+    }
+
+    fn get(name: &str) -> JsValue {
+        Reflect::get(&window(), &JsValue::from_str(name)).unwrap_or(JsValue::UNDEFINED)
+    }
+
+    /// Stand in for the reload script: `__idealyst_replay_ready(cb)` parks
+    /// `cb` on `window.__test_replay_cb` for the test to fire.
+    fn fake_reload_script() {
+        let ready = web_glue::Closure::new_with_args(|args| {
+            let cb = args.first().cloned().unwrap_or(JsValue::UNDEFINED);
+            let _ = Reflect::set(&window(), &JsValue::from_str("__test_replay_cb"), &cb);
+            JsValue::UNDEFINED
+        });
+        let _ = Reflect::set(&window(), &JsValue::from_str(REPLAY_READY), &ready.into_js_value());
+    }
+
+    fn reset() {
+        for name in [REPLAY_READY, BOOTING, "__test_replay_cb", "__idealyst_hot_patch"] {
+            let _ = Reflect::delete_property(&window(), &JsValue::from_str(name));
+        }
+        FIRST_MOUNT.with(|m| m.borrow_mut().take());
+        LOADING.with(|l| l.set(0));
+        REPLAYED.with(|r| r.set(false));
+    }
+
+    fn fire_replayed() {
+        let cb: web_glue::js::Function = get("__test_replay_cb").dyn_into().expect("the bundle asked to be told");
+        cb.call0(&JsValue::NULL).expect("the callback runs");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_page_without_the_reload_script_mounts_at_once() {
+        reset();
+        let mounted = Rc::new(Cell::new(false));
+        let m = mounted.clone();
+        before_first_mount(move || m.set(true));
+        assert!(mounted.get());
+    }
+
+    /// Regression (CrewForge): a fresh load mounted, then the replayed hot
+    /// patch rebuilt the tree under the user's typing. The mount now waits
+    /// for the replay, with the pre-mount applier up and the script told
+    /// the bundle is booting, and the flag clears once it has mounted.
+    #[wasm_bindgen_test]
+    fn regression_the_first_mount_waits_for_the_replay() {
+        reset();
+        fake_reload_script();
+        let mounted = Rc::new(Cell::new(false));
+        let m = mounted.clone();
+        before_first_mount(move || m.set(true));
+        assert!(!mounted.get(), "held until the replay is over");
+        assert_eq!(get(BOOTING).as_bool(), Some(true), "the script is told the bundle is booting");
+        assert!(get("__idealyst_hot_patch").is_function(), "the pre-mount applier is up");
+
+        fire_replayed();
+        assert!(mounted.get(), "mounted once the replay is over");
+        assert_eq!(get(BOOTING).as_bool(), Some(false));
+        reset();
+    }
+
+    /// A replayed patch still loading when the replay ends holds the mount
+    /// until it is in place, or has failed: either way the page mounts.
+    #[wasm_bindgen_test]
+    async fn the_first_mount_waits_for_a_replayed_patch_to_load() {
+        reset();
+        fake_reload_script();
+        let mounted = Rc::new(Cell::new(false));
+        let m = mounted.clone();
+        before_first_mount(move || m.set(true));
+        // A patch that cannot load: the fetch fails.
+        apply_patch("/__no_such_patch__.wasm", r#"{"lib":"p.wasm","map":{"1":2},"aslr_reference":0,"new_base_address":0,"ifunc_count":0}"#);
+        assert_eq!(LOADING.with(|l| l.get()), 1);
+        fire_replayed();
+        assert!(!mounted.get(), "the replay is over, but a patch is still loading");
+        for _ in 0..100 {
+            if mounted.get() {
+                break;
+            }
+            crate::tests::sleep_ms(20).await;
+        }
+        assert!(mounted.get(), "a failed load still releases the mount");
+        reset();
+    }
 }

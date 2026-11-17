@@ -11,6 +11,14 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **A fresh page in `idealyst dev --web` mounts with the session's hot patch already applied**
+  (`backend-web` minor, `dev-http` minor, CLI). A page loaded after a hot patch mounted the base
+  bundle and then took the replayed patch, rebuilding the tree 50-100 ms in; every input
+  remounted and lost what had been typed (a login form's email came back empty). The reload
+  stream now ends its replay with a `replayed` event, and a dev bundle holds its first mount
+  until then, applying the replayed patch first. An overlay patch queued ahead of a hot patch is
+  dropped, as the patch carries it. Release bundles are unchanged.
+
 - **Escape passes over an overlay that is fading out** (`runtime-vocabulary` minor,
   `runtime-scene` patch). An overlay held mounted for its exit animation stayed on top of the
   Escape stack, so a second quick Escape (a submenu's flyout fading after the first) landed on

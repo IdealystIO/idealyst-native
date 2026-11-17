@@ -375,6 +375,23 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
 
     // One `Rc` so the boot and any later rebuild run the same closure.
     let build: std::rc::Rc<dyn Fn() -> Element> = std::rc::Rc::new(build);
+    let mount = move || mount_and_install(backend, registry, build);
+    // A dev build mounts once the hot patch the session replays to a
+    // fresh page is in place, so the tree is built against it rather than
+    // rebuilt 50-100 ms later under the user's typing. See
+    // `hot_patch::before_first_mount`.
+    #[cfg(feature = "hot-reload")]
+    crate::hot_patch::before_first_mount(mount);
+    #[cfg(not(feature = "hot-reload"))]
+    mount();
+}
+
+/// The boot's mount, and the page services that need a mounted app.
+fn mount_and_install(
+    backend: Rc<RefCell<WebBackend>>,
+    registry: Rc<Registry<WebBackend>>,
+    build: std::rc::Rc<dyn Fn() -> Element>,
+) {
     #[cfg(feature = "hot-reload")]
     let root_for_rebuild = build.clone();
     let vp_sig = mount_tree(&backend, &registry, &*build, None);
