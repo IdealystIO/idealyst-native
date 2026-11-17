@@ -482,6 +482,12 @@ impl App {
         crate::Net { app: self }
     }
 
+    /// The app's camera: feed it from a test image
+    /// ([`Camera`](crate::Camera)).
+    pub fn camera(&mut self) -> crate::Camera<'_> {
+        crate::Camera { app: self }
+    }
+
     /// The app's file picker: queue the files the next pick returns
     /// ([`FilePicker`](crate::FilePicker)).
     pub fn file_picker(&mut self) -> crate::FilePicker<'_> {

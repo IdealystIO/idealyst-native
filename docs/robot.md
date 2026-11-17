@@ -502,6 +502,7 @@ app.net().clear();
 | `notifications` | `notifications::register_robot_controls()` | `notifications.log`, `notifications.clear_log` |
 | `permissions` | `permissions::register_robot_controls()` | `permissions.set {permission, status}`, `permissions.clear`, `permissions.requests` |
 | `file-picker` | `file_picker::register_robot_controls()` | `file_picker.queue {files: [{name, mime?, base64? \| text?}]}`, `file_picker.cancel_next`, `file_picker.requests`, `file_picker.clear` |
+| `camera` | `camera::register_robot_controls()` | `camera.fake {width, height, rgba}` (every `open` streams the image), `camera.clear`, `camera.status` |
 
 Anything that asks the OS — a permission prompt, a sensor, the network —
 should be fakeable, so a test assumes the answer it needs instead of

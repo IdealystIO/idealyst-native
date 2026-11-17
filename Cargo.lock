@@ -2243,6 +2243,7 @@ name = "camera"
 version = "9.0.0"
 dependencies = [
  "async-channel",
+ "base64",
  "futures-channel",
  "glib",
  "gstreamer",
@@ -2254,6 +2255,9 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "permissions",
  "pollster 0.4.0",
+ "runtime-core",
+ "runtime-vocabulary",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen-test",
@@ -10807,6 +10811,7 @@ version = "3.1.0"
 dependencies = [
  "anyhow",
  "base64",
+ "image",
  "native-parity",
  "robot-test-macros",
  "serde",

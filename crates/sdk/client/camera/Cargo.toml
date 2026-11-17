@@ -47,8 +47,22 @@ capabilities = ["camera"]
 [package.metadata.idealyst.ios]
 frameworks = ["AVFoundation", "CoreMedia", "CoreVideo"]
 
+[features]
+default = ["robot-controls"]
+# `register_robot_controls()`: a robot test feeds the app's camera from an
+# image (`camera.fake`). The controls compile only into robot builds
+# (`runtime_vocabulary::robot_select!`); this feature only brings the
+# framework deps they are written against.
+robot-controls = ["dep:runtime-core", "dep:runtime-vocabulary", "dep:base64"]
+# A robot build of this crate on its own (its tests).
+robot = ["robot-controls", "runtime-vocabulary/robot"]
+
 [dependencies]
 thiserror = { workspace = true }
+runtime-core = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+# `robot-controls`: the test image arrives base64 over the bridge.
+base64 = { version = "0.22", optional = true }
 # The platform-agnostic live-source abstraction camera produces. Thin and
 # GPU-free; shared with `screen-recorder` (producer) and `video` (consumer).
 media-stream = { workspace = true }
@@ -123,4 +137,6 @@ gstreamer-app = "0.23"
 glib = "0.20"
 
 [dev-dependencies]
+serde_json = { workspace = true }
+base64 = "0.22"
 tokio = { version = "1", features = ["macros", "rt"] }

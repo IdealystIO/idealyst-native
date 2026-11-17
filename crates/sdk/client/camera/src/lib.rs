@@ -90,6 +90,8 @@
 #![deny(missing_docs)]
 
 mod config;
+#[cfg(feature = "robot-controls")]
+mod robot_controls;
 mod devices;
 mod error;
 // Requested vs. observed facing: the check web and desktop Linux run on the
@@ -195,6 +197,14 @@ pub struct Camera {
     _private: (),
 }
 
+/// Register this SDK's robot test controls (`camera.fake`, `camera.clear`,
+/// `camera.status`): a test feeds the app's camera from an image. Call once
+/// at boot, on the UI thread. Inert outside robot builds.
+pub fn register_robot_controls() {
+    #[cfg(feature = "robot-controls")]
+    robot_controls::register();
+}
+
 impl Camera {
     /// Create a camera handle.
     pub fn new() -> Self {
@@ -207,6 +217,11 @@ impl Camera {
     ///
     /// Optional — [`open`](Camera::open) requests access on its own.
     pub async fn request_permission(&self) -> Result<(), CameraError> {
+        // A robot test's fake camera needs no OS grant.
+        #[cfg(feature = "robot-controls")]
+        if robot_controls::fake().is_some() {
+            return Ok(());
+        }
         imp::request_permission().await
     }
 
@@ -220,6 +235,14 @@ impl Camera {
     /// not an error. Labels are never empty, and repeated names are numbered
     /// ("USB Camera", "USB Camera 2") so every entry reads differently.
     pub async fn devices(&self) -> Result<Vec<CameraDevice>, CameraError> {
+        #[cfg(feature = "robot-controls")]
+        if robot_controls::fake().is_some() {
+            return Ok(vec![CameraDevice {
+                id: robot_controls::FAKE_DEVICE_ID.into(),
+                label: "Robot test camera".into(),
+                facing: DeviceFacing::Front,
+            }]);
+        }
         imp::request_permission().await?;
         Ok(devices::number_repeated_labels(imp::devices().await?))
     }
@@ -239,6 +262,25 @@ impl Camera {
             return Err(e);
         }
         let (stream, writer) = MediaStream::new();
+        // A robot test's fake camera: its image instead of a device
+        // (`camera.fake`, robot builds only).
+        #[cfg(feature = "robot-controls")]
+        if let Some(img) = robot_controls::fake() {
+            robot_controls::note_opened();
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let handle = robot_controls::open(img, writer);
+                stream.attach_stopper(move || drop(handle));
+                return Ok(stream);
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let (handle, native) = imp::open_fake(img, writer)?;
+                stream.set_native_source(native);
+                stream.attach_stopper(move || drop(handle));
+                return Ok(stream);
+            }
+        }
         let (handle, native) = imp::open(config, writer).await?;
         if let Some(src) = native {
             stream.set_native_source(src);

@@ -48,6 +48,7 @@
 //! every platform — the relay makes them all reachable as the same bridge.
 
 mod app;
+mod camera;
 mod clock;
 mod file_picker;
 mod net;
@@ -67,6 +68,7 @@ pub use client::{
 };
 pub use parity::{capture_native, diff as diff_native, report as report_parity, Capture, Mismatch, Tolerance};
 
+pub use camera::Camera;
 pub use clock::Clock;
 pub use file_picker::FilePicker;
 pub use net::{HeldRequest, Net, NetRule};

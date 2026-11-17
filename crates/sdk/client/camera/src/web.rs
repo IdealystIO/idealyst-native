@@ -60,6 +60,17 @@ web_glue::import! {
     #[catch]
     fn js_list_cameras(md: u32) -> u32 =
         "(m) => G.add(G.get(m).enumerateDevices().then((all) => all            .filter((d) => d.kind === 'videoinput').map((d) => { let f = 0;              try { const c = d.getCapabilities ? d.getCapabilities() : null;                const fm = c && Array.isArray(c.facingMode) ? c.facingMode : [];                f = fm.includes('user') ? 1 : fm.includes('environment') ? 2 : fm.length ? 3 : 0; }              catch (_) {}              return { id: d.deviceId, label: d.label, facing: f }; })))";
+    // A robot test's fake camera: a canvas holding the `w`×`h` RGBA8 image at
+    // `p`, captured as a browser MediaStream. Repainted at the stream's rate
+    // (a static canvas emits no new frames) until its track ends.
+    #[catch]
+    fn js_canvas_stream(w: u32, h: u32, p: usize) -> u32 =
+        "(w, h, p) => { const c = document.createElement('canvas'); c.width = w; c.height = h; \
+           const x = c.getContext('2d'); if (x == null) throw new Error('no 2d context'); \
+           const o = p >>> 0; const img = new ImageData(new Uint8ClampedArray(G.u8().slice(o, o + w * h * 4)), w, h); \
+           x.putImageData(img, 0, 0); const s = c.captureStream(15); const t = s.getVideoTracks()[0]; \
+           const id = setInterval(() => { if (!t || t.readyState === 'ended') { clearInterval(id); return; } \
+             x.putImageData(img, 0, 0); }, 66); return G.add(s); }";
     fn js_video_width(v: u32) -> u32 = "(v) => G.get(v).videoWidth >>> 0";
     fn js_video_height(v: u32) -> u32 = "(v) => G.get(v).videoHeight >>> 0";
     // Detach the source.
@@ -201,6 +212,27 @@ pub(crate) async fn open(
     writer: FrameWriter,
 ) -> Result<(StreamHandle, Option<NativeSource>), CameraError> {
     let stream = get_user_media(&config).await?;
+    run(stream, writer).map(|(h, n)| (h, Some(n)))
+}
+
+/// A robot test's fake camera: a canvas-backed browser stream of `img`,
+/// through the same pipeline as a real one, so `<video>` plays it and the
+/// CPU channel reads it exactly as it would a camera.
+#[cfg(feature = "robot-controls")]
+pub(crate) fn open_fake(
+    img: crate::robot_controls::FakeImage,
+    writer: FrameWriter,
+) -> Result<(StreamHandle, NativeSource), CameraError> {
+    // SAFETY: `img.rgba` holds width*height*4 bytes, copied out before return.
+    let stream = unsafe { js_canvas_stream(img.width, img.height, img.rgba.as_ptr() as usize) }
+        .map(|s| unsafe { JsValue::from_raw(s) })
+        .map_err(|e| CameraError::Backend(format!("fake camera: {}", err_string(&e))))?
+        .unchecked_into::<MediaStream>();
+    run(stream, writer)
+}
+
+/// Play `stream` in a detached `<video>` and pump its frames to `writer`.
+fn run(stream: MediaStream, writer: FrameWriter) -> Result<(StreamHandle, NativeSource), CameraError> {
 
     // SAFETY: a live stream handle; the result is a fresh element handle.
     let video = unsafe { js_video_for(stream.as_js().raw()) }
@@ -261,7 +293,7 @@ pub(crate) async fn open(
             raf_id,
             pump,
         },
-        Some(native),
+        native,
     ))
 }
 

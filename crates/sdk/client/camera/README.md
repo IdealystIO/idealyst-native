@@ -354,6 +354,33 @@ synthetic front and back camera.
   `gst-plugin-pipewire` GStreamer plugin and slots in as an alternate source
   behind the same pipeline contract.
 
+
+## Robot tests
+
+A test can't point a camera at a known face, so it feeds the app's camera from an
+image instead. Register the controls once at boot (inert outside robot builds):
+
+```rust
+camera::register_robot_controls();
+```
+
+`camera.fake {width, height, rgba}` (base64 of straight RGBA8, top-down) makes every
+`Camera::open` from then on stream that image instead of a device: `latest` and
+`subscribe` deliver it, and a preview shows it (on web through a canvas-backed
+browser stream, so `<video>` plays it like a camera; natively through the CPU frame
+channel, which every native preview draws). While it is set, permission is granted
+with no prompt and `devices()` lists one "Robot test camera". `camera.clear` goes
+back to the real camera; `camera.status` reports `{fake, opened}`. In `robot-test`,
+which decodes the image on the test's side:
+
+```rust
+app.camera().fake_image("tests/fixtures/face.jpg");
+app.test_id("take-photo").click();
+```
+
+The controls compile only into robot builds; the default-on `robot-controls`
+feature only brings the framework dependencies they are written against.
+
 ## Testing checklist
 
 Manual verification per backend — an unchecked **native** box means the code

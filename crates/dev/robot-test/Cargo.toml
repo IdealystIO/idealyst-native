@@ -16,3 +16,5 @@ serde_json = { workspace = true }
 anyhow = "1"
 # `app.file_picker()`: a queued file's bytes cross the bridge base64.
 base64 = "0.22"
+# `app.camera().fake_image(path)`: the test image is decoded on the test's side.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

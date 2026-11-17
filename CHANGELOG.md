@@ -1343,6 +1343,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **A robot test can feed the app's camera from an image** (`camera` minor, `robot-test` minor).
+  `camera::register_robot_controls()` adds `camera.fake {width, height, rgba}` (every `open`
+  streams the image: no device, no prompt, `devices()` lists a "Robot test camera"),
+  `camera.clear` and `camera.status`. On web the fake is a canvas-backed browser stream through
+  the real pipeline, so `<video>` previews play it; natively a thread writes the frames.
+  `robot-test` has `app.camera()` (`fake_image(path)` decodes PNG/JPEG on the test's side,
+  `fake_rgba`, `opened`, `clear`). New default-on `robot-controls` feature and a `robot` feature
+  for the crate's own robot tests.
+
 - **A robot test can hand the app files instead of the OS picker** (`file-picker` minor,
   `robot-test` minor). `file_picker::register_robot_controls()` adds `file_picker.queue {files:
   [{name, mime?, base64? | text?}]}` (the next `pick` returns them with no dialog),
