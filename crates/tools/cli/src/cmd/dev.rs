@@ -488,7 +488,7 @@ pub struct Args {
     /// app icons) queues them, and a rebuild request applies the queue
     /// as one save — through the same patch-or-rebuild decision a save
     /// takes. Request one with `r` in the panel, or from an agent through
-    /// the session's control endpoint (`idealyst mcp`'s `rebuild_dev`).
+    /// the session's control endpoint (`idealyst mcp`'s `dev_session` `rebuild`).
     /// A request also applies a save the watcher has not reported yet, and
     /// with nothing to apply it forces a rebuild.
     #[arg(long)]
@@ -3753,7 +3753,7 @@ fn start_robot_relay(dir: &Path, args: &Args, app_name: &str) -> Option<robot_re
             });
             // The relay serves without its registration, but an MCP server
             // finds apps only through it: say so here, in the log
-            // `read_dev_log` returns, not as a `wait_for_app` timeout.
+            // `dev_session` `log` returns, not as a `wait_for_app` timeout.
             for err in relay.registration_errors() {
                 dev_events::global().warn(
                     "dev",
@@ -5161,7 +5161,7 @@ fn spawn_worker(
 
 /// Launch the headless web client once the server's listener is up (same
 /// TCP-poll dance as [`spawn_browser_opener`]). The browser `Child` goes into
-/// `children` so Ctrl-C / MCP `stop_dev` teardown kills it with the session.
+/// `children` so Ctrl-C / MCP `dev_session` `stop` teardown kills it with the session.
 fn spawn_headless_client(host: &str, port: u16, dir: &Path, children: Arc<Mutex<Vec<Child>>>) {
     let connect_host = match host {
         "0.0.0.0" | "::" | "[::]" => "localhost".to_string(),
@@ -5275,7 +5275,7 @@ pub(crate) fn open_url_in_browser(url: &str) {
 /// reload on source change, the iOS app re-renders automatically.
 /// `--local` builds and runs once, then rebuilds and relaunches on a
 /// rebuild request (the panel's `r`, the control endpoint, the MCP's
-/// `rebuild_dev`) — not on every save, which would kill the app's state
+/// `dev_session` `rebuild`) — not on every save, which would kill the app's state
 /// mid-edit ([`register_local_relauncher`]).
 fn launch_ios(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Result<()> {
     launch_ios_once(dir, args, runtime_server_port)?;
@@ -5330,7 +5330,7 @@ fn launch_ios_once(dir: &Path, args: &Args, runtime_server_port: Option<u16>) ->
 /// Take rebuild requests for a `--local` native target, whose app is a
 /// one-shot build with no watcher behind it: each request runs `relaunch`
 /// (build, install, launch) on its own thread, reported as a build of
-/// `target` so `wait_for_build` sees how it ended. A request arriving
+/// `target` so `dev_session` `wait` sees how it ended. A request arriving
 /// while one runs is folded into one more run after it, not dropped: the
 /// save it was made for may have landed after the running build read the
 /// source.
@@ -5866,7 +5866,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     /// An iOS `--local` session had no watcher, so a rebuild request
-    /// (`rebuild_dev`, the panel's `r`) reached nothing and the only way to
+    /// (`dev_session` `rebuild`, the panel's `r`) reached nothing and the only way to
     /// see a change was to stop the session. A registered relauncher takes
     /// the request and runs; one arriving mid-run is folded into one more
     /// run, not dropped.

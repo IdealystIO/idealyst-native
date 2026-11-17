@@ -1329,7 +1329,7 @@ mod tests {
         let rec = &recs[0];
         assert_eq!(rec["trigger"], "save");
         // Sessions of one project share the file; this is how their
-        // records are told apart (`read_build_metrics` filters on it).
+        // records are told apart (`dev_session` `metrics` filters on it).
         assert_eq!(rec["session"], 7);
         assert_eq!(rec["total_ms"], 8_600);
         assert_eq!(rec["changes"][0]["path"], "src/app.rs");

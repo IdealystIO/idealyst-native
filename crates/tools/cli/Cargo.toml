@@ -154,7 +154,7 @@ quote = { workspace = true }
 lint = { workspace = true }
 
 # Project configuration engine — powers `idealyst configure` (devcontainer
-# provisioning today). The same crate backs the MCP `configure_devcontainer`
+# provisioning today). The same crate backs the MCP `configure_project`
 # tool; the CLI adds only the interactive wizard on top of its plan→apply core.
 configure = { workspace = true }
 # Interactive prompts for `idealyst configure devcontainer` (multi-select of

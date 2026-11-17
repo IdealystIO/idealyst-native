@@ -272,7 +272,7 @@ pub fn run(args: Args) -> Result<()> {
                 // record why on the SERVICE, not just stderr. An MCP
                 // client never sees our stderr, so a stderr-only
                 // explanation is invisible exactly where it is needed:
-                // `list_components` would return `[]` and read as "this
+                // `list(kind: "component")` would return `[]` and read as "this
                 // project has no components".
                 for err in &expand_errors {
                     eprintln!("[idealyst mcp] no project catalog available from {err}");
@@ -770,7 +770,7 @@ mod tests {
 
     /// Regression: `idealyst mcp` with NO flags must default to the
     /// current directory and wire a catalog subprocess. Before the fix
-    /// the resolver returned `None` here, so `list_components` served
+    /// the resolver returned `None` here, so `list(kind: "component")` served
     /// the empty in-process catalog — the "no components appear" bug
     /// reported against scaffolded projects (whose `.mcp.json` invokes
     /// the server as `{"args": ["mcp"]}`, i.e. no `--project-root`).

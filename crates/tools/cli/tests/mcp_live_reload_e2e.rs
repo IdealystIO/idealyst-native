@@ -12,9 +12,9 @@
 //! 3. Assert the project's own component AND a dependency's components
 //!    (force-linked into the catalog wrapper) are listed.
 //! 4. **Add a component** to the project's source, then poll until it
-//!    appears in `list_components` — proving the watcher rebuilt the
+//!    appears in `list` (kind `component`) — proving the watcher rebuilt the
 //!    catalog and swapped it into the live server.
-//! 5. **Change a doc comment** and poll until `describe_component`
+//! 5. **Change a doc comment** and poll until `describe`
 //!    reflects the new text — proving documentation edits propagate too.
 //!
 //! Marked `#[ignore]`: it drives real `cargo` builds of the catalog
@@ -121,8 +121,7 @@ idea-ui = {{ path = "{ui}" }}
     Ok(())
 }
 
-/// Pull the catalog out of a `list_components` / `describe_component`
-/// tool result. The handlers return the JSON as a single text content.
+/// Pull the catalog out of a `list` / `describe` tool result. The handlers return the JSON as a single text content.
 fn result_text(r: &CallToolResult) -> String {
     r.content
         .iter()
@@ -130,17 +129,16 @@ fn result_text(r: &CallToolResult) -> String {
         .unwrap_or_default()
 }
 
-/// Names returned by `list_components`.
+/// Component names `list` returns.
 async fn list_component_names<S>(client: &S) -> Result<Vec<String>>
 where
     S: std::ops::Deref<Target = rmcp::service::Peer<rmcp::RoleClient>>,
 {
-    let res = client
-        .call_tool(CallToolRequestParams::new("list_components"))
-        .await
-        .context("call list_components")?;
+    let mut params = CallToolRequestParams::new("list");
+    params.arguments = serde_json::json!({ "kind": "component" }).as_object().cloned();
+    let res = client.call_tool(params).await.context("call list")?;
     let json: serde_json::Value =
-        serde_json::from_str(&result_text(&res)).context("parse list_components json")?;
+        serde_json::from_str(&result_text(&res)).context("parse list json")?;
     Ok(json
         .as_array()
         .map(|a| {
@@ -151,19 +149,19 @@ where
         .unwrap_or_default())
 }
 
-/// Raw `describe_component` text for `name` (the pretty JSON record).
+/// Raw `describe` text for component `name` (the pretty JSON record).
 async fn describe_component<S>(client: &S, name: &str) -> Result<String>
 where
     S: std::ops::Deref<Target = rmcp::service::Peer<rmcp::RoleClient>>,
 {
-    let mut params = CallToolRequestParams::new("describe_component");
-    params.arguments = serde_json::json!({ "name": name })
+    let mut params = CallToolRequestParams::new("describe");
+    params.arguments = serde_json::json!({ "kind": "component", "name": name })
         .as_object()
         .cloned();
     let res = client
         .call_tool(params)
         .await
-        .context("call describe_component")?;
+        .context("call describe")?;
     Ok(result_text(&res))
 }
 
@@ -247,7 +245,7 @@ async fn mcp_server_live_reloads_catalog_on_source_and_doc_edits() -> Result<()>
         "`Gadget` did not appear in the live catalog within 300s after the source edit"
     );
 
-    // --- 3. Change a doc comment → describe_component should reflect it.
+    // --- 3. Change a doc comment → describe should reflect it.
     std::fs::write(
         proj.join("src/lib.rs"),
         fixture_lib("DOC_V2_UPDATED the revised widget documentation.", true),
@@ -263,7 +261,7 @@ async fn mcp_server_live_reloads_catalog_on_source_and_doc_edits() -> Result<()>
     .await;
     assert!(
         doc_updated,
-        "describe_component(Widget) did not reflect the updated doc within 300s"
+        "describe(component Widget) did not reflect the updated doc within 300s"
     );
 
     // Tidy: stop the server, drop the temp project, remove the wrapper

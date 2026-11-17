@@ -227,9 +227,9 @@ pub fn claim_dir(
             anyhow::bail!(
                 "{which} already runs in {} (pid {}, started by {}, idealyst {}). \
                  Two sessions with one key share a target directory and log, and their builds \
-                 race. Use that session — the idealyst MCP drives it by pid (`dev_status`, \
-                 `rebuild_dev`, `wait_for_build`) — stop it first (Ctrl-C in its terminal, \
-                 `kill -INT {}`, or `stop_dev` with its pid), or {beside}.",
+                 race. Use that session — the idealyst MCP drives it by pid (`dev_session`: \
+                 `status`, `rebuild`, `wait`) — stop it first (Ctrl-C in its terminal, \
+                 `kill -INT {}`, or `dev_session` `stop` with its pid), or {beside}.",
                 dir.display(),
                 e.pid,
                 started_by(&e.launched_by),
@@ -252,7 +252,7 @@ pub fn claim_dir(
         Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!(
             "another `idealyst dev` session is starting in {} (it holds {}). Two sessions with one \
              key share a target directory and log, and their builds race: wait for it and use it \
-             (`list_dev_sessions` shows it once it is up), stop it first, or run beside it with \
+             (`dev_session` `list` shows it once it is up), stop it first, or run beside it with \
              `--isolated <key>`.",
             dir.display(),
             lock_path.display(),
