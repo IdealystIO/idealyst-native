@@ -1313,6 +1313,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`Breadcrumbs(current_role = …)`: the current crumb can be the page's heading** (`idea-ui`
+  minor). `Some(Role::Header)` gives the last crumb the heading role, for a page whose title is
+  the trail itself; without it such a page had no heading for screen readers or
+  `getByRole('heading')`. Default `None` leaves it plain text.
+
 - **`video-codec`: live hardware video encoding and decoding** (new crate). `Encoder::start(&stream,
   EncoderConfig::realtime(), on_event)` encodes a capture stream with Android's MediaCodec H.264,
   fed through its input surface (the capture renders straight into the encoder), and emits each

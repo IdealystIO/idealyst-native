@@ -13,12 +13,16 @@
 //!
 //! The last crumb renders as the current page (bold, no link);
 //! every earlier crumb with an `on_press` is clickable.
+//!
+//! When the trail is what names the page (no title row under it), give
+//! the current crumb the heading role so screen readers and locators
+//! find the page's heading there: `current_role = Some(Role::Header)`.
 
 use std::rc::Rc;
 
 use runtime_core::{
     component, component_styles, icon, ui, AlignItems, Color, Cursor, Element, FlexDirection, FontWeight,
-    IconData, IdealystSchema, IntoElement, Length, Reactive, StyleRules, Tokenized, signal,
+    IconData, IdealystSchema, IntoElement, Length, Reactive, Role, StyleRules, Tokenized, signal,
 };
 
 use crate::theme::IdeaThemeRef;
@@ -140,6 +144,10 @@ pub struct BreadcrumbsProps {
     /// `None` falls back to the [`separator`](Self::separator) string — so
     /// both forms are supported.
     pub separator_icon: Option<IconData>,
+    /// Accessibility role of the current (last) crumb. Default `None`:
+    /// plain text. `Some(Role::Header)` makes it the page's heading, for
+    /// a page whose title is the trail itself.
+    pub current_role: Option<Role>,
 }
 
 impl Default for BreadcrumbsProps {
@@ -148,6 +156,7 @@ impl Default for BreadcrumbsProps {
             items: Vec::new(),
             separator: Reactive::Static("/".to_string()),
             separator_icon: Reactive::Static(None),
+            current_role: Reactive::Static(None),
             styles: Default::default(),
         }
     }
@@ -167,6 +176,8 @@ pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
     // below.)
     let sep = props.separator.get();
     let sep_icon = props.separator_icon.get();
+    // Snapshotted at build, like Typography's `a11y_role`.
+    let current_role = props.current_role.get();
 
     let mut kids: Vec<Element> = Vec::with_capacity(n * 2);
     for (i, crumb) in props.items.into_iter().enumerate() {
@@ -196,13 +207,17 @@ pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
                     .on_focus(move |on| focused.set(on))
                     .into_element()
             }
-            _ => runtime_core::text(crumb.label)
-                .with_style(
+            _ => {
+                let label = runtime_core::text(crumb.label).with_style(
                     BreadcrumbsStyles::crumb()
                         .set(BreadcrumbsCurrent::from(is_current))
                         .overridden(props.styles.crumb.as_ref()),
-                )
-                .into_element(),
+                );
+                match current_role {
+                    Some(role) if is_current => label.a11y_role(role).into_element(),
+                    _ => label.into_element(),
+                }
+            }
         };
         kids.push(item);
         if !is_current {
@@ -251,6 +266,52 @@ mod tests {
                 items: vec![Crumb::linked("Home", Rc::new(|| {})), Crumb::new("Here")],
                 ..Default::default()
             }));
+        });
+    }
+
+    /// The roles of every text node in the trail, in order.
+    fn text_roles(el: Element) -> Vec<(String, Option<Role>)> {
+        use crate::test_support::{classify, P};
+        fn walk(el: Element, out: &mut Vec<(String, Option<Role>)>) {
+            match classify(el) {
+                P::Text { text, accessibility, .. } => out.push((text.unwrap_or_default(), accessibility.role)),
+                P::View { children, .. } | P::Pressable { children, .. } => {
+                    for c in children {
+                        walk(c, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        walk(el, &mut out);
+        out
+    }
+
+    /// Regression (CrewForge): with the trail naming the page, the page
+    /// had no heading at all: neither `Crumb` nor the props could give the
+    /// current crumb a role, so an app drew its own trail to get one.
+    #[test]
+    fn regression_current_crumb_can_be_the_page_heading() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let items = || vec![Crumb::linked("Projects", Rc::new(|| {})), Crumb::new("Copper Creek Mine")];
+            let roles = text_roles(Breadcrumbs(BreadcrumbsProps {
+                items: items(),
+                current_role: Reactive::Static(Some(Role::Header)),
+                ..Default::default()
+            }));
+            assert_eq!(
+                roles,
+                vec![
+                    ("Projects".to_string(), None),
+                    ("/".to_string(), None),
+                    ("Copper Creek Mine".to_string(), Some(Role::Header)),
+                ],
+                "only the current crumb takes the role"
+            );
+            let plain = text_roles(Breadcrumbs(BreadcrumbsProps { items: items(), ..Default::default() }));
+            assert!(plain.iter().all(|(_, r)| r.is_none()), "no role unless asked: {plain:?}");
         });
     }
 }
