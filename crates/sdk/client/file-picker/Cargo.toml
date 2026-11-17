@@ -24,7 +24,15 @@ license.workspace = true
 # one cfg-gated backend compiles per target.
 
 [features]
-default = ["drop"]
+default = ["drop", "robot-controls"]
+# `register_robot_controls()`: a robot test hands the app files instead of
+# driving the OS picker (`file_picker.queue` …). The controls themselves
+# compile only into robot builds (`runtime_vocabulary::robot_only!`); this
+# feature only brings the framework deps they are written against.
+robot-controls = ["dep:runtime-core", "dep:runtime-vocabulary", "dep:base64", "dep:serde", "dep:runtime-tls"]
+# A robot build of this crate on its own (its tests): the app normally gets
+# one by enabling the framework's robot feature, which unifies with this.
+robot = ["robot-controls", "runtime-vocabulary/robot"]
 # `FileDropZone` — the OS file drag-and-drop surface (drag a Finder file /
 # desktop file / browser file onto a view). It's a view handler plus a reactive
 # signal, so it pulls in the framework; the imperative `FilePicker::pick` needs
@@ -41,6 +49,14 @@ thiserror = { workspace = true }
 runtime-core = { workspace = true, optional = true }
 # `DroppedFile` in the per-platform `picked_from_dropped` adapters.
 runtime-shared = { workspace = true, optional = true }
+# `robot-controls`: robot functions and the robot-build gate.
+runtime-vocabulary = { workspace = true, optional = true }
+# `robot-controls`: a queued file's bytes arrive base64 over the bridge.
+base64 = { version = "0.22", optional = true }
+# `robot-controls`: the queued files' shape.
+serde = { workspace = true, optional = true }
+# `robot-controls`: the queue's thread-local (one Android pthread key).
+runtime-tls = { workspace = true, optional = true }
 
 # iOS / macOS: drive NSOpenPanel (macOS) / UIDocumentPickerViewController +
 # PHPickerViewController (iOS) through the Obj-C runtime, the same posture
@@ -112,3 +128,6 @@ runtime_kotlin = ["runtime/kotlin/io/idealyst/filepicker/RustFilePicker.kt"]
 # here (`tests/sdk_framework_declarations.rs` in run-ios checks the two match).
 [package.metadata.idealyst.ios]
 frameworks = ["PhotosUI", "UniformTypeIdentifiers"]
+
+[dev-dependencies]
+serde_json = { workspace = true }

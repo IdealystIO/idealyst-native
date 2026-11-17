@@ -4344,6 +4344,7 @@ version = "8.0.0"
 dependencies = [
  "ashpd",
  "backend-android-mobile",
+ "base64",
  "block2 0.5.1",
  "futures-channel",
  "jni 0.21.1",
@@ -4352,7 +4353,11 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "runtime-core",
  "runtime-shared",
+ "runtime-tls",
+ "runtime-vocabulary",
  "runtime-world",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "wasm-bindgen-test",
  "web-glue",
@@ -10801,6 +10806,7 @@ name = "robot-test"
 version = "3.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "native-parity",
  "robot-test-macros",
  "serde",

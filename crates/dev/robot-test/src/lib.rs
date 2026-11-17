@@ -49,6 +49,7 @@
 
 mod app;
 mod clock;
+mod file_picker;
 mod net;
 pub mod browser_control;
 mod client;
@@ -67,6 +68,7 @@ pub use client::{
 pub use parity::{capture_native, diff as diff_native, report as report_parity, Capture, Mismatch, Tolerance};
 
 pub use clock::Clock;
+pub use file_picker::FilePicker;
 pub use net::{HeldRequest, Net, NetRule};
 pub use fixture::Fixture;
 #[doc(hidden)]

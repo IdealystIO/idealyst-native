@@ -1343,6 +1343,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **A robot test can hand the app files instead of the OS picker** (`file-picker` minor,
+  `robot-test` minor). `file_picker::register_robot_controls()` adds `file_picker.queue {files:
+  [{name, mime?, base64? | text?}]}` (the next `pick` returns them with no dialog),
+  `file_picker.cancel_next`, `file_picker.requests` and `file_picker.clear`; `robot-test` has
+  `app.file_picker()` (`queue_files(paths)`, `queue_bytes`, `cancel_next`, `requests`, `clear`).
+  New default-on `robot-controls` feature (the controls' framework deps) and a `robot` feature
+  for the crate's own robot tests.
+
 - **The robot can hold, delay or fail the app's HTTP requests** (`runtime-vocabulary` minor, `net`
   minor, `robot-test` minor, new crate `test-net`). `net.intercept {url, method?, action:
   hold|delay|fail, …}`, `net.held`, `net.release`, `net.remove`, `net.clear`, in every robot build;

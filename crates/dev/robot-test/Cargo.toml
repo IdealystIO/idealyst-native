@@ -14,3 +14,5 @@ native-parity = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = "1"
+# `app.file_picker()`: a queued file's bytes cross the bridge base64.
+base64 = "0.22"

@@ -139,6 +139,30 @@ auto-discovered and compiled by `idealyst run android` via the
 See [`examples/file-picker-demo`](./examples/file-picker-demo) for a
 runnable demo.
 
+## Robot tests
+
+A test can't drive the OS picker, so it hands the app files instead. Register
+the controls once at boot (inert outside robot builds):
+
+```rust
+file_picker::register_robot_controls();
+```
+
+Then `file_picker.queue {files: [{name, mime?, base64? | text?}]}` makes the
+next `pick` return those files with no dialog (read from memory, so `path()` is
+`None`, as on web); `file_picker.cancel_next` makes it return `Cancelled`;
+`file_picker.requests` lists the picks the app made; `file_picker.clear` drops
+both. Queued answers are taken one per pick, in order; with none queued the real
+picker opens. In `robot-test`:
+
+```rust
+app.file_picker().queue_files(["tests/fixtures/template.pdf"]);
+app.test_id("upload-template").click();
+```
+
+The controls compile only into robot builds; the default-on `robot-controls`
+feature only brings the framework dependencies they are written against.
+
 ## Testing checklist
 
 Manual verification per backend — every backend is **interactive OS UI**; an

@@ -482,6 +482,12 @@ impl App {
         crate::Net { app: self }
     }
 
+    /// The app's file picker: queue the files the next pick returns
+    /// ([`FilePicker`](crate::FilePicker)).
+    pub fn file_picker(&mut self) -> crate::FilePicker<'_> {
+        crate::FilePicker { app: self }
+    }
+
     /// The functions the app registered with the robot.
     pub fn functions(&mut self) -> Vec<FunctionInfo> {
         serde_json::from_value(self.read("functions()", "list_functions", json!({})))

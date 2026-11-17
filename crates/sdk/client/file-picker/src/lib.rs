@@ -149,6 +149,18 @@ mod imp;
 // `picked_from_dropped(&DroppedFile) -> Option<PickedFile>` the zone calls.
 #[cfg(feature = "drop")]
 mod drop;
+
+#[cfg(feature = "robot-controls")]
+mod robot_controls;
+
+/// Register this SDK's robot test controls (`file_picker.queue`,
+/// `file_picker.cancel_next`, `file_picker.requests`, `file_picker.clear`):
+/// a test hands the app files instead of driving the OS picker. Call once
+/// at boot, on the UI thread. Inert outside robot builds.
+pub fn register_robot_controls() {
+    #[cfg(feature = "robot-controls")]
+    robot_controls::register();
+}
 #[cfg(feature = "drop")]
 pub use drop::FileDropZone;
 
@@ -246,7 +258,22 @@ pub enum PickOutcome {
 /// A file the user picked. A lazy handle — see the [crate docs](crate#reading-without-blowing-up-memory)
 /// for how to read it without buffering the whole thing.
 pub struct PickedFile {
-    inner: imp::PickedFile,
+    inner: Inner,
+}
+
+/// A file from the platform's picker, or one a test handed the app
+/// (`file_picker.queue`, robot builds).
+enum Inner {
+    Platform(imp::PickedFile),
+    Given(GivenFile),
+}
+
+/// A file whose bytes are already in memory: what a robot test hands the
+/// app instead of a picker it can't drive.
+pub(crate) struct GivenFile {
+    pub(crate) name: String,
+    pub(crate) mime: String,
+    pub(crate) bytes: std::sync::Arc<Vec<u8>>,
 }
 
 impl PickedFile {
@@ -254,24 +281,39 @@ impl PickedFile {
     /// a dropped OS file as the same handle a picker returns.
     #[cfg(feature = "drop")]
     pub(crate) fn from_inner(inner: imp::PickedFile) -> Self {
-        Self { inner }
+        Self { inner: Inner::Platform(inner) }
+    }
+
+    /// A file a robot test handed the app (`file_picker.queue`).
+    #[cfg_attr(not(feature = "robot-controls"), allow(dead_code))]
+    pub(crate) fn given(file: GivenFile) -> Self {
+        Self { inner: Inner::Given(file) }
     }
 
     /// The file's display name (e.g. `"report.pdf"`).
     pub fn name(&self) -> &str {
-        self.inner.name()
+        match &self.inner {
+            Inner::Platform(f) => f.name(),
+            Inner::Given(f) => &f.name,
+        }
     }
 
     /// The file's MIME type, best-effort (e.g. `"application/pdf"`). May be an
     /// empty string or `"application/octet-stream"` when the platform doesn't
     /// report one.
     pub fn mime(&self) -> &str {
-        self.inner.mime()
+        match &self.inner {
+            Inner::Platform(f) => f.mime(),
+            Inner::Given(f) => &f.mime,
+        }
     }
 
     /// The file's size in bytes, when the platform reports it.
     pub fn size(&self) -> Option<u64> {
-        self.inner.size()
+        match &self.inner {
+            Inner::Platform(f) => f.size(),
+            Inner::Given(f) => Some(f.bytes.len() as u64),
+        }
     }
 
     /// A real filesystem path to the file, when one exists.
@@ -281,7 +323,11 @@ impl PickedFile {
     /// (`content://` URIs have no path), and for media-library assets; use
     /// [`open`](Self::open) / [`copy_to`](Self::copy_to) there.
     pub fn path(&self) -> Option<&Path> {
-        self.inner.path()
+        match &self.inner {
+            Inner::Platform(f) => f.path(),
+            // In memory: read it through `open`, as on web.
+            Inner::Given(_) => None,
+        }
     }
 
     /// Open a chunked, RAM-safe reader over the file's contents. Works on every
@@ -289,7 +335,10 @@ impl PickedFile {
     /// yields `None` (EOF).
     pub async fn open(&self) -> Result<FileStream, PickError> {
         Ok(FileStream {
-            inner: self.inner.open().await?,
+            inner: match &self.inner {
+                Inner::Platform(f) => StreamInner::Platform(f.open().await?),
+                Inner::Given(f) => StreamInner::Given { bytes: f.bytes.clone(), at: 0 },
+            },
         })
     }
 
@@ -335,13 +384,29 @@ impl PickedFile {
 /// A chunked, forward-only reader over a [`PickedFile`]'s contents. Obtained
 /// from [`PickedFile::open`]. Drives the RAM-safe read path on every backend.
 pub struct FileStream {
-    inner: imp::FileStream,
+    inner: StreamInner,
+}
+
+enum StreamInner {
+    Platform(imp::FileStream),
+    Given { bytes: std::sync::Arc<Vec<u8>>, at: usize },
 }
 
 impl FileStream {
     /// Read the next chunk (up to ~1 MiB). Returns `Ok(None)` at end of file.
     pub async fn chunk(&mut self) -> Result<Option<Vec<u8>>, PickError> {
-        self.inner.chunk().await
+        match &mut self.inner {
+            StreamInner::Platform(s) => s.chunk().await,
+            StreamInner::Given { bytes, at } => {
+                if *at >= bytes.len() {
+                    return Ok(None);
+                }
+                let end = (*at + READ_CHUNK).min(bytes.len());
+                let chunk = bytes[*at..end].to_vec();
+                *at = end;
+                Ok(Some(chunk))
+            }
+        }
     }
 }
 
@@ -364,12 +429,24 @@ impl FilePicker {
     /// [`PickOutcome::Cancelled`] if the user dismisses the picker; errors only
     /// on a genuine failure (no UI surface, backend error, unsupported target).
     pub async fn pick(&self, request: PickRequest) -> Result<PickOutcome, PickError> {
+        // Robot builds: a test's queued answer, with no dialog
+        // (`file_picker.queue` / `file_picker.cancel_next`).
+        #[cfg(feature = "robot-controls")]
+        if let Some(outcome) = robot_controls::take(&request) {
+            return Ok(outcome);
+        }
         match imp::pick(&request).await? {
             Some(files) => Ok(PickOutcome::Picked(
-                files.into_iter().map(|inner| PickedFile { inner }).collect(),
+                files.into_iter().map(PickedFile::from_platform).collect(),
             )),
             None => Ok(PickOutcome::Cancelled),
         }
+    }
+}
+
+impl PickedFile {
+    fn from_platform(inner: imp::PickedFile) -> Self {
+        Self { inner: Inner::Platform(inner) }
     }
 }
 
