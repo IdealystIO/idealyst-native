@@ -309,7 +309,12 @@ web_glue::import! {
     /// can't take explicit capture), then `click` on the nearest common
     /// ancestor of the down and up targets. An untrusted `mousedown` runs
     /// no default action, so the focus a press gives a focusable target is
-    /// given here, unless a listener prevented it.
+    /// given here, unless a listener prevented it — with `preventScroll`,
+    /// as a click's focus never scrolls (the target is under the pointer
+    /// already). A plain `focus()` scrolls its target into view, and moving
+    /// the page between the press and the release would land the release
+    /// beside the element: Firefox does that to an element resting against
+    /// the scroll view's edge.
     ///
     /// On a page with touch input (`navigator.maxTouchPoints > 0` — a phone,
     /// or `idealyst test --device`'s touch emulation) the gesture is also a
@@ -364,7 +369,7 @@ web_glue::import! {
            const press = (t) => { \
              if (t.dispatchEvent(new MouseEvent('mousedown', { ...o, buttons: 1 }))) { \
                const f = t.closest('input, textarea, select, button, a[href], [tabindex], [contenteditable]'); \
-               if (f && typeof f.focus === 'function') f.focus(); } }; \
+               if (f && typeof f.focus === 'function') f.focus({ preventScroll: true }); } }; \
            const fire = (t, type, lifted) => { \
              const p = new Touch({ identifier: 1, target: t, clientX: x, clientY: y, pageX: x + scrollX, pageY: y + scrollY, \
                                    screenX: x, screenY: y, radiusX: 1, radiusY: 1, force: lifted ? 0 : 1 }); \
@@ -528,6 +533,61 @@ mod is_shown_tests {
         cover.set_attribute("style", "position:absolute;left:0;top:0;width:200px;height:200px;pointer-events:none").unwrap();
         assert_eq!(super::hit_contains(node, 50.0, 25.0), Some(true), "pointer-events: none lets it through");
         root.remove();
+    }
+
+    web_glue::import! {
+        /// Set the element's `scrollTop` (`to` ≥ 0) and return it.
+        fn js_scroll_top(n: u32, to: i32) -> i32 =
+            "(n, to) => { const e = G.get(n); if (to >= 0) e.scrollTop = to; return Math.round(e.scrollTop); }";
+    }
+
+    /// REGRESSION (robot-e2e demo in Firefox): a tap on a button resting
+    /// against the bottom edge of the screen's scroll view never pressed it.
+    /// The press gives the button focus as a click does, and a plain
+    /// `focus()` scrolls its target into view: Firefox moved the flush
+    /// button 16 px up, so the release landed beside it and the press
+    /// counted as slid off. A click's focus never scrolls — the element is
+    /// already under the pointer. `scroll-padding` makes every browser's
+    /// `focus()` scroll the same way here.
+    #[wasm_bindgen_test]
+    fn regression_a_native_tap_does_not_scroll_the_button_it_focuses() {
+        use runtime_vocabulary::caps::{PointerStep, PointerStepPhase};
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let scroller = doc.create_element("div").unwrap();
+        scroller
+            .set_attribute(
+                "style",
+                "position:fixed;left:0;top:0;width:200px;height:100px;overflow:auto;scroll-padding-bottom:60px",
+            )
+            .unwrap();
+        doc.body().unwrap().append_child(&scroller).unwrap();
+        let block = |h: u32| {
+            let e = doc.create_element("div").unwrap();
+            e.set_attribute("style", &format!("height:{h}px")).unwrap();
+            e
+        };
+        scroller.append_child(&block(200)).unwrap();
+        let button = doc.create_element("button").unwrap();
+        button.set_attribute("style", "display:block;width:100px;height:20px;margin:0;padding:0;border:0").unwrap();
+        scroller.append_child(&button).unwrap();
+        scroller.append_child(&block(100)).unwrap();
+        let scroller_raw = AsRef::<web_glue::JsValue>::as_ref(&scroller).raw();
+        // The button's bottom on the scroll view's bottom edge: 80..100.
+        unsafe { js_scroll_top(scroller_raw, 120) };
+        let (seen, _keep) = record(&button, &["pointerdown", "pointerup", "click"]);
+
+        let tap = [
+            PointerStep { phase: PointerStepPhase::Down, x: 50.0, y: 90.0 },
+            PointerStep { phase: PointerStepPhase::Up, x: 50.0, y: 90.0 },
+        ];
+        super::native_pointer(&tap)().unwrap();
+        let scrolled = unsafe { js_scroll_top(scroller_raw, -1) };
+        let node: &web_glue::dom::Node = button.as_ref();
+        let focused = unsafe { js_is_active(AsRef::<web_glue::JsValue>::as_ref(node).raw()) };
+        scroller.remove();
+        assert_eq!(scrolled, 120, "the tap's focus left the scroll view where it was");
+        assert_eq!(focused, 1, "the tapped button took focus");
+        assert_eq!(seen.borrow().as_slice(), ["pointerdown", "pointerup", "click"], "and was clicked");
     }
 
     web_glue::import! {

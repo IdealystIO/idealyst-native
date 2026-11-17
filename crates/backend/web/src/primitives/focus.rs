@@ -10,7 +10,9 @@
 //!   (`css::state_pseudo`). A click that focuses a `<button>` reports
 //!   `false` (no ring, no focus-driven UI); Tab and programmatic focus
 //!   after keyboard use report `true`; a text field is always
-//!   focus-visible.
+//!   focus-visible. A page without window focus matches no
+//!   `:focus-visible`; there the robot's delivery of the withheld events
+//!   (`pending_focus::moving_focus`) answers for the selector.
 //! - `focusout` whose `relatedTarget` (the element gaining focus) is still
 //!   inside this element is focus moving WITHIN the subtree: skipped, the
 //!   paired `focusin` reports the new state. Otherwise focus left: `false`.
@@ -30,10 +32,13 @@ pub(crate) fn install(node: &Node, handler: FocusWithinHandler) {
     {
         let handler = handler.clone();
         crate::glue_dom::listen_for_element_lifetime(&element, "focusin", Default::default(), move |ev| {
-            let visible = ev
-                .target()
-                .and_then(|t| t.dyn_into::<Element>().ok())
-                .is_some_and(|t| t.matches(":focus-visible").unwrap_or(false));
+            // A page without window focus matches no `:focus-visible`; the
+            // robot's withheld-event delivery says what it would match.
+            let visible = crate::pending_focus::delivering_withheld_focus()
+                || ev
+                    .target()
+                    .and_then(|t| t.dyn_into::<Element>().ok())
+                    .is_some_and(|t| t.matches(":focus-visible").unwrap_or(false));
             (handler)(visible);
         });
     }

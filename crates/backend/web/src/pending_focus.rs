@@ -88,6 +88,15 @@ fn drain() {
 ///
 /// Robot builds only: a person's browser delivers these itself when the
 /// window comes back, and a synthetic pair would run the handlers twice.
+///
+/// Every move this wraps is a Tab, a focus into a text field, or a blur
+/// (which focuses nothing), and the browser's `:focus-visible` heuristic
+/// matches whatever the first two focus. An unfocused document
+/// matches no `:focus` / `:focus-visible` at all, so while the withheld
+/// events are dispatched [`delivering_withheld_focus`] is true and the
+/// focus-within listener (`primitives/focus.rs`) reports the focus visible
+/// instead of asking the selector. A caller that moves focus some other way
+/// (a click on a button: not focus-visible) must not go through here.
 #[cfg(feature = "robot")]
 pub(crate) fn moving_focus(move_focus: impl FnOnce()) {
     let Some(doc) = web_glue::dom::window().and_then(|w| w.document()) else {
@@ -113,6 +122,9 @@ pub(crate) fn moving_focus(move_focus: impl FnOnce()) {
     let real = |el: Option<web_glue::dom::Element>| {
         el.filter(|e| !body.as_ref().is_some_and(|b| b.is_same_node(Some(e.as_ref()))))
     };
+    // Restored, not cleared, after: a focus handler that moves focus again
+    // re-enters here while this delivery is still dispatching.
+    let outer = DELIVERING.with(|d| d.replace(true));
     if let Some(left) = real(before) {
         dispatch_focus_event(&left, "blur", false);
         dispatch_focus_event(&left, "focusout", true);
@@ -121,6 +133,26 @@ pub(crate) fn moving_focus(move_focus: impl FnOnce()) {
         dispatch_focus_event(&entered, "focus", false);
         dispatch_focus_event(&entered, "focusin", true);
     }
+    DELIVERING.with(|d| d.set(outer));
+}
+
+#[cfg(feature = "robot")]
+thread_local! {
+    static DELIVERING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether the focus events being handled are ones [`moving_focus`]
+/// delivered for an unfocused page — a move `:focus-visible` would match
+/// if the page held focus.
+#[cfg(feature = "robot")]
+pub(crate) fn delivering_withheld_focus() -> bool {
+    DELIVERING.with(|d| d.get())
+}
+
+#[cfg(not(feature = "robot"))]
+#[inline]
+pub(crate) fn delivering_withheld_focus() -> bool {
+    false
 }
 
 #[cfg(not(feature = "robot"))]

@@ -3854,6 +3854,65 @@ mod tests {
         robot_commits_a_text_box(true).await;
     }
 
+    /// REGRESSION (robot-e2e demo in Firefox, whose headless window never
+    /// holds OS focus): Tab into a field inside a view with `on_focus` moved
+    /// focus, but the view's focus-within stayed `false`. The robot delivers
+    /// the `focusin` the browser withholds from an unfocused page, and the
+    /// listener reported `:focus-visible` of the target — which matches
+    /// nothing in a document without focus. Chromium under `idealyst test`
+    /// emulates focus, so it never showed there; a second window in front
+    /// takes this page's focus to reproduce it in any browser.
+    #[cfg(feature = "robot")]
+    #[wasm_bindgen_test]
+    async fn regression_robot_tab_into_a_view_reports_focus_within_without_window_focus() {
+        use runtime_vocabulary::builders::text_input;
+        use runtime_vocabulary::caps::KeyChord;
+        use runtime_vocabulary::robot::{Query, Robot};
+
+        let (backend, registry, world) = focus_harness();
+        let heard: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+        let within = heard.clone();
+        let realized = world.enter(|| {
+            let tree = runtime_vocabulary::builders::view()
+                .child(text_input().value("").test_id("fw-outer").build())
+                .child(
+                    runtime_vocabulary::builders::view()
+                        .on_focus(move |focused| within.borrow_mut().push(focused))
+                        .child(text_input().value("").test_id("fw-inner").build())
+                        .build(),
+                )
+                .build();
+            realize(&backend, &registry, tree)
+        });
+        let root = realized.collect_nodes().pop().expect("one root");
+        let mut parent: web_glue::dom::Node = setup_mount_child();
+        Host::insert(&mut *backend.borrow_mut(), &mut parent, root);
+        settle().await;
+        let js = |body: &str| {
+            web_glue::js::Function::new_no_args(body).call0(&web_glue::JsValue::UNDEFINED).unwrap();
+        };
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        js("window.__iyFocusThief = window.open('about:blank', '_blank');");
+        settle().await;
+        assert!(!doc.has_focus(), "the test page lost window focus");
+
+        let robot = Robot::new();
+        let outer = robot.find(Query::test_id("fw-outer")).expect("outer");
+        let inner = robot.find(Query::test_id("fw-inner")).expect("inner");
+        robot.focus(&outer).unwrap();
+        settle().await;
+        robot.press_key(None, &KeyChord::parse("Tab").unwrap()).unwrap();
+        settle().await;
+        assert_eq!(robot.state(&inner).unwrap().unwrap().focused, Some(true), "Tab moved focus inside");
+        assert_eq!(heard.borrow().last(), Some(&true), "the view heard focus arrive: {:?}", heard.borrow());
+
+        robot.press_key(None, &KeyChord::parse("Shift+Tab").unwrap()).unwrap();
+        settle().await;
+        assert_eq!(heard.borrow().last(), Some(&false), "and leave: {:?}", heard.borrow());
+        js("window.__iyFocusThief.close(); window.focus();");
+        drop(realized);
+    }
+
     fn setup_mount_append(node: &web_glue::dom::Node) {
         let doc = web_glue::dom::window().unwrap().document().unwrap();
         doc.get_element_by_id("app").unwrap().append_child(node).unwrap();

@@ -3621,6 +3621,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Robot taps and Tab focus behave in Firefox** (`backend-web` patch). Two web robot paths
+  broke in a browser whose page has no window focus, or that scrolls on `focus()`:
+  - A native tap gives the pressed element focus as a click does. That focus now passes
+    `preventScroll`, since a click's focus never scrolls. A plain `focus()` let Firefox scroll a
+    button resting against the scroll view's edge, so the release landed beside it and the press
+    never ran.
+  - A view's `on_focus` heard nothing when the robot Tabbed into it in a page without window
+    focus (headless Firefox's, always). The robot delivers the `focusin` the browser withholds,
+    and the listener asked `:focus-visible`, which matches nothing in an unfocused document. The
+    robot's own delivery now says the focus is visible, as it would be for a Tab or a text field.
+
 - **A label whose font changes is re-measured on native** (`runtime-layout` patch). A font
   weight, size, family, style, line height, letter spacing, transform or line limit changes a
   label's measured size without changing its layout box, so the cached measurement stood: a
