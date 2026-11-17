@@ -1366,7 +1366,7 @@ fn stage_touch(world: WorldId, slot: u32, gen: u32) {
 thread_local! {
     /// `Some` while a [`record_staged`] is running: the worlds staged into
     /// so far. Nested recordings save the outer list and fold into it.
-    static STAGED_LOG: RefCell<Option<Vec<WorldId>>> = const { RefCell::new(None) };
+    static STAGED_LOG: std::cell::RefCell<Option<Vec<WorldId>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Note a staged write into `world` for an enclosing [`record_staged`].
