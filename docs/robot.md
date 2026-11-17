@@ -785,6 +785,14 @@ simulator or emulator this run booted (one already running is left as it
 was; `--keep-devices` leaves them all). A physical device (`serial:`) is
 never shut down.
 
+Every web row runs in one launch: the app builds and boots once and the
+page is resized and re-emulated between classes. Each run's tests are
+logged one by one (libtest's `--logfile`): the summary names a failed
+run's failing tests, and `--junit <path>` writes the whole run as JUnit
+XML for CI, a suite per run and a case per test (a test that didn't apply,
+and a run this machine couldn't make, are `skipped` with the reason; a run
+that never reached its tests is an `error`).
+
 `idealyst test --plan` prints the plan and exits, creating nothing. A run
 where nothing could run fails; skips alongside runs that passed don't. The one-off
 flags below (`--viewport`, `--device`, `--simulator`, `--emulator`,

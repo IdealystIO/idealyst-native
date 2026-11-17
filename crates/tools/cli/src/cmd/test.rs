@@ -180,6 +180,12 @@ pub struct Args {
     /// their rows (default: shut down what the run started).
     #[arg(long)]
     pub keep_devices: bool,
+    /// Write a JUnit XML report of the whole run to this file: a suite per
+    /// run (class × platform, or size), a case per test. A test that didn't
+    /// apply to the run's device, and a run this machine couldn't make, are
+    /// `skipped` with the reason.
+    #[arg(long, value_name = "PATH")]
+    pub junit: Option<PathBuf>,
     /// `KEY=VALUE` set for the app (passed as `idealyst dev --app-env`, which
     /// delivers it on every platform), the dev session (so a full-stack
     /// project's server inherits it), the tests, and the `--before`/`--after`
@@ -283,6 +289,8 @@ struct Size {
     device: Option<String>,
     /// Web: what the page is told about its screen.
     emulation: Option<Emulation>,
+    /// The matrix class this run is (`IDEALYST_TEST_CLASS`).
+    class: Option<String>,
 }
 
 /// One app launch, and the suite runs made against it.
@@ -334,7 +342,7 @@ fn plan_launches(args: &Args, platform: &str) -> Result<Vec<Launch>> {
                 .iter()
                 .map(|&(w, h)| {
                     let e = if args.mobile { Emulation::mobile(w, h) } else { Emulation::desktop(w, h) };
-                    Size { label: e.describe(), viewport: Some((w, h)), device: None, emulation: Some(e) }
+                    Size { label: e.describe(), viewport: Some((w, h)), device: None, emulation: Some(e), class: None }
                 })
                 .collect();
             sizes.extend(devices.iter().map(|d| {
@@ -344,12 +352,13 @@ fn plan_launches(args: &Args, platform: &str) -> Result<Vec<Launch>> {
                     viewport: Some((d.width, d.height)),
                     device: Some(d.name.to_string()),
                     emulation: Some(e),
+                    class: None,
                 }
             }));
             if sizes.is_empty() {
                 let (w, h) = DEFAULT_VIEWPORT;
                 let e = if args.mobile { Emulation::mobile(w, h) } else { Emulation::desktop(w, h) };
-                sizes.push(Size { label: e.describe(), viewport: Some((w, h)), device: None, emulation: Some(e) });
+                sizes.push(Size { label: e.describe(), viewport: Some((w, h)), device: None, emulation: Some(e), class: None });
             }
             if args.attach && (sizes.len() > 1 || !devices.is_empty() || args.mobile) {
                 one_launch("resize or emulate a browser it didn't start")?;
@@ -386,6 +395,7 @@ fn plan_launches(args: &Args, platform: &str) -> Result<Vec<Launch>> {
                         viewport: None,
                         device: sim.clone(),
                         emulation: None,
+                        class: None,
                     }],
                     target_device: sim,
                 })
@@ -408,6 +418,7 @@ fn plan_launches(args: &Args, platform: &str) -> Result<Vec<Launch>> {
                         viewport: Some((w, h)),
                         device: None,
                         emulation: None,
+                        class: None,
                     }],
                 })
                 .collect()
@@ -425,6 +436,9 @@ fn suite_env(size: &Size, port: u16, user_env: &[(String, String)]) -> Vec<(Stri
     }
     if let Some(d) = &size.device {
         env.push(("IDEALYST_TEST_DEVICE".into(), d.clone()));
+    }
+    if let Some(c) = &size.class {
+        env.push(("IDEALYST_TEST_CLASS".into(), c.clone()));
     }
     env.push(("IDEALYST_TEST_PORT".into(), port.to_string()));
     env
@@ -444,19 +458,116 @@ enum Outcome {
     Skipped(String),
 }
 
-/// One suite run: what it ran on, how it ended, and the tests that didn't
-/// apply to its device (`#[robot_test(form = …)]`), with why.
+/// One test of a suite run, as libtest logged it (`--logfile`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TestStatus {
+    Ok,
+    Failed,
+    Ignored,
+}
+
+/// One suite run: what it ran on, how it ended, each test's result, and the
+/// tests that didn't apply to its device (`#[robot_test(form = …)]`), with
+/// why.
 #[derive(Debug, Clone, PartialEq)]
 struct RunResult {
     label: String,
     outcome: Outcome,
+    tests: Vec<(String, TestStatus)>,
     not_applicable: Vec<(String, String)>,
 }
 
 impl RunResult {
     fn new(label: impl Into<String>, outcome: Outcome) -> Self {
-        Self { label: label.into(), outcome, not_applicable: Vec::new() }
+        Self { label: label.into(), outcome, tests: Vec::new(), not_applicable: Vec::new() }
     }
+}
+
+/// libtest's `--logfile`: `ok <name>` / `failed <name>` / `ignored <name>`.
+fn read_test_log(path: &Path) -> Vec<(String, TestStatus)> {
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    text.lines()
+        .filter_map(|l| {
+            let (status, name) = l.split_once(' ')?;
+            let status = match status {
+                "ok" => TestStatus::Ok,
+                "failed" => TestStatus::Failed,
+                "ignored" => TestStatus::Ignored,
+                _ => return None,
+            };
+            Some((name.trim().to_string(), status))
+        })
+        .collect()
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// The run as JUnit XML: a `testsuite` per run, a `testcase` per test. A
+/// test that didn't apply, and an ignored one, are `skipped`; a run that
+/// couldn't be made here is one skipped case with the reason; a run that
+/// never got to its tests is one case with an `error`.
+fn junit(results: &[RunResult]) -> String {
+    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites name=\"idealyst test\">\n");
+    for r in results {
+        let suite = xml_escape(&r.label);
+        let mut cases = String::new();
+        let (mut failures, mut errors, mut skipped) = (0, 0, 0);
+        match &r.outcome {
+            Outcome::Skipped(why) => {
+                skipped += 1;
+                cases.push_str(&format!(
+                    "    <testcase name=\"(run)\" classname=\"{suite}\"><skipped message=\"{}\"/></testcase>\n",
+                    xml_escape(why)
+                ));
+            }
+            Outcome::Error(e) => {
+                errors += 1;
+                cases.push_str(&format!(
+                    "    <testcase name=\"(run)\" classname=\"{suite}\"><error message=\"{}\"/></testcase>\n",
+                    xml_escape(e)
+                ));
+            }
+            Outcome::Passed | Outcome::Failed(_) => {
+                for (name, status) in &r.tests {
+                    let na = r.not_applicable.iter().find(|(t, _)| name == t || name.starts_with(&format!("{t}::")));
+                    let body = match (status, na) {
+                        (_, Some((_, why))) => {
+                            skipped += 1;
+                            format!("<skipped message=\"not applicable: {}\"/>", xml_escape(why))
+                        }
+                        (TestStatus::Failed, None) => {
+                            failures += 1;
+                            "<failure message=\"failed\"/>".to_string()
+                        }
+                        (TestStatus::Ignored, None) => {
+                            skipped += 1;
+                            "<skipped/>".to_string()
+                        }
+                        (TestStatus::Ok, None) => String::new(),
+                    };
+                    cases.push_str(&format!(
+                        "    <testcase name=\"{}\" classname=\"{suite}\">{body}</testcase>\n",
+                        xml_escape(name)
+                    ));
+                }
+                // The suite failed without naming a test (it crashed): say so.
+                if matches!(r.outcome, Outcome::Failed(_)) && failures == 0 {
+                    errors += 1;
+                    cases.push_str(&format!(
+                        "    <testcase name=\"(run)\" classname=\"{suite}\"><error message=\"the suite failed\"/></testcase>\n"
+                    ));
+                }
+            }
+        }
+        let count = cases.lines().count();
+        out.push_str(&format!(
+            "  <testsuite name=\"{suite}\" tests=\"{count}\" failures=\"{failures}\" errors=\"{errors}\" skipped=\"{skipped}\">\n{cases}  </testsuite>\n"
+        ));
+    }
+    out.push_str("</testsuites>\n");
+    out
 }
 
 /// The summary and the process exit code: 0 when every run that ran passed
@@ -468,7 +579,15 @@ fn summarize(results: &[RunResult]) -> (String, i32) {
         let label = &r.label;
         let line = match &r.outcome {
             Outcome::Passed => format!("  PASS   {label}\n"),
-            Outcome::Failed(_) => format!("  FAIL   {label}\n"),
+            Outcome::Failed(_) => {
+                let failed: Vec<&str> =
+                    r.tests.iter().filter(|(_, s)| *s == TestStatus::Failed).map(|(n, _)| n.as_str()).collect();
+                let mut line = format!("  FAIL   {label}\n");
+                for name in failed {
+                    line.push_str(&format!("           failed {name}\n"));
+                }
+                line
+            }
             Outcome::Error(e) => format!("  ERROR  {label}: {e}\n"),
             Outcome::Skipped(why) => format!("  SKIP   {label}: {why}\n"),
         };
@@ -584,7 +703,7 @@ pub fn run(args: Args) -> Result<()> {
             if args.plan {
                 return Ok(());
             }
-            rows.iter().map(|row| job_for_row(&args, row)).collect::<Result<Vec<_>>>()?
+            merge_web(rows.iter().map(|row| job_for_row(&args, row)).collect::<Result<Vec<_>>>()?)
         }
         _ => {
             anyhow::ensure!(
@@ -602,7 +721,6 @@ pub fn run(args: Args) -> Result<()> {
             let platform = flagged.first().copied().unwrap_or("web");
             vec![Job::Run {
                 platform: platform.to_string(),
-                class: None,
                 launches: plan_launches(&args, platform)?,
                 create: None,
                 device: None,
@@ -662,13 +780,13 @@ pub fn run(args: Args) -> Result<()> {
         let mut results = Vec::new();
         let mut index = 0;
         for job in &jobs {
-            let (platform, class, launches, create, device) = match job {
+            let (platform, launches, create, device) = match job {
                 Job::Skip { label, why } => {
                     results.push(RunResult::new(label.clone(), Outcome::Skipped(why.clone())));
                     continue;
                 }
-                Job::Run { platform, class, launches, create, device } => {
-                    (platform.as_str(), class.as_deref(), launches.clone(), create, device.clone())
+                Job::Run { platform, launches, create, device } => {
+                    (platform.as_str(), launches.clone(), create, device.clone())
                 }
             };
             // A device the plan said to make: made now, and the launches
@@ -708,7 +826,6 @@ pub fn run(args: Args) -> Result<()> {
                     args: &args,
                     dir: &dir,
                     platform,
-                    class,
                     port,
                     isolated: isolated.get(platform).and_then(|k| k.as_deref()),
                     user_env: &user_env,
@@ -738,6 +855,12 @@ pub fn run(args: Args) -> Result<()> {
     let after = if runs_anything { run_hooks("--after", &args.after, &dir, &hook_env) } else { Ok(()) };
 
     let results = outcome?;
+    if let Some(path) = &args.junit {
+        match std::fs::write(path, junit(&results)) {
+            Ok(()) => eprintln!("[test] JUnit report: {}", path.display()),
+            Err(e) => eprintln!("[test] could not write the JUnit report {}: {e}", path.display()),
+        }
+    }
     let (summary, mut code) = summarize(&results);
     eprintln!("\n{summary}");
     if let Err(e) = after {
@@ -758,7 +881,6 @@ pub fn run(args: Args) -> Result<()> {
 enum Job {
     Run {
         platform: String,
-        class: Option<String>,
         launches: Vec<Launch>,
         /// A device to make before the launches (they are pointed at it).
         create: Option<matrix::Create>,
@@ -768,6 +890,29 @@ enum Job {
         device: Option<provision::Device>,
     },
     Skip { label: String, why: String },
+}
+
+/// Every web row in one launch: the page is resized and re-emulated between
+/// sizes (as `--viewport` / `--device` lists are), so the app builds and
+/// boots once for all of them. Placed where the first web row was.
+fn merge_web(jobs: Vec<Job>) -> Vec<Job> {
+    let mut out: Vec<Job> = Vec::with_capacity(jobs.len());
+    let mut web_at: Option<usize> = None;
+    for job in jobs {
+        match (job, web_at) {
+            (Job::Run { platform, launches, .. }, Some(at)) if platform == "web" => {
+                if let Job::Run { launches: first, .. } = &mut out[at] {
+                    first[0].sizes.extend(launches.into_iter().flat_map(|l| l.sizes));
+                }
+            }
+            (job @ Job::Run { .. }, None) if matches!(&job, Job::Run { platform, .. } if platform == "web") => {
+                web_at = Some(out.len());
+                out.push(job);
+            }
+            (job, _) => out.push(job),
+        }
+    }
+    out
 }
 
 /// The job for one matrix row: the one-off flags it stands for, through the
@@ -795,6 +940,7 @@ fn job_for_row(args: &Args, row: &matrix::Row) -> Result<Job> {
     for launch in &mut launches {
         for size in &mut launch.sizes {
             size.label = row.label();
+            size.class = Some(row.class.clone());
         }
     }
     let device = match (target.create.is_some(), row.platform.as_str()) {
@@ -806,7 +952,6 @@ fn job_for_row(args: &Args, row: &matrix::Row) -> Result<Job> {
     };
     Ok(Job::Run {
         platform: row.platform.clone(),
-        class: Some(row.class.clone()),
         launches,
         create: target.create.clone(),
         device,
@@ -818,8 +963,6 @@ struct LaunchCtx<'a> {
     args: &'a Args,
     dir: &'a Path,
     platform: &'a str,
-    /// The matrix class this launch runs as (`IDEALYST_TEST_CLASS`).
-    class: Option<&'a str>,
     port: u16,
     isolated: Option<&'a str>,
     user_env: &'a [(String, String)],
@@ -831,7 +974,7 @@ struct LaunchCtx<'a> {
 /// Launch the app (unless attaching), then run the suite at each of the
 /// launch's sizes, appending one result per size to `results`.
 fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) -> Result<()> {
-    let LaunchCtx { args, dir, platform, class, port, isolated, user_env, test_bin, tests, index } = *ctx;
+    let LaunchCtx { args, dir, platform, port, isolated, user_env, test_bin, tests, index } = *ctx;
     let apps_dirs = registry_dirs()?;
     // Registrations already live before the launch belong to another run
     // (an earlier launch of this one included) or to the app being attached
@@ -898,6 +1041,9 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
 
     for (n, size) in launch.sizes.iter().enumerate() {
         let na_file = std::env::temp_dir().join(format!("idealyst-test-na-{}-{index}-{n}.jsonl", std::process::id()));
+        // libtest's per-test results, for the summary and the JUnit report.
+        let test_log = std::env::temp_dir().join(format!("idealyst-test-log-{}-{index}-{n}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&test_log);
         let ran = (|| -> Result<Outcome> {
             if let (Some(b), Some(e)) = (browser.as_ref(), &size.emulation) {
                 let mut b = b.lock().unwrap();
@@ -919,9 +1065,7 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
                 .envs(suite_env(size, port, user_env))
                 .env("IDEALYST_ROBOT_BRIDGE", addr.to_string())
                 .env(robot_test::RESULTS_ENV, &na_file);
-            if let Some(class) = class {
-                suite.env("IDEALYST_TEST_CLASS", class);
-            }
+
             if let Some(control) = control {
                 suite.env(robot_test::browser_control::ENV, control.to_string());
             }
@@ -935,6 +1079,7 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
             suite.args(&selection.args);
             // One shared app: tests run serialized against it.
             suite.args(["--test-threads=1", "--nocapture"]);
+            suite.arg("--logfile").arg(&test_log);
             let status = suite.status().with_context(|| format!("running {}", test_bin.display()))?;
             Ok(if status.success() { Outcome::Passed } else { Outcome::Failed(status.code()) })
         })();
@@ -944,7 +1089,9 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
         });
         let not_applicable = read_not_applicable(&na_file);
         let _ = std::fs::remove_file(&na_file);
-        results.push(RunResult { label: size.label.clone(), outcome, not_applicable });
+        let tests = read_test_log(&test_log);
+        let _ = std::fs::remove_file(&test_log);
+        results.push(RunResult { label: size.label.clone(), outcome, tests, not_applicable });
     }
     drop(browser);
     drop(kill); // tear down the dev session
@@ -2147,6 +2294,69 @@ mod tests {
         assert!(read_not_applicable(&dir.path().join("missing")).is_empty());
     }
 
+    /// Every web row joins one launch (the page resizes between them), each
+    /// size keeping its class; other platforms' jobs stay where they were.
+    #[test]
+    fn web_rows_share_one_launch() {
+        let row = |class: &str, platform: &str, t: matrix::Target| matrix::Row {
+            class: class.into(),
+            platform: platform.into(),
+            spec: "s".into(),
+            plan: Ok(t),
+        };
+        let web = |device: &str| matrix::Target {
+            create: None,
+            simulator: None,
+            emulator: None,
+            device: Some(device.into()),
+            viewport: None,
+        };
+        let ios = matrix::Target { create: None, simulator: Some("U".into()), emulator: None, device: None, viewport: None };
+        let jobs = vec![
+            job_for_row(&args(&[]), &row("phone", "web", web("iphone-15"))).unwrap(),
+            job_for_row(&args(&[]), &row("phone", "ios", ios)).unwrap(),
+            job_for_row(&args(&[]), &row("tablet", "web", web("ipad-air"))).unwrap(),
+        ];
+        let merged = merge_web(jobs);
+        assert_eq!(merged.len(), 2);
+        let Job::Run { platform, launches, .. } = &merged[0] else { panic!() };
+        assert_eq!(platform, "web");
+        assert_eq!(launches.len(), 1, "one launch");
+        let classes: Vec<_> = launches[0].sizes.iter().map(|s| s.class.as_deref()).collect();
+        assert_eq!(classes, [Some("phone"), Some("tablet")]);
+        assert!(matches!(&merged[1], Job::Run { platform, .. } if platform == "ios"));
+    }
+
+    /// libtest's log names each test's result; the summary lists a failed
+    /// run's failing tests, and the JUnit report has a case per test with
+    /// n/a and skipped runs as `skipped`, a run that never ran as an `error`.
+    #[test]
+    fn the_report_names_tests_and_writes_junit() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        std::fs::write(&log, "ok a\nfailed b\nignored c\nok kb::phone_only\n").unwrap();
+        let tests = read_test_log(&log);
+        assert_eq!(tests.len(), 4);
+        let run = RunResult {
+            label: "phone on web (chromium:iphone-15)".into(),
+            outcome: Outcome::Failed(Some(101)),
+            tests,
+            not_applicable: vec![("kb::phone_only".into(), "needs phone; the app is a <desktop>".into())],
+        };
+        let (text, _) = summarize(&[run.clone()]);
+        assert!(text.contains("FAIL   phone on web") && text.contains("failed b"), "{text}");
+        let xml = junit(&[
+            run,
+            RunResult::new("phone on ios (x)", Outcome::Skipped("needs a Mac".into())),
+            RunResult::new("desktop on macos (x)", Outcome::Error("app never came up".into())),
+        ]);
+        assert!(xml.contains(r#"<testsuite name="phone on web (chromium:iphone-15)" tests="4" failures="1" errors="0" skipped="2">"#), "{xml}");
+        assert!(xml.contains(r#"<testcase name="b" classname="phone on web (chromium:iphone-15)"><failure"#), "{xml}");
+        assert!(xml.contains("not applicable: needs phone; the app is a &lt;desktop&gt;"), "escaped: {xml}");
+        assert!(xml.contains(r#"<skipped message="needs a Mac"/>"#), "{xml}");
+        assert!(xml.contains(r#"<error message="app never came up"/>"#), "{xml}");
+    }
+
     /// A matrix row runs through the same launch planning as its one-off
     /// flags, labelled by its class; a row the plan can't make is a skip.
     #[test]
@@ -2154,8 +2364,9 @@ mod tests {
         let row = |platform: &str, plan| matrix::Row { class: "phone".into(), platform: platform.into(), spec: "x".into(), plan };
         let target = matrix::Target { create: None, simulator: Some("U-15".into()), emulator: None, device: None, viewport: None };
         match job_for_row(&args(&[]), &row("ios", Ok(target))).unwrap() {
-            Job::Run { platform, class, launches, device, .. } => {
-                assert_eq!((platform.as_str(), class.as_deref()), ("ios", Some("phone")));
+            Job::Run { platform, launches, device, .. } => {
+                assert_eq!(platform.as_str(), "ios");
+                assert_eq!(launches[0].sizes[0].class.as_deref(), Some("phone"));
                 assert_eq!(launches[0].target_device.as_deref(), Some("U-15"));
                 assert_eq!(launches[0].sizes[0].label, "phone on ios (x)");
                 assert_eq!(device, Some(provision::Device::Simulator("U-15".into())), "stopped after if the run booted it");
