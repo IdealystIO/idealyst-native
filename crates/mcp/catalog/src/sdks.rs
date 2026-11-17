@@ -228,6 +228,12 @@ sdk!(
     "Cross-platform screen / window recording → a `MediaStream`."
 );
 sdk!(
+    "video-codec",
+    SdkCategory::Media,
+    SdkKind::Api,
+    "Live video encode/decode on the platform's own codecs, realtime (no muxing, keyframes on request): `Encoder::start(&stream, EncoderConfig::realtime(), |event| ...)` emits each `EncodedFrame` of a capture `MediaStream` (`screen-recorder`, `camera`); `Decoder::new(Codec::H264)?.decode(&frame)` turns frames back into a `MediaStream` the `video` SDK plays (`decoder.stream()`). Moving the frames between them (a socket, QUIC datagrams) is the app's job. PLATFORM REALITY: the encoder is Android only (MediaCodec H.264 fed straight from the stream's `PreviewSource`, which it claims: while it encodes, that stream's other consumers get no frames — `InUse` / `NoSurface` otherwise); the decoder is web only (WebCodecs). Everything else returns `VideoCodecError::Unsupported`. `decode` returning false means the decoder needs a keyframe: ask the sender (`request_keyframe`). For playing a video FILE, use `video-decode`."
+);
+sdk!(
     "media-writer",
     SdkCategory::Media,
     SdkKind::Api,
