@@ -1343,6 +1343,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **The robot can set the app's clock** (`runtime-vocabulary` minor, `runtime-shared` minor,
+  `datetime` minor, `robot-test` minor, new crate `test-clock`). `clock.set {epoch_ms, frozen?}`,
+  `clock.advance {ms}`, `clock.freeze`, `clock.zone {offset_minutes?}`, `clock.clear` and
+  `clock.now`, in every robot build with nothing to register; `robot-test` has `app.clock()`
+  (`set_utc("2026-11-17T22:30:00Z")`, `freeze`, `advance`, `zone`, `clear`). Both wall clocks
+  follow the fake: `runtime_shared::time::epoch_millis` / `local_offset_minutes` (and the new
+  `real_epoch_millis`, past the fake) and the `datetime` SDK's `SystemClock`. Timers keep real
+  time. See `docs/robot.md`.
+
 - **`Breadcrumbs(current_role = …)`: the current crumb can be the page's heading** (`idea-ui`
   minor). `Some(Role::Header)` gives the last crumb the heading role, for a page whose title is
   the trail itself; without it such a page had no heading for screen readers or

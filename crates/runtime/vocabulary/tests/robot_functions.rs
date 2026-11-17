@@ -126,9 +126,16 @@ fn a_function_is_called_by_name_with_named_arguments() {
 fn list_functions_reports_docs_and_signatures() {
     setup();
     let list: Value = serde_json::from_str(&invoke_command("list_functions", &json!({})).unwrap()).unwrap();
-    let names: Vec<&str> = list.as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
+    // The robot's own `clock.*` functions are always there; the app's own
+    // follow, sorted by name.
+    let all: Vec<&Value> = list.as_array().unwrap().iter().collect();
+    let names: Vec<&str> = all.iter().map(|f| f["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"clock.set") && names.contains(&"clock.clear"), "{names:?}");
+    let app: Vec<&Value> = all.into_iter().filter(|f| !f["name"].as_str().unwrap().starts_with("clock.")).collect();
+    let names: Vec<&str> = app.iter().map(|f| f["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["demo.seed", "demo.wait", "ping_unit", "set_balance"], "sorted by name");
-    let seed = &list[0];
+    let list = app;
+    let seed = list[0];
     assert_eq!(seed["doc"], "Fill the inbox with `count` sample messages titled `prefix`.");
     assert_eq!(seed["args"], json!([{ "name": "count", "type": "u32" }, { "name": "prefix", "type": "Option<String>" }]));
     assert_eq!(seed["returns"], "Vec<String>");

@@ -236,11 +236,17 @@ pub trait Clock: Send + Sync {
 pub struct SystemClock;
 
 impl Clock for SystemClock {
+    // A fake a test put on the wall clock (`test_clock`, driven by the
+    // robot's `clock.*` functions) wins over the platform: the same fake
+    // the framework's own clock reports, so the two never disagree.
     fn now(&self) -> Timestamp {
-        Timestamp::from_unix_micros(platform::now_micros())
+        Timestamp::from_unix_micros(test_clock::apply_micros(platform::now_micros()))
     }
 
     fn local_offset_at(&self, at: Timestamp) -> UtcOffset {
+        if test_clock::zone_is_faked() {
+            return UtcOffset::from_platform_seconds(test_clock::apply_offset_seconds(0));
+        }
         UtcOffset::from_platform_seconds(platform::offset_seconds_at(at.unix_micros()))
     }
 

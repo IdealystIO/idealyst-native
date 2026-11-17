@@ -52,6 +52,13 @@
 //! (`location.set`), registered by its `register_robot_controls()`. The
 //! fake and its hooks compile only into robot builds ([`robot_only!`],
 //! [`robot_select!`]), so a release build carries none of it.
+//!
+//! # The robot's own functions
+//!
+//! `clock.set` / `clock.advance` / `clock.freeze` / `clock.zone` /
+//! `clock.clear` / `clock.now` fake the wall clock (`robot_clock`). They
+//! are registered the first time the registry is used, so every robot build
+//! has them.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -218,7 +225,21 @@ mod real {
     }
 
     pub(super) fn register(function: RobotFunction) {
+        builtins();
         FUNCTIONS.with(|f| f.borrow_mut().insert(function.name, function));
+    }
+
+    runtime_tls::thread_local! {
+        static BUILTINS: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The robot's own functions (`clock.*`), registered on the registry's
+    /// first use so every robot build has them with no call from the app.
+    fn builtins() {
+        if BUILTINS.with(|b| b.replace(true)) {
+            return;
+        }
+        crate::robot_clock::register_all();
     }
 
     pub(super) fn unregister(name: &str) {
@@ -227,6 +248,7 @@ mod real {
 
     /// `list_functions`: every registered function, by name.
     pub(crate) fn list_json() -> String {
+        builtins();
         let items: Vec<serde_json::Value> = FUNCTIONS.with(|f| {
             f.borrow()
                 .values()
@@ -250,6 +272,7 @@ mod real {
 
     /// `call_function {name, args}`.
     pub(crate) fn call_json(name: &str, args: &serde_json::Value) -> Result<String, String> {
+        builtins();
         // Cloned out under a short borrow: the function may register or
         // unregister functions itself.
         let call = FUNCTIONS.with(|f| {

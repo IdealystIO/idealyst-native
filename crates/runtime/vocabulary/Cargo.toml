@@ -23,7 +23,7 @@ license.workspace = true
 # slots always exist (so `ui! { view(test_id = …) }` compiles in every
 # build), only the per-mount registration overhead is gated.
 # `async-driver` drives an async robot function (`robot_fn`).
-robot = ["async-driver"]
+robot = ["async-driver", "dep:test-clock"]
 
 # `ui-overlay`: the dev-time overlay's RUNTIME half — the per-node tag a
 # patch addresses by, the applier that edits a built `Element`, and the
@@ -126,6 +126,8 @@ runtime-tls = { workspace = true }
 runtime-shared = { workspace = true }
 runtime-scene = { workspace = true }
 runtime-world = { workspace = true }
+# The wall-clock fake the robot's `clock.*` functions set (robot builds).
+test-clock = { workspace = true, optional = true }
 # Descriptor DATA types. `#[component]` / `#[props]` generate an
 # `__apply_literal` naming `LiteralValue` on EVERY props struct, so the
 # type must resolve in every build — the dependency is unconditional even

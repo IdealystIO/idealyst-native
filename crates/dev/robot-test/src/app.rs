@@ -470,6 +470,12 @@ impl App {
         }
     }
 
+    /// The app's wall clock: set, freeze, advance or re-zone it
+    /// ([`Clock`](crate::Clock)).
+    pub fn clock(&mut self) -> crate::Clock<'_> {
+        crate::Clock { app: self }
+    }
+
     /// The functions the app registered with the robot.
     pub fn functions(&mut self) -> Vec<FunctionInfo> {
         serde_json::from_value(self.read("functions()", "list_functions", json!({})))

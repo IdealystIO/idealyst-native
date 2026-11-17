@@ -47,6 +47,11 @@ chrono = ["dep:chrono"]
 # instead of one per static (bionic allows 128).
 runtime-tls = { workspace = true }
 chrono = { version = "0.4", default-features = false, optional = true }
+# The fake a test can put on the wall clock (the robot's `clock.*`
+# functions): `SystemClock` reports it while one is set, so app code and
+# the framework's own widgets agree on "now". Dependency-free; unset it is
+# one atomic load per read.
+test-clock = { workspace = true }
 
 # The chrono-feature integration tests (`tests/portable.rs`) name chrono
 # types directly; same no-default-features line as the optional dep.

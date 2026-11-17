@@ -99,6 +99,9 @@ mcp-catalog = { workspace = true, optional = true }
 # source and the `datetime` SDK can share the same lookup. No deps on
 # wasm32, where the web backend's `js Date` clock is installed instead.
 zone-offset = { workspace = true }
+# The fake a test can put on the wall clock (`epoch_millis` /
+# `local_offset_minutes` report it while set). Shared with the datetime SDK.
+test-clock = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = { version = "0.4", optional = true }

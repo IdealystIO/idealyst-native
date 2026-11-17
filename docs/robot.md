@@ -435,6 +435,35 @@ bridge: every transport answers each request within its own timeout, and a
 function may take longer. Functions run on the UI thread outside any
 `World`, like an event handler, and the robot settles after each call.
 
+### The clock: `clock.*`
+
+Every robot build has these; nothing to register. A test sets the app's
+wall clock to the moment a time rule applies instead of waiting for it:
+
+| Function | Does |
+|---|---|
+| `clock.set {epoch_ms, frozen?}` | read `epoch_ms` (ms since 1970 UTC) now; run on from there unless `frozen` |
+| `clock.advance {ms}` | move it `ms` forward (negative: back); a frozen clock stays frozen |
+| `clock.freeze {frozen?}` | stop it where it reads (`frozen: false` lets it run again) |
+| `clock.zone {offset_minutes?}` | report that UTC offset as the device's zone; omit for the real one |
+| `clock.clear` | the real clock and zone again |
+| `clock.now` | `{epoch_ms, offset_minutes}` as the app reads them |
+
+Both clocks an app reads follow the fake: the framework's
+(`runtime_core::time::epoch_millis`, a date picker's "today") and the
+`datetime` SDK's (`now_utc`, `now_chrono_utc`, `local_offset`). The fake
+lives in the `test-clock` crate below both. The monotonic clock and timers
+keep real time (`after_ms(60_000)` still waits a minute), and the app's
+server keeps its own clock: a rule the server evaluates needs its own test
+seam. In `robot-test`:
+
+```rust
+app.clock().set_utc("2026-11-17T22:30:00Z").freeze();
+app.test_id("check-in").click();                     // late: asks for a reason
+app.clock().advance(Duration::from_secs(2 * 3600));  // the shift rolls past midnight
+app.clock().clear();
+```
+
 ### SDK test controls
 
 | SDK | Register | Functions |

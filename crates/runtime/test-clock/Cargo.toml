@@ -1,0 +1,21 @@
+# test-clock — a test's hand on the wall clock: the fake instant (and
+# zone) every wall-clock read in an app reports while a test sets one.
+#
+# Why a crate of its own: two clocks must report the same fake and
+# neither may depend on the other — `runtime-shared`'s wall clock
+# (`time::epoch_millis`, what the framework's own widgets read) and the
+# `datetime` SDK's `SystemClock` (what app code reads, and which must work
+# with no framework mounted). The same shape as `zone-offset`.
+#
+# Who sets it: the robot's `clock.*` functions (`runtime-vocabulary`,
+# robot builds only). Nothing else does, so in any other build every read
+# is one relaxed atomic load that finds no fake.
+
+[package]
+name = "test-clock"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "A settable fake for the wall clock, shared by the runtime's clock and the datetime SDK; driven by the robot's clock.* test functions."
+
+[dependencies]

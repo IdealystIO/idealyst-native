@@ -211,7 +211,15 @@ pub fn install_default_wall_clock_source(platform: crate::Platform) {
 /// [`WallClockSource`], or `0` when none is installed yet (before
 /// `mount`, or on `Web` before its bootstrap install) — mirroring
 /// [`now_micros`]'s no-source reading.
+///
+/// A fake a test set (`test_clock`, the robot's `clock.*` functions) wins
+/// over the installed source; [`real_epoch_millis`] reads past it.
 pub fn epoch_millis() -> i64 {
+    test_clock::apply_micros(real_epoch_millis().saturating_mul(1000)).div_euclid(1000)
+}
+
+/// [`epoch_millis`] from the installed source alone, past any test fake.
+pub fn real_epoch_millis() -> i64 {
     match WALL_CLOCK.get() {
         Some(wc) => wc.epoch_millis(),
         None => 0,
@@ -220,11 +228,13 @@ pub fn epoch_millis() -> i64 {
 
 /// Minutes to add to UTC to reach local civil time, from the installed
 /// [`WallClockSource`]; `0` when none is installed.
+/// A fake zone a test set (`test_clock`) wins over the installed source.
 pub fn local_offset_minutes() -> i32 {
-    match WALL_CLOCK.get() {
+    let real = match WALL_CLOCK.get() {
         Some(wc) => wc.local_offset_minutes(),
         None => 0,
-    }
+    };
+    test_clock::apply_offset_seconds(real * 60) / 60
 }
 
 #[cfg(test)]
