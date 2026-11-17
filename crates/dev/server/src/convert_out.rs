@@ -792,10 +792,6 @@ pub fn role_to_wire(r: Role) -> WireRole {
         Role::ListItem => WireRole::ListItem,
         Role::Group => WireRole::Group,
         Role::Separator => WireRole::Separator,
-        Role::Table => WireRole::Table,
-        Role::Row => WireRole::Row,
-        Role::Cell => WireRole::Cell,
-        Role::ColumnHeader => WireRole::ColumnHeader,
         Role::TextField => WireRole::TextField,
         Role::TextArea => WireRole::TextArea,
         Role::Switch => WireRole::Switch,
@@ -823,6 +819,11 @@ pub fn role_to_wire(r: Role) -> WireRole {
         Role::Popover => WireRole::Popover,
         Role::Tooltip => WireRole::Tooltip,
         Role::Region => WireRole::Region,
+        // `Table` / `Row` / `Cell` / `ColumnHeader` have no wire variant:
+        // adding one to `WireRole` (not `#[non_exhaustive]`) would break
+        // every published `dev-client` that matches it. They cross as
+        // `Unknown`, which the client reads as no role override.
+        //
         // `Role` is `#[non_exhaustive]`; future runtime-core variants
         // that this conversion module hasn't been taught about decode
         // as `Unknown` on the receiver. Acceptable because in dev-mode

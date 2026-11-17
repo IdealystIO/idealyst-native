@@ -1962,12 +1962,6 @@ pub enum WireRole {
     Group,
     Separator,
 
-    // Tabular
-    Table,
-    Row,
-    Cell,
-    ColumnHeader,
-
     // Input
     TextField,
     TextArea,

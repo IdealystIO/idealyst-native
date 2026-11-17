@@ -13,7 +13,8 @@ releases.
 
 - **A virtualized idea-ui `Table` is a table to assistive tech and locators** (`runtime-shared`
   minor, `backend-web` minor, `idea-ui` minor; role mappings in `backend-macos`,
-  `backend-ios-mobile`, `host-wgpu-accesskit`, `wire`, `dev-server`, `dev-client`). It read as a
+  `backend-ios-mobile`, `host-wgpu-accesskit`). The dev wire carries the new roles as `Unknown`
+  (no role override) in runtime-server mode. It read as a
   flat `list` of `generic` cells, so `getByRole('row')` found nothing. `Role` gains `Table`, `Row`,
   `Cell` and `ColumnHeader`; the virtual Table's grid takes `Role::Table`, and the web grid then
   gives each mounted row `role=row` (`aria-rowindex`), header cells `columnheader` and the rest
