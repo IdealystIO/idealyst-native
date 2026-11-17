@@ -36,6 +36,8 @@ pub(crate) struct FnState {
     id: u32,
     flags: u32,
     dead: Cell<bool>,
+    /// Killed by `release_owned`: a later call returns quietly.
+    released: Cell<bool>,
 }
 
 enum Slot {
@@ -97,7 +99,7 @@ pub(crate) fn take_microtask_requests() -> u32 {
 pub(crate) fn call_js_fn(f: &V, arg: V) -> Result<(), String> {
     let V::Func(st) = f else { return Err("not a function".into()) };
     if st.dead.get() {
-        if st.flags & crate::callback::FLAG_SILENT != 0 {
+        if st.flags & crate::callback::FLAG_SILENT != 0 || st.released.get() {
             return Ok(());
         }
         return Err(format!("web-glue: callback #{} called after its Rust owner dropped it", st.id));
@@ -245,18 +247,20 @@ pub(crate) unsafe fn str_get(i: u32, out: usize) -> u32 {
         _ => 0,
     }
 }
-pub(crate) unsafe fn strict_eq(a: u32, b: u32) -> u32 {
-    let eq = match (val(a), val(b)) {
+fn same_value(a: &V, b: &V) -> bool {
+    match (a, b) {
         (V::Undefined, V::Undefined) | (V::Null, V::Null) => true,
         (V::Bool(x), V::Bool(y)) => x == y,
         (V::Num(x), V::Num(y)) => x == y,
         (V::Str(x), V::Str(y)) => x == y,
-        (V::Obj(x), V::Obj(y)) => Rc::ptr_eq(&x, &y),
-        (V::Func(x), V::Func(y)) => Rc::ptr_eq(&x, &y),
-        (V::Promise(x), V::Promise(y)) => Rc::ptr_eq(&x, &y),
+        (V::Obj(x), V::Obj(y)) => Rc::ptr_eq(x, y),
+        (V::Func(x), V::Func(y)) => Rc::ptr_eq(x, y),
+        (V::Promise(x), V::Promise(y)) => Rc::ptr_eq(x, y),
         _ => false,
-    };
-    eq as u32
+    }
+}
+pub(crate) unsafe fn strict_eq(a: u32, b: u32) -> u32 {
+    same_value(&val(a), &val(b)) as u32
 }
 pub(crate) unsafe fn get(h: u32, p: usize, l: usize) -> Result<u32, JsError> {
     let key = unsafe { read_str(p, l) };
@@ -312,7 +316,7 @@ pub(crate) unsafe fn error_message(h: u32, out: usize) {
     ret_str(&js_string(&val(h)), out);
 }
 pub(crate) unsafe fn make_fn(id: u32, flags: u32) -> u32 {
-    add(V::Func(Rc::new(FnState { id, flags, dead: Cell::new(false) })))
+    add(V::Func(Rc::new(FnState { id, flags, dead: Cell::new(false), released: Cell::new(false) })))
 }
 pub(crate) unsafe fn revoke_fn(h: u32) {
     if let V::Func(st) = val(h) {
@@ -335,6 +339,40 @@ pub(crate) fn collect_garbage() {
     for id in GC_OWNED.with(|g| std::mem::take(&mut *g.borrow_mut())) {
         crate::callback::__glue_release(id);
     }
+}
+// Functions an object owns (`own_fn`), and the ids the last
+// `release_owned` took. The mock has no DOM, so an owner's "subtree" is
+// the owner itself.
+thread_local! {
+    static OWNED: RefCell<Vec<(V, Rc<FnState>)>> = const { RefCell::new(Vec::new()) };
+    static RELEASED: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+}
+pub(crate) unsafe fn own_fn(owner: u32, h: u32, _p: usize, _l: usize, _capture: u32) {
+    if let V::Func(st) = val(h) {
+        OWNED.with(|o| o.borrow_mut().push((val(owner), st)));
+    }
+}
+pub(crate) unsafe fn release_owned(root: u32) -> u32 {
+    let root = val(root);
+    let mut ids = Vec::new();
+    OWNED.with(|o| {
+        o.borrow_mut().retain(|(owner, st)| {
+            if !same_value(owner, &root) {
+                return true;
+            }
+            if !st.dead.replace(true) {
+                st.released.set(true);
+                ids.push(st.id);
+            }
+            false
+        })
+    });
+    let n = ids.len() as u32;
+    RELEASED.with(|r| *r.borrow_mut() = ids);
+    n
+}
+pub(crate) unsafe fn released_id(i: u32) -> u32 {
+    RELEASED.with(|r| r.borrow()[i as usize])
 }
 pub(crate) unsafe fn queue_microtask() {
     HEAP.with(|h| h.borrow_mut().microtasks_requested += 1);

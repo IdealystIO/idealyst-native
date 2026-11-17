@@ -358,17 +358,19 @@ impl Listener {
     }
 
     /// Hand the listener to its target for good: the target keeps the JS
-    /// function alive, and the Rust closure is released when JS collects
-    /// the function (with the target) — see
-    /// [`Closure::into_js_value`]. For listeners that live exactly as long
-    /// as their element and are never detached.
+    /// function alive, and the Rust closure is released when
+    /// [`crate::release_owned`] is called on the target or an ancestor
+    /// element — or, failing that, when JS collects the function (see
+    /// [`Closure::into_js_value`]; that never happens for a closure
+    /// holding a handle to its own target). For listeners that live
+    /// exactly as long as their element.
     pub fn into_target_owned(self) {
         let me = std::mem::ManuallyDrop::new(self);
         // SAFETY: `me` is never dropped; each field is read exactly once,
         // so both move out. Dropping `target` releases one slab slot.
         let (target, closure) = unsafe { (std::ptr::read(&me.target), std::ptr::read(&me.closure)) };
+        drop(closure.into_owned(target.as_js(), me.ty, me.capture));
         drop(target);
-        drop(closure.into_js_value());
     }
 }
 

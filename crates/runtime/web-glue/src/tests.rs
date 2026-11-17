@@ -223,6 +223,47 @@ fn regression_a_gc_owned_closure_keeps_running_then_is_released_when_js_collects
 }
 
 #[test]
+fn regression_release_owned_drops_a_closure_that_holds_its_own_owner() {
+    // The loop no collection breaks: the owner holds the function, and the
+    // function's closure holds a handle to the owner. `collect_garbage`
+    // models a collector that could reach the function; in a browser it
+    // cannot, because the handle table is a root — only `release_owned`
+    // frees it.
+    // Any two distinct values stand in for elements in the mock.
+    let owner = JsValue::from_str("owner");
+    let other = JsValue::from_str("other");
+    let calls = Rc::new(Cell::new(0));
+    let (handles, closures) = (JsValue::live_count(), Closure::live_count());
+
+    let (held, c2) = (owner.clone(), calls.clone());
+    let js = Closure::new(move |_| {
+        let _ = &held;
+        c2.set(c2.get() + 1);
+    })
+    .into_owned_by(&owner);
+    let func = mock::val(js.raw());
+    drop(js);
+    let theirs = Closure::new(|_| {}).into_owned_by(&other);
+    assert_eq!(Closure::live_count(), closures + 2);
+    assert_eq!(JsValue::live_count(), handles + 2, "the captured owner handle, and `theirs`");
+
+    let released = crate::release_owned(&owner);
+    assert_eq!(released.len(), 1, "only the released owner's function");
+    assert_eq!(Closure::live_count(), closures + 1, "out of the registry at once");
+    assert_eq!(JsValue::live_count(), handles + 2, "its captures live until the caller drops them");
+    drop(released);
+    assert_eq!(JsValue::live_count(), handles + 1, "the handle to the owner is gone");
+
+    mock::call_js_fn(&func, V::Undefined).expect("a released function is quiet, not an error");
+    assert_eq!(calls.get(), 0, "and does not run");
+    assert!(crate::release_owned(&owner).is_empty(), "releasing twice finds nothing");
+
+    drop(theirs);
+    drop(crate::release_owned(&other));
+    assert_eq!(Closure::live_count(), closures);
+}
+
+#[test]
 fn regression_an_fn_closure_may_be_reentered_where_fn_mut_is_refused() {
     // A `scroll` handler whose body re-fires `scroll` synchronously.
     let depth = Rc::new(Cell::new(0));

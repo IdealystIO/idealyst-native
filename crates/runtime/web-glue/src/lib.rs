@@ -59,7 +59,7 @@ pub mod task;
 pub mod value;
 pub mod worker;
 
-pub use callback::Closure;
+pub use callback::{release_owned, Closure, Released};
 pub use cast::JsCast;
 pub use error::JsError;
 pub use task::{queue_microtask, spawn_local, JsFuture};

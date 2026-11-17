@@ -39,6 +39,11 @@
 //!   element-lifetime listener needs — the element is the keepalive, and a
 //!   discarded element must not pin its listeners' closures for the life of
 //!   the page (see backend-web's `glue_dom::listen_for_element_lifetime`).
+//! * [`Closure::into_owned_by`] / `Listener::into_target_owned` do the same
+//!   and also record WHICH object owns the function, so [`release_owned`]
+//!   can drop the closures of a discarded DOM subtree at once. Collection
+//!   never reaches a closure that holds a handle to its own element: the
+//!   handle table is a GC root.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -207,6 +212,24 @@ impl Closure {
         Closure { id, js }
     }
 
+    /// [`Closure::into_js_value`] for a function `owner` holds for its
+    /// lifetime (set as a property of it by the caller): the function is
+    /// also recorded as `owner`'s, so [`release_owned`] on `owner` or an
+    /// ancestor element drops the Rust closure without waiting for a
+    /// collection that may never come (see [`release_owned`]).
+    pub fn into_owned_by(self, owner: &JsValue) -> JsValue {
+        self.into_owned(owner, "", false)
+    }
+
+    /// `ty` non-empty: the function is `owner`'s `ty` listener, which
+    /// [`release_owned`] detaches.
+    pub(crate) fn into_owned(self, owner: &JsValue, ty: &str, capture: bool) -> JsValue {
+        let js = self.into_js_value();
+        let (p, l) = crate::string::abi(ty);
+        unsafe { ffi::own_fn(owner.raw(), js.raw(), p, l, capture as u32) };
+        js
+    }
+
     /// The JS function — pass it to `addEventListener`, `then`, ….
     pub fn as_js(&self) -> &JsValue {
         &self.js
@@ -235,6 +258,55 @@ impl std::fmt::Debug for Closure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Closure(#{})", self.id)
     }
+}
+
+/// The Rust closures [`release_owned`] took out of the registry. Dropping
+/// this drops them, and with them whatever they captured — which may run
+/// arbitrary `Drop` code, so the caller picks a moment when that is safe.
+pub struct Released(Vec<Slot>);
+
+impl Released {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+/// Release every function that `root`, or an element beneath it, owns
+/// ([`Closure::into_owned_by`], `Listener::into_target_owned`): each is
+/// detached if it is a listener, its JS function goes dead (a later call
+/// returns quietly), and its Rust closure is handed back to be dropped.
+///
+/// Garbage collection alone does not do this for a closure that holds a
+/// handle to its own element — a press handler that captures the element
+/// to take pointer capture, a scroll handler that reads its scroll offset.
+/// The element keeps the function alive, the function's closure keeps the
+/// element's slot in the handle table, and the table is a GC root, so the
+/// element and everything reachable from it (its whole detached subtree)
+/// stay for the life of the page. The owner of the subtree has to say when
+/// it is gone.
+pub fn release_owned(root: &JsValue) -> Released {
+    let n = unsafe { ffi::release_owned(root.raw()) };
+    let ids: Vec<u32> = (0..n).map(|i| unsafe { ffi::released_id(i) }).collect();
+    let slots = REGISTRY.with(|r| {
+        let mut r = r.borrow_mut();
+        ids.iter()
+            .filter_map(|id| match r.map.get_mut(id) {
+                // Running right now (the release was reached from inside
+                // it): discarded when the call returns.
+                Some(slot @ Slot::Running) => {
+                    *slot = Slot::DroppedWhileRunning;
+                    None
+                }
+                Some(_) => r.map.remove(id),
+                None => None,
+            })
+            .collect()
+    });
+    Released(slots)
 }
 
 /// The runtime's `FinalizationRegistry` callback for a function minted by

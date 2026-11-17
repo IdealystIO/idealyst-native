@@ -55,6 +55,10 @@ crate::import! {
     pub(crate) fn make_fn(id: u32, flags: u32) -> u32 = "(i, f) => G.fn(i, f)";
     pub(crate) fn revoke_fn(h: u32) = "(h) => G.revokeFn(h)";
     pub(crate) fn gc_own_fn(h: u32) = "(h) => G.gcOwn(h)";
+    pub(crate) fn own_fn(owner: u32, h: u32, p: usize, l: usize, capture: u32) =
+        "(o, h, p, l, c) => G.own(o, h, p, l, c)";
+    pub(crate) fn release_owned(root: u32) -> u32 = "(r) => G.releaseOwned(r)";
+    pub(crate) fn released_id(i: u32) -> u32 = "(i) => G.releasedId(i)";
     pub(crate) fn queue_microtask() = "() => G.queueMicrotask()";
     pub(crate) fn promise_then(p: u32, ok: u32, err: u32) =
         "(p, a, b) => { G.get(p).then(G.get(a), G.get(b)); }";

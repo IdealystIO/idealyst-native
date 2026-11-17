@@ -56,6 +56,13 @@ let u32 = new Uint32Array(0);
 const dec = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true });
 const enc = new TextEncoder();
 const fnState = new WeakMap();
+// Functions a JS object owns for its lifetime (`Closure::into_owned_by`,
+// `Listener::into_target_owned`): owner -> [fn, listener type | null,
+// capture, …]. Weak on the owner, which already holds each function (as a
+// listener or a property), so the table keeps nothing alive.
+const owned = new WeakMap();
+// Ids `releaseOwned` took, read back one by one with `releasedId`.
+const released = [];
 const modules = new Map();
 let finalizer = null;
 
@@ -322,6 +329,48 @@ const G = {
     }
     const st = fnState.get(G.get(h));
     if (finalizer !== null && st !== undefined) finalizer.register(G.get(h), st.id);
+  },
+  // Record that `o` owns function `h` — as a `ty` listener when `l` is
+  // non-zero, else through a property the caller set.
+  own(o, h, p, l, c) {
+    const t = G.get(o);
+    let a = owned.get(t);
+    if (a === undefined) owned.set(t, (a = []));
+    a.push(G.get(h), l !== 0 ? G.str(p, l) : null, c !== 0);
+  },
+  // `release_owned`: kill every function `root` and the elements under it
+  // own, detach the ones that are listeners, and report their ids so Rust
+  // can drop the closures. Without this a closure that holds a handle to
+  // its own element is never collected: the element keeps the function,
+  // the closure keeps the element's slot in `heap`, and `heap` is a root.
+  // The functions die SILENT: a property handler left on a discarded
+  // element may still be called, and that is not a missed detach.
+  releaseOwned(r) {
+    released.length = 0;
+    const root = G.get(r);
+    const one = (t) => {
+      const a = owned.get(t);
+      if (a === undefined) return;
+      owned.delete(t);
+      for (let i = 0; i < a.length; i += 3) {
+        const f = a[i];
+        if (a[i + 1] !== null) t.removeEventListener(a[i + 1], f, a[i + 2]);
+        const st = fnState.get(f);
+        if (st !== undefined && !st.dead) {
+          st.dead = true;
+          st.flags |= SILENT;
+          released.push(st.id);
+        }
+      }
+    };
+    one(root);
+    if (root !== null && typeof root === "object" && typeof root.querySelectorAll === "function") {
+      for (const el of root.querySelectorAll("*")) one(el);
+    }
+    return released.length;
+  },
+  releasedId(i) {
+    return released[i];
   },
   revokeFn(h) {
     const f = G.take(h);
