@@ -151,6 +151,20 @@ impl RequestBuilder {
             }
         }
         let url = resolve_url(self.client.inner.base_url.as_deref(), &self.url)?;
+        // A test's rule for this request (the robot's `net.*` functions):
+        // answer it without the network, or hold it until released.
+        match test_net::intercept(self.method.as_str(), &url) {
+            test_net::Decision::Pass => {}
+            test_net::Decision::Fail(f) => return faked(f),
+            test_net::Decision::Hold(gate) => {
+                if let Some(f) = gate.await {
+                    return faked(f);
+                }
+                if self.cancel.as_ref().is_some_and(|t| t.is_cancelled()) {
+                    return Err(Error::Cancelled);
+                }
+            }
+        }
         transport::send(
             &self.client.inner.transport,
             self.method,
@@ -161,6 +175,18 @@ impl RequestBuilder {
             self.cancel,
         )
         .await
+    }
+}
+
+/// A test's failure for a request, as `send` would have returned it.
+fn faked(f: test_net::Failure) -> Result<Response, Error> {
+    match f {
+        test_net::Failure::Status { code, body } => {
+            Ok(Response { status: code, headers: crate::Headers::new(), body: body.into_bytes() })
+        }
+        test_net::Failure::Network(msg) => Err(Error::Network(msg)),
+        test_net::Failure::Timeout => Err(Error::Timeout),
+        test_net::Failure::Offline => Err(Error::Offline),
     }
 }
 

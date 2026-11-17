@@ -58,7 +58,7 @@ const POLL: Duration = Duration::from_millis(50);
 /// from here too.
 pub struct App {
     client: RobotClient,
-    timeout: Duration,
+    pub(crate) timeout: Duration,
     /// Whether `click` / `tap_native` scroll the element into view first
     /// ([`App::set_auto_scroll`]).
     auto_scroll: bool,
@@ -474,6 +474,12 @@ impl App {
     /// ([`Clock`](crate::Clock)).
     pub fn clock(&mut self) -> crate::Clock<'_> {
         crate::Clock { app: self }
+    }
+
+    /// The app's HTTP: hold, delay or fail its requests by URL
+    /// ([`Net`](crate::Net)).
+    pub fn net(&mut self) -> crate::Net<'_> {
+        crate::Net { app: self }
     }
 
     /// The functions the app registered with the robot.

@@ -8285,6 +8285,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "test-net",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.21.0",
@@ -11040,6 +11041,7 @@ dependencies = [
  "runtime-world",
  "serde",
  "test-clock",
+ "test-net",
  "trybuild",
 ]
 
@@ -13049,6 +13051,10 @@ dependencies = [
 
 [[package]]
 name = "test-clock"
+version = "0.1.0"
+
+[[package]]
+name = "test-net"
 version = "0.1.0"
 
 [[package]]

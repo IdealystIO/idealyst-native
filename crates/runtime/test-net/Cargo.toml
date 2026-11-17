@@ -1,0 +1,20 @@
+# test-net — a test's hand on the app's HTTP: hold a request until the
+# test releases it, or fail it, by URL pattern.
+#
+# Why a crate of its own: the `net` SDK sends every request (server
+# functions included) and must stay free of the framework (servers use
+# it); the robot functions that drive the fake live in the framework
+# (`runtime-vocabulary`, robot builds only). Both reach this leaf, the
+# `test-clock` / `zone-offset` shape.
+#
+# Who sets it: the robot's `net.*` functions. Nothing else does, so in any
+# other build `net` pays one relaxed atomic load per request.
+
+[package]
+name = "test-net"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Settable request interception (hold, fail) shared by the net SDK and the robot's net.* test functions."
+
+[dependencies]

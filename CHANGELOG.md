@@ -1343,6 +1343,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **The robot can hold, delay or fail the app's HTTP requests** (`runtime-vocabulary` minor, `net`
+  minor, `robot-test` minor, new crate `test-net`). `net.intercept {url, method?, action:
+  hold|delay|fail, …}`, `net.held`, `net.release`, `net.remove`, `net.clear`, in every robot build;
+  `robot-test` has `app.net()` (`hold`, `delay`, `fail_status`, `fail_error`, `wait_held`,
+  `release`, `clear`). Every request the `net` SDK sends is matched before the platform, server
+  functions included. See `docs/robot.md`.
+
 - **The robot can set the app's clock** (`runtime-vocabulary` minor, `runtime-shared` minor,
   `datetime` minor, `robot-test` minor, new crate `test-clock`). `clock.set {epoch_ms, frozen?}`,
   `clock.advance {ms}`, `clock.freeze`, `clock.zone {offset_minutes?}`, `clock.clear` and

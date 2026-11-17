@@ -464,6 +464,35 @@ app.clock().advance(Duration::from_secs(2 * 3600));  // the shift rolls past mid
 app.clock().clear();
 ```
 
+### The network: `net.*`
+
+Also in every robot build. A rule matches the app's HTTP requests by URL
+(containment; `*` matches any run, `/_srv/*search`) and optionally method,
+and the newest matching rule decides:
+
+| Function | Does |
+|---|---|
+| `net.intercept {url, method?, action, ms?, status?, body?, error?, times?}` | `action`: `hold` (parked until released), `delay` (held `ms`, then sent) or `fail` (answered at once with `status` [+ `body`] or `error`: `network` / `timeout` / `offline`; never sent). `times` retires the rule after that many requests. Returns `{rule}` |
+| `net.held` | the requests held now: `[{request, rule, method, url}]` |
+| `net.release {request? \| rule?, status?, body?, error?}` | send held requests on (one, a rule's, or all), or answer them with a failure |
+| `net.remove {rule}` | drop a rule; what it holds stays held |
+| `net.clear` | drop every rule and send every held request on |
+
+Every request the `net` SDK sends is matched before it reaches the
+platform, server functions included (`/_srv/<name>`). WebSockets and SSE
+are not. The rules live in the `test-net` crate below `net`, which stays
+free of the framework. In `robot-test`:
+
+```rust
+let search = app.net().hold("/_srv/*search");
+app.test_id("search").type_text("copper");
+app.net().wait_held(search);               // the search is in flight
+app.test_id("filter-status").click();      // the filter bar rebuilds
+app.net().release(search);
+app.net().fail_status("/_srv/save", 503, "down");
+app.net().clear();
+```
+
 ### SDK test controls
 
 | SDK | Register | Functions |

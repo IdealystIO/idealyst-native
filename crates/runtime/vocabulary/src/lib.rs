@@ -474,6 +474,8 @@ pub mod robot_ext;
 pub mod robot_fn;
 #[cfg(feature = "robot")]
 mod robot_clock;
+#[cfg(feature = "robot")]
+mod robot_net;
 // Always compiled (stub-shaped without `robot`): every `#[component]`
 // emits `glue::__inspect::…` (and a `#[method]` component `glue::robot::…`)
 // unconditionally (see robot_methods' module docs).

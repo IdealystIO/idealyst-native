@@ -38,6 +38,10 @@ serde = { workspace = true }
 serde_json = { workspace = true, optional = true }
 serde_urlencoded = { version = "0.7", optional = true }
 thiserror = { workspace = true }
+# A test's hold/fail rules for requests (the robot's `net.*` functions):
+# `Request::send` consults them before the transport. Dependency-free;
+# with no rule set it is one atomic load per request.
+test-net = { workspace = true }
 
 # reqwest with rustls (no native-tls, no OpenSSL). The async HTTP `transport`
 # uses it only on Linux/Windows (Apple/mobile have native stacks — see lib.rs),
