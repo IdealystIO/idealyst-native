@@ -1307,13 +1307,13 @@ fn drive_dyn_anchored<H: Host>(
 /// lifetime has to say so, and that is here — the points where a
 /// `Realized` is dropped for good.
 ///
-/// Backends that keep no per-node state outside the node itself (web,
-/// SSR — the DOM node dies with its last reference) inherit the trait's
-/// no-op and pay nothing. It matters for a host with a side registry
-/// keyed by node: `backend-ios` holds a strong `Retained<UIView>` plus a
-/// Taffy node per view, and without this the discarded subtree's entries
-/// lived forever — every later layout pass walking them, and every
-/// unparented node counting as another root to lay out.
+/// A backend that keeps nothing per node outside the node itself (SSR)
+/// inherits the trait's no-op and pays nothing. It matters for a host
+/// with state a discarded node cannot free on its own: `backend-ios`
+/// holds a strong `Retained<UIView>` plus a Taffy node per view in a side
+/// registry, and `backend-web` has listener closures holding a handle to
+/// their own element. Without this the discarded subtree lived forever on
+/// both.
 ///
 /// Call it while the subtree is still assembled; a host that walks its
 /// own children to find what to free needs them there.

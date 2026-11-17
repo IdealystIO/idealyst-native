@@ -59,14 +59,17 @@ pub trait Host: 'static {
     /// spliced), a keyed list's anchored rebuild, and each row a spliced
     /// keyed list removes.
     ///
-    /// Default: no-op. Hosts that keep no per-node state outside the
-    /// node itself (web, SSR — the DOM node dies with its last
-    /// reference) need nothing here. It matters for a host holding a
-    /// side registry keyed by node, which is exactly the iOS backend:
-    /// its `view_to_layout` owns a strong `Retained<UIView>` and a
-    /// Taffy node per view, and without this seam a disposed screen's
-    /// entries lived forever — every later layout pass walking them,
-    /// and each unparented node counted as another root to compute.
+    /// Default: no-op, for a host that keeps nothing per node outside
+    /// the node itself (SSR). It matters for a host holding state a
+    /// discarded node cannot free on its own. iOS has a side registry
+    /// keyed by node: its `view_to_layout` owns a strong
+    /// `Retained<UIView>` and a Taffy node per view, and without this
+    /// seam a disposed screen's entries lived forever — every later
+    /// layout pass walking them, and each unparented node counted as
+    /// another root to compute. The web backend has listener closures
+    /// that hold a handle to their own element, which pins the element
+    /// (and its whole detached subtree) against garbage collection until
+    /// the closures are dropped here.
     fn release_subtree(&mut self, _node: &Self::Node) {}
 
     /// Create a reactive anchor: a layout-transparent container the
