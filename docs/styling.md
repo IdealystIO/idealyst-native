@@ -473,7 +473,7 @@ shape, two fields that kebab to one name (`accent_bg` beside
 `accent.bg`), and `app_background` on a non-`Color` field.
 
 **Tooling.** Each theme registers its whole vocabulary with the MCP
-catalog (`list_tokens` shows every token with its accessor path, kind
+catalog (`list(kind: "token")` shows every token with its accessor path, kind
 and default). The catalog's source scan (`idealyst mcp --watch`) cannot
 read const-evaluated names, so a crate defining a theme is compiled for
 the catalog instead of scanned.

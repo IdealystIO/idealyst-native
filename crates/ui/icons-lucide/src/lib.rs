@@ -48,7 +48,7 @@ pub struct IconEntry {
 include!(concat!(env!("OUT_DIR"), "/icons_generated.rs"));
 
 /// Self-register this pack into the MCP catalog's `IconSetEntry` slice so
-/// it's discoverable through the MCP `list_icon_sets` / `search_icons`
+/// it's discoverable through the MCP `list(kind: "icon_set")` / `search_icons`
 /// tools and renders in the docs site's icon gallery. An icon pack is the
 /// open extension point for this slice: it submits one entry pointing at
 /// the build-generated [`ICON_REFS`] name table — the same self-registration

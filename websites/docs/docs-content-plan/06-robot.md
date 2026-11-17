@@ -295,10 +295,10 @@ Wiring it into Claude Code or Claude Desktop is a config change
 function, plus the static component catalog.
 
 The Robot MCP tools mirror the bridge surface above: `find_element`,
-`get_state`, `click`, `tap_native`, `type_text`, `list_functions` /
+`inspect_element`, `click`, `pointer_native`, `type_text`, `list_functions` /
 `call_function`, `open_link`, `get_snapshot`,
 `list_component_instances` / `invoke_method` (the MCP's
-`list_components` is the static catalog), and `call_verb` for anything
+`list(kind: "component")` is the static catalog), and `call_verb` for anything
 without its own tool. The server's `testing` guide walks an agent
 through writing a suite.
 

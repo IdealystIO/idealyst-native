@@ -538,7 +538,7 @@ fn guides_table_includes_getting_started() {
 fn macros_table_documents_effect_and_signal() {
     // Regression for the gap this slice closes: the authoring macros
     // were undocumented in the catalog, so `effect!` was invisible and
-    // authors fell back to a bare `Effect::new`. `describe_macro` must
+    // authors fell back to a bare `Effect::new`. `describe` (kind `macro`) must
     // surface `effect`, mark it the recommended form, and show what it
     // expands to (the primitive underneath).
     let effect = catalog::lookup_macro("effect").expect("`effect!` macro registered");
@@ -555,7 +555,7 @@ fn macros_table_documents_effect_and_signal() {
          don't fall back to the sealed `Effect::new`",
     );
 
-    // A trailing `!` resolves the same entry — `list_macros` consumers
+    // A trailing `!` resolves the same entry — `list` / `describe` consumers
     // pass either spelling.
     assert!(catalog::lookup_macro("effect!").is_some());
 
@@ -632,7 +632,7 @@ fn sdks_table_indexes_non_ui_capability_crates() {
 #[test]
 fn sdks_guide_enumerates_the_data_crates() {
     // The structured slice's prose home: the `sdks` guide must exist and
-    // name the data crates so `read_guide("sdks")` is a real fallback.
+    // name the data crates so `describe(kind: "guide", name: "sdks")` is a real fallback.
     let guide = catalog::lookup_guide("sdks").expect("sdks guide registered");
     for required in &["net", "storage", "credentials", "server", "cache", "pubsub", "jobs"] {
         assert!(

@@ -466,7 +466,7 @@ mod tests {
     /// names, and every entry's `path` actually resolves to its `name`.
     ///
     /// This is the drift guard for the tooling surface: the editor
-    /// completion and `list_tokens` both read the catalog, so an entry
+    /// completion and `list(kind: "token")` both read the catalog, so an entry
     /// naming a token the vocabulary doesn't have would offer code that
     /// doesn't compile, and a missing entry would hide a real token.
     #[cfg(feature = "catalog")]

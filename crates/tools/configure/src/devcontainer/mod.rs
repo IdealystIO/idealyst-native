@@ -1,7 +1,7 @@
 //! Devcontainer configuration — the shared, non-interactive core.
 //!
 //! Both front-ends (the `idealyst configure devcontainer` CLI wizard and the
-//! MCP `configure_devcontainer` tool) build a [`ConfigureRequest`] and call
+//! MCP `configure_project` tool, target `devcontainer`) build a [`ConfigureRequest`] and call
 //! [`apply`]. [`read_state`] reports what's currently configured so a re-run
 //! can preselect it.
 //!

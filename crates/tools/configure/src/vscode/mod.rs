@@ -1,7 +1,7 @@
 //! VS Code configuration — the shared, non-interactive core.
 //!
 //! Mirrors [`crate::devcontainer`]: both front-ends (the `idealyst configure
-//! vscode` CLI wizard and the MCP `configure_vscode` tool) build a
+//! vscode` CLI wizard and the MCP `configure_project` tool, target `vscode`) build a
 //! [`ConfigureRequest`] of per-aspect actions and call [`apply`];
 //! [`read_state`] reports which aspects are currently configured.
 //!

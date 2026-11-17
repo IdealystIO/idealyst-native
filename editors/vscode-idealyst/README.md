@@ -55,7 +55,7 @@ markup macros:
   `#[props]` (a props struct with a documented field), `stylesheet!`.
 
 The snippets and docs are the catalog's `macros` / `utilities` slices
-(`idealyst mcp`'s `describe_macro` / `describe_utility` return the same
+(`idealyst mcp`'s `describe` for a `macro` / `utility` returns the same
 `snippet`), so an agent and the editor propose one canonical spelling.
 
 Theme-token completion inside `stylesheet! { … }` blocks:

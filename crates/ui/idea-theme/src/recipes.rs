@@ -4,7 +4,7 @@
 //!
 //! Why this exists: the arena's themed-settings feedback report
 //! (run-0, 2026-07) showed an agent hand-rolling a palette struct with
-//! per-node `if dark {...}` color switching because `list_recipes`
+//! per-node `if dark {...}` color switching because `list(kind: "recipe")`
 //! offered no theming recipe and `install_theme` wasn't discoverable
 //! from `runtime-core` alone. This recipe compiles against the live
 //! `install_theme` / `set_theme` / `stylesheet!` APIs, so the served

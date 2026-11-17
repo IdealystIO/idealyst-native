@@ -60,7 +60,7 @@ untouched.
 
 Like `configure devcontainer`, the logic lives in the shared `configure` crate
 (`crates/tools/configure`), so an agent can do the same over MCP via the
-**`configure_vscode`** tool — pass `dir` + optional `aspects: [{ id, action }]`
+**`configure_project`** tool — pass `target: "vscode"`, `dir` + optional `items: [{ id, action }]`
 (omit to enable all, or `remove_all: true` to tear down) and get back the change
 report.
 

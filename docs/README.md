@@ -121,12 +121,12 @@ If you're new to the codebase, read the docs in this order:
   sidecar services (Postgres/MySQL, Redis, MinIO). The two-file ownership model
   (we own `docker-compose.idealyst.yml`, never your `docker-compose.yml`), the
   interactive wizard vs. the non-interactive flags, the shared `configure`
-  engine behind the MCP `configure_devcontainer` tool, and how to add a service.
+  engine behind the MCP `configure_project` tool, and how to add a service.
 - [`vscode.md`](./vscode.md). `idealyst configure vscode` — set up a project's
   `.vscode/` workspace: recommend the editor extensions and wire the idealyst
   linter into rust-analyzer (inline squiggles via a generated `ra-check.sh`).
   The surgical settings/extensions merge, the aspect model, the non-interactive
-  flags, and the shared MCP `configure_vscode` tool.
+  flags, and the shared MCP `configure_project` tool.
 - [`inspector.md`](./inspector.md). The Inspector, a live debugging dashboard
   for any running app, opened in the browser with `idealyst inspect` or
   `idealyst dev --inspect`. The server owns all debug state and every app

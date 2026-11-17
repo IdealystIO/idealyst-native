@@ -4845,7 +4845,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         // `watcher_ready` follows `watching`: a consumer waiting for saves
-        // to be taken waits for it (`wait_for_build`).
+        // to be taken waits for it (`dev_session` `wait`).
         let at = |f: fn(&dev_events::DevEvent) -> bool| seen.iter().position(f).unwrap();
         assert!(
             at(|e| matches!(e, dev_events::DevEvent::Watching { .. }))
@@ -5499,7 +5499,7 @@ mod tests {
     }
 
     /// Regression: the web watcher opened its inbox only after the first
-    /// build returned, so an agent's `rebuild_dev` during that build was
+    /// build returned, so an agent's `dev_session` `rebuild` during that build was
     /// refused (no watcher to go to) and its request number went
     /// nowhere. The request now queues and the loop takes it first.
     #[test]

@@ -296,12 +296,12 @@ docs! {
            tool's full parameters, return shape and caveats."),
 
         p("The Robot MCP tools mirror the bridge surface above: ",
-          code("find_element"), ", ", code("get_state"), ", ", code("click"),
-          ", ", code("tap_native"), ", ", code("type_text"), ", ",
+          code("find_element"), ", ", code("inspect_element"), ", ", code("click"),
+          ", ", code("pointer_native"), ", ", code("type_text"), ", ",
           code("list_functions"), " / ", code("call_function"), ", ",
           code("open_link"), ", ", code("get_snapshot"), ", ",
           code("list_component_instances"), " / ", code("invoke_method"),
-          " (the MCP's ", code("list_components"), " is the static catalog), \
+          " (the MCP's ", code("list(kind: \"component\")"), " is the static catalog), \
            and ", code("call_verb"), " for anything without its own tool. The \
            server's ", code("testing"), " guide walks an agent through writing \
            a suite."),

@@ -539,7 +539,7 @@ pub use style_attach::{
 ///
 /// A design system calls this from the same declaration that generates
 /// the token's accessor, so tooling gets the vocabulary as data — the
-/// editor completion behind `t.spacing.│`, and `list_tokens` over MCP.
+/// editor completion behind `t.spacing.│`, and `list(kind: "token")` over MCP.
 ///
 /// ```ignore
 /// register_style_token!("spacing-md", "spacing.md", "spacing", "Length", "IdeaThemeRef", {

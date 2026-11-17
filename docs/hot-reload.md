@@ -2166,7 +2166,7 @@ analyse). A record holds:
   artifacts were removed. It typically means the whole tree is rebuilt.
 
 From `idealyst mcp`, `run_dev` takes `metrics` / `metrics_diffs`, and
-`read_build_metrics` returns the records — one session's (by its
+`dev_session` with `action: "metrics"` returns the records — one session's (by its
 `session_id` or `pid`), or every session's of a project (by its
 directory, also once the session has stopped) — ordered by when their
 work started: a summary per save by default, each saying what kind of
@@ -2197,7 +2197,7 @@ targets' builds report their stages only.
 `idealyst dev --no-watch` still watches, but a save only queues: the
 session reports it (`change_detected`, and a log line `N file(s) changed
 and queued (--no-watch); a rebuild request applies them`) and builds
-nothing. A rebuild request — the panel's `r`, or `rebuild_dev` from
+nothing. A rebuild request — the panel's `r`, or `dev_session` `rebuild` from
 `idealyst mcp` (next section) — applies everything queued as one save,
 through the same decision a watched save takes, so a body edit still hot
 patches. With nothing to apply, the request rebuilds. Only saves made
@@ -2224,7 +2224,7 @@ Each queued save's `change_detected` names the whole queue so far, and
 no decision follows it until a request. The panel shows that as a
 target status of `queued: <files> · r applies` and one `queued` row in
 the save history, rewritten as the queue grows; the request's decision
-turns that row into the save's result. An agent reading `dev_status`
+turns that row into the save's result. An agent reading `dev_session` `status`
 sees the target as `queued: true` — a `change_detected` with nothing
 after it in the raw snapshot (`detail`); the session's registry entry
 (`no_watch: true`) says why.
@@ -2239,7 +2239,7 @@ in the session's cache instead, and applies nothing:
 idealyst check --session [DIR]              # exit 0, or non-zero with the errors
 ```
 
-or `rebuild_dev` with `apply: false` from `idealyst mcp`, or `POST /check` on
+or `dev_session` `rebuild` with `apply: false` from `idealyst mcp`, or `POST /check` on
 the control endpoint, then `GET /check/<n>`.
 
 Each target runs the command its own build runs (same target dir, flags,
@@ -2403,10 +2403,10 @@ web page can reach any loopback port, so the endpoint refuses a request
 without the token, and any request carrying an `Origin` header at all.
 
 This is how an agent drives a session it did not start:
-`list_dev_sessions` lists them all, `dev_status` and `rebuild_dev` go
-through the endpoint, and `read_dev_log` reads the entry's log. Stopping
+`dev_session` `list` lists them all, its `status` and `rebuild` actions go
+through the endpoint, and `log` reads the entry's log. Stopping
 one goes by pid, not by endpoint, so it works on a session too hung to
-answer: `stop_dev` with `include_external: true` sends SIGINT (to the
+answer: `dev_session` `stop` with `include_external: true` sends SIGINT (to the
 process group when the session leads one), then SIGKILL after 10 s. The
 interactive panel quits on that SIGINT as it does on its own Ctrl-C,
 restoring the terminal. A session whose launching `idealyst mcp` has

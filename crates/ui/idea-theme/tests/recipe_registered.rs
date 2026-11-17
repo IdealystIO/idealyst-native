@@ -9,7 +9,7 @@
 //! distributed-slice entry links into the catalog. A mis-forwarded
 //! feature would compile clean and serve nothing — exactly the failure
 //! this test pins. (Regression guard for the arena themed-settings
-//! run-0 finding: `list_recipes` offered no theming recipe.)
+//! run-0 finding: `list(kind: "recipe")` offered no theming recipe.)
 #![cfg(feature = "catalog")]
 
 #[test]

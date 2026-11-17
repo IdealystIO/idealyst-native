@@ -2697,7 +2697,7 @@ fn emit_drawer_navigator(_props: &[Prop], _children: Option<&[UiNode]>) -> Token
             "DrawerNavigator has no `ui!` sugar. Use a navigator SDK crate's builder API: \
              `stack_navigator::StackNavigator::new(&ROUTE).screen(...)` for a push/pop stack, \
              or `swap_navigator::SwapNavigator::new(&ROUTE)` for tab/drawer-style swapping. \
-             See the `navigation` guide (read_guide) and the `stack_two_screens` recipe."
+             See the `navigation` guide (`describe`, kind `guide`) and the `stack_two_screens` recipe."
         )
     }
 }

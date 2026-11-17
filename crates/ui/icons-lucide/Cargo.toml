@@ -14,7 +14,7 @@ license.workspace = true
 registry = []
 # Self-registers this pack into the MCP catalog as an `IconSetEntry`
 # (name + every icon's (name, ident) pair) so it's discoverable via the
-# MCP `list_icon_sets` / `search_icons` tools and renders in the docs
+# MCP `list(kind: "icon_set")` / `search_icons` tools and renders in the docs
 # site's icon gallery. OFF by default: the name table pulls the whole
 # pack into the binary, defeating the per-`const` tree-shaking normal
 # `use icons_lucide::SEARCH` usage relies on. The catalog `catalog` bin

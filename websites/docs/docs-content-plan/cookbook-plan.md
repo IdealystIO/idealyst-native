@@ -40,7 +40,7 @@ lands on Reactivity, not on a list of recipes that happen to use
 signals.
 
 The idealyst MCP server has no docs-page tools (its docs surface is
-`list_guides` / `read_guide` / `search`). If recipes should reach
+`list` / `describe` with kind `guide`, and `search`). If recipes should reach
 agents, they need a tool built for that; this plan proposes keeping
 the same split there — recipes reachable by slug and search, but out
 of the default listing.

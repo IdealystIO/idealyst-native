@@ -2,7 +2,7 @@
 //!
 //! This crate is the *logic* behind `idealyst configure` — the shared,
 //! non-interactive core that both the CLI (which wraps it in a dialoguer
-//! wizard) and the MCP server (the `configure_devcontainer` tool) drive.
+//! wizard) and the MCP server (the `configure_project` tool) drive.
 //! Keeping it prompt-free is deliberate: the MCP server has no TTY, so
 //! anything interactive would fork the two front-ends. Instead the core
 //! exposes a plan → apply surface, and the CLI's wizard is just a way to

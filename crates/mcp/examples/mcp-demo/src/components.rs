@@ -99,7 +99,7 @@ pub fn LabeledBadge(_props: &LabeledBadgeProps) -> Element {
 
 /// Returns a hex color darkened by `amount` (linear-light space).
 /// Standalone helper exposed through MCP via `#[idealyst_tool]` —
-/// shows up under `list_tools` and `describe_tool`.
+/// shows up under `list` / `describe` with kind `tool`.
 #[idealyst_tool]
 pub fn darken(_hex: &str, _amount: f32) -> String {
     // Demo body — real impl would convert hex → linear → scale → hex.

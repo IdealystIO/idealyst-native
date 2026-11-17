@@ -43,10 +43,10 @@ Every entry in `crates/mcp/catalog/src/{macros,utilities}.rs` carries a `snippet
 
 ### Open-set prop values
 
-The `values` slice is open, not locked, but has its own drift: every idea-theme marker that a `*Ref` prop accepts (`extensible/{tone,variant,typography,size,shape}.rs`, plus idea-ui's `card::variant`) must carry `#[derive(IdealystSchema)] #[schema(value_of = "<Ref>", via = "<alias>")]`, or it silently vanishes from `tone = │` completion and `list_values`. The declaration macros `tone!` / `variant!` add it for app code; hand-written markers don't.
+The `values` slice is open, not locked, but has its own drift: every idea-theme marker that a `*Ref` prop accepts (`extensible/{tone,variant,typography,size,shape}.rs`, plus idea-ui's `card::variant`) must carry `#[derive(IdealystSchema)] #[schema(value_of = "<Ref>", via = "<alias>")]`, or it silently vanishes from `tone = │` completion and `list(kind: "value")`. The declaration macros `tone!` / `variant!` add it for app code; hand-written markers don't.
 
 - [ ] For each `pub struct <Marker>;` implementing `Tone` / `Variant` / `TypographyKind` / `ButtonSize` / `Shape` in those files, confirm the `value_of` annotation is present and names the matching `*Ref` type, and that `via` matches the alias idea-ui re-exports (`tone`, `variant`, `typography_kind`, `size`, `shape`; `card::variant` for Card's).
-- [ ] If a new open vocabulary was added (a new `*Ref` newtype in `extensible/mod.rs`), its markers need the same, and `list_values`' tool description should name the new type.
+- [ ] If a new open vocabulary was added (a new `*Ref` newtype in `extensible/mod.rs`), its markers need the same, and the `list` tool's docs for kind `value` should name the new type.
 
 ## Checklist
 
@@ -106,10 +106,10 @@ a spelling that silently did nothing.
 ### SDK roster coverage
 
 - [ ] List the crate directories under `crates/sdk/{client,server}/`, `crates/api/`, and `crates/ui/` (each with a `Cargo.toml`). Exclude internal/proc-macro-only helpers that aren't author-facing deps (e.g. `server-macros`, `offload-macro`). `crates/mcp/catalog/tests/sdk_roster.rs` does this walk in both directions and fails on a missing or stale entry; its `NOT_AUTHOR_FACING` list is the exclusion set, so review any name added there.
-- [ ] For each author-facing crate, search `crates/mcp/catalog/src/sdks.rs` for an `sdk!("<crate>", …)` entry. Flag any crate with no entry — it's undiscoverable from `list_sdks` / `describe_sdk` / `search`.
+- [ ] For each author-facing crate, search `crates/mcp/catalog/src/sdks.rs` for an `sdk!("<crate>", …)` entry. Flag any crate with no entry — it's undiscoverable from `list(kind: "sdk")` / `describe(kind: "sdk")` / `search`.
 - [ ] Flag any `SdkEntry` whose `name` no longer matches a directory under `crates/{sdk,api,ui}/` — a stale claim whose `dep_line` won't resolve.
 - [ ] Spot-check `category` (data / media / ui / device) and `kind` (api vs external — does the crate expose plain functions/types, or a third-party `ui!` primitive registered on the scene `Registry`?). A `MapView`/`WebView`/`Video`-style primitive is `External`; `net`/`storage`/`server` are `Api`.
-- [ ] Verify the `sdks` and `server-functions` guides still exist (`guides/sdks.md`, `guides/server-functions.md`) and that the `sdks` guide enumerates the data crates the structured slice indexes (the prose fallback for `read_guide("sdks")`).
+- [ ] Verify the `sdks` and `server-functions` guides still exist (`guides/sdks.md`, `guides/server-functions.md`) and that the `sdks` guide enumerates the data crates the structured slice indexes (the prose fallback for `describe(kind: "guide", name: "sdks")`).
 
 ### Guide link integrity
 

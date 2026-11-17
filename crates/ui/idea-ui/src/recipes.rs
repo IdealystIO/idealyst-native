@@ -1193,7 +1193,7 @@ recipe!(
 // ---------------------------------------------------------------------------
 // Theming recipes — how to install and customize the idea-ui theme. These
 // target the theme functions/types rather than a component, so they surface
-// via `list_recipes` / `describe_recipe` as the "how do I theme this?" answer.
+// via `list` / `describe` (kind `recipe`) as the "how do I theme this?" answer.
 // ---------------------------------------------------------------------------
 
 recipe!(

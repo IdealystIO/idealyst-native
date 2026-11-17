@@ -15,7 +15,7 @@
 //! The `docs` literals below mirror each file's leading `///` block
 //! (the file keeps the comment so the served `source` reads complete).
 //! Entries register into the same `mcp_catalog::RecipeEntry` inventory
-//! slice `recipe!` uses, so `list_recipes` / `describe_recipe` /
+//! slice `recipe!` uses, so `list` / `describe` (kind `recipe`) and
 //! `get_catalog` serve them like any other recipe.
 
 // One `inventory::submit!` per recipe. `module_path!()` names this
@@ -158,7 +158,7 @@ mod tests {
     }
 
     /// The two navigation recipes register here rather than in the
-    /// navigator SDKs, so `list_recipes` always serves them.
+    /// navigator SDKs, so `list(kind: "recipe")` always serves them.
     ///
     /// The assertions on the served source pin the load-bearing pieces
     /// an agent copy-pastes. Both extension-trait import lines are
@@ -202,7 +202,7 @@ mod tests {
             );
         }
 
-        // `recipes_for` is what `describe_recipe`/`list_recipes` join on:
+        // `recipes_for` is what `describe` / `list` (kind `recipe`) join on:
         // the navigator TYPE name must resolve to its recipe.
         let cat = mcp_catalog::ResolvedCatalog::build();
         assert!(

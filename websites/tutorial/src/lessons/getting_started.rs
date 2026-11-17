@@ -367,12 +367,11 @@ pub fn mcp() -> Element {
 
             Typography(content = "Reading the framework".to_string(), kind = typography_kind::H2)
             Typography(
-                content = "The catalog tools describe what your code can use. list_primitives and \
-                    describe_primitive cover the built-in elements; list_components and \
-                    describe_component cover every #[component] you link, idea-ui's and your own, \
-                    with each prop's type and docs; list_tokens and list_values give a \
-                    stylesheet's token names and a prop's accepted values; read_guide serves the \
-                    framework's guides; search looks across all of it. The catalog is rebuilt as \
+                content = "The catalog tools describe what your code can use. list and describe take a kind: \
+                    primitive covers the built-in elements; component covers every #[component] \
+                    you link, idea-ui's and your own, with each prop's type and docs; token and \
+                    value give a stylesheet's token names and a prop's accepted values; guide \
+                    serves the framework's guides. search looks across all of it. The catalog is rebuilt as \
                     you save, so a component you just wrote is described the moment it compiles.".to_string()
             )
 
@@ -388,8 +387,8 @@ pub fn mcp() -> Element {
             CodePanel(
                 src = r##"you:   Add a Clear button that empties the todo list.
 
-agent: describe_component Button    the props, and on_click's type
-       read_guide components         how this project writes components
+agent: describe component Button    the props, and on_click's type
+       describe guide components     how this project writes components
        (edits src/app.rs)
        run_dev, wait_for_app         the app is up on the web
        type_text, click "Add"        two todos added

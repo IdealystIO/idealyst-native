@@ -269,8 +269,8 @@ devcontainer exists.
 ## Same engine from the MCP server
 
 The logic lives in the shared `configure` crate (`crates/tools/configure`), so
-an agent can do the same thing over MCP via the **`configure_devcontainer`**
-tool — pass `dir` + a list of `{ id, variant?, action }` and get back the change
+an agent can do the same thing over MCP via the **`configure_project`**
+tool — pass `target: "devcontainer"`, `dir` and `items: [{ id, variant?, action? }]` and get back the change
 report. The CLI's interactive wizard is the only thing layered on top; both
 front-ends drive the identical non-interactive `apply`.
 

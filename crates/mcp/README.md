@@ -17,7 +17,7 @@ cannot drift.
 | `catalog-scan` | [`catalog-scan/`](./catalog-scan) | Reads a workspace's catalog entries from **source**, with no build: it runs the catalog macros' own expansion (`runtime-macros-expand`) over the items they are attached to and reads the `inventory::submit!` literals back. Entries are byte-identical to a compiled catalog's (pinned by `mcp-catalog`'s `source_scan_reads_exactly_what_the_compiled_macros_register`). Used by `idealyst mcp`'s refresh, `catalog-json --scan` and `catalog-scan`. |
 | `mcp-design-server` | [`design-server/`](./design-server) | Stdio MCP server (`idealyst mcp design`) with **opinionated idea-ui design guidance**: design skills (`content/skills/*.md`), whole-screen recipes (`content/recipes/*.rs`) and four prompts (`design_screen`, `brand_theme`, `plan_navigation`, `design_review`). Static content shipped in the CLI — no project, no catalog. See [The design server](#the-design-server). |
 | `mcp-design-recipes-check` | [`design-server/recipes-check/`](./design-server/recipes-check) | Not published. Compiles every design recipe as a module against idea-ui and server-renders it at the phone/tablet/desktop widths its `//! render:` lines declare. |
-| `mcp-server` | [`server/`](./server) | Stdio MCP server (`idealyst mcp`). Surfaces catalog tools (`list_components`, `describe_component`, `find_uses`, …) and the `idealyst://catalog` resource, **plus** the Robot tools (`find_element`, `click`, `type_text`, `get_snapshot`, …) that drive a running app, **plus** the dev-session tools (`run_dev` / `list_dev_sessions` / `dev_status` / `rebuild_dev` / `stop_dev` / `read_dev_log` / `wait_for_app`) that launch, observe, rebuild, and tear down `idealyst dev` from MCP — its own sessions and a person's. Reaches the app's Robot bridge via discovery (`~/.idealyst/apps/`) or an explicit `--robot-port`. Consumed by Claude Code / IDE plugins. |
+| `mcp-server` | [`server/`](./server) | Stdio MCP server (`idealyst mcp`). Surfaces catalog tools (`list`, `describe`, `find_references`, `search`, …) and the `idealyst://catalog` resource, **plus** the Robot tools (`find_element`, `click`, `type_text`, `get_snapshot`, …) that drive a running app, **plus** the dev-session tools (`run_dev`, `dev_session` with its `list` / `status` / `wait` / `log` / `metrics` / `rebuild` / `stop` actions, `wait_for_app`) that launch, observe, rebuild, and tear down `idealyst dev` from MCP — its own sessions and a person's. Reaches the app's Robot bridge via discovery (`~/.idealyst/apps/`) or an explicit `--robot-port`. Consumed by Claude Code / IDE plugins. |
 
 ## How the catalog gets populated
 
@@ -75,7 +75,7 @@ app on every save.
 Project-awareness has a corollary worth calling out: the catalog only
 contains what the project **actually links**. An SDK you haven't added
 to `Cargo.toml` yet contributes nothing to the `inventory` slices, so
-`list_components` / `describe_component` / `list_icon_sets` return
+`list` and `describe` (kind `component`, `icon_set`, …) return
 nothing for it — you can't introspect an SDK's API *before* depending on
 it. This is by construction (the catalog is collected at link time from
 the crates in the build), not a bug. To explore a not-yet-added SDK,
@@ -130,10 +130,10 @@ log under `~/.idealyst/dev-logs/`) and tracks the process. It mirrors
 the CLI flags worth driving from MCP — `platforms` (`web`/`ios`/
 `android`/`macos`/`terminal`), `all`, `local`, `no_robot`,
 `bridge_port`, `screenshot_dir`, `no_build`, `no_watch`,
-`experimental_build`. `list_dev_sessions` shows every `idealyst dev`
+`experimental_build`. `dev_session` `list` shows every `idealyst dev`
 on the machine — the ones this server started and the ones started
 outside it, at a terminal or by a script (found through the session registry,
-`~/.idealyst/dev-sessions/`) — and `stop_dev` (by `session_id`, `pid`,
+`~/.idealyst/dev-sessions/`) — and `dev_session` `stop` (by `session_id`, `pid`,
 or `all`) tears a session back down — on unix the whole `idealyst dev`
 process **group** (its cargo builds, web servers, simulators) gets a
 graceful SIGINT escalating to SIGKILL. A session a person or another
@@ -144,21 +144,21 @@ best-effort stops any sessions it still owns when it shuts down. A
 project directory runs one session: `run_dev` refuses beside a running
 one and names it, to be used by `pid` instead.
 
-`dev_status` summarizes a session's current state (per target the
+`dev_session` `status` summarizes a session's current state (per target the
 latest outcome or the build in flight, what it serves, how many roots it
-watches; `detail` for the raw event snapshot) and `rebuild_dev` does what the
+watches; `detail` for the raw event snapshot) and `dev_session` `rebuild` does what the
 panel's `r` does — for a `--no-watch` session, applies the saves it
 queued. Both work on a person's session through its control endpoint,
 so an agent can drive the rebuilds of a session it did not start.
 
-`read_dev_log` tails a session's log (with a case-insensitive `filter`,
+`dev_session` `log` tails a session's log (with a case-insensitive `filter`,
 e.g. `"error"`, applied before the tail) so you can follow the build /
 spot a compile failure — readable even after the session exits.
 `wait_for_app` blocks until an app registers its Robot bridge, closing
 the gap between `run_dev` (returns once the build starts) and the Robot
 tools (need the app actually up). The loop: `run_dev` → `wait_for_app`
-(or `read_dev_log` if it's slow / failing) → drive it with the Robot
-tools → `stop_dev`.
+(or `dev_session` `log` if it's slow / failing) → drive it with the Robot
+tools → `dev_session` `stop`.
 
 ## The design server
 

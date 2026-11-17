@@ -333,7 +333,7 @@ members = [
     # Source linter engine — `idealyst lint` + rust-analyzer overrideCommand.
     "crates/tools/lint",
     # Project configuration engine — powers `idealyst configure` (devcontainer
-    # today) and the shared MCP `configure_devcontainer` tool.
+    # today) and the shared MCP `configure_project` tool.
     "crates/tools/configure",
     # Premint style-dump assembly — the ephemeral dump wrapper the CLI
     # generates links this to turn `runtime_core::premint::PREMINT_SHEETS`

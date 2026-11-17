@@ -335,7 +335,7 @@ Claude Desktop, that's a few lines in its config:
 ```
 
 Now the model gets every Robot tool — `find_element`, `click`,
-`tap_native`, `type_text`, `call_function`, `get_snapshot`,
+`pointer_native`, `type_text`, `call_function`, `get_snapshot`,
 `invoke_method`, and the rest — as
 callable functions. You can ask it to interact with your
 running app in natural language; it issues the tool calls; the

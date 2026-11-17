@@ -281,7 +281,7 @@ docs! {
             }
         "##),
         p("Now the model gets every Robot tool — ", code("find_element"),
-          ", ", code("click"), ", ", code("tap_native"), ", ", code("type_text"),
+          ", ", code("click"), ", ", code("pointer_native"), ", ", code("type_text"),
           ", ", code("call_function"), ", ", code("get_snapshot"), ", ",
           code("invoke_method"), ", and the rest — as callable functions. You can ask it to interact with your \
            running app in natural language; it issues the tool calls; the \

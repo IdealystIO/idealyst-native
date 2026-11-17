@@ -75,7 +75,7 @@ pub enum State {
     /// Files changed; the decision is coming.
     Changed { files: Vec<String> },
     /// `idealyst dev --no-watch`: saves are queued, and nothing happens
-    /// until a rebuild request (`r`, an agent's `rebuild_dev`) applies
+    /// until a rebuild request (`r`, an agent's `dev_session` `rebuild`) applies
     /// them.
     Held { files: Vec<String> },
     /// Overlay patches are on their way to the page.

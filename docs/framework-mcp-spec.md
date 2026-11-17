@@ -140,26 +140,26 @@ That emits one `ValueEntry { short_name, module_path, docs, value_of, via }` int
 
 ## 5. MCP surface
 
-Exposed tools (the catalog's core set; `list_guides`, `list_primitives`, `list_scopes`, the SDK / token / type slices, and the Robot tools sit alongside them):
+Exposed tools (the catalog's core set; `list` and `describe` take a `kind` — `component`, `primitive`, `guide`, `scope`, `sdk`, `token`, `type`, … — and the Robot tools sit alongside them):
 
 | Tool                            | Purpose                                                        |
 |---------------------------------|----------------------------------------------------------------|
-| `list_components`               | All components.                                                |
-| `describe_component(name)`      | Full record: signature, props, docs, example, source location. |
-| `find_uses(name)`               | Who composes `name`? (reverse edges)                           |
-| `find_dependencies(name)`       | What does `name` compose? (forward edges)                      |
-| `list_tools`                    | All `#[idealyst_tool]` functions.                              |
-| `describe_tool(name)`           | Tool record.                                                   |
+| `list(kind: "component")`       | All components.                                                |
+| `describe(kind: "component", name)` | Full record: signature, props, docs, example, source location. |
+| `find_references(name, direction: "uses")` | Who composes `name`? (reverse edges)                |
+| `find_references(name, direction: "dependencies")` | What does `name` compose? (forward edges)   |
+| `list(kind: "tool")`            | All `#[idealyst_tool]` functions.                              |
+| `describe(kind: "tool", name)`  | Tool record.                                                   |
 | `search(query)`                 | Fulltext over names + doc comments.                            |
-| `list_values(filter)`           | Open-set prop values (§4.3.1), filterable by the prop type.    |
-| `describe_macro` / `describe_utility` | Macro / utility record incl. its `snippet` (§5.1).       |
+| `list(kind: "value", filter)`   | Open-set prop values (§4.3.1), filterable by the prop type.    |
+| `describe(kind: "macro" \| "utility", name)` | Macro / utility record incl. its `snippet` (§5.1). |
 | `get_docs(name?, query?)`      | Long-form docs for this server's own tools and topics.         |
 
 Tool definitions are deliberately terse (one-line descriptions and parameter docs, minified schemas): a client keeps them in context for the whole session. Return shapes, caveats and workflows live in `crates/mcp/server/docs/*.md` and are fetched with `get_docs`; see the "Tool definitions stay small" section of `crates/mcp/README.md`.
 
 ### 5.1 Snippets on the macro and utility tables
 
-`MacroEntry.snippet` / `UtilityEntry.snippet` carry the invocation in LSP snippet syntax — `${n:name}` placeholders for the arguments an author supplies, `$0` for the final cursor, `\t` for one indent level (`"let ${1:name} = signal(${2:value});"`, `"effect!({\n\t$0\n});"`). The VS Code extension inserts them verbatim as authoring hints in `#[component]` bodies; `describe_macro` / `describe_utility` return the same string so an agent proposes the identical spelling. Empty for an attribute or derive that is complete as written (`#[derive(IdealystSchema)]`) and for catalog-only macros nobody types by hand (`recipe!`). The emission suite pins that every `Reactive` utility has a well-formed snippet that spells its own call, and that the utility table covers the reactive surface the guides describe.
+`MacroEntry.snippet` / `UtilityEntry.snippet` carry the invocation in LSP snippet syntax — `${n:name}` placeholders for the arguments an author supplies, `$0` for the final cursor, `\t` for one indent level (`"let ${1:name} = signal(${2:value});"`, `"effect!({\n\t$0\n});"`). The VS Code extension inserts them verbatim as authoring hints in `#[component]` bodies; `describe` (kind `macro` / `utility`) returns the same string so an agent proposes the identical spelling. Empty for an attribute or derive that is complete as written (`#[derive(IdealystSchema)]`) and for catalog-only macros nobody types by hand (`recipe!`). The emission suite pins that every `Reactive` utility has a well-formed snippet that spells its own call, and that the utility table covers the reactive surface the guides describe.
 
 Exposed resources:
 
@@ -265,7 +265,7 @@ Coverage the catalog relies on:
 
 - A macros-crate integration test asserts a `#[component]` function produces a discoverable inventory entry with the expected `short_name`, `file`, `line`.
 - A second test asserts `ui! { Vignette() }` inside a host fn produces an edge with `to: "Vignette"` and the host fn's path as `from`.
-- A runtime test drives the joiner against a fixture project with a known component graph and asserts `find_uses` / `find_dependencies` results, including the proximity-resolution rules.
+- A runtime test drives the joiner against a fixture project with a known component graph and asserts `find_references` results in both directions, including the proximity-resolution rules.
 - A feature-gating test confirms that without the `catalog` feature, no `submit!` is emitted (`inventory::iter` is empty).
 
 ## 11. Risks

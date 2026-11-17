@@ -5,7 +5,7 @@
 > `scopes.rs`), the `CatalogSlice` trait (`crates/mcp/catalog/src/slice.rs`),
 > the `--check` / `--strict-scopes` lint (`crates/mcp/server/src/lint.rs`, wired
 > into `idealyst mcp` in `crates/tools/cli/src/cmd/mcp.rs`), and the
-> `list_scopes` / `describe_scope` tools all ship. Scopes are flat: the
+> `scope` kind of the `list` / `describe` tools all ship. Scopes are flat: the
 > hierarchy an earlier draft had was dropped. Author: Nicho.
 >
 > Companion to [`framework-mcp-spec.md`](framework-mcp-spec.md). That spec
@@ -116,7 +116,7 @@ mod auth {
 
 A scope's identity is a **slug that is independent of module location**, so
 moving or renaming a module never reorganizes the catalog or breaks saved
-references / MCP `describe_scope(id)` calls. The slug defaults to the
+references / MCP `describe(kind: "scope", name: id)` calls. The slug defaults to the
 `doc_scope!` marker ident (`Auth` → `"auth"`) — already location-independent —
 and is overridable via an explicit `slug:` for when you want to rename the
 marker without breaking the external key.
@@ -169,9 +169,9 @@ recipe!(in Auth, parse_token, fn token_example() { parse_token(..) }); // → fr
 Component, fn …)`. A recipe in some module inherits that module's ambient scope
 just like a component, so utility recipes organize identically. Cross-kind name
 collisions (a component *and* a utility both named `foo`) reuse the resolver's
-existing `EdgeStatus::Ambiguous` path — no new mechanism. `describe_utility`,
-`describe_type`, etc. surface their recipes exactly the way `describe_component`
-does today.
+existing `EdgeStatus::Ambiguous` path — no new mechanism. `describe` on a
+`utility`, `type`, etc. surfaces its recipes exactly the way it does for a
+`component`.
 
 ## 7. Enforcement
 
@@ -248,14 +248,14 @@ boundary.
 
 ## 10. MCP surface
 
-- `list_scopes(filter?)` → `{ slug, title, order, summary }`; the flat scope list.
-- `describe_scope(slug)` → scope docs + the entities that resolve into it
+- `list(kind: "scope", filter?)` → `{ slug, title, order, summary }`; the flat scope list.
+- `describe(kind: "scope", name: slug)` → scope docs + the entities that resolve into it
   (components, utilities, …) by nearest-module proximity.
-- **Anchored prose notes** get no list tool — they fold into `describe_*` of the
+- **Anchored prose notes** get no list tool — they fold into `describe` of the
   entity they're `about`, the way recipes already do, so the LLM gets the note
   in context of the thing it asked about, never as a flat pile.
-- Existing `describe_component` / `describe_utility` / `describe_type` gain a
-  `scope:` field and surface their recipes regardless of entity kind.
+- `describe` on a `component` / `utility` / `type` carries a
+  `scope:` field and surfaces its recipes regardless of entity kind.
 - The raw `idealyst://catalog` resource gains `scopes` automatically once the
   slice is registered.
 

@@ -22,7 +22,7 @@
 //!    entries, with composes idents disambiguated to fully-qualified
 //!    names per spec §6 (same module → closest ancestor → workspace).
 //!    Also includes the reverse adjacency ("used by") because that's
-//!    what an MCP `find_uses(name)` tool would call into.
+//!    what the MCP `find_references(name, direction: "uses")` tool calls into.
 
 use mcp_catalog::{catalog_json, ComponentEntry, EdgeStatus, EntryRef, ResolvedCatalog};
 

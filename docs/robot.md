@@ -899,10 +899,10 @@ launch environment, and a web page as a global the dev server injects.
 ### MCP server
 
 Every verb is reachable: dedicated tools for the element verbs (`find_element`, `click`,
-`tap_native`, `drag_native`, `pointer_native` (hover / press / release), `get_state`, `set_scroll`, …), `list_navigators` / `get_navigator_state` /
+`find_element` with `mode: "all"` / `"count"`, `inspect_element` (state / frame / absolute_frame / children / parent / native), `pointer_native` (tap / drag / hover / press / release / context_click), `set_scroll`, …), `list_navigators` / `get_navigator_state` /
 `navigate`, `list_watched_signals` / `read_signal` / `write_signal`,
 `list_component_instances` / `get_component_instance` / `invoke_method`
-(`list_components` is the *catalog*), `open_link`, `list_functions` /
+(`list(kind: "component")` is the *catalog*), `open_link`, `list_functions` /
 `call_function` (which polls an async function to completion), and
 `call_verb` for any verb without
 its own tool (`get_device_frame`, `get_signal_history`, an SDK's custom verb).

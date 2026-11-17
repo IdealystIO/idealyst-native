@@ -3,7 +3,7 @@ name = "configure"
 version = "1.5.2"
 edition.workspace = true
 license.workspace = true
-description = "Idealyst project configuration engine — provisions devcontainers (idealyst-managed docker-compose sidecar services) and other project config. Shared by the `idealyst configure` CLI and the MCP `configure_devcontainer` tool."
+description = "Idealyst project configuration engine — provisions devcontainers (idealyst-managed docker-compose sidecar services) and other project config. Shared by the `idealyst configure` CLI and the MCP `configure_project` tool."
 
 [lib]
 # Plain library, no interactive/TTY code: both the `idealyst configure`
