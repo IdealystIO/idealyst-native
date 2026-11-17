@@ -1336,12 +1336,14 @@ fn read_signal<T: PartialEq + 'static, R>(
 /// Writes through a STALE handle (live world, freed slot) still panic: that
 /// is a use-after-unmount logic error worth surfacing.
 fn stage_set<T: PartialEq + 'static>(world: WorldId, slot: u32, gen: u32, value: T, force: bool) {
+    note_staged(world);
     let _ = Active::signal_write(world, slot, gen, force, |d| typed::<T>(d).next = Some(value));
 }
 
 /// Read-modify-write against the STAGED value (falling back to committed),
 /// so multiple updates in one batch compose (two `+1`s = `+2`).
 fn stage_update<T: PartialEq + 'static>(world: WorldId, slot: u32, gen: u32, f: impl FnOnce(&T) -> T) {
+    note_staged(world);
     let _ = Active::signal_write(world, slot, gen, false, |d| {
         let d = typed::<T>(d);
         let next = f(d.next.as_ref().unwrap_or(&d.value));
@@ -1353,7 +1355,104 @@ fn stage_update<T: PartialEq + 'static>(world: WorldId, slot: u32, gen: u32, f: 
 /// itself — with no storage access to piggyback on, a stale handle would
 /// otherwise wake the recycled slot's NEW occupant's subscribers.
 fn stage_touch(world: WorldId, slot: u32, gen: u32) {
+    note_staged(world);
     Active::signal_touch(world, slot, gen);
+}
+
+// ============================================================================
+// Write recording — which worlds a stretch of code staged into.
+// ============================================================================
+
+thread_local! {
+    /// `Some` while a [`record_staged`] is running: the worlds staged into
+    /// so far. Nested recordings save the outer list and fold into it.
+    static STAGED_LOG: RefCell<Option<Vec<WorldId>>> = const { RefCell::new(None) };
+}
+
+/// Note a staged write into `world` for an enclosing [`record_staged`].
+/// One thread-local read when nothing is recording.
+#[inline]
+fn note_staged(world: WorldId) {
+    let _ = STAGED_LOG.try_with(|log| {
+        if let Some(worlds) = log.borrow_mut().as_mut() {
+            if !worlds.contains(&world) {
+                worlds.push(world);
+            }
+        }
+    });
+}
+
+/// The worlds a stretch of code staged writes into, from [`record_staged`].
+/// [`commit`](Self::commit) flushes them, so code that runs next reads what
+/// was written.
+#[derive(Default, Debug)]
+pub struct StagedWorlds(Vec<WorldId>);
+
+impl StagedWorlds {
+    /// Fold another recording into this one.
+    pub fn merge(&mut self, other: StagedWorlds) {
+        for w in other.0 {
+            if !self.0.contains(&w) {
+                self.0.push(w);
+            }
+        }
+    }
+
+    /// Did the recorded code stage nothing?
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Flush every recorded world, so its staged writes commit and their
+    /// effects run now rather than at the host's next flush.
+    ///
+    /// Does nothing while any world is flushing or entered: a flush there
+    /// would run effects in the middle of another flush or a build. Those
+    /// writes commit at the next flush as usual. A world that has since
+    /// dropped is skipped.
+    pub fn commit(self) {
+        if is_flushing() || is_entered() {
+            return;
+        }
+        for world in self.0 {
+            Active::world_flush(world);
+        }
+    }
+}
+
+/// Run `f` and report every world it staged a write into (`set`, `update`,
+/// `touch`).
+///
+/// For a task runner that must make a task's writes visible to whatever
+/// runs after it in the same turn: `runtime_vocabulary`'s `spawn_then`
+/// records each poll of its future and commits the recording before its
+/// callback, so a value the future wrote is the value the callback reads.
+/// Nests: an inner recording also counts toward the outer one.
+pub fn record_staged<R>(f: impl FnOnce() -> R) -> (R, StagedWorlds) {
+    struct Restore(Option<Vec<WorldId>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let outer = self.0.take();
+            let _ = STAGED_LOG.try_with(|log| {
+                let mut log = log.borrow_mut();
+                let inner = log.take().unwrap_or_default();
+                *log = outer.map(|mut o| {
+                    for w in inner {
+                        if !o.contains(&w) {
+                            o.push(w);
+                        }
+                    }
+                    o
+                });
+            });
+        }
+    }
+    let outer = STAGED_LOG.with(|log| log.borrow_mut().replace(Vec::new()));
+    let restore = Restore(outer);
+    let r = f();
+    let recorded = STAGED_LOG.with(|log| log.borrow().clone().unwrap_or_default());
+    drop(restore);
+    (r, StagedWorlds(recorded))
 }
 
 /// Write the COMMITTED value directly, bypassing staging, waking nobody

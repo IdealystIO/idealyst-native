@@ -49,6 +49,15 @@
 //! synthesize), so `let snapshot = data.get();` after an await is fatal
 //! under every write policy. Inside `then` it is valid by construction.
 //!
+//! **`then` reads what the future wrote.** Writes stage until a flush,
+//! and the host flushes only after the poll that ran `then` returns, so
+//! a `set` in the future would otherwise still be staged when `then`
+//! reads it. `spawn_then` records the worlds the future staged into and
+//! flushes them before the liveness check, so the order is the one
+//! sequential code promises: the future's writes commit (their effects
+//! run, and a teardown they cause is seen), then the check, then `then`.
+//! Regression: `regression_a_write_made_in_the_future_is_what_the_callback_reads`.
+//!
 //! # The IO still completes
 //!
 //! Liveness is checked **after** the future resolves, so the request has
@@ -240,7 +249,21 @@ fn spawn_guarded<T, F, A>(
 {
     let alive = alive.clone();
     spawn_detached(async move {
-        let value = task.await;
+        // Record every poll of the task, then commit what it staged before
+        // `then` runs: a write the future made must be what `then` reads,
+        // as in sequential code. Without this the write sits staged until
+        // the host's post-poll flush, and `then` (same poll) reads the old
+        // value. Committing first also means a teardown that write causes
+        // is seen by the liveness check below.
+        let mut task = std::pin::pin!(task);
+        let mut written = runtime_world::StagedWorlds::default();
+        let value = std::future::poll_fn(|cx| {
+            let (poll, worlds) = runtime_world::record_staged(|| task.as_mut().poll(cx));
+            written.merge(worlds);
+            poll
+        })
+        .await;
+        written.commit();
         if alive.get() {
             // Publish the token for the callback's duration, so a task
             // chained from inside `then` inherits this same lifetime

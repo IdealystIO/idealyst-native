@@ -11,6 +11,15 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **`spawn_then`'s callback reads what its future wrote** (`runtime-vocabulary` patch,
+  `runtime-world` minor). A `set` made inside the future stayed staged until the host flushed
+  after the poll, and the callback runs inside that same poll, so it read the old value (a
+  CrewForge kiosk matched against a board the future had just loaded and found it empty).
+  `spawn_then` now commits the future's writes before its liveness check: their effects run
+  first, and a write that tears the spawning scope down skips the callback. `runtime-world`
+  adds `record_staged` / `StagedWorlds`, which report and flush the worlds a stretch of code
+  staged into.
+
 - **Wire protocol 27 and remote codec 15: an editor's placeholder takes an ink**
   (`runtime-vocabulary`, `wire`, `dev-server`, `dev-client`, `backend-ios-mobile`,
   `backend-android-mobile`, `backend-macos`, `backend-web`, `idea-ui` minor). `text_input` and

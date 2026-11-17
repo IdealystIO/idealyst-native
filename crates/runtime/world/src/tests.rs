@@ -3576,3 +3576,40 @@ fn world_local_is_one_value_per_world_created_once() {
     let c = World::new();
     c.enter(|| assert_eq!(crate::world_local(make).unwrap().0.get(), 0, "a new world starts fresh"));
 }
+
+#[test]
+fn record_staged_names_the_worlds_written_and_commit_flushes_them() {
+    let a = World::new();
+    let b = World::new();
+    let c = World::new();
+    let sa = a.enter(|| signal(0));
+    let sb = b.enter(|| signal(0));
+    let sc = c.enter(|| signal(0));
+    let ((), inner_worlds) = {
+        let ((), outer) = crate::record_staged(|| {
+            sa.set(1);
+            let ((), inner) = crate::record_staged(|| sb.update(|v| v + 2));
+            assert!(!inner.is_empty(), "the inner recording sees its own write");
+            inner.commit(); // flushes b only
+            assert_eq!(sb.peek(), 2, "committed by the inner recording");
+            assert_eq!(sa.peek(), 0, "a is not the inner recording's");
+        });
+        ((), outer)
+    };
+    sc.set(3); // outside any recording: not reported
+    inner_worlds.commit(); // the outer recording holds a AND b (folded in)
+    assert_eq!(sa.peek(), 1, "the outer recording commits a");
+    assert_eq!(sc.peek(), 0, "c was written outside the recording");
+}
+
+#[test]
+fn record_staged_commit_waits_while_a_world_is_entered() {
+    // A flush inside an `enter` would run effects in the middle of a build.
+    let w = World::new();
+    let s = w.enter(|| signal(0));
+    let ((), worlds) = crate::record_staged(|| s.set(4));
+    w.enter(|| worlds.commit());
+    assert_eq!(s.peek(), 0, "left staged for the next flush");
+    w.flush();
+    assert_eq!(s.peek(), 4);
+}

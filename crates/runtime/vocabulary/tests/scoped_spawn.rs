@@ -153,6 +153,73 @@ fn callback_applies_its_writes_while_the_scope_is_alive() {
 }
 
 #[test]
+fn regression_a_write_made_in_the_future_is_what_the_callback_reads() {
+    // CrewForge's kiosk: the future loaded a board and `set` it, and the
+    // callback `peek`ed it to match a worker — and got the old `None`,
+    // because the write was still staged (the host flushes after the
+    // poll, and the callback runs inside that same poll).
+    ensure_executor();
+    let h = Harness::new();
+    let gate = Gate::new();
+    let g = gate.clone();
+    let seen: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
+    let seen_c = seen.clone();
+    let _screen = mount_screen(&h, move |scoped| {
+        let g = g.clone();
+        let seen = seen_c.clone();
+        spawn_then(
+            async move {
+                g.await;
+                scoped.set(5);
+            },
+            move |()| *seen.borrow_mut() = Some(scoped.peek()),
+        );
+    });
+    h.world.flush();
+
+    gate.complete();
+    pump(); // no host flush between the future's write and the callback
+    assert_eq!(*seen.borrow(), Some(5), "the callback reads the future's write");
+}
+
+#[test]
+fn a_teardown_caused_by_the_future_s_own_write_skips_the_callback() {
+    // Committing the future's writes before the liveness check means a
+    // write that closes the screen is seen by the check: the callback
+    // never runs into the scope it just tore down.
+    ensure_executor();
+    let h = Harness::new();
+    let gate = Gate::new();
+    let g = gate.clone();
+    let hole: Rc<RefCell<Option<Signal<bool>>>> = Rc::new(RefCell::new(None));
+    let hole_c = hole.clone();
+    let ran: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+    let ran_c = ran.clone();
+    let screen = mount_screen(&h, move |scoped| {
+        let g = g.clone();
+        let hole = hole_c.clone();
+        let ran = ran_c.clone();
+        spawn_then(
+            async move {
+                g.await;
+                let shown = hole.borrow().expect("hole published");
+                shown.set(false); // the IO's result closes the screen
+            },
+            move |()| {
+                *ran.borrow_mut() = true;
+                scoped.set(1); // would abort: the slot is freed
+            },
+        );
+    });
+    *hole.borrow_mut() = Some(screen.shown);
+    h.world.flush();
+
+    gate.complete();
+    pump();
+    assert!(!*ran.borrow(), "the callback must not run into the scope its future closed");
+}
+
+#[test]
 fn regression_callback_is_skipped_when_the_scope_died_during_the_io() {
     // Under a raw `spawn_detached` the tail writes a
     // freed slot and the app aborts with `stale-signal-handle`.
