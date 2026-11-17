@@ -526,7 +526,10 @@ pub use virtual_reorder::{
 };
 pub use scroller::TableScroller;
 pub use rows::RowId;
-pub use select::{select_all_state, toggle_select_all, SelectAllState, SELECT_COLUMN_WIDTH_PX};
+pub use select::{
+    select_all_state, toggle_select_all, SelectAllState, SelectRowLabel, SELECT_ALL_NAME, SELECT_ALL_TEST_ID,
+    SELECT_COLUMN_WIDTH_PX, SELECT_ROW_NAME, SELECT_ROW_TEST_ID,
+};
 pub use virtual_table::VirtualRows;
 
 use columns::ColumnModel;
@@ -901,6 +904,12 @@ pub struct TableProps {
     /// writes it. Frozen with the first column when that one is pinned.
     #[prop(static)]
     pub selection: Option<Signal<BTreeSet<RowId>>>,
+    /// Names each row's selection box from its row id: what a screen
+    /// reader announces and a test finds the box by ("Select Ice on the
+    /// ramp"). Default: "Select row". Every row box also carries the robot
+    /// test id `table-select-row`, the header's `table-select-all`.
+    #[prop(static)]
+    pub select_row_label: Option<select::SelectRowLabel>,
     /// Makes body rows draggable: adds a leading grip column (frozen with
     /// the first column when that one is pinned), lifts the dragged row
     /// above its neighbours while the others slide to open the gap, and
@@ -1185,6 +1194,7 @@ pub fn Table(mut props: TableProps) -> Element {
         .collect();
     let reorder = props.on_reorder.map(|cb| Reorder::new(&body, cb));
     let selection = props.selection;
+    let select_row_label = props.select_row_label.clone();
     // A band's content pins past the frozen columns the table adds, takes
     // the leading edge inset when its cell is the row's first, and in a
     // `scroll_x` table is held to the scroller's visible width — the
@@ -1241,7 +1251,10 @@ pub fn Table(mut props: TableProps) -> Element {
                             .filter(|m| m.selectable)
                             .and_then(|m| m.id.clone())
                             .zip(selection)
-                            .map(|(id, s)| select_row_box(s, id)),
+                            .map(|(id, s)| {
+                                let name = select::row_box_name(select_row_label.as_ref(), &id);
+                                select_row_box(s, id, name)
+                            }),
                         _ => None,
                     };
                     let cell = builtin_cell(kind == RowKind::Head, lead_width(k), content);

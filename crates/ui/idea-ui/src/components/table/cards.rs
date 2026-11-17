@@ -253,6 +253,10 @@ pub struct TableCardsProps {
     /// The select-all line's text for a selected-row count. Defaults to "Select
     /// all" at zero and "N selected" otherwise.
     pub selection_label: Option<Rc<dyn Fn(usize) -> String>>,
+    /// Names each card's selection box from its row id, as
+    /// `Table(select_row_label = …)`. Default: "Select row".
+    #[prop(static)]
+    pub select_row_label: Option<super::select::SelectRowLabel>,
     /// Whether a `selection` draws the select-all line. Default `true`; turn it
     /// off when the screen has its own select-all header, so a phone doesn't
     /// show two. Each card keeps its box.
@@ -283,6 +287,7 @@ impl Default for TableCardsProps {
             on_end_reached: None,
             selection: None,
             selection_label: None,
+            select_row_label: None,
             selection_header: true,
             empty: None,
             scroller: None,
@@ -309,6 +314,7 @@ struct CardsModel {
     on_row_click: Option<Rc<dyn Fn(usize)>>,
     on_row_menu: Option<Rc<dyn Fn(usize, TouchPoint)>>,
     selection: Option<Signal<BTreeSet<RowId>>>,
+    select_row_label: Option<super::select::SelectRowLabel>,
     presentation: CardPresentation,
     /// The row whose detail sheet is open.
     detail_row: Signal<Option<usize>>,
@@ -328,6 +334,7 @@ impl Default for CardsModel {
             on_row_click: None,
             on_row_menu: None,
             selection: None,
+            select_row_label: None,
             presentation: CardPresentation::default(),
             detail_row: signal(None),
             styles: Default::default(),
@@ -372,6 +379,7 @@ pub fn TableCards(props: &TableCardsProps) -> Element {
         on_row_click: props.on_row_click.clone(),
         on_row_menu: props.on_row_menu.clone(),
         selection: props.selection,
+        select_row_label: props.select_row_label.clone(),
         presentation: props.presentation,
         detail_row: signal(None),
         styles: props.styles.clone(),
@@ -577,7 +585,11 @@ fn TableCardItem(props: &TableCardItemProps) -> Element {
     let more_style = TableStyles::card_more().overridden(styles.card_more.as_ref());
     let title_line_style = TableStyles::card_title_line().overridden(styles.card_title_line.as_ref());
     let title_style = TableStyles::card_title().overridden(styles.card_title.as_ref());
-    let select = model.selection.map(|s| select_row_box(s, (model.row_id)(i)));
+    let select = model.selection.map(|s| {
+        let id = (model.row_id)(i);
+        let name = super::select::row_box_name(model.select_row_label.as_ref(), &id);
+        select_row_box(s, id, name)
+    });
     let detail_row = model.detail_row;
     let clickable = model.on_row_click.is_some();
     let card_style = TableStyles::card()
@@ -660,7 +672,11 @@ fn TableCardRow(props: &TableCardRowProps) -> Element {
         })
         .collect();
     let has_meta = !meta.is_empty();
-    let select = model.selection.map(|s| select_row_box(s, (model.row_id)(i)));
+    let select = model.selection.map(|s| {
+        let id = (model.row_id)(i);
+        let name = super::select::row_box_name(model.select_row_label.as_ref(), &id);
+        select_row_box(s, id, name)
+    });
     let body_style = TableStyles::card_row_body().overridden(styles.card_row_body.as_ref());
     let title_style = TableStyles::card_row_title().overridden(styles.card_row_title.as_ref());
     let meta_style = TableStyles::card_meta().overridden(styles.card_meta.as_ref());

@@ -1343,6 +1343,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **A Table's selection boxes have accessible names and robot test ids** (`idea-ui` minor). Every
+  row's box was an unnamed checkbox with no test id, so a screen reader couldn't say which row it
+  ticks and a test could find one only by position. A row's box is now named by the new
+  `select_row_label(&RowId) -> String` (on `Table` and `TableCards`; "Select Ice on the ramp"),
+  else "Select row", and carries `table-select-row`; the header's is "Select all rows",
+  `table-select-all`. On a virtualized table a reused cell's box is rebuilt when its row's name
+  changes. Constants: `SELECT_ROW_TEST_ID`, `SELECT_ALL_TEST_ID`, `SELECT_ROW_NAME`,
+  `SELECT_ALL_NAME`.
+
 - **One robot test can drive two apps** (`robot-relay` minor, `robot-test` minor). The relay
   serves `apps`, `select_app {app}` (this connection drives that app) and `open_page {url,
   isolated?}` (another tab of the web app over CDP, in its own browser context by default, joining

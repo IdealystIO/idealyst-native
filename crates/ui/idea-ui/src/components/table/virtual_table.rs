@@ -398,6 +398,7 @@ struct Shared {
     inset_left: Reactive<TableInset>,
     inset_right: Reactive<TableInset>,
     selection: Option<Signal<BTreeSet<RowId>>>,
+    select_row_label: Option<super::select::SelectRowLabel>,
     select_all: Option<runtime_core::Memo<Vec<RowId>>>,
     /// The row under the pointer and the row under a press: one signal for
     /// the whole table, since a row's cells mount independently and a
@@ -562,6 +563,7 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
         inset_left,
         inset_right,
         selection: props.selection,
+        select_row_label: props.select_row_label.clone(),
         select_all,
         hovered: signal(None),
         pressed: signal(None),
@@ -975,11 +977,23 @@ fn body_cell(shared: &Rc<Shared>, col: usize, row: Memo<usize>) -> Element {
                     let id = id.clone();
                     move || id().is_some() && selectable.as_ref().is_none_or(|f| f(row.get()))
                 };
-                ui! {
-                    if shown() {
-                        select_row_box_live(selection, id.clone())
-                    }
-                }
+                // The box's accessible name is set once, when it is made:
+                // rebuilt (keyed by the name) when the reused cell moves to
+                // a row named differently. The checked state follows the
+                // row without one.
+                let label = shared.select_row_label.clone();
+                let name = {
+                    let id = id.clone();
+                    move || id().map(|id| super::select::row_box_name(label.as_ref(), &id))
+                };
+                // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape
+                runtime_core::switch(
+                    move || if shown() { name() } else { None },
+                    move |name: &Option<String>| match name {
+                        Some(name) => select_row_box_live(selection, id.clone(), name.clone()),
+                        None => ui! { view() },
+                    },
+                )
             }
             None => ui! { view() },
         },

@@ -8,6 +8,12 @@
 //! when it has an `id` and is `selectable`; select-all touches exactly
 //! those rows of the ones the table was built with (the page on screen),
 //! leaving any other ids in the set alone.
+//!
+//! Every box has an accessible name and a robot test id, so a screen
+//! reader says which row a box ticks and a test finds one row's box by
+//! name: the header's is "Select all rows" (`table-select-all`), a row's
+//! the table's `select_row_label(id)` ("Select Ice on the ramp"), else
+//! "Select row" (`table-select-row`).
 
 use std::collections::BTreeSet;
 use std::rc::Rc;
@@ -30,6 +36,23 @@ const MIXED_MARK: IconData = IconData {
     fill_rule: FillRule::NonZero,
     filled: false,
 };
+
+/// The robot test id of the select-all box.
+pub const SELECT_ALL_TEST_ID: &str = "table-select-all";
+/// The robot test id of every row's box (scope by row to pick one).
+pub const SELECT_ROW_TEST_ID: &str = "table-select-row";
+/// The select-all box's accessible name.
+pub const SELECT_ALL_NAME: &str = "Select all rows";
+/// A row box's accessible name when the table has no `select_row_label`.
+pub const SELECT_ROW_NAME: &str = "Select row";
+
+/// Names a row's box from its id: `Table(select_row_label = …)`.
+pub type SelectRowLabel = Rc<dyn Fn(&RowId) -> String>;
+
+/// Row `id`'s box's accessible name.
+pub(super) fn row_box_name(label: Option<&SelectRowLabel>, id: &RowId) -> String {
+    label.map_or_else(|| SELECT_ROW_NAME.to_string(), |f| f(id))
+}
 
 /// How much of the visible, selectable set is selected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,20 +147,28 @@ fn select_all_control(
         size: ControlSize::Sm.into(),
         disabled,
         label,
+        test_id: Some(SELECT_ALL_TEST_ID),
+        accessibility_label: Some(SELECT_ALL_NAME.into()),
         ..Default::default()
     })
 }
 
-/// One row's box.
-pub(super) fn select_row_box(selection: Signal<BTreeSet<RowId>>, id: RowId) -> Element {
-    select_row_box_live(selection, Rc::new(move || Some(id.clone())))
+/// One row's box, named `name`.
+pub(super) fn select_row_box(selection: Signal<BTreeSet<RowId>>, id: RowId, name: String) -> Element {
+    select_row_box_live(selection, Rc::new(move || Some(id.clone())), name)
 }
 
 /// One row's box, for a row whose id can change under it — a reused cell
 /// of a virtualized table, pointed at another row. `id` is read reactively
 /// for the checked state and at the moment of the press for the toggle;
 /// `None` (a row that's gone) reads as unchecked and toggles nothing.
-pub(super) fn select_row_box_live(selection: Signal<BTreeSet<RowId>>, id: Rc<dyn Fn() -> Option<RowId>>) -> Element {
+/// `name` is fixed: a reused cell rebuilds the box when its row's name
+/// changes (an accessible name is set once, when the node is made).
+pub(super) fn select_row_box_live(
+    selection: Signal<BTreeSet<RowId>>,
+    id: Rc<dyn Fn() -> Option<RowId>>,
+    name: String,
+) -> Element {
     let checked = signal(false);
     {
         let id = id.clone();
@@ -159,6 +190,8 @@ pub(super) fn select_row_box_live(selection: Signal<BTreeSet<RowId>>, id: Rc<dyn
             selection.set(next);
         }),
         size: ControlSize::Sm.into(),
+        test_id: Some(SELECT_ROW_TEST_ID),
+        accessibility_label: Some(name),
         ..Default::default()
     })
 }

@@ -280,14 +280,15 @@ pub use components::switch::{
 pub use components::table::{
     dragged_width, move_in_place, page_window_text, pager_count_text, rows_picker_matters, select_all_state,
     slide_offset, toggle_select_all, CardPresentation, CardSlot, CellAlign, CellPadding, CellTone, ColSpan, ColumnId,
-    ColumnPin, ColumnResizeCallback, ColumnWidths, RowId, RowTone, SelectAllState, SortState,
+    ColumnPin, ColumnResizeCallback, ColumnWidths, RowId, RowTone, SelectAllState, SelectRowLabel, SortState,
     Table, TableCards, TableCardsProps, TableCell, TableCellProps, TableColumn, TableDensity,
     TableEmpty, TableFooter, TableFooterProps, TableGroup, TableGroupProps, TableInset, TablePager, TablePagerProps,
     TableProps, TableRestyle, TableRow, TableRowProps, TableScroller, TableSlotStyles, TableStyles, TableTone, TableHeadEdge, TableVariant,
     VirtualRows,
     ACTIONS_COLUMN_WIDTH_PX, CARD_CELL_CAP,
     CARD_ESTIMATE_PX, CARD_GAP_PX, CARD_LOAD_AHEAD_PX, CARD_ROW_MIN_HEIGHT_PX, COLUMN_RESET_DOUBLE_CLICK_NS,
-    COLUMN_RESIZE_MIN_PX, GRIP_COLUMN_WIDTH_PX, SELECT_COLUMN_WIDTH_PX,
+    COLUMN_RESIZE_MIN_PX, GRIP_COLUMN_WIDTH_PX, SELECT_ALL_NAME, SELECT_ALL_TEST_ID, SELECT_COLUMN_WIDTH_PX,
+    SELECT_ROW_NAME, SELECT_ROW_TEST_ID,
 };
 pub use components::tabs::{Tab, TabIndicator, Tabs, TabsActive, TabsPad, TabsProps, TabsSlotStyles, TabsStyles};
 pub use components::tag::{Tag, TagProps, TagRestyle, TagSlotStyles, TagStyles, TagVariant};

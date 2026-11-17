@@ -889,3 +889,36 @@ fn regression_on_row_menu_opens_on_a_hold_or_a_secondary_press() {
     assert_eq!(menus.borrow().last(), Some(&(2, 10.0, 105.0)));
     assert_eq!(*clicks.borrow(), vec![2]);
 }
+
+/// CrewForge (Safety Tips): a row's selection box had no accessible name
+/// and no test id, so a screen reader announced an unnamed checkbox and a
+/// test found one row's box only by its position on the row's line. Each
+/// box is named from its row (`select_row_label`) and carries
+/// `table-select-row`. A reused cell pointed at another row is renamed:
+/// the name is set when the box is made, so the box is rebuilt for it.
+#[test]
+fn regression_a_row_box_is_named_from_its_row_and_follows_a_reused_cell() {
+    use runtime_vocabulary::robot::{ElementKind, Query, Robot};
+    Robot::new().reset();
+    let t = table(20, |base, props| {
+        props.select_row_label = Some(Rc::new(|id: &RowId| format!("Select {id}")));
+        base
+    });
+    let (_, scope) = t.mount_scoped(0, 2); // the selection column, body row 1
+    let boxes = || Robot::new().find_all(Query::test_id(idea_ui::SELECT_ROW_TEST_ID));
+    let found = boxes();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].label.as_deref(), Some("Select row 1"));
+    assert_eq!(found[0].kind, ElementKind::Pressable, "on the box itself");
+
+    t.rebind(scope, 0, 6);
+    let found = boxes();
+    assert_eq!(found.len(), 1, "one box, rebuilt in place: {found:?}");
+    assert_eq!(found[0].label.as_deref(), Some("Select row 5"), "the reused cell's new row");
+
+    // The header's box.
+    t.mount(0, 0);
+    let all = Robot::new().find_all(Query::test_id(idea_ui::SELECT_ALL_TEST_ID));
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].label.as_deref(), Some(idea_ui::SELECT_ALL_NAME));
+}
