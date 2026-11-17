@@ -64,6 +64,9 @@ pub struct App {
     auto_scroll: bool,
     /// The app's platform, asked once ([`App::platform`]).
     platform: Option<Platform>,
+    /// The viewport before the running test first resized or turned the
+    /// screen, to put back after it ([`App::restore_screen`]).
+    pub(crate) screen_start: Option<(f64, f64)>,
 }
 
 impl App {
@@ -76,7 +79,7 @@ impl App {
     /// Wrap an already-connected client (used by the harness, which connects +
     /// waits for readiness before handing the app to tests).
     pub(crate) fn from_client(client: RobotClient) -> Self {
-        Self { client, timeout: DEFAULT_TIMEOUT, auto_scroll: true, platform: None }
+        Self { client, timeout: DEFAULT_TIMEOUT, auto_scroll: true, platform: None, screen_start: None }
     }
 
     /// How long actions and assertions wait before failing.
@@ -180,6 +183,122 @@ impl App {
     /// (unsupported on this platform, a maximized window) instead of
     /// panicking. Still panics if the app never reaches the size.
     pub fn try_set_viewport(&mut self, width: f64, height: f64) -> Result<(), String> {
+        self.note_screen_start();
+        self.resize_to(width, height)
+    }
+
+    /// Turn the screen to `orientation`, as a person turns the device, and
+    /// wait until the app's viewport has turned — a test of what the app
+    /// does when its layout flips under it. An iPhone app turns its own
+    /// interface; under `idealyst test` the runner turns the rest: an
+    /// Android device's display (over adb, emulator or device), an iPad
+    /// simulator (from Simulator.app), and a web page (swapping its width
+    /// and height). A desktop window has no orientation: there this
+    /// panics, saying to use [`set_viewport`](Self::set_viewport) — see
+    /// [`try_set_orientation`](Self::try_set_orientation) to skip instead.
+    ///
+    /// The screen is put back after the test, as `set_viewport`'s size is.
+    pub fn set_orientation(&mut self, orientation: Orientation) {
+        self.try_set_orientation(orientation)
+            .unwrap_or_else(|e| panic!("set_orientation({}): {e}", orientation.name()))
+    }
+
+    /// [`set_orientation`](Self::set_orientation), returning why it could
+    /// not (no screen to turn) instead of panicking. Still panics if the
+    /// app never turns.
+    pub fn try_set_orientation(&mut self, orientation: Orientation) -> Result<(), String> {
+        self.note_screen_start();
+        self.turn_to(orientation)
+    }
+
+    /// Remember the viewport the test started with, once per test.
+    fn note_screen_start(&mut self) {
+        if self.screen_start.is_none() {
+            let v = self.measured_viewport();
+            self.screen_start = Some((v.width, v.height));
+        }
+    }
+
+    /// Put back the screen the test started with, if it resized or turned
+    /// it: the orientation first (a phone can only turn), then the size.
+    /// Run by the harness after each test.
+    pub(crate) fn restore_screen(&mut self) {
+        self.__restore_screen()
+    }
+
+    /// [`restore_screen`](Self::restore_screen), for this crate's mock
+    /// tests; not part of the authoring surface.
+    #[doc(hidden)]
+    pub fn __restore_screen(&mut self) {
+        let Some((width, height)) = self.screen_start.take() else { return };
+        let v = self.viewport();
+        let start = Orientation::of(width, height);
+        if v.orientation() != start {
+            // A desktop has no orientation; its size is restored below.
+            let _ = self.turn_to(start);
+        }
+        let v = self.viewport();
+        if (v.width - width).abs() >= 0.5 || (v.height - height).abs() >= 0.5 {
+            self.resize_to(width, height)
+                .unwrap_or_else(|e| panic!("putting the screen back to {width} × {height} after the test: {e}"));
+        }
+    }
+
+    /// The viewport once the app has measured it. An Android app reports
+    /// 0 × 0 until its first layout pass, which a 0 × 0 "portrait" would
+    /// pass for: a turn read from it was never asked.
+    fn measured_viewport(&mut self) -> Viewport {
+        self.wait("viewport()", |app| {
+            let v: Viewport = serde_json::from_value(app.query("get_viewport", json!({}))?)
+                .map_err(|e| Failure::Fatal(format!("get_viewport: unexpected shape ({e})")))?;
+            if v.width > 0.0 && v.height > 0.0 {
+                Ok(v)
+            } else {
+                Err(Failure::NotYet("the app has not measured its viewport yet (0 × 0)".into()))
+            }
+        })
+    }
+
+    fn turn_to(&mut self, orientation: Orientation) -> Result<(), String> {
+        let desc = format!("set_orientation({})", orientation.name());
+        let before = self.measured_viewport();
+        if before.orientation() == orientation {
+            return Ok(());
+        }
+        let asked = self.wait(&desc, |app| match app.query("set_orientation", json!({ "orientation": orientation.name() })) {
+            Ok(_) => Ok(Ok(())),
+            Err(Failure::Fatal(e)) => Ok(Err(e)),
+            Err(other) => Err(other),
+        });
+        // An app that can't turn its own screen is turned by the runner:
+        // under `idealyst test`, a web page is resized to the swapped size,
+        // an Android device's display is turned over adb (an Android app
+        // can only request an orientation, which a tablet answers by
+        // letterboxing it), and an iPad simulator from Simulator.app (a
+        // multitasking iPad app can't choose its orientation).
+        if let Err(e) = asked {
+            let Some(control) = crate::browser_control::from_env() else { return Err(e) };
+            let args = json!({
+                "orientation": orientation.name(),
+                "width": before.height.round() as u32,
+                "height": before.width.round() as u32,
+            });
+            crate::browser_control::request(control, "set_orientation", args)
+                .map_err(|c| format!("{e}; and the test runner could not turn the screen: {c}"))?;
+        }
+        self.wait(&desc, |app| {
+            let v: Viewport = serde_json::from_value(app.query("get_viewport", json!({}))?)
+                .map_err(|e| Failure::Fatal(format!("get_viewport: unexpected shape ({e})")))?;
+            if v.orientation() == orientation {
+                Ok(())
+            } else {
+                Err(Failure::NotYet(format!("the viewport is still {} × {}", v.width, v.height)))
+            }
+        });
+        Ok(())
+    }
+
+    fn resize_to(&mut self, width: f64, height: f64) -> Result<(), String> {
         let desc = format!("set_viewport({width}, {height})");
         // Idempotent, so a busy app is asked again.
         let asked = self.wait(&desc, |app| match app.query("set_viewport", json!({ "width": width, "height": height })) {
@@ -731,6 +850,30 @@ impl From<String> for Failure {
     }
 }
 
+/// Which way up a screen is, as [`App::set_orientation`] turns it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Orientation {
+    /// Taller than wide (or square).
+    Portrait,
+    /// Wider than tall.
+    Landscape,
+}
+
+impl Orientation {
+    /// `"portrait"` / `"landscape"`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Orientation::Portrait => "portrait",
+            Orientation::Landscape => "landscape",
+        }
+    }
+
+    /// The orientation of a `width × height` viewport.
+    pub fn of(width: f64, height: f64) -> Self {
+        if width > height { Orientation::Landscape } else { Orientation::Portrait }
+    }
+}
+
 /// The app's viewport, as [`App::viewport`] reports it.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
 pub struct Viewport {
@@ -740,6 +883,13 @@ pub struct Viewport {
     pub height: f64,
     /// The active breakpoint: `"xs"`, `"sm"`, `"md"`, `"lg"` or `"xl"`.
     pub breakpoint: String,
+}
+
+impl Viewport {
+    /// Portrait unless wider than tall.
+    pub fn orientation(&self) -> Orientation {
+        Orientation::of(self.width, self.height)
+    }
 }
 
 /// The platform an app runs on, as [`App::platform`] reports it. The

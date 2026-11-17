@@ -71,6 +71,9 @@ mod root_box_policy;
 // (`imp/activity.rs`).
 #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
 mod user_activity_policy;
+/// The robot's `set_orientation` masks (`imp/orientation.rs`).
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+mod orientation_policy;
 // The robot's UIKit geometry reads: whether a tap at a point reaches a node
 // (a label reached through its interactive ancestor) and how a node clips
 // its descendants. Un-gated so the tests run from any host; the UIKit walk

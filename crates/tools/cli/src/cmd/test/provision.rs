@@ -106,13 +106,13 @@ fn simulator_booted(udid: &str) -> bool {
         .any(|d| d["udid"] == udid && d["state"] == "Booted")
 }
 
-fn adb() -> Option<std::path::PathBuf> {
+pub fn adb() -> Option<std::path::PathBuf> {
     Some(matrix::sdk_root()?.join("platform-tools/adb")).filter(|p| p.is_file())
 }
 
 /// The serial of the running emulator that is AVD `name`: only `emulator-*`
 /// serials are asked, so a physical device is never matched.
-fn emulator_serial(name: &str) -> Option<String> {
+pub fn emulator_serial(name: &str) -> Option<String> {
     let adb = adb()?;
     let out = Command::new(&adb).arg("devices").output().ok()?;
     String::from_utf8_lossy(&out.stdout)

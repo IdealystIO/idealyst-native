@@ -6,7 +6,7 @@
 //! harness need a live app + relay, so they're verified end-to-end via
 //! `idealyst test`; this covers the client logic in plain `cargo test`.)
 
-use robot_test::{App, Cookie, Selector};
+use robot_test::{App, Cookie, Orientation, Selector};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -55,6 +55,11 @@ struct Mock {
     pending_viewport: Option<(f64, f64)>,
     /// `set_viewport` answers unsupported (a browser tab, a phone).
     viewport_fixed: bool,
+    /// `set_orientation` answers unsupported (a desktop window).
+    orientation_fixed: bool,
+    /// `get_viewport` answers 0 × 0 this many more times (an Android app
+    /// before its first layout pass).
+    unmeasured_looks: u32,
     /// "tab" (50, off the window to the right) and "clipped" (51, in the
     /// window but clipped by its scroll view) after `scroll_into_view`.
     tab_revealed: bool,
@@ -234,6 +239,10 @@ fn respond(cmd: &str, args: &Value, m: &mut Mock) -> Result<Value, String> {
             _ => json!([]),
         },
         "count_elements" => json!(if args["kind"] == "Button" { 3 } else { 0 }),
+        "get_viewport" if m.unmeasured_looks > 0 => {
+            m.unmeasured_looks -= 1;
+            json!({ "width": 0.0, "height": 0.0, "breakpoint": "xs", "pointer": "coarse" })
+        }
         "get_viewport" => {
             let (width, height) = m.viewport;
             if let Some(next) = m.pending_viewport.take() {
@@ -246,6 +255,16 @@ fn respond(cmd: &str, args: &Value, m: &mut Mock) -> Result<Value, String> {
         }
         "set_viewport" if m.viewport_fixed => {
             return Err("set_viewport is unsupported on this platform: the app cannot resize its own window here".into())
+        }
+        "set_orientation" if m.orientation_fixed => {
+            return Err("set_orientation is unsupported on this platform: the app has no screen it can turn".into())
+        }
+        // A phone turns: width and height swap, a look later.
+        "set_orientation" => {
+            let (w, h) = m.viewport;
+            let landscape = args["orientation"] == "landscape";
+            m.pending_viewport = Some(if landscape == (w > h) { (w, h) } else { (h, w) });
+            json!("ok")
         }
         "set_viewport" => {
             m.pending_viewport = Some((args["width"].as_f64().unwrap(), args["height"].as_f64().unwrap()));
@@ -794,6 +813,61 @@ fn viewport_is_read_and_set() {
     assert!(err.contains("unsupported on this platform"), "{err}");
     let msg = panic_message(|| app.set_viewport(800.0, 600.0));
     assert!(msg.contains("set_viewport(800, 600)") && msg.contains("unsupported"), "got: {msg}");
+}
+
+/// A phone turns: `set_orientation` waits until the viewport has turned,
+/// and the screen is put back after the test by turning it again (a phone
+/// can't resize).
+#[test]
+fn a_phone_turns_and_is_turned_back_after_the_test() {
+    let (addr, mock) = spawn_mock_app_with(Mock::default());
+    mock.lock().unwrap().viewport = (390.0, 844.0);
+    mock.lock().unwrap().viewport_fixed = true;
+    let mut app = App::connect(addr).unwrap();
+    assert_eq!(app.viewport().orientation(), Orientation::Portrait);
+    app.set_orientation(Orientation::Landscape);
+    let v = app.viewport();
+    assert_eq!((v.width, v.height, v.orientation()), (844.0, 390.0, Orientation::Landscape));
+    app.__restore_screen();
+    let v = app.viewport();
+    assert_eq!((v.width, v.height), (390.0, 844.0), "turned back");
+    let turns: Vec<Value> = mock.lock().unwrap().requests.iter()
+        .filter(|(c, _)| c == "set_orientation").map(|(_, a)| a["orientation"].clone()).collect();
+    assert_eq!(turns, [json!("landscape"), json!("portrait")]);
+    let n = mock.lock().unwrap().requests.len();
+    app.__restore_screen();
+    assert_eq!(mock.lock().unwrap().requests.len(), n, "nothing to put back twice");
+}
+
+/// REGRESSION (Android tablet row): the runner turned a freshly booted
+/// app upright before its first layout pass, read the 0 × 0 viewport as
+/// already portrait, and never asked; the landscape tablet stayed at the
+/// desktop breakpoint. The turn waits for a measured viewport.
+#[test]
+fn regression_a_turn_waits_for_the_first_measured_viewport() {
+    let (addr, mock) = spawn_mock_app_with(Mock::default());
+    mock.lock().unwrap().viewport = (1280.0, 716.0);
+    mock.lock().unwrap().unmeasured_looks = 3;
+    let mut app = App::connect(addr).unwrap();
+    app.set_orientation(Orientation::Portrait);
+    let v = app.viewport();
+    assert_eq!((v.width, v.height), (716.0, 1280.0), "turned, not taken as already portrait");
+}
+
+/// A desktop window has no orientation: `set_orientation` says so, and a
+/// test's resize is put back by resizing (the turn it can't make is not an
+/// error there).
+#[test]
+fn a_window_says_it_cannot_turn_and_its_size_is_put_back() {
+    let (addr, mock) = spawn_mock_app_with(Mock::default());
+    mock.lock().unwrap().orientation_fixed = true;
+    let mut app = App::connect(addr).unwrap();
+    let err = app.try_set_orientation(Orientation::Portrait).unwrap_err();
+    assert!(err.contains("no screen it can turn"), "{err}");
+    app.set_viewport(390.0, 844.0);
+    app.__restore_screen();
+    let v = app.viewport();
+    assert_eq!((v.width, v.height), (1280.0, 800.0), "the size the test started with");
 }
 
 fn verbs(state: &Arc<Mutex<Mock>>) -> Vec<String> {

@@ -51,6 +51,17 @@ impl std::ops::Deref for AppGuard {
         &self.0
     }
 }
+/// After a test that passed, the screen it resized or turned is put back
+/// here, and a failure to is that test's failure. After one that panicked
+/// it is left for the next [`__acquire`].
+impl Drop for AppGuard {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            self.0.restore_screen();
+        }
+    }
+}
+
 impl std::ops::DerefMut for AppGuard {
     fn deref_mut(&mut self) -> &mut App {
         &mut self.0
@@ -62,11 +73,21 @@ impl std::ops::DerefMut for AppGuard {
 #[doc(hidden)]
 pub fn __acquire(_test: &str) -> Acquire {
     match CONN.get_or_init(establish) {
-        Conn::Ready(m) => Acquire::Ready(AppGuard(
+        Conn::Ready(m) => {
             // A panicking test poisons the mutex; recover the inner app so the
             // next test still runs rather than cascading false failures.
-            m.lock().unwrap_or_else(|p| p.into_inner()),
-        )),
+            let mut app = m.lock().unwrap_or_else(|p| p.into_inner());
+            // A test that failed with the screen resized or turned left it
+            // that way: its guard can't restore while unwinding (a second
+            // panic there aborts the run). Put it back before this test.
+            if app.screen_start.is_some() {
+                let restored = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.restore_screen()));
+                if restored.is_err() {
+                    eprintln!("[robot_test] {_test}: the previous test's screen could not be put back (see above)");
+                }
+            }
+            Acquire::Ready(AppGuard(app))
+        }
         Conn::Skip(why) => Acquire::Skip(why.clone()),
     }
 }

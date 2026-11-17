@@ -574,9 +574,7 @@ impl Host for ThisHost {
             .arg("-list-avds")
             .output()
             .map_err(|_| format!("the Android emulator isn't installed ({} is missing; `sdkmanager emulator`)", emulator.display()))?;
-        let home = std::env::var_os("ANDROID_AVD_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".android").join("avd")));
+        let home = avd_home();
         Ok(String::from_utf8_lossy(&out.stdout)
             .lines()
             .map(str::trim)
@@ -746,6 +744,13 @@ pub fn parse_simctl(json: &[u8]) -> Result<Vec<Simulator>, String> {
         }
     }
     Ok(out)
+}
+
+/// Where AVDs live: `ANDROID_AVD_HOME`, else `~/.android/avd`.
+pub fn avd_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("ANDROID_AVD_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".android").join("avd")))
 }
 
 /// An AVD's `config.ini` → its hardware profile, API level and ABI.

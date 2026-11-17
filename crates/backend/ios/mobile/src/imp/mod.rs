@@ -11,6 +11,7 @@ pub(crate) mod handles;
 pub(crate) mod icon;
 pub(crate) mod image;
 pub(crate) mod introspect;
+pub(crate) mod orientation;
 pub(crate) mod portal;
 pub(crate) mod press_state;
 pub(crate) mod phase_timer;

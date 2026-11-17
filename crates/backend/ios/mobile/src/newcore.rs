@@ -1759,6 +1759,10 @@ mod ios_impl {
             IosBackend::hit_contains_impl(self, node, x, y)
         }
 
+        fn set_orientation(&self, node: &Self::Node, orientation: caps::ScreenOrientation) -> Option<caps::NativeInjection> {
+            crate::imp::orientation::set_orientation(node.as_view(), orientation)
+        }
+
         fn supports_native_introspection(&self) -> bool {
             true
         }

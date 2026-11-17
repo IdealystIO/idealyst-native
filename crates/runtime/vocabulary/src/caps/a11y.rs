@@ -236,6 +236,23 @@ pub trait IntrospectionOps: Host {
         None
     }
 
+    /// Turn the screen holding `node` to `orientation`, as a person turns
+    /// the device: the robot's `set_orientation`. The app's interface
+    /// rotates and the viewport takes the turned size through the
+    /// backend's ordinary rotation path. `None` = the app can't turn its
+    /// screen here, and the robot reports the verb unsupported: a desktop
+    /// window or a browser tab resizes instead, and an Android app can only
+    /// request an orientation, which a large screen answers by letterboxing
+    /// the app (`idealyst test` turns an Android display over adb).
+    ///
+    /// An injection, run after the robot releases its backend borrow, as
+    /// [`resize_window`](Self::resize_window) is; callers wait for the new
+    /// size.
+    #[allow(unused_variables)]
+    fn set_orientation(&self, node: &Self::Node, orientation: ScreenOrientation) -> Option<NativeInjection> {
+        None
+    }
+
     /// The scroll position and range of a scroller the toolkit scrolls —
     /// `node` itself ([`ScrollTarget::Node`]: a `scroll_view`, a list's own
     /// scroller, a web element whose CSS `overflow` scrolls), or the
@@ -382,6 +399,40 @@ pub enum PointerStepPhase {
     /// have no secondary button and answer `None` for a gesture
     /// containing it; their context gesture is a long press.
     SecondaryClick,
+}
+
+/// Which way up a screen is: [`IntrospectionOps::set_orientation`].
+/// Portrait is taller than wide, landscape wider than tall — the side the
+/// device turned to is the platform's choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenOrientation {
+    Portrait,
+    Landscape,
+}
+
+impl ScreenOrientation {
+    /// `"portrait"` / `"landscape"`: the robot verb's spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            ScreenOrientation::Portrait => "portrait",
+            ScreenOrientation::Landscape => "landscape",
+        }
+    }
+
+    /// The inverse of [`name`](Self::name).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "portrait" => Some(ScreenOrientation::Portrait),
+            "landscape" => Some(ScreenOrientation::Landscape),
+            _ => None,
+        }
+    }
+
+    /// The orientation a `width × height` viewport has: portrait unless
+    /// it is wider than tall.
+    pub fn of(width: f32, height: f32) -> Self {
+        if width > height { ScreenOrientation::Landscape } else { ScreenOrientation::Portrait }
+    }
 }
 
 /// A prepared [`IntrospectionOps::native_pointer`] injection; `Err` says

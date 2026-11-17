@@ -87,7 +87,8 @@ use std::rc::Rc;
 use runtime_shared::primitives::portal::ViewportRect;
 
 use crate::caps::{
-    ContentClip, IntrospectionOps, NativeInjection, PointerStep, PointerStepPhase, ResolvedStyle, ScrollPort, ScrollTarget,
+    ContentClip, IntrospectionOps, NativeInjection, PointerStep, PointerStepPhase, ResolvedStyle, ScreenOrientation,
+    ScrollPort, ScrollTarget,
 };
 
 mod key;
@@ -407,6 +408,10 @@ pub(crate) struct ElementActions {
     /// set on root elements — `set_viewport` resizes the first root's
     /// window, and a closure per element would be dead weight.
     pub resize_window: Option<Rc<dyn Fn(f32, f32) -> Option<NativeInjection>>>,
+    /// Turn this element's screen ([`IntrospectionOps::set_orientation`]),
+    /// built under the backend borrow and run after it is released. Root
+    /// elements only, as `resize_window`.
+    pub set_orientation: Option<Rc<dyn Fn(ScreenOrientation) -> Option<NativeInjection>>>,
     /// Real key input in this element's window
     /// ([`IntrospectionOps::native_key`]); see [`Robot::press_key`].
     pub native_key: Option<key::NativeKey>,
@@ -992,6 +997,12 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
         Rc::new(move |w: f32, h: f32| b.borrow().resize_window(&n, w, h))
             as Rc<dyn Fn(f32, f32) -> Option<NativeInjection>>
     });
+    let set_orientation = parent.is_none().then(|| {
+        let b = backend.clone();
+        let n = node.clone();
+        Rc::new(move |o: ScreenOrientation| b.borrow().set_orientation(&n, o))
+            as Rc<dyn Fn(ScreenOrientation) -> Option<NativeInjection>>
+    });
     let id = REGISTRY.with(|r| {
         r.borrow_mut().insert(RegistryEntry {
             kind,
@@ -1021,6 +1032,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
                 hit: Some(hit),
                 native_pointer: Some(native_pointer),
                 resize_window,
+                set_orientation,
                 native_key: Some(native_key),
                 move_focus: Some(move_focus),
                 keys,
@@ -1458,6 +1470,12 @@ pub struct Viewport {
 }
 
 /// Why [`Robot::set_viewport`] can't resize on this platform.
+/// Why `set_orientation` can't run: the app has no screen to turn.
+pub const SET_ORIENTATION_UNSUPPORTED: &str = "set_orientation is unsupported on this platform: the app has \
+     no screen it can turn (a desktop window resizes instead: use set_viewport). On web and Android, run \
+     under `idealyst test`, whose runner turns the page or the device's display for robot-test's \
+     `set_orientation`";
+
 pub const SET_VIEWPORT_UNSUPPORTED: &str = "set_viewport is unsupported on this platform: the app cannot \
      resize its own window here. On web, run under `idealyst test --web`, whose runner resizes the \
      page for robot-test's `set_viewport`; on iOS and Android, run on a device or simulator of the \
@@ -2850,6 +2868,25 @@ impl Robot {
         Ok(())
     }
 
+    /// Turn the app's screen to `orientation`, where the app can turn it
+    /// itself (iOS, through [`IntrospectionOps::set_orientation`]);
+    /// otherwise `Err(`[`SET_ORIENTATION_UNSUPPORTED`]`)`. The turned size
+    /// reaches [`viewport`](Self::viewport) through the backend's rotation
+    /// path, after the platform animates it, so a caller that needs it
+    /// waits for it.
+    pub fn set_orientation(&self, orientation: ScreenOrientation) -> Result<(), String> {
+        let turn = REGISTRY.with(|r| {
+            let reg = r.borrow();
+            reg.roots().into_iter().find_map(|id| reg.get(id)?.actions.set_orientation.clone())
+        });
+        let injection = turn
+            .and_then(|prepare| prepare(orientation))
+            .ok_or_else(|| SET_ORIENTATION_UNSUPPORTED.to_string())?;
+        injection().map_err(|e| format!("the platform refused to turn the screen: {e}"))?;
+        settle();
+        Ok(())
+    }
+
     pub fn reset(&self) {
         REGISTRY.with(|r| *r.borrow_mut() = Registry::new());
         PARENT_STACK.with(|s| s.borrow_mut().clear());
@@ -3388,6 +3425,13 @@ pub mod bridge {
                     args[key].as_f64().map(|v| v as f32).ok_or_else(|| format!("missing '{key}' argument"))
                 };
                 robot.set_viewport(dim("width")?, dim("height")?)?;
+                Ok("\"ok\"".into())
+            }
+            "set_orientation" => {
+                let name = args["orientation"].as_str().ok_or("missing 'orientation' argument")?;
+                let orientation = ScreenOrientation::parse(name)
+                    .ok_or_else(|| format!("orientation must be \"portrait\" or \"landscape\", got {name:?}"))?;
+                robot.set_orientation(orientation)?;
                 Ok("\"ok\"".into())
             }
             "count_elements" => {
@@ -4368,6 +4412,55 @@ mod tests {
         let err = bridge::invoke_command("set_viewport", &json!({ "width": -1, "height": 600 })).unwrap_err();
         assert!(err.contains("positive"), "{err}");
         robot.reset();
+    }
+
+    /// `set_orientation` turns the first root's screen outside any backend
+    /// borrow; a platform without one (desktop, web) says to resize
+    /// instead.
+    #[test]
+    fn set_orientation_turns_the_first_roots_screen_or_says_why_not() {
+        let robot = Robot::new();
+        robot.reset();
+        let asked: Rc<RefCell<Vec<ScreenOrientation>>> = Rc::default();
+        let asked_in = asked.clone();
+        REGISTRY.with(|r| {
+            r.borrow_mut().insert(RegistryEntry {
+                actions: ElementActions {
+                    set_orientation: Some(Rc::new(move |o| {
+                        let asked = asked_in.clone();
+                        Some(Box::new(move || {
+                            asked.borrow_mut().push(o);
+                            // What a backend's rotation path does.
+                            runtime_shared::set_viewport_size(runtime_shared::ViewportSize::new(844.0, 390.0));
+                            Ok(())
+                        }) as NativeInjection)
+                    })),
+                    ..ElementActions::default()
+                },
+                ..RegistryEntry::default()
+            })
+        });
+        let turn = |o: &str| bridge::invoke_command("set_orientation", &json!({ "orientation": o }));
+        assert_eq!(turn("landscape").unwrap(), "\"ok\"");
+        assert_eq!(*asked.borrow(), vec![ScreenOrientation::Landscape]);
+        assert_eq!((robot.viewport().width, robot.viewport().height), (844.0, 390.0));
+        assert!(turn("sideways").unwrap_err().contains("\"portrait\" or \"landscape\""));
+        assert!(bridge::invoke_command("set_orientation", &json!({})).unwrap_err().contains("'orientation'"));
+
+        robot.reset();
+        REGISTRY.with(|r| r.borrow_mut().insert(RegistryEntry::default()));
+        assert_eq!(turn("portrait").unwrap_err(), SET_ORIENTATION_UNSUPPORTED);
+        robot.reset();
+    }
+
+    #[test]
+    fn a_viewport_is_portrait_unless_wider_than_tall() {
+        assert_eq!(ScreenOrientation::of(390.0, 844.0), ScreenOrientation::Portrait);
+        assert_eq!(ScreenOrientation::of(844.0, 390.0), ScreenOrientation::Landscape);
+        assert_eq!(ScreenOrientation::of(500.0, 500.0), ScreenOrientation::Portrait);
+        for o in [ScreenOrientation::Portrait, ScreenOrientation::Landscape] {
+            assert_eq!(ScreenOrientation::parse(o.name()), Some(o));
+        }
     }
 
     /// A backend that can't size its own window (web, phones) answers

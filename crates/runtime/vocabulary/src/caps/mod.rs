@@ -31,7 +31,7 @@ mod wire;
 
 pub use a11y::{
     A11yOps, AnimationOps, ContentClip, IntrospectionOps, NativeInjection, PointerStep, PointerStepPhase, ResolvedStyle,
-    ScrollPort, ScrollTarget,
+    ScreenOrientation, ScrollPort, ScrollTarget,
 };
 pub use app::{AppEnvOps, LifecycleOps};
 pub use batch::BatchOps;

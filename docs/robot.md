@@ -526,6 +526,7 @@ Deep links need no SDK: `open_link {url}` delivers a URL as the OS would
 | Components | `list_components` (mounted instances), `get_component {instance_id}` (live props), `invoke_method {instance_id, method, args}` |
 | Signals | `list_watched_signals`, `read_signal`, `write_signal` (`watch_signal_writable` only), `get_signal_history` |
 | Functions | `list_functions`, `call_function`, `poll_function` (above) |
+| Orientation | `set_orientation {orientation: "portrait"\|"landscape"}` turns the app's screen where the app can turn it itself (an iPhone app: `UIWindowScene.requestGeometryUpdate`), through `IntrospectionOps::set_orientation`; elsewhere an error naming the alternative — a desktop window resizes instead, and under `idealyst test` robot-test asks the runner, which turns an Android display (adb), an iPad simulator (Simulator.app) or a web page. The turned size reaches `get_viewport` after the platform's rotation |
 | Viewport | `get_viewport` → `{width, height, breakpoint}` (logical px; `breakpoint` is `xs`…`xl`, what the app's responsive layout sees); `set_viewport {width, height}` resizes the window so its content area is that size — desktop backends only (macOS `setContentSize:`, Windows `SetWindowPos` on the top-level window, Linux the GTK window's default size), through `IntrospectionOps::resize_window`; on web under `idealyst test --web`, robot-test's `set_viewport` asks the runner, which resizes the page in place through its own DevTools session (pixel ratio, touch and user agent kept; no reload, so the app sees a window resize); elsewhere (an MCP session on web, mobile) an error naming the alternative. A maximized or full-screen window refuses; the new size reaches `get_viewport` through the window's ordinary resize path |
 | Page (relay) | Answered by the relay, never forwarded to the app (as `screenshot`'s `cdp` is), so `call_verb` reaches them too. `load_url {url}` boots the app again at `url` and answers `{url}` once the new instance has said `hello`: on web the relay navigates the driven tab over DevTools (`url` resolves against the page's address; a change of `#fragment` only reloads); on Android it relaunches the app with the link through the dev session's hook (`am start -S -W -a VIEW -d <link>`; an app path `/x` becomes `https://localhost/x`, whose route is `/x`); iOS and desktop apps answer that the session can't relaunch them (a link launch on the simulator drops the environment the app reconnects with; a desktop dev session ends with its app). `set_cookie {name, value, url?, domain?, path?, http_only?, secure?, same_site?, expires?}` (default: the page's origin; HttpOnly allowed), `get_cookies` (the cookies sent to the page's address, HttpOnly included), `clear_cookies {name?}`: web only, a native app's HTTP stack keeps its own cookie store. All four need a tab in a browser the dev session launched (`idealyst test --web`, the headless web client): the relay finds it by the page's pairing nonce among the browser profiles in the session's state directory |
 | App | `get_logs`, `clear_logs`, `get_identity`, `ping`, `get_platform` → `{platform}` (`web`, `ios`, `android`, `macos`, `linux`, `windows` — the `idealyst test --<platform>` names — or `tvos`, `androidtv`, `roku`, a custom backend's own name, `unknown`) |
@@ -600,9 +601,27 @@ fn sign_in(app: &mut App) {
 - Platform: `platform()` (`Platform::Ios`, … with `is_mobile()` /
   `is_desktop()` / `is_native()`; `try_platform()` for an app too old to
   say) — pair with `viewport().breakpoint` for the form factor.
-- Viewport: `viewport()` (`width`, `height`, `breakpoint`),
-  `set_viewport(w, h)` (waits for the app to report the size; panics where
-  the app can't resize itself) / `try_set_viewport` (returns why instead).
+- Viewport: `viewport()` (`width`, `height`, `breakpoint`;
+  `.orientation()`), `set_viewport(w, h)` (waits for the app to report the
+  size; panics where the app can't resize itself) / `try_set_viewport`
+  (returns why instead).
+- Orientation: `set_orientation(Orientation::Landscape)` turns the screen
+  as a person turns the device and waits until the app's viewport has
+  turned — a rotation reflows the app, and that reflow is its own place
+  for bugs. Who turns it: an iPhone app turns its own interface
+  (`requestGeometryUpdate`); under `idealyst test` the runner turns the
+  rest — an Android device's display over adb (`user_rotation`, emulator
+  or device: an Android app can only *request* an orientation, which a
+  large screen answers by letterboxing it), an iPad simulator from
+  Simulator.app's Device ▸ Orientation menu (a multitasking iPad app
+  can't choose its orientation; this needs the terminal allowed to
+  control the computer, under Privacy & Security ▸ Accessibility), and a
+  web page by swapping its width and height. A desktop window has no
+  orientation: it panics saying to use `set_viewport`
+  (`try_set_orientation` returns why instead).
+- Whatever a test resized or turned is put back after it: when it passes,
+  as it ends (failing to is that test's failure); when it fails, before
+  the next test starts.
 - App: `navigate` / `navigate_with` / `back` / `assert_path` /
   `assert_query(key, value)` / `assert_href(href)` / `navigators()`
   (each with `query` and `href`), `open_link(url)` (waits until the whole
@@ -805,6 +824,14 @@ command. `--no-create` reports missing devices instead of making them.
 simulator or emulator this run booted (one already running is left as it
 was; `--keep-devices` leaves them all). A physical device (`serial:`) is
 never shut down.
+
+Phone and tablet rows start upright: a device's own default differs (an
+iPad simulator boots in portrait, a `pixel_tablet` emulator in landscape,
+and a quick-boot snapshot keeps whatever it was saved in), which would make
+`tablet` a different class on each platform. Once the app is up, the runner
+turns it to portrait the way `set_orientation` does; a test that wants
+landscape turns it itself. The Android rotation settings the run changed
+are put back after the row.
 
 Every web row runs in one launch: the app builds and boots once and the
 page is resized and re-emulated between classes. Each run's tests are

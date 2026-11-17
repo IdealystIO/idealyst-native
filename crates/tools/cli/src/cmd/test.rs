@@ -45,6 +45,7 @@ mod browser;
 mod engines;
 mod matrix;
 mod provision;
+mod rotation;
 
 use anyhow::{Context, Result};
 use browser::{device_preset, Emulation, HeadlessBrowser};
@@ -1151,6 +1152,16 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
         }
         control = Some(serve_browser_control(Arc::downgrade(&browser))?);
     }
+    // A phone or tablet row's screen, which the runner turns where the app
+    // can't (`rotation`): an Android display, a multitasking iPad app's
+    // simulator. Dropped at the end of the launch, which puts it back.
+    let device_screen: Option<Arc<rotation::DeviceScreen>> = match launch.target_device.as_deref() {
+        Some(device) if !args.attach => rotation::DeviceScreen::new(platform, device).map(Arc::new),
+        _ => None,
+    };
+    if let Some(screen) = &device_screen {
+        control = Some(serve_control(Arc::downgrade(screen), screen_verb)?);
+    }
 
     for (n, size) in launch.sizes.iter().enumerate() {
         let na_file = std::env::temp_dir().join(format!("idealyst-test-na-{}-{index}-{n}.jsonl", std::process::id()));
@@ -1178,6 +1189,9 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
             // a cold app build finishes, launches, and dials — so give the app a
             // generous budget and reconnect each attempt.
             wait_until_ready(addr, Duration::from_secs(240)).with_context(|| see_log("the app did not become ready"))?;
+            if starts_upright(platform) {
+                turn_upright(addr, device_screen.as_deref());
+            }
             note!("running `{}` on {platform} at {}…\n", args.test, size.label);
             let mut suite = Command::new(test_bin);
             // Where the suite's not-applicable tests are recorded.
@@ -1235,17 +1249,31 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
 type BrowserSlot = Arc<Mutex<Option<Box<dyn engines::Browser>>>>;
 
 /// Serve the run's browser control (`robot_test::browser_control`): the
-/// robot's `set_viewport` on web, which a page cannot do for itself, and,
-/// for Firefox and WebKit, the browser verbs the relay answers over
-/// DevTools for Chromium (`load_url`, cookies, `open_page`, `screenshot`).
-/// On a thread for the run's length; it ends once `browser` is dropped.
+/// robot's `set_viewport` and `set_orientation` on web, which a page cannot
+/// do for itself, and, for Firefox and WebKit, the browser verbs the relay
+/// answers over DevTools for Chromium (`load_url`, cookies, `open_page`,
+/// `screenshot`).
 fn serve_browser_control(browser: Weak<Mutex<Option<Box<dyn engines::Browser>>>>) -> Result<SocketAddr> {
+    serve_control(browser, |slot, verb, args| match slot.lock().unwrap().as_mut() {
+        None => Err("the run's browser isn't open".into()),
+        Some(b) => browser_verb(b.as_mut(), verb, args).map_err(|e| format!("{e:#}")),
+    })
+}
+
+/// Serve a runner control socket (the protocol of
+/// `robot_test::browser_control`): each request is answered by `handle`
+/// against what `target` points at. On a thread for the run's length; it
+/// ends once `target` is dropped.
+fn serve_control<T: Send + Sync + 'static>(
+    target: Weak<T>,
+    handle: impl Fn(&T, &str, &serde_json::Value) -> Result<serde_json::Value, String> + Send + 'static,
+) -> Result<SocketAddr> {
     use std::io::{BufRead, BufReader, Write};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").context("binding the browser control socket")?;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").context("binding the runner control socket")?;
     let addr = listener.local_addr()?;
     listener.set_nonblocking(true)?;
     std::thread::spawn(move || loop {
-        if browser.strong_count() == 0 {
+        if target.strong_count() == 0 {
             return;
         }
         let stream = match listener.accept() {
@@ -1262,18 +1290,36 @@ fn serve_browser_control(browser: Weak<Mutex<Option<Box<dyn engines::Browser>>>>
             continue;
         }
         let result = match robot_test::browser_control::parse_request(line.trim()) {
-            None => Err(format!("unknown browser control request {:?}", line.trim())),
-            Some((verb, args)) => match browser.upgrade() {
-                None => Err("the run's browser is closed".into()),
-                Some(slot) => match slot.lock().unwrap().as_mut() {
-                    None => Err("the run's browser isn't open".into()),
-                    Some(b) => browser_verb(b.as_mut(), &verb, &args).map_err(|e| format!("{e:#}")),
-                },
+            None => Err(format!("unknown runner control request {:?}", line.trim())),
+            Some((verb, args)) => match target.upgrade() {
+                None => Err("the run's device is gone".into()),
+                Some(t) => handle(&t, &verb, &args),
             },
         };
         let _ = writeln!(&stream, "{}", robot_test::browser_control::reply_value(result));
     });
     Ok(addr)
+}
+
+/// One runner-control request on a phone or tablet row: `set_orientation`
+/// turns the device's screen.
+fn screen_verb(screen: &rotation::DeviceScreen, verb: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    match verb {
+        "set_orientation" => {
+            let o = orientation_arg(args).map_err(|e| format!("{e:#}"))?;
+            screen.turn(o).map_err(|e| format!("{e:#}"))?;
+            Ok(serde_json::json!(true))
+        }
+        other => Err(format!("`{other}` is a browser request; this row runs on a device")),
+    }
+}
+
+fn orientation_arg(args: &serde_json::Value) -> Result<robot_test::Orientation> {
+    match args["orientation"].as_str() {
+        Some("portrait") => Ok(robot_test::Orientation::Portrait),
+        Some("landscape") => Ok(robot_test::Orientation::Landscape),
+        other => anyhow::bail!("set_orientation needs \"portrait\" or \"landscape\", got {other:?}"),
+    }
 }
 
 /// One browser-control request against the run's browser.
@@ -1283,6 +1329,13 @@ fn browser_verb(b: &mut dyn engines::Browser, verb: &str, args: &serde_json::Val
     Ok(match verb {
         "set_viewport" => {
             let (w, h) = dim("width").zip(dim("height")).context("set_viewport needs a positive width and height")?;
+            b.resize(w, h)?;
+            json!(true)
+        }
+        // A page turned: the client sends the swapped size.
+        "set_orientation" => {
+            orientation_arg(args)?;
+            let (w, h) = dim("width").zip(dim("height")).context("set_orientation needs the turned width and height")?;
             b.resize(w, h)?;
             json!(true)
         }
@@ -1776,6 +1829,51 @@ fn discover_all_in(project_dir: &Path, apps_dirs: &[PathBuf]) -> Vec<SocketAddr>
     apps_dirs.iter().flat_map(|d| discover_all(Some(project_dir), d)).collect()
 }
 
+/// Whether a row on `platform` starts with its screen upright. A phone or
+/// tablet's own default differs by device: an iPad simulator boots in
+/// portrait, a `pixel_tablet` emulator in landscape (1280 dp wide, the
+/// desktop breakpoint), and a quick-boot snapshot keeps whatever it was
+/// saved in. So a `tablet` row would be a different class on each. Turned
+/// after launch (by the app where it can, else by the runner), which no
+/// boot setting or snapshot overrides; a test that wants landscape turns
+/// it there.
+fn starts_upright(platform: &str) -> bool {
+    matches!(platform, "ios" | "android")
+}
+
+/// Turn the screen to portrait before the suite: by the app where it can
+/// turn itself (an iPhone), else by the runner (`screen`: an Android
+/// display, an iPad simulator). Best-effort: a screen that won't turn runs
+/// as it is, and the run says so.
+fn turn_upright(addr: SocketAddr, screen: Option<&rotation::DeviceScreen>) {
+    use robot_test::Orientation::Portrait;
+    let turned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+        let mut app = robot_test::App::connect(addr).map_err(|e| e.to_string())?;
+        if let Err(by_app) = app.try_set_orientation(Portrait) {
+            let screen = screen.ok_or(by_app)?;
+            screen.turn(Portrait).map_err(|e| format!("{e:#}"))?;
+        }
+        // The app takes the turned size after the platform's rotation.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let v = app.viewport();
+            if v.width > 0.0 && v.orientation() == Portrait {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("the app still reports {} × {}", v.width, v.height));
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }));
+    let why = match turned {
+        Ok(Ok(())) => return,
+        Ok(Err(e)) => e,
+        Err(_) => "it never turned (see above)".to_string(),
+    };
+    note!("could not turn the screen upright before the suite; it runs as the device is: {why}");
+}
+
 /// Poll until the app answers a ping, reconnecting each attempt — the bridge
 /// isn't pingable until the app dials the relay, which can be long after the
 /// relay (and thus the registration) comes up.
@@ -2159,6 +2257,16 @@ fn wait_for_web_server(port: u16, timeout: Duration) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Phones and tablets start upright, whatever the device boots in;
+    /// a desktop window and a web page keep the size the row gave them.
+    #[test]
+    fn mobile_rows_start_upright() {
+        assert!(starts_upright("ios") && starts_upright("android"));
+        for p in ["web", "macos", "linux", "windows"] {
+            assert!(!starts_upright(p), "{p}");
+        }
+    }
+
     /// `--jobs` workers' progress lines interleave on one terminal; each
     /// says its platform, and the main thread's stay plain `[test]`.
     #[test]

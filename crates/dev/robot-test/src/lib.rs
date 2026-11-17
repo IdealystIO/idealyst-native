@@ -61,7 +61,7 @@ mod harness;
 pub mod parity;
 
 pub use app::{
-    parse_key, App, Component, Cookie, ElementState, FunctionArg, FunctionInfo, LinkOutcome, Locator, NavigatorInfo, Platform, ScrollOffset,
+    parse_key, App, Component, Cookie, ElementState, FunctionArg, FunctionInfo, LinkOutcome, Locator, NavigatorInfo, Orientation, Platform, ScrollOffset,
     Selector, SignalAssert, Style, TextDecoration, Viewport, DEFAULT_TIMEOUT, LOAD_URL_TIMEOUT, LONG_PRESS,
 };
 pub use client::{

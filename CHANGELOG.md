@@ -1343,6 +1343,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Robot tests turn the device** (`runtime-vocabulary` minor, `backend-ios-mobile` minor,
+  `robot-test` minor, `idealyst-cli` minor). `app.set_orientation(Orientation::Landscape)` turns
+  the screen and waits for the app to reflow: an iPhone app turns itself (robot verb
+  `set_orientation`, `IntrospectionOps::set_orientation`); under `idealyst test` the runner turns an
+  Android display over adb, an iPad simulator from Simulator.app and a web page. Whatever a test
+  resized or turned (`set_viewport` too) is put back after it, also after a failure. Phone and
+  tablet rows start upright, so a `pixel_tablet` row is a tablet (`md`) like the iPad's.
+
 - **Robot suites run in Firefox and WebKit too** (`idealyst-cli` minor, `robot-test` minor,
   `robot-relay` minor). A device matrix web spec takes an engine: `firefox:ipad-air` runs headless
   Firefox over WebDriver BiDi (no geckodriver), `webkit:1280x800` runs Safari through `safaridriver`
@@ -3621,6 +3629,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **Closing a modal on Android no longer focuses a field of the page** (`backend-android-mobile`
+  patch). When the focused view went away (a modal closed with its field focused), Android
+  re-requested focus from the window root and landed on the first visible text field: its
+  `on_focus` ran and the keyboard could come up, where iOS and web leave focus nowhere. The host
+  root is now the window's resting focus.
 
 - **Robot taps and Tab focus behave in Firefox** (`backend-web` patch). Two web robot paths
   broke in a browser whose page has no window focus, or that scrolls on `focus()`:

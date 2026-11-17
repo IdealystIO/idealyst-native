@@ -22,7 +22,7 @@
 //! Each test is the sole mutator of the state it asserts, so they're independent
 //! of run order (the harness also holds the one shared app for a whole test).
 
-use robot_test::{json, robot_test, App, Platform};
+use robot_test::{json, robot_test, App, Orientation, Platform};
 
 /// find → act → assert a signal: clicking the buttons drives the `count` signal
 /// (exposed via `watch_signal` in the app).
@@ -243,6 +243,28 @@ fn escape_closes_a_modal_while_its_field_has_focus(app: &mut App) {
     app.test_id("dialog-field").assert_hidden();
 }
 
+/// REGRESSION (Android tablet, robot-e2e demo): closing a modal whose
+/// field had focus put focus on a field of the page the user never
+/// touched. Android re-requests focus from the window's root when the
+/// focused view goes away, and that walk, in touch mode, stops at the first
+/// visible text field — here the name field, on screen once the page has
+/// scrolled down. Focus now rests on the backend's host root, as it rests
+/// nowhere on iOS and web. Below the fold first, as the suite that found it
+/// had scrolled; the check runs on every platform, which must all agree.
+#[robot_test]
+fn regression_closing_a_modal_with_its_field_focused_focuses_nothing_else(app: &mut App) {
+    app.test_id("page-end").click();
+    app.call_function("demo.set_dialog", json!({ "open": true }));
+    app.test_id("dialog-field").press_key("a");
+    app.test_id("dialog-field").assert_focused(true);
+    app.press_key("Escape");
+    app.test_id("dialog-field").assert_hidden();
+    app.signal("name_focused").assert_eq(false);
+    for field in ["name", "email", "focus-outer", "focus-inner"] {
+        app.test_id(field).assert_focused(false);
+    }
+}
+
 /// Regression: on web the overlay's window Escape listener closed the
 /// dialog even when the focused field's `on_key_down` prevented Escape —
 /// iOS, Android and macOS keep it open. A prevented Escape is the field's.
@@ -401,16 +423,6 @@ fn an_email_field_reports_the_email_keyboard(app: &mut App) {
     app.test_id("name").assert_keyboard("default");
 }
 
-/// The window's size before a test resized it, put back when it ends so
-/// the tests after it run at the size the run asked for.
-struct Viewport<'a>(&'a mut App, f64, f64);
-impl Drop for Viewport<'_> {
-    fn drop(&mut self) {
-        let (w, h) = (self.1, self.2);
-        self.0.set_viewport(w, h);
-    }
-}
-
 fn frame(app: &mut App, id: &str) -> (f64, f64, f64, f64) {
     let el = app.call("find_element", json!({ "test_id": id }));
     let f = app.call("get_absolute_frame", json!({ "element_id": el["id"] }));
@@ -422,16 +434,14 @@ fn frame(app: &mut App, id: &str) -> (f64, f64, f64, f64) {
 /// opens reads visible once a resize crosses `md`, and hidden again below.
 #[robot_test(platforms = [web, macos])]
 fn a_resize_across_md_shows_what_the_overlay_opens(app: &mut App) {
-    let v = app.viewport();
-    let mut app = Viewport(app, v.width, v.height);
-    app.0.set_viewport(390.0, 844.0);
-    let rail = app.0.call("find_element", json!({ "test_id": "rail" }));
+    app.set_viewport(390.0, 844.0);
+    let rail = app.call("find_element", json!({ "test_id": "rail" }));
     assert_eq!(rail["visible"], json!(false), "collapsed below md: {rail}");
-    app.0.set_viewport(1100.0, 900.0);
-    let rail = app.0.call("find_element", json!({ "test_id": "rail" }));
+    app.set_viewport(1100.0, 900.0);
+    let rail = app.call("find_element", json!({ "test_id": "rail" }));
     assert_eq!(rail["visible"], json!(true), "opened by the md overlay after the resize: {rail}");
-    app.0.set_viewport(390.0, 844.0);
-    let rail = app.0.call("find_element", json!({ "test_id": "rail" }));
+    app.set_viewport(390.0, 844.0);
+    let rail = app.call("find_element", json!({ "test_id": "rail" }));
     assert_eq!(rail["visible"], json!(false), "collapsed again: {rail}");
 }
 
@@ -440,18 +450,44 @@ fn a_resize_across_md_shows_what_the_overlay_opens(app: &mut App) {
 /// including after a resize brings the stacked layout back.
 #[robot_test(platforms = [web, macos])]
 fn a_frame_below_the_fold_is_where_it_is_drawn(app: &mut App) {
-    let v = app.viewport();
-    let mut app = Viewport(app, v.width, v.height);
     for (w, h) in [(390.0, 844.0), (1100.0, 900.0), (390.0, 844.0)] {
-        app.0.set_viewport(w, h);
-        let (rx, ry, rw, rh) = frame(app.0, "record");
-        let (px, py, _, _) = frame(app.0, "panel");
+        app.set_viewport(w, h);
+        let (rx, ry, rw, rh) = frame(app, "record");
+        let (px, py, _, _) = frame(app, "panel");
         if w < 768.0 {
             assert!(py >= ry + rh - 1.0, "at {w}: the panel (y {py}) is under the record ({ry}..{})", ry + rh);
         } else {
             assert!(px >= rx + rw - 1.0, "at {w}: the panel (x {px}) is beside the record (ends {})", rx + rw);
         }
     }
+}
+
+/// Turning the device is its own reflow: the split layout stacks the
+/// panel under the record (rail collapsed) below `md` and sets them side by
+/// side (rail open) from `md`. A phone crosses `md` when it turns; a tablet
+/// is `md` upright and wider turned. After every turn the layout must match
+/// the breakpoint the app reports. The harness turns the screen back after
+/// the test.
+#[robot_test(platforms = [web, ios, android], form = [phone, tablet])]
+fn turning_the_device_reflows_the_split_layout(app: &mut App) {
+    let check = |app: &mut App, when: &str| {
+        let v = app.viewport();
+        let wide = v.breakpoint != "xs" && v.breakpoint != "sm";
+        let (rx, ry, rw, rh) = frame(app, "record");
+        let (px, py, _, _) = frame(app, "panel");
+        let rail = app.call("find_element", json!({ "test_id": "rail" }));
+        let layout = (py >= ry + rh - 1.0, px >= rx + rw - 1.0, rail["visible"] == json!(true));
+        assert_eq!(layout, (!wide, wide, wide), "{when}: stacked below md, side by side from it; {v:?}");
+        v
+    };
+    let upright = check(app, "upright");
+    assert_eq!(upright.orientation(), Orientation::Portrait, "a phone or tablet row starts upright");
+    app.set_orientation(Orientation::Landscape);
+    let turned = check(app, "turned");
+    assert!(turned.width > turned.height && turned.width > upright.width, "turned: {turned:?}");
+    app.set_orientation(Orientation::Portrait);
+    let back = check(app, "upright again");
+    assert_eq!((back.width, back.height), (upright.width, upright.height));
 }
 
 /// A device-class test: it runs where the app is phone-sized (its
