@@ -2,6 +2,8 @@
 //! `label-value`).
 
 use idea_ui::Typography;
+
+use super::HelpHint;
 use runtime_core::{
     component, rx, stylesheet, ui, AlignItems, AlignSelf, Element, FlexDirection, IdealystSchema, Length, Reactive,
     StyleRules,
@@ -27,6 +29,10 @@ pub struct LabelValueProps {
     /// A value that is more than text (a tag, a link), in place of
     /// `value`.
     pub content: Option<Element>,
+    /// What the label cannot say for itself: a `?` beside it whose
+    /// tooltip is this. `None` or blank mounts nothing.
+    #[prop(static)]
+    pub hint: Option<String>,
     /// The wide label column, for a list whose labels run long
     /// ("Effective since"). Every row of one list takes the same, or
     /// its values stop lining up.
@@ -45,6 +51,7 @@ impl Default for LabelValueProps {
             label: String::new(),
             value: Reactive::Static(None),
             content: None,
+            hint: None,
             wide_label: false,
             top: false,
         }
@@ -79,16 +86,27 @@ pub fn LabelValue(props: LabelValueProps) -> Element {
         Some(v) if !v.trim().is_empty() => v,
         _ => ABSENT.to_string(),
     };
+    let hint = props.hint.filter(|h| !h.trim().is_empty());
+    let label = ui! {
+        view(style = label_style) {
+            view(style = LabelValueLabelLine()) {
+                Typography(content = label, muted = true)
+                if let Some(hint) = hint {
+                    HelpHint(text = hint)
+                }
+            }
+        }
+    };
     match props.content {
         Some(content) => ui! {
             view(style = LabelValueRow()) {
-                view(style = label_style.clone()) { Typography(content = label, muted = true) }
+                label
                 view(style = LabelValueValue()) { content }
             }
         },
         None => ui! {
             view(style = LabelValueRow()) {
-                view(style = label_style.clone()) { Typography(content = label, muted = true) }
+                label
                 view(style = LabelValueValue()) { Typography(content = rx!(shown())) }
             }
         },
@@ -108,6 +126,17 @@ stylesheet! {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Baseline,
             gap: t.spacing.md(),
+        }
+    }
+}
+
+stylesheet! {
+    // The label and its hint on one line.
+    LabelValueLabelLine<idea_ui::IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: t.spacing.xs(),
         }
     }
 }

@@ -147,6 +147,21 @@ merge it or split it differently. The body of a `Content` page is a
 `Stack(gap = StackGap::Lg)` of `Section`s. Cards do not nest, and a
 table is already a frame.
 
+A section's own verb ("Add", "Edit") is its heading's `action`, at the
+heading's right end, level with the title.
+
+### help-hint
+**What a screen's structure cannot say goes in a `?` beside the name.**
+
+A screen explains itself by its groups, titles and labels. For an idea
+those cannot carry, a section or a fact takes a `hint`: a muted `?`
+beside the title or label whose tooltip is the explanation, a sentence
+or two. It is not for what a better title would say, and never the only
+place a rule the user must follow is stated.
+
+Built by `HelpHint`; `Section`, `SectionHeading` and `LabelValue` draw
+it from their `hint`.
+
 ### theme-owns-look
 **Sizes, shapes and colours are the theme's.**
 
@@ -390,6 +405,10 @@ has one narrow form.**
   either, so a half-typed field survives a rotation.
 - Nav's list is 240 wide; the second region of Detail and Inspector is
   320 unless the screen passes a width.
+- An Inspector whose canvas lies on the ground (an editor's well) draws
+  its pane as a `card`: filled, rounded and lifted, with a gap where the
+  plain pane has its rule. The well is the screen's; the tablet overlay
+  and the phone dock are unchanged.
 - No screen states a threshold of its own. `SplitMode::beside()` answers
   it for a decision a screen makes alongside its split, never for what
   to draw.
@@ -426,7 +445,8 @@ wide, the label above the value on a phone.**
 
 `LabelValue(label = …, value = …)`. The label is muted, in a fixed
 column when beside. A list of them is a `Stack` with the `sm` gap. An
-absent value reads `—`: not stated is not zero.
+absent value reads `—`: not stated is not zero. A label that needs
+explaining takes a `hint` (rule `help-hint`).
 
 ### stat-grid
 **Figures sit four across when wide and two across on a phone.**

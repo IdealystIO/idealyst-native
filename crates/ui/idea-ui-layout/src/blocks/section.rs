@@ -6,8 +6,10 @@
 //! heading and its body are distinct things in one section, `md`. The
 //! `lg` between sections is the page's.
 
-use idea_ui::{typography_kind, Stack, StackGap, Typography, TypographyKind};
+use idea_ui::{typography_kind, Spacer, Stack, StackAlign, StackAxis, StackGap, Typography, TypographyKind};
 use runtime_core::{component, ui, ChildList, Element, IdealystSchema};
+
+use super::HelpHint;
 
 fn default_kind() -> TypographyKind {
     typography_kind::H3
@@ -32,28 +34,62 @@ pub struct SectionHeadingProps {
     /// Heading level. Default `H3`.
     #[prop(static)]
     pub kind: TypographyKind,
+    /// What the title cannot say for itself: a `?` beside it whose
+    /// tooltip is this. `None` or blank mounts nothing.
+    #[prop(static)]
+    pub hint: Option<String>,
+    /// The section's verb at the heading's right end: "Add", "Edit".
+    /// `None` mounts nothing.
+    pub action: Option<Element>,
 }
 
 impl Default for SectionHeadingProps {
     fn default() -> Self {
-        Self { title: String::new(), subtitle: None, kind: default_kind() }
+        Self { title: String::new(), subtitle: None, kind: default_kind(), hint: None, action: None }
     }
 }
 
 /// A title and its optional muted subtitle, `xs` apart: the one place
-/// that distance is decided.
+/// that distance is decided. A `hint` stands beside the title as a `?`;
+/// an `action` stands at the heading's right end, level with the title.
 ///
 /// ```ignore
 /// SectionHeading(title = "Crew".to_string(), subtitle = Some("Who is on this shift".to_string()))
+/// SectionHeading(
+///     title = "Rotations".to_string(),
+///     hint = Some("A rotation repeats until its end date.".to_string()),
+///     action = Some(ui! { Button(label = "Add", on_click = add) }),
+/// )
 /// ```
 #[component]
-pub fn SectionHeading(props: &SectionHeadingProps) -> Element {
-    let title = props.title.clone();
-    let kind = props.kind.clone();
+pub fn SectionHeading(props: SectionHeadingProps) -> Element {
+    let title = props.title;
+    let kind = props.kind;
     let subtitle = shown_subtitle(props.subtitle.as_deref()).map(str::to_string);
+    let hint = shown_subtitle(props.hint.as_deref()).map(str::to_string);
+    let action = props.action;
+    // The title's own line: the title, its hint, and the action at the
+    // far end. With neither, the title is the line.
+    let titled = match (hint, action) {
+        (None, None) => ui! { Typography(content = title, kind = kind) },
+        (hint, action) => ui! {
+            Stack(axis = StackAxis::Row, align = StackAlign::Center, gap = StackGap::Md) {
+                Stack(axis = StackAxis::Row, align = StackAlign::Center, gap = StackGap::Sm) {
+                    Typography(content = title, kind = kind)
+                    if let Some(hint) = hint {
+                        HelpHint(text = hint)
+                    }
+                }
+                Spacer()
+                if let Some(action) = action {
+                    action
+                }
+            }
+        },
+    };
     ui! {
         Stack(gap = StackGap::Xs) {
-            Typography(content = title, kind = kind)
+            titled
             if let Some(subtitle) = subtitle {
                 Typography(content = subtitle, kind = typography_kind::BodySm, muted = true)
             }
@@ -74,13 +110,25 @@ pub struct SectionProps {
     /// Heading level. Default `H3`.
     #[prop(static)]
     pub kind: TypographyKind,
+    /// A `?` beside the title whose tooltip is this.
+    #[prop(static)]
+    pub hint: Option<String>,
+    /// The section's verb at the heading's right end.
+    pub action: Option<Element>,
     /// The section's body.
     pub children: Vec<Element>,
 }
 
 impl Default for SectionProps {
     fn default() -> Self {
-        Self { title: String::new(), subtitle: None, kind: default_kind(), children: Vec::new() }
+        Self {
+            title: String::new(),
+            subtitle: None,
+            kind: default_kind(),
+            hint: None,
+            action: None,
+            children: Vec::new(),
+        }
     }
 }
 
@@ -104,7 +152,13 @@ pub fn Section(props: SectionProps) -> Element {
     }
     ui! {
         Stack(gap = StackGap::Md) {
-            SectionHeading(title = props.title.clone(), subtitle = props.subtitle.clone(), kind = props.kind.clone())
+            SectionHeading(
+                title = props.title,
+                subtitle = props.subtitle,
+                kind = props.kind,
+                hint = props.hint,
+                action = props.action,
+            )
             children
         }
     }

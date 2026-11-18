@@ -54,7 +54,11 @@ pub(crate) fn ContentScreen(#[prop(static)] shell: Shell) -> Element {
                         Stack(gap = StackGap::Sm) {
                             LabelValue(label = "Hired".to_string(), value = Some("12 Mar 2024".to_string()))
                             LabelValue(label = "Position".to_string(), value = Some("Jumbo operator".to_string()))
-                            LabelValue(label = "Division".to_string(), value = None::<String>)
+                            LabelValue(
+                                label = "Division".to_string(),
+                                value = None::<String>,
+                                hint = Some("The crew this worker's hours are costed to.".to_string()),
+                            )
                             LabelValue(label = "Status".to_string(), content = Some(ui! { Tag(label = "Active") }))
                         }
                     }

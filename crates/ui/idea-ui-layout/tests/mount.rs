@@ -832,3 +832,64 @@ mod sheet_rows {
         assert!(picked.get());
     }
 }
+
+mod blocks {
+    use super::*;
+    use idea_ui_layout::{LabelValue, Section, SplitMode, SplitView};
+
+    /// A hint is a `?` beside the title and an action stands in the
+    /// heading; a blank hint draws nothing.
+    #[test]
+    fn a_section_heading_carries_its_hint_and_its_action() {
+        let plain = mount_at(DESKTOP, || ui! { Section(title = "Rotations".to_string(), hint = Some("  ".to_string())) }).log();
+        assert!(plain.contains("\"Rotations\"") && !plain.contains(" icon"), "{plain}");
+        let full = mount_at(DESKTOP, || {
+            ui! {
+                Section(
+                    title = "Rotations".to_string(),
+                    hint = Some("A rotation repeats until its end date.".to_string()),
+                    action = Some(ui! { Typography(content = "ADD".to_string()) }),
+                ) {
+                    Typography(content = "BODY".to_string())
+                }
+            }
+        })
+        .log();
+        for part in ["\"Rotations\"", " icon", "\"ADD\"", "\"BODY\""] {
+            assert_eq!(full.matches(part).count(), 1, "{part}:\n{full}");
+        }
+    }
+
+    #[test]
+    fn a_label_value_carries_its_hint() {
+        let plain = mount_at(DESKTOP, || ui! { LabelValue(label = "Waste".to_string(), value = Some("5%".to_string())) }).log();
+        assert!(!plain.contains(" icon"), "{plain}");
+        let hinted = mount_at(DESKTOP, || {
+            ui! { LabelValue(label = "Waste".to_string(), value = Some("5%".to_string()), hint = Some("Added before pricing.".to_string())) }
+        })
+        .log();
+        assert!(hinted.contains("\"Waste\"") && hinted.contains("\"5%\"") && hinted.contains(" icon"), "{hinted}");
+    }
+
+    /// The card form is a restyle of the same pane: both regions mount
+    /// once at every width.
+    #[test]
+    fn a_carded_inspector_mounts_both_regions_once() {
+        for width in [PHONE, TABLET, DESKTOP] {
+            let log = mount_at(width, || {
+                ui! {
+                    SplitView(
+                        mode = SplitMode::Inspector,
+                        card = true,
+                        first = ui! { Typography(content = "CANVAS".to_string()) },
+                        second = ui! { Typography(content = "PANE".to_string()) },
+                    )
+                }
+            })
+            .log();
+            for part in ["\"CANVAS\"", "\"PANE\""] {
+                assert_eq!(log.matches(part).count(), 1, "{width}: {part}\n{log}");
+            }
+        }
+    }
+}

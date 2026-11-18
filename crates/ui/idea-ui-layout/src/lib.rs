@@ -74,8 +74,8 @@ pub use app_frame::{
     SidebarToggleProps, SIDEBAR_RAIL_WIDTH, SIDEBAR_WIDTH,
 };
 pub use blocks::{
-    ActionBar, ActionBarProps, BottomInset, FieldGrid, FieldGridProps, FieldGridRow, FieldGridRowProps, LabelValue,
-    LabelValueProps, Section, SectionHeading, SectionHeadingProps, SectionProps, StatGrid, StatGridProps,
+    ActionBar, ActionBarProps, BottomInset, FieldGrid, FieldGridProps, FieldGridRow, FieldGridRowProps, HelpHint,
+    HelpHintProps, LabelValue, LabelValueProps, Section, SectionHeading, SectionHeadingProps, SectionProps, StatGrid, StatGridProps,
     StateMessage, StateMessageProps,
 };
 pub use flow::{Flow, FlowLabels, FlowProps, FlowStep};

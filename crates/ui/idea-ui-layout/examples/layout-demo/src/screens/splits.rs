@@ -137,16 +137,23 @@ pub(crate) fn WorkbenchScreen(#[prop(static)] shell: Shell) -> Element {
         Page(
             variant = PageVariant::Blank,
             header = ui! { PageHeader(title = "Form builder".to_string(), leading = Some(shell.leading()), status = move || shell.style_picker()) },
+            // The canvas is a well (the ground), so the pane is a card in it.
             body = ui! {
+              view(style = Well()) {
                 SplitView(
                     mode = SplitMode::Inspector,
+                    card = true,
                     first = ui! {
                         view(style = Canvas()) {
                             Button(label = "Select the field", variant = variant::Outlined, on_click = select.clone())
                         }
                     },
                     second = ui! {
-                        Section(title = "Field settings".to_string()) {
+                        Section(
+                            title = "Field settings".to_string(),
+                            hint = Some("What a worker sees when they fill this field in.".to_string()),
+                            action = Some(ui! { Button(label = "Reset", variant = variant::Ghost) }),
+                        ) {
                             Field(label = Some("Label".to_string()), value = signal("Bolts used".to_string()))
                             Field(label = Some("Unit".to_string()), value = signal("each".to_string()))
                         }
@@ -154,6 +161,7 @@ pub(crate) fn WorkbenchScreen(#[prop(static)] shell: Shell) -> Element {
                     open = rx!(selected.get()),
                     on_close = Some(clear.clone()),
                 )
+              }
             },
         )
     }
@@ -166,7 +174,20 @@ stylesheet! {
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
             flex_grow: 1.0,
-            background: t.color.surface_alt(),
+        }
+    }
+}
+
+stylesheet! {
+    // The editor's ground: the canvas lies on it and the pane's card
+    // floats in it.
+    Well<idea_ui::IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Column,
+            flex_grow: 1.0,
+            min_height: runtime_core::Length::Px(0.0),
+            padding: t.spacing.sm(),
+            background: t.color.background(),
         }
     }
 }

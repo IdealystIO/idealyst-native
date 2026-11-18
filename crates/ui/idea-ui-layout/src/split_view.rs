@@ -30,6 +30,10 @@ const OVERLAY_Z: i32 = 10;
 const OVERLAY_SHADOW_Y: f32 = 4.0;
 const OVERLAY_SHADOW_BLUR: f32 = 16.0;
 
+/// A carded pane's lift: a card's, not an overlay's.
+const CARD_SHADOW_Y: f32 = 1.0;
+const CARD_SHADOW_BLUR: f32 = 3.0;
+
 /// What a [`SplitView`]'s two regions are, which decides where they sit
 /// at each width.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, IdealystSchema)]
@@ -104,6 +108,11 @@ pub struct SplitViewProps {
     /// `Blank` page), where each region is as tall as the body.
     #[prop(static)]
     pub frame: Option<PageFrame>,
+    /// Inspector, beside the canvas: the pane is a card in a well
+    /// (filled, rounded, lifted, no rule, stood off the canvas) for an
+    /// editor whose canvas is the ground rather than the page's surface.
+    #[prop(static)]
+    pub card: bool,
     /// Inspector: the pane's content brings its own head, rules and
     /// padding and fills the pane's height, so the split pads nothing
     /// round it.
@@ -127,6 +136,7 @@ impl Default for SplitViewProps {
             on_close: None,
             width: None,
             frame: None,
+            card: false,
             bare: false,
             grow: false,
         }
@@ -158,7 +168,7 @@ impl Default for SplitViewProps {
 /// ```
 #[component]
 pub fn SplitView(props: SplitViewProps) -> Element {
-    let SplitViewProps { mode, first, second, open, full, on_close, width, frame, bare, grow } = props;
+    let SplitViewProps { mode, first, second, open, full, on_close, width, frame, card, bare, grow } = props;
     let pane_width = width.unwrap_or(SPLIT_PANE_WIDTH);
     let state = {
         let open = open.clone();
@@ -181,6 +191,9 @@ pub fn SplitView(props: SplitViewProps) -> Element {
         move || {
             let form = second_form(mode, state());
             let mut rules = region_rules(form, pane_width);
+            if card && mode == SplitMode::Inspector && form == RegionForm::Side {
+                rules = carded(rules);
+            }
             // Detail's panel stands off its rule as Nav's destination
             // does. Stacked under the record it takes none, so its text
             // stays on the record's edge. An Inspector's pane pads
@@ -464,6 +477,26 @@ fn region_rules(form: RegionForm, width: f32) -> StyleRules {
     }
 }
 
+/// A side pane's `rules` as a card in a well: the control fill a `Card`
+/// takes, rounded and lifted, with the well's gap between it and the
+/// canvas where a plain pane has its rule.
+fn carded(rules: StyleRules) -> StyleRules {
+    let t = tokens();
+    let radius = || Some(t.radius.lg());
+    StyleRules {
+        background: Some(t.color.control()),
+        border_left_width: Some(Tokenized::Literal(0.0)),
+        border_top_left_radius: radius(),
+        border_top_right_radius: radius(),
+        border_bottom_left_radius: radius(),
+        border_bottom_right_radius: radius(),
+        overflow: Some(Overflow::Hidden),
+        shadow: Some(Shadow { x: 0.0, y: CARD_SHADOW_Y, blur: CARD_SHADOW_BLUR, color: t.effect.shadow() }),
+        margin_left: Some(t.spacing.sm()),
+        ..rules
+    }
+}
+
 /// `rules`, pinned under `frame`'s header when `pin` and the split sits
 /// in a page.
 fn pinned(rules: StyleRules, pin: bool, frame: Option<PageFrame>) -> StyleRules {
@@ -535,6 +568,27 @@ stylesheet! {
             pane(t) { padding: t.spacing.lg() }
             fill(_t) { min_height: Length::pct(100.0) }
         }
+    }
+}
+
+#[cfg(test)]
+mod card_tests {
+    use super::*;
+
+    /// A carded pane keeps the side pane's size and trades its rule for
+    /// a card's fill, corners, lift and a gap from the canvas.
+    #[test]
+    fn a_carded_pane_is_the_side_pane_without_its_rule() {
+        idea_theme::testing::with_test_world(|| {
+            let side = region_rules(RegionForm::Side, 320.0);
+            let card = carded(side.clone());
+            assert_eq!(card.width, side.width);
+            assert_eq!(card.flex_shrink, side.flex_shrink);
+            assert_eq!(card.border_left_width, Some(Tokenized::Literal(0.0)));
+            assert_eq!(card.background, Some(tokens().color.control()));
+            assert!(card.shadow.is_some() && card.margin_left.is_some() && card.border_top_left_radius.is_some());
+            assert_eq!(card.overflow, Some(Overflow::Hidden));
+        });
     }
 }
 

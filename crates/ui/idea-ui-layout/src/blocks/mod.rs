@@ -5,6 +5,7 @@
 mod action_bar;
 mod bottom_inset;
 mod field_grid;
+mod help_hint;
 mod label_value;
 mod section;
 mod stat_grid;
@@ -13,6 +14,7 @@ mod state_message;
 pub use action_bar::{ActionBar, ActionBarProps, ACTION_BAR_MAX_SECONDARY, ACTION_BAR_NOTE_MIN};
 pub use bottom_inset::BottomInset;
 pub use field_grid::{FieldGrid, FieldGridProps, FieldGridRow, FieldGridRowProps};
+pub use help_hint::{HelpHint, HelpHintProps};
 pub use label_value::{LabelValue, LabelValueProps, LABEL_WIDTH, LABEL_WIDTH_WIDE};
 pub use section::{Section, SectionHeading, SectionHeadingProps, SectionProps};
 pub use stat_grid::{StatGrid, StatGridProps};
