@@ -71,10 +71,14 @@ calling out:
   tests pin.
 - **`release_subtree`** is called when a subtree is disposed (a swapped-out
   branch, a removed keyed row, a popped screen). Hosts that keep no per-node
-  state outside the node itself (web, SSR) leave the no-op default; a host
-  with a side registry keyed by node (iOS's `view_to_layout`: a retained
-  `UIView` plus a Taffy node per view) must drop those entries here, or
-  disposed screens live forever in every later layout pass.
+  state outside the node itself (SSR) leave the no-op default; a host with a
+  side registry keyed by node (iOS's `view_to_layout`: a retained `UIView`
+  plus a Taffy node per view) must drop those entries here, or disposed
+  screens live forever in every later layout pass. Web drops the listener
+  closures that hold a handle to their own element, which otherwise pin the
+  detached subtree. The dev-server recorder forwards it as
+  `Command::ReleaseSubtree`, so the dev client forgets the subtree's nodes
+  and releases it in its own backend.
 - **`supports_splice`** answers "can this host splice children directly
   into a real parent (`remove_child` + `insert_at`)?" `true` → style-less
   reactive regions go anchorless; `false` → every reactive region nests

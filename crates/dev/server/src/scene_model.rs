@@ -546,23 +546,22 @@ impl SceneModel {
                 self.root = Some(*root);
             }
             Command::ReleaseNode { node } => {
-                self.node_create.remove(node);
-                self.children.remove(node);
-                self.parent_of.remove(node);
-                self.node_style.remove(node);
-                self.node_container.remove(node);
-                self.node_attach_states.remove(node);
-                self.node_disabled.remove(node);
-                self.node_presence.remove(node);
-                self.node_icon_stroke.remove(node);
-                self.node_icon_anim.remove(node);
-                self.node_a11y.remove(node);
-                self.node_safe_area.remove(node);
-                self.node_keyboard_avoid.remove(node);
-                self.node_text_input_keyboard.remove(node);
-                self.node_placeholder_color.remove(node);
+                self.forget_node(*node);
                 // Releasing this node may have removed the last referent of
                 // a retired style — collect any now-unreferenced rules.
+                self.gc_retired_styles();
+            }
+            Command::ReleaseSubtree { root, nodes } => {
+                // Off its parent's child list too, so a snapshot cannot
+                // emit an `Insert` naming a node it no longer creates.
+                if let Some(parent) = self.parent_of.get(root).copied() {
+                    if let Some(siblings) = self.children.get_mut(&parent) {
+                        siblings.retain(|c| c != root);
+                    }
+                }
+                for node in nodes {
+                    self.forget_node(*node);
+                }
                 self.gc_retired_styles();
             }
             Command::InstallThemeVariables { .. } => {
@@ -645,6 +644,47 @@ impl SceneModel {
                 }
             }
         }
+    }
+
+    /// `root` and every node under it, as the model has them assembled
+    /// (root first, then depth-first). The recorder takes this at
+    /// `release_subtree`, before the subtree's teardown detaches
+    /// anything.
+    pub fn subtree(&self, root: NodeId) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            out.push(node);
+            if let Some(kids) = self.children.get(&node) {
+                stack.extend(kids.iter().rev().copied());
+            }
+        }
+        out
+    }
+
+    /// Drop everything the model keeps for `node`, except its entry in
+    /// its parent's child list (`ReleaseSubtree` detaches its root
+    /// itself).
+    fn forget_node(&mut self, node: NodeId) {
+        self.node_create.remove(&node);
+        self.children.remove(&node);
+        self.parent_of.remove(&node);
+        self.node_style.remove(&node);
+        self.node_container.remove(&node);
+        self.node_attach_states.remove(&node);
+        self.node_disabled.remove(&node);
+        self.node_presence.remove(&node);
+        self.node_icon_stroke.remove(&node);
+        self.node_icon_anim.remove(&node);
+        self.node_a11y.remove(&node);
+        self.node_safe_area.remove(&node);
+        self.node_keyboard_avoid.remove(&node);
+        self.node_text_input_keyboard.remove(&node);
+        self.node_placeholder_color.remove(&node);
+        self.navigators.remove(&node);
+        self.nav_style_slots.remove(&node);
+        self.nav_layouts.remove(&node);
+        self.scope_to_navigator.retain(|_, nav| *nav != node);
     }
 
     fn insert_child_internal(&mut self, parent: NodeId, child: NodeId) {
@@ -1525,6 +1565,39 @@ mod liveness_tests {
         assert!(m.is_live(&NodeId(7)));
         m.apply(&Command::ReleaseNode { node: NodeId(7) });
         assert!(!m.is_live(&NodeId(7)), "released");
+    }
+
+    fn create_view(id: u64) -> Command {
+        Command::CreateView { id: NodeId(id), a11y: Default::default() }
+    }
+
+    /// REGRESSION (dev web builds: every left screen kept its nodes): a
+    /// released subtree stays in the model unless every node of it is
+    /// forgotten. Before `ReleaseSubtree` the model kept each discarded
+    /// screen's creates, edges and styles for the life of the session.
+    #[test]
+    fn regression_a_released_subtree_is_forgotten_whole_and_detached() {
+        let mut m = SceneModel::new();
+        // 1 ─┬─ 2 ─┬─ 3
+        //    │     └─ 4
+        //    └─ 5          (5 is a sibling that stays)
+        for id in 1..=5 {
+            m.apply(&create_view(id));
+        }
+        m.apply(&Command::Insert { parent: NodeId(1), child: NodeId(2) });
+        m.apply(&Command::Insert { parent: NodeId(2), child: NodeId(3) });
+        m.apply(&Command::Insert { parent: NodeId(2), child: NodeId(4) });
+        m.apply(&Command::Insert { parent: NodeId(1), child: NodeId(5) });
+
+        let nodes = m.subtree(NodeId(2));
+        assert_eq!(nodes, vec![NodeId(2), NodeId(3), NodeId(4)], "root first, depth-first");
+
+        m.apply(&Command::ReleaseSubtree { root: NodeId(2), nodes });
+        for id in 2..=4 {
+            assert!(!m.is_live(&NodeId(id)), "n{id} is forgotten");
+        }
+        assert!(m.is_live(&NodeId(1)) && m.is_live(&NodeId(5)), "the rest stays");
+        assert_eq!(m.children.get(&NodeId(1)), Some(&vec![NodeId(5)]), "the root is off its parent");
     }
 
     /// The bug this exists for: a virtualizer's data effect and its

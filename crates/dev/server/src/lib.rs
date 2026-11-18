@@ -128,6 +128,10 @@ pub struct HandlerTable {
     /// existing slot is overwritten with the freshly-walked closure
     /// (capturing the post-reset `Rc<NavigatorControl>` etc.).
     identity_to_id: HashMap<runtime_shared::Identity, HandlerId>,
+    /// Ids registered since the recorder last emitted. The emit that
+    /// follows a registration names the node that owns them
+    /// (`RecorderState::emit_owned`), which frees them with the node.
+    fresh: Vec<HandlerId>,
 }
 
 enum Handler {
@@ -144,33 +148,47 @@ impl HandlerTable {
         HandlerId(self.next)
     }
 
+    fn put(&mut self, id: HandlerId, handler: Handler) {
+        self.closures.insert(id, handler);
+        self.fresh.push(id);
+    }
+
+    /// Number of live closures (diagnostics and leak tests).
+    pub fn len(&self) -> usize {
+        self.closures.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.closures.is_empty()
+    }
+
     pub fn register_unit(&mut self, f: Rc<dyn Fn()>) -> HandlerId {
         let id = self.mint();
-        self.closures.insert(id, Handler::Unit(f));
+        self.put(id, Handler::Unit(f));
         id
     }
 
     pub fn register_bool(&mut self, f: Rc<dyn Fn(bool)>) -> HandlerId {
         let id = self.mint();
-        self.closures.insert(id, Handler::Bool(f));
+        self.put(id, Handler::Bool(f));
         id
     }
 
     pub fn register_float(&mut self, f: Rc<dyn Fn(f32)>) -> HandlerId {
         let id = self.mint();
-        self.closures.insert(id, Handler::Float(f));
+        self.put(id, Handler::Float(f));
         id
     }
 
     pub fn register_string(&mut self, f: Rc<dyn Fn(String)>) -> HandlerId {
         let id = self.mint();
-        self.closures.insert(id, Handler::StringFn(f));
+        self.put(id, Handler::StringFn(f));
         id
     }
 
     pub fn register_states(&mut self, f: Rc<dyn Fn(StateBits, bool)>) -> HandlerId {
         let id = self.mint();
-        self.closures.insert(id, Handler::States(f));
+        self.put(id, Handler::States(f));
         id
     }
 
@@ -196,7 +214,7 @@ impl HandlerTable {
             self.next += 1;
             HandlerId(self.next)
         });
-        self.closures.insert(id, Handler::Unit(f));
+        self.put(id, Handler::Unit(f));
         id
     }
 
@@ -214,7 +232,7 @@ impl HandlerTable {
             self.next += 1;
             HandlerId(self.next)
         });
-        self.closures.insert(id, Handler::Bool(f));
+        self.put(id, Handler::Bool(f));
         id
     }
 
@@ -232,7 +250,7 @@ impl HandlerTable {
             self.next += 1;
             HandlerId(self.next)
         });
-        self.closures.insert(id, Handler::Float(f));
+        self.put(id, Handler::Float(f));
         id
     }
 
@@ -250,7 +268,7 @@ impl HandlerTable {
             self.next += 1;
             HandlerId(self.next)
         });
-        self.closures.insert(id, Handler::StringFn(f));
+        self.put(id, Handler::StringFn(f));
         id
     }
 
@@ -264,6 +282,7 @@ impl HandlerTable {
     /// read) is freed here before the next render starts.
     pub fn clear_closures(&mut self) {
         self.closures.clear();
+        self.fresh.clear();
         // `next` and `identity_to_id` deliberately preserved.
     }
 
@@ -381,6 +400,29 @@ struct RecorderState {
     /// `out` is still used for incremental broadcast to clients
     /// already past the snapshot point.
     scene: SceneModel,
+    /// Subtrees the scene discarded (`release_subtree`) and the nodes
+    /// each held, taken while still assembled. Sent as
+    /// `Command::ReleaseSubtree` by [`RecorderState::send_releases`] when
+    /// the log is next read, so each lands after its own teardown.
+    pending_releases: Vec<(NodeId, Vec<NodeId>)>,
+    /// The handler closures each node owns, by the op that registered
+    /// them. Freed when the node is released, and per slot when the
+    /// same op registers a replacement set (an accessibility update
+    /// brings new action handlers each time).
+    node_handlers: HashMap<NodeId, HashMap<HandlerSlot, Vec<HandlerId>>>,
+}
+
+/// Which op registered a node's handlers: a later op of the same kind
+/// replaces them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum HandlerSlot {
+    /// `create_*`: the primitive's callbacks and its initial
+    /// accessibility actions.
+    Create,
+    /// `update_accessibility`'s actions.
+    Accessibility,
+    /// `attach_states`' setter.
+    States,
 }
 
 impl RecorderState {
@@ -391,8 +433,74 @@ impl RecorderState {
     /// current and clients connecting mid-session see the right
     /// thing.
     fn emit(&mut self, cmd: Command) {
+        debug_assert!(
+            self.handlers.fresh.is_empty(),
+            "handlers {:?} were registered for {cmd:?} without an owner: emit it with \
+             `emit_owned`, or they are never freed",
+            self.handlers.fresh,
+        );
         self.scene.apply(&cmd);
         self.out.push(cmd);
+    }
+
+    /// [`Self::emit`] a command whose op registered handlers, giving them
+    /// to `node` under `slot`. The handlers `slot` held before are freed,
+    /// except an id the new set reuses (an identity-keyed registration
+    /// keeps its id across rebuilds).
+    fn emit_owned(&mut self, node: NodeId, slot: HandlerSlot, cmd: Command) {
+        let fresh = std::mem::take(&mut self.handlers.fresh);
+        let slots = self.node_handlers.entry(node).or_default();
+        let old = if fresh.is_empty() {
+            slots.remove(&slot)
+        } else {
+            slots.insert(slot, fresh.clone())
+        };
+        if slots.is_empty() {
+            self.node_handlers.remove(&node);
+        }
+        for id in old.unwrap_or_default() {
+            if !fresh.contains(&id) {
+                self.handlers.release(id);
+            }
+        }
+        self.emit(cmd);
+    }
+
+    /// Free every handler closure `node` owns. A closure holds the
+    /// author's callback and whatever it captured (signals, `Rc`s), so
+    /// one left in the table keeps that alive for the session.
+    fn release_handlers_of(&mut self, node: NodeId) {
+        self.state_handlers.remove(&node);
+        for (_, ids) in self.node_handlers.remove(&node).unwrap_or_default() {
+            for id in ids {
+                self.handlers.release(id);
+            }
+        }
+    }
+
+    /// `Command::ReleaseNode`, with the node's handlers freed.
+    fn emit_release_node(&mut self, node: NodeId) {
+        self.release_handlers_of(node);
+        self.emit(Command::ReleaseNode { node });
+    }
+
+    /// Emit the queued `ReleaseSubtree`s. Every reader of the log calls
+    /// this first.
+    ///
+    /// Not at `release_subtree` itself: the scene releases a subtree
+    /// and then drops its scopes (or the reverse) in one step, and the
+    /// teardown still emits commands naming its nodes (a style's
+    /// `OnNodeUnstyled`, a virtualizer's `ReleaseNode`). A client that
+    /// had already forgotten them would skip those, and the backend
+    /// state they free would stay. Between log reads the session runs
+    /// whole steps only, so a release sent here follows its teardown.
+    fn send_releases(&mut self) {
+        for (root, nodes) in std::mem::take(&mut self.pending_releases) {
+            for node in &nodes {
+                self.release_handlers_of(*node);
+            }
+            self.emit(Command::ReleaseSubtree { root, nodes });
+        }
     }
 
     /// Build a `WireAccessibilityProps` from an in-memory
@@ -439,6 +547,8 @@ impl WireRecordingBackend {
             out: Vec::new(),
             color_scheme: ColorScheme::Auto,
             state_handlers: HashMap::new(),
+            pending_releases: Vec::new(),
+            node_handlers: HashMap::new(),
             navigators: HashMap::new(),
             scope_to_navigator: HashMap::new(),
             nav_state_mirror: nav_state_mirror.clone(),
@@ -557,6 +667,8 @@ impl WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         state.out.clear();
         state.scene = SceneModel::new();
+        state.pending_releases.clear();
+        state.node_handlers.clear();
         // `next_node` is *not* reset for the same reason `next_style` and
         // `handlers.next` aren't: `identity_to_node` survives the reset,
         // and minting fresh ids from 0 would recycle ids that cached
@@ -616,6 +728,11 @@ impl WireRecordingBackend {
         self.inner.borrow().epoch
     }
 
+    /// Number of live handler closures (diagnostics and leak tests).
+    pub fn handler_count(&self) -> usize {
+        self.inner.borrow().handlers.len()
+    }
+
     /// Drain any pending commands, removing them from the recorder's
     /// log. Used by the legacy single-snapshot path; new code should
     /// prefer the append-only [`Self::commands_since`] /
@@ -628,14 +745,18 @@ impl WireRecordingBackend {
         // Must run before the `inner` borrow — the tasks re-enter the
         // recorder.
         scheduler::drain_microtasks();
-        std::mem::take(&mut self.inner.borrow_mut().out)
+        let mut state = self.inner.borrow_mut();
+        state.send_releases();
+        std::mem::take(&mut state.out)
     }
 
     /// Total number of commands ever emitted into this
     /// recorder's log. Pair with [`Self::commands_since`] to ferry
     /// "everything past my cursor" to a connected client.
     pub fn command_count(&self) -> usize {
-        self.inner.borrow().out.len()
+        let mut state = self.inner.borrow_mut();
+        state.send_releases();
+        state.out.len()
     }
 
     /// Return a clone of every command emitted at or after `cursor`.
@@ -650,7 +771,8 @@ impl WireRecordingBackend {
     /// presumed to have already received the historical commands,
     /// so incremental replay from their cursor is correct.
     pub fn commands_since(&self, cursor: usize) -> Vec<Command> {
-        let state = self.inner.borrow();
+        let mut state = self.inner.borrow_mut();
+        state.send_releases();
         if cursor >= state.out.len() {
             Vec::new()
         } else {
@@ -669,7 +791,9 @@ impl WireRecordingBackend {
     /// was taken — subsequent `commands_since(cursor)` calls then
     /// pick up live mutations that happened after the snapshot.
     pub fn snapshot(&self) -> Vec<Command> {
-        self.inner.borrow().scene.snapshot_commands()
+        let mut state = self.inner.borrow_mut();
+        state.send_releases();
+        state.scene.snapshot_commands()
     }
 
     /// Dispatch an event received from the app. Returns true if the
@@ -910,7 +1034,7 @@ impl NavRecorder {
         self.with_state(|state| {
             let id = WireRecordingBackend::mint_node(state);
             let wire_a11y = state.wire_a11y(a11y);
-            state.emit(Command::CreateNavigator {
+            state.emit_owned(id, HandlerSlot::Create, Command::CreateNavigator {
                 id,
                 initial_route: initial_route.to_string(),
                 initial_path: initial_path.to_string(),
@@ -1323,7 +1447,7 @@ impl WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateView {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateView {
             id,
             a11y: wire_a11y,
         });
@@ -1356,7 +1480,7 @@ impl WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateText {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateText {
             id,
             content: content.to_string(),
             a11y: wire_a11y,
@@ -1382,7 +1506,7 @@ impl WireRecordingBackend {
         let leading = leading_icon.map(convert_out::icon_data_to_wire);
         let trailing = trailing_icon.map(convert_out::icon_data_to_wire);
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateButton {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateButton {
             id,
             label: label.to_string(),
             on_click: handler,
@@ -1425,7 +1549,7 @@ impl WireRecordingBackend {
             .handlers
             .register_unit_for_identity(identity, on_click);
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreatePressable {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreatePressable {
             id,
             on_click: handler,
             a11y: wire_a11y,
@@ -1479,7 +1603,7 @@ impl WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateImage {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateImage {
             id,
             src: src.to_string(),
             alt: alt.map(str::to_string),
@@ -1522,7 +1646,7 @@ impl WireRecordingBackend {
         let id = Self::mint_node(&mut state);
         let wire_data = convert_out::icon_data_to_wire(data);
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateIcon {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateIcon {
             id,
             data: wire_data,
             color: color.map(|c| WireColor(c.0.clone())),
@@ -1657,7 +1781,7 @@ impl WireRecordingBackend {
             .handlers
             .register_string_for_identity(identity, on_change);
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateTextInput {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateTextInput {
             id,
             initial_value: initial_value.to_string(),
             placeholder: placeholder.map(str::to_string),
@@ -1739,7 +1863,7 @@ impl WireRecordingBackend {
             .handlers
             .register_string_for_identity(identity, on_change);
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateTextArea {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateTextArea {
             id,
             initial_value: initial_value.to_string(),
             placeholder: placeholder.map(str::to_string),
@@ -1784,7 +1908,7 @@ impl WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateExternal {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateExternal {
             id,
             type_name: type_name.to_string(),
             payload: payload_bytes,
@@ -1806,7 +1930,7 @@ impl WireRecordingBackend {
             .handlers
             .register_bool_for_identity(identity, on_change);
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateToggle {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateToggle {
             id,
             initial_value,
             on_change: handler,
@@ -1841,7 +1965,7 @@ impl WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateScrollView {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateScrollView {
             id,
             horizontal: axis == runtime_shared::ScrollAxis::Horizontal,
             both_axes: axis == runtime_shared::ScrollAxis::Both,
@@ -1866,7 +1990,7 @@ impl WireRecordingBackend {
             .handlers
             .register_float_for_identity(identity, on_change);
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateSlider {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateSlider {
             id,
             initial_value,
             min,
@@ -1903,7 +2027,7 @@ impl WireRecordingBackend {
             }
         };
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateActivityIndicator {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateActivityIndicator {
             id,
             size: wire_size,
             color: color.map(|c| WireColor(c.0.clone())),
@@ -2084,7 +2208,7 @@ impl WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let handler_id = state.handlers.register_states(setter);
         state.state_handlers.insert(*node, handler_id);
-        state.emit(Command::AttachStates { node: *node });
+        state.emit_owned(*node, HandlerSlot::States, Command::AttachStates { node: *node });
     }
 
     pub fn set_disabled(&mut self, node: &NodeId, disabled: bool) {
@@ -2174,7 +2298,7 @@ impl WireRecordingBackend {
     ) {
         let mut state = self.inner.borrow_mut();
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::UpdateAccessibility {
+        state.emit_owned(*node, HandlerSlot::Accessibility, Command::UpdateAccessibility {
             id: *node,
             a11y: wire_a11y,
             inferred_role: inferred_role.map(convert_out::role_to_wire),
@@ -2253,7 +2377,7 @@ impl WireRecordingBackend {
             }
         };
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreatePortal {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreatePortal {
             id,
             target: wire_target,
             on_dismiss: handler,
@@ -2283,7 +2407,7 @@ impl WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateGraphics {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateGraphics {
             id,
             renderer: "<unnamed>".to_string(),
             a11y: wire_a11y,
@@ -2307,7 +2431,7 @@ impl WireRecordingBackend {
         // encodes which command to dispatch); the wire stores a
         // placeholder so a future renderer can target the right
         // accessibility role if it cares. Default Push is fine.
-        state.emit(Command::CreateLink {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateLink {
             id,
             route: config.route.to_string(),
             url: config.url,
@@ -2334,24 +2458,34 @@ impl WireRecordingBackend {
     // overlay would leak its `NodeId` on the client side (see
     // `SceneModel::apply` for the matching per-node map clears).
 
+    /// The scene discarded the subtree under `root`. Its nodes are
+    /// taken now, while the scene model still has them assembled; the
+    /// `ReleaseSubtree` naming them goes out with the next log read
+    /// (see `RecorderState::send_releases`).
+    pub fn release_subtree(&mut self, root: &NodeId) {
+        let mut state = self.inner.borrow_mut();
+        let nodes = state.scene.subtree(*root);
+        state.pending_releases.push((*root, nodes));
+    }
+
     pub fn release_virtualizer(&mut self, node: &NodeId) {
         let mut state = self.inner.borrow_mut();
-        state.emit(Command::ReleaseNode { node: *node });
+        state.emit_release_node(*node);
     }
 
     pub fn release_graphics(&mut self, node: &NodeId) {
         let mut state = self.inner.borrow_mut();
-        state.emit(Command::ReleaseNode { node: *node });
+        state.emit_release_node(*node);
     }
 
     pub fn release_portal(&mut self, node: &NodeId) {
         let mut state = self.inner.borrow_mut();
-        state.emit(Command::ReleaseNode { node: *node });
+        state.emit_release_node(*node);
     }
 
     pub fn release_external(&mut self, node: &NodeId) {
         let mut state = self.inner.borrow_mut();
-        state.emit(Command::ReleaseNode { node: *node });
+        state.emit_release_node(*node);
     }
 
     // ---------------------------------------------------------------------
@@ -2380,7 +2514,7 @@ impl WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateVirtualizer {
+        state.emit_owned(id, HandlerSlot::Create, Command::CreateVirtualizer {
             id,
             overscan,
             layout: convert_out::virtual_layout_to_wire(layout),

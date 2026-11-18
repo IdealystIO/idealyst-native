@@ -340,6 +340,28 @@ where
         }
     }
 
+    /// Number of nodes the replayer holds a backend handle for.
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Drop every per-node entry for `gone` (the node table and the
+    /// idempotency/bookkeeping maps keyed by node).
+    fn forget_nodes(&mut self, gone: &std::collections::HashSet<NodeId>) {
+        for node in gone {
+            self.nodes.remove(node);
+            self.text_content.remove(node);
+            self.button_labels.remove(node);
+            self.navigators.remove(node);
+            self.attached_states.remove(node);
+        }
+        self.inserted_edges
+            .retain(|(parent, child)| !gone.contains(parent) && !gone.contains(child));
+        self.safe_area_nodes
+            .borrow_mut()
+            .retain(|(id, ..)| !gone.contains(id));
+    }
+
     /// Expose the outbound sender so the transport can retarget it on
     /// reconnect.
     pub fn outbound(&self) -> &OutboundSender {
@@ -1446,16 +1468,18 @@ where
                 // re-creates the same logical primitive doesn't leak the
                 // old node's bookkeeping in `text_content` /
                 // `button_labels` / `inserted_edges` / `navigators`.
-                self.nodes.remove(&node);
-                self.text_content.remove(&node);
-                self.button_labels.remove(&node);
-                self.navigators.remove(&node);
-                self.attached_states.remove(&node);
-                self.inserted_edges
-                    .retain(|(parent, child)| *parent != node && *child != node);
-                self.safe_area_nodes
-                    .borrow_mut()
-                    .retain(|(id, ..)| *id != node);
+                self.forget_nodes(&std::iter::once(node).collect());
+            }
+            Command::ReleaseSubtree { root, nodes } => {
+                // The backend first, while the subtree is still in the
+                // table: on web this drops the listener closures that
+                // hold a handle to their own element. Then the table's
+                // own handle per node, which on its own keeps every
+                // element of a left screen alive as detached DOM.
+                if let Some(n) = self.nodes.get(&root).cloned() {
+                    self.backend.borrow_mut().release_subtree(&n);
+                }
+                self.forget_nodes(&nodes.into_iter().collect());
             }
             Command::InstallThemeVariables { tokens } => {
                 // Populate THIS (wire-replay) thread's thread-local token

@@ -79,6 +79,22 @@ releases.
   adds `record_staged` / `StagedWorlds`, which report and flush the worlds a stretch of code
   staged into.
 
+- **Wire protocol 28: a dev build frees what the app discards** (`wire`, `dev-server`,
+  `dev-client` minor; `backend-web` patch). Under `idealyst dev` (the runtime-server path) every
+  screen left, branch swapped, row removed or grid cell scrolled away stayed alive on the
+  client: in a web dev build `Memory.getDOMCounters` nodes climbed a fixed amount per round trip
+  between two routes while the live document stayed flat. The recorder ignored
+  `Host::release_subtree`, so the client's node table kept a backend handle to every node it had
+  replayed, and its backend's own release (the web listener fix in backend-web 10.3.2) never
+  ran. The recorder now sends `Command::ReleaseSubtree { root, nodes }` after the update that
+  discarded the subtree; the client releases `root` in its backend and forgets every listed
+  node, and the recorder's scene model forgets them too. The dev server also frees the handler
+  closures a node owns (its press, change and accessibility-action callbacks, and whatever they
+  captured) when the node is released; it kept every one for the life of the session, and an
+  accessibility update added a new set of action handlers each time without dropping the old.
+  A dev client must match the new protocol: upgrade the `idealyst` CLI with the framework
+  crates.
+
 - **Wire protocol 27 and remote codec 15: an editor's placeholder takes an ink**
   (`runtime-vocabulary`, `wire`, `dev-server`, `dev-client`, `backend-ios-mobile`,
   `backend-android-mobile`, `backend-macos`, `backend-web`, `idea-ui` minor). `text_input` and

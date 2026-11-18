@@ -310,6 +310,15 @@ impl Host for WireRecordingBackend {
         WireRecordingBackend::clear_children(self, node)
     }
 
+    /// Forwarded as `Command::ReleaseSubtree`: the client's node table
+    /// holds a backend handle per node it replayed, so a subtree the
+    /// scene discards stays alive on the client (on web, as detached
+    /// DOM) until the client is told to forget it and to release it in
+    /// its own backend.
+    fn release_subtree(&mut self, node: &Self::Node) {
+        WireRecordingBackend::release_subtree(self, node)
+    }
+
     fn create_anchor(&mut self) -> Self::Node {
         WireRecordingBackend::create_reactive_anchor(self)
     }

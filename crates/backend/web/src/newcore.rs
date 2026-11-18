@@ -4003,6 +4003,72 @@ mod tests {
         assert_eq!(JsValue::live_count(), handles, "five discarded screens left element handles in the table");
     }
 
+    /// REGRESSION (dev web builds, 10.3.2: `Memory.getDOMCounters` nodes
+    /// climbed a fixed amount per round trip between two routes while
+    /// the live document stayed flat): under `idealyst dev` the page is a
+    /// wire client, and the client's node table held a handle to every
+    /// node it replayed. A left screen was detached but never forgotten,
+    /// so it stayed as detached DOM, with its press listeners' closures
+    /// (which this backend's `release_subtree` frees) never released.
+    /// `ReleaseSubtree` now reaches the client, which releases the
+    /// subtree here and drops its own handles.
+    #[cfg(feature = "runtime-server")]
+    #[wasm_bindgen_test]
+    async fn regression_a_dev_client_frees_a_screen_the_app_left() {
+        use wire::{Command, HandlerId, NodeId};
+        let (backend, _registry, _world) = focus_harness();
+        let (tx, _rx) = std::sync::mpsc::channel::<wire::AppToDev>();
+        let mut client = dev_client::WireBackend::new_with_shared(backend.clone(), tx);
+        let apply = |client: &mut dev_client::WireBackend<WebBackend>, cmds: Vec<Command>| {
+            client.apply_batch(cmds).expect("every command applies");
+        };
+        // The navigator's outlet, mounted once.
+        apply(&mut client, vec![Command::CreateView { id: NodeId(1), a11y: Default::default() }, Command::Finish { root: NodeId(1) }]);
+
+        let mut next = 2u64;
+        let mut visit = |client: &mut dev_client::WireBackend<WebBackend>| {
+            let (screen, press, label) = (NodeId(next), NodeId(next + 1), NodeId(next + 2));
+            next += 3;
+            apply(
+                client,
+                vec![
+                    Command::CreateView { id: screen, a11y: Default::default() },
+                    Command::CreateButton {
+                        id: press,
+                        label: "go".into(),
+                        on_click: HandlerId(1),
+                        leading_icon: None,
+                        trailing_icon: None,
+                        a11y: Default::default(),
+                    },
+                    Command::CreateText { id: label, content: "screen".into(), a11y: Default::default(), selectable: false },
+                    Command::Insert { parent: screen, child: press },
+                    Command::Insert { parent: screen, child: label },
+                    Command::Insert { parent: NodeId(1), child: screen },
+                ],
+            );
+            // Leaving it: what the recorder sends for a disposed screen.
+            apply(
+                client,
+                vec![
+                    Command::ClearChildren { node: NodeId(1) },
+                    Command::ReleaseSubtree { root: screen, nodes: vec![screen, press, label] },
+                ],
+            );
+        };
+        // Once to load what is created on first use.
+        visit(&mut client);
+        wait_ms(50).await;
+        let (handles, closures, held) = (JsValue::live_count(), web_glue::Closure::live_count(), client.node_count());
+        for _ in 0..5 {
+            visit(&mut client);
+        }
+        wait_ms(50).await;
+        assert_eq!(client.node_count(), held, "the client still holds the screens it left");
+        assert_eq!(web_glue::Closure::live_count(), closures, "the left screens' listener closures are still registered");
+        assert_eq!(JsValue::live_count(), handles, "the left screens' elements are still in the handle table");
+    }
+
     fn setup_mount_append(node: &web_glue::dom::Node) {
         let doc = web_glue::dom::window().unwrap().document().unwrap();
         doc.get_element_by_id("app").unwrap().append_child(node).unwrap();

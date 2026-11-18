@@ -475,6 +475,7 @@ fn command_kind(c: &wire::Command) -> &'static str {
         NavigatorSelect { .. } => "NavigatorSelect",
         Finish { .. } => "Finish",
         ReleaseNode { .. } => "ReleaseNode",
+        ReleaseSubtree { .. } => "ReleaseSubtree",
         InstallThemeVariables { .. } => "InstallThemeVariables",
         RegisterAsset { .. } => "RegisterAsset",
         UnregisterAsset { .. } => "UnregisterAsset",
@@ -508,6 +509,7 @@ fn format_command(c: &wire::Command) -> String {
         ApplyStyle { node, style } => format!("ApplyStyle {} ← {}", node, style),
         RegisterStyle { id, .. } => format!("RegisterStyle {}", id),
         ReleaseNode { node } => format!("ReleaseNode {}", node),
+        ReleaseSubtree { root, nodes } => format!("ReleaseSubtree {} ({} nodes)", root, nodes.len()),
         Finish { root } => format!("Finish {}", root),
         other => format!("{}", command_kind(other)),
     }

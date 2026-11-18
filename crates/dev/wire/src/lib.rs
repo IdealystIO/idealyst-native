@@ -68,7 +68,7 @@ pub use payload_serde::{
 /// [`WireStyleRules`] carries every `StyleRules` property; the
 /// conversions on both ends are exhaustive destructures, so a new
 /// property cannot compile until it crosses (see `WireStyleRules`).
-pub const PROTOCOL_VERSION: u32 = 27;
+pub const PROTOCOL_VERSION: u32 = 28;
 
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
@@ -1029,11 +1029,31 @@ pub enum Command {
     Finish {
         root: NodeId,
     },
-    /// Release a node and any backend-side state. Used for navigator
-    /// screens, virtualizer items, and overlays whose scopes have
-    /// dropped on the dev side.
+    /// Release a node and any backend-side state: the dev side's
+    /// release hook for a virtualizer, graphics surface, portal or
+    /// external fired. One node; a discarded subtree is
+    /// [`Command::ReleaseSubtree`].
     ReleaseNode {
         node: NodeId,
+    },
+    /// The scene discarded the subtree under `root` for good
+    /// (`Host::release_subtree`: a left navigator screen, a swapped
+    /// `when`/`switch` branch, a removed list row, a scrolled-away grid
+    /// cell, a closed overlay). PROTOCOL_VERSION 28.
+    ///
+    /// `nodes` is every node of the subtree, `root` included, as the
+    /// recorder's scene model had it assembled at the release. The
+    /// client hands `root` to its backend's `release_subtree`, then
+    /// forgets every listed node: its node table holds a backend handle
+    /// per node, and on web that handle alone keeps the detached element
+    /// (and everything under it) from being collected.
+    ///
+    /// The recorder sends this after the commands of the update that
+    /// discarded the subtree (its scopes' teardown still names these
+    /// nodes), so it is the last command about any of them.
+    ReleaseSubtree {
+        root: NodeId,
+        nodes: Vec<NodeId>,
     },
     /// Apply a freshly resolved theme's tokens. Backends with
     /// runtime variable stores (web's CSS custom properties) update

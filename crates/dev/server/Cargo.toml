@@ -196,6 +196,12 @@ runtime-server-shell-native = { path = "../runtime-server-shell", features = ["r
 # `rt-multi-thread` is only for the test's own listener task; the code
 # under test uses the crate's current-thread runtime.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "time"] }
+# `tests/subtree_release_wire.rs` replays the recorder's stream into the
+# real client replayer (`dev_client::WireBackend`) over the all-caps mock
+# host, so a discarded subtree is checked on both ends of the wire. No
+# cycle: neither depends on dev-server.
+dev-client = { path = "../client" }
+host-mock = { path = "../host-mock" }
 
 # E2 regression: app-initiated async work on an AAS session thread must
 # run inside a Tokio reactor (the executor in `src/async_executor.rs`),
