@@ -10848,6 +10848,7 @@ dependencies = [
  "robot-test-macros",
  "serde",
  "serde_json",
+ "trybuild",
  "tungstenite 0.24.0",
 ]
 
