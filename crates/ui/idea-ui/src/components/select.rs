@@ -71,7 +71,7 @@ component_styles! {
         /// juddering.
         slot trigger {
             base(t) {
-                background: t.color.surface(),
+                background: t.color.control(),
                 color: t.color.text(),
                 padding_vertical: t.spacing.sm(),
                 padding_horizontal: t.spacing.md(),

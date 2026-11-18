@@ -219,7 +219,7 @@ component_styles! {
         slot input {
             base(t) {
                 width: Length::pct(100.0),
-                background: t.color.surface(),
+                background: t.color.control(),
                 color: t.color.text(),
                 border_radius: t.radius.md(),
                 border_width: 1.0,

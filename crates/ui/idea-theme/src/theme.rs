@@ -166,11 +166,33 @@ pub struct Palette {
 /// component sheet reads it back through [`IdeaThemeRef`]. Keeping the
 /// read half canonical is what lets a customized theme still swap at
 /// runtime — a literal baked into a component's class can never repaint.
+///
+/// # The three surfaces
+///
+/// - [`surface`](Self::surface) — the PRIMARY surface: where the work
+///   is. Pages, cards, dialogs, menus.
+/// - [`background`](Self::background) — the SECONDARY surface: the
+///   ground the primary one stands on. The app canvas, a sidebar behind
+///   a raised page.
+/// - [`control`](Self::control) — the fill of a control that is not
+///   coloured: a text field, a select, an outlined button. It is a
+///   surface in that things are drawn on it, but its job is to make a
+///   control read as one against whichever surface it stands on, so it
+///   is a step apart from `surface`.
+///
+/// [`surface_alt`](Self::surface_alt) is a WASH, not a surface: a hover,
+/// a selected row, a well inside a surface.
 #[derive(Clone, Tokens)]
 pub struct Colors {
+    /// The secondary surface: the ground behind the primary one.
     pub background: Tokenized<Color>,
+    /// The primary surface: where the work is.
     pub surface: Tokenized<Color>,
+    /// A wash on a surface: hover, selection, a recessed well.
     pub surface_alt: Tokenized<Color>,
+    /// The fill of an uncoloured control: fields, selects, outlined
+    /// buttons.
+    pub control: Tokenized<Color>,
 
     pub text: Tokenized<Color>,
     pub text_muted: Tokenized<Color>,
@@ -534,6 +556,7 @@ fn canonicalize_colors(c: &Colors) -> Colors {
         background: canonicalize_color("color-background", &c.background),
         surface: canonicalize_color("color-surface", &c.surface),
         surface_alt: canonicalize_color("color-surface-alt", &c.surface_alt),
+        control: canonicalize_color("color-control", &c.control),
         text: canonicalize_color("color-text", &c.text),
         text_muted: canonicalize_color("color-text-muted", &c.text_muted),
         text_inverse: canonicalize_color("color-text-inverse", &c.text_inverse),
@@ -647,10 +670,11 @@ fn canonicalize_palette(p: &Palette) -> Palette {
 /// Canonical token names for the non-intent neutral colors, in the same
 /// field order as [`Colors`]. The Nth entry is the canonical key for the
 /// Nth `Colors` field.
-pub const CANONICAL_NEUTRAL_TOKENS: [&str; 18] = [
+pub const CANONICAL_NEUTRAL_TOKENS: [&str; 19] = [
     "color-background",
     "color-surface",
     "color-surface-alt",
+    "color-control",
     "color-text",
     "color-text-muted",
     "color-text-inverse",
@@ -1266,9 +1290,13 @@ fn default_effects() -> Effects {
 pub fn light_theme() -> IdeaThemeDefaults {
     IdeaThemeDefaults {
         colors: Colors {
-            background: tok("color-background", "#f6f7f9"),
-            surface: tok("color-surface", "#ffffff"),
+            // The primary surface is a breath off white, so a white
+            // control reads as a control on it; the ground behind it is a
+            // step darker again.
+            background: tok("color-background", "#eef1f5"),
+            surface: tok("color-surface", "#f8f9fb"),
             surface_alt: tok("color-surface-alt", "#f1f5f9"),
+            control: tok("color-control", "#ffffff"),
 
             text: tok("color-text", "#0f172a"),
             text_muted: tok("color-text-muted", "#64748b"),
@@ -1358,6 +1386,9 @@ pub fn dark_theme() -> IdeaThemeDefaults {
             background: tok("color-background", "#0a0e17"),
             surface: tok("color-surface", "#0f1625"),
             surface_alt: tok("color-surface-alt", "#1a2336"),
+            // Lifted off the surface, where light's control is brighter
+            // than its surface: a control is the lighter thing in both.
+            control: tok("color-control", "#151d2e"),
 
             text: tok("color-text", "#e6edf6"),
             text_muted: tok("color-text-muted", "#8b97aa"),
@@ -1772,6 +1803,18 @@ mod tests {
         t
     }
 
+    /// The control fill is its own token, and a step apart from the
+    /// primary surface in both themes: a control that matched the surface
+    /// it stands on would read as a bare frame.
+    #[test]
+    fn the_control_fill_is_a_token_apart_from_the_surface() {
+        for theme in [light_theme(), dark_theme()] {
+            assert_eq!(theme.colors.control.name(), Some("color-control"));
+            assert_ne!(theme.colors.control.resolve().0, theme.colors.surface.resolve().0);
+            assert_ne!(theme.colors.surface.resolve().0, theme.colors.background.resolve().0);
+        }
+    }
+
     #[test]
     fn theme_tokens_include_spacing_radius_typography() {
         let theme = IdeaThemeRef::new(make_theme(8.0, 8.0, 14.0));
@@ -2064,7 +2107,7 @@ mod tests {
         };
         let mut t = light_theme();
         t.colors = Colors {
-            background: lit(), surface: lit(), surface_alt: lit(),
+            background: lit(), surface: lit(), surface_alt: lit(), control: lit(),
             text: lit(), text_muted: lit(), text_inverse: lit(),
             border: lit(), border_hover: lit(), border_strong: lit(),
             focus_ring: lit(), overlay: lit(),
@@ -2101,7 +2144,7 @@ mod tests {
         let mut read_names: Vec<&str> = Vec::new();
         for (label, field) in [
             ("background", &c.background), ("surface", &c.surface),
-            ("surface_alt", &c.surface_alt), ("text", &c.text),
+            ("surface_alt", &c.surface_alt), ("control", &c.control), ("text", &c.text),
             ("text_muted", &c.text_muted), ("text_inverse", &c.text_inverse),
             ("border", &c.border), ("border_hover", &c.border_hover),
             ("border_strong", &c.border_strong), ("focus_ring", &c.focus_ring),

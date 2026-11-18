@@ -41,7 +41,7 @@ pub(crate) use marker_into_axis;
 /// |---|---|---|---|
 /// | [`Filled`]  | tone's `fill_bg` | none (width=0) | tone's `fill_fg` |
 /// | [`Soft`]    | tone's `soft_bg` | none (width=0) | tone's `soft_fg` |
-/// | [`Outlined`]| transparent | tone's `stroke_color` (1px) | tone's `stroke_fg` |
+/// | [`Outlined`]| transparent (the theme's `control` fill on a `Button` / `IconButton`) | tone's `stroke_color` (1px) | tone's `stroke_fg` |
 /// | [`Ghost`]   | transparent | none (width=0) | tone's `ghost_fg` |
 /// | [`Gradient`]| the theme's accent gradient | none | `gradient_text` |
 ///
@@ -179,10 +179,33 @@ pub mod variant {
         }
     }
 
+    /// [`Outlined`] on the theme's control fill, under the same key. What
+    /// `outlined` means on a CONTROL (a `Button`, an `IconButton`): a
+    /// secondary button is a control like a field, and reads as one
+    /// against whatever surface it stands on rather than taking that
+    /// surface's colour and reading as a bare frame. A static surface (a
+    /// `Tag`, an `Alert`) keeps the transparent [`Outlined`].
+    pub(crate) struct ControlOutlined;
+
+    impl Variant for ControlOutlined {
+        fn key(&self) -> &'static str {
+            "outlined"
+        }
+        fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
+            StyleRules { background: Some(crate::tokens().color.control()), ..Outlined.render(ctx) }
+        }
+    }
+
     /// The four built-in variant recipes a tone-aware component renders by
     /// default, by key.
     pub fn builtin_recipes() -> [(&'static str, &'static dyn Variant); 4] {
         [("filled", &Filled), ("soft", &Soft), ("outlined", &Outlined), ("ghost", &Ghost)]
+    }
+
+    /// [`builtin_recipes`] for a control: `outlined` rests on the theme's
+    /// control fill ([`ControlOutlined`]).
+    pub(crate) fn control_recipes() -> [(&'static str, &'static dyn Variant); 4] {
+        [("filled", &Filled), ("soft", &Soft), ("outlined", &ControlOutlined), ("ghost", &Ghost)]
     }
 }
 

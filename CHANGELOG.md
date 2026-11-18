@@ -11,6 +11,21 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **The idea theme has a control fill, an off-white primary surface, and round buttons**
+  (`idea-theme` major, `idea-ui` minor). Every app on the stock theme looks different after
+  upgrading:
+  - `Colors` gains a field, `control` (`color-control`): the fill of an uncoloured control. A
+    `Field`, `Select` and `Autocomplete` box now paints it where it painted `surface`, and an
+    `Outlined` `Button` / `IconButton` rests on it where it was transparent. An outlined `Tag`,
+    `Chip` or `Alert` is unchanged. Code that builds a `Colors { .. }` literal must add the field.
+  - The light theme's `surface` is `#f8f9fb` (was `#ffffff`) and its `background` `#eef1f5` (was
+    `#f6f7f9`), so the white `control` reads as a control on it. The dark theme's neutrals are
+    unchanged; its `control` is `#151d2e`.
+  - `Button`'s default `shape` is `Pill` (was `Md`). Pass `shape = shape::Md` for the old corners,
+    or restyle the default once: `ButtonStyles::restyle(|s| s.root().arm(ButtonShape::Pill, …))`.
+  - To keep the old look app-wide, set the three colours back on your theme
+    (`surface = #ffffff`, `background = #f6f7f9`, `control = #ffffff`).
+
 - **The idealyst MCP advertises 44 tools instead of 87: families are one tool with an argument**
   (`mcp-server` major, `mcp-catalog` patch, CLI). The tool definitions a client loads into
   context go from 32,146 to 18,170 characters. No capability is removed, but the folded tools'

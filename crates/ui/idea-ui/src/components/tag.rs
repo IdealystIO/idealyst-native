@@ -254,6 +254,19 @@ pub fn Tag(props: &TagProps) -> Element {
 #[cfg(test)]
 mod tests {
 
+    /// The control fill is for controls. An outlined tag is a static
+    /// label, and stays a bare outline on whatever it sits on.
+    #[test]
+    fn an_outlined_tag_stays_transparent() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let app = TagStyles::root().raw("tone", "neutral").set(TagVariant::Outlined).into_style_application();
+            let fill = resolve_style(&app).background.clone().expect("the variant states its fill");
+            assert_eq!(fill.name(), None, "not a theme token");
+            assert_eq!(fill.resolve().0, "transparent");
+        });
+    }
+
     /// Mirror of the Alert regression: the label/glyph slots must
     /// premint — the point of replacing the call-site composition.
     #[test]

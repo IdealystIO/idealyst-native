@@ -283,6 +283,7 @@ mod tests {
             t.color.background(),
             t.color.surface(),
             t.color.surface_alt(),
+            t.color.control(),
             t.color.text(),
             t.color.text_muted(),
             t.color.text_inverse(),

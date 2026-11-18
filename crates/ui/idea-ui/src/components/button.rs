@@ -8,7 +8,7 @@
 //!         tone = tone::Primary,
 //!         variant = variant::Filled,
 //!         size = size::Md,
-//!         shape = shape::Md,
+//!         shape = shape::Pill,
 //!     )
 //! }
 //! ```
@@ -110,9 +110,11 @@ component_styles! {
             }
             variant shape {
                 sm(t) { border_radius: t.radius.sm() }
-                #[default]
                 md(t) { border_radius: t.radius.md() }
                 lg(t) { border_radius: t.radius.lg() }
+                // The default: a button is fully round unless it asks
+                // for corners.
+                #[default]
                 pill(t) { border_radius: t.radius.pill() }
             }
             // Icon + label lay out in a row with a gap; a plain label stays
@@ -195,7 +197,9 @@ fn root_tone_variants(s: &mut SlotRestyle<'_, ButtonStyles>) {
     // `Md` up. No `size` arm sets `min_*`, so the floor holds for every size.
     crate::touch::touch_target(s);
     let tones = semantic_tones();
-    for (key, recipe) in variant::builtin_recipes() {
+    // A button is a control: `outlined` rests on the theme's control
+    // fill (`variant::control_recipes`).
+    for (key, recipe) in variant::control_recipes() {
         tone_variant_arms(s, &tones, key, recipe);
     }
     for (key, _) in variant::builtin_recipes() {
@@ -283,13 +287,16 @@ pub struct ButtonProps {
     /// app tone). Default Primary.
     pub tone: ToneRef,
     /// Surface treatment (Filled, Soft, Outlined, Ghost, or an app value).
-    /// Default Filled.
+    /// Default Filled. `Outlined` rests on the theme's `control` fill, not
+    /// on transparent: a secondary button reads as a control on any
+    /// surface.
     pub variant: ButtonVariant,
     /// Padding/font scale (Sm, Md, Lg). Default Md. On phones (`Xs`/`Sm`
     /// breakpoints) every size is floored at a 44 pt tap target — see
     /// [`crate::touch`] for the rule and the opt-out.
     pub size: ButtonSize,
-    /// Corner-radius scale (Sm, Md, Lg, Pill). Default Md.
+    /// Corner shape (Sm, Md, Lg, Pill). Default Pill: a button is fully
+    /// round unless it asks for corners.
     pub shape: ButtonShape,
     /// When `true`, blocks the press and dims the button (opacity drop).
     /// Default `false`. Reactive: pass a `Signal<bool>` (`disabled =
@@ -1230,6 +1237,44 @@ mod tests {
 
     fn reset_styles() {
         runtime_core::component_styles::__reset::<ButtonStyles>();
+    }
+
+    /// A button is fully round unless it asks for corners: the default
+    /// shape is the pill, and a named shape still takes its own radius.
+    #[test]
+    fn a_button_is_a_pill_by_default_and_a_named_shape_keeps_its_corners() {
+        with_test_world(|| {
+            theme();
+            let radius = |props: ButtonProps| {
+                let (_, app) = pressable_parts(Button(&props));
+                resolve_style(&app).border_top_left_radius.as_ref().and_then(|r| r.name().map(str::to_string))
+            };
+            let default = radius(ButtonProps { label: Reactive::Static("Go".into()), ..Default::default() });
+            assert_eq!(default.as_deref(), Some("radius-pill"));
+            let cornered = radius(ButtonProps {
+                label: Reactive::Static("Go".into()),
+                shape: Reactive::Static(ButtonShape::Md),
+                ..Default::default()
+            });
+            assert_eq!(cornered.as_deref(), Some("radius-md"));
+        });
+    }
+
+    /// An outlined button is a control: it rests on the theme's control
+    /// fill, so it reads as a button on any surface rather than as a
+    /// bare frame in that surface's colour.
+    #[test]
+    fn an_outlined_button_rests_on_the_control_fill() {
+        with_test_world(|| {
+            theme();
+            let props = ButtonProps {
+                label: Reactive::Static("Cancel".into()),
+                variant: Reactive::Static(ButtonVariant::Outlined),
+                ..Default::default()
+            };
+            let (_, app) = pressable_parts(Button(&props));
+            assert_eq!(resolve_style(&app).background.as_ref().and_then(|c| c.name()), Some("color-control"));
+        });
     }
 
     /// `tone_variant` opts a variant value into a tone-aware look: the

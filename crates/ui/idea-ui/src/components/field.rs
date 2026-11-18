@@ -327,7 +327,9 @@ component_styles! {
         slot input {
             extend(input_tone_arms)
             base(t) {
-                background: t.color.surface(),
+                // The theme's control fill, not the surface it stands
+                // on: a field reads as a control on any surface.
+                background: t.color.control(),
                 color: t.color.text(),
                 border_radius: t.radius.md(),
                 border_width: 1.0,
@@ -1156,6 +1158,18 @@ mod tests {
 
     fn theme() {
         install_idea_theme(light_theme());
+    }
+
+    /// A field's box is the theme's control fill, not the surface it
+    /// stands on, so it reads as a control on a card, a page or a dialog
+    /// alike.
+    #[test]
+    fn a_field_rests_on_the_control_fill() {
+        with_test_world(|| {
+            theme();
+            let rules = resolve_input_style(Field(&FieldProps::default()));
+            assert_eq!(rules.background.as_ref().and_then(|c| c.name()), Some("color-control"));
+        });
     }
 
     // D9 regression: a Field whose `error` is a live signal must attach

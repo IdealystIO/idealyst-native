@@ -130,7 +130,11 @@ component_styles! {
 /// text, so a Ghost tool button fills with the accent when active.
 fn root_surfaces(s: &mut SlotRestyle<'_, IconButtonStyles>) {
     let tones = semantic_tones();
-    surface_arms(s, &tones);
+    // A button is a control: `outlined` rests on the theme's control
+    // fill (`variant::control_recipes`).
+    for (key, recipe) in variant::control_recipes() {
+        tone_variant_arms(s, &tones, key, recipe);
+    }
     for (key, _) in variant::builtin_recipes() {
         tone_variant_state_overlays(s, &tones, key);
     }
