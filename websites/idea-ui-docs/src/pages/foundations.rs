@@ -21,19 +21,20 @@ use crate::styles::{GapBlock, RadiusBox, RadiusBoxR, SwatchBlock};
 // =============================================================================
 
 pub fn colors() -> Element {
-    // (display name, canonical token, fallback) — the 11 neutral tokens.
-    let tokens: [(&str, &str, &str); 11] = [
-        ("Background", "color-background", "#f6f7f9"),
-        ("Surface", "color-surface", "#ffffff"),
-        ("Surface alt", "color-surface-alt", "#f1f5f9"),
-        ("Text", "color-text", "#0f172a"),
-        ("Text muted", "color-text-muted", "#64748b"),
+    // (display name, canonical token, fallback) — the 12 neutral tokens.
+    let tokens: [(&str, &str, &str); 12] = [
+        ("Background", "color-background", "#f1f1f0"),
+        ("Surface", "color-surface", "#fcfcfb"),
+        ("Surface alt", "color-surface-alt", "#f5f5f4"),
+        ("Control", "color-control", "#ffffff"),
+        ("Text", "color-text", "#1a1a19"),
+        ("Text muted", "color-text-muted", "#737370"),
         ("Text inverse", "color-text-inverse", "#ffffff"),
-        ("Border", "color-border", "#e3e8ef"),
-        ("Border hover", "color-border-hover", "#cdd5e0"),
-        ("Border strong", "color-border-strong", "#94a3b8"),
+        ("Border", "color-border", "#e8e8e6"),
+        ("Border hover", "color-border-hover", "#d6d6d3"),
+        ("Border strong", "color-border-strong", "#a3a3a0"),
         ("Focus ring", "color-focus-ring", "#6366f1"),
-        ("Overlay", "color-overlay", "rgba(15,23,42,0.45)"),
+        ("Overlay", "color-overlay", "rgba(23,23,23,0.45)"),
     ];
     let cards: Vec<Element> = tokens.iter().map(|&(name, token, fallback)| swatch(name, token, fallback)).collect();
 
@@ -41,7 +42,7 @@ pub fn colors() -> Element {
     // still theme-bound. One entry per component that owns a surface
     // the neutrals can't express without collateral damage.
     let component_tokens: [(&str, &str, &str); 7] = [
-        ("Table header", "color-table-header", "#f1f5f9"),
+        ("Table header", "color-table-header", "#f5f5f4"),
         ("Table row · highlight", "color-table-row-highlight", "#eef2ff"),
         ("Table row · highlight hover", "color-table-row-highlight-hover", "#e0e7ff"),
         ("Table row · warning", "color-table-row-warning", "#fffbeb"),

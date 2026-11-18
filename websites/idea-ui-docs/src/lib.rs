@@ -8,9 +8,10 @@
 //!
 //! Navigation is the outlet model: a [`SwapNavigator`] owns the screens
 //! and swaps the one visible screen into its outlet; the chrome is plain
-//! author layout built ONCE in `.layout(...)` — an `idea_ui_nav::AppShell`
-//! (pinned sidebar at ≥ 900 px, off-canvas drawer below) around a
-//! header-over-outlet column. The same chrome renders on every backend
+//! author layout built ONCE in `.layout(...)`, from `idea-ui-layout`: an
+//! `AppFrame` (pinned sidebar at ≥ 900 px, off-canvas drawer below; the
+//! page raised on a card, the sidebar on the ground behind it) round a
+//! `Page` whose `PageHeader` holds still over the outlet. The same chrome renders on every backend
 //! (CLAUDE.md §7) — there is no per-platform navigator chrome anymore.
 //!
 //! ## Crate layout
@@ -28,9 +29,9 @@
 //!   page ships as its own wasm chunk. The chunk renders the page frame
 //!   too, so its loading fallback owns the whole screen.
 
-use runtime_core::{effect, signal, ui, Breakpoint, Element, Signal};
-use idea_ui_nav::AppShell;
 use idea_ui::{install_idea_theme, light_theme};
+use idea_ui_layout::{AppFrame, FrameSurface, Page, PageVariant, SidebarCollapse, SidebarState};
+use runtime_core::{effect, signal, ui, Color, Element, Signal, Tokenized};
 
 mod lazy_pages;
 mod pages;
@@ -132,10 +133,27 @@ pub fn app() -> Element {
 /// seam a branded build (`websites/idea-ui-docs-branded`) installs its
 /// design language through. Restyles installed here compose into every
 /// slot sheet, so the branded build premints like this one.
+/// Every scrollbar as its thumb alone on a transparent track, so the bar
+/// takes the colour of whatever it scrolls over: the ground beside the
+/// sidebar, the page's card, a white card inside it. The thumb is a
+/// style token, so it follows the Light / Dark / Cyber toggle. Web and
+/// server-rendered output honour it; native platforms draw their own
+/// overlay bars.
+fn install_scrollbar() {
+    runtime_core::set_scrollbar_theme(
+        idea_ui::tokens().color.border_strong(),
+        Tokenized::Literal(Color("transparent".into())),
+    );
+}
+
+/// The sidebar's width, pinned or as a drawer.
+const SIDEBAR_WIDTH: f32 = 252.0;
+
 pub fn app_with(boot_styles: impl FnOnce()) -> Element {
     install_idea_theme(light_theme());
     restyles::register();
     boot_styles();
+    install_scrollbar();
 
     // App-level state surviving navigation — created here because
     // `app` runs inside `World::enter` (the boot entry enters the world
@@ -143,7 +161,9 @@ pub fn app_with(boot_styles: impl FnOnce()) -> Element {
     // handles; the layout closure captures them by value.
     let doc_theme: Signal<themes::DocTheme> = signal(themes::DocTheme::Light);
     let q: Signal<String> = signal(String::new());
-    let drawer_open: Signal<bool> = signal(false);
+    // The docs' destinations have no glyphs to stand in a rail, so the
+    // pinned sidebar does not collapse.
+    let sidebar_state = SidebarState::new(SidebarCollapse::Off);
 
     let _ = runtime_core::install_breakpoints(runtime_core::Breakpoints {
         lg_min: 900.0,
@@ -175,39 +195,36 @@ pub fn app_with(boot_styles: impl FnOnce()) -> Element {
                 .expect("SwapNav provided by the swap navigator mount");
             let active_route = nav.active_route;
 
-            // Auto-close the drawer when a sidebar link navigates while
-            // unpinned. Reading `active_route` inside the effect
-            // subscribes it to every navigation; the layout closure runs
-            // inside the navigator's retained chrome scope, so the
-            // effect is owned by (and freed with) the navigator.
+            // Close the drawer when a sidebar link navigates. Reading
+            // `active_route` inside the effect subscribes it to every
+            // navigation; the layout closure runs inside the navigator's
+            // retained chrome scope, so the effect is owned by (and
+            // freed with) the navigator. Where the sidebar is pinned the
+            // drawer is already closed and the write is a no-op.
             effect!({
                 let _ = active_route.get();
-                if !idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
-                    drawer_open.set(false);
-                }
+                sidebar_state.drawer.set(false);
             });
 
             let sidebar_el = shell::sidebar(active_route, q, doc_theme);
-            let header = shell::header(active_route, doc_theme, drawer_open);
-            let body: Element = ui! {
-                view(style = shell::outlet_grow_style) {
-                    { runtime_vocabulary::navigator_outlet().build() }
-                }
-            };
-            let content: Element = ui! {
-                view(style = shell::shell_column_style) {
-                    header
-                    body
-                }
-            };
+            let header = shell::header(active_route, doc_theme, sidebar_state);
+            // A `Blank` page: the header holds still and the outlet is
+            // bounded under it, so each screen's own scroller (which the
+            // "On this page" spy reads) is the one that scrolls.
             ui! {
-                AppShell(
+                AppFrame(
                     sidebar = vec![sidebar_el],
-                    is_open = drawer_open,
-                    pin_at = Breakpoint::Lg,
-                    width = 252.0,
+                    state = sidebar_state,
+                    // The page on a card, the sidebar on the ground
+                    // behind it.
+                    surface = FrameSurface::Raised,
+                    sidebar_width = SIDEBAR_WIDTH,
                 ) {
-                    { content }
+                    Page(
+                        variant = PageVariant::Blank,
+                        header = header,
+                        body = runtime_vocabulary::navigator_outlet().build(),
+                    )
                 }
             }
         })

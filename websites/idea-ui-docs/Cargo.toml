@@ -75,9 +75,10 @@ runtime-core = { workspace = true }
 runtime-vocabulary = { workspace = true }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }
-# Themed AppShell — pinned-sidebar ⇄ off-canvas drawer packaged around
-# the one-shot outlet, with a single sidebar build.
-idea-ui-nav = { workspace = true }
+# The app's structure: `AppFrame` (the sidebar pinned on a desktop, a
+# drawer below it, built once round the one-shot outlet), `Page` and
+# `PageHeader` for the chrome, and the layout blocks the pages use.
+idea-ui-layout = { workspace = true }
 # The live token editor demoed on the Theme editor page. Its own crate
 # (not an idea-ui feature), so only apps that want a control panel —
 # like this one — carry it.

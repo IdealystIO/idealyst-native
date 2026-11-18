@@ -6504,7 +6504,7 @@ dependencies = [
  "idea-theme",
  "idea-theme-editor",
  "idea-ui",
- "idea-ui-nav",
+ "idea-ui-layout",
  "idealyst",
  "lol_alloc",
  "robot-test",

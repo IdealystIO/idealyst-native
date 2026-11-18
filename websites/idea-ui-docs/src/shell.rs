@@ -1,6 +1,7 @@
-//! The docs chrome: the design's custom header bar, the grouped +
-//! searchable sidebar with status dots (both built ONCE inside the swap
-//! navigator's `.layout(...)` closure — see `lib.rs`), the eager
+//! The docs chrome: the header (a `PageHeader` holding the docs' brand
+//! and theme toggle), the grouped + searchable sidebar with status dots
+//! (both built ONCE inside the swap navigator's `.layout(...)` closure —
+//! see `lib.rs`), the eager
 //! per-screen `screen_frame` scroll shell, the `page_frame_content`
 //! frame (group overline, title + status badge, lead, body, Usage
 //! panel — rendered inside each page's lazy chunk, see `lazy_pages`),
@@ -23,6 +24,7 @@ use idea_ui::{
     Switch, Typography,
 };
 use idea_ui::{Table, TableCell, TableRow};
+use idea_ui_layout::{is_phone, PageHeader, SidebarState, SidebarToggle};
 use icons_lucide::SEARCH;
 
 use runtime_core::Route;
@@ -31,8 +33,8 @@ use crate::routes::{Entry, Status, CATALOG};
 use crate::themes::DocTheme;
 use crate::styles::{
     BrandName, Callout as CalloutBox, CodePanel as CodePanelBox, CodeText, ControlsBox, DemoRow,
-    DemoSurface as DemoSurfaceBox, DemoSurfaceContent, DocHeader, GroupOverline, HeaderBrand, HeaderMono, HeaderSpacer,
-    LogoBox, LogoGlyph, MenuButton, MenuGlyph, NavDot, NavDotReady, NavItem, NavItemActive, PagePad, PageRow, PageRowMain, PreviewBox,
+    DemoSurface as DemoSurfaceBox, DemoSurfaceContent, DocHeader, GroupOverline, HeaderBrand, HeaderMono,
+    LogoBox, LogoGlyph, NavDot, NavDotReady, NavItem, NavItemActive, PagePad, PageRow, PageRowMain, PreviewBox,
     PreviewSlot, ScreenFill, ScreenScroll, ScrollContent, SearchDialogBody, SearchFieldRow, SearchInputBare, SearchResultsScroll,
     SearchTrigger, SearchTriggerText, SegBtn, SegBtnActive, SegBtnText, SegBtnTextActive,
     SegToggle, SidebarBody, SidebarScroll, SidebarSection, StatusBadge, StatusBadgeDetailed, StatusBadgeText,
@@ -42,76 +44,57 @@ use crate::styles::{
 const VERSION: &str = "v0.1.0";
 
 // =============================================================================
-// Header — the custom top bar, built once by the `.layout(...)` closure
-// and mounted above the outlet. Hamburger (narrow widths only) + logo +
-// name + version, a "component reference" label, the active entry's
-// token hint, and the Light/Dark/Cyber segmented toggle.
+// Header — the top bar, built once by the `.layout(...)` closure as the
+// `Page`'s header. A `PageHeader` whose slots hold the docs' own pieces:
+// the sidebar's toggle and the brand leading, the site's label after
+// them, and the active entry's token hint and the Light/Dark/Cyber
+// toggle at the far end.
 // =============================================================================
 
 pub fn header(
     active_route: Signal<&'static str>,
     doc_theme: Signal<DocTheme>,
-    drawer_open: Signal<bool>,
+    sidebar: SidebarState,
 ) -> Element {
-    // Token hint follows the active component: live text, updated in place
-    // on navigation.
-    let token_hint = ui! {
-        text(style = HeaderMono()) {
-            move || {
-                let route = active_route.get();
-                crate::routes::entry_for(route).map(|e| e.token).unwrap_or("").to_string()
+    let brand = ui! {
+        view(style = HeaderBrand()) {
+            view(style = LogoBox()) {
+                text(style = LogoGlyph()) { "i".to_string() }
             }
+            text(style = BrandName()) { "idea-ui".to_string() }
+            text(style = VersionPill()) { VERSION.to_string() }
         }
     };
-
-    let toggle = header_theme_toggle(doc_theme);
+    // The brand rides the `leading` slot with the toggle, not the title's
+    // seat: that seat is the one the header shrinks first.
+    let lead = ui! {
+        view(style = HeaderBrand()) {
+            SidebarToggle(sidebar = sidebar)
+            brand
+        }
+    };
     ui! {
         view(style = DocHeader()) {
-            menu_button(drawer_open)
-            view(style = HeaderBrand()) {
-                view(style = LogoBox()) {
-                    text(style = LogoGlyph()) { "i".to_string() }
-                }
-                text(style = BrandName()) { "idea-ui".to_string() }
-                text(style = VersionPill()) { VERSION.to_string() }
-            }
-            text(style = HeaderMono()) { "component reference".to_string() }
-            view(style = HeaderSpacer()) {}
-            token_hint
-            toggle
-        }
-    }
-}
-
-/// The header's theme toggle — desktop only. Below the sidebar's
-/// pin breakpoint it moves into the drawer sidebar (`sidebar`), because
-/// the narrow header can't fit brand + label + hint + toggle without
-/// overflowing the viewport into a horizontal scroll.
-fn header_theme_toggle(doc_theme: Signal<DocTheme>) -> Element {
-    ui! {
-        if idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
-            theme_toggle(doc_theme)
-        }
-    }
-}
-
-// The leading hamburger. The AppShell's sidebar pins in-flow at/above
-// the `Lg` breakpoint (900 px — see `install_breakpoints` in `lib.rs`)
-// and becomes an off-canvas drawer below it, so the hamburger is only
-// rendered while the sidebar is a drawer. `sidebar_pinned` reads the
-// reactive breakpoint, so the `if` flips in lockstep with the
-// AppShell's own pin/drawer switch. Pressing it opens the app-owned
-// `drawer_open` signal the AppShell panel + scrim subscribe to.
-fn menu_button(drawer_open: Signal<bool>) -> Element {
-    let button = move || {
-        let glyph = ui! { text(style = MenuGlyph()) { "\u{2630}".to_string() } };
-        pressable(vec![glyph], move || drawer_open.set(true))
-            .with_style(MenuButton())
-            .into_element()
-    };
-    ui! {
-        if !idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
-            button()
+            PageHeader(
+                leading = Some(lead),
+                // What the site is, after the brand: the `status` slot,
+                // which a phone has no room for.
+                status = || ui! { text(style = HeaderMono()) { "component reference".to_string() } },
+                // The far end is the header's `trailing` slot, which a
+                // phone does not draw: the brand has the row there, and
+                // the theme toggle moves into the drawer (`sidebar`).
+                trailing = move || ui! {
+                    // The token hint follows the active component: live
+                    // text, updated in place on navigation.
+                    text(style = HeaderMono()) {
+                        move || {
+                            let route = active_route.get();
+                            crate::routes::entry_for(route).map(|e| e.token).unwrap_or("").to_string()
+                        }
+                    }
+                    theme_toggle(doc_theme)
+                },
+            )
         }
     }
 }
@@ -169,13 +152,11 @@ pub fn sidebar(
     q: Signal<String>,
     doc_theme: Signal<DocTheme>,
 ) -> Element {
-    // The theme toggle's narrow-width home (the header hosts it
-    // while the sidebar is pinned — see `header_theme_toggle`). The
-    // sidebar serves BOTH the pinned column and the off-canvas drawer,
-    // so the toggle is gated to the drawer case to avoid two toggles
-    // on desktop.
+    // The theme toggle's phone home. The header holds it from 640 up
+    // (its `trailing` slot, which a phone does not draw), so the drawer
+    // shows it only on a phone, or a tablet would have two.
     let drawer_toggle = ui! {
-        if !idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
+        if is_phone() {
             theme_toggle(doc_theme)
         }
     };
@@ -206,7 +187,7 @@ pub fn sidebar(
         Rc::new(move || o.set(false))
     };
 
-    // A scroll view (not a plain view): the AppShell gives the sidebar a
+    // A scroll view (not a plain view): the `AppFrame` gives the sidebar a
     // fixed full-height panel and leaves scrolling to the author, so
     // a nav list taller than the viewport must scroll here. The
     // `scroll_view` seed (`flex_grow:1 / flex_basis:0`) fills the panel's
@@ -230,42 +211,6 @@ pub fn sidebar(
         }
         .safe_area(SafeAreaSides::VERTICAL)
     }
-}
-
-// =============================================================================
-// Layout helpers for the swap `.layout(...)` closure in `lib.rs`:
-// header-over-outlet column + growing outlet wrapper.
-// =============================================================================
-
-/// The header-over-outlet column filling the AppShell's content region.
-pub fn shell_column_style() -> StyleApplication {
-    static KEY: u8 = 0;
-    let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
-        Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
-            flex_direction: Some(runtime_core::FlexDirection::Column),
-            width: Some(runtime_core::Length::Percent(100.0).into()),
-            height: Some(runtime_core::Length::Percent(100.0).into()),
-            min_height: Some(runtime_core::Length::Px(0.0).into()),
-            ..Default::default()
-        }))
-    });
-    StyleApplication::new(sheet)
-}
-
-/// The outlet's growing wrapper: absorbs the column's remaining height
-/// so screens (whose own `scroll_view`s need a bounded box) fill below
-/// the header.
-pub fn outlet_grow_style() -> StyleApplication {
-    static KEY: u8 = 0;
-    let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
-        Rc::new(runtime_core::StyleSheet::r#static(runtime_core::StyleRules {
-            flex_direction: Some(runtime_core::FlexDirection::Column),
-            flex_grow: Some(1.0f32.into()),
-            min_height: Some(runtime_core::Length::Px(0.0).into()),
-            ..Default::default()
-        }))
-    });
-    StyleApplication::new(sheet)
 }
 
 /// The search dialog body: a live text input over the reactive result list.

@@ -28,7 +28,9 @@ stylesheet! {
             flex_grow: 1.0,
             flex_shrink: 1.0,
             flex_basis: 0.0,
-            background: t.color.background(),
+            // The page is the frame's raised card: the primary surface,
+            // with the ground showing only round it.
+            background: t.color.surface(),
             color: t.color.text(),
         }
         transitions {
@@ -269,70 +271,27 @@ stylesheet! {
     }
 }
 
-// The hamburger itself — a square pressable that tints the menu glyph
-// with the theme's text color. Used in the custom header's leading edge
-// (web only) when the sidebar collapses below the pin width; a soft
-// hover fill gives it the same affordance as the sidebar nav items.
-stylesheet! {
-    pub MenuButton<IdeaThemeRef> {
-        base(t) {
-            cursor: Cursor::Pointer,
-            width: Length::Px(34.0),
-            height: Length::Px(34.0),
-            border_radius: t.radius.md(),
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            // Pull the icon toward the header's leading edge so it lines
-            // up with the sidebar's own left inset.
-            margin_left: -6.0,
-            background: Color("transparent".into()),
-        }
-        state hovered(t) {
-            background: t.color.surface_alt(),
-        }
-        transitions { background: 150ms EaseOut, }
-    }
-}
-
-// The ☰ glyph inside `MenuButton`, tinted with the theme's text color.
-stylesheet! {
-    pub MenuGlyph<IdeaThemeRef> {
-        base(t) {
-            font_size: 19.0,
-            text_align: TextAlign::Center,
-            color: t.color.text(),
-        }
-        transitions { color: 250ms EaseInOut, }
-    }
-}
-
 // ---- Sidebar ---------------------------------------------------------------
 
 stylesheet! {
-    // The scrolling panel: background + right border span the WHOLE panel
-    // (so they stay put while content scrolls). Padding lives on the inner
+    // The scrolling panel. Padding lives on the inner
     // `SidebarBody`, NOT here — a scroll view's own `padding` doesn't reliably
     // inset its content (its documentView isn't Taffy-positioned on macOS), so
     // a `width: 100%` child resolves against the full panel width and the
     // search field reads as too wide. Keep padding on a plain inner view.
     pub SidebarScroll<IdeaThemeRef> {
         base(t) {
-            background: t.color.surface(),
-            border_right_width: 1.0,
-            border_right_color: t.color.border(),
+            // No fill and no rule: the `AppFrame` paints the sidebar and
+            // parts it from the screen.
             flex_direction: FlexDirection::Column,
             width: Length::pct(100.0),
-            // Fill the AppShell panel's height: a short nav list still
+            // Fill the frame's sidebar panel's height: a short nav list still
             // draws the divider full-height, and a tall one is clamped
             // here so THIS node overflows and scrolls. An author style
             // replaces the scroll_view's default grow seed, so it must
             // be restated.
             flex_grow: 1.0,
             flex_basis: Length::Px(0.0),
-        }
-        transitions {
-            background: 250ms EaseInOut,
-            border_right_color: 250ms EaseInOut,
         }
     }
 }
@@ -343,7 +302,11 @@ stylesheet! {
     // the panel padding on every side.
     pub SidebarBody<IdeaThemeRef> {
         base(t) {
-            padding: t.spacing.lg(),
+            // The rows pad their own labels, so the panel's inset is the
+            // small step: the selected row's key stands close to the
+            // sidebar's edges, as the raised page does to the window's.
+            padding_horizontal: t.spacing.sm(),
+            padding_vertical: t.spacing.md(),
             gap: t.spacing.xs(),
             flex_direction: FlexDirection::Column,
             width: Length::pct(100.0),
@@ -437,7 +400,7 @@ stylesheet! {
             #[default]
             off(_t) {}
             on(t) {
-                color: t.intent.primary.fg(),
+                color: t.color.text(),
             }
         }
         state hovered(t) {
@@ -487,7 +450,7 @@ stylesheet! {
 stylesheet! {
     pub DemoSurface<IdeaThemeRef> {
         base(t) {
-            background: t.color.surface(),
+            background: t.color.control(),
             border_width: 1.0,
             border_color: t.color.border(),
             border_radius: t.radius.lg(),
@@ -550,7 +513,7 @@ stylesheet! {
         base(t) {
             // Same surface as `DemoSurface` but designed to share a row
             // with the controls panel.
-            background: t.color.surface(),
+            background: t.color.control(),
             border_width: 1.0,
             border_color: t.color.border(),
             border_radius: t.radius.lg(),
@@ -628,11 +591,10 @@ stylesheet! {
 stylesheet! {
     pub DocHeader<IdeaThemeRef> {
         base(t) {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            height: Length::Px(58.0),
-            padding_horizontal: 22.0,
-            gap: 16.0,
+            // What the docs add to the `PageHeader` inside: its rule and
+            // its glow. The row, its height and its gutter are the
+            // header's own.
+            flex_direction: FlexDirection::Column,
             background: t.color.surface(),
             border_bottom_width: 1.0,
             border_bottom_color: t.color.border(),
@@ -652,6 +614,9 @@ stylesheet! {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             gap: 11.0,
+            // The brand is short and never the thing to give ground: a
+            // squeezed wordmark wraps mid-name.
+            flex_shrink: 0.0,
         }
     }
 }
@@ -725,16 +690,11 @@ stylesheet! {
             font_size: 12.0,
             font_weight: FontWeight::Medium,
             color: t.color.text_muted(),
-        }
-    }
-}
-
-// A flex-grow spacer that pushes the trailing header content right.
-stylesheet! {
-    pub HeaderSpacer<()> {
-        base(_t) {
-            flex_grow: 1.0,
+            // One line, ending in "…": in a tight header these give
+            // ground rather than wrap and make the row taller.
+            max_lines: 1_u32,
             flex_shrink: 1.0,
+            min_width: Length::Px(0.0),
         }
     }
 }
@@ -746,7 +706,9 @@ stylesheet! {
         base(t) {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
-            background: t.color.surface_alt(),
+            // A well of the ground colour, as idea-ui's SegmentedControl
+            // track is.
+            background: t.color.background(),
             border_width: 1.0,
             border_color: t.color.border(),
             border_radius: Length::Full,
@@ -770,7 +732,7 @@ stylesheet! {
             #[default]
             off(_t) {}
             on(t) {
-                background: t.color.surface(),
+                background: t.color.control(),
                 shadow: runtime_core::Shadow { x: 0.0, y: 0.0, blur: 10.0, color: t.effect.glow_primary() },
             }
         }
@@ -835,14 +797,16 @@ stylesheet! {
             align_items: AlignItems::Center,
             padding_horizontal: 12.0,
             padding_vertical: 9.0,
-            background: t.color.surface_alt(),
+            // It looks like the field it opens: the control fill, and a
+            // stronger border under the pointer rather than the accent.
+            background: t.color.control(),
             border_width: 1.0,
             border_color: t.color.border(),
             border_radius: 8.0,
             margin_bottom: 12.0,
         }
         state hovered(t) {
-            border_color: t.color.focus_ring(),
+            border_color: t.color.border_strong(),
         }
         transitions { border_color: 150ms EaseOut, }
     }
@@ -900,7 +864,7 @@ stylesheet! {
             gap: 8.0,
             padding_horizontal: 12.0,
             padding_vertical: 8.0,
-            background: t.color.surface_alt(),
+            background: t.color.control(),
             border_width: 1.0,
             border_color: t.color.border(),
             border_radius: 8.0,
@@ -937,6 +901,10 @@ stylesheet! {
             padding_horizontal: 11.0,
             border_radius: 8.0,
             background: Color("transparent".into()),
+            // Every row carries the border's width, clear until the row
+            // is the open one, so opening a page shifts nothing.
+            border_width: 1.0,
+            border_color: Color("transparent".into()),
             // These rows sit inside a `link(route = …)`. On web that lowers
             // to a real `<a href>`, which the UA stylesheet gives a hand for
             // free; no native backend has that, and the framework defaults
@@ -947,11 +915,16 @@ stylesheet! {
         variant active {
             #[default]
             off(_t) {}
+            // The open page's row is a raised key: the theme's control
+            // fill and a hairline, not a tint of the accent. The hairline
+            // is what carries it in the search dialog, where the row sits
+            // on the surface and the fill alone is a breath apart.
             on(t) {
-                background: t.intent.primary.soft_bg(),
+                background: t.color.control(),
+                border_color: t.color.border(),
             }
         }
-        transitions { background: 150ms EaseOut, }
+        transitions { background: 150ms EaseOut, border_color: 150ms EaseOut, }
     }
 }
 
@@ -1150,7 +1123,7 @@ stylesheet! {
         base(t) {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::FlexStart,
-            background: t.color.surface(),
+            background: t.color.control(),
             border_width: 1.0,
             border_color: t.color.border(),
             border_radius: 20.0,
@@ -1297,7 +1270,7 @@ stylesheet! {
         base(t) {
             flex_direction: FlexDirection::Column,
             gap: 4.0,
-            background: t.color.surface(),
+            background: t.color.control(),
             border_width: 1.0,
             border_color: t.color.border(),
             border_radius: 14.0,
@@ -1371,7 +1344,7 @@ stylesheet! {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::FlexStart,
             gap: 14.0,
-            background: t.color.surface(),
+            background: t.color.control(),
             border_width: 1.0,
             border_color: t.color.border(),
             border_radius: 14.0,
@@ -1535,7 +1508,7 @@ stylesheet! {
         base(t) {
             flex_direction: FlexDirection::Column,
             gap: 11.0,
-            background: t.color.surface(),
+            background: t.color.control(),
             border_width: 1.0,
             border_color: t.color.border(),
             border_radius: 14.0,
@@ -1647,7 +1620,6 @@ mod tests {
         world.enter(|| {
             for (name, sheet) in [
                 ("SegBtn", SegBtn::sheet()),
-                ("MenuButton", MenuButton::sheet()),
                 ("SearchTrigger", SearchTrigger::sheet()),
                 ("IconToggleBtn", IconToggleBtn::sheet()),
             ] {

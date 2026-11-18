@@ -228,15 +228,22 @@ pub fn AppFrame(props: AppFrameProps) -> Element {
         FrameSurface::Flat => FrameContentFlat().into_style_application(),
         FrameSurface::Raised => FrameContentRaised().into_style_application(),
     };
+    // A sidebar that collapses has a live width: collapsing moves the
+    // panel, the screen's offset and the drawer's slide together. One
+    // that does not keeps a STATIC width, which the shell bakes into its
+    // sheets: a live width is laid out in Rust, so a server-rendered
+    // page would paint its first frame for the dump's viewport.
+    let width: Reactive<f32> = match state.collapse() {
+        SidebarCollapse::Off => Reactive::Static(sidebar_width),
+        _ => rx!(state.width(sidebar_width)),
+    };
     ui! {
         view(style = FrameGround().surface(ground)) {
             AppShell(
                 sidebar = vec![ui! { view(style = FrameSidebar().surface(side)) { destinations } }],
                 is_open = state.drawer,
                 pin_at = PIN_AT,
-                // Live: collapsing moves the panel, the screen's offset
-                // and the drawer's slide together.
-                width = rx!(state.width(sidebar_width)),
+                width = width,
             ) {
                 view(style = content_style) { screen }
             }
