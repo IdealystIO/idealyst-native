@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "10.3.3"
+version = "10.3.4"
 dependencies = [
  "css",
  "dev-client",
@@ -14889,7 +14889,7 @@ dependencies = [
 
 [[package]]
 name = "web-glue"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-test",

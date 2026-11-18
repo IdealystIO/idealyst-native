@@ -543,7 +543,7 @@ mcp-server = { path = "crates/mcp/server", version = "7.0.0", registry = "idealy
 mcp-design-server = { path = "crates/mcp/design-server", version = "3.0.0", registry = "idealyst" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "6.0.3", registry = "idealyst" }
-web-glue = { path = "crates/runtime/web-glue", version = "2.3.0", registry = "idealyst" }
+web-glue = { path = "crates/runtime/web-glue", version = "2.4.0", registry = "idealyst" }
 zone-offset = { path = "crates/runtime/zone-offset", version = "1.6.1", registry = "idealyst" }
 test-clock = { path = "crates/runtime/test-clock", version = "0.1.0", registry = "idealyst" }
 test-net = { path = "crates/runtime/test-net", version = "0.1.0", registry = "idealyst" }
@@ -606,7 +606,7 @@ backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", 
 backend-roku-transpile = { path = "crates/backend/roku/transpile", version = "1.5.2", registry = "idealyst" }
 backend-terminal = { path = "crates/backend/terminal", version = "9.0.0", registry = "idealyst" }
 backend-cpu = { path = "crates/backend/cpu", version = "8.0.0", registry = "idealyst" }
-backend-web = { path = "crates/backend/web", version = "10.3.3", registry = "idealyst" }
+backend-web = { path = "crates/backend/web", version = "10.3.4", registry = "idealyst" }
 backend-ssr = { path = "crates/backend/ssr", version = "8.0.0", registry = "idealyst" }
 backend-email = { path = "crates/backend/email", version = "8.0.0", registry = "idealyst" }
 backend-windows = { path = "crates/backend/windows", version = "9.0.0", registry = "idealyst" }
