@@ -33,7 +33,7 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tungstenite::Message;
 
 /// The page global holding its pairing nonce. `backend-web`'s
@@ -41,9 +41,12 @@ use tungstenite::Message;
 /// two names together.
 pub const NONCE_GLOBAL: &str = "__idealyst_robot_nonce";
 
-/// Per-socket I/O bound. A stale `DevToolsActivePort` can name a port some
-/// other process now holds; this keeps one such endpoint from stalling the
-/// screenshot.
+/// Per-socket I/O bound for reaching DevTools (connecting, `/json/list`, the
+/// WebSocket handshake). A stale `DevToolsActivePort` can name a port some
+/// other process now holds; this keeps one such endpoint from stalling a
+/// request. A command on a page waits as long as its request does
+/// ([`with_page`]'s `wait`): a navigation commits only once the new
+/// document starts to arrive, which on a debug build took far longer.
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A captured frame: PNG bytes and its pixel size.
@@ -69,30 +72,49 @@ pub fn browser_ports(dir: &Path) -> Vec<u16> {
 /// Capture the page target whose [`NONCE_GLOBAL`] is `nonce`, searching the
 /// browsers on `ports`. `Err` says what was searched, for the agent to
 /// read.
-pub fn capture(ports: &[u16], nonce: &str) -> Result<Shot, String> {
-    with_page(ports, nonce, Page::screenshot)
+pub fn capture(ports: &[u16], nonce: &str, wait: Duration) -> Result<Shot, String> {
+    with_page(ports, nonce, wait, Page::screenshot)
 }
 
 /// Run `f` on the page target whose [`NONCE_GLOBAL`] is `nonce`, searching
 /// the browsers on `ports` — the driven tab, whatever else the browsers
-/// hold. `Err` says what was searched when no tab matches.
-pub fn with_page<T>(ports: &[u16], nonce: &str, f: impl FnOnce(&mut Page) -> Result<T, String>) -> Result<T, String> {
+/// hold. Every command on a page, the nonce check included, waits up to
+/// `wait`. `Err` says what each tab searched answered, so a tab that was
+/// too slow to say its nonce reads as that, never as "no tab".
+pub fn with_page<T>(
+    ports: &[u16],
+    nonce: &str,
+    wait: Duration,
+    f: impl FnOnce(&mut Page) -> Result<T, String>,
+) -> Result<T, String> {
     if ports.is_empty() {
         return Err("no browser launched by this dev session answers CDP".into());
     }
-    let mut searched = 0;
+    let mut misses = Vec::new();
     for &port in ports {
         let Ok(pages) = page_targets(port) else { continue };
         for ws_url in pages {
-            searched += 1;
-            let Ok(mut page) = Page::connect(&ws_url) else { continue };
-            if matches!(page.nonce(), Ok(Some(n)) if n == nonce) {
-                return f(&mut page);
+            let mut page = match Page::connect(&ws_url) {
+                Ok(p) => p,
+                Err(e) => {
+                    misses.push(format!("could not attach ({e})"));
+                    continue;
+                }
+            };
+            page.wait = wait;
+            match page.nonce() {
+                Ok(Some(n)) if n == nonce => return f(&mut page),
+                Ok(Some(_)) => misses.push("another page of the app".to_string()),
+                Ok(None) => misses.push("a page with no robot client (yet)".to_string()),
+                Err(e) => misses.push(e),
             }
         }
     }
     Err(format!(
-        "the driven tab is not in a browser this dev session launched ({searched} tab(s) searched)"
+        "the driven tab is not in a browser this dev session launched ({} tab(s) searched{}{})",
+        misses.len(),
+        if misses.is_empty() { "" } else { ": " },
+        misses.join("; ")
     ))
 }
 
@@ -191,6 +213,8 @@ fn connect(port: u16) -> Result<TcpStream, String> {
 pub struct Page {
     ws: tungstenite::WebSocket<TcpStream>,
     next_id: u64,
+    /// How long a command waits for its answer.
+    wait: Duration,
 }
 
 impl Page {
@@ -205,18 +229,34 @@ impl Page {
         // was not told to allow (`--remote-allow-origins`), and tungstenite
         // sends none.
         let (ws, _) = tungstenite::client(ws_url, connect(port)?).map_err(|e| e.to_string())?;
-        Ok(Page { ws, next_id: 1 })
+        Ok(Page { ws, next_id: 1, wait: IO_TIMEOUT })
     }
 
-    /// Send one command and wait for its reply, skipping the events the
-    /// target interleaves.
+    /// Send one command and wait for its reply — up to the page's wait —
+    /// skipping the events the target interleaves.
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id;
         self.next_id += 1;
         let frame = json!({ "id": id, "method": method, "params": params }).to_string();
         self.ws.send(Message::Text(frame.into())).map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + self.wait;
         loop {
-            let msg = self.ws.read().map_err(|e| format!("{method}: {e}"))?;
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(format!("{method}: the tab gave no answer within {} ms", self.wait.as_millis()));
+            }
+            // The socket's own timeout is the time left (it rejects zero),
+            // so a slow answer is waited for and a missing one ends here.
+            self.ws.get_mut().set_read_timeout(Some(left)).map_err(|e| format!("{method}: {e}"))?;
+            let msg = match self.ws.read() {
+                Ok(msg) => msg,
+                Err(tungstenite::Error::Io(e))
+                    if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
+                {
+                    continue
+                }
+                Err(e) => return Err(format!("{method}: {e}")),
+            };
             let Message::Text(text) = msg else { continue };
             let Ok(v) = serde_json::from_str::<Value>(text.as_str()) else { continue };
             if v["id"].as_u64() != Some(id) {

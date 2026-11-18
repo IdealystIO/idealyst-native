@@ -93,7 +93,7 @@ pub(crate) fn serve(
         .ok_or_else(|| format!("{cmd}: this relay was started without CDP access"))?;
     let ports = cdp::browser_ports(dir);
     let on_page = |f: &mut dyn FnMut(&mut cdp::Page) -> Result<Value, String>| {
-        cdp::with_page(&ports, &nonce, |p| f(p)).map_err(|e| {
+        cdp::with_page(&ports, &nonce, wait, |p| f(p)).map_err(|e| {
             format!(
                 "{cmd}: {e}. The relay reaches only a tab in a browser the dev session launched \
                  (`idealyst test --web`, or `idealyst dev --headless-client`)"
@@ -168,7 +168,7 @@ pub(crate) fn open_page(inner: &Arc<Inner>, pinned: Option<u64>, args: &Value, w
     let target = match nonce {
         Some(nonce) => {
             let quoted = serde_json::to_string(url).expect("a string serializes");
-            cdp::with_page(&ports, &nonce, |p| p.evaluate(&format!("new URL({quoted}, location.href).href")))
+            cdp::with_page(&ports, &nonce, wait, |p| p.evaluate(&format!("new URL({quoted}, location.href).href")))
                 .map_err(|e| format!("open_page: {e}"))?
                 .as_str()
                 .ok_or_else(|| format!("open_page: {url:?} is not a URL"))?

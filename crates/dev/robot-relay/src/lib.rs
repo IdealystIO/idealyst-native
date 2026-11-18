@@ -112,6 +112,9 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RESPONSE_TIMEOUT: Duration = Duration::from_secs(600);
 /// WS read poll slice — bounds outbound-frame latency to the app.
 const WS_POLL: Duration = Duration::from_millis(20);
+/// How long a `screenshot` with source `auto` gives the CDP capture before
+/// falling back to the app's own.
+const AUTO_CDP_WAIT: Duration = Duration::from_secs(3);
 
 /// Identity used for the `~/.idealyst/apps` registration the MCP server
 /// discovers. For web the sidecar knows these (it scaffolded/served the app),
@@ -676,7 +679,11 @@ fn screenshot(inner: &Arc<Inner>, pinned: Option<u64>, args: &Value, wait: Durat
     let session = pinned.unwrap_or_else(|| inner.app_session.load(Ordering::SeqCst));
     let nonce = inner.nonces.lock().unwrap().get(&session).cloned();
     let shot = match (&nonce, &inner.cdp_profiles_dir) {
-        (Some(nonce), Some(dir)) => cdp::capture(&cdp::browser_ports(dir), nonce),
+        // `auto` falls back to the app's own capture, so it tries CDP only
+        // briefly; `cdp` asked for it, and waits as long as the request.
+        (Some(nonce), Some(dir)) => {
+            cdp::capture(&cdp::browser_ports(dir), nonce, if source == "cdp" { wait } else { AUTO_CDP_WAIT })
+        }
         (None, _) => Err("the driven app is not a web page that paired with the relay".into()),
         (_, None) => Err("this relay was started without CDP access".into()),
     };

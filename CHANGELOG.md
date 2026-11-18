@@ -3710,6 +3710,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`load_url` waits for a slow navigation, and a busy tab is no longer reported missing**
+  (`robot-relay` patch). The relay gave every DevTools command 3 s. On a debug build a
+  navigation took longer to commit (`load_url: Page.navigate: … Resource temporarily
+  unavailable`), and the check of the tab's pairing nonce — which runs on the page's main thread —
+  timed out while the app was busy and read as "the driven tab is not in a browser this dev
+  session launched (1 tab(s) searched)", test after test, while the app kept answering. Commands
+  on the tab now wait as long as the request (`load_url`: 60 s by default; an explicit `cdp`
+  screenshot likewise, `auto` still falls back after 3 s), and a failed search names what each
+  tab answered.
+
 - **A page loaded again under `idealyst test` no longer re-downloads and recompiles a large debug
   wasm before it can join the robot relay** (`idealyst-cli` patch). A debug build's wasm is hundreds of MB (CrewForge's: 225 MB), more than
   Chromium's default cache keeps, so the runner's browser fetched and compiled it again on every

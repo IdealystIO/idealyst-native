@@ -243,6 +243,97 @@ fn regression_load_url_and_cookies_drive_a_real_headless_tab() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// want_3393e6c1 (CrewForge): on a debug build a `load_url` took longer
+/// than the relay's 3 s DevTools read timeout to commit, failed with
+/// `Page.navigate: … Resource temporarily unavailable`, and `load_url`s
+/// after it failed with "the driven tab is not in a browser this dev
+/// session launched (1 tab(s) searched)" while the app itself kept
+/// answering: the check of the tab's nonce runs on the page's main
+/// thread, which a debug app kept busy past 3 s, and a check that timed
+/// out read as "not this tab". Here the server holds `/slow`'s response
+/// for 5 s, and the page at `/busy` blocks its main thread for 5 s after
+/// it has dialed: both `load_url`s must wait as long as `load_url` does.
+#[test]
+fn regression_a_slow_load_url_waits_and_the_next_one_finds_the_tab() {
+    let Some(browser) = browser() else {
+        eprintln!("cdp_real_browser: no Chromium-family browser found; skipped");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("relay_cdp_slow_load_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let profiles = root.join(".idealyst");
+    let profile = profiles.join("test-browser-profile");
+    std::fs::create_dir_all(&profile).unwrap();
+    let relay = robot_relay::start(robot_relay::RelayConfig {
+        register: false,
+        cdp_profiles_dir: Some(profiles.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    let page = format!(
+        r#"<!doctype html><body><script>
+        var nonce = "n" + Math.random();
+        window.{global} = nonce;
+        var ws = new WebSocket("ws://127.0.0.1:{port}/");
+        ws.onopen = function () {{
+          ws.send(JSON.stringify({{ hello: {{ platform: "web", nonce: nonce, label: location.pathname }} }}));
+          if (location.pathname === "/busy") {{
+            var until = Date.now() + 5000;
+            while (Date.now() < until) {{}}
+          }}
+        }};
+        </script></body>"#,
+        global = robot_relay::cdp::NONCE_GLOBAL,
+        port = relay.ws_addr.port(),
+    );
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://127.0.0.1:{}", server.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        let seen = std::sync::Mutex::new(Vec::new());
+        let seen = std::sync::Arc::new(seen);
+        for stream in server.incoming().flatten() {
+            let (page, seen) = (page.clone(), seen.clone());
+            std::thread::spawn(move || {
+                let mut peek = [0u8; 16];
+                let n = stream.peek(&mut peek).unwrap_or(0);
+                if String::from_utf8_lossy(&peek[..n]).starts_with("GET /slow") {
+                    std::thread::sleep(Duration::from_secs(5));
+                }
+                serve_one(stream, &page, &seen);
+            });
+        }
+    });
+    let _browser = Kill(
+        Command::new(&browser)
+            .args(["--headless=new", "--remote-debugging-port=0", "--no-first-run"])
+            .args(["--no-default-browser-check", "--disable-gpu"])
+            .arg(format!("--user-data-dir={}", profile.display()))
+            .arg(format!("{origin}/start"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn the browser"),
+    );
+    let active_label = || relay.apps().into_iter().find(|a| a.active).and_then(|a| a.label);
+    let booted = (0..150).any(|_| {
+        std::thread::sleep(Duration::from_millis(100));
+        active_label().as_deref() == Some("/start")
+    });
+    assert!(booted, "the page never dialed the relay");
+
+    let r = call(&relay, "load_url", json!({ "url": "/slow" }));
+    assert_eq!(r["ok"]["url"], format!("{origin}/slow"), "a navigation slower than 3 s still loads: {r}");
+    assert_eq!(active_label().as_deref(), Some("/slow"));
+    let r = call(&relay, "load_url", json!({ "url": "/busy" }));
+    assert_eq!(r["ok"]["url"], format!("{origin}/busy"), "{r}");
+    // The page has dialed and is now blocked: finding it waits.
+    let r = call(&relay, "load_url", json!({ "url": "/after" }));
+    assert_eq!(r["ok"]["url"], format!("{origin}/after"), "a busy tab is waited for, not reported missing: {r}");
+    assert_eq!(active_label().as_deref(), Some("/after"));
+    drop(_browser);
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// want_b853a728 (CrewForge): the two-supervisor claim needs the same web
 /// app open twice, signed in as two users. `open_page` opens a second tab
 /// in its own browser context: it does not see the first tab's cookies, it

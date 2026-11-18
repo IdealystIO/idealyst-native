@@ -197,6 +197,9 @@ fn auto_falls_back_to_the_page_when_no_browser_has_the_tab() {
     let cdp = call(&relay, "screenshot", json!({ "source": "cdp" }));
     let err = cdp["err"].as_str().unwrap_or_else(|| panic!("an error: {cdp}"));
     assert!(err.contains("not in a browser this dev session launched"), "{err}");
+    // Each tab searched says why it isn't the one (want_3393e6c1: a tab
+    // too slow to answer read as "no tab").
+    assert!(err.contains("1 tab(s) searched: another page of the app"), "{err}");
     assert!(err.contains("\"tab\"") && err.contains("\"dom\""), "names the alternatives: {err}");
 
     // `dom` and `tab` always go to the page.
