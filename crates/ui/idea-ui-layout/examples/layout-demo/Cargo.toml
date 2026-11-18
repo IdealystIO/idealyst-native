@@ -1,0 +1,34 @@
+[package]
+name = "layout-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Every layout in idea-ui-layout, one per screen: the three page variants, the three split modes, a flow, a shell with tabs, the list states and the overlays. Look at it at phone, tablet and desktop widths."
+# Not published to the idealyst registry: a workspace-internal demo.
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# Enabled only by the CLI-generated native sidecar wrapper.
+sidecar = ["dep:dev-server"]
+
+[dependencies]
+# The platform surface, used by `src/main.rs` only.
+idealyst = { workspace = true }
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+dev-server = { workspace = true, optional = true }
+idea-ui = { workspace = true }
+idea-ui-layout = { workspace = true }
+# The sidebar: pinned on a desktop, a drawer below it.
+idea-ui-nav = { workspace = true }
+icons-lucide = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Layout Demo"
+bundle_id = "io.idealyst.layoutdemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]

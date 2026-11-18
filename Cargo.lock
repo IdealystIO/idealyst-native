@@ -6551,6 +6551,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "idea-ui-layout"
+version = "0.1.0"
+dependencies = [
+ "host-mock",
+ "icons-lucide",
+ "idea-theme",
+ "idea-ui",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+]
+
+[[package]]
 name = "idea-ui-mail"
 version = "8.0.0"
 dependencies = [
@@ -7301,6 +7314,21 @@ dependencies = [
  "tower-service",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "layout-demo"
+version = "1.5.2"
+dependencies = [
+ "dev-server",
+ "icons-lucide",
+ "idea-ui",
+ "idea-ui-layout",
+ "idea-ui-nav",
+ "idealyst",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
 ]
 
 [[package]]

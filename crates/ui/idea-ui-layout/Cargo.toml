@@ -1,0 +1,31 @@
+[package]
+name = "idea-ui-layout"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Responsive screen layouts for idea-ui: page variants, split views, flows and overlays that pick their own phone, tablet and desktop form."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# Forward a `test_id` to the interactive primitives for robot/E2E.
+robot = ["runtime-core/robot", "idea-ui/robot"]
+
+[dependencies]
+runtime-core = { workspace = true }
+# The `ui!` / `#[component]` emission spells absolute
+# `::runtime_vocabulary::glue::…` paths.
+runtime-vocabulary = { workspace = true }
+# Same theme as idea-ui, and built from its components (Modal, Menu,
+# Popover, Button) rather than from primitives.
+idea-theme = { workspace = true }
+idea-ui = { workspace = true }
+# The glyphs the layouts draw themselves: the header's ⋮, a dialog's ✕,
+# a sheet's chevrons, the blank and no-match states.
+icons-lucide = { workspace = true }
+
+[dev-dependencies]
+# The recording scene `Host` + capability mock the mount tests run on.
+host-mock = { path = "../../dev/host-mock" }
+runtime-scene = { path = "../../runtime/scene" }

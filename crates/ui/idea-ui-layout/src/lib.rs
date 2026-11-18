@@ -1,0 +1,74 @@
+//! `idea-ui-layout` — responsive screen layouts for idea-ui.
+//!
+//! idea-ui decides what a control looks like. This kit decides how a
+//! screen is put together at each width: a screen picks a layout and
+//! hands it content, and the layout draws the phone, tablet and desktop
+//! form. A screen built from it never reads the breakpoint.
+//!
+//! The rules the kit holds to are in `RULES.md` beside this crate, each
+//! under a name the docs here cite (rule `layout`, rule `overlays`).
+//!
+//! # The ladder
+//!
+//! | | Phone (`Xs`, under 640) | Tablet (`Sm`, `Md`) | Desktop (`Lg` up) |
+//! |---|---|---|---|
+//! | Content | phone layout | desktop layout | desktop layout |
+//! | App sidebar ([`idea_ui_nav::AppShell`]) | drawer | drawer | pinned |
+//! | A pane beside the content | never | from the layout's width | yes |
+//! | Menus and popovers | bottom sheet | anchored | anchored |
+//! | Form dialogs | bottom sheet | card | card |
+//!
+//! # The layouts
+//!
+//! - [`Page`] — the frame: the header pinned, and the body in one of
+//!   three seats ([`PageVariant`]): `Content` (the page scrolls),
+//!   `Table` (the table in it scrolls), `Blank` (bounded, nothing else
+//!   decided). [`PageHeader`] is its title row.
+//! - [`SplitView`] — two regions side by side from one width per mode
+//!   ([`SplitMode`]): `Nav`, `Detail`, `Inspector`.
+//! - [`Flow`] — one step at a time, its actions pinned at the foot.
+//!
+//! # The blocks
+//!
+//! [`Section`], [`FieldGrid`], [`LabelValue`], [`StatGrid`],
+//! [`ActionBar`], [`StateMessage`] and [`ListStates`] go inside any
+//! layout. Each owns the phone form of one arrangement.
+//!
+//! # The overlays
+//!
+//! [`ActionMenu`], [`AdaptivePopover`], [`DrillSheet`] and [`Dialog`]
+//! are anchored or centred with a pointer and a bottom [`Sheet`] on a
+//! phone; see the [`overlay`] module.
+//!
+//! [`idea_ui_nav::AppShell`]: https://docs.rs/idea-ui-nav
+
+mod action;
+pub mod blocks;
+mod flow;
+mod list_states;
+pub mod overlay;
+pub mod page;
+mod slot;
+mod split_view;
+mod width;
+
+pub use action::Action;
+pub use blocks::{
+    ActionBar, ActionBarProps, FieldGrid, FieldGridProps, FieldGridRow, FieldGridRowProps, LabelValue,
+    LabelValueProps, Section, SectionHeading, SectionHeadingProps, SectionProps, StatGrid, StatGridProps,
+    StateMessage, StateMessageProps,
+};
+pub use flow::{Flow, FlowLabels, FlowProps, FlowStep};
+pub use list_states::{Blank, ListPhase, ListStates, ListStatesProps};
+pub use overlay::{
+    dialog_block, dialog_presentation, sheet_serves, ActionMenu, ActionMenuProps, ActionMenuSurface,
+    ActionMenuSurfaceProps, AdaptivePopover, AdaptivePopoverProps, Dialog, DialogFooter, DialogFooterProps,
+    DialogProps, DrillCx, DrillSheet, DrillSheetProps, Sheet, SheetActionRow, SheetActionRowProps, SheetCheckRow,
+    SheetCheckRowProps, SheetHeading, SheetHeadingProps, SheetProps, SheetPushRow, SheetPushRowProps,
+};
+pub use page::{Page, PageFrame, PageHeader, PageHeaderProps, PageProps, PageVariant, PinnedPane, PinnedPaneProps};
+pub use slot::{OptionalSlot, Slot};
+pub use split_view::{
+    SplitMode, SplitView, SplitViewProps, SPLIT_DOCK_MAX_PCT, SPLIT_NAV_WIDTH, SPLIT_PANE_WIDTH,
+};
+pub use width::{form_factor, is_phone, opens_on_phone, FormFactor};

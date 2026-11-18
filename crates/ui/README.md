@@ -10,6 +10,8 @@ of the box rather than reimplementing them.
 | --- | --- | --- |
 | `idea-ui` | [`idea-ui/`](./idea-ui) | The library itself. Heading, Body, Card, Stack, Btn, Caption, theme tokens, breakpoints. Pure composition over Runtime primitives. |
 | `icons-lucide` | [`icons-lucide/`](./icons-lucide) | Lucide icon set wrapped as an `IconRegistry`. Consumed by the `Icon` primitive. |
+| `idea-ui-nav` | [`idea-ui-nav/`](./idea-ui-nav) | Navigation chrome for the swap and stack navigators: `AppShell`, `TabBar`, `Drawer`, `StackHeader`. |
+| `idea-ui-layout` | [`idea-ui-layout/`](./idea-ui-layout) | Responsive screen layouts over idea-ui: page variants, split views, flows, and overlays that become sheets on a phone. Its rules are in [`RULES.md`](./idea-ui-layout/RULES.md). |
 
 ## Relationship to the framework
 
