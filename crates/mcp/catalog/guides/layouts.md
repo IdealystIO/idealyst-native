@@ -438,10 +438,14 @@ Toolbar(
   tabs as fit and puts the rest under "N more"; nothing scrolls sideways.
 - **`ToolbarSearch`** is a magnifier that opens its field, with a dot while
   a term is set. `inline = true` is the field itself, for the `start` slot.
-  It writes your `value` signal.
+  It writes your `value` signal. Ctrl-F (⌘F on a Mac) goes to it while it is
+  mounted, in place of the browser's find; pass `find_shortcut = false` on
+  all but one where two are mounted at once. Pass `open = Some(signal)` to
+  open the glyph's field from your own code.
 - **`ToolbarButton`** shows its label and count from 640 ("Filter · 2") and
-  its glyph with a dot on a phone. `bind_to` hands you the handle to anchor
-  what it opens.
+  its glyph with a dot on a phone. `compact = true` is the glyph at every
+  width with the count as a number on its corner. `bind_to` hands you the
+  handle to anchor what it opens.
 
 ## A record with tabs
 
@@ -552,8 +556,11 @@ Dialog(
 - `ActionMenuSurface` is the menu without its trigger, for a right-click
   or a long press.
 - `Sheet` with `SheetActionRow` (does something and closes),
-  `SheetCheckRow` (toggles and stays) and `SheetPushRow` (pushes a pane)
+  `SheetCheckRow` (toggles and stays), `SheetPickRow` (one of a set: a
+  check at the end of the chosen row) and `SheetPushRow` (pushes a pane)
   is for building your own. `DrillSheet` is a sheet with levels.
+- A slot (`Sheet`'s `content`, `ListStates`' rows) takes a closure or
+  a builder you already hold as `Rc<dyn Fn() -> Element>`.
 
 ## Safe areas
 
