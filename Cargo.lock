@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "10.3.4"
+version = "10.3.5"
 dependencies = [
  "css",
  "dev-client",
@@ -6552,7 +6552,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-layout"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "host-mock",
  "icons-lucide",
@@ -6602,7 +6602,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7787,7 +7787,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "2.4.0"
+version = "2.4.1"
 dependencies = [
  "catalog-scan",
  "inventory",
