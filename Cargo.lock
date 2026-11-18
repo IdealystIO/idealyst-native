@@ -6552,7 +6552,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-layout"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "host-mock",
  "icons-lucide",
@@ -7788,7 +7788,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "2.4.1"
+version = "2.4.2"
 dependencies = [
  "catalog-scan",
  "inventory",
