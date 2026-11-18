@@ -630,6 +630,12 @@ pub struct WebBackend {
     /// unchanged, so insert+delete are both O(1) regardless of how
     /// many rules are live.
     pub(crate) free_rule_indices: Vec<u32>,
+    /// Slots freed while class swaps may still be queued. A node whose
+    /// restyle released a rule keeps the OLD class until the class
+    /// batch flushes, so recycling the slot before then deletes the
+    /// rule out from under a painted element. `flush_pending_classes`
+    /// moves these to `free_rule_indices` once the swaps are applied.
+    pub(crate) quarantined_rule_indices: Vec<u32>,
     /// CSS rule index of the `:root { --token: value; ... }` block
     /// that holds the active theme's token variables. `None` until the
     /// first `install_theme_variables` call. On theme swap we reach
@@ -1324,6 +1330,7 @@ impl WebBackend {
             dynamic_by_content: FxHashMap::default(),
             dynamic_by_ptr: FxHashMap::default(),
             free_rule_indices: Vec::new(),
+            quarantined_rule_indices: Vec::new(),
             theme_root_rule_index: None,
             app_bg_rule_index: None,
             scrollbar_rule_indices: Vec::new(),
@@ -1872,7 +1879,7 @@ impl WebBackend {
     /// Schedule a microtask flush. Idempotent within a turn — if
     /// one's already scheduled, subsequent queues just append to
     /// the buffer.
-    fn schedule_class_flush(&self) {
+    pub(crate) fn schedule_class_flush(&self) {
         if self.class_queue.mark_scheduled() {
             return;
         }
@@ -1903,6 +1910,9 @@ impl WebBackend {
         // teardown produces at most one FFI call per kind.
         self.class_binding_release_batch.flush();
         self.class_queue.flush();
+        // Every queued swap is on its node now: no element still carries
+        // a class whose rule was released this turn.
+        self.free_rule_indices.append(&mut self.quarantined_rule_indices);
     }
 
     /// Drop a node from the JS-side styled-node registry. Called by

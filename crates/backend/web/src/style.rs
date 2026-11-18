@@ -375,12 +375,39 @@ impl WebBackend {
     /// `insert_rule` recycles it via the `deleteRule + insertRule`
     /// trick above.
     ///
-    /// Side effect: the rule physically remains in the sheet until
-    /// recycled. Its class name is no longer applied to any
-    /// element, so it's inert; the browser parses it once on
-    /// insert and ignores it thereafter.
+    /// For rules no element's class names (`@font-face`, the scrollbar
+    /// theme). A class rule goes through [`Self::delete_class_rule`].
     pub(crate) fn delete_rule(&mut self, idx: u32) {
         self.free_rule_indices.push(idx);
+    }
+
+    /// Free the slot of a rule whose selector is a class.
+    ///
+    /// The rule physically remains in the sheet until its slot is
+    /// recycled, and it must outlive the turn: a restyled node's class
+    /// swap rides the batched class queue, so the node still carries
+    /// the released class until that queue flushes. A slot recycled
+    /// before then (another node minting a class in the same turn)
+    /// leaves the node with no rule at all; one style recalc in that
+    /// window — any layout read — drops it to unstyled, and its
+    /// `transition` then animates from the unstyled value (a pinned
+    /// sidebar's content jumping to `margin-left: 0` and sliding back).
+    /// So with the batched path live the slot is quarantined until
+    /// `flush_pending_classes` has applied the swaps.
+    pub(crate) fn delete_class_rule(&mut self, idx: u32) {
+        // The batch flushes on the INSTALLED backend, so only that one
+        // has a flush to wait for. `RefCell::as_ptr` takes no borrow.
+        let this: *const WebBackend = self;
+        let batched = crate::WEB_BACKEND_HANDLE
+            .with(|s| s.borrow().as_ref().and_then(|w| w.upgrade()))
+            .is_some_and(|rc| std::ptr::eq(rc.as_ptr(), this));
+        if batched {
+            self.quarantined_rule_indices.push(idx);
+            self.schedule_class_flush();
+        } else {
+            // Class swaps are synchronous `setAttribute`s here.
+            self.free_rule_indices.push(idx);
+        }
     }
 }
 
@@ -606,7 +633,7 @@ impl WebBackend {
             };
             if should_drop {
                 if let Some(entry) = self.pregen.remove(&key) {
-                    self.delete_rule(entry.rule_index);
+                    self.delete_class_rule(entry.rule_index);
                 }
             }
         }
@@ -1118,9 +1145,9 @@ impl WebBackend {
             self.dynamic_by_ptr
                 .retain(|_, v| !std::rc::Rc::ptr_eq(v, &rule.shared));
             let _t = PhaseTimer::start("delete_rule");
-            self.delete_rule(rule.rule_index);
+            self.delete_class_rule(rule.rule_index);
             for idx in rule.state_rule_indices {
-                self.delete_rule(idx);
+                self.delete_class_rule(idx);
             }
         }
     }
@@ -1262,6 +1289,9 @@ mod z_index_tests {
     #[wasm_bindgen_test]
     async fn z_index_raises_an_unpositioned_view_over_a_later_sibling() {
         crate::tests::install_mount();
+        // The installed backend's class batch flushes on a scheduled
+        // microtask, as at boot.
+        crate::install_scheduler();
         // Installed as the app's backend, as at boot: a restyle's class
         // swap is batched to a microtask flushed on the INSTALLED backend.
         let shared = Rc::new(std::cell::RefCell::new(WebBackend::new("#app")));
@@ -1317,5 +1347,55 @@ mod z_index_tests {
         crate::tests::sleep_ms(0).await;
         assert!(!top_is(&first_el, 50.0, 75.0), "removing it restores tree order");
         parent_el.remove();
+    }
+    /// The CrewForge report (11-18): collapsing `AppFrame`'s sidebar made
+    /// the content snap to `margin-left: 0` and slide back out. A restyle
+    /// releases the node's old rule while its class swap is still queued;
+    /// another node minting a class in the same turn recycled that slot,
+    /// so the first node carried a class with no rule until the queue
+    /// flushed, and any style recalc in between rendered it unstyled.
+    #[wasm_bindgen_test]
+    async fn regression_a_released_rule_outlives_the_queued_class_swap() {
+        crate::tests::install_mount();
+        // The class batch flushes on a scheduled microtask.
+        crate::install_scheduler();
+        let shared = Rc::new(std::cell::RefCell::new(WebBackend::new("#app")));
+        crate::install_text_batcher(&shared);
+        let _ = shared.borrow_mut().sheet();
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let app = doc.get_element_by_id("app").unwrap();
+
+        let seat = crate::primitives::view::create(&mut shared.borrow_mut());
+        let other = crate::primitives::view::create(&mut shared.borrow_mut());
+        app.append_child(&seat).unwrap();
+        app.append_child(&other).unwrap();
+        let seat_el: web_glue::dom::Element = seat.clone().dyn_into().unwrap();
+        let margin = || {
+            let cs = web_glue::dom::window().unwrap().get_computed_style(&seat_el).unwrap().unwrap();
+            cs.get_property_value("margin-left").unwrap()
+        };
+        let px = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+        let offset = |v: f32| Rc::new(StyleRules { margin_left: px(v), ..Default::default() });
+
+        shared.borrow_mut().apply_style_impl(&seat, &offset(248.0));
+        shared.borrow_mut().apply_style_impl(&other, &offset(7.0));
+        crate::tests::sleep_ms(0).await;
+        assert_eq!(margin(), "248px");
+
+        // One turn: the seat restyles (its 248 rule is released, the swap
+        // queued), then another node mints a fresh class.
+        shared.borrow_mut().apply_style_impl(&seat, &offset(56.0));
+        shared.borrow_mut().apply_style_impl(&other, &offset(9.0));
+        assert_eq!(margin(), "248px", "still styled by the class it carries until the swap lands");
+        crate::tests::sleep_ms(0).await;
+        assert_eq!(margin(), "56px");
+
+        // The slots do come back once the swaps are applied.
+        let b = shared.borrow();
+        assert!(b.quarantined_rule_indices.is_empty() && !b.free_rule_indices.is_empty());
+        drop(b);
+        seat_el.remove();
+        let other_el: web_glue::dom::Element = other.dyn_into().unwrap();
+        other_el.remove();
     }
 }
