@@ -5265,6 +5265,145 @@ async fn virtual_grid_fit_content_height_reserves_the_horizontal_scrollbar() {
     sheet.remove();
 }
 
+// ---- virtual_grid: no sideways bar while the columns fit ---------------------
+
+/// The CrewForge report (11-18): a table whose columns fit showed a
+/// horizontal scrollbar on every step of a sidebar animation. Its columns
+/// share a MEASURED scrollport width, so the layout a narrowing produces
+/// still has the content at the width before; with `overflow-x: auto`
+/// that layout carries a bar until the owner has re-sized the columns.
+///
+/// The grid holds the axis at `hidden` while its content fits, so the
+/// layout that runs ahead of the columns has no bar; content that really
+/// is wider gets `auto` back. The bar is forced to a real 15px so its
+/// presence shows in `clientHeight` on overlay-scrollbar hosts too.
+#[wasm_bindgen_test]
+async fn regression_virtual_grid_shows_no_sideways_bar_while_its_columns_trail_a_resize() {
+    use runtime_shared::primitives::virtual_grid::GridCallbacks;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    install_mount();
+    crate::install_scheduler();
+    let backend = Rc::new(std::cell::RefCell::new(WebBackend::new("#app")));
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+
+    let sheet = doc.create_element("style").unwrap();
+    sheet.set_text_content(Some(
+        "[data-trail-grid]::-webkit-scrollbar{width:15px;height:15px;background:#ccc}",
+    ));
+    doc.body().unwrap().append_child(&sheet).unwrap();
+    let num = |el: &web_glue::dom::Element, prop: &str| -> f32 {
+        web_glue::js::Reflect::get(el, &web_glue::JsValue::from_str(prop))
+            .unwrap()
+            .as_f64()
+            .unwrap() as f32
+    };
+
+    // Four columns sharing `width`, as a table's flexible columns share
+    // the scrollport. 3 × 40 = 120 tall in a 300px box: no vertical bar.
+    let width = Rc::new(Cell::new(400.0f32));
+    let w = width.clone();
+    let cell_doc = doc.clone();
+    let callbacks = GridCallbacks::<web_glue::dom::Node> {
+        col_count: Rc::new(|| 4),
+        row_count: Rc::new(|| 3),
+        col_width: Rc::new(move |_| w.get() / 4.0),
+        row_height: Rc::new(|_| 40.0),
+        cell_key: Rc::new(|c, r| (c * 1000 + r) as u64),
+        mount_cell: Rc::new(move |_, _| {
+            let cell = cell_doc.create_element("div").unwrap();
+            (web_glue::JsCast::unchecked_into(cell), 0)
+        }),
+        release_cell: Rc::new(|_| {}),
+        on_scroll: None,
+    };
+    let node = crate::primitives::virtual_grid::create(&mut backend.borrow_mut(), callbacks, 1.0);
+    let grid: web_glue::dom::Element = node.clone().dyn_into().unwrap();
+    grid.set_attribute("data-trail-grid", "").unwrap();
+    let base_style = grid.get_attribute("style").unwrap_or_default();
+    let size = |px: u32| {
+        // The shim's own inline rules are re-read each time: it rewrites
+        // `overflow-x` on the same attribute.
+        let now = grid.get_attribute("style").unwrap_or_default();
+        let kept: String = now.split(';').filter(|d| !d.trim_start().starts_with("width") && !d.trim().is_empty()).map(|d| format!("{d};")).collect();
+        grid.set_attribute("style", &format!("{kept}width:{px}px")).unwrap();
+    };
+    grid.set_attribute("style", &format!("{base_style}height:300px;")).unwrap();
+    size(400);
+    doc.get_element_by_id("app").unwrap().append_child(&node).unwrap();
+    // The owner: re-sizes its columns to the scrollport, as a table with
+    // a filling column does. Subscribed after the shim's own observer,
+    // so each resize reaches the shim while the columns are still stale.
+    let follow = Rc::new(Cell::new(true));
+    let handle = crate::primitives::virtual_grid::make_handle(&node);
+    let _sub = {
+        let (width, follow, backend, node) = (width.clone(), follow.clone(), backend.clone(), node.clone());
+        handle.on_scrollport(move |p| {
+            if follow.get() {
+                width.set(p.width);
+                crate::primitives::virtual_grid::data_changed(&mut backend.borrow_mut(), &node);
+            }
+        })
+    };
+    sleep_ms(50).await;
+    let sideways = || {
+        let cs = web_glue::dom::window().unwrap().get_computed_style(&grid).unwrap().unwrap();
+        cs.get_property_value("overflow-x").unwrap()
+    };
+    // The bar's presence is read off `clientHeight`, which only a host
+    // that honours the forced 15px bar can show; `overflow-x` is asserted
+    // everywhere.
+    let classic_bars = {
+        let probe = doc.create_element("div").unwrap();
+        probe.set_attribute("data-trail-grid", "").unwrap();
+        probe.set_attribute("style", "width:50px;height:50px;overflow:scroll").unwrap();
+        doc.body().unwrap().append_child(&probe).unwrap();
+        let thick = num(&probe, "offsetHeight") - num(&probe, "clientHeight");
+        probe.remove();
+        thick == 15.0
+    };
+    let height = |want: f32, why: &str| {
+        if classic_bars {
+            assert_eq!(num(&grid, "clientHeight"), want, "{why}");
+        }
+    };
+    assert_eq!(num(&grid, "scrollWidth"), 400.0);
+    assert_eq!(sideways(), "hidden", "the columns fit: the axis does not scroll");
+    height(300.0, "the columns fit: no bar");
+
+    // The box narrows; the columns have not followed yet. These reads are
+    // the layout the browser makes before any observer runs.
+    size(340);
+    assert_eq!(num(&grid, "clientWidth"), 340.0);
+    assert_eq!(num(&grid, "scrollWidth"), 400.0, "the content trails the box");
+    height(300.0, "no bar while the columns trail the box");
+    // The observers run: the shim's sees the stale width first and must
+    // not answer by turning the axis on; then the owner's re-sizes.
+    sleep_ms(50).await;
+    assert_eq!(num(&grid, "scrollWidth"), 340.0);
+    assert_eq!(sideways(), "hidden");
+    height(300.0, "settled");
+
+    // Columns that do NOT follow the box (fixed widths): the bar comes.
+    follow.set(false);
+    size(200);
+    sleep_ms(50).await;
+    assert_eq!(num(&grid, "scrollWidth"), 340.0);
+    assert_eq!(sideways(), "auto", "content wider than the box scrolls sideways");
+    height(285.0, "and shows its bar");
+
+    // And goes again once they fit.
+    size(340);
+    sleep_ms(50).await;
+    assert_eq!(sideways(), "hidden");
+    height(300.0, "fits again");
+
+    crate::primitives::virtual_grid::release(&mut backend.borrow_mut(), &node);
+    sleep_ms(0).await;
+    grid.remove();
+    sheet.remove();
+}
+
 // ---- virtual_grid: the handle reports the scrollport -------------------------
 
 /// Regression for the CrewForge report (10-05): "`VirtualGridHandle`

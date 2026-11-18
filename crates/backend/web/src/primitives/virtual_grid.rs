@@ -38,6 +38,15 @@
 //! the scroll by a frame on every browser with async scrolling. The
 //! placement follows `GridMetrics::display_origin`'s rule, which is CSS
 //! sticky's.
+//!
+//! ## Sideways scrolling only while the content is wider
+//!
+//! The shim holds the container at `overflow-x: hidden` while the content
+//! fits the scrollport and `auto` otherwise (`_fitSideways`). A grid whose
+//! columns share a measured scrollport width trails every resize by one
+//! observer delivery; with `auto` throughout, the layout in between
+//! carries a horizontal bar, which shows on each step of an animated
+//! resize.
 
 use std::cell::RefCell;
 use web_glue::JsValue;

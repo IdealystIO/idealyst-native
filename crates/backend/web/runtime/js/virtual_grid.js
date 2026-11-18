@@ -118,6 +118,9 @@
              *  @type {Map<number, {el: HTMLElement, band: string, filler: HTMLElement, cells: Map<number, Object>}>} */
             this.rows = new Map();
             this.contentW = 0;
+            /** The pending task that may turn sideways scrolling back
+             *  on (`_fitSideways`), or 0. */
+            this._widenTimer = 0;
             /** Table semantics (`setTable`). */
             this.table = false;
 
@@ -247,6 +250,7 @@
                 this.contentW = w.contentW;
                 for (const r of this.rows.values()) r.el.style.width = w.contentW + 'px';
             }
+            this._fitSideways(w);
             if (this.table) {
                 this.container.setAttribute('aria-rowcount', String(w.rowCount));
                 this.container.setAttribute('aria-colcount', String(w.colCount));
@@ -577,6 +581,61 @@
             this.container.scrollTop = o[1];
         }
 
+        /** Stop the grid scrolling sideways while its columns fit.
+         *
+         *  A grid whose columns share the scrollport's width (a table
+         *  with a filling column) is sized from a MEASURED width: when
+         *  its box narrows, the first layout still has the content at
+         *  the width before, and with `overflow-x: auto` that layout
+         *  carries a horizontal scrollbar until the resize observer has
+         *  re-sized the columns. Animate the box and the bar shows on
+         *  every step. So while the content fits, the axis is `hidden`:
+         *  a layout that runs ahead of the columns has no bar to show.
+         *
+         *  Turning the axis back ON waits for a task. A resize is seen
+         *  here before the grid's owner has re-sized its columns, so
+         *  "does not fit" is true of every narrowing for a moment; by
+         *  the task both have run, and only content that still does not
+         *  fit gets its bar. */
+        _fitSideways(w) {
+            const c = this.container;
+            const fits = this._fitsSideways(w);
+            const hidden = c.style.overflowX === 'hidden';
+            if (fits) {
+                if (!hidden) c.style.overflowX = 'hidden';
+            } else if (hidden && !this._widenTimer) {
+                this._widenTimer = setTimeout(() => {
+                    this._widenTimer = 0;
+                    if (this._released) return;
+                    const now = this.cb.window(c.scrollLeft, c.scrollTop, c.clientWidth, c.clientHeight);
+                    if (now && !this._fitsSideways(now)) c.style.overflowX = 'auto';
+                }, 0);
+            }
+        }
+
+        /** Whether `w`'s content is no wider than the scrollport. Half
+         *  a pixel of slack: the widths are sums of floats, and the
+         *  browser itself scrolls nothing under a pixel. */
+        _fitsSideways(w) {
+            const c = this.container;
+            const SLACK = 0.5;
+            if (w.contentW <= c.clientWidth + SLACK) return true;
+            // Two classic bars can each be there only because of the
+            // other: the content fits the box without them, and each
+            // bar's thickness is what pushes the other axis over. The
+            // browser's own `auto` shows neither; say the same, or the
+            // pair would stay once shown. Only looked at when the
+            // content is within a bar of fitting.
+            if (w.contentW > c.offsetWidth + SLACK) return false;
+            const cs = getComputedStyle(c);
+            const px = (v) => parseFloat(v) || 0;
+            const barV = c.offsetWidth - c.clientWidth - px(cs.borderLeftWidth) - px(cs.borderRightWidth);
+            const barH = c.offsetHeight - c.clientHeight - px(cs.borderTopWidth) - px(cs.borderBottomWidth);
+            return barV > 0 && barH > 0
+                && w.contentW <= c.clientWidth + barV + SLACK
+                && w.contentH <= c.clientHeight + barH + SLACK;
+        }
+
         /** Called by Rust when counts or sizes change. Microtask-
          *  deferred for the same reason the constructor's initial fill
          *  is: the caller still holds `borrow_mut` on the backend. */
@@ -597,6 +656,7 @@
             this._releasedFully = true;
             this._released = true;
             this.container.removeEventListener('scroll', this._scrollHandler);
+            if (this._widenTimer) clearTimeout(this._widenTimer);
             if (this._containerObserver) {
                 this._containerObserver.disconnect();
                 this._containerObserver = null;
