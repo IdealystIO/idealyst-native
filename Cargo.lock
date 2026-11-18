@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "10.3.2"
+version = "10.3.3"
 dependencies = [
  "css",
  "dev-client",
@@ -3553,7 +3553,7 @@ dependencies = [
 
 [[package]]
 name = "dev-client"
-version = "9.1.0"
+version = "9.2.0"
 dependencies = [
  "host-mock",
  "mock-backend",
@@ -3635,7 +3635,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "11.1.0"
+version = "11.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -15839,7 +15839,7 @@ dependencies = [
 
 [[package]]
 name = "wire"
-version = "5.3.0"
+version = "5.4.0"
 dependencies = [
  "dev-client",
  "dev-server",
