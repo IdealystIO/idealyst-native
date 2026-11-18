@@ -1408,6 +1408,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`idea-ui-layout`: hints, a section action, a carded inspector pane** (`idea-ui-layout` minor).
+  - `Section` and `SectionHeading` take `hint` (a `?` beside the title whose tooltip explains it)
+    and `action` (a verb at the heading's right end). `LabelValue` takes `hint` beside its label.
+    `HelpHint(text)` is the glyph on its own.
+  - `SplitView(mode = Inspector, card = true)`: beside the canvas the pane is a card in a well
+    (the control fill, rounded, lifted, a gap in place of its rule).
+
 - **`idea-ui-layout`: a pick row, a find shortcut, a compact toolbar button, `Rc` builders as
   slots** (`idea-ui-layout` minor).
   - `SheetPickRow(label, selected, on_press)`: one of a set (a theme, a team). The chosen row has
