@@ -21,6 +21,8 @@ runtime-vocabulary = { workspace = true }
 # Popover, Button) rather than from primitives.
 idea-theme = { workspace = true }
 idea-ui = { workspace = true }
+# The sidebar's three seats (`AppFrame` is a look over `AppShell`).
+idea-ui-nav = { workspace = true }
 # The glyphs the layouts draw themselves: the header's ⋮, a dialog's ✕,
 # a sheet's chevrons, the blank and no-match states.
 icons-lucide = { workspace = true }

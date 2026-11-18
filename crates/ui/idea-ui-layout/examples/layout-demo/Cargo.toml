@@ -23,8 +23,6 @@ runtime-scene = { workspace = true }
 dev-server = { workspace = true, optional = true }
 idea-ui = { workspace = true }
 idea-ui-layout = { workspace = true }
-# The sidebar: pinned on a desktop, a drawer below it.
-idea-ui-nav = { workspace = true }
 icons-lucide = { workspace = true }
 
 [package.metadata.idealyst.app]

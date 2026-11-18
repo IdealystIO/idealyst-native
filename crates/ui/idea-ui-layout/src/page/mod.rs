@@ -7,7 +7,10 @@ mod page;
 mod pinned_pane;
 
 pub use frame::PageFrame;
-pub use header::{PageHeader, PageHeaderProps, HEADER_MAX_ACTIONS};
+pub use header::{
+    HeaderBackButton, HeaderBackButtonProps, HeaderTrail, HeaderTrailProps, HeaderWayBack, HeaderWayBackProps,
+    PageHeader, PageHeaderProps, WayBack, HEADER_MAX_ACTIONS,
+};
 pub use page::{Page, PageProps, PageVariant};
 pub use pinned_pane::{PinnedPane, PinnedPaneProps};
 

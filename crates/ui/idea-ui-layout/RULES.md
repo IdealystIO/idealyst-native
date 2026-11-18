@@ -40,16 +40,56 @@ content, and the layout decides what each width draws.**
   three.
 - `Md` (768) is the width at which a second pane fits. It belongs to
   `SplitView` and `Flow`. Nothing else steps there.
-- The sidebar's three seats are `idea_ui_nav::AppShell`'s, not this
-  kit's.
+- The sidebar's three seats are `AppFrame`'s.
+
+### app-frame
+**The app is a sidebar and a screen, and one switch says how the screen
+sits against it.**
+
+| `FrameSurface` | Desktop | Tablet, phone |
+|---|---|---|
+| `Flat` | sidebar and screen on one surface, a rule between them | the screen edge to edge; the sidebar a drawer |
+| `Raised` | the screen on a card, the sidebar on the ground behind it | the same as `Flat`: no card |
+
+- The card is drawn only while the sidebar is pinned. With the sidebar
+  away there is nothing for the screen to be raised above.
+- The look is the frame's, normally chosen once for the app. It can
+  be live: a change restyles the frame and remounts nothing. No screen
+  knows which it is in: a `Page` paints its own surface either way.
+- A screen's header works the sidebar with `SidebarToggle`.
+
+### sidebar
+**The sidebar has two states, open and collapsed, and one list of
+destinations for every width.**
+
+| | Open | Collapsed |
+|---|---|---|
+| Desktop | pinned at full width | per `SidebarCollapse`: `Off` (it does not collapse), `Hidden` (gone), `Icons` (a rail of icons) |
+| Tablet, phone | the drawer is over the screen | the drawer is away |
+
+- The icon rail is a desktop form only. Below 1024 the sidebar is a
+  drawer, and an open drawer is always the full sidebar with its
+  labels.
+- A destination is a `SidebarItem`: glyph and label when open, the
+  glyph alone with the label as its tooltip in the rail. One call for
+  both.
+- `SidebarToggle` is ☰ where the sidebar is a drawer and a collapse
+  control where it is pinned. It is not drawn on a desktop whose
+  sidebar does not collapse.
+- The app makes one `SidebarState` and hands it to the frame, the
+  items and the toggles.
 
 ### gutter
-**The page gutter is the theme's `lg` on a phone, `xl` from 640 and
-`xxl` from 1024, and only `Page` applies it.**
+**The page gutter is three theme tokens, one per form factor, and only
+the kit applies it.**
 
-The header, the toolbar row, the body and a pinned action bar all take
-the same steps, so a body's first text stands under the title. A screen
-adds no side padding of its own. A body that must run edge to edge
+`layout-gutter-phone` (16), `layout-gutter-tablet` (24, from 640) and
+`layout-gutter-desktop` (32, from 1024), from the kit's own
+`LayoutTheme`. The header, the toolbar row, the body and a pinned
+action bar all read them, so a body's first text stands under the
+title, and an app re-gutters every screen by installing a changed
+`LayoutTheme` beside its idea theme. A screen adds no side padding of
+its own. A body that must run edge to edge
 passes `bleed = true` and lines its own first text up with the title.
 
 ### one-scroller
@@ -62,11 +102,27 @@ content pins under the header and scrolls itself only when it is taller
 than the room left; it does not start a second page scroller.
 
 ### safe-areas
-**`Page` owns the safe areas. Nothing inside it takes one.**
+**Content runs under the bottom safe area, and comes to rest clear of
+it.**
 
-The header block takes the top and sides; the body takes the bottom and
-sides. A pinned `ActionBar` therefore pads only itself. Sheets and
-dialogs are outside the page and carry their own.
+A scroller reaches the screen's bottom edge, so rows pass under the home
+indicator as they move. What it scrolls ends with padding the height of
+the inset, so the last row is never left under it. Nothing that is
+pressed or read at rest sits in a safe area.
+
+- `Page` takes the top and side safe areas, at every variant.
+- A `Content` page pads the end of its own scroller.
+- A `Table` or `Blank` body is bounded to the screen's bottom edge, and
+  the scroller it brings ends with a `BottomInset`.
+- A `SplitView`'s side region in a bounded body pads the end of its own
+  scroller.
+- A pinned `ActionBar` paints to the bottom edge and keeps its verbs
+  above the inset.
+- Sheets and dialogs are outside the page and carry their own.
+
+A shell with a `live_variant` is the exception for now: its frame pads
+the bottom for every tab, so a bounded tab stops above the inset rather
+than running under it.
 
 ### spacing-ladder
 **A gap comes from the relationship between the things it separates. It
@@ -166,6 +222,43 @@ Each screen mounts its own header inside its own `Page`, so a
 navigator's push carries the header with the screen. Only the body
 scrolls under it. Anything pinned at the top must earn its height.
 
+### header-nav
+**The way back is the app's to choose; the kit's own is a trail on the
+web and the desktop and a back arrow on iOS and Android.**
+
+The header's `nav` slot takes any element. `HeaderWayBack` is the
+kit's: a screen hands it both the ancestors and a pop, and it draws the
+one that fits.
+
+- Web, desktop: the ancestors as a trail before the title, each a link,
+  and no arrow. A browser already has Back, and a trail names and links
+  every level where an arrow is one anonymous step.
+- iOS, Android: a back arrow and the title, no trail. A trail costs the
+  title its room, and its links are below touch size.
+- Keyed to the PLATFORM, never the width. A narrow browser still has a
+  URL bar and Back.
+- `HeaderTrail` folds its ancestors into one "…" on a phone, so the row
+  stays one line. An app that wants a different answer to a trail that
+  does not fit (first and last crumb, a wrapped trail, none at all)
+  passes its own element to the slot.
+
+Built by `HeaderWayBack`, or `HeaderTrail` / `HeaderBackButton` for one
+form on every platform, in `PageHeader(nav = …)`.
+
+### header-slots
+**A header is slots, in a fixed order; a screen fills them and never
+arranges them.**
+
+| Slot | Holds | On a phone |
+|---|---|---|
+| `leading` | the app's way around: a `SidebarToggle` | drawn |
+| `nav` | the way back (`header-nav`) | drawn; what it draws is its own |
+| `title` / `title_content` | the page's name, or the app's own element for it | drawn; it truncates first |
+| `menu` | what applies to the whole record | folded into the one ⋮ |
+| `status` | the record's status | not drawn |
+| `trailing` | something that is not a verb | not drawn |
+| `actions` | the verbs | the primary's glyph; the rest folded |
+
 ### header-actions
 **Primary actions go in the header: at most three, at most one
 filled.**
@@ -203,7 +296,54 @@ Tabs at the left; search, filters, a date control, a view switch at the
 right. The row is pinned with the header at every variant and holds
 only what scopes the body. A verb that writes belongs in the header.
 
-Built by `Page(toolbar = …)`.
+- One line while both ends fit.
+- When the controls would leave the left end less than one tab and
+  "N more" (200), they wrap to a line of their own under it, still at
+  the right. The row decides that from the widths itself, so the same
+  toolbar holds on a phone, in a narrow pane and in a wide window, and
+  nothing is rebuilt when it happens.
+- A third slot, `below`, is a line of its own for what fits no row at
+  any width.
+
+Built by `Toolbar(start = …, end = …, below = …)`, passed to
+`Page(toolbar = …)`.
+
+### screen-tabs
+**Tabs are the standard for a record's screens, and they never scroll
+sideways.**
+
+As many pills as fit are drawn; the rest are under "N more" at the
+row's end. When only one pill fits and the open tab is in the menu, the
+button shows the open tab's name. On a phone the menu is an action
+sheet.
+
+Tabs switch views of ONE screen: Back leaves the screen, and the header
+does not change between them.
+
+Built by `ToolbarTabs`, in the toolbar's `start` slot.
+
+### search-button
+**Search is a glyph that opens its field; where nothing else stands at
+the left, it is the field.**
+
+- A magnifier at the toolbar's right end opens the field under it. A
+  dot on the glyph says a term is in use while the field is closed.
+  Enter and Escape close the field and keep the term.
+- A screen with no tabs puts the field itself at the left
+  (`inline = true`). On a phone it takes the row.
+- The field has a ✕ that clears the term while there is one.
+
+Built by `ToolbarSearch`.
+
+### filter-panel
+**A control that opens a panel is one button with a count.**
+
+From 640 up: glyph, label, and the count of what is on ("Filter · 2").
+On a phone: the glyph alone, with a dot while anything is on. There is
+no row of chips; the panel is where the filters are read and changed.
+
+Built by `ToolbarButton`, opening an `AdaptivePopover` or a
+`DrillSheet`.
 
 ## Layouts inside a page
 
@@ -370,14 +510,17 @@ wraps.**
 
 ## What the kit leaves to the app
 
-- **The sidebar and its drawer**: `idea_ui_nav::AppShell`.
-- **What goes before the title**: a back arrow, the drawer's ☰, a
+- **What the sidebar holds**: the app's destinations, passed to
+  `AppFrame(sidebar = …)`.
+- **What goes before the title**: a back arrow, a `SidebarToggle`, a
   breadcrumb trail. `PageHeader(leading = …)` takes it; which one is
   right depends on the platform and the app's navigation.
 - **The table itself and its paging**: `idea_ui::Table`. The kit gives
   it a seat (`Table` page) and its states (`ListStates`).
-- **Search and filter controls**: the app's, mounted in the toolbar
-  row. `AdaptivePopover` and `DrillSheet` are what they open.
+- **What a filter panel holds**: the app's rows, in the
+  `AdaptivePopover` or `DrillSheet` a `ToolbarButton` opens.
+- **A keyboard shortcut for search**: the app binds its own and writes
+  the search signal.
 
 ## What a layout must hold to
 

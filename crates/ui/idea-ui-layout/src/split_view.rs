@@ -7,8 +7,8 @@ use icons_lucide::X;
 use idea_ui::{tokens, tone, variant, IconButton};
 use runtime_core::{
     component, current_breakpoint, stylesheet, ui, AlignItems, Breakpoint, Element, FlexDirection, IdealystSchema,
-    JustifyContent, Length, Overflow, PointerEvents, Position, Reactive, ScrollbarVisibility, Shadow, StyleRules,
-    Tokenized,
+    JustifyContent, Length, Overflow, PointerEvents, Position, Reactive, SafeAreaSides, ScrollbarVisibility, Shadow,
+    StyleRules, Tokenized,
 };
 
 use crate::page::{pin_rules, PageFrame};
@@ -202,6 +202,10 @@ pub fn SplitView(props: SplitViewProps) -> Element {
         (SplitMode::Inspector, false) => SplitSideBodyInset::Pane,
         _ => SplitSideBodyInset::None,
     };
+    // In a bounded body the side region's scroller reaches the screen's
+    // bottom edge, so what it scrolls ends clear of the home indicator.
+    // In a scrolling page the page pads for it.
+    let side_inset = if frame.is_none() { SafeAreaSides::BOTTOM } else { SafeAreaSides::NONE };
     // Which region is the side one is the mode's, so a static branch:
     // the side region scrolls itself, the main one is its content's.
     match mode {
@@ -209,7 +213,7 @@ pub fn SplitView(props: SplitViewProps) -> Element {
             view(style = frame_style, test_id = "split-view") {
                 view(style = first_style, test_id = "split-first") {
                     scroll_view(style = SplitSideScroll()) {
-                        view(style = SplitSideBody().inset(inset)) { first }
+                        view(style = SplitSideBody().inset(inset), safe_area = side_inset) { first }
                     }
                 }
                 view(style = second_style, test_id = "split-second") { second }
@@ -233,7 +237,7 @@ pub fn SplitView(props: SplitViewProps) -> Element {
                         }
                     }
                     scroll_view(style = SplitSideScroll()) {
-                        view(style = SplitSideBody().inset(inset)) { second }
+                        view(style = SplitSideBody().inset(inset), safe_area = side_inset) { second }
                     }
                 }
             }

@@ -1,13 +1,15 @@
 //! [`ActionBar`] — a screen's closing actions (rule `action-bar`).
 
 use idea_ui::{tone, typography_kind, variant, Button, Typography};
+use runtime_core::Tokens as _;
 use runtime_core::{
     component, rx, stylesheet, ui, AlignItems, Element, FlexDirection, FlexWrap, IdealystSchema, JustifyContent,
-    Length, PointerEvents, Position,
+    Length, PointerEvents, Position, SafeAreaSides,
 };
 
 use crate::width::is_phone;
 use crate::Action;
+use crate::LayoutTheme;
 
 /// The most verbs an [`ActionBar`] holds beside its primary; one more
 /// belongs in the header's ⋮.
@@ -92,7 +94,9 @@ pub fn ActionBar(props: &ActionBarProps) -> Element {
         }
     };
     if props.pinned {
-        ui! { view(style = ActionBarPinned()) { row } }
+        // The bar's surface runs to the screen's bottom edge and its
+        // verbs stand clear of the home indicator.
+        ui! { view(style = ActionBarPinned(), safe_area = SafeAreaSides::BOTTOM) { row } }
     } else {
         row
     }
@@ -122,27 +126,25 @@ stylesheet! {
 }
 
 stylesheet! {
-    // The page owns the safe areas (rule `safe-areas`), so the pinned
-    // bar pads only itself.
     ActionBarPinned<idea_ui::IdeaThemeRef> {
         base(t) {
             flex_direction: FlexDirection::Column,
             flex_shrink: 0.0,
             padding_top: t.spacing.md(),
-            padding_left: t.spacing.lg(),
-            padding_right: t.spacing.lg(),
+            padding_left: LayoutTheme::tokens().gutter.phone(),
+            padding_right: LayoutTheme::tokens().gutter.phone(),
             padding_bottom: t.spacing.md(),
             border_top_width: 1.0,
             border_top_color: t.color.border(),
             background: t.color.surface(),
         }
         breakpoint sm(t) {
-            padding_left: t.spacing.xl(),
-            padding_right: t.spacing.xl(),
+            padding_left: LayoutTheme::tokens().gutter.tablet(),
+            padding_right: LayoutTheme::tokens().gutter.tablet(),
         }
         breakpoint lg(t) {
-            padding_left: t.spacing.xxl(),
-            padding_right: t.spacing.xxl(),
+            padding_left: LayoutTheme::tokens().gutter.desktop(),
+            padding_right: LayoutTheme::tokens().gutter.desktop(),
         }
     }
 }

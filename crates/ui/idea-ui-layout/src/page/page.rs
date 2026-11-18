@@ -1,12 +1,14 @@
 //! [`Page`] — the frame every screen stands in: its header pinned at
 //! the top and, under it, the body in the seat its variant names.
 
+use runtime_core::Tokens as _;
 use runtime_core::{
     component, derived, stylesheet, ui, ChildList, Element, FlexDirection, IdealystSchema, Length, Position,
     Reactive, Ref, SafeAreaSides, ScrollbarVisibility, ViewHandle,
 };
 
 use super::{watch_height, PageFrame};
+use crate::LayoutTheme;
 
 /// What a [`Page`] puts under its header. The variant decides three
 /// things and nothing else: who scrolls, whether the body is bounded by
@@ -53,9 +55,9 @@ pub struct PageProps {
     pub variant: PageVariant,
     /// The screen's header: normally a [`PageHeader`](super::PageHeader).
     pub header: Element,
-    /// A row pinned under the header, in the page gutter: the tabs and
-    /// the controls that scope the body (rule `toolbar-row`). `None`
-    /// takes no height.
+    /// A row pinned under the header, in the page gutter: normally a
+    /// [`Toolbar`](crate::Toolbar) (rule `toolbar-row`). `None` takes no
+    /// height.
     pub toolbar: Option<Element>,
     /// Everything below the header.
     pub body: Element,
@@ -95,10 +97,13 @@ impl Default for PageProps {
 }
 
 /// The frame of a screen: `header` and `toolbar` pinned at the top,
-/// `body` under them in the seat `variant` names. It owns the safe
-/// areas, the page gutter and the one-scroller invariant, so nothing
-/// inside pads to the screen's edge, takes a safe area, or adds a page
-/// scroller of its own. It paints the page's surface: a screen a
+/// `body` under them in the seat `variant` names. It owns the page
+/// gutter, the one-scroller invariant, and the top and side safe areas,
+/// so nothing inside pads to the screen's edge or adds a page scroller
+/// of its own. Content runs under the bottom safe area and is padded
+/// clear of it (rule `safe-areas`): a `Content` page does that itself;
+/// in a `Table` or `Blank` page the body's own scroller ends with a
+/// [`BottomInset`](crate::BottomInset). It paints the page's surface: a screen a
 /// navigator pushes must be opaque, or the transition shows through it.
 ///
 /// A layout mounted as a tab's body inside a shell takes no `Page`: the
@@ -182,7 +187,10 @@ fn bounded_page(
     ui! {
         view(style = PageColumn(), bind = port_ref) {
             head
-            view(style = PageBounded(), safe_area = SafeAreaSides::BOTTOM | SafeAreaSides::HORIZONTAL) {
+            // No bottom inset: a bounded body runs to the screen's
+            // bottom edge, under the home indicator, and what scrolls in
+            // it ends with a `BottomInset` (rule `safe-areas`).
+            view(style = PageBounded(), safe_area = SafeAreaSides::HORIZONTAL) {
                 view(style = PageGutter().kind(kind).edge(edge)) { body }
             }
         }
@@ -243,8 +251,11 @@ fn scroller(
     // the page's full width, and the scroll bar belongs to the area
     // under it.
     //
-    // The bottom inset is padding on the page column, and the scroller
-    // opts out of the platform's own adjustment (`safe_area = NONE`; on
+    // The scroller runs to the screen's bottom edge, so content passes
+    // under the home indicator as it scrolls; the bottom inset is
+    // padding on the page column inside it, so the last of the content
+    // rests clear. The scroller opts out of the platform's own
+    // adjustment (`safe_area = NONE`; on
     // iOS an unset scroller keeps the automatic inset). On a fixed page
     // the automatic inset manufactures scroll extent out of content that
     // fits exactly, and a drag outside the inner scroller carries the
@@ -322,18 +333,18 @@ stylesheet! {
     PageToolbarSeat<idea_ui::IdeaThemeRef> {
         base(t) {
             flex_direction: FlexDirection::Column,
-            padding_left: t.spacing.lg(),
-            padding_right: t.spacing.lg(),
+            padding_left: LayoutTheme::tokens().gutter.phone(),
+            padding_right: LayoutTheme::tokens().gutter.phone(),
             padding_top: t.spacing.sm(),
             padding_bottom: t.spacing.sm(),
         }
         breakpoint sm(t) {
-            padding_left: t.spacing.xl(),
-            padding_right: t.spacing.xl(),
+            padding_left: LayoutTheme::tokens().gutter.tablet(),
+            padding_right: LayoutTheme::tokens().gutter.tablet(),
         }
         breakpoint lg(t) {
-            padding_left: t.spacing.xxl(),
-            padding_right: t.spacing.xxl(),
+            padding_left: LayoutTheme::tokens().gutter.desktop(),
+            padding_right: LayoutTheme::tokens().gutter.desktop(),
         }
     }
 }
@@ -429,19 +440,19 @@ stylesheet! {
             min_height: Length::Px(0.0),
             min_width: Length::Px(0.0),
             padding_top: t.spacing.sm(),
-            padding_left: t.spacing.lg(),
-            padding_right: t.spacing.lg(),
+            padding_left: LayoutTheme::tokens().gutter.phone(),
+            padding_right: LayoutTheme::tokens().gutter.phone(),
             padding_bottom: t.spacing.lg(),
         }
         breakpoint sm(t) {
             padding_top: t.spacing.lg(),
-            padding_left: t.spacing.xl(),
-            padding_right: t.spacing.xl(),
+            padding_left: LayoutTheme::tokens().gutter.tablet(),
+            padding_right: LayoutTheme::tokens().gutter.tablet(),
             padding_bottom: t.spacing.xl(),
         }
         breakpoint lg(t) {
-            padding_left: t.spacing.xxl(),
-            padding_right: t.spacing.xxl(),
+            padding_left: LayoutTheme::tokens().gutter.desktop(),
+            padding_right: LayoutTheme::tokens().gutter.desktop(),
         }
         variant kind {
             #[default]

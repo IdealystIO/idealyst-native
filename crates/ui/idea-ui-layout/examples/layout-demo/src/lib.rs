@@ -3,26 +3,30 @@
 //!
 //! | Screen | Shows |
 //! |---|---|
-//! | Content page | `Page(Content)`, `PageHeader`, `Section`, `StatGrid`, `LabelValue`, `FieldGrid`, `Dialog` |
-//! | Table page | `Page(Table)`, a pinned toolbar, `ListStates` in each of its states |
+//! | Content page | `Page(Content)`, `PageHeader` with a trail, `Section`, `StatGrid`, `LabelValue`, `FieldGrid`, `Dialog` |
+//! | Table page | `Page(Table)`, a `Toolbar` with an inline `ToolbarSearch` and a `ToolbarButton`, `ListStates` in each of its states |
 //! | Blank page | `Page(Blank)`: a body that lays itself out edge to edge |
 //! | Split · Nav | `SplitView(Nav)` in a scrolling page, its list pinned |
 //! | Split · Detail | `SplitView(Detail)`: a record and its companion panel |
 //! | Workbench | `Page(Blank)` holding `SplitView(Inspector)` |
 //! | Flow | `Flow`, `ActionBar(pinned)` |
-//! | Shell with tabs | one `Page` whose `live_variant` follows the tab |
+//! | Shell with tabs | one `Page` whose `live_variant` follows the tab; `ToolbarTabs` that overflow into "N more" |
 //! | Overlays | `ActionMenu`, `ActionMenuSurface`, `AdaptivePopover`, `DrillSheet`, `Dialog`, `Sheet` |
 //!
+//! The picker in every screen's header switches the frame between its
+//! two looks (`FrameSurface::Flat` and `Raised`), live.
+//!
 //! No screen here reads the breakpoint or writes a breakpoint overlay:
-//! what changes between widths is the kit's doing (rule `layout`). The
-//! one width read is the shell's ☰, which `idea_ui_nav` answers.
+//! what changes between widths is the kit's doing (rule `layout`).
 
 use std::rc::Rc;
 
-use icons_lucide::MENU;
-use idea_ui::{install_idea_theme, light_theme, typography_kind, variant, IconButton, ListItem, Stack, StackGap, StackPadding, Typography};
-use idea_ui_nav::{sidebar_pinned, AppShell};
-use runtime_core::{component, rx, signal, stylesheet, ui, Breakpoint, Element, FlexDirection, Length, Signal};
+use icons_lucide::{COLUMNS_2, FILE_TEXT, FOLDER, LAYERS, LIST, LIST_ORDERED, SQUARE, TABLE, WRENCH};
+use idea_ui::{install_idea_theme, light_theme, typography_kind, Crumb, Select, SelectOption, Stack, StackGap, StackPadding, Typography};
+use idea_ui_layout::{
+    AppFrame, FrameSurface, HeaderWayBack, SidebarCollapse, SidebarItem, SidebarState, SidebarToggle,
+};
+use runtime_core::{component, rx, signal, stylesheet, ui, Element, FlexDirection, IconData, Length, Signal};
 
 mod screens;
 
@@ -42,8 +46,9 @@ pub fn scene_app() -> Element {
     app()
 }
 
-/// The width the sidebar pins from: the ladder's desktop.
-const PIN_AT: Breakpoint = Breakpoint::Lg;
+/// The looks the header's picker offers, by the id the picker stores.
+const SURFACES: [(&str, &str, FrameSurface); 2] =
+    [("flat", "Flat: sidebar ruled off", FrameSurface::Flat), ("raised", "Raised: content on a card", FrameSurface::Raised)];
 
 /// The layout on show.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -86,44 +91,94 @@ impl Demo {
             Demo::Overlays => "Overlays",
         }
     }
-}
 
-/// What every screen needs from the shell: which screen is on show, and
-/// the drawer its header's ☰ opens.
-#[derive(Clone, Copy)]
-pub(crate) struct Shell {
-    pub screen: Signal<Demo>,
-    pub drawer: Signal<bool>,
-}
-
-impl Default for Shell {
-    fn default() -> Self {
-        Self { screen: signal(Demo::default()), drawer: signal(false) }
-    }
-}
-
-impl Shell {
-    /// What stands before a screen's title: the drawer's ☰, drawn only
-    /// while the sidebar is a drawer.
-    pub fn leading(self) -> Element {
-        let open: Rc<dyn Fn()> = Rc::new(move || self.drawer.set(true));
-        ui! {
-            if !sidebar_pinned(PIN_AT) {
-                IconButton(icon = Some(MENU), variant = variant::Ghost, label = Some("Menu".to_string()), on_click = open.clone())
-            }
+    fn icon(self) -> IconData {
+        match self {
+            Demo::Content => FILE_TEXT,
+            Demo::Table => TABLE,
+            Demo::Blank => SQUARE,
+            Demo::SplitNav => LIST,
+            Demo::SplitDetail => COLUMNS_2,
+            Demo::Workbench => WRENCH,
+            Demo::Flow => LIST_ORDERED,
+            Demo::ShellTabs => FOLDER,
+            Demo::Overlays => LAYERS,
         }
     }
 }
 
-/// The app: the sidebar's three seats (pinned on a desktop, a drawer on
-/// a tablet and a phone) round the screen on show.
+/// What every screen needs from the shell: which screen is on show, and
+/// the sidebar its header's toggle works.
+#[derive(Clone, Copy)]
+pub(crate) struct Shell {
+    pub screen: Signal<Demo>,
+    /// The sidebar: open or collapsed, and to icons where it is pinned.
+    pub sidebar: SidebarState,
+    /// The frame's look, by its id in [`SURFACES`]. One signal restyles
+    /// the whole app; no screen reads it.
+    pub surface: Signal<String>,
+}
+
+impl Default for Shell {
+    fn default() -> Self {
+        Self {
+            screen: signal(Demo::default()),
+            sidebar: SidebarState::new(SidebarCollapse::Icons),
+            surface: signal(SURFACES[0].0.to_string()),
+        }
+    }
+}
+
+impl Shell {
+    /// What stands before a screen's title: the sidebar's toggle. ☰
+    /// where the sidebar is a drawer, a collapse control where it is
+    /// pinned.
+    pub fn leading(self) -> Element {
+        ui! { SidebarToggle(sidebar = self.sidebar) }
+    }
+
+    /// The picker every screen's header carries: how the screens sit
+    /// against the sidebar. Its effect shows where the sidebar is
+    /// pinned, from 1024 wide.
+    pub fn style_picker(self) -> Element {
+        let options = SURFACES.iter().map(|(id, label, _)| SelectOption::new(*id, *label)).collect::<Vec<_>>();
+        let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| self.surface.set(id));
+        ui! { Select(value = self.surface, on_change = on_change, options = options) }
+    }
+
+    /// An ancestor crumb that goes to another of the demo's screens.
+    pub fn crumb(self, label: &'static str, to: Demo) -> Crumb {
+        Crumb::linked(label, Rc::new(move || self.screen.set(to)))
+    }
+
+    /// The way back a pushed screen puts in its header's `nav` slot:
+    /// the kit's own, which is this trail in a browser and an arrow to
+    /// `back` on iOS and Android.
+    pub fn way_back(self, crumbs: Vec<Crumb>, back: Demo) -> Element {
+        let pop: Rc<dyn Fn()> = Rc::new(move || self.screen.set(back));
+        ui! { HeaderWayBack(crumbs = crumbs, on_back = Some(pop)) }
+    }
+
+    fn frame_surface(self) -> FrameSurface {
+        let id = self.surface.get();
+        SURFACES.iter().find(|s| s.0 == id).map_or(FrameSurface::Flat, |s| s.2)
+    }
+}
+
+/// The app: an `AppFrame` (the sidebar pinned on a desktop, where it
+/// collapses to icons, and a drawer on a tablet and a phone) round the
+/// screen on show.
 pub fn app() -> Element {
     install_idea_theme(light_theme());
     let shell = Shell::default();
     let screen = shell.screen;
     ui! {
         view(style = Root()) {
-            AppShell(sidebar = vec![ui! { Sidebar(shell = shell) }], is_open = shell.drawer, pin_at = PIN_AT) {
+            AppFrame(
+                sidebar = vec![ui! { Sidebar(shell = shell) }],
+                state = shell.sidebar,
+                surface = rx!(shell.frame_surface()),
+            ) {
                 match screen.get() {
                     Demo::Content => { ContentScreen(shell = shell) }
                     Demo::Table => { TableScreen(shell = shell) }
@@ -144,19 +199,22 @@ pub fn app() -> Element {
 #[component]
 fn Sidebar(#[prop(static)] shell: Shell) -> Element {
     ui! {
-        Stack(gap = StackGap::Xs, padding = StackPadding::Md) {
-            Typography(content = "idea-ui-layout".to_string(), kind = typography_kind::H3)
+        Stack(gap = StackGap::Xs, padding = StackPadding::Sm) {
+            // The sidebar's own content that is not an item reads the
+            // rail from the state: the wordmark has no room in it.
+            if !shell.sidebar.is_rail() {
+                Typography(content = "idea-ui-layout".to_string(), kind = typography_kind::H3)
+            }
             for demo in Demo::ALL.iter(), key = demo.label() {
-                ListItem(
+                SidebarItem(
+                    sidebar = shell.sidebar,
+                    icon = Some(demo.icon()),
                     label = demo.label().to_string(),
                     active = { let demo = *demo; rx!(shell.screen.get() == demo) },
                     on_press = {
                         let demo = *demo;
-                        let go: Rc<dyn Fn()> = Rc::new(move || {
-                            shell.screen.set(demo);
-                            shell.drawer.set(false);
-                        });
-                        Some(go)
+                        let go: Rc<dyn Fn()> = Rc::new(move || shell.screen.set(demo));
+                        go
                     },
                 )
             }

@@ -3,12 +3,15 @@
 
 use std::rc::Rc;
 
-use icons_lucide::PLUS;
-use idea_ui::{Card, Field, Stack, StackGap, Typography};
-use idea_ui_layout::{Action, Blank, ListPhase, ListStates, Page, PageHeader, PageVariant};
+use icons_lucide::{LIST_FILTER, PLUS};
+use idea_ui::{AnchorTarget, Card, Stack, StackGap, Typography};
+use idea_ui_layout::{
+    Action, AdaptivePopover, Blank, BottomInset, ListPhase, ListStates, Page, PageHeader, PageVariant, SheetCheckRow, Toolbar,
+    ToolbarButton, ToolbarSearch,
+};
 use runtime_core::{
-    component, rx, signal, stylesheet, ui, AlignItems, DisplayKind, Element, FlexDirection, Length, Signal,
-    TrackSize,
+    component, rx, signal, stylesheet, ui, AlignItems, DisplayKind, Element, FlexDirection, Length,
+    PressableHandle, Ref, Signal, TrackSize,
 };
 
 use crate::Shell;
@@ -21,16 +24,27 @@ fn headings() -> Vec<String> {
 }
 
 /// A `Table` page. The header's ⋮ puts the list into each of its
-/// states; the search field is the toolbar that stays through all of
-/// them.
+/// states; the toolbar (an inline search, since the screen has no tabs,
+/// and a Filter button) stays through all of them.
 #[component]
 pub(crate) fn TableScreen(#[prop(static)] shell: Shell) -> Element {
     let rows: Signal<Vec<String>> = signal(headings());
     let phase: Signal<ListPhase> = signal(ListPhase::Ready);
     let search = signal(String::new());
+    let odd_only = signal(false);
+    let filter_open = signal(false);
+    let filter_button: Ref<PressableHandle> = Ref::new();
+    let open_filter: Rc<dyn Fn()> = Rc::new(move || filter_open.set(true));
+    let toggle_odd: Rc<dyn Fn()> = Rc::new(move || odd_only.set(!odd_only.get()));
     let shown = move || {
         let term = search.get().to_lowercase();
-        rows.get().into_iter().filter(|r| r.to_lowercase().contains(&term)).collect::<Vec<_>>()
+        let odd = odd_only.get();
+        rows.get()
+            .into_iter()
+            .enumerate()
+            .filter(|(i, r)| r.to_lowercase().contains(&term) && (!odd || i % 2 == 0))
+            .map(|(_, r)| r)
+            .collect::<Vec<_>>()
     };
     let add: Rc<dyn Fn()> = Rc::new(move || {
         let mut all = rows.get();
@@ -56,7 +70,7 @@ pub(crate) fn TableScreen(#[prop(static)] shell: Shell) -> Element {
             header = ui! {
                 PageHeader(
                     title = "Headings".to_string(),
-                    leading = Some(shell.leading()),
+                    leading = Some(shell.leading()), status = move || shell.style_picker(),
                     actions = vec![Action::new("Add heading", add.clone()).icon(PLUS).primary()],
                     menu = vec![
                         Action::new("Show rows", show_rows.clone()),
@@ -66,12 +80,27 @@ pub(crate) fn TableScreen(#[prop(static)] shell: Shell) -> Element {
                     ],
                 )
             },
-            toolbar = Some(ui! { Field(value = search, placeholder = Some("Search headings (try \"zz\" for the empty state)".to_string())) }),
+            toolbar = Some(ui! {
+                Toolbar(
+                    start = Some(ui! {
+                        ToolbarSearch(value = search, inline = true, placeholder = "Search headings (\"zz\" finds none)".to_string())
+                    }),
+                    end = Some(ui! {
+                        ToolbarButton(
+                            label = "Filter".to_string(),
+                            icon = Some(LIST_FILTER),
+                            count = rx!(usize::from(odd_only.get())),
+                            on_press = open_filter.clone(),
+                            bind_to = Some(filter_button),
+                        )
+                    }),
+                )
+            }),
             body = ui! {
                 ListStates(
                     phase = rx!(phase.get()),
                     is_empty = rx!(shown().is_empty()),
-                    narrowed = rx!(!search.get().is_empty()),
+                    narrowed = rx!(!search.get().is_empty() || odd_only.get()),
                     blank = Blank::new("No headings yet")
                         .body("A heading is one face the crews advance.")
                         .action(Action::new("Add heading", add.clone()).icon(PLUS)),
@@ -83,11 +112,23 @@ pub(crate) fn TableScreen(#[prop(static)] shell: Shell) -> Element {
                             for name in shown(), key = name.clone() {
                                 view(style = Row()) { Typography(content = name.clone()) }
                             }
+                            // The rows run under the home indicator and
+                            // the last one rests clear of it.
+                            BottomInset()
                         }
                     },
                 )
             },
-        )
+        ) {
+            AdaptivePopover(
+                open = filter_open,
+                target = Some(AnchorTarget::from(filter_button)),
+                title = Some("Filter".to_string()),
+                content = move || ui! {
+                    SheetCheckRow(label = "Odd headings only".to_string(), checked = rx!(odd_only.get()), on_press = toggle_odd.clone())
+                },
+            )
+        }
     }
 }
 
@@ -98,7 +139,7 @@ pub(crate) fn BlankScreen(#[prop(static)] shell: Shell) -> Element {
     ui! {
         Page(
             variant = PageVariant::Blank,
-            header = ui! { PageHeader(title = "Crew board".to_string(), leading = Some(shell.leading())) },
+            header = ui! { PageHeader(title = "Crew board".to_string(), leading = Some(shell.leading()), status = move || shell.style_picker()) },
             body = ui! {
                 scroll_view(style = Board()) {
                     view(style = BoardGrid()) {
@@ -111,6 +152,7 @@ pub(crate) fn BlankScreen(#[prop(static)] shell: Shell) -> Element {
                             }
                         }
                     }
+                    BottomInset()
                 }
             },
         )

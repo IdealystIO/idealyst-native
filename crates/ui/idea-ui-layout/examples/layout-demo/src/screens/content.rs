@@ -12,7 +12,7 @@ use idea_ui_layout::{
 use runtime_core::{component, signal, ui, Element};
 
 use super::{noop, Stat};
-use crate::Shell;
+use crate::{Demo, Shell};
 
 #[component]
 pub(crate) fn ContentScreen(#[prop(static)] shell: Shell) -> Element {
@@ -30,7 +30,8 @@ pub(crate) fn ContentScreen(#[prop(static)] shell: Shell) -> Element {
             header = ui! {
                 PageHeader(
                     title = "Dana Okafor".to_string(),
-                    leading = Some(shell.leading()),
+                    nav = Some(shell.way_back(vec![shell.crumb("Workers", Demo::Table)], Demo::Table)),
+                    leading = Some(shell.leading()), status = move || shell.style_picker(),
                     actions = vec![
                         Action::new("Edit worker", open_edit.clone()).icon(PENCIL).primary(),
                         Action::new("Export", noop()).icon(DOWNLOAD),
@@ -39,7 +40,6 @@ pub(crate) fn ContentScreen(#[prop(static)] shell: Shell) -> Element {
                         Action::new("Archive", noop()).icon(ARCHIVE),
                         Action::new("Delete", noop()).icon(TRASH),
                     ],
-                    status = || ui! { Tag(label = "Active") },
                 )
             },
             body = ui! {

@@ -6,10 +6,15 @@ at each width. A screen picks a layout and hands it content, and the
 layout draws the phone, tablet and desktop form. A screen built from it
 never reads the breakpoint.
 
-The rules it is built to are in [`RULES.md`](./RULES.md).
+How to build a screen with it is the `layouts` guide
+([`crates/mcp/catalog/guides/layouts.md`](../../mcp/catalog/guides/layouts.md), also served by
+the MCP as `describe(kind: "guide", name: "layouts")`). The rules it is built to are in [`RULES.md`](./RULES.md), and
+[`examples/layout-demo`](./examples/layout-demo) has one screen per layout.
 
 | | Components |
 |---|---|
+| The app | `AppFrame` (`FrameSurface::Flat`, `Raised`), `SidebarToggle` |
+| The toolbar | `Toolbar` (`start`, `end`, `below`), `ToolbarTabs`, `ToolbarSearch`, `ToolbarButton` |
 | The frame | `Page` (`PageVariant::Content`, `Table`, `Blank`), `PageHeader`, `PageFrame`, `PinnedPane` |
 | Layouts | `SplitView` (`SplitMode::Nav`, `Detail`, `Inspector`), `Flow` |
 | Blocks | `Section`, `SectionHeading`, `FieldGrid`, `FieldGridRow`, `LabelValue`, `StatGrid`, `ActionBar`, `StateMessage`, `ListStates` |

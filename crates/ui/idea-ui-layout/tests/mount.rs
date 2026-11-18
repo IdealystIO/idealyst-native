@@ -351,3 +351,356 @@ mod flow {
         }
     }
 }
+
+mod app_frame {
+    use super::*;
+    use idea_ui_layout::{AppFrame, FrameSurface, SidebarCollapse, SidebarItem, SidebarState, SidebarToggle};
+
+    /// A frame round one page, its sidebar holding one destination.
+    fn framed(surface: FrameSurface, sidebar: SidebarState) -> Element {
+        ui! {
+            AppFrame(
+                sidebar = vec![ui! {
+                    SidebarItem(sidebar = sidebar, icon = Some(GLYPH), label = "Projects".to_string(), on_press = noop())
+                }],
+                state = sidebar,
+                surface = surface,
+            ) {
+                Page(
+                    header = ui! {
+                        PageHeader(title = "Workers".to_string(), leading = Some(ui! { SidebarToggle(sidebar = sidebar) }))
+                    },
+                    body = ui! { Typography(content = "BODY".to_string()) },
+                )
+            }
+        }
+    }
+
+    /// Build inside the world, where a `SidebarState`'s signals live.
+    fn mount_framed(width: f32, surface: FrameSurface, collapse: SidebarCollapse) -> (Mounted, SidebarState) {
+        let state = Rc::new(Cell::new(None));
+        let out = state.clone();
+        let m = mount_at(width, move || {
+            let sidebar = SidebarState::new(collapse);
+            out.set(Some(sidebar));
+            framed(surface, sidebar)
+        });
+        (m, state.get().expect("built"))
+    }
+
+    /// The look is a restyle of one tree: both draw the sidebar once and
+    /// the screen once, at every width.
+    #[test]
+    fn either_surface_draws_the_sidebar_and_the_screen_once() {
+        for surface in [FrameSurface::Flat, FrameSurface::Raised] {
+            for width in [PHONE, TABLET, DESKTOP] {
+                let log = mount_framed(width, surface, SidebarCollapse::Off).0.log();
+                for part in ["\"Projects\"", "\"Workers\"", "\"BODY\""] {
+                    assert_eq!(log.matches(part).count(), 1, "{surface:?} at {width}: {part}\n{log}");
+                }
+            }
+        }
+    }
+
+    /// Switching the look restyles the frame in place: the screen
+    /// mounted in it is not rebuilt, so nothing typed in it is lost.
+    #[test]
+    fn a_live_surface_restyles_the_frame_and_remounts_nothing() {
+        host_mock::pump::install_scheduler();
+        let h = Harness::new();
+        let (tree, surface) = h.world.enter(|| {
+            install_idea_theme(light_theme());
+            viewport_size().set(ViewportSize::new(DESKTOP, 800.0));
+            let surface = signal(FrameSurface::Flat);
+            let tree = ui! {
+                AppFrame(
+                    sidebar = vec![ui! { Typography(content = "DESTINATIONS".to_string()) }],
+                    surface = runtime_core::rx!(surface.get()),
+                ) {
+                    Typography(content = "SCREEN".to_string())
+                }
+            };
+            (tree, surface)
+        });
+        h.flush();
+        let _realized = h.mount(tree);
+        h.flush();
+        h.take_log();
+        h.world.enter(|| surface.set(FrameSurface::Raised));
+        h.flush();
+        let log = h.take_log().join("\n");
+        assert!(!log.contains("create "), "nothing is remounted:\n{log}");
+        assert!(log.contains("apply_style"), "the frame restyles:\n{log}");
+    }
+
+    /// A sidebar that does not collapse is always there on a desktop,
+    /// so its toggle would do nothing and is not drawn.
+    #[test]
+    fn a_desktop_sidebar_that_does_not_collapse_draws_no_toggle() {
+        let pressables = |log: &str| log.lines().filter(|l| l.starts_with("create ") && l.ends_with(" pressable")).count();
+        let fixed = pressables(&mount_framed(DESKTOP, FrameSurface::Flat, SidebarCollapse::Off).0.log());
+        let collapsing = pressables(&mount_framed(DESKTOP, FrameSurface::Flat, SidebarCollapse::Icons).0.log());
+        assert_eq!(collapsing, fixed + 1, "the toggle is the one pressable collapsing adds");
+        for width in [PHONE, TABLET] {
+            let drawer = pressables(&mount_framed(width, FrameSurface::Flat, SidebarCollapse::Off).0.log());
+            assert_eq!(drawer, fixed + 1, "{width}: a drawer always has its ☰");
+        }
+    }
+
+    /// One press means two things: open the drawer where the sidebar is
+    /// one, collapse it where it is pinned.
+    #[test]
+    fn the_toggle_opens_the_drawer_below_desktop_and_collapses_the_sidebar_on_it() {
+        for (width, opens_drawer) in [(PHONE, true), (TABLET, true), (DESKTOP, false)] {
+            let (m, sidebar) = mount_framed(width, FrameSurface::Flat, SidebarCollapse::Icons);
+            m.h.world.enter(|| sidebar.toggle());
+            m.h.flush();
+            let (drawer, collapsed) = m.h.world.enter(|| (sidebar.drawer.get(), sidebar.collapsed.get()));
+            assert_eq!(drawer, opens_drawer, "{width}");
+            assert_eq!(collapsed, !opens_drawer, "{width}");
+        }
+    }
+
+    /// The icon rail: a collapsed desktop sidebar keeps its items as
+    /// glyphs and drops their labels.
+    #[test]
+    fn a_collapsed_desktop_sidebar_is_a_rail_of_icons() {
+        let (m, sidebar) = mount_framed(DESKTOP, FrameSurface::Flat, SidebarCollapse::Icons);
+        assert!(m.log().contains("\"Projects\""), "open: the label is drawn");
+        m.h.world.enter(|| sidebar.collapsed.set(true));
+        m.h.flush();
+        let rail = m.log();
+        assert!(m.h.world.enter(|| sidebar.is_rail()));
+        assert!(rail.contains(" icon"), "the glyph is drawn:\n{rail}");
+        assert!(!rail.contains("\"Projects\""), "the label is not:\n{rail}");
+    }
+
+    /// The rail is a desktop form only: below it the sidebar is a
+    /// drawer, and an open drawer is the full sidebar with its labels,
+    /// whatever `collapsed` was left at.
+    #[test]
+    fn the_icon_rail_does_not_apply_below_desktop() {
+        for width in [PHONE, TABLET] {
+            let (m, sidebar) = mount_framed(width, FrameSurface::Flat, SidebarCollapse::Icons);
+            m.log();
+            m.h.world.enter(|| sidebar.collapsed.set(true));
+            m.h.flush();
+            assert!(!m.h.world.enter(|| sidebar.is_rail()), "{width}");
+            let after = m.log();
+            assert!(!after.contains("create "), "{width}: the items are not rebuilt as glyphs:\n{after}");
+        }
+    }
+
+    #[test]
+    fn a_sidebar_item_closes_the_drawer_and_goes() {
+        let went = Rc::new(Cell::new(false));
+        let flag = went.clone();
+        let state = Rc::new(Cell::new(None));
+        let out = state.clone();
+        let m = mount_at(PHONE, move || {
+            let sidebar = SidebarState::new(SidebarCollapse::Icons);
+            sidebar.drawer.set(true);
+            out.set(Some(sidebar));
+            let go: Rc<dyn Fn()> = Rc::new(move || flag.set(true));
+            ui! { SidebarItem(sidebar = sidebar, label = "Projects".to_string(), on_press = go) }
+        });
+        let sidebar: SidebarState = state.get().expect("built");
+        m.h.press_labelled("Projects");
+        m.h.flush();
+        assert!(went.get());
+        assert!(!m.h.world.enter(|| sidebar.drawer.get()));
+    }
+}
+
+mod header_nav {
+    use super::*;
+    use idea_ui::Crumb;
+    use idea_ui_layout::{HeaderTrail, HeaderWayBack, WayBack};
+
+    fn crumbs() -> Vec<Crumb> {
+        vec![Crumb::linked("Projects", noop()), Crumb::linked("North Ramp", noop())]
+    }
+
+    fn pushed(form: WayBack, went_back: Rc<Cell<u32>>) -> Element {
+        let back: Rc<dyn Fn()> = Rc::new(move || went_back.set(went_back.get() + 1));
+        ui! {
+            PageHeader(
+                title = "Settings".to_string(),
+                nav = Some(ui! { HeaderWayBack(crumbs = crumbs(), on_back = Some(back), form = form) }),
+            )
+        }
+    }
+
+    /// The way back on the web and the desktop: every ancestor named
+    /// and linked, and no arrow.
+    #[test]
+    fn a_trail_names_every_ancestor_and_draws_no_back_arrow() {
+        let m = mount_at(DESKTOP, || pushed(WayBack::Trail, Rc::default()));
+        let log = m.log();
+        for part in ["\"Projects\"", "\"North Ramp\"", "\"Settings\""] {
+            assert!(log.contains(part), "{part}:\n{log}");
+        }
+        // The two crumbs are the only pressables: no back arrow, no menus.
+        assert_eq!(log.matches(" pressable").count(), 2, "{log}");
+    }
+
+    /// The kit's trail folds on a phone: the ancestors are one "…" and
+    /// the row is the title's.
+    #[test]
+    fn a_phone_trail_folds_its_ancestors_into_one_menu() {
+        let m = mount_at(PHONE, || pushed(WayBack::Trail, Rc::default()));
+        let closed = m.log();
+        assert!(closed.contains("\"Settings\""), "{closed}");
+        assert!(!closed.contains("\"Projects\"") && !closed.contains("\"North Ramp\""), "{closed}");
+        (m.h.press_handler(0))();
+        m.h.flush();
+        let open = m.log();
+        assert!(open.contains("\"Projects\"") && open.contains("\"North Ramp\""), "{open}");
+    }
+
+    /// Folding is the trail's default, not the header's rule: an app
+    /// that wants every crumb on a phone turns it off.
+    #[test]
+    fn a_trail_told_not_to_fold_draws_every_ancestor_on_a_phone() {
+        let log = mount_at(PHONE, || ui! { HeaderTrail(crumbs = crumbs(), fold_on_phone = false) }).log();
+        assert!(log.contains("\"Projects\"") && log.contains("\"North Ramp\""), "{log}");
+    }
+
+    /// The way back on iOS and Android: an arrow that pops, and no
+    /// trail taking the title's room.
+    #[test]
+    fn the_arrow_form_draws_the_arrow_and_no_trail() {
+        let went_back = Rc::new(Cell::new(0));
+        let count = went_back.clone();
+        let m = mount_at(PHONE, move || pushed(WayBack::Arrow, count));
+        let log = m.log();
+        assert!(log.contains("\"Settings\""), "{log}");
+        assert!(!log.contains("\"Projects\""), "{log}");
+        (m.h.press_handler(0))();
+        m.h.flush();
+        assert_eq!(went_back.get(), 1);
+    }
+
+    /// The host mock is no phone OS, so `Auto` is the trail.
+    #[test]
+    fn auto_follows_the_platform() {
+        let log = mount_at(DESKTOP, || pushed(WayBack::Auto, Rc::default())).log();
+        assert!(log.contains("\"Projects\""), "{log}");
+    }
+
+    /// The header is slots: what stands in `nav` and in the title's
+    /// seat is whatever the app passes.
+    #[test]
+    fn the_nav_and_title_slots_take_any_element() {
+        let log = mount_at(PHONE, || {
+            ui! {
+                PageHeader(
+                    title = "IGNORED".to_string(),
+                    nav = Some(ui! { Typography(content = "OWN NAV".to_string()) }),
+                    title_content = Some(ui! { Typography(content = "OWN TITLE".to_string()) }),
+                )
+            }
+        })
+        .log();
+        assert!(log.contains("\"OWN NAV\"") && log.contains("\"OWN TITLE\""), "{log}");
+        assert!(!log.contains("\"IGNORED\""), "the slot replaces the title's text:\n{log}");
+    }
+}
+
+mod toolbar {
+    use super::*;
+    use idea_ui::Tab;
+    use idea_ui_layout::{Toolbar, ToolbarButton, ToolbarSearch, ToolbarTabs};
+
+    #[test]
+    fn a_toolbar_draws_its_start_end_and_below_slots() {
+        let log = mount_at(DESKTOP, || {
+            ui! {
+                Toolbar(
+                    start = Some(ui! { Typography(content = "START".to_string()) }),
+                    end = Some(ui! { Typography(content = "END".to_string()) }),
+                    below = Some(ui! { Typography(content = "BELOW".to_string()) }),
+                )
+            }
+        })
+        .log();
+        for part in ["\"START\"", "\"END\"", "\"BELOW\""] {
+            assert!(log.contains(part), "{part}:\n{log}");
+        }
+    }
+
+    fn filter(count: usize) -> Element {
+        ui! { ToolbarButton(label = "Filter".to_string(), icon = Some(GLYPH), count = count) }
+    }
+
+    /// A toolbar control collapses to its glyph on a phone; it never
+    /// takes a shorter label.
+    #[test]
+    fn a_toolbar_button_is_labelled_when_wide_and_a_glyph_on_a_phone() {
+        let wide = mount_at(DESKTOP, || filter(0)).log();
+        assert!(wide.contains("\"Filter\""), "{wide}");
+        let counted = mount_at(TABLET, || filter(2)).log();
+        assert!(counted.contains("\"Filter · 2\""), "{counted}");
+        let phone = mount_at(PHONE, || filter(2)).log();
+        assert!(!phone.contains("Filter"), "{phone}");
+        assert!(phone.contains(" icon"), "{phone}");
+    }
+
+    #[test]
+    fn a_toolbar_button_with_no_glyph_keeps_its_label_on_a_phone() {
+        let log = mount_at(PHONE, || ui! { ToolbarButton(label = "Columns".to_string()) }).log();
+        assert!(log.contains("\"Columns\""), "{log}");
+    }
+
+    #[test]
+    fn inline_search_is_the_field_and_the_glyph_opens_one() {
+        let inline = mount_at(PHONE, || ui! { ToolbarSearch(inline = true) }).log();
+        assert!(inline.contains("text_input"), "{inline}");
+
+        let m = mount_at(PHONE, || ui! { ToolbarSearch() });
+        let closed = m.log();
+        assert!(!closed.contains("text_input"), "{closed}");
+        (m.h.press_handler(0))();
+        m.h.flush();
+        let open = m.log();
+        assert!(open.contains("text_input"), "{open}");
+    }
+
+    #[test]
+    fn search_writes_the_screens_term_and_reports_the_edit() {
+        host_mock::pump::install_scheduler();
+        let h = Harness::new();
+        let seen = Rc::new(Cell::new(0));
+        let count = seen.clone();
+        let (tree, value) = h.world.enter(|| {
+            install_idea_theme(light_theme());
+            let value = signal(String::new());
+            let after: Rc<dyn Fn(String)> = Rc::new(move |_| count.set(count.get() + 1));
+            (ui! { ToolbarSearch(value = value, inline = true, on_change = Some(after)) }, value)
+        });
+        let _realized = h.mount(tree);
+        h.flush();
+        (h.text_input_change(0))("ramp".to_string());
+        h.flush();
+        assert_eq!(h.world.enter(|| value.get()), "ramp");
+        assert_eq!(seen.get(), 1);
+    }
+
+    #[test]
+    fn toolbar_tabs_draw_every_tab_and_report_a_pick() {
+        let picked = Rc::new(Cell::new(false));
+        let flag = picked.clone();
+        let m = mount_at(DESKTOP, move || {
+            let tabs = signal(vec![Tab::new("work", "Work"), Tab::new("crew", "Crew"), Tab::new("log", "Log")]);
+            let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| flag.set(id == "crew"));
+            ui! { ToolbarTabs(tabs = tabs, active = "work".to_string(), on_change = on_change) }
+        });
+        let log = m.log();
+        for part in ["\"Work\"", "\"Crew\"", "\"Log\""] {
+            assert!(log.contains(part), "{part}:\n{log}");
+        }
+        m.h.press_labelled("Crew");
+        m.h.flush();
+        assert!(picked.get());
+    }
+}

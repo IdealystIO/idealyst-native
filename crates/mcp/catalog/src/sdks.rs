@@ -420,6 +420,13 @@ sdk!(
     "Themed navigation CHROME for the two navigators: `AppShell` (responsive pinned-sidebar <-> drawer, plus `sidebar_pinned`), `TabBar` (+ `TabItem`, and `TabIndicator` re-exported from idea-ui), `Drawer` (+ `DrawerSide`), and `StackHeader`. IT DOES NOT NAVIGATE: under the outlet model a navigator owns only its single `{ nav.outlet }` and everything wrapping it is ordinary author layout — these components ARE that layout, and they only do anything once you wire them to the context the navigator's `.layout(|nav| ...)` closure hands you (`active_route = nav.active_route`, `on_select = nav.on_select`). This is why there is NO tab- or drawer-navigator crate: a tab bar is `swap-navigator` + this crate's `TabBar`; a drawer is `swap-navigator` + `Drawer`/`AppShell`. Built on the same `idea-theme` as `idea-ui` and piggybacks on its `Tabs` strip rather than reimplementing chrome. Features mirror idea-ui: `docs` (reflective doc-control panels) and `robot` (turns on the runtime's robot bridge; a component's `test_id` is forwarded to its interactive primitive whether or not the feature is on). See the [[navigation]] guide.",
     guide = "navigation"
 );
+sdk!(
+    "idea-ui-layout",
+    SdkCategory::Ui,
+    SdkKind::External,
+    "Responsive SCREEN LAYOUTS over idea-ui: a screen picks a layout and hands it content, and the layout draws the phone, tablet and desktop form, so a screen never reads the breakpoint. `AppFrame` (sidebar pinned on a desktop, a drawer below it; `FrameSurface::Flat` or `Raised`; collapses to an icon rail via `SidebarState` + `SidebarItem` + `SidebarToggle`), `Page` (`PageVariant::Content` scrolls, `Table` bounds a table that owns the scroller, `Blank` decides nothing) with `PageHeader` (slots: `leading`, `nav`, `title`, `menu`, `status`, `trailing`, `actions`; verbs collapse on a phone) and `Toolbar` (`start` / `end` / `below`, with `ToolbarTabs`, `ToolbarSearch`, `ToolbarButton`), `SplitView` (`SplitMode::Nav` / `Detail` / `Inspector`), `Flow`, the blocks (`Section`, `FieldGrid`, `LabelValue`, `StatGrid`, `ActionBar`, `ListStates`, `BottomInset`), and overlays that become bottom sheets on a phone (`ActionMenu`, `AdaptivePopover`, `Dialog`, `DrillSheet`). The page gutter is the crate's own `LayoutTheme` tokens. It wraps idea-ui-nav's `AppShell`; it does not navigate. Nothing to register. See the [[layouts]] guide.",
+    guide = "layouts"
+);
 
 // ---------------------------------------------------------------------
 // Device — input gestures + device capabilities

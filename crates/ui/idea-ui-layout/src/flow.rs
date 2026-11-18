@@ -8,6 +8,7 @@ use idea_ui::{
     tone, typography_kind, variant, Button, Divider, Icon, Modal, Spacer, Stack, StackAlign, StackAxis, StackGap,
     Typography,
 };
+use runtime_core::Tokens as _;
 use runtime_core::{
     component, pressable, rx, signal, stylesheet, ui, AlignItems, AlignSelf, ChildList, Cursor, Element,
     FlexDirection, IdealystSchema, IntoElement, JustifyContent, Length, Overflow, Position, Reactive, Ref,
@@ -17,6 +18,7 @@ use runtime_core::{
 use crate::overlay::dialog_presentation;
 use crate::page::{watch_height, Page, PageFrame, PageVariant};
 use crate::split_view::{SplitMode, SplitView, SPLIT_NAV_WIDTH};
+use crate::LayoutTheme;
 
 /// The widest a step's heading and body run: a form line across a wide
 /// monitor is unreadable.
@@ -598,18 +600,18 @@ stylesheet! {
         base(t) {
             flex_direction: FlexDirection::Column,
             flex_shrink: 0.0,
-            padding_left: t.spacing.lg(),
-            padding_right: t.spacing.lg(),
+            padding_left: LayoutTheme::tokens().gutter.phone(),
+            padding_right: LayoutTheme::tokens().gutter.phone(),
             padding_top: t.spacing.lg(),
             padding_bottom: t.spacing.md(),
         }
         breakpoint sm(t) {
-            padding_left: t.spacing.xl(),
-            padding_right: t.spacing.xl(),
+            padding_left: LayoutTheme::tokens().gutter.tablet(),
+            padding_right: LayoutTheme::tokens().gutter.tablet(),
         }
         breakpoint lg(t) {
-            padding_left: t.spacing.xxl(),
-            padding_right: t.spacing.xxl(),
+            padding_left: LayoutTheme::tokens().gutter.desktop(),
+            padding_right: LayoutTheme::tokens().gutter.desktop(),
         }
     }
 }
@@ -725,18 +727,18 @@ stylesheet! {
         base(t) {
             flex_direction: FlexDirection::Column,
             flex_shrink: 0.0,
-            padding_left: t.spacing.lg(),
-            padding_right: t.spacing.lg(),
+            padding_left: LayoutTheme::tokens().gutter.phone(),
+            padding_right: LayoutTheme::tokens().gutter.phone(),
             padding_top: t.spacing.md(),
             padding_bottom: t.spacing.lg(),
         }
         breakpoint sm(t) {
-            padding_left: t.spacing.xl(),
-            padding_right: t.spacing.xl(),
+            padding_left: LayoutTheme::tokens().gutter.tablet(),
+            padding_right: LayoutTheme::tokens().gutter.tablet(),
         }
         breakpoint lg(t) {
-            padding_left: t.spacing.xxl(),
-            padding_right: t.spacing.xxl(),
+            padding_left: LayoutTheme::tokens().gutter.desktop(),
+            padding_right: LayoutTheme::tokens().gutter.desktop(),
         }
     }
 }

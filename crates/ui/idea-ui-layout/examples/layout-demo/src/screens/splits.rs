@@ -9,7 +9,7 @@ use idea_ui_layout::{
 };
 use runtime_core::{component, rx, signal, stylesheet, ui, AlignItems, Element, FlexDirection, JustifyContent, Signal};
 
-use crate::Shell;
+use crate::{Demo, Shell};
 
 const SECTIONS: [&str; 5] = ["General", "Divisions", "Positions", "Pay schedules", "Work hour types"];
 
@@ -62,7 +62,7 @@ pub(crate) fn SplitNavScreen(#[prop(static)] shell: Shell) -> Element {
             header = ui! {
                 PageHeader(
                     title = "Team settings".to_string(),
-                    leading = Some(shell.leading()),
+                    leading = Some(shell.leading()), status = move || shell.style_picker(),
                     actions = vec![Action::new("All sections", back.clone())],
                 )
             },
@@ -89,7 +89,14 @@ pub(crate) fn SplitDetailScreen(#[prop(static)] shell: Shell) -> Element {
     ui! {
         Page(
             frame = Some(frame),
-            header = ui! { PageHeader(title = "Incident 24-118".to_string(), leading = Some(shell.leading())) },
+            header = ui! { PageHeader(
+                title = "Incident 24-118".to_string(),
+                nav = Some(shell.way_back(vec![
+                    shell.crumb("Projects", Demo::Table),
+                    shell.crumb("North Ramp", Demo::ShellTabs),
+                    shell.crumb("Incidents", Demo::Table),
+                ], Demo::ShellTabs)),
+                leading = Some(shell.leading()), status = move || shell.style_picker()) },
             body = ui! {
                 SplitView(
                     mode = SplitMode::Detail,
@@ -129,7 +136,7 @@ pub(crate) fn WorkbenchScreen(#[prop(static)] shell: Shell) -> Element {
     ui! {
         Page(
             variant = PageVariant::Blank,
-            header = ui! { PageHeader(title = "Form builder".to_string(), leading = Some(shell.leading())) },
+            header = ui! { PageHeader(title = "Form builder".to_string(), leading = Some(shell.leading()), status = move || shell.style_picker()) },
             body = ui! {
                 SplitView(
                     mode = SplitMode::Inspector,

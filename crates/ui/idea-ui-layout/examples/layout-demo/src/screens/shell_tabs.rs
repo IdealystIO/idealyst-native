@@ -4,12 +4,15 @@
 
 use std::rc::Rc;
 
-use idea_ui::{Stack, StackGap, Tab, Tabs, Typography};
-use idea_ui_layout::{LabelValue, Page, PageHeader, PageVariant, Section, StatGrid};
+use icons_lucide::LIST_FILTER;
+use idea_ui::{Stack, StackGap, Tab, Typography};
+use idea_ui_layout::{
+    LabelValue, Page, PageHeader, PageVariant, Section, StatGrid, Toolbar, ToolbarButton, ToolbarSearch, ToolbarTabs,
+};
 use runtime_core::{component, rx, signal, stylesheet, ui, AlignItems, Element, FlexDirection, JustifyContent, Length};
 
 use super::Stat;
-use crate::Shell;
+use crate::{Demo, Shell};
 
 /// A row's height in the demo's plain list.
 const ROW_HEIGHT: f32 = 44.0;
@@ -20,16 +23,35 @@ enum ProjectTab {
     Overview,
     Headings,
     Schedule,
+    Crew,
+    Timesheets,
+    Reports,
+    Contacts,
+    Equipment,
 }
 
 impl ProjectTab {
-    const ALL: [ProjectTab; 3] = [ProjectTab::Overview, ProjectTab::Headings, ProjectTab::Schedule];
+    const ALL: [ProjectTab; 8] = [
+        ProjectTab::Overview,
+        ProjectTab::Headings,
+        ProjectTab::Schedule,
+        ProjectTab::Crew,
+        ProjectTab::Timesheets,
+        ProjectTab::Reports,
+        ProjectTab::Contacts,
+        ProjectTab::Equipment,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             ProjectTab::Overview => "Overview",
             ProjectTab::Headings => "Headings",
             ProjectTab::Schedule => "Schedule",
+            ProjectTab::Crew => "Crew",
+            ProjectTab::Timesheets => "Timesheets",
+            ProjectTab::Reports => "Reports",
+            ProjectTab::Contacts => "Contacts",
+            ProjectTab::Equipment => "Equipment",
         }
     }
 
@@ -37,9 +59,9 @@ impl ProjectTab {
     /// from.
     fn variant(self) -> PageVariant {
         match self {
-            ProjectTab::Overview => PageVariant::Content,
-            ProjectTab::Headings => PageVariant::Table,
             ProjectTab::Schedule => PageVariant::Blank,
+            ProjectTab::Overview | ProjectTab::Reports => PageVariant::Content,
+            _ => PageVariant::Table,
         }
     }
 }
@@ -47,6 +69,7 @@ impl ProjectTab {
 #[component]
 pub(crate) fn ShellTabsScreen(#[prop(static)] shell: Shell) -> Element {
     let tab = signal(ProjectTab::Overview);
+    let search = signal(String::new());
     let tabs = signal(ProjectTab::ALL.iter().map(|t| Tab::new(t.label(), t.label())).collect::<Vec<_>>());
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| {
         if let Some(picked) = ProjectTab::ALL.iter().find(|t| t.label() == id) {
@@ -56,14 +79,27 @@ pub(crate) fn ShellTabsScreen(#[prop(static)] shell: Shell) -> Element {
     ui! {
         Page(
             live_variant = Some(rx!(tab.get().variant())),
-            header = ui! { PageHeader(title = "North Ramp".to_string(), leading = Some(shell.leading())) },
-            toolbar = Some(ui! { Tabs(tabs = tabs, active = rx!(tab.get().label().to_string()), on_change = on_change) }),
+            header = ui! { PageHeader(
+                title = "North Ramp".to_string(),
+                nav = Some(shell.way_back(vec![shell.crumb("Projects", Demo::Table)], Demo::Table)),
+                leading = Some(shell.leading()), status = move || shell.style_picker()) },
+            toolbar = Some(ui! {
+                Toolbar(
+                    start = Some(ui! {
+                        ToolbarTabs(tabs = tabs, active = rx!(tab.get().label().to_string()), on_change = on_change)
+                    }),
+                    end = Some(ui! {
+                        ToolbarSearch(value = search, placeholder = "Search this project".to_string())
+                        ToolbarButton(label = "Filter".to_string(), icon = Some(LIST_FILTER), count = 2_usize)
+                    }),
+                )
+            }),
             body = ui! {
                 // The seat a navigator's outlet takes in a shell: it
                 // fills the frame, and a bounded tab is bounded by it.
                 view(style = Outlet()) {
                     match tab.get() {
-                        ProjectTab::Overview => {
+                        ProjectTab::Overview | ProjectTab::Reports => {
                             Stack(gap = StackGap::Lg) {
                                 StatGrid {
                                     Stat(label = "Advance this week".to_string(), value = "42 m".to_string())
@@ -79,16 +115,16 @@ pub(crate) fn ShellTabsScreen(#[prop(static)] shell: Shell) -> Element {
                                 }
                             }
                         }
-                        ProjectTab::Headings => {
+                        ProjectTab::Schedule => {
+                            view(style = Grid()) {
+                                Typography(content = "A custom grid, edge to edge".to_string(), muted = true)
+                            }
+                        }
+                        _ => {
                             scroll_view(style = Rows()) {
                                 for i in 1..=40, key = i {
                                     view(style = Row()) { Typography(content = format!("Heading {i}")) }
                                 }
-                            }
-                        }
-                        ProjectTab::Schedule => {
-                            view(style = Grid()) {
-                                Typography(content = "A custom grid, edge to edge".to_string(), muted = true)
                             }
                         }
                     }

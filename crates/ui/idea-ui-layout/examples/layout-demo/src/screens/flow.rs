@@ -34,7 +34,7 @@ pub(crate) fn FlowScreen(#[prop(static)] shell: Shell) -> Element {
             header = ui! {
                 PageHeader(
                     title = "New project".to_string(),
-                    leading = Some(shell.leading()),
+                    leading = Some(shell.leading()), status = move || shell.style_picker(),
                     actions = vec![Action::new("Cancel", leave.clone())],
                 )
             },

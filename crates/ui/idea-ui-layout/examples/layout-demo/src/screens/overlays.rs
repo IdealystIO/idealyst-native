@@ -107,7 +107,7 @@ pub(crate) fn OverlaysScreen(#[prop(static)] shell: Shell) -> Element {
 
     ui! {
         Page(
-            header = ui! { PageHeader(title = "Overlays".to_string(), leading = Some(shell.leading())) },
+            header = ui! { PageHeader(title = "Overlays".to_string(), leading = Some(shell.leading()), status = move || shell.style_picker()) },
             body = ui! {
                 Stack(gap = StackGap::Lg) {
                     Section(title = "ActionMenu".to_string(), subtitle = Some("A ⋮ and its verbs: an anchored menu, or an action sheet on a phone".to_string())) {
