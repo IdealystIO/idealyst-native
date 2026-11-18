@@ -689,10 +689,13 @@ pub struct WebBackend {
     /// `IntrospectionOps::note_introspection_root` (called as each primitive is
     /// registered). The native-introspection walk uses object identity here
     /// to know where one primitive's DOM ends and a child primitive's begins
-    /// — it prunes the tree at any descendant in this set. A `web_glue::js::Set`
-    /// (SameValueZero identity for objects) so it needs no node-id round-trip.
-    /// Populated only in robot builds; a single cheap JS Set otherwise idle.
-    pub(crate) introspection_roots: web_glue::js::Set,
+    /// — it prunes the tree at any descendant in this set. Object identity, so
+    /// it needs no node-id round-trip. Populated only in robot builds.
+    ///
+    /// A `WeakSet`, not a `Set`: nothing removes a root when its screen is
+    /// left, and a strong member pins its element, and through parent links
+    /// the whole detached screen, for the life of the page.
+    pub(crate) introspection_roots: web_glue::js::WeakSet,
 }
 
 /// Diagnostic snapshot returned by [`WebBackend::debug_counts`].
@@ -1331,7 +1334,7 @@ impl WebBackend {
             blob_asset_urls: FxHashSet::default(),
             font_face_rule_indices: runtime_shared::collections::SmallIdMap::new(),
             animated_states: FxHashMap::default(),
-            introspection_roots: web_glue::js::Set::new(&web_glue::JsValue::UNDEFINED),
+            introspection_roots: web_glue::js::WeakSet::new(),
         };
         backend
     }

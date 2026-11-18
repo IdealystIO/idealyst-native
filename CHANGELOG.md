@@ -3675,6 +3675,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Web robot builds no longer keep every screen they leave** (`backend-web` patch, `web-glue`
+  minor). With the `robot` feature (every `idealyst dev --web` build unless `--no-robot`, and
+  `idealyst build --web --robot`), each primitive's root element went into a strong JS `Set`
+  the backend keeps for native introspection, and nothing removed it. One member pins its
+  element and, through parent links, the whole detached screen: CrewForge still measured ~3,000
+  DOM nodes per round trip between two virtualized-Table screens on backend-web 10.3.3 after a
+  forced GC. The set is a `WeakSet` now. Builds without `robot` were not affected. `web-glue`
+  adds `js::WeakSet`. backend-web's browser tests now start Chrome with
+  `--js-flags=--expose-gc` (`webdriver.json`) for the regression test's `window.gc`.
+
 - **Web: a discarded subtree's elements are freed** (`backend-web` patch, `web-glue` minor). Leaving
   a screen, swapping an `if`/`match` branch, removing a list row or scrolling a virtual grid's cells
   away kept every element of the old subtree for the life of the page: CrewForge measured +3,560

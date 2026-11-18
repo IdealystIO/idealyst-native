@@ -28,6 +28,8 @@ crate::js_class! {
     pub struct Uint32Array: Object = "Uint32Array";
     /// `Set`.
     pub struct Set: Object = "Set";
+    /// `WeakSet`: identity membership that keeps no member alive.
+    pub struct WeakSet: Object = "WeakSet";
     /// `Map`.
     pub struct Map: Object = "Map";
 }
@@ -95,6 +97,7 @@ crate::import! {
     fn js_u32_copy_to(a: u32, p: usize) = "(a, p) => { G.u32().set(G.get(a), (p >>> 0) >>> 2); }";
 
     fn js_set_new(init: u32) -> u32 = "(i) => G.add(new Set(G.get(i) ?? undefined))";
+    fn js_weak_set_new() -> u32 = "() => G.add(new WeakSet())";
     fn js_set_add(s: u32, v: u32) = "(s, v) => { G.get(s).add(G.get(v)); }";
     fn js_set_has(s: u32, v: u32) -> u32 = "(s, v) => G.get(s).has(G.get(v)) ? 1 : 0";
     fn js_set_delete(s: u32, v: u32) -> u32 = "(s, v) => G.get(s).delete(G.get(v)) ? 1 : 0";
@@ -382,6 +385,30 @@ impl Set {
     }
     pub fn size(&self) -> u32 {
         unsafe { js_size(self.as_js().raw()) }
+    }
+}
+
+/// `add` / `has` / `delete` share `Set`'s imports: the JS calls are the
+/// same. A member must be an object (an element, say); a primitive throws.
+impl WeakSet {
+    pub fn new() -> WeakSet {
+        owned(unsafe { js_weak_set_new() })
+    }
+    pub fn add(&self, v: &JsValue) -> &WeakSet {
+        unsafe { js_set_add(self.as_js().raw(), v.raw()) };
+        self
+    }
+    pub fn has(&self, v: &JsValue) -> bool {
+        unsafe { js_set_has(self.as_js().raw(), v.raw()) != 0 }
+    }
+    pub fn delete(&self, v: &JsValue) -> bool {
+        unsafe { js_set_delete(self.as_js().raw(), v.raw()) != 0 }
+    }
+}
+
+impl Default for WeakSet {
+    fn default() -> WeakSet {
+        WeakSet::new()
     }
 }
 

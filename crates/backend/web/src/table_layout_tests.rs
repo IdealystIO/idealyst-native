@@ -432,3 +432,104 @@ async fn regression_leaving_a_virtualized_table_screen_frees_its_cells() {
     crate::newcore::set_mounted_world_for_tests(None);
     drop(realized);
 }
+
+/// REGRESSION (CrewForge want_09fc1ffc: on backend-web 10.3.3 a page
+/// running the app directly still kept ~3,000 DOM nodes per round trip
+/// between two virtualized-Table screens, after a forced GC): in a robot
+/// build every primitive root went into the backend's
+/// `introspection_roots`, a strong JS `Set` nothing removed from. Each
+/// member pinned its element, and through parent links the whole left
+/// screen: a plain screen kept all of its elements, a virtualized Table
+/// ~70 per visit. The roots are a `WeakSet` now; this leaves screens of
+/// a disposing swap navigator and checks a garbage collection takes
+/// every element of them.
+///
+/// Needs `window.gc`: `webdriver.json` beside the manifest starts Chrome
+/// with `--js-flags=--expose-gc`. A browser without it fails the test
+/// rather than passing it unchecked.
+#[cfg(feature = "robot")]
+#[wasm_bindgen_test]
+async fn regression_a_left_screen_is_garbage_collected_in_a_robot_build() {
+    use idea_ui::components::table::{ColumnId, ColumnPin, RowId, Table, TableColumn, TableProps, VirtualRows};
+    use runtime_shared::primitives::navigator::Route;
+    use runtime_vocabulary::builders::{navigator_outlet, swap_navigator, text};
+    use runtime_vocabulary::prims::{MountPolicy, NavHandle};
+
+    const HOME: Route<()> = Route::new("home", "/");
+    const PLAIN: Route<()> = Route::new("plain", "/plain");
+    const TABLE: Route<()> = Route::new("table", "/table");
+
+    let (backend, registry, world) = harness();
+    crate::newcore::set_mounted_world_for_tests(Some(world.clone()));
+    let handle_slot: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+    let slot = handle_slot.clone();
+    let realized = world.enter(|| {
+        idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+        let tree = swap_navigator(&HOME)
+            .screen(HOME, |_| view().child(text().content("home")).build())
+            .screen(PLAIN, |_| view().child(view().child(text().content("plain")).build()).build())
+            .screen(TABLE, |_| {
+                view().child(Table(TableProps {
+                    columns: vec![
+                        TableColumn::new("name").label("Name").width(200.0).pinned(ColumnPin::Left),
+                        TableColumn::new("status").label("Status").width(160.0),
+                    ],
+                    virtualized: Some(
+                        VirtualRows::new(
+                            move || 200,
+                            move |i| RowId::from(format!("r{i}")),
+                            move |i, col: &ColumnId| text().content(format!("{} {i}", col.as_str())).build(),
+                        )
+                        .on_row_click(|_| {}),
+                    ),
+                    max_height: Some(300.0),
+                    ..Default::default()
+                }))
+                .build()
+            })
+            .mount_policy(MountPolicy::LazyDisposing)
+            .layout(|| view().child(navigator_outlet()).build())
+            .on_handle(move |h| *slot.borrow_mut() = Some(h))
+            .build();
+        realize(&backend, &registry, tree)
+    });
+    let handle = handle_slot.borrow_mut().take().expect("on_handle filled at mount");
+    let host = mount_in(800.0, realized.collect_nodes().pop().expect("one root"));
+    settle(&world).await;
+
+    // A weak reference to every element on screen before leaving it.
+    let note = web_glue::js::Function::new_with_args(
+        "host",
+        "(window.__leftScreen = window.__leftScreen || []);\
+         for (const el of host.querySelectorAll('*')) window.__leftScreen.push(new WeakRef(el));",
+    );
+    for _ in 0..3 {
+        for route in [&PLAIN, &TABLE] {
+            world.enter(|| handle.select(route, ()));
+            settle(&world).await;
+            if route.name() == TABLE.name() {
+                let cells = host.query_selector_all("[role=cell]").unwrap().length();
+                assert!(cells > 0, "the table's cells are mounted before it is left");
+            }
+            let _ = note.call1(&web_glue::JsValue::NULL, host.as_ref());
+            world.enter(|| handle.select(&HOME, ()));
+            settle(&world).await;
+        }
+    }
+
+    let collect = web_glue::js::Function::new_no_args(
+        "if (typeof gc !== 'function') throw new Error('window.gc is missing: run Chrome with --js-flags=--expose-gc (webdriver.json)');\
+         const turn = () => new Promise(r => setTimeout(r, 0));\
+         return (async () => { await turn(); await gc(); await turn(); await gc();\
+           const refs = window.__leftScreen; delete window.__leftScreen;\
+           return [refs.length, refs.filter(w => { const e = w.deref(); return e && !e.isConnected; }).length]; })();",
+    );
+    let promise: web_glue::js::Promise =
+        collect.call0(&web_glue::JsValue::NULL).expect("window.gc").unchecked_into();
+    let counts: web_glue::js::Array = web_glue::JsFuture::new(&promise).await.expect("collected").unchecked_into();
+    let (noted, kept) = (counts.get(0).as_f64().unwrap(), counts.get(1).as_f64().unwrap());
+    assert_eq!(kept, 0.0, "{kept} of {noted} elements of left screens survived a garbage collection");
+
+    crate::newcore::set_mounted_world_for_tests(None);
+    drop(realized);
+}
