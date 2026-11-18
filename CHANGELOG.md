@@ -1408,6 +1408,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`SidebarItem` takes a `count`** (`idea-ui-layout` minor). `count =
+  Some(SidebarCount::new(value, tone))` — a number, a signal or an `rx!` — draws the number as a
+  tag at the row's end while the sidebar is open or a drawer, and a dot in the count's tone on the
+  glyph in the icon rail. Nothing is drawn at zero. An app no longer lays a badge of its own over
+  the item.
+
 - **`idealyst test` runs a suite held by another workspace package** (`idealyst-cli` minor,
   `robot-test` minor). An integration test of the app package builds the app's library for the
   host, so a suite that only needs the robot client paid a host build of every UI crate (444 for
@@ -3726,6 +3732,27 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A restyled view no longer flashes unstyled when another view is styled in the same turn**
+  (`backend-web` patch). A restyle released the node's old CSS rule while its class swap was still
+  queued for the batched flush; a class minted for another node in the same turn recycled that
+  rule's slot, deleting the rule under an element that still carried its class. Any style recalc
+  before the flush rendered the element with no rules, and its `transition` then ran from there:
+  an `AppFrame` collapsing to its icon rail snapped the content to `margin-left: 0` and slid it
+  back out. A released class rule's slot is now held until the queued swaps are applied.
+- **A virtualized `Table` whose columns fit shows no horizontal scrollbar while its container
+  resizes** (`backend-web` patch). Columns that share the scrollport are sized from a measured
+  width, so the layout a narrowing produces still has the content at the width before; with
+  `overflow-x: auto` that layout carried a bar on every step of an animated resize. `virtual_grid`
+  holds the axis at `hidden` while its content fits and gives it back when the content is wider.
+- **`idealyst dev` does not serve a page staged under another `--app-env`** (`idealyst-cli`
+  patch). A full-stack session's server starts before its first bundle is staged and served the
+  previous launch's `index.html`; with the wasm unchanged the app booted on the old environment,
+  and `idealyst test --workers` stopped before any test with "the staged index.html holds no
+  …IDEALYST_APP_ENV…". A staged page whose environment differs from the launch's is removed at
+  start.
+- **`LayoutTheme`'s doc example compiles** (`idea-ui-layout`). `install` and `with` are `Tokens`
+  methods; the example imports the trait and is now a compiled doctest.
 
 - **`load_url` waits for a slow navigation, and a busy tab is no longer reported missing**
   (`robot-relay` patch). The relay gave every DevTools command 3 s. On a debug build a
