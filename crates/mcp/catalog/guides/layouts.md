@@ -101,7 +101,10 @@ Two choices are made here, once, for the whole app:
   full labels; the rail is a desktop form only.
 
 `SidebarItem` draws icon and label when open and the icon alone, with the
-label as its tooltip, in the rail. Sidebar content of your own (a logo, a
+label as its tooltip, in the rail. Give it a `count` for a destination
+with something waiting: `count = Some(SidebarCount::new(open_tasks,
+tone::Neutral))` (a signal, an `rx!` or a plain number) draws the number
+at the row's end and a dot on the glyph in the rail, and nothing at zero. Sidebar content of your own (a logo, a
 footer) can read `sidebar.is_rail()` to adapt.
 
 ## Step 2: choose a layout for the screen
