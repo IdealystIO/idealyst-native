@@ -6561,6 +6561,7 @@ dependencies = [
  "idea-ui-nav",
  "runtime-core",
  "runtime-scene",
+ "runtime-shared",
  "runtime-vocabulary",
 ]
 

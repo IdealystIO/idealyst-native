@@ -84,7 +84,8 @@ pub use overlay::{
     dialog_block, dialog_presentation, sheet_serves, ActionMenu, ActionMenuProps, ActionMenuSurface,
     ActionMenuSurfaceProps, AdaptivePopover, AdaptivePopoverProps, Dialog, DialogFooter, DialogFooterProps,
     DialogProps, DrillCx, DrillSheet, DrillSheetProps, Sheet, SheetActionRow, SheetActionRowProps, SheetCheckRow,
-    SheetCheckRowProps, SheetHeading, SheetHeadingProps, SheetProps, SheetPushRow, SheetPushRowProps,
+    SheetCheckRowProps, SheetHeading, SheetHeadingProps, SheetPickRow, SheetPickRowProps, SheetProps, SheetPushRow,
+    SheetPushRowProps,
 };
 pub use page::{
     HeaderBackButton, HeaderBackButtonProps, HeaderTrail, HeaderTrailProps, HeaderWayBack, HeaderWayBackProps, WayBack,

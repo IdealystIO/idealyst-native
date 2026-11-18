@@ -7,7 +7,8 @@ use icons_lucide::{COPY, PENCIL, TRASH};
 use idea_ui::{variant, AnchorTarget, Button, Field, Stack, StackAlign, StackAxis, StackGap, Typography};
 use idea_ui_layout::{
     dialog_block, Action, ActionMenu, ActionMenuSurface, AdaptivePopover, Dialog, DialogFooter, DrillCx, DrillSheet,
-    FieldGrid, Page, PageHeader, Section, Sheet, SheetActionRow, SheetCheckRow, SheetHeading, SheetPushRow,
+    FieldGrid, Page, PageHeader, Section, Sheet, SheetActionRow, SheetCheckRow, SheetHeading, SheetPickRow,
+    SheetPushRow,
 };
 use runtime_core::{component, rx, signal, ui, Element, PressableHandle, Ref, Signal};
 
@@ -104,6 +105,10 @@ pub(crate) fn OverlaysScreen(#[prop(static)] shell: Shell) -> Element {
     let open_sheet: Rc<dyn Fn()> = Rc::new(move || sheet_open.set(true));
     let close_sheet: Rc<dyn Fn()> = Rc::new(move || sheet_open.set(false));
     let sheet_done = close_sheet.clone();
+    // One of a set: the sort the sheet's pick rows choose between.
+    let newest_first = signal(true);
+    let pick_newest: Rc<dyn Fn()> = Rc::new(move || newest_first.set(true));
+    let pick_oldest: Rc<dyn Fn()> = Rc::new(move || newest_first.set(false));
 
     ui! {
         Page(
@@ -189,6 +194,9 @@ pub(crate) fn OverlaysScreen(#[prop(static)] shell: Shell) -> Element {
                         SheetHeading(text = "Heading 12".to_string())
                         SheetActionRow(label = "Open".to_string(), on_press = sheet_done.clone())
                         SheetActionRow(label = "Share".to_string(), on_press = sheet_done.clone())
+                        SheetHeading(text = "Sort".to_string())
+                        SheetPickRow(label = "Newest first".to_string(), selected = rx!(newest_first.get()), on_press = pick_newest.clone())
+                        SheetPickRow(label = "Oldest first".to_string(), selected = rx!(!newest_first.get()), on_press = pick_oldest.clone())
                     }
                 },
             )

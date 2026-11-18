@@ -348,6 +348,12 @@ the left, it is the field.**
 - A magnifier at the toolbar's right end opens the field under it. A
   dot on the glyph says a term is in use while the field is closed.
   Enter and Escape close the field and keep the term.
+- Ctrl-F (⌘F on a Mac) goes to the search while it is mounted: the
+  glyph's field opens, the inline field takes focus. It replaces the
+  browser's find, which cannot see the rows a paged or virtualized list
+  has not drawn. Where two searches are mounted at once, all but one
+  pass `find_shortcut = false`.
+- An app opens the glyph's field itself by passing it an `open` signal.
 - A screen with no tabs puts the field itself at the left
   (`inline = true`). On a phone it takes the row.
 - The field has a ✕ that clears the term while there is one.
@@ -360,6 +366,10 @@ Built by `ToolbarSearch`.
 From 640 up: glyph, label, and the count of what is on ("Filter · 2").
 On a phone: the glyph alone, with a dot while anything is on. There is
 no row of chips; the panel is where the filters are read and changed.
+
+A control that stands beside the search glyph as its pair may be
+`compact`: the glyph at every width, with the count as a number on its
+corner and nothing at zero.
 
 Built by `ToolbarButton`, opening an `AdaptivePopover` or a
 `DrillSheet`.
@@ -480,9 +490,13 @@ bottom edge.
 
 - A screen mounts the component once, ungated, and drives its `open`.
   The sheet form has to stay mounted to play its exit.
-- A sheet has three kinds of row and only three: one that does
+- A sheet has four kinds of row and only four: one that does
   something and closes (`SheetActionRow`), one that toggles something
-  and stays (`SheetCheckRow`), one that pushes a pane (`SheetPushRow`).
+  and stays (`SheetCheckRow`), one that picks one of a set
+  (`SheetPickRow`), one that pushes a pane (`SheetPushRow`).
+- One-of-a-set is a pick row, never a check row: a box on every row
+  reads as if two could be ticked. The chosen row has a check at its
+  end, and every row keeps the check's room so a pick moves nothing.
 - Sheet rows are at least 48 tall and run edge to edge.
 
 ### menus

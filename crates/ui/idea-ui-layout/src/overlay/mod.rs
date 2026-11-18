@@ -40,7 +40,7 @@ pub use dialog_footer::{DialogFooter, DialogFooterProps};
 pub use drill_sheet::{DrillCx, DrillSheet, DrillSheetProps};
 pub use rows::{
     SheetActionRow, SheetActionRowProps, SheetCheckRow, SheetCheckRowProps, SheetHeading, SheetHeadingProps,
-    SheetPushRow, SheetPushRowProps, SHEET_ROW_MIN_HEIGHT,
+    SheetPickRow, SheetPickRowProps, SheetPushRow, SheetPushRowProps, SHEET_ROW_MIN_HEIGHT,
 };
 
 /// Whether a control's secondary surface is the sheet rather than an

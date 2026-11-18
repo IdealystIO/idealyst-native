@@ -10,7 +10,9 @@ use runtime_core::{ui, Element};
 /// empty. An `Element` is built once and moved, so content that comes
 /// and goes is passed as the closure that makes it.
 ///
-/// `From<closure>` lets a call site write `content = move || ui! { … }`.
+/// `From<closure>` lets a call site write `content = move || ui! { … }`;
+/// a builder already held as an `Rc<dyn Fn() -> Element>` (shared, or
+/// kept in props) passes as it is.
 #[derive(Clone)]
 pub struct Slot(pub Rc<dyn Fn() -> Element>);
 
@@ -24,6 +26,12 @@ impl Slot {
 impl<F: Fn() -> Element + 'static> From<F> for Slot {
     fn from(f: F) -> Self {
         Slot(Rc::new(f))
+    }
+}
+
+impl From<Rc<dyn Fn() -> Element>> for Slot {
+    fn from(f: Rc<dyn Fn() -> Element>) -> Self {
+        Slot(f)
     }
 }
 
@@ -52,5 +60,46 @@ impl OptionalSlot {
 impl<F: Fn() -> Element + 'static> From<F> for OptionalSlot {
     fn from(f: F) -> Self {
         OptionalSlot(Some(Rc::new(f)))
+    }
+}
+
+impl From<Rc<dyn Fn() -> Element>> for OptionalSlot {
+    fn from(f: Rc<dyn Fn() -> Element>) -> Self {
+        OptionalSlot(Some(f))
+    }
+}
+
+impl From<Option<Rc<dyn Fn() -> Element>>> for OptionalSlot {
+    fn from(f: Option<Rc<dyn Fn() -> Element>>) -> Self {
+        OptionalSlot(f)
+    }
+}
+
+impl From<Slot> for OptionalSlot {
+    fn from(slot: Slot) -> Self {
+        OptionalSlot(Some(slot.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A builder a caller already holds as an `Rc` is a slot without a
+    /// wrapping closure: `Rc<dyn Fn()>` is not itself `Fn`, so the
+    /// closure impl alone refused it.
+    #[test]
+    fn a_shared_builder_is_a_slot() {
+        let body: Rc<dyn Fn() -> Element> = Rc::new(|| ui! { view {} });
+        let slot: Slot = body.clone().into();
+        assert!(Rc::ptr_eq(&slot.0, &body), "the same builder, not a wrapper round it");
+        let set: OptionalSlot = body.clone().into();
+        assert!(set.is_set());
+        let some: OptionalSlot = Some(body).into();
+        assert!(some.is_set());
+        let none: OptionalSlot = None::<Rc<dyn Fn() -> Element>>.into();
+        assert!(!none.is_set());
+        let closure: Slot = (|| ui! { view {} }).into();
+        let _: OptionalSlot = closure.into();
     }
 }

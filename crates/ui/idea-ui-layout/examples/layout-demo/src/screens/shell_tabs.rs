@@ -149,7 +149,8 @@ fn ProjectTabScreen(
                     }),
                     end = Some(ui! {
                         ToolbarSearch(value = search, placeholder = "Search this project".to_string())
-                        ToolbarButton(label = "Filter".to_string(), icon = Some(LIST_FILTER), count = 2_usize)
+                        // The glyph at every width, as the search glyph's pair.
+                        ToolbarButton(label = "Filter".to_string(), icon = Some(LIST_FILTER), count = 2_usize, compact = true)
                     }),
                 )
             }),

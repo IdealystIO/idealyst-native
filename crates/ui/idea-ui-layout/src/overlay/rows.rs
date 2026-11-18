@@ -1,14 +1,14 @@
-//! The rows a [`Sheet`](super::Sheet) holds. Three kinds: a row that
+//! The rows a [`Sheet`](super::Sheet) holds. Four kinds: a row that
 //! DOES something and closes, a row that TOGGLES something and stays,
-//! and a row that PUSHES a pane.
+//! a row that PICKS one of a set, and a row that PUSHES a pane.
 
 use std::rc::Rc;
 
-use icons_lucide::CHEVRON_RIGHT;
-use idea_ui::{menu_checkbox, typography_kind, MenuLabel, Stack, StackAlign, StackAxis, StackGap, Typography};
+use icons_lucide::{CHECK, CHEVRON_RIGHT};
+use idea_ui::{menu_checkbox, typography_kind, Icon, MenuLabel, Stack, StackAlign, StackAxis, StackGap, Typography};
 use runtime_core::{
     component, icon, pressable, stylesheet, ui, AlignItems, Element, FlexDirection, IdealystSchema, IntoElement,
-    JustifyContent, Reactive, StyleApplication,
+    JustifyContent, Length, Reactive, StyleApplication,
 };
 
 /// A sheet row's least height: a touch target, not a menu row.
@@ -16,6 +16,9 @@ pub const SHEET_ROW_MIN_HEIGHT: f32 = 48.0;
 
 /// The push row's chevron, in px.
 const PUSH_CHEVRON_PX: f32 = 16.0;
+
+/// The pick row's check, and the slot kept for it, in px.
+const PICK_CHECK_PX: f32 = 18.0;
 
 stylesheet! {
     // Edge to edge, so the whole width is the target rather than the
@@ -143,6 +146,86 @@ pub fn SheetCheckRow(props: SheetCheckRowProps) -> Element {
     pressable(vec![body], move || on_press())
         .with_style(StyleApplication::new(SheetRow::sheet()))
         .into_element()
+}
+
+#[runtime_core::props]
+#[derive(IdealystSchema)]
+pub struct SheetPickRowProps {
+    /// The choice.
+    #[prop(static)]
+    pub label: String,
+    /// An icon before the label. `None` mounts nothing.
+    #[prop(static)]
+    pub leading: Option<Element>,
+    /// Whether this is the one chosen. Derived from where the choice
+    /// lives (`rx!(theme.get() == Theme::Dark)`), not a per-row signal.
+    pub selected: bool,
+    /// Choose it. Closing the sheet is this handler's to do.
+    #[prop(static)]
+    pub on_press: Rc<dyn Fn()>,
+}
+
+impl Default for SheetPickRowProps {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            leading: None,
+            selected: Reactive::Static(false),
+            on_press: Rc::new(|| {}),
+        }
+    }
+}
+
+/// A row that PICKS one of a set: a theme, a team, a sort order. A check
+/// at the row's end marks the one chosen. Its slot is kept on every row,
+/// so choosing another moves nothing.
+///
+/// Not a [`SheetCheckRow`]: a box on every row reads as if two could be
+/// ticked at once.
+///
+/// ```ignore
+/// SheetPickRow(
+///     label = "Dark".to_string(),
+///     selected = rx!(theme.get() == Theme::Dark),
+///     on_press = pick_dark.clone(),
+/// )
+/// ```
+#[component]
+pub fn SheetPickRow(props: SheetPickRowProps) -> Element {
+    let label = props.label;
+    let leading = props.leading;
+    let selected = props.selected;
+    let on_press = props.on_press;
+    let body = ui! {
+        Stack(axis = StackAxis::Row, align = StackAlign::Center, gap = StackGap::Md) {
+            if let Some(leading) = leading {
+                leading
+            }
+            Typography(content = label, kind = typography_kind::Body)
+        }
+    };
+    let mark = ui! {
+        view(style = PickCheckSlot()) {
+            if selected.get() {
+                Icon(data = CHECK, size = PICK_CHECK_PX)
+            }
+        }
+    };
+    // Two children of the row, parted by its `SpaceBetween`.
+    pressable(vec![body, mark], move || on_press())
+        .with_style(StyleApplication::new(SheetRow::sheet()))
+        .into_element()
+}
+
+stylesheet! {
+    // The check's room, held whether or not the check is drawn.
+    PickCheckSlot<idea_ui::IdeaThemeRef> {
+        base(_t) {
+            width: Length::Px(PICK_CHECK_PX),
+            height: Length::Px(PICK_CHECK_PX),
+            flex_shrink: 0.0,
+        }
+    }
 }
 
 #[runtime_core::props]

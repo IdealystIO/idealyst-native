@@ -686,6 +686,83 @@ mod toolbar {
         assert!(open.contains("text_input"), "{open}");
     }
 
+    /// Ctrl-F (⌘F on a Mac) opens the glyph's field and takes the key
+    /// from the browser's find; an app holding `open` works it too; a
+    /// search told to leave the chord alone does.
+    #[test]
+    fn the_find_chord_and_an_outside_signal_open_the_search() {
+        use runtime_core::{AppKeyEvent, KeyOutcome};
+        use runtime_shared::key_input::deliver;
+        let find = |ctrl: bool, meta: bool| {
+            let mut down = AppKeyEvent::down("f", "KeyF");
+            (down.ctrl, down.meta) = (ctrl, meta);
+            let outcome = deliver(&down);
+            let mut up = down.clone();
+            up.phase = runtime_core::KeyPhase::Up;
+            deliver(&up);
+            outcome
+        };
+
+        let handle = Rc::new(Cell::new(None));
+        let out = handle.clone();
+        let m = mount_at(DESKTOP, move || {
+            let open = signal(false);
+            out.set(Some(open));
+            ui! { ToolbarSearch(open = Some(open)) }
+        });
+        let open: Signal<bool> = handle.get().expect("built");
+        assert!(!m.log().contains("text_input"));
+        assert_eq!(find(false, false), KeyOutcome::Default, "a bare f is typing");
+        assert_eq!(find(true, false), KeyOutcome::PreventDefault, "the browser's find does not open");
+        m.h.flush();
+        assert!(m.h.world.enter(|| open.get()));
+        assert!(m.log().contains("text_input"), "Ctrl-F opened the field");
+
+        m.h.world.enter(|| open.set(false));
+        m.h.flush();
+        m.log();
+        assert_eq!(find(false, true), KeyOutcome::PreventDefault, "⌘F is the same chord");
+        m.h.flush();
+        assert!(m.log().contains("text_input"));
+
+        m.h.world.enter(|| open.set(false));
+        m.h.flush();
+        m.log();
+        m.h.world.enter(|| open.set(true));
+        m.h.flush();
+        assert!(m.log().contains("text_input"), "the app's own signal opens it");
+        drop(m);
+
+        let quiet = mount_at(DESKTOP, || ui! { ToolbarSearch(find_shortcut = false) });
+        quiet.log();
+        assert_eq!(find(true, false), KeyOutcome::Default, "left to the browser");
+        quiet.h.flush();
+        assert!(!quiet.log().contains("text_input"));
+    }
+
+    /// A compact control is its glyph at every width, the count a number
+    /// on its corner and nothing at zero.
+    #[test]
+    fn a_compact_toolbar_button_is_a_glyph_with_its_count_at_every_width() {
+        for width in [PHONE, DESKTOP] {
+            let handle = Rc::new(Cell::new(None));
+            let out = handle.clone();
+            let m = mount_at(width, move || {
+                let on: Signal<usize> = signal(0);
+                out.set(Some(on));
+                ui! { ToolbarButton(label = "Filter".to_string(), icon = Some(GLYPH), count = on, compact = true) }
+            });
+            let on: Signal<usize> = handle.get().expect("built");
+            let none = m.log();
+            assert!(!none.contains("\"Filter") && none.contains(" icon"), "{width}: a glyph, no label:\n{none}");
+            assert!(!none.contains("\"0\""), "{width}: nothing at zero:\n{none}");
+            m.h.world.enter(|| on.set(3));
+            m.h.flush();
+            let three = m.log();
+            assert!(three.contains("\"3\""), "{width}: the count is a number:\n{three}");
+        }
+    }
+
     #[test]
     fn search_writes_the_screens_term_and_reports_the_edit() {
         host_mock::pump::install_scheduler();
@@ -721,6 +798,37 @@ mod toolbar {
         }
         m.h.press_labelled("Crew");
         m.h.flush();
+        assert!(picked.get());
+    }
+}
+
+mod sheet_rows {
+    use super::*;
+    use idea_ui_layout::SheetPickRow;
+
+    /// One of a set: the chosen row carries the check, the others keep
+    /// its slot empty, and a press reports the pick.
+    #[test]
+    fn a_pick_row_marks_the_one_chosen_and_reports_a_press() {
+        let picked = Rc::new(Cell::new(false));
+        let flag = picked.clone();
+        let handle = Rc::new(Cell::new(None));
+        let out = handle.clone();
+        let m = mount_at(PHONE, move || {
+            let dark = signal(false);
+            out.set(Some(dark));
+            let pick: Rc<dyn Fn()> = Rc::new(move || flag.set(true));
+            ui! { SheetPickRow(label = "Dark".to_string(), selected = dark, on_press = pick) }
+        });
+        let dark: Signal<bool> = handle.get().expect("built");
+        let unpicked = m.log();
+        assert!(unpicked.contains("\"Dark\""), "{unpicked}");
+        assert!(!unpicked.contains(" icon"), "no check until it is the one chosen:\n{unpicked}");
+        m.h.world.enter(|| dark.set(true));
+        m.h.flush();
+        let chosen = m.log();
+        assert!(chosen.contains(" icon"), "the check:\n{chosen}");
+        (m.h.press_handler(0))();
         assert!(picked.get());
     }
 }
