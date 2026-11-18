@@ -1,7 +1,7 @@
 +++
 title = "Testing apps (robot E2E)"
 order = 62
-tags = ["testing", "e2e", "robot", "robot_test", "robot_fn", "tap_native", "call_function", "idealyst test", "mcp", "device matrix", "orientation", "firefox", "webkit", "clock", "net"]
+tags = ["testing", "e2e", "robot", "idea_test", "robot_test", "suites", "robot_fn", "tap_native", "call_function", "idealyst test", "mcp", "device matrix", "orientation", "firefox", "webkit", "clock", "net"]
 +++
 
 # Testing apps (robot E2E)
@@ -156,13 +156,13 @@ screen.
 ## 3. Write the suite
 
 Host-side tests live in `tests/robot.rs`, with `robot-test` as a
-dev-dependency (`robot-test = { version = "1", registry = "idealyst" }`,
+dev-dependency (`robot-test = { version = "3.3", registry = "idealyst" }`,
 or `{ workspace = true }` inside the framework workspace):
 
 ```rust
-use robot_test::{json, robot_test, App};
+use robot_test::{json, idea_test, App};
 
-#[robot_test]
+#[idea_test]
 fn sign_in(app: &mut App) {
     app.call_function("permissions.set", json!({ "permission": "location", "status": "granted" }));
     app.navigate("/login");
@@ -258,7 +258,7 @@ safe-area inset, a native list cell) says which, and is never reported
 passed anywhere else:
 
 ```rust
-#[robot_test(platforms = [ios, android])]   // or `platforms = native`
+#[idea_test(platforms = [ios, android])]   // or `platforms = native`
 fn amount_field_opens_the_number_pad(app: &mut App) { /* … */ }
 ```
 
@@ -271,6 +271,31 @@ out` (or leaves it `ignored`) elsewhere, and a bare `cargo test` shows it
 `ignored`. Its body sits in a module that imports the file's items with
 `use super::*`, so write `crate::…` paths, not `super::…`.
 
+### Suites
+
+Group tests into named suites to run a slice of the file — a quick smoke
+pass, one feature's tests:
+
+```rust
+#[idea_test(suites = smoke)]
+fn the_home_screen_loads(app: &mut App) { /* … */ }
+
+#[idea_test(suites = [smoke, checkout], platforms = mobile)]
+fn paying_opens_the_number_pad(app: &mut App) { /* … */ }
+```
+
+```text
+idealyst test --web --suite smoke <project>            # a suite
+idealyst test --web --suite smoke,checkout <project>   # any of several
+idealyst test --list-suites <project>                  # each suite and its tests
+```
+
+Names are lowercase words joined by single `_`. A suite is a label: a run
+without `--suite` runs every test. `--suite` combines with `--filter` and
+the platform rules; a name no test declares fails the run with the list of
+suites. A suite member's body sits in a module like a platform-bound
+test's (`<fn>::idea_suites_checkout__smoke`), so write `crate::…` paths.
+
 Keep tests independent of run order. Each test should be the only one
 mutating the state it asserts, and a robot function that resets the state
 is the cheap way to get there — wrapped in a fixture, so no test forgets it.
@@ -282,10 +307,10 @@ breakpoint (`phone` xs/sm, `tablet` md, `desktop` lg/xl); `input` is the
 primary pointer (`touch` coarse, `pointer` fine):
 
 ```rust
-#[robot_test(form = phone)]
+#[idea_test(form = phone)]
 fn the_tab_bar_is_at_the_bottom(app: &mut App) { … }
 
-#[robot_test(form = [phone, tablet], input = touch)]
+#[idea_test(form = [phone, tablet], input = touch)]
 fn a_long_press_opens_the_menu(app: &mut App) { … }
 ```
 
@@ -337,7 +362,7 @@ Several run in parameter order and tear down in reverse; one can build on
 another by calling its `setup`.
 
 ```rust
-use robot_test::{json, robot_test, App, Fixture};
+use robot_test::{json, idea_test, App, Fixture};
 
 /// Signed in as a known user.
 struct SignedIn { email: String }
@@ -354,7 +379,7 @@ impl Fixture for SignedIn {
     }
 }
 
-#[robot_test]
+#[idea_test]
 fn shows_the_account(app: &mut App, user: &SignedIn) {
     app.navigate("/account");
     app.test_id("account-email").assert_text(&user.email);
@@ -400,7 +425,7 @@ impl Fixture for FreshServer {
     }
 }
 
-#[robot_test]
+#[idea_test]
 fn starts_with_the_seeded_todos(app: &mut App, _: &FreshServer) {
     app.test_id("todo-row").assert_count(3);
 }
@@ -523,10 +548,11 @@ idealyst test --windows  <project>     # a Windows host, or IDEALYST_WINDOWS_REM
 - runs the suite against it, once per size, device or simulator;
 - runs the `--after` hooks, and prints a result per run.
 
-`--filter <name>` narrows the run, `--test <file>` picks another test
+`--filter <name>` narrows the run, `--suite <names>` runs only those
+suites (`--list-suites` lists them), `--test <file>` picks another test
 target, and `--attach` drives an app you already started with
 `idealyst dev` (never the app of another `idealyst test` run). Under a bare `cargo test`, with no app reachable, each
-`#[robot_test]` skips instead of failing. The runner asks the app its
+`#[idea_test]` skips instead of failing. The runner asks the app its
 platform and runs only the `platforms = …` tests that belong to it, naming
 the rest on a `[test] not on <platform>: …` line.
 

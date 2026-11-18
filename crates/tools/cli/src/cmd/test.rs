@@ -1,7 +1,7 @@
 //! `idealyst test` — prepare the environment for the project's Rust E2E tests
 //! and run them on any platform.
 //!
-//! The tests are ordinary `#[robot_test]` functions (in `tests/robot.rs` by
+//! The tests are ordinary `#[idea_test]` functions (in `tests/robot.rs` by
 //! default) that drive the app over the Robot relay. `cargo test` can run them
 //! directly, but only `idealyst test` sets up what they need: it builds the
 //! test target, runs the `--before` hooks, launches the app on the chosen
@@ -12,9 +12,11 @@
 //! `IDEALYST_ROBOT_BRIDGE` pointed at it — once per requested size, device or
 //! simulator — and finally the `--after` hooks. Without that prep the tests
 //! skip; with it they run for real. The run fails if any size fails.
-//! A `#[robot_test(platforms = …)]` test runs only where the app reports a
+//! A `#[idea_test(platforms = …)]` test runs only where the app reports a
 //! platform it names ([`select_tests`]); elsewhere it is filtered out or
-//! stays ignored, never passed.
+//! stays ignored, never passed. `--suite smoke,checkout` runs only the tests
+//! of those `#[idea_test(suites = …)]` suites; `--list-suites` builds the
+//! test target, prints its suites and their tests, and exits.
 //!
 //! # Device matrix
 //!
@@ -70,6 +72,16 @@ pub struct Args {
     /// Only run tests whose name contains this filter (passed to the test binary).
     #[arg(long, value_name = "FILTER")]
     pub filter: Option<String>,
+    /// Only run the tests of these suites (`#[idea_test(suites = …)]`) — a
+    /// comma list or repeated; a test in any of them runs. Combines with
+    /// `--filter` and the platform rules. A name no test declares is an
+    /// error, listing the suites there are.
+    #[arg(long = "suite", value_name = "NAME", value_delimiter = ',')]
+    pub suites: Vec<String>,
+    /// Build the test target, print its suites with their tests (and the
+    /// tests in none), and exit, launching nothing.
+    #[arg(long, conflicts_with_all = ["parity", "plan"])]
+    pub list_suites: bool,
     /// Test against web (the default).
     #[arg(long)]
     pub web: bool,
@@ -490,7 +502,7 @@ enum TestStatus {
 }
 
 /// One suite run: what it ran on, how it ended, each test's result, and the
-/// tests that didn't apply to its device (`#[robot_test(form = …)]`), with
+/// tests that didn't apply to its device (`#[idea_test(form = …)]`), with
 /// why.
 #[derive(Debug, Clone, PartialEq)]
 struct RunResult {
@@ -684,15 +696,26 @@ pub fn run(args: Args) -> Result<()> {
     let user_env = parse_env(&args.env)?;
 
     if !args.parity.is_empty() {
+        anyhow::ensure!(
+            args.suites.is_empty(),
+            "--suite picks `#[idea_test]` tests; a --parity target is plain `#[test]`s (narrow it with --filter)"
+        );
         return run_parity(&args, &dir, &user_env);
     }
 
     let test_file = dir.join("tests").join(format!("{}.rs", args.test));
     anyhow::ensure!(
         test_file.is_file(),
-        "no test target at {} — write `#[robot_test]` functions there (or pass --test <name>)",
+        "no test target at {} — write `#[idea_test]` functions there (or pass --test <name>)",
         test_file.display()
     );
+
+    if args.list_suites {
+        let test_bin = build_test_binary(&dir, &args.test)?;
+        let tests = list_tests(&test_bin, &dir)?;
+        print!("{}", describe_suites(&tests));
+        return Ok(());
+    }
 
     // The device matrix, when the project declares one and no one-off
     // device flag overrides it (see "Device matrix" in the module docs).
@@ -790,11 +813,19 @@ pub fn run(args: Args) -> Result<()> {
     let (test_bin, tests) = if runs_anything {
         let test_bin = build_test_binary(&dir, &args.test)?;
         // The suite's test names, which carry the platforms a
-        // `#[robot_test(platforms = …)]` test declared.
-        let tests = list_tests(&test_bin, &dir).unwrap_or_else(|e| {
-            note!("could not list the suite's tests ({e:#}); platform-bound tests stay ignored");
-            TestList::default()
-        });
+        // `#[idea_test(platforms = …)]` test declared.
+        let tests = if args.suites.is_empty() {
+            list_tests(&test_bin, &dir).unwrap_or_else(|e| {
+                note!("could not list the suite's tests ({e:#}); platform-bound tests stay ignored");
+                TestList::default()
+            })
+        } else {
+            // `--suite` selects by name from the list: without it there is
+            // nothing to select, so it fails the run.
+            let tests = list_tests(&test_bin, &dir).context("listing the tests to pick --suite from")?;
+            check_suites(&tests, &args.suites)?;
+            tests
+        };
         (test_bin, tests)
     } else {
         (PathBuf::new(), TestList::default())
@@ -1211,11 +1242,18 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
             // The platform the app itself reports (an attached app may not be
             // the default `--web`); an app too old to say is taken at the flag.
             let here = app_platform(addr).unwrap_or_else(|| platform.to_string());
-            let selection = select_tests(tests, &here, args.filter.as_deref());
+            let selection = select_tests(tests, &here, args.filter.as_deref(), &args.suites);
             for (name, on) in &selection.elsewhere {
                 note!("not on {here}: {name} (runs on {})", on.join(", "));
             }
-            suite.args(&selection.args);
+            let Some(selected) = &selection.args else {
+                return Ok(Outcome::Skipped(format!(
+                    "no test of suite {} runs on {here}{}",
+                    args.suites.join(", "),
+                    args.filter.as_deref().map(|f| format!(" within --filter {f:?}")).unwrap_or_default()
+                )));
+            };
+            suite.args(selected);
             // One shared app: tests run serialized against it.
             suite.args(["--test-threads=1", "--nocapture"]);
             suite.arg("--logfile").arg(&test_log);
@@ -1750,23 +1788,31 @@ fn app_platform(addr: SocketAddr) -> Option<String> {
 /// The test binary's arguments for one run on `platform`.
 #[derive(Debug, PartialEq)]
 struct Selection {
-    /// libtest arguments (filters), before `--test-threads`.
-    args: Vec<String>,
-    /// Platform-bound tests (within the filter) that don't run here, with
-    /// where they do.
+    /// libtest arguments (filters), before `--test-threads`; `None` when
+    /// `--suite` leaves no test to run here (libtest given no names runs
+    /// them all, so the run must not start).
+    args: Option<Vec<String>>,
+    /// Platform-bound tests (within the filter and suites) that don't run
+    /// here, with where they do.
     elsewhere: Vec<(String, Vec<&'static str>)>,
 }
 
-/// Which tests run on `platform`. A `#[robot_test(platforms = …)]` test is
+/// Which tests run on `platform`. A `#[idea_test(platforms = …)]` test is
 /// `#[ignore]`d under a name that says where it runs (see
 /// `robot_test::platforms_of_test`); libtest can't un-ignore one test, so
 /// when some belong here the run includes ignored tests and names exactly
 /// the ones to run, `--exact` — everything else, other platforms' tests and
 /// the author's own `#[ignore]`s, is counted "filtered out", never passed.
-/// When none belong here the binary runs as it always did: `filter` alone,
-/// and the platform-bound tests show as `ignored`, with their reason.
-fn select_tests(tests: &TestList, platform: &str, filter: Option<&str>) -> Selection {
-    let wanted = |name: &str| filter.is_none_or(|f| name.contains(f));
+/// `suites` (from `--suite`) keeps only tests in one of them
+/// (`robot_test::suites_of_test`); libtest can't filter by that either, so
+/// a suite run always names its tests `--exact`. Otherwise, when no
+/// platform-bound test belongs here, the binary runs as it always did:
+/// `filter` alone, and the platform-bound tests show as `ignored`, with
+/// their reason.
+fn select_tests(tests: &TestList, platform: &str, filter: Option<&str>, suites: &[String]) -> Selection {
+    let in_suites =
+        |name: &str| suites.is_empty() || robot_test::suites_of_test(name).iter().any(|s| suites.iter().any(|w| w == s));
+    let wanted = |name: &str| filter.is_none_or(|f| name.contains(f)) && in_suites(name);
     let mut here = HashSet::new();
     let mut elsewhere = Vec::new();
     for name in tests.all.iter().filter(|n| tests.ignored.contains(*n) && wanted(n)) {
@@ -1778,18 +1824,77 @@ fn select_tests(tests: &TestList, platform: &str, filter: Option<&str>) -> Selec
             }
         }
     }
-    if here.is_empty() {
-        return Selection { args: filter.map(str::to_string).into_iter().collect(), elsewhere };
+    if here.is_empty() && suites.is_empty() {
+        return Selection { args: Some(filter.map(str::to_string).into_iter().collect()), elsewhere };
     }
-    let mut args = vec!["--include-ignored".to_string(), "--exact".to_string()];
-    args.extend(
-        tests
-            .all
-            .iter()
-            .filter(|n| wanted(n) && (!tests.ignored.contains(*n) || here.contains(n.as_str())))
-            .cloned(),
-    );
-    Selection { args, elsewhere }
+    let names: Vec<String> = tests
+        .all
+        .iter()
+        .filter(|n| wanted(n) && (!tests.ignored.contains(*n) || here.contains(n.as_str())))
+        .cloned()
+        .collect();
+    if names.is_empty() {
+        return Selection { args: None, elsewhere };
+    }
+    let mut args = Vec::new();
+    if !here.is_empty() {
+        args.push("--include-ignored".to_string());
+    }
+    args.push("--exact".to_string());
+    args.extend(names);
+    Selection { args: Some(args), elsewhere }
+}
+
+/// Every suite the tests declare, sorted, each with its tests.
+fn suites_in(tests: &TestList) -> std::collections::BTreeMap<&str, Vec<&str>> {
+    let mut out: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
+    for name in &tests.all {
+        for suite in robot_test::suites_of_test(name) {
+            out.entry(suite).or_default().push(name);
+        }
+    }
+    out
+}
+
+/// `--suite` names must each be a suite some test declares: a typo would
+/// otherwise run nothing and pass.
+fn check_suites(tests: &TestList, wanted: &[String]) -> Result<()> {
+    let known = suites_in(tests);
+    let unknown: Vec<&str> = wanted.iter().map(String::as_str).filter(|w| !known.contains_key(w)).collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    let there = if known.is_empty() {
+        "no test declares a suite (`#[idea_test(suites = [smoke])]`)".to_string()
+    } else {
+        format!("the suites are {}", known.keys().copied().collect::<Vec<_>>().join(", "))
+    };
+    anyhow::bail!("no test is in suite {}: {there}", unknown.join(", "))
+}
+
+/// What `--list-suites` prints: each suite and its tests, then the tests in
+/// no suite.
+fn describe_suites(tests: &TestList) -> String {
+    let suites = suites_in(tests);
+    let mut out = String::new();
+    if suites.is_empty() {
+        out.push_str("no suites: no test declares one (`#[idea_test(suites = [smoke])]`)\n");
+    }
+    for (suite, names) in &suites {
+        let n = names.len();
+        out.push_str(&format!("{suite} ({n} test{})\n", if n == 1 { "" } else { "s" }));
+        for name in names {
+            out.push_str(&format!("  {name}\n"));
+        }
+    }
+    let loose: Vec<&String> = tests.all.iter().filter(|n| robot_test::suites_of_test(n).is_empty()).collect();
+    if !loose.is_empty() && !suites.is_empty() {
+        out.push_str(&format!("in no suite ({})\n", loose.len()));
+        for name in loose {
+            out.push_str(&format!("  {name}\n"));
+        }
+    }
+    out
 }
 
 /// Where a test run's `idealyst dev` output goes: the system temp dir, one
@@ -2471,16 +2576,16 @@ mod tests {
             &["kb::robot_only_ios_android", "web_menu::robot_only_web", "flaky", "inset::robot_only_ios_ignored"],
         );
 
-        let ios = select_tests(&tests, "ios", None);
-        assert_eq!(ios.args, ["--include-ignored", "--exact", "counts", "kb::robot_only_ios_android"]);
+        let ios = select_tests(&tests, "ios", None, &[]);
+        assert_eq!(ios.args.unwrap(), ["--include-ignored", "--exact", "counts", "kb::robot_only_ios_android"]);
         assert_eq!(ios.elsewhere, [("web_menu::robot_only_web".to_string(), vec!["web"])]);
 
-        let web = select_tests(&tests, "web", None);
-        assert_eq!(web.args, ["--include-ignored", "--exact", "counts", "web_menu::robot_only_web"]);
+        let web = select_tests(&tests, "web", None, &[]);
+        assert_eq!(web.args.unwrap(), ["--include-ignored", "--exact", "counts", "web_menu::robot_only_web"]);
 
         // Nothing bound to macOS: the plain run, the others stay ignored.
-        let macos = select_tests(&tests, "macos", None);
-        assert!(macos.args.is_empty(), "{:?}", macos.args);
+        let macos = select_tests(&tests, "macos", None, &[]);
+        assert!(macos.args.as_ref().unwrap().is_empty(), "{:?}", macos.args);
         assert_eq!(macos.elsewhere.len(), 2);
     }
 
@@ -2489,10 +2594,90 @@ mod tests {
     #[test]
     fn the_filter_narrows_a_platform_selection() {
         let tests = suite(&["counts", "kb::robot_only_ios", "kb_extra"], &["kb::robot_only_ios"]);
-        let ios = select_tests(&tests, "ios", Some("kb"));
-        assert_eq!(ios.args, ["--include-ignored", "--exact", "kb::robot_only_ios", "kb_extra"]);
-        let none = select_tests(&tests, "ios", Some("counts"));
-        assert_eq!(none.args, ["counts"]);
+        let ios = select_tests(&tests, "ios", Some("kb"), &[]);
+        assert_eq!(ios.args.unwrap(), ["--include-ignored", "--exact", "kb::robot_only_ios", "kb_extra"]);
+        let none = select_tests(&tests, "ios", Some("counts"), &[]);
+        assert_eq!(none.args.unwrap(), ["counts"]);
+    }
+
+    fn suites(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// `--suite` runs exactly the suite's tests — named `--exact`, since
+    /// libtest can't filter by suite — including its platform-bound ones
+    /// where they belong; an author-ignored member never runs.
+    #[test]
+    fn a_suite_runs_only_its_own_tests() {
+        let tests = suite(
+            &[
+                "plain",
+                "pay::idea_suites_checkout__smoke",
+                "cart::idea_suites_checkout",
+                "kb::idea_suites_smoke::robot_only_ios",
+                "old::idea_suites_smoke::robot_only_ios_ignored",
+            ],
+            &["kb::idea_suites_smoke::robot_only_ios", "old::idea_suites_smoke::robot_only_ios_ignored"],
+        );
+        let web = select_tests(&tests, "web", None, &suites(&["smoke"]));
+        assert_eq!(web.args.unwrap(), ["--exact", "pay::idea_suites_checkout__smoke"]);
+        assert_eq!(web.elsewhere, [("kb::idea_suites_smoke::robot_only_ios".to_string(), vec!["ios"])]);
+
+        let ios = select_tests(&tests, "ios", None, &suites(&["smoke"]));
+        assert_eq!(
+            ios.args.unwrap(),
+            ["--include-ignored", "--exact", "pay::idea_suites_checkout__smoke", "kb::idea_suites_smoke::robot_only_ios"]
+        );
+
+        // Several suites: a test in any of them, once.
+        let both = select_tests(&tests, "web", None, &suites(&["smoke", "checkout"]));
+        assert_eq!(both.args.unwrap(), ["--exact", "pay::idea_suites_checkout__smoke", "cart::idea_suites_checkout"]);
+
+        // With --filter: both narrow.
+        let cart = select_tests(&tests, "web", Some("cart"), &suites(&["checkout"]));
+        assert_eq!(cart.args.unwrap(), ["--exact", "cart::idea_suites_checkout"]);
+    }
+
+    /// Regression guard: libtest given `--exact` and no names runs every
+    /// test, so a suite with nothing to run here must not start the run.
+    #[test]
+    fn a_suite_with_nothing_to_run_here_runs_nothing() {
+        let tests = suite(&["plain", "kb::idea_suites_mobile::robot_only_ios"], &["kb::idea_suites_mobile::robot_only_ios"]);
+        let web = select_tests(&tests, "web", None, &suites(&["mobile"]));
+        assert_eq!(web.args, None);
+        assert_eq!(web.elsewhere.len(), 1);
+    }
+
+    #[test]
+    fn an_unknown_suite_is_refused_naming_the_suites_there_are() {
+        let tests = suite(&["plain", "pay::idea_suites_checkout__smoke"], &[]);
+        assert!(check_suites(&tests, &suites(&["smoke"])).is_ok());
+        let e = check_suites(&tests, &suites(&["smoke", "smok"])).unwrap_err().to_string();
+        assert!(e.contains("suite smok:") && e.contains("the suites are checkout, smoke"), "{e}");
+        let e = check_suites(&suite(&["plain"], &[]), &suites(&["smoke"])).unwrap_err().to_string();
+        assert!(e.contains("no test declares a suite"), "{e}");
+    }
+
+    #[test]
+    fn list_suites_prints_each_suite_its_tests_and_the_rest() {
+        let tests = suite(
+            &["plain", "pay::idea_suites_checkout__smoke", "kb::idea_suites_smoke::robot_only_ios"],
+            &["kb::idea_suites_smoke::robot_only_ios"],
+        );
+        assert_eq!(
+            describe_suites(&tests),
+            "checkout (1 test)\n  pay::idea_suites_checkout__smoke\n\
+             smoke (2 tests)\n  pay::idea_suites_checkout__smoke\n  kb::idea_suites_smoke::robot_only_ios\n\
+             in no suite (1)\n  plain\n"
+        );
+        assert!(describe_suites(&suite(&["plain"], &[])).starts_with("no suites"));
+    }
+
+    #[test]
+    fn suite_flags_parse_as_a_list() {
+        let a = args(&["--suite", "smoke,checkout", "--suite", "nightly"]);
+        assert_eq!(a.suites, ["smoke", "checkout", "nightly"]);
+        assert!(args(&["--list-suites"]).list_suites);
     }
 
     #[test]

@@ -1205,7 +1205,7 @@ adapts verb-for-verb. What changes for test authors:
   body, an effect, or any world-entered build scope; the entry's
   lifetime is tied to that scope
   (`crates/runtime/vocabulary/src/robot_watch.rs`).
-- **`assert_signal`** in `#[robot_test]` fns is unchanged — it needs
+- **`assert_signal`** in `#[idea_test]` fns is unchanged — it needs
   the target registered via `watch_signal` first, and the wire shape is
   identical across cores.
 - **MCP catalog + robot in new-core dev sessions** (wave 2b — this

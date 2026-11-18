@@ -1388,6 +1388,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **E2E test suites, and `#[robot_test]` is now `#[idea_test]`** (`robot-test-macros` minor,
+  `robot-test` minor, `idealyst-cli` minor). `#[idea_test(suites = [smoke, checkout])]` puts a test
+  in named suites; `idealyst test --suite smoke,checkout` runs only their tests (with `--filter` and
+  the platform rules still applying; an unknown name fails the run listing the suites), and
+  `idealyst test --list-suites` prints each suite with its tests. A suite member's libtest name
+  carries its suites (`<fn>::idea_suites_checkout__smoke`, read back by
+  `robot_test::suites_of_test`), so its body sits in a module like a platform-bound test's: write
+  `crate::…` paths. The attribute is renamed `#[idea_test]` (import `robot_test::idea_test`);
+  `#[robot_test]` still expands the same and warns that it is deprecated. The skip / n/a lines
+  print `[idea_test]`.
+
 - **Robot tests turn the device** (`runtime-vocabulary` minor, `backend-ios-mobile` minor,
   `robot-test` minor, `idealyst-cli` minor). `app.set_orientation(Orientation::Landscape)` turns
   the screen and waits for the app to reflow: an iPhone app turns itself (robot verb

@@ -2,7 +2,7 @@
 //! server speaking the bridge protocol — the locate → act → assert flow, the
 //! auto-waiting (an element that mounts late, a control that is disabled for a
 //! while, a label that updates late), element state, `nth`, navigation, and
-//! that failures panic with what was last seen. (The `#[robot_test]` macro +
+//! that failures panic with what was last seen. (The `#[idea_test]` macro +
 //! harness need a live app + relay, so they're verified end-to-end via
 //! `idealyst test`; this covers the client logic in plain `cargo test`.)
 

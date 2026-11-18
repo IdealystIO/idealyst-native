@@ -1,7 +1,7 @@
 //! Test fixtures: per-test setup (and teardown) declared once and asked for
 //! by type — Playwright's fixtures, in Rust.
 //!
-//! A `#[robot_test]` parameter after the app handle is a fixture: any type
+//! A `#[idea_test]` parameter after the app handle is a fixture: any type
 //! implementing [`Fixture`], taken by reference. The macro sets each one up
 //! before the body, in parameter order, hands it to the body, and tears it
 //! down afterwards in reverse order — also when the body (or a later
@@ -9,7 +9,7 @@
 //! or seeded rows behind for the next one.
 //!
 //! ```ignore
-//! use robot_test::{json, robot_test, App, Fixture};
+//! use robot_test::{json, idea_test, App, Fixture};
 //!
 //! /// A clean server: the app's `test.reset` robot function wipes its data.
 //! struct FreshServer;
@@ -37,12 +37,12 @@
 //!     }
 //! }
 //!
-//! #[robot_test]
+//! #[idea_test]
 //! fn shows_the_account(app: &mut App, user: &SignedIn) {
 //!     app.test_id("account-email").assert_text(&user.email);
 //! }
 //!
-//! #[robot_test]
+//! #[idea_test]
 //! fn starts_empty(app: &mut App, _: &FreshServer) {
 //!     app.test_id("todo-row").assert_count(0);
 //! }
@@ -51,7 +51,7 @@
 use crate::App;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 
-/// Per-test setup a `#[robot_test]` asks for by naming the type as a
+/// Per-test setup a `#[idea_test]` asks for by naming the type as a
 /// parameter (`user: &SignedIn`). See the [module docs](self).
 pub trait Fixture: Sized {
     /// Prepare the app for one test — reset data, seed rows, sign in,
@@ -83,7 +83,7 @@ pub fn __with_fixture<F: Fixture, R>(app: &mut App, body: impl FnOnce(&mut App, 
         Err(panic) => {
             if catch_unwind(AssertUnwindSafe(|| fixture.teardown(app))).is_err() {
                 eprintln!(
-                    "[robot_test] the teardown of {} panicked too, after the test failed",
+                    "[idea_test] the teardown of {} panicked too, after the test failed",
                     std::any::type_name::<F>()
                 );
             }

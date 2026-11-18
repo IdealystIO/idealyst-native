@@ -1,0 +1,12 @@
+error: use of deprecated function `robot_test::__robot_test_is_now_idea_test`: `#[robot_test]` is renamed `#[idea_test]` (same arguments): import `robot_test::idea_test`
+ --> tests/ui/robot_test_is_deprecated.rs:5:1
+  |
+5 | #[robot_test]
+  | ^^^^^^^^^^^^^
+  |
+note: the lint level is defined here
+ --> tests/ui/robot_test_is_deprecated.rs:1:9
+  |
+1 | #![deny(deprecated)]
+  |         ^^^^^^^^^^
+  = note: this error originates in the attribute macro `robot_test` (in Nightly builds, run with -Z macro-backtrace for more info)

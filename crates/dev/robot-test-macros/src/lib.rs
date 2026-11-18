@@ -1,10 +1,10 @@
-//! `#[robot_test]` — author a cross-platform end-to-end test as a normal Rust
+//! `#[idea_test]` — author a cross-platform end-to-end test as a normal Rust
 //! function and have it run like a standard `#[test]`.
 //!
 //! ```ignore
-//! use robot_test::{robot_test, App};
+//! use robot_test::{idea_test, App};
 //!
-//! #[robot_test]
+//! #[idea_test]
 //! fn increment_updates_count(app: &mut App) {
 //!     app.test_id("counter").assert_text("Counter: 0");
 //!     app.test_id("inc").click();
@@ -32,7 +32,7 @@
 //! order — also when the body (or a later fixture's setup) panics:
 //!
 //! ```ignore
-//! #[robot_test]
+//! #[idea_test]
 //! fn edits_profile(app: &mut App, user: &SignedIn) {
 //!     app.test_id("profile-name").assert_text(&user.name);
 //! }
@@ -43,7 +43,7 @@
 //! A test that only means something on some platforms says which:
 //!
 //! ```ignore
-//! #[robot_test(platforms = [ios, android])]
+//! #[idea_test(platforms = [ios, android])]
 //! fn numeric_field_opens_the_number_pad(app: &mut App) { … }
 //! ```
 //!
@@ -71,18 +71,42 @@
 //! the terms the app branches on (see `robot_test::Form`):
 //!
 //! ```ignore
-//! #[robot_test(form = phone)]                 // breakpoint xs / sm
-//! #[robot_test(form = [tablet, desktop])]
-//! #[robot_test(input = touch)]                // primary pointer is a finger
-//! #[robot_test(platforms = [ios], form = tablet)]
+//! #[idea_test(form = phone)]                 // breakpoint xs / sm
+//! #[idea_test(form = [tablet, desktop])]
+//! #[idea_test(input = touch)]                // primary pointer is a finger
+//! #[idea_test(platforms = [ios], form = tablet)]
 //! ```
 //!
 //! Forms are `phone`, `tablet`, `desktop`; inputs `touch`, `pointer`. The
 //! class is checked against what the app reports when the test runs, so a
 //! `phone` test runs on an iPhone, a Pixel and a phone-sized browser alike.
 //! Where it doesn't match, the test is **not applicable**: it prints
-//! `[robot_test] N/A …` with the reason, and `idealyst test` counts it apart
+//! `[idea_test] N/A …` with the reason, and `idealyst test` counts it apart
 //! from passes.
+//!
+//! # Suites
+//!
+//! A test can belong to one or more named suites, so a run can pick a slice
+//! of the file (`idealyst test --suite smoke`):
+//!
+//! ```ignore
+//! #[idea_test(suites = smoke)]
+//! #[idea_test(suites = [smoke, checkout], platforms = mobile)]
+//! ```
+//!
+//! A suite name is a lowercase identifier (`a`–`z`, digits, single `_`
+//! between words). Membership is only a label: a plain `cargo test` or an
+//! `idealyst test` without `--suite` runs a suite's tests like any other.
+//! Like the platforms, the suites go into the test's name — the runner has
+//! only the binary's `--list` — as a path segment `idea_suites_<a>__<b>`
+//! (sorted, `__` between names): `checkout_flow::idea_suites_checkout__smoke`,
+//! or `…::idea_suites_smoke::robot_only_ios_android` with platforms too.
+//! The body sits in a module then, as for platforms: write `crate::…` paths.
+//!
+//! # `#[robot_test]`
+//!
+//! The attribute's former name. It expands exactly like `#[idea_test]` and
+//! adds a deprecation warning at the call site.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -93,9 +117,24 @@ use syn::{FnArg, ItemFn, Type};
 /// that drives the app over the Robot relay. See the crate docs for the full
 /// contract.
 #[proc_macro_attribute]
-pub fn robot_test(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn idea_test(attr: TokenStream, item: TokenStream) -> TokenStream {
     match expand(attr.into(), item.into()) {
         Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// Deprecated name of [`macro@idea_test`]: the same expansion, plus a use of
+/// a `#[deprecated]` item so the call site gets the warning (`#[deprecated]`
+/// on a proc-macro function itself warns nobody).
+#[proc_macro_attribute]
+pub fn robot_test(attr: TokenStream, item: TokenStream) -> TokenStream {
+    match expand(attr.into(), item.into()) {
+        Ok(tokens) => quote! {
+            #tokens
+            const _: () = ::robot_test::__robot_test_is_now_idea_test();
+        }
+        .into(),
         Err(e) => e.to_compile_error().into(),
     }
 }
@@ -129,9 +168,11 @@ fn platform_names(name: &syn::Ident) -> syn::Result<&'static [&'static str]> {
     })
 }
 
-/// What `#[robot_test(…)]` was given.
+/// What `#[idea_test(…)]` was given.
 #[derive(Default)]
 struct TestArgs {
+    /// Suite names, sorted and deduplicated; empty: in no suite.
+    suites: Vec<String>,
     /// `None`: every platform.
     platforms: Option<Vec<&'static str>>,
     /// Device forms (`phone`, …); empty: any.
@@ -158,7 +199,7 @@ fn idents(value: &syn::Expr) -> syn::Result<Vec<syn::Ident>> {
         other => return Err(unknown_argument(other)),
     };
     if names.is_empty() {
-        return Err(syn::Error::new_spanned(value, "#[robot_test] names nothing to run on here"));
+        return Err(syn::Error::new_spanned(value, "#[idea_test] names nothing here"));
     }
     Ok(names)
 }
@@ -173,7 +214,26 @@ fn one_of(name: &syn::Ident, what: &str, allowed: &[&str]) -> syn::Result<String
     }
 }
 
-/// `platforms = …, form = …, input = …`, each optional, in any order.
+/// A suite name as the test name can carry it: lowercase words joined by
+/// single `_`, since `__` separates the suites in the name.
+fn suite_name(name: &syn::Ident) -> syn::Result<String> {
+    let s = name.to_string();
+    let ok = !s.is_empty()
+        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && !s.starts_with('_')
+        && !s.ends_with('_')
+        && !s.contains("__");
+    if ok {
+        Ok(s)
+    } else {
+        Err(syn::Error::new_spanned(
+            name,
+            format!("suite name `{s}`: use lowercase words joined by single underscores, e.g. `smoke` or `checkout_flow`"),
+        ))
+    }
+}
+
+/// `suites = …, platforms = …, form = …, input = …`, each optional, in any order.
 fn parse_args(attr: TokenStream2) -> syn::Result<TestArgs> {
     let mut out = TestArgs::default();
     if attr.is_empty() {
@@ -186,7 +246,12 @@ fn parse_args(attr: TokenStream2) -> syn::Result<TestArgs> {
     .map_err(|_| unknown_argument(&attr))?;
     for nv in list {
         let names = idents(&nv.value)?;
-        if nv.path.is_ident("platforms") {
+        if nv.path.is_ident("suites") {
+            let mut suites = names.iter().map(suite_name).collect::<syn::Result<Vec<_>>>()?;
+            suites.sort();
+            suites.dedup();
+            out.suites = suites;
+        } else if nv.path.is_ident("platforms") {
             let mut wanted = Vec::new();
             for n in &names {
                 wanted.extend_from_slice(platform_names(n)?);
@@ -206,14 +271,14 @@ fn parse_args(attr: TokenStream2) -> syn::Result<TestArgs> {
 fn unknown_argument(at: &impl quote::ToTokens) -> syn::Error {
     syn::Error::new_spanned(
         at,
-        "#[robot_test] takes `platforms = [ios, android]`, `form = [phone, tablet, desktop]` and \
-         `input = touch | pointer`; declare fixtures as parameters after the app, e.g. \
+        "#[idea_test] takes `suites = [smoke, checkout]`, `platforms = [ios, android]`, \
+         `form = [phone, tablet, desktop]` and `input = touch | pointer`; declare fixtures as parameters after the app, e.g. \
          `fn my_test(app: &mut App, user: &SignedIn)`",
     )
 }
 
 fn expand(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
-    let TestArgs { platforms, forms, inputs: input_kinds } = parse_args(attr)?;
+    let TestArgs { suites, platforms, forms, inputs: input_kinds } = parse_args(attr)?;
     let func: ItemFn = syn::parse2(item)?;
 
     // The first argument is the `&mut App` handle the test drives; any after
@@ -222,12 +287,12 @@ fn expand(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
     match params.next() {
         Some(FnArg::Typed(_)) => {}
         Some(receiver @ FnArg::Receiver(_)) => {
-            return Err(syn::Error::new_spanned(receiver, "#[robot_test] argument must be a typed `&mut App`, not `self`"))
+            return Err(syn::Error::new_spanned(receiver, "#[idea_test] argument must be a typed `&mut App`, not `self`"))
         }
         None => {
             return Err(syn::Error::new_spanned(
                 &func.sig,
-                "#[robot_test] functions take the app handle first, e.g. `fn my_test(app: &mut App)`",
+                "#[idea_test] functions take the app handle first, e.g. `fn my_test(app: &mut App)`",
             ))
         }
     }
@@ -235,14 +300,14 @@ fn expand(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
     let mut fixtures: Vec<(&Type, bool)> = Vec::new();
     for param in params {
         let FnArg::Typed(pat) = param else {
-            return Err(syn::Error::new_spanned(param, "#[robot_test] fixtures are typed parameters"));
+            return Err(syn::Error::new_spanned(param, "#[idea_test] fixtures are typed parameters"));
         };
         match &*pat.ty {
             Type::Reference(r) => fixtures.push((&r.elem, r.mutability.is_some())),
             other => {
                 return Err(syn::Error::new_spanned(
                     other,
-                    "#[robot_test] takes a fixture by reference (`&T` or `&mut T`), so it can be torn \
+                    "#[idea_test] takes a fixture by reference (`&T` or `&mut T`), so it can be torn \
                      down after the test",
                 ))
             }
@@ -281,7 +346,7 @@ fn expand(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
             if let ::std::option::Option::Some(__why) =
                 ::robot_test::__not_applicable(__app, #name_str, &[#(#form_list),*], &[#(#input_list),*])
             {
-                ::std::eprintln!("[robot_test] N/A {}: {}", #name_str, __why);
+                ::std::eprintln!("[idea_test] N/A {}: {}", #name_str, __why);
                 return;
             }
         }
@@ -299,49 +364,75 @@ fn expand(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
             }
             ::robot_test::Acquire::Skip(__reason) => {
                 ::std::eprintln!(
-                    "[robot_test] SKIP {}: {} — run `idealyst test` (or start `idealyst dev`) to execute it",
+                    "[idea_test] SKIP {}: {} — run `idealyst test` (or start `idealyst dev`) to execute it",
                     #name_str, __reason
                 );
             }
         }
     };
-    let Some(ps) = platforms else {
-        return Ok(quote! {
-            #[test]
-            #(#attrs)*
-            #vis fn #name() {
-                #body
-            }
-        });
-    };
+    // `idea_suites_<a>__<b>`: the path segment that names the suites (see
+    // the crate docs, "Suites"); the runner parses it back with
+    // `robot_test::suites_of_test`.
+    let suite_segment = (!suites.is_empty()).then(|| format_ident!("idea_suites_{}", suites.join("__")));
 
-    // Platform-bound: a module named for the fn, holding the test named
-    // for its platforms (see the crate docs, "Platforms").
-    let marker = format!("robot_only_{}", ps.join("_"));
-    let authored_ignore = attrs.iter().any(|a| a.path().is_ident("ignore"));
-    let (leaf, ignore) = if authored_ignore {
-        // The author's own `#[ignore]` stands, and the name stops parsing
-        // as a platform marker, so the runner never includes it.
-        (format_ident!("{marker}_ignored"), quote! {})
-    } else {
-        let flag = ps.iter().map(|p| format!("--{p}")).collect::<Vec<_>>().join(" / ");
-        let reason = format!(
-            "runs on {} only: `idealyst test {flag}` runs it (or `cargo test -- --include-ignored` against such an app)",
-            ps.join(", ")
-        );
-        (format_ident!("{marker}"), quote! { #[ignore = #reason] })
+    let (leaf, ignore) = match &platforms {
+        None => match &suite_segment {
+            None => {
+                return Ok(quote! {
+                    #[test]
+                    #(#attrs)*
+                    #vis fn #name() {
+                        #body
+                    }
+                })
+            }
+            // In suites only: the suite segment is the test itself.
+            Some(seg) => (seg.clone(), quote! {}),
+        },
+        // Platform-bound: the test is named for its platforms (see the
+        // crate docs, "Platforms").
+        Some(ps) => {
+            let marker = format!("robot_only_{}", ps.join("_"));
+            if attrs.iter().any(|a| a.path().is_ident("ignore")) {
+                // The author's own `#[ignore]` stands, and the name stops
+                // parsing as a platform marker, so the runner never includes it.
+                (format_ident!("{marker}_ignored"), quote! {})
+            } else {
+                let flag = ps.iter().map(|p| format!("--{p}")).collect::<Vec<_>>().join(" / ");
+                let reason = format!(
+                    "runs on {} only: `idealyst test {flag}` runs it (or `cargo test -- --include-ignored` against such an app)",
+                    ps.join(", ")
+                );
+                (format_ident!("{marker}"), quote! { #[ignore = #reason] })
+            }
+        }
     };
+    let mut test = quote! {
+        #[test]
+        #ignore
+        #(#attrs)*
+        pub fn #leaf() {
+            #body
+        }
+    };
+    // Suites and platforms: the suite segment is a module between the
+    // fn's module and the platform-named test.
+    if let (Some(seg), Some(_)) = (&suite_segment, &platforms) {
+        test = quote! {
+            pub mod #seg {
+                #[allow(unused_imports)]
+                use super::*;
+
+                #test
+            }
+        };
+    }
     Ok(quote! {
         #vis mod #name {
             #[allow(unused_imports)]
             use super::*;
 
-            #[test]
-            #ignore
-            #(#attrs)*
-            pub fn #leaf() {
-                #body
-            }
+            #test
         }
     })
 }
@@ -385,7 +476,7 @@ mod tests {
     #[test]
     fn unknown_arguments_on_the_attribute_are_an_error() {
         let e = error(quote!(setup = "x"), quote! { fn t(app: &mut App) {} });
-        assert!(e.contains("takes `platforms"), "{e}");
+        assert!(e.contains("takes `suites"), "{e}");
         let e = error(quote!(platforms = [ios, tvos]), quote! { fn t(app: &mut App) {} });
         assert!(e.contains("unknown platform `tvos`"), "{e}");
         let e = error(quote!(platforms = []), quote! { fn t(app: &mut App) {} });
@@ -453,6 +544,40 @@ mod tests {
         assert!(!out.contains("mod t"), "{out}");
         assert!(!out.contains("ignore"), "{out}");
         assert!(out.contains("__acquire (\"t\")"), "{out}");
+    }
+
+    /// Suites alone: a module named for the fn holding a test named for the
+    /// suites, sorted and deduplicated — not ignored, since membership only
+    /// labels the test.
+    #[test]
+    fn suites_name_the_test_without_ignoring_it() {
+        let out = with_platforms(quote!(suites = [smoke, checkout, smoke]), quote! { fn pay(app: &mut App) {} });
+        assert!(out.contains("mod pay"), "{out}");
+        assert!(out.contains("pub fn idea_suites_checkout__smoke ()"), "{out}");
+        assert!(!out.contains("ignore"), "{out}");
+        assert!(out.contains("__acquire (\"pay\")"), "{out}");
+        let one = with_platforms(quote!(suites = smoke), quote! { fn t(app: &mut App) {} });
+        assert!(one.contains("pub fn idea_suites_smoke ()"), "{one}");
+    }
+
+    /// Suites with platforms: the suite segment is a module between the fn's
+    /// module and the platform-named test, which stays ignored.
+    #[test]
+    fn suites_with_platforms_nest_the_platform_test_in_the_suite_module() {
+        let out = with_platforms(quote!(platforms = ios, suites = smoke), quote! { fn kb(app: &mut App) {} });
+        let module = out.find("pub mod idea_suites_smoke").expect(&out);
+        let test = out.find("fn robot_only_ios ()").expect(&out);
+        assert!(out.find("mod kb").unwrap() < module && module < test, "{out}");
+        assert_eq!(out.matches("use super :: * ;").count(), 2, "{out}");
+        assert!(out.contains("# [ignore = \"runs on ios only"), "{out}");
+    }
+
+    #[test]
+    fn a_malformed_suite_name_is_an_error() {
+        for bad in [quote!(suites = Smoke), quote!(suites = [a__b]), quote!(suites = _x), quote!(suites = [])] {
+            let e = error(bad.clone(), quote! { fn t(app: &mut App) {} });
+            assert!(e.contains("suite name") || e.contains("names nothing"), "{bad}: {e}");
+        }
     }
 
     #[test]

@@ -27,7 +27,7 @@
 //! ```
 //!
 //! With the bridges unset the test **skips** (prints a note and returns), so a
-//! bare `cargo test` stays green — same posture as `#[robot_test]`.
+//! bare `cargo test` stays green — same posture as `#[idea_test]`.
 //!
 //! # Which platforms
 //!

@@ -2,7 +2,7 @@
 //! from two running apps and diff them.
 //!
 //! This is the end-to-end shape of "prove web and macOS render the same". It's
-//! a plain `#[test]` (not `#[robot_test]`) because it needs **two**
+//! a plain `#[test]` (not `#[idea_test]`) because it needs **two**
 //! connections, one per platform — the single-app harness can't express that.
 //!
 //! # Running it
@@ -19,7 +19,7 @@
 //! ```
 //!
 //! With either variable unset the test **skips** (prints a note and returns),
-//! so a bare `cargo test` stays green — same posture as `#[robot_test]`.
+//! so a bare `cargo test` stays green — same posture as `#[idea_test]`.
 
 use robot_test::parity::{self, compare, report, DiffOptions};
 

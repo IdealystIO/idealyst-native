@@ -1,4 +1,4 @@
-//! `#[robot_test(platforms = …)]` end to end: real platform-bound tests,
+//! `#[idea_test(platforms = …)]` end to end: real platform-bound tests,
 //! the harness connecting to a mock bridge that reports its platform, and
 //! the test binary's own `--list` — what `idealyst test` selects from.
 //!
@@ -6,17 +6,17 @@
 //! one driver test: the harness decides connect-or-skip once per binary,
 //! so the bridge address must be in the environment before they run.
 
-use robot_test::{json, robot_test, App, Value};
+use robot_test::{json, idea_test, App, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
-#[robot_test(platforms = [ios, android])]
+#[idea_test(platforms = [ios, android])]
 fn mobile_only(app: &mut App) {
     app.call_function("mobile body", json!({}));
 }
 
-#[robot_test(platforms = web)]
+#[idea_test(platforms = web)]
 fn web_only(app: &mut App) {
     app.call_function("web body", json!({}));
 }

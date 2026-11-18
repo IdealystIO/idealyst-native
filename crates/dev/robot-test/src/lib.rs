@@ -1,14 +1,14 @@
 //! Cross-platform end-to-end tests, authored in Rust.
 //!
-//! Write a test as a normal function tagged [`#[robot_test]`](robot_test); it
+//! Write a test as a normal function tagged [`#[idea_test]`](idea_test); it
 //! drives a relay-connected [`App`] with a Playwright-flavoured
 //! `locate → act → assert` vocabulary, and assertions panic on failure so the
 //! body reads like an ordinary Rust test:
 //!
 //! ```ignore
-//! use robot_test::{robot_test, App};
+//! use robot_test::{idea_test, App};
 //!
-//! #[robot_test]
+//! #[idea_test]
 //! fn increment_updates_count(app: &mut App) {
 //!     app.test_id("counter").assert_text("Counter: 0");
 //!     app.test_id("inc").click();
@@ -30,15 +30,17 @@
 //! Per-test setup is a [`Fixture`] the test names as a parameter
 //! (`fn t(app: &mut App, user: &SignedIn)`), set up before and torn down
 //! after the body. A test that only applies on some platforms declares them
-//! (`#[robot_test(platforms = [ios, android])]`) and is reported ignored or
+//! (`#[idea_test(platforms = [ios, android])]`) and is reported ignored or
 //! filtered out elsewhere, never passed; [`App::platform`] tells a test which
-//! platform it is on.
+//! platform it is on. Tests can be grouped into named suites
+//! (`#[idea_test(suites = [smoke, checkout])]`) that `idealyst test --suite`
+//! runs alone and `idealyst test --list-suites` lists.
 //!
 //! `click` and `tap_native` scroll an element that is out of view into it
 //! first, through every scroll view it sits in ([`Locator::scroll_into_view`]),
 //! unless the locator says [`Locator::no_scroll`].
 //!
-//! Because `#[robot_test]` expands to a real `#[test]`, `cargo test` discovers
+//! Because `#[idea_test]` expands to a real `#[test]`, `cargo test` discovers
 //! and runs these. But they need a live app + relay, which `cargo test` can't
 //! set up — so when none is reachable each test **skips** (prints a note and
 //! returns) rather than failing. `idealyst test` is what prepares the
@@ -80,14 +82,16 @@ pub use fixture::Fixture;
 #[doc(hidden)]
 pub use fixture::__with_fixture;
 
-// The attribute macro that turns a function into a `#[test]`.
-pub use robot_test_macros::robot_test;
+// The attribute macro that turns a function into a `#[test]`, and its
+// deprecated former name.
+pub use robot_test_macros::{idea_test, robot_test};
 /// For building robot-function and verb arguments: `json!({ "value": 5 })`.
 pub use serde_json::{json, Value};
 
-// Called by the `#[robot_test]` expansion — public for the macro, hidden from
+// Called by the `#[idea_test]` expansion — public for the macro, hidden from
 // the authoring surface.
 #[doc(hidden)]
-pub use harness::{__acquire, __acquire_on, Acquire, AppGuard};
-/// How `idealyst test` reads which platforms a test declared.
-pub use harness::{platform_marker, platforms_of_test};
+#[allow(deprecated)]
+pub use harness::{__acquire, __acquire_on, __robot_test_is_now_idea_test, Acquire, AppGuard};
+/// How `idealyst test` reads which platforms and suites a test declared.
+pub use harness::{platform_marker, platforms_of_test, suite_marker, suites_of_test};

@@ -1,12 +1,14 @@
 //! Host-side cross-platform E2E suite for `robot-e2e-demo`, authored in Rust.
 //!
-//! Each `#[robot_test]` is a real `#[test]` that drives the running app over the
+//! Each `#[idea_test]` is a real `#[test]` that drives the running app over the
 //! Robot relay — the same suite runs on web, macOS, iOS, and Android:
 //!
 //! ```text
 //! idealyst test --macos crates/dev/robot-e2e/examples/robot-e2e-demo
 //! idealyst test --web   crates/dev/robot-e2e/examples/robot-e2e-demo
 //! idealyst test --ios   crates/dev/robot-e2e/examples/robot-e2e-demo
+//! idealyst test --web --suite smoke crates/dev/robot-e2e/examples/robot-e2e-demo   # one suite
+//! idealyst test --list-suites crates/dev/robot-e2e/examples/robot-e2e-demo
 //! ```
 //!
 //! `idealyst test` launches the app, stands up the relay, and points these
@@ -22,11 +24,11 @@
 //! Each test is the sole mutator of the state it asserts, so they're independent
 //! of run order (the harness also holds the one shared app for a whole test).
 
-use robot_test::{json, robot_test, App, Orientation, Platform};
+use robot_test::{idea_test, json, App, Orientation, Platform};
 
 /// find → act → assert a signal: clicking the buttons drives the `count` signal
 /// (exposed via `watch_signal` in the app).
-#[robot_test]
+#[idea_test(suites = smoke)]
 fn increment_and_decrement_drive_the_count_signal(app: &mut App) {
     app.signal("count").assert_eq(0);
     app.test_id("inc").click();
@@ -37,7 +39,7 @@ fn increment_and_decrement_drive_the_count_signal(app: &mut App) {
 }
 
 /// An element that only mounts conditionally: hidden until its toggle is pressed.
-#[robot_test]
+#[idea_test]
 fn secret_panel_toggles_into_existence(app: &mut App) {
     app.test_id("secret").assert_hidden();
     app.test_id("toggle-secret").click();
@@ -45,7 +47,7 @@ fn secret_panel_toggles_into_existence(app: &mut App) {
 }
 
 /// Typing into the name field updates the live greeting text.
-#[robot_test]
+#[idea_test(suites = [smoke, input])]
 fn the_greeting_follows_the_name_field(app: &mut App) {
     app.test_id("greeting").assert_text("Hello, stranger");
     app.test_id("name").type_text("Ada");
@@ -54,7 +56,7 @@ fn the_greeting_follows_the_name_field(app: &mut App) {
 
 /// The app's robot functions set state a test would otherwise click its way
 /// to: a sync one answers at once, an async one is polled until done.
-#[robot_test]
+#[idea_test]
 fn robot_functions_set_the_counter(app: &mut App) {
     let names: Vec<String> = app.functions().into_iter().map(|f| f.name).collect();
     assert!(names.contains(&"demo.set_count".to_string()), "{names:?}");
@@ -69,7 +71,7 @@ fn robot_functions_set_the_counter(app: &mut App) {
 
 /// A tap through the platform's own input path reaches the button: real
 /// events where the backend synthesizes them, UIKit's hit test on iOS.
-#[robot_test]
+#[idea_test]
 fn a_native_tap_presses_the_button(app: &mut App) {
     app.call_function("demo.set_count", json!({ "value": 0 }));
     let how = app.test_id("inc").tap_native();
@@ -82,7 +84,7 @@ fn a_native_tap_presses_the_button(app: &mut App) {
 /// Under an overlay's default backdrop, a native tap doesn't reach the
 /// button: a backend with a hit test refuses and says what covers it; every
 /// backend leaves the count alone.
-#[robot_test]
+#[idea_test]
 fn an_overlay_stops_a_native_tap(app: &mut App) {
     app.call_function("demo.set_count", json!({ "value": 0 }));
     // In the window, so what refuses the raw tap below is the overlay, not
@@ -106,7 +108,7 @@ fn an_overlay_stops_a_native_tap(app: &mut App) {
 
 /// An overlay with no backdrop leaves the page usable: a native tap beside
 /// its content reaches the button underneath.
-#[robot_test]
+#[idea_test]
 fn an_overlay_without_a_backdrop_leaves_the_page_tappable(app: &mut App) {
     app.call_function("demo.set_count", json!({ "value": 0 }));
     app.call_function("demo.set_cover", json!({ "on": true, "backdrop": false }));
@@ -120,7 +122,7 @@ fn an_overlay_without_a_backdrop_leaves_the_page_tappable(app: &mut App) {
 
 /// The last tab of a strip wider than the window: `click()` scrolls the
 /// strip (and the page) until the tab is in view, then taps it.
-#[robot_test]
+#[idea_test]
 fn click_scrolls_an_off_screen_tab_into_view(app: &mut App) {
     app.call_function("demo.set_count", json!({ "value": 0 }));
     let tab = app.call("find_element", json!({ "test_id": "tab-last" }));
@@ -136,7 +138,7 @@ fn click_scrolls_an_off_screen_tab_into_view(app: &mut App) {
 /// Declared for the platforms whose robot reports one: elsewhere it is
 /// filtered out or ignored, never passed. `platform()` agrees with the
 /// declaration wherever it runs.
-#[robot_test(platforms = [web, macos])]
+#[idea_test(platforms = [web, macos])]
 fn the_app_reports_the_platform_the_test_declared(app: &mut App) {
     let p = app.platform();
     assert!(p == Platform::Web || p == Platform::Macos, "{p}");
@@ -144,7 +146,7 @@ fn the_app_reports_the_platform_the_test_declared(app: &mut App) {
 
 /// The mobile half of the declaration: run on iOS and Android, filtered
 /// out (never passed) on web and the desktops.
-#[robot_test(platforms = mobile)]
+#[idea_test(platforms = mobile, suites = smoke)]
 fn a_phone_app_reports_a_mobile_platform(app: &mut App) {
     assert!(app.platform().is_mobile(), "{}", app.platform());
 }
@@ -152,7 +154,7 @@ fn a_phone_app_reports_a_mobile_platform(app: &mut App) {
 /// Keys pressed into a focused field edit it as a keyboard does — a capital
 /// carries Shift, Backspace deletes — and Enter reaches the field's own
 /// `on_key_down`, which submits the text.
-#[robot_test]
+#[idea_test(suites = input)]
 fn pressed_keys_edit_a_field_and_enter_submits_it(app: &mut App) {
     app.test_id("note").fill("");
     for key in ["H", "i", "x"] {
@@ -169,7 +171,7 @@ fn pressed_keys_edit_a_field_and_enter_submits_it(app: &mut App) {
 
 /// Tab moves keyboard focus to the next field and Shift+Tab back, through
 /// the platform's own focus traversal.
-#[robot_test]
+#[idea_test(suites = input)]
 fn tab_moves_focus_between_fields(app: &mut App) {
     app.test_id("tab-first").focus();
     app.test_id("tab-first").assert_focused(true);
@@ -183,7 +185,7 @@ fn tab_moves_focus_between_fields(app: &mut App) {
 
 /// `view(on_focus = …)` hears keyboard focus reaching a field inside it
 /// (through each platform's own Tab traversal) and leaving it.
-#[robot_test]
+#[idea_test]
 fn tab_into_and_out_of_a_view_reports_focus_within(app: &mut App) {
     app.test_id("focus-outer").focus();
     app.signal("focus_within").assert_eq("false");
@@ -200,7 +202,7 @@ fn tab_into_and_out_of_a_view_reports_focus_within(app: &mut App) {
 /// blurring it reports the blur. (On web, a headless browser window that
 /// is not the OS's focused window delivers no `focus` event for the first
 /// `element.focus()`; the state must follow the document's active element.)
-#[robot_test]
+#[idea_test]
 fn focusing_a_field_reports_it_focused(app: &mut App) {
     // The field's own `on_focus` fires too, once per change, and its
     // `on_blur` once per blur (it lets the blur through), on every
@@ -222,7 +224,7 @@ fn focusing_a_field_reports_it_focused(app: &mut App) {
 
 /// Escape closes an overlay that has an `on_dismiss`, as a user's Escape
 /// does on every platform.
-#[robot_test]
+#[idea_test]
 fn escape_closes_an_overlay_with_on_dismiss(app: &mut App) {
     app.call_function("demo.set_cover", json!({ "on": true }));
     app.test_id("cover-label").assert_visible();
@@ -233,7 +235,7 @@ fn escape_closes_an_overlay_with_on_dismiss(app: &mut App) {
 /// Escape closes a modal while a field inside it holds focus — the key goes
 /// to the field first and, unconsumed, closes the topmost overlay. (The
 /// typed key proves the field holds keyboard focus.)
-#[robot_test]
+#[idea_test]
 fn escape_closes_a_modal_while_its_field_has_focus(app: &mut App) {
     app.call_function("demo.set_dialog", json!({ "open": true }));
     app.test_id("dialog-field").press_key("a");
@@ -251,7 +253,7 @@ fn escape_closes_a_modal_while_its_field_has_focus(app: &mut App) {
 /// scrolled down. Focus now rests on the backend's host root, as it rests
 /// nowhere on iOS and web. Below the fold first, as the suite that found it
 /// had scrolled; the check runs on every platform, which must all agree.
-#[robot_test]
+#[idea_test]
 fn regression_closing_a_modal_with_its_field_focused_focuses_nothing_else(app: &mut App) {
     app.test_id("page-end").click();
     app.call_function("demo.set_dialog", json!({ "open": true }));
@@ -268,7 +270,7 @@ fn regression_closing_a_modal_with_its_field_focused_focuses_nothing_else(app: &
 /// Regression: on web the overlay's window Escape listener closed the
 /// dialog even when the focused field's `on_key_down` prevented Escape —
 /// iOS, Android and macOS keep it open. A prevented Escape is the field's.
-#[robot_test]
+#[idea_test]
 fn a_field_that_claims_escape_keeps_its_dialog_open(app: &mut App) {
     app.call_function("demo.set_dialog", json!({ "open": true }));
     for key in ["k", "e", "e", "p"] {
@@ -284,7 +286,7 @@ fn a_field_that_claims_escape_keeps_its_dialog_open(app: &mut App) {
 /// A deep link through navigators that each mount only after their
 /// screen's data loads opens the whole path in one call — and the query it
 /// carries is on the navigator state.
-#[robot_test]
+#[idea_test]
 fn open_link_reaches_navigators_that_mount_late(app: &mut App) {
     assert!(app.open_link("robote2e://projects/7/schedule?asset_tag=~7781"));
     app.test_id("nav-schedule").assert_visible();
@@ -307,7 +309,7 @@ fn read_i32(app: &mut App, name: &str) -> i32 {
 
 /// `context_click` opens a row's context menu the way the platform's user
 /// does: a right click with a mouse, a long press on a phone.
-#[robot_test]
+#[idea_test]
 fn context_click_opens_a_rows_menu(app: &mut App) {
     let (right, held) = (read_i32(app, "menu_right_clicks"), read_i32(app, "menu_long_presses"));
     app.test_id("menu-row").context_click();
@@ -322,7 +324,7 @@ fn context_click_opens_a_rows_menu(app: &mut App) {
 
 /// A long press held past the recognizer's threshold opens the menu on
 /// every platform, a mouse's held button included.
-#[robot_test]
+#[idea_test]
 fn a_long_press_opens_a_rows_menu(app: &mut App) {
     let held = read_i32(app, "menu_long_presses");
     app.test_id("menu-row").long_press(robot_test::LONG_PRESS);
@@ -332,7 +334,7 @@ fn a_long_press_opens_a_rows_menu(app: &mut App) {
 
 /// `load_url` boots the app at an address: the navigators open the URL's
 /// path from the first frame, and the app's state starts over.
-#[robot_test(platforms = [web, android])]
+#[idea_test(platforms = [web, android])]
 fn load_url_boots_the_app_at_a_path(app: &mut App) {
     app.load_url("/projects/7/schedule");
     app.test_id("nav-schedule").assert_visible();
@@ -350,7 +352,7 @@ fn load_url_boots_the_app_at_a_path(app: &mut App) {
 /// A cookie set before a page load is there when the app boots: the
 /// browser lists it (HttpOnly too) and the page's scripts read the one
 /// they may. Cleared afterwards so other tests boot without it.
-#[robot_test(platforms = [web])]
+#[idea_test(platforms = [web])]
 fn cookies_set_before_a_load_reach_the_booted_page(app: &mut App) {
     use robot_test::Cookie;
     app.clear_cookies();
@@ -374,7 +376,7 @@ fn cookies_set_before_a_load_reach_the_booted_page(app: &mut App) {
 /// scrolls; `click()` never scrolled it and failed with "outside the
 /// window". Web only: a native window doesn't scroll, so there the button
 /// is out of reach.
-#[robot_test(platforms = [web])]
+#[idea_test(platforms = [web])]
 fn regression_click_reaches_a_button_below_the_fold_of_a_page(app: &mut App) {
     app.call_function("demo.set_tall_page", json!({ "on": true }));
     let before = read_i32(app, "page_bottom_taps");
@@ -392,7 +394,7 @@ fn regression_click_reaches_a_button_below_the_fold_of_a_page(app: &mut App) {
 /// The screen is a vertical `scroll_view` taller than a phone's window:
 /// `click()` scrolls it until the button at its end is in view, then taps
 /// it — on every platform.
-#[robot_test]
+#[idea_test]
 fn click_scrolls_the_screen_to_a_button_below_the_fold(app: &mut App) {
     let before = read_i32(app, "page_end_taps");
     app.test_id("page-end").click();
@@ -403,7 +405,7 @@ fn click_scrolls_the_screen_to_a_button_below_the_fold(app: &mut App) {
 /// A to-do struck through once it is marked done: the resolved style, read
 /// back (`get_style`) — the browser's computed style on web, the rules the
 /// backend was handed on native.
-#[robot_test]
+#[idea_test]
 fn a_done_todo_is_struck_through(app: &mut App) {
     let style = app.test_id("todo-item").style();
     assert!(!style.is_line_through(), "not done yet: {style:?}");
@@ -416,7 +418,7 @@ fn a_done_todo_is_struck_through(app: &mut App) {
 
 /// An email field reports the email keyboard — the kind it asked for and,
 /// where the platform has a soft keyboard, the one the native widget holds.
-#[robot_test]
+#[idea_test]
 fn an_email_field_reports_the_email_keyboard(app: &mut App) {
     app.test_id("email").assert_keyboard("email");
     assert_eq!(app.test_id("email").keyboard().as_deref(), Some("email"));
@@ -432,7 +434,7 @@ fn frame(app: &mut App, id: &str) -> (f64, f64, f64, f64) {
 
 /// want_42e78771: a rail its base style collapses and its `md` overlay
 /// opens reads visible once a resize crosses `md`, and hidden again below.
-#[robot_test(platforms = [web, macos])]
+#[idea_test(platforms = [web, macos])]
 fn a_resize_across_md_shows_what_the_overlay_opens(app: &mut App) {
     app.set_viewport(390.0, 844.0);
     let rail = app.call("find_element", json!({ "test_id": "rail" }));
@@ -448,7 +450,7 @@ fn a_resize_across_md_shows_what_the_overlay_opens(app: &mut App) {
 /// want_2497c37b: a panel stacked under a record taller than the window is
 /// measured where it is drawn, below the fold, before anything scrolls,
 /// including after a resize brings the stacked layout back.
-#[robot_test(platforms = [web, macos])]
+#[idea_test(platforms = [web, macos])]
 fn a_frame_below_the_fold_is_where_it_is_drawn(app: &mut App) {
     for (w, h) in [(390.0, 844.0), (1100.0, 900.0), (390.0, 844.0)] {
         app.set_viewport(w, h);
@@ -468,7 +470,7 @@ fn a_frame_below_the_fold_is_where_it_is_drawn(app: &mut App) {
 /// is `md` upright and wider turned. After every turn the layout must match
 /// the breakpoint the app reports. The harness turns the screen back after
 /// the test.
-#[robot_test(platforms = [web, ios, android], form = [phone, tablet])]
+#[idea_test(platforms = [web, ios, android], form = [phone, tablet])]
 fn turning_the_device_reflows_the_split_layout(app: &mut App) {
     let check = |app: &mut App, when: &str| {
         let v = app.viewport();
@@ -493,7 +495,7 @@ fn turning_the_device_reflows_the_split_layout(app: &mut App) {
 /// A device-class test: it runs where the app is phone-sized (its
 /// breakpoint, from the app's own table) and is reported not applicable
 /// elsewhere, so `idealyst test` across the matrix shows it once per class.
-#[robot_test(form = phone)]
+#[idea_test(form = phone)]
 fn a_phone_test_runs_only_on_a_phone(app: &mut App) {
     let class = app.device_class();
     assert_eq!(class.form, Some(robot_test::Form::Phone), "{class:?}");

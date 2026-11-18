@@ -2,7 +2,7 @@
 //! an idealyst app itself branches on. Its breakpoint (from the app's own
 //! breakpoint table) and its primary pointer, not a device name. A test
 //! declares the classes it means something on
-//! (`#[robot_test(form = phone)]`, `input = touch`), and runs unchanged on
+//! (`#[idea_test(form = phone)]`, `input = touch`), and runs unchanged on
 //! an iPhone, a Pixel and a phone-sized browser alike.
 //!
 //! | form      | breakpoint |
@@ -15,7 +15,7 @@
 //! `pointer` when it is fine (a mouse, a trackpad).
 //!
 //! A test whose class doesn't match the app is **not applicable**: it prints
-//! `[robot_test] N/A <test>: <reason>` and returns, and `idealyst test`
+//! `[idea_test] N/A <test>: <reason>` and returns, and `idealyst test`
 //! counts it separately from passes (`IDEALYST_TEST_RESULTS`, below).
 
 use std::io::Write;
@@ -137,7 +137,7 @@ pub fn not_applicable(class: &DeviceClass, forms: &[&str], inputs: &[&str]) -> O
     Some(format!("needs {}; {}", needs.join(", "), class.describe()))
 }
 
-/// What a `#[robot_test(form = …, input = …)]` expansion calls before its
+/// What a `#[idea_test(form = …, input = …)]` expansion calls before its
 /// body: `Some(reason)` when the test does not apply to the app, after
 /// recording it for the runner.
 #[doc(hidden)]

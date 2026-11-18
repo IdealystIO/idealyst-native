@@ -21,7 +21,7 @@ and is treated as one.
   `robot_fn.rs` (functions a test calls by name, `#[robot_fn]`).
 - `crates/runtime/shared/src/robot/` — the transport (TCP bridge, relay
   client) and the registry-independent verbs (`get_logs`, `screenshot`, …).
-- Clients: `crates/dev/robot-test` (`#[robot_test]` host-side tests),
+- Clients: `crates/dev/robot-test` (`#[idea_test]` host-side tests),
   `crates/dev/robot-e2e` (in-app suites, which drive `Robot` directly: their
   `click` is the robot's `click`, with no native tier), the MCP server.
 
@@ -556,7 +556,7 @@ used in the result:
 
 ## Clients
 
-### robot-test (`#[robot_test]`)
+### robot-test (`#[idea_test]`)
 
 Host-side tests over the bridge (`crates/dev/robot-test`), run by
 `idealyst test`. Playwright-shaped, and **auto-waiting**: an action waits for
@@ -566,7 +566,7 @@ for it to be enabled), an assertion retries until it holds — both for up to
 never sleeps for a reactive update, a load or a navigation to land.
 
 ```rust
-#[robot_test]
+#[idea_test]
 fn sign_in(app: &mut App) {
     app.navigate("/login");
     app.test_id("email").fill("me@example.com");
@@ -660,7 +660,7 @@ typed error is `robot_test::CallError` (`AppTimedOut`, `ClientTimedOut`,
 `NoApp`, `Verb`).
 
 A test that only means something on some platforms declares them:
-`#[robot_test(platforms = [ios, android])]` (names `web`, `ios`,
+`#[idea_test(platforms = [ios, android])]` (names `web`, `ios`,
 `android`, `macos`, `linux`, `windows`; groups `mobile`, `desktop`,
 `native`). Elsewhere it is never reported passed. libtest can't skip at
 run time, so the macro puts the platforms in the test's name and its
@@ -681,6 +681,23 @@ marks the registration `under_test`, a bare `cargo test` never discovers
 it (it skips, or finds your own `idealyst dev`), and the MCP's robot tools
 refuse it. A second driver would interleave its steps with the suite's —
 its `set_count(0)` landing between the suite's tap and its assertion.
+
+Tests can be grouped into named suites: `#[idea_test(suites = [smoke,
+checkout])]` (lowercase words joined by single `_`). Membership is a label
+only — without `--suite` every test runs as before. `idealyst test --suite
+smoke,checkout` runs the tests in any of the named suites (with
+`--filter` and the platform rules still applying), naming them to libtest
+`--exact` since libtest can't filter by suite; a name no test declares
+fails the run, listing the suites there are, and a suite with nothing to
+run on the app's platform is a `SKIP` for that run. `idealyst test
+--list-suites <project>` builds the test target, prints each suite with
+its tests and the tests in none, and exits. As with platforms, the suites
+live in the test's name: `<fn>::idea_suites_checkout__smoke` (sorted, `__`
+between names), or `<fn>::idea_suites_smoke::robot_only_ios` with
+platforms; `robot_test::suites_of_test` reads them back.
+
+`#[robot_test]` is the attribute's former name: it expands the same and
+warns that it is deprecated.
 
 Per-test setup is a `Fixture` the test asks for by type
 (`fn t(app: &mut App, user: &SignedIn)`, by `&` or `&mut`): `setup(app)`
@@ -718,7 +735,7 @@ let mut kiosk = App::connect_project("../app-checkin");
 ### Running a suite on each platform
 
 `idealyst test --web | --macos | --ios | --android | --linux | --windows
-<project>` builds and launches the app (`idealyst dev --local`), waits for
+<project>` (`--suite <names>` for some suites only) builds and launches the app (`idealyst dev --local`), waits for
 THIS project's app to register — a registration from another project or an
 earlier run is ignored — and runs the `tests/robot.rs` suite against it
 (compiled before the app launches, then run directly). The dev session's
@@ -855,9 +872,9 @@ flags below (`--viewport`, `--device`, `--simulator`, `--emulator`,
 `--mobile`, `--attach`) still work and replace the matrix for that run.
 Tests see their class as `IDEALYST_TEST_CLASS`.
 
-Tests target classes rather than devices: `#[robot_test(form = phone)]`
+Tests target classes rather than devices: `#[idea_test(form = phone)]`
 (breakpoint xs/sm; `tablet` is md, `desktop` lg/xl, from the app's own
-breakpoint table) and `#[robot_test(input = touch)]` (a coarse primary
+breakpoint table) and `#[idea_test(input = touch)]` (a coarse primary
 pointer; `pointer` is fine). The class is checked against what the app
 reports when the test runs, so one test covers an iPhone, a Pixel and a
 phone-sized browser. Where it doesn't match, the test is listed under that

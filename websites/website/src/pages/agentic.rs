@@ -79,7 +79,7 @@ fn robot_bridge() -> Element {
                 and macOS.".to_string())
             CodePanel(src = snippet)
             Typography(content = "`idealyst test` wraps the bridge in a Rust harness: \
-                `#[robot_test]` fns expand to ordinary `#[test]`s that launch (or attach \
+                `#[idea_test]` fns expand to ordinary `#[test]`s that launch (or attach \
                 to) the app, locate elements, act, and assert on signals and labels \
                 \u{2014} pass/fail lands in your normal test output.".to_string())
         }

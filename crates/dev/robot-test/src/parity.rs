@@ -1,4 +1,4 @@
-//! Cross-platform render-parity checking from a `#[robot_test]` / sync client.
+//! Cross-platform render-parity checking from a `#[idea_test]` / sync client.
 //!
 //! The shared model + diff live in the [`native_parity`] crate (so the MCP
 //! server reuses the exact same comparison logic). This module adds the

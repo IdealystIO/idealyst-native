@@ -232,9 +232,9 @@ element to exist and accept it, and every assertion retries until it
 holds, so a test never sleeps:
 
 ```rust
-use robot_test::{json, robot_test, App};
+use robot_test::{json, idea_test, App};
 
-#[robot_test]
+#[idea_test]
 fn increment_updates_count(app: &mut App) {
     app.call_function("demo.set_count", json!({ "value": 0 }));
     app.test_id("count-display").assert_text("Count: 0");

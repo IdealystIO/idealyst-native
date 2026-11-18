@@ -346,7 +346,7 @@ page.
 
 ### Running a test suite on every platform
 
-`idealyst test` runs a project's `#[robot_test]` suite
+`idealyst test` runs a project's `#[idea_test]` suite
 (`tests/robot.rs`, with `robot-test` as a dev-dependency) against the
 app on one platform:
 
@@ -358,8 +358,10 @@ It builds the app fresh and launches it, waits for that project's app
 to register, and runs `cargo test --test robot` against it. The same
 suite runs unchanged on every platform. The app is marked as
 test-driven, so an in-app self-test that checks
-`robot::is_test_driven()` stands down. `--filter` narrows the run and
-`--attach` drives an app you already started with `idealyst dev`.
+`robot::is_test_driven()` stands down. `--filter` narrows the run,
+`--suite smoke` runs only the tests tagged `#[idea_test(suites = smoke)]`
+(`--list-suites` lists them), and `--attach` drives an app you already
+started with `idealyst dev`.
 
 A suite's `click()` taps with real platform input where the backend
 can synthesize it, so a test also catches an overlay or a disabled

@@ -1,4 +1,4 @@
-//! `#[robot_test]` fixtures end to end: real `#[robot_test]` functions, the
+//! `#[idea_test]` fixtures end to end: real `#[idea_test]` functions, the
 //! harness connecting to a mock bridge through `IDEALYST_ROBOT_BRIDGE`, and
 //! fixtures set up before the body and torn down after it — in reverse
 //! order, and also when the body panics.
@@ -7,7 +7,7 @@
 //! harness decides connect-or-skip once per binary, so the bridge address
 //! must be in the environment before the first of them runs.
 
-use robot_test::{json, robot_test, App, Fixture, Value};
+use robot_test::{json, idea_test, App, Fixture, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -56,7 +56,7 @@ impl Fixture for Seeded {
     }
 }
 
-#[robot_test]
+#[idea_test]
 #[ignore = "run by `fixtures_wrap_the_test_body`"]
 fn uses_two_fixtures(app: &mut App, user: &SignedIn, rows: &mut Seeded) {
     assert_eq!(user.email, "ada@example.com");
@@ -64,7 +64,7 @@ fn uses_two_fixtures(app: &mut App, user: &SignedIn, rows: &mut Seeded) {
     app.call_function("body", json!({}));
 }
 
-#[robot_test]
+#[idea_test]
 #[ignore = "run by `fixtures_wrap_the_test_body`"]
 fn fails_while_signed_in(app: &mut App, _: &SignedIn) {
     app.call_function("body", json!({}));

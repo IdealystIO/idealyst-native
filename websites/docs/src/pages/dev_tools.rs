@@ -290,7 +290,7 @@ docs! {
     },
 
     section(heading = "Running a test suite on every platform") {
-        p(code("idealyst test"), " runs a project's ", code("#[robot_test]"),
+        p(code("idealyst test"), " runs a project's ", code("#[idea_test]"),
           " suite (", code("tests/robot.rs"), ", with ", code("robot-test"),
           " as a dev-dependency) against the app on one platform:"),
         code(bash, r##"
@@ -301,7 +301,9 @@ docs! {
           " against it. The same suite runs unchanged on every platform. The \
            app is marked as test-driven, so an in-app self-test that checks ",
           code("robot::is_test_driven()"), " stands down. ", code("--filter"),
-          " narrows the run and ", code("--attach"), " drives an app you \
+          " narrows the run, ", code("--suite smoke"), " runs only the tests tagged ",
+          code("#[idea_test(suites = smoke)]"), " (", code("--list-suites"),
+          " lists them), and ", code("--attach"), " drives an app you \
            already started with ", code("idealyst dev"), "."),
         p("A suite's ", code("click()"), " taps with real platform input where \
            the backend can synthesize it, so a test also catches an overlay or \

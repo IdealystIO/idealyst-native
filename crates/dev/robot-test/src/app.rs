@@ -1,6 +1,6 @@
 //! The author-facing test surface: a relay-connected [`App`] handle and the
 //! Playwright-flavoured [`Locator`] it hands out. Assertions **panic** on
-//! failure (caught per-test by the libtest harness), so a `#[robot_test]` body
+//! failure (caught per-test by the libtest harness), so a `#[idea_test]` body
 //! reads like an ordinary Rust test — no `Result`/`?` ceremony.
 //!
 //! Every call goes over the Robot bridge ([`RobotClient`]), so the same code
@@ -51,7 +51,7 @@ pub const LOAD_URL_TIMEOUT: Duration = Duration::from_secs(60);
 /// How often a waiting action or assertion looks again.
 const POLL: Duration = Duration::from_millis(50);
 
-/// A connection to the running app under test — the handle a `#[robot_test]`
+/// A connection to the running app under test — the handle a `#[idea_test]`
 /// body receives. Locate elements with [`App::test_id`] / [`App::text`] /
 /// [`App::label`] / [`App::role`]; drive navigation, components, signals and
 /// robot functions ([`App::call_function`])
@@ -331,7 +331,7 @@ impl App {
     /// --<platform>` launched, or whatever app the bridge reached. For a
     /// test that runs on every platform but checks something one of them
     /// does differently; a test that only means something on some
-    /// platforms declares them instead (`#[robot_test(platforms = [ios,
+    /// platforms declares them instead (`#[idea_test(platforms = [ios,
     /// android])]`), so it is skipped, not passed, elsewhere. Pair with
     /// [`viewport`](Self::viewport)`().breakpoint` for the form factor.
     /// Panics if the app can't say (an app built before `get_platform`).
@@ -894,7 +894,7 @@ impl Viewport {
 
 /// The platform an app runs on, as [`App::platform`] reports it. The
 /// names are those of `idealyst test --<platform>` and
-/// `#[robot_test(platforms = …)]`.
+/// `#[idea_test(platforms = …)]`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Platform {
     Web,

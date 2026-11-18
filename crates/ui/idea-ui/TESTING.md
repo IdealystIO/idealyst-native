@@ -184,7 +184,7 @@ For any component you touch, walk this list across web + at least one native bac
 ## 8. Tooling for verification
 
 - **Unit / logic:** `cargo test -p idea-ui` (and the framework suites for core changes).
-- **Robot tests:** `#[robot_test]` fns drive a relay-connected `App` (locate→act→assert)
+- **Robot tests:** `#[idea_test]` fns drive a relay-connected `App` (locate→act→assert)
   and expand to real `#[test]`s; `idealyst test --<platform>` preps the env. Use these for
   cross-platform interaction assertions.
 - **Screenshots:** the `screenshot` robot verb captures the real surface (native) or a DOM

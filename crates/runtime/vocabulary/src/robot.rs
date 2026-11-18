@@ -1873,7 +1873,7 @@ pub fn is_test_driven() -> bool {
 /// The running app's platform as the robot names it to a test driver
 /// (the `get_platform` verb): `web`, `ios`, `android`, `macos`, `linux`,
 /// `windows` — the spellings of `idealyst test --<platform>` and of
-/// `#[robot_test(platforms = …)]` — or `tvos`, `androidtv`, `roku`, a
+/// `#[idea_test(platforms = …)]` — or `tvos`, `androidtv`, `roku`, a
 /// backend's own `Custom` name, `unknown` when none was declared. Read
 /// from [`runtime_shared::host::platform`], which every boot seeds from
 /// its backend's `AppEnvOps::platform`.
@@ -3406,7 +3406,7 @@ pub mod bridge {
                 let v = robot.viewport();
                 // The primary pointer rides along: with the breakpoint it is
                 // what a test's device class is checked against
-                // (`#[robot_test(form = …, input = …)]`).
+                // (`#[idea_test(form = …, input = …)]`).
                 let pointer = match runtime_shared::app_state::current().primary_pointer {
                     runtime_shared::app_state::PointerKind::Fine => "fine",
                     runtime_shared::app_state::PointerKind::Coarse => "coarse",

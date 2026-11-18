@@ -1,4 +1,4 @@
-//! The per-process connection the `#[robot_test]` macro drives.
+//! The per-process connection the `#[idea_test]` macro drives.
 //!
 //! All tests in a binary share **one** [`App`] connection, serialized behind a
 //! mutex so the default parallel libtest harness can't interleave two tests
@@ -68,7 +68,7 @@ impl std::ops::DerefMut for AppGuard {
     }
 }
 
-/// Acquire the shared app for one test. Called by the `#[robot_test]` expansion;
+/// Acquire the shared app for one test. Called by the `#[idea_test]` expansion;
 /// not part of the public authoring surface.
 #[doc(hidden)]
 pub fn __acquire(_test: &str) -> Acquire {
@@ -83,7 +83,7 @@ pub fn __acquire(_test: &str) -> Acquire {
             if app.screen_start.is_some() {
                 let restored = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.restore_screen()));
                 if restored.is_err() {
-                    eprintln!("[robot_test] {_test}: the previous test's screen could not be put back (see above)");
+                    eprintln!("[idea_test] {_test}: the previous test's screen could not be put back (see above)");
                 }
             }
             Acquire::Ready(AppGuard(app))
@@ -92,12 +92,12 @@ pub fn __acquire(_test: &str) -> Acquire {
     }
 }
 
-/// The platform names `#[robot_test(platforms = …)]` takes — the
+/// The platform names `#[idea_test(platforms = …)]` takes — the
 /// spellings of `idealyst test --<platform>` and of the app's
 /// `get_platform`.
 pub const PLATFORMS: [&str; 6] = ["web", "ios", "android", "macos", "linux", "windows"];
 
-/// The last path segment `#[robot_test(platforms = …)]` gives a test:
+/// The last path segment `#[idea_test(platforms = …)]` gives a test:
 /// `robot_only_` and the platforms, in [`PLATFORMS`] order, joined by
 /// `_` — `robot_only_ios_android`. The test's libtest name is
 /// `<fn>::robot_only_ios_android`, which is how a runner that only has
@@ -120,6 +120,40 @@ pub fn platforms_of_test(name: &str) -> Option<Vec<&'static str>> {
     }
     (!out.is_empty()).then_some(out)
 }
+
+/// The prefix of the path segment `#[idea_test(suites = …)]` gives a test.
+const SUITES_PREFIX: &str = "idea_suites_";
+
+/// The path segment `#[idea_test(suites = …)]` gives a test:
+/// `idea_suites_` and the suite names, sorted and deduplicated, joined by
+/// `__` — `idea_suites_checkout__smoke`. It is the test's last segment
+/// (`<fn>::idea_suites_smoke`), or the one before its platform marker
+/// (`<fn>::idea_suites_smoke::robot_only_ios`).
+pub fn suite_marker(suites: &[&str]) -> String {
+    let mut sorted = suites.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    format!("{SUITES_PREFIX}{}", sorted.join("__"))
+}
+
+/// The suites a test belongs to, from its libtest name; empty for a test
+/// in none. Reads the last segment, or the one before a `robot_only_…`
+/// last segment (an author-ignored platform test's included).
+pub fn suites_of_test(name: &str) -> Vec<&str> {
+    let mut segments = name.rsplit("::");
+    let Some(last) = segments.next() else { return Vec::new() };
+    let segment = if last.starts_with("robot_only_") { segments.next() } else { Some(last) };
+    segment
+        .and_then(|s| s.strip_prefix(SUITES_PREFIX))
+        .map(|rest| rest.split("__").filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+/// The deprecated `#[robot_test]` expands to a use of this, which is what
+/// puts the deprecation warning on the caller's attribute.
+#[doc(hidden)]
+#[deprecated(note = "`#[robot_test]` is renamed `#[idea_test]` (same arguments): import `robot_test::idea_test`")]
+pub const fn __robot_test_is_now_idea_test() {}
 
 /// [`__acquire`] for a test that declared its platforms: on any other
 /// platform it is skipped. `idealyst test` never runs it there (it is
@@ -201,10 +235,31 @@ mod platform_tests {
 }
 
 #[cfg(test)]
+mod suite_tests {
+    use super::*;
+
+    /// The macro names a suite member `<fn>::idea_suites_<a>__<b>` (or puts
+    /// that segment before its platform marker); the runner reads the
+    /// suites back from the name.
+    #[test]
+    fn a_test_name_round_trips_its_suites() {
+        assert_eq!(suite_marker(&["smoke", "checkout", "smoke"]), "idea_suites_checkout__smoke");
+        assert_eq!(suites_of_test("pay::idea_suites_checkout__smoke"), ["checkout", "smoke"]);
+        assert_eq!(suites_of_test("kb::idea_suites_smoke::robot_only_ios"), ["smoke"]);
+        assert_eq!(suites_of_test("kb::idea_suites_smoke::robot_only_ios_ignored"), ["smoke"]);
+        assert_eq!(suites_of_test("kb::idea_suites_check_out"), ["check_out"]);
+        assert!(suites_of_test("kb::robot_only_ios").is_empty());
+        assert!(suites_of_test("plain").is_empty());
+        // Only the test's own segment counts, not an author's module.
+        assert!(suites_of_test("idea_suites_smoke::helper").is_empty());
+    }
+}
+
+#[cfg(test)]
 mod locate_tests {
     use super::*;
 
-    /// Regression: `#[robot_test]` searched only `~/.idealyst/apps`, so a
+    /// Regression: `#[idea_test]` searched only `~/.idealyst/apps`, so a
     /// Windows app under Wine (registered in `apps-wine`) was never found,
     /// although `idealyst test` searched both.
     #[test]
