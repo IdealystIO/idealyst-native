@@ -3668,7 +3668,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "21.0.0"
+version = "22.0.0"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -6448,7 +6448,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "12.0.0"
+version = "13.0.0"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6458,7 +6458,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme-editor"
-version = "19.0.0"
+version = "20.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6469,7 +6469,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "22.7.0"
+version = "23.0.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6489,7 +6489,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "23.2.0"
+version = "24.0.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6518,7 +6518,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-branded"
-version = "14.1.0"
+version = "15.0.0"
 dependencies = [
  "idea-theme",
  "idea-ui",
@@ -6531,7 +6531,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.32"
+version = "1.5.33"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6541,7 +6541,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.32"
+version = "1.5.33"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6575,7 +6575,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-nav"
-version = "19.0.0"
+version = "20.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6602,7 +6602,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "2.4.0"
+version = "2.5.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7787,7 +7787,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7830,7 +7830,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-design-server"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "anyhow",
  "mcp-server",
@@ -10828,7 +10828,7 @@ dependencies = [
 
 [[package]]
 name = "robot-relay"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -10838,7 +10838,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test"
-version = "3.3.0"
+version = "3.4.0"
 dependencies = [
  "anyhow",
  "base64",
