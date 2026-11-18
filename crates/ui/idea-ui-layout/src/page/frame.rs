@@ -15,7 +15,7 @@ use runtime_core::{
 /// (`frame`), which fills it in, and to whatever inside pins against
 /// the header: a [`SplitView`](crate::SplitView) or a
 /// [`PinnedPane`](super::PinnedPane). Passed down rather than looked
-/// up, because a tab's body is built before the shell around it.
+/// up, because a page's body is built before the page around it.
 /// `Copy`: signals and a ref.
 #[derive(Clone, Copy)]
 pub struct PageFrame {

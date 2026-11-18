@@ -180,35 +180,6 @@ fn a_page_draws_its_header_toolbar_body_and_overlays() {
     }
 }
 
-/// A shell's variant follows its tab without rebuilding the outlet: a
-/// change of variant restyles the frame and creates nothing.
-#[test]
-fn a_live_variant_restyles_the_frame_and_keeps_the_body_mounted() {
-    host_mock::pump::install_scheduler();
-    let h = Harness::new();
-    let (tree, variant) = h.world.enter(|| {
-        install_idea_theme(light_theme());
-        viewport_size().set(ViewportSize::new(DESKTOP, 800.0));
-        let variant: Signal<PageVariant> = signal(PageVariant::Content);
-        let tree = ui! {
-            Page(
-                live_variant = Some(runtime_core::rx!(variant.get())),
-                header = ui! { PageHeader(title = "Project".to_string()) },
-                body = ui! { Typography(content = "TAB".to_string()) },
-            )
-        };
-        (tree, variant)
-    });
-    let _realized = h.mount(tree);
-    h.flush();
-    h.take_log();
-    h.world.enter(|| variant.set(PageVariant::Table));
-    h.flush();
-    let log = h.take_log().join("\n");
-    assert!(!log.contains("create "), "nothing is rebuilt:\n{log}");
-    assert!(log.contains("apply_style"), "the frame restyles:\n{log}");
-}
-
 fn states(phase: ListPhase, is_empty: bool, narrowed: bool) -> Element {
     ui! {
         ListStates(

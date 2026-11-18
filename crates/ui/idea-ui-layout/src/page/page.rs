@@ -3,8 +3,8 @@
 
 use runtime_core::Tokens as _;
 use runtime_core::{
-    component, derived, stylesheet, ui, ChildList, Element, FlexDirection, IdealystSchema, Length, Position,
-    Reactive, Ref, SafeAreaSides, ScrollbarVisibility, ViewHandle,
+    component, stylesheet, ui, ChildList, Element, FlexDirection, IdealystSchema, Length, Position, Ref,
+    SafeAreaSides, ViewHandle,
 };
 
 use super::{watch_height, PageFrame};
@@ -70,12 +70,6 @@ pub struct PageProps {
     /// [`PinnedPane`](super::PinnedPane).
     #[prop(static)]
     pub frame: Option<PageFrame>,
-    /// A shell whose body is a navigator outlet: the variant of the tab
-    /// on show, read live, in place of `variant`. The frame restyles
-    /// rather than rebuilds, so the tab in the outlet is never torn down
-    /// by a change of variant.
-    #[prop(static)]
-    pub live_variant: Option<Reactive<PageVariant>>,
     /// The screen's dialogs and sheets, mounted beside the frame so
     /// nothing the body rebuilds can tear one down.
     pub children: Vec<Element>,
@@ -90,7 +84,6 @@ impl Default for PageProps {
             body: ui! { view {} },
             bleed: false,
             frame: None,
-            live_variant: None,
             children: Vec::new(),
         }
     }
@@ -106,8 +99,9 @@ impl Default for PageProps {
 /// [`BottomInset`](crate::BottomInset). It paints the page's surface: a screen a
 /// navigator pushes must be opaque, or the transition shows through it.
 ///
-/// A layout mounted as a tab's body inside a shell takes no `Page`: the
-/// shell's is already there.
+/// Every screen mounts its own, a tab of a tabbed record included: the
+/// header is the screen's to compose, not something a shell above it
+/// holds (rule `header-per-screen`).
 ///
 /// ```ignore
 /// ui! {
@@ -120,13 +114,10 @@ impl Default for PageProps {
 ///         EditShiftDialog(…)
 ///     }
 /// }
-///
-/// // A shell around a navigator outlet, its variant the tab's:
-/// ui! { Page(live_variant = Some(rx!(tab_variant())), header = header, body = nav.outlet) }
 /// ```
 #[component(children)]
 pub fn Page(props: PageProps) -> Element {
-    let PageProps { variant, header, toolbar, body, bleed, frame, live_variant, children } = props;
+    let PageProps { variant, header, toolbar, body, bleed, frame, children } = props;
     // The `#[component(children)]` slot's flatten, not a staged list.
     let mut overlays = Vec::with_capacity(children.len());
     for c in children {
@@ -134,10 +125,9 @@ pub fn Page(props: PageProps) -> Element {
     }
     let frame = frame.unwrap_or_default();
     let edge = if bleed { PageGutterEdge::Bleed } else { PageGutterEdge::Inset };
-    let framed = match live_variant {
-        Some(live) => live_page(header, toolbar, body, live, edge, frame),
-        None if variant.scrolls() => scroller(header, toolbar, body, Reactive::Static(variant), edge, frame),
-        None => bounded_page(header, toolbar, body, variant, edge, frame),
+    let framed = match variant.scrolls() {
+        true => scrolling_page(header, toolbar, body, edge, frame),
+        false => bounded_page(header, toolbar, body, variant, edge, frame),
     };
     if overlays.is_empty() {
         return framed;
@@ -197,34 +187,11 @@ fn bounded_page(
     }
 }
 
-/// A shell around a navigator outlet, whose variant follows the tab on
-/// show. One tree for all three variants, restyled: swapping the
-/// container around a live outlet would tear the mounted tab down every
-/// time the variant changed.
-fn live_page(
+/// `Content`: the page scrolls under its header.
+fn scrolling_page(
     header: Element,
     toolbar: Option<Element>,
     body: Element,
-    variant: Reactive<PageVariant>,
-    edge: PageGutterEdge,
-    frame: PageFrame,
-) -> Element {
-    let outlet_variant = variant.clone();
-    let mode = derived(move || match outlet_variant.get().scrolls() {
-        true => PageOutletMode::Scrolling,
-        false => PageOutletMode::Fixed,
-    });
-    let body = ui! { view(style = PageOutlet().mode(mode)) { body } };
-    scroller(header, toolbar, body, variant, edge, frame)
-}
-
-/// The page scroller under the header: what a `Content` page is, and
-/// what a live shell restyles between its variants.
-fn scroller(
-    header: Element,
-    toolbar: Option<Element>,
-    body: Element,
-    variant: Reactive<PageVariant>,
     edge: PageGutterEdge,
     frame: PageFrame,
 ) -> Element {
@@ -233,20 +200,6 @@ fn scroller(
     watch_height(header_ref, frame.header_height);
     watch_height(port_ref, frame.port_height);
     let head = header_block(header, toolbar, header_ref);
-    // One variant drives four sheets; each takes a source of its own.
-    let scroll_mode = {
-        let v = variant.clone();
-        derived(move || if v.get().scrolls() { PageScrollMode::Scrolling } else { PageScrollMode::Fixed })
-    };
-    let body_mode = {
-        let v = variant.clone();
-        derived(move || if v.get().scrolls() { PageScrollBodyMode::Scrolling } else { PageScrollBodyMode::Fixed })
-    };
-    let fill_mode = {
-        let v = variant.clone();
-        derived(move || if v.get().scrolls() { PageFillMode::Scrolling } else { PageFillMode::Fixed })
-    };
-    let kind = derived(move || gutter_kind(variant.get()));
     // The header sits ABOVE the scroller, as its sibling: its rule runs
     // the page's full width, and the scroll bar belongs to the area
     // under it.
@@ -255,32 +208,23 @@ fn scroller(
     // under the home indicator as it scrolls; the bottom inset is
     // padding on the page column inside it, so the last of the content
     // rests clear. The scroller opts out of the platform's own
-    // adjustment (`safe_area = NONE`; on
-    // iOS an unset scroller keeps the automatic inset). On a fixed page
-    // the automatic inset manufactures scroll extent out of content that
-    // fits exactly, and a drag outside the inner scroller carries the
-    // whole page up. As padding it is layout the framework sees: a fixed
-    // page spends it out of the growing slot and still fits.
+    // adjustment (`safe_area = NONE`; on iOS an unset scroller keeps the
+    // automatic inset), so the inset is counted once, as layout the
+    // framework sees.
     //
     // `always_bounce = false` drops the spring for content that fits and
-    // keeps it for content that overflows, so a fixed page does not rock
-    // under a finger that meant its inner list.
+    // keeps it for content that overflows.
     ui! {
         view(style = PageColumn(), bind = port_ref) {
             head
             scroll_view(
-                style = PageScroll().mode(scroll_mode),
+                style = PageScroll(),
                 bind = frame.scroller,
                 safe_area = SafeAreaSides::NONE,
                 always_bounce = false,
             ) {
-                view(style = PageScrollBody().mode(body_mode)) {
-                    view(
-                        style = PageFill().mode(fill_mode),
-                        safe_area = SafeAreaSides::BOTTOM | SafeAreaSides::HORIZONTAL,
-                    ) {
-                        view(style = PageGutter().kind(kind).edge(edge)) { body }
-                    }
+                view(style = PageScrollBody(), safe_area = SafeAreaSides::BOTTOM | SafeAreaSides::HORIZONTAL) {
+                    view(style = PageGutter().kind(PageGutterKind::Content).edge(edge)) { body }
                 }
             }
         }
@@ -365,63 +309,28 @@ stylesheet! {
 }
 
 stylesheet! {
-    // The page scroller. A fixed page never scrolls here, so its bar is
-    // hidden: otherwise the inner scroller reserves a bar track and this
-    // one does too, and the body ends a bar's width short of the edge.
+    // The page scroller: what the header leaves, clamped to it so the
+    // content inside overflows and scrolls.
     PageScroll<idea_ui::IdeaThemeRef> {
         base(_t) {
             flex_direction: FlexDirection::Column,
             flex_grow: 1.0,
             min_height: Length::Px(0.0),
         }
-        variant mode {
-            #[default]
-            scrolling(_t) {}
-            fixed(_t) {
-                scrollbar: ScrollbarVisibility::Hidden,
-            }
-        }
     }
 }
 
 stylesheet! {
-    // The scroller's one child. A scrolling page grows past the
-    // scrollport; a fixed one is clamped to it, so its own region owns
-    // the scrolling.
+    // The scroller's one child, carrying the bottom inset. At least the
+    // scrollport's height, and as tall as its content past that
+    // (`flex_shrink: 0`, or the scroller would squeeze it instead of
+    // scrolling it).
     PageScrollBody<idea_ui::IdeaThemeRef> {
         base(_t) {
             flex_direction: FlexDirection::Column,
             flex_grow: 1.0,
+            flex_shrink: 0.0,
             min_height: Length::Px(0.0),
-        }
-        variant mode {
-            #[default]
-            scrolling(_t) {
-                flex_shrink: 0.0,
-            }
-            fixed(_t) {
-                flex_shrink: 1.0,
-            }
-        }
-    }
-}
-
-stylesheet! {
-    // The page column inside the scroller, carrying the bottom inset.
-    PageFill<idea_ui::IdeaThemeRef> {
-        base(_t) {
-            flex_direction: FlexDirection::Column,
-            flex_grow: 1.0,
-            min_height: Length::Px(0.0),
-        }
-        variant mode {
-            #[default]
-            scrolling(_t) {
-                flex_shrink: 0.0,
-            }
-            fixed(_t) {
-                flex_shrink: 1.0,
-            }
         }
     }
 }
@@ -476,34 +385,6 @@ stylesheet! {
                 padding_left: Length::Px(0.0),
                 padding_right: Length::Px(0.0),
                 padding_bottom: Length::Px(0.0),
-            }
-        }
-    }
-}
-
-stylesheet! {
-    // The box a shell mounts its navigator's outlet in. The outlet's own
-    // node is `flex: 1 1 0`. In a column that zero basis is its HEIGHT,
-    // so on a scrolling page the outlet, and the page with it, would
-    // come out the scrollport's height with the content overflowing it.
-    // So a scrolling outlet sits in a ROW: there the zero basis is a
-    // width, and the height is the content's. A fixed page keeps the
-    // column that bounds it.
-    PageOutlet<idea_ui::IdeaThemeRef> {
-        base(_t) {
-            width: Length::pct(100.0),
-            flex_grow: 1.0,
-            min_height: Length::Px(0.0),
-            min_width: Length::Px(0.0),
-        }
-        variant mode {
-            #[default]
-            scrolling(_t) {
-                flex_direction: FlexDirection::Row,
-            }
-            fixed(_t) {
-                flex_direction: FlexDirection::Column,
-                height: Length::pct(100.0),
             }
         }
     }

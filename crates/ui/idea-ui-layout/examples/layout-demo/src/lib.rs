@@ -10,7 +10,7 @@
 //! | Split · Detail | `SplitView(Detail)`: a record and its companion panel |
 //! | Workbench | `Page(Blank)` holding `SplitView(Inspector)` |
 //! | Flow | `Flow`, `ActionBar(pinned)` |
-//! | Shell with tabs | one `Page` whose `live_variant` follows the tab; `ToolbarTabs` that overflow into "N more" |
+//! | Tabbed record | a project whose tabs are each a screen with its own `Page`, sharing one header and one `ToolbarTabs` strip that overflows into "N more" |
 //! | Overlays | `ActionMenu`, `ActionMenuSurface`, `AdaptivePopover`, `DrillSheet`, `Dialog`, `Sheet` |
 //!
 //! The picker in every screen's header switches the frame between its
@@ -87,7 +87,7 @@ impl Demo {
             Demo::SplitDetail => "Split · Detail",
             Demo::Workbench => "Workbench",
             Demo::Flow => "Flow",
-            Demo::ShellTabs => "Shell with tabs",
+            Demo::ShellTabs => "Tabbed record",
             Demo::Overlays => "Overlays",
         }
     }

@@ -119,8 +119,8 @@ Ask in order and stop at the first yes.
 6. Otherwise **a `Content` page**. A record's detail screen is one; with a
    companion panel it holds a `SplitView(mode = Detail)`.
 
-Every screen mounts its own `Page`, so a navigator's push carries the
-header with the screen.
+Every screen mounts its own `Page`, a tab of a tabbed record included,
+so a navigator's push carries the header with the screen.
 
 ## A Content page
 
@@ -440,28 +440,57 @@ Toolbar(
   its glyph with a dot on a phone. `bind_to` hands you the handle to anchor
   what it opens.
 
-## A shell with tabs
+## A record with tabs
 
-A record with several screens (a project, a worker) is ONE `Page` whose
-variant follows the open tab. The tabs take no `Page` of their own, and
-the header does not change between them.
+A record with several screens (a project, a worker) is not a special
+layout. Each tab is a screen: it picks its own page variant and mounts
+its own `Page`, header and toolbar. There is no shell holding one header
+over the tabs, and a tab cannot publish content into a header above it.
+
+The tabs read as one record because they build their chrome from the
+same component. Write that component once:
 
 ```rust
-ui! {
-    Page(
-        live_variant = Some(rx!(tab.get().variant())),   // Content, Table or Blank per tab
-        header = header,
-        toolbar = Some(ui! { Toolbar(start = Some(ui! { ToolbarTabs(tabs = tabs, active = active, on_change = pick) })) }),
-        body = nav.outlet,
-    )
+/// One tab of a project, as a whole screen.
+#[component]
+fn ProjectTabScreen(tab: Signal<ProjectTab>, search: Signal<String>, #[prop(static)] open: ProjectTab) -> Element {
+    ui! {
+        Page(
+            variant = open.variant(),                 // Content, Table or Blank, per tab
+            header = ui! { PageHeader(title = rx!(project.get().name), actions = open.actions()) },
+            toolbar = Some(ui! {
+                Toolbar(
+                    start = Some(ui! { ToolbarTabs(tabs = tabs, active = open.id(), on_change = pick) }),
+                    end = Some(ui! { ToolbarSearch(value = search) }),
+                )
+            }),
+            body = open.body(),
+        )
+    }
 }
 ```
 
-Changing the variant restyles the frame and keeps the tab mounted. The
-body is expected to be a navigator outlet. If you switch tabs with your
-own `match` instead, wrap it in a view with the outlet's sizing
-(`flex: 1 1 0`, `min_width: 0`, `min_height: 0`, column), as the demo's
-`shell_tabs.rs` does.
+and switch on the open tab above it (or let a navigator do it, one route
+per tab):
+
+```rust
+let tab = signal(ProjectTab::Overview);
+let search = signal(String::new());   // held ABOVE the tabs
+ui! {
+    match tab.get() {
+        open => { ProjectTabScreen(tab = tab, search = search, open = *open) }
+    }
+}
+```
+
+Two things follow from each tab owning its header:
+
+- A tab can differ where it needs to: its own verbs in `actions`, its
+  own status, a toolbar with different controls.
+- Switching tabs rebuilds the header and toolbar. Anything that must
+  survive the switch (the open tab, a search term, a filter) is a signal
+  held above the tabs and passed in, as `search` is here. State created
+  inside the header resets.
 
 ## Overlays
 
@@ -560,7 +589,7 @@ width to draw something, that is a gap in a layout: extend the layout.
 
 ## Before you call a screen done
 
-1. Does it mount exactly one `Page` (or sit in a shell's)?
+1. Does it mount exactly one `Page`?
 2. Is the body's top level a handful of named `Section`s, not a flat column
    of controls?
 3. Is every gap a spacing step you can name (`xs` within one thing, `sm`

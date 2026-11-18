@@ -1,15 +1,21 @@
-//! A shell with tabs: ONE `Page` whose variant follows the tab on show.
-//! The tabs take no `Page` of their own; changing tab restyles the
-//! frame and leaves the header where it is.
+//! A tabbed record: a project with several screens. Every tab is a
+//! screen of its own, with its own `Page`, header and toolbar (rule
+//! `header-per-screen`); what makes them read as one record is that
+//! they all build that chrome from the same component. State that must
+//! outlive a tab change (the open tab, the search term) is held above
+//! the tabs.
 
 use std::rc::Rc;
 
 use icons_lucide::LIST_FILTER;
 use idea_ui::{Stack, StackGap, Tab, Typography};
 use idea_ui_layout::{
-    LabelValue, Page, PageHeader, PageVariant, Section, StatGrid, Toolbar, ToolbarButton, ToolbarSearch, ToolbarTabs,
+    BottomInset, LabelValue, Page, PageHeader, PageVariant, Section, StatGrid, Toolbar, ToolbarButton,
+    ToolbarSearch, ToolbarTabs,
 };
-use runtime_core::{component, rx, signal, stylesheet, ui, AlignItems, Element, FlexDirection, JustifyContent, Length};
+use runtime_core::{
+    component, signal, stylesheet, ui, AlignItems, Element, FlexDirection, JustifyContent, Length, Signal,
+};
 
 use super::Stat;
 use crate::{Demo, Shell};
@@ -55,7 +61,7 @@ impl ProjectTab {
         }
     }
 
-    /// The layout each tab takes, from the same list a screen picks
+    /// The layout each tab takes, from the same list any screen picks
     /// from.
     fn variant(self) -> PageVariant {
         match self {
@@ -66,27 +72,80 @@ impl ProjectTab {
     }
 }
 
+/// The record: which tab is open, and the state the tabs share.
 #[component]
 pub(crate) fn ShellTabsScreen(#[prop(static)] shell: Shell) -> Element {
     let tab = signal(ProjectTab::Overview);
     let search = signal(String::new());
+    ui! {
+        match tab.get() {
+            open => { ProjectTabScreen(shell = shell, tab = tab, search = search, open = *open) }
+        }
+    }
+}
+
+/// One tab of the project, as a whole screen. The header and the
+/// toolbar are built here for every tab, so they are the same on each;
+/// only the page's variant and its body differ.
+#[component]
+fn ProjectTabScreen(
+    #[prop(static)] shell: Shell,
+    tab: Signal<ProjectTab>,
+    search: Signal<String>,
+    #[prop(static)] open: ProjectTab,
+) -> Element {
     let tabs = signal(ProjectTab::ALL.iter().map(|t| Tab::new(t.label(), t.label())).collect::<Vec<_>>());
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| {
         if let Some(picked) = ProjectTab::ALL.iter().find(|t| t.label() == id) {
             tab.set(*picked);
         }
     });
+    let body = match open {
+        ProjectTab::Overview | ProjectTab::Reports => ui! {
+            Stack(gap = StackGap::Lg) {
+                StatGrid {
+                    Stat(label = "Advance this week".to_string(), value = "42 m".to_string())
+                    Stat(label = "Shifts logged".to_string(), value = "14".to_string())
+                }
+                for part in ["Scope", "Client", "Crew", "Equipment", "Safety"], key = part.to_string() {
+                    Section(title = part.to_string()) {
+                        Stack(gap = StackGap::Sm) {
+                            LabelValue(label = "Owner".to_string(), value = Some("Dana Okafor".to_string()))
+                            LabelValue(label = "Updated".to_string(), value = Some("3 Nov".to_string()))
+                        }
+                    }
+                }
+            }
+        },
+        ProjectTab::Schedule => ui! {
+            view(style = Grid()) {
+                Typography(content = "A custom grid, edge to edge".to_string(), muted = true)
+            }
+        },
+        _ => ui! {
+            scroll_view(style = Rows()) {
+                for i in 1..=40, key = i {
+                    view(style = Row()) { Typography(content = format!("Heading {i}")) }
+                }
+                BottomInset()
+            }
+        },
+    };
     ui! {
         Page(
-            live_variant = Some(rx!(tab.get().variant())),
-            header = ui! { PageHeader(
-                title = "North Ramp".to_string(),
-                nav = Some(shell.way_back(vec![shell.crumb("Projects", Demo::Table)], Demo::Table)),
-                leading = Some(shell.leading()), status = move || shell.style_picker()) },
+            variant = open.variant(),
+            header = ui! {
+                PageHeader(
+                    title = "North Ramp".to_string(),
+                    nav = Some(shell.way_back(vec![shell.crumb("Projects", Demo::Table)], Demo::Table)),
+                    leading = Some(shell.leading()),
+                    status = move || shell.style_picker(),
+                )
+            },
             toolbar = Some(ui! {
                 Toolbar(
                     start = Some(ui! {
-                        ToolbarTabs(tabs = tabs, active = rx!(tab.get().label().to_string()), on_change = on_change)
+                        ToolbarTabs(tabs = tabs, active = open.label().to_string(), on_change = on_change)
                     }),
                     end = Some(ui! {
                         ToolbarSearch(value = search, placeholder = "Search this project".to_string())
@@ -94,56 +153,8 @@ pub(crate) fn ShellTabsScreen(#[prop(static)] shell: Shell) -> Element {
                     }),
                 )
             }),
-            body = ui! {
-                // The seat a navigator's outlet takes in a shell: it
-                // fills the frame, and a bounded tab is bounded by it.
-                view(style = Outlet()) {
-                    match tab.get() {
-                        ProjectTab::Overview | ProjectTab::Reports => {
-                            Stack(gap = StackGap::Lg) {
-                                StatGrid {
-                                    Stat(label = "Advance this week".to_string(), value = "42 m".to_string())
-                                    Stat(label = "Shifts logged".to_string(), value = "14".to_string())
-                                }
-                                for part in ["Scope", "Client", "Crew", "Equipment", "Safety"], key = part.to_string() {
-                                    Section(title = part.to_string()) {
-                                        Stack(gap = StackGap::Sm) {
-                                            LabelValue(label = "Owner".to_string(), value = Some("Dana Okafor".to_string()))
-                                            LabelValue(label = "Updated".to_string(), value = Some("3 Nov".to_string()))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        ProjectTab::Schedule => {
-                            view(style = Grid()) {
-                                Typography(content = "A custom grid, edge to edge".to_string(), muted = true)
-                            }
-                        }
-                        _ => {
-                            scroll_view(style = Rows()) {
-                                for i in 1..=40, key = i {
-                                    view(style = Row()) { Typography(content = format!("Heading {i}")) }
-                                }
-                            }
-                        }
-                    }
-                }
-            },
+            body = body,
         )
-    }
-}
-
-stylesheet! {
-    Outlet<idea_ui::IdeaThemeRef> {
-        base(_t) {
-            flex_direction: FlexDirection::Column,
-            flex_grow: 1.0,
-            flex_shrink: 1.0,
-            flex_basis: Length::Px(0.0),
-            min_width: Length::Px(0.0),
-            min_height: Length::Px(0.0),
-        }
     }
 }
 

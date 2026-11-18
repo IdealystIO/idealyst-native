@@ -120,10 +120,6 @@ pressed or read at rest sits in a safe area.
   above the inset.
 - Sheets and dialogs are outside the page and carry their own.
 
-A shell with a `live_variant` is the exception for now: its frame pads
-the bottom for every tab, so a bounded tab stops above the inset rather
-than running under it.
-
 ### spacing-ladder
 **A gap comes from the relationship between the things it separates. It
 is never picked by eye.**
@@ -171,9 +167,9 @@ Ask in order and stop at the first yes.
    one; if it carries a companion panel, the page holds a
    `SplitView(mode = Detail)`.
 
-A shell with tabs (a project, a worker) is one `Page` whose
-`live_variant` follows the tab on show; each tab takes a layout of its
-own from the same list and mounts no `Page`.
+A record with tabs (a project, a worker) is not a layout of its own:
+each tab is a screen, picks its layout from the same list, and mounts
+its own `Page` (rule `header-per-screen`).
 
 ## Pages
 
@@ -221,6 +217,25 @@ every screenful.**
 Each screen mounts its own header inside its own `Page`, so a
 navigator's push carries the header with the screen. Only the body
 scrolls under it. Anything pinned at the top must earn its height.
+
+### header-per-screen
+**A header belongs to the screen that shows it. The kit gives screens
+the parts to build one; it holds none above them.**
+
+`Page`, `PageHeader`, `Toolbar` and `ToolbarTabs` are components a
+screen composes. There is no shell that owns a header for the screens
+inside it, and no way for a screen to publish content into a header
+further up.
+
+- A tabbed record's tabs are screens. Each mounts its own `Page` with
+  its own header and tab strip. They read as one record because they
+  build that chrome from the same component (an app writes one
+  `ProjectHeader`), and a tab is free to differ where it needs to: its
+  own verbs, its own status.
+- Switching tabs rebuilds the header. State that must outlive the
+  switch (the open tab, a search term, a filter) is held above the
+  tabs, not inside the header.
+- What IS app-wide lives in `AppFrame`: the sidebar.
 
 ### header-nav
 **The way back is the app's to choose; the kit's own is a trail on the
@@ -532,7 +547,6 @@ For whoever adds to the kit:
   same elements. A `ui!` `match` on the width is for the cases that
   hold different elements (a menu and a sheet), and it lives inside the
   kit.
-- A layout mounted as a tab's body takes no header and adds no scroller
-  beyond what its seat says.
+- A layout adds no scroller beyond what its page variant says.
 - A mount test per form, asserting the form (sheet or menu, scroller or
   none, restyled or remounted), in `tests/mount.rs`.
