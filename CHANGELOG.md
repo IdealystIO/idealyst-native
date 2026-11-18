@@ -1408,6 +1408,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`idealyst test` runs a suite held by another workspace package** (`idealyst-cli` minor,
+  `robot-test` minor). An integration test of the app package builds the app's library for the
+  host, so a suite that only needs the robot client paid a host build of every UI crate (444 for
+  CrewForge's main app) and a rebuild after app edits. The app's
+  `[package.metadata.idealyst.test] package = "<crate>"` (and `test = "<target>"`), or
+  `--test-package` / `--test`, points the runner at another package's test target: it builds that
+  with `cargo test -p`, and runs it in that package's directory, its `CARGO_MANIFEST_DIR`. The
+  suite package names the app a bare `cargo test` of it drives in its own
+  `[package.metadata.idealyst.test] app` (a path, or a table by test target when one package holds
+  several apps' suites); without it, its directory matched no running app's and it drove whichever
+  was up. `idealyst test --plan` no longer needs a test target.
+
 - **`idealyst test --workers N`: a web suite on N copies of the app at once** (`idealyst-cli`
   minor). The app builds once; each worker has its own port, robot relay, browser and, for a
   full-stack project, its own server (started from the dev session's own server command, serving a

@@ -300,6 +300,31 @@ Keep tests independent of run order. Each test should be the only one
 mutating the state it asserts, and a robot function that resets the state
 is the cheap way to get there — wrapped in a fixture, so no test forgets it.
 
+### The suite in a package of its own
+
+An integration test of the app package builds the app's whole library for
+the host: a suite that only needs `robot-test` then pays a host build of
+every UI crate, and a host rebuild after each app edit. Put the suite in a
+workspace package of its own (one that does not depend on the app) and
+point the app at it:
+
+```toml
+# the app's Cargo.toml
+[package.metadata.idealyst.test]
+package = "my-app-e2e"   # whose tests/<test>.rs is the suite
+test = "main"            # the target (default `robot`)
+
+# my-app-e2e/Cargo.toml — what a bare `cargo test -p my-app-e2e` drives
+[package.metadata.idealyst.test]
+app = "../app"           # or { main = "../app", checkin = "../app-checkin" }
+```
+
+`--test-package` / `--test` override the app's settings for one run. The
+suite runs in its package's directory, which is also its
+`CARGO_MANIFEST_DIR`, as under `cargo test`. The suite package's `app`
+is for a bare `cargo test` only: it picks the running app whose project is
+that path (the runner hands its suite the app's address itself).
+
 ### Device classes: phone, tablet, desktop
 
 Target a kind of device rather than a platform. `form` is the app's own

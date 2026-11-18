@@ -8,7 +8,8 @@
 //! - `IDEALYST_ROBOT_BRIDGE=host:port` set (by `idealyst test`) → connect there.
 //! - else discover a running app under `~/.idealyst/apps`, preferring the one
 //!   whose `project_root` matches this crate's `CARGO_MANIFEST_DIR` (the case
-//!   where you ran `idealyst dev` in another terminal). An app an
+//!   where you ran `idealyst dev` in another terminal) — or, for a suite in
+//!   a package of its own, the app its manifest names ([`suite_app_dir`]). An app an
 //!   `idealyst test` run launched is never picked: that run drives it alone
 //!   ([`discover`]).
 //! - else **skip** — no app is reachable, so every test prints a skip note and
@@ -202,10 +203,50 @@ fn locate_bridge() -> Result<SocketAddr, String> {
         return Err("no HOME, so no ~/.idealyst/apps to search".to_string());
     }
     // Cargo sets CARGO_MANIFEST_DIR for the test binary's package; prefer the
-    // app registered for this very project.
-    let project = std::env::var_os("CARGO_MANIFEST_DIR").map(std::path::PathBuf::from);
+    // app registered for this very project, or the app a suite package names.
+    let project = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(std::path::PathBuf::from)
+        .map(|dir| suite_app_dir(&dir, test_target_name().as_deref()));
     discover_in(project.as_deref(), &apps_dirs)
         .ok_or_else(|| "no running app found (start `idealyst dev` or use `idealyst test`)".into())
+}
+
+/// The app a bare `cargo test` of the suite at `manifest_dir` drives: the
+/// suite package's own directory, unless its manifest names an app in
+/// `[package.metadata.idealyst.test] app` — one path for every target
+/// (`app = "../app-main"`), or a table by test target when one package
+/// holds the suites of several apps (`app = { main = "../app-main",
+/// checkin = "../app-checkin" }`). Paths are relative to `manifest_dir`.
+/// Without it a suite in its own package would match no app's
+/// `project_root` and drive whichever app was running.
+fn suite_app_dir(manifest_dir: &std::path::Path, target: Option<&str>) -> std::path::PathBuf {
+    std::fs::read_to_string(manifest_dir.join("Cargo.toml"))
+        .ok()
+        .and_then(|manifest| named_app(&manifest, target))
+        .map(|rel| manifest_dir.join(rel))
+        .unwrap_or_else(|| manifest_dir.to_path_buf())
+}
+
+/// `[package.metadata.idealyst.test] app` from a manifest, for `target`.
+fn named_app(manifest: &str, target: Option<&str>) -> Option<String> {
+    let doc: toml::Table = manifest.parse().ok()?;
+    let app = doc.get("package")?.get("metadata")?.get("idealyst")?.get("test")?.get("app")?;
+    match app {
+        toml::Value::String(path) => Some(path.clone()),
+        toml::Value::Table(by_target) => by_target.get(target?)?.as_str().map(str::to_string),
+        _ => None,
+    }
+}
+
+/// This test binary's target name: cargo names it `<target>-<hash>`.
+fn test_target_name() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    target_of_exe(exe.file_stem()?.to_str()?)
+}
+
+fn target_of_exe(stem: &str) -> Option<String> {
+    let (name, hash) = stem.rsplit_once('-')?;
+    (hash.len() == 16 && hash.chars().all(|c| c.is_ascii_hexdigit())).then(|| name.to_string())
 }
 
 /// The first registry in `apps_dirs` holding a live app (see [`discover`]).
@@ -258,6 +299,37 @@ mod suite_tests {
 #[cfg(test)]
 mod locate_tests {
     use super::*;
+
+    /// A suite in a package of its own names the app it drives; without
+    /// that, its `CARGO_MANIFEST_DIR` matched no app and a bare `cargo test`
+    /// drove whichever app was running.
+    #[test]
+    fn a_suite_package_finds_the_app_its_manifest_names() {
+        let one = "[package]\nname = \"e2e\"\n[package.metadata.idealyst.test]\napp = \"../app-main\"\n";
+        assert_eq!(named_app(one, Some("robot")).as_deref(), Some("../app-main"));
+        assert_eq!(named_app(one, None).as_deref(), Some("../app-main"), "one app for every target");
+        let per_target =
+            "[package.metadata.idealyst.test.app]\nmain = \"../app-main\"\ncheckin = \"../app-checkin\"\n";
+        assert_eq!(named_app(per_target, Some("checkin")).as_deref(), Some("../app-checkin"));
+        assert_eq!(named_app(per_target, Some("other")), None);
+        assert_eq!(named_app("[package]\nname = \"app\"\n", Some("robot")), None, "an app's own suite");
+
+        let root = std::env::temp_dir().join(format!("robot-test-suite-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let e2e = root.join("robot-e2e");
+        std::fs::create_dir_all(&e2e).unwrap();
+        std::fs::write(e2e.join("Cargo.toml"), per_target).unwrap();
+        assert_eq!(suite_app_dir(&e2e, Some("main")), e2e.join("../app-main"));
+        assert_eq!(suite_app_dir(&e2e, Some("other")), e2e, "unnamed: the package itself, as before");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_test_binary_names_its_target() {
+        assert_eq!(target_of_exe("robot-0123456789abcdef").as_deref(), Some("robot"));
+        assert_eq!(target_of_exe("app-checkin-0123456789abcdef").as_deref(), Some("app-checkin"));
+        assert_eq!(target_of_exe("robot"), None);
+    }
 
     /// Regression: `#[idea_test]` searched only `~/.idealyst/apps`, so a
     /// Windows app under Wine (registered in `apps-wine`) was never found,

@@ -14,6 +14,10 @@ native-parity = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = "1"
+# A suite in its own package names the app it drives in its manifest
+# (`[package.metadata.idealyst.test] app`), read when a bare `cargo test`
+# discovers the running app.
+toml = "0.8"
 # `app.file_picker()`: a queued file's bytes cross the bridge base64.
 base64 = "0.22"
 # `app.camera().fake_image(path)`: the test image is decoded on the test's side.

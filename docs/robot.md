@@ -738,7 +738,14 @@ let mut kiosk = App::connect_project("../app-checkin");
 <project>` (`--suite <names>` for some suites only) builds and launches the app (`idealyst dev --local`), waits for
 THIS project's app to register — a registration from another project or an
 earlier run is ignored — and runs the `tests/robot.rs` suite against it
-(compiled before the app launches, then run directly). The dev session's
+(compiled before the app launches, then run directly). The suite can be
+another workspace package's test target — `[package.metadata.idealyst.test]
+package = "<crate>"` (and `test = "<target>"`) on the app, or
+`--test-package` / `--test` — so it needn't build the app's library for
+the host; it then runs in that package's directory (its
+`CARGO_MANIFEST_DIR`), and the package names the app a bare `cargo test`
+of it drives (`[package.metadata.idealyst.test] app = "../app"`, or a
+table by test target). `--plan` builds nothing and needs no test target. The dev session's
 output goes to a log file named on failure. `--windows` runs on a remote
 machine with `IDEALYST_WINDOWS_REMOTE` (docs/windows.md); `--linux` needs a
 Linux host. `--attach` drives an app already running — never one another

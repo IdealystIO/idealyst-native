@@ -62,6 +62,7 @@ pub(crate) mod workers;
 
 use anyhow::{Context, Result};
 use browser::{device_preset, Emulation, HeadlessBrowser};
+use matrix::ProjectTest;
 use clap::Parser;
 use dev_events::sessions::{self, SessionEntry};
 use robot_test::{default_apps_dirs, discover_all, RobotClient};
@@ -77,9 +78,17 @@ pub struct Args {
     /// Project directory.
     #[arg(default_value = ".")]
     pub dir: PathBuf,
-    /// Cargo test target to run (the file `tests/<name>.rs`).
-    #[arg(long, default_value = "robot")]
-    pub test: String,
+    /// Cargo test target to run (the file `tests/<name>.rs` of the suite's
+    /// package). Default: `[package.metadata.idealyst.test] test`, else
+    /// `robot` (`parity` for `--parity`).
+    #[arg(long)]
+    pub test: Option<String>,
+    /// The workspace package whose test target is the suite, when it isn't
+    /// the app's own — a crate holding only the robot tests, so the suite
+    /// doesn't build the app's library for the host. Default:
+    /// `[package.metadata.idealyst.test] package`, else the app.
+    #[arg(long, value_name = "PACKAGE")]
+    pub test_package: Option<String>,
     /// Only run tests whose name contains this filter (passed to the test binary).
     #[arg(long, value_name = "FILTER")]
     pub filter: Option<String>,
@@ -727,23 +736,23 @@ pub fn run(args: Args) -> Result<()> {
         return run_parity(&args, &dir, &user_env);
     }
 
-    let test_file = dir.join("tests").join(format!("{}.rs", args.test));
-    anyhow::ensure!(
-        test_file.is_file(),
-        "no test target at {} — write `#[idea_test]` functions there (or pass --test <name>)",
-        test_file.display()
-    );
+    // The device matrix, when the project declares one and no one-off
+    // device flag overrides it (see "Device matrix" in the module docs).
+    let project = matrix::load(&dir)?;
+    // The suite's test target, checked before anything builds; `--plan`
+    // builds nothing and does without one.
+    let suite = SuiteTarget::resolve(&args, &project, &dir, "robot")?;
+    if !args.plan {
+        suite.ensure_exists("write `#[idea_test]` functions there")?;
+    }
 
     if args.list_suites {
-        let test_bin = build_test_binary(&dir, &args.test)?;
-        let tests = list_tests(&test_bin, &dir)?;
+        let test_bin = build_test_binary(&suite)?;
+        let tests = list_tests(&test_bin, &suite.dir)?;
         print!("{}", describe_suites(&tests));
         return Ok(());
     }
 
-    // The device matrix, when the project declares one and no one-off
-    // device flag overrides it (see "Device matrix" in the module docs).
-    let project = matrix::load(&dir)?;
     let one_off = !args.viewport.is_empty()
         || !args.device.is_empty()
         || args.mobile
@@ -848,18 +857,18 @@ pub fn run(args: Args) -> Result<()> {
     // and the suite binary is then run directly per size (see
     // `build_test_binary` for why it must not be built after the app).
     let (test_bin, tests) = if runs_anything {
-        let test_bin = build_test_binary(&dir, &args.test)?;
+        let test_bin = build_test_binary(&suite)?;
         // The suite's test names, which carry the platforms a
         // `#[idea_test(platforms = …)]` test declared.
         let tests = if args.suites.is_empty() {
-            list_tests(&test_bin, &dir).unwrap_or_else(|e| {
+            list_tests(&test_bin, &suite.dir).unwrap_or_else(|e| {
                 note!("could not list the suite's tests ({e:#}); platform-bound tests stay ignored");
                 TestList::default()
             })
         } else {
             // `--suite` selects by name from the list: without it there is
             // nothing to select, so it fails the run.
-            let tests = list_tests(&test_bin, &dir).context("listing the tests to pick --suite from")?;
+            let tests = list_tests(&test_bin, &suite.dir).context("listing the tests to pick --suite from")?;
             check_suites(&tests, &args.suites)?;
             tests
         };
@@ -881,6 +890,7 @@ pub fn run(args: Args) -> Result<()> {
             user_env: &env0,
             env_template: &user_env,
             worker_ports: &worker_ports,
+            suite: &suite,
             test_bin: &test_bin,
             tests: &tests,
         };
@@ -933,6 +943,8 @@ struct JobCtx<'a> {
     env_template: &'a [(String, String)],
     /// The ports of workers 1… (`--workers`).
     worker_ports: &'a [u16],
+    /// The suite's test target (its package and name).
+    suite: &'a SuiteTarget,
     test_bin: &'a Path,
     tests: &'a TestList,
 }
@@ -1008,6 +1020,7 @@ fn run_job(cx: &JobCtx, job: &Job, port: u16, index: usize, suite_log: Option<&P
             user_env: cx.user_env,
             env_template: cx.env_template,
             worker_ports: cx.worker_ports,
+            suite: cx.suite,
             test_bin: cx.test_bin,
             tests: cx.tests,
             index: index + n,
@@ -1187,6 +1200,7 @@ struct LaunchCtx<'a> {
     user_env: &'a [(String, String)],
     env_template: &'a [(String, String)],
     worker_ports: &'a [u16],
+    suite: &'a SuiteTarget,
     test_bin: &'a Path,
     tests: &'a TestList,
     index: usize,
@@ -1197,8 +1211,21 @@ struct LaunchCtx<'a> {
 /// Launch the app (unless attaching), then run the suite at each of the
 /// launch's sizes, appending one result per size to `results`.
 fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) -> Result<()> {
-    let LaunchCtx { args, dir, platform, port, isolated, user_env, env_template, worker_ports, test_bin, tests, index, suite_log } =
-        *ctx;
+    let LaunchCtx {
+        args,
+        dir,
+        platform,
+        port,
+        isolated,
+        user_env,
+        env_template,
+        worker_ports,
+        suite,
+        test_bin,
+        tests,
+        index,
+        suite_log,
+    } = *ctx;
     let apps_dirs = registry_dirs()?;
     // Registrations already live before the launch belong to another run
     // (an earlier launch of this one included) or to the app being attached
@@ -1283,7 +1310,7 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
                 results.push(RunResult::new(size.label.clone(), Outcome::Skipped(nothing_to_run(args, &here))));
                 continue;
             }
-            results.push(workers::run_size(&mut pool, size, &planned, test_bin, dir, &format!("{index}-{n}"), suite_log));
+            results.push(workers::run_size(&mut pool, size, &planned, test_bin, &suite.dir, &format!("{index}-{n}"), suite_log));
         }
         // Workers 1… first (their servers and browsers), then this
         // launch's own browser and dev session.
@@ -1322,21 +1349,22 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
             if starts_upright(platform) {
                 turn_upright(addr, device_screen.as_deref());
             }
-            note!("running `{}` on {platform} at {}…\n", args.test, size.label);
-            let mut suite = Command::new(test_bin);
+            note!("running `{}` on {platform} at {}…\n", suite.name, size.label);
+            let mut suite_cmd = Command::new(test_bin);
             // Where the suite's not-applicable tests are recorded.
             let _ = std::fs::remove_file(&na_file);
-            suite
-                .current_dir(dir)
-                // What `cargo test` would set, for suites that read it at runtime.
-                .env("CARGO_MANIFEST_DIR", dir)
+            suite_cmd
+                // Where `cargo test` runs a test, and what it sets, for
+                // suites that read either at runtime: the suite's package.
+                .current_dir(&suite.dir)
+                .env("CARGO_MANIFEST_DIR", &suite.dir)
                 .envs(suite_env(size, port, user_env))
                 .env("IDEALYST_ROBOT_BRIDGE", addr.to_string())
                 .env(robot_test::RESULTS_ENV, &na_file);
 
             if let Some(control) = control {
-                suite.env(robot_test::browser_control::ENV, control.to_string());
-                suite.env(robot_test::browser_control::ENGINE_ENV, size.engine.name());
+                suite_cmd.env(robot_test::browser_control::ENV, control.to_string());
+                suite_cmd.env(robot_test::browser_control::ENGINE_ENV, size.engine.name());
             }
             // The platform the app itself reports (an attached app may not be
             // the default `--web`); an app too old to say is taken at the flag.
@@ -1348,19 +1376,19 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
             let Some(selected) = &selection.args else {
                 return Ok(Outcome::Skipped(nothing_to_run(args, &here)));
             };
-            suite.args(selected);
+            suite_cmd.args(selected);
             // One shared app: tests run serialized against it.
-            suite.args(["--test-threads=1", "--nocapture"]);
-            suite.arg("--logfile").arg(&test_log);
+            suite_cmd.args(["--test-threads=1", "--nocapture"]);
+            suite_cmd.arg("--logfile").arg(&test_log);
             if let Some(log) = suite_log {
                 let file = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(log)
                     .with_context(|| format!("opening {}", log.display()))?;
-                suite.stdout(file.try_clone()?).stderr(file);
+                suite_cmd.stdout(file.try_clone()?).stderr(file);
             }
-            let status = suite.status().with_context(|| format!("running {}", test_bin.display()))?;
+            let status = suite_cmd.status().with_context(|| format!("running {}", test_bin.display()))?;
             Ok(if status.success() { Outcome::Passed } else { Outcome::Failed(status.code()) })
         })();
         let outcome = ran.unwrap_or_else(|e| {
@@ -1524,22 +1552,13 @@ fn run_parity(args: &Args, dir: &Path, user_env: &[(String, String)]) -> Result<
          --emulator and several viewports are for single-platform runs"
     );
 
-    // The parity test lives in its own target by convention; default to
-    // `tests/parity.rs` unless the user pointed `--test` elsewhere.
-    let test_name = if args.test == "robot" {
-        "parity".to_string()
-    } else {
-        args.test.clone()
-    };
-    let test_file = dir.join("tests").join(format!("{test_name}.rs"));
-    anyhow::ensure!(
-        test_file.is_file(),
-        "no parity test target at {} — write a `#[test]` using `robot_test::parity` there \
-         (or pass --test <name>)",
-        test_file.display()
-    );
-
-    let test_bin = build_test_binary(dir, &test_name)?;
+    // The parity test lives in its own target by convention: `parity`
+    // unless `--test` names another (the manifest's `test` is the robot
+    // suite's), in the suite's package.
+    let project = matrix::load(dir)?;
+    let suite = SuiteTarget::resolve(args, &ProjectTest { test: None, ..project }, dir, "parity")?;
+    suite.ensure_exists("write a `#[test]` using `robot_test::parity` there")?;
+    let test_bin = build_test_binary(&suite)?;
 
     let viewport = match args.viewport.first() {
         Some(v) => parse_viewport(v)?,
@@ -1639,8 +1658,9 @@ fn run_parity(args: &Args, dir: &Path, user_env: &[(String, String)]) -> Result<
     // reads. Executing the binary rather than re-entering cargo keeps the
     // workspace build out of the picture entirely (see `build_test_binary`).
     eprintln!("\n[parity] running {}…\n", test_bin.display());
+    let suite_dir = suite.dir.clone();
     let mut suite = Command::new(&test_bin);
-    suite.current_dir(dir).env("CARGO_MANIFEST_DIR", dir).envs(user_env.iter().cloned());
+    suite.current_dir(&suite_dir).env("CARGO_MANIFEST_DIR", &suite_dir).envs(user_env.iter().cloned());
     for (platform, addr) in &bridges {
         suite.env(
             format!("IDEALYST_{}_BRIDGE", platform.to_uppercase()),
@@ -1808,41 +1828,129 @@ fn dev_command(self_exe: &Path, o: &DevOpts) -> Command {
 /// error[E0308]: expected `Element`, found `Element`
 /// note: there are multiple different versions of crate `runtime_scene`
 /// ```
-fn build_test_binary(dir: &Path, test_name: &str) -> Result<PathBuf> {
-    note!("building the `{test_name}` test target…");
-    let out = Command::new("cargo")
-        .current_dir(dir)
-        .args(["test", "--test", test_name, "--no-run", "--message-format=json"])
+fn build_test_binary(suite: &SuiteTarget) -> Result<PathBuf> {
+    let test_name = &suite.name;
+    let what = match &suite.package {
+        Some(p) => format!("the `{test_name}` test target of {p}"),
+        None => format!("the `{test_name}` test target"),
+    };
+    note!("building {what}…");
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(&suite.dir).arg("test");
+    if let Some(package) = &suite.package {
+        cmd.args(["-p", package]);
+    }
+    let out = cmd
+        .args(["--test", test_name, "--no-run", "--message-format=json"])
         .stderr(Stdio::inherit())
         .output()
         .context("running `cargo test --no-run` (is cargo on PATH?)")?;
-    anyhow::ensure!(
-        out.status.success(),
-        "building the `{test_name}` test target failed (cargo's errors are above)"
-    );
+    anyhow::ensure!(out.status.success(), "building {what} failed (cargo's errors are above)");
+    test_executable(&String::from_utf8_lossy(&out.stdout), test_name, &suite.dir.join("Cargo.toml")).ok_or_else(|| {
+        anyhow::anyhow!(
+            "cargo reported no executable for {what} — is `{}` a test target of that package?",
+            suite.file().display()
+        )
+    })
+}
+
+/// The executable cargo's `--message-format=json` reports for the test
+/// target `name` of the package at `manifest`. Matched on both: a
+/// workspace build can report a same-named test of another package.
+fn test_executable(messages: &str, name: &str, manifest: &Path) -> Option<PathBuf> {
+    let manifest = std::fs::canonicalize(manifest).unwrap_or_else(|_| manifest.to_path_buf());
     let mut found = None;
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if v.get("reason").and_then(|r| r.as_str()) != Some("compiler-artifact") {
+    for line in messages.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v["reason"] != "compiler-artifact" || v["target"]["name"] != name {
             continue;
         }
-        let is_wanted = v
-            .get("target")
-            .and_then(|t| t.get("name"))
-            .and_then(|n| n.as_str())
-            == Some(test_name);
-        if let (true, Some(exe)) = (is_wanted, v.get("executable").and_then(|e| e.as_str())) {
+        let is_test = v["target"]["kind"].as_array().is_some_and(|k| k.iter().any(|k| k == "test"));
+        let theirs = v["manifest_path"]
+            .as_str()
+            .map(|m| std::fs::canonicalize(m).unwrap_or_else(|_| PathBuf::from(m)) == manifest)
+            .unwrap_or(false);
+        if let (true, true, Some(exe)) = (is_test, theirs, v["executable"].as_str()) {
             found = Some(PathBuf::from(exe));
         }
     }
-    found.ok_or_else(|| {
-        anyhow::anyhow!(
-            "cargo reported no executable for the `{test_name}` test target — \
-             is `tests/{test_name}.rs` a test target of this package?"
-        )
-    })
+    found
+}
+
+/// The suite's test target: which package holds it, its name, and that
+/// package's directory (where `cargo test` runs it, and its
+/// `CARGO_MANIFEST_DIR`).
+#[derive(Debug, Clone, PartialEq)]
+struct SuiteTarget {
+    /// `None`: the app's own package.
+    package: Option<String>,
+    name: String,
+    dir: PathBuf,
+}
+
+impl SuiteTarget {
+    /// From `--test-package` / `--test`, else the app manifest's
+    /// `[package.metadata.idealyst.test]` `package` / `test`, else the app
+    /// and `default_name`. Another package must be in the app's cargo
+    /// workspace; its directory comes from `cargo metadata`.
+    fn resolve(args: &Args, project: &ProjectTest, app_dir: &Path, default_name: &str) -> Result<SuiteTarget> {
+        let name = args.test.clone().or_else(|| project.test.clone()).unwrap_or_else(|| default_name.to_string());
+        let Some(package) = args.test_package.clone().or_else(|| project.package.clone()) else {
+            return Ok(SuiteTarget { package: None, name, dir: app_dir.to_path_buf() });
+        };
+        let dir = workspace_package_dir(app_dir, &package)?;
+        Ok(SuiteTarget { package: Some(package), name, dir })
+    }
+
+    fn file(&self) -> PathBuf {
+        self.dir.join("tests").join(format!("{}.rs", self.name))
+    }
+
+    /// Fail, saying where to write it, when the target's file is missing.
+    fn ensure_exists(&self, write: &str) -> Result<()> {
+        let file = self.file();
+        anyhow::ensure!(
+            file.is_file(),
+            "no test target at {} — {write} (or pass --test <name>{})",
+            file.display(),
+            if self.package.is_none() {
+                ", or point [package.metadata.idealyst.test] package / --test-package at the crate that holds the suite"
+            } else {
+                ""
+            }
+        );
+        Ok(())
+    }
+}
+
+/// The directory of workspace package `name`, as `cargo metadata` run in
+/// `app_dir` reports it.
+fn workspace_package_dir(app_dir: &Path, name: &str) -> Result<PathBuf> {
+    let out = Command::new("cargo")
+        .current_dir(app_dir)
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .stderr(Stdio::inherit())
+        .output()
+        .context("running `cargo metadata` (is cargo on PATH?)")?;
+    anyhow::ensure!(out.status.success(), "`cargo metadata` failed in {}", app_dir.display());
+    let meta: serde_json::Value = serde_json::from_slice(&out.stdout).context("reading `cargo metadata`")?;
+    package_dir_in(&meta, name)
+}
+
+/// [`workspace_package_dir`] over `cargo metadata`'s JSON.
+fn package_dir_in(meta: &serde_json::Value, name: &str) -> Result<PathBuf> {
+    let packages = meta["packages"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let found = packages.iter().find(|p| p["name"] == name).and_then(|p| p["manifest_path"].as_str());
+    match found {
+        Some(manifest) => Ok(Path::new(manifest).parent().unwrap_or(Path::new(".")).to_path_buf()),
+        None => {
+            let names: Vec<&str> = packages.iter().filter_map(|p| p["name"].as_str()).collect();
+            anyhow::bail!(
+                "the test package `{name}` is not in this workspace (its packages: {})",
+                names.join(", ")
+            )
+        }
+    }
 }
 
 /// A suite binary's tests, from its own `--list`.
@@ -2823,6 +2931,93 @@ mod tests {
              in no suite (1)\n  plain\n"
         );
         assert!(describe_suites(&suite(&["plain"], &[])).starts_with("no suites"));
+    }
+
+    fn project(manifest: &str) -> ProjectTest {
+        matrix::parse(manifest).unwrap()
+    }
+
+    /// The suite's package and target come from the flags, else the app
+    /// manifest's `[package.metadata.idealyst.test]`, else the app and the
+    /// default name; the app's own suite runs where the app is.
+    #[test]
+    fn the_suite_target_comes_from_flags_then_the_manifest_then_the_app() {
+        let app = Path::new("/w/crates/app");
+        let plain = project("[package]\nname = \"app\"\n");
+        let own = SuiteTarget::resolve(&args(&[]), &plain, app, "robot").unwrap();
+        assert_eq!(own, SuiteTarget { package: None, name: "robot".into(), dir: app.to_path_buf() });
+        assert_eq!(SuiteTarget::resolve(&args(&["--test", "smoke"]), &plain, app, "robot").unwrap().name, "smoke");
+
+        let named = project("[package]\nname = \"app\"\n[package.metadata.idealyst.test]\ntest = \"main\"\n");
+        assert_eq!(SuiteTarget::resolve(&args(&[]), &named, app, "robot").unwrap().name, "main");
+        assert_eq!(SuiteTarget::resolve(&args(&["--test", "x"]), &named, app, "robot").unwrap().name, "x", "the flag wins");
+
+        let with_package = project(
+            "[package]\nname = \"app\"\n[package.metadata.idealyst.test]\npackage = \"robot-e2e\"\ntest = \"main\"\n\
+             [package.metadata.idealyst.test.devices]\nphone = { web = \"chromium:iphone-15\" }\n",
+        );
+        assert_eq!(with_package.package.as_deref(), Some("robot-e2e"));
+        assert!(with_package.matrix.is_some(), "beside the device matrix");
+        assert!(matrix::parse("[package.metadata.idealyst.test]\npackage = 3\n").is_err());
+    }
+
+    /// A suite package is found in the workspace by name; one that isn't
+    /// there is an error listing what is.
+    #[test]
+    fn a_suite_package_is_found_in_the_workspace() {
+        let meta = serde_json::json!({ "packages": [
+            { "name": "app-main", "manifest_path": "/w/crates/app-main/Cargo.toml" },
+            { "name": "robot-e2e", "manifest_path": "/w/crates/robot-e2e/Cargo.toml" },
+        ]});
+        assert_eq!(package_dir_in(&meta, "robot-e2e").unwrap(), Path::new("/w/crates/robot-e2e"));
+        let e = package_dir_in(&meta, "robot").unwrap_err().to_string();
+        assert!(e.contains("`robot` is not in this workspace") && e.contains("app-main, robot-e2e"), "{e}");
+    }
+
+    /// The executable is the test target of THAT package: a workspace
+    /// build can report a same-named test of another one, and a lib of the
+    /// same name is not it.
+    #[test]
+    fn the_built_suite_is_the_named_packages_test_target() {
+        let dir = tempfile::tempdir().unwrap();
+        for p in ["app", "e2e"] {
+            std::fs::create_dir_all(dir.path().join(p)).unwrap();
+            std::fs::write(dir.path().join(p).join("Cargo.toml"), "").unwrap();
+        }
+        let line = |pkg: &str, kind: &str, exe: &str| {
+            serde_json::json!({
+                "reason": "compiler-artifact",
+                "manifest_path": dir.path().join(pkg).join("Cargo.toml"),
+                "target": { "name": "robot", "kind": [kind] },
+                "executable": exe,
+            })
+            .to_string()
+        };
+        let messages = [line("app", "test", "/t/app-robot"), line("e2e", "lib", "/t/lib"), line("e2e", "test", "/t/e2e-robot")].join("\n");
+        assert_eq!(test_executable(&messages, "robot", &dir.path().join("e2e/Cargo.toml")), Some("/t/e2e-robot".into()));
+        assert_eq!(test_executable(&messages, "robot", &dir.path().join("app/Cargo.toml")), Some("/t/app-robot".into()));
+        assert_eq!(test_executable(&messages, "other", &dir.path().join("e2e/Cargo.toml")), None);
+    }
+
+    /// Regression: `--plan` prints the device matrix and builds nothing,
+    /// but failed on an app with no `tests/robot.rs` (its suite elsewhere)
+    /// before getting there.
+    #[test]
+    fn regression_plan_needs_no_test_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\
+             [package.metadata.idealyst.test.devices]\ndesktop = { web = \"1440x900\" }\n",
+        )
+        .unwrap();
+        let mut a = args(&["--plan"]);
+        a.dir = dir.path().to_path_buf();
+        run(a).expect("--plan runs without a test target");
+        let mut a = args(&[]);
+        a.dir = dir.path().to_path_buf();
+        let e = run(a).unwrap_err().to_string();
+        assert!(e.contains("no test target at") && e.contains("--test-package"), "a run still needs one: {e}");
     }
 
     #[test]

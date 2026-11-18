@@ -51,6 +51,12 @@ pub struct ProjectTest {
     pub matrix: Option<Matrix>,
     /// `[package.metadata.idealyst.app] targets`; `None` when absent.
     pub targets: Option<Vec<String>>,
+    /// `[package.metadata.idealyst.test] package`: the workspace package
+    /// whose test target is the suite, when it isn't the app's own.
+    pub package: Option<String>,
+    /// `[package.metadata.idealyst.test] test`: the suite's test target
+    /// name (the `--test` default).
+    pub test: Option<String>,
 }
 
 /// Read the matrix and the app's targets from `dir/Cargo.toml`.
@@ -70,8 +76,19 @@ pub fn parse(manifest: &str) -> Result<ProjectTest> {
         .and_then(|a| a.get("targets"))
         .and_then(|t| t.as_array())
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect());
-    let Some(devices) = idealyst.and_then(|i| i.get("test")).and_then(|t| t.get("devices")) else {
-        return Ok(ProjectTest { matrix: None, targets });
+    let test = idealyst.and_then(|i| i.get("test"));
+    let string = |key: &str| -> Result<Option<String>> {
+        match test.and_then(|t| t.get(key)) {
+            None => Ok(None),
+            Some(v) => v
+                .as_str()
+                .map(|s| Some(s.to_string()))
+                .with_context(|| format!("[package.metadata.idealyst.test] {key} must be a string")),
+        }
+    };
+    let (package, test_name) = (string("package")?, string("test")?);
+    let Some(devices) = test.and_then(|t| t.get("devices")) else {
+        return Ok(ProjectTest { matrix: None, targets, package, test: test_name });
     };
     let table = devices.as_table_like().context("[package.metadata.idealyst.test.devices] must be a table")?;
     let mut classes = Vec::new();
@@ -91,7 +108,7 @@ pub fn parse(manifest: &str) -> Result<ProjectTest> {
         }
         classes.push((class.to_string(), specs));
     }
-    Ok(ProjectTest { matrix: Some(Matrix { classes }), targets })
+    Ok(ProjectTest { matrix: Some(Matrix { classes }), targets, package, test: test_name })
 }
 
 /// A device the run makes before it can run on it: from what this machine
