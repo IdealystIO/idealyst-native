@@ -229,6 +229,35 @@ fn page_env_scripts(args: &Args) -> String {
     )
 }
 
+/// Whether a staged `index.html` carries page-environment `<script>`s
+/// other than `expected` (this launch's [`page_env_scripts`]): it was
+/// staged by a launch with a different `--app-env` or test-driver flag.
+fn staged_page_env_differs(html: &str, expected: &str) -> bool {
+    if !expected.is_empty() && !html.contains(expected) {
+        return true;
+    }
+    // Set by the earlier launch, absent from this one.
+    ["window.IDEALYST_APP_ENV=", "window.IDEALYST_TEST_DRIVER="]
+        .iter()
+        .any(|global| html.contains(global) && !expected.contains(global))
+}
+
+/// Remove a staged `index.html` whose page environment is another
+/// launch's. The server starts before this session's first bundle is
+/// staged and serves whatever is in `dist_web`; with the bundle's wasm
+/// unchanged that page boots the app at once, on the OLD `--app-env`,
+/// and `idealyst test --workers` copies it for each worker and fails to
+/// find this launch's environment in it. Without the file the server
+/// starts with no page and takes the one this session stages.
+fn drop_staged_index_of_another_page_env(dist_web: &Path, expected: &str) {
+    let index = dist_web.join("index.html");
+    let Ok(html) = std::fs::read_to_string(&index) else { return };
+    if staged_page_env_differs(&html, expected) {
+        crate::dlog!("dev web", "the staged index.html holds another launch's page environment; removed until this build stages its own");
+        let _ = std::fs::remove_file(&index);
+    }
+}
+
 /// Whether `idealyst test` launched this session: it then writes the
 /// [`WorkerTemplate`](super::test::workers::WorkerTemplate) a `--workers`
 /// run serves its other workers from.
@@ -3305,6 +3334,10 @@ fn launch_web_with_backend(
     // framework's router (`server::dev_stream`) and is told where it is.
     let dev_stream_env = sse_port.map(|p| format!("http://127.0.0.1:{p}"));
 
+    // A `--no-build` session serves the bundle as it stands.
+    if !args.no_build {
+        drop_staged_index_of_another_page_env(&dist_web, &page_env_scripts(args));
+    }
     let bundle_opts = full_stack_bundle_options(
         args,
         source,
@@ -6685,6 +6718,34 @@ mod tests {
         assert_eq!(run.matches("build_server_recorded(").count(), 1, "one native-only server build");
         assert!(run.contains("if server_owner == ServerOwner::Session {"), "the native-only build is gated on the plan");
         assert!(!run.contains("server_watch_setup("), "the watched build is the web launcher's");
+    }
+
+    /// `idealyst test --workers 3 --env A=1`, then the same with
+    /// `--env B=1` and no source change, stopped before any test: the
+    /// server served the first launch's staged `index.html` and the worker
+    /// copier found no `B` in it. A page staged under another environment
+    /// is removed at launch; one staged under this one is kept.
+    #[test]
+    fn regression_a_staged_index_of_another_app_env_is_not_served() {
+        let env = |pairs: &[(&str, &str)]| {
+            let pairs: Vec<(String, String)> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            super::super::test::workers::page_env_html(true, &pairs)
+        };
+        let page = |scripts: &str| format!("<html><head>{scripts}</head><body></body></html>");
+        let (a, b) = (env(&[("A", "1")]), env(&[("B", "1")]));
+        assert!(!staged_page_env_differs(&page(&a), &a));
+        assert!(staged_page_env_differs(&page(&a), &b), "another --env");
+        assert!(staged_page_env_differs(&page(&a), ""), "an environment this launch does not set");
+        assert!(staged_page_env_differs(&page(""), &a), "none where this launch sets one");
+        assert!(!staged_page_env_differs(&page(""), ""));
+
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("index.html");
+        std::fs::write(&index, page(&a)).unwrap();
+        drop_staged_index_of_another_page_env(dir.path(), &a);
+        assert!(index.is_file(), "this launch's own page stays");
+        drop_staged_index_of_another_page_env(dir.path(), &b);
+        assert!(!index.is_file(), "another launch's page is not served");
     }
 
     /// `idealyst test --env K=V` set K on the dev process, but only
