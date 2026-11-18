@@ -64,7 +64,9 @@ component_styles! {
             /// and a native backend leaves an unset property as it was.
             variant variant {
                 #[default]
-                regular(t) { background: t.color.surface() }
+                // The theme's raised fill, as a field's is: a card is
+                // something set ON the surface, and reads as one there.
+                regular(t) { background: t.color.control() }
                 outline(_t) { background: runtime_core::Color("transparent".into()) }
                 flat(t) {
                     background: t.color.surface_alt(),
@@ -107,7 +109,8 @@ component_styles! {
 pub mod variant {
     use runtime_core::IdealystSchema;
 
-    /// Regular — page-surface background framed by the 1px border. The
+    /// Regular — the theme's raised fill (`control`) framed by the 1px
+    /// border, so the card stands out from the surface it sits on. The
     /// default.
     #[derive(Copy, Clone, Default, Debug, IdealystSchema)]
     #[schema(value_of = "CardVariant", via = "idea_ui::components::{card::variant}")]
@@ -259,6 +262,17 @@ mod tests {
             },
             _ => panic!("Card renders a view"),
         }
+    }
+
+    /// A regular card is set ON the surface: it paints the theme's raised
+    /// fill, as a field does, so it reads against the page it sits on.
+    #[test]
+    fn a_regular_card_rests_on_the_control_fill() {
+        with_test_world(|| {
+            theme();
+            let rules = resolve_style(&view_style(Card(CardProps::default())));
+            assert_eq!(rules.background.as_ref().and_then(|c| c.name()), Some("color-control"));
+        });
     }
 
     // D7: a toned Card paints the tone's Soft tint as its background,
@@ -414,14 +428,13 @@ mod tests {
         pick(theme.colors()).clone()
     }
 
-    // The default is Regular: the page surface inside the 1px frame — the
-    // look every unannotated `Card(...)` had before the variants split.
+    // The default is Regular: the raised fill inside the 1px frame.
     #[test]
-    fn default_card_is_regular_surface_with_border() {
+    fn default_card_is_regular_fill_with_border() {
         with_test_world(|| {
             theme();
             let r = resolve_style(&view_style(Card(CardProps::default()))).as_ref().clone();
-            assert_eq!(r.background, Some(surface(|c| &c.surface)));
+            assert_eq!(r.background, Some(surface(|c| &c.control)));
             assert_eq!(widths(&r), [Some(1.0); 4]);
         });
     }
@@ -518,7 +531,7 @@ mod tests {
             assert_eq!(widths(&flat), [Some(0.0); 4], "Flat keeps its borderless arm");
             let regular = resolved(CardVariant::Regular, None);
             assert!(regular.shadow.is_some(), "the app's shadow lands on `regular`");
-            assert_eq!(regular.background, Some(surface(|c| &c.surface)), "and the surface stays");
+            assert_eq!(regular.background, Some(surface(|c| &c.control)), "and the fill stays");
             reset_styles();
         });
     }

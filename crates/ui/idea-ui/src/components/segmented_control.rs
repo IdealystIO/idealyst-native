@@ -138,7 +138,10 @@ component_styles! {
                 flex_shrink: 0.0,
                 padding: SEGMENT_TRACK_INSET,
                 gap: SEGMENT_TRACK_INSET,
-                background: t.color.surface_alt(),
+                // A well: the ground colour, a step below the surface in
+                // both themes, so the control-filled key in it is the
+                // lighter thing in light and in dark.
+                background: t.color.background(),
                 border_width: 1.0,
                 border_color: t.color.border(),
                 border_radius: t.radius.md(),
@@ -214,7 +217,10 @@ component_styles! {
                 #[default]
                 off(_t) {}
                 on(t) {
-                    background: t.color.surface(),
+                    // The theme's control fill, not the surface: the
+                    // surface is a breath off the track, and the selected
+                    // key has to read at a glance.
+                    background: t.color.control(),
                     border_color: t.color.border(),
                     color: t.color.text(),
                 }
@@ -811,7 +817,7 @@ mod tests {
 
     /// Every themed value the track and segments paint is a style token, so a
     /// theme swap retints them. The selected segment is a raised key — the
-    /// surface color with a border — on a `surface_alt` track.
+    /// control fill with a border — in a well of the ground colour.
     #[test]
     fn segmented_arms_are_built_from_style_tokens() {
         with_test_world(|| {
@@ -819,7 +825,7 @@ mod tests {
             install_idea_theme(light_theme());
             let name = |c: &Option<Tokenized<runtime_core::Color>>| c.as_ref().and_then(|c| c.name());
             let group = resolve_style(&SegmentedControlStyles::track().into_style_application());
-            assert_eq!(name(&group.background), Some("color-surface-alt"));
+            assert_eq!(name(&group.background), Some("color-background"));
             assert_eq!(name(&group.border_left_color), Some("color-border"));
             assert!(group.border_top_left_radius.as_ref().and_then(|r| r.name()).is_some());
             assert_eq!(
@@ -827,11 +833,16 @@ mod tests {
                 Some(Length::Px(SEGMENT_TRACK_INSET)),
                 "the selected segment sits SEGMENT_TRACK_INSET inside the track"
             );
+            // The selected key must read against its track in both
+            // themes: lighter than the well it sits in.
+            for theme in [light_theme(), idea_theme::theme::dark_theme()] {
+                assert_ne!(theme.colors.control.resolve().0, theme.colors.background.resolve().0);
+            }
             let seg = |sel: SegmentedControlSelected| {
                 resolve_style(&SegmentedControlStyles::segment().set(sel).into_style_application())
             };
             let (on, off) = (seg(SegmentedControlSelected::On), seg(SegmentedControlSelected::Off));
-            assert_eq!(name(&on.background), Some("color-surface"));
+            assert_eq!(name(&on.background), Some("color-control"));
             assert_eq!(name(&on.border_left_color), Some("color-border"));
             assert_eq!(name(&on.color), Some("color-text"));
             assert_eq!(name(&off.color), Some("color-text-muted"));

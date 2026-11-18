@@ -134,7 +134,7 @@ fn json_round_trips_through_a_fresh_draft() {
         // must land exactly where the first one was.
         draft.revert();
         flush_signals();
-        assert_eq!(token_value("color-surface"), Some(TokenValue::Color(Color("#f8f9fb".into()))));
+        assert_eq!(token_value("color-surface"), Some(TokenValue::Color(Color("#fcfcfb".into()))));
 
         let applied = draft.load_json(&saved).expect("the file this crate wrote must load");
         flush_signals();
@@ -179,7 +179,7 @@ fn a_bad_value_aborts_the_whole_load() {
         assert_eq!(token_value("color-surface"), before, "nothing was applied");
         assert_eq!(
             draft.find("color-surface").unwrap().text.get(),
-            "#f8f9fb",
+            "#fcfcfb",
             "and no control was moved",
         );
     });
@@ -221,8 +221,8 @@ fn revert_restores_the_values_the_draft_opened_with() {
 
         draft.revert();
         flush_signals();
-        assert_eq!(draft.find("color-surface").unwrap().text.get(), "#f8f9fb");
-        assert_eq!(token_value("color-surface"), Some(TokenValue::Color(Color("#f8f9fb".into()))));
+        assert_eq!(draft.find("color-surface").unwrap().text.get(), "#fcfcfb");
+        assert_eq!(token_value("color-surface"), Some(TokenValue::Color(Color("#fcfcfb".into()))));
     });
 }
 
@@ -260,7 +260,7 @@ fn regression_keystroke_commit_does_not_lag_by_one_edit() {
         draft.commit("color-surface").unwrap();
         assert_eq!(
             token_value("color-surface"),
-            Some(TokenValue::Color(Color("#f8f9fb".into()))),
+            Some(TokenValue::Color(Color("#fcfcfb".into()))),
             "commit reads FLUSHED text — this is why the input path uses commit_text",
         );
 
@@ -438,7 +438,7 @@ fn is_changed_tracks_the_control_against_its_starting_value() {
         flush_signals();
         assert!(entry.is_changed());
 
-        entry.text.set("#f8f9fb".into());
+        entry.text.set("#fcfcfb".into());
         flush_signals();
         assert!(!entry.is_changed(), "back to the opening value reads as unchanged");
 

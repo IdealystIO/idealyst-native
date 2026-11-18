@@ -32,9 +32,10 @@ NOT an idea-ui-only facility:
   `control`, `text`, `text_muted`, `text_inverse`, `border`, `border_hover`,
   `border_strong`, `focus_ring`, `overlay`. Three of them are the surfaces:
   `surface` is the primary one (pages, cards, dialogs), `background` the
-  secondary one (the ground behind it), and `control` the fill of an
-  uncoloured control (a field, a select, an outlined button), kept a step
-  apart from `surface` so a control reads as one. `surface_alt` is a wash
+  secondary one (the ground behind it), and `control` the fill of what is
+  set on a surface and is not coloured (a field, a select, an outlined
+  button, a card), kept a step apart from `surface` so those read against
+  it. `surface_alt` is a wash
   (hover, selection, a well), not a surface. Plus `table_header`, the one component-scoped
   color: the `Table` header band (`<th>` cells). It defaults to the
   `surface_alt` value, so the stock look is unchanged, but it exists as its own

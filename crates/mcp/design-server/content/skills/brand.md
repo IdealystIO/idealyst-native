@@ -45,7 +45,7 @@ specifies:
 | --- | --- |
 | primary color | `intents.primary` — all six slots: `solid_bg`, `solid_text`, `soft_bg`, `soft_text`, `fg`, `border` |
 | focus color | `colors.focus_ring` (usually the primary) |
-| brand grays | `colors.background` (the ground), `surface` (where the work is), `control` (the fill of fields and outlined buttons), `surface_alt` (hover and selection washes), `text`, `text_muted`, `border`, `border_hover`, `border_strong` |
+| brand grays | `colors.background` (the ground), `surface` (where the work is), `control` (the fill of fields, outlined buttons and cards), `surface_alt` (hover and selection washes), `text`, `text_muted`, `border`, `border_hover`, `border_strong` |
 | corner style | `radius.sm / md / lg` (sharp ≈ 2/4/6, default 4/8/12, round ≈ 6/10/16) |
 | typeface | `font` (`FontFamily::System("Brand, system-ui, sans-serif")` or a registered `Typeface`) |
 | type scale | `typography.*_size` — only if the brand defines one |

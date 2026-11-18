@@ -11,20 +11,25 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
-- **The idea theme has a control fill, an off-white primary surface, and round buttons**
+- **The idea theme has a control fill, a near-white primary surface, gray neutrals, and round buttons**
   (`idea-theme` major, `idea-ui` minor). Every app on the stock theme looks different after
   upgrading:
   - `Colors` gains a field, `control` (`color-control`): the fill of an uncoloured control. A
     `Field`, `Select` and `Autocomplete` box now paints it where it painted `surface`, and an
-    `Outlined` `Button` / `IconButton` rests on it where it was transparent. An outlined `Tag`,
+    `Outlined` `Button` / `IconButton` rests on it where it was transparent, and a `Regular`
+    `Card` and a `SegmentedControl`'s selected segment paint it where they painted `surface`
+    (the segmented track is now `background`). An outlined `Tag`,
     `Chip` or `Alert` is unchanged. Code that builds a `Colors { .. }` literal must add the field.
-  - The light theme's `surface` is `#f8f9fb` (was `#ffffff`) and its `background` `#eef1f5` (was
-    `#f6f7f9`), so the white `control` reads as a control on it. The dark theme's neutrals are
-    unchanged; its `control` is `#151d2e`.
+  - The light theme's `surface` is `#fcfcfb` (was `#ffffff`) and its `background` `#f1f1f0` (was
+    `#f6f7f9`): the white `control` is a subtle step on the surface, and the ground a clear step
+    behind it. The dark theme's `control` is `#1e1e1d`, a step lighter than its surface.
+  - Both themes' neutrals are grays with a trace of warmth where they were blue-leaning slate:
+    surfaces, text, borders, the overlay, the shadow, the table header, the dark table row tones,
+    and the `secondary` and `neutral` intents. The other intents and the palette are unchanged.
   - `Button`'s default `shape` is `Pill` (was `Md`). Pass `shape = shape::Md` for the old corners,
     or restyle the default once: `ButtonStyles::restyle(|s| s.root().arm(ButtonShape::Pill, …))`.
-  - To keep the old look app-wide, set the three colours back on your theme
-    (`surface = #ffffff`, `background = #f6f7f9`, `control = #ffffff`).
+  - To keep the old look app-wide, set the old values back on your theme, starting with
+    `surface = #ffffff`, `background = #f6f7f9` and `control = #ffffff`.
 
 - **The idealyst MCP advertises 44 tools instead of 87: families are one tool with an argument**
   (`mcp-server` major, `mcp-catalog` patch, CLI). The tool definitions a client loads into

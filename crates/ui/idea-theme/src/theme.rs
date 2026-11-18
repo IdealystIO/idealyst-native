@@ -174,11 +174,11 @@ pub struct Palette {
 /// - [`background`](Self::background) — the SECONDARY surface: the
 ///   ground the primary one stands on. The app canvas, a sidebar behind
 ///   a raised page.
-/// - [`control`](Self::control) — the fill of a control that is not
-///   coloured: a text field, a select, an outlined button. It is a
-///   surface in that things are drawn on it, but its job is to make a
-///   control read as one against whichever surface it stands on, so it
-///   is a step apart from `surface`.
+/// - [`control`](Self::control) — the fill of what is set ON a surface
+///   and is not coloured: a text field, a select, an outlined button, a
+///   card. It is a surface in that things are drawn on it, but its job
+///   is to make those read against whichever surface they stand on, so
+///   it is a step apart from `surface`.
 ///
 /// [`surface_alt`](Self::surface_alt) is a WASH, not a surface: a hover,
 /// a selected row, a well inside a surface.
@@ -190,8 +190,8 @@ pub struct Colors {
     pub surface: Tokenized<Color>,
     /// A wash on a surface: hover, selection, a recessed well.
     pub surface_alt: Tokenized<Color>,
-    /// The fill of an uncoloured control: fields, selects, outlined
-    /// buttons.
+    /// The fill of what is set on a surface: fields, selects, outlined
+    /// buttons, cards.
     pub control: Tokenized<Color>,
 
     pub text: Tokenized<Color>,
@@ -1272,7 +1272,7 @@ fn dark_palette() -> Palette {
 fn default_effects() -> Effects {
     const NO_GLOW: &str = "rgba(0, 0, 0, 0)";
     Effects {
-        shadow: tok("effect-shadow", "rgba(15, 17, 21, 0.10)"),
+        shadow: tok("effect-shadow", "rgba(23, 23, 23, 0.10)"),
         glow_primary: tok("effect-glow-primary", NO_GLOW),
         glow_secondary: tok("effect-glow-secondary", NO_GLOW),
         glow_neutral: tok("effect-glow-neutral", NO_GLOW),
@@ -1290,28 +1290,32 @@ fn default_effects() -> Effects {
 pub fn light_theme() -> IdeaThemeDefaults {
     IdeaThemeDefaults {
         colors: Colors {
-            // The primary surface is a breath off white, so a white
-            // control reads as a control on it; the ground behind it is a
-            // step darker again.
-            background: tok("color-background", "#eef1f5"),
-            surface: tok("color-surface", "#f8f9fb"),
-            surface_alt: tok("color-surface-alt", "#f1f5f9"),
+            // The neutrals are GRAY with a trace of warmth: no blue in
+            // them (not slate) and no visible yellow either.
+            //
+            // The primary surface is nearly white, and a white control or
+            // card on it is a subtle step, read as much by its border as
+            // by its fill; the ground behind the surface is a clear step
+            // darker.
+            background: tok("color-background", "#f1f1f0"),
+            surface: tok("color-surface", "#fcfcfb"),
+            surface_alt: tok("color-surface-alt", "#f5f5f4"),
             control: tok("color-control", "#ffffff"),
 
-            text: tok("color-text", "#0f172a"),
-            text_muted: tok("color-text-muted", "#64748b"),
+            text: tok("color-text", "#1a1a19"),
+            text_muted: tok("color-text-muted", "#737370"),
             text_inverse: tok("color-text-inverse", "#ffffff"),
 
-            border: tok("color-border", "#e3e8ef"),
-            border_hover: tok("color-border-hover", "#cdd5e0"),
-            border_strong: tok("color-border-strong", "#94a3b8"),
+            border: tok("color-border", "#e8e8e6"),
+            border_hover: tok("color-border-hover", "#d6d6d3"),
+            border_strong: tok("color-border-strong", "#a3a3a0"),
 
             focus_ring: tok("color-focus-ring", "#6366f1"),
-            overlay: tok("color-overlay", "rgba(15, 23, 42, 0.45)"),
+            overlay: tok("color-overlay", "rgba(23, 23, 23, 0.45)"),
 
             // Defaults to the `surface_alt` value — table headers keep
             // the exact tint they had before the token existed.
-            table_header: tok("color-table-header", "#f1f5f9"),
+            table_header: tok("color-table-header", "#f5f5f4"),
 
             // Table row tones — the intent soft tints, which are already
             // opaque in this theme; hover steps one shade deeper.
@@ -1330,20 +1334,20 @@ pub fn light_theme() -> IdeaThemeDefaults {
                 "#eef2ff", "#3730a3",
                 "#4f46e5", "#c7d2fe",
             ),
-            // secondary: slate gray
+            // secondary: gray
             secondary: intent_colors!(
                 "secondary",
-                "#475569", "#ffffff",
-                "#f1f5f9", "#334155",
-                "#475569", "#cbd5e1",
+                "#525250", "#ffffff",
+                "#f5f5f4", "#404040",
+                "#525250", "#d4d4d2",
             ),
-            // neutral: solid is a dark slate (think "Cancel" buttons);
+            // neutral: solid is a dark gray (think "Cancel" buttons);
             // soft is the surface-alt wash.
             neutral: intent_colors!(
                 "neutral",
-                "#334155", "#ffffff",
-                "#f1f5f9", "#334155",
-                "#475569", "#e2e8f0",
+                "#404040", "#ffffff",
+                "#f5f5f4", "#404040",
+                "#525250", "#e5e5e3",
             ),
             success: intent_colors!(
                 "success",
@@ -1383,36 +1387,36 @@ pub fn light_theme() -> IdeaThemeDefaults {
 pub fn dark_theme() -> IdeaThemeDefaults {
     IdeaThemeDefaults {
         colors: Colors {
-            background: tok("color-background", "#0a0e17"),
-            surface: tok("color-surface", "#0f1625"),
-            surface_alt: tok("color-surface-alt", "#1a2336"),
+            background: tok("color-background", "#0e0e0e"),
+            surface: tok("color-surface", "#171716"),
+            surface_alt: tok("color-surface-alt", "#252524"),
             // Lifted off the surface, where light's control is brighter
             // than its surface: a control is the lighter thing in both.
-            control: tok("color-control", "#151d2e"),
+            control: tok("color-control", "#1e1e1d"),
 
-            text: tok("color-text", "#e6edf6"),
-            text_muted: tok("color-text-muted", "#8b97aa"),
-            text_inverse: tok("color-text-inverse", "#0a0e17"),
+            text: tok("color-text", "#f2f2f0"),
+            text_muted: tok("color-text-muted", "#a1a19e"),
+            text_inverse: tok("color-text-inverse", "#0e0e0e"),
 
-            border: tok("color-border", "#1f2a3d"),
-            border_hover: tok("color-border-hover", "#2c3a52"),
-            border_strong: tok("color-border-strong", "#475569"),
+            border: tok("color-border", "#2a2a29"),
+            border_hover: tok("color-border-hover", "#3a3a38"),
+            border_strong: tok("color-border-strong", "#525250"),
 
             focus_ring: tok("color-focus-ring", "#818cf8"),
             overlay: tok("color-overlay", "rgba(0, 0, 0, 0.62)"),
 
             // Matches dark `surface_alt` — see `light_theme`.
-            table_header: tok("color-table-header", "#1a2336"),
+            table_header: tok("color-table-header", "#252524"),
 
             // Table row tones — the dark intent tints (rgba over the
-            // surface) precomposited onto `surface` #0f1625, so they stay
+            // surface) precomposited onto `surface` #171716, so they stay
             // opaque over a frozen column (see `Colors::table_row_highlight`).
-            table_row_highlight: tok("color-table-row-highlight", "#1c2346"),
-            table_row_highlight_hover: tok("color-table-row-highlight-hover", "#252b5a"),
-            table_row_warning: tok("color-table-row-warning", "#322a21"),
-            table_row_warning_hover: tok("color-table-row-warning-hover", "#46371f"),
-            table_row_danger: tok("color-table-row-danger", "#311d2a"),
-            table_row_danger_hover: tok("color-table-row-danger-hover", "#45212c"),
+            table_row_highlight: tok("color-table-row-highlight", "#232439"),
+            table_row_highlight_hover: tok("color-table-row-highlight-hover", "#2b2c4f"),
+            table_row_warning: tok("color-table-row-warning", "#382b14"),
+            table_row_warning_hover: tok("color-table-row-warning-hover", "#4c3713"),
+            table_row_danger: tok("color-table-row-danger", "#371e1d"),
+            table_row_danger_hover: tok("color-table-row-danger-hover", "#4b2221"),
         },
         intents: Intents {
             primary: intent_colors!(
@@ -1423,15 +1427,15 @@ pub fn dark_theme() -> IdeaThemeDefaults {
             ),
             secondary: intent_colors!(
                 "secondary",
-                "#64748b", "#ffffff",
-                "rgba(148, 163, 184, 0.14)", "#cbd5e1",
-                "#cbd5e1", "rgba(148, 163, 184, 0.32)",
+                "#737370", "#ffffff",
+                "rgba(163, 163, 160, 0.14)", "#d4d4d2",
+                "#d4d4d2", "rgba(163, 163, 160, 0.32)",
             ),
             neutral: intent_colors!(
                 "neutral",
-                "#475569", "#ffffff",
-                "rgba(148, 163, 184, 0.12)", "#cbd5e1",
-                "#cbd5e1", "rgba(148, 163, 184, 0.26)",
+                "#525250", "#ffffff",
+                "rgba(163, 163, 160, 0.12)", "#d4d4d2",
+                "#d4d4d2", "rgba(163, 163, 160, 0.26)",
             ),
             success: intent_colors!(
                 "success",
