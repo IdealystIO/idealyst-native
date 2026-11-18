@@ -6601,7 +6601,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "2.2.1"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7787,7 +7787,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "2.2.1"
+version = "2.3.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -10838,7 +10838,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test"
-version = "3.2.0"
+version = "3.3.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -10854,7 +10854,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test-macros"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "proc-macro2",
  "quote",
