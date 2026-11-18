@@ -1408,6 +1408,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`idea-ui-layout`: a pick row, a find shortcut, a compact toolbar button, `Rc` builders as
+  slots** (`idea-ui-layout` minor).
+  - `SheetPickRow(label, selected, on_press)`: one of a set (a theme, a team). The chosen row has
+    a check at its end; every row keeps the check's room.
+  - `ToolbarSearch` takes Ctrl-F / ⌘F while mounted (the glyph's field opens, the inline field
+    takes focus) and stops the browser's find. `find_shortcut = false` turns it off; `open =
+    Some(signal)` lets the app open the glyph's field.
+  - `ToolbarButton(compact = true)`: the glyph at every width, the count a number on its corner.
+  - `Slot` and `OptionalSlot` are `From<Rc<dyn Fn() -> Element>>` (`OptionalSlot` from the
+    `Option` of one too), so a shared or stored builder passes without a wrapping closure.
+
 - **`SidebarItem` takes a `count`** (`idea-ui-layout` minor). `count =
   Some(SidebarCount::new(value, tone))` — a number, a signal or an `rx!` — draws the number as a
   tag at the row's end while the sidebar is open or a drawer, and a dot in the count's tone on the
