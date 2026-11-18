@@ -54,6 +54,23 @@ pub fn has_display() -> bool {
     std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
+/// The HTTP cache size every Chromium the CLI launches gets, so a debug
+/// web bundle's wasm stays cached between page loads.
+///
+/// Chromium sizes its disk cache from the free space on the profile's
+/// volume and refuses to store a response that is too large a share of
+/// it. A debug build's wasm is hundreds of MB (CrewForge's: 225 MB), so
+/// on a nearly full disk every page load downloaded it and stream-compiled
+/// it again before the app could mount — 4–18 s per load in a devcontainer,
+/// and with it the robot relay join, which starts after the mount.
+/// Measured: without the flag a 240 MB response is never reused; with it,
+/// it is from the second load on. The value is the flag's maximum (a
+/// 32-bit int) and a ceiling, not an allocation; the largest entry it
+/// allows is about 256 MB in Chrome 158 (1/8 of it) and at least 300 MB
+/// in Playwright's Chromium 1243/1247 — a bundle past that is fetched
+/// every load again.
+pub const DISK_CACHE_SIZE_ARG: &str = "--disk-cache-size=2147483647";
+
 /// The files Chromium uses to claim a profile for one running instance.
 /// `SingletonLock` is a symlink naming `<hostname>-<pid>`.
 const SINGLETON_FILES: &[&str] = &["SingletonLock", "SingletonSocket", "SingletonCookie"];
@@ -151,6 +168,7 @@ pub fn launch(url: &str, profile_dir: &Path) -> Result<Child> {
             "--no-first-run",
             "--no-default-browser-check",
             "--remote-debugging-port=0",
+            DISK_CACHE_SIZE_ARG,
         ])
         .arg(format!("--user-data-dir={}", profile_dir.display()))
         .arg(url)

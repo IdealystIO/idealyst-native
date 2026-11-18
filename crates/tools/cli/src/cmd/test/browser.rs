@@ -274,6 +274,9 @@ impl HeadlessBrowser {
             // Port 0: Chrome picks one and writes it to `DevToolsActivePort`
             // in the profile, so parallel runs never collide.
             "--remote-debugging-port=0",
+            // Keeps a debug bundle's wasm cached between the suite's page
+            // loads (see the constant).
+            crate::headless_client::DISK_CACHE_SIZE_ARG,
         ])
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg("about:blank")
@@ -635,6 +638,93 @@ mod tests {
         assert_eq!(v[4], 1, "no reload: {v}");
         assert!(v[5].as_u64().unwrap() >= 1, "the page saw a resize: {v}");
         assert_eq!(v[6], true, "media queries follow: {v}");
+    }
+
+    /// CrewForge: a page loaded afresh took 20–35 s to join the robot
+    /// relay. Its debug wasm (225 MB) was never kept in the runner's
+    /// browser cache — Chromium's default cache, sized from free disk,
+    /// refuses an entry that large — so every load downloaded and
+    /// compiled it again before the app could mount and dial. A 240 MB
+    /// response must come from the cache on the second load (under the
+    /// ceiling the flag allows; see `DISK_CACHE_SIZE_ARG`).
+    #[test]
+    fn regression_a_large_debug_wasm_is_cached_between_page_loads() {
+        if headless_browser().is_none() {
+            eprintln!("skipping: no headless browser (set IDEALYST_CHROME)");
+            return;
+        }
+        const BIG: usize = 240 * 1024 * 1024;
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in server.incoming().flatten() {
+                std::thread::spawn(move || serve_cache_probe(stream, BIG));
+            }
+        });
+        let profiles = tempfile::tempdir().unwrap();
+        let mut b = HeadlessBrowser::launch(&format!("http://127.0.0.1:{port}/"), profiles.path()).expect("launch");
+        // `transferSize` of `/big` as the page at `search` measured it.
+        let transfer = |b: &mut HeadlessBrowser, search: &str| -> u64 {
+            let deadline = Instant::now() + Duration::from_secs(120);
+            loop {
+                let v = b.evaluate("JSON.stringify([location.search, window.transfer ?? null])").unwrap();
+                let v: Value = serde_json::from_str(v.as_str().unwrap_or("null")).unwrap_or(Value::Null);
+                if let (Some(s), Some(n)) = (v[0].as_str(), v[1].as_u64()) {
+                    if s == search {
+                        return n;
+                    }
+                }
+                assert!(Instant::now() < deadline, "the page at {search:?} never finished fetching /big");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        };
+        b.show(&Emulation::desktop(800, 600)).unwrap();
+        assert!(transfer(&mut b, "") >= BIG as u64, "the first load fetches it");
+        // A fresh page at another address, as a suite booting the app at a
+        // path does (the same address again would be a reload).
+        b.evaluate("location.href = '/?again'").unwrap();
+        assert_eq!(transfer(&mut b, "?again"), 0, "the second load is served from the cache");
+    }
+
+    /// `/`: a page that fetches `/big` and leaves its `transferSize` (0
+    /// from the cache) in `window.transfer`. `/big`: `len` bytes, cacheable
+    /// for a year.
+    fn serve_cache_probe(mut stream: TcpStream, len: usize) {
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            if stream.read(&mut byte).unwrap_or(0) == 0 {
+                return;
+            }
+            head.push(byte[0]);
+        }
+        let path = String::from_utf8_lossy(&head).split_whitespace().nth(1).unwrap_or("/").to_string();
+        if path == "/big" {
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {len}\r\n\
+                 Cache-Control: public, max-age=31536000, immutable\r\nConnection: close\r\n\r\n"
+            );
+            let chunk = vec![0u8; 1 << 20];
+            let mut left = len;
+            while left > 0 {
+                let n = left.min(chunk.len());
+                if stream.write_all(&chunk[..n]).is_err() {
+                    return;
+                }
+                left -= n;
+            }
+        } else {
+            let body = "<!doctype html><script>fetch('/big').then(r => r.arrayBuffer()).then(() => { \
+                        window.transfer = performance.getEntriesByType('resource') \
+                        .find(e => e.name.endsWith('/big')).transferSize; });</script>";
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
     }
 
     /// The runner's browser must be visible to the dev session's robot

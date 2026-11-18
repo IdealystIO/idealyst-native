@@ -223,12 +223,17 @@ fn app_env(specs: &[String], get: impl Fn(&str) -> Option<String>) -> Vec<(Strin
 /// flag when `idealyst test` drives the session, and the `--app-env`
 /// variables. Empty when there is neither.
 fn page_env_scripts(args: &Args) -> String {
-    let mut out = String::new();
-    if std::env::var_os("IDEALYST_TEST_DRIVER").is_some() {
-        out.push_str(build_web::test_driver_script_tag());
-    }
-    out.push_str(&build_web::app_env_script_tag(&app_env(&args.app_env, |k| std::env::var(k).ok())));
-    out
+    super::test::workers::page_env_html(
+        std::env::var_os("IDEALYST_TEST_DRIVER").is_some(),
+        &app_env(&args.app_env, |k| std::env::var(k).ok()),
+    )
+}
+
+/// Whether `idealyst test` launched this session: it then writes the
+/// [`WorkerTemplate`](super::test::workers::WorkerTemplate) a `--workers`
+/// run serves its other workers from.
+fn launched_by_test() -> bool {
+    std::env::var(dev_events::sessions::LAUNCHED_BY_ENV).as_deref() == Ok(dev_events::sessions::LAUNCHED_BY_TEST)
 }
 
 /// What a simulator / emulator app of this session is handed: everything
@@ -1434,6 +1439,8 @@ pub fn run(mut args: Args) -> Result<()> {
             &server_log,
             prebuilt,
             &[],
+            // A native-only session serves no page: no web workers.
+            None,
         ) {
             Ok(server) => {
                 let pid = server.child.id();
@@ -2622,6 +2629,9 @@ fn launch_web(
         //    splice above — the one route a forwarded app port always has)
         //    and this URL second. (Default on; --no-robot leaves the env
         //    unset and skips this.)
+        // The head without the relay and page-environment tags: an
+        // `idealyst test --workers` worker gets its own of those.
+        let worker_head_base = head_ctx.as_ref().map(|h| h.html.clone()).unwrap_or_default();
         if let Ok(url) = std::env::var("IDEALYST_ROBOT_RELAY_URL") {
             // Same tag builder the staged-bundle path uses, so both
             // web paths advertise the relay identically — and both
@@ -2670,6 +2680,19 @@ fn launch_web(
             crate::headless_client::has_display(),
         ) {
             spawn_headless_client(&args.host, web_port, dir, Arc::clone(&children));
+        }
+        // `idealyst test --workers` serves its other workers the same way.
+        if launched_by_test() {
+            let template = super::test::workers::WorkerTemplate::Static {
+                root: dir.to_path_buf(),
+                head_base: worker_head_base,
+                preload_fonts: preload_ctx.as_ref().map(|p| p.font_paths.clone()).unwrap_or_default(),
+                overlay_roots: overlay_ctx.as_ref().map(|o| o.roots.clone()).unwrap_or_default(),
+                fallback_index: fallback_index.clone(),
+            };
+            if let Err(e) = template.write(&project_state_dir(dir)) {
+                crate::dlog!("dev", "cannot write the test worker template: {e:#}");
+            }
         }
         serve_static(
             &args.host,
@@ -3378,6 +3401,7 @@ fn launch_web_with_backend(
         // make every `idealyst` process that inherits them act as a rustc
         // wrapper, `idealyst run-linked` included.
         hot_env: server_hot.as_ref().filter(|_| watched).map(|h| h.run_env()).unwrap_or_default(),
+        worker_page_env: launched_by_test().then(|| page_env_scripts(args)),
     };
     let mut child: Option<ServerProc> = None;
     let mut route_reported = false;
@@ -3879,7 +3903,7 @@ fn server_proxies_stream(port: u16) -> bool {
 const DEV_STREAM_PROBE_PATH: &str = "/__idealyst/stream";
 const DEV_STREAM_HEADER: &str = "x-idealyst-dev-stream";
 /// `server::dev_stream::RELAY_ENV`, restated for the same reason.
-const DEV_RELAY_ENV: &str = "IDEALYST_DEV_RELAY";
+pub(crate) const DEV_RELAY_ENV: &str = "IDEALYST_DEV_RELAY";
 /// `server::dev_parent::ENV`, restated for the same reason.
 const DEV_PARENT_ENV: &str = "IDEALYST_DEV_PARENT";
 
@@ -3915,6 +3939,10 @@ struct ServerLaunch<'a> {
     /// The server hot-patch tier's agent (`crate::server_hot`), which
     /// `idealyst run-linked` loads. Empty when the tier is off.
     hot_env: Vec<(String, String)>,
+    /// Under `idealyst test`: the page-environment `<script>`s the staged
+    /// `index.html` holds, for the worker template the server's start
+    /// writes. `None` otherwise.
+    worker_page_env: Option<String>,
 }
 
 impl ServerLaunch<'_> {
@@ -3948,6 +3976,7 @@ impl ServerLaunch<'_> {
             self.log,
             self.prebuilt,
             &self.hot_env,
+            self.worker_page_env.as_deref(),
         ) {
             Ok(c) => c,
             Err(e) => {
@@ -4892,6 +4921,7 @@ fn spawn_backend(
     log: &Path,
     prebuilt: bool,
     hot_env: &[(String, String)],
+    worker_page_env: Option<&str>,
 ) -> Result<ServerProc> {
     let app = &manifest.app;
     let mut cmd = cargo_run_command();
@@ -4963,6 +4993,19 @@ fn spawn_backend(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    // `idealyst test --workers` starts this same command again for each
+    // other worker, on its own port, relay and bundle copy.
+    if let (Some(page_env), Some(web_dist)) = (worker_page_env, web_dist) {
+        let template = super::test::workers::WorkerTemplate::server(
+            &cmd,
+            web_dist,
+            std::env::var("IDEALYST_ROBOT_RELAY_URL").ok(),
+            page_env.to_string(),
+        );
+        if let Err(e) = template.write(&project_state_dir(dir)) {
+            crate::dlog!("dev", "cannot write the test worker template: {e:#}");
+        }
+    }
     let mut child = cmd.spawn().context("spawn server (`cargo run`)")?;
     write_server_record(&server_record_path(log), child.id());
     let recompile = prebuilt.then(|| build_ios::target_gc::rounded_mtime_cause(target_dir));

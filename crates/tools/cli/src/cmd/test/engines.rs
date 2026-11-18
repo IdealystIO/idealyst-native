@@ -164,6 +164,14 @@ pub fn firefox_prefs(e: &Emulation) -> Vec<(&'static str, String)> {
         ("datareporting.policy.dataSubmissionEnabled", "false".to_string()),
         ("toolkit.telemetry.reportingpolicy.firstRun", "false".to_string()),
         ("browser.startup.homepage_override.mstone", "\"ignore\"".to_string()),
+        // A debug bundle's wasm (hundreds of MB) stays cached between the
+        // suite's page loads, as Chromium's `DISK_CACHE_SIZE_ARG` does
+        // there. By default Firefox stores no entry over 50 MB, so every
+        // load fetched and compiled the wasm again (measured, Firefox 160:
+        // a 240 MB response is reused only with these). In KiB.
+        ("browser.cache.disk.smart_size.enabled", "false".to_string()),
+        ("browser.cache.disk.capacity", "2097152".to_string()),
+        ("browser.cache.disk.max_entry_size", "1048576".to_string()),
         // `(pointer: coarse)` and `(hover: none)` for touch; a mouse with
         // hover otherwise (bits: 1 coarse, 2 fine, 4 hover).
         ("ui.primaryPointerCapabilities", if e.touch { "1" } else { "6" }.to_string()),
@@ -729,6 +737,23 @@ mod tests {
         assert_eq!(Engine::parse("chrome"), Some(Engine::Chromium));
         assert_eq!(Engine::parse("safari"), Some(Engine::Webkit));
         assert_eq!(Engine::parse("lynx"), None);
+    }
+
+    /// CrewForge: a debug wasm (225 MB) was fetched and compiled again on
+    /// every page load, because no browser cache kept an entry that large.
+    /// Firefox stores none over 50 MB by default; the prefs must allow a
+    /// 240 MB one (values in KiB). Checked here as prefs rather than through
+    /// a real Firefox: driving one takes the runner's WebDriver session.
+    /// That these prefs make headless Firefox reuse a 240 MB response was
+    /// measured by hand; Chromium's flag has a real-browser test in
+    /// `browser.rs`.
+    #[test]
+    fn regression_firefox_keeps_a_large_debug_wasm_cached() {
+        let prefs: std::collections::HashMap<_, _> = firefox_prefs(&Emulation::desktop(1280, 800)).into_iter().collect();
+        let kib = |k: &str| prefs[k].parse::<u64>().unwrap();
+        assert_eq!(prefs["browser.cache.disk.smart_size.enabled"], "false", "smart sizing would override the capacity");
+        assert!(kib("browser.cache.disk.max_entry_size") * 1024 >= 240 * 1024 * 1024);
+        assert!(kib("browser.cache.disk.capacity") >= kib("browser.cache.disk.max_entry_size"));
     }
 
     /// Firefox can't switch touch, the pointer media query or the user agent

@@ -1,7 +1,7 @@
 +++
 title = "Testing apps (robot E2E)"
 order = 62
-tags = ["testing", "e2e", "robot", "idea_test", "robot_test", "suites", "robot_fn", "tap_native", "call_function", "idealyst test", "mcp", "device matrix", "orientation", "firefox", "webkit", "clock", "net"]
+tags = ["testing", "e2e", "robot", "idea_test", "robot_test", "suites", "workers", "parallel", "robot_fn", "tap_native", "call_function", "idealyst test", "mcp", "device matrix", "orientation", "firefox", "webkit", "clock", "net"]
 +++
 
 # Testing apps (robot E2E)
@@ -549,12 +549,32 @@ idealyst test --windows  <project>     # a Windows host, or IDEALYST_WINDOWS_REM
 - runs the `--after` hooks, and prints a result per run.
 
 `--filter <name>` narrows the run, `--suite <names>` runs only those
-suites (`--list-suites` lists them), `--test <file>` picks another test
-target, and `--attach` drives an app you already started with
+suites (`--list-suites` lists them), `--workers N` runs N copies at once
+(below), `--test <file>` picks another test target, and `--attach` drives an app you already started with
 `idealyst dev` (never the app of another `idealyst test` run). Under a bare `cargo test`, with no app reachable, each
 `#[idea_test]` skips instead of failing. The runner asks the app its
 platform and runs only the `platforms = …` tests that belong to it, naming
 the rest on a `[test] not on <platform>: …` line.
+
+### Parallel workers
+
+`idealyst test --web --workers 4 <project>` runs the suite on four copies
+of the app at once, each test on whichever copy is free, with one report.
+The app builds once; each worker has its own port, robot relay, browser
+and, for a full-stack project, its own server. Give each worker's server
+its own data with `{worker}` in an `--env` value, and create it in a
+`--before` hook, which runs once per worker:
+
+```text
+idealyst test --web --workers 4 \
+  --env 'DATABASE_URL=postgres://app:app@db/app_robot_{worker}' \
+  --before 'scripts/reset-db.sh "$DATABASE_URL"' <project>
+```
+
+Tests and hooks see the worker's number as `IDEALYST_TEST_WORKER` (from
+0; a plain run is worker 0). Each test runs in its own process, so tests
+can't share state through the test binary — they shouldn't anyway. Web
+only: a native app is one per device (use the device matrix with `--jobs`).
 
 ### The device matrix
 

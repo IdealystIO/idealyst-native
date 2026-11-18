@@ -763,6 +763,33 @@ printed. `--web`
 on a project without a server can't be isolated (it stages into the
 project's own `pkg/`) and runs unisolated.
 
+`--workers N` (web) runs the suite on N copies of the app at once, each
+test on whichever copy is free, the results in one report. The app builds
+once: the dev session is worker 0, and it writes
+`.idealyst/[isolated/<key>/]test-workers.json` saying how it serves its
+page, from which the runner starts workers 1…: for a full-stack project,
+the session's own server command again on the worker's port, serving a
+copy of the staged bundle (hard links, with an `index.html` naming the
+worker's relay and environment); for static web, `dev_http` serving the
+project. Each worker has its own robot relay — a page it reloads joins
+its own relay, as in a one-worker run — and its own browser (cookies are
+scoped by host, not port, so one browser would share a sign-in across
+workers). Each test runs as its own test-binary process (`--exact
+<name>`): tests can't share state through the binary. A worker's
+environment is the run's `--env` with `{worker}` replaced by its number
+(`--env DATABASE_URL=postgres://…/app_{worker}` gives each worker's
+server its own database), plus `IDEALYST_TEST_WORKER` (0 in a plain
+run); the `--before`/`--after` hooks run once per worker with it.
+Native platforms run one app per device (use the device matrix and
+`--jobs`); Safari has one automation window, so `webkit` sizes can't.
+
+Every Chromium the CLI launches gets `--disk-cache-size` at its maximum,
+and the runner's Firefox profile the matching cache prefs: a debug
+bundle's wasm is hundreds of MB, more than the browsers' default cache
+keeps, so every page load fetched and compiled it again — and a load
+waited on the previous load's cache write first — before the app could
+mount and join the relay.
+
 One session runs per key and project, so two runs with the default key
 can't both launch. Before building anything the runner looks up the
 session registry (`~/.idealyst/dev-sessions/`): if a live session already

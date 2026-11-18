@@ -18,6 +18,16 @@
 //! of those `#[idea_test(suites = …)]` suites; `--list-suites` builds the
 //! test target, prints its suites and their tests, and exits.
 //!
+//! # Workers
+//!
+//! `--workers N` (web) runs the suite on N copies of the app at once: the
+//! app builds once, each worker has its own port, relay, browser and (for a
+//! full-stack project) server, and every test runs in its own process on
+//! whichever worker is free — see [`workers`]. Each worker's environment is
+//! the run's with `{worker}` replaced by its number (also
+//! `IDEALYST_TEST_WORKER`), and the `--before`/`--after` hooks run once per
+//! worker.
+//!
 //! # Device matrix
 //!
 //! A project that declares `[package.metadata.idealyst.test.devices]`
@@ -48,6 +58,7 @@ mod engines;
 mod matrix;
 mod provision;
 mod rotation;
+pub(crate) mod workers;
 
 use anyhow::{Context, Result};
 use browser::{device_preset, Emulation, HeadlessBrowser};
@@ -233,6 +244,17 @@ pub struct Args {
     /// fails the run. Repeatable; run in order.
     #[arg(long, value_name = "CMD")]
     pub after: Vec<String>,
+    /// Web only: run the suite on N copies of the app at once, each test on
+    /// whichever copy is free, with the results in one report. The app
+    /// builds once; each worker gets its own port, robot relay, browser
+    /// and (full-stack) server. Tests and hooks see the worker's number,
+    /// from 0, as `IDEALYST_TEST_WORKER`, and `{worker}` in an `--env`
+    /// value becomes it (`--env DATABASE_URL=postgres://…/app_{worker}`
+    /// gives each worker's server its own database). The `--before` /
+    /// `--after` hooks run once per worker. Each test runs in its own
+    /// process, so tests must not share state through the test binary.
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    pub workers: usize,
 }
 
 /// Parse a `WxH` viewport string into `(width, height)`.
@@ -695,7 +717,9 @@ pub fn run(args: Args) -> Result<()> {
         .with_context(|| format!("cannot resolve project dir {}", args.dir.display()))?;
     let user_env = parse_env(&args.env)?;
 
+    anyhow::ensure!(args.workers >= 1, "--workers is at least 1");
     if !args.parity.is_empty() {
+        anyhow::ensure!(args.workers == 1, "--parity compares one app per platform; --workers is for a suite run");
         anyhow::ensure!(
             args.suites.is_empty(),
             "--suite picks `#[idea_test]` tests; a --parity target is plain `#[test]`s (narrow it with --filter)"
@@ -773,6 +797,9 @@ pub fn run(args: Args) -> Result<()> {
             }]
         }
     };
+    if args.workers > 1 {
+        check_workers(&args, &jobs)?;
+    }
 
     // Decided, and checked against the live sessions, before anything
     // builds: a key another session holds is refused here, not after a
@@ -803,8 +830,18 @@ pub fn run(args: Args) -> Result<()> {
         Some(p) => p,
         None => free_port()?,
     };
-    let mut hook_env = user_env.clone();
-    hook_env.push(("IDEALYST_TEST_PORT".into(), port.to_string()));
+    // Workers 1…: a port each, decided now so their hooks know it.
+    let worker_ports: Vec<u16> = (1..args.workers).map(|_| free_port()).collect::<Result<_>>()?;
+    // Every worker's environment: the user's with `{worker}` filled in,
+    // and `IDEALYST_TEST_WORKER` (worker 0 is the whole of a plain run).
+    let worker_env = |i: usize| workers::for_worker(&user_env, i);
+    let hook_env = |i: usize| {
+        let mut env = worker_env(i);
+        let p = if i == 0 { port } else { worker_ports[i - 1] };
+        env.push(("IDEALYST_TEST_PORT".into(), p.to_string()));
+        env
+    };
+    let env0 = worker_env(0);
 
     let runs_anything = jobs.iter().any(|j| matches!(j, Job::Run { .. }));
     // Compile the suite before launching anything: a compile error fails fast,
@@ -833,13 +870,17 @@ pub fn run(args: Args) -> Result<()> {
 
     let outcome = (|| -> Result<Vec<RunResult>> {
         if runs_anything {
-            run_hooks("--before", &args.before, &dir, &hook_env)?;
+            for i in 0..args.workers {
+                run_hooks("--before", &args.before, &dir, &hook_env(i))?;
+            }
         }
         let shared = JobCtx {
             args: &args,
             dir: &dir,
             isolated: &isolated,
-            user_env: &user_env,
+            user_env: &env0,
+            env_template: &user_env,
+            worker_ports: &worker_ports,
             test_bin: &test_bin,
             tests: &tests,
         };
@@ -851,7 +892,12 @@ pub fn run(args: Args) -> Result<()> {
         Ok(results)
     })();
     // Teardown runs whatever happened above.
-    let after = if runs_anything { run_hooks("--after", &args.after, &dir, &hook_env) } else { Ok(()) };
+    let after = if runs_anything {
+        // Every worker's teardown runs, whichever fails.
+        (0..args.workers).map(|i| run_hooks("--after", &args.after, &dir, &hook_env(i))).fold(Ok(()), Result::and)
+    } else {
+        Ok(())
+    };
 
     let results = outcome?;
     if let Some(path) = &args.junit {
@@ -880,9 +926,35 @@ struct JobCtx<'a> {
     args: &'a Args,
     dir: &'a Path,
     isolated: &'a std::collections::BTreeMap<String, Option<String>>,
+    /// Worker 0's environment (the user's `--env`, `{worker}` filled in).
     user_env: &'a [(String, String)],
+    /// The user's `--env` as given, `{worker}` and all: each extra worker's
+    /// own is made from it.
+    env_template: &'a [(String, String)],
+    /// The ports of workers 1… (`--workers`).
+    worker_ports: &'a [u16],
     test_bin: &'a Path,
     tests: &'a TestList,
+}
+
+/// `--workers` runs N browser pages of one web app: refuse what it can't
+/// mean. A native app is one per device (the device matrix and `--jobs`
+/// run several devices); Safari drives one window; `--attach` has one app.
+fn check_workers(args: &Args, jobs: &[Job]) -> Result<()> {
+    anyhow::ensure!(!args.attach, "--workers launches its own copies of the app; --attach drives one already running");
+    for job in jobs {
+        let Job::Run { platform, launches, .. } = job else { continue };
+        anyhow::ensure!(
+            platform == "web",
+            "--workers runs several browser pages of a web app; {platform} runs one app per device \
+             (run several devices with the device matrix and --jobs)"
+        );
+        anyhow::ensure!(
+            launches.iter().flat_map(|l| &l.sizes).all(|s| s.engine != engines::Engine::Webkit),
+            "--workers can't run on webkit: it drives Safari, which has one automation window"
+        );
+    }
+    Ok(())
 }
 
 /// Run one job: make its device if the plan said to, run its launches, and
@@ -934,6 +1006,8 @@ fn run_job(cx: &JobCtx, job: &Job, port: u16, index: usize, suite_log: Option<&P
             port,
             isolated: cx.isolated.get(platform).and_then(|k| k.as_deref()),
             user_env: cx.user_env,
+            env_template: cx.env_template,
+            worker_ports: cx.worker_ports,
             test_bin: cx.test_bin,
             tests: cx.tests,
             index: index + n,
@@ -1111,6 +1185,8 @@ struct LaunchCtx<'a> {
     port: u16,
     isolated: Option<&'a str>,
     user_env: &'a [(String, String)],
+    env_template: &'a [(String, String)],
+    worker_ports: &'a [u16],
     test_bin: &'a Path,
     tests: &'a TestList,
     index: usize,
@@ -1121,7 +1197,8 @@ struct LaunchCtx<'a> {
 /// Launch the app (unless attaching), then run the suite at each of the
 /// launch's sizes, appending one result per size to `results`.
 fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) -> Result<()> {
-    let LaunchCtx { args, dir, platform, port, isolated, user_env, test_bin, tests, index, suite_log } = *ctx;
+    let LaunchCtx { args, dir, platform, port, isolated, user_env, env_template, worker_ports, test_bin, tests, index, suite_log } =
+        *ctx;
     let apps_dirs = registry_dirs()?;
     // Registrations already live before the launch belong to another run
     // (an earlier launch of this one included) or to the app being attached
@@ -1193,6 +1270,28 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
     if let Some(screen) = &device_screen {
         control = Some(serve_control(Arc::downgrade(screen), screen_verb)?);
     }
+    if web && !worker_ports.is_empty() {
+        let pool = start_workers(dir, isolated, port, addr, user_env, env_template, worker_ports, browser.clone())?;
+        let mut pool = pool;
+        let here = app_platform(addr).unwrap_or_else(|| platform.to_string());
+        let (planned, elsewhere) = planned_tests(tests, &here, args.filter.as_deref(), &args.suites);
+        for (name, on) in &elsewhere {
+            note!("not on {here}: {name} (runs on {})", on.join(", "));
+        }
+        for (n, size) in launch.sizes.iter().enumerate() {
+            if planned.is_empty() {
+                results.push(RunResult::new(size.label.clone(), Outcome::Skipped(nothing_to_run(args, &here))));
+                continue;
+            }
+            results.push(workers::run_size(&mut pool, size, &planned, test_bin, dir, &format!("{index}-{n}"), suite_log));
+        }
+        // Workers 1… first (their servers and browsers), then this
+        // launch's own browser and dev session.
+        drop(pool);
+        browser.lock().unwrap().take();
+        drop(kill);
+        return Ok(());
+    }
 
     for (n, size) in launch.sizes.iter().enumerate() {
         let na_file = std::env::temp_dir().join(format!("idealyst-test-na-{}-{index}-{n}.jsonl", std::process::id()));
@@ -1247,11 +1346,7 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
                 note!("not on {here}: {name} (runs on {})", on.join(", "));
             }
             let Some(selected) = &selection.args else {
-                return Ok(Outcome::Skipped(format!(
-                    "no test of suite {} runs on {here}{}",
-                    args.suites.join(", "),
-                    args.filter.as_deref().map(|f| format!(" within --filter {f:?}")).unwrap_or_default()
-                )));
+                return Ok(Outcome::Skipped(nothing_to_run(args, &here)));
             };
             suite.args(selected);
             // One shared app: tests run serialized against it.
@@ -1810,39 +1905,96 @@ struct Selection {
 /// `filter` alone, and the platform-bound tests show as `ignored`, with
 /// their reason.
 fn select_tests(tests: &TestList, platform: &str, filter: Option<&str>, suites: &[String]) -> Selection {
+    let (planned, elsewhere) = planned_tests(tests, platform, filter, suites);
+    let bound_here = planned.iter().any(|(_, ignored)| *ignored);
+    if !bound_here && suites.is_empty() {
+        return Selection { args: Some(filter.map(str::to_string).into_iter().collect()), elsewhere };
+    }
+    if planned.is_empty() {
+        return Selection { args: None, elsewhere };
+    }
+    let mut args = Vec::new();
+    if bound_here {
+        args.push("--include-ignored".to_string());
+    }
+    args.push("--exact".to_string());
+    args.extend(planned.into_iter().map(|(name, _)| name));
+    Selection { args: Some(args), elsewhere }
+}
+
+/// The tests a run on `platform` executes, in the binary's order, each with
+/// whether it is `#[ignore]`d (a platform-bound test of this platform,
+/// which needs `--include-ignored`), and the platform-bound tests within
+/// the filter and suites that run elsewhere, with where. The author's own
+/// `#[ignore]`s are in neither. [`select_tests`] turns it into one
+/// binary's arguments; `--workers` runs it a test at a time.
+fn planned_tests(
+    tests: &TestList,
+    platform: &str,
+    filter: Option<&str>,
+    suites: &[String],
+) -> (workers::Planned, Vec<(String, Vec<&'static str>)>) {
     let in_suites =
         |name: &str| suites.is_empty() || robot_test::suites_of_test(name).iter().any(|s| suites.iter().any(|w| w == s));
     let wanted = |name: &str| filter.is_none_or(|f| name.contains(f)) && in_suites(name);
-    let mut here = HashSet::new();
+    let mut planned = Vec::new();
     let mut elsewhere = Vec::new();
-    for name in tests.all.iter().filter(|n| tests.ignored.contains(*n) && wanted(n)) {
-        if let Some(on) = robot_test::platforms_of_test(name) {
+    for name in tests.all.iter().filter(|n| wanted(n)) {
+        if !tests.ignored.contains(name) {
+            planned.push((name.clone(), false));
+        } else if let Some(on) = robot_test::platforms_of_test(name) {
             if on.contains(&platform) {
-                here.insert(name.as_str());
+                planned.push((name.clone(), true));
             } else {
                 elsewhere.push((name.clone(), on));
             }
         }
     }
-    if here.is_empty() && suites.is_empty() {
-        return Selection { args: Some(filter.map(str::to_string).into_iter().collect()), elsewhere };
+    (planned, elsewhere)
+}
+
+/// Why a run with `--suite` has nothing to execute on `platform`.
+fn nothing_to_run(args: &Args, platform: &str) -> String {
+    format!(
+        "no test of suite {} runs on {platform}{}",
+        args.suites.join(", "),
+        args.filter.as_deref().map(|f| format!(" within --filter {f:?}")).unwrap_or_default()
+    )
+}
+
+/// `--workers`: worker 0 is the launch's own app (its dev session at `port`,
+/// its relay at `bridge`, its browser in `browser`); workers 1… are started
+/// from the template that session wrote, one per `worker_ports` entry.
+#[allow(clippy::too_many_arguments)]
+fn start_workers(
+    dir: &Path,
+    isolated: Option<&str>,
+    port: u16,
+    bridge: SocketAddr,
+    env0: &[(String, String)],
+    env_template: &[(String, String)],
+    worker_ports: &[u16],
+    browser: BrowserSlot,
+) -> Result<Vec<workers::Worker>> {
+    let state = session_state_dir(dir, isolated);
+    let template = workers::WorkerTemplate::read(&state, Duration::from_secs(60))?;
+    let mut pool = vec![workers::Worker {
+        index: 0,
+        port,
+        bridge,
+        env: env0.to_vec(),
+        profiles: state.clone(),
+        browser,
+        control: None,
+        _server: None,
+        _relay: None,
+    }];
+    for (i, worker_port) in worker_ports.iter().enumerate() {
+        let index = i + 1;
+        note!("starting worker {index} on port {worker_port}…");
+        pool.push(workers::start_extra(&template, index, *worker_port, workers::for_worker(env_template, index), &state)?);
     }
-    let names: Vec<String> = tests
-        .all
-        .iter()
-        .filter(|n| wanted(n) && (!tests.ignored.contains(*n) || here.contains(n.as_str())))
-        .cloned()
-        .collect();
-    if names.is_empty() {
-        return Selection { args: None, elsewhere };
-    }
-    let mut args = Vec::new();
-    if !here.is_empty() {
-        args.push("--include-ignored".to_string());
-    }
-    args.push("--exact".to_string());
-    args.extend(names);
-    Selection { args: Some(args), elsewhere }
+    Ok(pool)
 }
 
 /// Every suite the tests declare, sorted, each with its tests.

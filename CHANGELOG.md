@@ -1403,6 +1403,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`idealyst test --workers N`: a web suite on N copies of the app at once** (`idealyst-cli`
+  minor). The app builds once; each worker has its own port, robot relay, browser and, for a
+  full-stack project, its own server (started from the dev session's own server command, serving a
+  hard-linked copy of the staged bundle with its own `index.html`). Every test runs as its own
+  test-binary process on whichever worker is free, and the results go into the run's one summary
+  and JUnit report. `{worker}` in an `--env` value becomes the worker's number, which tests and
+  hooks also get as `IDEALYST_TEST_WORKER` (0 in a plain run); `--before` / `--after` run once per
+  worker. Web only (a native app is one per device); not with `--attach`, `--parity` or webkit.
+
 - **E2E test suites, and `#[robot_test]` is now `#[idea_test]`** (`robot-test-macros` minor,
   `robot-test` minor, `idealyst-cli` minor). `#[idea_test(suites = [smoke, checkout])]` puts a test
   in named suites; `idealyst test --suite smoke,checkout` runs only their tests (with `--filter` and
@@ -3700,6 +3709,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A page loaded again under `idealyst test` no longer re-downloads and recompiles a large debug
+  wasm before it can join the robot relay** (`idealyst-cli` patch). A debug build's wasm is hundreds of MB (CrewForge's: 225 MB), more than
+  Chromium's default cache keeps, so the runner's browser fetched and compiled it again on every
+  page load — after first waiting, up to Chromium's 20 s cache lock, for the previous load's
+  write of the same entry — and the app mounts, and its page dials the relay, only after that.
+  Every Chromium the CLI launches (`idealyst test`, the dev session's headless client) now gets
+  `--disk-cache-size` at its maximum, and the runner's Firefox profile the matching cache prefs, so
+  a load after the first is served from the cache.
 
 - **Web robot builds no longer keep every screen they leave** (`backend-web` patch, `web-glue`
   minor). With the `robot` feature (every `idealyst dev --web` build unless `--no-robot`, and
