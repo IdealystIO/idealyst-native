@@ -5,11 +5,12 @@
 use std::rc::Rc;
 
 use icons_lucide::{MENU, PANEL_LEFT_CLOSE, PANEL_LEFT_OPEN};
-use idea_ui::{tone, variant, Icon, IconButton, IconButtonSize, ListItem};
+use idea_theme::extensible::with_idea_theme;
+use idea_ui::{tone, variant, Icon, IconButton, IconButtonSize, ListItem, Tag, ToneRef};
 use idea_ui_nav::AppShell;
 use runtime_core::{
     component, derived, rx, signal, stylesheet, ui, AlignItems, Breakpoint, ChildList, Element, FlexDirection,
-    IconData, IdealystSchema, JustifyContent, Length, Overflow, Reactive, Shadow, Signal,
+    IconData, IdealystSchema, JustifyContent, Length, Overflow, Position, Reactive, Shadow, Signal, StyleRules,
 };
 
 use crate::width::{form_factor, FormFactor};
@@ -23,6 +24,9 @@ pub const SIDEBAR_RAIL_WIDTH: f32 = 56.0;
 
 /// A sidebar item's glyph beside its label, in px.
 const ITEM_ICON_PX: f32 = 18.0;
+
+/// The dot a count puts on a rail item, across, in px.
+const RAIL_DOT_PX: f32 = 8.0;
 
 /// What a pinned sidebar becomes when it is collapsed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, IdealystSchema)]
@@ -334,6 +338,33 @@ impl ToggleForm {
     }
 }
 
+/// How many of something wait at a [`SidebarItem`]'s destination, and how
+/// loudly to say so: open tasks in `tone::Neutral`, expired
+/// certifications in `tone::Danger`.
+#[derive(Clone)]
+pub struct SidebarCount {
+    value: Reactive<i64>,
+    tone: ToneRef,
+}
+
+impl SidebarCount {
+    /// `value` of them, drawn in `tone`. A signal or `rx!` keeps it live.
+    pub fn new(value: impl Into<Reactive<i64>>, tone: impl Into<ToneRef>) -> Self {
+        Self { value: value.into(), tone: tone.into() }
+    }
+
+    /// There is something to show. TRACKED.
+    fn shows(&self) -> bool {
+        self.value.get() > 0
+    }
+}
+
+impl Default for SidebarCount {
+    fn default() -> Self {
+        Self::new(0, tone::Neutral)
+    }
+}
+
 #[runtime_core::props]
 #[derive(IdealystSchema)]
 pub struct SidebarItemProps {
@@ -351,6 +382,11 @@ pub struct SidebarItemProps {
     pub label: String,
     /// This is the destination on show.
     pub active: bool,
+    /// What waits there: the number at the row's end while the sidebar
+    /// is open or a drawer, a dot on the glyph in the icon rail. Nothing
+    /// is drawn at zero or below.
+    #[prop(static)]
+    pub count: Option<SidebarCount>,
     /// Go there. The drawer closes itself first.
     #[prop(static)]
     pub on_press: Rc<dyn Fn()>,
@@ -366,6 +402,7 @@ impl Default for SidebarItemProps {
             icon: None,
             label: String::new(),
             active: Reactive::Static(false),
+            count: None,
             on_press: Rc::new(|| {}),
             test_id: None,
         }
@@ -375,7 +412,8 @@ impl Default for SidebarItemProps {
 /// One destination in the sidebar (rule `sidebar`). Its glyph and label
 /// in a row while the sidebar is open or a drawer; its glyph alone,
 /// centred, with the label as a tooltip, in the icon rail. One call for
-/// both: the item reads the form from the [`SidebarState`].
+/// both: the item reads the form from the [`SidebarState`]. A `count`
+/// follows it: the number in the row, a dot in the rail.
 ///
 /// Pressing it in a drawer closes the drawer before going.
 ///
@@ -394,6 +432,7 @@ pub fn SidebarItem(props: &SidebarItemProps) -> Element {
     let glyph = props.icon;
     let label = props.label.clone();
     let active = props.active.clone();
+    let count = props.count.clone();
     let test_id = props.test_id;
     let go = props.on_press.clone();
     let press: Rc<dyn Fn()> = Rc::new(move || {
@@ -407,29 +446,93 @@ pub fn SidebarItem(props: &SidebarItemProps) -> Element {
         match sidebar.is_rail() {
             true => {
                 view(style = RailSeat()) {
-                    IconButton(
-                        icon = glyph,
-                        glyph = initial.clone(),
-                        variant = variant::Ghost,
-                        tone = tone::Neutral,
-                        size = IconButtonSize::Md,
-                        selected = active.clone(),
-                        label = Some(label.clone()),
-                        tooltip = Some(label.clone()),
-                        on_click = press.clone(),
-                        test_id = test_id,
-                    )
+                    view(style = RailButton()) {
+                        IconButton(
+                            icon = glyph,
+                            glyph = initial.clone(),
+                            variant = variant::Ghost,
+                            tone = tone::Neutral,
+                            size = IconButtonSize::Md,
+                            selected = active.clone(),
+                            label = Some(label.clone()),
+                            tooltip = Some(label.clone()),
+                            on_click = press.clone(),
+                            test_id = test_id,
+                        )
+                        if let Some(count) = count.clone() {
+                            RailDot(count = count)
+                        }
+                    }
                 }
             }
             false => {
                 ListItem(
                     label = label.clone(),
                     leading = glyph.map(|data| ui! { Icon(data = data, size = ITEM_ICON_PX) }),
+                    trailing = count.clone().map(|count| ui! { RowCount(count = count) }),
                     active = active.clone(),
                     on_press = Some(press.clone()),
                     test_id = test_id,
                 )
             }
+        }
+    }
+}
+
+/// The count at an open row's end.
+#[component]
+fn RowCount(#[prop(static)] count: SidebarCount) -> Element {
+    let (value, tone) = (count.value.clone(), count.tone.clone());
+    ui! {
+        if count.shows() {
+            Tag(label = number(value.clone()), tone = tone.clone())
+        }
+    }
+}
+
+/// `value` as a live label.
+fn number(value: Reactive<i64>) -> Reactive<String> {
+    rx!(value.get().to_string())
+}
+
+/// The dot a count puts on a rail item's glyph, in the count's tone.
+#[component]
+fn RailDot(#[prop(static)] count: SidebarCount) -> Element {
+    // A token reference, so the dot follows a theme swap.
+    let fill = with_idea_theme(|theme| count.tone.fill_bg(theme));
+    let style = move || {
+        RailDotStyle()
+            .into_style_application()
+            .with_inline_merged(StyleRules { background: Some(fill.clone()), ..Default::default() })
+    };
+    ui! {
+        if count.shows() {
+            view(style = style.clone())
+        }
+    }
+}
+
+stylesheet! {
+    // Shrinks to the rail item's button, so the dot sits on the glyph's
+    // corner whatever the rail's width.
+    RailButton<idea_ui::IdeaThemeRef> {
+        base(_t) {
+            position: Position::Relative,
+        }
+    }
+}
+
+stylesheet! {
+    // On the button's top-right corner; presses pass through to it.
+    RailDotStyle<idea_ui::IdeaThemeRef> {
+        base(t) {
+            position: Position::Absolute,
+            top: t.spacing.xs(),
+            right: t.spacing.xs(),
+            width: Length::Px(RAIL_DOT_PX),
+            height: Length::Px(RAIL_DOT_PX),
+            border_radius: RAIL_DOT_PX / 2.0,
+            pointer_events: runtime_core::PointerEvents::None,
         }
     }
 }

@@ -22,9 +22,9 @@
 use std::rc::Rc;
 
 use icons_lucide::{COLUMNS_2, FILE_TEXT, FOLDER, LAYERS, LIST, LIST_ORDERED, SQUARE, TABLE, WRENCH};
-use idea_ui::{install_idea_theme, light_theme, typography_kind, Crumb, Select, SelectOption, Stack, StackGap, StackPadding, Typography};
+use idea_ui::{install_idea_theme, light_theme, tone, typography_kind, Crumb, Select, SelectOption, Stack, StackGap, StackPadding, Typography};
 use idea_ui_layout::{
-    AppFrame, FrameSurface, HeaderWayBack, SidebarCollapse, SidebarItem, SidebarState, SidebarToggle,
+    AppFrame, FrameSurface, HeaderWayBack, SidebarCollapse, SidebarCount, SidebarItem, SidebarState, SidebarToggle,
 };
 use runtime_core::{component, rx, signal, stylesheet, ui, Element, FlexDirection, IconData, Length, Signal};
 
@@ -66,6 +66,16 @@ pub(crate) enum Demo {
 }
 
 impl Demo {
+    /// What waits at a destination: a quiet count and an alarm, to show
+    /// the two tones a sidebar count takes.
+    fn count(self) -> Option<SidebarCount> {
+        match self {
+            Demo::Table => Some(SidebarCount::new(12, tone::Neutral)),
+            Demo::Flow => Some(SidebarCount::new(2, tone::Danger)),
+            _ => None,
+        }
+    }
+
     const ALL: [Demo; 9] = [
         Demo::Content,
         Demo::Table,
@@ -211,6 +221,7 @@ fn Sidebar(#[prop(static)] shell: Shell) -> Element {
                     icon = Some(demo.icon()),
                     label = demo.label().to_string(),
                     active = { let demo = *demo; rx!(shell.screen.get() == demo) },
+                    count = demo.count(),
                     on_press = {
                         let demo = *demo;
                         let go: Rc<dyn Fn()> = Rc::new(move || shell.screen.set(demo));

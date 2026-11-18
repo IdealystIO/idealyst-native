@@ -73,6 +73,10 @@ destinations for every width.**
 - A destination is a `SidebarItem`: glyph and label when open, the
   glyph alone with the label as its tooltip in the rail. One call for
   both.
+- A destination that has something waiting says so with the item's
+  `count`: the number at the row's end, a dot on the glyph in the rail,
+  in the count's tone. Nothing is drawn at zero. An app does not lay a
+  badge of its own over an item.
 - `SidebarToggle` is ☰ where the sidebar is a drawer and a collapse
   control where it is pinned. It is not drawn on a desktop whose
   sidebar does not collapse.

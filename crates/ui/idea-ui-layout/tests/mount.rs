@@ -462,6 +462,55 @@ mod app_frame {
         }
     }
 
+    /// A counted destination: the number at the open row's end, a dot
+    /// (and no number) on the rail's glyph, nothing at zero.
+    #[test]
+    fn a_sidebar_item_shows_its_count_as_a_number_or_a_rail_dot() {
+        use idea_ui::tone;
+        use idea_ui_layout::SidebarCount;
+        let handles = Rc::new(Cell::new(None));
+        let out = handles.clone();
+        let m = mount_at(DESKTOP, move || {
+            let sidebar = SidebarState::new(SidebarCollapse::Icons);
+            let open: Signal<i64> = signal(3);
+            out.set(Some((sidebar, open)));
+            ui! {
+                SidebarItem(
+                    sidebar = sidebar,
+                    icon = Some(GLYPH),
+                    label = "Tasks".to_string(),
+                    count = Some(SidebarCount::new(open, tone::Danger)),
+                    on_press = noop(),
+                )
+            }
+        });
+        let (sidebar, open): (SidebarState, Signal<i64>) = handles.get().expect("built");
+        let row = m.log();
+        assert!(row.contains("\"Tasks\"") && row.contains("\"3\""), "the open row carries the number:\n{row}");
+
+        m.h.world.enter(|| open.set(0));
+        m.h.flush();
+        m.h.world.enter(|| open.set(12));
+        m.h.flush();
+        let back = m.log();
+        assert!(back.contains("\"12\""), "hidden at zero, back with the next count:\n{back}");
+
+        m.h.world.enter(|| sidebar.collapsed.set(true));
+        m.h.flush();
+        let rail = m.log();
+        assert!(!rail.contains("\"12\""), "the rail has no room for a number:\n{rail}");
+        let with_dot = rail.matches("create ").count();
+        m.h.world.enter(|| sidebar.collapsed.set(false));
+        m.h.flush();
+        m.h.world.enter(|| open.set(0));
+        m.h.flush();
+        m.log();
+        m.h.world.enter(|| sidebar.collapsed.set(true));
+        m.h.flush();
+        let bare = m.log().matches("create ").count();
+        assert_eq!(with_dot, bare + 1, "the dot is one more node, and only while there is a count");
+    }
+
     #[test]
     fn a_sidebar_item_closes_the_drawer_and_goes() {
         let went = Rc::new(Cell::new(false));

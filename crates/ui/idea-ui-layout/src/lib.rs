@@ -69,7 +69,8 @@ mod width;
 
 pub use action::Action;
 pub use app_frame::{
-    AppFrame, AppFrameProps, FrameSurface, SidebarCollapse, SidebarItem, SidebarItemProps, SidebarState, SidebarToggle,
+    AppFrame, AppFrameProps, FrameSurface, SidebarCollapse, SidebarCount, SidebarItem, SidebarItemProps, SidebarState,
+    SidebarToggle,
     SidebarToggleProps, SIDEBAR_RAIL_WIDTH, SIDEBAR_WIDTH,
 };
 pub use blocks::{

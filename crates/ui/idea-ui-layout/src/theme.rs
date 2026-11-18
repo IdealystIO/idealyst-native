@@ -22,7 +22,12 @@ pub struct Gutter {
 /// installing a changed theme re-gutters every screen at once; an app
 /// that installs none gets [`LayoutTheme::standard`].
 ///
-/// ```ignore
+/// `install` and `with` are [`Tokens`] methods, so the trait is imported:
+///
+/// ```no_run
+/// use idea_ui_layout::LayoutTheme;
+/// use runtime_core::Tokens as _;
+///
 /// // In the app's brand module, after `install_idea_theme`:
 /// LayoutTheme::install(LayoutTheme::standard().with(|t| {
 ///     t.gutter.tablet = 16.0.into();
