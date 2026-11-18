@@ -282,6 +282,18 @@ crate that is not already in the plan is refused too — use `--force` for that.
 `--force` is applied first, so `--force X --bump X=major` re-cuts an unchanged
 crate as a major: the repair for a release published at the wrong level.
 
+`--level <CRATE>=<LEVEL>` sets a crate's own level exactly, lowering included,
+for a crate a subject over-classifies. One `!` marks every crate its commit
+touched: the `feat(idea-theme)!` that added `Colors::control` also edited
+markdown in `mcp-catalog`, which made `mcp-catalog` a major, and since
+`runtime-shared` depends on it, the drag sent ~139 crates to new majors with
+no API change. `--level mcp-catalog=minor` puts it right. It is refused below
+major while the API check has findings for the crate (waive a false positive
+with `--skip-api-check` first), and never goes below a patch. It applies before
+the majors sweep, so a crate set lower stops dragging its dependents, and a
+dependency's real major still raises it (reported as the drag). The plan marks
+a crate it set `(--level; earned <level>)`.
+
 **The API check.** Commit subjects under-call breaking changes, so `plan`
 also reads the source. For every crate that earned a release of its own, it
 parses the library (`syn`) at the crate's recorded release commit and at HEAD,

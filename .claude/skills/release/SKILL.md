@@ -152,6 +152,17 @@ subject?
   already in the plan. Recomputes from the PUBLISHED version, so raising a
   patch to a minor cannot skip a number. Breaking changes need no grep: the
   API check below raises those to a major on its own.
+- **`--level <CRATE>=<LEVEL>`** sets a crate's own level exactly, LOWER
+  included, for a crate a commit subject over-calls. One `!` subject makes
+  EVERY crate its commit touched a major: `feat(idea-theme)!` also edited
+  markdown in `mcp-catalog`, which `runtime-shared` depends on, and the drag
+  put ~139 crates on new majors with no API change (2026-11-18). When a
+  planned major has no `(API break)` and no `(dependency major bump)`, check
+  what its commits changed in THAT crate; docs or additive content there is a
+  `--level <crate>=minor`. Refused below major while the API check has
+  findings (waive a false positive with `--skip-api-check` first). Applied
+  before the drag, so a real dependency major still raises it. Say so in the
+  release commit. Shown in the plan as `(--level; earned major)`.
 - **The API check raises breaking changes to a major automatically.** For
   every crate that earned its own release, `plan` parses the library source
   (`syn`) at the crate's recorded release commit and at HEAD and diffs the

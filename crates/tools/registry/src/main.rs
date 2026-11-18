@@ -157,6 +157,14 @@ struct RemoteArgs {
     /// an error, not a silent downgrade.
     #[arg(long = "bump", value_name = "CRATE=LEVEL")]
     bump: Vec<String>,
+    /// Set a crate's own level exactly, lower included: `--level
+    /// mcp-catalog=minor`. For a crate a commit subject over-classifies — a
+    /// `feat(x)!:` commit that also touched another crate's docs makes that
+    /// crate a major too, and a major drags every dependent to one. Refused
+    /// below major while the API check has findings for the crate, and below
+    /// patch (it changed). A dependency's real major still raises it after.
+    #[arg(long = "level", value_name = "CRATE=LEVEL")]
+    level: Vec<String>,
     /// Report this crate's API-check findings without raising it to a
     /// major. For a false positive only — a `pub` item the crate documents
     /// as internal, a sealed trait gaining a method. The findings still
@@ -640,6 +648,8 @@ struct Release {
     forced: Forced,
     /// `--bump` raised this level past what the commit subjects earned.
     overridden: bool,
+    /// `--level` set this level; `Some` holds the level it replaced.
+    level_set: Option<Bump>,
     /// Breaking public-API changes the API check found since the last
     /// release (see `api.rs`). Non-empty raises the crate to a major unless
     /// `api_waived`.
@@ -796,6 +806,7 @@ fn plan_from_state(
                     from: None,
                     forced: Forced::No,
                     overridden: false,
+                level_set: None,
                     api: Vec::new(),
                     api_waived: false,
                 },
@@ -816,6 +827,7 @@ fn plan_from_state(
                 from: Some(from),
                 forced: Forced::No,
                 overridden: false,
+                level_set: None,
                 api: Vec::new(),
                 api_waived: false,
             },
@@ -853,6 +865,10 @@ fn plan_from_state(
     // Before the majors sweep below, so `--bump X=major` correctly drags X's
     // dependents in with it.
     apply_bump_overrides(&mut plan, &r.bump)?;
+    // Also before the sweep: a crate set below major stops dragging its
+    // dependents, and one that a dependency's real major reaches is still
+    // raised by it.
+    apply_level_overrides(&mut plan, &r.level)?;
 
     drag_in_dependents_of_majors(ws, &state, &mut plan)?;
     refuse_skipped(&plan, &r.skip)?;
@@ -932,6 +948,11 @@ fn drag_in_dependents_of_majors(
                 rel.to = want.apply(from);
             }
             rel.bump = want;
+            // A `--level` that set it lower is overruled by a dependency's
+            // real major: report the drag, not the flag.
+            if rel.level_set.take().is_some() {
+                rel.forced = Forced::DependencyMajor;
+            }
             continue;
         }
         let from = state
@@ -949,6 +970,7 @@ fn drag_in_dependents_of_majors(
                 from,
                 forced: Forced::DependencyMajor,
                 overridden: false,
+                level_set: None,
                 api: Vec::new(),
                 api_waived: false,
             },
@@ -1040,6 +1062,55 @@ fn apply_bump_overrides(plan: &mut BTreeMap<String, Release>, specs: &[String]) 
     Ok(())
 }
 
+/// Set the levels named by `--level CRATE=LEVEL`, lowering included.
+///
+/// The planner classifies a crate from the subjects of the commits that
+/// touched it, and one `!` marks every crate the commit touched. The
+/// `feat(idea-theme)!` that added `Colors::control` also edited markdown in
+/// `mcp-catalog`, which made `mcp-catalog` a major — and `runtime-shared`
+/// depends on it, so the drag sent ~139 crates to new majors with no API
+/// change among them. `--bump` cannot help: it only raises.
+///
+/// Guarded where lowering could hide a break: a crate the API check found
+/// breaks in stays a major (waive a false positive with `--skip-api-check`
+/// first), and nothing goes below a patch (the crate changed).
+fn apply_level_overrides(plan: &mut BTreeMap<String, Release>, specs: &[String]) -> Result<()> {
+    for spec in specs {
+        let (name, level) = spec
+            .split_once('=')
+            .with_context(|| format!("--level {spec}: expected CRATE=LEVEL, e.g. mcp-catalog=minor"))?;
+        let want = match level.trim().to_ascii_lowercase().as_str() {
+            "patch" => Bump::Patch,
+            "minor" => Bump::Minor,
+            "major" => Bump::Major,
+            other => bail!("--level {spec}: unknown level {other:?} (patch, minor or major)"),
+        };
+        let rel = plan.get_mut(name).with_context(|| {
+            format!(
+                "--level {spec}: {name} is not in the plan — nothing in it changed. \
+                 Use --force to republish an unchanged crate."
+            )
+        })?;
+        if want < Bump::Major && !rel.api.is_empty() && !rel.api_waived {
+            bail!(
+                "--level {spec}: the API check found breaks in {name} ({}); it stays a major \
+                 (waive a false positive with --skip-api-check {name})",
+                rel.api.join("; ")
+            );
+        }
+        if want == rel.bump {
+            continue;
+        }
+        let Some(from) = rel.from.clone() else {
+            bail!("--level {spec}: {name} is unpublished, so its manifest version ships as-is");
+        };
+        rel.level_set = Some(rel.bump);
+        rel.bump = want;
+        rel.to = want.apply(&from);
+    }
+    Ok(())
+}
+
 /// Add the `--force` crates to a plan that did not earn them.
 ///
 /// The diff-driven path answers "did this crate's source change?", and for a
@@ -1083,6 +1154,7 @@ fn force_into_plan(
                 from,
                 forced: Forced::Requested,
                 overridden: false,
+                level_set: None,
                 api: Vec::new(),
                 api_waived: false,
             },
@@ -1107,6 +1179,14 @@ fn report(ws: &Workspace, plan: &BTreeMap<String, Release>) {
         };
         let label = if r.initial { "initial" } else { r.bump.label() };
         let why = if r.overridden { "  (--bump)" } else { why };
+        let level_note;
+        let why = match r.level_set {
+            Some(earned) => {
+                level_note = format!("  (--level; earned {})", earned.label());
+                level_note.as_str()
+            }
+            None => why,
+        };
         let why = match (r.api.is_empty(), r.api_waived) {
             (true, _) => why,
             (false, false) => "  (API break)",
@@ -1469,6 +1549,7 @@ mod tests {
             from_scratch: false,
             force: vec![],
             bump: vec![],
+            level: vec![],
             skip_api_check: vec![],
             skip: vec![],
             registry_name: "idealyst".into(),
@@ -1536,6 +1617,7 @@ mod tests {
             to: semver::Version::new(to.0, to.1, to.2),
             forced: Forced::No,
             overridden: false,
+                level_set: None,
             api: Vec::new(),
             api_waived: false,
         };
@@ -1550,6 +1632,7 @@ mod tests {
             from_scratch: false,
             force: vec![],
             bump: vec![],
+            level: vec![],
             skip_api_check: vec![],
             skip: vec![],
             registry_name: "idealyst".into(),
@@ -1615,6 +1698,7 @@ mod tests {
             from: Some(from),
             forced: Forced::No,
             overridden: false,
+                level_set: None,
             api: Vec::new(),
             api_waived: false,
         }
@@ -1814,6 +1898,56 @@ mod tests {
         assert!(err.to_string().contains("--force"), "points at the right flag: {err}");
     }
 
+    /// The case `--level` exists for: a `feat(idea-theme)!` commit also
+    /// edited `mcp-catalog`'s markdown, so the subject made `mcp-catalog` a
+    /// major, and `runtime-shared` depends on it — ~139 crates went major
+    /// with no API change. Set to a minor, it drags nobody; a dependency's
+    /// real major still raises a crate set lower, and says so.
+    #[test]
+    fn regression_level_lowers_a_subject_major_and_stops_its_drag() {
+        let (ws, state) = idea_ui_family();
+        let mut plan = BTreeMap::from([("idea-ui".to_string(), planned(Bump::Major, (4, 1, 0)))]);
+        apply_level_overrides(&mut plan, &["idea-ui=minor".to_string()]).unwrap();
+        assert_eq!((plan["idea-ui"].bump, plan["idea-ui"].to.clone()), (Bump::Minor, semver::Version::new(4, 2, 0)));
+        assert_eq!(plan["idea-ui"].level_set, Some(Bump::Major), "reported with the level it replaced");
+        drag_in_dependents_of_majors(&ws, &state, &mut plan).unwrap();
+        assert_eq!(plan.len(), 1, "no major, no drag: {:?}", plan.keys());
+
+        // Its dependent set lower is raised again by a real major below it.
+        let mut plan = BTreeMap::from([
+            ("idea-ui".to_string(), planned(Bump::Major, (4, 1, 0))),
+            ("idea-ui-nav".to_string(), planned(Bump::Major, (2, 0, 0))),
+        ]);
+        apply_level_overrides(&mut plan, &["idea-ui-nav=patch".to_string()]).unwrap();
+        drag_in_dependents_of_majors(&ws, &state, &mut plan).unwrap();
+        assert_eq!(plan["idea-ui-nav"].bump, Bump::Major, "idea-ui's major still reaches it");
+        assert_eq!(plan["idea-ui-nav"].forced, Forced::DependencyMajor);
+        assert_eq!(plan["idea-ui-nav"].level_set, None);
+    }
+
+    /// `--level` cannot hide a break the API check found, and never goes
+    /// below a patch; a waived finding can be lowered.
+    #[test]
+    fn level_refuses_to_lower_an_api_break() {
+        let mut plan = BTreeMap::from([("idea-theme".to_string(), planned(Bump::Minor, (12, 0, 0)))]);
+        apply_api_breaks(
+            &mut plan,
+            BTreeMap::from([("idea-theme".to_string(), vec!["added field `control`".to_string()])]),
+            &[],
+        );
+        let err = apply_level_overrides(&mut plan, &["idea-theme=minor".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("found breaks") && err.to_string().contains("--skip-api-check"), "{err}");
+        assert_eq!(plan["idea-theme"].bump, Bump::Major, "left a major");
+        assert!(apply_level_overrides(&mut plan, &["idea-theme=major".to_string()]).is_ok(), "saying major is fine");
+        assert!(apply_level_overrides(&mut plan, &["idea-theme=none".to_string()]).is_err());
+        assert!(apply_level_overrides(&mut BTreeMap::new(), &["x=minor".to_string()]).is_err(), "not in the plan");
+
+        let mut waived = BTreeMap::from([("idea-ui".to_string(), planned(Bump::Major, (4, 1, 0)))]);
+        apply_api_breaks(&mut waived, BTreeMap::from([("idea-ui".to_string(), vec!["x".into()])]), &["idea-ui".to_string()]);
+        apply_level_overrides(&mut waived, &["idea-ui=minor".to_string()]).unwrap();
+        assert_eq!(waived["idea-ui"].bump, Bump::Minor);
+    }
+
     #[test]
     fn bump_rejects_a_malformed_spec() {
         let mut plan = BTreeMap::from([("css".to_string(), planned(Bump::Patch, (1, 5, 4)))]);
@@ -1858,6 +1992,7 @@ mod tests {
             from_scratch: false,
             force: vec![],
             bump: vec![],
+            level: vec![],
             skip_api_check: vec![],
             skip: vec![],
             registry_name: "idealyst".into(),
@@ -1926,6 +2061,7 @@ mod tests {
                 to: semver::Version::new(1, 9, 0),
                 forced: Forced::No,
                 overridden: false,
+                level_set: None,
                 api: Vec::new(),
                 api_waived: false,
             },
