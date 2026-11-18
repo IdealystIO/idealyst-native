@@ -182,10 +182,10 @@ What the blocks do for you:
 | Block | Wide | Phone |
 |---|---|---|
 | `FieldGrid(columns = 1..=3)` | that many columns | one column |
-| `LabelValue` | label beside value | label above value |
+| `LabelValue` | label beside value; `hint` puts a `?` with a tooltip beside the label | label above value |
 | `StatGrid` | four across | two across |
 | `ActionBar` | right-aligned row | full-width, stacked, primary first |
-| `Section` | a heading and its body, spaced | the same |
+| `Section` | a heading and its body, spaced; `hint` is a `?` with a tooltip beside the title, `action` a verb at the heading's right end | the same |
 
 Add no side padding of your own: `Page` applies the gutter. A body that
 must run edge to edge passes `bleed = true`.
@@ -282,6 +282,11 @@ half-typed field survives a rotation.
 | `Nav` | a list of destinations and the open one | 768 | the list is the screen; opening a destination replaces it |
 | `Detail` | a record and a companion panel | 768 | the panel stacks under the record |
 | `Inspector` | a canvas and settings for the selection | 1024 | tablet: the pane overlays with ✕. Phone: it docks under the canvas |
+
+An Inspector whose canvas lies on the ground (an editor's well) passes
+`card = true`: beside the canvas the pane is a card, filled, rounded and
+lifted, with a gap in place of its rule. The well's fill and padding are
+yours. `HelpHint(text = …)` is the `?` on its own, for a place of your own.
 
 Settings, in a scrolling page:
 
