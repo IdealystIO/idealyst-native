@@ -69,6 +69,10 @@
     if (typeof window === 'undefined') return;
     if (window.__idealystVirtualGrid) return; // idempotent inject
 
+    /** The kept (held) row's `z-index`: over a frozen cell's 1, under the
+     *  frozen bands' 3. */
+    const KEPT_ROW_Z = '2';
+
     class VirtualGrid {
         /**
          * @param {HTMLElement} container — the outer two-axis scroller
@@ -198,10 +202,21 @@
          *  DOM, which drops its pointer capture: a drag that started in it
          *  would stop hearing the pointer. Re-windows on a microtask, as
          *  the first fill does: the caller is framework code, and the
-         *  re-window mounts and releases cells, which re-enter it. */
+         *  re-window mounts and releases cells, which re-enter it.
+         *
+         *  The kept row is the one in the user's hand, so it also STACKS
+         *  above the other scrolling rows (and under the frozen bands,
+         *  which it passes beneath). On the row element, not its cells: a
+         *  frozen cell's `z-index` is set inline by `_place`, so a cell's
+         *  own class cannot lift it over another row's frozen cells, and
+         *  a held row dragged down slid under them. */
         setKeptRow(row) {
             if (this._released || this.keepRow === row) return;
+            const was = this.rows.get(this.keepRow);
+            if (was) was.el.style.zIndex = '';
             this.keepRow = row;
+            const now = this.rows.get(row);
+            if (now && now.band === 'S') now.el.style.zIndex = KEPT_ROW_Z;
             queueMicrotask(() => {
                 if (this._released) return;
                 this.lastWindow = null;
@@ -435,6 +450,7 @@
             if (band === 'S') {
                 el.style.position = 'absolute';
                 el.style.left = '0px';
+                if (row === this.keepRow) el.style.zIndex = KEPT_ROW_Z;
             } else {
                 el.style.position = 'relative';
             }

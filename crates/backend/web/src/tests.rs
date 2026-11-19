@@ -3886,6 +3886,16 @@ async fn virtual_grid_kept_row_stays_mounted_while_scrolled_away() {
     let now: web_glue::dom::Node = now.unchecked_into();
     assert!(now.is_same_node(Some(&held)), "the same node, never re-created");
     assert!(grid_el.contains(Some(&held)));
+    // The kept row is the held one: its row stacks over the other rows'
+    // cells (a frozen cell's inline 1) and under the frozen bands (3), so
+    // a row dragged down does not slide under the rows it crosses.
+    let row_z = |r: usize| {
+        let row: web_glue::dom::HtmlElement =
+            grid_el.query_selector(&format!("[data-virtual-grid-row=\"{r}\"]")).unwrap().expect("row").unchecked_into();
+        row.style().get_property_value("z-index").unwrap()
+    };
+    assert_eq!(row_z(2), "2", "the kept row is raised");
+    assert_eq!(row_z(50), "", "the others are not");
     assert!(cell(1, 50).is_some(), "the window followed the scroll");
 
     ops.keep_row_mounted(&grid_el, None);
