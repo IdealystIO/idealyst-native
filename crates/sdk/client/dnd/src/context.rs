@@ -181,6 +181,36 @@ impl<T: Clone + 'static> DragContext<T> {
         }
     }
 
+    // ---- a drag driven by the caller's own gesture ----------------------
+
+    /// Open a drag from a gesture the caller recognises itself, for a
+    /// component that already owns its drag (a table's row grip, a
+    /// calendar's event) and wants this context's drop targets to see it.
+    /// [`Draggable`](crate::Draggable) is the usual way in; this is the
+    /// same session without its recognizer.
+    ///
+    /// `at` is the pointer in window coordinates. With a `preview`, the
+    /// [`drag_layer`](crate::drag_layer) draws it until the session ends.
+    pub fn start_drag(&self, payload: T, at: TouchPoint, preview: Option<DragPreview>) -> DragSession<T> {
+        if let Some(DragPreview { build, x, y }) = preview {
+            self.set_preview(build, x, y);
+        }
+        self.begin(payload);
+        self.update(at);
+        DragSession { ctx: self.clone(), open: true }
+    }
+
+    /// Whether a drop target that accepts the in-flight payload is under
+    /// the pointer, as of the last move.
+    pub fn is_over_target(&self) -> bool {
+        self.inner.borrow().over.is_some()
+    }
+
+    /// Take the preview down, so a later in-place drag draws no ghost.
+    pub(crate) fn clear_preview(&self) {
+        self.inner.borrow_mut().preview = None;
+    }
+
     // ---- drag session (called by Draggable's recognizer callback) --------
 
     /// Open a drag session with `payload`. Sets `dragging` true and clears any
@@ -474,6 +504,70 @@ impl<T: Clone + 'static> DragContext<T> {
         };
         gx.bind(target, AnimProp::TranslateX);
         gy.bind(target, AnimProp::TranslateY);
+    }
+}
+
+/// A drag preview for [`DragContext::start_drag`]: what the
+/// [`drag_layer`](crate::drag_layer) draws, and where its top-left starts,
+/// in window coordinates.
+pub struct DragPreview {
+    build: PreviewBuilder,
+    x: f32,
+    y: f32,
+}
+
+impl DragPreview {
+    /// `build`'s element, its top-left at window `(x, y)`.
+    pub fn new(build: impl Fn() -> Element + 'static, x: f32, y: f32) -> Self {
+        Self { build: Rc::new(build), x, y }
+    }
+}
+
+/// A drag in flight that the caller drives from its own gesture — see
+/// [`DragContext::start_drag`]. End it with [`finish`](Self::finish) or
+/// [`cancel`](Self::cancel); a session dropped without either is cancelled.
+pub struct DragSession<T: Clone + 'static> {
+    ctx: DragContext<T>,
+    open: bool,
+}
+
+impl<T: Clone + 'static> DragSession<T> {
+    /// The pointer is at window `at`; with a preview, its top-left moves to
+    /// `preview_at`. Returns whether a drop target that accepts the payload
+    /// is under the pointer.
+    pub fn moved(&self, at: TouchPoint, preview_at: Option<(f32, f32)>) -> bool {
+        if let Some((x, y)) = preview_at {
+            self.ctx.move_preview(x, y);
+        }
+        self.ctx.update(at);
+        self.ctx.is_over_target()
+    }
+
+    /// Release at window `at`: the target under it, if one accepts the
+    /// payload, receives it through its `on_drop`. Returns whether one did.
+    pub fn finish(mut self, at: TouchPoint) -> bool {
+        self.open = false;
+        let landed = self.ctx.finish(at);
+        self.ctx.clear_preview();
+        landed
+    }
+
+    /// Abandon the drag: nothing is delivered.
+    pub fn cancel(mut self) {
+        self.close();
+    }
+
+    fn close(&mut self) {
+        if std::mem::replace(&mut self.open, false) {
+            self.ctx.cancel();
+            self.ctx.clear_preview();
+        }
+    }
+}
+
+impl<T: Clone + 'static> Drop for DragSession<T> {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 

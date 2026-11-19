@@ -72,6 +72,15 @@
 //! [`DragContext::refresh_rects`] does the first two for targets that moved
 //! some other way.
 //!
+//! ## A component that owns its drag
+//!
+//! A component with a drag of its own (a table's row grip) can still offer
+//! it to a context's drop targets: [`DragContext::start_drag`] opens the
+//! same session a [`Draggable`] does and returns a [`DragSession`] the
+//! component feeds from its gesture. `moved` says whether a target is under
+//! the pointer, so the component can stand its own behaviour down there;
+//! `finish` delivers the payload.
+//!
 //! ## What it deliberately does not do
 //!
 //! Auto-scrolling a list while dragging near its edge, reorder animations, and
@@ -96,10 +105,10 @@ pub mod native;
 #[doc(hidden)]
 mod recipes;
 
-pub use context::{DragContext, DroppableId};
+pub use context::{DragContext, DragPreview, DragSession, DroppableId};
 pub use draggable::{Draggable, DropOutcome, SNAP_BACK_DAMPING, SNAP_BACK_STIFFNESS};
 pub use droppable::Droppable;
-pub use layer::drag_layer;
+pub use layer::{drag_layer, DRAG_LAYER_Z};
 pub use recognizer::{
     Activation, DragPhase, DragRecognizer, DragSample, ScrollAxis, DEFAULT_DRAG_LONG_PRESS_MS,
     DEFAULT_DRAG_LONG_PRESS_SLOP_PX, DEFAULT_DRAG_SLOP_PX,

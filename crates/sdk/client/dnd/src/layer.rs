@@ -21,8 +21,9 @@
 //! drag depends on, so the drag silently never ends (a "stuck" drag that looks
 //! like a freeze). The fix is the standard one for a drag layer: render the
 //! ghost as an `position: absolute`, `pointer-events: none` element. Mounted as
-//! the last child of the root it paints over everything (paint order = sibling
-//! order, no stacking-context tricks), `position: absolute` keeps it out of
+//! the last child of the root it paints over everything (sibling order, and a
+//! high `z_index` — [`DRAG_LAYER_Z`] — for content that has `z_index`es of its
+//! own), `position: absolute` keeps it out of
 //! flow (no layout impact), and `pointer-events: none` lets every event pass
 //! straight through to the dragged element. The ghost is positioned purely by a
 //! bound translate (window coords) — a translate never affects layout, so it
@@ -69,15 +70,23 @@ pub fn drag_layer<T: Clone + 'static>(ctx: &DragContext<T>) -> Element {
     }
 }
 
+/// The ghost's `z_index`. Sibling order alone puts the layer over content
+/// that has no `z_index` of its own; an app shell that stacks its regions
+/// (a pinned sidebar under the page, a drawer over a scrim) gives them
+/// positive ones, and those paint over any later sibling without one.
+pub const DRAG_LAYER_Z: i32 = 10_000;
+
 /// The ghost wrapper: out of flow at the root's top-left, moved by the bound
-/// translate to track the finger, and — crucially — `pointer-events: none` so
-/// it never swallows the moves/release the drag needs.
-fn ghost_sheet() -> Rc<StyleSheet> {
+/// translate to track the finger, above whatever the app stacks, and —
+/// crucially — `pointer-events: none` so it never swallows the moves/release
+/// the drag needs.
+pub(crate) fn ghost_sheet() -> Rc<StyleSheet> {
     Rc::new(StyleSheet::r#static(StyleRules {
         position: Some(Position::Absolute),
         top: Some(Tokenized::Literal(Length::Px(0.0))),
         left: Some(Tokenized::Literal(Length::Px(0.0))),
         pointer_events: Some(PointerEvents::None),
+        z_index: Some(DRAG_LAYER_Z),
         ..Default::default()
     }))
 }

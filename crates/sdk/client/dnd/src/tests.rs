@@ -325,6 +325,50 @@ fn hover_enter_leave_edges_fire_once() {
     });
 }
 
+/// A component driving the drag from its own gesture gets the same
+/// session a `Draggable` opens: hover edges, the over-a-target answer it
+/// stands its own behaviour down on, and delivery on release.
+#[test]
+fn a_caller_driven_session_hovers_delivers_and_cancels() {
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let is_over = signal(false);
+        let dropped = Rc::new(Cell::new(None));
+        let d = dropped.clone();
+        register_zone(
+            &ctx,
+            rect(100.0, 0.0, 50.0, 50.0),
+            is_over,
+            Rc::new(|_| true),
+            None,
+            None,
+            Some(Rc::new(move |p| d.set(Some(p)))),
+        );
+
+        let session = ctx.start_drag(7, TouchPoint::new(0.0, 0.0), None);
+        assert!(flushed(ctx.dragging()));
+        assert!(!session.moved(TouchPoint::new(10.0, 10.0), None), "over nothing");
+        assert!(session.moved(TouchPoint::new(120.0, 25.0), None), "over the zone");
+        assert!(flushed(is_over));
+        assert!(session.finish(TouchPoint::new(120.0, 25.0)), "the zone took the drop");
+        assert_eq!(dropped.get(), Some(7));
+        assert!(!flushed(ctx.dragging()) && !flushed(is_over));
+
+        // Released over nothing: no delivery.
+        dropped.set(None);
+        let session = ctx.start_drag(8, TouchPoint::new(0.0, 0.0), None);
+        assert!(!session.finish(TouchPoint::new(10.0, 10.0)));
+        assert_eq!(dropped.get(), None);
+
+        // Dropped without an ending: cancelled, not left in flight.
+        let session = ctx.start_drag(9, TouchPoint::new(120.0, 25.0), None);
+        assert!(flushed(is_over));
+        drop(session);
+        assert!(!flushed(ctx.dragging()) && !flushed(is_over));
+        assert_eq!(dropped.get(), None);
+    });
+}
+
 #[test]
 fn drop_delivers_payload_and_clears_state() {
     world(|| {
@@ -1150,5 +1194,20 @@ fn scrolling_with_no_drag_in_flight_is_a_no_op() {
         ctx.refresh_rects();
         ctx.scrolled_by(0.0, 10.0);
         assert_eq!(reads.get(), 0);
+    });
+}
+
+/// The ghost is out of flow, deaf to the pointer, and above content
+/// that stacks itself: an app shell gives its page and drawer positive
+/// `z_index`es, which paint over a later sibling that has none — the
+/// dragged row was mounted and invisible behind the page.
+#[test]
+fn regression_the_drag_layer_stacks_above_z_indexed_content() {
+    world(|| {
+        let app = runtime_core::StyleApplication::new(crate::layer::ghost_sheet());
+        let rules = runtime_core::resolve_style(&app);
+        assert_eq!(rules.z_index, Some(crate::DRAG_LAYER_Z));
+        assert_eq!(rules.pointer_events, Some(runtime_core::PointerEvents::None));
+        assert_eq!(rules.position, Some(runtime_core::Position::Absolute));
     });
 }
