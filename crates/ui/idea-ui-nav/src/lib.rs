@@ -37,7 +37,7 @@ mod drawer;
 mod stack_header;
 mod tab_bar;
 
-pub use app_shell::{sidebar_pinned, AppShell, AppShellProps};
+pub use app_shell::{sidebar_pinned, AppShell, AppShellProps, SIDEBAR_SLIDE_MS};
 pub use drawer::{Drawer, DrawerProps, DrawerSide};
 pub use stack_header::{StackHeader, StackHeaderProps};
 pub use tab_bar::{TabBar, TabBarProps, TabItem};

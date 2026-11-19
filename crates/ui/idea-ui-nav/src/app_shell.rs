@@ -36,7 +36,8 @@
 //! `width` may be a signal too — a collapsible rail passes
 //! `width = rx!(if collapsed.get() { 64.0 } else { 280.0 })` and the
 //! panel, the content offset and the closed drawer's slide all follow it
-//! live. The sheets stay keyed on the FIRST value (they are preminted per
+//! live, the panel's width and the content's offset easing together over
+//! [`SIDEBAR_SLIDE_MS`]. The sheets stay keyed on the FIRST value (they are preminted per
 //! width, and a sheet first built after the crawl has no CSS); a live
 //! width rides the inline layer on top, which is the one layer that never
 //! keys a sheet. The cost, and the reason a static width does not pay it:
@@ -51,9 +52,11 @@ use runtime_core::{
     FlexDirection, IdealystSchema, Length, PointerEvents, Position, Reactive, Signal,
     StyleApplication, StyleRules, StyleSheet, Tokenized, Transform, Transition,
 };
-use std::rc::Rc;
 
-const SLIDE_MS: u32 = 240;
+/// How long the sidebar takes to slide, open, close or change width, in
+/// ms: for what an app's sidebar content animates alongside it.
+pub const SIDEBAR_SLIDE_MS: u32 = 240;
+const SLIDE_MS: u32 = SIDEBAR_SLIDE_MS;
 
 // Sibling stacking (`StyleRules::z_index`). The content is ALWAYS raised:
 // an explicit z makes it contain its subtree, so nothing inside the page
@@ -341,6 +344,11 @@ pub fn AppShell(props: AppShellProps) -> Element {
                     -width
                 }))]),
                 transform_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
+                // A live width (a collapsing rail) eases with the
+                // content's margin, so the panel's edge and the page's
+                // travel together and what the panel clips is cut
+                // progressively rather than at once.
+                width_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
                 z_index: Some(if pin_axis.is_none() { PINNED_PANEL_Z } else { DRAWER_Z }),
                 ..Default::default()
             })
@@ -439,6 +447,7 @@ mod tests {
     use super::*;
     use idea_theme::testing::{commit, with_test_world};
     use idea_ui::test_support::{classify, P, TStyle};
+    use std::rc::Rc;
     use runtime_core::{resolve_style, text};
 
     /// Resolve a part's style at the MOBILE base (no breakpoint overlay
@@ -612,6 +621,15 @@ mod tests {
             assert_eq!(translate_x(&resolve(&panel, false)), -280.0);
             assert_eq!(resolve(&panel, false).width, Some(Length::Px(280.0).into()));
             assert_eq!(resolve(&content, false).margin_left, Some(Length::Px(0.0).into()));
+
+            // The panel's width eases with the content's offset: a rail
+            // that snapped to its width while the page slid cut its own
+            // content off at once.
+            assert_eq!(
+                resolve(&panel, false).width_transition.map(|t| t.duration_ms),
+                Some(SIDEBAR_SLIDE_MS),
+                "the panel's width is animated",
+            );
 
             w.set(64.0);
             commit();
