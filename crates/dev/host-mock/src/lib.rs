@@ -441,7 +441,7 @@ pub fn take_animated_log() -> Vec<String> {
 impl runtime_shared::ViewOps for RecordingViewOps {
     fn frame(&self, node: &dyn Any) -> Option<ViewportRect> {
         handle_rec(node, "frame".into());
-        None
+        placed_rect(node)
     }
     fn rect(&self, node: &dyn Any) -> ViewportRect {
         handle_rec(node, "rect".into());
@@ -2219,7 +2219,7 @@ impl Harness {
     }
 
     /// Put `node` at `rect` on screen: what a `ViewHandle` /
-    /// `PressableHandle` bound to it reports from `rect()` and
+    /// `PressableHandle` bound to it reports from `rect()`, `frame()` and
     /// `absolute_frame()`. An unplaced node reports the zero rect / `None`
     /// (an unmounted handle).
     pub fn place(&self, node: Node, rect: ViewportRect) {

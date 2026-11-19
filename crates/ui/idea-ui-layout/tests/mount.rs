@@ -478,9 +478,11 @@ mod app_frame {
     }
 
     /// The row's tooltip is its label, and only the rail needs it: with
-    /// the label on show a hover draws no bubble.
+    /// the label on show a hover draws no bubble. Timers are pumped, so a
+    /// hover rests past the tooltip's show delay.
     #[test]
     fn a_sidebar_item_says_its_name_on_hover_only_in_the_rail() {
+        host_mock::pump::install_scheduler();
         let state = Rc::new(Cell::new(None));
         let out = state.clone();
         let m = mount_at(DESKTOP, move || {
@@ -494,6 +496,8 @@ mod app_frame {
             for handler in handlers {
                 handler(entering);
             }
+            m.h.flush();
+            host_mock::pump::pump_timers();
             m.h.flush();
         };
         m.log();
@@ -854,6 +858,57 @@ mod toolbar {
         m.h.press_labelled("Crew");
         m.h.flush();
         assert!(picked.get());
+    }
+
+    /// REGRESSION: the pill row's clip was a fixed 28 px line (and 2 px
+    /// of slack), not tied to the pills, so an app whose controls are
+    /// taller (CrewForge's 34 px pills) got every pill's bottom cut off
+    /// and could not restyle the private sheet. The line is the tallest
+    /// pill's measured height.
+    #[test]
+    fn regression_taller_pills_are_clipped_at_a_fixed_line() {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+
+        use runtime_core::{Length, ViewportRect};
+
+        const PILL_H: f32 = 34.0;
+        host_mock::pump::install_scheduler();
+        let h = Harness::new();
+        // Every node's last applied pixel height.
+        let heights: Rc<RefCell<HashMap<host_mock::Node, f32>>> = Rc::new(RefCell::new(HashMap::new()));
+        {
+            let heights = heights.clone();
+            h.set_style_line(move |node, rules| {
+                if let Some(Length::Px(px)) = rules.height.as_ref().map(|t| *t.value()) {
+                    heights.borrow_mut().insert(node, px);
+                }
+                format!("apply_style n{node}")
+            });
+        }
+        let tree = h.world.enter(|| {
+            install_idea_theme(light_theme());
+            viewport_size().set(ViewportSize::new(DESKTOP, 800.0));
+            let tabs = signal(vec![Tab::new("work", "Work"), Tab::new("crew", "Crew")]);
+            let on_change: Rc<dyn Fn(String)> = Rc::new(|_| {});
+            ui! { ToolbarTabs(tabs = tabs, active = "work".to_string(), on_change = on_change) }
+        });
+        h.flush();
+        let _realized = h.mount(tree);
+        h.flush();
+        let clipped = |at: f32| heights.borrow().values().any(|px| (*px - at).abs() < 0.01);
+        assert!(clipped(30.0), "the unmeasured line is idea-ui's pill: {:?}", heights.borrow());
+        // Lay every node out as a pill would be: 34 tall, with room for
+        // all of them.
+        let nodes: Vec<host_mock::Node> = h.shared.kinds.borrow().keys().copied().collect();
+        for n in nodes {
+            h.place(n, ViewportRect { x: 0.0, y: 0.0, width: 200.0, height: PILL_H });
+        }
+        host_mock::pump::pump_frames();
+        h.flush();
+        host_mock::pump::pump_timers();
+        h.flush();
+        assert!(clipped(PILL_H + 2.0), "the line follows the pills: {:?}", heights.borrow());
     }
 }
 

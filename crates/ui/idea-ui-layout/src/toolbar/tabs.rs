@@ -20,12 +20,14 @@ const TAB_GAP: f32 = 6.0;
 /// The least room "N more" is given when deciding what fits beside it,
 /// before it has been measured.
 const MORE_WIDTH: f32 = 92.0;
-/// One line of pills.
+/// One line of pills until a pill has been measured: idea-ui's own tab
+/// pill. The line then takes the tallest pill's height, so an app whose
+/// controls are taller keeps whole pills.
 const ROW_HEIGHT: f32 = 28.0;
 /// How far the pill row's clip reaches below the pills.
 const CLIP_SLACK: f32 = 2.0;
-/// A width change smaller than this is layout noise, not a resize.
-const WIDTH_EPSILON: f32 = 0.5;
+/// A size change smaller than this is layout noise, not a resize.
+const SIZE_EPSILON: f32 = 0.5;
 
 #[runtime_core::props]
 #[derive(IdealystSchema)]
@@ -102,7 +104,7 @@ pub fn ToolbarTabs(props: &ToolbarTabsProps) -> Element {
             h.on_layout(move |w, _| {
                 let alive = alive.clone();
                 after_ms_detached(0, move || {
-                    if alive.get() && (room.peek() - w).abs() > WIDTH_EPSILON {
+                    if alive.get() && (room.peek() - w).abs() > SIZE_EPSILON {
                         room.set(w);
                     }
                 })
@@ -149,7 +151,7 @@ pub fn ToolbarTabs(props: &ToolbarTabsProps) -> Element {
                     return;
                 }
                 if let Some(Some(frame)) = anchor.with(|h| h.frame()) {
-                    if frame.width > 0.0 && (more_w.peek() - frame.width).abs() > WIDTH_EPSILON {
+                    if frame.width > 0.0 && (more_w.peek() - frame.width).abs() > SIZE_EPSILON {
                         more_w.set(frame.width);
                     }
                 }
@@ -279,12 +281,21 @@ fn TabsFit(props: &TabsFitProps) -> Element {
     let items: Vec<(Tab, Ref<ViewHandle>)> = props.tabs.iter().map(|t| (t.clone(), Ref::new())).collect();
     // The row's width: the pills that fit, or no limit while all do.
     let held_to: Signal<Option<f32>> = signal(None);
+    // One line's height: the tallest pill, read with the widths. The
+    // pills' height is the theme's, which an app can restyle; a fixed
+    // line would clip taller pills.
+    let line_h = signal(ROW_HEIGHT);
     let fit: Rc<dyn Fn()> = {
         let seats: Vec<(String, Ref<ViewHandle>)> = items.iter().map(|(t, r)| (t.id.clone(), *r)).collect();
         Rc::new(move || {
+            let frames: Vec<Option<runtime_core::ViewportRect>> =
+                seats.iter().map(|(_, seat)| seat.with(|h| h.frame()).flatten()).collect();
+            let tallest = frames.iter().flatten().map(|f| f.height).fold(0.0_f32, f32::max);
+            if tallest > 0.0 && (line_h.peek() - tallest).abs() > SIZE_EPSILON {
+                line_h.set(tallest);
+            }
             let room = room.peek();
-            let widths: Vec<f32> =
-                seats.iter().map(|(_, seat)| seat.with(|h| h.frame()).flatten().map_or(0.0, |f| f.width)).collect();
+            let widths: Vec<f32> = frames.iter().map(|f| f.map_or(0.0, |f| f.width)).collect();
             // A seat not laid out yet has no width; a zero would count
             // it as fitting.
             if room <= 0.0 || widths.is_empty() || widths.iter().any(|w| *w <= 0.0) {
@@ -341,10 +352,17 @@ fn TabsFit(props: &TabsFitProps) -> Element {
             }
         });
     });
+    // The clip is CLIP_SLACK taller than the line, handed back with a
+    // negative margin so the row still lays out at the line's height: a
+    // clip that fits exactly lands on a fractional y and shaves the
+    // pills' bottom edge. The row gap keeps a wrapped line below the
+    // slack.
     let row_style = move || {
         let limit = held_to.get();
         TabsFitRow().into_style_application().with_inline_merged(StyleRules {
             max_width: limit.map(|w| Tokenized::Literal(Length::Px(w))),
+            height: Some(Tokenized::Literal(Length::Px(line_h.get() + CLIP_SLACK))),
+            margin_bottom: Some(Tokenized::Literal(Length::Px(-CLIP_SLACK))),
             ..Default::default()
         })
     };
@@ -393,12 +411,8 @@ stylesheet! {
 
 stylesheet! {
     // One line of pills; what wraps past it is clipped. As wide as its
-    // pills and no wider, so "N more" follows the last one.
-    //
-    // The clip is CLIP_SLACK taller than the pills, handed back with a
-    // negative margin so the row still lays out at ROW_HEIGHT: a clip
-    // that fits exactly lands on a fractional y and shaves the pills'
-    // bottom edge. The row gap keeps a wrapped line below the slack.
+    // pills and no wider, so "N more" follows the last one. Its height
+    // is the measured line's, set inline by `TabsFit`.
     TabsFitRow<idea_ui::IdeaThemeRef> {
         base(_t) {
             flex_direction: FlexDirection::Row,
@@ -407,8 +421,6 @@ stylesheet! {
             align_content: AlignContent::FlexStart,
             column_gap: Length::Px(TAB_GAP),
             row_gap: Length::Px(TAB_GAP),
-            height: Length::Px(ROW_HEIGHT + CLIP_SLACK),
-            margin_bottom: Length::Px(-CLIP_SLACK),
             overflow: Overflow::Hidden,
             flex_grow: 0.0,
             flex_shrink: 1.0,

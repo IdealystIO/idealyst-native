@@ -3790,6 +3790,9 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 - **The drag ghost no longer flashes at the window's top-left** (`dnd`). Its position was
   re-applied on a microtask that could run before the ghost mounted; it is now written as the
   ghost mounts, before its first paint.
+- **Toolbar tab pills taller than idea-ui's are no longer cut off** (`idea-ui-layout`). The pill
+  row's clip was a fixed 28 px line, so an app that restyled its controls taller (34 px pills)
+  lost every pill's bottom edge. The line is now the tallest pill's measured height.
 - **A wide drag ghost no longer widens the page** (`dnd`). `drag_layer` puts the ghost in a box
   pinned to the window's four edges that clips what overhangs and ignores the pointer, so a row
   ghost carried to the edge no longer adds a horizontal scrollbar. The app root needs no
