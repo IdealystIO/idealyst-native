@@ -118,8 +118,8 @@ use crate::builders::{self, TextContent};
 // the macro (and app preludes) reach for.
 pub use runtime_scene::{component_scope, Element};
 pub use runtime_world::{
-    effect, memo, on_cleanup, on_owned_drop, on_scope_drop, signal, untrack, Effect, Memo,
-    ReadSignal, Signal, WriteSignal,
+    effect, memo, on_cleanup, on_owned_drop, on_scope_drop, signal, untrack, world_local, Effect,
+    Memo, ReadSignal, Signal, WriteSignal,
 };
 
 // The escape hatch for the `T: PartialEq` bound those signal handles
@@ -4094,6 +4094,16 @@ impl GlueView {
     /// Fill `r` with the mounted node's handle.
     pub fn bind(mut self, r: Ref<ViewHandle>) -> Self {
         self.b = self.b.on_handle(move |h| crate::glue::fill_ref_while_mounted(r, h));
+        self
+    }
+
+    /// Run `f` with the node's handle when it mounts: synchronously in the
+    /// mount handler, so before its first paint. For a write the node must
+    /// show from its first frame, which a value bound through a `Ref` (that
+    /// reaches the node on its next change, or after mount) can miss.
+    /// Composes with [`bind`](Self::bind): both receive the handle.
+    pub fn on_mount(mut self, f: impl FnOnce(&ViewHandle) + 'static) -> Self {
+        self.b = self.b.on_handle(move |h| f(&h));
         self
     }
 }

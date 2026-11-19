@@ -708,3 +708,46 @@ fn raw_virtualizer_without_item_diff_has_no_item_changed() {
     });
     assert!(h.virtualizer(0).item_changed.is_none());
 }
+
+// ===========================================================================
+// View handle receivers
+// ===========================================================================
+
+/// A view's `bind(ref)` and an `on_handle` / `on_mount` receiver both get
+/// the handle. The second receiver used to replace the first: the dnd
+/// drag ghost needs its `Ref` filled for the bound translate AND its
+/// position written at mount, and chaining `on_mount` after `bind` left
+/// the `Ref` empty, so the ghost stopped following the pointer.
+#[test]
+fn regression_view_handle_receivers_compose() {
+    let h = harness();
+    let order: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+    let (a, b) = (order.clone(), order.clone());
+    let _realized = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            view()
+                .on_handle(move |_h| a.borrow_mut().push("first"))
+                .on_handle(move |_h| b.borrow_mut().push("second"))
+                .build(),
+        )
+    });
+    assert_eq!(*order.borrow(), vec!["first", "second"], "both receivers run, in chain order");
+
+    // The glue surface: `bind` then `on_mount` on one view.
+    use runtime_vocabulary::glue::IntoElement;
+    let seen = Rc::new(Cell::new(false));
+    let s = seen.clone();
+    let filled = h.world.enter(|| {
+        let r: runtime_shared::Ref<runtime_shared::ViewHandle> = runtime_shared::Ref::new();
+        let el = runtime_vocabulary::glue::view(Vec::new())
+            .bind(r)
+            .on_mount(move |_h| s.set(true))
+            .into_element();
+        let realized = realize(&h.backend, &h.registry, el);
+        (r.get().is_some(), realized)
+    });
+    assert!(filled.0, "bind's Ref is filled");
+    assert!(seen.get(), "and on_mount ran");
+}

@@ -141,9 +141,18 @@ impl ViewBuilder {
         self
     }
 
-    /// Receive the imperative-ref handle at mount.
+    /// Receive the imperative-ref handle at mount — synchronously, inside
+    /// the mount handler, so before the node's first paint. Each call adds
+    /// a receiver: a `bind(ref)` and an `on_handle` on the same view both
+    /// get the handle, in the order they were chained.
     pub fn on_handle(mut self, fill: impl FnOnce(ViewHandle) + 'static) -> Self {
-        self.prim.ref_fill = Some(Box::new(fill));
+        self.prim.ref_fill = Some(match self.prim.ref_fill.take() {
+            None => Box::new(fill),
+            Some(first) => Box::new(move |h: ViewHandle| {
+                first(h.clone());
+                fill(h);
+            }),
+        });
         self
     }
 
