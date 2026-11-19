@@ -1,6 +1,6 @@
 [package]
 name = "idea-ui-layout"
-version = "0.5.0"
+version = "0.5.1"
 edition.workspace = true
 license.workspace = true
 description = "Responsive screen layouts for idea-ui: page variants, split views, flows and overlays that pick their own phone, tablet and desktop form."

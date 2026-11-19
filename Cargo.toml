@@ -502,11 +502,11 @@ license = "MIT OR Apache-2.0"
 # cargo — there is no CLI-generated web wrapper crate any more.
 idealyst = { path = "crates/idealyst", version = "9.0.0", registry = "idealyst" }
 runtime-core = { path = "crates/runtime/core", version = "8.0.0", registry = "idealyst" }
-runtime-shared = { path = "crates/runtime/shared", version = "6.3.0", registry = "idealyst" }
+runtime-shared = { path = "crates/runtime/shared", version = "6.4.0", registry = "idealyst" }
 runtime-world = { path = "crates/runtime/world", version = "1.10.1", registry = "idealyst" }
 runtime-tls = { path = "crates/runtime/tls", version = "0.1.1", registry = "idealyst" }
 runtime-scene = { path = "crates/runtime/scene", version = "2.1.1", registry = "idealyst" }
-runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "9.5.0", registry = "idealyst" }
+runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "9.6.0", registry = "idealyst" }
 runtime-template = { path = "crates/runtime/template", version = "1.5.1", registry = "idealyst" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
@@ -553,7 +553,7 @@ wire = { path = "crates/dev/wire", version = "5.4.0", registry = "idealyst" }
 dev-client = { path = "crates/dev/client", version = "9.2.0", registry = "idealyst" }
 dev-server = { path = "crates/dev/server", version = "11.2.0", registry = "idealyst" }
 mock-backend = { path = "crates/dev/mock-backend" }
-host-mock = { path = "crates/dev/host-mock", version = "8.2.0", registry = "idealyst" }
+host-mock = { path = "crates/dev/host-mock", version = "8.2.1", registry = "idealyst" }
 parity-goldens = { path = "crates/dev/parity-goldens" }
 ui-lowering-parity = { path = "crates/dev/ui-lowering-parity" }
 headless-screenshot = { path = "crates/dev/headless-screenshot", version = "9.0.0", registry = "idealyst" }
@@ -615,7 +615,7 @@ backend-windows = { path = "crates/backend/windows", version = "9.0.0", registry
 backend-linux = { path = "crates/backend/linux", version = "8.0.0", registry = "idealyst" }
 host-gtk = { path = "crates/host/gtk", version = "8.0.1", registry = "idealyst" }
 welcome = { path = "examples/welcome" }
-idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "24.1.0", registry = "idealyst" }
+idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "24.2.0", registry = "idealyst" }
 render-api = { path = "crates/gpu-backend/api", version = "7.0.0", registry = "idealyst" }
 render-wgpu = { path = "crates/gpu-backend/engine", version = "9.0.0", registry = "idealyst" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
@@ -641,14 +641,14 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme", version = "13.0.0", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "20.0.0", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "23.1.0", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "23.2.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "8.0.0", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "20.1.0", registry = "idealyst" }
-idea-ui-layout = { path = "crates/ui/idea-ui-layout", version = "0.5.0", registry = "idealyst" }
+idea-ui-layout = { path = "crates/ui/idea-ui-layout", version = "0.5.1", registry = "idealyst" }
 icons-lucide = { path = "crates/ui/icons-lucide", version = "8.0.0", registry = "idealyst" }
 pan = { path = "crates/sdk/client/pan", version = "8.0.0", registry = "idealyst" }
 zoom = { path = "crates/sdk/client/zoom", version = "8.0.0", registry = "idealyst" }
-dnd = { path = "crates/sdk/client/dnd", version = "8.1.0", registry = "idealyst" }
+dnd = { path = "crates/sdk/client/dnd", version = "8.2.0", registry = "idealyst" }
 gesture = { path = "crates/sdk/client/gesture", version = "6.0.0", registry = "idealyst" }
 maps = { path = "crates/sdk/client/maps", version = "9.0.0", registry = "idealyst" }
 maps-core = { path = "crates/sdk/client/maps/core", version = "8.0.0", registry = "idealyst" }
