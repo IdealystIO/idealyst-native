@@ -544,3 +544,46 @@ fn a_held_press_through_the_hit_test_spans_real_time() {
     assert_eq!(presses.get(), 1);
     robot.reset();
 }
+
+/// REGRESSION (CrewForge): a sheet's button below the sheet's fold — its
+/// scroller clipped it to nothing — "tapped" with `hit_test` success while
+/// nothing was pressed: the point was checked against the window only.
+/// Now it is refused like a point outside the window (whose message
+/// `robot-test` reads to scroll and retry).
+#[test]
+fn regression_a_button_its_scroller_clips_away_refuses_the_tap() {
+    use runtime_vocabulary::caps::ContentClip;
+    let robot = Robot::new();
+    robot.reset();
+    let h = Harness::new();
+    let presses = Rc::new(Cell::new(0));
+    let _r = h.world.enter(|| {
+        let presses = presses.clone();
+        realize(
+            &h.backend,
+            &h.registry,
+            view()
+                .test_id("sheet")
+                .child(pressable(move || presses.set(presses.get() + 1)).test_id("terminate").build())
+                .build(),
+        )
+    });
+    runtime_shared::viewport::set_viewport_size(runtime_shared::viewport::ViewportSize { width: 400.0, height: 900.0 });
+    {
+        let mut frames = h.shared.frames.borrow_mut();
+        frames.insert(0, rect(0.0, 500.0, 400.0, 357.0)); // the sheet's scroll viewport
+        frames.insert(1, rect(170.0, 870.0, 62.0, 40.0)); // below its fold, inside the window
+    }
+    h.shared.clips.borrow_mut().insert(0, ContentClip::Scroll);
+
+    let err = robot.tap_native(&find(&robot, "terminate")).unwrap_err();
+    assert_eq!(err, RobotError::OutsideWindow { action: "tap_native", x: 201.0, y: 890.0 });
+    assert!(err.to_string().contains("outside the window"), "robot-test scrolls on this: {err}");
+    assert_eq!(presses.get(), 0);
+
+    // Scrolled up so its center shows: the tap goes through.
+    h.shared.frames.borrow_mut().insert(1, rect(170.0, 800.0, 62.0, 40.0));
+    assert_eq!(robot.tap_native(&find(&robot, "terminate")), Ok(TapMechanism::HitTest));
+    assert_eq!(presses.get(), 1);
+    robot.reset();
+}

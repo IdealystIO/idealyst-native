@@ -96,7 +96,7 @@ Real platform input on an element, one `action` at a time, through the toolkit's
 
 Taps an element's center with REAL platform input, through the toolkit's own event path: hit testing, overlays, gesture recognizers and the native disabled state all take part, which `click` skips.
 
-It refuses the way a finger would fail: the element is not visible, its center is outside the window (scroll it into view), or another element covers it (the error names it).
+It refuses the way a finger would fail: the element is not visible, its center is outside the window or clipped away by its scroller (scroll it into view), or another element covers it (the error names it).
 
 Returns `{ mechanism }`:
 

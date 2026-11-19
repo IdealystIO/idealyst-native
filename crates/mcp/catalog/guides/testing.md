@@ -511,7 +511,8 @@ sends the right click) through the framework's own touch handlers.
 
 A native tap refuses the way a finger would fail, with a retryable error:
 - the element is not visible;
-- its center is outside the window (`click()` scrolls it into view first);
+- its center is outside the window, or a scroller clips it away (a sheet's
+  button below the fold). `click()` scrolls it into view first;
 - something covers it. The error names the element on top.
 
 That last case is how a test catches an overlay or modal backdrop

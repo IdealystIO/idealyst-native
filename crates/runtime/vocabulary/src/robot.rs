@@ -1495,8 +1495,10 @@ pub enum RobotError {
     Disabled(&'static str),
     /// A native action needs the element visible.
     NotVisible(&'static str),
-    /// A native action's point is outside the window: a user couldn't
-    /// reach it without scrolling.
+    /// A native action's point is outside the window, or cut off by a
+    /// scroller or a clipping ancestor: a user couldn't reach it without
+    /// scrolling. Its message keeps "outside the window", which
+    /// `robot-test` matches to scroll the element into view and retry.
     OutsideWindow { action: &'static str, x: f32, y: f32 },
     /// Something else is on top at the action's point and would take a
     /// real tap — an overlay, a scrim, a sibling drawn later. `by`
@@ -1520,7 +1522,7 @@ impl std::fmt::Display for RobotError {
             Self::NotVisible(action) => write!(f, "action '{action}' refused: the element is not visible"),
             Self::OutsideWindow { action, x, y } => write!(
                 f,
-                "action '{action}' refused: the point ({x}, {y}) is outside the window (scroll the element into view)"
+                "action '{action}' refused: the point ({x}, {y}) is outside the window or cut off by a scroller (scroll the element into view)"
             ),
             Self::Covered { action, x, y, by } => {
                 write!(f, "action '{action}' refused: another element covers the point ({x}, {y})")?;
@@ -1776,6 +1778,17 @@ fn deepest_hit_in(root: ElementId, x: f32, y: f32) -> ElementId {
         .map(|(id, depth, _)| (id, depth))
         .max_by_key(|&(_, depth)| depth)
         .map_or(root, |(id, _)| id)
+}
+
+/// Whether a native action's point is on screen: inside `seen`, the part
+/// of the element left after its scrollers, clipping ancestors and the
+/// window cut it ([`Robot::visible_frame`]); unknown counts as on screen.
+/// Not the window alone: a sheet's button below its fold is inside the
+/// window but clipped to nothing by the sheet's scroller, and a tap there
+/// reported success while the toolkit hit-tested past it and pressed
+/// nothing.
+fn point_on_screen(seen: Option<ViewportRect>, (x, y): (f32, f32)) -> bool {
+    seen.is_none_or(|r| x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height)
 }
 
 /// Element `id`'s [`Visibility`]; `None` once it has unmounted.
@@ -2087,7 +2100,8 @@ impl Robot {
     /// calls the element's handler directly, cannot test.
     ///
     /// Refuses, as a user would fail, when the element is not visible,
-    /// its center is outside the window, or the backend's hit test
+    /// its center is off screen (outside the window, or cut off by a
+    /// scroller or clipping ancestor), or the backend's hit test
     /// ([`hit_contains`](IntrospectionOps::hit_contains)) finds something
     /// else on top. A backend with a hit test but no input injection taps
     /// through the hit test: the point is checked, then the press runs as
@@ -2317,7 +2331,7 @@ impl Robot {
     /// its top-left, or its center. Refuses an invisible element and a
     /// point outside the window.
     fn native_point(&self, id: ElementId, offset: Option<(f32, f32)>, action: &'static str) -> Result<(f32, f32), RobotError> {
-        let vis = visibility_of(id).ok_or(RobotError::ElementGone)?;
+        let (vis, seen) = visibility_and_frame(id).ok_or(RobotError::ElementGone)?;
         if !vis.visible {
             return Err(RobotError::NotVisible(action));
         }
@@ -2330,7 +2344,9 @@ impl Robot {
             None => (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0),
         };
         let window = runtime_shared::viewport::viewport_size().get();
-        if window.width > 0.0 && window.height > 0.0 && !(x >= 0.0 && y >= 0.0 && x < window.width && y < window.height) {
+        let in_window =
+            !(window.width > 0.0 && window.height > 0.0) || (x >= 0.0 && y >= 0.0 && x < window.width && y < window.height);
+        if !in_window || !point_on_screen(seen, (x, y)) {
             return Err(RobotError::OutsideWindow { action, x, y });
         }
         Ok((x, y))

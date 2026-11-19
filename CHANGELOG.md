@@ -3787,6 +3787,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`tap_native` refuses a control its scroller clips away** (`runtime-vocabulary`). The point
+  check looked at the window only, so on iOS a sheet's button below the sheet's fold (in the
+  window, clipped to zero height by the sheet's scroll view) "tapped" with `{"mechanism":
+  "hit_test"}` while nothing was pressed. Every native action (`tap_native`, `press_native`,
+  `hover_native`, `drag_native`) now refuses a point outside the element's visible part with the
+  same "outside the window … (scroll the element into view)" error, which `robot-test` already
+  answers by scrolling the element into view and retrying.
+
 - **`idealyst test` no longer tells a device row it runs in a browser** (`idealyst-cli`). A
   phone or tablet row serves its screen's control socket, and the runner set
   `IDEALYST_TEST_ENGINE` whenever a control socket existed, so every iOS and Android suite read

@@ -186,8 +186,9 @@ all take part. `drag_native {element_id, points}` does the same for a
 path (points relative to the element's top-left, as `drag` takes them).
 
 It refuses as a finger would fail, with a retryable error: the element is
-not visible, its center is outside the window ("scroll the element into
-view"), or the backend's hit test finds something else on top ("another
+not visible, its center is outside the window or cut off by a scroller
+that clips it, such as a sheet's button below the fold ("scroll the element
+into view"), or the backend's hit test finds something else on top ("another
 element covers the point … — View test_id=\"scrim\" would receive the
 tap"). It answers `{mechanism}`:
 
