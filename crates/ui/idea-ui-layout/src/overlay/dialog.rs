@@ -108,7 +108,10 @@ pub fn Dialog(props: &DialogProps) -> Element {
                             IconButton(
                                 icon = Some(ARROW_LEFT),
                                 variant = variant::Ghost,
-                                size = IconButtonSize::Md,
+                                // The ✕'s size: the row is as tall as
+                                // its tallest child, so a larger arrow
+                                // would move the title when it appears.
+                                size = IconButtonSize::Sm,
                                 label = Some("Back".to_string()),
                                 on_click = back.clone(),
                             )

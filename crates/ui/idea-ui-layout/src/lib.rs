@@ -71,7 +71,7 @@ pub use action::Action;
 pub use app_frame::{
     AppFrame, AppFrameProps, FrameSurface, SidebarCollapse, SidebarCount, SidebarItem, SidebarItemProps, SidebarState,
     SidebarToggle,
-    SidebarToggleProps, SIDEBAR_RAIL_WIDTH, SIDEBAR_WIDTH,
+    SidebarToggleProps, SIDEBAR_INSET, SIDEBAR_ITEM_PAD, SIDEBAR_RAIL_WIDTH, SIDEBAR_WIDTH,
 };
 pub use blocks::{
     ActionBar, ActionBarProps, BottomInset, FieldGrid, FieldGridProps, FieldGridRow, FieldGridRowProps, HelpHint,

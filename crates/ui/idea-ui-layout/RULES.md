@@ -71,15 +71,25 @@ destinations for every width.**
   drawer, and an open drawer is always the full sidebar with its
   labels.
 - A destination is a `SidebarItem`: glyph and label when open, the
-  glyph alone with the label as its tooltip in the rail. One call for
-  both.
+  glyph alone with the label as its tooltip in the rail. It is one row
+  in both: collapsing narrows it, so the glyph holds its size and place
+  and the label fades as the sidebar closes over it. Nothing is swapped
+  or rebuilt.
+- The sidebar's width and the screen's offset ease together. The
+  sidebar clips what does not fit; its own content does not animate a
+  width of its own.
+- The sidebar's content is inset `sm` (8) from the sidebar's edges
+  (`SIDEBAR_INSET`): that inset is what stands an item's glyph in the
+  middle of the rail.
 - A destination that has something waiting says so with the item's
   `count`: the number at the row's end, a dot on the glyph in the rail,
   in the count's tone. Nothing is drawn at zero. An app does not lay a
   badge of its own over an item.
 - `SidebarToggle` is ☰ where the sidebar is a drawer and a collapse
   control where it is pinned. It is not drawn on a desktop whose
-  sidebar does not collapse.
+  sidebar does not collapse. Each form is named for what a press does:
+  "Menu", "Collapse sidebar", "Expand sidebar", the desktop two with a
+  tooltip.
 - The app makes one `SidebarState` and hands it to the frame, the
   items and the toggles.
 

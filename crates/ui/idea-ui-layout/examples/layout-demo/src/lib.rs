@@ -210,11 +210,9 @@ pub fn app() -> Element {
 fn Sidebar(#[prop(static)] shell: Shell) -> Element {
     ui! {
         Stack(gap = StackGap::Xs, padding = StackPadding::Sm) {
-            // The sidebar's own content that is not an item reads the
-            // rail from the state: the wordmark has no room in it.
-            if !shell.sidebar.is_rail() {
-                Typography(content = "idea-ui-layout".to_string(), kind = typography_kind::H3)
-            }
+            // The sidebar's own content keeps its line and lets the
+            // narrowing sidebar clip it, so the items under it hold still.
+            Typography(content = "idea-ui-layout".to_string(), kind = typography_kind::H3, lines = Some(1))
             for demo in Demo::ALL.iter(), key = demo.label() {
                 SidebarItem(
                     sidebar = shell.sidebar,

@@ -432,18 +432,81 @@ mod app_frame {
         }
     }
 
-    /// The icon rail: a collapsed desktop sidebar keeps its items as
-    /// glyphs and drops their labels.
+    /// The desktop control says which of the two a press does; the ☰ is
+    /// "Menu". The CrewForge report (11-19): all three answered to "Menu".
     #[test]
-    fn a_collapsed_desktop_sidebar_is_a_rail_of_icons() {
+    fn the_toggle_is_named_for_what_a_press_does() {
         let (m, sidebar) = mount_framed(DESKTOP, FrameSurface::Flat, SidebarCollapse::Icons);
-        assert!(m.log().contains("\"Projects\""), "open: the label is drawn");
+        assert!(m.h.a11y_by_label("Collapse sidebar").is_some());
+        assert!(m.h.a11y_by_label("Expand sidebar").is_none() && m.h.a11y_by_label("Menu").is_none());
+        m.h.world.enter(|| sidebar.collapsed.set(true));
+        m.h.flush();
+        assert!(m.h.a11y_by_label("Expand sidebar").is_some());
+
+        let (phone, _) = mount_framed(PHONE, FrameSurface::Flat, SidebarCollapse::Icons);
+        assert!(phone.h.a11y_by_label("Menu").is_some());
+        assert!(phone.h.a11y_by_label("Collapse sidebar").is_none());
+    }
+
+    /// The icon rail is the same rows, narrowed: collapsing restyles
+    /// them and builds nothing, so the glyph cannot move or change size
+    /// and the label has something to fade from. The CrewForge report
+    /// (11-19): the rail swapped each row for an icon button, so the
+    /// label vanished and the glyph jumped on the first frame.
+    #[test]
+    fn regression_collapsing_to_the_rail_restyles_the_rows_and_builds_nothing() {
+        let state = Rc::new(Cell::new(None));
+        let out = state.clone();
+        let m = mount_at(DESKTOP, move || {
+            let sidebar = SidebarState::new(SidebarCollapse::Icons);
+            out.set(Some(sidebar));
+            ui! { SidebarItem(sidebar = sidebar, icon = Some(GLYPH), label = "Projects".to_string(), on_press = noop()) }
+        });
+        let sidebar: SidebarState = state.get().expect("built");
+        let open = m.log();
+        assert!(open.contains("\"Projects\"") && open.contains(" icon"), "open: glyph and label:\n{open}");
         m.h.world.enter(|| sidebar.collapsed.set(true));
         m.h.flush();
         let rail = m.log();
         assert!(m.h.world.enter(|| sidebar.is_rail()));
-        assert!(rail.contains(" icon"), "the glyph is drawn:\n{rail}");
-        assert!(!rail.contains("\"Projects\""), "the label is not:\n{rail}");
+        assert!(!rail.contains("create "), "nothing is rebuilt for the rail:\n{rail}");
+        assert!(rail.contains("apply_style"), "the row is restyled:\n{rail}");
+        m.h.world.enter(|| sidebar.collapsed.set(false));
+        m.h.flush();
+        let back = m.log();
+        assert!(!back.contains("create "), "nor on the way back:\n{back}");
+    }
+
+    /// The row's tooltip is its label, and only the rail needs it: with
+    /// the label on show a hover draws no bubble.
+    #[test]
+    fn a_sidebar_item_says_its_name_on_hover_only_in_the_rail() {
+        let state = Rc::new(Cell::new(None));
+        let out = state.clone();
+        let m = mount_at(DESKTOP, move || {
+            let sidebar = SidebarState::new(SidebarCollapse::Icons);
+            out.set(Some(sidebar));
+            ui! { SidebarItem(sidebar = sidebar, icon = Some(GLYPH), label = "Projects".to_string(), on_press = noop()) }
+        });
+        let sidebar: SidebarState = state.get().expect("built");
+        let hover = |entering: bool| {
+            let handlers: Vec<_> = m.h.shared.hover_handlers.borrow().iter().map(|(_, h)| h.clone()).collect();
+            for handler in handlers {
+                handler(entering);
+            }
+            m.h.flush();
+        };
+        m.log();
+        hover(true);
+        let open = m.log();
+        assert_eq!(open.matches("\"Projects\"").count(), 0, "no bubble beside a label that is on show:\n{open}");
+        hover(false);
+        m.h.world.enter(|| sidebar.collapsed.set(true));
+        m.h.flush();
+        m.log();
+        hover(true);
+        let rail = m.log();
+        assert_eq!(rail.matches("\"Projects\"").count(), 1, "the rail's row names itself:\n{rail}");
     }
 
     /// The rail is a desktop form only: below it the sidebar is a
@@ -462,8 +525,8 @@ mod app_frame {
         }
     }
 
-    /// A counted destination: the number at the open row's end, a dot
-    /// (and no number) on the rail's glyph, nothing at zero.
+    /// A counted destination: the number at the open row's end and a
+    /// dot on the glyph for the rail, nothing at zero.
     #[test]
     fn a_sidebar_item_shows_its_count_as_a_number_or_a_rail_dot() {
         use idea_ui::tone;
@@ -495,20 +558,12 @@ mod app_frame {
         let back = m.log();
         assert!(back.contains("\"12\""), "hidden at zero, back with the next count:\n{back}");
 
+        // The dot is mounted with the number and shown by the rail's
+        // restyle: collapsing builds nothing.
         m.h.world.enter(|| sidebar.collapsed.set(true));
         m.h.flush();
         let rail = m.log();
-        assert!(!rail.contains("\"12\""), "the rail has no room for a number:\n{rail}");
-        let with_dot = rail.matches("create ").count();
-        m.h.world.enter(|| sidebar.collapsed.set(false));
-        m.h.flush();
-        m.h.world.enter(|| open.set(0));
-        m.h.flush();
-        m.log();
-        m.h.world.enter(|| sidebar.collapsed.set(true));
-        m.h.flush();
-        let bare = m.log().matches("create ").count();
-        assert_eq!(with_dot, bare + 1, "the dot is one more node, and only while there is a count");
+        assert!(!rail.contains("create "), "the rail restyles the count, it does not rebuild it:\n{rail}");
     }
 
     #[test]

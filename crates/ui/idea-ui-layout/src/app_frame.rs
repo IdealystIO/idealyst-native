@@ -6,11 +6,15 @@ use std::rc::Rc;
 
 use icons_lucide::{MENU, PANEL_LEFT_CLOSE, PANEL_LEFT_OPEN};
 use idea_theme::extensible::with_idea_theme;
-use idea_ui::{tone, variant, Icon, IconButton, IconButtonSize, ListItem, Tag, ToneRef};
-use idea_ui_nav::AppShell;
+use idea_ui::{
+    tone, typography_kind, variant, ElementSide, Icon, IconButton, ListItemActive, ListItemInteractive, ListItemStyles,
+    Tag, ToneRef, Tooltip, Typography,
+};
+use idea_ui_nav::{AppShell, SIDEBAR_SLIDE_MS};
 use runtime_core::{
-    component, derived, rx, signal, stylesheet, ui, AlignItems, Breakpoint, ChildList, Element, FlexDirection,
-    IconData, IdealystSchema, JustifyContent, Length, Overflow, Position, Reactive, Shadow, Signal, StyleRules,
+    component, derived, pressable, rx, signal, stylesheet, ui, AlignItems, Breakpoint, ChildList, Easing, Element,
+    FlexDirection, IconData, IdealystSchema, IntoElement, JustifyContent, Length, Overflow, Position, Reactive, Shadow,
+    Signal, SlotOverride, StyleRules, Tokenized, Transition,
 };
 
 use crate::width::{form_factor, FormFactor};
@@ -18,9 +22,18 @@ use crate::width::{form_factor, FormFactor};
 /// The sidebar's width, open or as a drawer.
 pub const SIDEBAR_WIDTH: f32 = 264.0;
 
-/// The sidebar's width collapsed to icons: an icon button and its
-/// margins.
+/// The sidebar's width collapsed to icons.
 pub const SIDEBAR_RAIL_WIDTH: f32 = 56.0;
+
+/// The inset a sidebar's content takes from the sidebar's edges for its
+/// items' glyphs to stand in the middle of the rail: idea-ui's `sm`
+/// step (`StackPadding::Sm`).
+pub const SIDEBAR_INSET: f32 = 8.0;
+
+/// A [`SidebarItem`]'s side padding: what centres its glyph in a rail
+/// [`SIDEBAR_RAIL_WIDTH`] wide whose content is inset by
+/// [`SIDEBAR_INSET`].
+pub const SIDEBAR_ITEM_PAD: f32 = (SIDEBAR_RAIL_WIDTH - 2.0 * SIDEBAR_INSET - ITEM_ICON_PX) / 2.0;
 
 /// A sidebar item's glyph beside its label, in px.
 const ITEM_ICON_PX: f32 = 18.0;
@@ -261,14 +274,25 @@ pub struct SidebarToggleProps {
     /// The [`AppFrame`]'s sidebar.
     #[prop(static)]
     pub sidebar: SidebarState,
-    /// The button's accessible name.
+    /// The ☰'s accessible name, where the sidebar is a drawer.
     #[prop(static)]
     pub label: String,
+    /// The desktop control's name and tooltip while the sidebar is open.
+    #[prop(static)]
+    pub collapse_label: String,
+    /// The desktop control's name and tooltip while it is collapsed.
+    #[prop(static)]
+    pub expand_label: String,
 }
 
 impl Default for SidebarToggleProps {
     fn default() -> Self {
-        Self { sidebar: SidebarState::default(), label: "Menu".to_string() }
+        Self {
+            sidebar: SidebarState::default(),
+            label: "Menu".to_string(),
+            collapse_label: "Collapse sidebar".to_string(),
+            expand_label: "Expand sidebar".to_string(),
+        }
     }
 }
 
@@ -277,7 +301,7 @@ impl Default for SidebarToggleProps {
 ///
 /// - Tablet, phone: ☰, which opens the drawer.
 /// - Desktop: a panel glyph that collapses the sidebar and opens it
-///   again. Not drawn where the sidebar does not collapse
+///   again, named and tooltipped for which of the two a press does. Not drawn where the sidebar does not collapse
 ///   ([`SidebarCollapse::Off`]): it is always there, and the control
 ///   would do nothing.
 ///
@@ -287,7 +311,7 @@ impl Default for SidebarToggleProps {
 #[component]
 pub fn SidebarToggle(props: &SidebarToggleProps) -> Element {
     let sidebar = props.sidebar;
-    let label = props.label.clone();
+    let (menu, collapse, expand) = (props.label.clone(), props.collapse_label.clone(), props.expand_label.clone());
     let press: Rc<dyn Fn()> = Rc::new(move || sidebar.toggle());
     let collapses = sidebar.collapse() != SidebarCollapse::Off;
     let form = move || match (sidebar.is_drawer(), collapses) {
@@ -301,12 +325,34 @@ pub fn SidebarToggle(props: &SidebarToggleProps) -> Element {
     ui! {
         match form() {
             ToggleForm::None => { view {} }
-            shown => {
+            ToggleForm::Menu => {
                 IconButton(
-                    icon = Some(shown.glyph()),
+                    icon = Some(MENU),
                     variant = variant::Ghost,
                     tone = tone::Neutral,
-                    label = Some(label.clone()),
+                    label = Some(menu.clone()),
+                    on_click = press.clone(),
+                    test_id = Some("sidebar-toggle"),
+                )
+            }
+            ToggleForm::Collapse => {
+                IconButton(
+                    icon = Some(PANEL_LEFT_CLOSE),
+                    variant = variant::Ghost,
+                    tone = tone::Neutral,
+                    label = Some(collapse.clone()),
+                    tooltip = Some(collapse.clone()),
+                    on_click = press.clone(),
+                    test_id = Some("sidebar-toggle"),
+                )
+            }
+            ToggleForm::Expand => {
+                IconButton(
+                    icon = Some(PANEL_LEFT_OPEN),
+                    variant = variant::Ghost,
+                    tone = tone::Neutral,
+                    label = Some(expand.clone()),
+                    tooltip = Some(expand.clone()),
                     on_click = press.clone(),
                     test_id = Some("sidebar-toggle"),
                 )
@@ -326,16 +372,6 @@ enum ToggleForm {
     Collapse,
     /// Opens the collapsed sidebar.
     Expand,
-}
-
-impl ToggleForm {
-    fn glyph(self) -> IconData {
-        match self {
-            ToggleForm::Expand => PANEL_LEFT_OPEN,
-            ToggleForm::Collapse => PANEL_LEFT_CLOSE,
-            ToggleForm::Menu | ToggleForm::None => MENU,
-        }
-    }
 }
 
 /// How many of something wait at a [`SidebarItem`]'s destination, and how
@@ -409,11 +445,15 @@ impl Default for SidebarItemProps {
     }
 }
 
-/// One destination in the sidebar (rule `sidebar`). Its glyph and label
-/// in a row while the sidebar is open or a drawer; its glyph alone,
-/// centred, with the label as a tooltip, in the icon rail. One call for
-/// both: the item reads the form from the [`SidebarState`]. A `count`
-/// follows it: the number in the row, a dot in the rail.
+/// One destination in the sidebar (rule `sidebar`): its glyph and label
+/// in a row. In the icon rail it is the SAME row, narrowed: the glyph
+/// holds its size and place, the label fades as the sidebar closes over
+/// it, and the label becomes the row's tooltip. A `count` follows it:
+/// the number at the row's end, a dot on the glyph in the rail.
+///
+/// The row's side padding is the kit's ([`SIDEBAR_ITEM_PAD`]), set so
+/// the glyph stands in the middle of the rail when the sidebar's content
+/// is inset by [`SIDEBAR_INSET`] (idea-ui's `sm` step) on each side.
 ///
 /// Pressing it in a drawer closes the drawer before going.
 ///
@@ -435,46 +475,67 @@ pub fn SidebarItem(props: &SidebarItemProps) -> Element {
     let count = props.count.clone();
     let test_id = props.test_id;
     let go = props.on_press.clone();
-    let press: Rc<dyn Fn()> = Rc::new(move || {
+    // What stands in the glyph's seat for an item with no glyph of its
+    // own, so every row's label starts on one line and the rail has
+    // something to draw.
+    let initial: String = label.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
+    let px = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+    // idea-ui's list row (so an app's restyle of it reaches the sidebar),
+    // with the kit's side padding, clipped to the row's own box.
+    let row_style = ListItemStyles::root()
+        .set(active.map(ListItemActive::from))
+        .set(ListItemInteractive::from(true))
+        .overridden(Some(&SlotOverride::from(StyleRules {
+            padding_left: px(SIDEBAR_ITEM_PAD),
+            padding_right: px(SIDEBAR_ITEM_PAD),
+            overflow: Some(Overflow::Hidden),
+            ..Default::default()
+        })));
+    let label_style = ListItemStyles::label()
+        .overridden(Some(&SlotOverride::from(StyleRules { max_lines: Some(1), ..Default::default() })));
+    let rest = move || match sidebar.is_rail() {
+        false => ItemRestShown::On,
+        true => ItemRestShown::Off,
+    };
+    let dot = count.clone();
+    let seat = ui! {
+        view(style = ItemGlyphSeat()) {
+            if let Some(data) = glyph {
+                Icon(data = data, size = ITEM_ICON_PX)
+            } else {
+                Typography(content = initial, kind = typography_kind::BodySm, muted = true)
+            }
+            if let Some(count) = dot {
+                RailDot(sidebar = sidebar, count = count)
+            }
+        }
+    };
+    let name = label.clone();
+    let trail = ui! {
+        view(style = ItemRest().shown(derived(rest))) {
+            view(style = ItemLabel()) { text(style = label_style) { name } }
+            if let Some(count) = count {
+                RowCount(count = count)
+            }
+        }
+    };
+    let press = move || {
         sidebar.drawer.set(false);
         go();
-    });
-    // What a rail draws for an item with no glyph of its own.
-    let initial: String = label.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
-    // The two forms hold different elements, so they are a `match`.
+    };
+    // `pressable` takes its children by value: `ui!` owns no pressable
+    // tag, so the vec is the primitive's signature.
+    let row = pressable(vec![seat, trail], press).with_style(row_style);
+    let row = match test_id {
+        Some(id) => row.test_id(id),
+        None => row,
+    }
+    .into_element();
     ui! {
-        match sidebar.is_rail() {
-            true => {
-                view(style = RailSeat()) {
-                    view(style = RailButton()) {
-                        IconButton(
-                            icon = glyph,
-                            glyph = initial.clone(),
-                            variant = variant::Ghost,
-                            tone = tone::Neutral,
-                            size = IconButtonSize::Md,
-                            selected = active.clone(),
-                            label = Some(label.clone()),
-                            tooltip = Some(label.clone()),
-                            on_click = press.clone(),
-                            test_id = test_id,
-                        )
-                        if let Some(count) = count.clone() {
-                            RailDot(count = count)
-                        }
-                    }
-                }
-            }
-            false => {
-                ListItem(
-                    label = label.clone(),
-                    leading = glyph.map(|data| ui! { Icon(data = data, size = ITEM_ICON_PX) }),
-                    trailing = count.clone().map(|count| ui! { RowCount(count = count) }),
-                    active = active.clone(),
-                    on_press = Some(press.clone()),
-                    test_id = test_id,
-                )
-            }
+        // The rail has no label to read, so the row says its name on
+        // hover; with the label on show it would only repeat it.
+        Tooltip(text = label, side = ElementSide::End, disabled = rx!(!sidebar.is_rail())) {
+            row
         }
     }
 }
@@ -495,13 +556,19 @@ fn number(value: Reactive<i64>) -> Reactive<String> {
     rx!(value.get().to_string())
 }
 
-/// The dot a count puts on a rail item's glyph, in the count's tone.
+/// The dot a count puts on the glyph while the sidebar is a rail, in the
+/// count's tone. It fades in as the number beside the label fades out.
 #[component]
-fn RailDot(#[prop(static)] count: SidebarCount) -> Element {
+fn RailDot(#[prop(static)] sidebar: SidebarState, #[prop(static)] count: SidebarCount) -> Element {
     // A token reference, so the dot follows a theme swap.
     let fill = with_idea_theme(|theme| count.tone.fill_bg(theme));
+    let shown = move || match sidebar.is_rail() {
+        true => RailDotStyleShown::On,
+        false => RailDotStyleShown::Off,
+    };
     let style = move || {
         RailDotStyle()
+            .shown(shown())
             .into_style_application()
             .with_inline_merged(StyleRules { background: Some(fill.clone()), ..Default::default() })
     };
@@ -513,37 +580,76 @@ fn RailDot(#[prop(static)] count: SidebarCount) -> Element {
 }
 
 stylesheet! {
-    // Shrinks to the rail item's button, so the dot sits on the glyph's
-    // corner whatever the rail's width.
-    RailButton<idea_ui::IdeaThemeRef> {
+    // The glyph's own box, the glyph's size in both forms: what keeps it
+    // in place as the row narrows, and the corner the rail's dot stands
+    // on.
+    ItemGlyphSeat<idea_ui::IdeaThemeRef> {
         base(_t) {
             position: Position::Relative,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            width: Length::Px(ITEM_ICON_PX),
+            height: Length::Px(ITEM_ICON_PX),
+            flex_shrink: 0.0,
         }
     }
 }
 
 stylesheet! {
-    // On the button's top-right corner; presses pass through to it.
-    RailDotStyle<idea_ui::IdeaThemeRef> {
+    // The label and the count: the room the glyph leaves. It gives the
+    // room up as the sidebar narrows and fades over the same slide.
+    ItemRest<idea_ui::IdeaThemeRef> {
         base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: t.spacing.sm(),
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            flex_basis: Length::Px(0.0),
+            min_width: Length::Px(0.0),
+            overflow: Overflow::Hidden,
+            opacity_transition: Transition::new(SIDEBAR_SLIDE_MS, Easing::EaseOut),
+        }
+        variant shown {
+            #[default]
+            on(_t) { opacity: 1.0 }
+            off(_t) { opacity: 0.0 }
+        }
+    }
+}
+
+stylesheet! {
+    // The label takes what the count leaves and is cut to one line, so a
+    // narrowing row never wraps it into a taller one.
+    ItemLabel<idea_ui::IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            flex_basis: Length::Px(0.0),
+            min_width: Length::Px(0.0),
+        }
+    }
+}
+
+stylesheet! {
+    // On the glyph's top-right corner; presses pass through to the row.
+    RailDotStyle<idea_ui::IdeaThemeRef> {
+        base(_t) {
             position: Position::Absolute,
-            top: t.spacing.xs(),
-            right: t.spacing.xs(),
+            top: Length::Px(-RAIL_DOT_PX / 2.0),
+            right: Length::Px(-RAIL_DOT_PX / 2.0),
             width: Length::Px(RAIL_DOT_PX),
             height: Length::Px(RAIL_DOT_PX),
             border_radius: RAIL_DOT_PX / 2.0,
             pointer_events: runtime_core::PointerEvents::None,
+            opacity_transition: Transition::new(SIDEBAR_SLIDE_MS, Easing::EaseOut),
         }
-    }
-}
-
-stylesheet! {
-    // A rail item, centred in the rail's width.
-    RailSeat<idea_ui::IdeaThemeRef> {
-        base(_t) {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
+        variant shown {
+            #[default]
+            off(_t) { opacity: 0.0 }
+            on(_t) { opacity: 1.0 }
         }
     }
 }

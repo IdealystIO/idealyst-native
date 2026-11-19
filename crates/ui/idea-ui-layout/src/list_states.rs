@@ -198,7 +198,7 @@ pub fn ListStates(props: &ListStatesProps) -> Element {
             Shown::Failed(reason) => {
                 {
                     let retry = on_retry.clone().map(|run| ui! {
-                        Button(label = "Retry", variant = variant::Outlined, on_click = run)
+                        Button(label = "Retry", variant = variant::Outlined, on_click = run, test_id = Some("list-retry"))
                     });
                     ui! {
                         StateMessage(
