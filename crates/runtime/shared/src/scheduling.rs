@@ -161,12 +161,21 @@ pub fn drain_buffered_microtasks() {
 
 /// A scheduled one-shot callback. Cancels the pending dispatch on
 /// `Drop`, then drops the closure. Hold the handle somewhere as long
-/// as you want the callback alive; let it drop to cancel.
+/// as you want the callback alive; let it drop to cancel — or hand it to
+/// the runtime with [`ScheduledTask::detach`] when nothing owns it.
+///
+/// `#[must_use]`: a handle dropped where it is made (`after_ms(..);` as a
+/// statement, `let _ = after_ms(..)`) cancels the callback before it
+/// can fire, so a fire-and-forget call silently never runs.
 ///
 /// On native without an installed scheduler this is an empty marker
 /// — the body ran synchronously at construction.
+#[must_use = "dropping a ScheduledTask cancels its callback: hold the handle, or call .detach()"]
 pub struct ScheduledTask {
     inner: Option<Box<dyn ScheduleHandle>>,
+    /// Set by the callback once it has run; [`ScheduledTask::detach`]
+    /// parks the task until then.
+    done: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 impl ScheduledTask {
@@ -177,6 +186,37 @@ impl ScheduledTask {
             h.cancel();
         }
     }
+
+    /// Let the callback run with nothing holding the handle: the runtime
+    /// parks the task until it fires, then sweeps it. For off-scope call
+    /// sites (event handlers, app singletons) that have no owner to hold
+    /// it; under a component scope prefer `runtime_core::after_ms_scoped`,
+    /// which dies with the scope.
+    pub fn detach(self) {
+        // Sweep tasks that already fired. We're outside any task closure
+        // here, so dropping a spent `ScheduledTask` is safe — it never
+        // re-enters or drops a handle whose closure is still on the stack
+        // (the web hazard).
+        DETACHED_TASKS.with(|t| t.borrow_mut().retain(|s| !s.done.get()));
+        // The synchronous fallback (no installed scheduler off web) has
+        // already run the body; there is nothing to park.
+        if self.done.get() {
+            return;
+        }
+        DETACHED_TASKS.with(|t| t.borrow_mut().push(self));
+    }
+}
+
+/// Wrap `f` so it marks `done` once it has run. The flag only writes a
+/// `Cell` — it drops nothing, so the task's own handle is never freed
+/// while its closure runs.
+fn marking_done<F: FnOnce() + 'static>(f: F) -> (std::rc::Rc<std::cell::Cell<bool>>, impl FnOnce() + 'static) {
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let flag = done.clone();
+    (done, move || {
+        f();
+        flag.set(true);
+    })
 }
 
 /// Schedule `f` to run on the next animation frame. Returns a
@@ -186,14 +226,16 @@ impl ScheduledTask {
 /// Without an installed scheduler: panic on `Web`, synchronous on
 /// every other platform.
 pub fn after_animation_frame<F: FnOnce() + 'static>(f: F) -> ScheduledTask {
+    let (done, f) = marking_done(f);
     if let Some(s) = SCHEDULER.get() {
         return ScheduledTask {
             inner: Some(s.after_animation_frame(Box::new(f))),
+            done,
         };
     }
     panic_if_web_without_scheduler("after_animation_frame");
     f();
-    ScheduledTask { inner: None }
+    ScheduledTask { inner: None, done }
 }
 
 /// Schedule `f` to run after `delay_ms` milliseconds. Returns a
@@ -202,38 +244,34 @@ pub fn after_animation_frame<F: FnOnce() + 'static>(f: F) -> ScheduledTask {
 /// Without an installed scheduler: panic on `Web`, synchronous on
 /// every other platform (delay ignored).
 pub fn after_ms<F: FnOnce() + 'static>(delay_ms: i32, f: F) -> ScheduledTask {
+    let (done, f) = marking_done(f);
     if let Some(s) = SCHEDULER.get() {
         return ScheduledTask {
             inner: Some(s.after_ms(delay_ms, Box::new(f))),
+            done,
         };
     }
     panic_if_web_without_scheduler("after_ms");
     let _ = delay_ms; // synchronous fallback ignores the delay
     f();
-    ScheduledTask { inner: None }
+    ScheduledTask { inner: None, done }
 }
 
 runtime_tls::thread_local! {
     /// Parking lot for tasks handed to the runtime via
-    /// [`after_ms_detached`]. Each slot holds the [`ScheduledTask`] so its
-    /// cancel-on-`Drop` doesn't fire, plus a `done` flag the task sets when
-    /// it runs. The list is swept on every `after_ms_detached` call, so it
-    /// never grows past the number of *in-flight* detached timers — unlike
-    /// `mem::forget`, which leaks an empty handle shell per call forever.
-    static DETACHED_TASKS: std::cell::RefCell<Vec<DetachedSlot>> =
+    /// [`ScheduledTask::detach`] (and so [`after_ms_detached`]). Each
+    /// task's `done` flag is set when it runs. The list is swept on every
+    /// detach, so it never grows past the number of *in-flight* detached
+    /// timers — unlike `mem::forget`, which leaks an empty handle shell per
+    /// call forever.
+    static DETACHED_TASKS: std::cell::RefCell<Vec<ScheduledTask>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-struct DetachedSlot {
-    done: std::rc::Rc<std::cell::Cell<bool>>,
-    // Held only to keep the pending dispatch alive; never read.
-    _task: ScheduledTask,
-}
-
 /// Schedule `f` to run once after `delay_ms`, owned by the runtime
-/// instead of the caller. Unlike [`after_ms`] there is no handle to keep
-/// alive and nothing to cancel: the task is parked in a runtime registry,
-/// fires once, then is swept away.
+/// instead of the caller: `after_ms(delay_ms, f).detach()`. There is no
+/// handle to keep alive and nothing to cancel: the task is parked in a
+/// runtime registry, fires once, then is swept away.
 ///
 /// This is the right tool for **imperative, off-scope** call sites —
 /// global queues, app singletons, event handlers that run outside any
@@ -247,26 +285,7 @@ struct DetachedSlot {
 /// If a reactive scope *is* active, prefer `runtime_core::after_ms_scoped` so the
 /// timer dies with the scope instead of outliving it.
 pub fn after_ms_detached<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
-    // Sweep tasks that already fired. We're outside any task closure here,
-    // so dropping a spent `ScheduledTask` is safe — it never re-enters or
-    // drops a handle whose closure is still on the stack (the web hazard).
-    DETACHED_TASKS.with(|t| t.borrow_mut().retain(|s| !s.done.get()));
-
-    let done = std::rc::Rc::new(std::cell::Cell::new(false));
-    let done_for_cb = done.clone();
-    let task = after_ms(delay_ms, move || {
-        f();
-        // Mark for sweep. This only writes a `Cell` — it drops nothing, so
-        // the task's own handle is never freed while its closure runs.
-        done_for_cb.set(true);
-    });
-
-    // The synchronous-fallback path (no installed scheduler off web) ran
-    // `f` already and set `done`; there's nothing to park.
-    if done.get() {
-        return;
-    }
-    DETACHED_TASKS.with(|t| t.borrow_mut().push(DetachedSlot { done, _task: task }));
+    after_ms(delay_ms, f).detach();
 }
 
 /// A live animation-frame loop. Each frame the user's closure runs;
