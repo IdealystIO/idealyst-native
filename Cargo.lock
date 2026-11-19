@@ -1379,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "9.2.1"
+version = "9.2.2"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "9.4.0"
+version = "9.4.1"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1542,7 +1542,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "9.3.0"
+version = "9.3.1"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -6469,7 +6469,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "23.2.0"
+version = "23.3.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6489,7 +6489,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "24.2.0"
+version = "24.3.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6552,7 +6552,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-layout"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "host-mock",
  "icons-lucide",
@@ -7788,7 +7788,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "2.4.5"
+version = "2.4.6"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7845,7 +7845,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "7.0.0"
+version = "7.0.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -11035,7 +11035,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "6.4.0"
+version = "6.5.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -11071,7 +11071,7 @@ version = "0.1.1"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "9.6.0"
+version = "9.6.1"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -13030,7 +13030,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "12.0.1"
+version = "12.1.0"
 dependencies = [
  "backend-ssr",
  "runtime-scene",
