@@ -362,14 +362,24 @@ macro_rules! try_fold_payload {
     };
 }
 
+/// Whether `element` is one node of its own (through component
+/// boundaries) — not a fragment, a `Dyn` hole or a keyed list.
+fn has_node_root(element: &Element) -> bool {
+    match element {
+        Element::Item { .. } => true,
+        Element::Owned { element, .. } => has_node_root(element),
+        _ => false,
+    }
+}
+
 /// Layer `rules` onto a screen ROOT element's style override layer —
 /// used for the stack's `screen_flow_fill_rules` full-bleed/flow-fill
 /// placement.
 ///
 /// The payload is type-erased, so the fold enumerates the built-in
-/// payload types. A screen whose root is a third-party primitive, a
-/// `Dyn` hole, or a `Keyed` list (no node of its own) is left untouched
-/// — give such screens an `Item` root.
+/// payload types. A screen whose root is a third-party primitive is
+/// left untouched; one with no node of its own (a fragment, a `Dyn`
+/// hole, a `Keyed` list) is wrapped in a view first ([`has_node_root`]).
 fn fold_style_overrides(element: &mut Element, rules: &Rc<StyleRules>) {
     use crate::prims::{
         ActivityIndicatorPrim, ButtonPrim, IconPrim, ImagePrim, LazyPrim, LinkPrim,
@@ -537,6 +547,16 @@ fn realize_screen<H: NavCaps + 'static>(
         }
     });
     let options = options_slot.borrow_mut().take();
+    // A screen built as several roots (a page and its overlays) gets one
+    // view around them, so it has a node of its own for the placement below
+    // and its roots lay out as a column inside it, as on the web. Without
+    // it the roots hung off a layout-less anchor: the placement found no
+    // node to land on, and iOS laid each root out as its own full-screen
+    // root, so a closed overlay's empty `view {}` covered the screen and
+    // took every touch.
+    if !has_node_root(&element) {
+        element = crate::builders::view().child(element).build();
+    }
     // Handler-requested screen placement (the stack's flow-fill) rides
     // the root element's style OVERRIDE layer, composing with the
     // screen's own styles.

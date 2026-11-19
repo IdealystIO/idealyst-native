@@ -487,6 +487,40 @@ fn stack_screen_root_gets_the_flow_fill_overlay() {
     });
 }
 
+/// REGRESSION (CrewForge, iOS): a screen built as a fragment — a page and
+/// the overlays beside it — had no node of its own. The stack's flow-fill
+/// found nothing to land on, and its roots hung off a layout-less anchor,
+/// which iOS laid out as separate full-screen roots: a closed overlay's
+/// empty `view {}` covered the screen and swallowed every touch. The screen
+/// now gets one view around its roots, carrying the flow-fill, with the
+/// roots inside it as a column.
+#[test]
+fn regression_a_fragment_screen_gets_one_root_view_with_the_flow_fill() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let element = stack_navigator(&HOME)
+            .screen(HOME, |_| {
+                runtime_scene::Element::Fragment(vec![
+                    text().content("page").build(),
+                    view().build(), // a closed overlay
+                ])
+            })
+            .layout(|| view().child(navigator_outlet()).build())
+            .build();
+        let _realized = realize(&h.backend, &h.registry, element);
+        let log = h.ops();
+        assert!(!log.iter().any(|l| l.starts_with("create ") && l.ends_with(" anchor")), "no layout-less anchor: {log:?}");
+        // The navigator's own container is 100% × 100%; the flow-fill is
+        // 100% wide and leaves the height to the flex.
+        assert!(
+            log.iter().any(|l| l.starts_with("apply_style")
+                && l.contains("width=Literal(Percent(100.0)) height=none flex_grow=Literal(1.0)")),
+            "the screen's view carries the flow-fill: {log:?}"
+        );
+    });
+}
+
 // ===========================================================================
 // Screen-scope teardown: `on_scope_drop` from a screen body
 // ===========================================================================

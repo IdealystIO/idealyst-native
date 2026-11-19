@@ -3805,6 +3805,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A screen built as several roots no longer lets a closed overlay cover it on iOS**
+  (`runtime-vocabulary`). A `Page` with overlays returns a fragment, which a navigator mounted
+  under a layout-less anchor: the stack's flow-fill found no node to land on, and iOS laid each
+  root out as its own full-screen root, so an overlay drawing an empty `view {}` while closed sat
+  over the whole screen and took every touch. A screen with no node of its own is now wrapped in
+  one view, which takes the flow-fill and lays its roots out as a column, as the web does.
+
 - **`tap_native` refuses a control its scroller clips away** (`runtime-vocabulary`). The point
   check looked at the window only, so on iOS a sheet's button below the sheet's fold (in the
   window, clipped to zero height by the sheet's scroll view) "tapped" with `{"mechanism":
