@@ -214,7 +214,10 @@ pub use components::menu::{
     SubMenuSlot, SubMenuSlotCx,
 };
 pub use components::pagination::{Pagination, PaginationProps, PaginationSlotStyles, PaginationStyles};
-pub use components::tooltip::{Tooltip, TooltipProps, TooltipSlotStyles, TooltipStyles};
+pub use components::tooltip::{
+    Tooltip, TooltipProps, TooltipSlotStyles, TooltipStyles, TOOLTIP_DELAY_MS, TOOLTIP_DISMISS_MS,
+    TOOLTIP_SKIP_DELAY_MS,
+};
 pub use components::hover_card::{
     HoverCard, HoverCardContent, HoverCardProps, HoverCardSlotStyles, HoverCardStyles, HOVER_CARD_CLOSE_DELAY_MS,
     HOVER_CARD_DEFAULT_OFFSET, HOVER_CARD_OPEN_DELAY_MS,

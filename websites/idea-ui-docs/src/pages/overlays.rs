@@ -55,6 +55,29 @@ pub fn tooltip() -> Element {
                 }
             }
 
+            Section(title = "Delay".to_string()) {
+                P(content = "The first tooltip waits delay_ms (500 by default) with the \
+                    pointer resting on its trigger, so sweeping across a toolbar shows \
+                    nothing. Once one has shown, the next shows the moment the pointer \
+                    reaches its trigger — move along the row below. The tooltips go back \
+                    to waiting skip_delay_ms (300 by default) after the pointer leaves a \
+                    shown one without reaching another.".to_string())
+                DemoSurface {
+                    Stack(axis = StackAxis::Row, gap = StackGap::Xs, justify = StackJustify::Center, wrap = true) {
+                        for label in ["Cut", "Copy", "Paste", "Delete"] {
+                            Tooltip(text = format!("{label} the selection")) {
+                                Button(
+                                    label = label.to_string(),
+                                    on_click = (Rc::new(|| {}) as Rc<dyn Fn()>),
+                                    tone = tone::Neutral,
+                                    variant = variant::Soft,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             Section(title = "Placement".to_string()) {
                 P(content = "side picks which edge of the trigger the bubble sits on — \
                     Above (the default), Below, Start, or End. offset is the gap in px \
@@ -199,6 +222,8 @@ pub fn tooltip() -> Element {
                     Prop { name: "align",      ty: "ElementAlign",     desc: "Alignment along the anchor edge. Default: Center." },
                     Prop { name: "offset",     ty: "f32",              desc: "Gap in px between the trigger and the bubble. Default: 6." },
                     Prop { name: "dismiss_ms", ty: "u32",              desc: "How long a long-press (touch) tooltip stays up before auto-dismissing. Ignored for hover. Default: 1800." },
+                    Prop { name: "delay_ms", ty: "u32",                desc: "How long the pointer rests on the trigger before the bubble shows, when no tooltip is warm. Ignored for touch. Default: 500." },
+                    Prop { name: "skip_delay_ms", ty: "u32",           desc: "After the pointer leaves a shown tooltip, how long the next tooltip still shows at once. 0 makes every tooltip wait its delay. Ignored for touch. Default: 300." },
                     Prop { name: "disabled", ty: "bool",               desc: "No bubble while true, for a hint that applies in only one state of its trigger. Reactive. Default: false." },
                 ])
             }

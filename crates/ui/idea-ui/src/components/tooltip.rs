@@ -15,12 +15,22 @@
 //!
 //! - **Desktop / web** — the wrapper view carries an `on_hover` handler
 //!   (the framework's pointer-enter/leave channel: web
-//!   `pointerenter`/`pointerleave`, macOS `NSTrackingArea`). Enter shows
-//!   the bubble, leave hides it.
+//!   `pointerenter`/`pointerleave`, macOS `NSTrackingArea`). Resting on
+//!   the trigger for [`TooltipProps::delay_ms`] shows the bubble; leaving
+//!   hides it at once. A pass over the trigger shorter than the delay shows
+//!   nothing.
+//! - **Warm window** — once any tooltip has shown, the tooltips of the same
+//!   world are *warm*: the next one shows the moment the pointer enters its
+//!   trigger, with no delay, so moving along a toolbar reads each hint in
+//!   turn. The window closes [`TooltipProps::skip_delay_ms`] after the
+//!   pointer leaves a shown tooltip without entering another; the next
+//!   tooltip after that waits its `delay_ms` again.
 //! - **Touch (iOS / Android)** — there is no hover with a finger, so a
-//!   `long_press` recognizer shows the bubble; it auto-dismisses after
-//!   [`TooltipProps::dismiss_ms`] (the recognizer reports the press start,
-//!   not the release, so a timed dismissal is the touch idiom).
+//!   `long_press` recognizer shows the bubble at once (the hold is the
+//!   delay); it auto-dismisses after [`TooltipProps::dismiss_ms`] (the
+//!   recognizer reports the press start, not the release, so a timed
+//!   dismissal is the touch idiom). A long-press neither uses nor opens
+//!   the warm window.
 //!
 //! The bubble itself is a styled `view` box holding the label text, rendered
 //! through the framework's `anchored_overlay` and anchored to the wrapper —
@@ -29,12 +39,15 @@
 //! hint wraps *inside* one rounded surface instead of painting a ragged
 //! background strip per line. For clickable content reach for `Popover`.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
-    after_ms_detached, component, long_press, signal, ui, ChildList, Element, IdealystSchema,
-    IntoElement, LongPressRecognizer, Reactive, Ref, ViewHandle, component_styles, Color,
-    FlexDirection, TextAlign,
+    after_ms_detached, component, long_press, on_owned_drop, signal, ui, world_local, ChildList,
+    Element, IdealystSchema, IntoElement, LongPressRecognizer, Reactive, Ref, ScopeAlive, Signal,
+    ViewHandle, component_styles, Color, FlexDirection, TextAlign,
 };
 
 use crate::theme::IdeaThemeRef;
@@ -89,8 +102,18 @@ component_styles! {
 /// pointer-leave.
 pub const TOOLTIP_DISMISS_MS: u32 = 1800;
 
+/// Default [`TooltipProps::delay_ms`]: how long the pointer rests on a
+/// trigger before the first tooltip shows. Long enough that sweeping the
+/// pointer across a toolbar shows nothing.
+pub const TOOLTIP_DELAY_MS: u32 = 500;
+
+/// Default [`TooltipProps::skip_delay_ms`]: how long the warm window stays
+/// open after the pointer leaves a shown tooltip. It has to cover crossing
+/// the gap to a neighbouring trigger.
+pub const TOOLTIP_SKIP_DELAY_MS: u32 = 300;
+
 // Reactive-by-default: `#[props]` wraps the scalar data props (`side`/`align`
-// enums, `offset`, `dismiss_ms`) → `Reactive<…>`. `text` is already `Reactive`
+// enums, `offset`, the delays) → `Reactive<…>`. `text` is already `Reactive`
 // (routes to the `text()` sink, untouched); `children` is a `Vec<Element>`
 // (auto-skipped).
 #[runtime_core::props(styles = TooltipStyles)]
@@ -110,6 +133,15 @@ pub struct TooltipProps {
     /// auto-dismissing, in ms. Ignored for hover. Default
     /// [`TOOLTIP_DISMISS_MS`].
     pub dismiss_ms: u32,
+    /// How long the pointer rests on the trigger before the bubble shows,
+    /// in ms, when no tooltip is warm (see the module docs). Ignored for
+    /// touch. Default [`TOOLTIP_DELAY_MS`].
+    pub delay_ms: u32,
+    /// How long after the pointer leaves this tooltip, shown, the next
+    /// tooltip still shows with no delay, in ms. `0` makes every tooltip
+    /// wait its `delay_ms`. Ignored for touch. Default
+    /// [`TOOLTIP_SKIP_DELAY_MS`].
+    pub skip_delay_ms: u32,
     /// No bubble while `true`: for a hint that only applies in one state
     /// of its trigger (a row whose label is hidden), without unmounting
     /// the trigger to take the tooltip off. Default `false`.
@@ -127,10 +159,216 @@ impl Default for TooltipProps {
             align: Reactive::Static(ElementAlign::Center),
             offset: Reactive::Static(6.0),
             dismiss_ms: Reactive::Static(TOOLTIP_DISMISS_MS),
+            delay_ms: Reactive::Static(TOOLTIP_DELAY_MS),
+            skip_delay_ms: Reactive::Static(TOOLTIP_SKIP_DELAY_MS),
             disabled: Reactive::Static(false),
             children: Vec::new(),
             styles: Default::default(),
         }
+    }
+}
+
+/// The warm window every Tooltip of one world shares (see the module docs).
+///
+/// Per world, not per thread: a server render runs one world per request on
+/// a shared thread, and one session's hover must not warm another's
+/// tooltips. Reached through [`world_local`] at build time and held by each
+/// tooltip, because hover handlers can run outside the world's ambient
+/// scope.
+#[derive(Clone)]
+struct WarmWindow(Rc<WarmState>);
+
+struct WarmState {
+    warm: Cell<bool>,
+    /// Stamps the pending cool-down; a cool-down whose stamp is no longer
+    /// current does nothing, so a tooltip showing inside the window keeps
+    /// it open.
+    generation: Cell<u64>,
+}
+
+impl WarmWindow {
+    /// The current world's window, created cold. Outside every world (a
+    /// backend-less unit test) a private window, which behaves the same for
+    /// the one tooltip that holds it.
+    fn current() -> WarmWindow {
+        let fresh = || WarmWindow(Rc::new(WarmState { warm: Cell::new(false), generation: Cell::new(0) }));
+        world_local(fresh).unwrap_or_else(fresh)
+    }
+
+    fn is_warm(&self) -> bool {
+        self.0.warm.get()
+    }
+
+    fn bump(&self) -> u64 {
+        let g = self.0.generation.get().wrapping_add(1);
+        self.0.generation.set(g);
+        g
+    }
+
+    /// A tooltip showed: warm, and any pending cool-down goes stale.
+    fn warm_up(&self) {
+        self.bump();
+        self.0.warm.set(true);
+    }
+
+    /// A shown tooltip went away: close the window after `skip_ms`, unless
+    /// another tooltip shows first. The timer touches no signal, so it is
+    /// safe to outlive the tooltip that armed it.
+    fn cool_after(&self, skip_ms: u32) {
+        let generation = self.bump();
+        if skip_ms == 0 {
+            self.0.warm.set(false);
+            return;
+        }
+        let state = self.0.clone();
+        after_ms_detached(skip_ms.min(i32::MAX as u32) as i32, move || {
+            if state.generation.get() == generation {
+                state.warm.set(false);
+            }
+        });
+    }
+}
+
+/// One Tooltip's show/hide state machine; the only writer of `open`.
+///
+/// Every hover change or long-press stamps a fresh `generation`, and a timer
+/// whose stamp is no longer current does nothing: that is how a leave
+/// cancels a pending show, and a second long-press restarts the dismiss.
+/// `after_ms_detached` rather than `after_ms_scoped` because the timers are
+/// armed from event handlers, which run outside any component scope;
+/// `alive` stops a timer that outlives the component from writing `open`.
+///
+/// The delays are read when they are used, so a live `delay_ms` /
+/// `skip_delay_ms` / `dismiss_ms` takes effect on the next hover or press.
+struct TooltipIntent {
+    open: Signal<bool>,
+    /// Mirrors `open` without a tracked read.
+    shown: Cell<bool>,
+    /// The bubble was shown by hover, so hiding it starts the warm
+    /// window's cool-down. A long-press shows without warming.
+    by_hover: Cell<bool>,
+    generation: Cell<u64>,
+    /// The `skip_delay_ms` read when the bubble last showed by hover: the
+    /// cool-down an unmount starts can't read the prop, whose signal may
+    /// already be freed by then.
+    skip_ms: Cell<u32>,
+    window: WarmWindow,
+    delay_ms: Reactive<u32>,
+    skip_delay_ms: Reactive<u32>,
+    dismiss_ms: Reactive<u32>,
+    disabled: Reactive<bool>,
+    alive: ScopeAlive,
+}
+
+impl TooltipIntent {
+    /// A hidden tooltip's state machine. Must run in the component body:
+    /// `open` and the `alive` token belong to its scope, and so does the
+    /// unmount hook that closes the warm window behind a bubble removed
+    /// while it was showing (no pointer leave reports that).
+    fn new(
+        delay_ms: Reactive<u32>,
+        skip_delay_ms: Reactive<u32>,
+        dismiss_ms: Reactive<u32>,
+        disabled: Reactive<bool>,
+    ) -> Rc<Self> {
+        let me = Rc::new(TooltipIntent {
+            open: signal(false),
+            shown: Cell::new(false),
+            by_hover: Cell::new(false),
+            generation: Cell::new(0),
+            skip_ms: Cell::new(0),
+            window: WarmWindow::current(),
+            delay_ms,
+            skip_delay_ms,
+            dismiss_ms,
+            disabled,
+            alive: ScopeAlive::current(),
+        });
+        let on_drop = me.clone();
+        on_owned_drop(move || {
+            if on_drop.shown.get() && on_drop.by_hover.get() {
+                on_drop.window.cool_after(on_drop.skip_ms.get());
+            }
+        });
+        me
+    }
+
+    fn bump(&self) -> u64 {
+        let g = self.generation.get().wrapping_add(1);
+        self.generation.set(g);
+        g
+    }
+
+    fn is_disabled(&self) -> bool {
+        self.disabled.get_untracked()
+    }
+
+    /// Pointer enter / leave on the trigger.
+    fn hover(self: &Rc<Self>, entering: bool) {
+        let generation = self.bump();
+        if !entering {
+            if self.shown.get() {
+                self.hide();
+            }
+            return;
+        }
+        if self.is_disabled() {
+            return;
+        }
+        let delay = self.delay_ms.get_untracked();
+        if self.window.is_warm() || delay == 0 {
+            self.show_by_hover();
+            return;
+        }
+        let me = self.clone();
+        after_ms_detached(delay.min(i32::MAX as u32) as i32, move || {
+            // A leave bumps the generation; the `disabled` re-check covers
+            // a source that turned on while the timer was pending.
+            if me.alive.get() && me.generation.get() == generation && !me.is_disabled() {
+                me.show_by_hover();
+            }
+        });
+    }
+
+    /// Long-press: show now, then hide after `dismiss_ms`.
+    fn long_press(self: &Rc<Self>) {
+        if self.is_disabled() {
+            return;
+        }
+        let generation = self.bump();
+        if !self.shown.get() {
+            self.by_hover.set(false);
+            self.set_shown(true);
+        }
+        let me = self.clone();
+        let dismiss = self.dismiss_ms.get_untracked().min(i32::MAX as u32) as i32;
+        after_ms_detached(dismiss, move || {
+            if me.alive.get() && me.generation.get() == generation {
+                me.hide();
+            }
+        });
+    }
+
+    fn show_by_hover(&self) {
+        if self.shown.get() {
+            return;
+        }
+        self.skip_ms.set(self.skip_delay_ms.get_untracked());
+        self.by_hover.set(true);
+        self.window.warm_up();
+        self.set_shown(true);
+    }
+
+    fn hide(&self) {
+        if self.by_hover.get() {
+            self.window.cool_after(self.skip_ms.get());
+        }
+        self.set_shown(false);
+    }
+
+    fn set_shown(&self, shown: bool) {
+        self.shown.set(shown);
+        self.open.set(shown);
     }
 }
 
@@ -158,31 +396,28 @@ fn bubble_box(text: Reactive<String>, styles: &TooltipSlotStyles) -> Element {
 /// long-press (touch). See the module docs.
 #[component(children)]
 pub fn Tooltip(props: TooltipProps) -> Element {
-    let open = signal(false);
     let anchor_ref: Ref<ViewHandle> = Ref::new();
     let text = props.text;
     let styles = props.styles.clone();
-    // TODO(reactive-sweep): route `side`/`align`/`offset`/`dismiss_ms`
-    // reactively into the bubble's `anchored_overlay` placement + the
-    // long-press timer. They're consumed by value as builder args (inside the
-    // bubble's `if open` branch) and the touch-dismiss delay — STRUCTURE, not a
-    // style closure. All four are snapshotted here at build; the bubble is
-    // rebuilt on each open, so reading them inside the branch instead would
-    // pick up a change between shows. `text` stays reactive (routes to `text()`).
+    // `side`/`align`/`offset` are consumed by value as builder args of the
+    // bubble's `anchored_overlay` — structure, not a style closure — so they
+    // are snapshotted here at build. `text` stays reactive (it routes to
+    // `text()`); the delays are read live by the intent.
     let side = props.side.get();
     let align = props.align.get();
     let offset = props.offset.get();
-    let dismiss_ms = props.dismiss_ms.get() as i32;
-    let disabled = props.disabled;
+    let disabled = props.disabled.clone();
+    let intent = TooltipIntent::new(props.delay_ms, props.skip_delay_ms, props.dismiss_ms, props.disabled);
+    let open = intent.open;
 
     // Touch path: long-press shows the bubble, then auto-dismisses. The
     // `long_press` recognizer reports recognition (press start) only — no
     // release — so a timed hide is the right touch idiom. No-op on desktop
     // (a mouse rarely long-presses; hover drives it there).
-    let lp_handler = long_press(LongPressRecognizer::default(), move || {
-        open.set(true);
-        after_ms_detached(dismiss_ms, move || open.set(false));
-    });
+    let lp_handler = {
+        let intent = intent.clone();
+        long_press(LongPressRecognizer::default(), move || intent.long_press())
+    };
 
     // The trigger, wrapped so we can attach the anchor ref + hover/touch. Unstyled,
     // so layout-transparent: the wrapper follows the parent's `align_items` as the
@@ -201,8 +436,9 @@ pub fn Tooltip(props: TooltipProps) -> Element {
     }
     let anchor = runtime_core::view(kids)
         .bind(anchor_ref)
-        // Desktop/web: pointer enter → show, leave → hide. No-op on touch.
-        .on_hover(move |entering| open.set(entering))
+        // Desktop/web: pointer enter → show (after the delay unless warm),
+        // leave → hide. No-op on touch.
+        .on_hover(move |entering| intent.hover(entering))
         // Touch: long-press → show (auto-dismiss). Returns the recognizer's
         // response so the press still bubbles for the trigger's own handler.
         .on_touch(move |ev| lp_handler(ev))
