@@ -220,9 +220,6 @@ bundle_id = "io.idealyst"
 version   = "0.0.1"
 targets   = ["web", "ios", "android"]
 
-[package.metadata.idealyst.app.splash]
-duration_ms = 0
-
 # Build-time icon pipeline (icon-gen). One base block per the
 # common identity, plus a per-platform `[icon.web]` override for the
 # favicon — which uses the already-colored outlined glyph so the

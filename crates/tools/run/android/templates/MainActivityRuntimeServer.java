@@ -34,6 +34,12 @@ public class MainActivity extends FragmentActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // The manifest theme may be the launch screen (`Theme.Idealyst.Splash`,
+        // from `[package.metadata.idealyst.app.splash]`), which the system
+        // draws until the first frame. Switch to the content theme before
+        // `super.onCreate` sets up the window, or the launch drawable stays
+        // behind the app as its window background.
+        setTheme(android.R.style.Theme_DeviceDefault_Light_NoActionBar);
         super.onCreate(savedInstanceState);
 
         // `keep_alive = true` in the app's Android metadata: start the

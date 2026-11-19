@@ -68,6 +68,3 @@ name      = "Idealyst Tutorial"
 bundle_id = "io.idealyst.tutorial"
 version   = "0.0.1"
 targets   = ["web", "ios", "android"]
-
-[package.metadata.idealyst.app.splash]
-duration_ms = 0

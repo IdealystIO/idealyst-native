@@ -1,4 +1,4 @@
-//! Icon generation pipeline.
+//! Icon and launch-screen generation pipeline.
 //!
 //! One [`IconConfig`] declared in TOML becomes every platform's
 //! app-icon asset. The config carries a common base plus optional
@@ -31,8 +31,13 @@ use std::path::{Path, PathBuf};
 mod cache;
 mod manifest;
 mod render;
+mod splash;
 
 pub use manifest::{load_config_from_manifest, Background, Gradient, IconBlock, IconConfig, Stop};
+pub use splash::{
+    sync_android_splash_res, sync_ios_splash_catalog, IosSplashAssets, SplashLook, SplashSpec,
+    ANDROID_SPLASH_THEME, IOS_SPLASH_COLOR_NAME, IOS_SPLASH_IMAGE_NAME, SPLASH_LOGO_PT,
+};
 
 /// Targets that get their own [`IconBlock`] in the merged config.
 /// Mirrors the per-platform override sub-tables in TOML

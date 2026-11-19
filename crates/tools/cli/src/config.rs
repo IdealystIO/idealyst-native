@@ -9,7 +9,9 @@
 //! exists so subcommands can plug in as they need it. The icon
 //! block has graduated out of here: its parser lives in `icon-gen`
 //! (`icon_gen::load_spec_from_manifest`) so CLI and build crates
-//! share one schema source of truth.
+//! share one schema source of truth. The splash block lives in
+//! `build_ios::splash` (`[package.metadata.idealyst.app.splash]`), parsed
+//! with the rest of the app manifest.
 
 #![allow(dead_code)]
 
@@ -36,8 +38,6 @@ pub struct AppConfig {
     pub version: Option<String>,
     #[serde(default)]
     pub icon: Option<IconConfig>,
-    #[serde(default)]
-    pub splash: Option<SplashConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,20 +51,6 @@ pub struct IconConfig {
     pub foreground: Option<String>,
     #[serde(default)]
     pub background: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SplashConfig {
-    #[serde(default)]
-    pub background: Option<String>,
-    #[serde(default)]
-    pub background_image: Option<String>,
-    #[serde(default)]
-    pub logo: Option<String>,
-    #[serde(default)]
-    pub logo_scale: Option<String>,
-    #[serde(default)]
-    pub dark: Option<Box<SplashConfig>>,
 }
 
 #[derive(Debug, Default, Deserialize)]

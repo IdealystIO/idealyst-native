@@ -147,23 +147,66 @@ fn rasterize_standalone(src: &StandaloneSource, size: u32) -> Result<Pixmap> {
         }
         StandaloneSource::Raster(img) => {
             let resized = img.resize_exact(size, size, image::imageops::FilterType::Lanczos3);
-            // image::DynamicImage is straight-alpha RGBA; tiny-skia
-            // pixmaps are premultiplied. We copy through a
-            // premultiply step so the composite blends correctly
-            // for translucent rasters.
-            let rgba = resized.to_rgba8();
-            let data = pixmap.data_mut();
-            for (i, p) in rgba.pixels().enumerate() {
-                let [r, g, b, a] = p.0;
-                let a_f = a as f32 / 255.0;
-                data[i * 4] = (r as f32 * a_f).round() as u8;
-                data[i * 4 + 1] = (g as f32 * a_f).round() as u8;
-                data[i * 4 + 2] = (b as f32 * a_f).round() as u8;
-                data[i * 4 + 3] = a;
-            }
+            premultiply_into(&resized, &mut pixmap);
         }
     }
     Ok(pixmap)
+}
+
+/// Render the image at `path` into a transparent `size × size` canvas,
+/// scaled to fit and centered — never stretched. Splash logos are
+/// arbitrary artwork (often a wide wordmark), unlike icon masters, which
+/// [`rasterize_standalone`] squares off.
+pub(crate) fn render_contained_png(path: &Path, size: u32) -> Result<Vec<u8>> {
+    let pixmap = match load_standalone(path)? {
+        // The SVG path already scales uniformly and centers.
+        svg @ StandaloneSource::Svg(_) => rasterize_standalone(&svg, size)?,
+        StandaloneSource::Raster(img) => {
+            // `resize` keeps the aspect ratio, fitting inside the box.
+            let fitted = img.resize(size, size, image::imageops::FilterType::Lanczos3);
+            let (w, h) = (fitted.width(), fitted.height());
+            let mut glyph =
+                Pixmap::new(w, h).ok_or_else(|| anyhow!("allocate {w}x{h} pixmap"))?;
+            premultiply_into(&fitted, &mut glyph);
+            let mut canvas = Pixmap::new(size, size)
+                .ok_or_else(|| anyhow!("allocate {size}x{size} pixmap"))?;
+            canvas.draw_pixmap(
+                ((size - glyph.width()) / 2) as i32,
+                ((size - glyph.height()) / 2) as i32,
+                glyph.as_ref(),
+                &resvg::tiny_skia::PixmapPaint::default(),
+                Transform::identity(),
+                None,
+            );
+            canvas
+        }
+    };
+    pixmap.encode_png().context("encode contained PNG")
+}
+
+/// A fully transparent `size × size` PNG.
+pub(crate) fn render_transparent_png(size: u32) -> Result<Vec<u8>> {
+    Pixmap::new(size, size)
+        .ok_or_else(|| anyhow!("allocate {size}x{size} pixmap"))?
+        .encode_png()
+        .context("encode transparent PNG")
+}
+
+/// Copy a straight-alpha image into a premultiplied pixmap of the same
+/// size. `image::DynamicImage` is straight-alpha RGBA; tiny-skia pixmaps
+/// are premultiplied, so translucent rasters blend correctly only after
+/// this step.
+fn premultiply_into(img: &image::DynamicImage, pixmap: &mut Pixmap) {
+    let rgba = img.to_rgba8();
+    let data = pixmap.data_mut();
+    for (i, p) in rgba.pixels().enumerate() {
+        let [r, g, b, a] = p.0;
+        let a_f = a as f32 / 255.0;
+        data[i * 4] = (r as f32 * a_f).round() as u8;
+        data[i * 4 + 1] = (g as f32 * a_f).round() as u8;
+        data[i * 4 + 2] = (b as f32 * a_f).round() as u8;
+        data[i * 4 + 3] = a;
+    }
 }
 
 /// Render JUST the background fill at `size × size`. Used by the

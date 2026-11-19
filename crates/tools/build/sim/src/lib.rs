@@ -397,7 +397,7 @@ mod regression_tests {
     //! for no reason.
 
     use super::*;
-    use build_ios::{AppMetadata, Manifest, SplashConfig};
+    use build_ios::{AppMetadata, Manifest};
 
     fn fake_manifest() -> Manifest {
         Manifest {
@@ -408,12 +408,7 @@ mod regression_tests {
                 bundle_id: Some("ai.example.demo".to_string()),
                 version: "0.0.1".to_string(),
                 build_number: "1".to_string(),
-                splash: SplashConfig {
-                    background: "#000000".to_string(),
-                    title: "Demo".to_string(),
-                    title_color: "#ffffff".to_string(),
-                    duration_ms: 0,
-                },
+                splash: None,
                 targets: Vec::new(),
                 server_bin: None,
                 server_manifest: None,

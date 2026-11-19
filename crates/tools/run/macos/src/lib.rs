@@ -858,7 +858,7 @@ fn set_executable(_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use build_ios::{AppMetadata, MacosMetadata, SplashConfig};
+    use build_ios::{AppMetadata, MacosMetadata};
 
     fn app_metadata(macos: MacosMetadata) -> AppMetadata {
         AppMetadata {
@@ -866,12 +866,7 @@ mod tests {
             bundle_id: Some("ai.example.demo".to_string()),
             version: "1.2.3".to_string(),
             build_number: "7".to_string(),
-            splash: SplashConfig {
-                background: "#000000".to_string(),
-                title: "Demo".to_string(),
-                title_color: "#ffffff".to_string(),
-                duration_ms: 0,
-            },
+            splash: None,
             targets: Vec::new(),
             server_bin: None,
             server_manifest: None,

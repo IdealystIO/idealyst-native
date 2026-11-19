@@ -1,5 +1,5 @@
-//! `idealyst sync` — regenerate derived assets (icons today, splash
-//! later) from the project's `[package.metadata.idealyst]` config.
+//! `idealyst sync` — regenerate derived assets (icons and launch
+//! screens) from the project's `[package.metadata.idealyst]` config.
 //!
 //! Icons today cover web (favicon set), iOS (non-Xcode .app bundle
 //! sizes), and Android (mipmap-*dpi launchers). Each platform reads
@@ -42,9 +42,7 @@ pub fn run(args: Args) -> Result<()> {
     for kind in kinds {
         match kind {
             SyncKind::Icons => sync_icons(&dir)?,
-            SyncKind::Splash => {
-                eprintln!("[sync] skipping splash: not yet implemented");
-            }
+            SyncKind::Splash => sync_splash(&dir)?,
         }
     }
     Ok(())
@@ -105,5 +103,41 @@ fn sync_icons(project_dir: &std::path::Path) -> Result<()> {
         "[sync icons] macos   → {} (AppIcon.icns)",
         macos_out.display(),
     );
+    Ok(())
+}
+
+/// Render the launch-screen assets `idealyst run`/`build` generate, so they
+/// can be inspected without a platform build: the iOS colorset/imageset
+/// catalog and the Android theme + resources. No-op when the manifest has
+/// no `[package.metadata.idealyst.app.splash]` block.
+fn sync_splash(project_dir: &std::path::Path) -> Result<()> {
+    let manifest = build_ios::parse_manifest(project_dir)?;
+    let Some(splash) = &manifest.app.splash else {
+        println!(
+            "[sync splash] no `[package.metadata.idealyst.app.splash]` block — \
+             nothing to do (declare `background = \"#RRGGBB\"` and/or `logo = \"…\"` to opt in)"
+        );
+        return Ok(());
+    };
+    let spec = icon_gen::SplashSpec {
+        light: icon_gen::SplashLook {
+            background: &splash.light.background,
+            logo: splash.light.logo.as_deref(),
+        },
+        dark: icon_gen::SplashLook {
+            background: &splash.dark.background,
+            logo: splash.dark.logo.as_deref(),
+        },
+    };
+
+    let root = project_dir.join("target").join("idealyst").join("splash");
+    let xcassets = root.join("ios").join("Assets.xcassets");
+    let _ = std::fs::remove_dir_all(&xcassets);
+    icon_gen::sync_ios_splash_catalog(&spec, &xcassets)?;
+    println!("[sync splash] ios     → {} (LaunchBackground + LaunchLogo)", xcassets.display());
+
+    let res = root.join("android").join("res");
+    icon_gen::sync_android_splash_res(&spec, &res)?;
+    println!("[sync splash] android → {} (Theme.Idealyst.Splash)", res.display());
     Ok(())
 }

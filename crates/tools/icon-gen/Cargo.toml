@@ -3,7 +3,7 @@ name = "icon-gen"
 version = "1.5.3"
 edition.workspace = true
 license.workspace = true
-description = "Idealyst icon generator — rasterize a single SVG (or PNG) into per-platform app icon assets"
+description = "Idealyst icon generator — rasterize a single SVG (or PNG) into per-platform app icon and launch-screen assets"
 
 [dependencies]
 anyhow = "1"

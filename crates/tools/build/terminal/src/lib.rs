@@ -374,7 +374,7 @@ mod regression_tests {
     //! class.
 
     use super::*;
-    use build_ios::{AppMetadata, Manifest, SplashConfig, Target};
+    use build_ios::{AppMetadata, Manifest, Target};
 
     fn manifest_with_targets(targets: Vec<Target>) -> Manifest {
         Manifest {
@@ -385,12 +385,7 @@ mod regression_tests {
                 bundle_id: Some("ai.example.demo".to_string()),
                 version: "0.0.1".to_string(),
                 build_number: "1".to_string(),
-                splash: SplashConfig {
-                    background: "#000000".to_string(),
-                    title: "Demo".to_string(),
-                    title_color: "#ffffff".to_string(),
-                    duration_ms: 0,
-                },
+                splash: None,
                 targets,
                 server_bin: None,
                 server_manifest: None,

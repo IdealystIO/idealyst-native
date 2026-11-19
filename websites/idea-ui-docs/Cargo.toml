@@ -144,6 +144,3 @@ name      = "idea-ui Docs"
 bundle_id = "io.idealyst.idea_ui_docs"
 version   = "0.0.1"
 targets   = ["web", "ios", "android"]
-
-[package.metadata.idealyst.app.splash]
-duration_ms = 0

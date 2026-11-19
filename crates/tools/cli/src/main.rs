@@ -110,7 +110,7 @@ enum Command {
     /// Update this CLI to the newest release: rebuilds it from the
     /// registry and replaces the running binary. `--check` only reports.
     Update(cmd::update::Args),
-    /// Regenerate icons, splash, and other derived assets.
+    /// Regenerate icons and launch-screen assets.
     Sync(cmd::sync::Args),
     /// Inspect generated icons (preview as platform-style mockups,
     /// list output paths, etc.).

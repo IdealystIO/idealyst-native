@@ -30,6 +30,3 @@ name      = "Vtable Dispatch Test"
 bundle_id = "io.idealyst.vtable_dispatch_test"
 version   = "0.0.1"
 targets   = ["web"]
-
-[package.metadata.idealyst.app.splash]
-duration_ms = 0

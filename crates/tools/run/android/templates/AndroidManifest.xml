@@ -34,11 +34,16 @@
              the app runs is re-delivered to THIS Activity's `onNewIntent`
              instead of stacking a second instance in the caller's task,
              which would `attach` and mount a second copy of the app. -->
+        <!-- `android:theme`: `Theme.Idealyst.Splash` (generated launch-screen
+             resources) when the app declares
+             `[package.metadata.idealyst.app.splash]`, else the plain
+             DeviceDefault theme. MainActivity switches to the content theme
+             in `onCreate`. -->
         <activity android:name="{{PACKAGE}}.MainActivity"
                   android:exported="true"
                   android:launchMode="singleTask"
                   android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|uiMode|density|navigation|fontScale|layoutDirection"
-                  android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"{{MAIN_ACTIVITY_ATTRS}}>
+                  android:theme="{{ACTIVITY_THEME}}"{{MAIN_ACTIVITY_ATTRS}}>
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

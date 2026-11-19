@@ -62,7 +62,7 @@ use build_ios::{BuildOptions, FrameworkSource, Manifest};
 
 use crate::frameworks::{collect_ios_frameworks, pbx_ids, Framework};
 use crate::{
-    render_view_controller, targeted_device_family, title_case_for_executable,
+    launch_screen_plist_entry, targeted_device_family, view_controller_swift, title_case_for_executable,
     ui_device_family_plist_entry, xml_escape,
     RunMode, APP_DELEGATE_SWIFT, BRIDGING_HEADER_LOCAL_H, INFO_PLIST_TMPL,
 };
@@ -229,9 +229,6 @@ pub(crate) struct PreparedProject {
 /// path ([`crate::publish::publish`]). The only variation is the on-disk
 /// sub-directory; both use automatic development signing (the publish path
 /// re-signs for distribution at export, not here).
-///
-/// Splash is forced OFF (duration 0): signed builds mount the framework
-/// immediately and the splash path isn't needed to validate signing.
 pub(crate) fn prepare_xcode_project(
     project_dir: &Path,
     manifest: &Manifest,
@@ -269,12 +266,9 @@ pub(crate) fn prepare_xcode_project(
     std::fs::create_dir_all(&swift_dir)
         .with_context(|| format!("create {}", swift_dir.display()))?;
 
-    // Swift sources + bridging header (splash forced off — see fn doc).
+    // Swift sources + bridging header.
     std::fs::write(swift_dir.join("AppDelegate.swift"), APP_DELEGATE_SWIFT)?;
-    std::fs::write(
-        swift_dir.join("ViewController.swift"),
-        render_view_controller(&splashless(manifest), &RunMode::Local),
-    )?;
+    std::fs::write(swift_dir.join("ViewController.swift"), view_controller_swift(&RunMode::Local))?;
     std::fs::write(swift_dir.join("BridgingHeader.h"), BRIDGING_HEADER_LOCAL_H)?;
 
     // App-icon ASSET CATALOG + Info.plist. The xcodebuild paths (device
@@ -287,6 +281,21 @@ pub(crate) fn prepare_xcode_project(
     // simulator path keeps loose PNGs — it hand-assembles the bundle with no
     // `actool`. See [`crate::sync_ios_icons_into_bundle`].)
     crate::sync_ios_asset_catalog_into_project(project_dir, &project_root)?;
+    // The launch screen's colorset/imageset ride in the same catalog, so
+    // xcodebuild's actool compiles them beside the AppIcon. Without a
+    // splash block, drop any from an earlier build.
+    let xcassets = project_root.join("Assets.xcassets");
+    match &manifest.app.splash {
+        Some(splash) => {
+            crate::sync_ios_splash_catalog(splash, &xcassets)?;
+        }
+        None => {
+            let color = format!("{}.colorset", icon_gen::IOS_SPLASH_COLOR_NAME);
+            let image = format!("{}.imageset", icon_gen::IOS_SPLASH_IMAGE_NAME);
+            let _ = std::fs::remove_dir_all(xcassets.join(color));
+            let _ = std::fs::remove_dir_all(xcassets.join(image));
+        }
+    }
     // The app's `assets/` → `<project_root>/assets/`, which the pbxproj
     // references as a FOLDER (blue folder) in the Resources phase, so
     // xcodebuild copies it to `<App>.app/assets/` — where the UIKit backend
@@ -363,15 +372,6 @@ fn stage_xcode_project_assets(project_dir: &Path, project_root: &Path) -> Result
     )
 }
 
-/// Clone the manifest with the splash forced off (duration 0). Device
-/// builds skip the splash — see `render_view_controller`'s
-/// `{{SPLASH_DURATION_MS}}` substitution.
-fn splashless(manifest: &Manifest) -> Manifest {
-    let mut m = manifest.clone();
-    m.app.splash.duration_ms = 0;
-    m
-}
-
 // ---------------------------------------------------------------------------
 // Info.plist (device flavor)
 // ---------------------------------------------------------------------------
@@ -383,7 +383,7 @@ fn splashless(manifest: &Manifest) -> Manifest {
 /// a real device's `127.0.0.1` is the phone itself). Device builds are the
 /// local-mount, standalone flavor. Icon + capability permission entries are
 /// still spliced in.
-fn render_device_info_plist(
+pub(crate) fn render_device_info_plist(
     manifest: &Manifest,
     executable_name: &str,
     icon_entries: &str,
@@ -405,6 +405,7 @@ fn render_device_info_plist(
         .replace("{{VERSION}}", &xml_escape(&manifest.app.version))
         .replace("{{BUILD_NUMBER}}", &xml_escape(&manifest.app.build_number))
         .replace("{{UI_DEVICE_FAMILY}}", &ui_device_family_plist_entry())
+        .replace("{{LAUNCH_SCREEN}}", &launch_screen_plist_entry(manifest.app.splash.as_ref()))
         .replace("{{EXTRA_PLIST_ENTRIES}}", &extra_entries))
 }
 

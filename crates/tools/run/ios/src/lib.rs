@@ -26,7 +26,7 @@
 //!   against IosBackend.
 //!
 //! runtime-server mode shares everything except the staticlib + Swift glue.
-//! Bundle ID, app name, splash, simulator orchestration are all
+//! Bundle ID, app name, launch screen, simulator orchestration are all
 //! identical to Local mode — same project metadata, same flow.
 //!
 //! This module is the **simulator** path. The **physical-device** path
@@ -61,7 +61,7 @@ pub mod simulator;
 pub mod publish;
 
 /// Embedded Swift sources + plist template. Tiny and identical for
-/// every project (modulo splash substitution), so we ship them as
+/// every project, so we ship them as
 /// `include_str!` rather than generating from scratch.
 ///
 /// `pub(crate)` so the [`device`] submodule reuses the exact same Swift
@@ -116,6 +116,9 @@ pub(crate) fn targeted_device_family() -> String {
 /// same `ios_main` / `ios_teardown` C symbols and keeps `[lib] name =
 /// "backend_ios"`, so the Swift glue + `-l` flag are unchanged.
 const IOS_AAS_SHELL_PACKAGE: &str = "backend-ios-rs-shell";
+/// Minimum iOS for `actool`. Matches Info.plist's `MinimumOSVersion` and
+/// the `ios16.0` in the swiftc target triples.
+const IOS_DEPLOYMENT_TARGET: &str = "16.0";
 const IOS_AAS_SHELL_LIB: &str = "backend_ios";
 
 /// Whether the iOS process runs the user's app locally or acts as a
@@ -295,10 +298,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             RunMode::RuntimeServer { .. } => APP_DELEGATE_AAS_SWIFT,
         },
     )?;
-    fs::write(
-        swift_dir.join("ViewController.swift"),
-        render_view_controller(&manifest, &opts.mode),
-    )?;
+    fs::write(swift_dir.join("ViewController.swift"), view_controller_swift(&opts.mode))?;
     fs::write(
         swift_dir.join("BridgingHeader.h"),
         match &opts.mode {
@@ -334,6 +334,16 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // ── 5b. The app's `assets/` → `<App>.app/assets/`, where the UIKit
     // backend resolves `asset!` paths (`NSBundle.mainBundle.resourcePath`).
     ship_sim_bundle_assets(&project_dir, &app_bundle)?;
+
+    // ── 5c. Launch screen → `Assets.car`. `UILaunchScreen` names a color
+    // and image in a COMPILED asset catalog, so the hand-assembled bundle
+    // runs `actool` itself (xcodebuild does it on the device path).
+    if let Some(splash) = &manifest.app.splash {
+        let xcassets = bundle_root.join("splash").join("Assets.xcassets");
+        let _ = fs::remove_dir_all(&xcassets);
+        sync_ios_splash_catalog(splash, &xcassets)?;
+        compile_sim_asset_catalog(&xcassets, &app_bundle, &bundle_root.join("splash"))?;
+    }
 
     // ── 6. Info.plist + PkgInfo ──────────────────────────────────
     fs::write(
@@ -376,7 +386,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
 /// generation here, because the runtime-server client doesn't depend on user
 /// code (the user's `app()` runs on the dev-host, not in the iOS
 /// process). One staticlib services every project; the per-project
-/// metadata flows in through the .app bundle (Info.plist, splash,
+/// metadata flows in through the .app bundle (Info.plist, launch screen,
 /// runtime-server URL) and through the Swift glue.
 fn build_runtime_server_shell(workspace_root: &Path, target: &str, release: bool) -> Result<()> {
     let manifest = workspace_root.join("Cargo.toml");
@@ -674,37 +684,84 @@ fn render_info_plist(
         .replace("{{VERSION}}", &xml_escape(&manifest.app.version))
         .replace("{{BUILD_NUMBER}}", &xml_escape(&manifest.app.build_number))
         .replace("{{UI_DEVICE_FAMILY}}", &ui_device_family_plist_entry())
+        .replace("{{LAUNCH_SCREEN}}", &launch_screen_plist_entry(manifest.app.splash.as_ref()))
         .replace("{{EXTRA_PLIST_ENTRIES}}", &extra_entries))
 }
 
-/// Fill the ViewController template with the project's splash
-/// settings (and, in runtime-server mode, the dev-server URL). Title text is
-/// Swift-string-escaped (we need to survive embedding in a `"..."`
-/// literal, so backslashes and quotes get escaped). Colors are
-/// validated by Swift's own `Scanner` at runtime — passing a
-/// malformed hex shows magenta so it's obvious.
-pub(crate) fn render_view_controller(manifest: &Manifest, mode: &RunMode) -> String {
-    let template = match mode {
+/// The ViewController source for `mode`. Identical for every project: the
+/// launch screen lives in Info.plist + the asset catalog, not in Swift.
+pub(crate) fn view_controller_swift(mode: &RunMode) -> &'static str {
+    match mode {
         RunMode::Local => VIEW_CONTROLLER_LOCAL_SWIFT,
         RunMode::RuntimeServer { .. } => VIEW_CONTROLLER_AAS_SWIFT,
-    };
-    // Splash substitution only — the runtime-server URL travels via
-    // Info.plist's `IdealystDevEndpoint`, set by `render_info_plist`.
-    template
-        .replace("{{SPLASH_BG}}", &swift_escape(&manifest.app.splash.background))
-        .replace("{{SPLASH_TITLE}}", &swift_escape(&manifest.app.splash.title))
-        .replace(
-            "{{SPLASH_TITLE_COLOR}}",
-            &swift_escape(&manifest.app.splash.title_color),
-        )
-        .replace(
-            "{{SPLASH_DURATION_MS}}",
-            &manifest.app.splash.duration_ms.to_string(),
-        )
+    }
 }
 
-fn swift_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+/// The `UILaunchScreen` Info.plist entry. With a splash block it names the
+/// colorset (and imageset) [`sync_ios_splash_catalog`] writes; without one
+/// it is the empty dict, which iOS requires to launch full-screen and
+/// draws as `systemBackground`.
+pub(crate) fn launch_screen_plist_entry(splash: Option<&build_ios::SplashConfig>) -> String {
+    let Some(splash) = splash else {
+        return "<key>UILaunchScreen</key>\n    <dict/>".to_string();
+    };
+    let mut entries = format!(
+        "\n        <key>UIColorName</key>\n        <string>{}</string>",
+        icon_gen::IOS_SPLASH_COLOR_NAME,
+    );
+    if splash.light.logo.is_some() || splash.dark.logo.is_some() {
+        entries.push_str(&format!(
+            "\n        <key>UIImageName</key>\n        <string>{}</string>\n        \
+             <key>UIImageRespectsSafeAreaInsets</key>\n        <true/>",
+            icon_gen::IOS_SPLASH_IMAGE_NAME,
+        ));
+    }
+    format!("<key>UILaunchScreen</key>\n    <dict>{entries}\n    </dict>")
+}
+
+/// Write the launch-screen colorset/imageset into `xcassets`.
+pub(crate) fn sync_ios_splash_catalog(
+    splash: &build_ios::SplashConfig,
+    xcassets: &Path,
+) -> Result<icon_gen::IosSplashAssets> {
+    icon_gen::sync_ios_splash_catalog(&splash_spec(splash), xcassets)
+}
+
+/// Borrow a resolved [`build_ios::SplashConfig`] as `icon-gen`'s input.
+fn splash_spec(splash: &build_ios::SplashConfig) -> icon_gen::SplashSpec<'_> {
+    fn look(l: &build_ios::SplashLook) -> icon_gen::SplashLook<'_> {
+        icon_gen::SplashLook { background: &l.background, logo: l.logo.as_deref() }
+    }
+    icon_gen::SplashSpec { light: look(&splash.light), dark: look(&splash.dark) }
+}
+
+/// Compile `xcassets` into `<app_bundle>/Assets.car` with `actool`, as
+/// xcodebuild's CompileAssetCatalog step would. `scratch` receives the
+/// partial Info.plist actool insists on writing; the launch-screen keys are
+/// rendered by [`launch_screen_plist_entry`] instead.
+fn compile_sim_asset_catalog(xcassets: &Path, app_bundle: &Path, scratch: &Path) -> Result<()> {
+    let partial_plist = scratch.join("actool-partial.plist");
+    let mut cmd = Command::new("xcrun");
+    cmd.arg("actool")
+        .arg(xcassets)
+        .arg("--compile")
+        .arg(app_bundle)
+        .args(["--platform", "iphonesimulator"])
+        .args(["--minimum-deployment-target", IOS_DEPLOYMENT_TARGET])
+        .args(["--target-device", "iphone", "--target-device", "ipad"])
+        .arg("--output-partial-info-plist")
+        .arg(&partial_plist)
+        .args(["--errors", "--warnings", "--output-format", "human-readable-text"]);
+    let out = cmd.output().context("spawn `xcrun actool` (is Xcode installed?)")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "actool failed compiling the launch screen catalog {}:\n{}{}",
+            xcassets.display(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn xml_escape(s: &str) -> String {
@@ -912,9 +969,9 @@ pub(crate) fn title_case_for_executable(s: &str) -> String {
 /// unit tests. Only compiled under `#[cfg(test)]`.
 #[cfg(test)]
 pub(crate) mod tests_support {
-    use build_ios::{AppMetadata, Manifest, SplashConfig, WebMetadata};
+    use build_ios::{AppMetadata, Manifest, WebMetadata};
 
-    /// A minimal manifest with a bundle id and the splash disabled —
+    /// A minimal manifest with a bundle id and no splash block —
     /// enough to exercise plist / project rendering without touching disk.
     pub(crate) fn fake_manifest() -> Manifest {
         Manifest {
@@ -925,12 +982,7 @@ pub(crate) mod tests_support {
                 bundle_id: Some("ai.example.demo".to_string()),
                 version: "0.0.1".to_string(),
                 build_number: "1".to_string(),
-                splash: SplashConfig {
-                    background: "#000000".to_string(),
-                    title: "Demo".to_string(),
-                    title_color: "#ffffff".to_string(),
-                    duration_ms: 0,
-                },
+                splash: None,
                 targets: Vec::new(),
                 server_bin: None,
                 server_manifest: None,
@@ -951,7 +1003,7 @@ pub(crate) mod tests_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use build_ios::{AppMetadata, Manifest, SplashConfig};
+    use build_ios::{AppMetadata, Manifest};
 
     fn kv(k: &str, v: &str) -> (String, String) {
         (k.to_string(), v.to_string())
@@ -1010,12 +1062,7 @@ mod tests {
                 bundle_id: Some("ai.example.demo".to_string()),
                 version: "0.0.1".to_string(),
                 build_number: "1".to_string(),
-                splash: SplashConfig {
-                    background: "#000000".to_string(),
-                    title: "Demo".to_string(),
-                    title_color: "#ffffff".to_string(),
-                    duration_ms: 0,
-                },
+                splash: None,
                 targets: Vec::new(),
                 server_bin: None,
                 server_manifest: None,
@@ -1184,5 +1231,47 @@ mod tests {
         std::fs::create_dir_all(&app_bundle).unwrap();
         assert!(ship_sim_bundle_assets(&project, &app_bundle).unwrap());
         assert!(app_bundle.join("assets/images/logo.png").is_file());
+    }
+
+    fn splash(logo: Option<&str>) -> build_ios::SplashConfig {
+        let look = |bg: &str| build_ios::SplashLook {
+            background: bg.to_string(),
+            logo: logo.map(std::path::PathBuf::from),
+        };
+        build_ios::SplashConfig { light: look("#1A1A2E"), dark: look("#000000") }
+    }
+
+    /// Regression: the launch screen was an empty `UILaunchScreen` dict on
+    /// every build, so a configured splash never reached the OS launch
+    /// screen. Both rendered plists must name the catalog's color + image.
+    #[test]
+    fn regression_info_plists_name_the_splash_catalog_entries() {
+        let mut m = fake_manifest();
+        m.app.splash = Some(splash(Some("/p/logo.svg")));
+        let sim = render_info_plist(&m, "demo", &RunMode::Local, "", "").unwrap();
+        let device = device::render_device_info_plist(&m, "Demo", "", "").unwrap();
+        for plist in [sim, device] {
+            assert!(!plist.contains("{{LAUNCH_SCREEN}}"), "{plist}");
+            assert!(plist.contains("<key>UIColorName</key>\n        <string>LaunchBackground</string>"), "{plist}");
+            assert!(plist.contains("<key>UIImageName</key>\n        <string>LaunchLogo</string>"), "{plist}");
+        }
+    }
+
+    #[test]
+    fn launch_screen_entry_per_splash_shape() {
+        assert_eq!(launch_screen_plist_entry(None), "<key>UILaunchScreen</key>\n    <dict/>");
+        let color_only = launch_screen_plist_entry(Some(&splash(None)));
+        assert!(color_only.contains("UIColorName"));
+        assert!(!color_only.contains("UIImageName"));
+    }
+
+    /// The ViewController mounts on load; nothing substitutes into it.
+    #[test]
+    fn view_controllers_mount_immediately_with_no_placeholders() {
+        for mode in [RunMode::Local, RunMode::RuntimeServer { endpoint: String::new() }] {
+            let swift = view_controller_swift(&mode);
+            assert!(!swift.contains("{{"), "unsubstituted placeholder in {swift}");
+            assert!(!swift.contains("asyncAfter"), "mount must not be delayed");
+        }
     }
 }

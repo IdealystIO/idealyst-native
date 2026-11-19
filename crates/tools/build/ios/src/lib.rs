@@ -51,6 +51,7 @@ pub mod nfc_app;
 /// product of its own for the app's target.
 pub mod sdk_products;
 pub mod source;
+pub mod splash;
 /// Pruning of the target dirs the CLI builds into: every build records
 /// its units and a prune removes what no recorded variant uses; recency
 /// only where no record can exist. Cargo-lock-aware. See the module docs.
@@ -69,6 +70,7 @@ pub use source::{
     session_isolation, set_session_isolation, validate_isolation_key, FrameworkSource,
     FrameworkVersions, GitDefaults, GitRef, RegistryDefaults, REGISTRY_NAME,
 };
+pub use splash::{SplashConfig, SplashLook};
 pub use web_html::{font_preload_tags, inject_into_head};
 pub use wrapper_lock::{record_resolved_lock, seed_wrapper_lockfile, write_if_changed, LockSeed};
 
@@ -142,11 +144,11 @@ pub struct AppMetadata {
     /// `[package.metadata.idealyst.app].build_number`, or override per
     /// upload via `idealyst publish ios --build-number`.
     pub build_number: String,
-    /// Splash-screen settings. Always present — if the user didn't
-    /// declare `[package.metadata.idealyst.app.splash]`, defaults are
-    /// filled in so every project gets a working splash without
-    /// boilerplate. Set `duration_ms = 0` in TOML to skip the splash.
-    pub splash: SplashConfig,
+    /// The native launch screen from
+    /// `[package.metadata.idealyst.app.splash]` (see [`splash`]). `None`
+    /// when the block is absent: iOS shows its default blank launch
+    /// screen and Android its default launch window.
+    pub splash: Option<SplashConfig>,
     /// Platforms this project ships on. Drives the default behavior
     /// of `idealyst dev` and `idealyst build` when no platform flag
     /// is passed: every target listed here is launched / built.
@@ -454,37 +456,6 @@ impl std::fmt::Display for Target {
     }
 }
 
-/// Splash-screen rendering config. Eventually this will be derived
-/// from a Rust-authored `#[idealyst::splash]` AST (richer layout,
-/// theme-token references, cross-platform). For now it's a tiny
-/// TOML schema with reasonable defaults — enough to see the splash
-/// pipeline working end-to-end.
-#[derive(Debug, Clone)]
-pub struct SplashConfig {
-    /// Background color hex like `"#1a1a2e"`. Used to fill the
-    /// initial screen before the framework mounts.
-    pub background: String,
-    /// Text shown centered on the splash. Defaults to `app.name`.
-    pub title: String,
-    /// Title text color hex. Defaults to `"#ffffff"`.
-    pub title_color: String,
-    /// How long the splash stays up after process launch, before the
-    /// framework root mounts. `0` disables the splash entirely (mount
-    /// happens immediately, no fade, no delay).
-    pub duration_ms: u32,
-}
-
-impl SplashConfig {
-    fn default_for(app_name: &str) -> Self {
-        Self {
-            background: "#1a1a2e".to_string(),
-            title: app_name.to_string(),
-            title_color: "#ffffff".to_string(),
-            duration_ms: 1500,
-        }
-    }
-}
-
 /// Build the user's project at `project_dir` for iOS. Returns the
 /// produced `.a` and metadata about how it was built.
 pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
@@ -583,7 +554,7 @@ struct RawAppMetadata {
     #[serde(default)]
     build_number: Option<String>,
     #[serde(default)]
-    splash: Option<RawSplashConfig>,
+    splash: Option<splash::RawSplashConfig>,
     #[serde(default)]
     targets: Option<Vec<String>>,
     #[serde(default)]
@@ -628,18 +599,6 @@ struct RawWebMetadata {
     assets: Option<Vec<String>>,
     #[serde(default)]
     font_dirs: Option<Vec<String>>,
-}
-
-#[derive(Default, Deserialize)]
-struct RawSplashConfig {
-    #[serde(default)]
-    background: Option<String>,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default)]
-    title_color: Option<String>,
-    #[serde(default)]
-    duration_ms: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -689,15 +648,14 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
     // builds don't need it at all.
     let bundle_id = app_raw.bundle_id.clone();
     let app_name = app_raw.name.unwrap_or_else(|| title_case(&name));
-    let splash = match app_raw.splash {
-        Some(s) => SplashConfig {
-            background: s.background.unwrap_or_else(|| "#1a1a2e".to_string()),
-            title: s.title.unwrap_or_else(|| app_name.clone()),
-            title_color: s.title_color.unwrap_or_else(|| "#ffffff".to_string()),
-            duration_ms: s.duration_ms.unwrap_or(1500),
-        },
-        None => SplashConfig::default_for(&app_name),
-    };
+    let splash = app_raw
+        .splash
+        .map(|raw| SplashConfig::from_raw(raw, project_dir))
+        .transpose()
+        .with_context(|| {
+            format!("{}: invalid `[package.metadata.idealyst.app.splash]`", path.display())
+        })?
+        .flatten();
     // Parse target strings into the typed enum. Empty when the
     // user didn't declare any — the CLI flags the missing
     // declaration when the user runs `idealyst dev` / `build`
@@ -1254,12 +1212,7 @@ mod regression_tests {
                 bundle_id: Some("ai.example.demo".to_string()),
                 version: "0.0.1".to_string(),
                 build_number: "1".to_string(),
-                splash: SplashConfig {
-                    background: "#000000".to_string(),
-                    title: "Demo".to_string(),
-                    title_color: "#ffffff".to_string(),
-                    duration_ms: 0,
-                },
+                splash: None,
                 targets: Vec::new(),
                 server_bin: None,
                 server_manifest: None,

@@ -467,15 +467,18 @@ targets   = ["web"]               # what dev and build use by default
 source = "assets/icon.png"        # app icons + favicons, generated
 
 [package.metadata.idealyst.app.splash]
-background  = "#1a1a2e"           # shown until the app mounts
-duration_ms = 0                   # 0 turns the splash off"##.to_string(),
+background = "#1a1a2e"            # iOS / Android launch screen, shown
+logo       = "assets/logo.svg"    # until the app's first frame"##.to_string(),
                 shell = true,
             )
             Typography(
                 content = "targets takes web, ios, android, macos, linux, windows, terminal and \
                     roku. A new project lists only web, which needs no platform tooling; add the \
                     others when you're ready, or name one on the command line \
-                    (idealyst dev --ios). build_number sets the store build number.".to_string()
+                    (idealyst dev --ios). build_number sets the store build number. The splash \
+                    table is the iOS and Android launch screen: a fill and an optional centered \
+                    logo, shown from the tap until your app draws, with a splash.dark table for \
+                    dark mode. Leave it out for the platform's blank default.".to_string()
             )
 
             Typography(content = "src/main.rs".to_string(), kind = typography_kind::H2)

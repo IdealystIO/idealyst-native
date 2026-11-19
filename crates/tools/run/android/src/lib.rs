@@ -418,6 +418,21 @@ pub fn package(project_dir: &Path, opts: &PackageOptions) -> Result<PackagedApk>
     let icon_attrs =
         sync_android_icons_into_res(&project_dir, &project_res, &build_tools, &project_icon_flat)?;
 
+    // Launch-screen resources (`Theme.Idealyst.Splash` + its colors and
+    // drawables), compiled into their own flat. Without a splash block the
+    // Activity keeps the plain theme and nothing is compiled.
+    let splash_flat = build_dir.join("splash-res.flata");
+    let _ = fs::remove_file(&splash_flat);
+    let activity_theme = match &manifest.app.splash {
+        Some(splash) => {
+            let splash_res = build_dir.join("splash-res");
+            icon_gen::sync_android_splash_res(&splash_spec(splash), &splash_res)?;
+            aapt2_compile_dir(&build_tools, &splash_res, &splash_flat, "launch screen")?;
+            icon_gen::ANDROID_SPLASH_THEME
+        }
+        None => PLAIN_ACTIVITY_THEME,
+    };
+
     // One `cargo metadata` over the wrapper's dependency graph feeds every
     // SDK-declared input: manifest fragments + resources here, and (below)
     // the Kotlin runtime sources and AndroidX artifacts.
@@ -457,6 +472,7 @@ pub fn package(project_dir: &Path, opts: &PackageOptions) -> Result<PackagedApk>
                 robot_relay_url: opts.robot_relay_url.as_deref().unwrap_or(""),
                 idealyst_env: &forwarded_env(&opts.env_vars, |k| std::env::var(k).ok()),
                 icon_attrs: &icon_attrs,
+                activity_theme,
                 uses_permissions: &uses_permissions,
                 services: &services,
                 // Only the local template carries the splice; the
@@ -518,6 +534,9 @@ pub fn package(project_dir: &Path, opts: &PackageOptions) -> Result<PackagedApk>
     // string in that case which we filter out.
     if project_icon_flat.is_file() {
         runtime.aar_resource_flats.push(project_icon_flat.clone());
+    }
+    if splash_flat.is_file() {
+        runtime.aar_resource_flats.push(splash_flat.clone());
     }
     // Order matters: `aapt2 link` applies `-R` overlays in order, so a
     // later flat's resource replaces an earlier one of the same name.
@@ -841,6 +860,18 @@ fn sync_android_icons_into_res(
     // string in that case).
     Ok(" android:icon=\"@mipmap/ic_launcher\" android:roundIcon=\"@mipmap/ic_launcher_round\""
         .to_string())
+}
+
+/// The main Activity's theme without a launch screen. The generated
+/// Activities `setTheme` to the same style in `onCreate`.
+const PLAIN_ACTIVITY_THEME: &str = "@android:style/Theme.DeviceDefault.Light.NoActionBar";
+
+/// Borrow a resolved [`build_ios::SplashConfig`] as `icon-gen`'s input.
+fn splash_spec(splash: &build_ios::SplashConfig) -> icon_gen::SplashSpec<'_> {
+    fn look(l: &build_ios::SplashLook) -> icon_gen::SplashLook<'_> {
+        icon_gen::SplashLook { background: &l.background, logo: l.logo.as_deref() }
+    }
+    icon_gen::SplashSpec { light: look(&splash.light), dark: look(&splash.dark) }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1167,6 +1198,8 @@ struct ManifestInputs<'a> {
     robot_relay_url: &'a str,
     idealyst_env: &'a str,
     icon_attrs: &'a str,
+    /// The main Activity's `android:theme`.
+    activity_theme: &'a str,
     uses_permissions: &'a str,
     services: &'a str,
     intent_filters: &'a str,
@@ -1188,6 +1221,7 @@ fn render_manifest(template: &str, i: &ManifestInputs<'_>) -> String {
         ("ROBOT_RELAY_URL", &xml_escape(i.robot_relay_url)),
         ("IDEALYST_ENV", &xml_escape(i.idealyst_env)),
         ("ICON_ATTRS", i.icon_attrs),
+        ("ACTIVITY_THEME", i.activity_theme),
         ("USES_PERMISSIONS", &uses_permissions),
         ("KEEP_ALIVE_SERVICE", &keep_alive),
         ("SERVICES", i.services),
@@ -1826,7 +1860,7 @@ mod tests {
         ));
     }
 
-    use super::{local_robot_build_needs_internet, render, ANDROID_MANIFEST_LOCAL_XML};
+    use super::{local_robot_build_needs_internet, render, ANDROID_MANIFEST_AAS_XML, ANDROID_MANIFEST_LOCAL_XML};
     use super::{apksigner_key_args, render_manifest, resolve_signing, ManifestInputs, SigningKey};
     use super::{AndroidAppMetadata, SdkManifestContributions};
     use super::{keep_alive_start, KEEP_ALIVE_SERVICE_JAVA, MAIN_ACTIVITY_AAS_JAVA, MAIN_ACTIVITY_LOCAL_JAVA};
@@ -1867,6 +1901,42 @@ mod tests {
         assert!(!xml.contains("{{INTENT_FILTERS}}"));
     }
 
+    /// Regression: the launch Activity's theme was hard-coded, so a
+    /// declared splash never reached Android's launch window. Both manifests
+    /// carry the chosen theme on the main Activity.
+    #[test]
+    fn regression_manifests_put_the_splash_theme_on_the_main_activity() {
+        let meta = AndroidAppMetadata::default();
+        let sdk = SdkManifestContributions::default();
+        for template in [ANDROID_MANIFEST_LOCAL_XML, ANDROID_MANIFEST_AAS_XML] {
+            let mut i = inputs(&meta, &sdk, true);
+            i.activity_theme = icon_gen::ANDROID_SPLASH_THEME;
+            let xml = render_manifest(template, &i);
+            let activity = &xml[xml.find("<activity").unwrap()..];
+            let activity = &activity[..activity.find('>').unwrap()];
+            assert!(
+                activity.contains("android:theme=\"@style/Theme.Idealyst.Splash\""),
+                "{activity}"
+            );
+            assert!(!xml.contains("{{ACTIVITY_THEME}}"));
+        }
+    }
+
+    /// The launch theme's `windowBackground` is the splash drawable; the
+    /// Activity must leave it before `super.onCreate` builds the window, or
+    /// the logo stays painted behind the app.
+    #[test]
+    fn activities_switch_to_the_content_theme_before_super_on_create() {
+        for activity in [MAIN_ACTIVITY_LOCAL_JAVA, MAIN_ACTIVITY_AAS_JAVA] {
+            let set_theme = activity
+                .find("setTheme(android.R.style.Theme_DeviceDefault_Light_NoActionBar)")
+                .expect("setTheme in onCreate");
+            let super_on_create = activity.find("super.onCreate(savedInstanceState)").unwrap();
+            assert!(set_theme < super_on_create);
+        }
+        assert!(super::PLAIN_ACTIVITY_THEME.ends_with("Theme.DeviceDefault.Light.NoActionBar"));
+    }
+
     /// The dev/run manifest must enable cleartext HTTP so a dev build can
     /// reach a server-function / `#[sse]` host running over `http://` on the
     /// developer's machine (the emulator's `http://10.0.2.2:<port>` loopback
@@ -1893,6 +1963,7 @@ mod tests {
             robot_relay_url: "",
             idealyst_env: "",
             icon_attrs: "",
+            activity_theme: super::PLAIN_ACTIVITY_THEME,
             uses_permissions: "",
             services: "",
             intent_filters: "",

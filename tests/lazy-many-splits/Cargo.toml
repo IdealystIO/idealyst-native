@@ -28,6 +28,3 @@ name      = "Lazy Many Splits Test"
 bundle_id = "io.idealyst.lazy_many_splits_test"
 version   = "0.0.1"
 targets   = ["web"]
-
-[package.metadata.idealyst.app.splash]
-duration_ms = 0

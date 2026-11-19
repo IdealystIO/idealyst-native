@@ -30,6 +30,3 @@ name      = "Lazy Chunk Handoff Test"
 bundle_id = "io.idealyst.lazy_chunk_handoff_test"
 version   = "0.0.1"
 targets   = ["web"]
-
-[package.metadata.idealyst.app.splash]
-duration_ms = 0
