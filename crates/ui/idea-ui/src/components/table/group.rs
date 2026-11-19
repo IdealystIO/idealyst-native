@@ -50,7 +50,7 @@ use std::rc::Rc;
 use runtime_core::accessibility::{AccessibilityTraits, Role};
 use runtime_core::{
     component, signal, text as text_node, ui, ChildList, Element, IdealystSchema, IntoElement,
-    Reactive, Signal, StyleApplication,
+    Easing, Reactive, Signal, StyleApplication, StyleRules, Transition,
 };
 
 use super::rows::{BandLead, BandMeta, RowMeta};
@@ -286,13 +286,24 @@ pub(super) fn toggle_button(collapsed: Signal<bool>, is_collapsed: bool, title: 
         .into_element()
 }
 
-/// The band row's group grip and hover-revealed grip glyph style.
-pub(super) fn grip_style(revealed: Option<Rc<dyn Fn() -> bool>>) -> impl Fn() -> StyleApplication {
+/// The band row's group grip and hover-revealed grip glyph style: shown
+/// while `revealed` holds, with no show/hide fade while `quiet` holds.
+pub(super) fn grip_style(
+    revealed: Option<Rc<dyn Fn() -> bool>>,
+    quiet: Option<Rc<dyn Fn() -> bool>>,
+) -> impl Fn() -> StyleApplication {
     move || {
         let app = TableStyles::grip().into_style_application();
-        match &revealed {
+        let app = match &revealed {
             Some(f) => app.with("shown", if f() { "on" } else { "off" }),
             None => app,
+        };
+        match &quiet {
+            Some(q) if q() => app.with_inline_merged(StyleRules {
+                opacity_transition: Some(Transition::new(0, Easing::Linear)),
+                ..Default::default()
+            }),
+            _ => app,
         }
     }
 }

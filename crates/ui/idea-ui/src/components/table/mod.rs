@@ -438,7 +438,9 @@
 //!   page, unclipped by the table, while the row's own cells are hidden
 //!   and the others slide to show where it would land.
 //! - Bound it like a `scroll_y` table: `max_height` fits the rows up to
-//!   the cap; without it the table fills its (bounded) parent.
+//!   the cap; without it the table fills its (bounded) parent. While it
+//!   has no rows the grid fits its header, so `empty` stands right under
+//!   the header, as in the plain table.
 //! - Linux, Windows, the terminal, the CPU renderer and SSR have no
 //!   two-axis grid engine; they show the unsupported-primitive placeholder.
 //!
@@ -1810,12 +1812,13 @@ fn grip_mark(hovered: Option<Signal<bool>>) -> Element {
         let pointer = runtime_core::primary_pointer();
         Rc::new(move || h.get() || pointer.get() == runtime_core::PointerKind::Coarse) as Rc<dyn Fn() -> bool>
     });
-    grip_mark_revealed(revealed)
+    grip_mark_revealed(revealed, None)
 }
 
-/// The grip glyph, shown while `revealed` holds (always, when `None`).
-fn grip_mark_revealed(revealed: Option<Rc<dyn Fn() -> bool>>) -> Element {
-    let style = group::grip_style(revealed);
+/// The grip glyph, shown while `revealed` holds (always, when `None`), with
+/// its show/hide fade off while `quiet` holds.
+fn grip_mark_revealed(revealed: Option<Rc<dyn Fn() -> bool>>, quiet: Option<Rc<dyn Fn() -> bool>>) -> Element {
+    let style = group::grip_style(revealed, quiet);
     ui! {
         view(style = style) {
             Icon(data = GRIP_MARK, size = GRIP_ICON_PX, tone = Some(crate::tone::Neutral.into()))

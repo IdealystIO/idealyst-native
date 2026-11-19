@@ -32,12 +32,19 @@
 //!   carries it from where it was let go into slot `to`. Apply the move in
 //!   the callback ([`move_in_place`](super::move_in_place)): the cells show
 //!   the rows' new order from the same frame.
-//! - **No background fade while a row is held or landing.** Cells are
-//!   positional: on the drop the cells at the held row's old index show the
-//!   next row at once, and a 150 ms tint fade-out there read as the
-//!   highlight jumping to the row that took the index. With the fade off,
-//!   the tint leaves those cells instantly and stays on the moved row; the
-//!   fade comes back as it lands, so its tint fades out in its new slot.
+//! - **No fades while a row is held or landing.** Cells are positional: on
+//!   the drop the cells at the held row's old index show the next row at
+//!   once, so any fade there plays on the wrong row. The background's 150 ms
+//!   tint fade-out read as the highlight jumping to the row that took the
+//!   index; the grip's opacity fade showed that row's grip fading out
+//!   (`grip_on_hover`); and the cells a [`RowDrag`] hid at opacity 0 faded
+//!   that row in from nothing. With the background and opacity fades off
+//!   ([`VirtualReorder::quiet_fades`]), those cells change at once and the
+//!   tint stays on the moved row; the fades come back as it lands, so its
+//!   tint fades out in its new slot. A row a drop target took does not
+//!   land, so the fades stay off for one more frame
+//!   ([`VirtualReorder::settling`]): the restyle that un-hides the cells
+//!   runs with them off.
 //!
 //! - **Outside the table** (`Table(row_drag = …)`, [`RowDrag`]). The drag
 //!   is also a `dnd` drag of the row's payload, and the row is drawn by
@@ -62,8 +69,8 @@ use dnd::{Activation, DragPhase, DragPreview, DragRecognizer, ScrollAxis};
 use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo};
 use runtime_core::primitives::virtual_grid::VirtualGridHandle;
 use runtime_core::{
-    effect, signal, Easing, Element, Memo, RafLoop, Ref, Signal, StyleApplication, StyleRules, Tokenized, TouchHandler,
-    TouchPoint, Transition, ViewHandle,
+    effect, signal, Easing, Element, Memo, RafLoop, Ref, ScheduledTask, Signal, StyleApplication, StyleRules,
+    Tokenized, TouchHandler, TouchPoint, Transition, ViewHandle,
 };
 
 use super::row_drag::{ActiveRowDrag, RowDrag};
@@ -223,6 +230,11 @@ pub(super) struct VirtualReorder {
     preview: RefCell<Option<Rc<dyn Fn(usize) -> Element>>>,
     /// The held row is drawn by the drag layer, so its cells are hidden.
     ghosted: Signal<bool>,
+    /// A drag just ended with no landing (a drop target took the row): the
+    /// fades stay off until the next frame, which `settle_frame` clears
+    /// this on. See the module docs, "No fades".
+    settling: Signal<bool>,
+    settle_frame: RefCell<Option<ScheduledTask>>,
     me: Weak<VirtualReorder>,
 }
 
@@ -254,6 +266,8 @@ impl VirtualReorder {
             active: RefCell::new(None),
             preview: RefCell::new(None),
             ghosted: signal(false),
+            settling: signal(false),
+            settle_frame: RefCell::new(None),
             me: me.clone(),
         });
         // The landing spring publishes each step, and ends the landing when
@@ -275,6 +289,7 @@ impl VirtualReorder {
                 // Cancels a drag still in flight in the outside context.
                 drop(me.active.borrow_mut().take());
                 drop(me.landing_sub.borrow_mut().take());
+                drop(me.settle_frame.borrow_mut().take());
                 me.landing_spring.cancel();
             }
         });
@@ -333,14 +348,21 @@ impl VirtualReorder {
         }
     }
 
-    /// `app` for a body cell, with its background fade off while a row is
-    /// held or landing — see the module docs, "No background fade".
-    pub(super) fn quiet_background(&self, app: StyleApplication) -> StyleApplication {
-        if self.from.get().is_none() && self.landing.get().is_none() {
+    /// Whether a row is held or landing, or a drag ended this frame with
+    /// no landing: while it is, cells change with no fade.
+    pub(super) fn quiet(&self) -> bool {
+        self.from.get().is_some() || self.landing.get().is_some() || self.settling.get()
+    }
+
+    /// `app` for a body cell or a grip, with its background and opacity
+    /// fades off while [`Self::quiet`] — see the module docs, "No fades".
+    pub(super) fn quiet_fades(&self, app: StyleApplication) -> StyleApplication {
+        if !self.quiet() {
             return app;
         }
         app.with_inline_merged(StyleRules {
             background_transition: Some(Transition::new(0, Easing::Linear)),
+            opacity_transition: Some(Transition::new(0, Easing::Linear)),
             ..Default::default()
         })
     }
@@ -498,6 +520,11 @@ impl VirtualReorder {
         self.landing.set(None);
         self.over.set(None);
         self.from.set(None);
+        // No landing keeps the fades off through this turn's restyle, so
+        // hold them off until the next frame.
+        self.settling.set(true);
+        let settling = self.settling;
+        *self.settle_frame.borrow_mut() = Some(runtime_core::after_animation_frame(move || settling.set(false)));
     }
 
     /// The held row's landing slot for session `s`.
@@ -617,6 +644,59 @@ mod tests {
             assert_eq!(moved.get(), Some((3, 5)), "a release in the table reorders");
             assert!(!ctx.dragging().get() && ctx.payload().is_none(), "and ends the context's drag");
             assert!(!reorder.ghosted.get() && reorder.from.get().is_none());
+        });
+    }
+
+    /// REGRESSION (Timely): on a drop, the cells a [`RowDrag`] hid at
+    /// opacity 0 showed the row that took the held row's index and faded it
+    /// in from nothing over the cell sheet's 150 ms opacity fade. While a
+    /// row is held or lands, a cell's opacity fade is off along with its
+    /// background fade. A row a drop target took has no landing, so the
+    /// fades stay off until the next frame — through the restyle that
+    /// un-hides those cells — and come back after it.
+    #[test]
+    fn regression_a_ghosted_rows_cells_do_not_fade_in_on_the_drop() {
+        host_mock::pump::install_scheduler();
+        idea_theme::testing::with_test_world(|| {
+            let ctx: dnd::DragContext<usize> = dnd::DragContext::new();
+            let reorder = VirtualReorder::new(
+                Rc::new(|_, _| {}),
+                40.0,
+                Rc::new(|| 10),
+                Rc::new(RefCell::new(None)),
+                Some(RowDrag::new(&ctx, |row| row)),
+            );
+            reorder.set_preview(Rc::new(|_| runtime_core::view(Vec::new()).into()));
+            let fades = |r: &VirtualReorder| {
+                let app = super::super::styles::TableStyles::grip().into_style_application();
+                let rules = runtime_core::resolve_style(&r.quiet_fades(app));
+                (rules.background_transition.map(|t| t.duration_ms), rules.opacity_transition.map(|t| t.duration_ms))
+            };
+            let at_rest = fades(&reorder);
+            assert_ne!(at_rest.1, Some(0), "at rest the sheet's opacity fade applies");
+
+            reorder.begin(3, TouchPoint::new(20.0, 170.0), TouchPoint::new(10.0, 10.0));
+            idea_theme::testing::commit();
+            assert_eq!(fades(&reorder), (Some(0), Some(0)), "held: no background or opacity fade");
+
+            // Let go in the table: the row lands, and the fades stay off.
+            reorder.released(TouchPoint::new(20.0, 250.0));
+            idea_theme::testing::commit();
+            assert!(!reorder.ghosted.get());
+            assert_eq!(fades(&reorder), (Some(0), Some(0)), "landing: still no fade");
+
+            // A drop target took the next one: no landing, and still no
+            // fade on the restyle that shows the cells again.
+            reorder.landing.set(None);
+            reorder.begin(3, TouchPoint::new(20.0, 170.0), TouchPoint::new(10.0, 10.0));
+            reorder.finish_taken();
+            idea_theme::testing::commit();
+            assert!(!reorder.ghosted.get() && reorder.from.get().is_none() && reorder.landing.get().is_none());
+            assert_eq!(fades(&reorder), (Some(0), Some(0)), "taken: no fade this frame");
+
+            host_mock::pump::pump_frames();
+            idea_theme::testing::commit();
+            assert_eq!(fades(&reorder), at_rest, "the next frame: the fades are back");
         });
     }
 

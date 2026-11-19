@@ -28,6 +28,8 @@ struct Fixture {
     selection: Signal<BTreeSet<RowId>>,
     /// Every cell node's last resolved background token.
     backgrounds: Rc<RefCell<HashMap<host_mock::Node, Option<String>>>>,
+    /// Every node's last applied `flex_grow`.
+    grows: Rc<RefCell<HashMap<host_mock::Node, Option<f32>>>>,
 }
 
 fn columns() -> Vec<TableColumn> {
@@ -42,11 +44,13 @@ fn columns() -> Vec<TableColumn> {
 fn table(count: usize, extra: impl FnOnce(VirtualRows, &mut TableProps) -> VirtualRows) -> Fixture {
     let h = host_mock::Harness::new();
     let backgrounds: Rc<RefCell<HashMap<host_mock::Node, Option<String>>>> = Rc::new(RefCell::new(HashMap::new()));
+    let grows: Rc<RefCell<HashMap<host_mock::Node, Option<f32>>>> = Rc::new(RefCell::new(HashMap::new()));
     {
-        let b = backgrounds.clone();
+        let (b, g) = (backgrounds.clone(), grows.clone());
         h.set_style_line(move |node, rules| {
             let bg = rules.background.as_ref().and_then(|c| c.name().map(str::to_string));
             b.borrow_mut().insert(node, bg.clone());
+            g.borrow_mut().insert(node, rules.flex_grow.as_ref().map(|t| *t.value()));
             format!("apply_style n{node} bg={bg:?}")
         });
     }
@@ -72,7 +76,7 @@ fn table(count: usize, extra: impl FnOnce(VirtualRows, &mut TableProps) -> Virtu
     let realized = h.mount(realized);
     h.flush();
     let (rows, selection) = cell.take().unwrap();
-    Fixture { h, _realized: realized, rows, selection, backgrounds }
+    Fixture { h, _realized: realized, rows, selection, backgrounds, grows }
 }
 
 impl Fixture {
@@ -380,6 +384,33 @@ fn empty_state_follows_the_row_count() {
     assert_eq!((f.grid().row_count)(), 2);
 }
 
+/// REGRESSION: with no `max_height`, the grid filled the table's bounded
+/// box even while it held only the header, so the empty state — mounted
+/// after the grid — sank to the foot of the page instead of standing under
+/// the header as the plain Table's empty row does. The grid fits its header
+/// while there are no rows and fills again once rows arrive.
+#[test]
+fn regression_empty_state_sinks_to_the_foot_of_a_bounded_table() {
+    let f = table(0, |r, p| {
+        p.empty = Some(TableEmpty::Text("Nobody yet".into()));
+        r
+    });
+    let grid: host_mock::Node = f
+        .h
+        .ops()
+        .iter()
+        .find_map(|l| l.strip_prefix("create n")?.split_once(" virtual_grid").map(|(n, _)| n.parse().unwrap()))
+        .expect("the grid was created");
+    let grow = || f.grows.borrow().get(&grid).copied().flatten();
+    assert_eq!(grow(), Some(0.0), "an empty grid fits its header");
+    f.h.world.enter(|| f.rows.set(vec!["a".into()]));
+    f.h.flush();
+    assert_eq!(grow(), Some(1.0), "a grid with rows fills the box");
+    f.h.world.enter(|| f.rows.set(Vec::new()));
+    f.h.flush();
+    assert_eq!(grow(), Some(0.0));
+}
+
 #[test]
 #[should_panic(expected = "on_group_reorder")]
 fn a_virtualized_table_refuses_group_reorder() {
@@ -556,6 +587,11 @@ fn a_reused_cell_selects_tints_and_hovers_its_new_row() {
 /// A reorderable 100-row table, 40 px rows, recording every `on_reorder`
 /// and applying it to the rows the way an app does.
 fn reorderable() -> (Fixture, Rc<RefCell<Vec<(usize, usize)>>>) {
+    reorderable_with(|_| {})
+}
+
+/// [`reorderable`], with `props` adjusting the table's props.
+fn reorderable_with(props: impl FnOnce(&mut TableProps)) -> (Fixture, Rc<RefCell<Vec<(usize, usize)>>>) {
     let moves: Rc<RefCell<Vec<(usize, usize)>>> = Rc::new(RefCell::new(Vec::new()));
     let m = moves.clone();
     let rows_cell: Rc<std::cell::Cell<Option<Signal<Vec<String>>>>> = Rc::new(std::cell::Cell::new(None));
@@ -571,6 +607,7 @@ fn reorderable() -> (Fixture, Rc<RefCell<Vec<(usize, usize)>>>) {
                 });
             }
         }));
+        props(p);
         r.row_height(40.0)
     });
     rows_cell.set(Some(f.rows));
@@ -819,6 +856,48 @@ fn regression_the_drop_highlight_stays_on_the_moved_row() {
     assert_ne!(look(new_slot).0, tint, "landed: the highlight goes");
     assert_ne!(look(new_slot).1, Some(0), "with the sheet's fade back");
     assert_ne!(look(old_index).1, Some(0));
+}
+
+/// REGRESSION (Timely): with `grip_on_hover`, on the drop the row that took
+/// the held row's index faded its grip out — the grip at the old index is
+/// positional, it showed while its row was held and belongs to the next row
+/// from the drop on. It must hide there at once; the grip's fade comes back
+/// once the moved row has landed.
+#[test]
+fn regression_the_grip_at_the_old_index_hides_without_a_fade() {
+    // (opacity, opacity transition ms) per node, last applied.
+    type Looks = Rc<RefCell<HashMap<host_mock::Node, (Option<f32>, Option<u32>)>>>;
+    let (f, moves) = reorderable_with(|p| p.grip_on_hover = true);
+    let looks: Looks = Rc::new(RefCell::new(HashMap::new()));
+    {
+        let l = looks.clone();
+        f.h.set_style_line(move |node, rules| {
+            let opacity = rules.opacity.as_ref().map(|o| *o.value());
+            let fade = rules.opacity_transition.map(|t| t.duration_ms);
+            l.borrow_mut().insert(node, (opacity, fade));
+            format!("apply_style n{node} opacity={opacity:?}")
+        });
+    }
+    let grip = f.mount(0, 4); // body row 3
+    // The glyph inside the grip cell carries the shown/hidden opacity.
+    fn styled(h: &host_mock::Harness, looks: &Looks, node: host_mock::Node) -> Option<host_mock::Node> {
+        if looks.borrow().get(&node).is_some_and(|(o, _)| o.is_some()) {
+            return Some(node);
+        }
+        h.children_of(node).into_iter().find_map(|c| styled(h, looks, c))
+    }
+    let glyph = || styled(&f.h, &looks, grip);
+    f.drag(grip, &[12.0, 120.0]);
+    let held = glyph().expect("the held row's grip is styled");
+    assert_eq!(looks.borrow()[&held].0, Some(1.0), "the held row's grip shows");
+
+    f.release(grip, 120.0);
+    assert_eq!(*moves.borrow(), vec![(3, 6)]);
+    assert_eq!(looks.borrow()[&held], (Some(0.0), Some(0)), "the old index's grip hides at once, no fade");
+
+    f.h.world.enter(settle_springs);
+    f.h.flush();
+    assert_ne!(looks.borrow()[&held].1, Some(0), "landed: the grip's fade is back");
 }
 
 /// REGRESSION (reported): a `fill` column with a live width — a saved

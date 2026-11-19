@@ -754,12 +754,28 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
             items.with(|v| v.get(r - 1).map_or(u64::MAX - c as u64, |(id, g)| row_key(id, *g, c)))
         }
     };
-    let grid_style = match props.max_height {
+    // Whether the table has no rows: the empty state shows, and the grid
+    // holds only its header. A memo, so the styles below re-run when the
+    // table empties or fills, not on every change to its rows.
+    let no_rows = {
+        let items = shared.items;
+        memo(move || items.with(|v| v.is_empty()))
+    };
+    let cap = props.max_height;
+    let grid_style = move || match cap {
         // Fit the rows, up to the cap: the grid reports its content size.
         Some(h) => StyleRules {
             flex_grow: Some(Tokenized::Literal(0.0)),
             flex_basis: Some(Tokenized::Literal(Length::Auto)),
             max_height: Some(Tokenized::Literal(Length::Px(h))),
+            ..Default::default()
+        },
+        // Just the header: fit it, so the empty state (the grid's next
+        // sibling) stands under the header, as the plain Table's empty
+        // row does. Filling here would push it to the box's foot.
+        None if no_rows.get() => StyleRules {
+            flex_grow: Some(Tokenized::Literal(0.0)),
+            flex_basis: Some(Tokenized::Literal(Length::Auto)),
             ..Default::default()
         },
         // Fill the bounded box the table sits in.
@@ -826,9 +842,8 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
         // Shown while there are no rows, collapsed to nothing otherwise —
         // not rebuilt, since an element empty state can only be mounted
         // once and the rows can come and go (a filter, a page still loading).
-        let no_rows = shared.items;
         let style = move || {
-            if no_rows.with(|v| v.is_empty()) {
+            if no_rows.get() {
                 app.clone()
             } else {
                 let zero = || Some(Tokenized::Literal(Length::Px(0.0)));
@@ -1074,14 +1089,15 @@ fn body_cell(shared: &Rc<Shared>, col: usize, row: Memo<usize>) -> Element {
             };
             // While a row is held or landing: it rides above the rest with
             // the hover tint (opaque), and the rows it crosses paint their
-            // surface — with no background fade (see `virtual_reorder`).
+            // surface — with no background or opacity fade (see
+            // `virtual_reorder`, "No fades").
             let Some(reorder) = shared.reorder.as_ref() else { return app };
             let app = match reorder.drag_arm(row.get()) {
                 Some("lifted") => app.with("drag", "lifted").with("row_hovered", "on"),
                 Some(arm) => app.with("drag", arm),
                 None => app,
             };
-            reorder.hidden_while_ghosted(row.get(), reorder.quiet_background(app))
+            reorder.hidden_while_ghosted(row.get(), reorder.quiet_fades(app))
         }
     };
     let cell_ref: Ref<ViewHandle> = Ref::new();
@@ -1141,6 +1157,11 @@ fn body_cell(shared: &Rc<Shared>, col: usize, row: Memo<usize>) -> Element {
 /// asks (`grip_on_hover`) — while its row is hovered or held, and always
 /// where the primary pointer cannot hover.
 fn grip_glyph(shared: &Shared, row: Memo<usize>) -> Element {
+    // The grip's show/hide fade is off while a row is held or landing, like
+    // the cells' (`virtual_reorder`, "No fades"): the grip at the held row's
+    // old index belongs to the next row once it drops.
+    let quiet: Option<Rc<dyn Fn() -> bool>> =
+        shared.reorder.clone().map(|o| Rc::new(move || o.quiet()) as Rc<dyn Fn() -> bool>);
     let revealed: Option<Rc<dyn Fn() -> bool>> = shared.grip_on_hover.then(|| {
         let (hovered, reorder) = (shared.hovered, shared.reorder.clone());
         let pointer = runtime_core::primary_pointer();
@@ -1151,7 +1172,7 @@ fn grip_glyph(shared: &Shared, row: Memo<usize>) -> Element {
                 || pointer.get() == runtime_core::PointerKind::Coarse
         }) as Rc<dyn Fn() -> bool>
     });
-    super::grip_mark_revealed(revealed)
+    super::grip_mark_revealed(revealed, quiet)
 }
 
 /// Row `row` drawn on its own, for a [`RowDrag`](super::RowDrag)'s drag
@@ -1177,7 +1198,7 @@ fn row_preview(shared: Rc<Shared>, row: usize, widths: Vec<f32>, visible: f32, r
 fn preview_cell(shared: &Rc<Shared>, row: usize, col: usize, width: f32, height: f32) -> Element {
     let px = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
     let content: Element = match &shared.cols[col] {
-        GridCol::Grip => super::grip_mark_revealed(None),
+        GridCol::Grip => super::grip_mark_revealed(None, None),
         GridCol::Select => ui! { view() },
         GridCol::Author(c) => match &shared.rows.cell {
             CellSource::Reusable(f) => f(memo(move || row), &c.id),
