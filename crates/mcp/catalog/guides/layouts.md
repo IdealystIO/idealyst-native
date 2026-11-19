@@ -101,7 +101,10 @@ Two choices are made here, once, for the whole app:
   full labels; the rail is a desktop form only.
 
 `SidebarItem` draws icon and label when open and the icon alone, with the
-label as its tooltip, in the rail. Give it a `count` for a destination
+label as its tooltip, in the rail. It is the same row in both forms: the
+glyph stays where it is and the label fades as the sidebar narrows. Inset
+the sidebar's content by `sm` (`StackPadding::Sm`, `SIDEBAR_INSET`) so the
+glyphs stand in the middle of the rail. Give it a `count` for a destination
 with something waiting: `count = Some(SidebarCount::new(open_tasks,
 tone::Neutral))` (a signal, an `rx!` or a plain number) draws the number
 at the row's end and a dot on the glyph in the rail, and nothing at zero. Sidebar content of your own (a logo, a
