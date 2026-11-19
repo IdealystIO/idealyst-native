@@ -3805,6 +3805,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`SplitView`'s inspector shows on a phone** (`idea-ui-layout`). At phone width the inspector
+  docks under the content in a dock sized to its content (up to 45%). Native layout seeds a
+  vertical scroller with a 0 flex basis, so the pane's scroller counted as 0 tall, the dock
+  collapsed, and the content took the whole screen; the pane's fields sat below it on iOS. The
+  pane's scroller now sets `flex_basis: auto`, which is what the web already did.
+
 - **A screen built as several roots no longer lets a closed overlay cover it on iOS**
   (`runtime-vocabulary`). A `Page` with overlays returns a fragment, which a navigator mounted
   under a layout-less anchor: the stack's flow-fill found no node to land on, and iOS laid each

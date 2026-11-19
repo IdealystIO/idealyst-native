@@ -538,11 +538,19 @@ stylesheet! {
     // a flex item's automatic minimum is its content and a scroller that
     // may not shrink below its content never scrolls.
     //
+    // `flex_basis: auto` because a phone's inspector dock sizes to its
+    // content (up to its cap): the scroller must count its content toward
+    // that, as the web's `flex: 1 1 auto` does. Native seeds a vertical
+    // scroller with a 0 basis, under which the dock collapsed and the
+    // content above took the whole screen. In the other forms the region's
+    // height is set by its parent, so the basis changes nothing there.
+    //
     // No bar: its track would inset the pane's content from its rule.
     SplitSideScroll<idea_ui::IdeaThemeRef> {
         base(_t) {
             flex_grow: 1.0,
             flex_shrink: 1.0,
+            flex_basis: Length::Auto,
             min_height: Length::Px(0.0),
             min_width: Length::Px(0.0),
             scrollbar: ScrollbarVisibility::Hidden,
@@ -588,6 +596,20 @@ mod card_tests {
             assert_eq!(card.background, Some(tokens().color.control()));
             assert!(card.shadow.is_some() && card.margin_left.is_some() && card.border_top_left_radius.is_some());
             assert_eq!(card.overflow, Some(Overflow::Hidden));
+        });
+    }
+
+    /// CrewForge (iOS): a phone's inspector dock is as tall as its content,
+    /// so the pane's scroller must count its content: `flex_basis: auto`
+    /// over native's 0-basis scroller seed (the dock collapsed, and the
+    /// content above took the screen). runtime-layout's
+    /// `regression_a_scroller_in_a_content_sized_dock_is_content_tall_with_basis_auto`
+    /// pins what the basis does.
+    #[test]
+    fn regression_the_side_scroller_counts_its_content() {
+        idea_theme::testing::with_test_world(|| {
+            let rules = runtime_core::resolve_style(&SplitSideScroll().into_style_application());
+            assert_eq!(rules.flex_basis, Some(Tokenized::Literal(Length::Auto)));
         });
     }
 }

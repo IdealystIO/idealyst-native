@@ -2904,6 +2904,74 @@ mod tests {
         );
     }
 
+    /// REGRESSION (CrewForge, iOS): idea-ui-layout's `SplitView` docks an
+    /// inspector under a phone's content in a content-sized dock (`max_height:
+    /// 45%`) holding a scroller. The native seed's `flex_basis: 0` made the
+    /// scroller count as 0 tall when the dock sized itself, so the dock
+    /// collapsed and the content above took the whole height, pushing the
+    /// pane's fields below the screen. On the web the scroller's basis is its
+    /// content. An author `flex_basis: auto` over the seed matches the web:
+    /// the dock is its content, up to its cap, and the scroller shrinks
+    /// inside it.
+    #[test]
+    fn regression_a_scroller_in_a_content_sized_dock_is_content_tall_with_basis_auto() {
+        fn dock_and_first(content: f32, basis: Option<runtime_shared::Length>) -> (f32, f32) {
+            let px = |v: f32| Some(runtime_shared::Length::Px(v).into());
+            let mut t = LayoutTree::new();
+            let root = t.new_node();
+            t.set_style(root, &StyleRules { width: px(402.0), height: px(800.0), ..Default::default() });
+            let first = t.new_node();
+            t.set_style(
+                first,
+                &StyleRules {
+                    flex_grow: Some(1.0f32.into()),
+                    flex_shrink: Some(1.0f32.into()),
+                    flex_basis: px(0.0),
+                    min_height: px(0.0),
+                    ..Default::default()
+                },
+            );
+            let tall = t.new_node();
+            t.set_style(tall, &StyleRules { height: px(2000.0), flex_shrink: Some(0.0f32.into()), ..Default::default() });
+            t.add_child(first, tall);
+            let dock = t.new_node();
+            t.set_style(
+                dock,
+                &StyleRules {
+                    max_height: Some(runtime_shared::Length::Percent(45.0).into()),
+                    flex_grow: Some(0.0f32.into()),
+                    flex_shrink: Some(0.0f32.into()),
+                    min_height: px(0.0),
+                    ..Default::default()
+                },
+            );
+            let scroller = t.new_node();
+            t.set_overflow_scroll(scroller, false);
+            t.set_style(
+                scroller,
+                &StyleRules {
+                    flex_grow: Some(1.0f32.into()),
+                    flex_shrink: Some(1.0f32.into()),
+                    min_height: px(0.0),
+                    flex_basis: basis.map(Into::into),
+                    ..Default::default()
+                },
+            );
+            let body = t.new_node();
+            t.set_style(body, &StyleRules { height: px(content), flex_shrink: Some(0.0f32.into()), ..Default::default() });
+            t.add_child(scroller, body);
+            t.add_child(dock, scroller);
+            t.add_child(root, first);
+            t.add_child(root, dock);
+            t.compute(root, 402.0, 800.0);
+            (t.frame_of(dock).height, t.frame_of(first).height)
+        }
+        let auto = Some(runtime_shared::Length::Auto);
+        assert_eq!(dock_and_first(600.0, auto), (360.0, 440.0), "capped at 45% of 800; the content gives way");
+        assert_eq!(dock_and_first(100.0, auto), (100.0, 700.0), "a short pane is its content");
+        assert!(dock_and_first(600.0, None).0 < 1.0, "the bare seed collapses the dock");
+    }
+
     /// `auto` grid columns with cells that measure like real text
     /// reproduce `table-layout: auto`: a content-heavy column takes the
     /// space it needs and the others stay tight — and the table fills its
