@@ -11,7 +11,7 @@ use idea_ui::{
 };
 use idea_ui::{
     move_in_place, CardSlot, CellAlign, CellTone, ColSpan, ColumnId, ColumnPin, ColumnWidths,
-    RowId, RowTone, SortState, Table, TableCards, TableCell, TableColumn, TableDensity,
+    RowDrag, RowId, RowTone, SortState, Table, TableCards, TableCell, TableColumn, TableDensity,
     TableFooter, TableGroup, TableInset, TablePager, TableRow, TableVariant, VirtualRows,
 };
 
@@ -434,6 +434,36 @@ TableCell {
             }
         },
         ui! {
+            Section(title = "Dragging rows out of the table".to_string()) {
+                P(content = "`row_drag` offers a virtualized table's grip drag to a `dnd` context outside \
+                    it. Inside the table the drag reorders as before. Over one of the context's drop \
+                    targets the target lights up and takes the row through its `on_drop`, and \
+                    `on_reorder` is not called; let go outside the table on nothing, the row goes \
+                    back. The dragged row is drawn by the context's `dnd::drag_layer`, mounted once \
+                    as the last child of the app's root, so it rides over the header, the frozen \
+                    columns and the rest of the page and is never cut off by the table. Drag a task \
+                    onto Done.".to_string())
+                row_drag_demo()
+                CodePanel(src = r##"let ctx: DragContext<Uuid> = DragContext::new();
+
+Table(
+    columns = columns,
+    on_reorder = Some(reorder),
+    // What a row carries into the context. `row` is the index `VirtualRows` reads.
+    row_drag = Some(RowDrag::new(&ctx, move |row| tasks.with(|t| t[row].id))),
+    virtualized = Some(rows),
+)
+
+// Anywhere else on the screen:
+let done = Droppable::new(&ctx).on_drop(move |id| complete(id));
+let over = done.is_over();
+done.attach(view(vec![label]).with_style(move || DropBox().over(over.get())))
+
+// Once, last in the app's root:
+{ dnd::drag_layer(&ctx) }"##.to_string())
+            }
+        },
+        ui! {
             Section(title = "Row groups".to_string()) {
                 P(content = "`TableGroup` puts rows under a band row — the settings screen grouped by \
                     category. The band spans the table in the group tone, with the title, a \
@@ -735,6 +765,11 @@ TableFooter {
                         name: "on_group_reorder",
                         ty: "Option<Rc<dyn Fn(usize, usize)>>",
                         desc: "Makes TableGroups draggable as a whole by a grip on their band: the band moves with its rows; (from, to) are ordinals over the draggable groups. Default None.",
+                    },
+                    Prop {
+                        name: "row_drag",
+                        ty: "Option<RowDrag>",
+                        desc: "Offer a virtualized table's row drag to a dnd context outside it: RowDrag::new(&ctx, |row| payload). The drag still reorders inside the table; over one of the context's drop targets the target takes the row and on_reorder is not called; let go outside the table on nothing, the row goes back. The dragged row is drawn by the context's dnd::drag_layer, above the page and unclipped. Needs on_reorder and virtualized. Default None.",
                     },
                     Prop {
                         name: "grip_on_hover",
@@ -1068,6 +1103,118 @@ fn virtual_demo_table() -> Element {
     ui! {
         Table(columns = columns, selection = Some(picked), max_height = Some(320.0), virtualized = Some(rows))
     }
+}
+
+/// A task list whose rows reorder by their grip and can be dragged out
+/// onto a drop box: the table's row drag joined to the docs' drag context.
+fn row_drag_demo() -> Element {
+    let ctx = crate::shell::demo_drag();
+    let tasks: Signal<Vec<(u32, &'static str)>> = signal(vec![
+        (1, "Order rock bolts"),
+        (2, "Inspect the jumbo"),
+        (3, "Survey heading 12"),
+        (4, "Book the shotcrete crew"),
+        (5, "Sign off the timesheets"),
+        (6, "Replace the vent bag"),
+        (7, "Calibrate the gas monitor"),
+        (8, "Restock the first-aid kits"),
+    ]);
+    let done = signal(0_u32);
+    let columns = vec![
+        TableColumn::new("id").label("#").width(64.0),
+        TableColumn::new("task").label("Task").fill().min_width(180.0),
+    ];
+    let cell = move |row: Memo<usize>, col: &ColumnId| -> Element {
+        let wants_id = col.as_str() == "id";
+        ui! {
+            Typography(content = rx!(tasks.with(|t| match (t.get(row.get()), wants_id) {
+                (Some((id, _)), true) => format!("#{id}"),
+                (Some((_, name)), false) => name.to_string(),
+                (None, _) => String::new(),
+            })))
+        }
+    };
+    let rows = VirtualRows::reusing(
+        move || tasks.with(|t| t.len()),
+        move |i| RowId::from(tasks.with(|t| t.get(i).map_or(String::new(), |(id, _)| format!("task-{id}")))),
+        cell,
+    );
+    let reorder: Rc<dyn Fn(usize, usize)> = Rc::new(move |from, to| {
+        let mut v = tasks.get();
+        if move_in_place(&mut v, from, to) {
+            tasks.set(v);
+        }
+    });
+    let payload = move |row: usize| tasks.with(|t| t.get(row).map_or(String::new(), |(id, _)| id.to_string()));
+    let target = dnd::Droppable::new(&ctx).on_drop(move |id: String| {
+        let mut left = tasks.get();
+        left.retain(|(task, _)| task.to_string() != id);
+        tasks.set(left);
+        done.set(done.get() + 1);
+    });
+    let over = target.is_over();
+    let label = ui! { Typography(content = rx!(format!("Done · {}", done.get()))) };
+    let drop_box = target.attach(runtime_core::view(vec![label]).with_style(move || {
+        let t = idea_ui::tokens();
+        let edge = if over.get() { t.intent.primary.solid_bg() } else { t.color.border() };
+        runtime_core::StyleApplication::new(drop_box_sheet()).with_inline_merged(StyleRules {
+            border_top_color: Some(edge.clone()),
+            border_right_color: Some(edge.clone()),
+            border_bottom_color: Some(edge.clone()),
+            border_left_color: Some(edge),
+            background: Some(if over.get() { t.intent.primary.soft_bg() } else { t.color.surface_alt() }),
+            ..Default::default()
+        })
+    }));
+    ui! {
+        Stack(axis = StackAxis::Row, gap = StackGap::Lg) {
+            view(style = runtime_core::StyleApplication::new(drag_table_sheet())) {
+                Table(
+                    columns = columns,
+                    on_reorder = Some(reorder),
+                    row_drag = Some(RowDrag::new(&ctx, payload)),
+                    max_height = Some(240.0),
+                    virtualized = Some(rows),
+                )
+            }
+            drop_box
+        }
+    }
+}
+
+/// The drop box: a dashed panel beside the table.
+fn drop_box_sheet() -> Rc<StyleSheet> {
+    use runtime_core::{AlignItems, FlexDirection, JustifyContent, Length, Tokenized};
+    let px = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+    Rc::new(StyleSheet::r#static(StyleRules {
+        flex_direction: Some(FlexDirection::Column),
+        align_items: Some(AlignItems::Center),
+        justify_content: Some(JustifyContent::Center),
+        width: px(180.0),
+        min_height: px(120.0),
+        border_top_width: Some(Tokenized::Literal(2.0)),
+        border_right_width: Some(Tokenized::Literal(2.0)),
+        border_bottom_width: Some(Tokenized::Literal(2.0)),
+        border_left_width: Some(Tokenized::Literal(2.0)),
+        border_style: Some(BorderStyle::Dashed),
+        border_top_left_radius: px(12.0),
+        border_top_right_radius: px(12.0),
+        border_bottom_left_radius: px(12.0),
+        border_bottom_right_radius: px(12.0),
+        ..Default::default()
+    }))
+}
+
+/// The table's seat beside the drop box: the room the box leaves.
+fn drag_table_sheet() -> Rc<StyleSheet> {
+    use runtime_core::{FlexDirection, Length, Tokenized};
+    Rc::new(StyleSheet::r#static(StyleRules {
+        flex_direction: Some(FlexDirection::Column),
+        flex_grow: Some(Tokenized::Literal(1.0)),
+        flex_basis: Some(Tokenized::Literal(Length::Px(0.0))),
+        min_width: Some(Tokenized::Literal(Length::Px(0.0))),
+        ..Default::default()
+    }))
 }
 
 /// A demo button's press.

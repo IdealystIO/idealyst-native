@@ -1031,3 +1031,22 @@ fn _force_imports() -> Element {
         }
     }
 }
+
+thread_local! {
+    /// The docs' one drag-and-drop context: made with the chrome, whose
+    /// root mounts its drag layer, and read by the demos that drag.
+    static DEMO_DRAG: std::cell::RefCell<Option<dnd::DragContext<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Make the docs' drag context. Call once, from the chrome's build, so
+/// its signals live as long as the app; returns it for the drag layer.
+pub fn install_demo_drag() -> dnd::DragContext<String> {
+    let ctx = dnd::DragContext::new();
+    DEMO_DRAG.with(|slot| *slot.borrow_mut() = Some(ctx.clone()));
+    ctx
+}
+
+/// The docs' drag context, for a demo whose drag leaves its own box.
+pub fn demo_drag() -> dnd::DragContext<String> {
+    DEMO_DRAG.with(|slot| slot.borrow().clone()).expect("the chrome installs the demo drag context")
+}

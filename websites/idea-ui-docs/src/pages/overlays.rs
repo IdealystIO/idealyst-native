@@ -199,6 +199,7 @@ pub fn tooltip() -> Element {
                     Prop { name: "align",      ty: "ElementAlign",     desc: "Alignment along the anchor edge. Default: Center." },
                     Prop { name: "offset",     ty: "f32",              desc: "Gap in px between the trigger and the bubble. Default: 6." },
                     Prop { name: "dismiss_ms", ty: "u32",              desc: "How long a long-press (touch) tooltip stays up before auto-dismissing. Ignored for hover. Default: 1800." },
+                    Prop { name: "disabled", ty: "bool",               desc: "No bubble while true, for a hint that applies in only one state of its trigger. Reactive. Default: false." },
                 ])
             }
 

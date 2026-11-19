@@ -1653,3 +1653,14 @@ stylesheet! {
         }
     }
 }
+
+stylesheet! {
+    // The app's root: the frame fills it, and the drag layer lies over it.
+    pub AppRoot<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            width: Length::pct(100.0),
+            height: Length::pct(100.0),
+        }
+    }
+}

@@ -211,7 +211,11 @@ pub fn app_with(boot_styles: impl FnOnce()) -> Element {
             // A `Blank` page: the header holds still and the outlet is
             // bounded under it, so each screen's own scroller (which the
             // "On this page" spy reads) is the one that scrolls.
+            // The drag layer is the root's last child, so a demo's dragged
+            // row draws over the whole app.
+            let drag = shell::install_demo_drag();
             ui! {
+              view(style = styles::AppRoot()) {
                 AppFrame(
                     sidebar = vec![sidebar_el],
                     state = sidebar_state,
@@ -226,6 +230,8 @@ pub fn app_with(boot_styles: impl FnOnce()) -> Element {
                         body = runtime_vocabulary::navigator_outlet().build(),
                     )
                 }
+                { dnd::drag_layer(&drag) }
+              }
             }
         })
         .build()
