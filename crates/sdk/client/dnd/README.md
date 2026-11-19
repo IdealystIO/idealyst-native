@@ -117,6 +117,25 @@ mounted, and keeps an in-place source under the pointer.
 `DragContext::refresh_rects()` does the first two for targets that moved some
 other way.
 
+`DragContext::pointer_position()` is where the pointer is in the drag in
+flight, so an auto-scroll loop can watch the pointer near an edge instead of
+placing edge drop targets.
+
+### When the scroll unmounts the source
+
+A virtualized list scrolled far enough during a drag unmounts the dragged
+item, and with it the view that delivered the drag's moves and release. The
+context carries the drag on from there:
+
+- a **mouse or pen** drag follows the app-wide pointer: the ghost and hover
+  keep tracking, and the release drops the payload on the target under it;
+- a **finger** drag is cancelled, because finger touches have no app-wide
+  channel to follow.
+
+Either way the drag never sticks. The unmounted source's `on_release` is not
+called. `DragContext::cancel()` ends a drag from outside at any time, for
+example on Escape.
+
 ## What it deliberately leaves to you
 
 Auto-scrolling a list while dragging near its edge, reorder animations, and

@@ -1273,3 +1273,183 @@ fn regression_the_drag_ghost_is_placed_as_it_mounts() {
         assert!(wrote("TranslateY", "20"), "and its y:\n{}", log.join("\n"));
     });
 }
+
+// ---------------------------------------------------------------------------
+// A drag outlives its source
+// ---------------------------------------------------------------------------
+
+/// What [`mount_unmountable_source`] hands back.
+struct Unmountable {
+    // Before `h`: the tree unmounts while its host is still there.
+    _realized: Box<dyn std::any::Any>,
+    h: host_mock::Harness,
+    ctx: DragContext<u64>,
+    /// Whether the source is mounted; set `false` to unmount it, as a
+    /// virtualizer does when a scroll takes its item out of range.
+    show: Signal<bool>,
+    /// The source's touch handler, as its view's `on_touch` would run it.
+    touch: runtime_core::TouchHandler,
+    dropped: Rc<Cell<u64>>,
+    outcomes: Rc<RefCell<Vec<DropOutcome>>>,
+}
+
+/// A source in an `if` branch, a drop zone at x 500..600, and the
+/// app-wide pointer wired as a backend boots it.
+fn mount_unmountable_source(preview: bool) -> Unmountable {
+    use runtime_core::{ui, view, IntoElement};
+    install_test_scheduler_once();
+    runtime_shared::pointer_input::reset_for_tests();
+    let h = host_mock::Harness::new();
+    runtime_vocabulary::backend::install_env_services(&h.backend);
+    let dropped = Rc::new(Cell::new(0u64));
+    let outcomes: Rc<RefCell<Vec<DropOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+    let slot: Rc<RefCell<Option<runtime_core::TouchHandler>>> = Rc::new(RefCell::new(None));
+    let (tree, ctx, show) = h.world.enter(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let sink = dropped.clone();
+        register_zone(
+            &ctx,
+            rect(500.0, 0.0, 100.0, 100.0),
+            signal(false),
+            Rc::new(|_| true),
+            None,
+            None,
+            Some(Rc::new(move |p| sink.set(p))),
+        );
+        let show = signal(true);
+        let (c, slot, outcomes) = (ctx.clone(), slot.clone(), outcomes.clone());
+        let source = move || {
+            let outcomes = outcomes.clone();
+            let mut drag = Draggable::new(&c, || 7u64)
+                .activation(Activation::immediate())
+                .on_release(move |o| outcomes.borrow_mut().push(o));
+            if preview {
+                drag = drag.preview(|| runtime_core::fragment(Vec::new()));
+            }
+            *slot.borrow_mut() = Some(drag.handler());
+            view(Vec::new()).into_element()
+        };
+        let tree = ui! {
+            view() {
+                if show.get() {
+                    source()
+                }
+            }
+        };
+        (tree, ctx, show)
+    });
+    let realized = h.mount(tree);
+    h.flush();
+    let touch = slot.borrow().clone().expect("the source mounted");
+    Unmountable { _realized: Box::new(realized), h, ctx, show, touch, dropped, outcomes }
+}
+
+impl Unmountable {
+    fn mouse(&self, phase: runtime_core::PointerPhase, x: f32, y: f32) {
+        use runtime_core::{AppPointerEvent, MouseButton, PointerPhase};
+        let sink = self.h.shared.pointer_sink.borrow().clone().expect("pointer sink installed");
+        let button = matches!(phase, PointerPhase::Down | PointerPhase::Up).then_some(MouseButton::Primary);
+        sink.event(&AppPointerEvent { button, ..AppPointerEvent::new(phase, x, y) });
+    }
+
+    /// Pick the source up and carry it 20 px, then unmount it.
+    fn grab_and_unmount(&self) {
+        (self.touch)(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        (self.touch)(&ev(TouchPhase::Moved, 1, 20.0, 0.0, 16_000_000));
+        self.h.world.enter(|| self.show.set(false));
+        self.h.flush();
+    }
+
+    fn dragging(&self) -> bool {
+        self.h.world.enter(|| self.ctx.dragging().get())
+    }
+}
+
+/// REGRESSION (Timely): auto-scrolling a virtualized board unmounted the
+/// dragged card's lane, and the card's view took the drag's moves and
+/// release with it: the ghost stayed up, `dragging()` stayed true, and the
+/// app's auto-scroll (still "over" its edge strip) never stopped. The
+/// context now carries a mouse drag on from the app-wide pointer.
+#[test]
+fn regression_a_mouse_drag_outlives_its_unmounted_source() {
+    use runtime_core::PointerPhase;
+    let s = mount_unmountable_source(true);
+    s.mouse(PointerPhase::Down, 0.0, 0.0);
+    s.grab_and_unmount();
+    assert!(s.dragging(), "the drag survives its source");
+
+    s.mouse(PointerPhase::Move, 550.0, 50.0);
+    // The grab offset is where the drag committed: (20, 0).
+    assert_eq!(s.ctx.ghost_position(), (530.0, 50.0), "the ghost follows the mouse");
+    assert_eq!(s.ctx.pointer_position(), Some(TouchPoint::new(550.0, 50.0)));
+    assert!(s.ctx.is_over_target(), "hover follows the mouse");
+
+    s.mouse(PointerPhase::Up, 550.0, 50.0);
+    s.h.flush();
+    assert_eq!(s.dropped.get(), 7, "the release drops the payload");
+    assert!(!s.dragging());
+    assert!(s.outcomes.borrow().is_empty(), "the gone source is not told");
+}
+
+/// A finger has no app-wide channel to carry the drag on, so the drag is
+/// cancelled when its source unmounts instead of sticking.
+#[test]
+fn regression_a_touch_drag_whose_source_unmounts_is_cancelled() {
+    let s = mount_unmountable_source(true);
+    s.grab_and_unmount();
+    assert!(!s.dragging(), "no button is down: the drag ends");
+    assert_eq!(s.dropped.get(), 0, "nothing is delivered");
+    assert_eq!(s.ctx.pointer_position(), None);
+}
+
+/// The window lost the mouse mid-drag (alt-tab), so its release will
+/// never arrive: the dispatcher's Up for the held button ends the drag.
+#[test]
+fn an_orphaned_drag_ends_when_the_window_loses_the_mouse() {
+    use runtime_core::PointerPhase;
+    let s = mount_unmountable_source(false);
+    s.mouse(PointerPhase::Down, 0.0, 0.0);
+    s.grab_and_unmount();
+    assert!(s.dragging());
+    s.h.shared.pointer_sink.borrow().clone().unwrap().focus_lost();
+    s.h.flush();
+    assert!(!s.dragging());
+}
+
+/// `DragContext::cancel` ends a `Draggable`'s drag from outside: nothing is
+/// delivered, and the source reports `Cancelled` when its pointer lifts.
+#[test]
+fn cancel_ends_a_draggables_drag_from_outside() {
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let dropped = Rc::new(Cell::new(0u64));
+        let sink = dropped.clone();
+        register_zone(
+            &ctx,
+            rect(0.0, 0.0, 200.0, 200.0),
+            signal(false),
+            Rc::new(|_| true),
+            None,
+            None,
+            Some(Rc::new(move |p| sink.set(p))),
+        );
+        let outcomes: Rc<RefCell<Vec<DropOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+        let out = outcomes.clone();
+        let drag = Draggable::new(&ctx, || 7u64)
+            .activation(Activation::immediate())
+            .on_release(move |o| out.borrow_mut().push(o));
+        let h = drag.handler();
+        h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        h(&ev(TouchPhase::Moved, 1, 50.0, 50.0, 16_000_000));
+        assert_eq!(ctx.pointer_position(), Some(TouchPoint::new(50.0, 50.0)));
+
+        ctx.cancel();
+        assert!(!flushed(ctx.dragging()));
+        h(&ev(TouchPhase::Moved, 1, 60.0, 60.0, 32_000_000));
+        assert_eq!(ctx.pointer_position(), None, "a move after the cancel opens nothing");
+        h(&ev(TouchPhase::Ended, 1, 60.0, 60.0, 48_000_000));
+
+        assert_eq!(dropped.get(), 0, "nothing is delivered");
+        assert_eq!(*outcomes.borrow(), vec![DropOutcome::Cancelled]);
+    });
+}

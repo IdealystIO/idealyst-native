@@ -6,12 +6,16 @@
 //! element follows the finger. On release the payload is delivered to whatever
 //! [`Droppable`](crate::Droppable) is under the pointer; if none accepts it the
 //! element springs back (unless you opt out).
+//!
+//! If the source unmounts with its drag in flight (a virtualized list
+//! scrolled it away), the [`DragContext`] carries the drag on — see its
+//! module docs, "A drag outlives its source".
 
 use std::cell::Cell;
 use std::rc::Rc;
 
 use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo};
-use runtime_core::{effect, signal, Element, GlueView, Ref, Signal, ViewHandle};
+use runtime_core::{effect, on_owned_drop, signal, Element, GlueView, Ref, Signal, ViewHandle};
 
 use crate::context::{DragContext, PreviewBuilder};
 use crate::recognizer::{Activation, DragPhase, DragRecognizer};
@@ -30,7 +34,8 @@ pub enum DropOutcome {
     /// The finger lifted over no accepting target. The element snaps back
     /// (unless [`Draggable::snap_back`] was set `false`).
     Missed,
-    /// The platform interrupted the drag (system gesture, view detach).
+    /// The drag ended without a drop: the platform interrupted it (a
+    /// system gesture), or [`DragContext::cancel`] ended it.
     Cancelled,
 }
 
@@ -134,7 +139,8 @@ impl<T: Clone + 'static> Draggable<T> {
     /// Fired once when the drag ends, with how it ended. Replaces any
     /// previous callback. (The *target* is notified separately via
     /// [`Droppable::on_drop`](crate::Droppable::on_drop); this is the
-    /// *source's* notification.)
+    /// *source's* notification.) Not fired for a drag whose source
+    /// unmounted before it ended.
     pub fn on_release(mut self, f: impl Fn(DropOutcome) + 'static) -> Self {
         self.on_release = Some(Rc::new(f));
         self
@@ -204,6 +210,9 @@ impl<T: Clone + 'static> Draggable<T> {
 
     /// The `DragPhase` → context/offset closure shared by `handler` and
     /// `recognizer`. Captures fresh clones so the two paths stay independent.
+    ///
+    /// Call it while building the source's view: when that scope drops with
+    /// this source's drag in flight, the context takes the drag over.
     fn drag_callback(&self) -> impl Fn(DragPhase) + 'static {
         let ctx = self.ctx.clone();
         let payload = self.payload.clone();
@@ -218,6 +227,19 @@ impl<T: Clone + 'static> Draggable<T> {
         let on_start = self.on_start.clone();
         let on_release = self.on_release.clone();
         let preview = self.preview.clone();
+        // This source's drag in flight, as the context's session token.
+        let session: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+        {
+            let (ctx, session, base) = (ctx.clone(), session.clone(), base.clone());
+            let ghost = preview.is_some();
+            on_owned_drop(move || {
+                if let Some(token) = session.take() {
+                    if ctx.owns(token) {
+                        ctx.orphan(ghost.then(|| base.get()));
+                    }
+                }
+            });
+        }
 
         move |phase: DragPhase| match phase {
             DragPhase::Began(sample) => {
@@ -248,13 +270,18 @@ impl<T: Clone + 'static> Draggable<T> {
                         fy.set(fy.get() + dy);
                     }));
                 }
-                ctx.begin((payload)());
+                session.set(Some(ctx.begin((payload)())));
                 ctx.update(sample.window_position);
                 if let Some(cb) = &on_start {
                     cb();
                 }
             }
             DragPhase::Moved(sample) => {
+                // Cancelled from outside (`DragContext::cancel`): nothing to
+                // move until the pointer lifts.
+                if !session.get().is_some_and(|t| ctx.owns(t)) {
+                    return;
+                }
                 if preview.is_some() {
                     let (gx, gy) = base.get();
                     ctx.move_preview(sample.window_position.x - gx, sample.window_position.y - gy);
@@ -270,8 +297,12 @@ impl<T: Clone + 'static> Draggable<T> {
                 window_position, ..
             } => {
                 is_dragging.set(false);
-                let landed = ctx.finish(window_position);
-                let outcome = if landed {
+                let outcome = if !session.take().is_some_and(|t| ctx.owns(t)) {
+                    if preview.is_none() && snap_back {
+                        spring_back(&x, &y, base.get());
+                    }
+                    DropOutcome::Cancelled
+                } else if ctx.finish(window_position) {
                     DropOutcome::Landed
                 } else {
                     // In-place mode springs the element back; the ghost just
@@ -288,7 +319,9 @@ impl<T: Clone + 'static> Draggable<T> {
             }
             DragPhase::Cancelled => {
                 is_dragging.set(false);
-                ctx.cancel();
+                if session.take().is_some_and(|t| ctx.owns(t)) {
+                    ctx.cancel();
+                }
                 if preview.is_none() && snap_back {
                     spring_back(&x, &y, base.get());
                 }

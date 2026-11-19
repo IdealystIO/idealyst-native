@@ -15,12 +15,38 @@
 //! filtered by each target's accept predicate. When targets nest, the
 //! **smallest-area** match wins — the most specific (innermost) target — which
 //! is the intuitive result for a target inside a target.
+//!
+//! ## A drag outlives its source
+//!
+//! The source's own view delivers a drag's moves and release. A scroller
+//! can unmount that view mid-drag — a virtualized list scrolled far
+//! enough (by an auto-scroll near its edge, say) drops the source's
+//! item — and its gesture stream ends with it, release included. When the
+//! source's scope drops with its drag in flight, the context takes the
+//! drag over from the app-wide pointer
+//! ([`add_pointer_listener`](runtime_core::add_pointer_listener)), which
+//! it listens to for its whole life so it knows whether the primary
+//! button is down at that moment:
+//!
+//! - button down (a mouse or pen drag): moves keep moving the ghost and
+//!   updating hover, and the release drops the payload on the target under
+//!   it, as the source would have;
+//! - otherwise (a finger, which has no app-wide channel, or a release
+//!   nothing reported): the drag is cancelled. It never sticks.
+//!
+//! The gone source's [`Draggable::on_release`](crate::Draggable::on_release)
+//! is not called: its scope, and whatever its callback would write, is
+//! gone.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use runtime_core::animation::{AnimProp, AnimatedValue};
-use runtime_core::{signal, Element, Ref, Signal, TouchPoint, ViewHandle, ViewportRect};
+use runtime_core::{
+    add_pointer_listener, pointer_root_origin, signal, AppPointerEvent, Element, MouseButton,
+    PointerListener, PointerOutcome, PointerPhase, Ref, Signal, TouchPoint, ViewHandle,
+    ViewportRect,
+};
 
 /// Builds the visual that follows the pointer during a drag (the "drag
 /// preview" / ghost). Snapshotted once at drag start.
@@ -107,6 +133,16 @@ struct Inner<T> {
     ghost_x: AnimatedValue<f32>,
     ghost_y: AnimatedValue<f32>,
     preview: Option<PreviewBuilder>,
+    /// Counts sessions, so a source can tell its own drag from a later one
+    /// ([`owns`](DragContext::owns)).
+    session: u64,
+    /// Set while the context drives a drag whose source unmounted: the
+    /// ghost's grab offset (pointer minus ghost top-left), `None` for an
+    /// in-place drag. See the module docs, "A drag outlives its source".
+    orphan: Option<Option<(f32, f32)>>,
+    /// The app-wide pointer, heard for the context's life (module docs).
+    /// Its closure holds the context weakly, so this does not keep it alive.
+    pointer: Option<PointerListener>,
 }
 
 /// Shared drag/drop registry for one scope. Clone freely — clones share state.
@@ -131,8 +167,10 @@ impl<T: Clone + 'static> Default for DragContext<T> {
 impl<T: Clone + 'static> DragContext<T> {
     /// Create a context. Call this inside the component scope that owns the
     /// drag area; the `dragging` signal it allocates lives for that scope.
+    /// It listens to the app-wide pointer while it lives (module docs, "A
+    /// drag outlives its source").
     pub fn new() -> Self {
-        Self {
+        let ctx = Self {
             inner: Rc::new(RefCell::new(Inner {
                 dragging: signal(false),
                 payload: None,
@@ -144,8 +182,20 @@ impl<T: Clone + 'static> DragContext<T> {
                 ghost_x: AnimatedValue::new(0.0),
                 ghost_y: AnimatedValue::new(0.0),
                 preview: None,
+                session: 0,
+                orphan: None,
+                pointer: None,
             })),
-        }
+        };
+        let weak = Rc::downgrade(&ctx.inner);
+        let pointer = add_pointer_listener(move |e| {
+            if let Some(inner) = weak.upgrade() {
+                DragContext { inner }.follow_orphan(e);
+            }
+            PointerOutcome::Default
+        });
+        ctx.inner.borrow_mut().pointer = Some(pointer);
+        ctx
     }
 
     /// Reactive "a drag is in flight" flag. Read it in a `ui!`/`jsx!` body to
@@ -206,6 +256,24 @@ impl<T: Clone + 'static> DragContext<T> {
         self.inner.borrow().over.is_some()
     }
 
+    /// Where the pointer is in the drag in flight, in window coordinates,
+    /// as of its last move; `None` with no drag in flight. Read it from a
+    /// frame loop to auto-scroll near an edge from the pointer itself.
+    pub fn pointer_position(&self) -> Option<TouchPoint> {
+        let inner = self.inner.borrow();
+        inner.payload.as_ref().and(inner.last_pointer)
+    }
+
+    /// Abandon the drag in flight: nothing is delivered, the hovered
+    /// target hears `on_leave`, and the ghost goes. A
+    /// [`Draggable`](crate::Draggable) whose drag this ends reports
+    /// [`DropOutcome::Cancelled`](crate::DropOutcome::Cancelled) when its
+    /// pointer lifts. No-op with no drag in flight.
+    pub fn cancel(&self) {
+        self.end_cancelled();
+        self.clear_preview();
+    }
+
     /// Take the preview down, so a later in-place drag draws no ghost.
     pub(crate) fn clear_preview(&self) {
         self.inner.borrow_mut().preview = None;
@@ -214,19 +282,75 @@ impl<T: Clone + 'static> DragContext<T> {
     // ---- drag session (called by Draggable's recognizer callback) --------
 
     /// Open a drag session with `payload`. Sets `dragging` true and clears any
-    /// stale hover.
-    pub(crate) fn begin(&self, payload: T) {
-        let dragging = {
+    /// stale hover. Returns the session's token for [`owns`](Self::owns).
+    pub(crate) fn begin(&self, payload: T) -> u64 {
+        let (dragging, session) = {
             let mut inner = self.inner.borrow_mut();
             inner.payload = Some(payload);
             inner.over = None;
             inner.last_pointer = None;
+            inner.orphan = None;
+            inner.session += 1;
             // Snapshot every drop zone's rect here at drag start, so the
             // per-move hit-test reads no geometry (see `session_rects`).
             inner.session_rects = read_rects(&inner.droppables);
-            inner.dragging
+            (inner.dragging, inner.session)
         };
         dragging.set(true);
+        session
+    }
+
+    /// Whether the drag `session` (a [`begin`](Self::begin) token) is still
+    /// the one in flight — not finished, cancelled, or replaced.
+    pub(crate) fn owns(&self, session: u64) -> bool {
+        let inner = self.inner.borrow();
+        inner.payload.is_some() && inner.session == session
+    }
+
+    /// The source of the drag in flight unmounted. Take the drag over from
+    /// the app-wide pointer while the primary button is down, else cancel
+    /// it. `grab` is the pointer's offset from the ghost's top-left, `None`
+    /// for an in-place drag. See the module docs, "A drag outlives its
+    /// source".
+    pub(crate) fn orphan(&self, grab: Option<(f32, f32)>) {
+        if self.inner.borrow().payload.is_none() {
+            return;
+        }
+        // The context's own listener has tracked the buttons since it was
+        // made, so this is the button state now, not since some later point.
+        if runtime_shared::pointer_input::is_button_down(MouseButton::Primary) {
+            let mut inner = self.inner.borrow_mut();
+            inner.orphan = Some(grab);
+            // It moved the source's offset, and the source is gone.
+            inner.follow_scroll = None;
+        } else {
+            self.cancel();
+        }
+    }
+
+    /// Drive an orphaned drag from one app-wide pointer event.
+    fn follow_orphan(&self, e: &AppPointerEvent) {
+        let Some(grab) = self.inner.borrow().orphan else {
+            return;
+        };
+        // Pointer events are relative to the app root, drags to the window.
+        let (ox, oy) = pointer_root_origin();
+        let at = TouchPoint::new(e.x + ox, e.y + oy);
+        match e.phase {
+            PointerPhase::Move if e.is_held(MouseButton::Primary) => {
+                if let Some((gx, gy)) = grab {
+                    self.move_preview(at.x - gx, at.y - gy);
+                }
+                self.update(at);
+            }
+            // The release — or, when the window lost the mouse, the Up the
+            // dispatcher sends for every held button.
+            PointerPhase::Up if !e.is_held(MouseButton::Primary) => {
+                self.finish(at);
+                self.clear_preview();
+            }
+            _ => {}
+        }
     }
 
     /// Update hover state for the pointer at `window` (in window coordinates),
@@ -313,6 +437,7 @@ impl<T: Clone + 'static> DragContext<T> {
             let over = inner.over.take();
             inner.last_pointer = None;
             inner.follow_scroll = None;
+            inner.orphan = None;
             let Some(payload) = payload else {
                 inner.session_rects.clear();
                 dragging.set(false);
@@ -353,15 +478,17 @@ impl<T: Clone + 'static> DragContext<T> {
         }
     }
 
-    /// Abort the in-flight drag without delivering the payload (platform
-    /// cancel). Fires `on_leave` for the hovered target and closes the session.
-    pub(crate) fn cancel(&self) {
+    /// Close the session without delivering the payload. Fires `on_leave`
+    /// for the hovered target. [`cancel`](Self::cancel) also takes the
+    /// preview down.
+    fn end_cancelled(&self) {
         let (leave, dragging) = {
             let mut inner = self.inner.borrow_mut();
             inner.payload = None;
             inner.session_rects.clear();
             inner.last_pointer = None;
             inner.follow_scroll = None;
+            inner.orphan = None;
             let dragging = inner.dragging;
             let leave = inner.over.take().and_then(|id| {
                 inner

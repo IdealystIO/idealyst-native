@@ -70,7 +70,13 @@
 //! auto-scroll loop. That re-reads the zones, picks up any a virtualized list
 //! mounted, and keeps an in-place source under the pointer.
 //! [`DragContext::refresh_rects`] does the first two for targets that moved
-//! some other way.
+//! some other way. [`DragContext::pointer_position`] is where the pointer is
+//! in the drag, for an auto-scroll loop that watches the edges.
+//!
+//! A scroll that unmounts the source (a virtualized item scrolled out of
+//! range) does not strand the drag: a mouse drag carries on to its release,
+//! and a finger drag is cancelled. See [`DragContext`]'s module docs, "A drag
+//! outlives its source".
 //!
 //! ## A component that owns its drag
 //!

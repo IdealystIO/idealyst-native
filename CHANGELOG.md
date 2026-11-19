@@ -1408,6 +1408,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`DragContext::cancel` and `DragContext::pointer_position`** (`dnd` minor). `cancel` ends the
+  drag in flight from outside: nothing is delivered, and a `Draggable` whose drag it ends reports
+  `DropOutcome::Cancelled` when its pointer lifts. `pointer_position` is where the pointer is in
+  the drag, in window coordinates, so an edge auto-scroll can run from the pointer itself.
+
 - **`Tooltip` waits before it shows, then shows at once while warm** (`idea-ui` minor). Two new
   props: `delay_ms` (default `TOOLTIP_DELAY_MS`, 500) is how long the pointer rests on a trigger
   before the first tooltip shows, so sweeping across a toolbar shows nothing; once one has shown,
@@ -3781,6 +3786,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A drag no longer sticks when a scroll unmounts its source** (`dnd`). Auto-scrolling a
+  virtualized list far enough unmounted the dragged item, and its view took the drag's moves and
+  release with it: the ghost stayed up, `dragging()` stayed true, and an auto-scroll driven by an
+  edge target's `is_over` never stopped. When a `Draggable`'s scope drops mid-drag, its
+  `DragContext` now carries a mouse or pen drag on from the app-wide pointer, so the release
+  drops the payload where it lands, and cancels a finger drag, which has no app-wide channel. The
+  unmounted source's `on_release` is not called. Each `DragContext` now listens to the app-wide
+  pointer for its life, so it knows whether the button is down at that moment.
 
 - **No fades on the wrong row after a virtualized `Table` drop** (`idea-ui`). Cells are
   positional, so after a drop the row that took the held row's index faded its grip out
