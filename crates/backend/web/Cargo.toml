@@ -1,6 +1,6 @@
 [package]
 name = "backend-web"
-version = "10.3.5"
+version = "10.3.6"
 edition.workspace = true
 license.workspace = true
 

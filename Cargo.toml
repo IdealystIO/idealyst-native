@@ -539,7 +539,7 @@ dev-hot = { path = "crates/dev/hot", version = "1.7.1", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "4.3.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "2.0.0", registry = "idealyst" }
 runtime-macros-expand = { path = "crates/runtime/macros-expand", version = "4.5.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "2.4.3", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "2.4.4", registry = "idealyst" }
 catalog-scan = { path = "crates/mcp/catalog-scan", version = "5.0.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server", version = "7.0.0", registry = "idealyst" }
 mcp-design-server = { path = "crates/mcp/design-server", version = "3.1.0", registry = "idealyst" }
@@ -608,14 +608,14 @@ backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", 
 backend-roku-transpile = { path = "crates/backend/roku/transpile", version = "1.5.2", registry = "idealyst" }
 backend-terminal = { path = "crates/backend/terminal", version = "9.0.0", registry = "idealyst" }
 backend-cpu = { path = "crates/backend/cpu", version = "8.0.0", registry = "idealyst" }
-backend-web = { path = "crates/backend/web", version = "10.3.5", registry = "idealyst" }
+backend-web = { path = "crates/backend/web", version = "10.3.6", registry = "idealyst" }
 backend-ssr = { path = "crates/backend/ssr", version = "8.0.0", registry = "idealyst" }
 backend-email = { path = "crates/backend/email", version = "8.0.0", registry = "idealyst" }
 backend-windows = { path = "crates/backend/windows", version = "9.0.0", registry = "idealyst" }
 backend-linux = { path = "crates/backend/linux", version = "8.0.0", registry = "idealyst" }
 host-gtk = { path = "crates/host/gtk", version = "8.0.1", registry = "idealyst" }
 welcome = { path = "examples/welcome" }
-idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "24.0.0", registry = "idealyst" }
+idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "24.1.0", registry = "idealyst" }
 render-api = { path = "crates/gpu-backend/api", version = "7.0.0", registry = "idealyst" }
 render-wgpu = { path = "crates/gpu-backend/engine", version = "9.0.0", registry = "idealyst" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
@@ -641,14 +641,14 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme", version = "13.0.0", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "20.0.0", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "23.0.0", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "23.1.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "8.0.0", registry = "idealyst" }
-idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "20.0.0", registry = "idealyst" }
-idea-ui-layout = { path = "crates/ui/idea-ui-layout", version = "0.4.0", registry = "idealyst" }
+idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "20.1.0", registry = "idealyst" }
+idea-ui-layout = { path = "crates/ui/idea-ui-layout", version = "0.5.0", registry = "idealyst" }
 icons-lucide = { path = "crates/ui/icons-lucide", version = "8.0.0", registry = "idealyst" }
 pan = { path = "crates/sdk/client/pan", version = "8.0.0", registry = "idealyst" }
 zoom = { path = "crates/sdk/client/zoom", version = "8.0.0", registry = "idealyst" }
-dnd = { path = "crates/sdk/client/dnd", version = "8.0.0", registry = "idealyst" }
+dnd = { path = "crates/sdk/client/dnd", version = "8.1.0", registry = "idealyst" }
 gesture = { path = "crates/sdk/client/gesture", version = "6.0.0", registry = "idealyst" }
 maps = { path = "crates/sdk/client/maps", version = "9.0.0", registry = "idealyst" }
 maps-core = { path = "crates/sdk/client/maps/core", version = "8.0.0", registry = "idealyst" }
