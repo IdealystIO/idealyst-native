@@ -3713,6 +3713,127 @@ mod tests {
         drop(realized);
     }
 
+    /// Timely (item 12): an `EdgeRide` carrier — absolute, insets 0, a
+    /// `reveal` variant of transform arms driven by a `derived(..)` source,
+    /// and `breakpoint lg` insets — lost its lg insets after about three
+    /// content ⇄ calendar toggles at a 1180 px window. After every toggle the
+    /// node's class must keep its `@media` lg rule, physically after its
+    /// base rule, and (when this window is lg-wide) the computed insets must
+    /// be the lg ones.
+    #[wasm_bindgen_test]
+    async fn edge_ride_keeps_its_breakpoint_across_variant_toggles() {
+        use runtime_shared::{
+            Easing, Length, Position, StyleApplication, StyleRules, StyleSheet, Tokenized, Transform, Transition,
+        };
+        let (backend, registry, world) = focus_harness();
+        let px = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+        let arm = |t: Vec<Transform>, opacity: Option<f32>| {
+            move |_: &runtime_shared::VariantSet| StyleRules {
+                transform: Some(t.clone()),
+                opacity: opacity.map(Tokenized::Literal),
+                ..Default::default()
+            }
+        };
+        let sheet = Rc::new(
+            StyleSheet::new(move |_| StyleRules {
+                position: Some(Position::Absolute),
+                top: px(0.0),
+                right: px(0.0),
+                bottom: px(0.0),
+                left: px(0.0),
+                z_index: Some(4),
+                transform_transition: Some(Transition::new(200, Easing::EaseOut)),
+                opacity_transition: Some(Transition::new(150, Easing::EaseOut)),
+                ..Default::default()
+            })
+            .variant("reveal", "content", arm(vec![Transform::TranslateX(Length::Percent(0.0)), Transform::TranslateX(Length::Px(0.0))], None))
+            .variant("reveal", "rail", arm(vec![Transform::TranslateX(Length::Percent(0.0)), Transform::TranslateX(Length::Px(248.0))], Some(0.0)))
+            .variant("reveal", "calendar", arm(vec![Transform::TranslateX(Length::Percent(100.0)), Transform::TranslateX(Length::Px(-8.0))], None))
+            .variant("__bp_lg", "on", move |_| StyleRules {
+                top: px(8.0),
+                right: px(8.0),
+                bottom: px(8.0),
+                left: px(248.0),
+                ..Default::default()
+            }),
+        );
+        let (calendar, realized) = world.enter(|| {
+            let calendar = signal(false);
+            let sheet = sheet.clone();
+            let style = move || {
+                let arm = if calendar.get() { "calendar" } else { "content" };
+                StyleApplication::new(sheet.clone()).with("reveal", arm)
+            };
+            // A sibling restyled by the same toggle (Timely's knob flips
+            // with `reveal`): its class mints in the same turn as the
+            // carrier's.
+            let knob = move || {
+                let w = if calendar.get() { 31.0 } else { 33.0 };
+                Rc::new(StyleRules { width: Some(Tokenized::Literal(Length::Px(w))), ..Default::default() })
+            };
+            let tree = view()
+                .child(runtime_vocabulary::builders::view().style(style).build())
+                .child(runtime_vocabulary::builders::view().style(knob).build())
+                .build();
+            (calendar, realize(&backend, &registry, tree))
+        });
+        let root = realized.collect_nodes().pop().expect("one root");
+        let mut parent: web_glue::dom::Node = setup_mount_child();
+        let parent_el: web_glue::dom::Element = parent.clone().unchecked_into();
+        parent_el.set_attribute("style", "position:relative;width:1180px;height:600px").unwrap();
+        Host::insert(&mut *backend.borrow_mut(), &mut parent, root.clone());
+        settle().await;
+        let ride = || -> web_glue::dom::Element {
+            let root: web_glue::dom::Element = root.clone().unchecked_into();
+            root.children().item(0).expect("the carrier")
+        };
+        let wide = web_glue::dom::window().unwrap().inner_width().unwrap().as_f64().unwrap() >= 1024.0;
+        let check = |step: &str| {
+            let el = ride();
+            let class = el.class_name();
+            let sheet = backend.borrow_mut().sheet();
+            let rules = sheet.css_rules().unwrap();
+            let (mut base, mut media, mut dump) = (Vec::new(), Vec::new(), String::new());
+            for i in 0..rules.length() {
+                let r = rules.get(i).unwrap();
+                let text = r.css_text();
+                for c in class.split_whitespace() {
+                    if text.contains(&format!(".{c} ")) || text.contains(&format!(".{c}{{")) {
+                        dump.push_str(&format!("{i}: {text}\n"));
+                        if r.dyn_ref::<web_glue::dom::CssMediaRule>().is_some() {
+                            media.push(i);
+                        } else {
+                            base.push(i);
+                        }
+                    }
+                }
+            }
+            assert!(
+                !base.is_empty() && !media.is_empty() && base.iter().max() < media.iter().min(),
+                "{step}: class `{class}` base {base:?} media {media:?}\n{dump}"
+            );
+            let media_text: String = media.iter().map(|i| rules.get(*i).unwrap().css_text()).collect();
+            assert!(
+                media_text.contains("min-width: 1024px") && media_text.contains("248px"),
+                "{step}: the lg rule lost its insets: {media_text}"
+            );
+            if wide {
+                let cs = web_glue::dom::window().unwrap().get_computed_style(&el).unwrap().unwrap();
+                let left = cs.get_property_value("left").unwrap();
+                assert_eq!(left, "248px", "{step}: lg left inset; class `{class}`\n{dump}");
+            }
+        };
+        check("mount");
+        for i in 0..8 {
+            calendar.set(i % 2 == 0);
+            world.flush();
+            settle().await;
+            check(&format!("toggle {}", i + 1));
+        }
+        web_glue::dom::console::log_1(&format!("edge ride probe: window lg-wide = {wide}").into());
+        drop(realized);
+    }
+
     /// REGRESSION (robot-e2e demo under `idealyst test --web`): the robot's
     /// `focused` for a text input read FALSE after `focus`, though the input
     /// was `document.activeElement`. A page without OS window focus (the
